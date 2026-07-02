@@ -15,7 +15,7 @@ pub use exit_confirm_dialog::ExitConfirmDialog;
 pub use hotkey_overlay::HotkeyOverlay;
 
 use crate::input::Bind;
-use crate::render::{OutputRenderElements, TakhtiRenderer};
+use crate::render::{OutputRenderElements, TomoeRenderer};
 use text::Fonts;
 
 // Shared palette (premultiplied RGBA).
@@ -53,7 +53,7 @@ impl Ui {
 
     /// Build render elements for one output, topmost first (callers prepend
     /// these before window content). Coordinates are output-local.
-    pub fn render_elements<R: TakhtiRenderer>(
+    pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         renderer: &mut R,
         output_size: Size<i32, Physical>,

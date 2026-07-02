@@ -42,7 +42,7 @@ impl Cursor {
         Self { frame }
     }
 
-    pub fn element<R: crate::render::TakhtiRenderer>(
+    pub fn element<R: crate::render::TomoeRenderer>(
         &self,
         renderer: &mut R,
         pos: Point<f64, Physical>,

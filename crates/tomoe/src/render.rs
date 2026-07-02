@@ -7,7 +7,7 @@
 //! independently, which drifts decorations a pixel away from windows at
 //! fractional scales.
 //!
-//! Everything is generic over [`TakhtiRenderer`] so the same scene code
+//! Everything is generic over [`TomoeRenderer`] so the same scene code
 //! drives the winit backend's `GlesRenderer` and the TTY backend's
 //! multi-GPU `MultiRenderer`.
 
@@ -31,22 +31,22 @@ use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use crate::coords;
 use crate::space::PhysicalSpace;
 
-/// Renderer bounds for takhti's render elements, satisfied by both
+/// Renderer bounds for tomoe's render elements, satisfied by both
 /// `GlesRenderer` (winit) and `MultiRenderer` (TTY). The associated types
 /// pin `TextureId` the niri way, since associated type bounds can't be
 /// written in a supertrait list directly.
-pub trait TakhtiRenderer:
-    ImportAll + ImportMem + Renderer<TextureId = Self::TakhtiTextureId>
+pub trait TomoeRenderer:
+    ImportAll + ImportMem + Renderer<TextureId = Self::TomoeTextureId>
 {
-    type TakhtiTextureId: Texture + Clone + Send + 'static;
+    type TomoeTextureId: Texture + Clone + Send + 'static;
 }
 
-impl<R> TakhtiRenderer for R
+impl<R> TomoeRenderer for R
 where
     R: ImportAll + ImportMem,
     R::TextureId: Texture + Clone + Send + 'static,
 {
-    type TakhtiTextureId = R::TextureId;
+    type TomoeTextureId = R::TextureId;
 }
 
 render_elements! {
@@ -81,7 +81,7 @@ pub fn take_presentation_feedback(
     feedback
 }
 
-/// Border frame slabs drawn around windows (buffers are persisted in `Takhti`
+/// Border frame slabs drawn around windows (buffers are persisted in `Tomoe`
 /// so the damage tracker sees stable element ids). Four slabs per window so
 /// nothing is drawn behind the window itself — transparent surfaces would
 /// otherwise show the border color across their whole area.
@@ -91,7 +91,7 @@ pub fn take_presentation_feedback(
 /// can never land off-grid.
 // Window keys hash by their stable id despite interior mutability.
 #[allow(clippy::mutable_key_type)]
-pub fn border_elements<R: TakhtiRenderer>(
+pub fn border_elements<R: TomoeRenderer>(
     space: &PhysicalSpace,
     border_buffers: &HashMap<Window, [SolidColorBuffer; 4]>,
     width: i32,
@@ -142,8 +142,8 @@ pub fn border_elements<R: TakhtiRenderer>(
 
 /// Build the full scene for one output (everything except the cursor), in
 /// render order: earlier elements draw on top. `ui` and `borders` are built
-/// by the caller because they need parts of `Takhti` this borrow can't reach.
-pub fn scene_elements<R: TakhtiRenderer>(
+/// by the caller because they need parts of `Tomoe` this borrow can't reach.
+pub fn scene_elements<R: TomoeRenderer>(
     renderer: &mut R,
     space: &PhysicalSpace,
     output: &Output,

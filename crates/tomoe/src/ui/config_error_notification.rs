@@ -11,7 +11,7 @@ use smithay::utils::{Physical, Size};
 
 use super::text::{Canvas, Fonts, Span};
 use super::{BG, FG, RED};
-use crate::render::{OutputRenderElements, TakhtiRenderer};
+use crate::render::{OutputRenderElements, TomoeRenderer};
 
 const PADDING: i32 = 16;
 const BORDER: i32 = 4;
@@ -47,7 +47,7 @@ impl ConfigErrorNotification {
         self.shown_at = None;
     }
 
-    pub fn render_elements<R: TakhtiRenderer>(
+    pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         fonts: &Fonts,
         renderer: &mut R,

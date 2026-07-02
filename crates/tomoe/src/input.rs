@@ -10,7 +10,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotio
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
-use crate::state::Takhti;
+use crate::state::Tomoe;
 
 /// A dispatchable compositor action. Lua binds queue these; built-in binds
 /// carry them directly.
@@ -50,7 +50,7 @@ impl Action {
 }
 
 /// The modifier "Mod" resolves to in binds and pointer events
-/// (`takhti.settings { mod = "alt" }`). Default: Super.
+/// (`tomoe.settings { mod = "alt" }`). Default: Super.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModKey {
     #[default]
@@ -95,7 +95,7 @@ pub struct Bind {
     pub mods: Mods,
     pub keysym: Keysym,
     pub action: Action,
-    /// Overlay label (third argument to `takhti.bind`).
+    /// Overlay label (third argument to `tomoe.bind`).
     pub desc: Option<String>,
 }
 
@@ -132,7 +132,7 @@ pub fn parse_combo(combo: &str, mod_key: ModKey) -> Result<(Mods, Keysym)> {
     Ok((mods, keysym))
 }
 
-impl Takhti {
+impl Tomoe {
     /// (alt, ctrl, shift, super) — for pointer event hooks.
     fn current_mods(&self) -> (bool, bool, bool, bool) {
         self.seat
@@ -283,7 +283,7 @@ impl Takhti {
                     key_state,
                     serial,
                     time,
-                    |takhti, mods, handle| {
+                    |tomoe, mods, handle| {
                         let raw_syms = handle.raw_syms();
                         if pressed {
                             // VT switching always works, even over the dialog.
@@ -299,7 +299,7 @@ impl Takhti {
                         }
                         // The exit dialog is modal: while open, no key
                         // reaches clients. Enter confirms, the rest dismiss.
-                        if takhti.ui.exit_dialog.is_open() {
+                        if tomoe.ui.exit_dialog.is_open() {
                             if pressed
                                 && (raw_syms.contains(&Keysym::Return)
                                     || raw_syms.contains(&Keysym::KP_Enter))
@@ -309,7 +309,7 @@ impl Takhti {
                             return FilterResult::Intercept(None);
                         }
                         if pressed {
-                            for bind in &takhti.binds {
+                            for bind in &tomoe.binds {
                                 if bind.mods.matches(mods) && raw_syms.contains(&bind.keysym) {
                                     return FilterResult::Intercept(Some(bind.action.clone()));
                                 }
@@ -552,12 +552,14 @@ impl Takhti {
                 pointer.frame(self);
             }
             InputEvent::PointerAxis { event } => {
-                let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Horizontal).unwrap_or(0.0) / 120.0 * 15.0
-                });
-                let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Vertical).unwrap_or(0.0) / 120.0 * 15.0
-                });
+                let horizontal_v120 = event.amount_v120(Axis::Horizontal);
+                let vertical_v120 = event.amount_v120(Axis::Vertical);
+                let horizontal = event
+                    .amount(Axis::Horizontal)
+                    .unwrap_or_else(|| horizontal_v120.unwrap_or(0.0) / 120.0 * 15.0);
+                let vertical = event
+                    .amount(Axis::Vertical)
+                    .unwrap_or_else(|| vertical_v120.unwrap_or(0.0) / 120.0 * 15.0);
                 if self.lua.has_pointer_axis_hooks() {
                     let Some(pointer) = self.seat.get_pointer() else {
                         return;
@@ -596,10 +598,24 @@ impl Takhti {
                 }
                 let mut frame = AxisFrame::new(event.time_msec()).source(event.source());
                 if horizontal != 0.0 {
+                    frame = frame.relative_direction(
+                        Axis::Horizontal,
+                        event.relative_direction(Axis::Horizontal),
+                    );
                     frame = frame.value(Axis::Horizontal, horizontal);
+                    if let Some(v120) = horizontal_v120 {
+                        frame = frame.v120(Axis::Horizontal, v120 as i32);
+                    }
                 }
                 if vertical != 0.0 {
+                    frame = frame.relative_direction(
+                        Axis::Vertical,
+                        event.relative_direction(Axis::Vertical),
+                    );
                     frame = frame.value(Axis::Vertical, vertical);
+                    if let Some(v120) = vertical_v120 {
+                        frame = frame.v120(Axis::Vertical, v120 as i32);
+                    }
                 }
                 if event.source() == AxisSource::Finger {
                     if event.amount(Axis::Horizontal) == Some(0.0) {

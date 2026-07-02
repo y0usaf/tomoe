@@ -1,14 +1,14 @@
--- Default window manager for takhti, implemented entirely on the public Lua API.
+-- Default window manager for tomoe, implemented entirely on the public Lua API.
 -- This is the same surface user configs use: replace this module wholesale by
 -- not requiring it, or extend it by wrapping its functions.
 --
 -- All geometry (window/output coordinates, gaps) is in *physical pixels*:
 -- integers stay integers at any output scale, so layouts can never cause
--- blurry, misaligned windows. Set the scale with takhti.settings{ scale = n }.
+-- blurry, misaligned windows. Set the scale with tomoe.settings{ scale = n }.
 --
 --   local wm = require("wm")
 --   wm.gaps = 4
---   takhti.bind("Mod+1", function() wm.switch(1) end)
+--   tomoe.bind("Mod+1", function() wm.switch(1) end)
 
 local M = {
   gaps = 8,
@@ -43,7 +43,7 @@ end
 -- Classic dwindle: split the remaining area along its longer side.
 -- Fullscreen windows keep their output-covering geometry and stay on top.
 function M.arrange()
-  local area = takhti.usable_area()
+  local area = tomoe.usable_area()
   local wins, full = {}, {}
   for _, win in ipairs(M.workspaces[M.active]) do
     if M.fullscreen[win:id()] then
@@ -80,7 +80,7 @@ end
 
 -- The output containing the window's center, or the named/first output.
 local function output_for(win, name)
-  local outs = takhti.outputs()
+  local outs = tomoe.outputs()
   for _, o in ipairs(outs) do
     if o.name == name then
       return o
@@ -116,7 +116,7 @@ function M.set_fullscreen(win, on, output_name)
 end
 
 function M.toggle_fullscreen()
-  local win = takhti.focused_window()
+  local win = tomoe.focused_window()
   if win then
     M.set_fullscreen(win, not M.fullscreen[win:id()])
   end
@@ -136,7 +136,7 @@ function M.switch(n)
     last:focus()
   else
     -- Don't leave a hidden window from the old workspace holding the keyboard.
-    takhti.clear_focus()
+    tomoe.clear_focus()
   end
 end
 
@@ -144,7 +144,7 @@ function M.move_focused(n)
   if n == M.active or n < 1 or n > M.workspace_count then
     return
   end
-  local win = takhti.focused_window()
+  local win = tomoe.focused_window()
   if not win then
     return
   end
@@ -156,7 +156,7 @@ function M.move_focused(n)
   if last then
     last:focus()
   else
-    takhti.clear_focus()
+    tomoe.clear_focus()
   end
 end
 
@@ -165,7 +165,7 @@ local function cycle(dir)
   if #wins == 0 then
     return
   end
-  local focused = takhti.focused_window()
+  local focused = tomoe.focused_window()
   local idx = focused and find(wins, focused) or 1
   idx = ((idx - 1 + dir) % #wins) + 1
   wins[idx]:focus()
@@ -180,13 +180,13 @@ function M.focus_prev()
 end
 
 function M.close_focused()
-  local win = takhti.focused_window()
+  local win = tomoe.focused_window()
   if win then
     win:close()
   end
 end
 
-takhti.on_window_open(function(win)
+tomoe.on_window_open(function(win)
   table.insert(M.workspaces[M.active], win)
   if win:is_fullscreen() then
     -- The client asked for fullscreen before mapping (mpv, games).
@@ -197,7 +197,7 @@ takhti.on_window_open(function(win)
   win:focus()
 end)
 
-takhti.on_window_close(function(win)
+tomoe.on_window_close(function(win)
   M.fullscreen[win:id()] = nil
   for i = 1, M.workspace_count do
     remove(M.workspaces[i], win)
@@ -213,7 +213,7 @@ end)
 -- return) makes this config responsible for responding; maximize/minimize
 -- fall through to the native default (ack / ignore) — a tiled layout has no
 -- separate maximized or minimized state.
-takhti.on_window_request(function(ev)
+tomoe.on_window_request(function(ev)
   if ev.type == "fullscreen" then
     M.set_fullscreen(ev.window, true, ev.output)
     return true
@@ -223,7 +223,7 @@ takhti.on_window_request(function(ev)
   end
 end)
 
-takhti.on_outputs_changed(function()
+tomoe.on_outputs_changed(function()
   M.arrange()
 end)
 

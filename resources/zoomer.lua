@@ -1,10 +1,10 @@
 -- zoomer: a floating, zooming, scrolling canvas WM (after ~chld/shko).
 --
 -- Windows float on an infinite world-coordinate canvas viewed through the
--- compositor camera (takhti.set_view). Planes are independent canvases,
+-- compositor camera (tomoe.set_view). Planes are independent canvases,
 -- each remembering its own camera.
 --
---   takhti.settings { mod = "alt" }    -- pick your Mod key (default: super)
+--   tomoe.settings { mod = "alt" }    -- pick your Mod key (default: super)
 --   require("zoomer").setup {}
 --
 --   Mod+left-drag    move window          Mod+Tab          next plane
@@ -58,8 +58,8 @@ end
 
 -- The world rect currently visible through the camera.
 local function visible_rect()
-  local u = takhti.usable_area()
-  local v = takhti.view()
+  local u = tomoe.usable_area()
+  local v = tomoe.view()
   return {
     x = u.x / v.zoom + v.x,
     y = u.y / v.zoom + v.y,
@@ -74,7 +74,7 @@ local function focus_top(plane)
     win:raise()
     win:focus()
   else
-    takhti.clear_focus()
+    tomoe.clear_focus()
   end
 end
 
@@ -84,7 +84,7 @@ local function switch_plane(n)
   if n == current or not planes[n] then
     return
   end
-  planes[current].view = takhti.view()
+  planes[current].view = tomoe.view()
   for _, win in ipairs(planes[current].wins) do
     win:hide()
   end
@@ -93,7 +93,7 @@ local function switch_plane(n)
   for _, win in ipairs(plane.wins) do
     win:show()
   end
-  takhti.set_view(plane.view)
+  tomoe.set_view(plane.view)
   focus_top(plane)
 end
 
@@ -103,7 +103,7 @@ end
 
 -- ─── Window lifecycle ────────────────────────────────────────────────────────
 
-takhti.on_window_open(function(win)
+tomoe.on_window_open(function(win)
   local plane = planes[current]
   if not plane then
     return
@@ -121,7 +121,7 @@ takhti.on_window_open(function(win)
   win:focus()
 end)
 
-takhti.on_window_close(function(win)
+tomoe.on_window_close(function(win)
   fit_saved[win:id()] = nil
   local p, i = plane_of(win)
   if not p then
@@ -135,7 +135,7 @@ end)
 
 -- Keep stacking bookkeeping honest with click-to-focus: the focused window
 -- moves to the top of its plane's order.
-takhti.on_focus_change(function(win)
+tomoe.on_focus_change(function(win)
   if not win then
     return
   end
@@ -156,7 +156,7 @@ local function begin_move(win)
   win:raise()
   win:focus()
   local x, y = g.x, g.y
-  takhti.grab_pointer(function(m)
+  tomoe.grab_pointer(function(m)
     x = x + m.dx
     y = y + m.dy
     win:set_geometry(round(x), round(y), g.w, g.h)
@@ -181,7 +181,7 @@ local function begin_resize(win, edges)
   local top = edges:find("top", 1, true) ~= nil
   local bottom = edges:find("bottom", 1, true) ~= nil
   local w, h = g.w, g.h
-  takhti.grab_pointer(function(m)
+  tomoe.grab_pointer(function(m)
     if left then
       w = w - m.dx
     elseif right then
@@ -201,21 +201,21 @@ local function begin_resize(win, edges)
 end
 
 local function begin_pan()
-  local v = takhti.view()
+  local v = tomoe.view()
   local x, y = v.x, v.y
-  takhti.grab_pointer(function(m)
+  tomoe.grab_pointer(function(m)
     -- Canvas follows the cursor: the world point under it stays put.
     x = x - m.dx
     y = y - m.dy
-    takhti.set_view { x = round(x), y = round(y) }
+    tomoe.set_view { x = round(x), y = round(y) }
   end)
 end
 
 -- Zoom keeping the world point at screen position (sx, sy) fixed.
 local function zoom_around(factor, wx, wy, sx, sy)
-  local v = takhti.view()
+  local v = tomoe.view()
   local zoom = clamp(v.zoom * factor, 1 / 16, 16)
-  takhti.set_view {
+  tomoe.set_view {
     x = round(wx - sx / zoom),
     y = round(wy - sy / zoom),
     zoom = zoom,
@@ -223,22 +223,22 @@ local function zoom_around(factor, wx, wy, sx, sy)
 end
 
 local function zoom_center(factor)
-  local u = takhti.usable_area()
-  local v = takhti.view()
+  local u = tomoe.usable_area()
+  local v = tomoe.view()
   local sx, sy = u.x + u.w / 2, u.y + u.h / 2
   zoom_around(factor, sx / v.zoom + v.x, sy / v.zoom + v.y, sx, sy)
 end
 
 -- Pan by a screen-pixel step (constant apparent speed at any zoom).
 local function pan(dx, dy)
-  local v = takhti.view()
-  takhti.set_view {
+  local v = tomoe.view()
+  tomoe.set_view {
     x = v.x + round(dx / v.zoom),
     y = v.y + round(dy / v.zoom),
   }
 end
 
-takhti.on_pointer_button(function(ev)
+tomoe.on_pointer_button(function(ev)
   if not ev.pressed or not ev.mods.mod then
     return
   end
@@ -254,7 +254,7 @@ takhti.on_pointer_button(function(ev)
   end
 end)
 
-takhti.on_pointer_axis(function(ev)
+tomoe.on_pointer_axis(function(ev)
   if not ev.mods.mod or ev.dy == 0 then
     return
   end
@@ -263,7 +263,7 @@ takhti.on_pointer_axis(function(ev)
 end)
 
 -- Client-initiated drags (CSD titlebars, resize edges) reuse the same grabs.
-takhti.on_window_request(function(ev)
+tomoe.on_window_request(function(ev)
   if ev.type == "move" then
     begin_move(ev.window)
     return true
@@ -276,7 +276,7 @@ end)
 -- ─── Fit toggle ──────────────────────────────────────────────────────────────
 
 local function toggle_fit()
-  local win = takhti.focused_window()
+  local win = tomoe.focused_window()
   if not win then
     return
   end
@@ -309,21 +309,21 @@ function M.setup(opts)
   end
   current = 1
 
-  takhti.bind("Mod+Tab", function() next_plane(1) end, "next plane")
-  takhti.bind("Mod+Shift+Tab", function() next_plane(-1) end, "previous plane")
+  tomoe.bind("Mod+Tab", function() next_plane(1) end, "next plane")
+  tomoe.bind("Mod+Shift+Tab", function() next_plane(-1) end, "previous plane")
   for n = 1, math.min(9, #planes) do
-    takhti.bind("Mod+" .. n, function() switch_plane(n) end)
+    tomoe.bind("Mod+" .. n, function() switch_plane(n) end)
   end
-  takhti.bind("Mod+equal", function() zoom_center(cfg.zoom_step) end, "zoom in")
-  takhti.bind("Mod+minus", function() zoom_center(1 / cfg.zoom_step) end, "zoom out")
-  takhti.bind("Mod+period", function()
-    takhti.set_view { x = 0, y = 0, zoom = 1 }
+  tomoe.bind("Mod+equal", function() zoom_center(cfg.zoom_step) end, "zoom in")
+  tomoe.bind("Mod+minus", function() zoom_center(1 / cfg.zoom_step) end, "zoom out")
+  tomoe.bind("Mod+period", function()
+    tomoe.set_view { x = 0, y = 0, zoom = 1 }
   end, "reset view")
-  takhti.bind("Mod+f", toggle_fit, "fit window to view")
-  takhti.bind("Mod+Left", function() pan(-cfg.pan_step, 0) end)
-  takhti.bind("Mod+Right", function() pan(cfg.pan_step, 0) end)
-  takhti.bind("Mod+Up", function() pan(0, -cfg.pan_step) end)
-  takhti.bind("Mod+Down", function() pan(0, cfg.pan_step) end)
+  tomoe.bind("Mod+f", toggle_fit, "fit window to view")
+  tomoe.bind("Mod+Left", function() pan(-cfg.pan_step, 0) end)
+  tomoe.bind("Mod+Right", function() pan(cfg.pan_step, 0) end)
+  tomoe.bind("Mod+Up", function() pan(0, -cfg.pan_step) end)
+  tomoe.bind("Mod+Down", function() pan(0, cfg.pan_step) end)
 
   return M
 end

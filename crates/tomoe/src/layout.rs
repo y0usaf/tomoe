@@ -1,9 +1,9 @@
 //! Native layout mechanisms. Layout *policy* lives in Lua (see
 //! resources/wm.lua); this module only keeps rendering-adjacent bookkeeping.
 
-use crate::state::Takhti;
+use crate::state::Tomoe;
 
-impl Takhti {
+impl Tomoe {
     /// Update per-window border buffers (size + focus color) for mapped windows.
     pub fn refresh_borders(&mut self) {
         let settings = self.lua.settings();

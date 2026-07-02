@@ -59,7 +59,7 @@ impl<'a> Span<'a> {
 impl Fonts {
     pub fn load() -> Result<Self> {
         let sans = load_font(
-            "TAKHTI_FONT",
+            "TOMOE_FONT",
             "sans",
             &[
                 "DejaVuSans.ttf",
@@ -69,7 +69,7 @@ impl Fonts {
         )
         .context("no sans font found")?;
         let mono = load_font(
-            "TAKHTI_FONT_MONO",
+            "TOMOE_FONT_MONO",
             "monospace",
             &[
                 "DejaVuSansMono.ttf",

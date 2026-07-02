@@ -67,7 +67,7 @@ use crate::lua::{
 };
 use crate::render::OutputRenderElements;
 use crate::space::PhysicalSpace;
-use crate::state::Takhti;
+use crate::state::Tomoe;
 
 const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
     Fourcc::Argb8888,
@@ -163,7 +163,7 @@ pub struct TtyData {
     pub cursor_buffer: SolidColorBuffer,
 }
 
-pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
+pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
     let (session, notifier) = LibSeatSession::new()
         .context("error creating libseat session (is seatd or logind available?)")?;
     let seat_name = session.seat();
@@ -174,28 +174,28 @@ pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
         .udev_assign_seat(&seat_name)
         .map_err(|()| anyhow!("error assigning libinput seat"))?;
     let input_backend = LibinputInputBackend::new(libinput.clone());
-    takhti
+    tomoe
         .loop_handle
-        .insert_source(input_backend, |mut event, _, takhti| {
+        .insert_source(input_backend, |mut event, _, tomoe| {
             // Device lifecycle stays backend-side: configure new devices per
             // the current settings and track them so `apply_libinput_settings`
             // can re-apply on config changes.
             match &mut event {
-                InputEvent::DeviceAdded { device } => on_device_added(takhti, device),
+                InputEvent::DeviceAdded { device } => on_device_added(tomoe, device),
                 InputEvent::DeviceRemoved { device } => {
-                    if let Backend::Tty(data) = &mut takhti.backend {
+                    if let Backend::Tty(data) = &mut tomoe.backend {
                         data.input_devices.retain(|d| d != device);
                     }
                 }
                 _ => {}
             }
-            takhti.process_input_event(event);
+            tomoe.process_input_event(event);
         })
         .map_err(|err| anyhow!("error inserting libinput source: {err}"))?;
 
-    takhti
+    tomoe
         .loop_handle
-        .insert_source(notifier, |event, _, takhti| takhti.on_session_event(event))
+        .insert_source(notifier, |event, _, tomoe| tomoe.on_session_event(event))
         .map_err(|err| anyhow!("error inserting session source: {err}"))?;
 
     let gpu_manager = GpuManager::new(GbmGlesBackend::with_context_priority(ContextPriority::High))
@@ -231,7 +231,7 @@ pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
     };
     info!("rendering on {primary_render_node} (primary node {primary_node})");
 
-    takhti.backend = Backend::Tty(TtyData {
+    tomoe.backend = Backend::Tty(TtyData {
         session,
         libinput,
         gpu_manager,
@@ -239,8 +239,8 @@ pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
         primary_render_node,
         devices: HashMap::new(),
         dmabuf_global_created: false,
-        last_displays: takhti.lua.settings().displays,
-        last_input: takhti.lua.settings().input,
+        last_displays: tomoe.lua.settings().displays,
+        last_input: tomoe.lua.settings().input,
         input_devices: Vec::new(),
         cursor_buffer: SolidColorBuffer::new((8, 16), [1.0, 1.0, 1.0, 1.0]),
     });
@@ -258,37 +258,37 @@ pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
     // scanout buffers from its GBM device.
     initial.sort_by_key(|(node, _)| *node != primary_node);
 
-    takhti
+    tomoe
         .loop_handle
-        .insert_source(udev_backend, |event, _, takhti| match event {
+        .insert_source(udev_backend, |event, _, tomoe| match event {
             UdevEvent::Added { device_id, path } => {
                 if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                    if let Err(err) = device_added(takhti, node, &path) {
+                    if let Err(err) = device_added(tomoe, node, &path) {
                         warn!("error adding DRM device {node}: {err:#}");
                     }
                 }
             }
             UdevEvent::Changed { device_id } => {
                 if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                    device_changed(takhti, node);
+                    device_changed(tomoe, node);
                 }
             }
             UdevEvent::Removed { device_id } => {
                 if let Ok(node) = DrmNode::from_dev_id(device_id) {
-                    device_removed(takhti, node);
+                    device_removed(tomoe, node);
                 }
             }
         })
         .map_err(|err| anyhow!("error inserting udev source: {err}"))?;
 
     for (node, path) in initial {
-        if let Err(err) = device_added(takhti, node, &path) {
+        if let Err(err) = device_added(tomoe, node, &path) {
             warn!("error adding DRM device {node}: {err:#}");
         }
     }
 
     {
-        let Backend::Tty(data) = &takhti.backend else {
+        let Backend::Tty(data) = &tomoe.backend else {
             unreachable!()
         };
         if data
@@ -301,23 +301,23 @@ pub fn init(takhti: &mut Takhti, drm_device: Option<&Path>) -> Result<()> {
     }
 
     // Runs the Lua outputs hook and, via after_lua, queues the first redraws.
-    takhti.outputs_changed(true);
-    queue_redraw_all(takhti);
+    tomoe.outputs_changed(true);
+    queue_redraw_all(tomoe);
     Ok(())
 }
 
-fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
+fn device_added(tomoe: &mut Tomoe, node: DrmNode, path: &Path) -> Result<()> {
     if node.ty() != NodeType::Primary {
         return Ok(());
     }
-    let display_handle = takhti.display_handle.clone();
-    let Takhti {
+    let display_handle = tomoe.display_handle.clone();
+    let Tomoe {
         backend,
         loop_handle,
         dmabuf_state,
         syncobj_state,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Tty(data) = backend else {
         return Ok(());
     };
@@ -381,7 +381,7 @@ fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
                 match DmabufFeedbackBuilder::new(data.primary_render_node.dev_id(), formats).build()
                 {
                     Ok(feedback) => {
-                        let _global = dmabuf_state.create_global_with_default_feedback::<Takhti>(
+                        let _global = dmabuf_state.create_global_with_default_feedback::<Tomoe>(
                             &display_handle,
                             &feedback,
                         );
@@ -399,7 +399,7 @@ fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
         // ready instead of relying on implicit fences.
         if supports_syncobj_eventfd(&device_fd) {
             info!("explicit sync (linux-drm-syncobj-v1) enabled");
-            *syncobj_state = Some(DrmSyncobjState::new::<Takhti>(
+            *syncobj_state = Some(DrmSyncobjState::new::<Tomoe>(
                 &display_handle,
                 device_fd.clone(),
             ));
@@ -421,8 +421,8 @@ fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
     );
 
     let token = loop_handle
-        .insert_source(drm_notifier, move |event, meta, takhti| match event {
-            DrmEvent::VBlank(crtc) => on_vblank(takhti, node, crtc, meta.take()),
+        .insert_source(drm_notifier, move |event, meta, tomoe| match event {
+            DrmEvent::VBlank(crtc) => on_vblank(tomoe, node, crtc, meta.take()),
             DrmEvent::Error(err) => warn!("DRM error: {err}"),
         })
         .map_err(|err| anyhow!("error inserting DRM source: {err}"))?;
@@ -441,13 +441,13 @@ fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
         },
     );
 
-    device_changed(takhti, node);
+    device_changed(tomoe, node);
     Ok(())
 }
 
-fn device_changed(takhti: &mut Takhti, node: DrmNode) {
+fn device_changed(tomoe: &mut Tomoe, node: DrmNode) {
     let events: Vec<DrmScanEvent> = {
-        let Backend::Tty(data) = &mut takhti.backend else {
+        let Backend::Tty(data) = &mut tomoe.backend else {
             return;
         };
         let Some(device) = data.devices.get_mut(&node) else {
@@ -468,14 +468,14 @@ fn device_changed(takhti: &mut Takhti, node: DrmNode) {
             DrmScanEvent::Connected {
                 connector,
                 crtc: Some(crtc),
-            } => match connector_connected(takhti, node, connector, crtc) {
+            } => match connector_connected(tomoe, node, connector, crtc) {
                 Ok(lit) => changed |= lit,
                 Err(err) => warn!("error setting up connector: {err:#}"),
             },
             DrmScanEvent::Disconnected {
                 crtc: Some(crtc), ..
             } => {
-                connector_disconnected(takhti, node, crtc);
+                connector_disconnected(tomoe, node, crtc);
                 changed = true;
             }
             _ => {}
@@ -483,15 +483,15 @@ fn device_changed(takhti: &mut Takhti, node: DrmNode) {
     }
 
     if changed {
-        reposition_outputs(takhti);
-        takhti.outputs_changed(false);
-        queue_redraw_all(takhti);
+        reposition_outputs(tomoe);
+        tomoe.outputs_changed(false);
+        queue_redraw_all(tomoe);
     }
 }
 
-fn device_removed(takhti: &mut Takhti, node: DrmNode) {
+fn device_removed(tomoe: &mut Tomoe, node: DrmNode) {
     let crtcs: Vec<crtc::Handle> = {
-        let Backend::Tty(data) = &takhti.backend else {
+        let Backend::Tty(data) = &tomoe.backend else {
             return;
         };
         let Some(device) = data.devices.get(&node) else {
@@ -501,15 +501,15 @@ fn device_removed(takhti: &mut Takhti, node: DrmNode) {
     };
     let had_surfaces = !crtcs.is_empty();
     for crtc in crtcs {
-        connector_disconnected(takhti, node, crtc);
+        connector_disconnected(tomoe, node, crtc);
     }
 
     {
-        let Takhti {
+        let Tomoe {
             backend,
             loop_handle,
             ..
-        } = takhti;
+        } = tomoe;
         let Backend::Tty(data) = backend else { return };
         let Some(device) = data.devices.remove(&node) else {
             return;
@@ -524,9 +524,9 @@ fn device_removed(takhti: &mut Takhti, node: DrmNode) {
     }
 
     if had_surfaces {
-        reposition_outputs(takhti);
-        takhti.outputs_changed(false);
-        queue_redraw_all(takhti);
+        reposition_outputs(tomoe);
+        tomoe.outputs_changed(false);
+        queue_redraw_all(tomoe);
     }
 }
 
@@ -584,18 +584,18 @@ fn pick_mode(connector: &connector::Info, target: Resolution) -> Option<(DrmMode
 /// `settings.displays` keeps it dark — the connector is stashed, no surface
 /// or global is created, and the output set is unchanged.
 fn connector_connected(
-    takhti: &mut Takhti,
+    tomoe: &mut Tomoe,
     node: DrmNode,
     connector: connector::Info,
     crtc: crtc::Handle,
 ) -> Result<bool> {
-    let Takhti {
+    let Tomoe {
         backend,
         space,
         display_handle,
         lua,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Tty(data) = backend else {
         bail!("tty backend not active");
     };
@@ -731,7 +731,7 @@ fn connector_connected(
         }
     };
 
-    let global = output.create_global::<Takhti>(display_handle);
+    let global = output.create_global::<Tomoe>(display_handle);
     space.map_output(&output, (x, 0));
 
     device.surfaces.insert(
@@ -747,14 +747,14 @@ fn connector_connected(
     Ok(true)
 }
 
-fn connector_disconnected(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
-    let Takhti {
+fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
+    let Tomoe {
         backend,
         space,
         display_handle,
         loop_handle,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Tty(data) = backend else { return };
     let Some(device) = data.devices.get_mut(&node) else {
         return;
@@ -776,7 +776,7 @@ fn connector_disconnected(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle
         _ => {}
     }
     space.unmap_output(&surface.output);
-    display_handle.remove_global::<Takhti>(surface.global);
+    display_handle.remove_global::<Tomoe>(surface.global);
 }
 
 /// Pure placement policy: `(name, physical size)` in connect order plus the
@@ -840,10 +840,10 @@ fn place_outputs(
 
 /// Place outputs per [`place_outputs`] and refresh their logical positions;
 /// run after any change to the output set, modes, or `settings.displays`.
-fn reposition_outputs(takhti: &mut Takhti) {
-    let displays = takhti.lua.settings().displays;
-    let outputs: Vec<Output> = takhti.space.outputs().cloned().collect();
-    let scale = takhti.space.scale();
+fn reposition_outputs(tomoe: &mut Tomoe) {
+    let displays = tomoe.lua.settings().displays;
+    let outputs: Vec<Output> = tomoe.space.outputs().cloned().collect();
+    let scale = tomoe.space.scale();
 
     let size_of = |output: &Output| {
         output
@@ -867,7 +867,7 @@ fn reposition_outputs(takhti: &mut Takhti) {
             crate::coords::rect_to_logical(smithay::utils::Rectangle::new(loc.into(), size), scale)
                 .loc;
         output.change_current_state(None, None, None, Some(logical_loc));
-        takhti.space.map_output(output, loc);
+        tomoe.space.map_output(output, loc);
     }
 }
 
@@ -877,10 +877,10 @@ fn reposition_outputs(takhti: &mut Takhti) {
 /// the output set or any geometry effectively changed; the caller re-emits
 /// `outputs_changed` so the Lua WM can retile. Runs after every Lua entry,
 /// so it bails immediately unless the displays config actually changed.
-pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
-    let settings = takhti.lua.settings();
+pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
+    let settings = tomoe.lua.settings();
     {
-        let Backend::Tty(data) = &mut takhti.backend else {
+        let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
         };
         if settings.displays == data.last_displays {
@@ -888,12 +888,12 @@ pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
         }
         data.last_displays = settings.displays.clone();
     }
-    let geometries = |takhti: &Takhti| -> Vec<(String, (i32, i32, i32, i32))> {
-        let mut v: Vec<_> = takhti
+    let geometries = |tomoe: &Tomoe| -> Vec<(String, (i32, i32, i32, i32))> {
+        let mut v: Vec<_> = tomoe
             .space
             .outputs()
             .map(|output| {
-                let geo = takhti.space.output_geometry(output).unwrap_or_default();
+                let geo = tomoe.space.output_geometry(output).unwrap_or_default();
                 (
                     output.name(),
                     (geo.loc.x, geo.loc.y, geo.size.w, geo.size.h),
@@ -903,13 +903,13 @@ pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
         v.sort();
         v
     };
-    let before = geometries(takhti);
+    let before = geometries(tomoe);
 
     let mut changed = false;
     let mut to_disable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     let mut to_enable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     {
-        let Backend::Tty(data) = &mut takhti.backend else {
+        let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
         };
 
@@ -969,8 +969,8 @@ pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
     }
 
     for (node, crtc, connector) in to_disable {
-        connector_disconnected(takhti, node, crtc);
-        if let Backend::Tty(data) = &mut takhti.backend {
+        connector_disconnected(tomoe, node, crtc);
+        if let Backend::Tty(data) = &mut tomoe.backend {
             if let Some(device) = data.devices.get_mut(&node) {
                 device.inactive.insert(crtc, connector);
             }
@@ -979,10 +979,10 @@ pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
     }
     for (node, crtc, connector) in to_enable {
         // connector_connected re-checks the (now cleared) disabled flag.
-        if let Err(err) = connector_connected(takhti, node, connector.clone(), crtc) {
+        if let Err(err) = connector_connected(tomoe, node, connector.clone(), crtc) {
             warn!("error re-enabling connector: {err:#}");
             // Back in the stash so the next settings change retries.
-            if let Backend::Tty(data) = &mut takhti.backend {
+            if let Backend::Tty(data) = &mut tomoe.backend {
                 if let Some(device) = data.devices.get_mut(&node) {
                     device.inactive.insert(crtc, connector);
                 }
@@ -994,29 +994,29 @@ pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
 
     // Positions/mirrors may have changed without a mode or topology change;
     // re-place unconditionally (idempotent) and compare effective geometry.
-    reposition_outputs(takhti);
-    if !changed && before == geometries(takhti) {
+    reposition_outputs(tomoe);
+    if !changed && before == geometries(tomoe) {
         return false;
     }
-    queue_redraw_all(takhti);
+    queue_redraw_all(tomoe);
     true
 }
 
-fn on_device_added(takhti: &mut Takhti, device: &mut libinput::Device) {
+fn on_device_added(tomoe: &mut Tomoe, device: &mut libinput::Device) {
     // The name is what `settings.devices` keys on; log it for discoverability
     // (same string `libinput list-devices` prints).
     info!("input device added: {:?}", device.name());
-    apply_device_config(&takhti.lua.settings().input, device);
-    if let Backend::Tty(data) = &mut takhti.backend {
+    apply_device_config(&tomoe.lua.settings().input, device);
+    if let Backend::Tty(data) = &mut tomoe.backend {
         data.input_devices.push(device.clone());
     }
 }
 
 /// Re-apply `settings.touchpad`/`settings.mouse`/`settings.devices` to every
 /// live device. Runs after every Lua entry; bails unless the config changed.
-pub fn apply_libinput_settings(takhti: &mut Takhti) {
-    let config = takhti.lua.settings().input;
-    let Backend::Tty(data) = &mut takhti.backend else {
+pub fn apply_libinput_settings(tomoe: &mut Tomoe) {
+    let config = tomoe.lua.settings().input;
+    let Backend::Tty(data) = &mut tomoe.backend else {
         return;
     };
     if config == data.last_input {
@@ -1125,12 +1125,12 @@ fn apply_device_config(config: &InputConfig, device: &mut libinput::Device) {
 
 /// Request a repaint of one output. Cheap and idempotent: every damage source
 /// (commits, Lua ops, cursor motion) calls this; the state machine coalesces.
-pub fn queue_redraw(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
-    let Takhti {
+pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
+    let Tomoe {
         backend,
         loop_handle,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Tty(data) = backend else { return };
     let Some(surface) = data
         .devices
@@ -1141,7 +1141,7 @@ pub fn queue_redraw(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
     };
     surface.redraw_state = match mem::take(&mut surface.redraw_state) {
         RedrawState::Idle => {
-            loop_handle.insert_idle(move |takhti| render_surface(takhti, node, crtc));
+            loop_handle.insert_idle(move |tomoe| render_surface(tomoe, node, crtc));
             RedrawState::Queued
         }
         RedrawState::Queued => RedrawState::Queued,
@@ -1155,8 +1155,8 @@ pub fn queue_redraw(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
     };
 }
 
-pub fn queue_redraw_all(takhti: &mut Takhti) {
-    let Backend::Tty(data) = &takhti.backend else {
+pub fn queue_redraw_all(tomoe: &mut Tomoe) {
+    let Backend::Tty(data) = &tomoe.backend else {
         return;
     };
     let targets: Vec<(DrmNode, crtc::Handle)> = data
@@ -1165,19 +1165,19 @@ pub fn queue_redraw_all(takhti: &mut Takhti) {
         .flat_map(|(node, device)| device.surfaces.keys().map(move |crtc| (*node, *crtc)))
         .collect();
     for (node, crtc) in targets {
-        queue_redraw(takhti, node, crtc);
+        queue_redraw(tomoe, node, crtc);
     }
 }
 
 fn on_vblank(
-    takhti: &mut Takhti,
+    tomoe: &mut Tomoe,
     node: DrmNode,
     crtc: crtc::Handle,
     meta: Option<DrmEventMetadata>,
 ) {
-    let now = takhti.clock.now();
+    let now = tomoe.clock.now();
     {
-        let Backend::Tty(data) = &mut takhti.backend else {
+        let Backend::Tty(data) = &mut tomoe.backend else {
             return;
         };
         let Some(surface) = data
@@ -1231,13 +1231,13 @@ fn on_vblank(
             }
         }
     }
-    queue_redraw(takhti, node, crtc);
+    queue_redraw(tomoe, node, crtc);
 }
 
 /// The estimated-vblank timer fired: idle out, or repaint if damage arrived.
-fn on_estimated_vblank(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
+fn on_estimated_vblank(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     {
-        let Backend::Tty(data) = &mut takhti.backend else {
+        let Backend::Tty(data) = &mut tomoe.backend else {
             return;
         };
         let Some(surface) = data
@@ -1258,13 +1258,13 @@ fn on_estimated_vblank(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
             }
         }
     }
-    render_surface(takhti, node, crtc);
+    render_surface(tomoe, node, crtc);
 }
 
 /// After a no-damage render nothing is queued to DRM, so no vblank will
 /// arrive. Schedule a timer one refresh interval out to stand in for it.
 fn queue_estimated_vblank(
-    loop_handle: &LoopHandle<'static, Takhti>,
+    loop_handle: &LoopHandle<'static, Tomoe>,
     surface: &mut TtySurface,
     node: DrmNode,
     crtc: crtc::Handle,
@@ -1286,8 +1286,8 @@ fn queue_estimated_vblank(
         .unwrap_or(60_000);
     let interval = Duration::from_secs_f64(1000.0 / refresh_mhz as f64);
     let timer = Timer::from_duration(interval);
-    match loop_handle.insert_source(timer, move |_, _, takhti| {
-        on_estimated_vblank(takhti, node, crtc);
+    match loop_handle.insert_source(timer, move |_, _, tomoe| {
+        on_estimated_vblank(tomoe, node, crtc);
         TimeoutAction::Drop
     }) {
         Ok(token) => surface.redraw_state = RedrawState::WaitingForEstimatedVBlank(token),
@@ -1298,10 +1298,10 @@ fn queue_estimated_vblank(
     }
 }
 
-pub fn render_surface(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
-    // Data that needs shared access to `takhti`, gathered before splitting borrows.
+pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
+    // Data that needs shared access to `tomoe`, gathered before splitting borrows.
     let output = {
-        let Backend::Tty(data) = &takhti.backend else {
+        let Backend::Tty(data) = &tomoe.backend else {
             return;
         };
         let Some(surface) = data
@@ -1313,20 +1313,20 @@ pub fn render_surface(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
         };
         surface.output.clone()
     };
-    let (output_loc, output_size) = takhti
+    let (output_loc, output_size) = tomoe
         .space
         .output_geometry(&output)
         .map(|geo| (geo.loc, geo.size))
         .unwrap_or_default();
-    let pointer_pos = takhti
+    let pointer_pos = tomoe
         .seat
         .get_pointer()
         .map(|p| p.current_location())
         .unwrap_or_default();
-    let cursor_status = takhti.cursor_status.clone();
-    let border_width = takhti.lua.settings().border_width;
+    let cursor_status = tomoe.cursor_status.clone();
+    let border_width = tomoe.lua.settings().border_width;
 
-    let Takhti {
+    let Tomoe {
         backend,
         space,
         start_time,
@@ -1336,7 +1336,7 @@ pub fn render_surface(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
         binds,
         border_buffers,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Tty(data) = backend else { return };
     let TtyData {
         gpu_manager,
@@ -1514,7 +1514,7 @@ fn send_frames(space: &PhysicalSpace, output: &Output, time: Duration) {
     }
 }
 
-impl Takhti {
+impl Tomoe {
     pub fn on_session_event(&mut self, event: SessionEvent) {
         let Backend::Tty(data) = &mut self.backend else {
             return;

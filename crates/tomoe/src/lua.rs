@@ -478,7 +478,7 @@ struct Hooks {
     pointer_leave: Vec<RegistryKey>,
 }
 
-/// A Lua-initiated pointer grab (`takhti.grab_pointer`): motion is routed to
+/// A Lua-initiated pointer grab (`tomoe.grab_pointer`): motion is routed to
 /// the handler instead of clients until every button is released.
 struct PointerGrab {
     motion: RegistryKey,
@@ -602,11 +602,11 @@ impl LuaRuntime {
         let shared = Rc::new(Shared::default());
         *shared.view.borrow_mut() = (0, 0, 1.0);
 
-        let takhti = lua.create_table()?;
+        let tomoe = lua.create_table()?;
 
-        // takhti.settings { gaps = 8, border = {...}, ... }
+        // tomoe.settings { gaps = 8, border = {...}, ... }
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "settings",
             lua.create_function(move |_, table: Table| {
                 let mut settings = s.settings.borrow_mut();
@@ -741,9 +741,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.bind("Alt+Return", fn | "action string" [, "overlay description"])
+        // tomoe.bind("Alt+Return", fn | "action string" [, "overlay description"])
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "bind",
             lua.create_function(
                 move |lua, (combo, action, desc): (String, Value, Option<String>)| {
@@ -751,7 +751,7 @@ impl LuaRuntime {
                         Value::String(name) => match Action::parse(&name.to_string_lossy()) {
                             Ok(action) => action,
                             Err(err) => {
-                                warn!("takhti.bind({combo:?}): {err:#}");
+                                warn!("tomoe.bind({combo:?}): {err:#}");
                                 return Ok(());
                             }
                         },
@@ -763,7 +763,7 @@ impl LuaRuntime {
                         }
                         other => {
                             warn!(
-                                "takhti.bind({combo:?}): expected string or function, got {}",
+                                "tomoe.bind({combo:?}): expected string or function, got {}",
                                 other.type_name()
                             );
                             return Ok(());
@@ -779,8 +779,8 @@ impl LuaRuntime {
             )?,
         )?;
 
-        // takhti.spawn("foot")
-        takhti.set(
+        // tomoe.spawn("foot")
+        tomoe.set(
             "spawn",
             lua.create_function(|_, cmd: String| {
                 spawn(&cmd);
@@ -788,9 +788,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.clear_focus() — drop keyboard focus (no window receives keys)
+        // tomoe.clear_focus() — drop keyboard focus (no window receives keys)
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "clear_focus",
             lua.create_function(move |_, ()| {
                 s.ops.borrow_mut().push(WindowOp::ClearFocus);
@@ -798,9 +798,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.quit()
+        // tomoe.quit()
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "quit",
             lua.create_function(move |_, ()| {
                 s.actions.borrow_mut().push(Action::Quit);
@@ -808,9 +808,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.windows() -> array of window objects
+        // tomoe.windows() -> array of window objects
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "windows",
             lua.create_function(move |_, ()| {
                 let mut ids: Vec<u64> = s.windows.borrow().keys().copied().collect();
@@ -825,9 +825,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.focused_window() -> window | nil
+        // tomoe.focused_window() -> window | nil
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "focused_window",
             lua.create_function(move |_, ()| {
                 let id = s
@@ -843,9 +843,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.usable_area([output_index]) -> {x, y, w, h}
+        // tomoe.usable_area([output_index]) -> {x, y, w, h}
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "usable_area",
             lua.create_function(move |lua, idx: Option<usize>| {
                 let outputs = s.outputs.borrow();
@@ -860,9 +860,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.outputs() -> array of {name, x, y, w, h, usable = {...}}
+        // tomoe.outputs() -> array of {name, x, y, w, h, usable = {...}}
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "outputs",
             lua.create_function(move |lua, ()| {
                 let outputs = s.outputs.borrow();
@@ -886,9 +886,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.view() -> {x, y, zoom} — the camera over the window canvas.
+        // tomoe.view() -> {x, y, zoom} — the camera over the window canvas.
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "view",
             lua.create_function(move |lua, ()| {
                 let (x, y, zoom) = *s.view.borrow();
@@ -900,10 +900,10 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.set_view { x = ..., y = ..., zoom = ... } — omitted fields
+        // tomoe.set_view { x = ..., y = ..., zoom = ... } — omitted fields
         // keep their current value. screen = (world - offset) * zoom.
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "set_view",
             lua.create_function(move |_, table: Table| {
                 let (mut x, mut y, mut zoom) = *s.view.borrow();
@@ -926,9 +926,9 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.pointer() -> {x, y, sx, sy} — world and screen position.
+        // tomoe.pointer() -> {x, y, sx, sy} — world and screen position.
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "pointer",
             lua.create_function(move |lua, ()| {
                 let (x, y, sx, sy) = *s.pointer.borrow();
@@ -941,12 +941,12 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // takhti.grab_pointer(on_motion [, on_release]) — route pointer
+        // tomoe.grab_pointer(on_motion [, on_release]) — route pointer
         // motion to Lua (in world coordinates) until every button is
         // released. Typically called from an on_pointer_button hook that
         // returns true to consume the click.
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "grab_pointer",
             lua.create_function(
                 move |lua, (motion, release): (Function, Option<Function>)| {
@@ -958,9 +958,9 @@ impl LuaRuntime {
             )?,
         )?;
 
-        // takhti.ungrab_pointer() — end the grab without the release callback.
+        // tomoe.ungrab_pointer() — end the grab without the release callback.
         let s = shared.clone();
-        takhti.set(
+        tomoe.set(
             "ungrab_pointer",
             lua.create_function(move |_, ()| {
                 s.grab.borrow_mut().take();
@@ -981,7 +981,7 @@ impl LuaRuntime {
             ("on_pointer_leave", 8),
         ] {
             let s = shared.clone();
-            takhti.set(
+            tomoe.set(
                 name,
                 lua.create_function(move |lua, func: Function| {
                     let key = lua.create_registry_value(func)?;
@@ -1002,7 +1002,7 @@ impl LuaRuntime {
             )?;
         }
 
-        lua.globals().set("takhti", takhti)?;
+        lua.globals().set("tomoe", tomoe)?;
 
         // Preload the default WM library: `require("wm")` runs it lazily, so
         // configs that ship their own WM never pay for (or fight with) ours.
@@ -1292,7 +1292,7 @@ impl LuaRuntime {
     /// targeted; `ev.edges` names the edge/corner a resize drags, e.g.
     /// "bottom_right"). Returns true if a hook consumed the request — the
     /// consumer takes over responding, typically via `win:set_fullscreen` +
-    /// `win:set_geometry`, or `takhti.grab_pointer` for move/resize;
+    /// `win:set_geometry`, or `tomoe.grab_pointer` for move/resize;
     /// unconsumed requests get the native default (drags are dropped).
     pub fn emit_window_request(
         &mut self,
@@ -1416,7 +1416,7 @@ pub fn resolve_config_path(cli: Option<&Path>) -> Option<PathBuf> {
         let base = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        let candidate = base.join("takhti/init.lua");
+        let candidate = base.join("tomoe/init.lua");
         candidate.exists().then_some(candidate)
     })
 }
@@ -1431,9 +1431,9 @@ mod tests {
         rt.lua
             .load(
                 r#"
-                takhti.settings { focus_follows_mouse = true }
-                takhti.on_pointer_enter(function(win) end)
-                takhti.on_pointer_leave(function(win) end)
+                tomoe.settings { focus_follows_mouse = true }
+                tomoe.on_pointer_enter(function(win) end)
+                tomoe.on_pointer_leave(function(win) end)
                 "#,
             )
             .exec()
@@ -1448,7 +1448,7 @@ mod tests {
         rt.lua
             .load(
                 r#"
-                takhti.settings {
+                tomoe.settings {
                   keyboard = {
                     layout = "us,de",
                     options = "caps:escape",

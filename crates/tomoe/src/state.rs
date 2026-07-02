@@ -63,9 +63,9 @@ fn config_fingerprint(path: Option<&Path>) -> Option<ConfigFingerprint> {
     Some(ConfigFingerprint { canonical, mtime })
 }
 
-pub struct Takhti {
+pub struct Tomoe {
     pub display_handle: DisplayHandle,
-    pub loop_handle: LoopHandle<'static, Takhti>,
+    pub loop_handle: LoopHandle<'static, Tomoe>,
     pub loop_signal: LoopSignal,
     pub start_time: Instant,
 
@@ -114,7 +114,7 @@ pub struct Takhti {
     /// Held to keep the wp-fractional-scale global alive.
     #[allow(dead_code)]
     pub fractional_scale_manager_state: FractionalScaleManagerState,
-    pub seat_state: SeatState<Takhti>,
+    pub seat_state: SeatState<Tomoe>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     /// Held to keep the pointer-constraints global alive; the activation and
@@ -132,7 +132,7 @@ pub struct Takhti {
     /// the primary GPU supports `syncobj_eventfd`; absent on winit.
     pub syncobj_state: Option<DrmSyncobjState>,
 
-    pub seat: Seat<Takhti>,
+    pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
     /// Monotonic clock for presentation-time feedback (the same clock the
     /// wp-presentation global advertises).
@@ -150,9 +150,9 @@ pub struct Takhti {
     config_fingerprint: Option<ConfigFingerprint>,
 }
 
-impl Takhti {
+impl Tomoe {
     pub fn new(
-        loop_handle: LoopHandle<'static, Takhti>,
+        loop_handle: LoopHandle<'static, Tomoe>,
         loop_signal: LoopSignal,
         display_handle: DisplayHandle,
     ) -> Result<Self> {
@@ -183,7 +183,7 @@ impl Takhti {
             PresentationState::new::<Self>(&display_handle, Monotonic::ID as u32);
         let dmabuf_state = DmabufState::new();
 
-        let mut seat = seat_state.new_wl_seat(&display_handle, "takhti");
+        let mut seat = seat_state.new_wl_seat(&display_handle, "tomoe");
         seat.add_keyboard(XkbConfig::default(), 600, 25)
             .map_err(|err| anyhow!("error adding keyboard: {err:?}"))?;
         seat.add_pointer();
@@ -331,8 +331,8 @@ impl Takhti {
         let timer = Timer::from_duration(
             crate::ui::ConfigErrorNotification::TIMEOUT + Duration::from_millis(50),
         );
-        let _ = self.loop_handle.insert_source(timer, |_, _, takhti| {
-            takhti.queue_redraw_all();
+        let _ = self.loop_handle.insert_source(timer, |_, _, tomoe| {
+            tomoe.queue_redraw_all();
             TimeoutAction::Drop
         });
     }
@@ -531,7 +531,7 @@ impl Takhti {
     }
 
     fn apply_op(&mut self, op: WindowOp) {
-        let window = |takhti: &Self, id: u64| takhti.windows.get(&id).cloned();
+        let window = |tomoe: &Self, id: u64| tomoe.windows.get(&id).cloned();
         match op {
             WindowOp::SetGeometry(id, (x, y, w, h)) => {
                 let Some(window) = window(self, id) else {

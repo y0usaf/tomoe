@@ -1,8 +1,9 @@
-# takhti — design & roadmap
+# tomoe — design & roadmap
 
-> **Takhti** (تختی, Urdu: the wooden school slate you write on, wash clean, and write on again) —
-> a surface that's yours to rewrite, like the compositor's hot-reloadable Lua config.
-> Used as the binary, crate, `~/.config/takhti/`, and Lua global name.
+> **Tomoe** (巴, after Tomoe River — the legendary fountain-pen paper, a writing surface
+> you return to again and again) — a surface that's yours to rewrite, like the
+> compositor's hot-reloadable Lua config.
+> Used as the binary, crate, `~/.config/tomoe/`, and Lua global name.
 
 ## Vision
 
@@ -28,17 +29,17 @@ References live in `ref/` (niri 26.4.0, Hyprland 0.55.0, ShojiWM) and are the so
 
 ```
 crates/
-  takhti/            # the compositor binary
+  tomoe/            # the compositor binary
     src/
       main.rs      # CLI, logging, backend selection
-      state.rs     # Takhti: Space, seat, outputs, protocol states, Lua runtime handle
+      state.rs     # Tomoe: Space, seat, outputs, protocol states, Lua runtime handle
       handlers/    # Smithay delegate impls (compositor, xdg-shell, shm, seat, ...)
       backend/     # winit (dev) + tty (DRM/GBM/libinput, Phase 2)
       layout/      # built-in engines: scrolling, dwindle, master, monocle, floating
       input/       # keybind parsing/dispatch, libinput config
-      lua/         # mlua runtime, `takhti` API table, watchdog, hot reload
+      lua/         # mlua runtime, `tomoe` API table, watchdog, hot reload
       render/      # render elements; later: borders, rounded, shadow, blur
-  takhti-ipc/        # (Phase 4) serde types for the JSON IPC socket + `takhti msg` CLI
+  tomoe-ipc/        # (Phase 4) serde types for the JSON IPC socket + `tomoe msg` CLI
 ```
 
 ### Coordinate doctrine (physical-first)
@@ -46,7 +47,7 @@ crates/
 Niri's sharpness comes from a discipline: every element lands on an integer
 physical pixel, so client buffers are sampled 1:1 (no resampling → crisp
 text). Niri enforces it by convention — fractional logical coordinates plus
-rounding helpers every code path must remember to call. Takhti enforces the
+rounding helpers every code path must remember to call. Tomoe enforces the
 same invariant *structurally*:
 
 1. **The canonical coordinate space is integer physical pixels.** Layout, the
@@ -71,7 +72,7 @@ same invariant *structurally*:
    effects must keep intermediate framebuffers pixel-aligned too.
 6. **The camera is the one sanctioned resampling path.** Windows (and their
    borders) live on a world-coordinate canvas viewed through a per-space
-   camera (`takhti.set_view`): `screen = (world − offset) · zoom`. The offset
+   camera (`tomoe.set_view`): `screen = (world − offset) · zoom`. The offset
    is integer physical, so pan and the identity view keep every element on
    the grid; at `zoom ≠ 1` windows render through `RescaleRenderElement`
    (GPU-resampled — meant to be transient, e.g. a zoomable-canvas WM's
@@ -82,7 +83,7 @@ same invariant *structurally*:
    steady-state zoom: re-advertise the effective fractional scale at rest so
    clients re-render at native density.
 
-Currently one scale applies to all outputs (`takhti.settings { scale }`);
+Currently one scale applies to all outputs (`tomoe.settings { scale }`);
 per-output scale is a later, local change — it belongs in the existing
 per-output `settings.displays` table (which already holds `resolution`,
 `position`, `mirror`, and `disabled`).
@@ -116,32 +117,32 @@ output logical positions for mixed-scale multi-head need a placement policy.
   planes, Mod+drag move/resize, Mod+scroll zoom — proof the pointer-hook,
   grab, raise, and camera mechanisms suffice for a wholly different paradigm.
 - Configs are modifier-agnostic: binds and pointer hooks say `Mod`
-  (`"Mod+Return"`, `ev.mods.mod`), and `takhti.settings { mod = "alt" }`
+  (`"Mod+Return"`, `ev.mods.mod`), and `tomoe.settings { mod = "alt" }`
   declares once what Mod means (default: super).
 
 ### Lua API surface (target; grows per phase)
 
 ```lua
-takhti.settings { gaps = 8, mod = "super", focus_follows_mouse = true }
-takhti.bind("Mod+Return", function() takhti.spawn("foot") end)
-takhti.bind("Mod+1", "workspace 1")              -- built-in actions as strings
-takhti.on_window_open(function(win) ... end)      -- hooks: open/close/focus/output/...
+tomoe.settings { gaps = 8, mod = "super", focus_follows_mouse = true }
+tomoe.bind("Mod+Return", function() tomoe.spawn("foot") end)
+tomoe.bind("Mod+1", "workspace 1")              -- built-in actions as strings
+tomoe.on_window_open(function(win) ... end)      -- hooks: open/close/focus/output/...
 win:raise()                                       -- restack above all others
-takhti.on_pointer_button(function(ev) ... end)    -- return true to consume; ev has
-takhti.on_pointer_axis(function(ev) ... end)      --   world/screen pos, mods, window
-takhti.on_pointer_enter(function(win) ... end)    -- hover changed window; leave fires
-takhti.on_pointer_leave(function(win) ... end)    --   first, suppressed during grabs
-takhti.on_window_request(function(ev) ... end)    -- client fullscreen/maximize/minimize/
+tomoe.on_pointer_button(function(ev) ... end)    -- return true to consume; ev has
+tomoe.on_pointer_axis(function(ev) ... end)      --   world/screen pos, mods, window
+tomoe.on_pointer_enter(function(win) ... end)    -- hover changed window; leave fires
+tomoe.on_pointer_leave(function(win) ... end)    --   first, suppressed during grabs
+tomoe.on_window_request(function(ev) ... end)    -- client fullscreen/maximize/minimize/
                                                   --   move/resize asks; consume or default
-takhti.grab_pointer(on_motion [, on_release])     -- route motion to Lua until release
-takhti.set_view { x = 0, y = 0, zoom = 1.5 }      -- camera over the window canvas
-takhti.view(); takhti.pointer()                   -- camera + pointer (world & screen)
-takhti.rule { app_id = "mpv", floating = true }   -- rules as data or as functions
-takhti.register_layout("fibonacci", fn)           -- custom layout, same trait as built-ins
-takhti.workspace(2).layout = "scrolling"
-takhti.process.service("waybar", { restart = "on-exit" })  -- ShojiWM-style manifest
-takhti.ipc.serve("mybar", handler)                -- user-extensible IPC
-takhti.on_reload(snapshot_fn, restore_fn)         -- hot reload with state persistence
+tomoe.grab_pointer(on_motion [, on_release])     -- route motion to Lua until release
+tomoe.set_view { x = 0, y = 0, zoom = 1.5 }      -- camera over the window canvas
+tomoe.view(); tomoe.pointer()                   -- camera + pointer (world & screen)
+tomoe.rule { app_id = "mpv", floating = true }   -- rules as data or as functions
+tomoe.register_layout("fibonacci", fn)           -- custom layout, same trait as built-ins
+tomoe.workspace(2).layout = "scrolling"
+tomoe.process.service("waybar", { restart = "on-exit" })  -- ShojiWM-style manifest
+tomoe.ipc.serve("mybar", handler)                -- user-extensible IPC
+tomoe.on_reload(snapshot_fn, restore_fn)         -- hot reload with state persistence
 ```
 
 ## Roadmap
@@ -156,7 +157,7 @@ takhti.on_reload(snapshot_fn, restore_fn)         -- hot reload with state persi
   maximize request plumbing ✓, focus-follows-mouse events ✓, xdg move/resize grab
   forwarding ✓, per-output workspace support in `wm.lua`, layer-shell ✓, z-order ✓,
   pointer hooks + Lua grabs ✓, view camera ✓ (dogfooded by the `zoomer` module).
-- **Phase 4: IPC + tooling.** JSON socket (`takhti msg`), event stream, `takhti.ipc.serve`,
+- **Phase 4: IPC + tooling.** JSON socket (`tomoe msg`), event stream, `tomoe.ipc.serve`,
   LuaLS meta files, hot reload with snapshot/restore.
 - **Phase 5: Eye-candy.** Borders/rounded/shadows (shader elements), dual-kawase blur,
   animation engine (springs + beziers, Hyprland-style AnimatedVariable on layout positions).

@@ -1,5 +1,5 @@
 {
-  description = "takhti — a Wayland compositor built with Smithay and embedded Lua";
+  description = "tomoe — a Wayland compositor built with Smithay and embedded Lua";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -22,7 +22,7 @@
         ]
       );
 
-      takhti-package =
+      tomoe-package =
         {
           lib,
           pkg-config,
@@ -38,7 +38,7 @@
           dbus,
         }:
         rustPlatform.buildRustPackage {
-          pname = "takhti";
+          pname = "tomoe";
           version = "0.1.0";
 
           src = lib.fileset.toSource {
@@ -82,7 +82,7 @@
           meta = {
             description = "Wayland compositor with Smithay + embedded Lua";
             license = lib.licenses.gpl3Only;
-            mainProgram = "takhti";
+            mainProgram = "tomoe";
             platforms = lib.platforms.linux;
           };
         };
@@ -91,8 +91,8 @@
       packages = forAllSystems (system:
         let pkgs = nixpkgsFor.${system};
         in {
-          default = pkgs.callPackage takhti-package { };
-          takhti = pkgs.callPackage takhti-package { };
+          default = pkgs.callPackage tomoe-package { };
+          tomoe = pkgs.callPackage tomoe-package { };
         }
       );
 
@@ -132,7 +132,7 @@
             env = {
               # Required for dlopen() to find EGL and wayland-client at runtime.
               RUSTFLAGS = devRustflags;
-              RUST_LOG = "takhti=debug";
+              RUST_LOG = "tomoe=debug";
             };
           };
         }

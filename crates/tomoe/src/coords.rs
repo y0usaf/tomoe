@@ -1,13 +1,13 @@
 //! The logical↔physical coordinate boundary.
 //!
-//! Takhti's canonical coordinate space is **integer physical pixels**: layout,
+//! Tomoe's canonical coordinate space is **integer physical pixels**: layout,
 //! the Lua API, and rendering all speak physical. Wayland protocol objects
 //! (xdg configure sizes, wl_output geometry, pointer events) speak *logical*
 //! coordinates. Every conversion between the two lives in this module and
 //! nowhere else — that is what keeps client buffers sampled 1:1 on the pixel
 //! grid (sharp text) regardless of output scale.
 //!
-//! Currently one scale applies to all outputs (`takhti.settings { scale }`),
+//! Currently one scale applies to all outputs (`tomoe.settings { scale }`),
 //! so protocol-logical is simply physical divided by that scale. Per-output
 //! scales later only change which scale each helper is called with.
 

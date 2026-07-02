@@ -15,7 +15,7 @@ use smithay::wayland::presentation::Refresh;
 use tracing::debug;
 
 use crate::backend::Backend;
-use crate::state::Takhti;
+use crate::state::Tomoe;
 
 pub struct WinitData {
     pub backend: WinitGraphicsBackend<GlesRenderer>,
@@ -23,12 +23,12 @@ pub struct WinitData {
     pub output: Output,
 }
 
-pub fn init(takhti: &mut Takhti) -> Result<()> {
-    let (width, height) = takhti.lua.settings().winit_size;
+pub fn init(tomoe: &mut Tomoe) -> Result<()> {
+    let (width, height) = tomoe.lua.settings().winit_size;
     let attrs = WinitWindow::default_attributes()
         .with_inner_size(LogicalSize::new(width as f64, height as f64))
-        .with_title("takhti")
-        .with_name("takhti", "");
+        .with_title("tomoe")
+        .with_name("tomoe", "");
     let (backend, winit_source) =
         winit::init_from_attributes::<GlesRenderer>(attrs).map_err(|err| anyhow!("{err:?}"))?;
 
@@ -37,12 +37,12 @@ pub fn init(takhti: &mut Takhti) -> Result<()> {
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
-            make: "takhti".into(),
+            make: "tomoe".into(),
             model: "winit".into(),
             serial_number: "".into(),
         },
     );
-    let _global = output.create_global::<Takhti>(&takhti.display_handle);
+    let _global = output.create_global::<Tomoe>(&tomoe.display_handle);
     let mode = Mode {
         size: backend.window_size(),
         refresh: 60_000,
@@ -50,36 +50,36 @@ pub fn init(takhti: &mut Takhti) -> Result<()> {
     output.change_current_state(
         Some(mode),
         None,
-        Some(Scale::Fractional(takhti.space.scale())),
+        Some(Scale::Fractional(tomoe.space.scale())),
         Some((0, 0).into()),
     );
     output.set_preferred(mode);
-    takhti.space.map_output(&output, (0, 0));
+    tomoe.space.map_output(&output, (0, 0));
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
-    takhti.backend = Backend::Winit(WinitData {
+    tomoe.backend = Backend::Winit(WinitData {
         backend,
         damage_tracker,
         output,
     });
 
     // EGL hardware-acceleration for clients (legacy wl_drm + dmabuf global).
-    let display_handle = takhti.display_handle.clone();
-    let winit = takhti.backend.winit();
+    let display_handle = tomoe.display_handle.clone();
+    let winit = tomoe.backend.winit();
     if let Err(err) = winit.backend.renderer().bind_wl_display(&display_handle) {
         debug!("error binding legacy EGL display (expected on modern systems): {err}");
     }
     let formats = winit.backend.renderer().dmabuf_formats();
-    let _dmabuf_global = takhti
+    let _dmabuf_global = tomoe
         .dmabuf_state
-        .create_global::<Takhti>(&display_handle, formats);
+        .create_global::<Tomoe>(&display_handle, formats);
 
-    takhti
+    tomoe
         .loop_handle
         .clone()
-        .insert_source(winit_source, move |event, _, takhti| match event {
+        .insert_source(winit_source, move |event, _, tomoe| match event {
             WinitEvent::Resized { size, .. } => {
-                takhti.backend.winit().output.change_current_state(
+                tomoe.backend.winit().output.change_current_state(
                     Some(Mode {
                         size,
                         refresh: 60_000,
@@ -88,34 +88,34 @@ pub fn init(takhti: &mut Takhti) -> Result<()> {
                     None,
                     None,
                 );
-                takhti.outputs_changed(true);
+                tomoe.outputs_changed(true);
             }
-            WinitEvent::Input(event) => takhti.process_input_event(event),
-            WinitEvent::Redraw => redraw(takhti),
-            WinitEvent::CloseRequested => takhti.loop_signal.stop(),
+            WinitEvent::Input(event) => tomoe.process_input_event(event),
+            WinitEvent::Redraw => redraw(tomoe),
+            WinitEvent::CloseRequested => tomoe.loop_signal.stop(),
             WinitEvent::Focus(_) => {}
         })
         .map_err(|err| anyhow!("error inserting winit event source: {err}"))?;
 
     // First paint; afterwards redraws are requested on damage only.
-    takhti.backend.winit().backend.window().request_redraw();
+    tomoe.backend.winit().backend.window().request_redraw();
 
     Ok(())
 }
 
-pub fn redraw(takhti: &mut Takhti) {
+pub fn redraw(tomoe: &mut Tomoe) {
     let (output_loc, output_size) = {
-        let Backend::Winit(winit) = &takhti.backend else {
+        let Backend::Winit(winit) = &tomoe.backend else {
             return;
         };
-        takhti
+        tomoe
             .space
             .output_geometry(&winit.output)
             .map(|geo| (geo.loc, geo.size))
             .unwrap_or_default()
     };
 
-    let Takhti {
+    let Tomoe {
         backend,
         space,
         start_time,
@@ -125,7 +125,7 @@ pub fn redraw(takhti: &mut Takhti) {
         border_buffers,
         clock,
         ..
-    } = takhti;
+    } = tomoe;
     let Backend::Winit(winit) = backend else {
         return;
     };

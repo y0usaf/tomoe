@@ -1,4 +1,4 @@
-# takhti — parity plan
+# tomoe — parity plan
 
 Working tracker toward the DESIGN.md vision: **niri's performance,
 Hyprland's features, ShojiWM's configurability**. DESIGN.md holds doctrine
@@ -79,12 +79,12 @@ Done and working:
       fullscreen on the window's output, acks maximize, ignores minimize
 - [x] xdg interactive move/resize forwarded to Lua as `on_window_request`
       ("move"/"resize" + edges); a consuming hook takes over via
-      `takhti.grab_pointer` (the core releases the client's click grab),
+      `tomoe.grab_pointer` (the core releases the client's click grab),
       unconsumed drags are dropped
 - [x] Focus-follows-mouse (`settings.focus_follows_mouse`, sloppy focus,
       no restack) + `on_pointer_enter/leave` hover events, suppressed
       while any pointer grab is active
-- [ ] Window rules (`takhti.rule { app_id = ..., ... }`)
+- [ ] Window rules (`tomoe.rule { app_id = ..., ... }`)
 - [ ] Animation engine (springs + beziers on layout positions,
       AnimatedVariable-style; open/close/move/workspace-switch)
 - [ ] Rounded corners (shader element, pixel-aligned per doctrine §5)
@@ -95,16 +95,16 @@ Done and working:
 
 ### vs ShojiWM (extension surface)
 
-- [ ] Process API: `takhti.process.once/service/spawn` declarative
+- [ ] Process API: `tomoe.process.once/service/spawn` declarative
       manifest, diffed by id, restart policies
       (`ref/ShojiWM/knowledges/process-api.md`)
-- [ ] IPC: JSON socket + `takhti msg` CLI + event stream +
-      `takhti.ipc.serve` for user-defined endpoints (bars/launchers)
-- [ ] Hot reload with state persistence: `takhti.on_reload` /
+- [ ] IPC: JSON socket + `tomoe msg` CLI + event stream +
+      `tomoe.ipc.serve` for user-defined endpoints (bars/launchers)
+- [ ] Hot reload with state persistence: `tomoe.on_reload` /
       persist-restore so workspaces survive a reload without replay hacks
       (`ref/ShojiWM/packages/config/src/index.tsx` onEnable/onDisable)
 - [x] Request events surfaced to Lua: maximize/minimize/fullscreen via
-      `takhti.on_window_request` (ShojiWM's `onWindow*Request` family);
+      `tomoe.on_window_request` (ShojiWM's `onWindow*Request` family);
       activate requests wait on xdg-activation (M4)
 - [ ] Input-device change events (per-device *config* landed with M1 §5;
       the add/remove events + device query surface remain)
@@ -183,7 +183,7 @@ scanout confirmed via drm_info; no idle redraw storms.*
 ### M3 — Phase 4: extension-surface parity with ShojiWM
 
 1. Process API (once/service/spawn manifest, restart/reload policies)
-2. IPC socket + `takhti msg` + event stream + `takhti.ipc.serve`
+2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)
 4. Window rules

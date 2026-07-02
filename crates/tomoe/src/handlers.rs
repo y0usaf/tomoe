@@ -61,11 +61,11 @@ use smithay::{
 };
 use tracing::{debug, trace, warn};
 
-use crate::state::{ClientState, Takhti};
+use crate::state::{ClientState, Tomoe};
 
 // ─── wl_compositor ────────────────────────────────────────────────────────────
 
-impl CompositorHandler for Takhti {
+impl CompositorHandler for Tomoe {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
@@ -80,7 +80,7 @@ impl CompositorHandler for Takhti {
         // point when it uses linux-drm-syncobj, else the dmabuf's implicit
         // fences. Without this, drivers that need explicit sync (NVIDIA) show
         // stalls/freezes in GPU-heavy clients.
-        add_pre_commit_hook::<Self, _>(surface, move |takhti, _dh, surface| {
+        add_pre_commit_hook::<Self, _>(surface, move |tomoe, _dh, surface| {
             let mut acquire_point = None;
             let maybe_dmabuf = with_states(surface, |states| {
                 acquire_point.clone_from(
@@ -106,19 +106,19 @@ impl CompositorHandler for Takhti {
                 return;
             };
             let sid = surface.id().protocol_id();
-            let unblock = move |takhti: &mut Takhti| {
-                let dh = takhti.display_handle.clone();
-                takhti
+            let unblock = move |tomoe: &mut Tomoe| {
+                let dh = tomoe.display_handle.clone();
+                tomoe
                     .client_compositor_state(&client)
-                    .blocker_cleared(takhti, &dh);
+                    .blocker_cleared(tomoe, &dh);
             };
             if let Some(acquire_point) = acquire_point {
                 if let Ok((blocker, source)) = acquire_point.generate_blocker() {
-                    let res = takhti
+                    let res = tomoe
                         .loop_handle
-                        .insert_source(source, move |_, _, takhti| {
+                        .insert_source(source, move |_, _, tomoe| {
                             debug!("surface {sid}: acquire fence signaled, unblocking");
-                            unblock(takhti);
+                            unblock(tomoe);
                             Ok(())
                         });
                     if res.is_ok() {
@@ -132,11 +132,11 @@ impl CompositorHandler for Takhti {
                 warn!("surface {sid}: failed to create acquire point blocker");
             }
             if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ) {
-                let res = takhti
+                let res = tomoe
                     .loop_handle
-                    .insert_source(source, move |_, _, takhti| {
+                    .insert_source(source, move |_, _, tomoe| {
                         debug!("surface {sid}: implicit fences signaled, unblocking");
-                        unblock(takhti);
+                        unblock(tomoe);
                         Ok(())
                     });
                 if res.is_ok() {
@@ -169,22 +169,22 @@ impl CompositorHandler for Takhti {
         self.queue_redraw_all();
     }
 }
-delegate_compositor!(Takhti);
+delegate_compositor!(Tomoe);
 
-impl BufferHandler for Takhti {
+impl BufferHandler for Tomoe {
     fn buffer_destroyed(&mut self, _buffer: &WlBuffer) {}
 }
 
-impl ShmHandler for Takhti {
+impl ShmHandler for Tomoe {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }
 }
-delegate_shm!(Takhti);
+delegate_shm!(Tomoe);
 
 // ─── xdg-shell ────────────────────────────────────────────────────────────────
 
-impl XdgShellHandler for Takhti {
+impl XdgShellHandler for Tomoe {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
@@ -259,7 +259,7 @@ impl XdgShellHandler for Takhti {
     // triggering button is held, i.e. while smithay's implicit click grab
     // pins pointer focus to the client. The request becomes an
     // `on_window_request` event; a hook that consumes it typically calls
-    // `takhti.grab_pointer`, and the core then releases the click grab so
+    // `tomoe.grab_pointer`, and the core then releases the click grab so
     // motion routes to Lua instead of the client. Unconsumed requests are
     // dropped — a tiled layout has no native drag, and ignoring is the
     // protocol-sanctioned response.
@@ -348,7 +348,7 @@ impl XdgShellHandler for Takhti {
         }
     }
 }
-delegate_xdg_shell!(Takhti);
+delegate_xdg_shell!(Tomoe);
 
 // ─── xdg-decoration / kde-server-decoration ───────────────────────────────────
 //
@@ -357,7 +357,7 @@ delegate_xdg_shell!(Takhti);
 // GTK/Qt apps, ...) skip their own titlebar instead of drawing one that
 // ignores the layout's uniform look.
 
-impl XdgDecorationHandler for Takhti {
+impl XdgDecorationHandler for Tomoe {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(zxdg_toplevel_decoration_v1::Mode::ServerSide);
@@ -391,9 +391,9 @@ impl XdgDecorationHandler for Takhti {
         }
     }
 }
-delegate_xdg_decoration!(Takhti);
+delegate_xdg_decoration!(Tomoe);
 
-impl KdeDecorationHandler for Takhti {
+impl KdeDecorationHandler for Tomoe {
     fn kde_decoration_state(&self) -> &KdeDecorationState {
         &self.kde_decoration_state
     }
@@ -410,7 +410,7 @@ impl KdeDecorationHandler for Takhti {
         }
     }
 }
-delegate_kde_decoration!(Takhti);
+delegate_kde_decoration!(Tomoe);
 
 /// Lua-friendly name for the edge/corner an xdg resize drags.
 fn edges_name(edges: xdg_toplevel::ResizeEdge) -> &'static str {
@@ -428,7 +428,7 @@ fn edges_name(edges: xdg_toplevel::ResizeEdge) -> &'static str {
     }
 }
 
-impl Takhti {
+impl Tomoe {
     /// Shared tail of xdg move/resize requests. The serial must match the
     /// live click grab (a stale serial means the button is already up) and
     /// the grab must have started on the requesting client, else the request
@@ -643,7 +643,7 @@ impl Takhti {
 
 // ─── wlr-layer-shell ──────────────────────────────────────────────────────────
 
-impl WlrLayerShellHandler for Takhti {
+impl WlrLayerShellHandler for Tomoe {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell_state
     }
@@ -688,16 +688,16 @@ impl WlrLayerShellHandler for Takhti {
         self.outputs_changed(false);
     }
 }
-delegate_layer_shell!(Takhti);
+delegate_layer_shell!(Tomoe);
 
 // ─── seat / input focus ───────────────────────────────────────────────────────
 
-impl SeatHandler for Takhti {
+impl SeatHandler for Tomoe {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
-    fn seat_state(&mut self) -> &mut SeatState<Takhti> {
+    fn seat_state(&mut self) -> &mut SeatState<Tomoe> {
         &mut self.seat_state
     }
 
@@ -713,9 +713,9 @@ impl SeatHandler for Takhti {
         set_primary_focus(dh, seat, client);
     }
 }
-delegate_seat!(Takhti);
-delegate_relative_pointer!(Takhti);
-delegate_presentation!(Takhti);
+delegate_seat!(Tomoe);
+delegate_relative_pointer!(Tomoe);
+delegate_presentation!(Tomoe);
 
 // ─── pointer-constraints ──────────────────────────────────────────────────────
 //
@@ -723,7 +723,7 @@ delegate_presentation!(Takhti);
 // smithay deactivates a constraint itself when pointer focus leaves its
 // surface, so only activation and the cursor position hint are handled here.
 
-impl PointerConstraintsHandler for Takhti {
+impl PointerConstraintsHandler for Tomoe {
     fn new_constraint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>) {
         self.maybe_activate_pointer_constraint();
     }
@@ -757,51 +757,51 @@ impl PointerConstraintsHandler for Takhti {
         self.queue_redraw_all();
     }
 }
-delegate_pointer_constraints!(Takhti);
+delegate_pointer_constraints!(Tomoe);
 
 // ─── selection / data device ──────────────────────────────────────────────────
 
-impl SelectionHandler for Takhti {
+impl SelectionHandler for Tomoe {
     type SelectionUserData = ();
 }
 
-impl DataDeviceHandler for Takhti {
+impl DataDeviceHandler for Tomoe {
     fn data_device_state(&mut self) -> &mut DataDeviceState {
         &mut self.data_device_state
     }
 }
 
-impl WaylandDndGrabHandler for Takhti {}
-impl DndGrabHandler for Takhti {}
-delegate_data_device!(Takhti);
+impl WaylandDndGrabHandler for Tomoe {}
+impl DndGrabHandler for Tomoe {}
+delegate_data_device!(Tomoe);
 
-impl PrimarySelectionHandler for Takhti {
+impl PrimarySelectionHandler for Tomoe {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         &mut self.primary_selection_state
     }
 }
-delegate_primary_selection!(Takhti);
+delegate_primary_selection!(Tomoe);
 
 // ─── outputs ──────────────────────────────────────────────────────────────────
 
-impl OutputHandler for Takhti {}
-delegate_output!(Takhti);
+impl OutputHandler for Tomoe {}
+delegate_output!(Tomoe);
 
 // ─── wp-viewporter / wp-fractional-scale ──────────────────────────────────────
 
-impl FractionalScaleHandler for Takhti {
+impl FractionalScaleHandler for Tomoe {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // Tell the client the exact scale up front so its very first buffer
         // is already at native pixel density.
         crate::state::send_scale(&surface, self.space.scale());
     }
 }
-delegate_fractional_scale!(Takhti);
-delegate_viewporter!(Takhti);
+delegate_fractional_scale!(Tomoe);
+delegate_viewporter!(Tomoe);
 
 // ─── dmabuf ───────────────────────────────────────────────────────────────────
 
-impl DmabufHandler for Takhti {
+impl DmabufHandler for Tomoe {
     fn dmabuf_state(&mut self) -> &mut DmabufState {
         &mut self.dmabuf_state
     }
@@ -813,19 +813,19 @@ impl DmabufHandler for Takhti {
         notifier: ImportNotifier,
     ) {
         if self.backend.import_dmabuf(&dmabuf) {
-            let _ = notifier.successful::<Takhti>();
+            let _ = notifier.successful::<Tomoe>();
         } else {
             notifier.failed();
         }
     }
 }
-delegate_dmabuf!(Takhti);
+delegate_dmabuf!(Tomoe);
 
 // ─── linux-drm-syncobj (explicit sync) ────────────────────────────────────────
 
-impl DrmSyncobjHandler for Takhti {
+impl DrmSyncobjHandler for Tomoe {
     fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
         self.syncobj_state.as_mut()
     }
 }
-delegate_drm_syncobj!(Takhti);
+delegate_drm_syncobj!(Tomoe);

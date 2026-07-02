@@ -1,5 +1,5 @@
--- takhti default configuration.
--- Copy to ~/.config/takhti/init.lua and customise.
+-- tomoe default configuration.
+-- Copy to ~/.config/tomoe/init.lua and customise.
 --
 -- The compositor core is mechanism-only; ALL window management below comes
 -- from the `wm` module — Lua code built on the same public API your config
@@ -8,7 +8,7 @@
 local wm = require("wm")
 wm.gaps = 8
 
-takhti.settings {
+tomoe.settings {
   -- What "Mod" means in binds and pointer events: "super" (default),
   -- "alt", "ctrl", or "shift". Declare it once; write binds against Mod.
   mod = "super",
@@ -70,21 +70,21 @@ takhti.settings {
 -- ─── Launch / close ──────────────────────────────────────────────────────────
 -- The optional third argument labels the bind in the hotkey overlay
 -- (Mod+Shift+/); Lua-function binds without one are omitted from it.
-takhti.bind("Mod+Return", function() takhti.spawn("foot") end, "Spawn foot")
-takhti.bind("Mod+d", function() takhti.spawn("fuzzel") end, "Run an Application")
-takhti.bind("Mod+q", wm.close_focused, "Close Window")
-takhti.bind("Mod+f", wm.toggle_fullscreen, "Toggle Fullscreen")
-takhti.bind("Mod+Shift+e", "quit")
-takhti.bind("Mod+Shift+slash", "show-hotkey-overlay")
+tomoe.bind("Mod+Return", function() tomoe.spawn("foot") end, "Spawn foot")
+tomoe.bind("Mod+d", function() tomoe.spawn("fuzzel") end, "Run an Application")
+tomoe.bind("Mod+q", wm.close_focused, "Close Window")
+tomoe.bind("Mod+f", wm.toggle_fullscreen, "Toggle Fullscreen")
+tomoe.bind("Mod+Shift+e", "quit")
+tomoe.bind("Mod+Shift+slash", "show-hotkey-overlay")
 
 -- ─── Focus ───────────────────────────────────────────────────────────────────
-takhti.bind("Mod+j", wm.focus_next, "Focus Next Window")
-takhti.bind("Mod+k", wm.focus_prev, "Focus Previous Window")
+tomoe.bind("Mod+j", wm.focus_next, "Focus Next Window")
+tomoe.bind("Mod+k", wm.focus_prev, "Focus Previous Window")
 
 -- ─── Workspaces ──────────────────────────────────────────────────────────────
 for i = 1, wm.workspace_count do
-  takhti.bind("Mod+" .. i, function() wm.switch(i) end,
+  tomoe.bind("Mod+" .. i, function() wm.switch(i) end,
     i == 1 and "Switch to Workspace 1-9" or nil)
-  takhti.bind("Mod+Shift+" .. i, function() wm.move_focused(i) end,
+  tomoe.bind("Mod+Shift+" .. i, function() wm.move_focused(i) end,
     i == 1 and "Move Window to Workspace 1-9" or nil)
 end

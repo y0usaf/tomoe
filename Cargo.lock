@@ -1837,21 +1837,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "takhti"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fontdue",
- "mlua",
- "smithay",
- "smithay-drm-extras",
- "tracing",
- "tracing-subscriber",
- "xcursor",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1941,6 +1926,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
+]
+
+[[package]]
+name = "tomoe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fontdue",
+ "mlua",
+ "smithay",
+ "smithay-drm-extras",
+ "tracing",
+ "tracing-subscriber",
+ "xcursor",
 ]
 
 [[package]]

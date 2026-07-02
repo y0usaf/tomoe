@@ -12,7 +12,7 @@ use smithay::utils::{Physical, Size};
 
 use super::text::{Fonts, Span};
 use super::{BACKDROP, BG, FG, KEY_CHIP, RED};
-use crate::render::{OutputRenderElements, TakhtiRenderer};
+use crate::render::{OutputRenderElements, TomoeRenderer};
 
 const PADDING: i32 = 32;
 const BORDER: i32 = 8;
@@ -45,7 +45,7 @@ impl ExitConfirmDialog {
         self.open = false;
     }
 
-    pub fn render_elements<R: TakhtiRenderer>(
+    pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         fonts: &Fonts,
         renderer: &mut R,
@@ -92,7 +92,7 @@ impl ExitConfirmDialog {
 
 fn render(fonts: &Fonts) -> (MemoryRenderBuffer, Size<i32, Physical>) {
     let line1 = [Span::sans(
-        "Are you sure you want to exit takhti?",
+        "Are you sure you want to exit tomoe?",
         FONT_SIZE,
         FG,
     )];

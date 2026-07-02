@@ -10,7 +10,7 @@ use smithay::utils::{Physical, Size};
 use super::text::{Canvas, Fonts, Span};
 use super::{ACCENT, BG, FG, KEY_CHIP};
 use crate::input::{Action, Bind};
-use crate::render::{OutputRenderElements, TakhtiRenderer};
+use crate::render::{OutputRenderElements, TomoeRenderer};
 
 const PADDING: i32 = 28;
 const BORDER: i32 = 4;
@@ -49,7 +49,7 @@ impl HotkeyOverlay {
         self.buffer = None;
     }
 
-    pub fn render_elements<R: TakhtiRenderer>(
+    pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         fonts: &Fonts,
         renderer: &mut R,
@@ -93,7 +93,7 @@ fn title(bind: &Bind) -> Option<String> {
         Action::ShowHotkeyOverlay => Some("Show Important Hotkeys".to_string()),
         Action::ReloadConfig => Some("Reload the Config File".to_string()),
         // Lua functions are opaque; configs label them via the third
-        // `takhti.bind` argument.
+        // `tomoe.bind` argument.
         Action::LuaFn(_) | Action::ChangeVt(_) => None,
     }
 }

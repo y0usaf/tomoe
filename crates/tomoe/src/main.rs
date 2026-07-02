@@ -24,12 +24,12 @@ use smithay::wayland::socket::ListeningSocketSource;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::state::{ClientState, Takhti};
+use crate::state::{ClientState, Tomoe};
 
 #[derive(Parser, Debug)]
-#[command(name = "takhti", about = "A Wayland compositor with embedded Lua")]
+#[command(name = "tomoe", about = "A Wayland compositor with embedded Lua")]
 struct Args {
-    /// Path to init.lua (default: ~/.config/takhti/init.lua)
+    /// Path to init.lua (default: ~/.config/tomoe/init.lua)
     #[arg(long)]
     config: Option<PathBuf>,
     /// Backend: auto, winit (nested window), or tty (DRM, run from a VT)
@@ -47,16 +47,16 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("takhti=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("tomoe=info")),
         )
         .init();
 
-    let mut event_loop: EventLoop<Takhti> =
+    let mut event_loop: EventLoop<Tomoe> =
         EventLoop::try_new().context("error creating event loop")?;
-    let display: Display<Takhti> = Display::new().context("error creating display")?;
+    let display: Display<Tomoe> = Display::new().context("error creating display")?;
     let display_handle = display.handle();
 
-    let mut takhti = Takhti::new(
+    let mut tomoe = Tomoe::new(
         event_loop.handle(),
         event_loop.get_signal(),
         display_handle.clone(),
@@ -67,8 +67,8 @@ fn main() -> Result<()> {
     let socket_name = socket_source.socket_name().to_os_string();
     event_loop
         .handle()
-        .insert_source(socket_source, |client, _, takhti| {
-            if let Err(err) = takhti
+        .insert_source(socket_source, |client, _, tomoe| {
+            if let Err(err) = tomoe
                 .display_handle
                 .insert_client(client, Arc::new(ClientState::default()))
             {
@@ -82,10 +82,10 @@ fn main() -> Result<()> {
         .handle()
         .insert_source(
             Generic::new(display, Interest::READ, Mode::Level),
-            |_, display, takhti| {
+            |_, display, tomoe| {
                 // SAFETY: we don't drop the display.
                 unsafe {
-                    display.get_mut().dispatch_clients(takhti).unwrap();
+                    display.get_mut().dispatch_clients(tomoe).unwrap();
                 }
                 Ok(PostAction::Continue)
             },
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
         .map_err(|err| anyhow!("error inserting display source: {err}"))?;
 
     // Config loads first so the backend can honor settings (e.g. winit_size).
-    takhti.load_config(args.config);
+    tomoe.load_config(args.config);
 
     // Watch the config file for changes (niri-style polling: stat + canonical
     // path survive atomic renames and Nix store symlink swaps, and parsing
@@ -101,8 +101,8 @@ fn main() -> Result<()> {
     const CONFIG_POLL: Duration = Duration::from_millis(500);
     event_loop
         .handle()
-        .insert_source(Timer::from_duration(CONFIG_POLL), |_, _, takhti| {
-            takhti.check_config_reload();
+        .insert_source(Timer::from_duration(CONFIG_POLL), |_, _, tomoe| {
+            tomoe.check_config_reload();
             TimeoutAction::ToDuration(CONFIG_POLL)
         })
         .map_err(|err| anyhow!("error inserting config watch timer: {err}"))?;
@@ -113,19 +113,19 @@ fn main() -> Result<()> {
         _ => std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some(),
     };
     if use_winit {
-        backend::winit::init(&mut takhti)?;
+        backend::winit::init(&mut tomoe)?;
     } else {
-        backend::tty::init(&mut takhti, args.drm_device.as_deref())?;
+        backend::tty::init(&mut tomoe, args.drm_device.as_deref())?;
     }
 
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     info!("listening on WAYLAND_DISPLAY={socket_name:?}");
 
     event_loop
-        .run(None, &mut takhti, |takhti| {
-            takhti.space.refresh();
-            takhti.popups.cleanup();
-            if let Err(err) = takhti.display_handle.flush_clients() {
+        .run(None, &mut tomoe, |tomoe| {
+            tomoe.space.refresh();
+            tomoe.popups.cleanup();
+            if let Err(err) = tomoe.display_handle.flush_clients() {
                 warn!("error flushing clients: {err}");
             }
         })
