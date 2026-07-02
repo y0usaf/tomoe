@@ -33,6 +33,23 @@ Done and working:
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
 - Compositor UI: hotkey overlay, exit confirm, config-error banner;
   xcursor themes; no-hooks full-screen fallback
+- XWayland via xwayland-satellite (niri-shape: tomoe owns the X11
+  sockets/lock file, exports `DISPLAY` at startup, spawns satellite
+  on-demand via `-listenfd` on first connection, respawns on next
+  connection after a crash; `xwayland.rs`)
+- Capture: wlr-screencopy v3 (shm + dmabuf, `copy` immediate,
+  `copy_with_damage` queued per manager and completed from the redraw
+  loop) and ext-image-copy-capture-v1 + ext-image-capture-source-v1
+  (smithay handlers; output sources, session constraint renegotiation on
+  output changes); both render through one shared path in `capture.rs`
+  on the primary GPU
+- ScreenCast portal: `xdg-desktop-portal-tomoe` binary (zbus + pipewire,
+  ShojiWM-shape: `PW_STREAM_FLAG_DRIVER | ALLOC_BUFFERS`, single thread,
+  wlr-screencopy `ready` queues the PW buffer and kicks the next capture
+  → vblank-paced); monitor sources, dmabuf with shm fallback, no-GUI
+  output choice (`TOMOE_SCREENCAST_OUTPUT` / `TOMOE_PORTAL_CHOOSER` /
+  single-output auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`,
+  nix package ships `.portal` + `tomoe-portals.conf` + D-Bus service
 
 ## Gap inventory by reference
 
@@ -105,7 +122,7 @@ Done and working:
       (`ref/ShojiWM/packages/config/src/index.tsx` onEnable/onDisable)
 - [x] Request events surfaced to Lua: maximize/minimize/fullscreen via
       `tomoe.on_window_request` (ShojiWM's `onWindow*Request` family);
-      activate requests wait on xdg-activation (M4)
+      activate requests wait on xdg-activation (M5)
 - [ ] Input-device change events (per-device *config* landed with M1 §5;
       the add/remove events + device query surface remain)
 - [ ] Output reconfigure API (re-run config on hotplug, query available
@@ -119,10 +136,23 @@ Done and working:
 
 ### Ecosystem (all three have it)
 
-- [ ] XWayland via xwayland-satellite
-- [ ] Screencopy (wlr-screencopy) + xdg-desktop-portal backend — build
-      our own portal like ShojiWM did; avoid the xdpw 30fps bug
-      (`ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`)
+- [x] **XWayland via xwayland-satellite (expedited → M2)** — landed; the
+      rough edge it shook loose was the legacy `wl_drm` global (smithay's
+      wl_drm kills Xwayland with a fatal "invalid format" protocol error),
+      so `bind_wl_display` is gone from both backends — clients use
+      linux-dmabuf. No Lua toggle yet; auto-enabled when the binary
+      supports `--test-listenfd-support`
+- [x] **Screencopy (expedited → M2)** — wlr-screencopy v3 (niri port) and
+      ext-image-copy-capture-v1 (smithay handlers) both landed; verified
+      with grim (shm copy) and wf-recorder (damage-queued frames at
+      content rate). wf-recorder also forced linux-dmabuf v4 (default
+      feedback) on the winit backend — it hard-binds v4
+- [x] **Own xdg-desktop-portal backend (expedited → M2)** — landed:
+      `crates/xdg-desktop-portal-tomoe`, ScreenCast over PipeWire built
+      like ShojiWM's (DRIVER flag, vblank-paced), sidestepping the xdpw
+      30fps bug (`ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`).
+      Existing wlr portals remain usable as fallbacks alongside it
+      (`tomoe-portals.conf` routes only ScreenCast to us)
 - [ ] Foreign-toplevel (wlr + ext-foreign-toplevel-list) for bars/docks
 - [ ] Gamma control / night light
 - [ ] text-input + input-method (IME) — after core parity
@@ -138,7 +168,7 @@ The stubs that break real apps, plus the input plumbing Lua policy needs.
 1. ~~Popup grabs~~ done (highest impact: context menus)
 2. ~~Fullscreen/maximize/minimize requests~~ done — `on_window_request`
    Lua events with a sane native default (fullscreen honored on the
-   window's output); activate requests deferred to xdg-activation (M4)
+   window's output); activate requests deferred to xdg-activation (M5)
 3. ~~xdg move/resize grab forwarding~~ done — `on_window_request`
    "move"/"resize" events hand the drag to Lua's pointer-grab machinery
    (dogfooded by zoomer's CSD titlebar/edge drags)
@@ -163,7 +193,49 @@ The stubs that break real apps, plus the input plumbing Lua policy needs.
 CSD titlebar drags — all behave; keyboard layout and touchpad configured
 from Lua.*
 
-### M2 — Session hardening (Phase 2 leftovers)
+### M2 — Daily-drive blockers: XWayland + screensharing (expedited)
+
+Pulled forward from the old M4: with M1 done, these two are the only
+things left between tomoe and full-time use. Session hardening and the
+extension surface can wait; a compositor you can't share a screen from
+or run X11 apps on cannot be daily driven.
+
+1. ~~XWayland via xwayland-satellite~~ done — sockets/lock owned by
+   tomoe, `DISPLAY` exported at startup, on-demand spawn via
+   `-listenfd`, spawner thread waits and re-arms the watch on exit.
+   What it shook loose: the legacy `wl_drm` global (removed — fatal
+   "invalid format" error against Xwayland), verified with xeyes
+   rendering through satellite
+2. ~~wlr-screencopy~~ done — v3 with shm + dmabuf, immediate `copy` and
+   redraw-loop-completed `copy_with_damage` (per-manager queues with own
+   damage trackers, sync-fence-deferred `ready`). Verified: grim
+   screenshots, wf-recorder records damage-paced frames. Side fix: winit
+   backend now offers linux-dmabuf v4 with default feedback (wf-recorder
+   binds v4 unconditionally)
+3. ~~ext-image-copy-capture-v1~~ done — smithay's image_capture_source +
+   image_copy_capture handlers; output sources via WeakOutput user-data,
+   shm + dmabuf constraints (render formats of the primary GPU),
+   constraint renegotiation and session stop on output changes. Globals
+   verified advertised; frame path shares the screencopy render helpers.
+   No cursor sessions yet (clients get embedded cursors via
+   `paint_cursors`; separate cursor streams can come with the portal)
+4. ~~Our own xdg-desktop-portal backend~~ done —
+   `xdg-desktop-portal-tomoe` (zbus + pipewire, monitor sources): the
+   pipeline is the ShojiWM port (DRIVER + ALLOC_BUFFERS, wayland fd on
+   the PW loop, screencopy `ready` → `queue_buffer` → next capture, so
+   pacing follows vblank, not the audio quantum); GBM dmabuf buffers
+   with memfd/shm fallback; discovery ships in the nix package
+   (`tomoe.portal`, `tomoe-portals.conf`, D-Bus activation) and the
+   compositor now exports `XDG_CURRENT_DESKTOP=tomoe`. Verified: builds
+   through the flake, claims the bus, exports impl.portal.ScreenCast
+
+*Accept: X11 app runs under satellite ✓; grim screenshots ✓; OBS/browser
+screenshare captures at monitor refresh via our portal (built + bus
+verified; end-to-end OBS fps check pending a real tomoe session), and
+at least one third-party portal backend also works end-to-end (pending a
+real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
+
+### M3 — Session hardening (Phase 2 leftovers)
 
 1. ~~Output hotplug end-to-end~~ done — udev → connector →
    `outputs_changed` → Lua reconfigure (ShojiWM's docked-monitor pattern
@@ -180,9 +252,10 @@ from Lua.*
 *Accept: laptop lid/dock cycles, lock screen, fullscreen game with direct
 scanout confirmed via drm_info; no idle redraw storms.*
 
-### M3 — Phase 4: extension-surface parity with ShojiWM
+### M4 — Phase 4: extension-surface parity with ShojiWM
 
-1. Process API (once/service/spawn manifest, restart/reload policies)
+1. Process API (once/service/spawn manifest, restart/reload policies) —
+   note: M2's satellite/portal supervision is a natural first consumer
 2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)
@@ -192,16 +265,16 @@ scanout confirmed via drm_info; no idle redraw storms.*
 *Accept: waybar-equivalent driven purely over user IPC; config reload
 preserves workspace assignments; services survive and diff correctly.*
 
-### M4 — Ecosystem
+### M5 — Ecosystem remainder
 
-1. xwayland-satellite integration
-2. wlr-screencopy + our own portal (ScreenCast over PipeWire)
-3. Foreign-toplevel, xdg-activation, gamma/night-light
+1. Foreign-toplevel (wlr + ext-foreign-toplevel-list) for bars/docks
+2. xdg-activation
+3. Gamma control / night light
 
-*Accept: X11 app runs, OBS captures at monitor refresh, taskbar sees
-windows.*
+*Accept: taskbar sees windows, activation focuses them, night light
+works.*
 
-### M5 — Phase 5: eye-candy
+### M6 — Phase 5: eye-candy
 
 1. Animation engine (springs/beziers) driving layout positions + opacity
 2. Borders polish, rounded corners, shadows as shader elements —
@@ -220,3 +293,8 @@ UFO test still flat at high refresh with animations running.*
 - Redraw-loop spec: `ref/niri/docs/wiki/Development:-Redraw-Loop.md`
 - Effect damage/invalidation policy design:
   `ref/ShojiWM/knowledges/effect-invalidation.md`
+- Never bind the legacy wl_drm global (`bind_wl_display`): smithay's
+  implementation posts a fatal "invalid format" protocol error at
+  Xwayland, killing xwayland-satellite; linux-dmabuf covers every
+  current client. Also: offer dmabuf **v4** (default feedback) on every
+  backend — wf-recorder and friends hard-bind v4 and die on v3

@@ -50,7 +50,19 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use smithay::utils::IsAlive;
+use smithay::wayland::image_capture_source::{
+    ImageCaptureSource, ImageCaptureSourceHandler, OutputCaptureSourceHandler,
+    OutputCaptureSourceState,
+};
+use smithay::wayland::image_copy_capture::{
+    BufferConstraints, Frame as CaptureFrame, ImageCopyCaptureHandler, ImageCopyCaptureState,
+    Session as CaptureSession, SessionRef,
+};
 use smithay::input::dnd::DndGrabHandler;
+
+use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj,
@@ -114,13 +126,11 @@ impl CompositorHandler for Tomoe {
             };
             if let Some(acquire_point) = acquire_point {
                 if let Ok((blocker, source)) = acquire_point.generate_blocker() {
-                    let res = tomoe
-                        .loop_handle
-                        .insert_source(source, move |_, _, tomoe| {
-                            debug!("surface {sid}: acquire fence signaled, unblocking");
-                            unblock(tomoe);
-                            Ok(())
-                        });
+                    let res = tomoe.loop_handle.insert_source(source, move |_, _, tomoe| {
+                        debug!("surface {sid}: acquire fence signaled, unblocking");
+                        unblock(tomoe);
+                        Ok(())
+                    });
                     if res.is_ok() {
                         debug!("surface {sid}: commit blocked on explicit-sync acquire point");
                         add_blocker(surface, blocker);
@@ -132,13 +142,11 @@ impl CompositorHandler for Tomoe {
                 warn!("surface {sid}: failed to create acquire point blocker");
             }
             if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ) {
-                let res = tomoe
-                    .loop_handle
-                    .insert_source(source, move |_, _, tomoe| {
-                        debug!("surface {sid}: implicit fences signaled, unblocking");
-                        unblock(tomoe);
-                        Ok(())
-                    });
+                let res = tomoe.loop_handle.insert_source(source, move |_, _, tomoe| {
+                    debug!("surface {sid}: implicit fences signaled, unblocking");
+                    unblock(tomoe);
+                    Ok(())
+                });
                 if res.is_ok() {
                     debug!("surface {sid}: commit blocked on implicit dmabuf fences");
                     add_blocker(surface, blocker);
@@ -829,3 +837,69 @@ impl DrmSyncobjHandler for Tomoe {
     }
 }
 delegate_drm_syncobj!(Tomoe);
+
+// ─── wlr-screencopy ───────────────────────────────────────────────────────────
+
+impl ScreencopyHandler for Tomoe {
+    fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
+        let output_exists = self.space.outputs().any(|o| o == screencopy.output());
+        if !output_exists {
+            // Dropping the screencopy sends `failed`.
+            trace!("screencopy output no longer exists");
+            return;
+        }
+
+        if screencopy.with_damage() {
+            // Completed from the redraw loop once the output has damage.
+            self.screencopy_state.push(manager, screencopy);
+        } else {
+            crate::capture::render_screencopy(self, manager, screencopy);
+        }
+    }
+
+    fn screencopy_state(&mut self) -> &mut ScreencopyManagerState {
+        &mut self.screencopy_state
+    }
+}
+crate::delegate_screencopy!(Tomoe);
+
+// ─── ext-image-capture-source / ext-image-copy-capture ───────────────────────
+
+impl ImageCaptureSourceHandler for Tomoe {}
+smithay::delegate_image_capture_source!(Tomoe);
+
+impl OutputCaptureSourceHandler for Tomoe {
+    fn output_capture_source_state(&mut self) -> &mut OutputCaptureSourceState {
+        &mut self.output_capture_source_state
+    }
+
+    fn output_source_created(&mut self, source: ImageCaptureSource, output: &Output) {
+        // The source resolves back to its output through this weak handle
+        // (capture.rs::source_output).
+        source.user_data().insert_if_missing(|| output.downgrade());
+    }
+}
+smithay::delegate_output_capture_source!(Tomoe);
+
+impl ImageCopyCaptureHandler for Tomoe {
+    fn image_copy_capture_state(&mut self) -> &mut ImageCopyCaptureState {
+        &mut self.image_copy_capture_state
+    }
+
+    fn capture_constraints(&mut self, source: &ImageCaptureSource) -> Option<BufferConstraints> {
+        crate::capture::constraints_for_source(self, source)
+    }
+
+    fn new_session(&mut self, session: CaptureSession) {
+        self.capture_sessions.push(session);
+    }
+
+    fn frame(&mut self, session: &SessionRef, frame: CaptureFrame) {
+        crate::capture::render_capture_frame(self, session, frame);
+    }
+
+    fn session_destroyed(&mut self, _session: SessionRef) {
+        self.capture_sessions.retain(|s| s.as_ref().alive());
+    }
+}
+smithay::delegate_image_copy_capture!(Tomoe);

@@ -1,9 +1,13 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use crate::backend::Backend;
+use crate::state::Tomoe;
+use anyhow::{anyhow, Context, Result};
+use smithay::backend::drm::DrmNode;
+use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{ImportDma, ImportEgl};
+use smithay::backend::renderer::ImportDma;
 use smithay::backend::winit::{self, WinitEvent, WinitGraphicsBackend};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
@@ -11,16 +15,25 @@ use smithay::reexports::winit::dpi::LogicalSize;
 use smithay::reexports::winit::platform::wayland::WindowAttributesExtWayland;
 use smithay::reexports::winit::window::Window as WinitWindow;
 use smithay::utils::Monotonic;
+use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
 use tracing::debug;
-
-use crate::backend::Backend;
-use crate::state::Tomoe;
 
 pub struct WinitData {
     pub backend: WinitGraphicsBackend<GlesRenderer>,
     pub damage_tracker: OutputDamageTracker,
     pub output: Output,
+}
+
+/// The DRM render node behind the winit EGL context (for dmabuf feedback and
+/// capture constraints).
+pub fn render_node(renderer: &GlesRenderer) -> Result<DrmNode> {
+    let display = renderer.egl_context().display();
+    let device = EGLDevice::device_for_display(display).context("error getting EGL device")?;
+    device
+        .try_get_render_node()
+        .context("error getting EGL device render node")?
+        .context("EGL device has no render node")
 }
 
 pub fn init(tomoe: &mut Tomoe) -> Result<()> {
@@ -63,16 +76,38 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
         output,
     });
 
-    // EGL hardware-acceleration for clients (legacy wl_drm + dmabuf global).
+    // EGL hardware-acceleration for clients via linux-dmabuf. The legacy
+    // wl_drm global is deliberately not bound (niri-shape): smithay's wl_drm
+    // rejects Xwayland's format requests with a fatal protocol error, and
+    // every current client (Xwayland included) speaks dmabuf.
+    //
+    // Prefer a v4 global (default feedback pointing at the EGL device's
+    // render node) — clients like wf-recorder hard-require v4 — and fall
+    // back to v3 when the node can't be determined.
     let display_handle = tomoe.display_handle.clone();
     let winit = tomoe.backend.winit();
-    if let Err(err) = winit.backend.renderer().bind_wl_display(&display_handle) {
-        debug!("error binding legacy EGL display (expected on modern systems): {err}");
-    }
     let formats = winit.backend.renderer().dmabuf_formats();
-    let _dmabuf_global = tomoe
-        .dmabuf_state
-        .create_global::<Tomoe>(&display_handle, formats);
+    match render_node(winit.backend.renderer()) {
+        Ok(node) => match DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build() {
+            Ok(feedback) => {
+                let _global = tomoe
+                    .dmabuf_state
+                    .create_global_with_default_feedback::<Tomoe>(&display_handle, &feedback);
+            }
+            Err(err) => {
+                debug!("error building dmabuf feedback, using dmabuf v3: {err}");
+                let _global = tomoe
+                    .dmabuf_state
+                    .create_global::<Tomoe>(&display_handle, formats);
+            }
+        },
+        Err(err) => {
+            debug!("error getting EGL render node, using dmabuf v3: {err:#}");
+            let _global = tomoe
+                .dmabuf_state
+                .create_global::<Tomoe>(&display_handle, formats);
+        }
+    }
 
     tomoe
         .loop_handle
@@ -188,6 +223,10 @@ pub fn redraw(tomoe: &mut Tomoe) {
             Some(output.clone())
         });
     }
+
+    // Complete queued with-damage screencopies against the just-rendered
+    // scene, mirroring the TTY backend's post-present pass.
+    crate::capture::render_queued_screencopies(tomoe, &output);
 
     // Damage-driven: the next repaint comes from queue_redraw_all() (commits,
     // Lua ops, input), mirroring the TTY backend so missing damage sources

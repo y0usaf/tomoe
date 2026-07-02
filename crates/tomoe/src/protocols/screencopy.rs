@@ -1,0 +1,618 @@
+//! wlr-screencopy-unstable-v1: copy output contents into client buffers.
+//!
+//! Ported from niri's implementation (same smithay pin), minus niri's
+//! cast-introspection bookkeeping. `copy` renders immediately;
+//! `copy_with_damage` frames queue per manager and complete from the redraw
+//! loop once the queue's damage tracker sees a change. Every frame is
+//! guaranteed a terminal event: dropping an unsubmitted [`Screencopy`] sends
+//! `failed`.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer, Fourcc};
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::sync::SyncPoint;
+use smithay::output::Output;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::{
+    zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
+};
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_shm::Format;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+};
+use smithay::utils::{Physical, Point, Rectangle, Size, Transform};
+use smithay::wayland::{dmabuf, shm};
+use tracing::{error, trace, warn};
+use zwlr_screencopy_frame_v1::{Flags, ZwlrScreencopyFrameV1};
+use zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+
+const VERSION: u32 = 3;
+
+pub struct ScreencopyQueue {
+    damage_tracker: OutputDamageTracker,
+    /// Frames waiting for the client to call copy or destroy.
+    pending_frames: HashSet<ZwlrScreencopyFrameV1>,
+    /// Screencopies waiting for a corresponding output redraw with damage.
+    screencopies: Vec<Screencopy>,
+}
+
+impl ScreencopyQueue {
+    pub fn new() -> Self {
+        Self {
+            damage_tracker: OutputDamageTracker::new((0, 0), 1.0, Transform::Normal),
+            pending_frames: HashSet::new(),
+            screencopies: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending_frames.is_empty() && self.screencopies.is_empty()
+    }
+
+    pub fn split(&mut self) -> (&mut OutputDamageTracker, Option<&Screencopy>) {
+        let ScreencopyQueue {
+            damage_tracker,
+            screencopies,
+            ..
+        } = self;
+        (damage_tracker, screencopies.first())
+    }
+
+    pub fn push(&mut self, screencopy: Screencopy) {
+        // Screencopy without damage is rendered immediately without the queue.
+        if !screencopy.with_damage() {
+            error!("only screencopy with damage can be pushed in the queue");
+        }
+        self.screencopies.push(screencopy);
+    }
+
+    pub fn pop(&mut self) -> Screencopy {
+        self.screencopies.remove(0)
+    }
+
+    fn remove_output(&mut self, output: &Output) {
+        self.screencopies
+            .retain(|screencopy| screencopy.output() != output);
+    }
+
+    fn remove_frame(&mut self, frame: &ZwlrScreencopyFrameV1) {
+        self.pending_frames.remove(frame);
+        self.screencopies
+            .retain(|screencopy| screencopy.frame != *frame);
+    }
+}
+
+#[derive(Default)]
+pub struct ScreencopyManagerState {
+    queues: HashMap<ZwlrScreencopyManagerV1, ScreencopyQueue>,
+}
+
+pub struct ScreencopyManagerGlobalData {
+    filter: Box<dyn for<'c> Fn(&'c Client) -> bool + Send + Sync>,
+}
+
+impl ScreencopyManagerState {
+    pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
+    where
+        D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>,
+        D: Dispatch<ZwlrScreencopyManagerV1, ()>,
+        D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+        D: ScreencopyHandler,
+        D: 'static,
+        F: for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static,
+    {
+        let global_data = ScreencopyManagerGlobalData {
+            filter: Box::new(filter),
+        };
+        display.create_global::<D, ZwlrScreencopyManagerV1, _>(VERSION, global_data);
+
+        Self {
+            queues: HashMap::new(),
+        }
+    }
+
+    pub fn push(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy) {
+        let Some(queue) = self.queues.get_mut(manager) else {
+            // Destroying the manager does not invalidate existing frames, so
+            // the queue should keep existing.
+            error!("screencopy queue must not be deleted as long as frames exist");
+            return;
+        };
+
+        queue.push(screencopy);
+    }
+
+    pub fn damage_tracker(
+        &mut self,
+        manager: &ZwlrScreencopyManagerV1,
+    ) -> Option<&mut OutputDamageTracker> {
+        let queue = self.queues.get_mut(manager)?;
+        Some(&mut queue.damage_tracker)
+    }
+
+    pub fn remove_output(&mut self, output: &Output) {
+        for queue in self.queues.values_mut() {
+            queue.remove_output(output);
+        }
+
+        self.cleanup_queues();
+    }
+
+    pub fn with_queues_mut(&mut self, mut f: impl FnMut(&mut ScreencopyQueue)) {
+        for queue in self.queues.values_mut() {
+            f(queue);
+        }
+
+        self.cleanup_queues();
+    }
+
+    fn cleanup_queues(&mut self) {
+        self.queues
+            .retain(|manager, queue| manager.is_alive() || !queue.is_empty());
+    }
+}
+
+impl<D> GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData, D>
+    for ScreencopyManagerState
+where
+    D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>,
+    D: Dispatch<ZwlrScreencopyManagerV1, ()>,
+    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+    D: ScreencopyHandler,
+    D: 'static,
+{
+    fn bind(
+        state: &mut D,
+        _dh: &DisplayHandle,
+        _client: &Client,
+        manager: New<ZwlrScreencopyManagerV1>,
+        _manager_state: &ScreencopyManagerGlobalData,
+        data_init: &mut DataInit<'_, D>,
+    ) {
+        let manager = data_init.init(manager, ());
+
+        let state = state.screencopy_state();
+        state.queues.insert(manager, ScreencopyQueue::new());
+    }
+
+    fn can_view(client: Client, global_data: &ScreencopyManagerGlobalData) -> bool {
+        (global_data.filter)(&client)
+    }
+}
+
+impl<D> Dispatch<ZwlrScreencopyManagerV1, (), D> for ScreencopyManagerState
+where
+    D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>,
+    D: Dispatch<ZwlrScreencopyManagerV1, ()>,
+    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+    D: ScreencopyHandler,
+    D: 'static,
+{
+    fn request(
+        state: &mut D,
+        _client: &Client,
+        manager: &ZwlrScreencopyManagerV1,
+        request: zwlr_screencopy_manager_v1::Request,
+        _data: &(),
+        _display: &DisplayHandle,
+        data_init: &mut DataInit<'_, D>,
+    ) {
+        let (frame, overlay_cursor, buffer_size, region_loc, output) = match request {
+            zwlr_screencopy_manager_v1::Request::CaptureOutput {
+                frame,
+                overlay_cursor,
+                output,
+            } => {
+                let Some(output) = Output::from_resource(&output) else {
+                    trace!("screencopy client requested non-existent output");
+                    let frame = data_init.init(frame, ScreencopyFrameState::Failed);
+                    frame.failed();
+                    return;
+                };
+                let Some(mode) = output.current_mode() else {
+                    trace!("screencopy output has no mode");
+                    let frame = data_init.init(frame, ScreencopyFrameState::Failed);
+                    frame.failed();
+                    return;
+                };
+
+                let buffer_size = mode.size;
+                let region_loc = Point::from((0, 0));
+
+                (frame, overlay_cursor, buffer_size, region_loc, output)
+            }
+            zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
+                frame,
+                overlay_cursor,
+                x,
+                y,
+                width,
+                height,
+                output,
+            } => {
+                if width <= 0 || height <= 0 {
+                    trace!("screencopy client requested invalid sized region");
+                    let frame = data_init.init(frame, ScreencopyFrameState::Failed);
+                    frame.failed();
+                    return;
+                }
+
+                let output =
+                    Output::from_resource(&output).filter(|output| output.current_mode().is_some());
+                let Some(output) = output else {
+                    trace!("screencopy client requested non-existent output");
+                    let frame = data_init.init(frame, ScreencopyFrameState::Failed);
+                    frame.failed();
+                    return;
+                };
+
+                let output_transform = output.current_transform();
+                let output_physical_size =
+                    output_transform.transform_size(output.current_mode().unwrap().size);
+                let output_rect = Rectangle::from_size(output_physical_size);
+
+                let rect = Rectangle::new(Point::from((x, y)), Size::from((width, height)));
+
+                // The requested region is protocol-logical.
+                let output_scale = output.current_scale().fractional_scale();
+                let physical_rect = rect.to_physical_precise_round(output_scale);
+
+                // Clamp captured region to the output.
+                let Some(clamped_rect) = physical_rect.intersection(output_rect) else {
+                    trace!("screencopy client requested region outside of output");
+                    let frame = data_init.init(frame, ScreencopyFrameState::Failed);
+                    frame.failed();
+                    return;
+                };
+
+                let untransformed_rect = output_transform
+                    .invert()
+                    .transform_rect_in(clamped_rect, &output_physical_size);
+
+                (
+                    frame,
+                    overlay_cursor,
+                    untransformed_rect.size,
+                    clamped_rect.loc,
+                    output,
+                )
+            }
+            zwlr_screencopy_manager_v1::Request::Destroy => return,
+            _ => unreachable!(),
+        };
+
+        // Create the frame.
+        let overlay_cursor = overlay_cursor != 0;
+        let info = ScreencopyFrameInfo {
+            output,
+            overlay_cursor,
+            buffer_size,
+            region_loc,
+        };
+        let frame = data_init.init(
+            frame,
+            ScreencopyFrameState::Pending {
+                manager: manager.clone(),
+                info,
+                copied: Arc::new(AtomicBool::new(false)),
+            },
+        );
+
+        // Send desired SHM buffer parameters.
+        frame.buffer(
+            Format::Xrgb8888,
+            buffer_size.w as u32,
+            buffer_size.h as u32,
+            buffer_size.w as u32 * 4,
+        );
+
+        if frame.version() >= 3 {
+            // Send desired DMA buffer parameters.
+            frame.linux_dmabuf(
+                Fourcc::Xrgb8888 as u32,
+                buffer_size.w as u32,
+                buffer_size.h as u32,
+            );
+
+            // Notify client that all supported buffers were enumerated.
+            frame.buffer_done();
+        }
+
+        let state = state.screencopy_state();
+        let queue = state.queues.get_mut(manager).unwrap();
+        queue.pending_frames.insert(frame);
+    }
+
+    fn destroyed(state: &mut D, _client: ClientId, manager: &ZwlrScreencopyManagerV1, _data: &()) {
+        let state = state.screencopy_state();
+
+        // The queue can already be gone if cleanup_queues() ran between the
+        // client disconnect and this delayed destructor (niri hit this).
+        let Some(queue) = state.queues.get_mut(manager) else {
+            return;
+        };
+
+        // Clean up the queue if this was the last object.
+        if queue.is_empty() {
+            state.queues.remove(manager);
+        }
+    }
+}
+
+/// Handler trait for wlr-screencopy.
+pub trait ScreencopyHandler {
+    /// Handle a new screencopy request.
+    ///
+    /// The handler must synchronously either ready/fail the screencopy, or
+    /// submit it to the manager queue.
+    fn frame(&mut self, manager: &ZwlrScreencopyManagerV1, screencopy: Screencopy);
+
+    fn screencopy_state(&mut self) -> &mut ScreencopyManagerState;
+}
+
+#[macro_export]
+macro_rules! delegate_screencopy {
+    ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
+        smithay::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1: $crate::protocols::screencopy::ScreencopyManagerGlobalData
+        ] => $crate::protocols::screencopy::ScreencopyManagerState);
+
+        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1: ()
+        ] => $crate::protocols::screencopy::ScreencopyManagerState);
+
+        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1: $crate::protocols::screencopy::ScreencopyFrameState
+        ] => $crate::protocols::screencopy::ScreencopyManagerState);
+    };
+}
+
+#[derive(Clone)]
+pub struct ScreencopyFrameInfo {
+    output: Output,
+    buffer_size: Size<i32, Physical>,
+    region_loc: Point<i32, Physical>,
+    overlay_cursor: bool,
+}
+
+pub enum ScreencopyFrameState {
+    Failed,
+    Pending {
+        manager: ZwlrScreencopyManagerV1,
+        info: ScreencopyFrameInfo,
+        copied: Arc<AtomicBool>,
+    },
+}
+
+impl<D> Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState, D> for ScreencopyManagerState
+where
+    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+    D: ScreencopyHandler,
+    D: 'static,
+{
+    fn request(
+        state: &mut D,
+        _client: &Client,
+        frame: &ZwlrScreencopyFrameV1,
+        request: zwlr_screencopy_frame_v1::Request,
+        data: &ScreencopyFrameState,
+        _display: &DisplayHandle,
+        _data_init: &mut DataInit<'_, D>,
+    ) {
+        if matches!(request, zwlr_screencopy_frame_v1::Request::Destroy) {
+            return;
+        }
+
+        let ScreencopyFrameState::Pending {
+            manager,
+            info,
+            copied,
+        } = data
+        else {
+            return;
+        };
+
+        if copied.load(Ordering::SeqCst) {
+            frame.post_error(
+                zwlr_screencopy_frame_v1::Error::AlreadyUsed,
+                "copy was already requested",
+            );
+            return;
+        }
+
+        let (buffer, with_damage) = match request {
+            zwlr_screencopy_frame_v1::Request::Copy { buffer } => (buffer, false),
+            zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => (buffer, true),
+            _ => unreachable!(),
+        };
+
+        let size = info.buffer_size;
+
+        let buffer = if let Ok(dmabuf) = dmabuf::get_dmabuf(&buffer) {
+            if dmabuf.format().code == Fourcc::Xrgb8888
+                && dmabuf.width() == size.w as u32
+                && dmabuf.height() == size.h as u32
+            {
+                ScreencopyBuffer::Dmabuf(dmabuf.clone())
+            } else {
+                frame.post_error(
+                    zwlr_screencopy_frame_v1::Error::InvalidBuffer,
+                    "invalid dmabuf parameters",
+                );
+                return;
+            }
+        } else if shm::with_buffer_contents(&buffer, |_, shm_len, buffer_data| {
+            buffer_data.format == Format::Xrgb8888
+                && buffer_data.width == size.w
+                && buffer_data.height == size.h
+                && buffer_data.stride == size.w * 4
+                && shm_len == buffer_data.stride as usize * buffer_data.height as usize
+        })
+        .unwrap_or(false)
+        {
+            ScreencopyBuffer::Shm(buffer)
+        } else {
+            frame.post_error(
+                zwlr_screencopy_frame_v1::Error::InvalidBuffer,
+                "invalid buffer",
+            );
+            return;
+        };
+
+        copied.store(true, Ordering::SeqCst);
+
+        state.frame(
+            manager,
+            Screencopy {
+                buffer,
+                frame: frame.clone(),
+                info: info.clone(),
+                with_damage,
+                submitted: false,
+            },
+        );
+
+        // By this point the frame should've been either copied or failed or
+        // pushed to the queue, so remove it from pending frames.
+        let state = state.screencopy_state();
+        let queue = state.queues.get_mut(manager).unwrap();
+        queue.pending_frames.remove(frame);
+        if queue.is_empty() && !manager.is_alive() {
+            state.queues.remove(manager);
+        }
+    }
+
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        frame: &ZwlrScreencopyFrameV1,
+        data: &ScreencopyFrameState,
+    ) {
+        let ScreencopyFrameState::Pending { manager, .. } = data else {
+            return;
+        };
+
+        let state = state.screencopy_state();
+        // The queue can be gone after a post_error() on a pending frame.
+        let Some(queue) = state.queues.get_mut(manager) else {
+            return;
+        };
+
+        queue.remove_frame(frame);
+
+        // Clean up the queue if this was the last object.
+        if queue.is_empty() && !manager.is_alive() {
+            state.queues.remove(manager);
+        }
+    }
+}
+
+/// Screencopy buffer.
+#[derive(Clone)]
+pub enum ScreencopyBuffer {
+    Dmabuf(Dmabuf),
+    Shm(WlBuffer),
+}
+
+/// Screencopy frame.
+pub struct Screencopy {
+    info: ScreencopyFrameInfo,
+    frame: ZwlrScreencopyFrameV1,
+    buffer: ScreencopyBuffer,
+    with_damage: bool,
+    submitted: bool,
+}
+
+impl Drop for Screencopy {
+    fn drop(&mut self) {
+        if !self.submitted {
+            self.frame.failed();
+        }
+    }
+}
+
+impl Screencopy {
+    /// Get the target buffer to copy to.
+    pub fn buffer(&self) -> &ScreencopyBuffer {
+        &self.buffer
+    }
+
+    pub fn region_loc(&self) -> Point<i32, Physical> {
+        self.info.region_loc
+    }
+
+    pub fn buffer_size(&self) -> Size<i32, Physical> {
+        self.info.buffer_size
+    }
+
+    pub fn output(&self) -> &Output {
+        &self.info.output
+    }
+
+    pub fn overlay_cursor(&self) -> bool {
+        self.info.overlay_cursor
+    }
+
+    pub fn with_damage(&self) -> bool {
+        self.with_damage
+    }
+
+    pub fn damage(&self, damages: impl Iterator<Item = Rectangle<i32, smithay::utils::Buffer>>) {
+        for Rectangle { loc, size } in damages {
+            self.frame
+                .damage(loc.x as u32, loc.y as u32, size.w as u32, size.h as u32);
+        }
+    }
+
+    /// Submit the copied content.
+    fn submit(mut self, y_invert: bool, timestamp: Duration) {
+        // Notify client that buffer is ordinary.
+        self.frame.flags(if y_invert {
+            Flags::YInvert
+        } else {
+            Flags::empty()
+        });
+
+        // Notify client about successful copy.
+        let tv_sec_hi = (timestamp.as_secs() >> 32) as u32;
+        let tv_sec_lo = (timestamp.as_secs() & 0xFFFFFFFF) as u32;
+        let tv_nsec = timestamp.subsec_nanos();
+        self.frame.ready(tv_sec_hi, tv_sec_lo, tv_nsec);
+
+        // Mark frame as submitted to ensure destructor isn't run.
+        self.submitted = true;
+    }
+
+    /// Submit once the GPU is done with the buffer: immediately for
+    /// synchronous copies (shm readback), or when the render's sync fence
+    /// signals for direct-to-dmabuf renders.
+    pub fn submit_after_sync<T>(
+        self,
+        y_invert: bool,
+        sync_point: Option<SyncPoint>,
+        timestamp: Duration,
+        event_loop: &LoopHandle<'_, T>,
+    ) {
+        match sync_point.and_then(|s| s.export()) {
+            None => self.submit(y_invert, timestamp),
+            Some(sync_fd) => {
+                let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
+                let mut screencopy = Some(self);
+                if let Err(err) = event_loop.insert_source(source, move |_, _, _| {
+                    screencopy.take().unwrap().submit(y_invert, timestamp);
+                    Ok(PostAction::Remove)
+                }) {
+                    warn!("error inserting screencopy sync source: {err}");
+                }
+            }
+        }
+    }
+}

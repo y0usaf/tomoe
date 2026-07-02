@@ -15,7 +15,9 @@ use std::collections::HashMap;
 
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
-use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::surface::{
+    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
+};
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind, RenderElementStates};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer, Texture};
@@ -23,12 +25,15 @@ use smithay::desktop::utils::{
     surface_presentation_feedback_flags_from_states, OutputPresentationFeedback,
 };
 use smithay::desktop::{layer_map_for_output, Window};
+use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
 use smithay::render_elements;
-use smithay::utils::{Physical, Point, Scale};
+use smithay::utils::{IsAlive, Physical, Point, Scale};
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use crate::coords;
+use crate::cursor::Cursor;
 use crate::space::PhysicalSpace;
 
 /// Renderer bounds for tomoe's render elements, satisfied by both
@@ -135,6 +140,65 @@ pub fn border_elements<R: TomoeRenderer>(
                     zoom,
                 ))
             });
+        }
+    }
+    elements
+}
+
+/// Cursor elements at `pos` (output-local physical): the client-provided
+/// surface, the xcursor theme frame, or the block fallback, in that order.
+/// Shared by the TTY on-screen path and the capture paths; the buffers behind
+/// every branch are persistent, so damage trackers see stable element ids
+/// (never regenerate cursor buffers per frame — see the standing lessons).
+pub fn cursor_elements<R: TomoeRenderer>(
+    renderer: &mut R,
+    cursor_status: &CursorImageStatus,
+    cursor: &Cursor,
+    fallback: &SolidColorBuffer,
+    pos: Point<f64, Physical>,
+    scale: f64,
+) -> Vec<OutputRenderElements<R>> {
+    let mut elements = Vec::new();
+    match cursor_status {
+        CursorImageStatus::Hidden => {}
+        CursorImageStatus::Surface(cursor_surface) if cursor_surface.alive() => {
+            let hotspot = with_states(cursor_surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|data| data.lock().unwrap().hotspot)
+            })
+            .unwrap_or_default();
+            // The hotspot is in the cursor surface's coordinates (logical).
+            let hotspot_phys = coords::logical_point_to_physical(hotspot.to_f64(), scale);
+            let surface_pos = (pos - hotspot_phys.to_f64()).to_i32_round();
+            elements.extend(
+                render_elements_from_surface_tree(
+                    renderer,
+                    cursor_surface,
+                    surface_pos,
+                    scale,
+                    1.0,
+                    Kind::Cursor,
+                )
+                .into_iter()
+                .map(OutputRenderElements::Surface),
+            );
+        }
+        _ => {
+            if let Some(element) = cursor.element(renderer, pos) {
+                elements.push(OutputRenderElements::Memory(element));
+            } else {
+                elements.push(OutputRenderElements::Solid(
+                    SolidColorRenderElement::from_buffer(
+                        fallback,
+                        pos.to_i32_round::<i32>(),
+                        1.0,
+                        1.0,
+                        Kind::Cursor,
+                    ),
+                ));
+            }
         }
     }
     elements

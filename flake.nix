@@ -36,6 +36,7 @@
           wayland,
           systemd,        # provides libudev
           dbus,
+          pipewire,       # xdg-desktop-portal-tomoe links libpipewire-0.3
         }:
         rustPlatform.buildRustPackage {
           pname = "tomoe";
@@ -73,11 +74,26 @@
             wayland
             systemd   # libudev
             dbus
+            pipewire
           ];
 
           env = {
             RUSTFLAGS = devRustflags;
           };
+
+          # Portal discovery: the .portal file tells xdg-desktop-portal the
+          # backend exists, portals.conf routes ScreenCast to it under
+          # XDG_CURRENT_DESKTOP=tomoe, and the D-Bus service file lets the
+          # bus activate the binary on demand.
+          postInstall = ''
+            install -Dm644 resources/tomoe.portal \
+              $out/share/xdg-desktop-portal/portals/tomoe.portal
+            install -Dm644 resources/tomoe-portals.conf \
+              $out/share/xdg-desktop-portal/tomoe-portals.conf
+            install -d $out/share/dbus-1/services
+            printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.tomoe\nExec=%s/bin/xdg-desktop-portal-tomoe\n' \
+              "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
+          '';
 
           meta = {
             description = "Wayland compositor with Smithay + embedded Lua";
@@ -110,6 +126,7 @@
             pkgs.wayland
             pkgs.systemd   # libudev
             pkgs.dbus
+            pkgs.pipewire
           ];
         in
         {

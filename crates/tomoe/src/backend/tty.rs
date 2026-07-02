@@ -28,19 +28,15 @@ use smithay::backend::egl::context::ContextPriority;
 use smithay::backend::egl::{EGLDevice, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
-use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
-use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
-use smithay::backend::renderer::{ImportDma, ImportEgl};
+use smithay::backend::renderer::ImportDma;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::utils::OutputPresentationFeedback;
-use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
@@ -53,8 +49,7 @@ use smithay::reexports::input::{
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::reexports::wayland_server::backend::GlobalId;
-use smithay::utils::{DeviceFd, IsAlive, Monotonic};
-use smithay::wayland::compositor::with_states;
+use smithay::utils::{DeviceFd, Monotonic};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
@@ -160,7 +155,6 @@ pub struct TtyData {
     pub last_input: InputConfig,
     /// Live libinput devices, for re-applying config on settings changes.
     pub input_devices: Vec<libinput::Device>,
-    pub cursor_buffer: SolidColorBuffer,
 }
 
 pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
@@ -242,7 +236,6 @@ pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
         last_displays: tomoe.lua.settings().displays,
         last_input: tomoe.lua.settings().input,
         input_devices: Vec::new(),
-        cursor_buffer: SolidColorBuffer::new((8, 16), [1.0, 1.0, 1.0, 1.0]),
     });
 
     let udev_backend = UdevBackend::new(&seat_name).context("error creating udev backend")?;
@@ -372,11 +365,10 @@ fn device_added(tomoe: &mut Tomoe, node: DrmNode, path: &Path) -> Result<()> {
     // The primary GPU is up: create the dmabuf global (default feedback
     // points clients at the render device) and explicit sync.
     if render_node == Some(data.primary_render_node) && !data.dmabuf_global_created {
+        // No legacy wl_drm (bind_wl_display): it breaks Xwayland with a fatal
+        // "invalid format" protocol error; clients use linux-dmabuf instead.
         match data.gpu_manager.single_renderer(&data.primary_render_node) {
-            Ok(mut renderer) => {
-                if renderer.bind_wl_display(&display_handle).is_err() {
-                    debug!("legacy EGL display binding unavailable (expected on modern systems)");
-                }
+            Ok(renderer) => {
                 let formats = renderer.dmabuf_formats();
                 match DmabufFeedbackBuilder::new(data.primary_render_node.dev_id(), formats).build()
                 {
@@ -753,6 +745,7 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
         space,
         display_handle,
         loop_handle,
+        screencopy_state,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
@@ -777,6 +770,8 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
     }
     space.unmap_output(&surface.output);
     display_handle.remove_global::<Tomoe>(surface.global);
+    // Queued screencopies for this output can never complete; fail them now.
+    screencopy_state.remove_output(&surface.output);
 }
 
 /// Pure placement policy: `(name, physical size)` in connect order plus the
@@ -1169,12 +1164,7 @@ pub fn queue_redraw_all(tomoe: &mut Tomoe) {
     }
 }
 
-fn on_vblank(
-    tomoe: &mut Tomoe,
-    node: DrmNode,
-    crtc: crtc::Handle,
-    meta: Option<DrmEventMetadata>,
-) {
+fn on_vblank(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle, meta: Option<DrmEventMetadata>) {
     let now = tomoe.clock.now();
     {
         let Backend::Tty(data) = &mut tomoe.backend else {
@@ -1332,6 +1322,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         start_time,
         loop_handle,
         cursor,
+        cursor_fallback,
         ui,
         binds,
         border_buffers,
@@ -1342,7 +1333,6 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         gpu_manager,
         devices,
         primary_render_node,
-        cursor_buffer,
         ..
     } = data;
     let Some(device) = devices.get_mut(&node) else {
@@ -1379,48 +1369,14 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     // Pointer position converts from protocol-logical once, then everything
     // is physical and snapped to the grid.
     let cursor_phys = crate::coords::point_to_physical(pointer_pos, scale) - output_loc.to_f64();
-    match &cursor_status {
-        CursorImageStatus::Hidden => {}
-        CursorImageStatus::Surface(cursor_surface) if cursor_surface.alive() => {
-            let hotspot = with_states(cursor_surface, |states| {
-                states
-                    .data_map
-                    .get::<CursorImageSurfaceData>()
-                    .map(|data| data.lock().unwrap().hotspot)
-            })
-            .unwrap_or_default();
-            // The hotspot is in the cursor surface's coordinates (logical).
-            let hotspot_phys = crate::coords::logical_point_to_physical(hotspot.to_f64(), scale);
-            let pos = (cursor_phys - hotspot_phys.to_f64()).to_i32_round();
-            elements.extend(
-                render_elements_from_surface_tree(
-                    &mut renderer,
-                    cursor_surface,
-                    pos,
-                    scale,
-                    1.0,
-                    Kind::Cursor,
-                )
-                .into_iter()
-                .map(OutputRenderElements::Surface),
-            );
-        }
-        _ => {
-            if let Some(element) = cursor.element(&mut renderer, cursor_phys) {
-                elements.push(OutputRenderElements::Memory(element));
-            } else {
-                elements.push(OutputRenderElements::Solid(
-                    SolidColorRenderElement::from_buffer(
-                        cursor_buffer,
-                        cursor_phys.to_i32_round::<i32>(),
-                        1.0,
-                        1.0,
-                        Kind::Cursor,
-                    ),
-                ));
-            }
-        }
-    }
+    elements.extend(crate::render::cursor_elements(
+        &mut renderer,
+        &cursor_status,
+        cursor,
+        cursor_fallback,
+        cursor_phys,
+        scale,
+    ));
 
     // Compositor UI (dialogs/overlays): above windows, below the cursor.
     let ui_elements = ui.render_elements(&mut renderer, output_size, binds);
@@ -1476,6 +1432,11 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             surface.redraw_state = RedrawState::Idle;
         }
     }
+
+    // Complete queued with-damage screencopies against the just-rendered
+    // scene: an independent render pass into client buffers on the primary
+    // GPU, after the on-screen frame was queued.
+    crate::capture::render_queued_screencopies(tomoe, &output);
 }
 
 /// Import a client dmabuf on the primary GPU (the one that composites).

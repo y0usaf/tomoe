@@ -36,6 +36,8 @@ use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState};
+use smithay::wayland::image_copy_capture::{ImageCopyCaptureState, Session};
 use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
 use smithay::wayland::shm::ShmState;
 use tracing::{info, warn};
@@ -131,9 +133,24 @@ pub struct Tomoe {
     /// linux-drm-syncobj-v1 (explicit sync). Created by the TTY backend when
     /// the primary GPU supports `syncobj_eventfd`; absent on winit.
     pub syncobj_state: Option<DrmSyncobjState>,
+    /// wlr-screencopy: per-manager frame queues (grim, xdg-desktop-portal-wlr).
+    pub screencopy_state: crate::protocols::screencopy::ScreencopyManagerState,
+    /// Held to keep the ext-image-capture-source dispatch alive.
+    #[allow(dead_code)]
+    pub image_capture_source_state: ImageCaptureSourceState,
+    pub output_capture_source_state: OutputCaptureSourceState,
+    pub image_copy_capture_state: ImageCopyCaptureState,
+    /// Live ext-image-copy-capture sessions; dropping one sends `stopped`.
+    pub capture_sessions: Vec<Session>,
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
+    /// Block cursor drawn when no xcursor theme loaded and no client surface;
+    /// persistent so damage trackers see a stable element id.
+    pub cursor_fallback: SolidColorBuffer,
+    /// xwayland-satellite integration (X11 sockets + on-demand spawn); None
+    /// when the binary is missing or socket setup failed.
+    pub satellite: Option<crate::xwayland::Satellite>,
     /// Monotonic clock for presentation-time feedback (the same clock the
     /// wp-presentation global advertises).
     pub clock: Clock<Monotonic>,
@@ -182,6 +199,13 @@ impl Tomoe {
         let presentation_state =
             PresentationState::new::<Self>(&display_handle, Monotonic::ID as u32);
         let dmabuf_state = DmabufState::new();
+        let screencopy_state = crate::protocols::screencopy::ScreencopyManagerState::new::<Self, _>(
+            &display_handle,
+            |_| true,
+        );
+        let image_capture_source_state = ImageCaptureSourceState::new();
+        let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&display_handle);
+        let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "tomoe");
         seat.add_keyboard(XkbConfig::default(), 600, 25)
@@ -226,8 +250,15 @@ impl Tomoe {
             presentation_state,
             dmabuf_state,
             syncobj_state: None,
+            screencopy_state,
+            image_capture_source_state,
+            output_capture_source_state,
+            image_copy_capture_state,
+            capture_sessions: Vec::new(),
             seat,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_fallback: SolidColorBuffer::new((8, 16), [1.0, 1.0, 1.0, 1.0]),
+            satellite: None,
             clock: Clock::new(),
             lua,
             binds: Vec::new(),
@@ -703,6 +734,9 @@ impl Tomoe {
 
     /// Outputs or usable areas changed; notify Lua (only on real change unless forced).
     pub fn outputs_changed(&mut self, force: bool) {
+        // Capture sessions negotiate buffers per output size; renegotiate (or
+        // stop sessions for removed outputs) before policy reacts.
+        crate::capture::refresh_capture_sessions(self);
         let changed = self.sync_snapshot();
         if !(changed || force) {
             return;

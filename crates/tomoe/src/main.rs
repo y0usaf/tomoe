@@ -1,14 +1,17 @@
 mod backend;
+mod capture;
 mod coords;
 mod cursor;
 mod handlers;
 mod input;
 mod layout;
 mod lua;
+mod protocols;
 mod render;
 mod space;
 mod state;
 mod ui;
+mod xwayland;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -120,6 +123,23 @@ fn main() -> Result<()> {
 
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     info!("listening on WAYLAND_DISPLAY={socket_name:?}");
+
+    // xdg-desktop-portal picks its backends per desktop: this makes it read
+    // tomoe-portals.conf and route ScreenCast to xdg-desktop-portal-tomoe.
+    std::env::set_var("XDG_CURRENT_DESKTOP", "tomoe");
+
+    // xwayland-satellite: the sockets exist from here on, so DISPLAY is valid
+    // for every spawned child even before satellite itself runs (connections
+    // queue in the kernel backlog until the first client triggers the spawn).
+    xwayland::setup(&mut tomoe);
+    if let Some(satellite) = &tomoe.satellite {
+        let display_name = satellite.display_name().to_owned();
+        std::env::set_var("DISPLAY", &display_name);
+        info!("listening on X11 socket: DISPLAY={display_name}");
+    } else {
+        // Never point children at a host X11 session.
+        std::env::remove_var("DISPLAY");
+    }
 
     event_loop
         .run(None, &mut tomoe, |tomoe| {
