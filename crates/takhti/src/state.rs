@@ -813,18 +813,30 @@ impl Takhti {
 
     /// Clamp a physical position onto the union bounding box of all outputs
     /// (the same clamp pointer motion applies).
-    pub(crate) fn clamp_to_outputs(&self, mut pos: Point<f64, Physical>) -> Point<f64, Physical> {
-        let mut max_x = 0.0f64;
-        let mut max_y = 0.0f64;
+    /// Keep the pointer on an output. Outputs sit at arbitrary positions
+    /// (explicit `settings.displays` placement, possibly negative, possibly
+    /// with gaps), so this clamps to the nearest output rect, not to a
+    /// bounding box a gap could hide in. Inside any output it's a no-op.
+    pub(crate) fn clamp_to_outputs(&self, pos: Point<f64, Physical>) -> Point<f64, Physical> {
+        let mut best = pos;
+        let mut best_d2 = f64::INFINITY;
         for output in self.space.outputs() {
-            if let Some(geo) = self.space.output_geometry(output) {
-                max_x = max_x.max((geo.loc.x + geo.size.w) as f64);
-                max_y = max_y.max((geo.loc.y + geo.size.h) as f64);
+            let Some(geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let clamped: Point<f64, Physical> = Point::from((
+                pos.x
+                    .clamp(geo.loc.x as f64, (geo.loc.x + geo.size.w) as f64 - 1.0),
+                pos.y
+                    .clamp(geo.loc.y as f64, (geo.loc.y + geo.size.h) as f64 - 1.0),
+            ));
+            let d2 = (clamped.x - pos.x).powi(2) + (clamped.y - pos.y).powi(2);
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best = clamped;
             }
         }
-        pos.x = pos.x.clamp(0.0, (max_x - 1.0).max(0.0));
-        pos.y = pos.y.clamp(0.0, (max_y - 1.0).max(0.0));
-        pos
+        best
     }
 
     /// Activate a pending pointer constraint on the surface under the pointer,

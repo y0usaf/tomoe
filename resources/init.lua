@@ -16,9 +16,14 @@ takhti.settings {
   -- "<preferred|max|WxH>" optionally followed by "@<Hz|max>"; unlisted
   -- outputs use their EDID-preferred mode. Some monitors advertise a low
   -- compatibility mode as preferred — "max@max" gets their best.
+  -- `position` places the output explicitly (physical pixels, may be
+  -- negative); outputs without one pack left-to-right after the placed
+  -- ones. `mirror = "DP-1"` shows the same region as that output instead
+  -- of extending; `disabled = true` turns the connector off entirely.
   -- displays = {
-  --   ["DP-1"] = { resolution = "max@max" },
-  --   ["HDMI-A-1"] = { resolution = "1920x1080@60" },
+  --   ["DP-1"] = { resolution = "max@max", position = { 0, 0 } },
+  --   ["HDMI-A-1"] = { resolution = "1920x1080@60", mirror = "DP-1" },
+  --   ["eDP-1"] = { disabled = true },
   -- },
   -- Focus the window under the pointer as it moves (sloppy focus: leaving
   -- onto empty space keeps focus). Default: click-to-focus.

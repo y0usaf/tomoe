@@ -84,7 +84,8 @@ same invariant *structurally*:
 
 Currently one scale applies to all outputs (`takhti.settings { scale }`);
 per-output scale is a later, local change — it belongs in the existing
-per-output `settings.displays` table (which already holds `resolution`).
+per-output `settings.displays` table (which already holds `resolution`,
+`position`, `mirror`, and `disabled`).
 Known follow-ups: compositor UI font sizes don't multiply by scale yet, and
 output logical positions for mixed-scale multi-head need a placement policy.
 

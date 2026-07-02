@@ -47,9 +47,13 @@ Done and working:
 - [ ] Tearing control (`wp_tearing_control_v1`) + async page flips
 - [x] Output hotplug (udev → connector scan diff → connect/disconnect,
       reposition, `outputs_changed`)
-- [ ] Per-output config: explicit position, mirror, disable, per-output
-      scale (single global scale today; placement policy noted in
-      DESIGN.md coordinate doctrine)
+- [x] Per-output position/mirror/disable (`settings.displays`: explicit
+      physical `position`s anchor the layout and the rest packs after
+      them; `mirror` maps at its target's position so it shows the same
+      world region; `disabled` connectors stay stashed per device so a
+      settings change re-enables them without a replug)
+- [ ] Per-output scale (single global scale today; mixed-scale placement
+      policy noted in DESIGN.md coordinate doctrine)
 - [x] pointer-constraints + relative-pointer (games) — niri-shape: lock
       swallows motion, confine clamps at the surface/region edge, both keep
       sending relative motion; smithay deactivates on focus change
@@ -164,7 +168,10 @@ from Lua.*
 1. ~~Output hotplug end-to-end~~ done — udev → connector →
    `outputs_changed` → Lua reconfigure (ShojiWM's docked-monitor pattern
    is writable now)
-2. Per-output position/mirror/disable/scale in `settings.displays`
+2. ~~Per-output position/mirror/disable~~ done — `settings.displays`
+   gains `position = {x, y}` (physical), `mirror = "<output>"`, and
+   `disabled = true`, all live-reloadable; per-output *scale* still
+   open (blocked on the DESIGN.md mixed-scale placement policy)
 3. ext-session-lock + idle-notify/idle-inhibit (swaylock/swayidle work)
 4. Direct scanout for fullscreen + cursor plane; VRR; tearing control
    (mind `ref/ShojiWM/knowledges/fullscreen-direct-scanout-tearing.md`

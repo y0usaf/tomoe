@@ -89,9 +89,19 @@ impl std::str::FromStr for Resolution {
 }
 
 /// Per-output settings: `settings.displays[output_name]` (tty backend).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DisplaySettings {
     pub resolution: Resolution,
+    /// Explicit position in physical pixels (may be negative). Unset
+    /// outputs pack left-to-right after everything placed, in connect order.
+    pub position: Option<(i32, i32)>,
+    /// Leave the connector off entirely: no surface, no wl_output global.
+    /// Flipping it back on reconnects without a replug.
+    pub disabled: bool,
+    /// Show the same world region as the named output by mapping at its
+    /// position (sizes may differ; no rescaling). Overrides `position`.
+    /// The target must itself be an active, non-mirroring output.
+    pub mirror: Option<String>,
 }
 
 /// xkb keymap + key-repeat settings: `settings.keyboard`. Empty strings mean
@@ -620,6 +630,24 @@ impl LuaRuntime {
                                      optionally followed by \"@<Hz|max>\")"
                                 ),
                             }
+                        }
+                        if let Ok(pos) = display.get::<Table>("position") {
+                            match (pos.get::<i32>(1), pos.get::<i32>(2)) {
+                                (Ok(x), Ok(y)) => ds.position = Some((x, y)),
+                                _ => warn!(
+                                    "displays[{name:?}]: invalid position \
+                                     (expected {{ x, y }} in physical pixels)"
+                                ),
+                            }
+                        }
+                        // Entries are rebuilt from scratch on every settings
+                        // call, so plain-bool truthiness (missing -> false)
+                        // is the right default here.
+                        if let Ok(v) = display.get::<bool>("disabled") {
+                            ds.disabled = v;
+                        }
+                        if let Ok(m) = display.get::<String>("mirror") {
+                            ds.mirror = Some(m);
                         }
                         settings.displays.insert(name, ds);
                     }

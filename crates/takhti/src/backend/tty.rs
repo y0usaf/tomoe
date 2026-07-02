@@ -136,6 +136,10 @@ pub struct OutputDevice {
     pub render_node: Option<DrmNode>,
     pub scanner: DrmScanner,
     pub surfaces: HashMap<crtc::Handle, TtySurface>,
+    /// Connected connectors kept dark by `settings.displays[..].disabled`,
+    /// stashed with their crtc so flipping the setting back lights them up
+    /// without a replug.
+    pub inactive: HashMap<crtc::Handle, connector::Info>,
     /// The DRM event source, removed with the device.
     pub token: RegistrationToken,
 }
@@ -432,6 +436,7 @@ fn device_added(takhti: &mut Takhti, node: DrmNode, path: &Path) -> Result<()> {
             render_node,
             scanner: DrmScanner::new(),
             surfaces: HashMap::new(),
+            inactive: HashMap::new(),
             token,
         },
     );
@@ -464,7 +469,7 @@ fn device_changed(takhti: &mut Takhti, node: DrmNode) {
                 connector,
                 crtc: Some(crtc),
             } => match connector_connected(takhti, node, connector, crtc) {
-                Ok(()) => changed = true,
+                Ok(lit) => changed |= lit,
                 Err(err) => warn!("error setting up connector: {err:#}"),
             },
             DrmScanEvent::Disconnected {
@@ -575,12 +580,15 @@ fn pick_mode(connector: &connector::Info, target: Resolution) -> Option<(DrmMode
     }
 }
 
+/// Bring a newly connected (or re-enabled) connector up. Returns false if
+/// `settings.displays` keeps it dark — the connector is stashed, no surface
+/// or global is created, and the output set is unchanged.
 fn connector_connected(
     takhti: &mut Takhti,
     node: DrmNode,
     connector: connector::Info,
     crtc: crtc::Handle,
-) -> Result<()> {
+) -> Result<bool> {
     let Takhti {
         backend,
         space,
@@ -608,6 +616,17 @@ fn connector_connected(
         connector.interface().as_str(),
         connector.interface_id()
     );
+
+    if lua
+        .settings()
+        .displays
+        .get(&name)
+        .is_some_and(|d| d.disabled)
+    {
+        info!("output {name}: disabled by settings.displays; leaving the connector dark");
+        device.inactive.insert(crtc, connector);
+        return Ok(false);
+    }
 
     let (mode, fallback) = pick_mode(&connector, lua.settings().resolution_for(&name))
         .context("connector has no modes")?;
@@ -725,7 +744,7 @@ fn connector_connected(
             global,
         },
     );
-    Ok(())
+    Ok(true)
 }
 
 fn connector_disconnected(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle) {
@@ -740,6 +759,10 @@ fn connector_disconnected(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle
     let Some(device) = data.devices.get_mut(&node) else {
         return;
     };
+    // A settings-disabled connector has a stash entry instead of a surface;
+    // a physical unplug must drop it, or a later re-enable would resurrect
+    // a connector that is no longer there.
+    device.inactive.remove(&crtc);
     let Some(surface) = device.surfaces.remove(&crtc) else {
         return;
     };
@@ -756,85 +779,225 @@ fn connector_disconnected(takhti: &mut Takhti, node: DrmNode, crtc: crtc::Handle
     display_handle.remove_global::<Takhti>(surface.global);
 }
 
-/// Re-pack outputs left-to-right (preserving connect order) and refresh
-/// their logical positions; run after any change to the output set or modes.
-fn reposition_outputs(takhti: &mut Takhti) {
-    let outputs: Vec<Output> = takhti.space.outputs().cloned().collect();
-    let scale = takhti.space.scale();
-    let mut x = 0;
-    for output in &outputs {
-        let Some(mode) = output.current_mode() else {
+/// Pure placement policy: `(name, physical size)` in connect order plus the
+/// displays config, to physical positions. Explicit `position`s anchor the
+/// layout exactly where the config says, everything unpositioned packs
+/// left-to-right after the anchors (never left of 0, so an anchor-free
+/// config keeps the pack-from-zero layout) in connect order, and `mirror`s
+/// copy their target's position last (same position = same world region on
+/// screen). A mirror whose target is missing, dark, or itself a mirror
+/// packs normally instead.
+fn place_outputs(
+    outputs: &[(String, (i32, i32))],
+    displays: &HashMap<String, DisplaySettings>,
+) -> HashMap<String, (i32, i32)> {
+    let is_mirror = |name: &str| displays.get(name).is_some_and(|d| d.mirror.is_some());
+
+    let mut locs: HashMap<String, (i32, i32)> = HashMap::new();
+    for (name, _) in outputs {
+        if is_mirror(name) {
+            continue;
+        }
+        if let Some(pos) = displays.get(name).and_then(|d| d.position) {
+            locs.insert(name.clone(), pos);
+        }
+    }
+    let mut pack_x = outputs
+        .iter()
+        .filter_map(|(name, (w, _))| locs.get(name).map(|(x, _)| x + w))
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let mut pack = |name: &str, w: i32, locs: &mut HashMap<String, (i32, i32)>| {
+        locs.insert(name.to_owned(), (pack_x, 0));
+        pack_x += w;
+    };
+    for (name, (w, _)) in outputs {
+        if is_mirror(name) || locs.contains_key(name) {
+            continue;
+        }
+        pack(name, *w, &mut locs);
+    }
+    for (name, (w, _)) in outputs {
+        let Some(target) = displays.get(name).and_then(|d| d.mirror.as_ref()) else {
             continue;
         };
-        let size = output.current_transform().transform_size(mode.size);
-        let logical_loc = crate::coords::rect_to_logical(
-            smithay::utils::Rectangle::new((x, 0).into(), size),
-            scale,
-        )
-        .loc;
+        match locs.get(target).copied() {
+            Some(loc) => {
+                locs.insert(name.clone(), loc);
+            }
+            None => {
+                warn!(
+                    "output {name}: mirror target {target:?} is not an active \
+                     non-mirror output; placing normally"
+                );
+                pack(name, *w, &mut locs);
+            }
+        }
+    }
+    locs
+}
+
+/// Place outputs per [`place_outputs`] and refresh their logical positions;
+/// run after any change to the output set, modes, or `settings.displays`.
+fn reposition_outputs(takhti: &mut Takhti) {
+    let displays = takhti.lua.settings().displays;
+    let outputs: Vec<Output> = takhti.space.outputs().cloned().collect();
+    let scale = takhti.space.scale();
+
+    let size_of = |output: &Output| {
+        output
+            .current_mode()
+            .map(|mode| output.current_transform().transform_size(mode.size))
+    };
+    let sized: Vec<(String, (i32, i32))> = outputs
+        .iter()
+        .filter_map(|output| {
+            let size = size_of(output)?;
+            Some((output.name(), (size.w, size.h)))
+        })
+        .collect();
+    let locs = place_outputs(&sized, &displays);
+
+    for output in &outputs {
+        let (Some(size), Some(&loc)) = (size_of(output), locs.get(&output.name())) else {
+            continue;
+        };
+        let logical_loc =
+            crate::coords::rect_to_logical(smithay::utils::Rectangle::new(loc.into(), size), scale)
+                .loc;
         output.change_current_state(None, None, None, Some(logical_loc));
-        takhti.space.map_output(output, (x, 0));
-        x += size.w;
+        takhti.space.map_output(output, loc);
     }
 }
 
-/// Re-pick every output's mode against the current `settings.displays`
-/// (config reload). Returns true if any mode changed; the caller re-emits
+/// Re-apply `settings.displays` to the live output set (config reload):
+/// re-pick modes, tear down newly disabled connectors, light up re-enabled
+/// ones, and re-place everything (position/mirror changes). Returns true if
+/// the output set or any geometry effectively changed; the caller re-emits
 /// `outputs_changed` so the Lua WM can retile. Runs after every Lua entry,
 /// so it bails immediately unless the displays config actually changed.
 pub fn apply_display_settings(takhti: &mut Takhti) -> bool {
     let settings = takhti.lua.settings();
-    let Backend::Tty(data) = &mut takhti.backend else {
-        return false;
-    };
-    if settings.displays == data.last_displays {
-        return false;
+    {
+        let Backend::Tty(data) = &mut takhti.backend else {
+            return false;
+        };
+        if settings.displays == data.last_displays {
+            return false;
+        }
+        data.last_displays = settings.displays.clone();
     }
-    data.last_displays = settings.displays.clone();
+    let geometries = |takhti: &Takhti| -> Vec<(String, (i32, i32, i32, i32))> {
+        let mut v: Vec<_> = takhti
+            .space
+            .outputs()
+            .map(|output| {
+                let geo = takhti.space.output_geometry(output).unwrap_or_default();
+                (
+                    output.name(),
+                    (geo.loc.x, geo.loc.y, geo.size.w, geo.size.h),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = geometries(takhti);
 
     let mut changed = false;
-    for device in data.devices.values_mut() {
-        for surface in device.surfaces.values_mut() {
-            let name = surface.output.name();
-            let Some((mode, fallback)) =
-                pick_mode(&surface.connector, settings.resolution_for(&name))
-            else {
-                continue;
-            };
-            if fallback {
-                warn!("output {name}: no mode matches the configured resolution; using preferred");
-            }
-            if mode == surface.compositor.pending_mode() {
-                continue;
-            }
-            if let Err(err) = surface.compositor.use_mode(mode) {
-                warn!(
-                    "output {}: error setting mode {}x{}@{}: {err}",
-                    surface.output.name(),
-                    mode.size().0,
-                    mode.size().1,
-                    mode.vrefresh(),
-                );
-                continue;
-            }
-            let (w, h) = mode.size();
-            info!(
-                "output {}: mode changed to {w}x{h}@{}",
-                surface.output.name(),
-                mode.vrefresh(),
+    let mut to_disable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
+    let mut to_enable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
+    {
+        let Backend::Tty(data) = &mut takhti.backend else {
+            return false;
+        };
+
+        let disabled = |connector: &connector::Info| {
+            let name = format!(
+                "{}-{}",
+                connector.interface().as_str(),
+                connector.interface_id()
             );
-            surface
-                .output
-                .change_current_state(Some(Mode::from(mode)), None, None, None);
-            changed = true;
+            settings.displays.get(&name).is_some_and(|d| d.disabled)
+        };
+        for (node, device) in &mut data.devices {
+            for (crtc, surface) in &mut device.surfaces {
+                if disabled(&surface.connector) {
+                    to_disable.push((*node, *crtc, surface.connector.clone()));
+                    continue;
+                }
+                let name = surface.output.name();
+                let Some((mode, fallback)) =
+                    pick_mode(&surface.connector, settings.resolution_for(&name))
+                else {
+                    continue;
+                };
+                if fallback {
+                    warn!(
+                        "output {name}: no mode matches the configured resolution; \
+                         using preferred"
+                    );
+                }
+                if mode == surface.compositor.pending_mode() {
+                    continue;
+                }
+                if let Err(err) = surface.compositor.use_mode(mode) {
+                    warn!(
+                        "output {name}: error setting mode {}x{}@{}: {err}",
+                        mode.size().0,
+                        mode.size().1,
+                        mode.vrefresh(),
+                    );
+                    continue;
+                }
+                let (w, h) = mode.size();
+                info!("output {name}: mode changed to {w}x{h}@{}", mode.vrefresh());
+                surface
+                    .output
+                    .change_current_state(Some(Mode::from(mode)), None, None, None);
+                changed = true;
+            }
+            device.inactive.retain(|crtc, connector| {
+                if disabled(connector) {
+                    return true;
+                }
+                to_enable.push((*node, *crtc, connector.clone()));
+                false
+            });
         }
     }
-    if !changed {
-        return false;
+
+    for (node, crtc, connector) in to_disable {
+        connector_disconnected(takhti, node, crtc);
+        if let Backend::Tty(data) = &mut takhti.backend {
+            if let Some(device) = data.devices.get_mut(&node) {
+                device.inactive.insert(crtc, connector);
+            }
+        }
+        changed = true;
+    }
+    for (node, crtc, connector) in to_enable {
+        // connector_connected re-checks the (now cleared) disabled flag.
+        if let Err(err) = connector_connected(takhti, node, connector.clone(), crtc) {
+            warn!("error re-enabling connector: {err:#}");
+            // Back in the stash so the next settings change retries.
+            if let Backend::Tty(data) = &mut takhti.backend {
+                if let Some(device) = data.devices.get_mut(&node) {
+                    device.inactive.insert(crtc, connector);
+                }
+            }
+            continue;
+        }
+        changed = true;
     }
 
-    // Widths may have changed: re-pack and repaint.
+    // Positions/mirrors may have changed without a mode or topology change;
+    // re-place unconditionally (idempotent) and compare effective geometry.
     reposition_outputs(takhti);
+    if !changed && before == geometries(takhti) {
+        return false;
+    }
     queue_redraw_all(takhti);
     true
 }
@@ -1403,5 +1566,96 @@ impl Takhti {
                 warn!("error switching VT: {err}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(names_and_widths: &[(&str, i32)]) -> Vec<(String, (i32, i32))> {
+        names_and_widths
+            .iter()
+            .map(|(name, w)| (name.to_string(), (*w, 1080)))
+            .collect()
+    }
+
+    fn display(f: impl FnOnce(&mut DisplaySettings)) -> DisplaySettings {
+        let mut d = DisplaySettings::default();
+        f(&mut d);
+        d
+    }
+
+    #[test]
+    fn unconfigured_outputs_pack_from_zero_in_connect_order() {
+        let locs = place_outputs(
+            &named(&[("DP-1", 2560), ("HDMI-A-1", 1920)]),
+            &HashMap::new(),
+        );
+        assert_eq!(locs["DP-1"], (0, 0));
+        assert_eq!(locs["HDMI-A-1"], (2560, 0));
+    }
+
+    #[test]
+    fn anchors_stay_put_and_the_rest_packs_after_them() {
+        let displays = HashMap::from([(
+            "HDMI-A-1".to_string(),
+            display(|d| d.position = Some((100, -500))),
+        )]);
+        let locs = place_outputs(&named(&[("DP-1", 2560), ("HDMI-A-1", 1920)]), &displays);
+        assert_eq!(locs["HDMI-A-1"], (100, -500));
+        // Packs right of the anchor's right edge (100 + 1920).
+        assert_eq!(locs["DP-1"], (2020, 0));
+    }
+
+    #[test]
+    fn negative_anchor_never_drags_the_pack_left_of_zero() {
+        let displays = HashMap::from([(
+            "HDMI-A-1".to_string(),
+            display(|d| d.position = Some((-1920, 0))),
+        )]);
+        let locs = place_outputs(&named(&[("HDMI-A-1", 1920), ("DP-1", 2560)]), &displays);
+        assert_eq!(locs["HDMI-A-1"], (-1920, 0));
+        assert_eq!(locs["DP-1"], (0, 0));
+    }
+
+    #[test]
+    fn mirror_copies_the_target_position_without_consuming_width() {
+        let displays = HashMap::from([(
+            "HDMI-A-1".to_string(),
+            display(|d| d.mirror = Some("DP-1".to_string())),
+        )]);
+        let locs = place_outputs(
+            &named(&[("DP-1", 2560), ("HDMI-A-1", 1920), ("DP-2", 1920)]),
+            &displays,
+        );
+        assert_eq!(locs["DP-1"], (0, 0));
+        assert_eq!(locs["HDMI-A-1"], (0, 0));
+        // The mirror occupies no strip of its own.
+        assert_eq!(locs["DP-2"], (2560, 0));
+    }
+
+    #[test]
+    fn mirror_overrides_an_explicit_position() {
+        let displays = HashMap::from([(
+            "HDMI-A-1".to_string(),
+            display(|d| {
+                d.position = Some((9999, 9999));
+                d.mirror = Some("DP-1".to_string());
+            }),
+        )]);
+        let locs = place_outputs(&named(&[("DP-1", 2560), ("HDMI-A-1", 1920)]), &displays);
+        assert_eq!(locs["HDMI-A-1"], (0, 0));
+    }
+
+    #[test]
+    fn mirror_of_a_missing_target_packs_normally() {
+        let displays = HashMap::from([(
+            "HDMI-A-1".to_string(),
+            display(|d| d.mirror = Some("DP-9".to_string())),
+        )]);
+        let locs = place_outputs(&named(&[("DP-1", 2560), ("HDMI-A-1", 1920)]), &displays);
+        assert_eq!(locs["DP-1"], (0, 0));
+        assert_eq!(locs["HDMI-A-1"], (2560, 0));
     }
 }
