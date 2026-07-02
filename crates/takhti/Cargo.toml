@@ -1,0 +1,31 @@
+[package]
+name = "takhti"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4", features = ["derive"] }
+fontdue = "0.9"
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+smithay-drm-extras.workspace = true
+xcursor = "0.3"
+
+[dependencies.smithay]
+workspace = true
+features = [
+    "backend_drm",
+    "backend_egl",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
+    "backend_winit",
+    "desktop",
+    "renderer_gl",
+    "use_system_lib",
+    "wayland_frontend",
+]

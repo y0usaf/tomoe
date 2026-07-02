@@ -1,0 +1,31 @@
+[workspace]
+members = ["crates/takhti"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Same Smithay pin as niri 26.4 — the most battle-tested rev available.
+[workspace.dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+default-features = false
+
+[workspace.dependencies.smithay-drm-extras]
+git = "https://github.com/Smithay/smithay.git"
+rev = "ff5fa7df392cecfba049ffed55cdaa4e98a8e7ef"
+default-features = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
