@@ -91,7 +91,12 @@ impl<'a> SceneParts<'a> {
                 scale,
             ));
         }
-        let ui_elements = self.ui.render_elements(renderer, geo.size, self.binds);
+        // Captures never include the screenshot selection overlay: the
+        // screenshot itself must not contain it, and screencopy/screencast
+        // consumers shouldn't record it either (niri does the same).
+        let ui_elements = self
+            .ui
+            .render_elements(renderer, output, geo.size, self.binds, false);
         let borders = crate::render::border_elements(
             self.space,
             self.border_buffers,
@@ -414,6 +419,69 @@ pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Fram
 }
 
 // ─── Render-to-buffer helpers (niri-shape) ────────────────────────────────────
+
+/// Render the current scene of `output` — cropped to `region` (output-local
+/// physical coordinates) when given — into an offscreen texture and read the
+/// pixels back as tightly packed RGBA8. Rows come out top-down: smithay's
+/// texture render targets flip the projection, so `copy_framebuffer` returns
+/// the same orientation [`render_to_shm`] copies verbatim into shm buffers.
+pub fn capture_rgba(
+    tomoe: &mut Tomoe,
+    output: &Output,
+    region: Option<Rectangle<i32, Physical>>,
+) -> Result<(Size<i32, Physical>, Vec<u8>)> {
+    let (mut parts, backend, _screencopy_state, _loop_handle, _now) = split_tomoe!(tomoe);
+    let scale = parts.space.scale();
+    let geo = parts
+        .space
+        .output_geometry(output)
+        .context("output has no geometry")?;
+    let region = region.unwrap_or_else(|| Rectangle::from_size(geo.size));
+    ensure!(
+        region.size.w > 0 && region.size.h > 0,
+        "empty capture region"
+    );
+
+    let pixels = backend
+        .with_primary_gles(|renderer| -> Result<Vec<u8>> {
+            let elements = parts.elements(renderer, output, region.loc, true);
+            let mut damage_tracker =
+                OutputDamageTracker::new(region.size, scale, Transform::Normal);
+            let (_damages, states) = damage_tracker.damage_output(1, &elements).unwrap();
+
+            // GL RGBA8: mapped bytes come back in R,G,B,A order, PNG-ready.
+            let fourcc = Fourcc::Abgr8888;
+            let mut texture = create_texture(renderer, region.size, fourcc)?;
+            let mut target = renderer
+                .bind(&mut texture)
+                .context("error binding texture")?;
+            let _res = damage_tracker
+                .render_output_with_states(
+                    renderer,
+                    &mut target,
+                    0,
+                    &elements,
+                    Color32F::TRANSPARENT,
+                    states,
+                )
+                .context("error rendering")?;
+
+            let mapping = renderer
+                .copy_framebuffer(
+                    &target,
+                    Rectangle::from_size(region.size.to_logical(1).to_buffer(1, Transform::Normal)),
+                    fourcc,
+                )
+                .context("error copying framebuffer")?;
+            let bytes = renderer
+                .map_texture(&mapping)
+                .context("error mapping texture")?;
+            Ok(bytes.to_vec())
+        })
+        .context("no renderer available")??;
+
+    Ok((region.size, pixels))
+}
 
 fn create_texture(
     renderer: &mut GlesRenderer,

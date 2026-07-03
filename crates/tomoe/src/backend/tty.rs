@@ -1379,7 +1379,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     ));
 
     // Compositor UI (dialogs/overlays): above windows, below the cursor.
-    let ui_elements = ui.render_elements(&mut renderer, output_size, binds);
+    let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, binds, true);
     let borders = crate::render::border_elements(space, border_buffers, border_width, output_loc);
     elements.extend(crate::render::scene_elements(
         &mut renderer,

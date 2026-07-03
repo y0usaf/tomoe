@@ -8,6 +8,7 @@ mod layout;
 mod lua;
 mod protocols;
 mod render;
+mod screenshot;
 mod space;
 mod state;
 mod ui;

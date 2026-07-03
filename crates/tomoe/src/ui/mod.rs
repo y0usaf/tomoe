@@ -5,14 +5,17 @@
 mod config_error_notification;
 mod exit_confirm_dialog;
 mod hotkey_overlay;
+mod screenshot_ui;
 pub mod text;
 
+use smithay::output::Output;
 use smithay::utils::{Physical, Size};
 use tracing::warn;
 
 pub use config_error_notification::ConfigErrorNotification;
 pub use exit_confirm_dialog::ExitConfirmDialog;
 pub use hotkey_overlay::HotkeyOverlay;
+pub use screenshot_ui::ScreenshotUi;
 
 use crate::input::Bind;
 use crate::render::{OutputRenderElements, TomoeRenderer};
@@ -32,6 +35,7 @@ pub struct Ui {
     pub exit_dialog: ExitConfirmDialog,
     pub hotkey_overlay: HotkeyOverlay,
     pub config_error: ConfigErrorNotification,
+    pub screenshot: ScreenshotUi,
 }
 
 impl Ui {
@@ -48,21 +52,38 @@ impl Ui {
             exit_dialog: ExitConfirmDialog::new(),
             hotkey_overlay: HotkeyOverlay::new(),
             config_error: ConfigErrorNotification::new(),
+            screenshot: ScreenshotUi::new(),
         }
     }
 
     /// Build render elements for one output, topmost first (callers prepend
     /// these before window content). Coordinates are output-local.
+    /// `include_screenshot_ui` is false on the capture paths so screenshots
+    /// (and screencopy/screencast frames) never contain the selection
+    /// overlay itself.
     pub fn render_elements<R: TomoeRenderer>(
         &mut self,
         renderer: &mut R,
+        output: &Output,
         output_size: Size<i32, Physical>,
         binds: &[Bind],
+        include_screenshot_ui: bool,
     ) -> Vec<OutputRenderElements<R>> {
-        let Some(fonts) = &self.fonts else {
-            return Vec::new();
-        };
         let mut elements = Vec::new();
+        // The selection overlay works without fonts (only its hint bar needs
+        // them), so it renders before the fonts check.
+        if include_screenshot_ui {
+            self.screenshot.render_elements(
+                self.fonts.as_ref(),
+                renderer,
+                output,
+                output_size,
+                &mut elements,
+            );
+        }
+        let Some(fonts) = &self.fonts else {
+            return elements;
+        };
         self.exit_dialog
             .render_elements(fonts, renderer, output_size, &mut elements);
         self.config_error

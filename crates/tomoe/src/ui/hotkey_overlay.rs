@@ -92,9 +92,11 @@ fn title(bind: &Bind) -> Option<String> {
         Action::Spawn(cmd) => Some(format!("Spawn {cmd}")),
         Action::ShowHotkeyOverlay => Some("Show Important Hotkeys".to_string()),
         Action::ReloadConfig => Some("Reload the Config File".to_string()),
+        Action::Screenshot => Some("Take a Screenshot".to_string()),
+        Action::ScreenshotScreen => Some("Screenshot the Screen".to_string()),
         // Lua functions are opaque; configs label them via the third
         // `tomoe.bind` argument.
-        Action::LuaFn(_) | Action::ChangeVt(_) => None,
+        Action::LuaFn(_) | Action::ChangeVt(_) | Action::ScreenshotConfirm => None,
     }
 }
 

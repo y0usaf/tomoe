@@ -1006,6 +1006,61 @@ impl Tomoe {
                 self.after_lua();
             }
             Action::ChangeVt(vt) => self.change_vt(vt),
+            Action::Screenshot => self.open_screenshot_ui(),
+            Action::ScreenshotScreen => self.screenshot_screen(),
+            Action::ScreenshotConfirm => self.screenshot_confirm(),
+        }
+    }
+
+    /// The output under the pointer, falling back to the first output.
+    fn output_under_pointer(&self) -> Option<smithay::output::Output> {
+        let pos = self
+            .seat
+            .get_pointer()
+            .map(|p| coords::point_to_physical(p.current_location(), self.space.scale()));
+        pos.and_then(|pos| self.space.output_under(pos))
+            .or_else(|| self.space.outputs().next())
+            .cloned()
+    }
+
+    /// Open the interactive region-selection overlay on the output under the
+    /// pointer; `input.rs` intercepts everything until it closes.
+    fn open_screenshot_ui(&mut self) {
+        let Some(output) = self.output_under_pointer() else {
+            warn!("screenshot: no output to capture");
+            return;
+        };
+        self.ui.screenshot.open(output);
+        self.queue_redraw_all();
+    }
+
+    /// Confirm the screenshot UI: capture its selection (or the whole output
+    /// when nothing is selected). Closes the overlay *before* capturing so
+    /// the rendered scene never contains it.
+    pub fn screenshot_confirm(&mut self) {
+        let Some(output) = self.ui.screenshot.output().cloned() else {
+            return;
+        };
+        let region = self
+            .space
+            .output_geometry(&output)
+            .and_then(|geo| self.ui.screenshot.selection_rect(geo.size));
+        self.ui.screenshot.close();
+        self.queue_redraw_all();
+        if let Err(err) = crate::screenshot::screenshot(self, &output, region) {
+            warn!("error taking screenshot: {err:#}");
+        }
+    }
+
+    /// Screenshot the output under the pointer (falling back to the first
+    /// output) and save it as a PNG.
+    fn screenshot_screen(&mut self) {
+        let Some(output) = self.output_under_pointer() else {
+            warn!("screenshot: no output to capture");
+            return;
+        };
+        if let Err(err) = crate::screenshot::screenshot(self, &output, None) {
+            warn!("error taking screenshot: {err:#}");
         }
     }
 }

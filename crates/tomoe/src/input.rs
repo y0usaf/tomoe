@@ -24,6 +24,14 @@ pub enum Action {
     Spawn(String),
     ShowHotkeyOverlay,
     ReloadConfig,
+    /// Interactive region screenshot (stage 2 UI; screenshots the pointer's
+    /// output until the selection overlay lands).
+    Screenshot,
+    /// Screenshot the output under the pointer.
+    ScreenshotScreen,
+    /// Confirm the screenshot selection UI (internal: dispatched by the
+    /// overlay's key handling, not bindable from config).
+    ScreenshotConfirm,
     /// Call the Lua function registered for bind index `idx`.
     LuaFn(usize),
     /// Switch virtual terminal (TTY backend; Ctrl+Alt+F1..F12).
@@ -44,6 +52,8 @@ impl Action {
             "close-window" => Action::CloseWindow,
             "show-hotkey-overlay" => Action::ShowHotkeyOverlay,
             "reload-config" => Action::ReloadConfig,
+            "screenshot" => Action::Screenshot,
+            "screenshot-screen" => Action::ScreenshotScreen,
             _ => bail!("unknown action {s:?} (define a Lua function instead)"),
         })
     }
@@ -144,6 +154,23 @@ impl Tomoe {
             .unwrap_or_default()
     }
 
+    /// The pointer position in the screenshot overlay's output-local
+    /// physical coordinates, clamped to the output bounds. None when the
+    /// overlay is closed or its output lost its geometry.
+    fn screenshot_pointer_local(
+        &self,
+    ) -> Option<smithay::utils::Point<i32, smithay::utils::Physical>> {
+        let output = self.ui.screenshot.output()?;
+        let geo = self.space.output_geometry(output)?;
+        let pointer = self.seat.get_pointer()?;
+        let pos = crate::coords::point_to_physical(pointer.current_location(), self.space.scale());
+        let local = pos - geo.loc.to_f64();
+        Some(smithay::utils::Point::from((
+            (local.x.round() as i32).clamp(0, geo.size.w),
+            (local.y.round() as i32).clamp(0, geo.size.h),
+        )))
+    }
+
     /// Common tail of relative and absolute pointer motion: route to the
     /// active Lua grab (world coordinates), or to clients via the seat.
     /// `relative` is delivered alongside the motion for relative-pointer
@@ -160,6 +187,30 @@ impl Tomoe {
         };
         let scale = self.space.scale();
         let location = crate::coords::point_to_protocol(pos, scale);
+
+        // Screenshot selection overlay: the cursor keeps moving (no client
+        // focus, like the Lua-grab path below) and an active drag tracks it.
+        if self.ui.screenshot.is_open() {
+            let serial = SERIAL_COUNTER.next_serial();
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
+            if self.ui.screenshot.is_dragging() {
+                if let Some(local) = self.screenshot_pointer_local() {
+                    self.ui.screenshot.drag_to(local);
+                }
+            }
+            // The cursor is composited, so moving it damages the output.
+            self.queue_redraw_all();
+            return;
+        }
 
         if self.lua.pointer_grab_active() {
             let prev = crate::coords::point_to_physical(pointer.current_location(), scale);
@@ -296,6 +347,28 @@ impl Tomoe {
                                     return FilterResult::Intercept(Some(Action::ChangeVt(vt)));
                                 }
                             }
+                        }
+                        // The screenshot overlay is modal: Esc cancels,
+                        // Enter/Space capture (Space with no selection means
+                        // the whole screen), everything else — releases
+                        // included — is swallowed.
+                        if tomoe.ui.screenshot.is_open() {
+                            if pressed {
+                                if raw_syms.contains(&Keysym::Escape) {
+                                    tomoe.ui.screenshot.close();
+                                    tomoe.queue_redraw_all();
+                                    return FilterResult::Intercept(None);
+                                }
+                                if raw_syms.contains(&Keysym::Return)
+                                    || raw_syms.contains(&Keysym::KP_Enter)
+                                    || raw_syms.contains(&Keysym::space)
+                                {
+                                    return FilterResult::Intercept(Some(
+                                        Action::ScreenshotConfirm,
+                                    ));
+                                }
+                            }
+                            return FilterResult::Intercept(None);
                         }
                         // The exit dialog is modal: while open, no key
                         // reaches clients. Enter confirms, the rest dismiss.
@@ -454,6 +527,23 @@ impl Tomoe {
                     if ui_dismissed {
                         self.queue_redraw_all();
                     }
+                }
+
+                // Screenshot selection overlay: left-drag selects, clicks
+                // never reach clients while it is open.
+                if self.ui.screenshot.is_open() {
+                    const BTN_LEFT: u32 = 0x110;
+                    if button == BTN_LEFT {
+                        if pressed {
+                            if let Some(local) = self.screenshot_pointer_local() {
+                                self.ui.screenshot.begin_drag(local);
+                            }
+                        } else {
+                            self.ui.screenshot.end_drag();
+                        }
+                        self.queue_redraw_all();
+                    }
+                    return;
                 }
 
                 // A Lua pointer grab ends on any release; presses during it

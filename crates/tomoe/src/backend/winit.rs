@@ -172,8 +172,9 @@ pub fn redraw(tomoe: &mut Tomoe) {
     );
 
     // Compositor UI (dialogs/overlays) first: earlier elements render on top.
-    let ui_elements = ui.render_elements(winit.backend.renderer(), output_size, binds);
     let output = winit.output.clone();
+    let ui_elements =
+        ui.render_elements(winit.backend.renderer(), &output, output_size, binds, true);
     let elements = crate::render::scene_elements(
         winit.backend.renderer(),
         space,
