@@ -70,7 +70,9 @@ fn screenshots_dir() -> PathBuf {
 }
 
 /// Best-effort clipboard copy: pipe the written file into `wl-copy`. Missing
-/// wl-copy just logs a warning.
+/// wl-copy just logs a warning. Runs on the detached save thread, so waiting
+/// on the child is fine — and required, both to reap it (no zombies) and to
+/// surface failures instead of logging success unconditionally.
 fn copy_to_clipboard(path: &std::path::Path) {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -79,14 +81,19 @@ fn copy_to_clipboard(path: &std::path::Path) {
             return;
         }
     };
-    match Command::new("wl-copy")
+    let output = Command::new("wl-copy")
         .args(["-t", "image/png"])
         .stdin(Stdio::from(file))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(_child) => debug!("screenshot handed to wl-copy"),
+        .stderr(Stdio::piped())
+        .output();
+    match output {
+        Ok(out) if out.status.success() => debug!("screenshot copied to clipboard via wl-copy"),
+        Ok(out) => warn!(
+            "wl-copy failed ({}), screenshot not copied to clipboard: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
         Err(err) => warn!("wl-copy unavailable, screenshot not copied to clipboard: {err}"),
     }
 }
