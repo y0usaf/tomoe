@@ -32,7 +32,9 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
 use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
@@ -119,6 +121,10 @@ pub struct Tomoe {
     pub seat_state: SeatState<Tomoe>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// zwlr-data-control: clipboard managers and `wl-copy`/`wl-paste`.
+    pub wlr_data_control_state: WlrDataControlState,
+    /// ext-data-control: the standardized successor; newer wl-clipboard.
+    pub ext_data_control_state: ExtDataControlState,
     /// Held to keep the pointer-constraints global alive; the activation and
     /// lock/confine logic lives in the input path.
     #[allow(dead_code)]
@@ -193,6 +199,18 @@ impl Tomoe {
         let mut seat_state = SeatState::new();
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        // Data-control globals let clipboard tools (`wl-copy`, clipboard
+        // managers) read and set the selection without keyboard focus.
+        let wlr_data_control_state = WlrDataControlState::new::<Self, _>(
+            &display_handle,
+            Some(&primary_selection_state),
+            |_| true,
+        );
+        let ext_data_control_state = ExtDataControlState::new::<Self, _>(
+            &display_handle,
+            Some(&primary_selection_state),
+            |_| true,
+        );
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         let relative_pointer_manager_state =
             RelativePointerManagerState::new::<Self>(&display_handle);
@@ -245,6 +263,8 @@ impl Tomoe {
             seat_state,
             data_device_state,
             primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
             pointer_constraints_state,
             relative_pointer_manager_state,
             presentation_state,

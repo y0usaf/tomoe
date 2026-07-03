@@ -30,8 +30,14 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler,
 };
+use smithay::wayland::selection::ext_data_control::{
+    DataControlHandler as ExtDataControlHandler, DataControlState as ExtDataControlState,
+};
 use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
+};
+use smithay::wayland::selection::wlr_data_control::{
+    DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
 };
 use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::shell::wlr_layer::{
@@ -65,7 +71,8 @@ use smithay::input::dnd::DndGrabHandler;
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_drm_syncobj,
+    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
+    delegate_drm_syncobj, delegate_ext_data_control,
     delegate_fractional_scale, delegate_kde_decoration, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_presentation, delegate_primary_selection,
     delegate_relative_pointer, delegate_seat, delegate_shm, delegate_viewporter,
@@ -789,6 +796,20 @@ impl PrimarySelectionHandler for Tomoe {
     }
 }
 delegate_primary_selection!(Tomoe);
+
+impl WlrDataControlHandler for Tomoe {
+    fn data_control_state(&mut self) -> &mut WlrDataControlState {
+        &mut self.wlr_data_control_state
+    }
+}
+delegate_data_control!(Tomoe);
+
+impl ExtDataControlHandler for Tomoe {
+    fn data_control_state(&mut self) -> &mut ExtDataControlState {
+        &mut self.ext_data_control_state
+    }
+}
+delegate_ext_data_control!(Tomoe);
 
 // ─── outputs ──────────────────────────────────────────────────────────────────
 
