@@ -212,7 +212,7 @@ impl Tomoe {
             return;
         }
 
-        if self.lua.pointer_grab_active() {
+        if self.lua.pointer_grab_active() && !self.is_locked() {
             let prev = crate::coords::point_to_physical(pointer.current_location(), scale);
             // Move the cursor but drop client focus: the drag is ours.
             let serial = SERIAL_COUNTER.next_serial();
@@ -258,8 +258,9 @@ impl Tomoe {
         }
         pointer.frame(self);
         // Client drags hold hover steady, like click-to-focus does: no
-        // enter/leave churn (or focus theft) while a button is down.
-        if !pointer.is_grabbed() {
+        // enter/leave churn (or focus theft) while a button is down. While
+        // locked there is no hover: windows aren't hittable at all.
+        if !pointer.is_grabbed() && !self.is_locked() {
             self.update_hover(pos);
         }
         // The motion may have landed on a surface with a pending constraint.
@@ -311,6 +312,14 @@ impl Tomoe {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Every real input event is user activity for idle-notify (device
+        // add/remove is a hotplug, not the user at the desk).
+        if !matches!(
+            event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) {
+            self.notify_activity();
+        }
         match event {
             InputEvent::Keyboard { event } => {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -347,6 +356,13 @@ impl Tomoe {
                                     return FilterResult::Intercept(Some(Action::ChangeVt(vt)));
                                 }
                             }
+                        }
+                        // Locked session: keys go straight to the lock
+                        // surface (password entry). Binds, Lua, and the
+                        // compositor UI are unreachable; only VT switching
+                        // (above) still works.
+                        if tomoe.is_locked() {
+                            return FilterResult::Forward;
                         }
                         // The screenshot overlay is modal: Esc cancels,
                         // Enter/Space capture (Space with no selection means
@@ -584,7 +600,7 @@ impl Tomoe {
                     return;
                 }
 
-                if self.lua.has_pointer_button_hooks() {
+                if self.lua.has_pointer_button_hooks() && !self.is_locked() {
                     let scale = self.space.scale();
                     let screen =
                         crate::coords::point_to_physical(pointer.current_location(), scale);
@@ -621,7 +637,7 @@ impl Tomoe {
                     }
                 }
 
-                if pressed && !pointer.is_grabbed() {
+                if pressed && !pointer.is_grabbed() && !self.is_locked() {
                     let screen = crate::coords::point_to_physical(
                         pointer.current_location(),
                         self.space.scale(),
@@ -650,7 +666,7 @@ impl Tomoe {
                 let vertical = event
                     .amount(Axis::Vertical)
                     .unwrap_or_else(|| vertical_v120.unwrap_or(0.0) / 120.0 * 15.0);
-                if self.lua.has_pointer_axis_hooks() {
+                if self.lua.has_pointer_axis_hooks() && !self.is_locked() {
                     let Some(pointer) = self.seat.get_pointer() else {
                         return;
                     };

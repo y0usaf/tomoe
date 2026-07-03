@@ -22,7 +22,8 @@ use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind, RenderElementStates};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer, Texture};
 use smithay::desktop::utils::{
-    surface_presentation_feedback_flags_from_states, OutputPresentationFeedback,
+    surface_presentation_feedback_flags_from_states, take_presentation_feedback_surface_tree,
+    OutputPresentationFeedback,
 };
 use smithay::desktop::{layer_map_for_output, Window};
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
@@ -30,6 +31,7 @@ use smithay::output::Output;
 use smithay::render_elements;
 use smithay::utils::{IsAlive, Physical, Point, Scale};
 use smithay::wayland::compositor::with_states;
+use smithay::wayland::session_lock::LockSurface;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use crate::coords;
@@ -71,6 +73,7 @@ render_elements! {
 pub fn take_presentation_feedback(
     space: &PhysicalSpace,
     output: &Output,
+    lock_surface: Option<&LockSurface>,
     render_element_states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
     let mut feedback = OutputPresentationFeedback::new(output);
@@ -82,6 +85,14 @@ pub fn take_presentation_feedback(
     }
     for layer in layer_map_for_output(output).layers() {
         layer.take_presentation_feedback(&mut feedback, |_, _| Some(output.clone()), flags);
+    }
+    if let Some(surface) = lock_surface {
+        take_presentation_feedback_surface_tree(
+            surface.wl_surface(),
+            &mut feedback,
+            |_, _| Some(output.clone()),
+            flags,
+        );
     }
     feedback
 }

@@ -1316,6 +1316,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     let cursor_status = tomoe.cursor_status.clone();
     let border_width = tomoe.lua.settings().border_width;
 
+    let locked = tomoe.is_locked();
     let Tomoe {
         backend,
         space,
@@ -1326,6 +1327,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ui,
         binds,
         border_buffers,
+        lock_surfaces,
+        lock_backdrops,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
@@ -1378,17 +1381,33 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         scale,
     ));
 
-    // Compositor UI (dialogs/overlays): above windows, below the cursor.
-    let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, binds, true);
-    let borders = crate::render::border_elements(space, border_buffers, border_width, output_loc);
-    elements.extend(crate::render::scene_elements(
-        &mut renderer,
-        space,
-        &surface.output,
-        ui_elements,
-        borders,
-    ));
+    if locked {
+        // Locked: the lock surface over a solid backdrop, nothing else
+        // (the cursor above still composites on top).
+        elements.extend(crate::lock::lock_elements(
+            &mut renderer,
+            &surface.output,
+            output_size,
+            scale,
+            lock_surfaces.get(&surface.output),
+            lock_backdrops,
+        ));
+    } else {
+        // Compositor UI (dialogs/overlays): above windows, below the cursor.
+        let ui_elements =
+            ui.render_elements(&mut renderer, &surface.output, output_size, binds, true);
+        let borders =
+            crate::render::border_elements(space, border_buffers, border_width, output_loc);
+        elements.extend(crate::render::scene_elements(
+            &mut renderer,
+            space,
+            &surface.output,
+            ui_elements,
+            borders,
+        ));
+    }
 
+    let mut rendered_ok = false;
     match surface.compositor.render_frame(
         &mut renderer,
         &elements,
@@ -1396,6 +1415,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         FrameFlags::empty(),
     ) {
         Ok(res) => {
+            rendered_ok = true;
             // KMS can't fence this frame (no IN_FENCE_FD, or the GL sync
             // isn't exportable — common on NVIDIA): wait for the render to
             // finish CPU-side or the display scans out a half-drawn buffer.
@@ -1406,14 +1426,23 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
                     }
                 }
             }
-            send_frames(space, &surface.output, start_time.elapsed());
+            send_frames(
+                space,
+                &surface.output,
+                lock_surfaces.get(&surface.output),
+                start_time.elapsed(),
+            );
             if res.is_empty {
                 queue_estimated_vblank(loop_handle, surface, node, crtc);
             } else {
                 // Presentation feedback rides along as the frame's user data
                 // and is fired from the vblank that presents it.
-                let feedback =
-                    crate::render::take_presentation_feedback(space, &surface.output, &res.states);
+                let feedback = crate::render::take_presentation_feedback(
+                    space,
+                    &surface.output,
+                    lock_surfaces.get(&surface.output),
+                    &res.states,
+                );
                 match surface.compositor.queue_frame(feedback) {
                     Ok(()) => {
                         surface.redraw_state = RedrawState::WaitingForVBlank {
@@ -1431,6 +1460,15 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             warn!("error rendering frame: {err}");
             surface.redraw_state = RedrawState::Idle;
         }
+    }
+
+    // While locking, confirmation waits until every output shows a locked
+    // frame; a failed render on a still-unlocked output fails the lock
+    // instead of confirming a lie.
+    if rendered_ok {
+        tomoe.lock_frame_rendered(&output);
+    } else {
+        tomoe.lock_render_failed(&output);
     }
 
     // Complete queued with-damage screencopies against the just-rendered
@@ -1460,7 +1498,12 @@ pub fn import_dmabuf(data: &mut TtyData, dmabuf: &Dmabuf) -> bool {
     }
 }
 
-fn send_frames(space: &PhysicalSpace, output: &Output, time: Duration) {
+fn send_frames(
+    space: &PhysicalSpace,
+    output: &Output,
+    lock_surface: Option<&smithay::wayland::session_lock::LockSurface>,
+    time: Duration,
+) {
     for window in space.elements() {
         window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
@@ -1473,10 +1516,25 @@ fn send_frames(space: &PhysicalSpace, output: &Output, time: Duration) {
             Some(output.clone())
         });
     }
+    // Lock surfaces live outside the space; they animate on frame callbacks
+    // like anything else.
+    if let Some(surface) = lock_surface {
+        smithay::desktop::utils::send_frames_surface_tree(
+            surface.wl_surface(),
+            output,
+            time,
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+    }
 }
 
 impl Tomoe {
     pub fn on_session_event(&mut self, event: SessionEvent) {
+        // Switching back to this VT is user activity for idle-notify.
+        if matches!(event, SessionEvent::ActivateSession) {
+            self.notify_activity();
+        }
         let Backend::Tty(data) = &mut self.backend else {
             return;
         };

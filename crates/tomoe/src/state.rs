@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -9,18 +9,18 @@ use smithay::desktop::{layer_map_for_output, PopupManager, Window, WindowSurface
 use smithay::input::keyboard::XkbConfig;
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
-use smithay::output::Scale as OutputScale;
+use smithay::output::{Output, Scale as OutputScale};
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{
-    Clock, ClockSource, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform,
+    Clock, ClockSource, IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform,
     SERIAL_COUNTER,
 };
 use smithay::wayland::compositor::{
-    send_surface_state, with_states, CompositorClientState, CompositorState,
+    get_parent, send_surface_state, with_states, CompositorClientState, CompositorState,
 };
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleManagerState};
 use smithay::wayland::viewporter::ViewporterState;
@@ -38,8 +38,11 @@ use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataCo
 use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
 use smithay::wayland::image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState};
 use smithay::wayland::image_copy_capture::{ImageCopyCaptureState, Session};
+use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
 use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
 use smithay::wayland::shm::ShmState;
 use tracing::{info, warn};
@@ -48,6 +51,7 @@ use crate::backend::Backend;
 use crate::coords;
 use crate::cursor::Cursor;
 use crate::input::{Action, Bind};
+use crate::lock::LockState;
 use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp};
 use crate::space::PhysicalSpace;
 use crate::ui::Ui;
@@ -148,6 +152,28 @@ pub struct Tomoe {
     pub image_copy_capture_state: ImageCopyCaptureState,
     /// Live ext-image-copy-capture sessions; dropping one sends `stopped`.
     pub capture_sessions: Vec<Session>,
+    pub session_lock_state: SessionLockManagerState,
+    /// ext-session-lock progression (see `lock.rs`).
+    pub lock_state: LockState,
+    /// Lock surfaces by output; entries only exist while a lock is underway.
+    pub lock_surfaces: HashMap<Output, LockSurface>,
+    /// Persistent locked-backdrop buffers (stable element ids for damage
+    /// tracking), created on first locked render of each output.
+    pub lock_backdrops: HashMap<Output, SolidColorBuffer>,
+    /// Outputs whose latest frame on screen is a locked one; a pending lock
+    /// confirms only when this covers every output.
+    pub lock_rendered: HashSet<Output>,
+    pub idle_notifier_state: IdleNotifierState<Tomoe>,
+    /// Held to keep the zwp-idle-inhibit global alive; handlers track the
+    /// inhibiting surfaces below.
+    #[allow(dead_code)]
+    pub idle_inhibit_state: IdleInhibitManagerState,
+    /// Surfaces holding a live idle inhibitor; only *visible* ones actually
+    /// inhibit (re-checked every loop iteration in `refresh_idle_inhibit`).
+    pub idle_inhibiting_surfaces: HashSet<WlSurface>,
+    /// Debounce: activity was already notified this event-loop iteration
+    /// (reset in the main loop callback).
+    pub notified_activity: bool,
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
@@ -224,6 +250,9 @@ impl Tomoe {
         let image_capture_source_state = ImageCaptureSourceState::new();
         let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&display_handle);
         let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&display_handle);
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
+        let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle.clone());
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
 
         let mut seat = seat_state.new_wl_seat(&display_handle, "tomoe");
         seat.add_keyboard(XkbConfig::default(), 600, 25)
@@ -275,6 +304,15 @@ impl Tomoe {
             output_capture_source_state,
             image_copy_capture_state,
             capture_sessions: Vec::new(),
+            session_lock_state,
+            lock_state: LockState::default(),
+            lock_surfaces: HashMap::new(),
+            lock_backdrops: HashMap::new(),
+            lock_rendered: HashSet::new(),
+            idle_notifier_state,
+            idle_inhibit_state,
+            idle_inhibiting_surfaces: HashSet::new(),
+            notified_activity: false,
             seat,
             cursor_status: CursorImageStatus::default_named(),
             cursor_fallback: SolidColorBuffer::new((8, 16), [1.0, 1.0, 1.0, 1.0]),
@@ -757,6 +795,9 @@ impl Tomoe {
         // Capture sessions negotiate buffers per output size; renegotiate (or
         // stop sessions for removed outputs) before policy reacts.
         crate::capture::refresh_capture_sessions(self);
+        // Lock surfaces track output sizes; a pending lock may also complete
+        // (or newly need surfaces) when the output set changes.
+        self.refresh_lock_state();
         let changed = self.sync_snapshot();
         if !(changed || force) {
             return;
@@ -821,6 +862,22 @@ impl Tomoe {
         let scale = self.space.scale();
         let output = self.space.output_under(pos)?.clone();
         let output_geo = self.space.output_geometry(&output)?;
+
+        // While locked, the pointer can only ever land on the output's lock
+        // surface — checked before anything else so no window, layer, or
+        // popup is reachable.
+        if self.is_locked() {
+            let surface = self.lock_surfaces.get(&output)?;
+            let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), scale);
+            let output_protocol_loc = coords::point_to_protocol(output_geo.loc.to_f64(), scale);
+            let (surface, loc) = smithay::desktop::utils::under_from_surface_tree(
+                surface.wl_surface(),
+                rel,
+                (0, 0),
+                WindowSurfaceType::ALL,
+            )?;
+            return Some((surface, loc.to_f64() + output_protocol_loc));
+        }
         // Layer maps arrange in output-local logical coordinates.
         let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), scale);
         let output_protocol_loc = coords::point_to_protocol(output_geo.loc.to_f64(), scale);
@@ -943,6 +1000,11 @@ impl Tomoe {
     }
 
     fn focus_window_impl(&mut self, window: Option<&Window>, raise: bool) {
+        // While locked, keyboard focus belongs to the lock surface; window
+        // focus (input-driven or Lua ops) must not steal it.
+        if self.is_locked() {
+            return;
+        }
         for w in self.space.elements() {
             w.set_activated(Some(w) == window);
         }
@@ -1026,6 +1088,11 @@ impl Tomoe {
     /// Open the interactive region-selection overlay on the output under the
     /// pointer; `input.rs` intercepts everything until it closes.
     fn open_screenshot_ui(&mut self) {
+        // The overlay is modal over the session; a locked screen has no
+        // session to select from (captures would only show the lock scene).
+        if self.is_locked() {
+            return;
+        }
         let Some(output) = self.output_under_pointer() else {
             warn!("screenshot: no output to capture");
             return;
@@ -1050,6 +1117,57 @@ impl Tomoe {
         if let Err(err) = crate::screenshot::screenshot(self, &output, region) {
             warn!("error taking screenshot: {err:#}");
         }
+    }
+
+    // ── Idle (ext-idle-notify / zwp-idle-inhibit) ──
+
+    /// Reset every idle-notification timer: the user did something. Called
+    /// from the input path for every event, so it debounces to once per
+    /// event-loop iteration (the flag resets in the main loop callback).
+    pub fn notify_activity(&mut self) {
+        if self.notified_activity {
+            return;
+        }
+        self.notified_activity = true;
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
+    }
+
+    /// Recompute whether idle is inhibited: some surface holds a live
+    /// inhibitor *and* is actually visible. Clients aren't trusted to
+    /// destroy inhibitors when hidden or dying, so this runs every loop
+    /// iteration. A locked session never counts as inhibited — whatever
+    /// video was playing is not on screen.
+    pub fn refresh_idle_inhibit(&mut self) {
+        self.idle_inhibiting_surfaces.retain(|s| s.alive());
+        let is_inhibited = !self.is_locked()
+            && self
+                .idle_inhibiting_surfaces
+                .iter()
+                .any(|surface| self.surface_visible(surface));
+        self.idle_notifier_state.set_is_inhibited(is_inhibited);
+    }
+
+    /// Visibility proxy for idle inhibitors: the surface's root is a window
+    /// currently mapped in the space, or a layer surface mapped on some
+    /// output. (No per-surface scanout tracking here — an off-screen but
+    /// mapped window still counts, occlusion doesn't.)
+    fn surface_visible(&self, surface: &WlSurface) -> bool {
+        if !surface.alive() {
+            return false;
+        }
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        if let Some(window) = self.window_for_surface(&root) {
+            return self.space.element_geometry(&window).is_some();
+        }
+        self.space.outputs().any(|output| {
+            layer_map_for_output(output)
+                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        })
     }
 
     /// Screenshot the output under the pointer (falling back to the first

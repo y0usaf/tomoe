@@ -5,6 +5,7 @@ mod cursor;
 mod handlers;
 mod input;
 mod layout;
+mod lock;
 mod lua;
 mod protocols;
 mod render;
@@ -146,6 +147,10 @@ fn main() -> Result<()> {
         .run(None, &mut tomoe, |tomoe| {
             tomoe.space.refresh();
             tomoe.popups.cleanup();
+            // Idle inhibitors are re-validated (alive + visible) once per
+            // iteration; the activity debounce resets alongside.
+            tomoe.refresh_idle_inhibit();
+            tomoe.notified_activity = false;
             if let Err(err) = tomoe.display_handle.flush_clients() {
                 warn!("error flushing clients: {err}");
             }

@@ -150,6 +150,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
             .unwrap_or_default()
     };
 
+    let locked = tomoe.is_locked();
     let Tomoe {
         backend,
         space,
@@ -159,29 +160,42 @@ pub fn redraw(tomoe: &mut Tomoe) {
         lua,
         border_buffers,
         clock,
+        lock_surfaces,
+        lock_backdrops,
         ..
     } = tomoe;
     let Backend::Winit(winit) = backend else {
         return;
     };
-    let borders = crate::render::border_elements(
-        space,
-        border_buffers,
-        lua.settings().border_width,
-        output_loc,
-    );
-
-    // Compositor UI (dialogs/overlays) first: earlier elements render on top.
     let output = winit.output.clone();
-    let ui_elements =
-        ui.render_elements(winit.backend.renderer(), &output, output_size, binds, true);
-    let elements = crate::render::scene_elements(
-        winit.backend.renderer(),
-        space,
-        &output,
-        ui_elements,
-        borders,
-    );
+    let elements = if locked {
+        // Locked: the lock surface over a solid backdrop, nothing else.
+        crate::lock::lock_elements(
+            winit.backend.renderer(),
+            &output,
+            output_size,
+            space.scale(),
+            lock_surfaces.get(&output),
+            lock_backdrops,
+        )
+    } else {
+        let borders = crate::render::border_elements(
+            space,
+            border_buffers,
+            lua.settings().border_width,
+            output_loc,
+        );
+        // Compositor UI (dialogs/overlays) first: earlier elements render on top.
+        let ui_elements =
+            ui.render_elements(winit.backend.renderer(), &output, output_size, binds, true);
+        crate::render::scene_elements(
+            winit.backend.renderer(),
+            space,
+            &output,
+            ui_elements,
+            borders,
+        )
+    };
 
     let res = {
         let (renderer, mut framebuffer) = winit.backend.bind().unwrap();
@@ -201,8 +215,12 @@ pub fn redraw(tomoe: &mut Tomoe) {
         winit.backend.submit(Some(damage)).unwrap();
         // No real vblank here; approximate presentation as "now" at the
         // output's nominal refresh so presentation-time clients keep pacing.
-        let mut feedback =
-            crate::render::take_presentation_feedback(space, &winit.output, &res.states);
+        let mut feedback = crate::render::take_presentation_feedback(
+            space,
+            &winit.output,
+            lock_surfaces.get(&winit.output),
+            &res.states,
+        );
         let refresh = winit
             .output
             .current_mode()
@@ -218,12 +236,26 @@ pub fn redraw(tomoe: &mut Tomoe) {
     }
 
     let time = start_time.elapsed();
-    let output = winit.output.clone();
     for window in space.elements() {
         window.send_frame(&output, time, Some(Duration::ZERO), |_, _| {
             Some(output.clone())
         });
     }
+    // Lock surfaces are outside the space; they animate on frame callbacks
+    // like anything else.
+    if let Some(surface) = lock_surfaces.get(&output) {
+        smithay::desktop::utils::send_frames_surface_tree(
+            surface.wl_surface(),
+            &output,
+            time,
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+    }
+
+    // While locking, confirmation waits until every output shows a locked
+    // frame; this render just produced one for this output.
+    tomoe.lock_frame_rendered(&output);
 
     // Complete queued with-damage screencopies against the just-rendered
     // scene, mirroring the TTY backend's post-present pass.

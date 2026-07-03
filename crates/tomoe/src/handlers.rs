@@ -70,13 +70,18 @@ use smithay::input::dnd::DndGrabHandler;
 
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
+use smithay::wayland::idle_inhibit::IdleInhibitHandler;
+use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_drm_syncobj, delegate_ext_data_control,
-    delegate_fractional_scale, delegate_kde_decoration, delegate_layer_shell, delegate_output,
-    delegate_pointer_constraints, delegate_presentation, delegate_primary_selection,
-    delegate_relative_pointer, delegate_seat, delegate_shm, delegate_viewporter,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_drm_syncobj, delegate_ext_data_control, delegate_fractional_scale,
+    delegate_idle_inhibit, delegate_idle_notify, delegate_kde_decoration, delegate_layer_shell,
+    delegate_output, delegate_pointer_constraints, delegate_presentation,
+    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_viewporter, delegate_xdg_decoration, delegate_xdg_shell,
 };
 use tracing::{debug, trace, warn};
 
@@ -173,6 +178,12 @@ impl CompositorHandler for Tomoe {
             }
             if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+            }
+            // A lock surface committing its first buffer can progress a
+            // pending lock; later commits just redraw (below).
+            if self.is_lock_surface(&root) {
+                self.maybe_continue_to_locking();
+                self.update_lock_focus();
             }
         }
 
@@ -642,7 +653,8 @@ impl Tomoe {
                 if matches!(
                     interactivity,
                     KeyboardInteractivity::Exclusive | KeyboardInteractivity::OnDemand
-                ) {
+                ) && !self.is_locked()
+                {
                     let serial = SERIAL_COUNTER.next_serial();
                     if let Some(keyboard) = self.seat.get_keyboard() {
                         keyboard.set_focus(self, Some(surface.clone()), serial);
@@ -883,6 +895,54 @@ impl ScreencopyHandler for Tomoe {
     }
 }
 crate::delegate_screencopy!(Tomoe);
+
+// ─── ext-session-lock ─────────────────────────────────────────────────────────
+//
+// The state machine (and why the confirmation is deferred) lives in lock.rs.
+
+impl SessionLockHandler for Tomoe {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        self.lock_session(confirmation);
+    }
+
+    fn unlock(&mut self) {
+        self.unlock_session();
+        // Unlocking is user activity: wake idle listeners.
+        self.notify_activity();
+    }
+
+    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
+        self.new_lock_surface(surface, &output);
+    }
+}
+delegate_session_lock!(Tomoe);
+
+// ─── ext-idle-notify / zwp-idle-inhibit ───────────────────────────────────────
+//
+// Timers are smithay's; tomoe feeds them activity (input.rs) and the
+// inhibited flag (state.rs::refresh_idle_inhibit, every loop iteration).
+
+impl IdleNotifierHandler for Tomoe {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.idle_notifier_state
+    }
+}
+delegate_idle_notify!(Tomoe);
+
+impl IdleInhibitHandler for Tomoe {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibiting_surfaces.insert(surface);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibiting_surfaces.remove(&surface);
+    }
+}
+delegate_idle_inhibit!(Tomoe);
 
 // ─── ext-image-capture-source / ext-image-copy-capture ───────────────────────
 

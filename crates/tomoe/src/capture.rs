@@ -60,6 +60,10 @@ struct SceneParts<'a> {
     cursor_status: &'a CursorImageStatus,
     cursor_fallback: &'a SolidColorBuffer,
     pointer_pos: Point<f64, smithay::utils::Logical>,
+    /// Session locked: captures see the locked scene, never the session.
+    locked: bool,
+    lock_surfaces: &'a HashMap<Output, smithay::wayland::session_lock::LockSurface>,
+    lock_backdrops: &'a mut HashMap<Output, SolidColorBuffer>,
 }
 
 impl<'a> SceneParts<'a> {
@@ -91,25 +95,38 @@ impl<'a> SceneParts<'a> {
                 scale,
             ));
         }
-        // Captures never include the screenshot selection overlay: the
-        // screenshot itself must not contain it, and screencopy/screencast
-        // consumers shouldn't record it either (niri does the same).
-        let ui_elements = self
-            .ui
-            .render_elements(renderer, output, geo.size, self.binds, false);
-        let borders = crate::render::border_elements(
-            self.space,
-            self.border_buffers,
-            self.border_width,
-            geo.loc,
-        );
-        elements.extend(crate::render::scene_elements(
-            renderer,
-            self.space,
-            output,
-            ui_elements,
-            borders,
-        ));
+        if self.locked {
+            // Locked sessions capture the locked scene — anything else would
+            // leak session content to screenshots/screenshares.
+            elements.extend(crate::lock::lock_elements(
+                renderer,
+                output,
+                geo.size,
+                scale,
+                self.lock_surfaces.get(output),
+                self.lock_backdrops,
+            ));
+        } else {
+            // Captures never include the screenshot selection overlay: the
+            // screenshot itself must not contain it, and screencopy/screencast
+            // consumers shouldn't record it either (niri does the same).
+            let ui_elements = self
+                .ui
+                .render_elements(renderer, output, geo.size, self.binds, false);
+            let borders = crate::render::border_elements(
+                self.space,
+                self.border_buffers,
+                self.border_width,
+                geo.loc,
+            );
+            elements.extend(crate::render::scene_elements(
+                renderer,
+                self.space,
+                output,
+                ui_elements,
+                borders,
+            ));
+        }
 
         let offset = region_loc.upscale(-1);
         elements
@@ -129,6 +146,7 @@ macro_rules! split_tomoe {
             .get_pointer()
             .map(|p| p.current_location())
             .unwrap_or_default();
+        let locked = $tomoe.is_locked();
         let Tomoe {
             backend,
             space,
@@ -141,6 +159,8 @@ macro_rules! split_tomoe {
             screencopy_state,
             loop_handle,
             clock,
+            lock_surfaces,
+            lock_backdrops,
             ..
         } = $tomoe;
         (
@@ -154,6 +174,9 @@ macro_rules! split_tomoe {
                 cursor_status,
                 cursor_fallback,
                 pointer_pos,
+                locked,
+                lock_surfaces,
+                lock_backdrops,
             },
             backend,
             screencopy_state,

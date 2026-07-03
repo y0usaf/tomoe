@@ -33,6 +33,9 @@ Done and working:
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
 - Compositor UI: hotkey overlay, exit confirm, config-error banner;
   xcursor themes; no-hooks full-screen fallback
+- Session lock (ext-session-lock-v1, swaylock incl. crashed-locker
+  fallback) and idle (ext-idle-notify + zwp-idle-inhibit, swayidle) —
+  `lock.rs` + idle plumbing in `state.rs`
 - XWayland via xwayland-satellite (niri-shape: tomoe owns the X11
   sockets/lock file, exports `DISPLAY` at startup, spawns satellite
   on-demand via `-listenfd` on first connection, respawns on next
@@ -74,8 +77,13 @@ Done and working:
 - [x] pointer-constraints + relative-pointer (games) — niri-shape: lock
       swallows motion, confine clamps at the surface/region edge, both keep
       sending relative motion; smithay deactivates on focus change
-- [ ] idle-notify + idle-inhibit
-- [ ] ext-session-lock-v1
+- [x] idle-notify + idle-inhibit (smithay's timers; activity fed from every
+      input event, VT resume, and unlock, debounced per loop iteration;
+      inhibitors honored only while their surface is mapped and the session
+      unlocked)
+- [x] ext-session-lock-v1 (niri-shape: `locked` confirmed only after every
+      output rendered a locked frame; dark-red backdrop fallback; dead-locker
+      replacement; locked scene also fed to all capture paths)
 - [ ] xdg-activation
 - [x] Primary selection (focus follows keyboard focus, same as the clipboard)
 - [x] libinput device config (tap, accel, natural scroll, DWT, scroll/click
@@ -244,7 +252,18 @@ real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
    gains `position = {x, y}` (physical), `mirror = "<output>"`, and
    `disabled = true`, all live-reloadable; per-output *scale* still
    open (blocked on the DESIGN.md mixed-scale placement policy)
-3. ext-session-lock + idle-notify/idle-inhibit (swaylock/swayidle work)
+3. ~~ext-session-lock + idle-notify/idle-inhibit~~ done — `lock.rs` state
+   machine (WaitingForSurfaces 1s grace → Locking → confirmed from the
+   redraw path once every output shows a locked frame; dropping the
+   confirmation is the abort path and sends `finished`); the locked scene
+   replaces the normal one at all three scene-assembly sites (tty, winit,
+   captures — screenshots/screenshares can't leak session content); input
+   is gated to the lock surface while locked (VT switching stays live);
+   idle timers are smithay's, fed activity from input/VT-resume/unlock and
+   inhibited only by visible surfaces. Verified: swaylock lock → unlock,
+   SIGKILL'd locker leaves the session locked on the backdrop and a new
+   locker replaces it, grim captures only the locked scene, swayidle's
+   timeout fires
 4. Direct scanout for fullscreen + cursor plane; VRR; tearing control
    (mind `ref/ShojiWM/knowledges/fullscreen-direct-scanout-tearing.md`
    for the NVIDIA/async-flip pitfalls)
