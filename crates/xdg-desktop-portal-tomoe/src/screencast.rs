@@ -1,7 +1,8 @@
 //! org.freedesktop.impl.portal.ScreenCast backend implementation.
 //!
-//! Monitor sources only for now — tomoe has no foreign-toplevel protocol yet
-//! (PLAN M5), so there is nothing to hang WINDOW capture off.
+//! Monitor sources stream via wlr-screencopy (`pipewire_stream`); window
+//! sources ride ext-foreign-toplevel-list + ext-image-copy-capture
+//! (`toplevel_stream`), ShojiWM-shape.
 //!
 //! See: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.impl.portal.ScreenCast.html
 
@@ -13,11 +14,14 @@ use std::sync::Mutex;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::outputs::{self, OutputInfo};
-use crate::pipewire_stream::{self, StreamHandle, StreamSpec};
+use crate::pipewire_stream::{self, StreamSpec};
+use crate::toplevel_stream;
+use crate::toplevels::{self, ToplevelInfo};
 
 /// SourceTypes bitmask values from the portal spec.
 mod source_types {
     pub const MONITOR: u32 = 1 << 0;
+    pub const WINDOW: u32 = 1 << 1;
 }
 
 /// CursorMode bitmask values from the portal spec.
@@ -26,12 +30,25 @@ mod cursor_modes {
     pub const EMBEDDED: u32 = 1 << 1;
 }
 
+/// What SelectSources picked for a session.
+#[derive(Debug, Clone)]
+enum Selection {
+    Monitor(OutputInfo),
+    Window(ToplevelInfo),
+}
+
+/// One live streaming pipeline; dropping it stops its thread.
+enum LiveStream {
+    Monitor(#[allow(dead_code)] pipewire_stream::StreamHandle),
+    Window(#[allow(dead_code)] toplevel_stream::StreamHandle),
+}
+
 #[derive(Default)]
 pub struct ScreenCast {
     /// What SelectSources picked, consumed by Start.
-    sessions: Mutex<HashMap<String, OutputInfo>>,
+    sessions: Mutex<HashMap<String, Selection>>,
     /// Live streaming pipelines; dropping a handle stops its thread.
-    streams: Mutex<HashMap<String, StreamHandle>>,
+    streams: Mutex<HashMap<String, LiveStream>>,
     /// Per-session `cursor_mode & EMBEDDED != 0`. Filled by SelectSources,
     /// consumed by Start to configure the streaming pipeline.
     cursor_visibility: Mutex<HashMap<String, bool>>,
@@ -43,44 +60,87 @@ impl ScreenCast {
     }
 }
 
-/// Pick the output to cast without a GUI:
-/// `TOMOE_SCREENCAST_OUTPUT` names one directly; a single connected output is
-/// unambiguous; `TOMOE_PORTAL_CHOOSER` runs a dmenu-style command (output
-/// names on stdin, chosen name on stdout, non-zero exit = cancel); otherwise
-/// fall back to the first output.
-fn choose_output(outputs: &[OutputInfo]) -> Option<OutputInfo> {
-    if outputs.is_empty() {
-        return None;
+/// Chooser line for a window: title, app id, and the identifier that makes
+/// the line unique when two windows share both.
+fn window_line(t: &ToplevelInfo) -> String {
+    format!("[window] {} ({}) {}", t.title, t.app_id, t.identifier)
+}
+
+/// Pick the source to cast without a GUI:
+/// `TOMOE_SCREENCAST_WINDOW` names a window (identifier, exact app id, or
+/// title substring); `TOMOE_SCREENCAST_OUTPUT` names an output; a single
+/// candidate is unambiguous; `TOMOE_PORTAL_CHOOSER` runs a dmenu-style
+/// command (candidate lines on stdin, chosen line on stdout, non-zero exit =
+/// cancel); otherwise fall back to the first output when monitors are
+/// allowed.
+fn choose_source(outputs: &[OutputInfo], windows: &[ToplevelInfo]) -> Option<Selection> {
+    if let Ok(want) = std::env::var("TOMOE_SCREENCAST_WINDOW") {
+        if !windows.is_empty() {
+            let want_lower = want.to_lowercase();
+            let pick = windows
+                .iter()
+                .find(|t| t.identifier == want)
+                .or_else(|| windows.iter().find(|t| t.app_id == want))
+                .or_else(|| {
+                    windows
+                        .iter()
+                        .find(|t| t.title.to_lowercase().contains(&want_lower))
+                });
+            match pick {
+                Some(t) => return Some(Selection::Window(t.clone())),
+                None => {
+                    tracing::warn!(want, "TOMOE_SCREENCAST_WINDOW matches no toplevel");
+                }
+            }
+        }
     }
     if let Ok(want) = std::env::var("TOMOE_SCREENCAST_OUTPUT") {
         match outputs.iter().find(|o| o.name == want) {
-            Some(o) => return Some(o.clone()),
+            Some(o) => return Some(Selection::Monitor(o.clone())),
             None => {
                 tracing::warn!(want, "TOMOE_SCREENCAST_OUTPUT names no connected output");
             }
         }
     }
-    if outputs.len() == 1 {
-        return Some(outputs[0].clone());
+    if outputs.len() == 1 && windows.is_empty() {
+        return Some(Selection::Monitor(outputs[0].clone()));
+    }
+    if outputs.is_empty() && windows.len() == 1 {
+        return Some(Selection::Window(windows[0].clone()));
     }
     if let Ok(chooser) = std::env::var("TOMOE_PORTAL_CHOOSER") {
-        match run_chooser(&chooser, outputs) {
+        match run_chooser(&chooser, outputs, windows) {
             Ok(pick) => return pick,
             Err(e) => tracing::warn!("portal chooser {chooser:?} failed: {e}"),
         }
     }
-    tracing::warn!(
-        chosen = outputs[0].name,
-        "multiple outputs and no chooser configured; casting the first \
-         (set TOMOE_SCREENCAST_OUTPUT or TOMOE_PORTAL_CHOOSER)"
-    );
-    Some(outputs[0].clone())
+    if let Some(out) = outputs.first() {
+        tracing::warn!(
+            chosen = out.name,
+            "multiple sources and no chooser configured; casting the first output \
+             (set TOMOE_SCREENCAST_OUTPUT / TOMOE_SCREENCAST_WINDOW or TOMOE_PORTAL_CHOOSER)"
+        );
+        return Some(Selection::Monitor(out.clone()));
+    }
+    tracing::warn!("no source candidates and no chooser pick; cancelling");
+    None
 }
 
 fn run_chooser(
     chooser: &str,
     outputs: &[OutputInfo],
-) -> Result<Option<OutputInfo>, Box<dyn std::error::Error + Send + Sync>> {
+    windows: &[ToplevelInfo],
+) -> Result<Option<Selection>, Box<dyn std::error::Error + Send + Sync>> {
+    // Output lines stay bare names (as before window support); window lines
+    // are prefixed. The chooser echoes one line back, matched exactly.
+    let mut candidates: Vec<(String, Selection)> = Vec::new();
+    for o in outputs {
+        candidates.push((o.name.clone(), Selection::Monitor(o.clone())));
+    }
+    for t in windows {
+        candidates.push((window_line(t), Selection::Window(t.clone())));
+    }
+
     let mut child = Command::new("/bin/sh")
         .args(["-c", chooser])
         .stdin(Stdio::piped())
@@ -88,8 +148,8 @@ fn run_chooser(
         .spawn()?;
     {
         let stdin = child.stdin.as_mut().ok_or("chooser stdin unavailable")?;
-        for o in outputs {
-            writeln!(stdin, "{}", o.name)?;
+        for (line, _) in &candidates {
+            writeln!(stdin, "{line}")?;
         }
     }
     let out = child.wait_with_output()?;
@@ -99,10 +159,10 @@ fn run_chooser(
     }
     let choice = String::from_utf8_lossy(&out.stdout);
     let choice = choice.lines().next().unwrap_or("").trim();
-    match outputs.iter().find(|o| o.name == choice) {
-        Some(o) => Ok(Some(o.clone())),
+    match candidates.iter().find(|(line, _)| line == choice) {
+        Some((_, selection)) => Ok(Some(selection.clone())),
         None => {
-            tracing::warn!(choice, "chooser printed an unknown output; cancelling");
+            tracing::warn!(choice, "chooser printed an unknown source; cancelling");
             Ok(None)
         }
     }
@@ -117,11 +177,12 @@ impl ScreenCast {
 
     #[zbus(property, name = "AvailableSourceTypes")]
     fn available_source_types(&self) -> u32 {
-        source_types::MONITOR
+        source_types::MONITOR | source_types::WINDOW
     }
 
     /// Both HIDDEN and EMBEDDED — the OBS "Show cursor" checkbox toggles
-    /// between these; wlr-screencopy's overlay_cursor honors it per session.
+    /// between these; wlr-screencopy's overlay_cursor (monitors) and
+    /// ext-image-copy-capture's paint_cursors (windows) honor it per session.
     #[zbus(property, name = "AvailableCursorModes")]
     fn available_cursor_modes(&self) -> u32 {
         cursor_modes::HIDDEN | cursor_modes::EMBEDDED
@@ -159,27 +220,47 @@ impl ScreenCast {
             .lock()
             .unwrap()
             .insert(session_handle.to_string(), cursor_visible);
-        tracing::info!(%handle, %session_handle, %app_id, cursor_mode, "SelectSources");
+        let types = options
+            .get("types")
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(source_types::MONITOR);
+        tracing::info!(%handle, %session_handle, %app_id, cursor_mode, types, "SelectSources");
 
-        let outputs = tokio::task::spawn_blocking(outputs::enumerate)
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration join: {e}")))?
-            .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration: {e}")))?;
+        let outputs = if types & source_types::MONITOR != 0 {
+            tokio::task::spawn_blocking(outputs::enumerate)
+                .await
+                .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration join: {e}")))?
+                .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration: {e}")))?
+        } else {
+            Vec::new()
+        };
+        let windows = if types & source_types::WINDOW != 0 {
+            tokio::task::spawn_blocking(toplevels::enumerate)
+                .await
+                .map_err(|e| zbus::fdo::Error::Failed(format!("toplevel enumeration join: {e}")))?
+                .unwrap_or_else(|e| {
+                    tracing::warn!("toplevel enumeration failed: {e}");
+                    Vec::new()
+                })
+        } else {
+            Vec::new()
+        };
         tracing::info!(
             outputs = ?outputs.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(),
-            "enumerated outputs"
+            windows = ?windows.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            "enumerated sources"
         );
 
-        let pick = tokio::task::spawn_blocking(move || choose_output(&outputs))
+        let pick = tokio::task::spawn_blocking(move || choose_source(&outputs, &windows))
             .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("chooser join: {e}")))?;
         match pick {
-            Some(out) => {
-                tracing::info!(?out, %session_handle, "selected output");
+            Some(selection) => {
+                tracing::info!(?selection, %session_handle, "selected source");
                 self.sessions
                     .lock()
                     .unwrap()
-                    .insert(session_handle.to_string(), out);
+                    .insert(session_handle.to_string(), selection);
                 Ok((0, HashMap::new()))
             }
             None => {
@@ -201,7 +282,7 @@ impl ScreenCast {
         let selection = self.sessions.lock().unwrap().get(&session_key).cloned();
         tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?selection, "Start");
 
-        let Some(out) = selection else {
+        let Some(selection) = selection else {
             tracing::warn!(%session_handle, "Start with no selection — cancelling");
             return Ok((1, HashMap::new()));
         };
@@ -213,43 +294,75 @@ impl ScreenCast {
             .copied()
             .unwrap_or(true);
 
-        let framerate = {
-            let hz = (out.refresh_mhz as f32 / 1000.0).round() as u32;
-            hz.clamp(30, 240)
-        };
-        let spec = StreamSpec {
-            output_name: out.name.clone(),
-            width: out.width.max(1) as u32,
-            height: out.height.max(1) as u32,
-            framerate,
-            cursor_visible,
-        };
-        let spec_for_task = spec.clone();
-        let stream_result =
-            tokio::task::spawn_blocking(move || pipewire_stream::start(spec_for_task))
-                .await
-                .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
-        let (node_id, stream_handle) = match stream_result {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("pipewire stream failed: {e}");
-                return Ok((2, HashMap::new()));
+        let (node_id, width, height, source_type, stream) = match selection {
+            Selection::Monitor(out) => {
+                let framerate = {
+                    let hz = (out.refresh_mhz as f32 / 1000.0).round() as u32;
+                    hz.clamp(30, 240)
+                };
+                let spec = StreamSpec {
+                    output_name: out.name.clone(),
+                    width: out.width.max(1) as u32,
+                    height: out.height.max(1) as u32,
+                    framerate,
+                    cursor_visible,
+                };
+                let spec_for_task = spec.clone();
+                let stream_result =
+                    tokio::task::spawn_blocking(move || pipewire_stream::start(spec_for_task))
+                        .await
+                        .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
+                let (node_id, stream_handle) = match stream_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("pipewire stream failed: {e}");
+                        return Ok((2, HashMap::new()));
+                    }
+                };
+                (
+                    node_id,
+                    spec.width,
+                    spec.height,
+                    source_types::MONITOR,
+                    LiveStream::Monitor(stream_handle),
+                )
+            }
+            Selection::Window(win) => {
+                let spec = toplevel_stream::StreamSpec {
+                    toplevel_identifier: win.identifier.clone(),
+                    // No refresh source of truth per window; cap at 60 like
+                    // ShojiWM. Content-paced anyway (frames follow commits).
+                    framerate: 60,
+                    cursor_visible,
+                };
+                let stream_result =
+                    tokio::task::spawn_blocking(move || toplevel_stream::start(spec))
+                        .await
+                        .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
+                let (info, stream_handle) = match stream_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("toplevel pipewire stream failed: {e}");
+                        return Ok((2, HashMap::new()));
+                    }
+                };
+                (
+                    info.node_id,
+                    info.width,
+                    info.height,
+                    source_types::WINDOW,
+                    LiveStream::Window(stream_handle),
+                )
             }
         };
-        self.streams
-            .lock()
-            .unwrap()
-            .insert(session_key, stream_handle);
+        self.streams.lock().unwrap().insert(session_key, stream);
 
         let mut stream_props: HashMap<String, Value> = HashMap::new();
         stream_props.insert(
             "size".to_string(),
-            Value::from((spec.width as i32, spec.height as i32)),
+            Value::from((width as i32, height as i32)),
         );
-        stream_props.insert(
-            "source_type".to_string(),
-            Value::from(source_types::MONITOR),
-        );
+        stream_props.insert("source_type".to_string(), Value::from(source_type));
         let streams: Vec<(u32, HashMap<String, Value>)> = vec![(node_id, stream_props)];
         let mut results = HashMap::new();
         results.insert(

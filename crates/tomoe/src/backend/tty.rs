@@ -1473,8 +1473,10 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
 
     // Complete queued with-damage screencopies against the just-rendered
     // scene: an independent render pass into client buffers on the primary
-    // GPU, after the on-screen frame was queued.
+    // GPU, after the on-screen frame was queued. Ext-image-copy-capture
+    // frames complete here too, pacing casts to the redraw loop.
     crate::capture::render_queued_screencopies(tomoe, &output);
+    crate::capture::complete_capture_frames(tomoe);
 }
 
 /// Import a client dmabuf on the primary GPU (the one that composites).

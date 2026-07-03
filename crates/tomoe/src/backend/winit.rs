@@ -259,7 +259,9 @@ pub fn redraw(tomoe: &mut Tomoe) {
 
     // Complete queued with-damage screencopies against the just-rendered
     // scene, mirroring the TTY backend's post-present pass.
+    // Ext-image-copy-capture frames complete here too (redraw-paced).
     crate::capture::render_queued_screencopies(tomoe, &output);
+    crate::capture::complete_capture_frames(tomoe);
 
     // Damage-driven: the next repaint comes from queue_redraw_all() (commits,
     // Lua ops, input), mirroring the TTY backend so missing damage sources

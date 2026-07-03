@@ -18,7 +18,7 @@ use smithay::backend::allocator::{Buffer as AllocBuffer, Fourcc, Modifier};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
-use smithay::backend::renderer::element::{RenderElement, RenderElementStates};
+use smithay::backend::renderer::element::{AsRenderElements, RenderElement, RenderElementStates};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::{Bind, Color32F, ExportMem, Offscreen};
@@ -132,6 +132,64 @@ impl<'a> SceneParts<'a> {
         elements
             .into_iter()
             .map(|element| RelocateRenderElement::from_element(element, offset, Relocate::Relative))
+            .collect()
+    }
+
+    /// One window's surface tree with its geometry origin at the buffer
+    /// origin (CSD shadows outside the geometry crop away), unaffected by the
+    /// camera. The cursor embeds only while it actually hovers the window. A
+    /// locked session renders nothing — transparent frames instead of window
+    /// content.
+    fn window_elements(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &Window,
+        include_cursor: bool,
+    ) -> Vec<CaptureElement> {
+        if self.locked {
+            return Vec::new();
+        }
+        let scale = self.space.scale();
+        let mut elements: Vec<OutputRenderElements<GlesRenderer>> = Vec::new();
+        if include_cursor {
+            if let Some(geo) = self.space.element_geometry(window) {
+                // Windows live in world coordinates; the pointer in screen.
+                let pointer_world = self
+                    .space
+                    .screen_to_world(crate::coords::point_to_physical(self.pointer_pos, scale));
+                if geo.to_f64().contains(pointer_world) {
+                    elements.extend(crate::render::cursor_elements(
+                        renderer,
+                        self.cursor_status,
+                        self.cursor,
+                        self.cursor_fallback,
+                        pointer_world - geo.loc.to_f64(),
+                        scale,
+                    ));
+                }
+            }
+        }
+        // Same origin math as the on-screen path: the stored location is the
+        // geometry origin, the buffer shifts by the client's geometry offset.
+        let buffer_offset =
+            crate::coords::logical_point_to_physical(window.geometry().loc.to_f64(), scale);
+        elements.extend(
+            window.render_elements::<OutputRenderElements<GlesRenderer>>(
+                renderer,
+                Point::from((0, 0)) - buffer_offset,
+                Scale::from(scale),
+                1.0,
+            ),
+        );
+        elements
+            .into_iter()
+            .map(|element| {
+                RelocateRenderElement::from_element(
+                    element,
+                    Point::from((0, 0)),
+                    Relocate::Relative,
+                )
+            })
             .collect()
     }
 }
@@ -339,19 +397,51 @@ fn render_into(
 
 // ─── ext-image-copy-capture fulfillment ───────────────────────────────────────
 
-/// Resolve an ext-image-capture source back to its live output.
-fn source_output(space: &PhysicalSpace, source: &ImageCaptureSource) -> Option<Output> {
-    let output = source.user_data().get::<WeakOutput>()?.upgrade()?;
-    space.outputs().any(|o| *o == output).then_some(output)
+/// What an ext-image-capture source points at.
+enum CaptureTarget {
+    Output(Output),
+    Window(Window),
 }
 
-/// Buffer constraints for capturing `source`, or None if its output is gone.
+/// Resolve an ext-image-capture source back to its live output or window.
+fn source_target(tomoe: &Tomoe, source: &ImageCaptureSource) -> Option<CaptureTarget> {
+    if let Some(weak) = source.user_data().get::<WeakOutput>() {
+        let output = weak.upgrade()?;
+        return tomoe
+            .space
+            .outputs()
+            .any(|o| *o == output)
+            .then_some(CaptureTarget::Output(output));
+    }
+    let weak = source
+        .user_data()
+        .get::<smithay::wayland::foreign_toplevel_list::ForeignToplevelWeakHandle>()?;
+    let handle = weak.upgrade()?;
+    let id = handle
+        .user_data()
+        .get::<crate::foreign_toplevel::ForeignWindowId>()?
+        .0;
+    tomoe.windows.get(&id).cloned().map(CaptureTarget::Window)
+}
+
+/// Physical size of a window capture: the client's committed geometry at the
+/// global scale (the same rounding placement uses), floored at 1×1 so a
+/// pre-first-commit window still yields valid constraints.
+fn window_capture_size(space: &PhysicalSpace, window: &Window) -> Size<i32, Physical> {
+    let size =
+        crate::coords::logical_size_to_physical(window.geometry().size.to_f64(), space.scale());
+    Size::from((size.w.max(1), size.h.max(1)))
+}
+
+/// Buffer constraints for capturing `source`, or None if its target is gone.
 pub fn constraints_for_source(
     tomoe: &mut Tomoe,
     source: &ImageCaptureSource,
 ) -> Option<BufferConstraints> {
-    let output = source_output(&tomoe.space, source)?;
-    let size = tomoe.space.output_geometry(&output)?.size;
+    let size = match source_target(tomoe, source)? {
+        CaptureTarget::Output(output) => tomoe.space.output_geometry(&output)?.size,
+        CaptureTarget::Window(window) => window_capture_size(&tomoe.space, &window),
+    };
     Some(BufferConstraints {
         size: Size::from((size.w, size.h)),
         shm: vec![wl_shm::Format::Xrgb8888],
@@ -359,8 +449,8 @@ pub fn constraints_for_source(
     })
 }
 
-/// Re-announce constraints after any output change: stop sessions whose
-/// output is gone, renegotiate buffers for sessions whose size changed.
+/// Re-announce constraints after any output or window change: stop sessions
+/// whose target is gone, renegotiate buffers for sessions whose size changed.
 pub fn refresh_capture_sessions(tomoe: &mut Tomoe) {
     if tomoe.capture_sessions.is_empty() {
         return;
@@ -387,11 +477,27 @@ pub fn refresh_capture_sessions(tomoe: &mut Tomoe) {
     tomoe.image_copy_capture_state.cleanup();
 }
 
-/// Fulfill one ext-image-copy-capture frame: render the source output's
-/// current scene into the attached buffer and signal success, or fail with
-/// the closest protocol reason.
+/// Complete queued ext-image-copy-capture frames after an on-screen render.
+/// Frames queue on the capture request instead of rendering right away: an
+/// immediate answer would let a capture→ready→capture client (our portal)
+/// spin unthrottled, while completing from the redraw path paces casts to
+/// vblank. The request itself queues a redraw, so static content still
+/// yields a first frame promptly.
+pub fn complete_capture_frames(tomoe: &mut Tomoe) {
+    if tomoe.pending_capture_frames.is_empty() {
+        return;
+    }
+    let pending = std::mem::take(&mut tomoe.pending_capture_frames);
+    for (session, frame) in pending {
+        render_capture_frame(tomoe, &session, frame);
+    }
+}
+
+/// Fulfill one ext-image-copy-capture frame: render the source's current
+/// scene (an output's, or a single window's) into the attached buffer and
+/// signal success, or fail with the closest protocol reason.
 pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Frame) {
-    let Some(output) = source_output(&tomoe.space, &session.source()) else {
+    let Some(target) = source_target(tomoe, &session.source()) else {
         frame.fail(CaptureFailureReason::Stopped);
         return;
     };
@@ -399,13 +505,26 @@ pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Fram
 
     let (mut parts, backend, _screencopy_state, _loop_handle, now) = split_tomoe!(tomoe);
     let scale = parts.space.scale();
-    let Some(size) = parts.space.output_geometry(&output).map(|geo| geo.size) else {
-        frame.fail(CaptureFailureReason::Stopped);
-        return;
+    let size = match &target {
+        CaptureTarget::Output(output) => {
+            let Some(geo) = parts.space.output_geometry(output) else {
+                frame.fail(CaptureFailureReason::Stopped);
+                return;
+            };
+            geo.size
+        }
+        CaptureTarget::Window(window) => window_capture_size(parts.space, window),
     };
 
     let res = backend.with_primary_gles(|renderer| {
-        let elements = parts.elements(renderer, &output, Point::from((0, 0)), include_cursor);
+        let elements = match &target {
+            CaptureTarget::Output(output) => {
+                parts.elements(renderer, output, Point::from((0, 0)), include_cursor)
+            }
+            CaptureTarget::Window(window) => {
+                parts.window_elements(renderer, window, include_cursor)
+            }
+        };
         // Fresh tracker per frame: clients rotate buffers, so cross-frame
         // damage diffing can't be trusted; render everything (age 0).
         let mut damage_tracker = OutputDamageTracker::new(size, scale, Transform::Normal);

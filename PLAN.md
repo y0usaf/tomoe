@@ -43,15 +43,24 @@ Done and working:
 - Capture: wlr-screencopy v3 (shm + dmabuf, `copy` immediate,
   `copy_with_damage` queued per manager and completed from the redraw
   loop) and ext-image-copy-capture-v1 + ext-image-capture-source-v1
-  (smithay handlers; output sources, session constraint renegotiation on
-  output changes); both render through one shared path in `capture.rs`
-  on the primary GPU
+  (smithay handlers; output *and toplevel* sources — per-window renders
+  crop to the xdg geometry, cursor embeds only while hovering, sessions
+  renegotiate on window resize and stop on close; capture frames are
+  queued and completed from the redraw loop, so casts pace to vblank
+  instead of spinning); everything renders through one shared path in
+  `capture.rs` on the primary GPU
+- ext-foreign-toplevel-list-v1: handles published on window map, title/
+  app_id pushed on commit, `closed` on unmap (`foreign_toplevel.rs`) —
+  feeds bars and the portal's window enumeration
 - ScreenCast portal: `xdg-desktop-portal-tomoe` binary (zbus + pipewire,
   ShojiWM-shape: `PW_STREAM_FLAG_DRIVER | ALLOC_BUFFERS`, single thread,
   wlr-screencopy `ready` queues the PW buffer and kicks the next capture
-  → vblank-paced); monitor sources, dmabuf with shm fallback, no-GUI
-  output choice (`TOMOE_SCREENCAST_OUTPUT` / `TOMOE_PORTAL_CHOOSER` /
-  single-output auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`,
+  → vblank-paced); monitor sources (dmabuf with shm fallback) *and
+  window sources* (ext-foreign-toplevel-list enumeration +
+  ext-image-copy-capture streaming, shm, resize renegotiation via
+  `update_params`); no-GUI source choice (`TOMOE_SCREENCAST_OUTPUT` /
+  `TOMOE_SCREENCAST_WINDOW` / `TOMOE_PORTAL_CHOOSER` dmenu lines /
+  single-source auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`,
   nix package ships `.portal` + `tomoe-portals.conf` + D-Bus service
 
 ## Gap inventory by reference
@@ -161,7 +170,9 @@ Done and working:
       30fps bug (`ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`).
       Existing wlr portals remain usable as fallbacks alongside it
       (`tomoe-portals.conf` routes only ScreenCast to us)
-- [ ] Foreign-toplevel (wlr + ext-foreign-toplevel-list) for bars/docks
+- [ ] Foreign-toplevel for bars/docks — ext-foreign-toplevel-list landed
+      (with portal window capture); wlr-foreign-toplevel-management (the
+      activate/close/minimize control surface bars actually use) still open
 - [ ] Gamma control / night light
 - [ ] text-input + input-method (IME) — after core parity
 - [ ] Touch + tablet-v2 — deferred, no hardware pressure yet
@@ -286,7 +297,9 @@ preserves workspace assignments; services survive and diff correctly.*
 
 ### M5 — Ecosystem remainder
 
-1. Foreign-toplevel (wlr + ext-foreign-toplevel-list) for bars/docks
+1. Foreign-toplevel for bars/docks — ext-foreign-toplevel-list done
+   (pulled forward for portal window capture); wlr-foreign-toplevel-
+   management remains
 2. xdg-activation
 3. Gamma control / night light
 

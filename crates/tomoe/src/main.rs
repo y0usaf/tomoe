@@ -2,6 +2,7 @@ mod backend;
 mod capture;
 mod coords;
 mod cursor;
+mod foreign_toplevel;
 mod handlers;
 mod input;
 mod layout;

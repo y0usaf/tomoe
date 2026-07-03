@@ -9,6 +9,8 @@
 mod outputs;
 mod pipewire_stream;
 mod screencast;
+mod toplevel_stream;
+mod toplevels;
 
 use tracing_subscriber::EnvFilter;
 

@@ -58,9 +58,12 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 use smithay::utils::IsAlive;
+use smithay::wayland::foreign_toplevel_list::{
+    ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
+};
 use smithay::wayland::image_capture_source::{
     ImageCaptureSource, ImageCaptureSourceHandler, OutputCaptureSourceHandler,
-    OutputCaptureSourceState,
+    OutputCaptureSourceState, ToplevelCaptureSourceHandler, ToplevelCaptureSourceState,
 };
 use smithay::wayland::image_copy_capture::{
     BufferConstraints, Frame as CaptureFrame, ImageCopyCaptureHandler, ImageCopyCaptureState,
@@ -178,6 +181,12 @@ impl CompositorHandler for Tomoe {
             }
             if let Some(window) = self.window_for_surface(&root) {
                 window.on_commit();
+                // Title/app_id changes flow to foreign-toplevel listeners; a
+                // resize renegotiates any capture session on this window.
+                self.refresh_foreign_toplevel(&window);
+                if !self.capture_sessions.is_empty() {
+                    crate::capture::refresh_capture_sessions(self);
+                }
             }
             // A lock surface committing its first buffer can progress a
             // pending lock; later commits just redraw (below).
@@ -944,6 +953,17 @@ impl IdleInhibitHandler for Tomoe {
 }
 delegate_idle_inhibit!(Tomoe);
 
+// ─── ext-foreign-toplevel-list ────────────────────────────────────────────────
+//
+// Handle lifecycle (publish/refresh/retire) lives in foreign_toplevel.rs.
+
+impl ForeignToplevelListHandler for Tomoe {
+    fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
+        &mut self.foreign_toplevel_state
+    }
+}
+smithay::delegate_foreign_toplevel_list!(Tomoe);
+
 // ─── ext-image-capture-source / ext-image-copy-capture ───────────────────────
 
 impl ImageCaptureSourceHandler for Tomoe {}
@@ -962,6 +982,25 @@ impl OutputCaptureSourceHandler for Tomoe {
 }
 smithay::delegate_output_capture_source!(Tomoe);
 
+impl ToplevelCaptureSourceHandler for Tomoe {
+    fn toplevel_capture_source_state(&mut self) -> &mut ToplevelCaptureSourceState {
+        &mut self.toplevel_capture_source_state
+    }
+
+    fn toplevel_source_created(
+        &mut self,
+        source: ImageCaptureSource,
+        toplevel: ForeignToplevelHandle,
+    ) {
+        // The source resolves back to its window through the handle and the
+        // window id riding on it (capture.rs::source_target).
+        source
+            .user_data()
+            .insert_if_missing(|| toplevel.downgrade());
+    }
+}
+smithay::delegate_toplevel_capture_source!(Tomoe);
+
 impl ImageCopyCaptureHandler for Tomoe {
     fn image_copy_capture_state(&mut self) -> &mut ImageCopyCaptureState {
         &mut self.image_copy_capture_state
@@ -976,7 +1015,12 @@ impl ImageCopyCaptureHandler for Tomoe {
     }
 
     fn frame(&mut self, session: &SessionRef, frame: CaptureFrame) {
-        crate::capture::render_capture_frame(self, session, frame);
+        // Defer to the redraw path (capture.rs::complete_capture_frames):
+        // answering immediately would let a capture→ready→capture client
+        // spin unthrottled; completing after on-screen renders paces casts
+        // to vblank.
+        self.pending_capture_frames.push((session.clone(), frame));
+        self.queue_redraw_all();
     }
 
     fn session_destroyed(&mut self, _session: SessionRef) {

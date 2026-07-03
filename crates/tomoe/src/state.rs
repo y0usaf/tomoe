@@ -40,8 +40,13 @@ use smithay::wayland::shell::wlr_layer::{Layer as WlrLayer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::idle_notify::IdleNotifierState;
-use smithay::wayland::image_capture_source::{ImageCaptureSourceState, OutputCaptureSourceState};
-use smithay::wayland::image_copy_capture::{ImageCopyCaptureState, Session};
+use smithay::wayland::foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelListState};
+use smithay::wayland::image_capture_source::{
+    ImageCaptureSourceState, OutputCaptureSourceState, ToplevelCaptureSourceState,
+};
+use smithay::wayland::image_copy_capture::{
+    Frame as CaptureFrame, ImageCopyCaptureState, Session, SessionRef,
+};
 use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
 use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
 use smithay::wayland::shm::ShmState;
@@ -149,9 +154,17 @@ pub struct Tomoe {
     #[allow(dead_code)]
     pub image_capture_source_state: ImageCaptureSourceState,
     pub output_capture_source_state: OutputCaptureSourceState,
+    pub toplevel_capture_source_state: ToplevelCaptureSourceState,
     pub image_copy_capture_state: ImageCopyCaptureState,
     /// Live ext-image-copy-capture sessions; dropping one sends `stopped`.
     pub capture_sessions: Vec<Session>,
+    /// Capture frames waiting on the next on-screen render
+    /// (`capture.rs::complete_capture_frames` — pacing, not correctness).
+    pub pending_capture_frames: Vec<(SessionRef, CaptureFrame)>,
+    pub foreign_toplevel_state: ForeignToplevelListState,
+    /// Foreign-toplevel handles by window id, mapped windows only
+    /// (`foreign_toplevel.rs`).
+    pub foreign_toplevels: HashMap<u64, ForeignToplevelHandle>,
     pub session_lock_state: SessionLockManagerState,
     /// ext-session-lock progression (see `lock.rs`).
     pub lock_state: LockState,
@@ -249,7 +262,10 @@ impl Tomoe {
         );
         let image_capture_source_state = ImageCaptureSourceState::new();
         let output_capture_source_state = OutputCaptureSourceState::new::<Self>(&display_handle);
+        let toplevel_capture_source_state =
+            ToplevelCaptureSourceState::new::<Self>(&display_handle);
         let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&display_handle);
+        let foreign_toplevel_state = ForeignToplevelListState::new::<Self>(&display_handle);
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, loop_handle.clone());
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
@@ -302,8 +318,12 @@ impl Tomoe {
             screencopy_state,
             image_capture_source_state,
             output_capture_source_state,
+            toplevel_capture_source_state,
             image_copy_capture_state,
             capture_sessions: Vec::new(),
+            pending_capture_frames: Vec::new(),
+            foreign_toplevel_state,
+            foreign_toplevels: HashMap::new(),
             session_lock_state,
             lock_state: LockState::default(),
             lock_surfaces: HashMap::new(),
@@ -715,6 +735,7 @@ impl Tomoe {
         let id = self.next_window_id;
         self.next_window_id += 1;
         self.windows.insert(id, window.clone());
+        self.publish_foreign_toplevel(id, &window);
         if let Some(toplevel) = window.toplevel() {
             send_scale(toplevel.wl_surface(), self.space.scale());
         }
@@ -764,6 +785,9 @@ impl Tomoe {
         self.space.unmap(window);
         let Some(id) = id else { return };
         self.windows.remove(&id);
+        self.retire_foreign_toplevel(id);
+        // A session capturing this window stops now (its source is gone).
+        crate::capture::refresh_capture_sessions(self);
         self.desired_loc.remove(&id);
         self.fullscreen_prev.remove(&id);
         // No leave event for a window that no longer exists; the next motion
