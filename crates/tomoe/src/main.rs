@@ -144,6 +144,15 @@ fn main() -> Result<()> {
         std::env::remove_var("DISPLAY");
     }
 
+    // Bus-activated services (xdg-desktop-portal + our ScreenCast backend,
+    // bars, ...) run as children of the session bus, not of tomoe, so they
+    // only see the session through the systemd/D-Bus activation environment.
+    // Push it when we own the session; a nested winit run must not hijack
+    // the host session's bus environment with its own socket.
+    if !use_winit {
+        import_environment();
+    }
+
     event_loop
         .run(None, &mut tomoe, |tomoe| {
             tomoe.space.refresh();
@@ -159,4 +168,42 @@ fn main() -> Result<()> {
         .context("error running event loop")?;
 
     Ok(())
+}
+
+/// Push the session variables into the systemd user environment and the
+/// D-Bus activation environment (niri-shape). The portal frontend caches
+/// `XDG_CURRENT_DESKTOP` at startup, so a stale instance from before this
+/// session is restarted — `try-restart` is a no-op unless it is running;
+/// a fresh one gets bus-activated with the updated environment. Waits for
+/// the shell: bus-activated services must not race the import.
+fn import_environment() {
+    let variables = ["WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP"]
+        .iter()
+        .filter(|var| std::env::var_os(var).is_some())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = format!(
+        "hash systemctl 2>/dev/null && \
+         systemctl --user import-environment {variables}; \
+         hash dbus-update-activation-environment 2>/dev/null && \
+         dbus-update-activation-environment {variables}; \
+         hash systemctl 2>/dev/null && \
+         systemctl --user try-restart xdg-desktop-portal.service; \
+         exit 0"
+    );
+    match std::process::Command::new("/bin/sh")
+        .args(["-c", &script])
+        .spawn()
+    {
+        Ok(mut child) => match child.wait() {
+            Ok(status) => {
+                if !status.success() {
+                    warn!("import environment shell exited with {status}");
+                }
+            }
+            Err(err) => warn!("error waiting for import environment shell: {err:?}"),
+        },
+        Err(err) => warn!("error spawning shell to import environment: {err:?}"),
+    }
 }

@@ -60,8 +60,12 @@ Done and working:
   ext-image-copy-capture streaming, shm, resize renegotiation via
   `update_params`); no-GUI source choice (`TOMOE_SCREENCAST_OUTPUT` /
   `TOMOE_SCREENCAST_WINDOW` / `TOMOE_PORTAL_CHOOSER` dmenu lines /
-  single-source auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`,
-  nix package ships `.portal` + `tomoe-portals.conf` + D-Bus service
+  single-source auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`
+  and, on TTY, pushes `WAYLAND_DISPLAY`/`DISPLAY`/`XDG_CURRENT_DESKTOP`
+  into the systemd + D-Bus activation environment (restarting a stale
+  portal frontend), so bus-activated backends find the session from a
+  bare TTY launch; nix package ships `.portal` + `tomoe-portals.conf` +
+  D-Bus service
 
 ## Gap inventory by reference
 
