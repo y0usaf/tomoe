@@ -396,9 +396,7 @@ fn parse_process_spec(
         }
         if launch.is_none() {
             match t.get::<Value>("command") {
-                Ok(Value::String(s)) => {
-                    launch = Some(Launch::Shell(s.to_string_lossy()))
-                }
+                Ok(Value::String(s)) => launch = Some(Launch::Shell(s.to_string_lossy())),
                 Ok(Value::Table(arr)) => {
                     let mut argv = Vec::new();
                     for v in arr.sequence_values::<String>() {

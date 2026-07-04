@@ -40,8 +40,9 @@ Done and working:
 - Process API (`tomoe.process.once/service/spawn`, ShojiWM-shape):
   declarative manifest diffed by id across reloads, restart/reload
   policies, 1 Hz supervision poll that also reaps fire-and-forget
-  children (`process.rs`); session/portal supervision still M4 §1's
-  remaining slice
+  children (`process.rs`); builtin entries (reserved `tomoe:` id prefix,
+  `Tomoe::declare_builtin_process`) ride the same manifest — the session
+  bring-up chain is the first consumer
 - Dogfood WMs: `wm.lua` (9 workspaces, dwindle, focus cycling),
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
 - Compositor UI: hotkey overlay, exit confirm, config-error banner,
@@ -86,10 +87,13 @@ Done and working:
   or NixOS's After= override deadlocks the frontend's synchronous
   backend calls), and try-restarts a stale frontend, so bus-activated
   backends find the session from a bare TTY launch; nix package ships
-  `.portal` + `tomoe-portals.conf` + D-Bus service.
-  `graphical-session.target` is *not* started (systemd refuses manual
-  start; needs an installed `tomoe-session.target` with
-  `BindsTo=graphical-session.target` — see M4 §1's session supervision)
+  `.portal` + `tomoe-portals.conf` + D-Bus service +
+  `tomoe-session.target`. Session bring-up (start `tomoe-session.target`
+  — its BindsTo pulls `graphical-session.target` up, systemd refuses
+  starting that directly — then GTK backend, then frontend try-restart)
+  runs as the builtin `tomoe:session-units` manifest entry; compositor
+  exit stops the target (graphical-session.target follows,
+  StopWhenUnneeded) and unsets the session env vars
 
 ## Gap inventory by reference
 
@@ -376,7 +380,7 @@ scanout confirmed via drm_info; no idle redraw storms.*
 
 ### M4 — Phase 4: extension-surface parity with ShojiWM
 
-1. ~~Process API~~ core landed (`process.rs` + `tomoe.process` in Lua,
+1. ~~Process API~~ done (`process.rs` + `tomoe.process` in Lua,
    ShojiWM-shape): manifest keyed by id, `once` (`run =
    "once_per_session"|"once_per_config_version"`), `service` (`restart =
    "never"|"on_failure"|"on_exit"`, `reload =
@@ -387,13 +391,22 @@ scanout confirmed via drm_info; no idle redraw storms.*
    that stops services) and bumps the config generation. Supervision is a
    1 Hz `try_wait` poll (per ShojiWM) — the tick period rate-limits crash
    loops; the timer exists only while children do (no idle wakeups);
-   services are killed on compositor exit. Remaining slices: session
-   supervision (installed `tomoe-session.target` with
-   `BindsTo=graphical-session.target`, pulled up by `import_environment`
-   — systemd refuses starting the target directly), and migrating M2's
-   satellite/portal pre-start onto the manifest as builtin consumers.
-   Live check pending: waybar-style service surviving a config reload
-   with `keep_if_unchanged`, restart-after-crash cadence
+   services are killed on compositor exit. ~~Session supervision +
+   builtin consumers~~ landed: `tomoe-session.target` ships in the nix
+   package (`share/systemd/user/`), started by the builtin
+   `tomoe:session-units` `once` entry — one shell so ordering holds
+   (target → GTK backend → frontend try-restart), running as a
+   supervised manifest child instead of an orphaned background shell;
+   exit stops the target and `unset-environment`s the session vars.
+   Builtin mechanism: `Tomoe::declare_builtin_process` merges
+   compositor-owned decls (reserved `tomoe:` prefix wins over user ids)
+   into every reconcile. xwayland-satellite deliberately stays native —
+   its fd handoff (`pre_exec` + `-listenfd`) and socket-activated
+   respawn don't fit `ProcessSpec`, and growing the manifest for one
+   consumer isn't worth it. Live checks pending:
+   `graphical-session.target` active after a TTY launch and gone after
+   exit; waybar-style service surviving a config reload with
+   `keep_if_unchanged`; restart-after-crash cadence
 2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)

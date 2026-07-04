@@ -17,6 +17,7 @@ mod state;
 mod ui;
 mod xwayland;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,7 @@ use smithay::wayland::socket::ListeningSocketSource;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::process::{Launch, ProcessDecl, ProcessSpec, RunPolicy};
 use crate::state::{ClientState, Tomoe};
 
 #[derive(Parser, Debug)]
@@ -149,9 +151,13 @@ fn main() -> Result<()> {
     // bars, ...) run as children of the session bus, not of tomoe, so they
     // only see the session through the systemd/D-Bus activation environment.
     // Push it when we own the session; a nested winit run must not hijack
-    // the host session's bus environment with its own socket.
+    // the host session's bus environment with its own socket. The session
+    // units come up afterwards through the process manifest — a builtin
+    // consumer of the same API user configs declare through.
     if !use_winit {
         import_environment();
+        tomoe.declare_builtin_process("session-units", session_units());
+        tomoe.reconcile_processes();
     }
 
     event_loop
@@ -170,53 +176,40 @@ fn main() -> Result<()> {
 
     // Managed services belong to the session; take them down with it.
     tomoe.process.shutdown();
+    if !use_winit {
+        exit_session();
+    }
 
     Ok(())
 }
 
+/// Session variables pushed into (and cleared from) the systemd user
+/// environment and the D-Bus activation environment. TOMOE_PORTAL_CHOOSER is
+/// the screencast source picker for xdg-desktop-portal-tomoe; the
+/// bus-activated backend only sees it through the activation env.
+const SESSION_ENV: &[&str] = &[
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XDG_CURRENT_DESKTOP",
+    "TOMOE_PORTAL_CHOOSER",
+];
+
 /// Push the session variables into the systemd user environment and the
-/// D-Bus activation environment (niri-shape), then bring the portal units
-/// up. The portal frontend caches `XDG_CURRENT_DESKTOP` at startup, so a
-/// stale instance from before this session is restarted — `try-restart` is
-/// a no-op unless it is running; a fresh one gets bus-activated with the
-/// updated environment. The GTK portal backend starts before the frontend:
-/// the frontend calls its backends synchronously during activation, so a
-/// backend that is merely bus-activatable but ordered after the frontend
-/// (NixOS ships such an After= override) deadlocks until the D-Bus call
-/// times out.
-///
-/// Waits for the shell only through the environment import: bus-activated
-/// services must not race it. The unit starts are backgrounded — the GTK
-/// backend is itself a Wayland client, so blocking on it here, before the
-/// event loop dispatches, deadlocks the compositor against its own client
-/// until the timeout fires.
-///
-/// graphical-session.target is deliberately not started: systemd refuses
-/// manual start/stop for it. Activating it needs an installed session
-/// target (BindsTo=graphical-session.target) pulled up here instead.
+/// D-Bus activation environment (niri-shape). Blocks on the shell:
+/// bus-activated services must not race the import, and the session units
+/// (started next, via the process manifest) rely on it.
 fn import_environment() {
-    let variables = [
-        "WAYLAND_DISPLAY",
-        "DISPLAY",
-        "XDG_CURRENT_DESKTOP",
-        // Screencast source picker for xdg-desktop-portal-tomoe; the
-        // bus-activated backend only sees it through the activation env.
-        "TOMOE_PORTAL_CHOOSER",
-    ]
-    .iter()
-    .filter(|var| std::env::var_os(var).is_some())
-    .copied()
-    .collect::<Vec<_>>()
-    .join(" ");
+    let variables = SESSION_ENV
+        .iter()
+        .filter(|var| std::env::var_os(var).is_some())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
     let script = format!(
         "hash systemctl 2>/dev/null && \
          systemctl --user import-environment {variables}; \
          hash dbus-update-activation-environment 2>/dev/null && \
          dbus-update-activation-environment {variables}; \
-         hash systemctl 2>/dev/null && (\
-         timeout 10 systemctl --user start xdg-desktop-portal-gtk.service; \
-         systemctl --user try-restart xdg-desktop-portal.service\
-         ) >/dev/null 2>&1 & \
          exit 0"
     );
     match std::process::Command::new("/bin/sh")
@@ -232,5 +225,66 @@ fn import_environment() {
             Err(err) => warn!("error waiting for import environment shell: {err:?}"),
         },
         Err(err) => warn!("error spawning shell to import environment: {err:?}"),
+    }
+}
+
+/// The session bring-up chain, declared as a builtin `once` entry on the
+/// process manifest — so it runs as a supervised, reaped child instead of an
+/// orphaned background shell, and nothing here blocks the event loop (the
+/// GTK portal backend is a Wayland client of ours: waiting on it before the
+/// loop dispatches would deadlock). One shell so the ordering holds:
+///
+/// 1. tomoe-session.target: BindsTo=graphical-session.target pulls the
+///    session target up (systemd refuses starting graphical-session.target
+///    directly), so session-bound user units start and units ordered
+///    After=graphical-session.target become startable.
+/// 2. xdg-desktop-portal-gtk before the frontend: the frontend calls its
+///    backends synchronously during activation, so a backend that is merely
+///    bus-activatable but ordered after the frontend (NixOS ships such an
+///    After= override) deadlocks until the D-Bus call times out.
+/// 3. try-restart the frontend: it caches `XDG_CURRENT_DESKTOP` at startup,
+///    so a stale instance from before this session must go — `try-restart`
+///    is a no-op unless it is running; a fresh one gets bus-activated with
+///    the updated environment.
+fn session_units() -> ProcessDecl {
+    ProcessDecl::Once {
+        spec: ProcessSpec {
+            launch: Launch::Shell(
+                "hash systemctl 2>/dev/null || exit 0; \
+                 systemctl --user start tomoe-session.target; \
+                 timeout 10 systemctl --user start xdg-desktop-portal-gtk.service; \
+                 systemctl --user try-restart xdg-desktop-portal.service"
+                    .to_string(),
+            ),
+            cwd: None,
+            env: BTreeMap::new(),
+        },
+        run: RunPolicy::OncePerSession,
+    }
+}
+
+/// Tear the session back down: stop tomoe-session.target
+/// (graphical-session.target follows once nothing binds it — it is
+/// StopWhenUnneeded) and clear the session variables from the systemd user
+/// environment, so units activated later don't inherit a dead socket. The
+/// D-Bus activation environment has no unset operation; a fresh session
+/// overwrites it on the next import.
+fn exit_session() {
+    let variables = SESSION_ENV.join(" ");
+    let script = format!(
+        "hash systemctl 2>/dev/null || exit 0; \
+         systemctl --user stop tomoe-session.target; \
+         systemctl --user unset-environment {variables}"
+    );
+    match std::process::Command::new("/bin/sh")
+        .args(["-c", &script])
+        .spawn()
+    {
+        Ok(mut child) => {
+            if let Err(err) = child.wait() {
+                warn!("error waiting for session teardown shell: {err:?}");
+            }
+        }
+        Err(err) => warn!("error spawning session teardown shell: {err:?}"),
     }
 }

@@ -58,7 +58,7 @@ use crate::cursor::Cursor;
 use crate::input::{Action, Bind};
 use crate::lock::LockState;
 use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp};
-use crate::process::{Launch, ProcessManager, ProcessSpec};
+use crate::process::{Launch, ProcessDecl, ProcessManager, ProcessSpec};
 use crate::space::PhysicalSpace;
 use crate::ui::Ui;
 
@@ -210,6 +210,10 @@ pub struct Tomoe {
     /// Child processes: the `tomoe.process` manifest reconciler plus
     /// fire-and-forget spawns (`process.rs`).
     pub process: ProcessManager,
+    /// Compositor-owned manifest entries (session bring-up units): the same
+    /// declaration shape as `tomoe.process`, merged over the user's entries
+    /// on every reconcile — ids carry a reserved "tomoe:" prefix.
+    builtin_processes: HashMap<String, ProcessDecl>,
     /// The 1 Hz supervision timer is registered (dropped when idle so an
     /// empty manifest costs no wakeups).
     process_timer_active: bool,
@@ -354,6 +358,7 @@ impl Tomoe {
             binds: Vec::new(),
             applied_keyboard: KeyboardSettings::default(),
             process: ProcessManager::default(),
+            builtin_processes: HashMap::new(),
             process_timer_active: false,
             ui: Ui::new(),
             config_cli_path: None,
@@ -578,13 +583,7 @@ impl Tomoe {
             self.do_action(action);
         }
         self.in_lua = was_in_lua;
-        for spec in self.lua.take_spawns() {
-            self.process.spawn_detached(&spec);
-        }
-        if let Some(manifest) = self.lua.take_process_manifest() {
-            self.process.reconcile(&manifest);
-        }
-        self.ensure_process_timer();
+        self.reconcile_processes();
         self.apply_keyboard_settings();
         crate::backend::tty::apply_libinput_settings(self);
         // Displays before scale: scale math reads output geometry. A mode
@@ -596,6 +595,33 @@ impl Tomoe {
         self.apply_scale();
         self.sync_snapshot();
         self.queue_redraw_all();
+    }
+
+    /// Declare a compositor-owned process-manifest entry. Built-ins ride the
+    /// same manifest and diff semantics as user `tomoe.process` declarations
+    /// (doctrine 01); the id is namespaced "tomoe:" so user entries can't
+    /// collide. Takes effect on the next `reconcile_processes` (which every
+    /// Lua entry reaches via `after_lua`).
+    pub fn declare_builtin_process(&mut self, id: &str, decl: ProcessDecl) {
+        self.builtin_processes.insert(format!("tomoe:{id}"), decl);
+        self.lua.mark_processes_dirty();
+    }
+
+    /// Drive children to match the manifest: fire-and-forget spawns, then the
+    /// user manifest with the builtin entries merged over it.
+    pub fn reconcile_processes(&mut self) {
+        for spec in self.lua.take_spawns() {
+            self.process.spawn_detached(&spec);
+        }
+        if let Some(mut manifest) = self.lua.take_process_manifest() {
+            manifest.extend(
+                self.builtin_processes
+                    .iter()
+                    .map(|(id, decl)| (id.clone(), decl.clone())),
+            );
+            self.process.reconcile(&manifest);
+        }
+        self.ensure_process_timer();
     }
 
     /// Keep the 1 Hz process-supervision timer alive exactly while there are

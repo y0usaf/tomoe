@@ -81,11 +81,16 @@
             RUSTFLAGS = devRustflags;
           };
 
+          # tomoe-session.target is how the compositor activates
+          # graphical-session.target (which refuses manual start): starting
+          # the session target pulls it up via BindsTo.
           # Portal discovery: the .portal file tells xdg-desktop-portal the
           # backend exists, portals.conf routes ScreenCast to it under
           # XDG_CURRENT_DESKTOP=tomoe, and the D-Bus service file lets the
           # bus activate the binary on demand.
           postInstall = ''
+            install -Dm644 resources/tomoe-session.target \
+              $out/share/systemd/user/tomoe-session.target
             install -Dm644 resources/tomoe.portal \
               $out/share/xdg-desktop-portal/portals/tomoe.portal
             install -Dm644 resources/tomoe-portals.conf \
