@@ -20,8 +20,10 @@ tomoe.settings {
   -- negative); outputs without one pack left-to-right after the placed
   -- ones. `mirror = "DP-1"` shows the same region as that output instead
   -- of extending; `disabled = true` turns the connector off entirely.
+  -- `vrr = true` enables variable refresh rate (adaptive sync) when the
+  -- monitor supports it.
   -- displays = {
-  --   ["DP-1"] = { resolution = "max@max", position = { 0, 0 } },
+  --   ["DP-1"] = { resolution = "max@max", position = { 0, 0 }, vrr = true },
   --   ["HDMI-A-1"] = { resolution = "1920x1080@60", mirror = "DP-1" },
   --   ["eDP-1"] = { disabled = true },
   -- },

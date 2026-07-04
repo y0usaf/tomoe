@@ -98,7 +98,11 @@ Done and working:
       edge-triggered ("direct scanout engaged"). **Pending live
       verification**: fullscreen client on the primary plane via drm_info +
       the engage log; cursor-only motion not re-compositing
-- [ ] VRR (adaptive sync) per output
+- [x] VRR (adaptive sync) per output (`settings.displays[..].vrr`, applied
+      at connector bring-up and live-toggled on reload; explicit
+      `use_vrr(false)` when unsupported/unwanted per niri's stale
+      VRR_ENABLED workaround). Live verification pending (needs a
+      VRR-capable monitor)
 - [ ] Tearing control (`wp_tearing_control_v1`) + async page flips
 - [x] Output hotplug (udev → connector scan diff → connect/disconnect,
       reposition, `outputs_changed`)
@@ -322,8 +326,16 @@ real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
      `CLEAR_COLOR`, so a translucent fullscreen client won't flip; swap
      the clear color to black under a fullscreen window if that ever
      matters. Live checks pending (drm_info, engage/disengage log)
-   - VRR per output (smithay `DrmCompositor::use_vrr`; wire to
-     `settings.displays[..].vrr`) — open
+   - ~~VRR per output~~ landed — `settings.displays[..].vrr` →
+     `vrr_supported`/`use_vrr` at `connector_connected` (with the
+     disable-anyway workaround for stale VRR_ENABLED) and a live diff in
+     `apply_display_settings` (toggle queues a redraw — `use_vrr` is
+     pending state applied on the next commit — without re-emitting
+     `outputs_changed`, since no geometry changes). Tomoe's
+     estimated-vblank timer needs no VRR awareness: it is only the
+     no-damage safety net, not a presentation-time predictor like niri's
+     frame clock. Live check pending (VRR-capable monitor +
+     `drm_info` VRR_ENABLED)
    - Tearing control (`wp_tearing_control_v1` + async flips) — open;
      needs the smithay fork/patch described in the ShojiWM doc, plus the
      estimated-vblank bypass for tearing surfaces (§5 of that doc)

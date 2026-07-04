@@ -23,6 +23,7 @@ use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags, PrimaryPlaneE
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::{
     DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType,
+    VrrSupport,
 };
 use smithay::backend::egl::context::ContextPriority;
 use smithay::backend::egl::{EGLDevice, EGLDisplay};
@@ -677,6 +678,30 @@ fn connector_connected(
         .create_surface(crtc, mode, &[connector.handle()])
         .context("error creating DRM surface")?;
 
+    // VRR per settings.displays. niri-shape: explicitly disable even when
+    // unsupported/unwanted — a DRM state reset can drop vrr_capable to 0
+    // while leaving a stale VRR_ENABLED at 1.
+    let want_vrr = lua.settings().displays.get(&name).is_some_and(|d| d.vrr);
+    match surface.vrr_supported(connector.handle()) {
+        Ok(VrrSupport::Supported | VrrSupport::RequiresModeset) => {
+            match surface.use_vrr(want_vrr) {
+                Ok(()) if want_vrr => info!("output {name}: VRR enabled"),
+                Ok(()) => {}
+                Err(err) => warn!(
+                    "output {name}: error {} VRR: {err}",
+                    if want_vrr { "enabling" } else { "disabling" }
+                ),
+            }
+        }
+        Ok(VrrSupport::NotSupported) => {
+            if want_vrr {
+                warn!("output {name}: VRR requested but the connector does not support it");
+            }
+            let _ = surface.use_vrr(false);
+        }
+        Err(err) => warn!("output {name}: error querying VRR support: {err}"),
+    }
+
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
     let output = Output::new(
         name,
@@ -959,6 +984,9 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     let before = geometries(tomoe);
 
     let mut changed = false;
+    // VRR toggles need a commit to take effect but change no geometry, so
+    // they queue a redraw without re-emitting `outputs_changed`.
+    let mut vrr_toggled = false;
     let mut to_disable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     let mut to_enable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     {
@@ -981,6 +1009,22 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
                     continue;
                 }
                 let name = surface.output.name();
+                let want_vrr = settings.displays.get(&name).is_some_and(|d| d.vrr);
+                if want_vrr != surface.compositor.vrr_enabled() {
+                    match surface.compositor.use_vrr(want_vrr) {
+                        Ok(()) => {
+                            info!(
+                                "output {name}: VRR {}",
+                                if want_vrr { "enabled" } else { "disabled" }
+                            );
+                            vrr_toggled = true;
+                        }
+                        Err(err) => warn!(
+                            "output {name}: error {} VRR: {err}",
+                            if want_vrr { "enabling" } else { "disabling" }
+                        ),
+                    }
+                }
                 let Some((mode, fallback)) =
                     pick_mode(&surface.connector, settings.resolution_for(&name))
                 else {
@@ -1049,6 +1093,9 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     // re-place unconditionally (idempotent) and compare effective geometry.
     reposition_outputs(tomoe);
     if !changed && before == geometries(tomoe) {
+        if vrr_toggled {
+            queue_redraw_all(tomoe);
+        }
         return false;
     }
     queue_redraw_all(tomoe);

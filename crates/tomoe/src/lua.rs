@@ -102,6 +102,9 @@ pub struct DisplaySettings {
     /// position (sizes may differ; no rescaling). Overrides `position`.
     /// The target must itself be an active, non-mirroring output.
     pub mirror: Option<String>,
+    /// Variable refresh rate (adaptive sync). Applied when the connector
+    /// supports it; live-toggleable from a settings reload.
+    pub vrr: bool,
 }
 
 /// xkb keymap + key-repeat settings: `settings.keyboard`. Empty strings mean
@@ -648,6 +651,9 @@ impl LuaRuntime {
                         }
                         if let Ok(m) = display.get::<String>("mirror") {
                             ds.mirror = Some(m);
+                        }
+                        if let Ok(v) = display.get::<bool>("vrr") {
+                            ds.vrr = v;
                         }
                         settings.displays.insert(name, ds);
                     }
