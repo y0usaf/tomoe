@@ -171,25 +171,48 @@ fn main() -> Result<()> {
 }
 
 /// Push the session variables into the systemd user environment and the
-/// D-Bus activation environment (niri-shape). The portal frontend caches
-/// `XDG_CURRENT_DESKTOP` at startup, so a stale instance from before this
-/// session is restarted — `try-restart` is a no-op unless it is running;
-/// a fresh one gets bus-activated with the updated environment. Waits for
-/// the shell: bus-activated services must not race the import.
+/// D-Bus activation environment (niri-shape), then bring the portal units
+/// up. The portal frontend caches `XDG_CURRENT_DESKTOP` at startup, so a
+/// stale instance from before this session is restarted — `try-restart` is
+/// a no-op unless it is running; a fresh one gets bus-activated with the
+/// updated environment. The GTK portal backend starts before the frontend:
+/// the frontend calls its backends synchronously during activation, so a
+/// backend that is merely bus-activatable but ordered after the frontend
+/// (NixOS ships such an After= override) deadlocks until the D-Bus call
+/// times out.
+///
+/// Waits for the shell only through the environment import: bus-activated
+/// services must not race it. The unit starts are backgrounded — the GTK
+/// backend is itself a Wayland client, so blocking on it here, before the
+/// event loop dispatches, deadlocks the compositor against its own client
+/// until the timeout fires.
+///
+/// graphical-session.target is deliberately not started: systemd refuses
+/// manual start/stop for it. Activating it needs an installed session
+/// target (BindsTo=graphical-session.target) pulled up here instead.
 fn import_environment() {
-    let variables = ["WAYLAND_DISPLAY", "DISPLAY", "XDG_CURRENT_DESKTOP"]
-        .iter()
-        .filter(|var| std::env::var_os(var).is_some())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let variables = [
+        "WAYLAND_DISPLAY",
+        "DISPLAY",
+        "XDG_CURRENT_DESKTOP",
+        // Screencast source picker for xdg-desktop-portal-tomoe; the
+        // bus-activated backend only sees it through the activation env.
+        "TOMOE_PORTAL_CHOOSER",
+    ]
+    .iter()
+    .filter(|var| std::env::var_os(var).is_some())
+    .copied()
+    .collect::<Vec<_>>()
+    .join(" ");
     let script = format!(
         "hash systemctl 2>/dev/null && \
          systemctl --user import-environment {variables}; \
          hash dbus-update-activation-environment 2>/dev/null && \
          dbus-update-activation-environment {variables}; \
-         hash systemctl 2>/dev/null && \
-         systemctl --user try-restart xdg-desktop-portal.service; \
+         hash systemctl 2>/dev/null && (\
+         timeout 10 systemctl --user start xdg-desktop-portal-gtk.service; \
+         systemctl --user try-restart xdg-desktop-portal.service\
+         ) >/dev/null 2>&1 & \
          exit 0"
     );
     match std::process::Command::new("/bin/sh")

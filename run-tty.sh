@@ -16,6 +16,9 @@ nix develop --command cargo build || exit $?
 # data-control protocols ended up running).
 BIN="$PROJ/target/debug/tomoe"
 echo "launching $BIN"
+# Screencast source picker; tomoe pushes this into the activation env for
+# the bus-activated portal backend.
+export TOMOE_PORTAL_CHOOSER="${TOMOE_PORTAL_CHOOSER:-$HOME/.config/scripts/portal-chooser.sh}"
 # Launch from $HOME so spawned terminals open there instead of the project dir.
 cd "$HOME"
 exec nix develop "$PROJ" --command env -u shell SHELL="${LOGIN_SHELL:-$SHELL}" "$BIN" --backend tty "$@" >/tmp/tomoe.log 2>&1

@@ -31,8 +31,10 @@ Done and working:
   `on_window_open` replay), watchdog
 - Dogfood WMs: `wm.lua` (9 workspaces, dwindle, focus cycling),
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
-- Compositor UI: hotkey overlay, exit confirm, config-error banner;
-  xcursor themes; no-hooks full-screen fallback
+- Compositor UI: hotkey overlay, exit confirm, config-error banner,
+  screenshot UI; xcursor themes; no-hooks full-screen fallback — four
+  hand-wired units in `ui/`, which is doctrine-05 debt: past the
+  third unit the registry is due (paid down by M4's `tomoe.ui`)
 - Session lock (ext-session-lock-v1, swaylock incl. crashed-locker
   fallback) and idle (ext-idle-notify + zwp-idle-inhibit, swayidle) —
   `lock.rs` + idle plumbing in `state.rs`
@@ -60,12 +62,21 @@ Done and working:
   ext-image-copy-capture streaming, shm, resize renegotiation via
   `update_params`); no-GUI source choice (`TOMOE_SCREENCAST_OUTPUT` /
   `TOMOE_SCREENCAST_WINDOW` / `TOMOE_PORTAL_CHOOSER` dmenu lines /
-  single-source auto); compositor exports `XDG_CURRENT_DESKTOP=tomoe`
-  and, on TTY, pushes `WAYLAND_DISPLAY`/`DISPLAY`/`XDG_CURRENT_DESKTOP`
-  into the systemd + D-Bus activation environment (restarting a stale
-  portal frontend), so bus-activated backends find the session from a
-  bare TTY launch; nix package ships `.portal` + `tomoe-portals.conf` +
-  D-Bus service
+  single-source auto) — the env-var chooser is a **recorded doctrine-05
+  exemption**: screencast policy is the one piece of WM policy declared
+  outside Lua, retired by M4 §7; compositor exports
+  `XDG_CURRENT_DESKTOP=tomoe` and, on TTY, pushes `WAYLAND_DISPLAY`/
+  `DISPLAY`/`XDG_CURRENT_DESKTOP`/`TOMOE_PORTAL_CHOOSER` into the
+  systemd + D-Bus activation environment, pre-starts the GTK portal
+  backend detached (it is a Wayland client of ours — blocking before the
+  event loop deadlocks; and it must be up before the frontend activates,
+  or NixOS's After= override deadlocks the frontend's synchronous
+  backend calls), and try-restarts a stale frontend, so bus-activated
+  backends find the session from a bare TTY launch; nix package ships
+  `.portal` + `tomoe-portals.conf` + D-Bus service.
+  `graphical-session.target` is *not* started (systemd refuses manual
+  start; needs an installed `tomoe-session.target` with
+  `BindsTo=graphical-session.target` — see M4 §1's session supervision)
 
 ## Gap inventory by reference
 
@@ -151,6 +162,17 @@ Done and working:
 - [ ] LuaLS `---@meta` annotation files shipped for editor DX
 - [ ] Layer-surface events (`on_layer_create/update/destroy`) and
       reserved-insets query (usable_area exists; insets breakdown doesn't)
+- [ ] `tomoe.ui` — retained-widget overlay API (menu/confirm/toast):
+      Lua declares the widget once, core renders and damages it; only
+      selection events re-enter Lua (no per-frame Lua draw — keeps the
+      doctrine-02 watchdog meaningful and fits render-on-damage). Modal
+      input routing generalized from `screenshot_ui`. Registry per
+      doctrine 05 — four hand-wired units already exist in `ui/`
+- [ ] Portal source policy through the extension API:
+      `tomoe.on_screencast_request` (snapshot in: app_id, requested
+      types, candidate outputs/windows; actions out: resolve/deny/defer)
+      with the backend as a thin IPC client — retires the
+      `TOMOE_PORTAL_CHOOSER` env-var exemption
 - [ ] Scriptable decorations (long-term; Hyprland-style built-in borders/
       titlebar first, ShojiWM-style Lua-driven SSD tree later — study
       `ref/ShojiWM/knowledges/shared-edge-tree-plan.md` before designing)
@@ -289,15 +311,42 @@ scanout confirmed via drm_info; no idle redraw storms.*
 ### M4 — Phase 4: extension-surface parity with ShojiWM
 
 1. Process API (once/service/spawn manifest, restart/reload policies) —
-   note: M2's satellite/portal supervision is a natural first consumer
+   note: M2's satellite/portal supervision is a natural first consumer;
+   session supervision belongs here too (installed `tomoe-session.target`
+   with `BindsTo=graphical-session.target`, pulled up by
+   `import_environment` — systemd refuses starting the target directly)
 2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)
 4. Window rules
 5. LuaLS meta files; example configs exercising all of the above
+6. `tomoe.ui` registry — retained widgets (menu/confirm/toast) + modal
+   input routing generalized from `screenshot_ui`; port `hotkey_overlay`
+   and `exit_confirm_dialog` onto it as builtins per doctrine 05 ("when
+   the third arrives, build it — and port the first two");
+   `screenshot_ui` stays native as a declared exemption until the API
+   grows drag-region interaction. Independent of the IPC work — can land
+   any time, and immediately pays for itself beyond the portal (alt-tab
+   switcher, workspace OSD, launcher)
+7. Portal source policy over IPC: `tomoe.on_screencast_request` — the
+   backend becomes a thin IPC client (asks the compositor on
+   SelectSources, bounded by a timeout), the hook gets a snapshot
+   (app_id, types, candidate outputs/windows) and answers with an action
+   (resolve/deny) or `req:defer()` + later `req:resolve(selection)` for
+   interactive picks, so the frame loop never waits on a picker. Default
+   policy ships as a builtin `tomoe.ui.menu` picker (doctrine 01);
+   per-app behavior composes with window rules
+   (`tomoe.rule { app_id = ..., screencast = ... }`). Bare core / no
+   hook: the backend keeps today's auto-pick + env-var heuristics
+   (doctrine 06), which stops being the *declared* mechanism and becomes
+   the fallback. Same hook pattern extends later to Screenshot and
+   GlobalShortcuts (which maps 1:1 onto the bind registry)
 
 *Accept: waybar-equivalent driven purely over user IPC; config reload
-preserves workspace assignments; services survive and diff correctly.*
+preserves workspace assignments; services survive and diff correctly;
+the screencast picker is compositor-drawn via `tomoe.ui`, declared in
+`init.lua`, and `TOMOE_PORTAL_CHOOSER` is no longer needed on a default
+setup.*
 
 ### M5 — Ecosystem remainder
 
