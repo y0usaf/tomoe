@@ -5,6 +5,7 @@ mod cursor;
 mod foreign_toplevel;
 mod handlers;
 mod input;
+mod ipc;
 mod layout;
 mod lock;
 mod lua;
@@ -49,10 +50,31 @@ struct Args {
     /// work via buffer copies.
     #[arg(long)]
     drm_device: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Send a request to the running compositor over its IPC socket.
+    ///
+    /// Builtins: version, windows, outputs, view, quit, subscribe. Any other
+    /// method reaches the config's `tomoe.ipc.serve` handlers. `subscribe`
+    /// keeps the connection open and prints one event per line.
+    Msg {
+        /// Method name, e.g. "windows" or "workspace/switch".
+        method: String,
+        /// Params as a JSON value, e.g. '{"name": "2"}'.
+        params: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if let Some(Command::Msg { method, params }) = args.command {
+        return msg(&method, params.as_deref());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -130,6 +152,15 @@ fn main() -> Result<()> {
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     info!("listening on WAYLAND_DISPLAY={socket_name:?}");
 
+    // IPC socket (`tomoe msg`, bars, the config's `tomoe.ipc.serve`
+    // endpoints). Children and bus-activated services find it through
+    // $TOMOE_SOCKET; external clients can also derive it from
+    // $WAYLAND_DISPLAY.
+    match ipc::start(&mut tomoe, &socket_name.to_string_lossy()) {
+        Ok(path) => std::env::set_var(tomoe_ipc::SOCKET_ENV, &path),
+        Err(err) => warn!("error starting IPC server (continuing without): {err:#}"),
+    }
+
     // xdg-desktop-portal picks its backends per desktop: this makes it read
     // tomoe-portals.conf and route ScreenCast to xdg-desktop-portal-tomoe.
     std::env::set_var("XDG_CURRENT_DESKTOP", "tomoe");
@@ -176,10 +207,38 @@ fn main() -> Result<()> {
 
     // Managed services belong to the session; take them down with it.
     tomoe.process.shutdown();
+    ipc::shutdown(&mut tomoe);
     if !use_winit {
         exit_session();
     }
 
+    Ok(())
+}
+
+/// `tomoe msg`: connect to the running compositor's socket, send one
+/// request, print the result. `subscribe` then streams events, one JSON
+/// object per line, until the compositor goes away.
+fn msg(method: &str, params: Option<&str>) -> Result<()> {
+    let params = params
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .context("params must be valid JSON")?;
+    let path = tomoe_ipc::find_socket()
+        .context("no compositor found ($TOMOE_SOCKET and $WAYLAND_DISPLAY unset)")?;
+    let mut client = tomoe_ipc::Client::connect(&path)
+        .with_context(|| format!("error connecting to {}", path.display()))?;
+
+    match client.request(method, params).context("request failed")? {
+        Ok(result) => println!("{}", serde_json::to_string_pretty(&result)?),
+        Err(err) => anyhow::bail!("{err}"),
+    }
+
+    if method == "subscribe" {
+        loop {
+            let event = client.next_event().context("event stream closed")?;
+            println!("{}", serde_json::to_string(&event)?);
+        }
+    }
     Ok(())
 }
 
@@ -192,6 +251,7 @@ const SESSION_ENV: &[&str] = &[
     "DISPLAY",
     "XDG_CURRENT_DESKTOP",
     "TOMOE_PORTAL_CHOOSER",
+    "TOMOE_SOCKET",
 ];
 
 /// Push the session variables into the systemd user environment and the

@@ -219,6 +219,8 @@ pub struct Tomoe {
     process_timer_active: bool,
 
     pub ui: Ui,
+    /// IPC socket server state (`ipc.rs`): connected clients + subscriptions.
+    pub ipc: crate::ipc::IpcState,
     /// `--config` argument; the effective path is re-resolved on each check.
     config_cli_path: Option<PathBuf>,
     config_fingerprint: Option<ConfigFingerprint>,
@@ -361,6 +363,7 @@ impl Tomoe {
             builtin_processes: HashMap::new(),
             process_timer_active: false,
             ui: Ui::new(),
+            ipc: crate::ipc::IpcState::default(),
             config_cli_path: None,
             config_fingerprint: None,
         })
@@ -477,6 +480,25 @@ impl Tomoe {
 
     /// Refresh the Lua-visible snapshot. Returns true if outputs changed.
     pub fn sync_snapshot(&mut self) -> bool {
+        let windows = self.collect_win_props();
+        let outputs = self.collect_output_props();
+        let view_offset = self.space.view_offset();
+        let view = (view_offset.x, view_offset.y, self.space.view_zoom());
+        let scale = self.space.scale();
+        let pointer = self
+            .seat
+            .get_pointer()
+            .map(|p| {
+                let screen = coords::point_to_physical(p.current_location(), scale);
+                let world = self.space.screen_to_world(screen);
+                (world.x, world.y, screen.x, screen.y)
+            })
+            .unwrap_or((0.0, 0.0, 0.0, 0.0));
+        self.lua.sync(windows, outputs, view, pointer)
+    }
+
+    /// Current window properties, as both the Lua snapshot and IPC see them.
+    pub fn collect_win_props(&self) -> HashMap<u64, WinProps> {
         let focused_surface = self.seat.get_keyboard().and_then(|kb| kb.current_focus());
         let mut windows = HashMap::new();
         for (id, window) in &self.windows {
@@ -530,7 +552,11 @@ impl Tomoe {
                 },
             );
         }
+        windows
+    }
 
+    /// Current output properties, as both the Lua snapshot and IPC see them.
+    pub fn collect_output_props(&self) -> Vec<OutputProps> {
         let scale = self.space.scale();
         let mut outputs = Vec::new();
         for output in self.space.outputs() {
@@ -551,18 +577,7 @@ impl Tomoe {
                 ),
             });
         }
-        let view_offset = self.space.view_offset();
-        let view = (view_offset.x, view_offset.y, self.space.view_zoom());
-        let pointer = self
-            .seat
-            .get_pointer()
-            .map(|p| {
-                let screen = coords::point_to_physical(p.current_location(), scale);
-                let world = self.space.screen_to_world(screen);
-                (world.x, world.y, screen.x, screen.y)
-            })
-            .unwrap_or((0.0, 0.0, 0.0, 0.0));
-        self.lua.sync(windows, outputs, view, pointer)
+        outputs
     }
 
     /// Apply queued Lua ops and actions after any Lua entry point.
@@ -583,6 +598,7 @@ impl Tomoe {
             self.do_action(action);
         }
         self.in_lua = was_in_lua;
+        crate::ipc::flush_lua_broadcasts(self);
         self.reconcile_processes();
         self.apply_keyboard_settings();
         crate::backend::tty::apply_libinput_settings(self);
@@ -847,6 +863,8 @@ impl Tomoe {
             self.focus_window(Some(&window));
             self.queue_redraw_all();
         }
+        // After Lua so subscribers see the geometry policy just assigned.
+        crate::ipc::notify_window_open(self, id);
     }
 
     /// A toplevel was destroyed.
@@ -885,6 +903,7 @@ impl Tomoe {
             let next = self.space.elements().next_back().cloned();
             self.focus_window(next.as_ref());
         }
+        crate::ipc::notify_window_close(self, id);
         self.queue_redraw_all();
     }
 
@@ -905,6 +924,7 @@ impl Tomoe {
         self.lua.emit_outputs_changed();
         self.in_lua = was_in_lua;
         self.after_lua();
+        crate::ipc::notify_outputs_changed(self);
     }
 
     /// A client asked for a window-state change (fullscreen/maximize/…) or
@@ -1124,20 +1144,24 @@ impl Tomoe {
             keyboard.set_focus(self, focus, serial);
         }
 
+        let id = window.and_then(|win| {
+            self.windows
+                .iter()
+                .find(|(_, w)| *w == win)
+                .map(|(id, _)| *id)
+        });
+
         // Notify Lua about input-driven focus changes (not its own Focus ops).
         if !self.in_lua {
-            let id = window.and_then(|win| {
-                self.windows
-                    .iter()
-                    .find(|(_, w)| *w == win)
-                    .map(|(id, _)| *id)
-            });
             self.sync_snapshot();
             self.in_lua = true;
             self.lua.emit_focus_change(id);
             self.in_lua = false;
             self.after_lua();
         }
+        // IPC subscribers hear about every focus change, Lua-driven included
+        // (the emitter dedupes repeats).
+        crate::ipc::notify_focus_change(self, id);
     }
 
     pub fn do_action(&mut self, action: Action) {

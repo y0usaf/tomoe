@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tomoe", "crates/xdg-desktop-portal-tomoe"]
+members = ["crates/tomoe", "crates/tomoe-ipc", "crates/xdg-desktop-portal-tomoe"]
 resolver = "2"
 
 [workspace.package]

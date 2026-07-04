@@ -36,13 +36,23 @@ Done and working:
   displays/focus-follows-mouse), window handles + queued ops, hooks
   (open/close/focus/outputs/pointer button+axis, hover enter/leave),
   pointer grabs, world camera (`set_view`), hot reload (fresh VM +
-  `on_window_open` replay), watchdog
+  `on_window_open` replay). NB: the doctrine-02 dispatch *watchdog* is
+  still unimplemented (no mlua hook/instruction limit anywhere) despite
+  earlier claims here — a hung hook or `tomoe.ipc.serve` handler blocks
+  the loop; worth pairing with M4 §3's reload work
 - Process API (`tomoe.process.once/service/spawn`, ShojiWM-shape):
   declarative manifest diffed by id across reloads, restart/reload
   policies, 1 Hz supervision poll that also reaps fire-and-forget
   children (`process.rs`); builtin entries (reserved `tomoe:` id prefix,
   `Tomoe::declare_builtin_process`) ride the same manifest — the session
   bring-up chain is the first consumer
+- IPC (doctrine 03): `tomoe-ipc` wire crate + `ipc.rs` calloop server —
+  `tomoe msg` CLI, builtins (`version`/`windows`/`outputs`/`view`/
+  `subscribe`/`quit`), `tomoe.ipc.serve` user endpoints running as normal
+  Lua entries, `tomoe.ipc.broadcast` + core event stream (`window_open`,
+  `window_close`, `focus_change`, `outputs_changed`); socket at
+  `$XDG_RUNTIME_DIR/tomoe.<display>.sock`, `$TOMOE_SOCKET` exported and
+  pushed to the activation environment
 - Dogfood WMs: `wm.lua` (9 workspaces, dwindle, focus cycling),
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
 - Compositor UI: hotkey overlay, exit confirm, config-error banner,
@@ -181,8 +191,10 @@ Done and working:
       ProcessManager + Lua manifest in `Shared`; 1 Hz polling supervision
       timer (only alive while children exist) doubles as crash-loop rate
       limit and zombie reaper; `tomoe.spawn` now reaps too
-- [ ] IPC: JSON socket + `tomoe msg` CLI + event stream +
-      `tomoe.ipc.serve` for user-defined endpoints (bars/launchers)
+- [x] IPC: JSON socket + `tomoe msg` CLI + event stream +
+      `tomoe.ipc.serve` for user-defined endpoints (bars/launchers) —
+      `tomoe-ipc` wire crate (WIRE_VERSION, ShojiWM-shape ndjson frames)
+      + calloop-hosted server in `ipc.rs`
 - [ ] Hot reload with state persistence: `tomoe.on_reload` /
       persist-restore so workspaces survive a reload without replay hacks
       (`ref/ShojiWM/packages/config/src/index.tsx` onEnable/onDisable)
@@ -407,7 +419,25 @@ scanout confirmed via drm_info; no idle redraw storms.*
    `graphical-session.target` active after a TTY launch and gone after
    exit; waybar-style service surviving a config reload with
    `keep_if_unchanged`; restart-after-crash cadence
-2. IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`
+2. ~~IPC socket + `tomoe msg` + event stream + `tomoe.ipc.serve`~~ done —
+   doctrine-03 split: `crates/tomoe-ipc` holds the wire contract only
+   (newline-delimited JSON `{id?, method, params?}` / `{id, result|error}`
+   / `{event, payload}`, `WIRE_VERSION`, socket discovery, blocking
+   client), the event *vocabulary* grows freely in the compositor/config.
+   Server (`ipc.rs`) hosts each connection as its own calloop source
+   (non-blocking reads, buffered writes, 1 MiB slow-reader drop à la
+   niri). Builtins: `version`, `windows`, `outputs`, `view`, `subscribe`
+   (opt-in event stream, optional `{events = [...]}` filter), `quit`;
+   every other method dispatches to `tomoe.ipc.serve` handlers, which run
+   as normal Lua entries (snapshot before, `after_lua` after; errors go
+   back to the caller). `tomoe.ipc.broadcast` queues events (payload →
+   JSON at call time), drained in `after_lua`. Core events: `window_open`
+   / `window_close` / `focus_change` (deduped) / `outputs_changed`.
+   Socket `$XDG_RUNTIME_DIR/tomoe.<display>.sock`, exported as
+   `$TOMOE_SOCKET` (also into the systemd/D-Bus activation env for bars).
+   Verified live on winit: all builtins, Lua echo endpoint, subscribe
+   stream (broadcast + window open/close/focus on a real foot window),
+   error paths, `quit` + socket unlink
 3. Hot reload with `on_reload` persist/restore (replace the
    window-replay hack)
 4. Window rules

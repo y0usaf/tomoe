@@ -11,9 +11,11 @@ tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 fontdue = "0.9"
 jiff = "0.2"
-mlua = { version = "0.10", features = ["luajit", "vendored"] }
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
 png = "0.17"
+serde_json.workspace = true
 smithay-drm-extras.workspace = true
+tomoe-ipc = { path = "../tomoe-ipc" }
 xcursor = "0.3"
 
 [dependencies.smithay]

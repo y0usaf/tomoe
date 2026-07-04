@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
-use mlua::{Function, Lua, MetaMethod, RegistryKey, Table, UserData, UserDataMethods, Value};
+use mlua::{
+    Function, Lua, LuaSerdeExt, MetaMethod, RegistryKey, Table, UserData, UserDataMethods, Value,
+};
 use tracing::{info, warn};
 
 use crate::input::Action;
@@ -622,6 +624,13 @@ struct Shared {
     /// Fire-and-forget spawns (`tomoe.spawn`, `tomoe.process.spawn`),
     /// drained like ops so the core can track and reap the children.
     spawns: RefCell<Vec<ProcessSpec>>,
+    /// User IPC endpoints (`tomoe.ipc.serve`), keyed by method name. Live in
+    /// the VM, so a reload naturally re-registers them from the new config.
+    ipc_handlers: RefCell<HashMap<String, RegistryKey>>,
+    /// Queued `tomoe.ipc.broadcast` events, drained like ops after each Lua
+    /// entry. Payloads convert to JSON at call time — the queue never holds
+    /// live Lua values.
+    ipc_broadcasts: RefCell<Vec<(String, serde_json::Value)>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1027,6 +1036,46 @@ impl LuaRuntime {
 
         tomoe.set("process", process)?;
 
+        // tomoe.ipc — user-extensible IPC endpoints on the compositor's JSON
+        // socket (ShojiWM-shape). `serve` registers a request handler,
+        // `broadcast` pushes an event to every subscribed client. Params and
+        // payloads cross the boundary as JSON-compatible values.
+        let ipc = lua.create_table()?;
+
+        // tomoe.ipc.serve("workspace/switch", function(params) ... end) —
+        // re-registering a method name overwrites the previous handler.
+        let s = shared.clone();
+        ipc.set(
+            "serve",
+            lua.create_function(move |lua, (method, handler): (String, Function)| {
+                let key = lua.create_registry_value(handler)?;
+                s.ipc_handlers.borrow_mut().insert(method, key);
+                Ok(())
+            })?,
+        )?;
+
+        // tomoe.ipc.broadcast("workspace/active", payload)
+        let s = shared.clone();
+        ipc.set(
+            "broadcast",
+            lua.create_function(move |lua, (event, payload): (String, Option<Value>)| {
+                let payload = match payload {
+                    None | Some(Value::Nil) => serde_json::Value::Null,
+                    Some(value) => match lua.from_value(value) {
+                        Ok(json) => json,
+                        Err(err) => {
+                            warn!("tomoe.ipc.broadcast({event:?}): payload not JSON-compatible: {err}");
+                            return Ok(());
+                        }
+                    },
+                };
+                s.ipc_broadcasts.borrow_mut().push((event, payload));
+                Ok(())
+            })?,
+        )?;
+
+        tomoe.set("ipc", ipc)?;
+
         // tomoe.clear_focus() — drop keyboard focus (no window receives keys)
         let s = shared.clone();
         tomoe.set(
@@ -1334,6 +1383,49 @@ impl LuaRuntime {
 
     pub fn mark_processes_dirty(&self) {
         self.shared.processes_dirty.set(true);
+    }
+
+    pub fn take_ipc_broadcasts(&mut self) -> Vec<(String, serde_json::Value)> {
+        self.shared.ipc_broadcasts.take()
+    }
+
+    pub fn has_ipc_handler(&self, method: &str) -> bool {
+        self.shared.ipc_handlers.borrow().contains_key(method)
+    }
+
+    /// Run a `tomoe.ipc.serve` handler. The caller wraps this like any other
+    /// Lua entry (snapshot before, `after_lua` after). Errors come back as
+    /// strings — they go to the requesting IPC client, not just the log.
+    pub fn call_ipc_handler(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let func = {
+            let handlers = self.shared.ipc_handlers.borrow();
+            let key = handlers
+                .get(method)
+                .ok_or_else(|| format!("unknown method: {method}"))?;
+            self.lua
+                .registry_value::<Function>(key)
+                .map_err(|err| format!("registry error: {err}"))?
+        };
+        let params = if params.is_null() {
+            Value::Nil
+        } else {
+            self.lua
+                .to_value(&params)
+                .map_err(|err| format!("params conversion error: {err}"))?
+        };
+        let result = func
+            .call::<Value>(params)
+            .map_err(|err| format!("Lua error: {err}"))?;
+        if matches!(result, Value::Nil) {
+            return Ok(serde_json::Value::Null);
+        }
+        self.lua
+            .from_value(result)
+            .map_err(|err| format!("result not JSON-compatible: {err}"))
     }
 
     pub fn has_window_open_hooks(&self) -> bool {
@@ -1836,6 +1928,44 @@ mod tests {
             Launch::Argv(vec!["notify-send".into(), "hello".into()])
         );
         assert_eq!(spawns[1].launch, Launch::Shell("foot".into()));
+    }
+
+    #[test]
+    fn ipc_serve_and_broadcast() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                tomoe.ipc.serve("echo", function(params)
+                  return { got = params.value, n = params.n + 1 }
+                end)
+                tomoe.ipc.serve("boom", function() error("nope") end)
+                tomoe.ipc.broadcast("workspace/active", { name = "2" })
+                tomoe.ipc.broadcast("ping")
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        assert!(rt.has_ipc_handler("echo"));
+        assert!(!rt.has_ipc_handler("missing"));
+
+        let result = rt
+            .call_ipc_handler("echo", serde_json::json!({ "value": "hi", "n": 1 }))
+            .unwrap();
+        assert_eq!(result, serde_json::json!({ "got": "hi", "n": 2 }));
+
+        let err = rt
+            .call_ipc_handler("boom", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("nope"), "{err}");
+
+        let broadcasts = rt.take_ipc_broadcasts();
+        assert_eq!(broadcasts.len(), 2);
+        assert_eq!(broadcasts[0].0, "workspace/active");
+        assert_eq!(broadcasts[0].1, serde_json::json!({ "name": "2" }));
+        assert_eq!(broadcasts[1].1, serde_json::Value::Null);
+        assert!(rt.take_ipc_broadcasts().is_empty());
     }
 
     #[test]
