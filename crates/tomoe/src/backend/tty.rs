@@ -28,6 +28,8 @@ use smithay::backend::egl::context::ContextPriority;
 use smithay::backend::egl::{EGLDevice, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::renderer::element::utils::select_dmabuf_feedback;
+use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
@@ -36,7 +38,7 @@ use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::desktop::layer_map_for_output;
-use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::desktop::utils::{send_dmabuf_feedback_surface_tree, OutputPresentationFeedback};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
@@ -47,10 +49,11 @@ use smithay::reexports::input::{
     self as libinput, DeviceCapability, DragLockState, Libinput, SendEventsMode,
 };
 use smithay::reexports::rustix::fs::OFlags;
+use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{DeviceFd, Monotonic};
-use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -117,6 +120,21 @@ pub struct TtySurface {
     pub redraw_state: RedrawState,
     /// The wl_output global, removed again when the connector disconnects.
     pub global: GlobalId,
+    /// Per-surface dmabuf feedback; None until the primary GPU is up.
+    pub dmabuf_feedback: Option<SurfaceDmabufFeedback>,
+    /// Whether the last frame put a client buffer on the primary plane
+    /// (zero-copy). Only for edge-triggered logging.
+    pub direct_scanout: bool,
+}
+
+/// Dmabuf feedback pair for one output surface. `render` lists the primary
+/// GPU's render formats; `scanout` prepends plane-format tranches so
+/// clients that can be flipped directly (fullscreen, cursor) allocate
+/// buffers the planes accept. Which one a surface gets each frame depends
+/// on whether it was scanned out (`select_dmabuf_feedback`).
+pub struct SurfaceDmabufFeedback {
+    pub render: DmabufFeedback,
+    pub scanout: DmabufFeedback,
 }
 
 /// One DRM device (GPU) on the seat.
@@ -370,7 +388,8 @@ fn device_added(tomoe: &mut Tomoe, node: DrmNode, path: &Path) -> Result<()> {
         match data.gpu_manager.single_renderer(&data.primary_render_node) {
             Ok(renderer) => {
                 let formats = renderer.dmabuf_formats();
-                match DmabufFeedbackBuilder::new(data.primary_render_node.dev_id(), formats).build()
+                match DmabufFeedbackBuilder::new(data.primary_render_node.dev_id(), formats.clone())
+                    .build()
                 {
                     Ok(feedback) => {
                         let _global = dmabuf_state.create_global_with_default_feedback::<Tomoe>(
@@ -378,6 +397,28 @@ fn device_added(tomoe: &mut Tomoe, node: DrmNode, path: &Path) -> Result<()> {
                             &feedback,
                         );
                         data.dmabuf_global_created = true;
+
+                        // Surfaces on GPUs that enumerated before the primary
+                        // couldn't build scanout feedback yet; backfill them.
+                        for (dev_node, dev) in data.devices.iter_mut() {
+                            for surface in dev.surfaces.values_mut() {
+                                if surface.dmabuf_feedback.is_some() {
+                                    continue;
+                                }
+                                match surface_dmabuf_feedback(
+                                    &surface.compositor,
+                                    formats.clone(),
+                                    data.primary_render_node,
+                                    dev.render_node,
+                                    *dev_node,
+                                ) {
+                                    Ok(feedback) => surface.dmabuf_feedback = Some(feedback),
+                                    Err(err) => {
+                                        warn!("error building surface dmabuf feedback: {err:#}")
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(err) => warn!("error building dmabuf feedback: {err}"),
                 }
@@ -723,6 +764,21 @@ fn connector_connected(
         }
     };
 
+    // Scanout feedback needs the primary GPU's render formats; if it isn't
+    // up yet (udev enumeration order), the dmabuf-global creation backfills.
+    let dmabuf_feedback = match gpu_manager.single_renderer(primary_render_node) {
+        Ok(renderer) => surface_dmabuf_feedback(
+            &compositor,
+            renderer.dmabuf_formats(),
+            *primary_render_node,
+            device.render_node,
+            node,
+        )
+        .map_err(|err| warn!("error building surface dmabuf feedback: {err:#}"))
+        .ok(),
+        Err(_) => None,
+    };
+
     let global = output.create_global::<Tomoe>(display_handle);
     space.map_output(&output, (x, 0));
 
@@ -734,6 +790,8 @@ fn connector_connected(
             connector,
             redraw_state: RedrawState::Idle,
             global,
+            dmabuf_feedback,
+            direct_scanout: false,
         },
     );
     Ok(true)
@@ -1410,15 +1468,31 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ));
     }
 
+    // Plane offloading: fullscreen client buffers flip onto the primary
+    // plane (zero-copy, format changes allowed — the atomic test commit
+    // decides) and the cursor rides the cursor plane, so pointer motion
+    // stops re-compositing the scene. Overlay planes stay off (niri
+    // default: weird performance on some hardware).
+    let frame_flags =
+        FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+
     let mut rendered_ok = false;
-    match surface.compositor.render_frame(
-        &mut renderer,
-        &elements,
-        CLEAR_COLOR,
-        FrameFlags::empty(),
-    ) {
+    match surface
+        .compositor
+        .render_frame(&mut renderer, &elements, CLEAR_COLOR, frame_flags)
+    {
         Ok(res) => {
             rendered_ok = true;
+            let scanout = matches!(&res.primary_element, PrimaryPlaneElement::Element(_));
+            if scanout != surface.direct_scanout {
+                surface.direct_scanout = scanout;
+                let name = surface.output.name();
+                if scanout {
+                    debug!("output {name}: direct scanout engaged (zero-copy)");
+                } else {
+                    debug!("output {name}: direct scanout disengaged");
+                }
+            }
             // KMS can't fence this frame (no IN_FENCE_FD, or the GL sync
             // isn't exportable — common on NVIDIA): wait for the render to
             // finish CPU-side or the display scans out a half-drawn buffer.
@@ -1428,6 +1502,16 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
                         warn!("error waiting for frame completion: {err:?}");
                     }
                 }
+            }
+            // Tell each client whether it can aim for a plane next frame.
+            if let Some(feedback) = surface.dmabuf_feedback.as_ref() {
+                send_dmabuf_feedbacks(
+                    space,
+                    &surface.output,
+                    lock_surfaces.get(&surface.output),
+                    feedback,
+                    &res.states,
+                );
             }
             send_frames(
                 space,
@@ -1500,6 +1584,134 @@ pub fn import_dmabuf(data: &mut TtyData, dmabuf: &Dmabuf) -> bool {
             debug!("error importing dmabuf: {err}");
             false
         }
+    }
+}
+
+/// NVIDIA block-linear modifiers with framebuffer compression (bits 25:23).
+/// The kernel advertises them as plane-capable but the driver rejects the
+/// actual flip, so clients allocating them flap between direct scanout and
+/// GL fallback every few frames — keep them out of the scanout tranches
+/// (see the standing lessons).
+fn is_nvidia_compressed_modifier(modifier: Modifier) -> bool {
+    let m = u64::from(modifier);
+    (m >> 56) == 0x03 && (m & 0x10) != 0 && (m & (0x7 << 23)) != 0
+}
+
+/// Build the render/scanout dmabuf feedback pair for one output surface
+/// (niri-shape). Scanout tranches carry only formats we can also render
+/// from, so a buffer that fails the plane test still has a GL path; the
+/// primary-plane-only tranche is preferred over primary-or-overlay to
+/// keep scanout working with overlay planes disabled.
+fn surface_dmabuf_feedback(
+    compositor: &GbmDrmCompositor,
+    primary_formats: FormatSet,
+    primary_render_node: DrmNode,
+    surface_render_node: Option<DrmNode>,
+    surface_scanout_node: DrmNode,
+) -> Result<SurfaceDmabufFeedback> {
+    let surface = compositor.surface();
+    let planes = surface.planes();
+
+    let primary_plane_formats = surface.plane_info().formats.clone();
+    let primary_or_overlay_plane_formats = primary_plane_formats
+        .iter()
+        .chain(planes.overlay.iter().flat_map(|p| p.formats.iter()))
+        .copied()
+        .collect::<FormatSet>();
+
+    let scanout_capable = |f: &smithay::backend::allocator::Format| {
+        // Cross-device scanout (display-only GPU importing the primary's
+        // buffers) is only safe with linear layouts.
+        let cross_device_ok =
+            surface_render_node == Some(primary_render_node) || f.modifier == Modifier::Linear;
+        cross_device_ok && !is_nvidia_compressed_modifier(f.modifier)
+    };
+    let primary_scanout_formats = primary_plane_formats
+        .intersection(&primary_formats)
+        .copied()
+        .filter(scanout_capable)
+        .collect::<Vec<_>>();
+    let primary_or_overlay_scanout_formats = primary_or_overlay_plane_formats
+        .intersection(&primary_formats)
+        .copied()
+        .filter(scanout_capable)
+        .collect::<Vec<_>>();
+
+    let builder = DmabufFeedbackBuilder::new(primary_render_node.dev_id(), primary_formats);
+    let scanout = builder
+        .clone()
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            surface_scanout_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_or_overlay_scanout_formats,
+        )
+        .build()
+        .context("error building scanout dmabuf feedback")?;
+    // On the primary node the render feedback is the scanout one, so a
+    // surface falling off a plane doesn't churn through format renegotiation.
+    let render = if surface_render_node == Some(primary_render_node) {
+        scanout.clone()
+    } else {
+        builder
+            .build()
+            .context("error building render dmabuf feedback")?
+    };
+
+    Ok(SurfaceDmabufFeedback { render, scanout })
+}
+
+/// Send each surface shown on `output` the feedback matching how it was
+/// presented this frame: scanout tranches if it sat on a plane, plain
+/// render formats otherwise. smithay dedups, so per-frame calls are cheap.
+/// Output attribution mirrors `send_frames`: everything visible on the
+/// output being presented.
+fn send_dmabuf_feedbacks(
+    space: &PhysicalSpace,
+    output: &Output,
+    lock_surface: Option<&smithay::wayland::session_lock::LockSurface>,
+    feedback: &SurfaceDmabufFeedback,
+    render_element_states: &RenderElementStates,
+) {
+    let select = |surface: &_, _: &_| {
+        select_dmabuf_feedback(
+            surface,
+            render_element_states,
+            &feedback.render,
+            &feedback.scanout,
+        )
+    };
+    let Some(output_geo) = space.output_geometry(output) else {
+        return;
+    };
+    for window in space.elements() {
+        // Same visibility filter as the scene: a window straddling outputs
+        // gets whichever presented last, which smithay's dedup tolerates.
+        let visible = space.element_geometry(window).is_some_and(|geo| {
+            space
+                .world_rect_to_screen(geo)
+                .intersection(output_geo.to_f64())
+                .is_some()
+        });
+        if !visible {
+            continue;
+        }
+        window.send_dmabuf_feedback(output, |_, _| Some(output.clone()), select);
+    }
+    for layer in layer_map_for_output(output).layers() {
+        layer.send_dmabuf_feedback(output, |_, _| Some(output.clone()), select);
+    }
+    if let Some(surface) = lock_surface {
+        send_dmabuf_feedback_surface_tree(
+            surface.wl_surface(),
+            output,
+            |_, _| Some(output.clone()),
+            select,
+        );
     }
 }
 

@@ -20,6 +20,11 @@ Done and working:
   zero connected outputs is a wait-state, not an error
 - niri-style per-output redraw state machine + estimated-vblank timer,
   damage-tracked rendering, frame-callback throttling
+- Plane offloading: fullscreen direct scanout (primary plane, zero-copy)
+  + hardware cursor plane via DrmCompositor frame flags; per-surface
+  render/scanout dmabuf feedback steers clients onto flippable formats
+  (NVIDIA compressed modifiers excluded). Overlay planes off. Live
+  verification pending (see M3 §4)
 - Physical-first coordinate doctrine (`coords.rs`), fractional-scale +
   viewporter, dmabuf, layer-shell, xdg-decoration (+ KDE legacy),
   data-device/clipboard, primary selection, xdg-output,
@@ -85,8 +90,14 @@ Done and working:
 - [x] presentation-time protocol (feedback rides the DRM frame as user data,
       fired from the vblank with the hardware timestamp; winit approximates
       with the compositor clock at submit)
-- [ ] Direct scanout for fullscreen surfaces; hardware cursor plane
-      (cursor is composited today — `backend/tty.rs:619`)
+- [x] Direct scanout for fullscreen surfaces; hardware cursor plane —
+      `FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | ALLOW_CURSOR_PLANE_SCANOUT`
+      on the DrmCompositor render, plus per-surface render/scanout dmabuf
+      feedback (niri-shape, NVIDIA compressed modifiers filtered from the
+      scanout tranches per the standing lessons); engagement logged
+      edge-triggered ("direct scanout engaged"). **Pending live
+      verification**: fullscreen client on the primary plane via drm_info +
+      the engage log; cursor-only motion not re-compositing
 - [ ] VRR (adaptive sync) per output
 - [ ] Tearing control (`wp_tearing_control_v1`) + async page flips
 - [x] Output hotplug (udev → connector scan diff → connect/disconnect,
@@ -304,6 +315,18 @@ real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
 4. Direct scanout for fullscreen + cursor plane; VRR; tearing control
    (mind `ref/ShojiWM/knowledges/fullscreen-direct-scanout-tearing.md`
    for the NVIDIA/async-flip pitfalls)
+   - ~~Direct scanout + cursor plane~~ landed (plane flags + per-surface
+     scanout dmabuf feedback in `backend/tty.rs`; overlay planes stay off,
+     niri default). Scanout needs the fullscreen buffer opaque *and*
+     spanning the output, or a black clear color — tomoe keeps its grey
+     `CLEAR_COLOR`, so a translucent fullscreen client won't flip; swap
+     the clear color to black under a fullscreen window if that ever
+     matters. Live checks pending (drm_info, engage/disengage log)
+   - VRR per output (smithay `DrmCompositor::use_vrr`; wire to
+     `settings.displays[..].vrr`) — open
+   - Tearing control (`wp_tearing_control_v1` + async flips) — open;
+     needs the smithay fork/patch described in the ShojiWM doc, plus the
+     estimated-vblank bypass for tearing surfaces (§5 of that doc)
 
 *Accept: laptop lid/dock cycles, lock screen, fullscreen game with direct
 scanout confirmed via drm_info; no idle redraw storms.*
