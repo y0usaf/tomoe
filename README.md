@@ -2,70 +2,47 @@
 
 A Wayland compositor where the window manager is yours to rewrite.
 
-Tomoe (巴, after Tomoe River — the fountain-pen paper you return to again and
-again) is built in Rust on [Smithay](https://github.com/Smithay/smithay), with
-an embedded LuaJIT runtime as its configuration language. The config is a
-program, not a settings file: the Rust core exposes mechanism — windows,
-outputs, input, a camera over the window canvas — and **all** window-management
-policy (workspaces, tiling, focus order) is Lua built on that same public API.
-If the built-in WM can't be written on the API, the API isn't done.
+The Rust/[Smithay](https://github.com/Smithay/smithay) core exposes mechanism
+— windows, outputs, input, a camera over an infinite canvas — and all window
+management policy is Lua, hot-reloaded on save. A tiling WM and a
+zoomable-canvas WM ship as plain Lua modules; extend or replace them
+wholesale. Geometry is integer physical pixels, so rendering stays
+pixel-exact at any scale. JSON IPC (`tomoe msg`), declarative process
+management, screencasting, session lock, VRR, tearing control, XWayland via
+xwayland-satellite.
 
-## Highlights
+Under active development, not yet stable.
 
-- **Config as a program** — event hooks, keybinds bound to Lua functions,
-  pointer grabs, declarative process management, user-defined IPC endpoints,
-  hot reload on save.
-- **Replaceable WM policy** — the default dwindle-tiling WM (`require("wm")`)
-  and a zoomable-canvas WM (`require("zoomer")`) ship as plain Lua modules;
-  extend them or replace them wholesale.
-- **Pixel-exact rendering** — all geometry is integer physical pixels, so
-  client buffers are sampled 1:1 at any output scale; fractional scaling via
-  wp-fractional-scale-v1 + wp-viewporter.
-- **Daily-driver plumbing** — DRM/GBM/libinput TTY backend and a nested winit
-  backend, direct scanout, VRR, output mirroring, tearing control, session
-  lock, screenshots, screencasting portal, XWayland via xwayland-satellite.
-- **JSON IPC** — a versioned socket with request/response and event streams
-  (`tomoe msg`), extensible from the config with `tomoe.ipc.serve`.
+## Build
 
-Tomoe is under active development and not yet stable; see `PLAN.md` for the
-current milestones.
+With Nix: `nix build`, or `nix develop` for a dev shell.
 
-## Building
-
-Nix is the source of truth for builds:
+Without: a stable Rust toolchain, `pkg-config`, `libclang`, and dev headers
+for EGL/GBM (mesa), wayland, libinput, libseat, libxkbcommon, libudev,
+libdisplay-info, dbus, and pipewire. LuaJIT is vendored — no Lua needed.
 
 ```sh
-nix build            # the compositor package
-nix develop          # hacking shell (cargo build / cargo test inside)
+cargo build --release            # target/release/{tomoe,xdg-desktop-portal-tomoe}
+cargo install --path crates/tomoe
 ```
 
-Run nested in an existing session with `tomoe --backend winit`, or on a TTY
-with `./run-tty.sh`.
+Run nested inside an existing session with `tomoe --backend winit`, or from a
+TTY with `tomoe --backend tty`. For screencasting, install the portal binary
+and the files in `resources/` (`tomoe.portal`, `tomoe-portals.conf`, D-Bus
+service) as the flake's `postInstall` does.
 
-## Configuration
+## Configure
 
-The config lives at `~/.config/tomoe/init.lua`; without one, a built-in
-default keeps the session usable. The complete Lua API reference is
-[docs/lua-api.md](docs/lua-api.md) — generated from the LuaLS stubs in
-`resources/meta/` and held in lockstep with the actual runtime by tests.
-Point lua-language-server at `resources/meta/` for completion and type
-checking while editing your config.
+`~/.config/tomoe/init.lua`; without one, a built-in default keeps the session
+usable. Full API reference: [docs/lua-api.md](docs/lua-api.md). Point LuaLS
+at `resources/meta/` for completion and type checking.
 
 ## Credits
 
-Tomoe is an original implementation, but it was designed by studying three
-compositors closely, and owes each of them:
-
-- **[niri](https://github.com/YaLTeR/niri)** — the performance blueprint:
-  render-on-damage, a per-output redraw state machine, direct scanout, and
-  a battle-tested Smithay revision. Its discipline around pixel-exact
-  scaling inspired tomoe's physical-first coordinate doctrine.
-- **[Hyprland](https://github.com/hyprwm/Hyprland)** — the feature bar:
-  animations, effects, window rules, and the expectation that a tiling
-  compositor can also be pleasant to look at.
-- **[ShojiWM](https://github.com/bea4dev/ShojiWM)** — the configurability
-  model: config as a scriptable program, hook-driven WM policy, declarative
-  process management, and user-extensible IPC.
+An original implementation, designed by studying
+[niri](https://github.com/YaLTeR/niri) (damage-driven rendering, pixel
+exactness), [Hyprland](https://github.com/hyprwm/Hyprland) (the feature bar),
+and [ShojiWM](https://github.com/bea4dev/ShojiWM) (config as a program).
 
 ## License
 
