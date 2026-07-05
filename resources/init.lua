@@ -34,6 +34,11 @@ tomoe.settings {
   -- it via wp_tearing_control — lowest latency for games, at the cost of
   -- visible tear lines. Default: off.
   -- tearing = true,
+  -- Wait for rendering to finish before queueing each frame to KMS. Set
+  -- this on NVIDIA: fenced frames queued before the render completes hang
+  -- the driver (whole-session freeze; niri discussion #3777). Costs a
+  -- little latency. Default: off.
+  -- wait_for_frame_completion = true,
   -- xkb keymap and key repeat. Unset fields use the xkb defaults
   -- (including XKB_DEFAULT_* environment variables).
   -- keyboard = {

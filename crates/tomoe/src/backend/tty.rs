@@ -1458,6 +1458,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         .unwrap_or_default();
     let cursor_status = tomoe.cursor_status.clone();
     let border_width = tomoe.lua.settings().border_width;
+    let wait_for_frame_completion = tomoe.lua.settings().wait_for_frame_completion;
 
     let locked = tomoe.is_locked();
 
@@ -1621,7 +1622,10 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             // KMS can't fence this frame (no IN_FENCE_FD, or the GL sync
             // isn't exportable — common on NVIDIA): wait for the render to
             // finish CPU-side or the display scans out a half-drawn buffer.
-            if res.needs_sync() {
+            // settings.wait_for_frame_completion forces the wait even for
+            // fenceable frames — queueing a fenced frame before the render
+            // completes hangs the NVIDIA driver (niri discussion #3777).
+            if res.needs_sync() || wait_for_frame_completion {
                 if let PrimaryPlaneElement::Swapchain(element) = &res.primary_element {
                     if let Err(err) = element.sync.wait() {
                         warn!("error waiting for frame completion: {err:?}");

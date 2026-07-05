@@ -248,6 +248,13 @@ pub struct Settings {
     /// it via wp_tearing_control_v1. Off by default: tearing is jarring
     /// unless you asked for it. Per-window overrides come with window rules.
     pub tearing: bool,
+    /// Wait for rendering to finish CPU-side before queueing every frame to
+    /// KMS, even when the driver could fence it (IN_FENCE_FD). Works around
+    /// an NVIDIA driver bug where a fenced atomic commit queued before the
+    /// render completes hangs the whole display pipeline — the same freeze
+    /// niri covers with debug.wait-for-frame-completion-before-queueing
+    /// (niri discussion #3777). Costs a little latency; off by default.
+    pub wait_for_frame_completion: bool,
     /// xkb keymap + key repeat, applied to the seat keyboard.
     pub keyboard: KeyboardSettings,
     /// libinput device config (tty backend).
@@ -277,6 +284,7 @@ impl Default for Settings {
             mod_key: crate::input::ModKey::default(),
             focus_follows_mouse: false,
             tearing: false,
+            wait_for_frame_completion: false,
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
         }
@@ -840,6 +848,9 @@ impl LuaRuntime {
                 }
                 if let Ok(Some(tearing)) = table.get::<Option<bool>>("tearing") {
                     settings.tearing = tearing;
+                }
+                if let Ok(Some(wait)) = table.get::<Option<bool>>("wait_for_frame_completion") {
+                    settings.wait_for_frame_completion = wait;
                 }
                 if let Ok(m) = table.get::<String>("mod") {
                     match crate::input::ModKey::parse(&m) {
@@ -1789,6 +1800,21 @@ mod tests {
             .unwrap();
         assert!(rt.settings().focus_follows_mouse);
         assert!(rt.has_hover_hooks());
+    }
+
+    #[test]
+    fn parse_wait_for_frame_completion() {
+        let rt = LuaRuntime::new().unwrap();
+        assert!(!rt.settings().wait_for_frame_completion);
+        rt.lua
+            .load(r#"tomoe.settings { wait_for_frame_completion = true }"#)
+            .exec()
+            .unwrap();
+        assert!(rt.settings().wait_for_frame_completion);
+        // A later partial settings call must not reset it (Option<bool>
+        // parse: a missing key is not `false`).
+        rt.lua.load(r#"tomoe.settings { gaps = 4 }"#).exec().unwrap();
+        assert!(rt.settings().wait_for_frame_completion);
     }
 
     #[test]
