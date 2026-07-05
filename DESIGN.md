@@ -145,6 +145,26 @@ tomoe.ipc.serve("mybar", handler)                -- user-extensible IPC
 tomoe.on_reload(snapshot_fn, restore_fn)         -- hot reload with state persistence
 ```
 
+## Companion project: moonshell
+
+**moonshell** (`~/Dev/moonshell`) is the desktop-shell sibling — bars/
+launchers/OSDs, Rust + LuaJIT, a CPU-rendered layer-shell client; nur's
+successor. The contract (mirrored in its DESIGN.md):
+
+- moonshell is the **first external consumer of `tomoe-ipc`**, pulled as
+  a git dependency. Protocol changes bump `WIRE_VERSION` deliberately;
+  the event *vocabulary* grows against moonshell's needs (see PLAN.md
+  "moonshell-driven"). It also speaks niri/Hyprland/Sway IPC, which keeps
+  our protocol honest against peer surfaces.
+- Workspace state for bars comes from the Lua layer (`wm.lua` via
+  `tomoe.ipc.broadcast`) — workspaces are policy, so their vocabulary is
+  config-owned, per the doctrine-03 wire/vocabulary split.
+- Integration ships as **content, not code**: tomoe provides a default
+  moonshell bar config (as it ships `wm.lua`); a combined home-manager
+  module composes both flakes. No shared Rust beyond `tomoe-ipc`; shared
+  Lua conventions (settings tables, `on_*` hooks, `Mod`) go in a
+  `~/Dev/design/` conventions doc, not either codebase.
+
 ## Roadmap
 
 - **Phase 1 (now): skeleton that runs.** Flake devshell; winit backend; GlesRenderer +

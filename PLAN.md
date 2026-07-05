@@ -250,6 +250,26 @@ Done and working:
 - [ ] Touch + tablet-v2 — deferred, no hardware pressure yet
 - [ ] Virtual keyboard — deferred
 
+### moonshell-driven (companion shell; see DESIGN.md "Companion project")
+
+moonshell (`~/Dev/moonshell`, its PLAN.md "Interconnection tracker" is
+the mirror of this list) is the first external `tomoe-ipc` consumer.
+Items it pulls on:
+
+- [ ] Workspace/window event vocabulary sufficient for a bar (workspace
+      list + active, focused window title/app_id) — vocabulary only, no
+      wire change: `wm.lua` broadcasts via `tomoe.ipc.broadcast`, core
+      events (`focus_change`, `window_open/close`) already carry the
+      rest. Design lands with moonshell M3
+- [ ] Window control surface for a taskbar (activate/close/minimize):
+      either wlr-foreign-toplevel-management (M5 §1) or equivalent
+      `tomoe-ipc` methods — decide when moonshell's taskbar widget
+      needs it; xdg-activation (M5 §2) is a prerequisite for activate
+- [ ] Default moonshell bar config shipped as content alongside
+      `wm.lua`, once moonshell M2 (Lua runtime) lands
+- [ ] Combined home-manager module composing both flakes (post
+      moonshell M3)
+
 ## Milestones (ordered)
 
 ### M1 — Finish Phase 3: a WM you can actually use daily
