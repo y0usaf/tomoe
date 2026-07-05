@@ -2,7 +2,7 @@
 //!
 //! Monitor sources stream via wlr-screencopy (`pipewire_stream`); window
 //! sources ride ext-foreign-toplevel-list + ext-image-copy-capture
-//! (`toplevel_stream`), ShojiWM-shape.
+//! (`toplevel_stream`).
 //!
 //! See: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.impl.portal.ScreenCast.html
 
@@ -330,8 +330,8 @@ impl ScreenCast {
             Selection::Window(win) => {
                 let spec = toplevel_stream::StreamSpec {
                     toplevel_identifier: win.identifier.clone(),
-                    // No refresh source of truth per window; cap at 60 like
-                    // ShojiWM. Content-paced anyway (frames follow commits).
+                    // No refresh source of truth per window; cap at 60.
+                    // Content-paced anyway (frames follow commits).
                     framerate: 60,
                     cursor_visible,
                 };

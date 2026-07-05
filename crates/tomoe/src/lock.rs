@@ -1,8 +1,8 @@
 //! ext-session-lock-v1: the lock state machine and locked-scene rendering.
 //!
-//! The niri-shape guarantee: the client's `locked` event is only sent after
-//! every output has actually put a locked frame on screen, so no stale
-//! session content can survive into the locked state. Progression:
+//! The guarantee: the client's `locked` event is only sent after every
+//! output has actually put a locked frame on screen, so no stale session
+//! content can survive into the locked state. Progression:
 //!
 //! `Unlocked` → (client locks) → `WaitingForSurfaces` (grace period for the
 //! client to create + commit lock surfaces, 1s deadline) → `Locking`

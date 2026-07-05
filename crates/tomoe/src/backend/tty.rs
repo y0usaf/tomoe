@@ -1,11 +1,11 @@
 //! TTY backend: DRM/GBM output + libinput input through a libseat session.
 //!
-//! Multi-GPU, niri-style: every DRM device on the seat is opened, rendering
-//! always happens on the primary render node through smithay's `GpuManager`,
+//! Multi-GPU: every DRM device on the seat is opened, rendering always
+//! happens on the primary render node through smithay's `GpuManager`,
 //! and frames for outputs on other devices are copied across for scanout.
 //! Connector and GPU hotplug arrive via udev; zero connected outputs is a
 //! wait-state, not an error. Rendering is damage-driven through a per-output
-//! redraw state machine (niri-style): nothing repaints unless `queue_redraw`
+//! redraw state machine: nothing repaints unless `queue_redraw`
 //! was called, and an output with a frame in flight coalesces further
 //! requests until its vblank.
 
@@ -81,8 +81,8 @@ const CLEAR_COLOR: [f32; 4] = [0.05, 0.05, 0.05, 1.0];
 
 /// `TOMOE_FORCE_TEARING=1` tears for any fullscreen window, skipping both
 /// `settings.tearing` and the wp_tearing_control hint — X11 games through
-/// xwayland-satellite can't send the hint. Testing aid (ShojiWM's
-/// SHOJI_FORCE_TEARING) until window rules can grant tearing per app.
+/// xwayland-satellite can't send the hint. Testing aid until window rules
+/// can grant tearing per app.
 fn force_tearing() -> bool {
     static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FORCE.get_or_init(|| std::env::var("TOMOE_FORCE_TEARING").is_ok_and(|v| v == "1"))
@@ -105,7 +105,7 @@ pub type GbmDrmCompositor = DrmCompositor<
     DrmDeviceFd,
 >;
 
-/// Per-output redraw state machine (spec: niri's Development:-Redraw-Loop).
+/// Per-output redraw state machine.
 /// Invariant: at most one repaint is in flight per output at any time.
 #[derive(Debug, Default)]
 pub enum RedrawState {
@@ -583,8 +583,8 @@ fn device_removed(tomoe: &mut Tomoe, node: DrmNode) {
 
 /// Choose a display mode per `settings.displays[name].resolution`. Resolve
 /// the size first (preferred / largest area / exact), then the refresh among
-/// modes of that size. Interlaced modes are skipped (they don't work — see
-/// niri's pick_mode). Returns the fallback flag: true means nothing matched
+/// modes of that size. Interlaced modes are skipped (they don't work
+/// reliably). Returns the fallback flag: true means nothing matched
 /// and the EDID-preferred mode was used instead, so a config written for one
 /// monitor degrades gracefully on another.
 fn pick_mode(connector: &connector::Info, target: Resolution) -> Option<(DrmMode, bool)> {
@@ -620,7 +620,7 @@ fn pick_mode(connector: &connector::Info, target: Resolution) -> Option<(DrmMode
         // Bare "preferred" means the EDID mode as-is, not its size at max refresh.
         RefreshSetting::Auto if target.size == SizeSetting::Preferred => Some(preferred),
         RefreshSetting::Auto | RefreshSetting::Max => at_size().max_by_key(refresh),
-        // Exact match first (niri-style), else within 1 Hz ("60" matches 59.94).
+        // Exact match first, else within 1 Hz ("60" matches 59.94).
         RefreshSetting::Exact(mhz) => at_size()
             .min_by_key(|m| (refresh(m) - mhz).abs())
             .filter(|m| (refresh(m) - mhz).abs() <= 1000),
@@ -695,7 +695,7 @@ fn connector_connected(
         .create_surface(crtc, mode, &[connector.handle()])
         .context("error creating DRM surface")?;
 
-    // VRR per settings.displays. niri-shape: explicitly disable even when
+    // VRR per settings.displays. Explicitly disable even when
     // unsupported/unwanted — a DRM state reset can drop vrr_capable to 0
     // while leaving a stale VRR_ENABLED at 1.
     let want_vrr = lua.settings().displays.get(&name).is_some_and(|d| d.vrr);
@@ -790,7 +790,7 @@ fn connector_connected(
         Ok(compositor) => compositor,
         Err(err) => {
             // Modifier negotiation can fail (bandwidth, cross-device import);
-            // retry with the invalid modifier (implicit tiling), niri-style.
+            // retry with the invalid modifier (implicit tiling).
             warn!("error creating DRM compositor, retrying with invalid modifier: {err}");
             let render_formats = render_formats
                 .iter()
@@ -1158,7 +1158,7 @@ pub fn apply_libinput_settings(tomoe: &mut Tomoe) {
 /// device's libinput defaults so a reload undoes removed lines; calls that a
 /// device doesn't support fail silently (libinput just refuses).
 fn apply_device_config(config: &InputConfig, device: &mut libinput::Device) {
-    // Tap support is what distinguishes touchpads (how Mutter tells them apart).
+    // Tap support is what distinguishes touchpads: only they report tap fingers.
     let is_touchpad = device.config_tap_finger_count() > 0;
     let class = if is_touchpad {
         config.touchpad
@@ -1277,8 +1277,8 @@ pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         | RedrawState::WaitingForEstimatedVBlankAndQueued(token) => {
             // A tearing surface presents at client commit rate, not vblank
             // rate: parking this commit behind the estimated-vblank timer
-            // would bunch frames into refresh-period bundles (ShojiWM's
-            // fullscreen-direct-scanout-tearing.md §5). Repaint now instead.
+            // would bunch frames into refresh-period bundles. Repaint now
+            // instead.
             if surface.tearing_active {
                 loop_handle.remove(token);
                 loop_handle.insert_idle(move |tomoe| render_surface(tomoe, node, crtc));
@@ -1582,8 +1582,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     // Plane offloading: fullscreen client buffers flip onto the primary
     // plane (zero-copy, format changes allowed — the atomic test commit
     // decides) and the cursor rides the cursor plane, so pointer motion
-    // stops re-compositing the scene. Overlay planes stay off (niri
-    // default: weird performance on some hardware).
+    // stops re-compositing the scene. Overlay planes stay off (weird
+    // performance on some hardware).
     let mut frame_flags =
         FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
@@ -1624,7 +1624,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             // finish CPU-side or the display scans out a half-drawn buffer.
             // settings.wait_for_frame_completion forces the wait even for
             // fenceable frames — queueing a fenced frame before the render
-            // completes hangs the NVIDIA driver (niri discussion #3777).
+            // completes hangs the NVIDIA driver.
             if res.needs_sync() || wait_for_frame_completion {
                 if let PrimaryPlaneElement::Swapchain(element) = &res.primary_element {
                     if let Err(err) = element.sync.wait() {
@@ -1742,8 +1742,8 @@ fn is_nvidia_compressed_modifier(modifier: Modifier) -> bool {
     (m >> 56) == 0x03 && (m & 0x10) != 0 && (m & (0x7 << 23)) != 0
 }
 
-/// Build the render/scanout dmabuf feedback pair for one output surface
-/// (niri-shape). Scanout tranches carry only formats we can also render
+/// Build the render/scanout dmabuf feedback pair for one output surface.
+/// Scanout tranches carry only formats we can also render
 /// from, so a buffer that fails the plane test still has a GL path; the
 /// primary-plane-only tranche is preferred over primary-or-overlay to
 /// keep scanout working with overlay planes disabled.

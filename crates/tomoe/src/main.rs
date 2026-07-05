@@ -128,9 +128,9 @@ fn main() -> Result<()> {
     // Config loads first so the backend can honor settings (e.g. winit_size).
     tomoe.load_config(args.config);
 
-    // Watch the config file for changes (niri-style polling: stat + canonical
-    // path survive atomic renames and Nix store symlink swaps, and parsing
-    // stays off the hot path — a stat every 500ms is negligible).
+    // Watch the config file for changes by polling: stat + canonical path
+    // survive atomic renames and Nix store symlink swaps, and parsing stays
+    // off the hot path — a stat every 500ms is negligible.
     const CONFIG_POLL: Duration = Duration::from_millis(500);
     event_loop
         .handle()
@@ -257,7 +257,7 @@ const SESSION_ENV: &[&str] = &[
 ];
 
 /// Push the session variables into the systemd user environment and the
-/// D-Bus activation environment (niri-shape). Blocks on the shell:
+/// D-Bus activation environment. Blocks on the shell:
 /// bus-activated services must not race the import, and the session units
 /// (started next, via the process manifest) rely on it.
 fn import_environment() {

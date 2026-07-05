@@ -1,5 +1,5 @@
-//! Keybind cheat-sheet overlay (niri's "Important Hotkeys"), built from the
-//! live bind list. Non-modal: any input dismisses it.
+//! Keybind cheat-sheet overlay, built from the live bind list. Non-modal:
+//! any input dismisses it.
 
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
@@ -163,7 +163,7 @@ fn render(fonts: &Fonts, binds: &[Bind]) -> (MemoryRenderBuffer, Size<i32, Physi
     let mut y = BORDER + PADDING + title_h + title_gap;
     for (key, action) in &rows {
         let (kw, _) = fonts.measure(&[Span::key(key, ROW_SIZE, FG, KEY_CHIP)]);
-        // Right-align keys against the column edge, niri-style.
+        // Right-align keys against the column edge.
         canvas.draw_spans(
             fonts,
             x0 + key_w - kw,

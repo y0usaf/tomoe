@@ -3,8 +3,7 @@
 //! Sibling to [`crate::pipewire_stream`], which streams whole outputs through
 //! wlr-screencopy. Same architecture (DRIVER + ALLOC_BUFFERS +
 //! wayland-driven queue on a single thread — see that module for the long
-//! rationale), ported from ShojiWM's `toplevel_stream.rs` with three protocol
-//! differences from the output path:
+//! rationale), with three protocol differences from the output path:
 //!
 //!   1. The capture source comes from
 //!      `ext_foreign_toplevel_image_capture_source_manager_v1::create_source`
@@ -21,9 +20,9 @@
 //! `update_params` so PipeWire reallocates buffers at the new size and the
 //! add/remove_buffer callbacks recreate the wl_buffer wraps.
 //!
-//! Buffers are memfd/shm only for now (ShojiWM parity); the compositor also
-//! accepts dmabuf for toplevel sessions, so a GBM path like the output
-//! stream's can come later.
+//! Buffers are memfd/shm only for now; the compositor also accepts dmabuf
+//! for toplevel sessions, so a GBM path like the output stream's can come
+//! later.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

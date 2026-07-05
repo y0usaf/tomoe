@@ -7,8 +7,7 @@
 //! lives in the compositor and the user's config and grows freely without
 //! touching this layer.
 //!
-//! The wire format is newline-delimited JSON over a Unix socket
-//! (ShojiWM-shape):
+//! The wire format is newline-delimited JSON over a Unix socket:
 //!
 //! ```text
 //! client -> server   { "id"?: number, "method": string, "params"?: value }

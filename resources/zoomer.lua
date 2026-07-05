@@ -1,4 +1,4 @@
--- zoomer: a floating, zooming, scrolling canvas WM (after ~chld/shko).
+-- zoomer: a floating, zooming, scrolling canvas WM.
 --
 -- Windows float on an infinite world-coordinate canvas viewed through the
 -- compositor camera (tomoe.set_view). Planes are independent canvases,

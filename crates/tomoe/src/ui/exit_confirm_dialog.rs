@@ -1,4 +1,4 @@
-//! Modal exit confirmation, drawn by the compositor (niri-style).
+//! Modal exit confirmation, drawn by the compositor.
 //!
 //! While open, all keyboard input is intercepted in `input.rs`: Enter
 //! confirms, any other key or click dismisses.

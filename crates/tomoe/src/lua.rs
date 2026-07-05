@@ -251,9 +251,8 @@ pub struct Settings {
     /// Wait for rendering to finish CPU-side before queueing every frame to
     /// KMS, even when the driver could fence it (IN_FENCE_FD). Works around
     /// an NVIDIA driver bug where a fenced atomic commit queued before the
-    /// render completes hangs the whole display pipeline — the same freeze
-    /// niri covers with debug.wait-for-frame-completion-before-queueing
-    /// (niri discussion #3777). Costs a little latency; off by default.
+    /// render completes hangs the whole display pipeline. Costs a little
+    /// latency; off by default.
     pub wait_for_frame_completion: bool,
     /// xkb keymap + key repeat, applied to the seat keyboard.
     pub keyboard: KeyboardSettings,
@@ -941,7 +940,7 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // tomoe.process — declarative process manifest (ShojiWM-shape).
+        // tomoe.process — declarative process manifest.
         // `once`/`service` declare desired state diffed by id, so a config
         // reload keeps, restarts, or stops children as the diff dictates;
         // `spawn` is imperative fire-and-forget (event handlers).
@@ -1048,7 +1047,7 @@ impl LuaRuntime {
         tomoe.set("process", process)?;
 
         // tomoe.ipc — user-extensible IPC endpoints on the compositor's JSON
-        // socket (ShojiWM-shape). `serve` registers a request handler,
+        // socket. `serve` registers a request handler,
         // `broadcast` pushes an event to every subscribed client. Params and
         // payloads cross the boundary as JSON-compatible values.
         let ipc = lua.create_table()?;

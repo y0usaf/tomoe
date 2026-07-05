@@ -12,7 +12,6 @@
       nixpkgsFor = forAllSystems (system: nixpkgs.legacyPackages.${system});
 
       # RUSTFLAGS needed for dlopen() to find EGL/wayland-client at runtime.
-      # Pattern taken from niri's flake.nix.
       devRustflags = toString (
         map (arg: "-C link-arg=" + arg) [
           "-Wl,--push-state,--no-as-needed"
@@ -102,7 +101,7 @@
 
           meta = {
             description = "Wayland compositor with Smithay + embedded Lua";
-            license = lib.licenses.gpl3Only;
+            license = lib.licenses.agpl3Plus;
             mainProgram = "tomoe";
             platforms = lib.platforms.linux;
           };

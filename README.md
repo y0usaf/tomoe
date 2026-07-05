@@ -53,13 +53,13 @@ checking while editing your config.
 
 ## Credits
 
-Tomoe stands on the work of three compositors, studied closely (vendored under
-`ref/`) and used as the source of truth for patterns:
+Tomoe is an original implementation, but it was designed by studying three
+compositors closely, and owes each of them:
 
 - **[niri](https://github.com/YaLTeR/niri)** — the performance blueprint:
-  render-on-damage, the per-output redraw state machine, direct scanout, and
-  the battle-tested Smithay revision tomoe pins. Its discipline around
-  pixel-exact scaling inspired tomoe's physical-first coordinate doctrine.
+  render-on-damage, a per-output redraw state machine, direct scanout, and
+  a battle-tested Smithay revision. Its discipline around pixel-exact
+  scaling inspired tomoe's physical-first coordinate doctrine.
 - **[Hyprland](https://github.com/hyprwm/Hyprland)** — the feature bar:
   animations, effects, window rules, and the expectation that a tiling
   compositor can also be pleasant to look at.
@@ -69,4 +69,4 @@ Tomoe stands on the work of three compositors, studied closely (vendored under
 
 ## License
 
-GPL-3.0-or-later.
+[AGPL-3.0-or-later](LICENSE).

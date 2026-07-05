@@ -1,4 +1,4 @@
-//! XWayland via xwayland-satellite (niri-shape).
+//! XWayland via xwayland-satellite.
 //!
 //! tomoe owns the X11 display: it picks a display number, creates the lock
 //! file and listening sockets itself, and exports `DISPLAY` immediately —
@@ -141,8 +141,7 @@ fn test_ondemand() -> bool {
     true
 }
 
-// Adapted from Mutter (via niri): create /tmp/.X11-unix or validate that an
-// existing one is trustworthy.
+// Create /tmp/.X11-unix or validate that an existing one is trustworthy.
 fn ensure_x11_unix_dir() -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.mode(0o1777);

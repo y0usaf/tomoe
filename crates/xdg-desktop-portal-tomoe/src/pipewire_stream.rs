@@ -2,13 +2,10 @@
 //!
 //! # Architecture: DRIVER + ALLOC_BUFFERS + wayland-driven queue
 //!
-//! Ported from ShojiWM's portal backend (see
-//! `ref/ShojiWM/src/xdg-desktop-portal-shojiwm/src/pipewire_stream.rs`),
-//! which mirrors xdg-desktop-portal-hyprland's approach rather than the more
-//! obvious "PipeWire pulls, we push" model. The choice is what gives full
-//! output-refresh framerates instead of being pinned to the PipeWire graph
-//! driver's audio quantum (~46.875 fps = 1024/48000 — the xdpw bug, see
-//! `ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`).
+//! The compositor pushes frames rather than the more obvious "PipeWire
+//! pulls, we push" model. The choice is what gives full output-refresh
+//! framerates instead of being pinned to the PipeWire graph driver's audio
+//! quantum (~46.875 fps = 1024/48000 — the xdpw bug).
 //!
 //! ## Why each piece matters
 //!
@@ -789,8 +786,8 @@ impl AppState {
         self.pw_buffer_stride.remove(&key);
         // If an in-flight wlr-screencopy frame was targeting this buffer,
         // abandon it. A late Ready event would otherwise call queue_raw_buffer
-        // on the now-freed pointer (use-after-free — observed in ShojiWM when
-        // OBS disconnects mid-stream).
+        // on the now-freed pointer (use-after-free when a consumer like OBS
+        // disconnects mid-stream).
         let targets_this = self
             .pending_frame
             .as_ref()

@@ -1,6 +1,6 @@
 //! Compositor-drawn UI: modal dialogs and transient overlays, rendered as
 //! memory-buffer elements above all client content (no Wayland protocol
-//! involved — same approach as niri).
+//! involved).
 
 mod config_error_notification;
 mod exit_confirm_dialog;

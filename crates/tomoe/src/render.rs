@@ -39,9 +39,9 @@ use crate::cursor::Cursor;
 use crate::space::PhysicalSpace;
 
 /// Renderer bounds for tomoe's render elements, satisfied by both
-/// `GlesRenderer` (winit) and `MultiRenderer` (TTY). The associated types
-/// pin `TextureId` the niri way, since associated type bounds can't be
-/// written in a supertrait list directly.
+/// `GlesRenderer` (winit) and `MultiRenderer` (TTY). The associated type
+/// pins `TextureId`, since associated type bounds can't be written in a
+/// supertrait list directly.
 pub trait TomoeRenderer:
     ImportAll + ImportMem + Renderer<TextureId = Self::TomoeTextureId>
 {

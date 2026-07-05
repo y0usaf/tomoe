@@ -1,4 +1,4 @@
-//! Declarative process management (`tomoe.process`, ShojiWM-shape).
+//! Declarative process management (`tomoe.process`).
 //!
 //! Lua declares a manifest — `once`/`service` entries keyed by id — and this
 //! module owns the actual process lifecycle, reconciling running children

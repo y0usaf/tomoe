@@ -1,4 +1,4 @@
-//! Interactive region-screenshot overlay (niri-style).
+//! Interactive region-screenshot overlay.
 //!
 //! While open, `input.rs` gives it the pointer and keyboard: left-drag
 //! selects a region, Enter/Space captures (the whole output when nothing is

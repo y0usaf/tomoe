@@ -77,7 +77,7 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
     });
 
     // EGL hardware-acceleration for clients via linux-dmabuf. The legacy
-    // wl_drm global is deliberately not bound (niri-shape): smithay's wl_drm
+    // wl_drm global is deliberately not bound: smithay's wl_drm
     // rejects Xwayland's format requests with a fatal protocol error, and
     // every current client (Xwayland included) speaks dmabuf.
     //

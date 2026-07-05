@@ -28,9 +28,8 @@ use tracing::{info, warn};
 use crate::lua::{OutputProps, WinProps};
 use crate::state::Tomoe;
 
-/// Outgoing-buffer cap per client: a reader this far behind is dropped
-/// (same policy as niri's event-stream clients — never buffer unboundedly
-/// for a stuck peer).
+/// Outgoing-buffer cap per client: a reader this far behind is dropped —
+/// never buffer unboundedly for a stuck peer.
 const MAX_OUTGOING: usize = 1024 * 1024;
 
 /// One request line may not exceed this (a client can't balloon our memory
@@ -244,7 +243,7 @@ fn dispatch(tomoe: &mut Tomoe, client_id: u64, line: &[u8]) {
     let request: tomoe_ipc::Request = match serde_json::from_slice(line) {
         Ok(request) => request,
         Err(err) => {
-            // No id to address a response to; log and drop (ShojiWM-shape).
+            // No id to address a response to; log and drop.
             warn!("invalid IPC request: {err}");
             return;
         }

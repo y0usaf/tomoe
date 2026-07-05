@@ -1,7 +1,7 @@
 //! Output capture: shared render-to-buffer helpers and the fulfillment paths
 //! for wlr-screencopy and ext-image-copy-capture.
 //!
-//! Captures always render on the primary GPU's `GlesRenderer` (niri-shape):
+//! Captures always render on the primary GPU's `GlesRenderer`:
 //! dmabuf targets are bound directly as the framebuffer (zero-copy, completion
 //! signaled via a sync fence), shm targets render into a throwaway texture and
 //! read back synchronously. The scene is rebuilt with the same element
@@ -109,7 +109,7 @@ impl<'a> SceneParts<'a> {
         } else {
             // Captures never include the screenshot selection overlay: the
             // screenshot itself must not contain it, and screencopy/screencast
-            // consumers shouldn't record it either (niri does the same).
+            // consumers shouldn't record it either.
             let ui_elements = self
                 .ui
                 .render_elements(renderer, output, geo.size, self.binds, false);
@@ -563,7 +563,7 @@ pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Fram
     }
 }
 
-// ─── Render-to-buffer helpers (niri-shape) ────────────────────────────────────
+// ─── Render-to-buffer helpers ─────────────────────────────────────────────────
 
 /// Render the current scene of `output` — cropped to `region` (output-local
 /// physical coordinates) when given — into an offscreen texture and read the

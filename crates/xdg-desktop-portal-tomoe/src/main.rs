@@ -1,10 +1,10 @@
 //! xdg-desktop-portal-tomoe — tomoe's own ScreenCast portal backend.
 //!
 //! Exists because xdg-desktop-portal-wlr lost `PW_STREAM_FLAG_DRIVER` and its
-//! screencast stream ends up paced by the audio graph quantum (~30 fps); see
-//! `ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`. This backend keeps
-//! the stream as the PipeWire graph driver and paces it off the compositor's
-//! wlr-screencopy `ready` events, i.e. at output refresh.
+//! screencast stream ends up paced by the audio graph quantum (~30 fps).
+//! This backend keeps the stream as the PipeWire graph driver and paces it
+//! off the compositor's wlr-screencopy `ready` events, i.e. at output
+//! refresh.
 
 mod outputs;
 mod pipewire_stream;

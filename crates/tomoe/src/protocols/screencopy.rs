@@ -1,7 +1,6 @@
 //! wlr-screencopy-unstable-v1: copy output contents into client buffers.
 //!
-//! Ported from niri's implementation (same smithay pin), minus niri's
-//! cast-introspection bookkeeping. `copy` renders immediately;
+//! `copy` renders immediately;
 //! `copy_with_damage` frames queue per manager and complete from the redraw
 //! loop once the queue's damage tracker sees a change. Every frame is
 //! guaranteed a terminal event: dropping an unsubmitted [`Screencopy`] sends
@@ -335,7 +334,7 @@ where
         let state = state.screencopy_state();
 
         // The queue can already be gone if cleanup_queues() ran between the
-        // client disconnect and this delayed destructor (niri hit this).
+        // client disconnect and this delayed destructor.
         let Some(queue) = state.queues.get_mut(manager) else {
             return;
         };
