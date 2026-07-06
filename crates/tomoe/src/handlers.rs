@@ -1,8 +1,9 @@
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{
-    find_popup_root_surface, layer_map_for_output, LayerSurface, PopupKeyboardGrab, PopupKind,
-    PopupPointerGrab, PopupUngrabStrategy, Window, WindowSurfaceType,
+    find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerSurface,
+    PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
+    WindowSurfaceType,
 };
 use smithay::output::Output;
 use smithay::input::pointer::{CursorImageStatus, Focus, MotionEvent, PointerHandle};
@@ -13,7 +14,7 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-use smithay::utils::{Logical, Point, Serial, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Size, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::reexports::calloop::Interest;
 use smithay::wayland::compositor::{
@@ -230,6 +231,7 @@ impl XdgShellHandler for Tomoe {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        self.unconstrain_popup(&surface);
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
             warn!("error tracking popup: {err:?}");
         }
@@ -285,6 +287,7 @@ impl XdgShellHandler for Tomoe {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
         });
+        self.unconstrain_popup(&surface);
         surface.send_repositioned(token);
     }
 
@@ -675,6 +678,84 @@ impl Tomoe {
             return;
         }
     }
+
+    /// Rewrite a popup's pending geometry so it stays on screen, applying the
+    /// positioner's constraint adjustments (flip/slide/resize). Clients only
+    /// *request* adjustments; solving them against the available area is the
+    /// compositor's job — without this, a menu near the bottom edge opens
+    /// downward off-screen instead of flipping up.
+    fn unconstrain_popup(&self, popup: &PopupSurface) {
+        let kind = PopupKind::Xdg(popup.clone());
+        let Ok(root) = find_popup_root_surface(&kind) else {
+            return;
+        };
+        let scale = self.space.scale();
+
+        // Build the usable area in the space the positioner works in:
+        // logical, relative to the parent's window-geometry origin.
+        let mut target = if let Some(window) = self.window_for_surface(&root) {
+            let Some(window_geo) = self.space.element_geometry(&window) else {
+                return;
+            };
+            // Windows live in world space, outputs are screen-fixed; compare
+            // in world space (the same transform refresh() applies), against
+            // the output showing the largest part of the window.
+            let zoom = self.space.view_zoom();
+            let Some(output_world) = self
+                .space
+                .outputs()
+                .filter_map(|output| self.space.output_geometry(output))
+                .map(|geo| {
+                    Rectangle::new(
+                        self.space.screen_to_world(geo.loc.to_f64()).to_i32_round(),
+                        Size::from((
+                            (geo.size.w as f64 / zoom).round() as i32,
+                            (geo.size.h as f64 / zoom).round() as i32,
+                        )),
+                    )
+                })
+                .max_by_key(|geo| {
+                    geo.intersection(window_geo)
+                        .map_or(0, |o| o.size.w as i64 * o.size.h as i64)
+                })
+            else {
+                return;
+            };
+            let mut rect = output_world;
+            rect.loc -= window_geo.loc;
+            crate::coords::rect_to_logical(rect, scale)
+        } else {
+            // Layer-shell parent: layer maps arrange in output-local logical
+            // coordinates, screen-fixed.
+            let mut found = None;
+            for output in self.space.outputs() {
+                let map = layer_map_for_output(output);
+                let Some(layer) = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL) else {
+                    continue;
+                };
+                let (Some(layer_geo), Some(output_geo)) =
+                    (map.layer_geometry(layer), self.space.output_geometry(output))
+                else {
+                    continue;
+                };
+                let mut rect =
+                    Rectangle::from_size(crate::coords::rect_to_logical(output_geo, scale).size);
+                rect.loc -= layer_geo.loc;
+                found = Some(rect);
+                break;
+            }
+            let Some(rect) = found else { return };
+            rect
+        };
+
+        // Nested popups (submenus) position relative to their parent popup,
+        // not the root toplevel.
+        target.loc -= get_popup_toplevel_coords(&kind);
+
+        popup.with_pending_state(|state| {
+            state.geometry = state.positioner.get_unconstrained_geometry(target);
+        });
+    }
 }
 
 // ─── wlr-layer-shell ──────────────────────────────────────────────────────────
@@ -705,6 +786,13 @@ impl WlrLayerShellHandler for Tomoe {
             warn!("error mapping layer surface: {err}");
         }
         self.outputs_changed(false);
+    }
+
+    fn new_popup(&mut self, _parent: WlrLayerSurface, popup: PopupSurface) {
+        // A layer-parented popup has no xdg parent at XdgShellHandler::
+        // new_popup time (layer-shell get_popup sets it), so unconstraining
+        // there found no root; redo it now that the parent is known.
+        self.unconstrain_popup(&popup);
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
