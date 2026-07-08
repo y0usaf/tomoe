@@ -87,6 +87,11 @@ pub struct Canvas<'a> {
     pub height: u32,
     /// Integer buffer scale (physical = logical * scale).
     pub scale: i32,
+    /// True when the surface has no previously committed content at
+    /// this buffer size (first draw, remap after close, resize). The
+    /// painter must repaint fully — frame-diff caches must be
+    /// invalidated — and any reported damage is upgraded to `Full`.
+    pub fresh: bool,
 }
 
 /// The caller's drawing policy. Painters must leave every pixel outside
@@ -161,6 +166,7 @@ pub fn run(options: LayerOptions, painter: Box<dyn Painter>) -> Result<(), Surfa
         scale: 1,
         configured: false,
         surface_was_configured: false,
+        committed_size: None,
         dirty: false,
         frame_pending: false,
         first_draw_done: false,
@@ -204,6 +210,10 @@ struct State {
     /// Integer buffer scale.
     scale: i32,
     configured: bool,
+    /// Buffer size of the last committed frame on the current surface;
+    /// `None` until one lands. A mismatch means the painter starts
+    /// `fresh` (no prior content at this size to diff against).
+    committed_size: Option<(u32, u32)>,
     /// Content changed; a draw is owed.
     dirty: bool,
     /// A frame callback is outstanding; hold further draws until it fires.
@@ -243,6 +253,7 @@ impl State {
         self.frame_pending = false;
         self.dirty = false;
         self.surface_was_configured = false;
+        self.committed_size = None;
     }
 
     /// The one logical→physical conversion point.
@@ -273,13 +284,18 @@ impl State {
             wl_shm::Format::Argb8888,
         )?;
 
+        let fresh = self.committed_size != Some((width, height));
         let damage = self.painter.paint(Canvas {
             buf: canvas,
             width,
             height,
             scale: self.scale,
+            fresh,
         });
         self.dirty = false;
+        // A fresh surface has no content to diff against — whatever the
+        // painter reported, the compositor needs the whole buffer.
+        let damage = if fresh { Damage::Full } else { damage };
         let surface = layer.wl_surface();
         match damage {
             Damage::None => return Ok(()),
@@ -297,6 +313,7 @@ impl State {
         self.frame_pending = true;
         buffer.attach_to(surface)?;
         layer.commit();
+        self.committed_size = Some((width, height));
         self.first_draw_done = true;
         Ok(())
     }

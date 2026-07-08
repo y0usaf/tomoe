@@ -5,14 +5,15 @@
 //! `nix flake check` runs under a headless compositor.
 
 use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
-use moonshell_render::{Element, Renderer, Rgba};
-use moonshell_surface::{Canvas, Damage, LayerOptions, Painter};
+use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
+use moonshell_surface::{Canvas, Damage, DamageRect, LayerOptions, Painter};
 
 const BG: Rgba = Rgba::new(0x14, 0x14, 0x1e, 0xff);
 const FG: Rgba = Rgba::new(0xc8, 0xc8, 0xd8, 0xff);
 
 struct VersionBar {
     renderer: Renderer,
+    scene: Scene,
     root: Element,
 }
 
@@ -44,6 +45,7 @@ impl VersionBar {
         });
         Self {
             renderer: Renderer::new(),
+            scene: Scene::new(),
             root,
         }
     }
@@ -56,8 +58,14 @@ impl Painter for VersionBar {
             width,
             height,
             scale,
+            fresh,
         } = canvas;
-        moonshell_render::render_tree(
+        if fresh {
+            // No prior content on this surface at this size — the diff
+            // baseline is gone.
+            self.scene.invalidate();
+        }
+        let damage = self.scene.render(
             &mut self.renderer,
             buf,
             width,
@@ -65,7 +73,21 @@ impl Painter for VersionBar {
             scale as f32,
             &self.root,
         );
-        Damage::Full
+        match damage {
+            SceneDamage::None => Damage::None,
+            SceneDamage::Full => Damage::Full,
+            SceneDamage::Rects(rects) => Damage::Rects(
+                rects
+                    .into_iter()
+                    .map(|r| DamageRect {
+                        x: r.x,
+                        y: r.y,
+                        width: r.w,
+                        height: r.h,
+                    })
+                    .collect(),
+            ),
+        }
     }
 }
 

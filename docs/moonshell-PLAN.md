@@ -21,9 +21,10 @@ unavailable — ctx-switch delta is the standing wakeup proxy); output
 disable/enable under headless sway survives (unmap → wait → remap).
 
 **M1 in progress**: §1 (element vocabulary + flex-lite layout + draw
-pass) and §2 (icon/image elements + asset cache) landed 2026-07-08 —
-see the M1 breakdown below. Next open item: **M1 §3 per-element damage
-diffing**.
+pass), §2 (icon/image elements + asset cache), and §3 (per-element
+damage diffing via `Scene`) landed 2026-07-08 — see the M1 breakdown
+below. Next open item: **M1 §4 acceptance** — nur `examples/simple-bar`
+tree as a static Rust table, visual parity check, RSS re-measure.
 
 Two working inputs exist:
 
@@ -146,8 +147,20 @@ M1 breakdown (element vocabulary; all in `render`, no Lua):
    1:1 (crisp), style overrides rescale (bilinear). Deps: resvg 0.47
    (default-features off — matches tiny-skia 0.12), image 0.25
    (png+jpeg only).
-3. [ ] Per-element damage diffing: cache the previous layout tree +
-   element tree, diff, emit `Damage::Rects` instead of `Damage::Full`.
+3. [x] Per-element damage diffing (2026-07-08): `scene.rs` `Scene`
+   caches the previous element+layout trees; diff walks both pairs in
+   lockstep (equal subtree → skip; equal container shell + rect →
+   recurse; else damage old+new subtree *bounds* — children can
+   overflow containers). Rects use the draw pass's edge rounding,
+   +1 px inflation (AA/glyph-overhang insurance), canvas clamp,
+   overlap coalescing → `SceneDamage::{None,Full,Rects}`. Canvas is
+   still repainted in full when damage ≠ None (buffers alternate;
+   partial repaint needs per-slot buffer-age tracking — deferred until
+   profiling demands it); identical tree + geometry early-outs before
+   layout, so steady state does zero shaping work. `surface` grew
+   `Canvas.fresh` (no committed content at this buffer size: first
+   draw/remap/resize) — painter invalidates its scene, damage upgraded
+   to Full.
 4. [ ] Accept: nur `examples/simple-bar` element tree as a static Rust
    table renders visually ≡ nur-on-GPUI; re-measure RSS, record here.
 
@@ -186,3 +199,10 @@ render core must be provably tiny before the runtime lands on top.
   exactly once at decode/rasterize time, mirroring `Rgba::to_skia`.
   resvg minor versions pin tiny-skia minors (0.47 ↔ 0.12); bump them
   together
+- From M1 §3: shm buffers alternate, so a partial-damage frame must
+  either fully repaint (current: correctness by determinism —
+  over-reported damage is always safe) or track per-slot buffer age
+  before clipping the repaint. And a remapped/resized surface has no
+  content to diff against — any frame-diff cache needs an invalidation
+  signal from the surface layer (`Canvas.fresh`), or the first paint
+  after remap reports `None` and the surface never gets a buffer
