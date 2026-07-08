@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/moonshell", "crates/surface", "crates/render"]
+members = ["crates/moonshell", "crates/surface", "crates/render", "crates/runtime"]
 resolver = "2"
 
 [workspace.package]
@@ -20,11 +20,15 @@ cosmic-text = "0.19"
 # icon themes are pure vector, and fontdb already lives in cosmic-text.
 resvg = { version = "0.47", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# vendored: LuaJIT compiled into the binary — no system Lua, single
+# artifact. LuaJIT (not 5.4) is a locked decision: the FFI escape hatch.
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 moonshell-surface = { path = "crates/surface" }
 moonshell-render = { path = "crates/render" }
+moonshell-runtime = { path = "crates/runtime" }
 
 [profile.release]
 opt-level = 3

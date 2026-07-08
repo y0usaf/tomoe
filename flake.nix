@@ -21,6 +21,7 @@
             root = ./.;
             fileset = lib.fileset.unions [
               ./crates
+              ./lua # the ui.* stdlib, include_str!'d by crates/runtime
               ./Cargo.toml
               ./Cargo.lock
             ];
