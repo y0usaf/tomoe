@@ -40,10 +40,15 @@ Done and working:
   outgoing VM, values cross as JSON, restore runs in the fresh VM;
   `on_window_open` replay is the fallback when no restore ran), window
   rules (`tomoe.rule` matcher registry + `tomoe.rules_for` merge +
-  apply-fns at window open). NB: the
-  doctrine-02 dispatch *watchdog* is still unimplemented (no mlua
-  hook/instruction limit anywhere) despite earlier claims here — a hung
-  hook or `tomoe.ipc.serve` handler blocks the loop
+  apply-fns at window open), dispatch watchdog (doctrine 02: every Lua
+  entry — hooks, binds, IPC handlers, config load — is time-boxed by
+  `settings.watchdog_ms`, default 1000; a count debug hook checks a
+  wall-clock deadline and aborts the entry with a normal Lua error.
+  LuaJIT lesson: compiled traces never check hooks — a bare
+  `while true do end` escaped the hook entirely — so installing the
+  watchdog also forces `jit.off(); jit.flush()` and the VM runs
+  interpreted while it's enabled; `watchdog_ms = 0` opts out and
+  restores full JIT
 - Process API (`tomoe.process.once/service/spawn`, ShojiWM-shape):
   declarative manifest diffed by id across reloads, restart/reload
   policies, 1 Hz supervision poll that also reaps fire-and-forget
@@ -583,6 +588,10 @@ UFO test still flat at high refresh with animations running.*
 - Redraw-loop spec: `ref/niri/docs/wiki/Development:-Redraw-Loop.md`
 - Effect damage/invalidation policy design:
   `ref/ShojiWM/knowledges/effect-invalidation.md`
+- LuaJIT debug hooks fire only from the interpreter — compiled traces
+  never check them, so any hook-based execution limit silently misses a
+  hot loop. Force `jit.off(); jit.flush()` while the hook is installed
+  (see `LuaRuntime::watchdog`)
 - Never bind the legacy wl_drm global (`bind_wl_display`): smithay's
   implementation posts a fatal "invalid format" protocol error at
   Xwayland, killing xwayland-satellite; linux-dmabuf covers every

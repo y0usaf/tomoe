@@ -101,6 +101,7 @@ crate tomoe
 │   ├── struct UiCallbacks: pub(self)
 │   ├── struct UiHandle: pub(self)
 │   ├── enum UiOp: pub
+│   ├── struct WatchdogGuard: pub(self)
 │   ├── struct WinProps: pub
 │   └── enum WindowOp: pub
 ├── mod process: pub(crate)

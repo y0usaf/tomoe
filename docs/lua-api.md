@@ -244,6 +244,7 @@ Motion event during a tomoe.grab_pointer grab.
 - `focus_follows_mouse: boolean` — sloppy focus: focus the window under the pointer (default false)
 - `tearing: boolean` — allow async page flips for fullscreen windows that request tearing (default false)
 - `wait_for_frame_completion: boolean` — NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
+- `watchdog_ms: integer` — wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 - `winit_size: integer[]` — { w, h } of the nested dev window (winit backend)
 - `border: Border`
 - `keyboard: Keyboard`

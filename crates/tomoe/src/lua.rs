@@ -13,11 +13,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use mlua::{
-    Function, Lua, LuaSerdeExt, MetaMethod, RegistryKey, Table, UserData, UserDataFields,
-    UserDataMethods, Value,
+    Function, HookTriggers, Lua, LuaSerdeExt, MetaMethod, RegistryKey, Table, UserData,
+    UserDataFields, UserDataMethods, Value, VmState,
 };
 use tracing::{info, warn};
 
@@ -261,6 +262,12 @@ pub struct Settings {
     pub keyboard: KeyboardSettings,
     /// libinput device config (tty backend).
     pub input: InputConfig,
+    /// Dispatch watchdog (doctrine 02): the wall-clock budget of a single
+    /// Lua entry (hook, bind, IPC handler, config load), in milliseconds.
+    /// A runaway entry is aborted with a Lua error so it cannot hang the
+    /// compositor. 0 disables the watchdog (and restores LuaJIT trace
+    /// compilation — the enforcing debug hook keeps the VM interpreted).
+    pub watchdog_ms: u64,
 }
 
 impl Settings {
@@ -289,6 +296,7 @@ impl Default for Settings {
             wait_for_frame_completion: false,
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
+            watchdog_ms: 1000,
         }
     }
 }
@@ -921,6 +929,10 @@ struct Shared {
     /// Queued answers to pending portal source requests, drained like ops
     /// (`ipc::flush_screencast_replies`).
     screencast_replies: RefCell<Vec<(u64, ScreencastReply)>>,
+    /// Wall-clock deadline of the Lua entry in flight; None when idle (or
+    /// the watchdog is disabled). A Cell, not a RefCell: the debug hook
+    /// reads it mid-execution and must never conflict with a borrow.
+    watchdog_deadline: Cell<Option<Instant>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1033,6 +1045,30 @@ impl UserData for UiHandle {
 pub struct LuaRuntime {
     lua: Lua,
     shared: Rc<Shared>,
+    /// Whether the watchdog debug hook is currently installed in the VM.
+    watchdog_hook_set: Cell<bool>,
+}
+
+/// How many VM instructions between watchdog deadline checks. Small enough
+/// to bound overrun to well under a frame of interpreted Lua, large enough
+/// that the `Instant::now()` check is noise.
+const WATCHDOG_GRANULARITY: u32 = 10_000;
+
+/// RAII disarm for the dispatch watchdog: dropping the guard of the entry
+/// that armed the deadline clears it. Nested entries (rule apply inside
+/// window-open, a widget callback firing from an IPC-driven event) hold a
+/// no-op guard — the outermost entry owns the budget.
+struct WatchdogGuard {
+    // Owns its Rc (not `&'rt Shared`) so entry methods stay `&mut self`.
+    shared: Option<Rc<Shared>>,
+}
+
+impl Drop for WatchdogGuard {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.watchdog_deadline.set(None);
+        }
+    }
 }
 
 impl LuaRuntime {
@@ -1154,6 +1190,17 @@ impl LuaRuntime {
                 }
                 if let Ok(Some(wait)) = table.get::<Option<bool>>("wait_for_frame_completion") {
                     settings.wait_for_frame_completion = wait;
+                }
+                if let Ok(Some(ms)) = table.get::<Option<u64>>("watchdog_ms") {
+                    settings.watchdog_ms = ms;
+                    // Adjust the deadline of the *running* entry too, so a
+                    // config that raises (or disables) the budget at the top
+                    // of init.lua governs its own load. Only when armed —
+                    // arming here without a guard would leak the deadline.
+                    if s.watchdog_deadline.get().is_some() {
+                        s.watchdog_deadline
+                            .set((ms > 0).then(|| Instant::now() + Duration::from_millis(ms)));
+                    }
                 }
                 if let Ok(m) = table.get::<String>("mod") {
                     match crate::input::ModKey::parse(&m) {
@@ -1910,7 +1957,69 @@ impl LuaRuntime {
             })?,
         )?;
 
-        Ok(Self { lua, shared })
+        Ok(Self {
+            lua,
+            shared,
+            watchdog_hook_set: Cell::new(false),
+        })
+    }
+
+    /// Arm the dispatch watchdog for one Lua entry (doctrine 02: every
+    /// dispatch has a watchdog). A debug hook checks a wall-clock deadline
+    /// every [`WATCHDOG_GRANULARITY`] instructions and aborts the entry
+    /// with a Lua error once it passes, so a runaway hook cannot hang the
+    /// compositor — the error surfaces through the entry's normal error
+    /// path (log / IPC error / config-error banner).
+    ///
+    /// Trade-off, by construction of LuaJIT: hooks only fire from the
+    /// interpreter — compiled traces never check them — so while the
+    /// watchdog is enabled the VM runs with `jit.off()` (enforced when the
+    /// hook is installed). Guarded entries run interpreted; LuaJIT's
+    /// interpreter keeps typical hooks at µs cost. `settings.watchdog_ms =
+    /// 0` opts out, removing the hook and restoring full JIT.
+    fn watchdog(&self) -> WatchdogGuard {
+        if self.shared.watchdog_deadline.get().is_some() {
+            // Nested entry: the outermost guard owns the deadline.
+            return WatchdogGuard { shared: None };
+        }
+        let ms = self.shared.settings.borrow().watchdog_ms;
+        if ms == 0 {
+            if self.watchdog_hook_set.replace(false) {
+                self.lua.remove_hook();
+                if let Err(err) = self.lua.load("jit.on()").exec() {
+                    warn!("watchdog: failed to re-enable LuaJIT compilation: {err}");
+                }
+            }
+            return WatchdogGuard { shared: None };
+        }
+        if !self.watchdog_hook_set.replace(true) {
+            let shared = Rc::clone(&self.shared);
+            // The hook must only touch Cells: it can fire while a Rust
+            // callback inside the entry holds a RefCell borrow.
+            self.lua.set_hook(
+                HookTriggers::new().every_nth_instruction(WATCHDOG_GRANULARITY),
+                move |_lua, _debug| match shared.watchdog_deadline.get() {
+                    Some(deadline) if Instant::now() >= deadline => Err(mlua::Error::runtime(
+                        "tomoe watchdog: Lua entry exceeded settings.watchdog_ms; \
+                         aborted to keep the compositor responsive",
+                    )),
+                    _ => Ok(VmState::Continue),
+                },
+            );
+            // Setting the hook is not enough under LuaJIT: compiled traces
+            // never check hooks, so a hot loop would escape the deadline.
+            // Force the interpreter (and drop any traces recorded while the
+            // watchdog was off) for as long as the hook is installed.
+            if let Err(err) = self.lua.load("jit.off(); jit.flush()").exec() {
+                warn!("watchdog: failed to disable LuaJIT compilation: {err}");
+            }
+        }
+        self.shared
+            .watchdog_deadline
+            .set(Some(Instant::now() + Duration::from_millis(ms)));
+        WatchdogGuard {
+            shared: Some(Rc::clone(&self.shared)),
+        }
     }
 
     /// Execute the config at `path` (pre-resolved via `resolve_config_path`),
@@ -1924,6 +2033,7 @@ impl LuaRuntime {
             None => (DEFAULT_CONFIG.to_string(), "<built-in default>".to_string()),
         };
         info!("loading config from {name}");
+        let _watchdog = self.watchdog();
         self.lua
             .load(&code)
             .set_name(&name)
@@ -1987,6 +2097,7 @@ impl LuaRuntime {
             UiEvent::Select(_) => callbacks.select,
         };
         let Some(key) = key else { return };
+        let _watchdog = self.watchdog();
         match self.lua.registry_value::<Function>(&key) {
             Ok(func) => {
                 let result = match event {
@@ -2067,6 +2178,7 @@ impl LuaRuntime {
             window,
             shared: self.shared.clone(),
         };
+        let _watchdog = self.watchdog();
         let value = match func.call::<Value>(req) {
             Ok(value) => value,
             Err(err) => {
@@ -2138,6 +2250,7 @@ impl LuaRuntime {
                 .to_value(&params)
                 .map_err(|err| format!("params conversion error: {err}"))?
         };
+        let _watchdog = self.watchdog();
         let result = func
             .call::<Value>(params)
             .map_err(|err| format!("Lua error: {err}"))?;
@@ -2161,6 +2274,7 @@ impl LuaRuntime {
                 .collect()
         };
         let mut saved = HashMap::new();
+        let _watchdog = self.watchdog();
         for (name, func) in funcs {
             let func = match func {
                 Ok(func) => func,
@@ -2191,6 +2305,7 @@ impl LuaRuntime {
     /// fall back to the on_window_open replay.
     pub fn restore_reload_state(&mut self, saved: &HashMap<String, serde_json::Value>) -> usize {
         let mut ran = 0;
+        let _watchdog = self.watchdog();
         for (name, value) in saved {
             let func = {
                 let hooks = self.shared.reload_hooks.borrow();
@@ -2279,6 +2394,7 @@ impl LuaRuntime {
             let fns = self.shared.bind_fns.borrow();
             self.lua.registry_value::<Function>(&fns[idx])
         };
+        let _watchdog = self.watchdog();
         match func {
             Ok(func) => {
                 if let Err(err) = func.call::<()>(()) {
@@ -2290,6 +2406,8 @@ impl LuaRuntime {
     }
 
     pub fn emit_window_open(&mut self, id: u64) {
+        // One budget for the hooks and the rule applies together.
+        let _watchdog = self.watchdog();
         self.emit_window_event(id, |hooks| &hooks.window_open, "on_window_open");
         // Rule `apply` functions run after the hooks so they can refine
         // whatever placement the WM just queued (later ops win).
@@ -2353,6 +2471,7 @@ impl LuaRuntime {
             id,
             shared: self.shared.clone(),
         });
+        let _watchdog = self.watchdog();
         for func in keys {
             if let Err(err) = func.call::<()>(window.clone()) {
                 warn!("Lua on_focus_change error: {err}");
@@ -2369,6 +2488,7 @@ impl LuaRuntime {
                 .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
                 .collect()
         };
+        let _watchdog = self.watchdog();
         for func in keys {
             if let Err(err) = func.call::<()>(()) {
                 warn!("Lua on_outputs_changed error: {err}");
@@ -2431,6 +2551,7 @@ impl LuaRuntime {
                 .collect()
         };
         let mut consumed = false;
+        let _watchdog = self.watchdog();
         for func in funcs {
             match func.call::<Value>(&ev) {
                 Ok(value) => {
@@ -2557,6 +2678,7 @@ impl LuaRuntime {
             warn!("Lua grab motion error: {err}");
             return;
         }
+        let _watchdog = self.watchdog();
         if let Err(err) = func.call::<()>(ev) {
             warn!("Lua grab motion error: {err}");
         }
@@ -2568,6 +2690,7 @@ impl LuaRuntime {
             return;
         };
         let Some(release) = grab.release else { return };
+        let _watchdog = self.watchdog();
         match self.lua.registry_value::<Function>(&release) {
             Ok(func) => {
                 if let Err(err) = func.call::<()>(()) {
@@ -2595,6 +2718,7 @@ impl LuaRuntime {
             id,
             shared: self.shared.clone(),
         };
+        let _watchdog = self.watchdog();
         for func in keys {
             if let Err(err) = func.call::<()>(window.clone()) {
                 warn!("Lua {name} error: {err}");
@@ -2708,6 +2832,34 @@ mod tests {
             .exec()
             .unwrap();
         assert!(rt.settings().wait_for_frame_completion);
+    }
+
+    #[test]
+    fn watchdog_aborts_runaway_entry() {
+        let mut rt = LuaRuntime::new().unwrap();
+        assert_eq!(rt.settings().watchdog_ms, 1000);
+        rt.lua
+            .load(
+                r#"
+                tomoe.settings { watchdog_ms = 30 }
+                tomoe.ipc.serve("ok", function() return 1 end)
+                tomoe.ipc.serve("spin", function() while true do end end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+        assert_eq!(rt.settings().watchdog_ms, 30);
+        // A well-behaved entry passes untouched…
+        assert!(rt.call_ipc_handler("ok", serde_json::Value::Null).is_ok());
+        // …a runaway one is aborted (this also proves the jit.off()
+        // enforcement: a compiled trace would never fire the hook).
+        let err = rt
+            .call_ipc_handler("spin", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.contains("watchdog"), "unexpected error: {err}");
+        // The deadline disarmed on exit: the next entry gets a fresh budget.
+        assert!(rt.shared.watchdog_deadline.get().is_none());
+        assert!(rt.call_ipc_handler("ok", serde_json::Value::Null).is_ok());
     }
 
     #[test]
