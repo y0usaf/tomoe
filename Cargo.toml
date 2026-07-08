@@ -33,6 +33,12 @@ mlua = { version = "0.10", features = ["luajit", "vendored"] }
 # a calloop Generic source.
 inotify = { version = "0.11", default-features = false }
 serde_json = "1.0"
+# D-Bus for the native services (UPower, NetworkManager, MPRIS, …).
+# rustbus, not zbus: pure-Rust, synchronous, exposes the socket fd —
+# it rides calloop as a `Generic` source with no async executor. zbus
+# structurally needs one (async-io reactor thread or tokio), which the
+# single-thread locked decision forbids (recorded in DESIGN.md).
+rustbus = "0.19"
 # The tomoe wire contract, pulled over git (doctrine 03: repo separation
 # keeps the versioned wire the only channel between the pair). Pin = a
 # plain rev, bumped deliberately when the protocol grows.

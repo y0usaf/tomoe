@@ -13,6 +13,7 @@
 //! worth a crash — the next snapshot retries).
 
 use mlua::prelude::*;
+use moonshell_services::battery::BatteryState;
 use moonshell_services::compositor::CompositorState;
 
 /// `shell.services.compositor:set(snapshot)`.
@@ -34,6 +35,15 @@ pub fn push_compositor(lua: &Lua, state: &CompositorState) -> LuaResult<()> {
         t.set("active_window", title.as_str())?;
     }
     set_service(lua, "compositor", t)
+}
+
+/// `shell.services.battery:set(snapshot)`.
+pub fn push_battery(lua: &Lua, state: &BatteryState) -> LuaResult<()> {
+    let t = lua.create_table()?;
+    t.set("available", state.available)?;
+    t.set("percent", state.percent)?;
+    t.set("charging", state.charging)?;
+    set_service(lua, "battery", t)
 }
 
 fn set_service(lua: &Lua, name: &str, snapshot: LuaTable) -> LuaResult<()> {

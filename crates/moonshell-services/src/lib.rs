@@ -11,4 +11,5 @@
 //! one plain state struct, snapshots pushed on change. Backends never
 //! expose their wire types.
 
+pub mod battery;
 pub mod compositor;

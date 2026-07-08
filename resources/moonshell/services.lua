@@ -77,9 +77,17 @@ M.define("compositor", {
     active_window    = nil,
 }, { "focus_workspace" })
 
+-- Backed natively since M3 §3 (UPower over the system D-Bus; sysfs
+-- polling fallback). Snapshot shape (nur's, plus `available`):
+--   available boolean — a battery exists; false on desktops, where a
+--             widget should render nothing (the bundled one does).
+--             percent/charging then keep these render-safe defaults.
+--   percent   integer 0–100
+--   charging  boolean
 M.define("battery", {
-    percent  = 100,
-    charging = false,
+    available = false,
+    percent   = 100,
+    charging  = false,
 })
 
 M.define("network", {
