@@ -145,9 +145,17 @@ fn resolve_config(cli: Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
         base.map(|b| b.join("moonshell").join("init.lua"))
             .filter(|p| p.is_file())
     };
+    // Absolutize *without* resolving symlinks. A Nix/home-manager
+    // config is a symlink into /nix/store — canonicalizing it (a) made
+    // the watch root /nix/store, so the watcher recursed the entire
+    // store (~500k dir watches, the whole per-user inotify budget),
+    // and (b) pinned reloads to the immutable old store file, so a
+    // config switch never took effect. Keeping the symlink identity
+    // fixes both: the watch root is the symlink's parent, and every
+    // reload re-reads through the (possibly retargeted) link.
     found
         .map(|p| {
-            p.canonicalize()
+            std::path::absolute(&p)
                 .with_context(|| format!("resolving config path {}", p.display()))
         })
         .transpose()
