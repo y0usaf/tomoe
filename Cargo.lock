@@ -484,6 +484,7 @@ dependencies = [
  "anyhow",
  "calloop",
  "moonshell-render",
+ "moonshell-runtime",
  "moonshell-surface",
  "tracing",
  "tracing-subscriber",
@@ -506,6 +507,7 @@ version = "0.1.0"
 dependencies = [
  "mlua",
  "moonshell-render",
+ "moonshell-surface",
  "tracing",
 ]
 

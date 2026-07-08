@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 mlua.workspace = true
 moonshell-render.workspace = true
+moonshell-surface.workspace = true
 tracing.workspace = true

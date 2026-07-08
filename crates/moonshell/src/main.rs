@@ -1,11 +1,23 @@
-//! The moonshell binary. With no config (there is no config yet — the
-//! runtime is M2), this maps one layer surface and draws a version
-//! string: the doctrine-06 bare-core artifact. `--boot-check` exits 0
-//! right after the first frame is committed, which is what
-//! `nix flake check` runs under a headless compositor.
+//! The moonshell binary: config resolution and the calloop bootstrap.
+//!
+//! With a config (`--config`, `$MOONSHELL_CONFIG`, or
+//! `~/.config/moonshell/init.lua`) it boots the Lua runtime, executes
+//! the config, and drains the runtime's action queue — window
+//! creations, dirty marks — after config exec and once per loop pass
+//! ([`Shell::run_with`]). With no config it maps one layer surface and
+//! draws a version string: the doctrine-06 bare-core artifact.
+//! `--boot-check` exits 0 right after every window committed its first
+//! frame, which is what `nix flake check` runs under a headless
+//! compositor.
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use anyhow::Context as _;
 use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
 use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
+use moonshell_runtime::{LuaPainter, ShellCtx, Vm};
 use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell};
 
 const BG: Rgba = Rgba::new(0x14, 0x14, 0x1e, 0xff);
@@ -91,6 +103,37 @@ impl Painter for VersionBar {
     }
 }
 
+/// Locate the config: explicit `--config` and `$MOONSHELL_CONFIG` must
+/// exist (a typo should fail loudly); the default location is optional
+/// (absent = the bare version bar).
+fn resolve_config(cli: Option<PathBuf>) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(p) = cli {
+        anyhow::ensure!(p.is_file(), "--config: no such file: {}", p.display());
+        return Ok(Some(p));
+    }
+    if let Some(p) = std::env::var_os("MOONSHELL_CONFIG") {
+        let p = PathBuf::from(p);
+        anyhow::ensure!(
+            p.is_file(),
+            "$MOONSHELL_CONFIG: no such file: {}",
+            p.display()
+        );
+        return Ok(Some(p));
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    Ok(base
+        .map(|b| b.join("moonshell").join("init.lua"))
+        .filter(|p| p.is_file()))
+}
+
+/// mlua's error is `!Send + !Sync`; this is the one Lua→anyhow boundary.
+fn lua_err(e: moonshell_runtime::mlua::Error) -> anyhow::Error {
+    anyhow::anyhow!("{e}")
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -100,21 +143,62 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let mut boot_check = false;
-    for arg in std::env::args().skip(1) {
+    let mut config_arg: Option<PathBuf> = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--boot-check" => boot_check = true,
+            "--config" => {
+                config_arg = Some(args.next().context("--config needs a path")?.into());
+            }
             "--version" | "-V" => {
                 println!("moonshell {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            other => anyhow::bail!("unknown argument: {other} (try --version, --boot-check)"),
+            other => {
+                anyhow::bail!("unknown argument: {other} (try --version, --config, --boot-check)")
+            }
         }
     }
 
+    let config = resolve_config(config_arg)?;
     let (mut shell, event_loop) = Shell::connect()?;
     shell.exit_after_first_draw = boot_check;
-    let painter = VersionBar::new(format!("moonshell {}", env!("CARGO_PKG_VERSION")));
-    shell.create_window(LayerOptions::bar(Edge::Top, 32, true), Box::new(painter));
-    shell.run(event_loop)?;
+
+    let Some(path) = config else {
+        // Bare core (doctrine 06): no policy, still boots.
+        let painter = VersionBar::new(format!("moonshell {}", env!("CARGO_PKG_VERSION")));
+        shell.create_window(LayerOptions::bar(Edge::Top, 32, true), Box::new(painter));
+        shell.run(event_loop)?;
+        return Ok(());
+    };
+
+    tracing::info!(config = %path.display(), "loading config");
+    let vm = Vm::new().map_err(lua_err)?;
+    let ctx = ShellCtx::new();
+    vm.install_shell(&ctx).map_err(lua_err)?;
+    let code = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading config {}", path.display()))?;
+    vm.exec(&code, &path.to_string_lossy()).map_err(lua_err)?;
+
+    // One renderer for every window: the font system and glyph caches
+    // are the dominant allocation — shared, not per-window.
+    let renderer = Rc::new(RefCell::new(Renderer::new()));
+    let lua = vm.lua().clone();
+    let drain = move |shell: &mut Shell| {
+        for p in ctx.take_pending() {
+            let painter = LuaPainter::new(lua.clone(), p.shared, renderer.clone());
+            shell.create_window(p.options, Box::new(painter));
+        }
+        if ctx.take_dirty() {
+            shell.mark_all_dirty();
+        }
+    };
+    drain(&mut shell);
+    if shell.window_count() == 0 {
+        tracing::warn!("config created no windows (shell.window was never called)");
+    }
+    shell.run_with(event_loop, drain)?;
+    drop(vm); // outlives the loop: painters hold Lua clones
     Ok(())
 }

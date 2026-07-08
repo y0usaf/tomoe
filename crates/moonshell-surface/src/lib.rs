@@ -376,15 +376,29 @@ impl Shell {
         self.exit = true;
     }
 
+    /// Number of live windows.
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
     /// Dispatch events and repaint dirty windows until [`Shell::quit`]
     /// (or, with [`Shell::exit_after_first_draw`], until every window
     /// has committed once).
-    pub fn run(
+    pub fn run(self, event_loop: calloop::EventLoop<'static, Shell>) -> Result<(), SurfaceError> {
+        self.run_with(event_loop, |_| {})
+    }
+
+    /// [`Shell::run`] with a per-pass hook, called after dispatch and
+    /// before the redraw pass — the binary drains its Lua action queue
+    /// here (create windows, mark dirty) while it holds `&mut Shell`.
+    pub fn run_with(
         mut self,
         mut event_loop: calloop::EventLoop<'static, Shell>,
+        mut tick: impl FnMut(&mut Shell),
     ) -> Result<(), SurfaceError> {
         loop {
             event_loop.dispatch(None, &mut self)?;
+            tick(&mut self);
             self.redraw_windows()?;
             self.conn.flush().map_err(DispatchError::from)?;
             let booted = self.exit_after_first_draw

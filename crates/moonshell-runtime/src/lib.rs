@@ -10,12 +10,20 @@
 //! `mlua::Error` is `!Send + !Sync`, so a bare `?` into anyhow does not
 //! compile — convert with `map_err(|e| anyhow::anyhow!("{e}"))` there.
 
+use std::rc::Rc;
+
 use mlua::prelude::*;
 
+pub mod api;
 pub mod element;
+pub mod painter;
+pub mod state;
+pub mod window;
 
+pub use api::{PendingWindow, ShellCtx};
 pub use element::{from_table, TextDefaults};
 pub use mlua;
+pub use painter::LuaPainter;
 
 /// The `ui.*` stdlib: pure-Lua element constructors, embedded at build
 /// time from the policy layer (`lua/` at the repo root, doctrine 01).
@@ -37,6 +45,13 @@ impl Vm {
         lua.globals().set("ui", lua.create_table()?)?;
         lua.load(STDLIB).set_name("moonshell/stdlib.lua").exec()?;
         Ok(Self { lua })
+    }
+
+    /// Register the `shell.*` API, wired to `ctx` (the action queue
+    /// the binary drains — see [`api`]). Call before executing the
+    /// user config.
+    pub fn install_shell(&self, ctx: &Rc<ShellCtx>) -> LuaResult<()> {
+        api::register_shell(&self.lua, ctx)
     }
 
     /// The raw VM, for API registration and chunk evaluation.

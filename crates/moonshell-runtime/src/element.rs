@@ -283,9 +283,10 @@ fn parse_children(table: &LuaTable, inherited: TextDefaults) -> LuaResult<Vec<El
     }
 }
 
-/// Parse a color prop: `0xRRGGBB` number, `"#rgb"`, `"#rrggbb"`, or
-/// `"#rrggbbaa"` (the `#` is optional). `None` when absent.
-fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>> {
+/// Parse a color prop: `0xRRGGBB` number, `"#rgb"`, `"#rrggbb"`,
+/// `"#rrggbbaa"` (the `#` is optional), or `"transparent"` (nur's
+/// window-config vocabulary). `None` when absent.
+pub(crate) fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>> {
     let val: LuaValue = table.get(key)?;
     match val {
         LuaValue::Integer(n) => Ok(Some(rgb_u32(n as u32))),
@@ -294,6 +295,9 @@ fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>> {
             let s = s.to_str().map_err(|e| {
                 LuaError::RuntimeError(format!("invalid color string for '{key}': {e}"))
             })?;
+            if s.eq_ignore_ascii_case("transparent") {
+                return Ok(Some(Rgba::new(0, 0, 0, 0)));
+            }
             let hex = s.strip_prefix('#').unwrap_or(&s);
             let parsed = match hex.len() {
                 3 => {
