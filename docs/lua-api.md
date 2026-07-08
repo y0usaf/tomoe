@@ -1,8 +1,8 @@
 # tomoe Lua API
 
-<!-- Generated from resources/meta/tomoe.lua, resources/wm.lua, and
-resources/zoomer.lua by src/docgen.rs. Do not edit; regenerate with
-`TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->
+<!-- Generated from resources/meta/tomoe.lua and the built-in modules
+(resources/wm.lua, zoomer.lua, screencast.lua) by src/docgen.rs. Do not
+edit; regenerate with `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->
 
 The config is a Lua program (`~/.config/tomoe/init.lua`, hot-reloaded on
 save); the `tomoe` global is the entire core API, and all WM policy is Lua
@@ -61,6 +61,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag. Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped).
 - `tomoe.on_pointer_enter(fn)` — Run `fn` when the pointer enters a window.
 - `tomoe.on_pointer_leave(fn)` — Run `fn` when the pointer leaves a window.
+- `tomoe.on_screencast_request(fn)` — Decide what a screencast portal request captures (the ScreenCast portal asks over IPC on SelectSources). Answer by returning a selection table (`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or call `req:defer()` and answer later with `req:resolve(sel)` / `req:deny()` from another callback (e.g. a tomoe.ui.menu selection): the portal waits, the compositor never does. Single slot: registering again replaces the handler. With no handler the portal falls back to its environment-variable heuristics. The default menu picker ships as the "screencast" module.
 - `tomoe.grab_pointer(on_motion, on_release)` — Route pointer motion to `on_motion` (world coordinates) instead of clients until every button is released, then call `on_release`. Typically started from an on_pointer_button hook that returned true to consume the click.
 - `tomoe.ungrab_pointer()` — End the active grab without running its release callback.
 - `tomoe.on_reload(name, save, restore)` — Persist config state across reloads. `save` runs in the outgoing config just before the new one takes over and must return a JSON-compatible value (window handles don't survive — persist ids and look them back up with tomoe.window); `restore` runs in the new config with that value after it loads. Keyed by `name` so independent modules persist independently. When any restore hook runs, the core skips the on_window_open replay of existing windows — restored state supersedes it.
@@ -200,6 +201,30 @@ A window rule (`tomoe.rule`). `app_id`, `title`, and `match` select windows — 
 - `match: (fun(win: Window): boolean)?` — arbitrary predicate
 - `apply: (fun(win: Window))?` — runs when a matching window opens, after on_window_open hooks
 
+### ScreencastRequest
+
+A pending screencast source request (tomoe.on_screencast_request).
+
+- `app_id: string` — the requesting application; "" when unknown
+- `types: ScreencastTypes` — source kinds the request allows
+- `outputs: Output[]` — candidate outputs
+- `windows: Window[]` — candidate windows (mapped toplevels)
+- `ScreencastRequest:resolve(sel)` — Answer the request with a selection. A request answers exactly once; later calls are ignored with a warning.
+- `ScreencastRequest:deny()` — Cancel the request (the application sees a cancelled dialog).
+- `ScreencastRequest:defer()` — Keep the request open past the hook's return, to resolve/deny it later from another callback (menu selection, IPC handler). A config reload abandons deferred requests (the portal falls back).
+
+### ScreencastTypes
+
+- `monitor: boolean`
+- `window: boolean`
+
+### ScreencastSelection
+
+What to cast: exactly one field.
+
+- `output: string?` — output name ("DP-1")
+- `window: Window|integer?` — window handle or id
+
 ### GrabEvent
 
 Motion event during a tomoe.grab_pointer grab.
@@ -330,3 +355,8 @@ Options for `zoomer.setup`; every field optional.
 - `open_size: number` — new windows take this fraction of the visible area (default 0.6)
 - `min_size: integer` — minimum window dimension in pixels (default 64)
 - `cascade: integer` — cascade offset between new windows (default 32)
+
+## screencast
+
+Compositor-drawn screencast source picker: answers ScreenCast portal requests with a tomoe.ui.menu of the allowed sources (single candidates resolve without asking). Preloaded as module "screencast"; requiring it installs its tomoe.on_screencast_request hook. Per-app policy composes with window rules: when a mapped window of the requesting app matches a rule carrying a `screencast` property, `screencast = false` denies the request and `screencast = "DP-1"` casts that output without asking.
+

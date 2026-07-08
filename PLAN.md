@@ -91,11 +91,12 @@ Done and working:
   → vblank-paced); monitor sources (dmabuf with shm fallback) *and
   window sources* (ext-foreign-toplevel-list enumeration +
   ext-image-copy-capture streaming, shm, resize renegotiation via
-  `update_params`); no-GUI source choice (`TOMOE_SCREENCAST_OUTPUT` /
+  `update_params`); source choice asks the compositor first
+  (`screencast_select` over IPC → `tomoe.on_screencast_request`, M4 §7),
+  with the env-var heuristics (`TOMOE_SCREENCAST_OUTPUT` /
   `TOMOE_SCREENCAST_WINDOW` / `TOMOE_PORTAL_CHOOSER` dmenu lines /
-  single-source auto) — the env-var chooser is a **recorded doctrine-05
-  exemption**: screencast policy is the one piece of WM policy declared
-  outside Lua, retired by M4 §7; compositor exports
+  single-source auto) demoted to the no-hook fallback — the former
+  doctrine-05 exemption is retired; compositor exports
   `XDG_CURRENT_DESKTOP=tomoe` and, on TTY, pushes `WAYLAND_DISPLAY`/
   `DISPLAY`/`XDG_CURRENT_DESKTOP`/`TOMOE_PORTAL_CHOOSER` into the
   systemd + D-Bus activation environment, pre-starts the GTK portal
@@ -238,11 +239,14 @@ Done and working:
       expire via a scheduled repaint). Exit dialog, hotkey overlay, and
       config-error banner ported as builtins (doctrine 05); screenshot
       UI stays native as the declared exemption
-- [ ] Portal source policy through the extension API:
-      `tomoe.on_screencast_request` (snapshot in: app_id, requested
-      types, candidate outputs/windows; actions out: resolve/deny/defer)
-      with the backend as a thin IPC client — retires the
-      `TOMOE_PORTAL_CHOOSER` env-var exemption
+- [x] Portal source policy through the extension API:
+      `tomoe.on_screencast_request` (snapshot in: `req.app_id`,
+      `req.types`, `req.outputs`, `req.windows`; actions out: return a
+      selection/false, or `req:defer()` + `req:resolve/deny` later) with
+      the backend as a thin IPC client (`screencast_select`, 120 s
+      timeout) — retires the `TOMOE_PORTAL_CHOOSER` env-var exemption;
+      default `tomoe.ui.menu` picker ships as the preloaded `screencast`
+      module, composing with `tomoe.rule { app_id = ..., screencast = ... }`
 - [ ] Scriptable decorations (long-term; Hyprland-style built-in borders/
       titlebar first, ShojiWM-style Lua-driven SSD tree later — study
       `ref/ShojiWM/knowledges/shared-edge-tree-plan.md` before designing)
@@ -514,25 +518,35 @@ scanout confirmed via drm_info; no idle redraw storms.*
    menu *keyboard selection* end-to-end (Enter → on_select → broadcast)
    still needs a hands-on check — the routing ships untested by real
    input
-7. Portal source policy over IPC: `tomoe.on_screencast_request` — the
-   backend becomes a thin IPC client (asks the compositor on
-   SelectSources, bounded by a timeout), the hook gets a snapshot
-   (app_id, types, candidate outputs/windows) and answers with an action
-   (resolve/deny) or `req:defer()` + later `req:resolve(selection)` for
-   interactive picks, so the frame loop never waits on a picker. Default
-   policy ships as a builtin `tomoe.ui.menu` picker (doctrine 01);
-   per-app behavior composes with window rules
-   (`tomoe.rule { app_id = ..., screencast = ... }`). Bare core / no
-   hook: the backend keeps today's auto-pick + env-var heuristics
-   (doctrine 06), which stops being the *declared* mechanism and becomes
-   the fallback. Same hook pattern extends later to Screenshot and
-   GlobalShortcuts (which maps 1:1 onto the bind registry)
+7. ~~Portal source policy over IPC~~ done — `tomoe.on_screencast_request`
+   (single slot, last registration wins): the portal's SelectSources
+   sends `screencast_select` `{app_id, types}` over IPC (thin client,
+   120 s read timeout) and the hook answers by returning
+   `{ output = name }` / `{ window = win }` / `false`, or `req:defer()`
+   + `req:resolve/deny` from a later Lua entry (menu callback) — replies
+   ride a queued-op drain (`ipc::flush_screencast_replies` from
+   `after_lua`), so the frame loop never waits. Window picks resolve to
+   the foreign-toplevel identifier at flush time (gone window ⇒ deny);
+   a config reload answers pending requests with `fallback` (resolvers
+   died with the VM); disconnecting clients drop their pending entries.
+   Default policy ships as the preloaded `screencast` module (required
+   by the default init.lua): rules (`screencast = false | "DP-1"` on a
+   window of the requesting app) → single candidate auto-resolve →
+   deferred `tomoe.ui.menu`. No hook → `{action = "fallback"}` and the
+   backend keeps the env-var heuristics (doctrine 06). Verified live on
+   winit: hook resolve + post-reload fallback over `tomoe msg`; unit
+   tests cover deny/defer/double-answer and the module's three tiers.
+   **Pending live check**: real-session OBS pick through the portal
+   (menu → PipeWire stream). Same hook pattern extends later to
+   Screenshot and GlobalShortcuts (which maps 1:1 onto the bind
+   registry)
 
 *Accept: waybar-equivalent driven purely over user IPC; config reload
 preserves workspace assignments; services survive and diff correctly;
 the screencast picker is compositor-drawn via `tomoe.ui`, declared in
 `init.lua`, and `TOMOE_PORTAL_CHOOSER` is no longer needed on a default
-setup.*
+setup. — All landed; remaining M4 loose ends: example configs
+exercising the surface (§5) and menu pointer interaction (§6).*
 
 ### M5 — Ecosystem remainder
 

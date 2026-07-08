@@ -16,7 +16,8 @@ use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use mlua::{
-    Function, Lua, LuaSerdeExt, MetaMethod, RegistryKey, Table, UserData, UserDataMethods, Value,
+    Function, Lua, LuaSerdeExt, MetaMethod, RegistryKey, Table, UserData, UserDataFields,
+    UserDataMethods, Value,
 };
 use tracing::{info, warn};
 
@@ -27,6 +28,7 @@ use crate::ui::widgets::{self, UiEvent, WidgetSpec};
 const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
 const ZOOMER_LUA: &str = include_str!("../../../resources/zoomer.lua");
+const SCREENCAST_LUA: &str = include_str!("../../../resources/screencast.lua");
 
 /// Which of a connector's advertised modes to use, parsed from
 /// `"<preferred|max|WxH>[@<Hz|max>]"` (e.g. "max@max", "2560x1440@144").
@@ -634,6 +636,151 @@ struct UiCallbacks {
     select: Option<RegistryKey>,
 }
 
+/// A queued answer to a portal `screencast_select` IPC request, keyed by
+/// the pending token the IPC layer holds for the waiting portal client.
+#[derive(Debug, Clone)]
+pub enum ScreencastReply {
+    /// Cast the named output.
+    Output(String),
+    /// Cast the window; the IPC layer maps the id to its foreign-toplevel
+    /// identifier (a window gone by then becomes a deny).
+    Window(u64),
+    /// Cancel the request.
+    Deny,
+}
+
+/// What `emit_screencast_request` did with the hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreencastHookOutcome {
+    /// A reply is queued (drained by `take_screencast_replies`).
+    Answered,
+    /// The hook called `req:defer()`; a reply arrives from a later Lua
+    /// entry (menu callback, IPC handler).
+    Deferred,
+    /// No usable answer (no hook / hook error): the portal should fall
+    /// back to its own heuristics.
+    Fallback,
+}
+
+/// Interior state of a screencast request: shared between the userdata
+/// (which deferred callbacks may hold long after the hook returned) and the
+/// emitter interpreting the hook's return value.
+struct ScreencastRequestState {
+    token: u64,
+    responded: Cell<bool>,
+    deferred: Cell<bool>,
+}
+
+/// The `req` object of `tomoe.on_screencast_request`: a snapshot of the ask
+/// plus resolve/deny/defer actions (doctrine 02: snapshot in, actions out).
+struct LuaScreencastRequest {
+    state: Rc<ScreencastRequestState>,
+    app_id: String,
+    monitor: bool,
+    window: bool,
+    shared: Rc<Shared>,
+}
+
+impl LuaScreencastRequest {
+    /// Queue the reply; a request answers exactly once.
+    fn respond(&self, reply: ScreencastReply) {
+        if self.state.responded.replace(true) {
+            warn!("screencast request already answered; ignoring");
+            return;
+        }
+        self.shared
+            .screencast_replies
+            .borrow_mut()
+            .push((self.state.token, reply));
+    }
+}
+
+/// Parse a selection table: `{ output = "DP-1" }` or `{ window = win_or_id }`.
+fn parse_screencast_selection(sel: &Table) -> Option<ScreencastReply> {
+    if let Ok(name) = sel.get::<String>("output") {
+        return Some(ScreencastReply::Output(name));
+    }
+    match sel.get::<Value>("window") {
+        Ok(Value::UserData(ud)) => ud
+            .borrow::<LuaWindow>()
+            .ok()
+            .map(|w| ScreencastReply::Window(w.id)),
+        Ok(Value::Integer(id)) => u64::try_from(id).ok().map(ScreencastReply::Window),
+        _ => None,
+    }
+}
+
+impl UserData for LuaScreencastRequest {
+    fn add_fields<F: UserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("app_id", |_, this| Ok(this.app_id.clone()));
+        fields.add_field_method_get("types", |lua, this| {
+            let t = lua.create_table()?;
+            t.set("monitor", this.monitor)?;
+            t.set("window", this.window)?;
+            Ok(t)
+        });
+        fields.add_field_method_get("outputs", |lua, this| {
+            let outputs = this.shared.outputs.borrow();
+            let list = lua.create_table()?;
+            for (i, o) in outputs.iter().enumerate() {
+                let t = lua.create_table()?;
+                t.set("name", o.name.clone())?;
+                t.set("x", o.geometry.0)?;
+                t.set("y", o.geometry.1)?;
+                t.set("w", o.geometry.2)?;
+                t.set("h", o.geometry.3)?;
+                list.set(i + 1, t)?;
+            }
+            Ok(list)
+        });
+        fields.add_field_method_get("windows", |_, this| {
+            let mut ids: Vec<u64> = this
+                .shared
+                .windows
+                .borrow()
+                .iter()
+                .filter(|(_, props)| props.mapped)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.sort_unstable();
+            Ok(ids
+                .into_iter()
+                .map(|id| LuaWindow {
+                    id,
+                    shared: this.shared.clone(),
+                })
+                .collect::<Vec<_>>())
+        });
+    }
+
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("resolve", |_, this, sel: Table| {
+            match parse_screencast_selection(&sel) {
+                Some(reply) => this.respond(reply),
+                None => {
+                    warn!(
+                        "screencast resolve: expected {{ output = name }} or \
+                         {{ window = win }}; denying"
+                    );
+                    this.respond(ScreencastReply::Deny);
+                }
+            }
+            Ok(())
+        });
+        methods.add_method("deny", |_, this, ()| {
+            this.respond(ScreencastReply::Deny);
+            Ok(())
+        });
+        methods.add_method("defer", |_, this, ()| {
+            this.state.deferred.set(true);
+            Ok(())
+        });
+        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
+            Ok(format!("ScreencastRequest({:?})", this.app_id))
+        });
+    }
+}
+
 /// Spec keys that select windows (or act on them) rather than describe them;
 /// excluded from the property table `tomoe.rules_for` merges.
 const RULE_RESERVED: [&str; 4] = ["app_id", "title", "match", "apply"];
@@ -768,6 +915,12 @@ struct Shared {
     ui_ops: RefCell<Vec<UiOp>>,
     /// Widget callbacks by id (see [`UiCallbacks`]).
     ui_callbacks: RefCell<HashMap<u64, UiCallbacks>>,
+    /// The `tomoe.on_screencast_request` handler. Single slot (a request
+    /// needs exactly one answer): registering again replaces it.
+    screencast_hook: RefCell<Option<RegistryKey>>,
+    /// Queued answers to pending portal source requests, drained like ops
+    /// (`ipc::flush_screencast_replies`).
+    screencast_replies: RefCell<Vec<(u64, ScreencastReply)>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1714,6 +1867,20 @@ impl LuaRuntime {
             )?;
         }
 
+        // tomoe.on_screencast_request(fn) — decide what a screencast portal
+        // request captures. Answer by returning a selection table or false
+        // (deny), or req:defer() + req:resolve/req:deny from a later
+        // callback. Single slot: registering again replaces the handler.
+        let s = shared.clone();
+        tomoe.set(
+            "on_screencast_request",
+            lua.create_function(move |lua, func: Function| {
+                let key = lua.create_registry_value(func)?;
+                *s.screencast_hook.borrow_mut() = Some(key);
+                Ok(())
+            })?,
+        )?;
+
         lua.globals().set("tomoe", tomoe)?;
 
         // Preload the default WM library: `require("wm")` runs it lazily, so
@@ -1732,6 +1899,14 @@ impl LuaRuntime {
             "zoomer",
             lua.create_function(|lua, _: Value| {
                 lua.load(ZOOMER_LUA).set_name("zoomer.lua").eval::<Value>()
+            })?,
+        )?;
+        preload.set(
+            "screencast",
+            lua.create_function(|lua, _: Value| {
+                lua.load(SCREENCAST_LUA)
+                    .set_name("screencast.lua")
+                    .eval::<Value>()
             })?,
         )?;
 
@@ -1846,6 +2021,93 @@ impl LuaRuntime {
 
     pub fn take_ipc_broadcasts(&mut self) -> Vec<(String, serde_json::Value)> {
         self.shared.ipc_broadcasts.take()
+    }
+
+    pub fn has_screencast_hook(&self) -> bool {
+        self.shared.screencast_hook.borrow().is_some()
+    }
+
+    pub fn take_screencast_replies(&mut self) -> Vec<(u64, ScreencastReply)> {
+        self.shared.screencast_replies.take()
+    }
+
+    /// Run the `tomoe.on_screencast_request` hook for a portal source
+    /// request. The caller wraps this like any other Lua entry and holds
+    /// `token` for the waiting client; replies (immediate or deferred)
+    /// arrive through `take_screencast_replies`.
+    pub fn emit_screencast_request(
+        &mut self,
+        token: u64,
+        app_id: String,
+        monitor: bool,
+        window: bool,
+    ) -> ScreencastHookOutcome {
+        let func = {
+            let hook = self.shared.screencast_hook.borrow();
+            let Some(key) = hook.as_ref() else {
+                return ScreencastHookOutcome::Fallback;
+            };
+            match self.lua.registry_value::<Function>(key) {
+                Ok(func) => func,
+                Err(err) => {
+                    warn!("Lua on_screencast_request registry error: {err}");
+                    return ScreencastHookOutcome::Fallback;
+                }
+            }
+        };
+        let state = Rc::new(ScreencastRequestState {
+            token,
+            responded: Cell::new(false),
+            deferred: Cell::new(false),
+        });
+        let req = LuaScreencastRequest {
+            state: state.clone(),
+            app_id,
+            monitor,
+            window,
+            shared: self.shared.clone(),
+        };
+        let value = match func.call::<Value>(req) {
+            Ok(value) => value,
+            Err(err) => {
+                warn!("Lua on_screencast_request error: {err}");
+                return if state.responded.get() {
+                    ScreencastHookOutcome::Answered
+                } else {
+                    ScreencastHookOutcome::Fallback
+                };
+            }
+        };
+        if state.responded.get() {
+            return ScreencastHookOutcome::Answered;
+        }
+        let reply = match value {
+            Value::Table(sel) => match parse_screencast_selection(&sel) {
+                Some(reply) => reply,
+                None => {
+                    warn!(
+                        "on_screencast_request: expected {{ output = name }} or \
+                         {{ window = win }}; denying"
+                    );
+                    ScreencastReply::Deny
+                }
+            },
+            Value::Boolean(false) => ScreencastReply::Deny,
+            Value::Nil if state.deferred.get() => return ScreencastHookOutcome::Deferred,
+            other => {
+                warn!(
+                    "on_screencast_request: returned {} without req:defer(); denying",
+                    other.type_name()
+                );
+                ScreencastReply::Deny
+            }
+        };
+        state.responded.set(true);
+        self.shared
+            .screencast_replies
+            .borrow_mut()
+            .push((token, reply));
+        ScreencastHookOutcome::Answered
     }
 
     pub fn has_ipc_handler(&self, method: &str) -> bool {
@@ -2742,6 +3004,168 @@ mod tests {
             matches!(ops.as_slice(), [WindowOp::SetGeometry(3, (1, 2, 300, 200))]),
             "{ops:?}"
         );
+    }
+
+    /// Hook return values map to replies; defer keeps the request open for
+    /// a later Lua entry; a request answers exactly once.
+    #[test]
+    fn screencast_request_hook() {
+        let mut rt = LuaRuntime::new().unwrap();
+        assert!(!rt.has_screencast_hook());
+        assert_eq!(
+            rt.emit_screencast_request(0, "obs".into(), true, false),
+            ScreencastHookOutcome::Fallback,
+            "no hook registered"
+        );
+
+        // Synchronous resolve by return value.
+        rt.lua
+            .load(
+                r#"tomoe.on_screencast_request(function(req)
+                     assert(req.app_id == "obs")
+                     assert(req.types.monitor and not req.types.window)
+                     return { output = "DP-1" }
+                   end)"#,
+            )
+            .exec()
+            .unwrap();
+        assert!(rt.has_screencast_hook());
+        assert_eq!(
+            rt.emit_screencast_request(1, "obs".into(), true, false),
+            ScreencastHookOutcome::Answered
+        );
+        let replies = rt.take_screencast_replies();
+        assert!(
+            matches!(&replies[..], [(1, ScreencastReply::Output(name))] if name == "DP-1"),
+            "{replies:?}"
+        );
+
+        // Deny by returning false (re-registering replaces the handler).
+        rt.lua
+            .load(r#"tomoe.on_screencast_request(function() return false end)"#)
+            .exec()
+            .unwrap();
+        assert_eq!(
+            rt.emit_screencast_request(2, String::new(), true, true),
+            ScreencastHookOutcome::Answered
+        );
+        assert!(matches!(
+            rt.take_screencast_replies()[..],
+            [(2, ScreencastReply::Deny)]
+        ));
+
+        // Deferred: the reply arrives from a later Lua entry.
+        rt.lua
+            .load(
+                r#"
+                local pending
+                tomoe.on_screencast_request(function(req)
+                  req:defer()
+                  pending = req
+                end)
+                function _resolve_later() pending:resolve({ window = 7 }) end
+                "#,
+            )
+            .exec()
+            .unwrap();
+        assert_eq!(
+            rt.emit_screencast_request(3, "firefox".into(), true, true),
+            ScreencastHookOutcome::Deferred
+        );
+        assert!(rt.take_screencast_replies().is_empty());
+        rt.lua.load("_resolve_later()").exec().unwrap();
+        assert!(matches!(
+            rt.take_screencast_replies()[..],
+            [(3, ScreencastReply::Window(7))]
+        ));
+        // A second answer to the same request is ignored.
+        rt.lua.load("_resolve_later()").exec().unwrap();
+        assert!(rt.take_screencast_replies().is_empty());
+    }
+
+    /// The shipped "screencast" module: rules and single candidates resolve
+    /// without a menu; multiple candidates defer to a tomoe.ui.menu.
+    #[test]
+    fn screencast_module_policy() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua.load(r#"require("screencast")"#).exec().unwrap();
+        let output = |name: &str| OutputProps {
+            name: name.into(),
+            geometry: (0, 0, 1920, 1080),
+            usable: (0, 0, 1920, 1080),
+        };
+
+        // One candidate output: resolved without asking.
+        rt.sync(
+            HashMap::new(),
+            vec![output("DP-1")],
+            (0, 0, 1.0),
+            (0.0, 0.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            rt.emit_screencast_request(1, "obs".into(), true, false),
+            ScreencastHookOutcome::Answered
+        );
+        let replies = rt.take_screencast_replies();
+        assert!(
+            matches!(&replies[..], [(1, ScreencastReply::Output(name))] if name == "DP-1"),
+            "{replies:?}"
+        );
+        assert!(rt.take_ui_ops().is_empty(), "no menu for a single source");
+
+        // Two outputs: deferred to a menu; selecting resolves the request.
+        rt.sync(
+            HashMap::new(),
+            vec![output("DP-1"), output("DP-2")],
+            (0, 0, 1.0),
+            (0.0, 0.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            rt.emit_screencast_request(2, "obs".into(), true, false),
+            ScreencastHookOutcome::Deferred
+        );
+        let ops = rt.take_ui_ops();
+        let [UiOp::Open {
+            id,
+            spec: WidgetSpec::Menu { items, .. },
+        }] = &ops[..]
+        else {
+            panic!("expected a menu, got {ops:?}");
+        };
+        assert_eq!(items.len(), 2);
+        rt.emit_ui_event(*id, UiEvent::Select(1), Some(items[1].clone()));
+        let replies = rt.take_screencast_replies();
+        assert!(
+            matches!(&replies[..], [(2, ScreencastReply::Output(name))] if name == "DP-2"),
+            "{replies:?}"
+        );
+
+        // A window rule with a screencast prop answers for the app.
+        rt.lua
+            .load(r#"tomoe.rule { app_id = "^obs$", screencast = false }"#)
+            .exec()
+            .unwrap();
+        rt.sync(
+            HashMap::from([(
+                5,
+                WinProps {
+                    app_id: "obs".into(),
+                    mapped: true,
+                    ..Default::default()
+                },
+            )]),
+            vec![output("DP-1"), output("DP-2")],
+            (0, 0, 1.0),
+            (0.0, 0.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            rt.emit_screencast_request(3, "obs".into(), true, false),
+            ScreencastHookOutcome::Answered
+        );
+        assert!(matches!(
+            rt.take_screencast_replies()[..],
+            [(3, ScreencastReply::Deny)]
+        ));
     }
 
     #[test]

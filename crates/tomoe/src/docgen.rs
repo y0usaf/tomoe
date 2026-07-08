@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 const META: &str = include_str!("../../../resources/meta/tomoe.lua");
 const WM: &str = include_str!("../../../resources/wm.lua");
 const ZOOMER: &str = include_str!("../../../resources/zoomer.lua");
+const SCREENCAST: &str = include_str!("../../../resources/screencast.lua");
 
 struct Field {
     name: String,
@@ -305,9 +306,9 @@ fn generate() -> String {
     let mut out = String::new();
     out.push_str("# tomoe Lua API\n\n");
     out.push_str(
-        "<!-- Generated from resources/meta/tomoe.lua, resources/wm.lua, and\n\
-         resources/zoomer.lua by src/docgen.rs. Do not edit; regenerate with\n\
-         `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->\n\n",
+        "<!-- Generated from resources/meta/tomoe.lua and the built-in modules\n\
+         (resources/wm.lua, zoomer.lua, screencast.lua) by src/docgen.rs. Do not\n\
+         edit; regenerate with `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->\n\n",
     );
     out.push_str(
         "The config is a Lua program (`~/.config/tomoe/init.lua`, hot-reloaded on\n\
@@ -320,6 +321,11 @@ fn generate() -> String {
     render_meta(&mut out, &parse(META, None));
     render_module(&mut out, &parse(WM, Some("wm")), "wm");
     render_module(&mut out, &parse(ZOOMER, Some("zoomer")), "zoomer");
+    render_module(
+        &mut out,
+        &parse(SCREENCAST, Some("screencast")),
+        "screencast",
+    );
     out
 }
 
@@ -397,7 +403,7 @@ mod tests {
     #[test]
     fn modules_match_their_annotations() {
         let rt = crate::lua::LuaRuntime::new().unwrap();
-        for (module, src) in [("wm", WM), ("zoomer", ZOOMER)] {
+        for (module, src) in [("wm", WM), ("zoomer", ZOOMER), ("screencast", SCREENCAST)] {
             let table: mlua::Table = rt
                 .lua()
                 .load(format!("return require(\"{module}\")"))

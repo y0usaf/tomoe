@@ -446,6 +446,9 @@ impl Tomoe {
         let saved = self.lua.save_reload_state();
 
         self.lua = new_lua;
+        // Deferred screencast resolvers died with the old VM; answer their
+        // waiting portals with the fallback action instead of a timeout.
+        crate::ipc::abandon_pending_screencasts(self);
         self.apply_binds();
         self.ui.widgets.close_tag(Tag::ConfigError);
         // Lua-owned widgets' callbacks died with the old VM.
@@ -708,6 +711,7 @@ impl Tomoe {
         }
         self.in_lua = was_in_lua;
         crate::ipc::flush_lua_broadcasts(self);
+        crate::ipc::flush_screencast_replies(self);
         self.reconcile_processes();
         self.apply_keyboard_settings();
         crate::backend::tty::apply_libinput_settings(self);

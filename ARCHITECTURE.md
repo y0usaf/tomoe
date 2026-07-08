@@ -14,6 +14,7 @@ Internal (workspace-local) dependencies only. `A --> B` means A depends on B.
 ```mermaid
 graph TD
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
+  xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
 ```
 
 ## Crates
@@ -79,6 +80,7 @@ crate tomoe
 │   ├── struct InputDeviceSettings: pub
 │   ├── struct KeyboardSettings: pub
 │   ├── struct LuaRuntime: pub
+│   ├── struct LuaScreencastRequest: pub(self)
 │   ├── struct LuaWindow: pub(self)
 │   ├── struct OutputProps: pub
 │   ├── struct PendingBind: pub
@@ -89,6 +91,9 @@ crate tomoe
 │   ├── struct ReloadHooks: pub(self)
 │   ├── struct Resolution: pub
 │   ├── struct Rule: pub(self)
+│   ├── enum ScreencastHookOutcome: pub
+│   ├── enum ScreencastReply: pub
+│   ├── struct ScreencastRequestState: pub(self)
 │   ├── enum ScrollMethod: pub
 │   ├── struct Settings: pub
 │   ├── struct Shared: pub(self)
@@ -191,6 +196,7 @@ crate xdg_desktop_portal_tomoe
 │   ├── struct StreamHandle: pub
 │   └── struct StreamSpec: pub
 ├── mod screencast: pub(crate)
+│   ├── enum IpcPick: pub(self)
 │   ├── enum LiveStream: pub(self)
 │   ├── struct ScreenCast: pub
 │   ├── enum Selection: pub(self)

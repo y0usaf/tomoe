@@ -192,6 +192,18 @@ function tomoe.on_pointer_enter(fn) end
 ---@param fn fun(win: Window)
 function tomoe.on_pointer_leave(fn) end
 
+---Decide what a screencast portal request captures (the ScreenCast portal
+---asks over IPC on SelectSources). Answer by returning a selection table
+---(`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or
+---call `req:defer()` and answer later with `req:resolve(sel)` /
+---`req:deny()` from another callback (e.g. a tomoe.ui.menu selection): the
+---portal waits, the compositor never does. Single slot: registering again
+---replaces the handler. With no handler the portal falls back to its
+---environment-variable heuristics. The default menu picker ships as the
+---"screencast" module.
+---@param fn fun(req: ScreencastRequest): ScreencastSelection|false|nil
+function tomoe.on_screencast_request(fn) end
+
 ---Route pointer motion to `on_motion` (world coordinates) instead of clients
 ---until every button is released, then call `on_release`. Typically started
 ---from an on_pointer_button hook that returned true to consume the click.
@@ -400,6 +412,36 @@ function UiWidget:close() end
 ---@field title string? # Lua pattern matched against the title
 ---@field match (fun(win: Window): boolean)? # arbitrary predicate
 ---@field apply (fun(win: Window))? # runs when a matching window opens, after on_window_open hooks
+
+---A pending screencast source request (tomoe.on_screencast_request).
+---@class ScreencastRequest
+---@field app_id string # the requesting application; "" when unknown
+---@field types ScreencastTypes # source kinds the request allows
+---@field outputs Output[] # candidate outputs
+---@field windows Window[] # candidate windows (mapped toplevels)
+local ScreencastRequest = {}
+
+---Answer the request with a selection. A request answers exactly once;
+---later calls are ignored with a warning.
+---@param sel ScreencastSelection
+function ScreencastRequest:resolve(sel) end
+
+---Cancel the request (the application sees a cancelled dialog).
+function ScreencastRequest:deny() end
+
+---Keep the request open past the hook's return, to resolve/deny it later
+---from another callback (menu selection, IPC handler). A config reload
+---abandons deferred requests (the portal falls back).
+function ScreencastRequest:defer() end
+
+---@class ScreencastTypes
+---@field monitor boolean
+---@field window boolean
+
+---What to cast: exactly one field.
+---@class ScreencastSelection
+---@field output string? # output name ("DP-1")
+---@field window Window|integer? # window handle or id
 
 ---Motion event during a tomoe.grab_pointer grab.
 ---@class GrabEvent

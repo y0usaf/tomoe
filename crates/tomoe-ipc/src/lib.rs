@@ -129,6 +129,13 @@ impl Client {
         })
     }
 
+    /// Bound how long `request`/`next_event` block on the socket: after
+    /// `timeout`, reads fail with a `WouldBlock`/`TimedOut` error instead
+    /// of waiting forever. Wire-neutral — purely a client-side option.
+    pub fn set_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)
+    }
+
     /// Send a request and block until its response arrives. Event frames
     /// received while waiting are dropped (subscribe last, then only read
     /// events). The outer error is transport failure; the inner is the

@@ -25,7 +25,7 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken};
 use tracing::{info, warn};
 
-use crate::lua::{OutputProps, WinProps};
+use crate::lua::{OutputProps, ScreencastHookOutcome, ScreencastReply, WinProps};
 use crate::state::Tomoe;
 
 /// Outgoing-buffer cap per client: a reader this far behind is dropped —
@@ -44,6 +44,10 @@ pub struct IpcState {
     /// Last focus broadcast, to emit `focus_change` only on real changes
     /// (focus_window runs on every click, mostly with the same window).
     last_focus: Option<u64>,
+    /// Portal `screencast_select` requests awaiting a Lua answer:
+    /// token → (client id, request id).
+    pending_screencast: HashMap<u64, (u64, u64)>,
+    next_screencast_token: u64,
 }
 
 struct Client {
@@ -234,6 +238,10 @@ fn read_client(tomoe: &mut Tomoe, id: u64, stream: &UnixStream) -> PostAction {
     let dead = disconnect || tomoe.ipc.clients.get(&id).is_none_or(|client| client.dead);
     if dead {
         tomoe.ipc.clients.remove(&id);
+        tomoe
+            .ipc
+            .pending_screencast
+            .retain(|_, (cid, _)| *cid != id);
         return PostAction::Remove;
     }
     PostAction::Continue
@@ -299,6 +307,12 @@ fn dispatch(tomoe: &mut Tomoe, client_id: u64, line: &[u8]) {
             tomoe.loop_signal.stop();
             Ok(json!(true))
         }
+        "screencast_select" => {
+            // May answer later (deferred to an interactive pick), so it
+            // manages its own response instead of returning a result here.
+            handle_screencast_select(tomoe, client_id, &request);
+            return;
+        }
         method if tomoe.lua.has_ipc_handler(method) => {
             let params = request.params.clone().unwrap_or(Value::Null);
             tomoe.sync_snapshot();
@@ -347,7 +361,7 @@ pub fn broadcast(tomoe: &mut Tomoe, event: &str, payload: Value) {
 }
 
 /// Remove clients marked dead by a failed/backed-up write, deregistering
-/// their loop sources.
+/// their loop sources and abandoning their pending screencast requests.
 fn sweep_dead(tomoe: &mut Tomoe) {
     let dead: Vec<u64> = tomoe
         .ipc
@@ -360,7 +374,148 @@ fn sweep_dead(tomoe: &mut Tomoe) {
         if let Some(client) = tomoe.ipc.clients.remove(&id) {
             tomoe.loop_handle.remove(client.token);
         }
+        tomoe
+            .ipc
+            .pending_screencast
+            .retain(|_, (cid, _)| *cid != id);
     }
+}
+
+// ── Screencast source policy (M4 §7) ──
+
+/// Send a `screencast_select` response frame to its waiting client.
+fn send_screencast_response(tomoe: &mut Tomoe, client_id: u64, request_id: u64, result: Value) {
+    let frame = json!({ "id": request_id, "result": result });
+    if let Some(client) = tomoe.ipc.clients.get_mut(&client_id) {
+        client.send(&frame);
+    }
+}
+
+/// `screencast_select` — the portal backend asking which source to cast:
+/// params `{app_id?, types?: ["monitor","window"]}`. Answered by the
+/// config's `tomoe.on_screencast_request` hook — immediately, or later when
+/// the hook deferred to an interactive pick (the portal waits with a
+/// timeout; the compositor never does). `{"action":"fallback"}` tells the
+/// backend to use its own heuristics (no hook registered / hook error).
+fn handle_screencast_select(tomoe: &mut Tomoe, client_id: u64, request: &tomoe_ipc::Request) {
+    let Some(request_id) = request.id else {
+        warn!("screencast_select without an id cannot be answered; ignoring");
+        return;
+    };
+    if !tomoe.lua.has_screencast_hook() {
+        send_screencast_response(
+            tomoe,
+            client_id,
+            request_id,
+            json!({ "action": "fallback" }),
+        );
+        sweep_dead(tomoe);
+        return;
+    }
+    let app_id = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("app_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let types: Vec<String> = request
+        .params
+        .as_ref()
+        .and_then(|p| p.get("types"))
+        .and_then(|t| serde_json::from_value(t.clone()).ok())
+        .unwrap_or_else(|| vec!["monitor".to_string()]);
+    let monitor = types.iter().any(|t| t == "monitor");
+    let window = types.iter().any(|t| t == "window");
+
+    let token = tomoe.ipc.next_screencast_token;
+    tomoe.ipc.next_screencast_token += 1;
+    tomoe
+        .ipc
+        .pending_screencast
+        .insert(token, (client_id, request_id));
+
+    tomoe.sync_snapshot();
+    let was_in_lua = tomoe.in_lua;
+    tomoe.in_lua = true;
+    let outcome = tomoe
+        .lua
+        .emit_screencast_request(token, app_id, monitor, window);
+    tomoe.in_lua = was_in_lua;
+    // Applies queued ops (the hook may open a tomoe.ui.menu) and flushes
+    // any synchronous reply to the client.
+    tomoe.after_lua();
+
+    if outcome == ScreencastHookOutcome::Fallback
+        && tomoe.ipc.pending_screencast.remove(&token).is_some()
+    {
+        send_screencast_response(
+            tomoe,
+            client_id,
+            request_id,
+            json!({ "action": "fallback" }),
+        );
+        sweep_dead(tomoe);
+    }
+}
+
+/// Send queued `tomoe.on_screencast_request` answers to their waiting
+/// portal clients. Called from `after_lua` (like the broadcast drain), so
+/// deferred resolves from any later Lua entry reach the portal.
+pub fn flush_screencast_replies(tomoe: &mut Tomoe) {
+    let replies = tomoe.lua.take_screencast_replies();
+    if replies.is_empty() {
+        return;
+    }
+    for (token, reply) in replies {
+        let Some((client_id, request_id)) = tomoe.ipc.pending_screencast.remove(&token) else {
+            // Request abandoned: client gone or config reloaded.
+            continue;
+        };
+        let result = match reply {
+            ScreencastReply::Output(name) => {
+                json!({ "action": "resolve", "type": "output", "output": name })
+            }
+            ScreencastReply::Window(id) => match tomoe.foreign_toplevels.get(&id) {
+                Some(handle) => json!({
+                    "action": "resolve",
+                    "type": "window",
+                    "identifier": handle.identifier(),
+                }),
+                None => {
+                    warn!("screencast resolve: window {id} is gone; denying");
+                    json!({ "action": "deny" })
+                }
+            },
+            ScreencastReply::Deny => json!({ "action": "deny" }),
+        };
+        send_screencast_response(tomoe, client_id, request_id, result);
+    }
+    sweep_dead(tomoe);
+}
+
+/// A config reload swapped the VM: deferred screencast resolvers died with
+/// it. Tell the waiting portals to use their fallback heuristics instead of
+/// leaving them to time out.
+pub fn abandon_pending_screencasts(tomoe: &mut Tomoe) {
+    if tomoe.ipc.pending_screencast.is_empty() {
+        return;
+    }
+    let pending: Vec<(u64, u64)> = tomoe
+        .ipc
+        .pending_screencast
+        .drain()
+        .map(|(_, v)| v)
+        .collect();
+    for (client_id, request_id) in pending {
+        send_screencast_response(
+            tomoe,
+            client_id,
+            request_id,
+            json!({ "action": "fallback" }),
+        );
+    }
+    sweep_dead(tomoe);
 }
 
 // ── Core event emitters (called from state.rs) ──

@@ -8,6 +8,13 @@
 local wm = require("wm")
 wm.gaps = 8
 
+-- Screencast source picker: answers screen-share requests (OBS, browsers)
+-- with a compositor-drawn menu; single candidates resolve without asking.
+-- Remove to fall back to the portal's TOMOE_SCREENCAST_OUTPUT /
+-- TOMOE_PORTAL_CHOOSER heuristics, or register your own
+-- tomoe.on_screencast_request to replace the policy.
+require("screencast")
+
 tomoe.settings {
   -- What "Mod" means in binds and pointer events: "super" (default),
   -- "alt", "ctrl", or "shift". Declare it once; write binds against Mod.

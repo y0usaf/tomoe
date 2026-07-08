@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
@@ -64,6 +65,79 @@ impl ScreenCast {
 /// the line unique when two windows share both.
 fn window_line(t: &ToplevelInfo) -> String {
     format!("[window] {} ({}) {}", t.title, t.app_id, t.identifier)
+}
+
+/// What the compositor answered to a `screencast_select` IPC request.
+enum IpcPick {
+    Output(String),
+    /// Foreign-toplevel identifier.
+    Window(String),
+    /// The config denied (or the user cancelled) the request.
+    Deny,
+    /// No hook registered / error / timeout: use the env-var heuristics.
+    Fallback,
+}
+
+/// How long to wait for the compositor's answer. Generous: the config's
+/// hook may defer to an interactive compositor-drawn picker — but a hook
+/// that never answers must not wedge the portal forever.
+const IPC_SELECT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Ask the compositor which source to cast (`tomoe.on_screencast_request`):
+/// source policy is config policy, and the portal is a thin IPC client of
+/// it. Every non-answer degrades to [`IpcPick::Fallback`] so screencasting
+/// keeps working on a bare core (no config hook, no compositor socket).
+fn ipc_select(app_id: &str, monitor: bool, window: bool) -> IpcPick {
+    let Some(path) = tomoe_ipc::find_socket() else {
+        return IpcPick::Fallback;
+    };
+    let mut client = match tomoe_ipc::Client::connect(&path) {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!("screencast_select: connecting {}: {e}", path.display());
+            return IpcPick::Fallback;
+        }
+    };
+    if let Err(e) = client.set_timeout(Some(IPC_SELECT_TIMEOUT)) {
+        tracing::warn!("screencast_select: set_timeout: {e}");
+    }
+    let mut types = Vec::new();
+    if monitor {
+        types.push("monitor");
+    }
+    if window {
+        types.push("window");
+    }
+    let params = serde_json::json!({ "app_id": app_id, "types": types });
+    let reply = match client.request("screencast_select", Some(params)) {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(e)) => {
+            tracing::warn!("screencast_select: compositor error: {e}");
+            return IpcPick::Fallback;
+        }
+        Err(e) => {
+            tracing::warn!("screencast_select: {e}");
+            return IpcPick::Fallback;
+        }
+    };
+    match reply.get("action").and_then(|v| v.as_str()) {
+        Some("resolve") => {
+            if let Some(name) = reply.get("output").and_then(|v| v.as_str()) {
+                return IpcPick::Output(name.to_string());
+            }
+            if let Some(ident) = reply.get("identifier").and_then(|v| v.as_str()) {
+                return IpcPick::Window(ident.to_string());
+            }
+            tracing::warn!("screencast_select: resolve without output/identifier");
+            IpcPick::Fallback
+        }
+        Some("deny") => IpcPick::Deny,
+        Some("fallback") => IpcPick::Fallback,
+        other => {
+            tracing::warn!("screencast_select: unknown action {other:?}");
+            IpcPick::Fallback
+        }
+    }
 }
 
 /// Pick the source to cast without a GUI:
@@ -251,9 +325,34 @@ impl ScreenCast {
             "enumerated sources"
         );
 
-        let pick = tokio::task::spawn_blocking(move || choose_source(&outputs, &windows))
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(format!("chooser join: {e}")))?;
+        let requester = app_id.clone();
+        let want_monitor = types & source_types::MONITOR != 0;
+        let want_window = types & source_types::WINDOW != 0;
+        let pick = tokio::task::spawn_blocking(move || {
+            // Source policy lives in the config (tomoe.on_screencast_request,
+            // asked over IPC); the env-var heuristics are the fallback for a
+            // bare core or an unanswered request.
+            match ipc_select(&requester, want_monitor, want_window) {
+                IpcPick::Output(name) => match outputs.iter().find(|o| o.name == name) {
+                    Some(o) => Some(Selection::Monitor(o.clone())),
+                    None => {
+                        tracing::warn!(name, "compositor picked an unknown output; falling back");
+                        choose_source(&outputs, &windows)
+                    }
+                },
+                IpcPick::Window(ident) => match windows.iter().find(|t| t.identifier == ident) {
+                    Some(t) => Some(Selection::Window(t.clone())),
+                    None => {
+                        tracing::warn!(ident, "compositor picked an unknown window; falling back");
+                        choose_source(&outputs, &windows)
+                    }
+                },
+                IpcPick::Deny => None,
+                IpcPick::Fallback => choose_source(&outputs, &windows),
+            }
+        })
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(format!("chooser join: {e}")))?;
         match pick {
             Some(selection) => {
                 tracing::info!(?selection, %session_handle, "selected source");
