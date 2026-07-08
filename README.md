@@ -174,7 +174,12 @@ end
 Every settings field — per-output modes and mirroring, xkb keymaps, libinput
 per-device overrides, tearing — is enumerated in the
 [API reference](docs/lua-api.md#settings). The default config
-(`resources/init.lua`) doubles as annotated documentation.
+(`resources/init.lua`) doubles as annotated documentation, and
+`resources/examples/` holds runnable configs (`tomoe --config <file>`):
+`extension-surface-init.lua` exercises the whole extension surface — rules,
+the process manifest, user IPC endpoints and broadcasts, reload persistence,
+`tomoe.ui` widgets, a custom screencast policy — and `zoomer-init.lua` runs
+the canvas WM. Both are load-tested in CI, so they can't drift from the API.
 
 ### The wm and zoomer modules
 

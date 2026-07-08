@@ -3373,4 +3373,57 @@ mod tests {
             assert_eq!(parse(bad), Err(()), "{bad:?} should not parse");
         }
     }
+
+    /// Every shipped example config must load cleanly against the current
+    /// API — examples that rot are worse than none. Loading is side-effect
+    /// free by construction (spawns live in binds, the process manifest and
+    /// ui/ipc registrations only queue), so this runs headless.
+    #[test]
+    fn example_configs_load() {
+        const EXAMPLES: &[(&str, &str)] = &[
+            (
+                "extension-surface-init.lua",
+                include_str!("../../../resources/examples/extension-surface-init.lua"),
+            ),
+            (
+                "zoomer-init.lua",
+                include_str!("../../../resources/examples/zoomer-init.lua"),
+            ),
+        ];
+        for (name, code) in EXAMPLES {
+            let rt = LuaRuntime::new().unwrap();
+            rt.lua
+                .load(*code)
+                .set_name(*name)
+                .exec()
+                .unwrap_or_else(|err| panic!("{name} failed to load: {err}"));
+        }
+
+        // The extension-surface example claims to exercise the whole M4
+        // surface (PLAN.md M4 §5); hold it to that.
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(EXAMPLES[0].1)
+            .set_name(EXAMPLES[0].0)
+            .exec()
+            .unwrap();
+        assert!(rt.has_window_rules(), "rules declared");
+        assert!(rt.has_window_open_hooks(), "hooks installed");
+        assert!(
+            rt.shared.screencast_hook.borrow().is_some(),
+            "screencast policy registered"
+        );
+        assert!(
+            rt.shared.reload_hooks.borrow().contains_key("scratchpad"),
+            "on_reload persistence registered"
+        );
+        let manifest = rt.take_process_manifest().expect("manifest declared");
+        assert!(manifest.contains_key("waybar") && manifest.contains_key("wallpaper"));
+        // The IPC endpoint answers headless from the wm module's tables.
+        let state = rt
+            .call_ipc_handler("workspace/state", serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(state["active"], 1);
+        assert!(rt.has_ipc_handler("workspace/switch"));
+    }
 }

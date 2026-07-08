@@ -505,8 +505,19 @@ scanout confirmed via drm_info; no idle redraw storms.*
 4. ~~Window rules~~ done — `tomoe.rule` / `tomoe.rules_for` (mechanics in
    the Hyprland gap list above); the `screencast = ...` rule composition
    arrives with §7
-5. ~~LuaLS meta files~~ done (parity-tested `resources/meta/tomoe.lua`);
-   example configs exercising all of the above still open
+5. ~~LuaLS meta files + example configs~~ done — parity-tested
+   `resources/meta/tomoe.lua`; `resources/examples/` ships runnable
+   configs (`tomoe --config <file>`): `extension-surface-init.lua`
+   exercises the whole M4 surface (rules, process manifest, IPC
+   endpoints + broadcasts via wrapped wm entry points, a scratchpad
+   persisted through `on_reload`, `tomoe.ui` power menu, custom
+   deferred-menu screencast policy) and `zoomer-init.lua` runs the
+   canvas WM. Both are load-tested headless (`lua.rs`
+   `example_configs_load` — loading is side-effect free by
+   construction: spawns live in binds, manifest/ui/ipc registrations
+   only queue), and the test asserts the extension-surface example
+   actually registers rules/hooks/manifest/IPC/screencast/reload
+   state, so the examples can't rot against the API
 6. ~~`tomoe.ui` registry~~ done — retained widgets (`confirm`, `menu`,
    `toast`, `sheet`) on `ui/widgets.rs`, IDs session-unique so builtins
    survive reloads. Contract: constructors return a handle (`:close()`),
@@ -555,14 +566,18 @@ scanout confirmed via drm_info; no idle redraw storms.*
 preserves workspace assignments; services survive and diff correctly;
 the screencast picker is compositor-drawn via `tomoe.ui`, declared in
 `init.lua`, and `TOMOE_PORTAL_CHOOSER` is no longer needed on a default
-setup. — All landed; remaining M4 loose end: example configs
-exercising the surface (§5).*
+setup. — All landed.*
 
 ### M5 — Ecosystem remainder
 
 1. Foreign-toplevel for bars/docks — ext-foreign-toplevel-list done
    (pulled forward for portal window capture); wlr-foreign-toplevel-
-   management remains
+   management remains — build on `foreign_toplevel.rs`'s existing
+   map/commit/unmap plumbing; the control requests (activate/close/
+   fullscreen/minimize) should route through the same `on_window_request`
+   policy path clients use, not bypass Lua; activate wants xdg-activation
+   (§2) for the focus-stealing story — also unblocks the moonshell
+   taskbar item
 2. xdg-activation
 3. Gamma control / night light
 

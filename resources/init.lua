@@ -4,6 +4,11 @@
 -- The compositor core is mechanism-only; ALL window management below comes
 -- from the `wm` module — Lua code built on the same public API your config
 -- uses. Don't require it and write your own to replace the WM wholesale.
+--
+-- Deeper examples live in resources/examples/ (try one with
+-- `tomoe --config <file>`): extension-surface-init.lua exercises rules,
+-- processes, IPC, reload persistence, tomoe.ui, and screencast policy;
+-- zoomer-init.lua runs the floating/zooming canvas WM.
 
 local wm = require("wm")
 wm.gaps = 8
