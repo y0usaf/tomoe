@@ -30,8 +30,10 @@ idle** — under the 25 MB full-bar budget with room for the Lua VM.
 **M2 in progress**: §1 done (2026-07-08) — `runtime` crate boots a
 vendored-LuaJIT VM, loads the ported `ui.*` stdlib from
 `lua/moonshell/stdlib.lua`, and parses nur's element-table contract
-into `render::Element`. Next open item: **M2 §2 — multi-window
-`surface`** (see the M2 breakdown below).
+into `render::Element`. §2 done (2026-07-08) — `surface` is
+multi-window (`Shell` + `WindowId` handles). Next open item:
+**M2 §3 — `shell.window`/`shell.state`/render callbacks in the
+binary** (see the M2 breakdown below).
 
 Two working inputs exist:
 
@@ -205,13 +207,23 @@ M2 breakdown (the Lua runtime):
    fills it from `shell.window` opts, no API break. Stdlib ported
    minus `ui.bar_layout` + the theme-aware `shell.window` wrapper
    (both need `moonshell.theme` and the `shell` global — §6).
-2. [ ] `surface` multi-window: generalize the single hardcoded layer
-   surface to N runtime-created windows — per-window `LayerOptions`
-   (edge/anchor, layer, margins, keyboard interactivity, namespace),
-   per-window painter + damage/frame state, create/destroy handles
-   usable from inside the event loop (`shell.window` at config time
-   *and* later). Bare binary and examples ride the same API
-   (doctrine 06 artifact must keep booting).
+2. [x] `surface` multi-window (2026-07-08): `Shell` (the calloop
+   dispatch data) owns the connection, globals, one shared recycled
+   `SlotPool`, and a `BTreeMap<WindowId, Window>`; per-window
+   `LayerOptions` in surface's own vocabulary (`Layer`/`Anchors`/
+   `Keyboard`/`Margins` — no SCTK types on the public API), per-window
+   painter + configure/scale/damage/frame state. `Shell::connect()`
+   returns the shell + its event loop so callers insert their own
+   sources (§4 timers, §5 inotify) with `&mut Shell` dispatch data;
+   `create_window`/`destroy_window`/`mark_dirty`/`mark_all_dirty`/
+   `quit` work at config time and from inside source callbacks alike.
+   M0 lessons preserved per window: close-remap gated on
+   was-configured + output-exists, `new_output` remaps all unmapped,
+   frame callbacks only while a commit is in flight. Boot check =
+   every window drew once. `examples/two_bars.rs` is the acceptance
+   fixture (two bars, timer destroys one from a callback, then quits —
+   the exact §3/§4 access pattern); verified exit-0 under headless
+   sway and the live tomoe session; flake `boot` gate still green.
 3. [ ] `shell.window` + `shell.state` + render callbacks in the
    binary: config resolution (`--config`, `$MOONSHELL_CONFIG`,
    `~/.config/moonshell/init.lua`; missing config = bare version bar),

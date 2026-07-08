@@ -24,7 +24,7 @@
 
 use moonshell_render::element::{Align, Edges, Flex, Icon, Justify, Style, Text};
 use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
-use moonshell_surface::{Canvas, Damage, DamageRect, LayerOptions, Painter};
+use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell};
 
 // ── nur.theme (Catppuccin Mocha) ────────────────────────────────────────
 const fn rgb(v: u32) -> Rgba {
@@ -215,15 +215,16 @@ fn main() -> anyhow::Result<()> {
 
     let options = LayerOptions {
         namespace: "moonshell-simple-bar".into(),
-        height: BAR_HEIGHT,
-        exit_after_first_draw: boot_check,
-        ..LayerOptions::default()
+        ..LayerOptions::bar(Edge::Top, BAR_HEIGHT, true)
     };
     let painter = SimpleBar {
         renderer: Renderer::new(),
         scene: Scene::new(),
         root: bar_tree(),
     };
-    moonshell_surface::run(options, Box::new(painter))?;
+    let (mut shell, event_loop) = Shell::connect()?;
+    shell.exit_after_first_draw = boot_check;
+    shell.create_window(options, Box::new(painter));
+    shell.run(event_loop)?;
     Ok(())
 }
