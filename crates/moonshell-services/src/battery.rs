@@ -33,25 +33,19 @@ use std::time::Duration;
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction};
-use rustbus::connection::ll_conn::force_finish_on_error;
-use rustbus::connection::Timeout;
 use rustbus::message_builder::MarshalledMessage;
-use rustbus::signature;
 use rustbus::wire::unmarshal::traits::Variant;
-use rustbus::wire::unmarshal::UnmarshalContext;
-use rustbus::{MessageBuilder, MessageType, RpcConn, Signature, Unmarshal};
+use rustbus::{MessageType, RpcConn};
+
+use crate::dbus::{self, Dbl, DbusError, PROPS_IFACE, SETUP};
 
 const UPOWER: &str = "org.freedesktop.UPower";
 const DEV_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 const DEV_IFACE: &str = "org.freedesktop.UPower.Device";
-const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 /// UPower's `State` value for "charging". `PendingCharge`/`Full` count
 /// as not charging — matches nur's sysfs semantics (`status ==
 /// "Charging"`).
 const STATE_CHARGING: u32 = 1;
-/// Boot-time setup (connect + AddMatch + GetAll) is the only blocking
-/// D-Bus IO.
-const SETUP: Timeout = Timeout::Duration(Duration::from_secs(2));
 /// sysfs fallback poll cadence.
 const SYSFS_POLL: Duration = Duration::from_secs(30);
 
@@ -121,20 +115,6 @@ pub fn start<D: 'static>(
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum UpowerError {
-    #[error(transparent)]
-    Bus(#[from] rustbus::connection::Error),
-    #[error("marshal: {0}")]
-    Marshal(#[from] rustbus::wire::errors::MarshalError),
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("error reply: {0}")]
-    Reply(String),
-    #[error("event loop: {0}")]
-    Loop(String),
-}
-
 /// One typed value pulled out of a D-Bus variant — the model speaks
 /// this, not wire types, so it unit-tests without a bus.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,27 +122,6 @@ enum Prop {
     F64(f64),
     U32(u32),
     Bool(bool),
-}
-
-/// rustbus's typed layer has no `f64` (doubles only exist in its
-/// dynamic `params` API as raw bits) — a local newtype fills the gap.
-struct Dbl(f64);
-
-impl Signature for Dbl {
-    fn signature() -> signature::Type {
-        signature::Type::Base(signature::Base::Double)
-    }
-    fn alignment() -> usize {
-        8
-    }
-}
-
-impl<'buf, 'fds> Unmarshal<'buf, 'fds> for Dbl {
-    fn unmarshal(
-        ctx: &mut UnmarshalContext<'fds, 'buf>,
-    ) -> rustbus::wire::unmarshal::UnmarshalResult<Self> {
-        u64::unmarshal(ctx).map(|(bytes, bits)| (bytes, Dbl(f64::from_bits(bits))))
-    }
 }
 
 fn prop(v: &Variant) -> Option<Prop> {
@@ -255,23 +214,10 @@ struct Upower<D> {
     handle: LoopHandle<'static, D>,
 }
 
-fn reply_ok(reply: &MarshalledMessage) -> Result<(), UpowerError> {
-    if reply.typ == MessageType::Error {
-        return Err(UpowerError::Reply(
-            reply
-                .dynheader
-                .error_name
-                .clone()
-                .unwrap_or_else(|| "unknown D-Bus error".into()),
-        ));
-    }
-    Ok(())
-}
-
 fn upower_start<D: 'static>(
     handle: &LoopHandle<'static, D>,
     notify: Notify<D>,
-) -> Result<(), UpowerError> {
+) -> Result<(), DbusError> {
     let mut rpc = RpcConn::system_conn(SETUP)?;
 
     // Match first, snapshot second: a change racing the GetAll is
@@ -281,21 +227,15 @@ fn upower_start<D: 'static>(
          interface='{PROPS_IFACE}',member='PropertiesChanged'"
     );
     let mut add = rustbus::standard_messages::add_match(&rule);
-    let serial = add_send(&mut rpc, &mut add)?;
-    reply_ok(&rpc.wait_response(serial, SETUP)?)?;
+    let serial = dbus::send(&mut rpc, &mut add)?;
+    dbus::reply_ok(&rpc.wait_response(serial, SETUP)?)?;
 
     // GetAll also auto-activates upowerd if the bus knows it; an error
     // reply (no UPower installed) falls back to sysfs in the caller.
-    let mut call = MessageBuilder::new()
-        .call("GetAll")
-        .with_interface(PROPS_IFACE)
-        .on(DEV_PATH)
-        .at(UPOWER)
-        .build();
-    call.body.push_param(DEV_IFACE)?;
-    let serial = add_send(&mut rpc, &mut call)?;
+    let mut call = dbus::get_all(UPOWER, DEV_PATH, DEV_IFACE)?;
+    let serial = dbus::send(&mut rpc, &mut call)?;
     let reply = rpc.wait_response(serial, SETUP)?;
-    reply_ok(&reply)?;
+    dbus::reply_ok(&reply)?;
 
     let mut model = Model::default();
     model.apply_props(&reply);
@@ -323,7 +263,7 @@ fn upower_start<D: 'static>(
             (b.notify.borrow_mut())(data, &state);
             TimeoutAction::Drop
         })
-        .map_err(|e| UpowerError::Loop(e.to_string()))?;
+        .map_err(|e| DbusError::Loop(e.to_string()))?;
 
     handle
         .insert_source(
@@ -363,17 +303,8 @@ fn upower_start<D: 'static>(
                 }
             },
         )
-        .map_err(|e| UpowerError::Loop(e.to_string()))?;
+        .map_err(|e| DbusError::Loop(e.to_string()))?;
     Ok(())
-}
-
-/// Send one message, flushing fully (messages are tiny; the socket
-/// buffer at setup/teardown time is empty — this cannot stall).
-fn add_send(rpc: &mut RpcConn, msg: &mut MarshalledMessage) -> Result<u32, UpowerError> {
-    Ok(rpc
-        .send_message(msg)?
-        .write_all()
-        .map_err(force_finish_on_error)?)
 }
 
 // ── sysfs fallback ──────────────────────────────────────────────────
@@ -446,36 +377,15 @@ fn sysfs_start<D: 'static>(handle: &LoopHandle<'static, D>, notify: Notify<D>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustbus::params::{Base, Container, Param, Variant as ParamVariant};
+    use rustbus::params::{Base, Param};
 
-    /// Build a real `PropertiesChanged` signal through rustbus's
-    /// dynamic marshaller, so `apply_props` parses actual wire bytes
-    /// (`s a{sv} as`) through the same typed path used live.
+    /// Wire-level `PropertiesChanged` (`s a{sv} as`) at the
+    /// DisplayDevice path — real bytes through the shared marshaller.
     fn props_changed(
         iface: &str,
         props: Vec<(&str, Param<'static, 'static>)>,
     ) -> MarshalledMessage {
-        let mut msg = MessageBuilder::new()
-            .signal(PROPS_IFACE, "PropertiesChanged", DEV_PATH)
-            .build();
-        msg.body.push_param(iface).unwrap();
-        let dict = Container::make_dict(
-            "s",
-            "v",
-            props.into_iter().map(|(k, v)| {
-                (
-                    k.to_string(),
-                    Param::Container(Container::Variant(Box::new(ParamVariant {
-                        sig: v.sig(),
-                        value: v,
-                    }))),
-                )
-            }),
-        )
-        .unwrap();
-        msg.body.push_old_param(&Param::Container(dict)).unwrap();
-        msg.body.push_param::<&[&str]>(&[]).unwrap(); // invalidated props
-        msg
+        crate::dbus::test_util::props_changed(DEV_PATH, iface, props)
     }
 
     #[test]

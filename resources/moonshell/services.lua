@@ -11,16 +11,16 @@
 --   :subscribe(fn)    → fn() after every :set (no args, nur's contract)
 -- plus one method per action name.
 --
--- M3 status: `compositor` is live — the native backend (crates/
--- services, tomoe IPC; niri/Hyprland/Sway in M3 §2) pushes snapshots
--- through this facade's :set() from the binary. The rest are still
--- *placeholders* — static initial state, actions warn once and do
--- nothing — so nur configs (which read shell.services.*
--- unconditionally) run unmodified. Later M3 sections replace each
--- backing the same way; the Lua-facing shape is final. Actions
--- (focus_workspace, set_volume, …) become real once the write path
--- lands (queued service actions — with M4 interactivity, when
--- something can click them).
+-- M3 status: `compositor`, `battery`, `network`, and `mpris` are live
+-- — native backends (crates/services) push snapshots through this
+-- facade's :set() from the binary. The rest are still *placeholders*
+-- — static initial state, actions warn once and do nothing — so nur
+-- configs (which read shell.services.* unconditionally) run
+-- unmodified. Later M3 sections replace each backing the same way;
+-- the Lua-facing shape is final. Actions (focus_workspace,
+-- play_pause, set_volume, …) become real once the write path lands
+-- (queued service actions — with M4 interactivity, when something
+-- can click them).
 
 local M = {}
 
@@ -90,6 +90,12 @@ M.define("battery", {
     charging  = false,
 })
 
+-- Backed natively since M3 §4 (NetworkManager over the system D-Bus;
+-- sysfs operstate polling fallback — link only, no ssid/strength
+-- there). Snapshot shape (nur's):
+--   connected boolean
+--   ssid      string? — nil on ethernet, hidden SSIDs, disconnect
+--   strength  integer 0–100, 0 when not on WiFi
 M.define("network", {
     connected = false,
     ssid      = nil,
@@ -101,6 +107,11 @@ M.define("audio", {
     muted  = false,
 }, { "set_volume", "toggle_mute" })
 
+-- Backed natively since M3 §4 (session D-Bus, playerctld-style
+-- most-recently-active player tracking). Snapshot shape (nur's).
+-- `position` is exact at status/track transitions and Seeked, frozen
+-- between them — a live progress bar interpolates from its own clock.
+-- Actions stay placeholders until the write path lands (M4).
 M.define("mpris", {
     player_name = "",
     status      = "",

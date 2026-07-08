@@ -79,9 +79,20 @@ rustbus rides calloop as a plain fd source); UPower `DisplayDevice`
 over the system bus, sysfs 30 s-poll fallback (inotify doesn't fire on
 sysfs). Live on the UPower path (desktop, no battery: `available =
 false`, defaults kept, widget hides); **17.8 MB RSS (release) full
-bar + 1 Hz clock, wakeups from the clock only**. Next open item:
-**M3 §4 — network (NetworkManager) + mpris**, over the same rustbus
-pattern.
+bar + 1 Hz clock, wakeups from the clock only**. §4 done (2026-07-08)
+— network (NetworkManager over rustbus, sysfs operstate fallback) +
+mpris (session bus, playerctld-style most-recently-active tracking);
+shared plumbing extracted to `dbus.rs`; nonblocking runtime
+request/reply via `try_get_response`. Verified live (ethernet,
+Firefox player, playerctld add/remove); **9.6 MB RSS (release, all
+three D-Bus services connected), 0 voluntary ctx switches / 5 s
+idle**. Also fixed here: `resolve_config` canonicalization made a
+home-manager (store-symlinked) config watch **/nix/store** — ~523k
+inotify watches (the whole per-user budget), 116 MB RSS on the live
+bar, and reloads pinned to the immutable old store file; the path is
+now absolutized without resolving symlinks, and the watcher is
+hard-capped at 4096 dirs. Next open item: **M3 §5 — audio**
+(PipeWire native protocol vs wireplumber decision).
 
 Two working inputs exist:
 
@@ -112,14 +123,16 @@ Two working inputs exist:
       `handle:close`). Not ported: system_tray, bar_overlay, wallust
       (need the tray service / more surface — M3/M4)
 - [ ] Services: applications (.desktop scan + inotify), audio,
-      network, bluetooth, mpris, notifications daemon,
-      power-profiles, sysinfo, system tray (SNI) (M3) —
-      **re-implemented event-driven** (rustbus D-Bus/sysfs),
-      not ported: nur's CLI-polling backends (`wpctl`, `nmcli`,
-      `playerctl`, `bluetoothctl`, `powerprofilesctl`) are the memory/
-      wakeup cost we're eliminating. Compositor auto-detect done
-      (M3 §1; tomoe > Hyprland > niri > Sway); battery done (M3 §3;
-      UPower via rustbus, sysfs fallback)
+      bluetooth, notifications daemon, power-profiles, sysinfo,
+      system tray (SNI) (M3) — **re-implemented event-driven**
+      (rustbus D-Bus/sysfs), not ported: nur's CLI-polling backends
+      (`wpctl`, `nmcli`, `playerctl`, `bluetoothctl`,
+      `powerprofilesctl`) are the memory/wakeup cost we're
+      eliminating. Compositor auto-detect done (M3 §1; tomoe >
+      Hyprland > niri > Sway); battery done (M3 §3; UPower via
+      rustbus, sysfs fallback); network done (M3 §4; NetworkManager
+      via rustbus, sysfs operstate fallback); mpris done (M3 §4;
+      session bus, playerctld-style tracking)
 - [x] Compositor backends: Hyprland, niri, Sway (M3 §2) + tomoe
       (M3 §1) — event-driven, thread-free, no compositor crates
 - [ ] nix: home-manager module + `mkBar`-style lib helpers (post-M3,
@@ -168,6 +181,12 @@ Two working inputs exist:
       `~/Dev/design/conventions/lua.md` (API global, settings tables,
       module shape, `on_*` naming, `Mod`, the reload contract) — tomoe
       and moonshell both cite it instead of restating.
+- [ ] M3 §7: check whether tomoe's IPC listener accepts **multiple
+      concurrent clients** — during §4 verification a second
+      moonshell instance got ECONNREFUSED from the live socket while
+      the session bar existed (could also be a dead listener after a
+      respawn). If single-client, that's a tomoe-side fix; mirror in
+      tomoe PLAN.md when confirmed.
 - [ ] post-M3: tomoe ships a default moonshell bar config as content;
       combined home-manager module composes both flakes.
 - [ ] M3+: taskbar widget rides ext-foreign-toplevel-list-ish data per
@@ -353,8 +372,43 @@ M3 breakdown (services, natively):
    verification (real Percentage/State changes, sysfs fallback)
    flagged for a battery machine — same posture as Hyprland in §2,
    fold into §7 acceptance.
-4. [ ] network (NetworkManager over rustbus) + mpris (rustbus,
-   playerctld-style player tracking).
+4. [x] network + mpris (2026-07-08), both on shared rustbus plumbing
+   lifted out of battery into `dbus.rs` (`Dbl`, `reply_ok`, `send`,
+   `get_all`/`get_one`, `SETUP`, the wire-level test-message builder —
+   the §3 “lift it out when a second service needs it” note, done).
+   New trick over §3: *runtime* request/reply without blocking — send
+   the call, remember `(serial, what-was-asked)`, resolve via
+   `try_get_response` on the next fd wakeup, and guard every reply
+   against the state having moved on. **network**: NM object chain
+   root → PrimaryConnection → AccessPoint; one `path_namespace` match
+   rule covers all three; chain re-roots (connection switch, AP roam)
+   clear downstream state immediately and re-query async;
+   `NameOwnerChanged` re-seeds across NM restarts; connected = `State
+   ≥ 50` (carrier semantics ≡ nur's operstate). Fallback: sysfs
+   operstate 30 s poll (link only — SSID needed nmcli in nur too);
+   none only if `/sys/class/net` is unreadable. **mpris**:
+   playerctld-style tracking, event-driven — every player signal
+   bumps an activity counter, snapshot = freshest Playing player,
+   else freshest; discovery = `ListNames` at setup +
+   `NameOwnerChanged` (`arg0namespace`) at runtime; one
+   `path='/org/mpris/MediaPlayer2'` rule catches every player's
+   `PropertiesChanged`/`Seeked`, keyed by unique-name sender.
+   `Position` never signals: re-queried at status/track transitions,
+   set by `Seeked`, frozen between — live progress bars interpolate
+   in Lua. Actions stay placeholder until the write path (M4).
+   Verified live: ethernet (`connected=true, ssid=nil`), Firefox
+   player metadata/status flips via busctl PlayPause (position exact
+   at each transition), playerctld activation/kill = player
+   add/remove + fallback. **9.6 MB RSS (release, test bar, all three
+   D-Bus services connected), 0 voluntary ctx switches / 5 s idle**
+   — the buses only wake the loop when something changes. WiFi
+   ssid/strength verification flagged for a wireless machine (§7,
+   same posture as §2 Hyprland / §3 laptop). Shook loose (fixed in
+   this step): the store-symlinked-config watcher incident — see the
+   standing lessons — and a flag: a second moonshell got ECONNREFUSED
+   from the live tomoe IPC socket while the session bar existed;
+   check whether tomoe's IPC accepts multiple clients (§7 /
+   interconnection tracker).
 5. [ ] audio — decide the native path (PipeWire native protocol vs
    wireplumber): zero steady-state subprocesses is the constraint.
 6. [ ] notifications daemon + SNI tray + power-profiles (rustbus —
@@ -618,6 +672,27 @@ tiny before the runtime landed on top.
   sysfs with inotify" is a design fiction; the honest fallbacks are a
   coarse timer or a netlink uevent socket (AF_NETLINK
   KOBJECT_UEVENT — upgrade path if the 30 s poll ever matters)
+- From M3 §4: **never canonicalize a config path used as a watch
+  root or reload source** — a home-manager config is a symlink into
+  /nix/store, so canonicalizing made the watcher recurse the entire
+  store (~523k watches ≡ the whole per-user inotify budget — every
+  *other* process's inotify then fails ENOSPC, which is how it
+  surfaced: unrelated watcher tests broke) and pinned reloads to the
+  immutable old store file so config switches never applied. Symlink
+  identity is load-bearing: `std::path::absolute`, not
+  `canonicalize`; plus a 4096-dir hard cap in the watcher as
+  insurance
+- From M3 §4: runtime D-Bus request/reply on a calloop source =
+  `send` + remember `(serial, what)` + `try_get_response` after
+  `refill_all()` — and every reply must be guarded against the state
+  having moved on (chain re-rooted, player quit) before applying
+- From M3 §4: MPRIS `Position` never emits `PropertiesChanged` —
+  poll-free position = re-query at status/track transitions + apply
+  `Seeked`; anything smoother is Lua-side interpolation, not a timer
+  in the service
+- From M3 §4: `grep voluntary_ctxt /proc/pid/status` also matches
+  `nonvoluntary_ctxt_switches` — anchor it (`^voluntary_ctxt`) or the
+  wakeup numbers are garbage
 - From M3 §3: a service snapshot should stay *render-safe* when the
   underlying thing is absent (no battery ⇒ keep 100%/false + an
   `available` flag), and "hide the widget" is Lua policy on that flag,

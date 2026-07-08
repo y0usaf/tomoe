@@ -183,6 +183,10 @@ struct Engine {
     compositor: Option<moonshell_services::compositor::CompositorState>,
     /// Latest battery snapshot — same re-seed contract.
     battery: Option<moonshell_services::battery::BatteryState>,
+    /// Latest network snapshot — same re-seed contract.
+    network: Option<moonshell_services::network::NetworkState>,
+    /// Latest mpris snapshot — same re-seed contract.
+    mpris: Option<moonshell_services::mpris::MprisState>,
 }
 
 impl Engine {
@@ -259,6 +263,24 @@ impl Engine {
         }
     }
 
+    /// `shell.services.network` — same contract as [`push_compositor`].
+    fn push_network(&self) {
+        if let Some(state) = &self.network {
+            if let Err(e) = moonshell_runtime::services_bridge::push_network(self.vm.lua(), state) {
+                tracing::debug!("pushing network state: {e}");
+            }
+        }
+    }
+
+    /// `shell.services.mpris` — same contract as [`push_compositor`].
+    fn push_mpris(&self) {
+        if let Some(state) = &self.mpris {
+            if let Err(e) = moonshell_runtime::services_bridge::push_mpris(self.vm.lua(), state) {
+                tracing::debug!("pushing mpris state: {e}");
+            }
+        }
+    }
+
     /// Tear down the current config and re-exec it in a fresh VM. The
     /// windows go first (their painters hold the old VM's last strong
     /// `Lua` clones), then the ctx forgets the old VM's callbacks, then
@@ -290,6 +312,8 @@ impl Engine {
         // displays above).
         self.push_compositor();
         self.push_battery();
+        self.push_network();
+        self.push_mpris();
         match std::fs::read_to_string(&self.config) {
             Ok(code) => {
                 if let Err(e) = self.vm.exec(&code, &self.config.to_string_lossy()) {
@@ -405,6 +429,8 @@ fn main() -> anyhow::Result<()> {
         reload_scheduled: false,
         compositor: None,
         battery: None,
+        network: None,
+        mpris: None,
     }));
 
     // The compositor service (M3 §1): a native IPC backend pushes
@@ -443,6 +469,39 @@ fn main() -> anyhow::Result<()> {
             },
         );
         tracing::info!("battery backend: {source}");
+    }
+
+    // The network service (M3 §4): NetworkManager over the system bus,
+    // sysfs operstate polling fallback.
+    {
+        let eng = engine.clone();
+        let source = moonshell_services::network::start(
+            &event_loop.handle(),
+            move |_shell: &mut Shell, state| {
+                let mut e = eng.borrow_mut();
+                e.network = Some(state.clone());
+                e.push_network();
+            },
+        );
+        tracing::info!("network backend: {source}");
+    }
+
+    // The mpris service (M3 §4): players tracked over the session bus,
+    // playerctld-style. No fallback — no session bus means media
+    // widgets stay on the facade defaults.
+    {
+        let eng = engine.clone();
+        match moonshell_services::mpris::start(
+            &event_loop.handle(),
+            move |_shell: &mut Shell, state| {
+                let mut e = eng.borrow_mut();
+                e.mpris = Some(state.clone());
+                e.push_mpris();
+            },
+        ) {
+            Ok(()) => tracing::info!("mpris backend: session D-Bus"),
+            Err(e) => tracing::info!("mpris unavailable ({e}) — media widgets stay empty"),
+        }
     }
 
     // Inotify readiness: drain events (fires watch_file callbacks
