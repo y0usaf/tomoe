@@ -3,8 +3,10 @@
 //! With a config (`--config`, `$MOONSHELL_CONFIG`, or
 //! `~/.config/moonshell/init.lua`) it boots the Lua runtime, executes
 //! the config, and drains the runtime's action queue — window
-//! creations, dirty marks — after config exec and once per loop pass
-//! ([`Shell::run_with`]). With no config it maps one layer surface and
+//! creations, timers to arm, dirty marks, the quit flag — after config
+//! exec and once per loop pass ([`Shell::run_with`]). `exec_async`
+//! replies arrive over a calloop channel; the display snapshot behind
+//! `shell.displays()` is refreshed each drain. With no config it maps one layer surface and
 //! draws a version string: the doctrine-06 bare-core artifact.
 //! `--boot-check` exits 0 right after every window committed its first
 //! frame, which is what `nix flake check` runs under a headless
@@ -15,6 +17,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::Context as _;
+use calloop::timer::{TimeoutAction, Timer};
 use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
 use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
 use moonshell_runtime::{LuaPainter, ShellCtx, Vm};
@@ -179,21 +182,67 @@ fn main() -> anyhow::Result<()> {
     vm.install_shell(&ctx).map_err(lua_err)?;
     let code = std::fs::read_to_string(&path)
         .with_context(|| format!("reading config {}", path.display()))?;
+    // Outputs are known (connect roundtrips) — snapshot them before the
+    // config runs so top-level `shell.displays()` sees real geometry.
+    ctx.set_displays(shell.displays());
     vm.exec(&code, &path.to_string_lossy()).map_err(lua_err)?;
+
+    // exec_async replies land on the loop thread through this channel;
+    // idle it schedules nothing. Inserted once, before any Lua runs —
+    // a reply can never beat its source.
+    let exec_channel = ctx
+        .take_exec_channel()
+        .context("exec channel already taken")?;
+    let exec_ctx = ctx.clone();
+    event_loop
+        .handle()
+        .insert_source(exec_channel, move |event, _, _shell: &mut Shell| {
+            if let calloop::channel::Event::Msg(reply) = event {
+                // May queue windows / mark dirty; the tick after this
+                // dispatch pass drains.
+                exec_ctx.dispatch_exec_reply(reply);
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("inserting exec channel: {e}"))?;
 
     // One renderer for every window: the font system and glyph caches
     // are the dominant allocation — shared, not per-window.
     let renderer = Rc::new(RefCell::new(Renderer::new()));
     let lua = vm.lua().clone();
+    let loop_handle = event_loop.handle();
     let drain = move |shell: &mut Shell| {
+        // Snapshot in (displays), actions out (everything below).
+        ctx.set_displays(shell.displays());
         for p in ctx.take_pending() {
             let painter = LuaPainter::new(lua.clone(), p.shared, renderer.clone());
             shell.create_window(p.options, Box::new(painter));
         }
+        for t in ctx.take_timers() {
+            // Armed only because a shell.interval/once exists — the
+            // zero-idle-wakeup discipline. `fire` returning false means
+            // the VM is gone; the source removes itself.
+            let timer = Timer::from_duration(t.delay);
+            let inserted =
+                loop_handle.insert_source(timer, move |_, _, _shell: &mut Shell| {
+                    match (t.fire(), t.period) {
+                        (true, Some(period)) => TimeoutAction::ToDuration(period),
+                        _ => TimeoutAction::Drop,
+                    }
+                });
+            if let Err(e) = inserted {
+                tracing::error!("inserting timer: {e}");
+            }
+        }
         if ctx.take_dirty() {
             shell.mark_all_dirty();
         }
+        if ctx.take_quit() {
+            shell.quit();
+        }
     };
+    // Pre-run drain so the no-window warning is accurate; run_with
+    // ticks again (idempotent — the queues are drained) before its
+    // first dispatch, so a config-time `shell.quit()` exits cleanly.
     drain(&mut shell);
     if shell.window_count() == 0 {
         tracing::warn!("config created no windows (shell.window was never called)");

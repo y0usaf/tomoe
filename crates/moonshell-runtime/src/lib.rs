@@ -16,14 +16,18 @@ use mlua::prelude::*;
 
 pub mod api;
 pub mod element;
+pub mod exec;
 pub mod painter;
 pub mod state;
+pub mod timer;
 pub mod window;
 
 pub use api::{PendingWindow, ShellCtx};
 pub use element::{from_table, TextDefaults};
+pub use exec::ExecReply;
 pub use mlua;
 pub use painter::LuaPainter;
+pub use timer::PendingTimer;
 
 /// The `ui.*` stdlib: pure-Lua element constructors, embedded at build
 /// time from the policy layer (`lua/` at the repo root, doctrine 01).

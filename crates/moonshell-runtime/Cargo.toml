@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# channel (exec_async replies) and timer types only — the loop itself
+# lives in the binary.
+calloop.workspace = true
 mlua.workspace = true
 moonshell-render.workspace = true
 moonshell-surface.workspace = true

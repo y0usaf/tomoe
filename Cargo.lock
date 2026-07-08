@@ -505,6 +505,7 @@ dependencies = [
 name = "moonshell-runtime"
 version = "0.1.0"
 dependencies = [
+ "calloop",
  "mlua",
  "moonshell-render",
  "moonshell-surface",

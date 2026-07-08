@@ -34,9 +34,15 @@ into `render::Element`. §2 done (2026-07-08) — `surface` is
 multi-window (`Shell` + `WindowId` handles). §3 done (2026-07-08) —
 config resolution, `shell.window`/`shell.state`, `LuaPainter` render
 callbacks; a Lua bar runs live on tomoe at **2.3 MB RSS (release),
-0 voluntary ctx switches / 5 s**. Next open item: **M2 §4 — timers &
-process (`shell.interval`/`once`/`exec`/`quit`/`get_window`/
-`displays`)** (see the M2 breakdown below).
+0 voluntary ctx switches / 5 s**. §4 done (2026-07-08) — `shell.
+interval`/`once` (queued `PendingTimer` → calloop timers, armed only
+while one exists), `shell.exec`/`exec_async` (worker thread + calloop
+channel), `shell.quit`, `shell.get_window` (named-window registry),
+`shell.displays` (snapshot fed from `surface::Shell::displays()`).
+Live on tomoe: all APIs verified by a self-checking config; **2.2 MB
+RSS idle, 0 voluntary ctx switches / 5 s (no timers); 6.6 MB with a
+1 s clock ticking**. Next open item: **M2 §5 — hot reload (inotify,
+fresh VM, `shell.reload`/`watch_file`)** (see the M2 breakdown below).
 
 Two working inputs exist:
 
@@ -253,11 +259,31 @@ M2 breakdown (the Lua runtime):
    Verified live on tomoe (grim: text, colors, spacer layout correct;
    `--boot-check` exit 0 with a config): **2.3 MB RSS release, 0
    voluntary ctx switches / 5 s.**
-4. [ ] timers & process: `shell.interval`/`once` as calloop timers
-   (armed only while one exists — the zero-idle-wakeup gate),
-   `shell.exec`/`exec_async`, `shell.quit`, `shell.get_window`,
-   `shell.displays`. nur's `shell.clipboard_*` needs a data-control
-   protocol on layer surfaces — deferred to M4, recorded here.
+4. [x] timers & process (2026-07-08): `shell.interval`/`once` queue
+   `PendingTimer`s (WeakLua + registry key — a live timer can't keep a
+   dropped VM alive; fire-after-drop asks calloop to remove the
+   source, so §5's reload is self-cleaning); the binary's drain arms
+   them as calloop `Timer` sources — armed only while one exists (the
+   zero-idle-wakeup gate), interval period clamped ≥ 1 ms, callback
+   errors logged but keep the timer. `shell.exec` = blocking `sh -c`
+   trimmed stdout (nur's contract); `shell.exec_async` = named worker
+   thread → calloop channel; the reply is plain Send data (id +
+   output), the Lua half lives in `ShellCtx.exec_callbacks` keyed by
+   id. `shell.quit` = ctx flag; `run_with` reordered to
+   tick→redraw→exit-check→dispatch so a config-time quit can't block
+   on an event that never comes. `shell.get_window(name)` = registry
+   of `WindowShared` by explicit `name` (unnamed windows aren't
+   registered; handle methods beyond `:render` — nur's `close`/`hide`/
+   `show`/`toggle` — deferred until the visibility story exists in
+   `surface`, tracked for §6/M4). `shell.displays()` reads a snapshot
+   the binary refreshes each drain *and* before config exec —
+   `Shell::connect` now does two roundtrips so output geometry exists
+   by then (`surface` grew `DisplayInfo` + `Shell::displays()`,
+   xdg-output logical size preferred, mode/scale fallback). nur's
+   `shell.clipboard_*` needs a data-control protocol on layer
+   surfaces — deferred to M4, recorded here. Measured live on tomoe:
+   2.2 MB RSS idle + 0 voluntary ctx switches / 5 s (no timers),
+   6.6 MB with a 1 s clock (glyph-cache growth from digits).
 5. [ ] hot reload: inotify (calloop source) on the config tree; on
    change drop the `Vm`, destroy Lua-created windows, boot a fresh VM,
    re-exec; `shell.reload()` does the same by hand. `shell.watch_file`
@@ -332,6 +358,15 @@ tiny before the runtime landed on top.
   callbacks stored *inside* the VM (state subscribers) must go through
   `WeakLua` + `LuaRegistryKey`, or the strong cycle keeps the VM alive
   across hot reload
+- From M2 §4: `WeakLua` (and the Lua half of any callback) is `!Send`
+  — whatever crosses a thread boundary must be plain data; ship an id
+  + payload over the channel and keep the WeakLua/registry-key half in
+  a loop-thread map keyed by that id
+- From M2 §4: anything Lua can request at config time must be
+  satisfiable before the event loop runs — `shell.quit` needed the
+  loop reordered (tick before dispatch), `shell.displays` needed
+  roundtrips inside `Shell::connect`; audit new `shell.*` calls for
+  the "top-level call, no loop yet" case
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age

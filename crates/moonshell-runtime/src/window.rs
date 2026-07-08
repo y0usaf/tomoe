@@ -19,8 +19,9 @@
 //! back to top-right silently); config mistakes should point at
 //! themselves.
 //!
-//! `name` is parsed and used as the surface namespace; the named-window
-//! registry behind `shell.get_window` lands with M2 §4.
+//! `name` is parsed and used as the surface namespace; when set, the
+//! `shell.window` call also registers the handle in [`ShellCtx`]'s
+//! named-window registry behind `shell.get_window`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -42,6 +43,10 @@ const DEFAULT_FONT_SIZE: f32 = 13.0;
 #[derive(Debug)]
 pub struct WindowOpts {
     pub layer: LayerOptions,
+    /// Explicit `name` from the opts table — registers the window for
+    /// `shell.get_window(name)`. (The namespace defaults to
+    /// "moonshell" either way.)
+    pub name: Option<String>,
     /// Window background, painted behind the Lua element tree.
     pub bg: Rgba,
     /// `fg`/`font_size`, inherited by text nodes that don't set their own.
@@ -184,13 +189,11 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             (anchors, w, h, Margins::default())
         };
 
-    let namespace = t
-        .get::<Option<String>>("name")?
-        .unwrap_or_else(|| "moonshell".into());
+    let name: Option<String> = t.get("name")?;
 
     Ok(WindowOpts {
         layer: LayerOptions {
-            namespace,
+            namespace: name.clone().unwrap_or_else(|| "moonshell".into()),
             layer,
             anchors,
             width,
@@ -199,6 +202,7 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             margins,
             keyboard,
         },
+        name,
         bg: parse_color(t, "bg")?.unwrap_or(DEFAULT_BG),
         text: TextDefaults {
             color: parse_color(t, "fg")?.unwrap_or(DEFAULT_FG),
@@ -331,5 +335,13 @@ mod tests {
     fn name_becomes_namespace() {
         let o = parse(r#"{ name = "launcher" }"#);
         assert_eq!(o.layer.namespace, "launcher");
+        assert_eq!(o.name.as_deref(), Some("launcher"));
+    }
+
+    #[test]
+    fn unnamed_windows_have_no_registry_name() {
+        let o = parse("{}");
+        assert_eq!(o.layer.namespace, "moonshell");
+        assert!(o.name.is_none());
     }
 }
