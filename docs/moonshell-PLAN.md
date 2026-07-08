@@ -31,9 +31,12 @@ idle** — under the 25 MB full-bar budget with room for the Lua VM.
 vendored-LuaJIT VM, loads the ported `ui.*` stdlib from
 `lua/moonshell/stdlib.lua`, and parses nur's element-table contract
 into `render::Element`. §2 done (2026-07-08) — `surface` is
-multi-window (`Shell` + `WindowId` handles). Next open item:
-**M2 §3 — `shell.window`/`shell.state`/render callbacks in the
-binary** (see the M2 breakdown below).
+multi-window (`Shell` + `WindowId` handles). §3 done (2026-07-08) —
+config resolution, `shell.window`/`shell.state`, `LuaPainter` render
+callbacks; a Lua bar runs live on tomoe at **2.3 MB RSS (release),
+0 voluntary ctx switches / 5 s**. Next open item: **M2 §4 — timers &
+process (`shell.interval`/`once`/`exec`/`quit`/`get_window`/
+`displays`)** (see the M2 breakdown below).
 
 Two working inputs exist:
 
@@ -224,13 +227,32 @@ M2 breakdown (the Lua runtime):
    fixture (two bars, timer destroys one from a callback, then quits —
    the exact §3/§4 access pattern); verified exit-0 under headless
    sway and the live tomoe session; flake `boot` gate still green.
-3. [ ] `shell.window` + `shell.state` + render callbacks in the
-   binary: config resolution (`--config`, `$MOONSHELL_CONFIG`,
-   `~/.config/moonshell/init.lua`; missing config = bare version bar),
-   window handles with `:render(fn)` (store `LuaRegistryKey`), render
-   called at paint time returning element tables, `state:set` marks
-   windows dirty (notify-all model, like nur), window `bg`/`fg`/
-   `font_size` feeding `TextDefaults`.
+3. [x] `shell.window` + `shell.state` + render callbacks in the
+   binary (2026-07-08). Lua never touches `surface::Shell` (no stable
+   `&mut` exists while Lua runs): `runtime::api::ShellCtx` is the
+   action queue — `shell.window` pushes a `PendingWindow` (parsed
+   `LayerOptions` + `Rc<RefCell<WindowShared>>` carrying the render
+   key and paint defaults), `state:set`/`handle:render` raise a dirty
+   flag; the binary drains both after config exec and once per loop
+   pass via the new `Shell::run_with(event_loop, tick)` hook.
+   `LuaPainter` (in `runtime`) calls the render fn at paint time,
+   parses the table with the window's `TextDefaults` (`fg`/
+   `font_size`), wraps it in a full-canvas Stack painting the window
+   `bg`, and feeds the shared `Scene`; a failing callback logs and
+   paints bare bg (a remapped surface must still get a buffer). One
+   `Renderer` is shared `Rc<RefCell<…>>` across all windows — the
+   font system is the dominant allocation, one copy not N. Window
+   opts speak nur's vocabulary (bar mode `position`/popup mode
+   `anchor`+`popup_width`+margins, `layer`, `keyboard`, `exclusive`,
+   `bg`/`fg`/`font_size`, `transparent`); divergences: bars stretch
+   via anchor (size 0) instead of reading display bounds — multi-
+   monitor correct — and unknown `anchor` strings error instead of
+   silently becoming top-right. Config resolution: `--config` >
+   `$MOONSHELL_CONFIG` (both must exist) > `$XDG_CONFIG_HOME`/
+   `~/.config/moonshell/init.lua` (optional) > bare version bar.
+   Verified live on tomoe (grim: text, colors, spacer layout correct;
+   `--boot-check` exit 0 with a config): **2.3 MB RSS release, 0
+   voluntary ctx switches / 5 s.**
 4. [ ] timers & process: `shell.interval`/`once` as calloop timers
    (armed only while one exists — the zero-idle-wakeup gate),
    `shell.exec`/`exec_async`, `shell.quit`, `shell.get_window`,
@@ -305,6 +327,11 @@ tiny before the runtime landed on top.
 - From M2 §1: Lua color strings (`"#rrggbb"`) inside Rust raw strings
   need `r##"..."##` — `"#` terminates a plain `r#"..."#` literal
   mid-string
+- From M2 §3: mlua 0.10's `Lua` is `Clone` + `'static` — painters (and
+  anything living *outside* the VM) may hold `Lua` clones, but
+  callbacks stored *inside* the VM (state subscribers) must go through
+  `WeakLua` + `LuaRegistryKey`, or the strong cycle keeps the VM alive
+  across hot reload
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age
