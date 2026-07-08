@@ -271,6 +271,9 @@ pub struct Settings {
     /// compositor. 0 disables the watchdog (and restores LuaJIT trace
     /// compilation — the enforcing debug hook keeps the VM interpreted).
     pub watchdog_ms: u64,
+    /// Animation configs (springs/easing on window moves and open fades).
+    /// `animations = false` turns everything off.
+    pub animations: crate::animation::AnimationSettings,
 }
 
 impl Settings {
@@ -301,6 +304,69 @@ impl Default for Settings {
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
             watchdog_ms: 1000,
+            animations: Default::default(),
+        }
+    }
+}
+
+/// Parse one `settings.animations.<name>` value: `false` disables it, a
+/// table configures a spring (`{ spring = { damping_ratio, stiffness,
+/// epsilon } }`) or an easing (`{ ease = { duration_ms, curve } }`, curve a
+/// named string or `{ x1, y1, x2, y2 }` cubic-bezier control points).
+fn parse_animation_config(value: &Value, label: &str) -> Option<crate::animation::Config> {
+    use crate::animation::{Config, CubicBezier, Curve, SpringParams};
+    match value {
+        Value::Boolean(false) => Some(Config::Off),
+        Value::Table(t) => {
+            if let Ok(spring) = t.get::<Table>("spring") {
+                let damping_ratio = spring.get::<f64>("damping_ratio").unwrap_or(1.0);
+                let stiffness = spring.get::<f64>("stiffness").unwrap_or(800.0);
+                let epsilon = spring.get::<f64>("epsilon").unwrap_or(0.0001);
+                return Some(Config::Spring(SpringParams::new(
+                    damping_ratio,
+                    stiffness,
+                    epsilon,
+                )));
+            }
+            if let Ok(ease) = t.get::<Table>("ease") {
+                let duration_ms = ease.get::<u64>("duration_ms").unwrap_or(150).max(1);
+                let curve = match ease.get::<Value>("curve") {
+                    Ok(Value::String(name)) => match name.to_string_lossy().as_ref() {
+                        "linear" => Curve::Linear,
+                        "ease_out_quad" => Curve::EaseOutQuad,
+                        "ease_out_cubic" => Curve::EaseOutCubic,
+                        "ease_out_expo" => Curve::EaseOutExpo,
+                        other => {
+                            warn!(
+                                "{label}.ease.curve: unknown curve {other:?} (expected \
+                                 \"linear\", \"ease_out_quad\", \"ease_out_cubic\", \
+                                 \"ease_out_expo\", or {{x1, y1, x2, y2}}); using \
+                                 ease_out_cubic"
+                            );
+                            Curve::EaseOutCubic
+                        }
+                    },
+                    Ok(Value::Table(pts)) => {
+                        let p = |i| pts.get::<f64>(i).unwrap_or(0.0);
+                        Curve::CubicBezier(CubicBezier::new(p(1), p(2), p(3), p(4)))
+                    }
+                    _ => Curve::EaseOutCubic,
+                };
+                return Some(Config::Easing {
+                    duration: Duration::from_millis(duration_ms),
+                    curve,
+                });
+            }
+            warn!("{label}: expected {{ spring = {{...}} }}, {{ ease = {{...}} }}, or false");
+            None
+        }
+        Value::Nil => None,
+        other => {
+            warn!(
+                "{label}: expected a table or false, got {}",
+                other.type_name()
+            );
+            None
         }
     }
 }
@@ -1220,6 +1286,29 @@ impl LuaRuntime {
                         size.get(1).unwrap_or(settings.winit_size.0),
                         size.get(2).unwrap_or(settings.winit_size.1),
                     );
+                }
+                match table.get::<Value>("animations") {
+                    Ok(Value::Boolean(false)) => {
+                        settings.animations = crate::animation::AnimationSettings::off();
+                    }
+                    Ok(Value::Boolean(true)) => {
+                        settings.animations = Default::default();
+                    }
+                    Ok(Value::Table(anims)) => {
+                        let a = &mut settings.animations;
+                        for (key, slot) in [
+                            ("window_move", &mut a.window_move),
+                            ("window_open", &mut a.window_open),
+                        ] {
+                            if let Ok(value) = anims.get::<Value>(key) {
+                                let label = format!("settings.animations.{key}");
+                                if let Some(config) = parse_animation_config(&value, &label) {
+                                    *slot = config;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 if let Ok(border) = table.get::<Table>("border") {
                     if let Ok(width) = border.get::<i32>("width") {

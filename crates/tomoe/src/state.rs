@@ -117,6 +117,10 @@ pub struct Tomoe {
     pub corner_damage: HashMap<Window, crate::render::damage::ExtraDamage>,
     /// The corner radius `corner_damage` was last bumped for.
     pub applied_corner_radius: i32,
+    /// Render-time animation state (window move offsets, open fades): the
+    /// space holds layout *targets*; this holds the transient presentation
+    /// deltas the backends sample each frame (M6 animation engine).
+    pub animations: crate::animation::Animations,
     pub cursor: Cursor,
 
     pub compositor_state: CompositorState,
@@ -360,6 +364,7 @@ impl Tomoe {
             hovered_window: None,
             border_buffers: HashMap::new(),
             corner_damage: HashMap::new(),
+            animations: Default::default(),
             applied_corner_radius: 0,
             cursor: Cursor::load(),
             compositor_state,
@@ -913,20 +918,43 @@ impl Tomoe {
                     toplevel.send_pending_configure();
                 }
                 self.desired_loc.insert(id, (x, y).into());
-                self.space.map_element(window, (x, y));
+                // Animate the move: the target lands in the space now; the
+                // render offset (old − new) decays to zero (M6 animations).
+                let old_loc = self.space.element_location(&window);
+                self.space.map_element(window.clone(), (x, y));
+                if let Some(old) = old_loc {
+                    let delta = old - Point::from((x, y));
+                    if delta != Point::from((0, 0)) {
+                        let config = self.lua.settings().animations.window_move;
+                        self.animations.start_move(
+                            &window,
+                            delta,
+                            config,
+                            self.start_time.elapsed(),
+                        );
+                    }
+                }
             }
             WindowOp::Show(id) => {
                 let Some(window) = window(self, id) else {
                     return;
                 };
+                let was_mapped = self.space.element_location(&window).is_some();
                 let loc = self.desired_loc.get(&id).copied().unwrap_or_default();
-                self.space.map_element(window, loc);
+                self.space.map_element(window.clone(), loc);
+                // Re-mapping (workspace switch-in) fades like an open.
+                if !was_mapped {
+                    let config = self.lua.settings().animations.window_open;
+                    self.animations
+                        .start_open(&window, config, self.start_time.elapsed());
+                }
             }
             WindowOp::Hide(id) => {
                 let Some(window) = window(self, id) else {
                     return;
                 };
                 self.space.unmap(&window);
+                self.animations.remove(&window);
             }
             WindowOp::Focus(id) => {
                 let Some(window) = window(self, id) else {
@@ -1038,6 +1066,14 @@ impl Tomoe {
                 self.after_lua();
             }
         }
+        // Open fade starts once policy has placed the window (mapped by the
+        // hook's set_geometry ops or the native fallback above).
+        if self.space.element_location(&window).is_some() {
+            let config = self.lua.settings().animations.window_open;
+            self.animations
+                .start_open(&window, config, self.start_time.elapsed());
+            self.queue_redraw_all();
+        }
         // After Lua so subscribers see the geometry policy just assigned.
         crate::ipc::notify_window_open(self, id);
 
@@ -1067,6 +1103,7 @@ impl Tomoe {
             .map(|(id, _)| *id);
         self.border_buffers.remove(window);
         self.corner_damage.remove(window);
+        self.animations.remove(window);
         self.space.unmap(window);
         let Some(id) = id else { return };
         self.windows.remove(&id);

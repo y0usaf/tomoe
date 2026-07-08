@@ -59,6 +59,8 @@ struct SceneParts<'a> {
     cursor: &'a crate::cursor::Cursor,
     cursor_status: &'a CursorImageStatus,
     cursor_fallback: &'a SolidColorBuffer,
+    animations: &'a crate::animation::Animations,
+    anim_now: std::time::Duration,
     pointer_pos: Point<f64, smithay::utils::Logical>,
     /// Session locked: captures see the locked scene, never the session.
     locked: bool,
@@ -116,6 +118,8 @@ impl<'a> SceneParts<'a> {
                 self.border_buffers,
                 self.border_width,
                 geo.loc,
+                self.animations,
+                self.anim_now,
             );
             elements.extend(crate::render::scene_elements(
                 renderer,
@@ -125,6 +129,8 @@ impl<'a> SceneParts<'a> {
                 borders,
                 self.corner_radius,
                 self.corner_damage,
+                self.animations,
+                self.anim_now,
             ));
         }
 
@@ -209,6 +215,9 @@ macro_rules! split_tomoe {
             .map(|p| p.current_location())
             .unwrap_or_default();
         let locked = $tomoe.is_locked();
+        // Captures sample the same animated scene the outputs show; they
+        // never advance/prune (the backends' redraws own that).
+        let anim_now = $tomoe.start_time.elapsed();
         let Tomoe {
             backend,
             space,
@@ -218,6 +227,7 @@ macro_rules! split_tomoe {
             cursor,
             cursor_status,
             cursor_fallback,
+            animations,
             screencopy_state,
             loop_handle,
             clock,
@@ -236,6 +246,8 @@ macro_rules! split_tomoe {
                 cursor,
                 cursor_status,
                 cursor_fallback,
+                animations,
+                anim_now,
                 pointer_pos,
                 locked,
                 lock_surfaces,

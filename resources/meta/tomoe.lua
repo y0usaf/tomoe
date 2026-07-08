@@ -477,6 +477,29 @@ function ScreencastRequest:defer() end
 ---@field touchpad InputDevice # class-wide touchpad settings (tty backend)
 ---@field mouse InputDevice # class-wide mouse settings (tty backend)
 ---@field devices table<string, InputDevice> # per-device overrides, keyed by libinput device name
+---@field animations Animations|boolean # per-property animation configs; false disables everything
+
+---Animation configs (`settings.animations`). Each property is `false` (off)
+---or a table configuring a spring (`{ spring = {...} }`) or an easing
+---(`{ ease = {...} }`). Animations are render-time only: layout, input, and
+---the Lua snapshot always see the target geometry.
+---@class Animations
+---@field window_move AnimationSpec|false # window position changes (default: spring, damping_ratio 1.0, stiffness 800)
+---@field window_open AnimationSpec|false # opacity fade-in on map/show (default: ease, 150ms ease_out_expo)
+
+---One animation: give `spring` or `ease` (spring wins when both are set).
+---@class AnimationSpec
+---@field spring SpringSpec?
+---@field ease EaseSpec?
+
+---@class SpringSpec
+---@field damping_ratio number # 1.0 = critically damped (no overshoot), <1 bounces (default 1.0)
+---@field stiffness number # spring constant; higher = snappier (default 800)
+---@field epsilon number # rest threshold (default 0.0001)
+
+---@class EaseSpec
+---@field duration_ms integer # animation length in milliseconds (default 150)
+---@field curve "linear"|"ease_out_quad"|"ease_out_cubic"|"ease_out_expo"|number[] # named curve or { x1, y1, x2, y2 } cubic-bezier control points (default "ease_out_cubic")
 
 ---@class Border
 ---@field width integer # thickness in physical pixels; 1 is one device pixel at any scale (default 2)

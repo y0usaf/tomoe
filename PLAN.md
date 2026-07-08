@@ -209,8 +209,29 @@ Done and working:
       `fullscreen = true`, `focus = false`. Per-window *core* props
       (tearing override, border colors) still need a queued-op surface —
       revisit with M6 eye-candy
-- [ ] Animation engine (springs + beziers on layout positions,
-      AnimatedVariable-style; open/close/move/workspace-switch)
+- [x] Animation engine core (springs + beziers, niri's `animation` module
+      with the clock stripped to explicit `now`): `animation.rs` —
+      `Config`/`Animation` (spring | easing incl. cubic-bezier) +
+      window-keyed `Animations` state on `Tomoe`. Doctrine split: Lua sets
+      *target* geometry, the core animates the **rendered**
+      position/alpha toward it — layout, input hit-testing, and the Lua
+      snapshot always see the target. Wired: window_move (set_geometry
+      delta → offset decays to 0, retargets compose so windows never
+      jump) and window_open (alpha fade on map/show — show gives
+      workspace switch-in fades for free). `settings.animations`
+      (`false`, or per-property `{ spring = {damping_ratio, stiffness,
+      epsilon} }` / `{ ease = {duration_ms, curve} }`). Rendering:
+      offsets are integer-physical per frame (coordinate doctrine),
+      alpha rides the element (smithay damage-tracks alpha changes);
+      captures sample the same animated scene. Keepalive: backends call
+      `animations.advance` per frame and re-queue while running (tty:
+      `queue_redraw` → vblank-paced; winit: request_redraw). Verified
+      nested: 400ms linear fade → grim mid-capture at expected ≈75%
+      brightness, settles at 100%. Remaining slices: close animations
+      (needs buffer retention past unmap), resize animation (shader,
+      niri-style), workspace-switch slide (Lua-visible mechanism TBD),
+      velocity-preserving retargets (`initial_velocity` is plumbed but
+      always 0), TTY live check
 - [x] Rounded corners (`settings.border.radius`, physical px) — niri-shape
       shader infra in `render/`: `shaders.rs` compiles per Gles context
       (winit init + TTY primary-GPU bring-up), `clipped_surface.rs` wraps
@@ -664,7 +685,12 @@ works — all landed; live night-light run pending.*
    (`tomoe_render_elements!`), and damage injection for uniform-driven
    effects (`damage.rs`). TTY live check pending (verified nested on
    winit incl. screencopy)
-2. Animation engine (springs/beziers) driving layout positions + opacity
+2. ~~Animation engine (springs/beziers) driving layout positions +
+   opacity~~ done — first slice (mechanics in the Hyprland gap list
+   above): move offsets + open fades, `settings.animations`, per-frame
+   advance/keepalive in both backends and the capture path. Open
+   follow-ups (close/resize/workspace-switch animations, spring
+   velocity on retarget, TTY live check) tracked in the gap list
 3. Borders polish (rounded borders via border shader), shadows as shader
    elements — pixel-aligned intermediates per coordinate doctrine §5;
    per-window core props (radius/tearing/border colors) queued-op surface

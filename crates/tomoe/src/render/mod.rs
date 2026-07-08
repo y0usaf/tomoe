@@ -132,6 +132,8 @@ pub fn border_elements<R: TomoeRenderer>(
     border_buffers: &HashMap<Window, [SolidColorBuffer; 4]>,
     width: i32,
     output_loc: Point<i32, Physical>,
+    animations: &crate::animation::Animations,
+    anim_now: std::time::Duration,
 ) -> Vec<OutputRenderElements<R>> {
     if width <= 0 {
         return Vec::new();
@@ -144,9 +146,13 @@ pub fn border_elements<R: TomoeRenderer>(
         let Some(buffers) = border_buffers.get(window) else {
             continue;
         };
-        let Some(geo) = space.element_geometry(window) else {
+        let Some(mut geo) = space.element_geometry(window) else {
             continue;
         };
+        // Borders follow the animated render position and fade with the
+        // window's open animation.
+        geo.loc += animations.offset(window, anim_now);
+        let alpha = animations.alpha(window, anim_now);
         let loc = geo.loc - cam_loc;
         let offsets: [Point<i32, Physical>; 4] = [
             Point::from((-width, -width)),     // top
@@ -159,7 +165,7 @@ pub fn border_elements<R: TomoeRenderer>(
                 buffer,
                 loc + offset,
                 1.0,
-                1.0,
+                alpha,
                 Kind::Unspecified,
             );
             elements.push(if zoom == 1.0 {
@@ -255,8 +261,9 @@ fn is_fullscreen(window: &Window) -> bool {
 /// windows are exempt — nothing to round, and clipping would block direct
 /// scanout. `corner_damage` holds the per-window damage-injection elements
 /// bumped when the radius setting changes (`Tomoe::refresh_borders`).
-// Window keys hash by their stable id despite interior mutability.
-#[allow(clippy::mutable_key_type)]
+// Window keys hash by their stable id despite interior mutability. Arg
+// count: scene assembly takes the whole per-frame context by design.
+#[allow(clippy::mutable_key_type, clippy::too_many_arguments)]
 pub fn scene_elements<R: TomoeRenderer>(
     renderer: &mut R,
     space: &PhysicalSpace,
@@ -265,6 +272,8 @@ pub fn scene_elements<R: TomoeRenderer>(
     borders: Vec<OutputRenderElements<R>>,
     corner_radius: i32,
     corner_damage: &HashMap<Window, ExtraDamage>,
+    animations: &crate::animation::Animations,
+    anim_now: std::time::Duration,
 ) -> Vec<OutputRenderElements<R>> {
     let scale = space.scale();
     let render_scale = Scale::from(scale);
@@ -309,9 +318,14 @@ pub fn scene_elements<R: TomoeRenderer>(
     let cam_loc = output_geo.loc + space.view_offset();
     let origin = Point::from((-output_geo.loc.x, -output_geo.loc.y));
     for window in space.elements().rev() {
-        let Some(geo) = space.element_geometry(window) else {
+        let Some(mut geo) = space.element_geometry(window) else {
             continue;
         };
+        // Animated render position/alpha: the space stores the layout
+        // target; the animation engine's transient offset shifts where the
+        // window *draws* this frame (integer physical, still on-grid).
+        geo.loc += animations.offset(window, anim_now);
+        let alpha = animations.alpha(window, anim_now);
         if space
             .world_rect_to_screen(geo)
             .intersection(output_geo.to_f64())
@@ -339,7 +353,7 @@ pub fn scene_elements<R: TomoeRenderer>(
                 popup.wl_surface(),
                 loc + offset,
                 render_scale,
-                1.0,
+                alpha,
                 Kind::Unspecified,
             ) {
                 elements.push(if zoom == 1.0 {
@@ -366,7 +380,7 @@ pub fn scene_elements<R: TomoeRenderer>(
             surface,
             loc,
             render_scale,
-            1.0,
+            alpha,
             Kind::Unspecified,
         ) {
             match &program {

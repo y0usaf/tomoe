@@ -1487,6 +1487,10 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     // Render-path refresh: border buffers re-derive from live geometry/focus
     // here, not on scattered events, so they can never be stale for a frame.
     tomoe.refresh_borders();
+    // Advance animations once per frame; while any run, this render ends by
+    // re-queueing itself (the state machine parks it until the vblank).
+    let anim_now = tomoe.start_time.elapsed();
+    let animating = tomoe.animations.advance(anim_now);
     // Data that needs shared access to `tomoe`, gathered before splitting borrows.
     let output = {
         let Backend::Tty(data) = &tomoe.backend else {
@@ -1555,6 +1559,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ui,
         border_buffers,
         corner_damage,
+        animations,
         lock_surfaces,
         lock_backdrops,
         ..
@@ -1623,8 +1628,14 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     } else {
         // Compositor UI (dialogs/overlays): above windows, below the cursor.
         let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, true);
-        let borders =
-            crate::render::border_elements(space, border_buffers, border_width, output_loc);
+        let borders = crate::render::border_elements(
+            space,
+            border_buffers,
+            border_width,
+            output_loc,
+            animations,
+            anim_now,
+        );
         elements.extend(crate::render::scene_elements(
             &mut renderer,
             space,
@@ -1633,6 +1644,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             borders,
             corner_radius,
             corner_damage,
+            animations,
+            anim_now,
         ));
     }
 
@@ -1758,6 +1771,13 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         tomoe.lock_frame_rendered(&output);
     } else {
         tomoe.lock_render_failed(&output);
+    }
+
+    // Animation keepalive: re-queue while animations run (WaitingForVBlank
+    // → redraw_needed, estimated-vblank → AndQueued — the state machine
+    // paces the follow-up to the display, never a busy loop).
+    if animating && rendered_ok {
+        queue_redraw(tomoe, node, crtc);
     }
 
     // Complete queued with-damage screencopies against the just-rendered

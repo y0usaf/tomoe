@@ -37,6 +37,17 @@ omitted; types, traits, and module boundaries are the architecture.
 crate tomoe
 ├── struct Args: pub(crate)
 ├── enum Command: pub(crate)
+├── mod animation: pub(crate)
+│   ├── struct Animation: pub
+│   ├── struct AnimationSettings: pub
+│   ├── struct Animations: pub
+│   ├── enum Config: pub
+│   ├── struct CubicBezier: pub
+│   ├── enum Curve: pub
+│   ├── enum Kind: pub(self)
+│   ├── struct Spring: pub
+│   ├── struct SpringParams: pub
+│   └── struct WindowAnims: pub(self)
 ├── mod backend: pub(crate)
 │   ├── enum Backend: pub
 │   ├── mod tty: pub

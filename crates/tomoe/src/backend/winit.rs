@@ -144,6 +144,10 @@ pub fn redraw(tomoe: &mut Tomoe) {
     // Render-path refresh: border buffers re-derive from live geometry/focus
     // here, not on scattered events, so they can never be stale for a frame.
     tomoe.refresh_borders();
+    // Advance animations once per frame; while any run, this frame ends by
+    // requesting the next (render-time keepalive, no idle wakeups after).
+    let anim_now = tomoe.start_time.elapsed();
+    let animating = tomoe.animations.advance(anim_now);
     let (output_loc, output_size) = {
         let Backend::Winit(winit) = &tomoe.backend else {
             return;
@@ -164,6 +168,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
         lua,
         border_buffers,
         corner_damage,
+        animations,
         clock,
         lock_surfaces,
         lock_backdrops,
@@ -189,6 +194,8 @@ pub fn redraw(tomoe: &mut Tomoe) {
             border_buffers,
             lua.settings().border_width,
             output_loc,
+            animations,
+            anim_now,
         );
         // Compositor UI (dialogs/overlays) first: earlier elements render on top.
         let ui_elements = ui.render_elements(winit.backend.renderer(), &output, output_size, true);
@@ -200,6 +207,8 @@ pub fn redraw(tomoe: &mut Tomoe) {
             borders,
             lua.settings().corner_radius,
             corner_damage,
+            animations,
+            anim_now,
         )
     };
 
@@ -271,5 +280,9 @@ pub fn redraw(tomoe: &mut Tomoe) {
 
     // Damage-driven: the next repaint comes from queue_redraw_all() (commits,
     // Lua ops, input), mirroring the TTY backend so missing damage sources
-    // show up as visible freezes during development.
+    // show up as visible freezes during development. Running animations are
+    // their own damage source: keep painting until they settle.
+    if animating {
+        tomoe.backend.winit().backend.window().request_redraw();
+    }
 }

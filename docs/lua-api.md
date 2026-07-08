@@ -252,6 +252,32 @@ Motion event during a tomoe.grab_pointer grab.
 - `touchpad: InputDevice` — class-wide touchpad settings (tty backend)
 - `mouse: InputDevice` — class-wide mouse settings (tty backend)
 - `devices: table<string, InputDevice>` — per-device overrides, keyed by libinput device name
+- `animations: Animations|boolean` — per-property animation configs; false disables everything
+
+### Animations
+
+Animation configs (`settings.animations`). Each property is `false` (off) or a table configuring a spring (`{ spring = {...} }`) or an easing (`{ ease = {...} }`). Animations are render-time only: layout, input, and the Lua snapshot always see the target geometry.
+
+- `window_move: AnimationSpec|false` — window position changes (default: spring, damping_ratio 1.0, stiffness 800)
+- `window_open: AnimationSpec|false` — opacity fade-in on map/show (default: ease, 150ms ease_out_expo)
+
+### AnimationSpec
+
+One animation: give `spring` or `ease` (spring wins when both are set).
+
+- `spring: SpringSpec?`
+- `ease: EaseSpec?`
+
+### SpringSpec
+
+- `damping_ratio: number` — 1.0 = critically damped (no overshoot), <1 bounces (default 1.0)
+- `stiffness: number` — spring constant; higher = snappier (default 800)
+- `epsilon: number` — rest threshold (default 0.0001)
+
+### EaseSpec
+
+- `duration_ms: integer` — animation length in milliseconds (default 150)
+- `curve: "linear"|"ease_out_quad"|"ease_out_cubic"|"ease_out_expo"|number[]` — named curve or { x1, y1, x2, y2 } cubic-bezier control points (default "ease_out_cubic")
 
 ### Border
 
