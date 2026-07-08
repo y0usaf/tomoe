@@ -1,0 +1,17 @@
+[package]
+name = "moonshell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "moonshell"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+calloop.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+moonshell-surface.workspace = true
+moonshell-render.workspace = true

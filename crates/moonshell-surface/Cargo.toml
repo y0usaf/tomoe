@@ -1,0 +1,13 @@
+[package]
+name = "moonshell-surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+calloop.workspace = true
+calloop-wayland-source.workspace = true
+smithay-client-toolkit.workspace = true
+wayland-client.workspace = true
+tracing.workspace = true

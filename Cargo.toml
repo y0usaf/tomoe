@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/moonshell", "crates/surface", "crates/render"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "2"
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
+wayland-client = "0.31"
+tiny-skia = "0.12"
+cosmic-text = "0.19"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+moonshell-surface = { path = "crates/surface" }
+moonshell-render = { path = "crates/render" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

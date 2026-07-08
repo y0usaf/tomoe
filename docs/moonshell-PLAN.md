@@ -10,7 +10,18 @@ style).
 
 ## Where we are (2026-07)
 
-Repo created. Nothing built. Two working inputs exist:
+**M0 done** (2026-07-08): flake + workspace (`moonshell`/`surface`/
+`render` crates), bare binary maps a top-anchored layer surface with
+exclusive zone and draws its version string via cosmic-text into
+wl_shm. `nix flake check` = build+tests, fmt, clippy(-D warnings), and
+the doctrine-06 `boot` check (headless sway + `moonshell --boot-check`
++ RSS gate). Measured: **6.9 MB idle RSS live / 6.3 MB in the sandbox
+gate (budget 20 MB); 0 voluntary ctx switches over 5 s idle** (powertop
+unavailable — ctx-switch delta is the standing wakeup proxy); output
+disable/enable under headless sway survives (unmap → wait → remap).
+Next open item: **M1 element vocabulary**.
+
+Two working inputs exist:
 
 - **nur** (`~/Dev/nur`) — the reference implementation and current
   daily driver. Its Lua API (`shell.*`, `ui.*`), `lua/` stdlib, widget
@@ -92,17 +103,23 @@ Repo created. Nothing built. Two working inputs exist:
 
 M0 → M6 as in DESIGN.md. M0 breakdown (the doctrine-06 spike):
 
-1. Flake: rust toolchain, devshell with Wayland libs; `nix flake check`
-   runs fmt + clippy + the bare-boot check
-2. `surface`: registry/seat/output/layer-shell bind via SCTK; one
-   anchored top surface with exclusive zone; shm pool, double buffer
-3. `render`: tiny-skia clear + rect; cosmic-text one-line draw with
-   fontconfig-discovered font; integer-physical sizing (tomoe's
-   coordinate doctrine applies — buffer scale first, fractional-scale
-   via wp-viewporter later)
-4. Damage: track dirty rects, `wl_surface.damage_buffer` precisely,
-   request frame callbacks only while dirty
-5. Measure: smem RSS + powertop wakeups, record numbers here
+1. [x] Flake: `nix flake check` runs build+tests, fmt, clippy
+   (-D warnings), and `boot` — headless sway (unwrapped; the wrapper
+   needs a dbus session) + `moonshell --boot-check` + a 20 MB RSS gate.
+   The sandbox has no fonts; the check writes a `FONTCONFIG_FILE`
+   pointing at dejavu so the text path is exercised (fontdb honors it).
+2. [x] `surface`: registry/seat/output binds; top-anchored layer
+   surface with exclusive zone; `SlotPool` double buffer; `Painter`
+   trait is the mechanism/policy boundary (returns `Damage`).
+3. [x] `render`: tiny-skia clear/rect + cosmic-text line into ARGB8888
+   (R<->B swizzle once in `Rgba::to_skia`); integer-physical sizing;
+   fontless systems skip text instead of panicking.
+4. [x] Damage: painter-reported rects → `damage_buffer`; frame callback
+   requested only when a commit is in flight; fully idle = zero
+   scheduled wakeups.
+5. [x] Measured 2026-07-08: idle RSS 6.9 MB live (6284 kB in the CI
+   gate), 0 voluntary ctx switches over 5 s idle. powertop/smem not
+   installed — /proc VmRSS + ctx-switch delta are the standing proxies.
 
 Then M1 element vocabulary, then M2 brings Lua in. Nothing Lua-shaped
 gets built in M0/M1 — the render core must be provably tiny before the
@@ -121,3 +138,12 @@ runtime lands on top.
   removal
 - From nur's TODO list: `watch_file`/hot-reload was the most-wanted
   missing feature — it's in M2, not later
+- From M0: cosmic-text 0.19 `set_text` only marks dirty — call
+  `shape_until_scroll` before `layout_runs`/`draw`, or advance is 0 and
+  nothing renders (the unit test exists because the live bar shipped
+  blank)
+- From M0: never remap unconditionally in `LayerShellHandler::closed` —
+  a compositor with zero outputs closes the new surface immediately and
+  the create/close loop storms (~150k remaps/s observed). Remap only if
+  the old surface was ever configured and an output exists; otherwise
+  wait for `new_output`

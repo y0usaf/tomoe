@@ -1,0 +1,10 @@
+[package]
+name = "moonshell-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+tracing.workspace = true
