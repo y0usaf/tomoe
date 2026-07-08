@@ -272,4 +272,14 @@ impl Element {
             Element::Image(e) => &e.style,
         }
     }
+
+    /// Container children; empty for leaves. The uniform accessor the
+    /// diff pass walks.
+    pub fn children(&self) -> &[Element] {
+        match self {
+            Element::HBox(f) | Element::VBox(f) => &f.children,
+            Element::Stack(s) => &s.children,
+            _ => &[],
+        }
+    }
 }

@@ -16,10 +16,12 @@ mod assets;
 pub mod draw;
 pub mod element;
 pub mod layout;
+pub mod scene;
 
 pub use draw::{draw, render_tree};
 pub use element::Element;
 pub use layout::LayoutNode;
+pub use scene::{PixelRect, Scene, SceneDamage};
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use tiny_skia::{FillRule, Paint, PathBuilder, PixmapMut, Rect, Stroke, Transform};
