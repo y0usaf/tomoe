@@ -13,6 +13,9 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use crate::state::Tomoe;
 use crate::ui::widgets::{UiEvent, WidgetKind};
 
+/// Linux BTN_LEFT (input-event-codes.h).
+const BTN_LEFT: u32 = 0x110;
+
 /// A dispatchable compositor action. Lua binds queue these; built-in binds
 /// carry them directly.
 #[derive(Debug, Clone)]
@@ -220,6 +223,27 @@ impl Tomoe {
             .unwrap_or_default()
     }
 
+    /// The output under a screen-space physical point, with the point
+    /// rebased to that output's local coordinates — for widget hit-testing
+    /// (widgets render centered per output).
+    fn output_local_point(
+        &self,
+        pos: smithay::utils::Point<f64, smithay::utils::Physical>,
+    ) -> Option<(
+        smithay::utils::Size<i32, smithay::utils::Physical>,
+        smithay::utils::Point<f64, smithay::utils::Physical>,
+    )> {
+        for output in self.space.outputs() {
+            let Some(geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            if geo.to_f64().contains(pos) {
+                return Some((geo.size, pos - geo.loc.to_f64()));
+            }
+        }
+        None
+    }
+
     /// The pointer position in the screenshot overlay's output-local
     /// physical coordinates, clamped to the output bounds. None when the
     /// overlay is closed or its output lost its geometry.
@@ -306,6 +330,16 @@ impl Tomoe {
             self.in_lua = was_in_lua;
             self.after_lua();
             return;
+        }
+
+        // A modal menu tracks the pointer: hovering a row moves the
+        // selection (a left click then selects it, in the button path).
+        if self.ui.widgets.top_modal_id().is_some() {
+            if let Some((size, local)) = self.output_local_point(pos) {
+                if self.ui.hover_menu(size, local) {
+                    self.queue_redraw_all();
+                }
+            }
         }
 
         let serial = SERIAL_COUNTER.next_serial();
@@ -604,7 +638,6 @@ impl Tomoe {
                 // Screenshot selection overlay: left-drag selects, clicks
                 // never reach clients while it is open.
                 if self.ui.screenshot.is_open() {
-                    const BTN_LEFT: u32 = 0x110;
                     if button == BTN_LEFT {
                         if pressed {
                             if let Some(local) = self.screenshot_pointer_local() {
@@ -618,13 +651,32 @@ impl Tomoe {
                     return;
                 }
 
-                // Modal widgets swallow clicks entirely; a press cancels the
-                // topmost one. The matching release is swallowed via
-                // consumed_buttons if the widget closed before it arrived.
+                // Modal widgets swallow clicks entirely. A left click on a
+                // menu row selects it; one elsewhere on the menu is ignored;
+                // anything else cancels the topmost widget (confirms stay
+                // keyboard-deliberate: Enter is the only way to confirm).
+                // The matching release is swallowed via consumed_buttons if
+                // the widget closed before it arrived.
                 if let Some(id) = self.ui.widgets.top_modal_id() {
                     if pressed {
                         self.consumed_buttons.insert(button);
-                        self.do_action(Action::UiEvent(id, UiEvent::Cancel));
+                        let hit = (button == BTN_LEFT)
+                            .then(|| {
+                                let pos = crate::coords::point_to_physical(
+                                    pointer.current_location(),
+                                    self.space.scale(),
+                                );
+                                let (size, local) = self.output_local_point(pos)?;
+                                self.ui.menu_click(size, local)
+                            })
+                            .flatten();
+                        match hit {
+                            Some(Some(row)) => {
+                                self.do_action(Action::UiEvent(id, UiEvent::Select(row)))
+                            }
+                            Some(None) => {}
+                            None => self.do_action(Action::UiEvent(id, UiEvent::Cancel)),
+                        }
                     }
                     return;
                 }

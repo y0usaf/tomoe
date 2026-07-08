@@ -8,7 +8,7 @@ pub mod text;
 pub mod widgets;
 
 use smithay::output::Output;
-use smithay::utils::{Physical, Size};
+use smithay::utils::{Physical, Point, Size};
 use tracing::warn;
 
 pub use screenshot_ui::ScreenshotUi;
@@ -78,5 +78,28 @@ impl Ui {
         self.widgets
             .render_elements(fonts, renderer, output_size, &mut elements);
         elements
+    }
+
+    /// Pointer hover over the topmost modal menu (`Widgets::hover_menu`);
+    /// no-op without fonts (nothing is drawn to hover over).
+    pub fn hover_menu(
+        &mut self,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> bool {
+        match &self.fonts {
+            Some(fonts) => self.widgets.hover_menu(fonts, output_size, point),
+            None => false,
+        }
+    }
+
+    /// Click hit-test on the topmost modal menu (`Widgets::menu_click`).
+    pub fn menu_click(
+        &mut self,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> Option<Option<usize>> {
+        self.widgets
+            .menu_click(self.fonts.as_ref()?, output_size, point)
     }
 }

@@ -151,6 +151,7 @@ crate tomoe
 │   │   ├── struct Fonts: pub
 │   │   └── struct Span: pub
 │   └── mod widgets: pub
+│       ├── struct MenuLayout: pub(self)
 │       ├── enum Tag: pub
 │       ├── enum UiEvent: pub
 │       ├── struct WidgetEntry: pub

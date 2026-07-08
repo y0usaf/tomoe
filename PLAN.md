@@ -511,13 +511,18 @@ scanout confirmed via drm_info; no idle redraw storms.*
    dialog = Confirm + `Action::ConfirmQuit` handler, hotkey overlay =
    Sheet built from binds at open (re-press toggles), config-error
    banner = urgent Toast; `screenshot_ui` stays native as the declared
-   exemption until the API grows drag-region interaction. Still open
-   here: pointer interaction inside menus (hover/click selection) —
-   keyboard-only for now, a click cancels. Verified live on winit
-   (toast/menu/confirm/sheet via IPC, handle close, builtin toggle);
-   menu *keyboard selection* end-to-end (Enter → on_select → broadcast)
-   still needs a hands-on check — the routing ships untested by real
-   input
+   exemption until the API grows drag-region interaction. Menu pointer
+   interaction landed: hovering a row moves the selection (menu geometry
+   is cached separately from the pixel cache — selection changes recolor
+   rows, never move them — so hit tests don't wait on a repaint), a left
+   click on a row selects, elsewhere on the menu is swallowed, outside
+   cancels; confirms stay keyboard-deliberate (Enter is the only way to
+   confirm). Hit-testing rebases the pointer per output (widgets render
+   centered on every output). Verified live on winit (toast/menu/
+   confirm/sheet via IPC, handle close, builtin toggle); menu selection
+   end-to-end (Enter or row click → on_select → broadcast) still needs
+   a hands-on check — hit math is unit-tested, the routing untested by
+   real input
 7. ~~Portal source policy over IPC~~ done — `tomoe.on_screencast_request`
    (single slot, last registration wins): the portal's SelectSources
    sends `screencast_select` `{app_id, types}` over IPC (thin client,
@@ -545,8 +550,8 @@ scanout confirmed via drm_info; no idle redraw storms.*
 preserves workspace assignments; services survive and diff correctly;
 the screencast picker is compositor-drawn via `tomoe.ui`, declared in
 `init.lua`, and `TOMOE_PORTAL_CHOOSER` is no longer needed on a default
-setup. — All landed; remaining M4 loose ends: example configs
-exercising the surface (§5) and menu pointer interaction (§6).*
+setup. — All landed; remaining M4 loose end: example configs
+exercising the surface (§5).*
 
 ### M5 — Ecosystem remainder
 

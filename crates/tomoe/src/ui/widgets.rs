@@ -14,7 +14,7 @@ use smithay::backend::renderer::element::memory::{
 };
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::Kind;
-use smithay::utils::{Physical, Size};
+use smithay::utils::{Physical, Point, Size};
 
 use super::text::{Canvas, Fonts, Span};
 use super::{ACCENT, BACKDROP, BG, FG, KEY_CHIP, RED};
@@ -72,7 +72,8 @@ pub enum Tag {
 pub enum WidgetKind {
     /// Enter confirms, any other key or click cancels.
     Confirm { text: String },
-    /// Up/Down (or k/j) navigate, Enter selects, Esc or a click cancels.
+    /// Up/Down (or k/j) or pointer hover navigate, Enter or a left click on
+    /// a row selects, Esc or a click outside the menu cancels.
     Menu {
         title: Option<String>,
         items: Vec<String>,
@@ -140,6 +141,10 @@ pub struct WidgetEntry {
     pub tag: Option<Tag>,
     /// Cached rendering; dropped when content changes (menu navigation).
     buffer: Option<(MemoryRenderBuffer, Size<i32, Physical>)>,
+    /// Cached menu geometry for pointer hit-testing. Unlike `buffer` it
+    /// survives `invalidate`: selection changes recolor rows, never move
+    /// them, so hit tests don't wait on a repaint.
+    layout: Option<MenuLayout>,
 }
 
 impl WidgetEntry {
@@ -150,12 +155,107 @@ impl WidgetEntry {
             handler,
             tag,
             buffer: None,
+            layout: None,
         }
     }
 
     /// Drop the cached rendering (content changed).
     pub fn invalidate(&mut self) {
         self.buffer = None;
+    }
+
+    /// Hit-test an output-local point against this widget, if it is a menu
+    /// (menus render centered on the output): `Some(Some(i))` = over row i,
+    /// `Some(None)` = over the widget but not a row, `None` = outside it or
+    /// not a menu.
+    fn menu_hit(
+        &mut self,
+        fonts: &Fonts,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> Option<Option<usize>> {
+        let WidgetKind::Menu { title, items, .. } = &self.kind else {
+            return None;
+        };
+        let layout = self
+            .layout
+            .get_or_insert_with(|| menu_layout(fonts, title.as_deref(), items));
+        layout.hit(output_size, point)
+    }
+}
+
+/// Menu geometry shared by rendering and pointer hit-testing: the widget
+/// size plus each row's (y, height) in buffer-local coordinates.
+struct MenuLayout {
+    size: Size<i32, Physical>,
+    title_w: i32,
+    rows: Vec<(i32, i32)>,
+}
+
+impl MenuLayout {
+    /// Hit-test an output-local point against this menu, centered on an
+    /// output of `output_size` (the render placement). Return shape as in
+    /// `WidgetEntry::menu_hit`.
+    fn hit(
+        &self,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> Option<Option<usize>> {
+        let x = point.x - ((output_size.w - self.size.w).max(0) / 2) as f64;
+        let y = point.y - ((output_size.h - self.size.h).max(0) / 2) as f64;
+        if x < 0.0 || y < 0.0 || x >= self.size.w as f64 || y >= self.size.h as f64 {
+            return None;
+        }
+        // Rows span the full inner width, like their highlight bar.
+        let row = (x >= BORDER as f64 && x < (self.size.w - BORDER) as f64)
+            .then(|| {
+                self.rows
+                    .iter()
+                    .position(|&(ry, rh)| y >= ry as f64 && y < (ry + rh) as f64)
+            })
+            .flatten();
+        Some(row)
+    }
+}
+
+fn menu_layout(fonts: &Fonts, title: Option<&str>, items: &[String]) -> MenuLayout {
+    let (title_w, title_h) = title
+        .map(|t| fonts.measure(&[Span::sans(t, TITLE_SIZE, FG)]))
+        .unwrap_or((0, 0));
+    let title_gap = if title.is_some() {
+        (TITLE_SIZE * 0.8) as i32
+    } else {
+        0
+    };
+
+    let mut item_w = 0;
+    let mut text_h = 0;
+    for item in items {
+        let (w, h) = fonts.measure(&[Span::sans(item, MENU_SIZE, FG)]);
+        item_w = item_w.max(w);
+        text_h = text_h.max(h);
+    }
+    let row_h = text_h + 2 * MENU_ROW_PAD;
+
+    let content_w = title_w.max(item_w);
+    let content_h = title_h + title_gap + items.len() as i32 * (row_h + ROW_GAP)
+        - if items.is_empty() { 0 } else { ROW_GAP };
+    let width = content_w + 2 * (PADDING + BORDER);
+    let height = content_h + 2 * (PADDING + BORDER);
+
+    let mut y = BORDER + PADDING + title_h + title_gap;
+    let rows = items
+        .iter()
+        .map(|_| {
+            let row = (y, row_h);
+            y += row_h + ROW_GAP;
+            row
+        })
+        .collect();
+    MenuLayout {
+        size: Size::from((width, height)),
+        title_w,
+        rows,
     }
 }
 
@@ -220,6 +320,47 @@ impl Widgets {
     pub fn close_lua(&mut self) {
         self.entries
             .retain(|e| !matches!(e.handler, WidgetHandler::Lua));
+    }
+
+    /// Pointer hover over the topmost modal menu: move the selection to the
+    /// row under `point` (output-local). Returns true when it changed (the
+    /// caller queues a redraw); off-row motion keeps the last selection.
+    pub fn hover_menu(
+        &mut self,
+        fonts: &Fonts,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> bool {
+        let Some(entry) = self.entries.iter_mut().rev().find(|e| e.kind.modal()) else {
+            return false;
+        };
+        let Some(Some(row)) = entry.menu_hit(fonts, output_size, point) else {
+            return false;
+        };
+        let WidgetKind::Menu { selected, .. } = &mut entry.kind else {
+            return false;
+        };
+        if *selected == row {
+            return false;
+        }
+        *selected = row;
+        entry.invalidate();
+        true
+    }
+
+    /// Hit-test a click against the topmost modal widget when it is a menu
+    /// (return shape as in `WidgetEntry::menu_hit`).
+    pub fn menu_click(
+        &mut self,
+        fonts: &Fonts,
+        output_size: Size<i32, Physical>,
+        point: Point<f64, Physical>,
+    ) -> Option<Option<usize>> {
+        self.entries
+            .iter_mut()
+            .rev()
+            .find(|e| e.kind.modal())?
+            .menu_hit(fonts, output_size, point)
     }
 
     /// Build render elements, topmost first (earlier elements draw on top).
@@ -339,45 +480,22 @@ fn render_menu(
     items: &[String],
     selected: usize,
 ) -> (MemoryRenderBuffer, Size<i32, Physical>) {
-    let (title_w, title_h) = title
-        .map(|t| fonts.measure(&[Span::sans(t, TITLE_SIZE, FG)]))
-        .unwrap_or((0, 0));
-    let title_gap = if title.is_some() {
-        (TITLE_SIZE * 0.8) as i32
-    } else {
-        0
-    };
-
-    let mut item_w = 0;
-    let mut text_h = 0;
-    for item in items {
-        let (w, h) = fonts.measure(&[Span::sans(item, MENU_SIZE, FG)]);
-        item_w = item_w.max(w);
-        text_h = text_h.max(h);
-    }
-    let row_h = text_h + 2 * MENU_ROW_PAD;
-
-    let content_w = title_w.max(item_w);
-    let content_h = title_h + title_gap + items.len() as i32 * (row_h + ROW_GAP)
-        - if items.is_empty() { 0 } else { ROW_GAP };
-    let width = content_w + 2 * (PADDING + BORDER);
-    let height = content_h + 2 * (PADDING + BORDER);
-
+    let layout = menu_layout(fonts, title, items);
+    let (width, height) = (layout.size.w, layout.size.h);
     let mut canvas = Canvas::new(width, height);
     canvas.fill(BG);
     canvas.border(BORDER, ACCENT);
 
-    let mut y = BORDER + PADDING;
     if let Some(title) = title {
         canvas.draw_spans(
             fonts,
-            (width - title_w) / 2,
-            y,
+            (width - layout.title_w) / 2,
+            BORDER + PADDING,
             &[Span::sans(title, TITLE_SIZE, FG)],
         );
-        y += title_h + title_gap;
     }
     for (i, item) in items.iter().enumerate() {
+        let (y, row_h) = layout.rows[i];
         // Highlight bar across the full inner width; dark text on accent.
         let color = if i == selected {
             canvas.fill_rect(BORDER, y, width - 2 * BORDER, row_h, ACCENT);
@@ -391,7 +509,6 @@ fn render_menu(
             y + MENU_ROW_PAD,
             &[Span::sans(item, MENU_SIZE, color)],
         );
-        y += row_h + ROW_GAP;
     }
     canvas.into_buffer()
 }
@@ -546,5 +663,53 @@ fn pretty_key(key: &str) -> String {
                 None => String::new(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 100×100 menu with two 20-tall rows at y=40 and y=70, centered on a
+    /// 300×300 output (so the widget occupies 100..200 on both axes).
+    fn layout() -> (MenuLayout, Size<i32, Physical>) {
+        let layout = MenuLayout {
+            size: Size::from((100, 100)),
+            title_w: 0,
+            rows: vec![(40, 20), (70, 20)],
+        };
+        (layout, Size::from((300, 300)))
+    }
+
+    #[test]
+    fn menu_hit_outside() {
+        let (layout, out) = layout();
+        assert!(layout.hit(out, Point::from((50.0, 150.0))).is_none());
+        assert!(layout.hit(out, Point::from((150.0, 250.0))).is_none());
+        // Exactly on the far edge is outside (half-open rect).
+        assert!(layout.hit(out, Point::from((200.0, 150.0))).is_none());
+    }
+
+    #[test]
+    fn menu_hit_inside_but_not_a_row() {
+        let (layout, out) = layout();
+        // Padding above the first row.
+        assert_eq!(layout.hit(out, Point::from((150.0, 120.0))), Some(None));
+        // Gap between the rows (row 0 ends at local y=60, row 1 starts at 70).
+        assert_eq!(layout.hit(out, Point::from((150.0, 165.0))), Some(None));
+        // Row height, but inside the left border (rows start at x=BORDER).
+        assert_eq!(layout.hit(out, Point::from((101.0, 150.0))), Some(None));
+    }
+
+    #[test]
+    fn menu_hit_rows() {
+        let (layout, out) = layout();
+        assert_eq!(layout.hit(out, Point::from((150.0, 145.0))), Some(Some(0)));
+        assert_eq!(layout.hit(out, Point::from((150.0, 175.0))), Some(Some(1)));
+        // Rows span the full inner width, like their highlight bar.
+        assert_eq!(
+            layout.hit(out, Point::from((BORDER as f64 + 100.0, 175.0))),
+            Some(Some(1))
+        );
     }
 }

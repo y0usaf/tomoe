@@ -295,9 +295,10 @@ tomoe.ui = {}
 ---@return UiWidget?
 function tomoe.ui.confirm(opts) end
 
----Modal menu: Up/Down (or k/j) navigate, Enter fires on_select with the
----1-based index and the item text, Esc or a click fires on_cancel. Returns
----nil (and warns) when `items` is empty.
+---Modal menu: Up/Down (or k/j) or pointer hover navigate, Enter or a left
+---click on a row fires on_select with the 1-based index and the item text,
+---Esc or a click outside the menu fires on_cancel. Returns nil (and warns)
+---when `items` is empty.
 ---@param opts MenuOpts
 ---@return UiWidget?
 function tomoe.ui.menu(opts) end
