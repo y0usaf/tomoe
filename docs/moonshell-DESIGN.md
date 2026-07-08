@@ -140,12 +140,15 @@ and the daily driver.
 
 ## Roadmap
 
-- [ ] **M0 — bare core boots.** Flake + devshell; SCTK layer surface,
+- [x] **M0 — bare core boots.** Flake + devshell; SCTK layer surface,
   double-buffered shm, tiny-skia clear + one cosmic-text line; damage-only
   redraw; frame callbacks only while dirty. The no-config binary is the
   doctrine-06 artifact, wired into `nix flake check`.
   *Accept: a static bar idles under 20 MB RSS (smem) with zero wakeups
   in powertop; unplugging/replugging the output survives.*
+  *Done 2026-07-08: 6.9 MB idle RSS, 0 wakeups (ctx-switch proxy;
+  see PLAN.md), unplug/replug verified under headless sway; RSS gate
+  runs in CI as the `boot` flake check.*
 - [ ] **M1 — element vocabulary.** hbox/vbox/stack/text/spacer/separator/
   icon (SVG via resvg)/image/progress/circular-progress; flex-lite layout
   (gap, padding, grow, align); per-element damage diffing.
