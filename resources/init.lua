@@ -77,6 +77,17 @@ tomoe.settings {
   },
 }
 
+-- ─── Window rules ──────────────────────────────────────────────────────────────────────
+-- Declarative per-window policy. Matcher fields select windows (`app_id`
+-- and `title` are Lua patterns — anchor with ^$ for exact; `match` is a
+-- predicate); `apply` runs when a matching window opens; every other field
+-- is a data property the WM reads via tomoe.rules_for. The wm module
+-- honors `workspace = n`, `fullscreen = true`, and `focus = false`.
+-- tomoe.rule { app_id = "^mpv$", fullscreen = true }
+-- tomoe.rule { app_id = "firefox", workspace = 2 }
+-- tomoe.rule { title = "Picture%-in%-Picture", focus = false }
+-- tomoe.rule { app_id = "^foot$", apply = function(win) win:raise() end }
+
 -- ─── Processes ───────────────────────────────────────────────────────────────
 -- Declarative manifest, diffed by id across config reloads: `once` runs
 -- session-bootstrap tasks, `service` keeps daemons (bars, notifications)

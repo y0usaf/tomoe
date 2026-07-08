@@ -614,6 +614,99 @@ struct ReloadHooks {
     restore: RegistryKey,
 }
 
+/// Spec keys that select windows (or act on them) rather than describe them;
+/// excluded from the property table `tomoe.rules_for` merges.
+const RULE_RESERVED: [&str; 4] = ["app_id", "title", "match", "apply"];
+
+/// A `tomoe.rule` registration. Matching is mechanism (the core evaluates
+/// it); what the data properties *mean* is policy — the WM module reads them
+/// via `tomoe.rules_for` and decides.
+struct Rule {
+    /// Lua pattern matched against the window's app id (unanchored; specs
+    /// anchor with ^$ for exact matches).
+    app_id: Option<String>,
+    /// Lua pattern matched against the window's title.
+    title: Option<String>,
+    /// `match = fn(win) -> boolean`: arbitrary predicate.
+    matcher: Option<RegistryKey>,
+    /// The spec table itself; non-reserved keys are the rule's properties.
+    spec: RegistryKey,
+    /// `apply = fn(win)`: runs when a matching window opens, after the
+    /// on_window_open hooks so it can refine the WM's placement.
+    apply: Option<RegistryKey>,
+}
+
+/// Does rule `index` match window `id`? All given matchers must match; a
+/// rule with none matches every window. Borrows of `shared.rules` are kept
+/// short: matcher functions run user code that may declare further rules.
+fn rule_matches(lua: &Lua, shared: &Rc<Shared>, index: usize, id: u64) -> bool {
+    if !shared.windows.borrow().contains_key(&id) {
+        return false;
+    }
+    let (app_id_pat, title_pat, matcher) = {
+        let rules = shared.rules.borrow();
+        let Some(rule) = rules.get(index) else {
+            return false;
+        };
+        (
+            rule.app_id.clone(),
+            rule.title.clone(),
+            rule.matcher
+                .as_ref()
+                .and_then(|k| lua.registry_value::<Function>(k).ok()),
+        )
+    };
+    if app_id_pat.is_some() || title_pat.is_some() {
+        let (app_id, title) = {
+            let windows = shared.windows.borrow();
+            let Some(props) = windows.get(&id) else {
+                return false;
+            };
+            (props.app_id.clone(), props.title.clone())
+        };
+        let string_match = lua
+            .globals()
+            .get::<Table>("string")
+            .and_then(|t| t.get::<Function>("match"));
+        let string_match = match string_match {
+            Ok(func) => func,
+            Err(err) => {
+                warn!("tomoe.rule: string.match unavailable: {err}");
+                return false;
+            }
+        };
+        for (subject, pattern) in [(app_id, app_id_pat), (title, title_pat)] {
+            let Some(pattern) = pattern else { continue };
+            match string_match.call::<Value>((subject, pattern.clone())) {
+                Ok(Value::Nil) => return false,
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("tomoe.rule: pattern {pattern:?} error: {err}");
+                    return false;
+                }
+            }
+        }
+    }
+    if let Some(func) = matcher {
+        let win = LuaWindow {
+            id,
+            shared: shared.clone(),
+        };
+        match func.call::<Value>(win) {
+            Ok(value) => {
+                if matches!(value, Value::Nil | Value::Boolean(false)) {
+                    return false;
+                }
+            }
+            Err(err) => {
+                warn!("Lua rule match error: {err}");
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[derive(Default)]
 struct Shared {
     actions: RefCell<Vec<Action>>,
@@ -648,6 +741,9 @@ struct Shared {
     /// `tomoe.on_reload` persist/restore hooks, keyed by name so independent
     /// modules persist independently across config reloads.
     reload_hooks: RefCell<HashMap<String, ReloadHooks>>,
+    /// `tomoe.rule` declarations, in declaration order (later rules win when
+    /// `rules_for` merges properties).
+    rules: RefCell<Vec<Rule>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1146,6 +1242,81 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // tomoe.rule { app_id = "^mpv$", fullscreen = true } — declare a
+        // window rule: matcher fields (app_id/title Lua patterns, `match`
+        // predicate) select windows, `apply` runs when a matching window
+        // opens, every other field is a data property for the WM to read
+        // via tomoe.rules_for.
+        let s = shared.clone();
+        tomoe.set(
+            "rule",
+            lua.create_function(move |lua, spec: Table| {
+                let pattern = |field: &str| match spec.get::<Value>(field) {
+                    Ok(Value::String(p)) => Some(p.to_string_lossy()),
+                    Ok(Value::Nil) | Err(_) => None,
+                    Ok(other) => {
+                        warn!(
+                            "tomoe.rule: {field} must be a Lua pattern string, got {}",
+                            other.type_name()
+                        );
+                        None
+                    }
+                };
+                let func = |field: &str| match spec.get::<Value>(field) {
+                    Ok(Value::Function(f)) => lua.create_registry_value(f).ok(),
+                    Ok(Value::Nil) | Err(_) => None,
+                    Ok(other) => {
+                        warn!(
+                            "tomoe.rule: {field} must be a function, got {}",
+                            other.type_name()
+                        );
+                        None
+                    }
+                };
+                let rule = Rule {
+                    app_id: pattern("app_id"),
+                    title: pattern("title"),
+                    matcher: func("match"),
+                    apply: func("apply"),
+                    spec: lua.create_registry_value(spec)?,
+                };
+                s.rules.borrow_mut().push(rule);
+                Ok(())
+            })?,
+        )?;
+
+        // tomoe.rules_for(win) -> merged data-property table of every rule
+        // matching the window, later declarations winning. Matcher fields
+        // and `apply` are excluded.
+        let s = shared.clone();
+        tomoe.set(
+            "rules_for",
+            lua.create_function(move |lua, win: mlua::UserDataRef<LuaWindow>| {
+                let merged = lua.create_table()?;
+                let len = s.rules.borrow().len();
+                for i in 0..len {
+                    if !rule_matches(lua, &s, i, win.id) {
+                        continue;
+                    }
+                    let spec = {
+                        let rules = s.rules.borrow();
+                        let Some(rule) = rules.get(i) else { continue };
+                        lua.registry_value::<Table>(&rule.spec)?
+                    };
+                    for pair in spec.pairs::<Value, Value>() {
+                        let (key, value) = pair?;
+                        if let Value::String(k) = &key {
+                            if RULE_RESERVED.contains(&k.to_string_lossy().as_str()) {
+                                continue;
+                            }
+                        }
+                        merged.set(key, value)?;
+                    }
+                }
+                Ok(merged)
+            })?,
+        )?;
+
         // tomoe.focused_window() -> window | nil
         let s = shared.clone();
         tomoe.set(
@@ -1573,6 +1744,10 @@ impl LuaRuntime {
         !self.shared.hooks.borrow().window_open.is_empty()
     }
 
+    pub fn has_window_rules(&self) -> bool {
+        !self.shared.rules.borrow().is_empty()
+    }
+
     pub fn has_window_close_hooks(&self) -> bool {
         !self.shared.hooks.borrow().window_close.is_empty()
     }
@@ -1621,6 +1796,41 @@ impl LuaRuntime {
 
     pub fn emit_window_open(&mut self, id: u64) {
         self.emit_window_event(id, |hooks| &hooks.window_open, "on_window_open");
+        // Rule `apply` functions run after the hooks so they can refine
+        // whatever placement the WM just queued (later ops win).
+        self.apply_window_rules(id);
+    }
+
+    /// Run the `apply` function of every rule matching the window — the
+    /// function form of window rules. Rules are re-borrowed per iteration:
+    /// matcher/apply functions are user code and may declare further rules.
+    fn apply_window_rules(&mut self, id: u64) {
+        let len = self.shared.rules.borrow().len();
+        for i in 0..len {
+            if !rule_matches(&self.lua, &self.shared, i, id) {
+                continue;
+            }
+            let func = {
+                let rules = self.shared.rules.borrow();
+                let Some(key) = rules.get(i).and_then(|r| r.apply.as_ref()) else {
+                    continue;
+                };
+                match self.lua.registry_value::<Function>(key) {
+                    Ok(func) => func,
+                    Err(err) => {
+                        warn!("Lua rule registry error: {err}");
+                        continue;
+                    }
+                }
+            };
+            let win = LuaWindow {
+                id,
+                shared: self.shared.clone(),
+            };
+            if let Err(err) = func.call::<()>(win) {
+                warn!("Lua rule apply error: {err}");
+            }
+        }
     }
 
     pub fn emit_window_close(&mut self, id: u64) {
@@ -2179,6 +2389,71 @@ mod tests {
         // A config with no on_reload restores nothing — the replay fallback.
         let mut plain = LuaRuntime::new().unwrap();
         assert_eq!(plain.restore_reload_state(&saved), 0);
+    }
+
+    /// Rules match on app_id/title patterns and predicates; `rules_for`
+    /// merges data props (later rules win, reserved keys excluded); `apply`
+    /// functions run from emit_window_open for matching windows only.
+    #[test]
+    fn window_rules() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                tomoe.rule { app_id = "^mpv$", fullscreen = true }
+                tomoe.rule { title = "Fire", workspace = 3, focus = false }
+                tomoe.rule { app_id = "fire", workspace = 5 }
+                tomoe.rule {
+                  match = function(w) return w:app_id() == "foot" end,
+                  apply = function(w) w:set_geometry(1, 2, 300, 200) end,
+                }
+                "#,
+            )
+            .exec()
+            .unwrap();
+        assert!(rt.has_window_rules());
+
+        let props = |app_id: &str, title: &str| WinProps {
+            app_id: app_id.into(),
+            title: title.into(),
+            mapped: true,
+            ..Default::default()
+        };
+        let windows = HashMap::from([
+            (1, props("mpv", "video")),
+            (2, props("firefox", "Mozilla Firefox")),
+            (3, props("foot", "~")),
+        ]);
+        rt.sync(windows, Vec::new(), (0, 0, 1.0), (0.0, 0.0, 0.0, 0.0));
+
+        let (mpv_ok, ff_ok, foot_ok): (bool, bool, bool) = rt
+            .lua
+            .load(
+                r#"
+                local r1 = tomoe.rules_for(tomoe.window(1))
+                local r2 = tomoe.rules_for(tomoe.window(2))
+                local r3 = tomoe.rules_for(tomoe.window(3))
+                return r1.fullscreen == true and r1.workspace == nil,
+                       r2.workspace == 5 and r2.focus == false
+                         and r2.title == nil and r2.apply == nil,
+                       r3.workspace == nil and r3.fullscreen == nil
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert!(mpv_ok, "anchored app_id pattern + data prop");
+        assert!(ff_ok, "later rule wins the merge; reserved keys excluded");
+        assert!(foot_ok, "predicate rules contribute no data props here");
+
+        // apply runs only for the matching window, via emit_window_open.
+        rt.emit_window_open(1);
+        assert!(rt.take_ops().is_empty(), "mpv rule has no apply");
+        rt.emit_window_open(3);
+        let ops = rt.take_ops();
+        assert!(
+            matches!(ops.as_slice(), [WindowOp::SetGeometry(3, (1, 2, 300, 200))]),
+            "{ops:?}"
+        );
     }
 
     #[test]

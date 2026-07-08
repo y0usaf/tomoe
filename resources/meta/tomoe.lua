@@ -214,7 +214,22 @@ function tomoe.ungrab_pointer() end
 ---@param restore fun(state: any)
 function tomoe.on_reload(name, save, restore) end
 
--- ─── Processes ────────────────────────────────────────────────────────────────
+-- ─── Window rules ────────────────────────────────────────────────────────
+
+---Declare a window rule: matcher fields select windows, `apply` runs when a
+---matching window opens (after the on_window_open hooks, so it can refine
+---the WM's placement), and every other field is a data property the WM
+---reads via tomoe.rules_for. Rules accumulate in declaration order.
+---@param rule Rule
+function tomoe.rule(rule) end
+
+---Merge the data properties of every rule matching `win`, later
+---declarations winning. Matcher fields and `apply` are excluded.
+---@param win Window
+---@return table<string, any>
+function tomoe.rules_for(win) end
+
+-- ─── Processes ────────────────────────────────────────────────────────────
 
 ---Declarative process manifest, diffed by id on config reload: entries are
 ---kept, restarted, or stopped as the diff dictates.
@@ -310,6 +325,17 @@ function tomoe.ipc.broadcast(event, payload) end
 ---@field type "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"
 ---@field output string? # the output a fullscreen request targeted
 ---@field edges string? # the edge/corner a resize drags, e.g. "bottom_right"
+
+---A window rule (`tomoe.rule`). `app_id`, `title`, and `match` select
+---windows — all given must match; a rule with none matches every window.
+---Every field not listed here is a data property collected by
+---tomoe.rules_for; the default wm module honors `workspace` (integer),
+---`fullscreen` (boolean), and `focus = false`.
+---@class Rule
+---@field app_id string? # Lua pattern matched against the app id (anchor with ^$ for exact)
+---@field title string? # Lua pattern matched against the title
+---@field match (fun(win: Window): boolean)? # arbitrary predicate
+---@field apply (fun(win: Window))? # runs when a matching window opens, after on_window_open hooks
 
 ---Motion event during a tomoe.grab_pointer grab.
 ---@class GrabEvent

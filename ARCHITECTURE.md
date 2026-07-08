@@ -88,6 +88,7 @@ crate tomoe
 │   ├── enum RefreshSetting: pub
 │   ├── struct ReloadHooks: pub(self)
 │   ├── struct Resolution: pub
+│   ├── struct Rule: pub(self)
 │   ├── enum ScrollMethod: pub
 │   ├── struct Settings: pub
 │   ├── struct Shared: pub(self)

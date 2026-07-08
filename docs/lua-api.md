@@ -65,6 +65,10 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.ungrab_pointer()` — End the active grab without running its release callback.
 - `tomoe.on_reload(name, save, restore)` — Persist config state across reloads. `save` runs in the outgoing config just before the new one takes over and must return a JSON-compatible value (window handles don't survive — persist ids and look them back up with tomoe.window); `restore` runs in the new config with that value after it loads. Keyed by `name` so independent modules persist independently. When any restore hook runs, the core skips the on_window_open replay of existing windows — restored state supersedes it.
 
+## Window rules
+- `tomoe.rule(rule)` — Declare a window rule: matcher fields select windows, `apply` runs when a matching window opens (after the on_window_open hooks, so it can refine the WM's placement), and every other field is a data property the WM reads via tomoe.rules_for. Rules accumulate in declaration order.
+- `tomoe.rules_for(win) -> table<string, any>` — Merge the data properties of every rule matching `win`, later declarations winning. Matcher fields and `apply` are excluded.
+
 ## Processes
 
 Declarative process manifest, diffed by id on config reload: entries are kept, restarted, or stopped as the diff dictates.
@@ -148,6 +152,15 @@ A client asked for a state change or an interactive drag.
 - `type: "fullscreen"|"unfullscreen"|"maximize"|"unmaximize"|"minimize"|"move"|"resize"`
 - `output: string?` — the output a fullscreen request targeted
 - `edges: string?` — the edge/corner a resize drags, e.g. "bottom_right"
+
+### Rule
+
+A window rule (`tomoe.rule`). `app_id`, `title`, and `match` select windows — all given must match; a rule with none matches every window. Every field not listed here is a data property collected by tomoe.rules_for; the default wm module honors `workspace` (integer), `fullscreen` (boolean), and `focus = false`.
+
+- `app_id: string?` — Lua pattern matched against the app id (anchor with ^$ for exact)
+- `title: string?` — Lua pattern matched against the title
+- `match: (fun(win: Window): boolean)?` — arbitrary predicate
+- `apply: (fun(win: Window))?` — runs when a matching window opens, after on_window_open hooks
 
 ### GrabEvent
 
@@ -243,7 +256,7 @@ How to launch a process: `command` as an argv array or a shell string (`shell` i
 
 ## wm
 
-The default window manager: classic dwindle tiling with numbered workspaces, built entirely on the public API. Preloaded as module "wm"; requiring it installs its hooks. All fields are plain data — mutate them and call `arrange()`.
+The default window manager: classic dwindle tiling with numbered workspaces, built entirely on the public API. Preloaded as module "wm"; requiring it installs its hooks. All fields are plain data — mutate them and call `arrange()`. Honors these window-rule properties (`tomoe.rule`): `workspace = n` opens the window on workspace n, `fullscreen = true` opens it fullscreen, `focus = false` opens it without stealing focus.
 
 - `gaps: integer` — gap between windows in physical pixels (default 8)
 - `workspace_count: integer` — number of workspaces (default 9)

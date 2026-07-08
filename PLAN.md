@@ -38,7 +38,9 @@ Done and working:
   pointer grabs, world camera (`set_view`), hot reload with state
   persistence (`tomoe.on_reload(name, save, restore)`: save runs in the
   outgoing VM, values cross as JSON, restore runs in the fresh VM;
-  `on_window_open` replay is the fallback when no restore ran). NB: the
+  `on_window_open` replay is the fallback when no restore ran), window
+  rules (`tomoe.rule` matcher registry + `tomoe.rules_for` merge +
+  apply-fns at window open). NB: the
   doctrine-02 dispatch *watchdog* is still unimplemented (no mlua
   hook/instruction limit anywhere) despite earlier claims here — a hung
   hook or `tomoe.ipc.serve` handler blocks the loop
@@ -176,7 +178,16 @@ Done and working:
 - [x] Focus-follows-mouse (`settings.focus_follows_mouse`, sloppy focus,
       no restack) + `on_pointer_enter/leave` hover events, suppressed
       while any pointer grab is active
-- [ ] Window rules (`tomoe.rule { app_id = ..., ... }`)
+- [x] Window rules (`tomoe.rule { app_id = ..., ... }`) — doctrine split:
+      the core owns the matcher registry (app_id/title as Lua patterns,
+      `match` predicate; all given must match) and runs `apply` functions
+      when a matching window opens (after on_window_open hooks, so they
+      refine WM placement — also in the native fallback and the reload
+      replay); what data props *mean* stays policy — `tomoe.rules_for(win)`
+      merges them (later rules win) and wm.lua honors `workspace = n`,
+      `fullscreen = true`, `focus = false`. Per-window *core* props
+      (tearing override, border colors) still need a queued-op surface —
+      revisit with M6 eye-candy
 - [ ] Animation engine (springs + beziers on layout positions,
       AnimatedVariable-style; open/close/move/workspace-switch)
 - [ ] Rounded corners (shader element, pixel-aligned per doctrine §5)
@@ -209,7 +220,10 @@ Done and working:
       the add/remove events + device query surface remain)
 - [ ] Output reconfigure API (re-run config on hotplug, query available
       modes)
-- [ ] LuaLS `---@meta` annotation files shipped for editor DX
+- [x] LuaLS `---@meta` annotation files shipped for editor DX —
+      `resources/meta/tomoe.lua` covers the whole core API; parity +
+      golden tests in `docgen.rs` hold it (and `docs/lua-api.md`) to the
+      registered surface (`TOMOE_REGEN_DOCS=1` regenerates)
 - [ ] Layer-surface events (`on_layer_create/update/destroy`) and
       reserved-insets query (usable_area exists; insets breakdown doesn't)
 - [ ] `tomoe.ui` — retained-widget overlay API (menu/confirm/toast):
@@ -408,8 +422,9 @@ real-session xdg-desktop-portal-wlr run — the protocols it rides are in).*
      `WaitingForEstimatedVBlank` straight to `Queued` so presents follow
      the client's commit rate, not the refresh period (§5 of the ShojiWM
      doc — the frame-bunching trap). Live checks pending: `tearing
-     engaged` log + present cadence in a real game; per-window rule
-     override arrives with M4 window rules
+     engaged` log + present cadence in a real game; per-window tearing
+     override still open — M4 rules carry WM-level data only, a core
+     window-prop op is future work
 
 *Accept: laptop lid/dock cycles, lock screen, fullscreen game with direct
 scanout confirmed via drm_info; no idle redraw storms.*
@@ -472,8 +487,11 @@ scanout confirmed via drm_info; no idle redraw storms.*
    would double-track windows, so it's either/or). `tomoe.window(id)`
    looks persisted ids back up. Verified live: window moved to workspace
    2 stays there across a reload (IPC-driven wm state dump)
-4. Window rules
-5. LuaLS meta files; example configs exercising all of the above
+4. ~~Window rules~~ done — `tomoe.rule` / `tomoe.rules_for` (mechanics in
+   the Hyprland gap list above); the `screencast = ...` rule composition
+   arrives with §7
+5. ~~LuaLS meta files~~ done (parity-tested `resources/meta/tomoe.lua`);
+   example configs exercising all of the above still open
 6. `tomoe.ui` registry — retained widgets (menu/confirm/toast) + modal
    input routing generalized from `screenshot_ui`; port `hotkey_overlay`
    and `exit_confirm_dialog` onto it as builtins per doctrine 05 ("when

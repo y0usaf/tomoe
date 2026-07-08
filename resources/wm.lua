@@ -13,7 +13,9 @@
 ---The default window manager: classic dwindle tiling with numbered
 ---workspaces, built entirely on the public API. Preloaded as module "wm";
 ---requiring it installs its hooks. All fields are plain data — mutate them
----and call `arrange()`.
+---and call `arrange()`. Honors these window-rule properties (`tomoe.rule`):
+---`workspace = n` opens the window on workspace n, `fullscreen = true`
+---opens it fullscreen, `focus = false` opens it without stealing focus.
 ---@class wm
 ---@field gaps integer # gap between windows in physical pixels (default 8)
 ---@field workspace_count integer # number of workspaces (default 9)
@@ -211,14 +213,30 @@ function M.close_focused()
 end
 
 tomoe.on_window_open(function(win)
-  table.insert(M.workspaces[M.active], win)
-  if win:is_fullscreen() then
-    -- The client asked for fullscreen before mapping (mpv, games).
+  local r = tomoe.rules_for(win)
+  local target = M.active
+  if type(r.workspace) == "number" then
+    local n = math.floor(r.workspace)
+    if n >= 1 and n <= M.workspace_count then
+      target = n
+    end
+  end
+  table.insert(M.workspaces[target], win)
+  if target ~= M.active then
+    -- Ruled onto another workspace: keep it hidden, don't steal focus.
+    win:hide()
+    return
+  end
+  if r.fullscreen or win:is_fullscreen() then
+    -- A rule demands fullscreen, or the client asked for it before
+    -- mapping (mpv, games).
     M.set_fullscreen(win, true)
   else
     M.arrange()
   end
-  win:focus()
+  if r.focus ~= false then
+    win:focus()
+  end
 end)
 
 tomoe.on_window_close(function(win)

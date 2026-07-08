@@ -462,7 +462,7 @@ impl Tomoe {
         let was_in_lua = self.in_lua;
         self.in_lua = true;
         let restored = self.lua.restore_reload_state(&saved);
-        if restored == 0 && self.lua.has_window_open_hooks() {
+        if restored == 0 && (self.lua.has_window_open_hooks() || self.lua.has_window_rules()) {
             let mut ids: Vec<u64> = self.windows.keys().copied().collect();
             ids.sort_unstable();
             for id in ids {
@@ -874,6 +874,17 @@ impl Tomoe {
             }
             self.focus_window(Some(&window));
             self.queue_redraw_all();
+            // Rules work without a WM: emit_window_open with no hooks
+            // registered runs only the matching rules' `apply` functions,
+            // refining the native full-screen placement just made.
+            if self.lua.has_window_rules() {
+                self.sync_snapshot();
+                let was_in_lua = self.in_lua;
+                self.in_lua = true;
+                self.lua.emit_window_open(id);
+                self.in_lua = was_in_lua;
+                self.after_lua();
+            }
         }
         // After Lua so subscribers see the geometry policy just assigned.
         crate::ipc::notify_window_open(self, id);
