@@ -1,26 +1,28 @@
-//! The moonshell binary. With no config (there is no config yet — the
-//! runtime is M2), this maps one layer surface and draws a version
-//! string: the doctrine-06 bare-core artifact. `--boot-check` exits 0
-//! right after the first frame is committed, which is what
-//! `nix flake check` runs under a headless compositor.
+//! M2 §2 acceptance fixture: two windows (top + bottom bars) on one
+//! `Shell`, plus a calloop timer that destroys the bottom bar and then
+//! quits — proving create/destroy work from inside a source callback,
+//! the exact shape `shell.window`/timers (M2 §3–4) will use.
+//!
+//! Run under any compositor: `cargo run --example two_bars`. Exits 0
+//! by itself after ~1.5 s; watch the bottom bar disappear at 1 s.
+
+use std::time::Duration;
 
 use moonshell_render::element::{Align, Edges, Flex, Spacer, Style, Text};
 use moonshell_render::{Element, Renderer, Rgba, Scene, SceneDamage};
-use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell};
+use moonshell_surface::{Canvas, Damage, DamageRect, Edge, LayerOptions, Painter, Shell, WindowId};
 
 const BG: Rgba = Rgba::new(0x14, 0x14, 0x1e, 0xff);
 const FG: Rgba = Rgba::new(0xc8, 0xc8, 0xd8, 0xff);
 
-struct VersionBar {
+struct LabelBar {
     renderer: Renderer,
     scene: Scene,
     root: Element,
 }
 
-impl VersionBar {
-    fn new(label: String) -> Self {
-        // The bare tree: bg + padding + a centered version string —
-        // exercises the M1 element/layout/draw path with zero policy.
+impl LabelBar {
+    fn new(label: &str) -> Self {
         let root = Element::HBox(Flex {
             style: Style {
                 bg: Some(BG),
@@ -34,7 +36,7 @@ impl VersionBar {
             align: Align::Center,
             children: vec![
                 Element::Text(Text {
-                    content: label,
+                    content: label.into(),
                     size: 13.0,
                     color: FG,
                     ..Text::default()
@@ -51,7 +53,7 @@ impl VersionBar {
     }
 }
 
-impl Painter for VersionBar {
+impl Painter for LabelBar {
     fn paint(&mut self, canvas: Canvas<'_>) -> Damage {
         let Canvas {
             buf,
@@ -61,19 +63,16 @@ impl Painter for VersionBar {
             fresh,
         } = canvas;
         if fresh {
-            // No prior content on this surface at this size — the diff
-            // baseline is gone.
             self.scene.invalidate();
         }
-        let damage = self.scene.render(
+        match self.scene.render(
             &mut self.renderer,
             buf,
             width,
             height,
             scale as f32,
             &self.root,
-        );
-        match damage {
+        ) {
             SceneDamage::None => Damage::None,
             SceneDamage::Full => Damage::Full,
             SceneDamage::Rects(rects) => Damage::Rects(
@@ -99,22 +98,48 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let mut boot_check = false;
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            "--boot-check" => boot_check = true,
-            "--version" | "-V" => {
-                println!("moonshell {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            other => anyhow::bail!("unknown argument: {other} (try --version, --boot-check)"),
-        }
-    }
-
     let (mut shell, event_loop) = Shell::connect()?;
-    shell.exit_after_first_draw = boot_check;
-    let painter = VersionBar::new(format!("moonshell {}", env!("CARGO_PKG_VERSION")));
-    shell.create_window(LayerOptions::bar(Edge::Top, 32, true), Box::new(painter));
+    let _top = shell.create_window(
+        LayerOptions::bar(Edge::Top, 28, true),
+        Box::new(LabelBar::new("two_bars: top (stays until quit)")),
+    );
+    let bottom: WindowId = shell.create_window(
+        LayerOptions {
+            namespace: "moonshell-two-bars-bottom".into(),
+            ..LayerOptions::bar(Edge::Bottom, 28, true)
+        },
+        Box::new(LabelBar::new("two_bars: bottom (dies at 1s)")),
+    );
+
+    // Destroy the bottom bar from inside a source callback, then quit
+    // half a second later — the §3/§4 access pattern.
+    event_loop
+        .handle()
+        .insert_source(
+            calloop::timer::Timer::from_duration(Duration::from_secs(1)),
+            move |_, _, shell: &mut Shell| {
+                assert!(shell.destroy_window(bottom), "bottom bar already gone?");
+                assert!(
+                    !shell.destroy_window(bottom),
+                    "double destroy must return false"
+                );
+                tracing::info!("bottom bar destroyed");
+                calloop::timer::TimeoutAction::Drop
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("insert timer: {e}"))?;
+    event_loop
+        .handle()
+        .insert_source(
+            calloop::timer::Timer::from_duration(Duration::from_millis(1500)),
+            |_, _, shell: &mut Shell| {
+                tracing::info!("quitting");
+                shell.quit();
+                calloop::timer::TimeoutAction::Drop
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("insert timer: {e}"))?;
+
     shell.run(event_loop)?;
     Ok(())
 }
