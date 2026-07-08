@@ -75,6 +75,21 @@ pub enum SurfaceError {
     LoopSource(String),
 }
 
+/// A connected output, in logical (compositor) coordinates. What
+/// `shell.displays()` ultimately reports; populated by the two
+/// roundtrips in [`Shell::connect`] and updated as outputs come and go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayInfo {
+    /// Output name (`DP-1`, `eDP-1`, …); empty if the compositor
+    /// predates wl_output v4 name events.
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub scale: i32,
+}
+
 /// A damaged region in buffer (physical) pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct DamageRect {
@@ -313,29 +328,36 @@ impl Shell {
         // Grows on demand; sized for nothing in particular.
         let pool = SlotPool::new(4096, &shm)?;
 
+        let mut shell = Self {
+            conn: conn.clone(),
+            qh: qh.clone(),
+            registry_state: RegistryState::new(&globals),
+            seat_state: SeatState::new(&globals, &qh),
+            output_state: OutputState::new(&globals, &qh),
+            compositor,
+            layer_shell,
+            shm,
+            pool,
+            windows: BTreeMap::new(),
+            next_id: 0,
+            exit_after_first_draw: false,
+            exit: false,
+        };
+
+        // Two roundtrips before the queue moves into calloop: the first
+        // delivers the output objects bound at init, the second their
+        // geometry/mode/done bursts — so `displays()` is already
+        // populated when the caller executes its config.
+        let mut event_queue = event_queue;
+        event_queue.roundtrip(&mut shell)?;
+        event_queue.roundtrip(&mut shell)?;
+
         let event_loop: calloop::EventLoop<Shell> = calloop::EventLoop::try_new()?;
-        calloop_wayland_source::WaylandSource::new(conn.clone(), event_queue)
+        calloop_wayland_source::WaylandSource::new(conn, event_queue)
             .insert(event_loop.handle())
             .map_err(|e| SurfaceError::LoopSource(e.to_string()))?;
 
-        Ok((
-            Self {
-                conn,
-                qh: qh.clone(),
-                registry_state: RegistryState::new(&globals),
-                seat_state: SeatState::new(&globals, &qh),
-                output_state: OutputState::new(&globals, &qh),
-                compositor,
-                layer_shell,
-                shm,
-                pool,
-                windows: BTreeMap::new(),
-                next_id: 0,
-                exit_after_first_draw: false,
-                exit: false,
-            },
-            event_loop,
-        ))
+        Ok((shell, event_loop))
     }
 
     /// Create and map a window. Usable before `run` and from inside
@@ -381,6 +403,37 @@ impl Shell {
         self.windows.len()
     }
 
+    /// Every connected output, logical coordinates. Prefers the
+    /// xdg-output logical position/size; falls back to the current
+    /// mode divided by the integer scale.
+    pub fn displays(&self) -> Vec<DisplayInfo> {
+        self.output_state
+            .outputs()
+            .filter_map(|output| {
+                let info = self.output_state.info(&output)?;
+                let (x, y) = info.logical_position.unwrap_or(info.location);
+                let (width, height) = info
+                    .logical_size
+                    .or_else(|| {
+                        let s = info.scale_factor.max(1);
+                        info.modes
+                            .iter()
+                            .find(|m| m.current)
+                            .map(|m| (m.dimensions.0 / s, m.dimensions.1 / s))
+                    })
+                    .unwrap_or((0, 0));
+                Some(DisplayInfo {
+                    name: info.name.unwrap_or_default(),
+                    x,
+                    y,
+                    width,
+                    height,
+                    scale: info.scale_factor,
+                })
+            })
+            .collect()
+    }
+
     /// Dispatch events and repaint dirty windows until [`Shell::quit`]
     /// (or, with [`Shell::exit_after_first_draw`], until every window
     /// has committed once).
@@ -396,8 +449,10 @@ impl Shell {
         mut event_loop: calloop::EventLoop<'static, Shell>,
         mut tick: impl FnMut(&mut Shell),
     ) -> Result<(), SurfaceError> {
+        // tick/redraw/exit-check *before* dispatch: a quit requested
+        // ahead of the loop (config called `shell.quit()`) must return
+        // without blocking on an event that may never come.
         loop {
-            event_loop.dispatch(None, &mut self)?;
             tick(&mut self);
             self.redraw_windows()?;
             self.conn.flush().map_err(DispatchError::from)?;
@@ -407,6 +462,7 @@ impl Shell {
             if self.exit || booted {
                 return Ok(());
             }
+            event_loop.dispatch(None, &mut self)?;
         }
     }
 
