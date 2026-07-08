@@ -11,6 +11,7 @@ use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 
 use crate::state::Tomoe;
+use crate::ui::widgets::{UiEvent, WidgetKind};
 
 /// A dispatchable compositor action. Lua binds queue these; built-in binds
 /// carry them directly.
@@ -36,6 +37,9 @@ pub enum Action {
     LuaFn(usize),
     /// Switch virtual terminal (TTY backend; Ctrl+Alt+F1..F12).
     ChangeVt(i32),
+    /// A retained widget fired an event (internal: dispatched by the modal
+    /// input routing, not bindable from config).
+    UiEvent(u64, UiEvent),
 }
 
 impl Action {
@@ -143,6 +147,68 @@ pub fn parse_combo(combo: &str, mod_key: ModKey) -> Result<(Mods, Keysym)> {
 }
 
 impl Tomoe {
+    /// Route a key to the topmost modal widget (`tomoe.ui` confirm/menu,
+    /// including the builtin exit dialog). Returns None when no modal widget
+    /// is open (normal key handling proceeds); Some(action) means the key is
+    /// swallowed, optionally dispatching a widget event.
+    fn modal_widget_key(&mut self, pressed: bool, raw_syms: &[Keysym]) -> Option<Option<Action>> {
+        let mut redraw = false;
+        let result = {
+            let entry = self.ui.widgets.top_modal_mut()?;
+            if !pressed {
+                // Releases are swallowed too: the widget is modal.
+                Some(None)
+            } else {
+                let id = entry.id;
+                let enter =
+                    raw_syms.contains(&Keysym::Return) || raw_syms.contains(&Keysym::KP_Enter);
+                let escape = raw_syms.contains(&Keysym::Escape);
+                match &mut entry.kind {
+                    // Enter confirms, everything else dismisses.
+                    WidgetKind::Confirm { .. } => {
+                        let event = if enter {
+                            UiEvent::Confirm
+                        } else {
+                            UiEvent::Cancel
+                        };
+                        Some(Some(Action::UiEvent(id, event)))
+                    }
+                    WidgetKind::Menu {
+                        items, selected, ..
+                    } => {
+                        if enter && !items.is_empty() {
+                            Some(Some(Action::UiEvent(id, UiEvent::Select(*selected))))
+                        } else if escape {
+                            Some(Some(Action::UiEvent(id, UiEvent::Cancel)))
+                        } else {
+                            let up =
+                                raw_syms.contains(&Keysym::Up) || raw_syms.contains(&Keysym::k);
+                            let down =
+                                raw_syms.contains(&Keysym::Down) || raw_syms.contains(&Keysym::j);
+                            let len = items.len();
+                            if len > 0 && (up || down) {
+                                *selected = if up {
+                                    (*selected + len - 1) % len
+                                } else {
+                                    (*selected + 1) % len
+                                };
+                                entry.invalidate();
+                                redraw = true;
+                            }
+                            Some(None)
+                        }
+                    }
+                    // Non-modal kinds never reach here (top_modal_mut).
+                    _ => Some(None),
+                }
+            }
+        };
+        if redraw {
+            self.queue_redraw_all();
+        }
+        result
+    }
+
     /// (alt, ctrl, shift, super) — for pointer event hooks.
     fn current_mods(&self) -> (bool, bool, bool, bool) {
         self.seat
@@ -330,12 +396,11 @@ impl Tomoe {
                     return;
                 };
                 let pressed = key_state == KeyState::Pressed;
-                // Transient UI is dismissed by any key press, but only if it
-                // was already up before this event, so the opening bind
-                // itself doesn't immediately close it (and re-pressing the
-                // bind toggles it away).
-                let exit_dialog_was_open = self.ui.exit_dialog.is_open();
-                let hotkey_overlay_was_open = self.ui.hotkey_overlay.is_open();
+                // Transient widgets (sheets) are dismissed by any key press,
+                // but only if they were already up before this event, so the
+                // opening bind itself doesn't immediately close them (and
+                // re-pressing the bind toggles them away via do_action).
+                let dismissable_was_open = self.ui.widgets.dismissable_ids();
                 // Intercept(None) swallows a key without dispatching an action.
                 let action = keyboard.input::<Option<Action>, _>(
                     self,
@@ -386,16 +451,10 @@ impl Tomoe {
                             }
                             return FilterResult::Intercept(None);
                         }
-                        // The exit dialog is modal: while open, no key
-                        // reaches clients. Enter confirms, the rest dismiss.
-                        if tomoe.ui.exit_dialog.is_open() {
-                            if pressed
-                                && (raw_syms.contains(&Keysym::Return)
-                                    || raw_syms.contains(&Keysym::KP_Enter))
-                            {
-                                return FilterResult::Intercept(Some(Action::ConfirmQuit));
-                            }
-                            return FilterResult::Intercept(None);
+                        // Modal widgets (confirm/menu, incl. the exit
+                        // dialog): while one is open, no key reaches clients.
+                        if let Some(action) = tomoe.modal_widget_key(pressed, &raw_syms) {
+                            return FilterResult::Intercept(action);
                         }
                         if pressed {
                             for bind in &tomoe.binds {
@@ -410,13 +469,14 @@ impl Tomoe {
                 if let Some(Some(action)) = action {
                     self.do_action(action);
                 }
-                if pressed && exit_dialog_was_open && self.ui.exit_dialog.is_open() {
-                    self.ui.exit_dialog.hide();
-                    self.queue_redraw_all();
-                }
-                if pressed && hotkey_overlay_was_open && self.ui.hotkey_overlay.is_open() {
-                    self.ui.hotkey_overlay.hide();
-                    self.queue_redraw_all();
+                if pressed {
+                    let mut dismissed = false;
+                    for id in dismissable_was_open {
+                        dismissed |= self.close_widget(id);
+                    }
+                    if dismissed {
+                        self.queue_redraw_all();
+                    }
                 }
             }
             InputEvent::PointerMotion { event } => {
@@ -530,15 +590,11 @@ impl Tomoe {
                 let button = event.button_code();
                 let pressed = event.state() == ButtonState::Pressed;
                 if pressed {
-                    // Clicks dismiss transient UI, like any key press.
+                    // Clicks dismiss transient widgets (sheets), like any
+                    // key press.
                     let mut ui_dismissed = false;
-                    if self.ui.exit_dialog.is_open() {
-                        self.ui.exit_dialog.hide();
-                        ui_dismissed = true;
-                    }
-                    if self.ui.hotkey_overlay.is_open() {
-                        self.ui.hotkey_overlay.hide();
-                        ui_dismissed = true;
+                    for id in self.ui.widgets.dismissable_ids() {
+                        ui_dismissed |= self.close_widget(id);
                     }
                     if ui_dismissed {
                         self.queue_redraw_all();
@@ -558,6 +614,17 @@ impl Tomoe {
                             self.ui.screenshot.end_drag();
                         }
                         self.queue_redraw_all();
+                    }
+                    return;
+                }
+
+                // Modal widgets swallow clicks entirely; a press cancels the
+                // topmost one. The matching release is swallowed via
+                // consumed_buttons if the widget closed before it arrived.
+                if let Some(id) = self.ui.widgets.top_modal_id() {
+                    if pressed {
+                        self.consumed_buttons.insert(button);
+                        self.do_action(Action::UiEvent(id, UiEvent::Cancel));
                     }
                     return;
                 }

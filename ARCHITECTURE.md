@@ -93,6 +93,9 @@ crate tomoe
 │   ├── struct Settings: pub
 │   ├── struct Shared: pub(self)
 │   ├── enum SizeSetting: pub
+│   ├── struct UiCallbacks: pub(self)
+│   ├── struct UiHandle: pub(self)
+│   ├── enum UiOp: pub
 │   ├── struct WinProps: pub
 │   └── enum WindowOp: pub
 ├── mod process: pub(crate)
@@ -134,20 +137,22 @@ crate tomoe
 │       └── type TouchFocus: pub(self)
 ├── mod ui: pub(crate)
 │   ├── struct Ui: pub
-│   ├── mod config_error_notification: pub(self)
-│   │   └── struct ConfigErrorNotification: pub
-│   ├── mod exit_confirm_dialog: pub(self)
-│   │   └── struct ExitConfirmDialog: pub
-│   ├── mod hotkey_overlay: pub(self)
-│   │   └── struct HotkeyOverlay: pub
 │   ├── mod screenshot_ui: pub(self)
 │   │   ├── struct ScreenshotUi: pub
 │   │   └── enum State: pub(self)
-│   └── mod text: pub
-│       ├── struct Canvas: pub
-│       ├── enum Face: pub
-│       ├── struct Fonts: pub
-│       └── struct Span: pub
+│   ├── mod text: pub
+│   │   ├── struct Canvas: pub
+│   │   ├── enum Face: pub
+│   │   ├── struct Fonts: pub
+│   │   └── struct Span: pub
+│   └── mod widgets: pub
+│       ├── enum Tag: pub
+│       ├── enum UiEvent: pub
+│       ├── struct WidgetEntry: pub
+│       ├── enum WidgetHandler: pub
+│       ├── enum WidgetKind: pub
+│       ├── enum WidgetSpec: pub
+│       └── struct Widgets: pub
 └── mod xwayland: pub(crate)
     ├── struct Satellite: pub
     ├── enum ToMain: pub(self)

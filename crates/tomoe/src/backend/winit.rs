@@ -159,7 +159,6 @@ pub fn redraw(tomoe: &mut Tomoe) {
         space,
         start_time,
         ui,
-        binds,
         lua,
         border_buffers,
         clock,
@@ -189,8 +188,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
             output_loc,
         );
         // Compositor UI (dialogs/overlays) first: earlier elements render on top.
-        let ui_elements =
-            ui.render_elements(winit.backend.renderer(), &output, output_size, binds, true);
+        let ui_elements = ui.render_elements(winit.backend.renderer(), &output, output_size, true);
         crate::render::scene_elements(
             winit.backend.renderer(),
             space,

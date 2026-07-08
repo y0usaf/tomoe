@@ -59,10 +59,13 @@ Done and working:
   pushed to the activation environment
 - Dogfood WMs: `wm.lua` (9 workspaces, dwindle, focus cycling),
   `zoomer.lua` (pan/zoom canvas, planes, drag move/resize)
-- Compositor UI: hotkey overlay, exit confirm, config-error banner,
-  screenshot UI; xcursor themes; no-hooks full-screen fallback — four
-  hand-wired units in `ui/`, which is doctrine-05 debt: past the
-  third unit the registry is due (paid down by M4's `tomoe.ui`)
+- Compositor UI: `tomoe.ui` retained-widget registry (doctrine 05) —
+  `confirm`/`menu`/`toast`/`sheet` widgets, core-rendered and
+  core-routed (modal keyboard routing, sheet dismissal, toast expiry);
+  only selection events re-enter Lua. Hotkey overlay, exit confirm, and
+  config-error banner are builtins on the same registry; screenshot UI
+  stays native (declared exemption until the API grows drag regions);
+  xcursor themes; no-hooks full-screen fallback
 - Session lock (ext-session-lock-v1, swaylock incl. crashed-locker
   fallback) and idle (ext-idle-notify + zwp-idle-inhibit, swayidle) —
   `lock.rs` + idle plumbing in `state.rs`
@@ -226,12 +229,15 @@ Done and working:
       registered surface (`TOMOE_REGEN_DOCS=1` regenerates)
 - [ ] Layer-surface events (`on_layer_create/update/destroy`) and
       reserved-insets query (usable_area exists; insets breakdown doesn't)
-- [ ] `tomoe.ui` — retained-widget overlay API (menu/confirm/toast):
-      Lua declares the widget once, core renders and damages it; only
-      selection events re-enter Lua (no per-frame Lua draw — keeps the
-      doctrine-02 watchdog meaningful and fits render-on-damage). Modal
-      input routing generalized from `screenshot_ui`. Registry per
-      doctrine 05 — four hand-wired units already exist in `ui/`
+- [x] `tomoe.ui` — retained-widget overlay API (menu/confirm/toast/
+      sheet): Lua declares the widget once (`ui/widgets.rs` registry),
+      the core renders and damages it; only selection events re-enter
+      Lua (as `Action::UiEvent` through `do_action`). Modal input
+      routing generalized in `input.rs` (topmost modal owns the
+      keyboard and swallows clicks; sheets dismiss on any input; toasts
+      expire via a scheduled repaint). Exit dialog, hotkey overlay, and
+      config-error banner ported as builtins (doctrine 05); screenshot
+      UI stays native as the declared exemption
 - [ ] Portal source policy through the extension API:
       `tomoe.on_screencast_request` (snapshot in: app_id, requested
       types, candidate outputs/windows; actions out: resolve/deny/defer)
@@ -492,14 +498,22 @@ scanout confirmed via drm_info; no idle redraw storms.*
    arrives with §7
 5. ~~LuaLS meta files~~ done (parity-tested `resources/meta/tomoe.lua`);
    example configs exercising all of the above still open
-6. `tomoe.ui` registry — retained widgets (menu/confirm/toast) + modal
-   input routing generalized from `screenshot_ui`; port `hotkey_overlay`
-   and `exit_confirm_dialog` onto it as builtins per doctrine 05 ("when
-   the third arrives, build it — and port the first two");
-   `screenshot_ui` stays native as a declared exemption until the API
-   grows drag-region interaction. Independent of the IPC work — can land
-   any time, and immediately pays for itself beyond the portal (alt-tab
-   switcher, workspace OSD, launcher)
+6. ~~`tomoe.ui` registry~~ done — retained widgets (`confirm`, `menu`,
+   `toast`, `sheet`) on `ui/widgets.rs`, IDs session-unique so builtins
+   survive reloads. Contract: constructors return a handle (`:close()`),
+   callbacks live in the VM keyed by widget id, widgets close silently
+   on config reload (Lua-owned only) and session lock; menu selection
+   passes (1-based index, item). Builtins ported per doctrine 05: exit
+   dialog = Confirm + `Action::ConfirmQuit` handler, hotkey overlay =
+   Sheet built from binds at open (re-press toggles), config-error
+   banner = urgent Toast; `screenshot_ui` stays native as the declared
+   exemption until the API grows drag-region interaction. Still open
+   here: pointer interaction inside menus (hover/click selection) —
+   keyboard-only for now, a click cancels. Verified live on winit
+   (toast/menu/confirm/sheet via IPC, handle close, builtin toggle);
+   menu *keyboard selection* end-to-end (Enter → on_select → broadcast)
+   still needs a hands-on check — the routing ships untested by real
+   input
 7. Portal source policy over IPC: `tomoe.on_screencast_request` — the
    backend becomes a thin IPC client (asks the compositor on
    SelectSources, bounded by a timeout), the hook gets a snapshot

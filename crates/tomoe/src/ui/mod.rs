@@ -1,23 +1,19 @@
 //! Compositor-drawn UI: modal dialogs and transient overlays, rendered as
 //! memory-buffer elements above all client content (no Wayland protocol
-//! involved).
+//! involved). Everything but the screenshot overlay lives in the retained
+//! widget registry (`widgets.rs`, the `tomoe.ui` surface).
 
-mod config_error_notification;
-mod exit_confirm_dialog;
-mod hotkey_overlay;
 mod screenshot_ui;
 pub mod text;
+pub mod widgets;
 
 use smithay::output::Output;
 use smithay::utils::{Physical, Size};
 use tracing::warn;
 
-pub use config_error_notification::ConfigErrorNotification;
-pub use exit_confirm_dialog::ExitConfirmDialog;
-pub use hotkey_overlay::HotkeyOverlay;
 pub use screenshot_ui::ScreenshotUi;
+pub use widgets::Widgets;
 
-use crate::input::Bind;
 use crate::render::{OutputRenderElements, TomoeRenderer};
 use text::Fonts;
 
@@ -32,9 +28,7 @@ pub const BACKDROP: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
 pub struct Ui {
     /// None if no usable font was found; UI elements are skipped.
     fonts: Option<Fonts>,
-    pub exit_dialog: ExitConfirmDialog,
-    pub hotkey_overlay: HotkeyOverlay,
-    pub config_error: ConfigErrorNotification,
+    pub widgets: Widgets,
     pub screenshot: ScreenshotUi,
 }
 
@@ -49,9 +43,7 @@ impl Ui {
         };
         Self {
             fonts,
-            exit_dialog: ExitConfirmDialog::new(),
-            hotkey_overlay: HotkeyOverlay::new(),
-            config_error: ConfigErrorNotification::new(),
+            widgets: Widgets::default(),
             screenshot: ScreenshotUi::new(),
         }
     }
@@ -66,7 +58,6 @@ impl Ui {
         renderer: &mut R,
         output: &Output,
         output_size: Size<i32, Physical>,
-        binds: &[Bind],
         include_screenshot_ui: bool,
     ) -> Vec<OutputRenderElements<R>> {
         let mut elements = Vec::new();
@@ -84,12 +75,8 @@ impl Ui {
         let Some(fonts) = &self.fonts else {
             return elements;
         };
-        self.exit_dialog
+        self.widgets
             .render_elements(fonts, renderer, output_size, &mut elements);
-        self.config_error
-            .render_elements(fonts, renderer, output_size, &mut elements);
-        self.hotkey_overlay
-            .render_elements(fonts, renderer, output_size, binds, &mut elements);
         elements
     }
 }

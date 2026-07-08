@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 use crate::input::Action;
 use crate::process::{Launch, ProcessDecl, ProcessSpec, ReloadPolicy, RestartPolicy, RunPolicy};
+use crate::ui::widgets::{self, UiEvent, WidgetSpec};
 
 const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
@@ -542,6 +543,15 @@ pub enum WindowOp {
     SetView(i32, i32, f64),
 }
 
+/// A queued `tomoe.ui` operation. Widget ids are allocated at call time
+/// (`widgets::alloc_id`) so the handle returns synchronously; the core
+/// creates/removes the retained widget when the Lua entry returns.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiOp {
+    Open { id: u64, spec: WidgetSpec },
+    Close(u64),
+}
+
 /// Data for a pointer button event handed to `on_pointer_button` hooks.
 pub struct PointerButtonData {
     pub button: u32,
@@ -612,6 +622,16 @@ struct PointerGrab {
 struct ReloadHooks {
     save: RegistryKey,
     restore: RegistryKey,
+}
+
+/// Callbacks of a `tomoe.ui` widget, keyed by widget id. They live in the
+/// VM (never in core state), so a config reload naturally invalidates them
+/// — the core closes Lua-owned widgets when the VM is swapped.
+#[derive(Default)]
+struct UiCallbacks {
+    confirm: Option<RegistryKey>,
+    cancel: Option<RegistryKey>,
+    select: Option<RegistryKey>,
 }
 
 /// Spec keys that select windows (or act on them) rather than describe them;
@@ -744,6 +764,10 @@ struct Shared {
     /// `tomoe.rule` declarations, in declaration order (later rules win when
     /// `rules_for` merges properties).
     rules: RefCell<Vec<Rule>>,
+    /// Queued `tomoe.ui` widget declarations, drained like ops.
+    ui_ops: RefCell<Vec<UiOp>>,
+    /// Widget callbacks by id (see [`UiCallbacks`]).
+    ui_callbacks: RefCell<HashMap<u64, UiCallbacks>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -826,6 +850,27 @@ impl UserData for LuaWindow {
         });
         methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
             Ok(format!("Window({}, {:?})", this.id, this.props().app_id))
+        });
+    }
+}
+
+// ─── UI-widget userdata ───────────────────────────────────────────────────────────────
+
+/// Handle returned by `tomoe.ui.*` constructors.
+#[derive(Clone)]
+struct UiHandle {
+    id: u64,
+    shared: Rc<Shared>,
+}
+
+impl UserData for UiHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("close", |_, this, ()| {
+            this.shared.ui_ops.borrow_mut().push(UiOp::Close(this.id));
+            Ok(())
+        });
+        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
+            Ok(format!("UiWidget({})", this.id))
         });
     }
 }
@@ -1191,6 +1236,159 @@ impl LuaRuntime {
         )?;
 
         tomoe.set("ipc", ipc)?;
+
+        // tomoe.ui — compositor-drawn retained widgets. Lua declares the
+        // widget once; the core renders, damages, and routes input to it,
+        // and only selection events re-enter Lua. The exit dialog, hotkey
+        // overlay, and config-error banner are builtins on this registry.
+        let ui = lua.create_table()?;
+
+        /// Optional callback field from a widget spec table.
+        fn callback(lua: &Lua, spec: &Table, field: &str, label: &str) -> Option<RegistryKey> {
+            match spec.get::<Value>(field) {
+                Ok(Value::Function(f)) => lua.create_registry_value(f).ok(),
+                Ok(Value::Nil) | Err(_) => None,
+                Ok(other) => {
+                    warn!(
+                        "{label}: {field} must be a function, got {}",
+                        other.type_name()
+                    );
+                    None
+                }
+            }
+        }
+
+        // tomoe.ui.confirm { text, on_confirm, on_cancel } -> UiWidget
+        let s = shared.clone();
+        ui.set(
+            "confirm",
+            lua.create_function(move |lua, spec: Table| {
+                let text = spec.get::<String>("text").unwrap_or_default();
+                if text.is_empty() {
+                    warn!("tomoe.ui.confirm: missing text");
+                    return Ok(None);
+                }
+                let id = widgets::alloc_id();
+                s.ui_callbacks.borrow_mut().insert(
+                    id,
+                    UiCallbacks {
+                        confirm: callback(lua, &spec, "on_confirm", "tomoe.ui.confirm"),
+                        cancel: callback(lua, &spec, "on_cancel", "tomoe.ui.confirm"),
+                        select: None,
+                    },
+                );
+                s.ui_ops.borrow_mut().push(UiOp::Open {
+                    id,
+                    spec: WidgetSpec::Confirm { text },
+                });
+                Ok(Some(UiHandle {
+                    id,
+                    shared: s.clone(),
+                }))
+            })?,
+        )?;
+
+        // tomoe.ui.menu { title?, items, on_select, on_cancel } -> UiWidget
+        let s = shared.clone();
+        ui.set(
+            "menu",
+            lua.create_function(move |lua, spec: Table| {
+                let items: Vec<String> = spec.get("items").unwrap_or_default();
+                if items.is_empty() {
+                    warn!("tomoe.ui.menu: needs at least one item");
+                    return Ok(None);
+                }
+                let title = spec.get::<Option<String>>("title").unwrap_or_default();
+                let id = widgets::alloc_id();
+                s.ui_callbacks.borrow_mut().insert(
+                    id,
+                    UiCallbacks {
+                        confirm: None,
+                        cancel: callback(lua, &spec, "on_cancel", "tomoe.ui.menu"),
+                        select: callback(lua, &spec, "on_select", "tomoe.ui.menu"),
+                    },
+                );
+                s.ui_ops.borrow_mut().push(UiOp::Open {
+                    id,
+                    spec: WidgetSpec::Menu { title, items },
+                });
+                Ok(Some(UiHandle {
+                    id,
+                    shared: s.clone(),
+                }))
+            })?,
+        )?;
+
+        // tomoe.ui.toast { text, duration?, urgent? } -> UiWidget
+        let s = shared.clone();
+        ui.set(
+            "toast",
+            lua.create_function(move |_, spec: Table| {
+                let text = spec.get::<String>("text").unwrap_or_default();
+                if text.is_empty() {
+                    warn!("tomoe.ui.toast: missing text");
+                    return Ok(None);
+                }
+                let duration = spec
+                    .get::<Option<f64>>("duration")
+                    .unwrap_or_default()
+                    .filter(|d| d.is_finite() && *d > 0.0)
+                    .unwrap_or(4.0);
+                let urgent = spec
+                    .get::<Option<bool>>("urgent")
+                    .unwrap_or_default()
+                    .unwrap_or(false);
+                let id = widgets::alloc_id();
+                s.ui_ops.borrow_mut().push(UiOp::Open {
+                    id,
+                    spec: WidgetSpec::Toast {
+                        text,
+                        duration: std::time::Duration::from_secs_f64(duration),
+                        urgent,
+                    },
+                });
+                Ok(Some(UiHandle {
+                    id,
+                    shared: s.clone(),
+                }))
+            })?,
+        )?;
+
+        // tomoe.ui.sheet { title?, rows = { {"Mod+Q", "Quit"}, ... } }
+        let s = shared.clone();
+        ui.set(
+            "sheet",
+            lua.create_function(move |_, spec: Table| {
+                let mut rows = Vec::new();
+                if let Ok(list) = spec.get::<Table>("rows") {
+                    for pair in list.sequence_values::<Table>() {
+                        let Ok(row) = pair else {
+                            warn!("tomoe.ui.sheet: rows must be {{ {{key, label}}, ... }}");
+                            continue;
+                        };
+                        let key: String = row.get(1).unwrap_or_default();
+                        let label: String = row.get(2).unwrap_or_default();
+                        rows.push((key, label));
+                    }
+                }
+                if rows.is_empty() {
+                    warn!("tomoe.ui.sheet: needs at least one row");
+                    return Ok(None);
+                }
+                let title = spec.get::<Option<String>>("title").unwrap_or_default();
+                let id = widgets::alloc_id();
+                s.ui_ops.borrow_mut().push(UiOp::Open {
+                    id,
+                    spec: WidgetSpec::Sheet { title, rows },
+                });
+                Ok(Some(UiHandle {
+                    id,
+                    shared: s.clone(),
+                }))
+            })?,
+        )?;
+
+        tomoe.set("ui", ui)?;
 
         // tomoe.clear_focus() — drop keyboard focus (no window receives keys)
         let s = shared.clone();
@@ -1591,6 +1789,41 @@ impl LuaRuntime {
 
     pub fn take_ops(&mut self) -> Vec<WindowOp> {
         self.shared.ops.take()
+    }
+
+    pub fn take_ui_ops(&mut self) -> Vec<UiOp> {
+        std::mem::take(&mut *self.shared.ui_ops.borrow_mut())
+    }
+
+    /// Drop a closed widget's callbacks without firing them.
+    pub fn drop_ui_callbacks(&self, id: u64) {
+        self.shared.ui_callbacks.borrow_mut().remove(&id);
+    }
+
+    /// Fire a widget's callback for `event` and drop its callbacks (widgets
+    /// close when they fire). Menu selections pass (1-based index, item).
+    pub fn emit_ui_event(&mut self, id: u64, event: UiEvent, item: Option<String>) {
+        let Some(callbacks) = self.shared.ui_callbacks.borrow_mut().remove(&id) else {
+            return;
+        };
+        let key = match event {
+            UiEvent::Confirm => callbacks.confirm,
+            UiEvent::Cancel => callbacks.cancel,
+            UiEvent::Select(_) => callbacks.select,
+        };
+        let Some(key) = key else { return };
+        match self.lua.registry_value::<Function>(&key) {
+            Ok(func) => {
+                let result = match event {
+                    UiEvent::Select(i) => func.call::<()>((i + 1, item)),
+                    _ => func.call::<()>(()),
+                };
+                if let Err(err) = result {
+                    warn!("Lua ui-widget callback error: {err}");
+                }
+            }
+            Err(err) => warn!("Lua ui-widget registry error: {err}"),
+        }
     }
 
     pub fn take_spawns(&mut self) -> Vec<ProcessSpec> {
@@ -2124,6 +2357,61 @@ pub fn resolve_config_path(cli: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_widget_ops_queue() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                local m = tomoe.ui.menu {
+                    title = "t",
+                    items = { "a", "b" },
+                    on_select = function() end,
+                }
+                m:close()
+                assert(tomoe.ui.menu { items = {} } == nil)
+                assert(tomoe.ui.confirm { text = "sure?" })
+                assert(tomoe.ui.toast { text = "hi", duration = 2 })
+                assert(tomoe.ui.sheet { rows = { { "Mod+Q", "Quit" } } })
+                "#,
+            )
+            .exec()
+            .unwrap();
+        let ops = rt.take_ui_ops();
+        assert_eq!(ops.len(), 5);
+        let UiOp::Open { id, spec } = &ops[0] else {
+            panic!("expected Open, got {:?}", ops[0]);
+        };
+        assert_eq!(
+            *spec,
+            WidgetSpec::Menu {
+                title: Some("t".into()),
+                items: vec!["a".into(), "b".into()],
+            }
+        );
+        assert_eq!(ops[1], UiOp::Close(*id));
+        assert!(matches!(
+            &ops[2],
+            UiOp::Open { spec: WidgetSpec::Confirm { text }, .. } if text == "sure?"
+        ));
+        assert!(matches!(
+            &ops[3],
+            UiOp::Open {
+                spec: WidgetSpec::Toast { duration, urgent: false, .. },
+                ..
+            } if *duration == std::time::Duration::from_secs(2)
+        ));
+        assert!(matches!(
+            &ops[4],
+            UiOp::Open { spec: WidgetSpec::Sheet { rows, .. }, .. } if rows.len() == 1
+        ));
+        // The menu's callbacks are registered; the closed... entry keeps them
+        // until the core applies the Close op and drops them.
+        assert!(rt.shared.ui_callbacks.borrow().contains_key(id));
+        rt.drop_ui_callbacks(*id);
+        assert!(!rt.shared.ui_callbacks.borrow().contains_key(id));
+    }
 
     #[test]
     fn hover_api_registers() {

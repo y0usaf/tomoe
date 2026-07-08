@@ -168,8 +168,11 @@ impl Tomoe {
     /// the session bleeds into (or fights) the locked scene.
     fn begin_locked_session(&mut self) {
         self.ui.screenshot.close();
-        self.ui.exit_dialog.hide();
-        self.ui.hotkey_overlay.hide();
+        // All widgets close silently (no cancel events — locking is not a
+        // moment to re-enter Lua); their callbacks are dropped.
+        for entry in self.ui.widgets.drain() {
+            self.lua.drop_ui_callbacks(entry.id);
+        }
         self.cursor_status = CursorImageStatus::default_named();
         self.hovered_window = None;
         self.lock_rendered.clear();

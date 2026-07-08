@@ -82,6 +82,44 @@ User-extensible endpoints on the compositor's JSON socket (the `tomoe msg` CLI).
 - `tomoe.ipc.serve(method, handler)` — Handle requests for `method` (e.g. `tomoe msg workspace/switch '{"n":2}'`). Re-registering a method overwrites the previous handler; a Lua error is returned to the requesting client.
 - `tomoe.ipc.broadcast(event, payload)` — Push an event to every subscribed IPC client (`subscribe` method).
 
+## Compositor UI
+
+Compositor-drawn retained widgets: declare one, the core renders it and routes input to it, and only selection events re-enter Lua. Modal widgets (confirm, menu) own the keyboard and swallow clicks; sheets are dismissed by any input; toasts expire on their own and ignore input. Widgets close silently (no events) on config reload and session lock. The exit dialog, hotkey overlay, and config-error banner are builtins on this registry.
+- `tomoe.ui.confirm(opts) -> UiWidget?` — Modal confirm dialog: Enter fires on_confirm; any other key or a click fires on_cancel. Returns nil (and warns) when `text` is missing.
+- `tomoe.ui.menu(opts) -> UiWidget?` — Modal menu: Up/Down (or k/j) navigate, Enter fires on_select with the 1-based index and the item text, Esc or a click fires on_cancel. Returns nil (and warns) when `items` is empty.
+- `tomoe.ui.toast(opts) -> UiWidget?` — Transient notification stacked at the top of each output; auto-hides after `duration` seconds.
+- `tomoe.ui.sheet(opts) -> UiWidget?` — Non-modal overlay of (key chip, label) rows — the hotkey-overlay shape. Dismissed by any key press or click. Returns nil (and warns) when `rows` is empty.
+
+### UiWidget
+
+Handle returned by the tomoe.ui constructors. Widgets close themselves when they fire an event or expire; the handle removes one early.
+
+- `UiWidget:close()` — Close the widget without firing any callback.
+
+### ConfirmOpts
+
+- `text: string`
+- `on_confirm: fun()?`
+- `on_cancel: fun()?`
+
+### MenuOpts
+
+- `title: string?`
+- `items: string[]`
+- `on_select: (fun(index: integer, item: string))?`
+- `on_cancel: fun()?`
+
+### ToastOpts
+
+- `text: string`
+- `duration: number?` — seconds (default 4)
+- `urgent: boolean?` — red border instead of accent
+
+### SheetOpts
+
+- `title: string?`
+- `rows: string[][]` — { {"Mod+Q", "Quit"}, ... }
+
 ## Types
 
 ### Geometry

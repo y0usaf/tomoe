@@ -60,6 +60,7 @@ use crate::lock::LockState;
 use crate::lua::{KeyboardSettings, LuaRuntime, OutputProps, WinProps, WindowOp};
 use crate::process::{Launch, ProcessDecl, ProcessManager, ProcessSpec};
 use crate::space::PhysicalSpace;
+use crate::ui::widgets::{self, Tag, UiEvent, WidgetEntry, WidgetHandler, WidgetKind, WidgetSpec};
 use crate::ui::Ui;
 
 /// Identity of the loaded config file for change detection. Comparing the
@@ -401,7 +402,9 @@ impl Tomoe {
                 Err(err) => warn!("invalid keybind {:?}: {err:#}", pending.combo),
             }
         }
-        self.ui.hotkey_overlay.invalidate();
+        // The hotkey overlay's rows are built at open time; a stale one is
+        // simply closed.
+        self.ui.widgets.close_tag(Tag::HotkeyOverlay);
     }
 
     /// Config watcher tick (main.rs timer): reload if the file changed.
@@ -444,7 +447,9 @@ impl Tomoe {
 
         self.lua = new_lua;
         self.apply_binds();
-        self.ui.config_error.hide();
+        self.ui.widgets.close_tag(Tag::ConfigError);
+        // Lua-owned widgets' callbacks died with the old VM.
+        self.ui.widgets.close_lua();
         // A new config generation: `once_per_config_version` entries become
         // due, and the manifest is force-taken even if the fresh VM declared
         // no processes — removal from the config is itself a diff that must
@@ -474,18 +479,107 @@ impl Tomoe {
         info!("config reloaded ({restored} on_reload state(s) restored)");
     }
 
-    /// Show the config-error banner and schedule the repaint that removes it
-    /// (rendering is damage-driven, so expiry alone would never repaint).
+    /// Show the config-error banner: an urgent builtin toast on the widget
+    /// registry.
     fn show_config_error(&mut self, message: &str) {
-        self.ui.config_error.show(message);
+        const TIMEOUT: Duration = Duration::from_secs(5);
+        self.ui.widgets.close_tag(Tag::ConfigError);
+        self.ui.widgets.open(WidgetEntry::new(
+            widgets::alloc_id(),
+            WidgetKind::Toast {
+                text: message.to_string(),
+                deadline: Instant::now() + TIMEOUT,
+                urgent: true,
+            },
+            WidgetHandler::None,
+            Some(Tag::ConfigError),
+        ));
         self.queue_redraw_all();
-        let timer = Timer::from_duration(
-            crate::ui::ConfigErrorNotification::TIMEOUT + Duration::from_millis(50),
-        );
+        self.schedule_ui_repaint(TIMEOUT);
+    }
+
+    /// Rendering is damage-driven, so a toast expiring on its own would
+    /// never repaint: schedule the redraw that culls it.
+    fn schedule_ui_repaint(&mut self, after: Duration) {
+        let timer = Timer::from_duration(after + Duration::from_millis(50));
         let _ = self.loop_handle.insert_source(timer, |_, _, tomoe| {
             tomoe.queue_redraw_all();
             TimeoutAction::Drop
         });
+    }
+
+    /// Close a widget and drop its Lua callbacks (without firing them).
+    pub(crate) fn close_widget(&mut self, id: u64) -> bool {
+        if self.ui.widgets.close(id).is_none() {
+            return false;
+        }
+        self.lua.drop_ui_callbacks(id);
+        true
+    }
+
+    /// Apply a queued `tomoe.ui` declaration from Lua.
+    fn apply_ui_op(&mut self, op: crate::lua::UiOp) {
+        match op {
+            crate::lua::UiOp::Open { id, spec } => {
+                let kind = match spec {
+                    WidgetSpec::Confirm { text } => WidgetKind::Confirm { text },
+                    WidgetSpec::Menu { title, items } => WidgetKind::Menu {
+                        title,
+                        items,
+                        selected: 0,
+                    },
+                    WidgetSpec::Toast {
+                        text,
+                        duration,
+                        urgent,
+                    } => {
+                        self.schedule_ui_repaint(duration);
+                        WidgetKind::Toast {
+                            text,
+                            deadline: Instant::now() + duration,
+                            urgent,
+                        }
+                    }
+                    WidgetSpec::Sheet { title, rows } => WidgetKind::Sheet { title, rows },
+                };
+                self.ui
+                    .widgets
+                    .open(WidgetEntry::new(id, kind, WidgetHandler::Lua, None));
+            }
+            crate::lua::UiOp::Close(id) => {
+                self.close_widget(id);
+            }
+        }
+        self.queue_redraw_all();
+    }
+
+    /// A widget fired an event: close it, then run its handler.
+    pub(crate) fn ui_widget_event(&mut self, id: u64, event: UiEvent) {
+        let Some(entry) = self.ui.widgets.close(id) else {
+            return;
+        };
+        self.queue_redraw_all();
+        match entry.handler {
+            WidgetHandler::None => {}
+            WidgetHandler::Action(action) => {
+                if matches!(event, UiEvent::Confirm | UiEvent::Select(_)) {
+                    self.do_action(action);
+                }
+            }
+            WidgetHandler::Lua => {
+                // Menus hand the selected item's text along with its index.
+                let item = match (&entry.kind, event) {
+                    (WidgetKind::Menu { items, .. }, UiEvent::Select(i)) => items.get(i).cloned(),
+                    _ => None,
+                };
+                self.sync_snapshot();
+                let was_in_lua = self.in_lua;
+                self.in_lua = true;
+                self.lua.emit_ui_event(id, event, item);
+                self.in_lua = was_in_lua;
+                self.after_lua();
+            }
+        }
     }
 
     // ── Snapshot & extension-surface plumbing ──
@@ -604,6 +698,9 @@ impl Tomoe {
             for op in ops {
                 self.apply_op(op);
             }
+        }
+        for op in self.lua.take_ui_ops() {
+            self.apply_ui_op(op);
         }
         let actions = self.lua.take_actions();
         for action in actions {
@@ -1190,12 +1287,32 @@ impl Tomoe {
     pub fn do_action(&mut self, action: Action) {
         match action {
             Action::Quit => {
-                self.ui.exit_dialog.show();
+                if !self.ui.widgets.tag_open(Tag::ExitDialog) {
+                    self.ui.widgets.open(WidgetEntry::new(
+                        widgets::alloc_id(),
+                        WidgetKind::Confirm {
+                            text: "Are you sure you want to exit tomoe?".to_string(),
+                        },
+                        WidgetHandler::Action(Action::ConfirmQuit),
+                        Some(Tag::ExitDialog),
+                    ));
+                }
                 self.queue_redraw_all();
             }
             Action::ConfirmQuit => self.loop_signal.stop(),
             Action::ShowHotkeyOverlay => {
-                self.ui.hotkey_overlay.show();
+                // Toggle: re-pressing the bind closes it.
+                if !self.ui.widgets.close_tag(Tag::HotkeyOverlay) {
+                    self.ui.widgets.open(WidgetEntry::new(
+                        widgets::alloc_id(),
+                        WidgetKind::Sheet {
+                            title: Some("Important Hotkeys".to_string()),
+                            rows: widgets::hotkey_rows(&self.binds),
+                        },
+                        WidgetHandler::None,
+                        Some(Tag::HotkeyOverlay),
+                    ));
+                }
                 self.queue_redraw_all();
             }
             Action::ReloadConfig => self.reload_config(),
@@ -1219,6 +1336,7 @@ impl Tomoe {
                 self.after_lua();
             }
             Action::ChangeVt(vt) => self.change_vt(vt),
+            Action::UiEvent(id, event) => self.ui_widget_event(id, event),
             Action::Screenshot => self.open_screenshot_ui(),
             Action::ScreenshotScreen => self.screenshot_screen(),
             Action::ScreenshotConfirm => self.screenshot_confirm(),

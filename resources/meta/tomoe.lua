@@ -267,6 +267,70 @@ function tomoe.ipc.serve(method, handler) end
 ---@param payload any? # JSON-compatible; defaults to null
 function tomoe.ipc.broadcast(event, payload) end
 
+-- ─── Compositor UI ────────────────────────────────────────────────────────────
+
+---Compositor-drawn retained widgets: declare one, the core renders it and
+---routes input to it, and only selection events re-enter Lua. Modal widgets
+---(confirm, menu) own the keyboard and swallow clicks; sheets are dismissed
+---by any input; toasts expire on their own and ignore input. Widgets close
+---silently (no events) on config reload and session lock. The exit dialog,
+---hotkey overlay, and config-error banner are builtins on this registry.
+tomoe.ui = {}
+
+---Modal confirm dialog: Enter fires on_confirm; any other key or a click
+---fires on_cancel. Returns nil (and warns) when `text` is missing.
+---@param opts ConfirmOpts
+---@return UiWidget?
+function tomoe.ui.confirm(opts) end
+
+---Modal menu: Up/Down (or k/j) navigate, Enter fires on_select with the
+---1-based index and the item text, Esc or a click fires on_cancel. Returns
+---nil (and warns) when `items` is empty.
+---@param opts MenuOpts
+---@return UiWidget?
+function tomoe.ui.menu(opts) end
+
+---Transient notification stacked at the top of each output; auto-hides
+---after `duration` seconds.
+---@param opts ToastOpts
+---@return UiWidget?
+function tomoe.ui.toast(opts) end
+
+---Non-modal overlay of (key chip, label) rows — the hotkey-overlay shape.
+---Dismissed by any key press or click. Returns nil (and warns) when `rows`
+---is empty.
+---@param opts SheetOpts
+---@return UiWidget?
+function tomoe.ui.sheet(opts) end
+
+---Handle returned by the tomoe.ui constructors. Widgets close themselves
+---when they fire an event or expire; the handle removes one early.
+---@class UiWidget
+local UiWidget = {}
+
+---Close the widget without firing any callback.
+function UiWidget:close() end
+
+---@class ConfirmOpts
+---@field text string
+---@field on_confirm fun()?
+---@field on_cancel fun()?
+
+---@class MenuOpts
+---@field title string?
+---@field items string[]
+---@field on_select (fun(index: integer, item: string))?
+---@field on_cancel fun()?
+
+---@class ToastOpts
+---@field text string
+---@field duration number? # seconds (default 4)
+---@field urgent boolean? # red border instead of accent
+
+---@class SheetOpts
+---@field title string?
+---@field rows string[][] # { {"Mod+Q", "Quit"}, ... }
+
 -- ─── Types ────────────────────────────────────────────────────────────────────
 
 ---A rectangle in integer physical pixels, world coordinates.

@@ -38,7 +38,6 @@ use smithay::wayland::shm;
 use tracing::{trace, warn};
 
 use crate::backend::Backend;
-use crate::input::Bind as KeyBind;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer};
 use crate::render::OutputRenderElements;
 use crate::space::PhysicalSpace;
@@ -53,7 +52,6 @@ type CaptureElement = RelocateRenderElement<OutputRenderElements<GlesRenderer>>;
 struct SceneParts<'a> {
     space: &'a PhysicalSpace,
     ui: &'a mut Ui,
-    binds: &'a [KeyBind],
     border_buffers: &'a HashMap<Window, [SolidColorBuffer; 4]>,
     border_width: i32,
     cursor: &'a crate::cursor::Cursor,
@@ -110,9 +108,7 @@ impl<'a> SceneParts<'a> {
             // Captures never include the screenshot selection overlay: the
             // screenshot itself must not contain it, and screencopy/screencast
             // consumers shouldn't record it either.
-            let ui_elements = self
-                .ui
-                .render_elements(renderer, output, geo.size, self.binds, false);
+            let ui_elements = self.ui.render_elements(renderer, output, geo.size, false);
             let borders = crate::render::border_elements(
                 self.space,
                 self.border_buffers,
@@ -212,7 +208,6 @@ macro_rules! split_tomoe {
             backend,
             space,
             ui,
-            binds,
             border_buffers,
             cursor,
             cursor_status,
@@ -228,7 +223,6 @@ macro_rules! split_tomoe {
             SceneParts {
                 space,
                 ui,
-                binds,
                 border_buffers,
                 border_width,
                 cursor,
