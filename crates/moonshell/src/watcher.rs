@@ -17,7 +17,10 @@
 //! Directory watches are never removed — a watch on a dir that no
 //! longer interests anyone costs a few bytes in the kernel and
 //! delivers events into an empty map. Bounded by the set of distinct
-//! directories ever watched; revisit if a config tree churns dirs.
+//! directories ever watched — and hard-capped ([`MAX_DIR_WATCHES`]):
+//! a config root that turns out to be a giant tree must degrade to
+//! partial hot reload, never eat the system's inotify budget (the
+//! /nix/store incident — see `resolve_config`).
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -39,6 +42,10 @@ fn dir_mask() -> WatchMask {
         | WatchMask::DELETE
 }
 
+/// Ceiling on directory watches. Two orders of magnitude above any
+/// sane config tree, three below the default per-user kernel budget.
+const MAX_DIR_WATCHES: usize = 4096;
+
 struct DirWatch {
     path: PathBuf,
     /// Changes to `.lua` files here trigger a config reload.
@@ -50,6 +57,8 @@ pub struct Watcher {
     dirs: HashMap<WatchDescriptor, DirWatch>,
     /// `watch_file` callbacks by full (parent-canonicalized) path.
     files: HashMap<PathBuf, Vec<WatchCallback>>,
+    /// [`MAX_DIR_WATCHES`] was hit (warned once).
+    capped: bool,
 }
 
 impl Watcher {
@@ -60,6 +69,7 @@ impl Watcher {
             inotify,
             dirs: HashMap::new(),
             files: HashMap::new(),
+            capped: false,
         };
         w.add_config_tree(config_root.to_path_buf())?;
         Ok(w)
@@ -75,6 +85,16 @@ impl Watcher {
     }
 
     fn add_dir(&mut self, path: PathBuf, in_config_tree: bool) -> io::Result<()> {
+        if self.dirs.len() >= MAX_DIR_WATCHES {
+            if !self.capped {
+                self.capped = true;
+                tracing::warn!(
+                    "watch limit ({MAX_DIR_WATCHES} dirs) reached — changes under \
+                     unwatched directories will not hot-reload"
+                );
+            }
+            return Ok(());
+        }
         let wd = self.inotify.watches().add(&path, dir_mask())?;
         // Same path twice → same descriptor; keep the stronger flag.
         let entry = self.dirs.entry(wd).or_insert(DirWatch {
