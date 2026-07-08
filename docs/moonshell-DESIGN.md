@@ -47,7 +47,7 @@ breadth, not code.
 | Event loop | **calloop, single thread; no tokio** | Timers, sockets, D-Bus, inotify are all calloop sources. No runtime threads idling in the RSS. Matches tomoe's loop discipline. |
 | Wayland | **smithay-client-toolkit; wlr-layer-shell** (+ xdg_popup, ext-session-lock later) | Client-side sibling of tomoe's Smithay knowledge; no toolkit between us and the protocol. |
 | Layout | **Hand-rolled flex-lite (hbox/vbox/stack, gap/padding/grow)** | nur's element vocabulary is exactly this; taffy adoption deferred until a real grid/wrap need appears (see Deferred). |
-| Services | **Native event-driven: zbus + sysfs + inotify; no subprocess polling in steady state** | nur's `wpctl`/`nmcli`/`playerctl` polling costs memory, wakeups, and latency. Fixing that is part of the point. |
+| Services | **Native event-driven: D-Bus via rustbus (pure-Rust, sync, fd-exposed) + sysfs; no subprocess polling in steady state** | nur's `wpctl`/`nmcli`/`playerctl` polling costs memory, wakeups, and latency. Fixing that is part of the point. rustbus, not zbus (revised at M3 §3): zbus structurally requires an async executor (async-io reactor thread or tokio), which the single-thread calloop decision forbids — rustbus exposes the socket fd and drains nonblocking, so D-Bus rides calloop like every other source. |
 | Compositor integration | **IPC only, auto-detected: tomoe (`$TOMOE_SOCKET`), niri, Hyprland, Sway** | Compositor-agnosticism is the product. No shared Rust with tomoe beyond the `tomoe-ipc` wire crate. |
 
 ## Architecture
@@ -171,8 +171,9 @@ and the daily driver.
   17.4 MB RSS release with the full bar + 1 Hz clock, wakeups only
   from the timer. Conventions doc: `~/Dev/design/conventions/lua.md`.
   See PLAN.md M2 §1–§6.*
-- [ ] **M3 — services, natively.** zbus: UPower, MPRIS, NetworkManager,
-  notifications daemon, SNI tray, PowerProfiles; sysfs battery fallback;
+- [ ] **M3 — services, natively.** D-Bus (rustbus): UPower, MPRIS,
+  NetworkManager, notifications daemon, SNI tray, PowerProfiles; sysfs
+  battery fallback;
   compositor backends: **tomoe** (`$TOMOE_SOCKET`, subscribe stream),
   niri, Hyprland, Sway. Widget parity with nur (clock/battery/
   workspaces/network/mpris) as `lua/` modules. **nur wind-down decision

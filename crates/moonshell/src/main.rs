@@ -173,6 +173,8 @@ struct Engine {
     /// Latest compositor snapshot — kept so a reload's fresh VM gets
     /// re-seeded (facades reset to placeholders on VM swap).
     compositor: Option<moonshell_services::compositor::CompositorState>,
+    /// Latest battery snapshot — same re-seed contract.
+    battery: Option<moonshell_services::battery::BatteryState>,
 }
 
 impl Engine {
@@ -240,6 +242,15 @@ impl Engine {
         }
     }
 
+    /// `shell.services.battery` — same contract as [`push_compositor`].
+    fn push_battery(&self) {
+        if let Some(state) = &self.battery {
+            if let Err(e) = moonshell_runtime::services_bridge::push_battery(self.vm.lua(), state) {
+                tracing::debug!("pushing battery state: {e}");
+            }
+        }
+    }
+
     /// Tear down the current config and re-exec it in a fresh VM. The
     /// windows go first (their painters hold the old VM's last strong
     /// `Lua` clones), then the ctx forgets the old VM's callbacks, then
@@ -270,6 +281,7 @@ impl Engine {
         // top-level service reads see real state (same contract as
         // displays above).
         self.push_compositor();
+        self.push_battery();
         match std::fs::read_to_string(&self.config) {
             Ok(code) => {
                 if let Err(e) = self.vm.exec(&code, &self.config.to_string_lossy()) {
@@ -384,6 +396,7 @@ fn main() -> anyhow::Result<()> {
         loop_handle: event_loop.handle(),
         reload_scheduled: false,
         compositor: None,
+        battery: None,
     }));
 
     // The compositor service (M3 §1): a native IPC backend pushes
@@ -407,6 +420,21 @@ fn main() -> anyhow::Result<()> {
             }
             Err(e) => tracing::warn!("compositor service unavailable: {e}"),
         }
+    }
+
+    // The battery service (M3 §3): UPower over the system bus, sysfs
+    // polling fallback. Same engine contract as the compositor above.
+    {
+        let eng = engine.clone();
+        let source = moonshell_services::battery::start(
+            &event_loop.handle(),
+            move |_shell: &mut Shell, state| {
+                let mut e = eng.borrow_mut();
+                e.battery = Some(state.clone());
+                e.push_battery();
+            },
+        );
+        tracing::info!("battery backend: {source}");
     }
 
     // Inotify readiness: drain events (fires watch_file callbacks

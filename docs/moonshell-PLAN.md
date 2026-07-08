@@ -73,8 +73,15 @@ plumbing, tomoe backend refactored onto it. Verified live on niri and
 sway (nested/headless); **7.1 MB RSS (release) connected to niri,
 0 voluntary ctx switches / 5 s idle**. Hyprland is unit-tested only —
 nested Hyprland crashes in this environment (known gap, §2 notes).
-Next open item: **M3 §3 — battery service** (UPower over zbus, sysfs +
-inotify fallback).
+§3 done (2026-07-08) — battery service: **rustbus, not zbus** (locked
+decision revised in DESIGN.md — zbus needs an async executor thread,
+rustbus rides calloop as a plain fd source); UPower `DisplayDevice`
+over the system bus, sysfs 30 s-poll fallback (inotify doesn't fire on
+sysfs). Live on the UPower path (desktop, no battery: `available =
+false`, defaults kept, widget hides); **17.8 MB RSS (release) full
+bar + 1 Hz clock, wakeups from the clock only**. Next open item:
+**M3 §4 — network (NetworkManager) + mpris**, over the same rustbus
+pattern.
 
 Two working inputs exist:
 
@@ -104,14 +111,15 @@ Two working inputs exist:
       placeholder services until M3; panel open/close needs M4 clicks +
       `handle:close`). Not ported: system_tray, bar_overlay, wallust
       (need the tray service / more surface — M3/M4)
-- [ ] Services: applications (.desktop scan + inotify), battery,
-      audio, network, bluetooth, mpris, notifications daemon,
+- [ ] Services: applications (.desktop scan + inotify), audio,
+      network, bluetooth, mpris, notifications daemon,
       power-profiles, sysinfo, system tray (SNI) (M3) —
-      **re-implemented event-driven** (zbus/sysfs),
+      **re-implemented event-driven** (rustbus D-Bus/sysfs),
       not ported: nur's CLI-polling backends (`wpctl`, `nmcli`,
       `playerctl`, `bluetoothctl`, `powerprofilesctl`) are the memory/
       wakeup cost we're eliminating. Compositor auto-detect done
-      (M3 §1; tomoe > Hyprland > niri > Sway)
+      (M3 §1; tomoe > Hyprland > niri > Sway); battery done (M3 §3;
+      UPower via rustbus, sysfs fallback)
 - [x] Compositor backends: Hyprland, niri, Sway (M3 §2) + tomoe
       (M3 §1) — event-driven, thread-free, no compositor crates
 - [ ] nix: home-manager module + `mkBar`-style lib helpers (post-M3,
@@ -311,15 +319,48 @@ M3 breakdown (services, natively):
    Hyprland crashes at boot in this environment (AsyncResourceGatherer
    abort, both under headless sway and on tomoe); flag for a first
    real Hyprland session before calling M3 §7 acceptance.
-3. [ ] battery: UPower over zbus, sysfs + inotify fallback; replaces
-   the placeholder facade through the same `:set()` path.
-4. [ ] network (NetworkManager zbus) + mpris (zbus, playerctld-style
-   player tracking).
+3. [x] battery (2026-07-08): UPower over the system D-Bus, sysfs
+   fallback; replaces the placeholder facade through the same `:set()`
+   path. **D-Bus = rustbus 0.19, not zbus** — zbus structurally needs
+   an async executor (async-io reactor thread or tokio), forbidden by
+   the single-thread locked decision; rustbus is pure-Rust/sync,
+   exposes the socket fd, and `refill_all()` drains nonblocking, so
+   the bus is a calloop `Generic` on a dup'd fd (the watcher's
+   technique). DESIGN.md locked-decisions row revised. Shape mirrors
+   the compositor backends: pure `Model` (properties in, snapshot
+   out) unit-tested apart from the wiring, incl. one round-trip test
+   marshalling a real `PropertiesChanged` (`s a{sv} as`) through
+   rustbus's dynamic params API. Setup is the only blocking IO
+   (connect + AddMatch + GetAll, 2 s timeout), match registered
+   *before* the snapshot request (events racing the snapshot apply on
+   top). Everything rides UPower's aggregate `DisplayDevice` — one
+   number, multi-battery pre-combined, hotplug arrives as `IsPresent`
+   flips (no DeviceAdded tracking). Snapshot = nur's shape +
+   `available`; when `IsPresent = false` (desktops report
+   `Percentage = 0`) the published snapshot keeps nur's render-safe
+   defaults (100%/false) and the bundled widget renders nothing
+   (returns an empty hbox — nil would truncate a children list). Bus
+   lost mid-flight → reset + degrade to sysfs. Fallback: first
+   `/sys/class/power_supply/*` with `type = Battery`, 30 s calloop
+   timer — sysfs emits no inotify events, so “sysfs + inotify” was a
+   fiction; the timer only exists on UPower-less machines that have a
+   battery (no battery + no UPower = no source, zero wakeups). Engine
+   caches the snapshot and re-seeds fresh VMs before config exec
+   (compositor contract). Verified live on the UPower path (upowerd,
+   no battery — `available=false`, GetAll parse, reload re-seed);
+   **17.8 MB RSS release, full bar + 1 Hz clock, no added wakeups**
+   (14 vol. ctx switches / 5 s ≡ the clock's cadence). Laptop
+   verification (real Percentage/State changes, sysfs fallback)
+   flagged for a battery machine — same posture as Hyprland in §2,
+   fold into §7 acceptance.
+4. [ ] network (NetworkManager over rustbus) + mpris (rustbus,
+   playerctld-style player tracking).
 5. [ ] audio — decide the native path (PipeWire native protocol vs
    wireplumber): zero steady-state subprocesses is the constraint.
-6. [ ] notifications daemon + SNI tray + power-profiles (zbus,
-   org.freedesktop.Notifications / StatusNotifier); system_tray +
-   bar_overlay widgets become portable.
+6. [ ] notifications daemon + SNI tray + power-profiles (rustbus —
+   serving methods = replying to METHOD_CALL messages on the same
+   fd source; org.freedesktop.Notifications / StatusNotifier);
+   system_tray + bar_overlay widgets become portable.
 7. [ ] acceptance + wind-down decision: widget parity vs nur, both-
    compositor live test, execsnoop-clean 5 min, RSS ≤ 25 MB full bar.
 
@@ -566,6 +607,22 @@ tiny before the runtime landed on top.
   *live* session dies in seconds (something closes it); Hyprland
   refuses to nest at all here. `niri msg` has no `--socket` flag —
   export `NIRI_SOCKET`
+- From M3 §3: zbus cannot run single-threaded — its connection needs
+  an executor ticked by an async-io reactor thread or tokio; when a
+  "D-Bus as a calloop source" is required, rustbus is the shape that
+  fits (sync, fd-exposed, `refill_all()` nonblocking drain). Its typed
+  layer has no `f64` — doubles need a local newtype unmarshalling via
+  `u64` bits (`Dbl` in battery.rs; lift it out when a second service
+  needs doubles)
+- From M3 §3: sysfs attribute changes do not fire inotify — "watch
+  sysfs with inotify" is a design fiction; the honest fallbacks are a
+  coarse timer or a netlink uevent socket (AF_NETLINK
+  KOBJECT_UEVENT — upgrade path if the 30 s poll ever matters)
+- From M3 §3: a service snapshot should stay *render-safe* when the
+  underlying thing is absent (no battery ⇒ keep 100%/false + an
+  `available` flag), and "hide the widget" is Lua policy on that flag,
+  not a core decision — widgets return an empty box, never nil (a nil
+  in a children list truncates it)
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age
