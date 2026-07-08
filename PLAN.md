@@ -89,9 +89,13 @@ Done and working:
   queued and completed from the redraw loop, so casts pace to vblank
   instead of spinning); everything renders through one shared path in
   `capture.rs` on the primary GPU
-- ext-foreign-toplevel-list-v1: handles published on window map, title/
-  app_id pushed on commit, `closed` on unmap (`foreign_toplevel.rs`) —
-  feeds bars and the portal's window enumeration
+- Foreign toplevels (`foreign_toplevel.rs`): ext-foreign-toplevel-list-v1
+  (handles published on window map, title/app_id pushed on commit,
+  `closed` on unmap — feeds bars and the portal's window enumeration) +
+  wlr-foreign-toplevel-management-v3 (the taskbar control surface:
+  states/outputs diff-refreshed once per loop iteration, control
+  requests routed through `on_window_request` policy — new "close"/
+  "unminimize" kinds — with xdg-matching native defaults)
 - ScreenCast portal: `xdg-desktop-portal-tomoe` binary (zbus + pipewire,
   ShojiWM-shape: `PW_STREAM_FLAG_DRIVER | ALLOC_BUFFERS`, single thread,
   wlr-screencopy `ready` queues the PW buffer and kicks the next capture
@@ -283,9 +287,10 @@ Done and working:
       30fps bug (`ref/ShojiWM/knowledges/screencast-30fps-xdpw-bug.md`).
       Existing wlr portals remain usable as fallbacks alongside it
       (`tomoe-portals.conf` routes only ScreenCast to us)
-- [ ] Foreign-toplevel for bars/docks — ext-foreign-toplevel-list landed
-      (with portal window capture); wlr-foreign-toplevel-management (the
-      activate/close/minimize control surface bars actually use) still open
+- [x] Foreign-toplevel for bars/docks — ext-foreign-toplevel-list (with
+      portal window capture) + wlr-foreign-toplevel-management v3
+      (`protocols/wlr_foreign_toplevel.rs`, niri-shape but id-keyed and
+      diff-based); every control request rides `on_window_request`
 - [ ] Gamma control / night light
 - [ ] text-input + input-method (IME) — after core parity
 - [ ] Touch + tablet-v2 — deferred, no hardware pressure yet
@@ -302,10 +307,10 @@ Items it pulls on:
       wire change: `wm.lua` broadcasts via `tomoe.ipc.broadcast`, core
       events (`focus_change`, `window_open/close`) already carry the
       rest. Design lands with moonshell M3
-- [ ] Window control surface for a taskbar (activate/close/minimize):
-      either wlr-foreign-toplevel-management (M5 §1) or equivalent
-      `tomoe-ipc` methods — decide when moonshell's taskbar widget
-      needs it; xdg-activation (M5 §2, landed) unblocks activate
+- [x] Window control surface for a taskbar (activate/close/minimize):
+      landed as wlr-foreign-toplevel-management (M5 §1); equivalent
+      `tomoe-ipc` methods can still come later if moonshell prefers the
+      socket over the protocol
 - [ ] Default moonshell bar config shipped as content alongside
       `wm.lua`, once moonshell M2 (Lua runtime) lands
 - [ ] Combined home-manager module composing both flakes (post
@@ -578,14 +583,28 @@ setup. — All landed.*
 
 ### M5 — Ecosystem remainder
 
-1. Foreign-toplevel for bars/docks — ext-foreign-toplevel-list done
-   (pulled forward for portal window capture); wlr-foreign-toplevel-
-   management remains — build on `foreign_toplevel.rs`'s existing
-   map/commit/unmap plumbing; the control requests (activate/close/
-   fullscreen/minimize) should route through the same `on_window_request`
-   policy path clients use, not bypass Lua; activate wants xdg-activation
-   (§2) for the focus-stealing story — also unblocks the moonshell
-   taskbar item
+1. ~~Foreign-toplevel for bars/docks~~ done —
+   wlr-foreign-toplevel-management v3 (`protocols/wlr_foreign_toplevel.rs`,
+   niri's module shape adapted from surface-keyed to window-id-keyed):
+   the state stores the last-sent snapshot (title/app_id/maximized/
+   fullscreen/activated/outputs) per window and a single diff refresh
+   runs once per event-loop iteration (`refresh_wlr_foreign_toplevels`,
+   `main.rs` loop callback — focus changes, commits, Lua ops, and unmaps
+   all converge there; focused window refreshes last so listeners see
+   deactivate-before-activate). "Activated" = keyboard focus (waybar/
+   sfwbar treat it as *the* focused window, so at most one carries it,
+   per niri). Control requests all ride `on_window_request` — activate
+   (default: focus, same as xdg-activation), close (new kind; default:
+   send_close), set/unset_fullscreen (defaults: the xdg fullscreen_default
+   pair), set/unset_maximized (default: ack), set/unset_minimized
+   ("minimize"/new "unminimize", no native default). `output_bound` sends
+   the enters a late-bound wl_output missed. Verified live on winit:
+   lswt lists windows; wlrctl focus moves keyboard focus (IPC-confirmed),
+   close closes, minimize no-ops. Note: wlrctl 0.2.2 aborts on *empty*
+   state arrays (its `wl_array_copy` trips libwayland≥1.24's sanity check
+   on demarshaled arrays: data≠NULL, alloc=0) — not our bug; niri sends
+   the same empty arrays and a state-less window is only expressible as
+   an empty array
 2. ~~xdg-activation~~ done — mechanics in the niri gap list above;
    activate/urgent ride the existing `on_window_request` policy path, so
    wlr-foreign-toplevel-management's activate (§1) can reuse it directly.

@@ -1,15 +1,26 @@
-//! ext-foreign-toplevel-list-v1: advertise mapped toplevels to clients
-//! (bars, docks, and the screencast portal's window enumeration).
+//! Foreign-toplevel advertising: mapped windows published to bars, docks,
+//! and the screencast portal's window enumeration.
 //!
-//! Handles exist only for mapped windows: published from `add_window`,
-//! retired from `window_closed`, title/app_id pushed on commit. Each handle
-//! carries the compositor window id in its user data so capture sources
-//! created from it resolve back to the window (`capture.rs::source_target`).
+//! Two protocols share this glue:
+//! - **ext-foreign-toplevel-list-v1** (read-only; smithay's state): handles
+//!   published from `add_window`, retired from `window_closed`, title/app_id
+//!   pushed on commit. Each handle carries the compositor window id in its
+//!   user data so capture sources created from it resolve back to the
+//!   window (`capture.rs::source_target`).
+//! - **wlr-foreign-toplevel-management-unstable-v1** (read + control; our
+//!   `protocols/wlr_foreign_toplevel.rs`): diff-refreshed once per
+//!   event-loop iteration from [`Tomoe::refresh_wlr_foreign_toplevels`] —
+//!   states (maximized/fullscreen/activated) and output enter/leave included
+//!   — so focus changes, commits, Lua ops, and unmaps all converge on one
+//!   refresh site. Control requests route through `on_window_request`
+//!   policy (`handlers.rs`).
 
 use smithay::desktop::Window;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
+use crate::protocols::wlr_foreign_toplevel::ToplevelInfo;
 use crate::state::Tomoe;
 
 /// Compositor window id riding on a [`ForeignToplevelHandle`]'s user data.
@@ -74,5 +85,69 @@ impl Tomoe {
         if let Some(handle) = self.foreign_toplevels.remove(&id) {
             self.foreign_toplevel_state.remove_toplevel(&handle);
         }
+    }
+
+    /// Diff every mapped window against the wlr-foreign-toplevel state and
+    /// push the changes; called once per event-loop iteration (`main.rs`).
+    /// The focused window refreshes last, so on a focus change listeners see
+    /// the old window deactivate before the new one activates (niri-shape).
+    pub fn refresh_wlr_foreign_toplevels(&mut self) {
+        for id in self.wlr_foreign_toplevel_state.tracked_ids() {
+            if !self.windows.contains_key(&id) {
+                self.wlr_foreign_toplevel_state.retire(id);
+            }
+        }
+        let focused_surface = self.seat.get_keyboard().and_then(|kb| kb.current_focus());
+        let mut focused = None;
+        for (id, window) in &self.windows {
+            let is_focused = window.toplevel().map(|t| t.wl_surface().clone()) == focused_surface;
+            if is_focused {
+                focused = Some(*id);
+                continue;
+            }
+            let info = wlr_toplevel_info(&self.space, window, false);
+            self.wlr_foreign_toplevel_state
+                .refresh_toplevel::<Self>(*id, info);
+        }
+        if let Some(id) = focused {
+            if let Some(window) = self.windows.get(&id) {
+                let info = wlr_toplevel_info(&self.space, window, true);
+                self.wlr_foreign_toplevel_state
+                    .refresh_toplevel::<Self>(id, info);
+            }
+        }
+    }
+}
+
+/// Snapshot a window for the wlr-foreign-toplevel diff: committed xdg
+/// states + the outputs its rendered rect overlaps.
+fn wlr_toplevel_info(
+    space: &crate::space::PhysicalSpace,
+    window: &Window,
+    activated: bool,
+) -> ToplevelInfo {
+    let (app_id, title) = window_meta(window);
+    let (fullscreen, maximized) = window
+        .toplevel()
+        .map(|t| {
+            t.with_committed_state(|state| {
+                state
+                    .map(|s| {
+                        (
+                            s.states.contains(xdg_toplevel::State::Fullscreen),
+                            s.states.contains(xdg_toplevel::State::Maximized),
+                        )
+                    })
+                    .unwrap_or_default()
+            })
+        })
+        .unwrap_or_default();
+    ToplevelInfo {
+        title,
+        app_id,
+        maximized,
+        fullscreen,
+        activated,
+        outputs: space.outputs_overlapping(window),
     }
 }

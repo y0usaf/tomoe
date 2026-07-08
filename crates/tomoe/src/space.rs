@@ -135,6 +135,24 @@ impl PhysicalSpace {
         })
     }
 
+    /// Outputs a window's rendered (screen-space) rect overlaps — the set
+    /// foreign-toplevel listeners hear `output_enter` for.
+    pub fn outputs_overlapping(&self, window: &Window) -> Vec<Output> {
+        let Some(geo) = self.element_geometry(window) else {
+            return Vec::new();
+        };
+        let screen_rect = self.world_rect_to_screen(geo);
+        self.outputs
+            .iter()
+            .map(|(o, _)| o)
+            .filter(|output| {
+                self.output_geometry(output)
+                    .is_some_and(|og| og.to_f64().overlaps(screen_rect))
+            })
+            .cloned()
+            .collect()
+    }
+
     // ── Windows ──
 
     /// Map a window at `loc`, or move it if already mapped. New windows go on

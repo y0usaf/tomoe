@@ -124,10 +124,18 @@ crate tomoe
 │   │   ├── struct ScreencopyManagerGlobalData: pub
 │   │   ├── struct ScreencopyManagerState: pub
 │   │   └── struct ScreencopyQueue: pub
-│   └── mod tearing_control: pub
-│       ├── struct TearingControlData: pub
-│       ├── struct TearingControlManagerState: pub
-│       └── struct TearingControlSurfaceData: pub(self)
+│   ├── mod tearing_control: pub
+│   │   ├── struct TearingControlData: pub
+│   │   ├── struct TearingControlManagerState: pub
+│   │   └── struct TearingControlSurfaceData: pub(self)
+│   └── mod wlr_foreign_toplevel: pub
+│       ├── struct ForeignHandleId: pub
+│       ├── enum ForeignRequest: pub
+│       ├── struct ToplevelData: pub(self)
+│       ├── struct ToplevelInfo: pub
+│       ├── struct WlrForeignToplevelGlobalData: pub
+│       ├── trait WlrForeignToplevelHandler: pub
+│       └── struct WlrForeignToplevelState: pub
 ├── mod render: pub(crate)
 │   ├── enum OutputRenderElements: pub
 │   └── trait TomoeRenderer: pub

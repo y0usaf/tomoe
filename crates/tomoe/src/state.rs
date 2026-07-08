@@ -168,6 +168,9 @@ pub struct Tomoe {
     /// Foreign-toplevel handles by window id, mapped windows only
     /// (`foreign_toplevel.rs`).
     pub foreign_toplevels: HashMap<u64, ForeignToplevelHandle>,
+    /// wlr-foreign-toplevel-management: the taskbar control surface,
+    /// diff-refreshed once per loop iteration (`foreign_toplevel.rs`).
+    pub wlr_foreign_toplevel_state: crate::protocols::wlr_foreign_toplevel::WlrForeignToplevelState,
     /// xdg-activation token registry; policy lives in `handlers.rs`, stale
     /// tokens are pruned by a timer armed in `new`.
     pub activation_state: XdgActivationState,
@@ -292,6 +295,11 @@ impl Tomoe {
             ToplevelCaptureSourceState::new::<Self>(&display_handle);
         let image_copy_capture_state = ImageCopyCaptureState::new::<Self>(&display_handle);
         let foreign_toplevel_state = ForeignToplevelListState::new::<Self>(&display_handle);
+        let wlr_foreign_toplevel_state =
+            crate::protocols::wlr_foreign_toplevel::WlrForeignToplevelState::new::<Self, _>(
+                &display_handle,
+                |_| true,
+            );
         let activation_state = XdgActivationState::new::<Self>(&display_handle);
         // Prune activation tokens (and unmapped-window stashes) that were
         // never redeemed — requests only honor tokens younger than the
@@ -367,6 +375,7 @@ impl Tomoe {
             pending_capture_frames: Vec::new(),
             foreign_toplevel_state,
             foreign_toplevels: HashMap::new(),
+            wlr_foreign_toplevel_state,
             activation_state,
             pending_activations: HashMap::new(),
             session_lock_state,

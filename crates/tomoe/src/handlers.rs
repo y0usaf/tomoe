@@ -75,6 +75,9 @@ use smithay::wayland::image_copy_capture::{
 use smithay::input::dnd::DndGrabHandler;
 
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
+use crate::protocols::wlr_foreign_toplevel::{
+    ForeignRequest, WlrForeignToplevelHandler, WlrForeignToplevelState,
+};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
@@ -1009,8 +1012,92 @@ delegate_ext_data_control!(Tomoe);
 
 // ─── outputs ──────────────────────────────────────────────────────────────────
 
-impl OutputHandler for Tomoe {}
+impl OutputHandler for Tomoe {
+    fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
+        // A client bound a fresh wl_output: foreign-toplevel handles that
+        // already entered this output owe it an output_enter.
+        self.wlr_foreign_toplevel_state
+            .on_output_bound(&output, &wl_output);
+    }
+}
 delegate_output!(Tomoe);
+
+// ─── wlr-foreign-toplevel-management ──────────────────────────────────────
+//
+// The taskbar control surface. Every request rides the same
+// `on_window_request` policy path the window's own client gets — a hook
+// that consumes "activate"/"fullscreen"/... governs taskbars too — and the
+// unconsumed defaults match the corresponding xdg/activation paths.
+
+impl WlrForeignToplevelHandler for Tomoe {
+    fn wlr_foreign_toplevel_state(&mut self) -> &mut WlrForeignToplevelState {
+        &mut self.wlr_foreign_toplevel_state
+    }
+
+    fn foreign_toplevel_request(&mut self, id: u64, request: ForeignRequest) {
+        // Retired handles resolve to ids no window carries: no-op.
+        let Some(window) = self.windows.get(&id).cloned() else {
+            return;
+        };
+        let toplevel = window.toplevel().cloned();
+        match request {
+            ForeignRequest::Activate => {
+                if !self.emit_window_request(id, "activate", None, None) {
+                    self.focus_window(Some(&window));
+                    self.queue_redraw_all();
+                }
+            }
+            ForeignRequest::Close => {
+                if !self.emit_window_request(id, "close", None, None) {
+                    if let Some(toplevel) = &toplevel {
+                        toplevel.send_close();
+                    }
+                }
+            }
+            ForeignRequest::SetFullscreen(wl_output) => {
+                let output_name = wl_output
+                    .as_ref()
+                    .and_then(Output::from_resource)
+                    .map(|o| o.name());
+                if !self.emit_window_request(id, "fullscreen", output_name, None) {
+                    if let Some(toplevel) = &toplevel {
+                        self.fullscreen_default(toplevel, wl_output.as_ref(), Some(id));
+                    }
+                }
+            }
+            ForeignRequest::UnsetFullscreen => {
+                if !self.emit_window_request(id, "unfullscreen", None, None) {
+                    if let Some(toplevel) = &toplevel {
+                        self.unfullscreen_default(toplevel, Some(id));
+                    }
+                }
+            }
+            ForeignRequest::SetMaximized => {
+                if !self.emit_window_request(id, "maximize", None, None) {
+                    if let Some(toplevel) = &toplevel {
+                        toplevel.send_configure();
+                    }
+                }
+            }
+            ForeignRequest::UnsetMaximized => {
+                if !self.emit_window_request(id, "unmaximize", None, None) {
+                    if let Some(toplevel) = &toplevel {
+                        toplevel.send_configure();
+                    }
+                }
+            }
+            // No native minimized state; policy may hide the window, the
+            // unconsumed default is to ignore (same as xdg minimize).
+            ForeignRequest::SetMinimized => {
+                self.emit_window_request(id, "minimize", None, None);
+            }
+            ForeignRequest::UnsetMinimized => {
+                self.emit_window_request(id, "unminimize", None, None);
+            }
+        }
+    }
+}
+crate::delegate_wlr_foreign_toplevel!(Tomoe);
 
 // ─── wp-viewporter / wp-fractional-scale ──────────────────────────────────────
 

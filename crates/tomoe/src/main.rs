@@ -197,6 +197,9 @@ fn main() -> Result<()> {
         .run(None, &mut tomoe, |tomoe| {
             tomoe.space.refresh();
             tomoe.popups.cleanup();
+            // Taskbar listeners: diff window states/outputs once per
+            // iteration (only changes hit the wire).
+            tomoe.refresh_wlr_foreign_toplevels();
             // Idle inhibitors are re-validated (alive + visible) once per
             // iteration; the activity debounce resets alongside.
             tomoe.refresh_idle_inhibit();
