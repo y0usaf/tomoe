@@ -26,8 +26,12 @@ damage diffing via `Scene`), §4 (simple-bar acceptance fixture) — see
 the M1 breakdown below. Measured on the fixture: **14.5 MB RSS
 (release) with a full bar tree, 0 voluntary ctx switches over 5 s
 idle** — under the 25 MB full-bar budget with room for the Lua VM.
-Next open item: **M2 — Lua runtime** (mlua/LuaJIT, `shell.*`/`ui.*`,
-hot reload, conventions doc).
+
+**M2 in progress**: §1 done (2026-07-08) — `runtime` crate boots a
+vendored-LuaJIT VM, loads the ported `ui.*` stdlib from
+`lua/moonshell/stdlib.lua`, and parses nur's element-table contract
+into `render::Element`. Next open item: **M2 §2 — multi-window
+`surface`** (see the M2 breakdown below).
 
 Two working inputs exist:
 
@@ -182,8 +186,60 @@ M1 breakdown (element vocabulary; all in `render`, no Lua):
    `icon_fallback_text_clips_to_box`). Measured: 14.5 MB RSS release,
    0 voluntary ctx switches / 5 s.
 
-Then M2 brings Lua in. Nothing Lua-shaped gets built in M0/M1 — the
-render core must be provably tiny before the runtime lands on top.
+M2 breakdown (the Lua runtime):
+
+1. [x] `runtime` crate: VM + element bridge + `ui.*` stdlib
+   (2026-07-08). mlua 0.10, `luajit`+`vendored` (the FFI escape hatch
+   is the locked decision; vendored → single binary, no system Lua).
+   `Vm` owns the `Lua`; one `Vm` per config lifetime — hot reload (§5)
+   drops it wholesale, nothing leaks across reloads. `element.rs`
+   `from_table` is the doctrine-05 fourth arm: nur's element-table
+   contract → `render::Element`, with per-element default merging
+   (`apply_style` over the variant's `Default`), `fill`→`grow` mapping
+   (numeric `grow` accepted, wins), hbox/button defaulting
+   `align=center` (nur's unconditional `items_center`), `button`
+   parsed as its M4 visual shell (handlers ignored), scroll/slider/
+   input rejected with milestone-naming errors, unsupported style
+   props accepted-and-ignored so nur configs load. `TextDefaults`
+   threads window `fg`/`font_size` inheritance through the parse — §3
+   fills it from `shell.window` opts, no API break. Stdlib ported
+   minus `ui.bar_layout` + the theme-aware `shell.window` wrapper
+   (both need `moonshell.theme` and the `shell` global — §6).
+2. [ ] `surface` multi-window: generalize the single hardcoded layer
+   surface to N runtime-created windows — per-window `LayerOptions`
+   (edge/anchor, layer, margins, keyboard interactivity, namespace),
+   per-window painter + damage/frame state, create/destroy handles
+   usable from inside the event loop (`shell.window` at config time
+   *and* later). Bare binary and examples ride the same API
+   (doctrine 06 artifact must keep booting).
+3. [ ] `shell.window` + `shell.state` + render callbacks in the
+   binary: config resolution (`--config`, `$MOONSHELL_CONFIG`,
+   `~/.config/moonshell/init.lua`; missing config = bare version bar),
+   window handles with `:render(fn)` (store `LuaRegistryKey`), render
+   called at paint time returning element tables, `state:set` marks
+   windows dirty (notify-all model, like nur), window `bg`/`fg`/
+   `font_size` feeding `TextDefaults`.
+4. [ ] timers & process: `shell.interval`/`once` as calloop timers
+   (armed only while one exists — the zero-idle-wakeup gate),
+   `shell.exec`/`exec_async`, `shell.quit`, `shell.get_window`,
+   `shell.displays`. nur's `shell.clipboard_*` needs a data-control
+   protocol on layer surfaces — deferred to M4, recorded here.
+5. [ ] hot reload: inotify (calloop source) on the config tree; on
+   change drop the `Vm`, destroy Lua-created windows, boot a fresh VM,
+   re-exec; `shell.reload()` does the same by hand. `shell.watch_file`
+   rides the same inotify source (nur's most-wanted feature, no
+   polling).
+6. [ ] stdlib completion + acceptance: port `theme.lua`/`utils.lua` +
+   widget modules' `package.preload` registration; land `ui.bar_layout`
+   and the theme-aware `shell.window` wrapper; Lua conventions doc in
+   `~/Dev/design/`. **Accept-criterion conflict to resolve**: nur's
+   `simple-bar/init.lua` reads `shell.services.*` (M3) — §6 ships
+   placeholder service facades (static state, `:get()`/`:subscribe()`
+   shaped) so the config runs unmodified; real backends replace them
+   in M3. Measure RSS (< 25 MB) + idle wakeups here.
+
+Nothing Lua-shaped was built in M0/M1 — the render core was provably
+tiny before the runtime landed on top.
 
 ## Standing lessons (imported)
 
@@ -225,6 +281,18 @@ render core must be provably tiny before the runtime lands on top.
 - From M1 §4: `pkill -f` patterns in dev scripts must not match the
   invoking shell's own command line (quote a bracketed char:
   `[s]imple_bar`)
+- From M2 §1: mlua's vendored LuaJIT (`luajit-src`) shells out to
+  `make`/`cc` at build time — builds must run inside the devshell/
+  sandbox (stdenv provides both); a bare `cargo build` on the host
+  fails in `luajit-src` with a bare `NotFound`
+- From M2 §1: the bridge speaks *nur's* contract even where render
+  defaults differ (separator defaults horizontal in the bridge,
+  vertical in `render`; progress `bg` is the *track*, pulled back out
+  of the parsed style) — compat lives in one layer, `render` keeps its
+  own sensible defaults
+- From M2 §1: Lua color strings (`"#rrggbb"`) inside Rust raw strings
+  need `r##"..."##` — `"#` terminates a plain `r#"..."#` literal
+  mid-string
 - From M1 §3: shm buffers alternate, so a partial-damage frame must
   either fully repaint (current: correctness by determinism —
   over-reported damage is always safe) or track per-slot buffer age
