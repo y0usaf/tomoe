@@ -174,6 +174,7 @@ crate tomoe
 │   ├── mod damage: pub
 │   │   └── struct ExtraDamage: pub
 │   ├── mod framebuffer_effect: pub
+│   │   ├── struct EffectState: pub(self)
 │   │   ├── struct FramebufferEffect: pub
 │   │   ├── struct FramebufferEffectElement: pub
 │   │   └── struct Inner: pub(self)
