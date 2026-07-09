@@ -110,6 +110,8 @@ pub struct Tomoe {
     /// Persistent shader border rings (stable element ids for damage tracking).
     /// The ring shader leaves the window interior transparent.
     pub borders: HashMap<Window, crate::render::border::BorderRenderElement>,
+    /// Persistent rounded shadow shader elements, below each mapped window.
+    pub shadows: HashMap<Window, crate::render::shadow::ShadowRenderElement>,
     /// Per-window damage injection for rounded corners: the radius is a
     /// shader uniform, invisible to damage tracking, so radius changes bump
     /// these (stable element ids, like the border buffers).
@@ -362,6 +364,7 @@ impl Tomoe {
             consumed_buttons: std::collections::HashSet::new(),
             hovered_window: None,
             borders: HashMap::new(),
+            shadows: HashMap::new(),
             corner_damage: HashMap::new(),
             animations: Default::default(),
             applied_corner_radius: 0,
@@ -1101,6 +1104,7 @@ impl Tomoe {
             .find(|(_, w)| *w == window)
             .map(|(id, _)| *id);
         self.borders.remove(window);
+        self.shadows.remove(window);
         self.corner_damage.remove(window);
         self.animations.remove(window);
         self.space.unmap(window);

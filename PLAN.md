@@ -298,6 +298,20 @@ Done and working:
       timeout) — retires the `TOMOE_PORTAL_CHOOSER` env-var exemption;
       default `tomoe.ui.menu` picker ships as the preloaded `screencast`
       module, composing with `tomoe.rule { app_id = ..., screencast = ... }`
+- [ ] Relative geometry/unit algebra across the Lua policy surface: accept
+      `%` alongside exact physical `px` (and evaluate whether a logical
+      `dp` unit is useful), with explicit reference boxes (`output`,
+      `usable`, `parent`, `view`), anchors/alignment, aspect ratios,
+      `contain`/`cover`/`stretch`, and min/max/clamp constraints. Apply the
+      same vocabulary to window placement/resizing, tiling splits, gaps,
+      margins, compositor UI, and later decorations; keep protocol,
+      renderer, damage, capture, and final `Window:set_geometry` boundaries
+      in deterministic integer physical pixels. Store relative layout
+      intent so output hotplug/mode/scale/usable-area changes re-resolve it;
+      define rounding/remainder ownership so adjacent tiles never gap or
+      overlap. This is broader than niri's proportional columns and should
+      follow ShojiWM's parent-relative/flex semantics without giving up
+      Tomoe's physical-first coordinate doctrine.
 - [ ] Scriptable decorations (long-term; Hyprland-style built-in borders/
       titlebar first, ShojiWM-style Lua-driven SSD tree later — study
       `ref/ShojiWM/knowledges/shared-edge-tree-plan.md` before designing)
@@ -696,13 +710,41 @@ works — all landed; live night-light run pending.*
      mapped window, shared by GLES/TTY/capture; stable IDs and parameter
      damage, animation/camera zoom following, and fullscreen omission for
      direct scanout. Outer radius = window radius + border width.
-   - [ ] Shadows as shader render elements.
+   - [x] Shadows: persistent physical-first rounded SDF shader elements,
+     Hyprland-shape range/color/power falloff, shared by GLES/TTY/capture;
+     animation/camera following and fullscreen omission preserve direct scanout.
+     Configured by `settings.shadow`; nested + TTY visual checks pending.
    - [ ] Per-window radius/tearing/border-color queued-op surface.
 4. Dual-kawase blur incl. blur-behind for layer surfaces (re-read
    `ref/ShojiWM/knowledges/effect-invalidation.md` first)
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*
+
+### M7 — Resolution-independent policy geometry
+
+1. Design and document a common Lua geometry value/algebra: `%` and `px`
+   units, explicit reference boxes (`output`, `usable`, `parent`, `view`),
+   anchors/alignment, aspect-ratio fitting (`contain`/`cover`/`stretch`),
+   and min/max/clamp. Specify whether percentages include borders/gaps and
+   specify deterministic physical-pixel rounding before implementation.
+2. Add resolver primitives and relative layout intent to the Lua/core
+   boundary. Re-resolve on output hotplug, mode, per-output scale, exclusive
+   zone/usable-area, and parent/view changes; preserve exact integer-pixel
+   `Window:set_geometry` as the low-level escape hatch and compositor
+   boundary.
+3. Dogfood the algebra in `wm.lua` and `zoomer.lua` for placement, resize,
+   tiling splits, gaps, and margins; then use the same values for
+   `tomoe.ui` and scriptable decorations rather than creating subsystem-
+   specific percentage syntaxes.
+4. Test ultrawide, 16:9, portrait, mixed-output, and fractional-scale cases,
+   including `5120x1440 -> 50% x 50% -> cover/crop 16:9 = 1280x720`, and
+   assert tiled rectangles exactly cover their parent without gaps or
+   overlap after rounding.
+
+*Accept: one declarative geometry vocabulary makes policy portable across
+display shapes and scales, while rendering, protocols, capture, and all
+final geometry remain crisp deterministic physical pixels.*
 
 ## Standing lessons from `ref/` (re-read before touching these areas)
 

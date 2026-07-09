@@ -247,6 +247,7 @@ Motion event during a tomoe.grab_pointer grab.
 - `watchdog_ms: integer` — wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 - `winit_size: integer[]` — { w, h } of the nested dev window (winit backend)
 - `border: Border`
+- `shadow: Shadow`
 - `keyboard: Keyboard`
 - `displays: table<string, Display>` — per-output settings, keyed by connector name ("DP-1")
 - `touchpad: InputDevice` — class-wide touchpad settings (tty backend)
@@ -285,6 +286,14 @@ One animation: give `spring` or `ease` (spring wins when both are set).
 - `focused: string` — "#rrggbb" or "#rrggbbaa"
 - `unfocused: string` — "#rrggbb" or "#rrggbbaa"
 - `radius: integer` — window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
+
+### Shadow
+
+Rounded window drop shadow (`settings.shadow`); fullscreen windows never draw one, preserving direct scanout.
+
+- `range: integer` — falloff extent in physical pixels; 0 disables shadows (default 12)
+- `color: string` — "#rrggbb" or "#rrggbbaa" (default "#00000099")
+- `power: number` — falloff exponent, clamped to 1..4 (default 3)
 
 ### Keyboard
 

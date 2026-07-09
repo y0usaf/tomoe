@@ -22,10 +22,12 @@ pub mod renderer;
 mod resources;
 mod shader_element;
 pub mod shaders;
+pub mod shadow;
 
 use std::collections::HashMap;
 
 use border::BorderRenderElement;
+use shadow::ShadowRenderElement;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::{
@@ -78,6 +80,7 @@ crate::tomoe_render_elements! {
     OutputRenderElements<R> => {
         Solid = SolidColorRenderElement,
         Border = BorderRenderElement,
+        Shadow = ShadowRenderElement,
         Memory = MemoryRenderBufferRenderElement<R>,
         Surface = WaylandSurfaceRenderElement<R>,
         // Window content clipped to rounded-corner geometry.
@@ -90,6 +93,7 @@ crate::tomoe_render_elements! {
         ZoomedClippedSurface = RescaleRenderElement<ClippedSurfaceRenderElement<R>>,
         ZoomedSolid = RescaleRenderElement<SolidColorRenderElement>,
         ZoomedBorder = RescaleRenderElement<BorderRenderElement>,
+        ZoomedShadow = RescaleRenderElement<ShadowRenderElement>,
     }
 }
 
@@ -159,6 +163,49 @@ pub fn border_elements<R: TomoeRenderer>(
         } else {
             OutputRenderElements::ZoomedBorder(RescaleRenderElement::from_element(
                 border,
+                Point::from((-output_loc.x, -output_loc.y)),
+                zoom,
+            ))
+        });
+    }
+    elements
+}
+
+/// Persistent rounded shadows below windows. Fullscreen windows are omitted
+/// to preserve direct scanout; camera and animation transforms match content.
+// Window keys hash by their stable id despite interior mutability.
+#[allow(clippy::mutable_key_type)]
+pub fn shadow_elements<R: TomoeRenderer>(
+    space: &PhysicalSpace,
+    shadows: &mut HashMap<Window, ShadowRenderElement>,
+    output_loc: Point<i32, Physical>,
+    animations: &crate::animation::Animations,
+    anim_now: std::time::Duration,
+) -> Vec<OutputRenderElements<R>> {
+    let zoom = space.view_zoom();
+    let cam_loc = output_loc + space.view_offset();
+    let mut elements = Vec::new();
+    for window in space.elements() {
+        if is_fullscreen(window) {
+            continue;
+        }
+        let Some(mut geo) = space.element_geometry(window) else {
+            continue;
+        };
+        let alpha = animations.alpha(window, anim_now);
+        let Some(shadow) = shadows.get_mut(window) else {
+            continue;
+        };
+        shadow.set_alpha(alpha);
+        geo.loc += animations.offset(window, anim_now);
+        let range = shadow.range().max(0);
+        let location = geo.loc - cam_loc - Point::from((range, range));
+        let shadow = shadow.clone().with_location(location);
+        elements.push(if zoom == 1.0 {
+            OutputRenderElements::Shadow(shadow)
+        } else {
+            OutputRenderElements::ZoomedShadow(RescaleRenderElement::from_element(
+                shadow,
                 Point::from((-output_loc.x, -output_loc.y)),
                 zoom,
             ))
@@ -255,6 +302,7 @@ pub fn scene_elements<R: TomoeRenderer>(
     output: &Output,
     ui: Vec<OutputRenderElements<R>>,
     borders: Vec<OutputRenderElements<R>>,
+    shadows: Vec<OutputRenderElements<R>>,
     corner_radius: i32,
     corner_damage: &HashMap<Window, ExtraDamage>,
     animations: &crate::animation::Animations,
@@ -419,8 +467,9 @@ pub fn scene_elements<R: TomoeRenderer>(
         }
     }
 
-    // Borders render below windows (visible as a ring around each).
+    // Borders and shadows render below windows, with shadows underneath rings.
     elements.extend(borders);
+    elements.extend(shadows);
     elements.extend(layer_elements(
         renderer,
         [WlrLayer::Bottom, WlrLayer::Background],

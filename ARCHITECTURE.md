@@ -176,9 +176,12 @@ crate tomoe
 │   │   ├── struct ShaderProgramInner: pub(self)
 │   │   ├── struct ShaderProgramInternal: pub(self)
 │   │   └── struct ShaderRenderElement: pub
-│   └── mod shaders: pub
-│       ├── enum ProgramType: pub
-│       └── struct Shaders: pub
+│   ├── mod shaders: pub
+│   │   ├── enum ProgramType: pub
+│   │   └── struct Shaders: pub
+│   └── mod shadow: pub
+│       ├── struct Parameters: pub(self)
+│       └── struct ShadowRenderElement: pub
 ├── mod screenshot: pub(crate)
 ├── mod space: pub(crate)
 │   └── struct PhysicalSpace: pub

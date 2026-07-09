@@ -246,6 +246,10 @@ pub struct Settings {
     /// Window corner radius in physical pixels; 0 disables rounding.
     /// Fullscreen windows never round (keeps direct scanout).
     pub corner_radius: i32,
+    /// Rounded drop-shadow parameters, in physical pixels.
+    pub shadow_range: i32,
+    pub shadow_color: [f32; 4],
+    pub shadow_power: f32,
     /// What "Mod" means in bind combos and pointer-event mods.
     pub mod_key: crate::input::ModKey,
     /// Focus the window under the pointer as it moves (sloppy focus:
@@ -297,6 +301,9 @@ impl Default for Settings {
             border_focused: parse_color("#7aa2f7").unwrap(),
             border_unfocused: parse_color("#3b4261").unwrap(),
             corner_radius: 0,
+            shadow_range: 12,
+            shadow_color: parse_color("#00000099").unwrap(),
+            shadow_power: 3.,
             mod_key: crate::input::ModKey::default(),
             focus_follows_mouse: false,
             tearing: false,
@@ -1309,6 +1316,24 @@ impl LuaRuntime {
                         }
                     }
                     _ => {}
+                }
+                if let Ok(shadow) = table.get::<Table>("shadow") {
+                    if let Ok(range) = shadow.get::<i32>("range") {
+                        settings.shadow_range = range.max(0);
+                    }
+                    if let Ok(color) = shadow.get::<String>("color") {
+                        match parse_color(&color) {
+                            Some(c) => settings.shadow_color = c,
+                            None => warn!("invalid shadow.color {color:?}"),
+                        }
+                    }
+                    if let Ok(power) = shadow.get::<f32>("power") {
+                        if power.is_finite() {
+                            settings.shadow_power = power.clamp(1., 4.);
+                        } else {
+                            warn!("invalid shadow.power {power:?}");
+                        }
+                    }
                 }
                 if let Ok(border) = table.get::<Table>("border") {
                     if let Ok(width) = border.get::<i32>("width") {

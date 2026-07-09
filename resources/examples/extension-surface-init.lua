@@ -13,7 +13,8 @@ wm.gaps = 8
 
 tomoe.settings {
   mod = "super",
-  border = { width = 2, focused = "#7aa2f7", unfocused = "#3b4261" },
+  border = { width = 2, focused = "#7aa2f7", unfocused = "#3b4261", radius = 12 },
+  shadow = { range = 12, color = "#00000099", power = 3 },
 }
 
 -- ─── Window rules ────────────────────────────────────────────────────────────

@@ -472,6 +472,7 @@ function ScreencastRequest:defer() end
 ---@field watchdog_ms integer # wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 ---@field winit_size integer[] # { w, h } of the nested dev window (winit backend)
 ---@field border Border
+---@field shadow Shadow
 ---@field keyboard Keyboard
 ---@field displays table<string, Display> # per-output settings, keyed by connector name ("DP-1")
 ---@field touchpad InputDevice # class-wide touchpad settings (tty backend)
@@ -506,6 +507,13 @@ function ScreencastRequest:defer() end
 ---@field focused string # "#rrggbb" or "#rrggbbaa"
 ---@field unfocused string # "#rrggbb" or "#rrggbbaa"
 ---@field radius integer # window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
+
+---Rounded window drop shadow (`settings.shadow`); fullscreen windows never
+---draw one, preserving direct scanout.
+---@class Shadow
+---@field range integer # falloff extent in physical pixels; 0 disables shadows (default 12)
+---@field color string # "#rrggbb" or "#rrggbbaa" (default "#00000099")
+---@field power number # falloff exponent, clamped to 1..4 (default 3)
 
 ---xkb keymap + key repeat. Empty strings mean the xkb defaults (including
 ---the XKB_DEFAULT_* environment variables).

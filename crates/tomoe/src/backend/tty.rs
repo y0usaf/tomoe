@@ -1557,6 +1557,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         cursor_fallback,
         ui,
         borders,
+        shadows,
         corner_damage,
         animations,
         lock_surfaces,
@@ -1629,12 +1630,15 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, true);
         let borders =
             crate::render::border_elements(space, borders, output_loc, animations, anim_now);
+        let shadows =
+            crate::render::shadow_elements(space, shadows, output_loc, animations, anim_now);
         elements.extend(crate::render::scene_elements(
             &mut renderer,
             space,
             &surface.output,
             ui_elements,
             borders,
+            shadows,
             corner_radius,
             corner_damage,
             animations,

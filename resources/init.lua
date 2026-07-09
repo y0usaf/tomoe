@@ -82,6 +82,9 @@ tomoe.settings {
   -- devices = {
   --   ["Logitech G Pro"] = { accel_speed = -0.3 },
   -- },
+  -- Rounded drop shadow; range/radius are physical pixels. Set range = 0
+  -- to disable. `power` controls falloff (1 = soft, 4 = fast).
+  shadow = { range = 12, color = "#00000099", power = 3 },
   border = {
     width = 2,
     focused = "#7aa2f7",

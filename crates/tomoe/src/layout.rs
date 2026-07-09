@@ -39,6 +39,13 @@ impl Tomoe {
                 width,
                 radius + width,
             );
+            self.shadows.entry(window.clone()).or_default().update(
+                geo.size,
+                settings.shadow_color,
+                settings.shadow_range,
+                radius,
+                settings.shadow_power,
+            );
         }
     }
 }

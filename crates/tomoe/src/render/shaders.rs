@@ -18,6 +18,7 @@ use super::shader_element::ShaderProgram;
 #[derive(Debug, Clone, Copy)]
 pub enum ProgramType {
     Border,
+    Shadow,
 }
 
 pub struct Shaders {
@@ -25,6 +26,7 @@ pub struct Shaders {
     /// (`clipped_surface.frag` overriding the default texture program).
     pub clipped_surface: Option<GlesTexProgram>,
     pub border: Option<ShaderProgram>,
+    pub shadow: Option<ShaderProgram>,
 }
 
 impl Shaders {
@@ -63,9 +65,25 @@ impl Shaders {
         .map_err(|err| warn!("error compiling border shader: {err:?}"))
         .ok();
 
+        let shadow = ShaderProgram::compile(
+            renderer,
+            include_str!("shaders/shadow.frag"),
+            &[
+                UniformName::new("color", UniformType::_4f),
+                UniformName::new("geo_size", UniformType::_2f),
+                UniformName::new("shadow_range", UniformType::_1f),
+                UniformName::new("corner_radius", UniformType::_1f),
+                UniformName::new("shadow_power", UniformType::_1f),
+            ],
+            &[],
+        )
+        .map_err(|err| warn!("error compiling shadow shader: {err:?}"))
+        .ok();
+
         Self {
             clipped_surface,
             border,
+            shadow,
         }
     }
 
@@ -78,6 +96,7 @@ impl Shaders {
     pub fn program(&self, program: ProgramType) -> Option<ShaderProgram> {
         match program {
             ProgramType::Border => self.border.clone(),
+            ProgramType::Shadow => self.shadow.clone(),
         }
     }
 
