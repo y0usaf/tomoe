@@ -730,8 +730,18 @@ works — all landed; live night-light run pending.*
      an explicit `anti_artifact_margin` sampling halo (96 physical pixels by
      default), so Smithay invalidates and recaptures it for adjacent source
      damage; the expanded capture is cropped back to the requested rectangle.
-     Blur regions, rounded masks, and window blur remain; nested + TTY visual
-     checks pending. (`ref/ShojiWM/knowledges/effect-invalidation.md` re-read.)
+     (`ref/ShojiWM/knowledges/effect-invalidation.md` re-read.)
+   - [x] Third slice: `Window:set_properties { blur = true }` opts a window into
+     the shared cached dual-kawase backdrop path (public Lua policy surface,
+     exercised by the extension-surface example), with stable per-window effect
+     identity across GLES/TTY/output capture. `ext-background-effect-v1` is
+     advertised with blur capability; committed layer-surface regions are
+     normalized after ordered add/subtract operations, clipped to surface bounds,
+     and render as exact physical effect rectangles. Protocol regions opt in
+     independently of namespace config and an explicit empty region disables the
+     effect. Window blur is rectangular and disabled during camera zoom until
+     transformed framebuffer-effect geometry lands. Rounded masks, popup/window
+     protocol regions, nested + TTY visual checks remain.
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*

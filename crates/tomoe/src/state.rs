@@ -22,6 +22,7 @@ use smithay::utils::{
 use smithay::wayland::compositor::{
     get_parent, send_surface_state, with_states, CompositorClientState, CompositorState,
 };
+use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleManagerState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::dmabuf::DmabufState;
@@ -116,8 +117,10 @@ pub struct Tomoe {
     pub borders: HashMap<Window, crate::render::border::BorderRenderElement>,
     /// Persistent rounded shadow shader elements, below each mapped window.
     pub shadows: HashMap<Window, crate::render::shadow::ShadowRenderElement>,
+    /// Persistent blur elements keyed by mapped windows.
+    pub window_blurs: HashMap<Window, crate::render::framebuffer_effect::FramebufferEffect>,
     /// Persistent blur elements keyed by the layer-shell root surface.
-    pub layer_blurs: HashMap<WlSurface, crate::render::framebuffer_effect::FramebufferEffect>,
+    pub layer_blurs: HashMap<WlSurface, Vec<crate::render::framebuffer_effect::FramebufferEffect>>,
     /// Per-window damage injection for rounded corners: the radius is a
     /// shader uniform, invisible to damage tracking, so radius changes bump
     /// these (stable element ids, like the border buffers).
@@ -136,6 +139,10 @@ pub struct Tomoe {
     pub compositor_state: CompositorState,
     pub layer_shell_state: WlrLayerShellState,
     pub xdg_shell_state: XdgShellState,
+    /// Held to keep the ext-background-effect-v1 global alive; committed blur
+    /// regions live in each surface's cached state.
+    #[allow(dead_code)]
+    pub background_effect_state: BackgroundEffectState,
     /// Held to keep the zxdg-decoration global alive; handlers drive policy.
     #[allow(dead_code)]
     pub xdg_decoration_state: XdgDecorationState,
@@ -269,6 +276,7 @@ impl Tomoe {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let background_effect_state = BackgroundEffectState::new::<Self>(&display_handle);
         // Advertise server-side decorations (both the xdg and the legacy KDE
         // protocol) so clients like Firefox/Librewolf drop their CSD titlebar
         // and every window gets the same compositor-drawn border.
@@ -375,6 +383,7 @@ impl Tomoe {
             hovered_window: None,
             borders: HashMap::new(),
             shadows: HashMap::new(),
+            window_blurs: HashMap::new(),
             layer_blurs: HashMap::new(),
             corner_damage: HashMap::new(),
             window_radii: HashMap::new(),
@@ -384,6 +393,7 @@ impl Tomoe {
             compositor_state,
             layer_shell_state,
             xdg_shell_state,
+            background_effect_state,
             xdg_decoration_state,
             kde_decoration_state,
             shm_state,

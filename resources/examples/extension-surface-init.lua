@@ -15,6 +15,7 @@ tomoe.settings {
   mod = "super",
   border = { width = 2, focused = "#7aa2f7", unfocused = "#3b4261", radius = 12 },
   shadow = { range = 12, color = "#00000099", power = 3 },
+  blur = { enabled = true, passes = 3, offset = 2.5 },
 }
 
 -- ─── Window rules ────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ tomoe.rule {
     win:set_properties {
       radius = 0,
       tearing = true,
+      blur = true,
       border = { focused = "#bb9af7", unfocused = "#565f89" },
     }
   end,

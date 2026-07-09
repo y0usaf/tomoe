@@ -130,6 +130,7 @@ A rectangle in integer physical pixels, world coordinates.
 
 - `radius: integer?` — corner radius in physical pixels
 - `tearing: boolean?` — per-window grant/denial; true does not require a client hint
+- `blur: boolean?` — blur the compositor scene behind this window (requires settings.blur.enabled)
 - `border: WindowBorder?` — focused/unfocused color overrides
 
 ### WindowBorder

@@ -640,6 +640,8 @@ pub struct WindowProperties {
     /// Per-window overrides; `None` falls back to the corresponding setting.
     pub radius: Option<i32>,
     pub tearing: Option<bool>,
+    /// Blur the compositor scene behind this window geometry.
+    pub blur: Option<bool>,
     pub border_focused: Option<[f32; 4]>,
     pub border_unfocused: Option<[f32; 4]>,
 }
@@ -1103,6 +1105,7 @@ impl UserData for LuaWindow {
         methods.add_method("set_properties", |_, this, table: Table| {
             let radius = table.get::<Option<i32>>("radius")?.map(|v| v.max(0));
             let tearing = table.get::<Option<bool>>("tearing")?;
+            let blur = table.get::<Option<bool>>("blur")?;
             let border = table.get::<Option<Table>>("border")?;
             let parse = |key: &str| -> mlua::Result<Option<[f32; 4]>> {
                 let Some(border) = border.as_ref() else {
@@ -1118,6 +1121,7 @@ impl UserData for LuaWindow {
             let props = WindowProperties {
                 radius,
                 tearing,
+                blur,
                 border_focused: parse("focused")?,
                 border_unfocused: parse("unfocused")?,
             };
@@ -3328,6 +3332,7 @@ mod tests {
                     w:set_properties {
                       radius = 18,
                       tearing = true,
+                      blur = true,
                       border = { focused = "#ff0000", unfocused = "#00800080" },
                     }
                   end,
@@ -3384,6 +3389,7 @@ mod tests {
         };
         assert_eq!(props.radius, Some(18));
         assert_eq!(props.tearing, Some(true));
+        assert_eq!(props.blur, Some(true));
         assert_eq!(props.border_focused, parse_color("#ff0000"));
         assert_eq!(props.border_unfocused, parse_color("#00800080"));
 
@@ -3400,6 +3406,7 @@ mod tests {
                 WindowProperties {
                     radius: None,
                     tearing: None,
+                    blur: None,
                     border_focused: None,
                     border_unfocused: None
                 }

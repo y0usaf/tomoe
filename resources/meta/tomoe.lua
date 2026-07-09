@@ -361,6 +361,7 @@ function UiWidget:close() end
 ---@class WindowProperties
 ---@field radius integer? # corner radius in physical pixels
 ---@field tearing boolean? # per-window grant/denial; true does not require a client hint
+---@field blur boolean? # blur the compositor scene behind this window (requires settings.blur.enabled)
 ---@field border WindowBorder? # focused/unfocused color overrides
 
 ---@class WindowBorder

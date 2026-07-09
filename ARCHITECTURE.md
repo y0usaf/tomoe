@@ -131,6 +131,7 @@ crate tomoe
 │   ├── enum RunPolicy: pub
 │   └── struct Service: pub(self)
 ├── mod protocols: pub(crate)
+│   ├── mod background_effect: pub
 │   ├── mod gamma_control: pub
 │   │   ├── trait GammaControlHandler: pub
 │   │   ├── struct GammaControlManagerGlobalData: pub

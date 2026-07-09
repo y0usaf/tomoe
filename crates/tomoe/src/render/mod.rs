@@ -308,7 +308,7 @@ fn layer_elements<R: TomoeRenderer>(
     blur: &crate::lua::BlurSettings,
     effects: &mut HashMap<
         smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-        FramebufferEffect,
+        Vec<FramebufferEffect>,
     >,
 ) -> Vec<OutputRenderElements<R>> {
     let layers = layer_map_for_output(output);
@@ -324,24 +324,46 @@ fn layer_elements<R: TomoeRenderer>(
             };
             let physical = coords::rect_to_physical(geo, scale);
             elements.extend(layer.render_elements(renderer, physical.loc, Scale::from(scale), 1.0));
-            if blur.enabled
-                && blur
+            if blur.enabled {
+                let local_bounds = Rectangle::from_size(geo.size);
+                let protocol_regions = crate::protocols::background_effect::blur_region_rects(
+                    layer.wl_surface(),
+                    local_bounds,
+                );
+                let configured = blur
                     .layer_namespaces
                     .iter()
-                    .any(|name| name == layer.namespace())
-            {
-                let effect = effects.entry(layer.wl_surface().clone()).or_default();
-                elements.push(OutputRenderElements::FramebufferEffect(effect.render(
-                    physical,
-                    options,
-                    blur.anti_artifact_margin,
-                )));
+                    .any(|name| name == layer.namespace());
+                // A protocol region opts in on its own and wins exactly,
+                // including an explicitly empty region. With no protocol
+                // request, configured namespaces blur their full geometry.
+                let visible_regions = match protocol_regions {
+                    Some(regions) => regions
+                        .into_iter()
+                        .map(|mut region| {
+                            region.loc += geo.loc;
+                            coords::rect_to_physical(region, scale)
+                        })
+                        .collect::<Vec<_>>(),
+                    None if configured => vec![physical],
+                    None => Vec::new(),
+                };
+                let surface_effects = effects.entry(layer.wl_surface().clone()).or_default();
+                surface_effects.resize_with(visible_regions.len(), FramebufferEffect::new);
+                for (effect, region) in surface_effects.iter_mut().zip(visible_regions) {
+                    elements.push(OutputRenderElements::FramebufferEffect(effect.render(
+                        region,
+                        options,
+                        blur.anti_artifact_margin,
+                    )));
+                }
             }
         }
     }
     elements
 }
 
+#[allow(clippy::mutable_key_type, clippy::too_many_arguments)]
 pub fn scene_elements<R: TomoeRenderer>(
     renderer: &mut R,
     space: &PhysicalSpace,
@@ -351,8 +373,11 @@ pub fn scene_elements<R: TomoeRenderer>(
     shadows: Vec<OutputRenderElements<R>>,
     layer_blurs: &mut HashMap<
         smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-        FramebufferEffect,
+        Vec<FramebufferEffect>,
     >,
+    window_blurs: &mut HashMap<Window, FramebufferEffect>,
+    window_properties: &HashMap<u64, crate::lua::WindowProperties>,
+    windows: &HashMap<u64, Window>,
     blur: &crate::lua::BlurSettings,
     corner_radius: i32,
     window_radii: &HashMap<Window, i32>,
@@ -367,6 +392,7 @@ pub fn scene_elements<R: TomoeRenderer>(
     };
 
     layer_blurs.retain(|surface, _| surface.alive());
+    window_blurs.retain(|window, _| window.alive());
 
     let mut elements = ui;
     elements.extend(layer_elements(
@@ -495,6 +521,26 @@ pub fn scene_elements<R: TomoeRenderer>(
                     });
                 }
             }
+        }
+
+        // The element list is top-to-bottom: place the effect after the
+        // window surface so it captures only lower scene content, exactly as
+        // the layer-shell path does. Camera zoom stays excluded until the
+        // framebuffer effect can share the transformed window geometry.
+        let window_blur = window_properties.iter().find_map(|(id, props)| {
+            (windows.get(id) == Some(window)).then_some(props.blur == Some(true))
+        });
+        if blur.enabled && zoom == 1.0 && window_blur == Some(true) && !is_fullscreen(window) {
+            let options = crate::render::blur::BlurOptions {
+                passes: blur.passes,
+                offset: blur.offset,
+            };
+            let effect = window_blurs.entry(window.clone()).or_default();
+            elements.push(OutputRenderElements::FramebufferEffect(effect.render(
+                clip_geo,
+                options,
+                blur.anti_artifact_margin,
+            )));
         }
 
         // Radius changes bump this window's ExtraDamage (uniform changes
