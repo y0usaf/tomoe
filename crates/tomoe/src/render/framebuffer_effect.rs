@@ -17,6 +17,7 @@ struct EffectState {
     geometry: Rectangle<i32, Physical>,
     visible_geometry: Rectangle<i32, Physical>,
     options: BlurOptions,
+    corner_radius: f32,
 }
 
 /// Persistent identity for a blur-behind rectangle. Keep one per layer surface
@@ -39,6 +40,9 @@ pub struct FramebufferEffectElement {
     /// halo are sampled but never drawn.
     visible_geometry: Rectangle<i32, Physical>,
     options: BlurOptions,
+    /// Physical corner radius for the visible mask. The sampling halo remains
+    /// rectangular so edge pixels retain enough neighboring backdrop content.
+    corner_radius: f32,
 }
 
 #[derive(Debug)]
@@ -69,11 +73,25 @@ impl FramebufferEffect {
         options: BlurOptions,
         anti_artifact_margin: i32,
     ) -> FramebufferEffectElement {
+        self.render_masked(visible_geometry, options, anti_artifact_margin, 0.0)
+    }
+
+    pub fn render_masked(
+        &mut self,
+        visible_geometry: Rectangle<i32, Physical>,
+        options: BlurOptions,
+        anti_artifact_margin: i32,
+        corner_radius: f32,
+    ) -> FramebufferEffectElement {
         let geometry = expand_rect(visible_geometry, anti_artifact_margin);
+        let corner_radius = corner_radius
+            .max(0.0)
+            .min(visible_geometry.size.w.min(visible_geometry.size.h) as f32 / 2.0);
         let state = EffectState {
             geometry,
             visible_geometry,
             options,
+            corner_radius,
         };
         if self.last != Some(state) {
             self.commit.increment();
@@ -85,6 +103,7 @@ impl FramebufferEffect {
             geometry,
             visible_geometry,
             options,
+            corner_radius,
         }
     }
 }
@@ -288,7 +307,31 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
         if visible_damage.is_empty() {
             return Ok(());
         }
-        frame.render_texture_from_to(
+        let mask_program = if self.corner_radius > 0.0 {
+            super::shaders::Shaders::get_from_frame(frame)
+                .and_then(|shaders| shaders.blur_mask.clone())
+        } else {
+            None
+        };
+        if let Some(program) = mask_program {
+            frame.override_default_tex_program(
+                program,
+                vec![
+                    smithay::backend::renderer::gles::Uniform::new(
+                        "geo_size",
+                        (
+                            self.visible_geometry.size.w as f32,
+                            self.visible_geometry.size.h as f32,
+                        ),
+                    ),
+                    smithay::backend::renderer::gles::Uniform::new(
+                        "corner_radius",
+                        [self.corner_radius; 4],
+                    ),
+                ],
+            );
+        }
+        let result = frame.render_texture_from_to(
             texture,
             source,
             visible,
@@ -298,7 +341,9 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             1.0,
             None,
             &[],
-        )
+        );
+        frame.clear_tex_program_override();
+        result
     }
 }
 
@@ -400,5 +445,21 @@ mod tests {
             )
         );
         assert_eq!(element.visible_geometry, visible);
+    }
+    #[test]
+    fn rounded_mask_is_clamped_and_damages_on_change() {
+        let mut effect = FramebufferEffect::new();
+        let visible = Rectangle::new(Point::from((10, 20)), Size::from((40, 20)));
+        let options = BlurOptions {
+            passes: 2,
+            offset: 1.0,
+        };
+        let square = effect.render(visible, options, 8);
+        let square_commit = square.current_commit();
+        assert_eq!(square.corner_radius, 0.0);
+
+        let rounded = effect.render_masked(visible, options, 8, 100.0);
+        assert!(rounded.current_commit() > square_commit);
+        assert_eq!(rounded.corner_radius, 10.0);
     }
 }

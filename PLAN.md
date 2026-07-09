@@ -246,8 +246,12 @@ Done and working:
       Follow-up: borders stay square — rounded borders need the border
       shader (with shadows); per-window radius needs the core-props op
       surface (below)
-- [ ] Drop shadows
-- [ ] Dual-kawase blur (windows + blur-behind for layer surfaces)
+- [x] Drop shadows — persistent rounded SDF shader elements with Hyprland-
+      shape range/color/power falloff, shared by GLES/TTY/capture; M6 §3
+- [x] Dual-kawase blur (windows + blur-behind for layer surfaces) — cached
+      framebuffer effects with invalidation halos, layer namespace and
+      ext-background-effect-v1 regions, Lua per-window opt-in, and rounded
+      window masks; remaining protocol/visual slices tracked in M6 §4
 - [ ] Special workspaces / groups — Lua-level per policy split; needs
       mechanism audit (hide/show + per-window state suffice?)
 
@@ -739,9 +743,12 @@ works — all landed; live night-light run pending.*
      normalized after ordered add/subtract operations, clipped to surface bounds,
      and render as exact physical effect rectangles. Protocol regions opt in
      independently of namespace config and an explicit empty region disables the
-     effect. Window blur is rectangular and disabled during camera zoom until
-     transformed framebuffer-effect geometry lands. Rounded masks, popup/window
-     protocol regions, nested + TTY visual checks remain.
+     effect. Window blur is masked by the same effective per-window radius as
+     content (including Lua overrides); the final blurred texture is clipped by
+     a shared antialiased physical-pixel shader while its sampling halo stays
+     rectangular. Camera zoom remains disabled until transformed framebuffer-
+     effect geometry lands. Popup/window protocol regions, nested + TTY visual
+     checks remain.
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*

@@ -26,6 +26,8 @@ pub struct Shaders {
     /// Clips a window surface to its rounded-corner geometry
     /// (`clipped_surface.frag` overriding the default texture program).
     pub clipped_surface: Option<GlesTexProgram>,
+    /// Masks the final blurred backdrop texture to rounded geometry.
+    pub blur_mask: Option<GlesTexProgram>,
     pub border: Option<ShaderProgram>,
     pub shadow: Option<ShaderProgram>,
     pub blur: Option<BlurProgram>,
@@ -82,6 +84,20 @@ impl Shaders {
         .map_err(|err| warn!("error compiling shadow shader: {err:?}"))
         .ok();
 
+        let blur_mask = renderer
+            .compile_custom_texture_shader(
+                concat!(
+                    include_str!("shaders/blur_mask.frag"),
+                    include_str!("shaders/rounding_alpha.frag"),
+                ),
+                &[
+                    UniformName::new("geo_size", UniformType::_2f),
+                    UniformName::new("corner_radius", UniformType::_4f),
+                ],
+            )
+            .map_err(|err| warn!("error compiling blur mask shader: {err:?}"))
+            .ok();
+
         let blur = BlurProgram::compile(renderer)
             .map_err(|err| warn!("error compiling blur shaders: {err:#}"))
             .ok();
@@ -91,6 +107,7 @@ impl Shaders {
             border,
             shadow,
             blur,
+            blur_mask,
         }
     }
 

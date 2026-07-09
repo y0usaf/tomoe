@@ -536,11 +536,9 @@ pub fn scene_elements<R: TomoeRenderer>(
                 offset: blur.offset,
             };
             let effect = window_blurs.entry(window.clone()).or_default();
-            elements.push(OutputRenderElements::FramebufferEffect(effect.render(
-                clip_geo,
-                options,
-                blur.anti_artifact_margin,
-            )));
+            elements.push(OutputRenderElements::FramebufferEffect(
+                effect.render_masked(clip_geo, options, blur.anti_artifact_margin, radius),
+            ));
         }
 
         // Radius changes bump this window's ExtraDamage (uniform changes
