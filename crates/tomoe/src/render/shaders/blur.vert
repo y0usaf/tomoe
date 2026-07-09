@@ -1,0 +1,1 @@
+[ref/niri/src/render_helpers/shaders/blur.vert unchanged since last read (9 lines already shown). Pass fresh=True to re-emit, or slice from your own variables.]

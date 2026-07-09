@@ -722,8 +722,12 @@ works — all landed; live night-light run pending.*
      Overrides reset on config reload before restore/open replay, so removed
      rules cannot leak policy. Exercised by the extension-surface example;
      TTY tearing + visual decoration check pending.
-4. Dual-kawase blur incl. blur-behind for layer surfaces (re-read
-   `ref/ShojiWM/knowledges/effect-invalidation.md` first)
+4. [in progress] Dual-kawase blur incl. blur-behind for layer surfaces.
+   - [x] First slice: cached dual-kawase framebuffer effect, physical rectangular
+     layer-shell blur selected by exact namespace through `settings.blur`, shared
+     by GLES/TTY/output capture. Full source-damage-box invalidation, blur regions,
+     rounded masks, and window blur remain; nested + TTY visual checks pending.
+     (`ref/ShojiWM/knowledges/effect-invalidation.md` re-read.)
 
 *Accept: side-by-side with Hyprland defaults, no visible fidelity gap;
 UFO test still flat at high refresh with animations running.*

@@ -12,6 +12,7 @@ use smithay::backend::renderer::gles::{
 };
 use tracing::warn;
 
+use super::blur::BlurProgram;
 use super::renderer::AsGlesRenderer;
 use super::shader_element::ShaderProgram;
 
@@ -27,6 +28,7 @@ pub struct Shaders {
     pub clipped_surface: Option<GlesTexProgram>,
     pub border: Option<ShaderProgram>,
     pub shadow: Option<ShaderProgram>,
+    pub blur: Option<BlurProgram>,
 }
 
 impl Shaders {
@@ -80,10 +82,15 @@ impl Shaders {
         .map_err(|err| warn!("error compiling shadow shader: {err:?}"))
         .ok();
 
+        let blur = BlurProgram::compile(renderer)
+            .map_err(|err| warn!("error compiling blur shaders: {err:#}"))
+            .ok();
+
         Self {
             clipped_surface,
             border,
             shadow,
+            blur,
         }
     }
 

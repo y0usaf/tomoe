@@ -54,6 +54,11 @@ struct SceneParts<'a> {
     ui: &'a mut Ui,
     borders: &'a mut HashMap<smithay::desktop::Window, crate::render::border::BorderRenderElement>,
     shadows: &'a mut HashMap<smithay::desktop::Window, crate::render::shadow::ShadowRenderElement>,
+    layer_blurs: &'a mut HashMap<
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        crate::render::framebuffer_effect::FramebufferEffect,
+    >,
+    blur: crate::lua::BlurSettings,
     corner_damage: &'a HashMap<Window, crate::render::damage::ExtraDamage>,
     window_radii: &'a HashMap<Window, i32>,
     corner_radius: i32,
@@ -135,6 +140,8 @@ impl<'a> SceneParts<'a> {
                 ui_elements,
                 borders,
                 shadows,
+                self.layer_blurs,
+                &self.blur,
                 self.corner_radius,
                 self.window_radii,
                 self.corner_damage,
@@ -217,6 +224,7 @@ macro_rules! split_tomoe {
         // border buffers themselves before borrowing them immutably.
         $tomoe.refresh_borders();
         let corner_radius = $tomoe.lua.settings().corner_radius;
+        let blur = $tomoe.lua.settings().blur.clone();
         let pointer_pos = $tomoe
             .seat
             .get_pointer()
@@ -232,6 +240,7 @@ macro_rules! split_tomoe {
             ui,
             borders,
             shadows,
+            layer_blurs,
             corner_damage,
             window_radii,
             cursor,
@@ -251,6 +260,8 @@ macro_rules! split_tomoe {
                 ui,
                 borders,
                 shadows,
+                layer_blurs,
+                blur,
                 corner_damage,
                 window_radii,
                 corner_radius,

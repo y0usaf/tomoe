@@ -88,6 +88,7 @@ crate tomoe
 │   └── enum LockState: pub
 ├── mod lua: pub(crate)
 │   ├── enum AccelProfile: pub
+│   ├── struct BlurSettings: pub
 │   ├── enum ClickMethod: pub
 │   ├── struct DisplaySettings: pub
 │   ├── struct Hooks: pub(self)
@@ -159,6 +160,12 @@ crate tomoe
 ├── mod render: pub(crate)
 │   ├── enum OutputRenderElements: pub
 │   ├── trait TomoeRenderer: pub
+│   ├── mod blur: pub
+│   │   ├── struct Blur: pub
+│   │   ├── struct BlurOptions: pub
+│   │   ├── struct BlurProgram: pub
+│   │   ├── struct BlurProgramInner: pub(self)
+│   │   └── struct BlurProgramInternal: pub(self)
 │   ├── mod border: pub
 │   │   ├── struct BorderRenderElement: pub
 │   │   └── struct Parameters: pub(self)
@@ -166,6 +173,10 @@ crate tomoe
 │   │   └── struct ClippedSurfaceRenderElement: pub
 │   ├── mod damage: pub
 │   │   └── struct ExtraDamage: pub
+│   ├── mod framebuffer_effect: pub
+│   │   ├── struct FramebufferEffect: pub
+│   │   ├── struct FramebufferEffectElement: pub
+│   │   └── struct Inner: pub(self)
 │   ├── mod macros: pub(self)
 │   ├── mod renderer: pub
 │   │   ├── trait AsGlesFrame: pub

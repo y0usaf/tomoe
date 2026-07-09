@@ -116,6 +116,8 @@ pub struct Tomoe {
     pub borders: HashMap<Window, crate::render::border::BorderRenderElement>,
     /// Persistent rounded shadow shader elements, below each mapped window.
     pub shadows: HashMap<Window, crate::render::shadow::ShadowRenderElement>,
+    /// Persistent blur elements keyed by the layer-shell root surface.
+    pub layer_blurs: HashMap<WlSurface, crate::render::framebuffer_effect::FramebufferEffect>,
     /// Per-window damage injection for rounded corners: the radius is a
     /// shader uniform, invisible to damage tracking, so radius changes bump
     /// these (stable element ids, like the border buffers).
@@ -373,6 +375,7 @@ impl Tomoe {
             hovered_window: None,
             borders: HashMap::new(),
             shadows: HashMap::new(),
+            layer_blurs: HashMap::new(),
             corner_damage: HashMap::new(),
             window_radii: HashMap::new(),
             animations: Default::default(),

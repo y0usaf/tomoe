@@ -260,6 +260,7 @@ Motion event during a tomoe.grab_pointer grab.
 - `winit_size: integer[]` — { w, h } of the nested dev window (winit backend)
 - `border: Border`
 - `shadow: Shadow`
+- `blur: Blur`
 - `keyboard: Keyboard`
 - `displays: table<string, Display>` — per-output settings, keyed by connector name ("DP-1")
 - `touchpad: InputDevice` — class-wide touchpad settings (tty backend)
@@ -298,6 +299,15 @@ One animation: give `spring` or `ease` (spring wins when both are set).
 - `focused: string` — "#rrggbb" or "#rrggbbaa"
 - `unfocused: string` — "#rrggbb" or "#rrggbbaa"
 - `radius: integer` — window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
+
+### Blur
+
+Dual-kawase blur behind rectangular layer-shell surfaces whose namespace is listed exactly in `layer_namespaces`.
+
+- `enabled: boolean` — enable layer blur (default false)
+- `passes: integer` — down/up sample passes, clamped to 1..31 (default 3)
+- `offset: number` — finite non-negative kernel offset (default 1.0)
+- `layer_namespaces: string[]` — exact layer-shell namespace allow-list
 
 ### Shadow
 

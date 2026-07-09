@@ -1,0 +1,1 @@
+[ref/niri/src/render_helpers/shaders/blur_down.frag unchanged since last read (15 lines already shown). Pass fresh=True to re-emit, or slice from your own variables.]

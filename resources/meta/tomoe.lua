@@ -490,6 +490,7 @@ function ScreencastRequest:defer() end
 ---@field winit_size integer[] # { w, h } of the nested dev window (winit backend)
 ---@field border Border
 ---@field shadow Shadow
+---@field blur Blur
 ---@field keyboard Keyboard
 ---@field displays table<string, Display> # per-output settings, keyed by connector name ("DP-1")
 ---@field touchpad InputDevice # class-wide touchpad settings (tty backend)
@@ -524,6 +525,14 @@ function ScreencastRequest:defer() end
 ---@field focused string # "#rrggbb" or "#rrggbbaa"
 ---@field unfocused string # "#rrggbb" or "#rrggbbaa"
 ---@field radius integer # window corner radius in physical pixels; 0 disables rounding, fullscreen windows never round (default 0)
+
+---Dual-kawase blur behind rectangular layer-shell surfaces whose namespace
+---is listed exactly in `layer_namespaces`.
+---@class Blur
+---@field enabled boolean # enable layer blur (default false)
+---@field passes integer # down/up sample passes, clamped to 1..31 (default 3)
+---@field offset number # finite non-negative kernel offset (default 1.0)
+---@field layer_namespaces string[] # exact layer-shell namespace allow-list
 
 ---Rounded window drop shadow (`settings.shadow`); fullscreen windows never
 ---draw one, preserving direct scanout.

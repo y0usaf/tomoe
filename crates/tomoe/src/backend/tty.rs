@@ -1554,6 +1554,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
                 && (force_tearing() || (allowed && (override_tearing == Some(true) || hinted)))
         })
     };
+    let blur = tomoe.lua.settings().blur.clone();
     let Tomoe {
         backend,
         space,
@@ -1564,6 +1565,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ui,
         borders,
         shadows,
+        layer_blurs,
         window_radii,
         corner_damage,
         animations,
@@ -1646,6 +1648,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
             ui_elements,
             borders,
             shadows,
+            layer_blurs,
+            &blur,
             corner_radius,
             window_radii,
             corner_damage,

@@ -226,6 +226,26 @@ pub struct InputConfig {
     pub devices: HashMap<String, InputDeviceSettings>,
 }
 
+/// Rectangular layer-shell blur-behind. Namespace matching is exact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlurSettings {
+    pub enabled: bool,
+    pub passes: u8,
+    pub offset: f64,
+    pub layer_namespaces: Vec<String>,
+}
+
+impl Default for BlurSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            passes: 3,
+            offset: 1.0,
+            layer_namespaces: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// Gap between windows, in physical pixels (like all Lua geometry).
@@ -250,6 +270,8 @@ pub struct Settings {
     pub shadow_range: i32,
     pub shadow_color: [f32; 4],
     pub shadow_power: f32,
+    /// Dual-kawase blur-behind for selected layer-shell namespaces.
+    pub blur: BlurSettings,
     /// What "Mod" means in bind combos and pointer-event mods.
     pub mod_key: crate::input::ModKey,
     /// Focus the window under the pointer as it moves (sloppy focus:
@@ -304,6 +326,7 @@ impl Default for Settings {
             shadow_range: 12,
             shadow_color: parse_color("#00000099").unwrap(),
             shadow_power: 3.,
+            blur: BlurSettings::default(),
             mod_key: crate::input::ModKey::default(),
             focus_follows_mouse: false,
             tearing: false,
@@ -1369,6 +1392,27 @@ impl LuaRuntime {
                         } else {
                             warn!("invalid shadow.power {power:?}");
                         }
+                    }
+                }
+                if let Ok(blur) = table.get::<Table>("blur") {
+                    if let Ok(enabled) = blur.get::<bool>("enabled") {
+                        settings.blur.enabled = enabled;
+                    }
+                    if let Ok(passes) = blur.get::<u8>("passes") {
+                        settings.blur.passes = passes.clamp(1, 31);
+                    }
+                    if let Ok(offset) = blur.get::<f64>("offset") {
+                        if offset.is_finite() && offset >= 0.0 {
+                            settings.blur.offset = offset;
+                        } else {
+                            warn!("invalid blur.offset {offset:?}; expected a finite value >= 0");
+                        }
+                    }
+                    if let Ok(namespaces) = blur.get::<Table>("layer_namespaces") {
+                        settings.blur.layer_namespaces = namespaces
+                            .sequence_values::<String>()
+                            .filter_map(Result::ok)
+                            .collect();
                     }
                 }
                 if let Ok(border) = table.get::<Table>("border") {

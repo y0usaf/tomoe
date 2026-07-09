@@ -160,6 +160,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
     };
 
     let locked = tomoe.is_locked();
+    let blur = tomoe.lua.settings().blur.clone();
     let Tomoe {
         backend,
         space,
@@ -168,6 +169,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
         lua,
         borders,
         shadows,
+        layer_blurs,
         window_radii,
         corner_damage,
         animations,
@@ -204,6 +206,8 @@ pub fn redraw(tomoe: &mut Tomoe) {
             ui_elements,
             borders,
             shadows,
+            layer_blurs,
+            &blur,
             lua.settings().corner_radius,
             window_radii,
             corner_damage,

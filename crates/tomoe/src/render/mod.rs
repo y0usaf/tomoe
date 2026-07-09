@@ -14,9 +14,11 @@
 //! `OutputRenderElements` implements `RenderElement` for exactly those two
 //! renderers (see `macros.rs`) instead of generically.
 
+pub mod blur;
 pub mod border;
 pub mod clipped_surface;
 pub mod damage;
+pub mod framebuffer_effect;
 mod macros;
 pub mod renderer;
 mod resources;
@@ -27,6 +29,7 @@ pub mod shadow;
 use std::collections::HashMap;
 
 use border::BorderRenderElement;
+use framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
 use shadow::ShadowRenderElement;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
@@ -81,6 +84,7 @@ crate::tomoe_render_elements! {
         Solid = SolidColorRenderElement,
         Border = BorderRenderElement,
         Shadow = ShadowRenderElement,
+        FramebufferEffect = FramebufferEffectElement,
         Memory = MemoryRenderBufferRenderElement<R>,
         Surface = WaylandSurfaceRenderElement<R>,
         // Window content clipped to rounded-corner geometry.
@@ -296,6 +300,46 @@ fn is_fullscreen(window: &Window) -> bool {
 // Window keys hash by their stable id despite interior mutability. Arg
 // count: scene assembly takes the whole per-frame context by design.
 #[allow(clippy::mutable_key_type, clippy::too_many_arguments)]
+fn layer_elements<R: TomoeRenderer>(
+    renderer: &mut R,
+    output: &Output,
+    kinds: [WlrLayer; 2],
+    scale: f64,
+    blur: &crate::lua::BlurSettings,
+    effects: &mut HashMap<
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        FramebufferEffect,
+    >,
+) -> Vec<OutputRenderElements<R>> {
+    let layers = layer_map_for_output(output);
+    let mut elements = Vec::new();
+    let options = crate::render::blur::BlurOptions {
+        passes: blur.passes,
+        offset: blur.offset,
+    };
+    for kind in kinds {
+        for layer in layers.layers_on(kind).rev() {
+            let Some(geo) = layers.layer_geometry(layer) else {
+                continue;
+            };
+            let physical = coords::rect_to_physical(geo, scale);
+            elements.extend(layer.render_elements(renderer, physical.loc, Scale::from(scale), 1.0));
+            if blur.enabled
+                && blur
+                    .layer_namespaces
+                    .iter()
+                    .any(|name| name == layer.namespace())
+            {
+                let effect = effects.entry(layer.wl_surface().clone()).or_default();
+                elements.push(OutputRenderElements::FramebufferEffect(
+                    effect.render(physical, options),
+                ));
+            }
+        }
+    }
+    elements
+}
+
 pub fn scene_elements<R: TomoeRenderer>(
     renderer: &mut R,
     space: &PhysicalSpace,
@@ -303,6 +347,11 @@ pub fn scene_elements<R: TomoeRenderer>(
     ui: Vec<OutputRenderElements<R>>,
     borders: Vec<OutputRenderElements<R>>,
     shadows: Vec<OutputRenderElements<R>>,
+    layer_blurs: &mut HashMap<
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        FramebufferEffect,
+    >,
+    blur: &crate::lua::BlurSettings,
     corner_radius: i32,
     window_radii: &HashMap<Window, i32>,
     corner_damage: &HashMap<Window, ExtraDamage>,
@@ -315,24 +364,17 @@ pub fn scene_elements<R: TomoeRenderer>(
         return ui;
     };
 
-    let layer_elements = |renderer: &mut R, kinds: [WlrLayer; 2]| {
-        let layers = layer_map_for_output(output);
-        let mut elements = Vec::new();
-        for kind in kinds {
-            // Top → bottom within each layer kind.
-            for layer in layers.layers_on(kind).rev() {
-                let Some(geo) = layers.layer_geometry(layer) else {
-                    continue;
-                };
-                let loc = coords::logical_point_to_physical(geo.loc.to_f64(), scale);
-                elements.extend(layer.render_elements(renderer, loc, render_scale, 1.0));
-            }
-        }
-        elements
-    };
+    layer_blurs.retain(|surface, _| surface.alive());
 
     let mut elements = ui;
-    elements.extend(layer_elements(renderer, [WlrLayer::Overlay, WlrLayer::Top]));
+    elements.extend(layer_elements(
+        renderer,
+        output,
+        [WlrLayer::Overlay, WlrLayer::Top],
+        scale,
+        blur,
+        layer_blurs,
+    ));
 
     // Rounded corners: the shader program lives on the Gles context; its
     // absence (compile failure, missing init) simply disables rounding.
@@ -473,7 +515,11 @@ pub fn scene_elements<R: TomoeRenderer>(
     elements.extend(shadows);
     elements.extend(layer_elements(
         renderer,
+        output,
         [WlrLayer::Bottom, WlrLayer::Background],
+        scale,
+        blur,
+        layer_blurs,
     ));
     elements
 }
