@@ -13,11 +13,18 @@ use smithay::backend::renderer::gles::{
 use tracing::warn;
 
 use super::renderer::AsGlesRenderer;
+use super::shader_element::ShaderProgram;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProgramType {
+    Border,
+}
 
 pub struct Shaders {
     /// Clips a window surface to its rounded-corner geometry
     /// (`clipped_surface.frag` overriding the default texture program).
     pub clipped_surface: Option<GlesTexProgram>,
+    pub border: Option<ShaderProgram>,
 }
 
 impl Shaders {
@@ -39,7 +46,39 @@ impl Shaders {
             })
             .ok();
 
-        Self { clipped_surface }
+        let border = ShaderProgram::compile(
+            renderer,
+            concat!(
+                include_str!("shaders/border.frag"),
+                include_str!("shaders/rounding_alpha.frag")
+            ),
+            &[
+                UniformName::new("color", UniformType::_4f),
+                UniformName::new("geo_size", UniformType::_2f),
+                UniformName::new("outer_radius", UniformType::_4f),
+                UniformName::new("border_width", UniformType::_1f),
+            ],
+            &[],
+        )
+        .map_err(|err| warn!("error compiling border shader: {err:?}"))
+        .ok();
+
+        Self {
+            clipped_surface,
+            border,
+        }
+    }
+
+    pub fn get_from_frame<'a>(
+        frame: &'a mut smithay::backend::renderer::gles::GlesFrame<'_, '_>,
+    ) -> Option<&'a Self> {
+        frame.egl_context().user_data().get()
+    }
+
+    pub fn program(&self, program: ProgramType) -> Option<ShaderProgram> {
+        match program {
+            ProgramType::Border => self.border.clone(),
+        }
     }
 
     /// The shaders for `renderer`'s Gles context, or `None` when [`init`]
@@ -57,6 +96,7 @@ pub fn init(renderer: &mut GlesRenderer) {
     let shaders = Shaders::compile(renderer);
     let data = renderer.egl_context().user_data();
     data.insert_if_missing(|| shaders);
+    super::resources::init(renderer);
 }
 
 /// A `mat3` uniform from a glam matrix.

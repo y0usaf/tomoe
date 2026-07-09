@@ -166,7 +166,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
         start_time,
         ui,
         lua,
-        border_buffers,
+        borders,
         corner_damage,
         animations,
         clock,
@@ -189,14 +189,8 @@ pub fn redraw(tomoe: &mut Tomoe) {
             lock_backdrops,
         )
     } else {
-        let borders = crate::render::border_elements(
-            space,
-            border_buffers,
-            lua.settings().border_width,
-            output_loc,
-            animations,
-            anim_now,
-        );
+        let borders =
+            crate::render::border_elements(space, borders, output_loc, animations, anim_now);
         // Compositor UI (dialogs/overlays) first: earlier elements render on top.
         let ui_elements = ui.render_elements(winit.backend.renderer(), &output, output_size, true);
         crate::render::scene_elements(

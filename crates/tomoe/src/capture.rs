@@ -52,8 +52,7 @@ type CaptureElement = RelocateRenderElement<OutputRenderElements<GlesRenderer>>;
 struct SceneParts<'a> {
     space: &'a PhysicalSpace,
     ui: &'a mut Ui,
-    border_buffers: &'a HashMap<Window, [SolidColorBuffer; 4]>,
-    border_width: i32,
+    borders: &'a mut HashMap<smithay::desktop::Window, crate::render::border::BorderRenderElement>,
     corner_damage: &'a HashMap<Window, crate::render::damage::ExtraDamage>,
     corner_radius: i32,
     cursor: &'a crate::cursor::Cursor,
@@ -115,8 +114,7 @@ impl<'a> SceneParts<'a> {
             let ui_elements = self.ui.render_elements(renderer, output, geo.size, false);
             let borders = crate::render::border_elements(
                 self.space,
-                self.border_buffers,
-                self.border_width,
+                self.borders,
                 geo.loc,
                 self.animations,
                 self.anim_now,
@@ -207,7 +205,6 @@ macro_rules! split_tomoe {
         // Captures render outside the backends' redraw, so they refresh
         // border buffers themselves before borrowing them immutably.
         $tomoe.refresh_borders();
-        let border_width = $tomoe.lua.settings().border_width;
         let corner_radius = $tomoe.lua.settings().corner_radius;
         let pointer_pos = $tomoe
             .seat
@@ -222,7 +219,7 @@ macro_rules! split_tomoe {
             backend,
             space,
             ui,
-            border_buffers,
+            borders,
             corner_damage,
             cursor,
             cursor_status,
@@ -239,8 +236,7 @@ macro_rules! split_tomoe {
             SceneParts {
                 space,
                 ui,
-                border_buffers,
-                border_width,
+                borders,
                 corner_damage,
                 corner_radius,
                 cursor,

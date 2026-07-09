@@ -691,9 +691,13 @@ works — all landed; live night-light run pending.*
    advance/keepalive in both backends and the capture path. Open
    follow-ups (close/resize/workspace-switch animations, spring
    velocity on retarget, TTY live check) tracked in the gap list
-3. Borders polish (rounded borders via border shader), shadows as shader
-   elements — pixel-aligned intermediates per coordinate doctrine §5;
-   per-window core props (radius/tearing/border colors) queued-op surface
+3. [in progress] Borders polish, shadows, and remaining core props.
+   - [x] Rounded borders: one persistent physical-first solid shader ring per
+     mapped window, shared by GLES/TTY/capture; stable IDs and parameter
+     damage, animation/camera zoom following, and fullscreen omission for
+     direct scanout. Outer radius = window radius + border width.
+   - [ ] Shadows as shader render elements.
+   - [ ] Per-window radius/tearing/border-color queued-op surface.
 4. Dual-kawase blur incl. blur-behind for layer surfaces (re-read
    `ref/ShojiWM/knowledges/effect-invalidation.md` first)
 

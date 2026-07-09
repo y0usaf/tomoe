@@ -14,14 +14,18 @@
 //! `OutputRenderElements` implements `RenderElement` for exactly those two
 //! renderers (see `macros.rs`) instead of generically.
 
+pub mod border;
 pub mod clipped_surface;
 pub mod damage;
 mod macros;
 pub mod renderer;
+mod resources;
+mod shader_element;
 pub mod shaders;
 
 use std::collections::HashMap;
 
+use border::BorderRenderElement;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::{
@@ -73,6 +77,7 @@ where
 crate::tomoe_render_elements! {
     OutputRenderElements<R> => {
         Solid = SolidColorRenderElement,
+        Border = BorderRenderElement,
         Memory = MemoryRenderBufferRenderElement<R>,
         Surface = WaylandSurfaceRenderElement<R>,
         // Window content clipped to rounded-corner geometry.
@@ -80,10 +85,11 @@ crate::tomoe_render_elements! {
         // Damage injection for uniform-driven effects (corner radius).
         Damage = ExtraDamage,
         // Camera-zoomed variants (view_zoom != 1 only): window content and
-        // border slabs scaled around the view origin.
+        // shader border rings scaled around the view origin.
         ZoomedSurface = RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
         ZoomedClippedSurface = RescaleRenderElement<ClippedSurfaceRenderElement<R>>,
         ZoomedSolid = RescaleRenderElement<SolidColorRenderElement>,
+        ZoomedBorder = RescaleRenderElement<BorderRenderElement>,
     }
 }
 
@@ -117,67 +123,46 @@ pub fn take_presentation_feedback(
     feedback
 }
 
-/// Border frame slabs drawn around windows (buffers are persisted in `Tomoe`
-/// so the damage tracker sees stable element ids). Four slabs per window so
-/// nothing is drawn behind the window itself — transparent surfaces would
-/// otherwise show the border color across their whole area.
-///
-/// Widths and positions are physical pixels; the solid buffers are sized in
-/// physical too, so they render with scale 1.0 (buffer units == pixels) and
-/// can never land off-grid.
+/// Persistent shader border rings drawn around windows. Geometry is physical
+/// from state through draw, so borders stay on the same pixel grid as content.
+/// Fullscreen windows are omitted to preserve direct-scanout eligibility.
 // Window keys hash by their stable id despite interior mutability.
 #[allow(clippy::mutable_key_type)]
 pub fn border_elements<R: TomoeRenderer>(
     space: &PhysicalSpace,
-    border_buffers: &HashMap<Window, [SolidColorBuffer; 4]>,
-    width: i32,
+    borders: &mut HashMap<Window, BorderRenderElement>,
     output_loc: Point<i32, Physical>,
     animations: &crate::animation::Animations,
     anim_now: std::time::Duration,
 ) -> Vec<OutputRenderElements<R>> {
-    if width <= 0 {
-        return Vec::new();
-    }
     let zoom = space.view_zoom();
-    // Borders live in world space with the windows they frame.
     let cam_loc = output_loc + space.view_offset();
     let mut elements = Vec::new();
     for window in space.elements() {
-        let Some(buffers) = border_buffers.get(window) else {
+        if is_fullscreen(window) {
             continue;
-        };
+        }
         let Some(mut geo) = space.element_geometry(window) else {
             continue;
         };
-        // Borders follow the animated render position and fade with the
-        // window's open animation.
-        geo.loc += animations.offset(window, anim_now);
         let alpha = animations.alpha(window, anim_now);
-        let loc = geo.loc - cam_loc;
-        let offsets: [Point<i32, Physical>; 4] = [
-            Point::from((-width, -width)),     // top
-            Point::from((-width, geo.size.h)), // bottom
-            Point::from((-width, 0)),          // left
-            Point::from((geo.size.w, 0)),      // right
-        ];
-        for (buffer, offset) in buffers.iter().zip(offsets) {
-            let solid = SolidColorRenderElement::from_buffer(
-                buffer,
-                loc + offset,
-                1.0,
-                alpha,
-                Kind::Unspecified,
-            );
-            elements.push(if zoom == 1.0 {
-                OutputRenderElements::Solid(solid)
-            } else {
-                OutputRenderElements::ZoomedSolid(RescaleRenderElement::from_element(
-                    solid,
-                    Point::from((-output_loc.x, -output_loc.y)),
-                    zoom,
-                ))
-            });
-        }
+        let Some(border) = borders.get_mut(window) else {
+            continue;
+        };
+        border.set_alpha(alpha);
+        geo.loc += animations.offset(window, anim_now);
+        let width = border.width().max(0);
+        let location = geo.loc - cam_loc - Point::from((width, width));
+        let border = border.clone().with_location(location);
+        elements.push(if zoom == 1.0 {
+            OutputRenderElements::Border(border)
+        } else {
+            OutputRenderElements::ZoomedBorder(RescaleRenderElement::from_element(
+                border,
+                Point::from((-output_loc.x, -output_loc.y)),
+                zoom,
+            ))
+        });
     }
     elements
 }

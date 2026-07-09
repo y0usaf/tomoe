@@ -107,10 +107,9 @@ pub struct Tomoe {
     /// Window under the pointer as of the last motion, for enter/leave
     /// diffing and focus-follows-mouse.
     pub(crate) hovered_window: Option<u64>,
-    /// Persistent border buffers (stable element ids for damage tracking).
-    /// Four slabs per window (top, bottom, left, right) so transparent
-    /// windows don't show border color through their whole surface.
-    pub border_buffers: HashMap<Window, [SolidColorBuffer; 4]>,
+    /// Persistent shader border rings (stable element ids for damage tracking).
+    /// The ring shader leaves the window interior transparent.
+    pub borders: HashMap<Window, crate::render::border::BorderRenderElement>,
     /// Per-window damage injection for rounded corners: the radius is a
     /// shader uniform, invisible to damage tracking, so radius changes bump
     /// these (stable element ids, like the border buffers).
@@ -362,7 +361,7 @@ impl Tomoe {
             in_lua: false,
             consumed_buttons: std::collections::HashSet::new(),
             hovered_window: None,
-            border_buffers: HashMap::new(),
+            borders: HashMap::new(),
             corner_damage: HashMap::new(),
             animations: Default::default(),
             applied_corner_radius: 0,
@@ -1101,7 +1100,7 @@ impl Tomoe {
             .iter()
             .find(|(_, w)| *w == window)
             .map(|(id, _)| *id);
-        self.border_buffers.remove(window);
+        self.borders.remove(window);
         self.corner_damage.remove(window);
         self.animations.remove(window);
         self.space.unmap(window);

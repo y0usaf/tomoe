@@ -4,17 +4,13 @@
 use crate::state::Tomoe;
 
 impl Tomoe {
-    /// Update per-window border buffers (size + focus color) for mapped
-    /// windows. Runs on the render path (backends and capture), right before
-    /// border elements are built, so buffer sizes always match the live
-    /// committed geometry — event-driven refresh missed the client's
-    /// ack-commit after an initial configure, leaving stale slab sizes.
-    /// Cheap when nothing changed: `SolidColorBuffer::update` only bumps its
-    /// commit counter (damage) if size or color actually differ.
+    /// Update persistent per-window shader borders for mapped windows. Runs
+    /// on every render path so size, focus color, width, and radius match the
+    /// latest committed geometry. Unchanged parameters preserve the commit.
     pub fn refresh_borders(&mut self) {
         let settings = self.lua.settings();
-        let width = settings.border_width;
-        let radius = settings.corner_radius;
+        let width = settings.border_width.max(0);
+        let radius = settings.corner_radius.max(0);
         let focused = self.focused_window();
         // Corner radius is a shader uniform — invisible to damage tracking —
         // so a changed setting bumps every window's damage-injection element
@@ -36,13 +32,13 @@ impl Tomoe {
                 settings.border_unfocused
             };
             self.corner_damage.entry(window.clone()).or_default();
-            let buffers = self.border_buffers.entry(window.clone()).or_default();
-            // Top, bottom, left, right slabs — a hollow frame rather than one
-            // full-size rect, so transparent windows don't tint all over.
-            buffers[0].update((geo.size.w + 2 * width, width), color);
-            buffers[1].update((geo.size.w + 2 * width, width), color);
-            buffers[2].update((width, geo.size.h), color);
-            buffers[3].update((width, geo.size.h), color);
+            let size = (geo.size.w + 2 * width, geo.size.h + 2 * width).into();
+            self.borders.entry(window.clone()).or_default().update(
+                size,
+                color,
+                width,
+                radius + width,
+            );
         }
     }
 }

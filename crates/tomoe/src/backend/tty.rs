@@ -1516,7 +1516,6 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         .map(|p| p.current_location())
         .unwrap_or_default();
     let cursor_status = tomoe.cursor_status.clone();
-    let border_width = tomoe.lua.settings().border_width;
     let corner_radius = tomoe.lua.settings().corner_radius;
     let wait_for_frame_completion = tomoe.lua.settings().wait_for_frame_completion;
 
@@ -1557,7 +1556,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         cursor,
         cursor_fallback,
         ui,
-        border_buffers,
+        borders,
         corner_damage,
         animations,
         lock_surfaces,
@@ -1628,14 +1627,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     } else {
         // Compositor UI (dialogs/overlays): above windows, below the cursor.
         let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, true);
-        let borders = crate::render::border_elements(
-            space,
-            border_buffers,
-            border_width,
-            output_loc,
-            animations,
-            anim_now,
-        );
+        let borders =
+            crate::render::border_elements(space, borders, output_loc, animations, anim_now);
         elements.extend(crate::render::scene_elements(
             &mut renderer,
             space,
