@@ -14,7 +14,7 @@ and type checking in your editor.
 ## Core
 - `tomoe.settings(settings)` — Apply settings; partial tables merge over previous calls (`displays` and `devices` are rebuilt per call). See Settings.
 - `tomoe.bind(combo, action, desc)` — Bind a key combo to a Lua function or an action string: "quit" (exit dialog), "quit!" (exit immediately), "close-window", "show-hotkey-overlay", "reload-config", "screenshot" (region overlay), "screenshot-screen", "spawn <shell command>". Combos are "Mod+Shift+q": modifiers super|win|logo, alt, ctrl|control, shift, or mod (= `settings.mod`); keys are XKB keysym names ("Return", "equal", "F11").
-- `tomoe.spawn(cmd)` — Run a shell command, fire-and-forget (the core tracks and reaps the child).
+- `tomoe.spawn(cmd)` — Run a shell command, fire-and-forget (the core tracks and reaps the child). The child gets a fresh xdg-activation token in both `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, so the app's first window can take focus.
 - `tomoe.quit()` — Ask to exit: shows the confirm dialog (the "quit!" action skips it).
 - `tomoe.clear_focus()` — Drop keyboard focus so no window receives keys.
 
@@ -76,7 +76,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 Declarative process manifest, diffed by id on config reload: entries are kept, restarted, or stopped as the diff dictates.
 - `tomoe.process.once(id, opts)` — Declare a one-shot process. Without `command`/`shell`, the id is the command.
 - `tomoe.process.service(id, opts)` — Declare a supervised service, restarted per its `restart` policy.
-- `tomoe.process.spawn(opts)` — Spawn once, imperative fire-and-forget (for event handlers).
+- `tomoe.process.spawn(opts)` — Spawn once, imperative fire-and-forget (for event handlers). Like `tomoe.spawn`, the child gets an xdg-activation token (an explicit `env` entry overrides it).
 
 ## IPC
 

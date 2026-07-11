@@ -174,7 +174,9 @@ Done and working:
       `on_window_request` as "activate"/"urgent" so Lua policy decides —
       wm.lua consumes "activate" by switching to the window's workspace
       — native default focuses ("activate") or ignores ("urgent");
-      tokens presented pre-map are stashed and honored at `add_window`)
+      tokens presented pre-map are stashed and honored at `add_window`;
+      user-initiated spawns mint external tokens exported as
+      `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID`)
 - [x] Primary selection (focus follows keyboard focus, same as the clipboard)
 - [x] libinput device config (tap, accel, natural scroll, DWT, scroll/click
       method…) via `settings.touchpad`/`settings.mouse`, per-device
@@ -679,11 +681,16 @@ setup. — All landed.*
 2. ~~xdg-activation~~ done — mechanics in the niri gap list above;
    activate/urgent ride the existing `on_window_request` policy path, so
    wlr-foreign-toplevel-management's activate (§1) can reuse it directly.
-   Compositor-side token creation for `tomoe.spawn` (exporting
-   `XDG_ACTIVATION_TOKEN` to children, niri-style) is still open — only
-   matters once launchers run as compositor spawns. Live check pending:
-   a real notification-click focus (needs a daemon + client that redeem
-   tokens; global + request path verified nested)
+   Compositor-side token creation landed too: every user-initiated
+   spawn (`tomoe.spawn`, `tomoe.process.spawn`, `"spawn …"` binds) mints
+   an external token (`create_external_token`) exported to the child as
+   `XDG_ACTIVATION_TOKEN` + `DESKTOP_STARTUP_ID` (niri-style; explicit
+   `env` declarations win, manifest once/service entries and restarts
+   get none — a restart token would be stale). External tokens carry no
+   serial and no urgent marker, so they focus if redeemed inside the
+   10 s window; unredeemed ones fall to the prune timer. Live check
+   pending: a real notification-click focus (needs a daemon + client
+   that redeem tokens; global + request path verified nested)
 3. ~~Gamma control / night light~~ done — wlr-gamma-control (mechanics in
    the Ecosystem gap list above); night-light policy stays in the daemon
    (wlsunset/gammastep), which can ship as a `tomoe.process.service`

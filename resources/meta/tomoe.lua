@@ -31,6 +31,8 @@ function tomoe.settings(settings) end
 function tomoe.bind(combo, action, desc) end
 
 ---Run a shell command, fire-and-forget (the core tracks and reaps the child).
+---The child gets a fresh xdg-activation token in both `XDG_ACTIVATION_TOKEN`
+---and `DESKTOP_STARTUP_ID`, so the app's first window can take focus.
 ---@param cmd string
 function tomoe.spawn(cmd) end
 
@@ -268,7 +270,9 @@ function tomoe.process.once(id, opts) end
 ---@param opts ProcessServiceOpts?
 function tomoe.process.service(id, opts) end
 
----Spawn once, imperative fire-and-forget (for event handlers).
+---Spawn once, imperative fire-and-forget (for event handlers). Like
+---`tomoe.spawn`, the child gets an xdg-activation token (an explicit
+---`env` entry overrides it).
 ---@param opts SpawnOpts
 function tomoe.process.spawn(opts) end
 

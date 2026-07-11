@@ -829,11 +829,23 @@ impl Tomoe {
         self.lua.mark_processes_dirty();
     }
 
+    /// Mint a compositor-side xdg-activation token for a spawned child
+    /// (niri-style startup notification). External tokens carry no input
+    /// serial, and `request_activation` treats serial-less tokens without
+    /// the urgent marker as full activations — so the app's first window
+    /// gets focus if it presents the token within the 10 s timeout; unused
+    /// tokens fall to the prune timer.
+    fn mint_activation_token(&mut self) -> String {
+        let (token, _) = self.activation_state.create_external_token(None);
+        token.as_str().to_owned()
+    }
+
     /// Drive children to match the manifest: fire-and-forget spawns, then the
     /// user manifest with the builtin entries merged over it.
     pub fn reconcile_processes(&mut self) {
         for spec in self.lua.take_spawns() {
-            self.process.spawn_detached(&spec);
+            let token = self.mint_activation_token();
+            self.process.spawn_detached(&spec, Some(&token));
         }
         if let Some(mut manifest) = self.lua.take_process_manifest() {
             manifest.extend(
@@ -1478,11 +1490,15 @@ impl Tomoe {
             }
             Action::ReloadConfig => self.reload_config(),
             Action::Spawn(cmd) => {
-                self.process.spawn_detached(&ProcessSpec {
-                    launch: Launch::Shell(cmd),
-                    cwd: None,
-                    env: Default::default(),
-                });
+                let token = self.mint_activation_token();
+                self.process.spawn_detached(
+                    &ProcessSpec {
+                        launch: Launch::Shell(cmd),
+                        cwd: None,
+                        env: Default::default(),
+                    },
+                    Some(&token),
+                );
                 self.ensure_process_timer();
             }
             Action::CloseWindow => {

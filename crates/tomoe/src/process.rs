@@ -119,8 +119,15 @@ impl ProcessManager {
     }
 
     /// Fire-and-forget spawn; the child is reaped by `tick` when it exits.
-    pub fn spawn_detached(&mut self, spec: &ProcessSpec) {
-        match self.spawn(spec) {
+    ///
+    /// `activation_token` is an xdg-activation token minted by the
+    /// compositor for this launch; it is exported as `XDG_ACTIVATION_TOKEN`
+    /// (and `DESKTOP_STARTUP_ID`, the X11/startup-notification spelling) so
+    /// the spawned app's first window can take focus by presenting it. Only
+    /// user-initiated spawns carry one — manifest entries pass `None`, and a
+    /// token never survives into a service restart (it would be stale).
+    pub fn spawn_detached(&mut self, spec: &ProcessSpec, activation_token: Option<&str>) {
+        match self.spawn_with_token(spec, activation_token) {
             Ok(child) => self.detached.push(child),
             Err(err) => warn!("error spawning {:?}: {err}", spec.launch),
         }
@@ -269,6 +276,14 @@ impl ProcessManager {
     }
 
     fn spawn(&self, spec: &ProcessSpec) -> std::io::Result<Child> {
+        self.spawn_with_token(spec, None)
+    }
+
+    fn spawn_with_token(
+        &self,
+        spec: &ProcessSpec,
+        activation_token: Option<&str>,
+    ) -> std::io::Result<Child> {
         let mut cmd = match &spec.launch {
             Launch::Shell(sh) => {
                 let mut cmd = Command::new("/bin/sh");
@@ -294,6 +309,15 @@ impl ProcessManager {
             };
         }
         cmd.envs(&spec.env);
+        // An explicit env declaration wins over the minted token.
+        if let Some(token) = activation_token {
+            if !spec.env.contains_key("XDG_ACTIVATION_TOKEN") {
+                cmd.env("XDG_ACTIVATION_TOKEN", token);
+            }
+            if !spec.env.contains_key("DESKTOP_STARTUP_ID") {
+                cmd.env("DESKTOP_STARTUP_ID", token);
+            }
+        }
         // stdout/stderr stay inherited so service output lands in the
         // compositor's log (the session journal on a TTY session).
         cmd.stdin(Stdio::null());
@@ -381,6 +405,36 @@ mod tests {
         manifest.clear();
         mgr.reconcile(&manifest);
         assert!(mgr.services.is_empty());
+    }
+
+    #[test]
+    fn detached_spawn_exports_activation_token_without_overriding_explicit_env() {
+        let mut mgr = ProcessManager::default();
+        let token = "tomoe-test-token";
+        let mut inherited = shell(
+            "test \"$XDG_ACTIVATION_TOKEN\" = tomoe-test-token && \
+             test \"$DESKTOP_STARTUP_ID\" = tomoe-test-token",
+        );
+        mgr.spawn_detached(&inherited, Some(token));
+
+        inherited.env.insert(
+            "XDG_ACTIVATION_TOKEN".to_string(),
+            "configured-token".to_string(),
+        );
+        inherited.env.insert(
+            "DESKTOP_STARTUP_ID".to_string(),
+            "configured-startup-id".to_string(),
+        );
+        inherited.launch = Launch::Shell(
+            "test \"$XDG_ACTIVATION_TOKEN\" = configured-token && \
+             test \"$DESKTOP_STARTUP_ID\" = configured-startup-id"
+                .to_string(),
+        );
+        mgr.spawn_detached(&inherited, Some(token));
+
+        for mut child in mgr.detached.drain(..) {
+            assert!(child.wait().is_ok_and(|status| status.success()));
+        }
     }
 
     #[test]
