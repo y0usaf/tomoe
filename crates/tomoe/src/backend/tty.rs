@@ -1672,18 +1672,21 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     let mut frame_flags =
         FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
-    // Tearing needs the cursor out of the picture: async flips may only
-    // touch the primary plane, so a cursor-plane update in the same commit
-    // is an EINVAL. Tear only while the cursor is hidden or elsewhere, and
-    // composite it (software) rather than offloading it for those frames —
-    // a briefly visible cursor pausing tearing is expected and transient.
+    // A requested tearing flip must still resolve to direct scanout below.
+    // Composited swapchain frames contain compositor-owned animation/effect
+    // pixels and must remain vblank-synchronized; otherwise an async-capable
+    // fullscreen client would make those pixels visibly tear too.
+    //
+    // Drop cursor-plane offloading while testing the direct-scanout candidate:
+    // async flips may only touch the primary plane, so a cursor-plane update in
+    // the same commit is EINVAL. A visible cursor denies tearing below.
     let cursor_on_output = !matches!(cursor_status, CursorImageStatus::Hidden)
         && cursor_phys.x >= 0.0
         && cursor_phys.y >= 0.0
         && cursor_phys.x < output_size.w as f64
         && cursor_phys.y < output_size.h as f64;
-    let should_tear = tearing_candidate && !cursor_on_output && surface.supports_async_flip;
-    if should_tear {
+    let tearing_requested = tearing_candidate && !cursor_on_output && surface.supports_async_flip;
+    if tearing_requested {
         frame_flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
     }
 
@@ -1694,16 +1697,20 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     {
         Ok(res) => {
             rendered_ok = true;
-            let scanout = matches!(&res.primary_element, PrimaryPlaneElement::Element(_));
-            if scanout != surface.direct_scanout {
-                surface.direct_scanout = scanout;
+            let direct_scanout = matches!(&res.primary_element, PrimaryPlaneElement::Element(_));
+            if direct_scanout != surface.direct_scanout {
+                surface.direct_scanout = direct_scanout;
                 let name = surface.output.name();
-                if scanout {
+                if direct_scanout {
                     debug!("output {name}: direct scanout engaged (zero-copy)");
                 } else {
                     debug!("output {name}: direct scanout disengaged");
                 }
             }
+            // Never async-flip a composited frame. In particular, fullscreen
+            // open/move animations and any compositor effect force the
+            // swapchain path and must stay synchronized to vblank.
+            let should_tear = tearing_requested && direct_scanout;
             // KMS can't fence this frame (no IN_FENCE_FD, or the GL sync
             // isn't exportable — common on NVIDIA): wait for the render to
             // finish CPU-side or the display scans out a half-drawn buffer.
