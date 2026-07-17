@@ -11,8 +11,8 @@
 --   :subscribe(fn)    → fn() after every :set (no args, nur's contract)
 -- plus one method per action name.
 --
--- M3 status: `compositor`, `battery`, `network`, and `mpris` are live
--- — native backends (crates/services) push snapshots through this
+-- M3 status: `compositor`, `keyboard`, `battery`, `network`, and `mpris`
+-- are live — native backends (crates/services) push snapshots through this
 -- facade's :set() from the binary. The rest are still *placeholders*
 -- — static initial state, actions warn once and do nothing — so nur
 -- configs (which read shell.services.* unconditionally) run
@@ -76,6 +76,13 @@ M.define("compositor", {
     workspaces       = {},
     active_window    = nil,
 }, { "focus_workspace" })
+
+-- Keyboard activity pulses from compositor IPC. Only coarse hand side and
+-- monotonically increasing sequence cross the boundary; key values do not.
+M.define("keyboard", {
+    sequence = 0,
+    hand     = "right",
+})
 
 -- Backed natively since M3 §3 (UPower over the system D-Bus; sysfs
 -- polling fallback). Snapshot shape (nur's, plus `available`):
