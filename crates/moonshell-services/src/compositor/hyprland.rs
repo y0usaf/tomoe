@@ -99,6 +99,7 @@ fn parse_state(workspaces: &Value, active: &Value, window: &Value) -> Compositor
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
             .map(str::to_owned),
+        ..Default::default()
     }
 }
 

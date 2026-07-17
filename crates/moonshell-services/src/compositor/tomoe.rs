@@ -29,7 +29,7 @@ use calloop::{Interest, LoopHandle, Mode, PostAction};
 use serde_json::{json, Value};
 
 use super::wire::{self, RETRY};
-use super::{CompositorState, Error, Notify, Workspace};
+use super::{CompositorState, Error, KeyboardActivity, KeyboardHand, Notify, Workspace};
 
 /// Connect-time snapshot request ids (the only requests we ever send).
 const ID_WINDOWS: u64 = 1;
@@ -91,6 +91,20 @@ impl Model {
     fn handle_event(&mut self, event: &str, payload: &Value) -> bool {
         match event {
             "wm_state" => self.apply_wm_state(payload),
+            "keyboard_activity" => {
+                let hand = match payload.get("hand").and_then(Value::as_str) {
+                    Some("left") => KeyboardHand::Left,
+                    _ => KeyboardHand::Right,
+                };
+                let sequence = self
+                    .state
+                    .keyboard_activity
+                    .map(|activity| activity.sequence)
+                    .unwrap_or(0)
+                    .wrapping_add(1);
+                self.state.keyboard_activity = Some(KeyboardActivity { sequence, hand });
+                true
+            }
             "window_open" => match serde_json::from_value::<tomoe_ipc::Window>(payload.clone()) {
                 Ok(win) => {
                     if win.focused {
@@ -218,7 +232,7 @@ fn try_connect<D: 'static>(be: &Rc<RefCell<Backend<D>>>) -> std::io::Result<()> 
     // buffer is empty — blocking writes here cannot stall.
     for line in [
         json!({ "method": "subscribe", "params": { "events":
-            ["wm_state", "window_open", "window_close", "focus_change"] } }),
+            ["wm_state", "window_open", "window_close", "focus_change", "keyboard_activity"] } }),
         json!({ "id": ID_WINDOWS, "method": "windows" }),
         json!({ "id": ID_WM_STATE, "method": "wm_state" }),
     ] {
@@ -329,6 +343,24 @@ mod tests {
         // Core events still work without wm.lua.
         assert!(m.handle_frame(&frame(r#"{"event":"focus_change","payload":{"id":null}}"#)));
         assert!(m.state.connected);
+    }
+
+    #[test]
+    fn keyboard_activity_increments_without_exposing_key_value() {
+        let mut m = Model::default();
+        assert!(m.handle_frame(&frame(
+            r#"{"event":"keyboard_activity","payload":{"hand":"left"}}"#
+        )));
+        let activity = m.state.keyboard_activity.unwrap();
+        assert_eq!(activity.sequence, 1);
+        assert_eq!(activity.hand, KeyboardHand::Left);
+
+        assert!(m.handle_frame(&frame(
+            r#"{"event":"keyboard_activity","payload":{"hand":"right"}}"#
+        )));
+        let activity = m.state.keyboard_activity.unwrap();
+        assert_eq!(activity.sequence, 2);
+        assert_eq!(activity.hand, KeyboardHand::Right);
     }
 
     #[test]

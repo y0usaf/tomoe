@@ -31,6 +31,31 @@ pub struct Workspace {
     pub windows: u32,
 }
 
+/// Which half of keyboard activity triggered a frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KeyboardHand {
+    Left,
+    #[default]
+    Right,
+}
+
+impl KeyboardHand {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
+
+/// One keyboard activity pulse. Sequence changes on every key press; no key
+/// value crosses the compositor IPC boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardActivity {
+    pub sequence: u64,
+    pub hand: KeyboardHand,
+}
+
 /// The snapshot pushed to `notify` on every change (nur's
 /// `CompositorState` shape, plus `connected` so bars can show a
 /// disconnected compositor honestly).
@@ -41,6 +66,8 @@ pub struct CompositorState {
     pub workspaces: Vec<Workspace>,
     /// Focused window title, if any window is focused.
     pub active_window: Option<String>,
+    /// Latest keyboard activity pulse, if compositor reports it.
+    pub keyboard_activity: Option<KeyboardActivity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

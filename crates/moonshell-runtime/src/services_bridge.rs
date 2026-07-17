@@ -18,7 +18,7 @@ use moonshell_services::compositor::CompositorState;
 use moonshell_services::mpris::MprisState;
 use moonshell_services::network::NetworkState;
 
-/// `shell.services.compositor:set(snapshot)`.
+/// Push compositor state plus keyboard activity into Lua facades.
 pub fn push_compositor(lua: &Lua, state: &CompositorState) -> LuaResult<()> {
     let t = lua.create_table()?;
     t.set("connected", state.connected)?;
@@ -36,7 +36,17 @@ pub fn push_compositor(lua: &Lua, state: &CompositorState) -> LuaResult<()> {
     if let Some(title) = &state.active_window {
         t.set("active_window", title.as_str())?;
     }
-    set_service(lua, "compositor", t)
+    set_service(lua, "compositor", t)?;
+
+    let keyboard = lua.create_table()?;
+    if let Some(activity) = state.keyboard_activity {
+        keyboard.set("sequence", activity.sequence)?;
+        keyboard.set("hand", activity.hand.as_str())?;
+    } else {
+        keyboard.set("sequence", 0u64)?;
+        keyboard.set("hand", "right")?;
+    }
+    set_service(lua, "keyboard", keyboard)
 }
 
 /// `shell.services.battery:set(snapshot)`.

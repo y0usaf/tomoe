@@ -149,6 +149,7 @@ fn map_state(workspaces: &Value, tree: &Value) -> CompositorState {
         active_workspace: active,
         workspaces: list,
         active_window: title,
+        ..Default::default()
     }
 }
 

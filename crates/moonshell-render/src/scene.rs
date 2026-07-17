@@ -29,7 +29,7 @@
 use crate::draw;
 use crate::element::Element;
 use crate::layout::{self, LayoutNode, Rect};
-use crate::Renderer;
+use crate::{Renderer, Rgba};
 
 /// Integer-pixel damage rect, clamped to the canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +119,9 @@ impl Scene {
             _ => SceneDamage::Full,
         };
         if !matches!(damage, SceneDamage::None) {
+            // SlotPool recycles buffers. Clear before the full redraw so
+            // transparent pixels in a new image frame erase old pixels.
+            r.clear(canvas, width, height, Rgba::new(0, 0, 0, 0));
             draw::draw(r, canvas, width, height, scale, root, &node);
         }
         self.prev = Some(Frame {
@@ -399,6 +402,50 @@ mod tests {
             scene.render(&mut r, &mut b, W, H, 1.0, &root),
             SceneDamage::Full
         ));
+    }
+
+    #[test]
+    fn transparent_image_swap_clears_recycled_pixels() {
+        let first_path =
+            std::env::temp_dir().join(format!("moonshell-scene-{}-first.png", std::process::id()));
+        let second_path =
+            std::env::temp_dir().join(format!("moonshell-scene-{}-second.png", std::process::id()));
+
+        let mut first = image::RgbaImage::from_pixel(W, H, image::Rgba([0, 0, 0, 0]));
+        first.put_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        first.save(&first_path).unwrap();
+
+        let mut second = image::RgbaImage::from_pixel(W, H, image::Rgba([0, 0, 0, 0]));
+        second.put_pixel(30, 2, image::Rgba([0, 0, 255, 255]));
+        second.save(&second_path).unwrap();
+
+        let image = |src| {
+            Element::Image(Image {
+                style: Style {
+                    width: Some(W as f32),
+                    height: Some(H as f32),
+                    ..Style::default()
+                },
+                src,
+            })
+        };
+
+        let mut r = Renderer::new();
+        let mut scene = Scene::new();
+        let mut b = buf();
+        scene.render(&mut r, &mut b, W, H, 1.0, &image(first_path.clone()));
+        assert_eq!(pixel(&b, 2, 2), &[0, 0, 255, 255]);
+
+        scene.render(&mut r, &mut b, W, H, 1.0, &image(second_path.clone()));
+        assert_eq!(
+            pixel(&b, 2, 2),
+            &[0, 0, 0, 0],
+            "old transparent pixel remains"
+        );
+        assert_eq!(pixel(&b, 30, 2), &[255, 0, 0, 255]);
+
+        std::fs::remove_file(first_path).ok();
+        std::fs::remove_file(second_path).ok();
     }
 
     #[test]

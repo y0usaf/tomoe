@@ -149,6 +149,7 @@ impl Model {
                 .focused
                 .and_then(|id| self.windows.get(&id))
                 .and_then(|w| w.title.clone()),
+            ..Default::default()
         }
     }
 }
