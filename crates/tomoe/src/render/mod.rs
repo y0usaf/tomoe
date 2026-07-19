@@ -385,8 +385,7 @@ pub fn scene_elements<R: TomoeRenderer>(
     animations: &crate::animation::Animations,
     anim_now: std::time::Duration,
 ) -> Vec<OutputRenderElements<R>> {
-    let scale = space.scale();
-    let render_scale = Scale::from(scale);
+    let scale = space.output_scale(output);
     let Some(output_geo) = space.output_geometry(output) else {
         return ui;
     };
@@ -432,8 +431,10 @@ pub fn scene_elements<R: TomoeRenderer>(
         {
             continue;
         }
+        let window_scale = space.element_scale(window);
+        let render_scale = Scale::from(window_scale);
         let buffer_offset =
-            coords::logical_point_to_physical(window.geometry().loc.to_f64(), scale);
+            coords::logical_point_to_physical(window.geometry().loc.to_f64(), window_scale);
         let loc = geo.loc - buffer_offset - cam_loc;
 
         let WindowSurface::Wayland(toplevel) = window.underlying_surface();
@@ -445,7 +446,7 @@ pub fn scene_elements<R: TomoeRenderer>(
         for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
             let offset = coords::logical_point_to_physical(
                 (window.geometry().loc + popup_offset - popup.geometry().loc).to_f64(),
-                scale,
+                window_scale,
             );
             for element in render_elements_from_surface_tree(
                 renderer,

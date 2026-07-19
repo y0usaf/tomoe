@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped on any change to the framing or message shapes below.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 /// Environment variable pointing at the compositor's IPC socket; exported to
 /// every child and pushed into the systemd/D-Bus activation environment.
@@ -87,6 +87,8 @@ pub struct Output {
     pub geometry: Rect,
     /// Geometry minus layer-shell exclusive zones.
     pub usable: Rect,
+    /// Fractional client scale advertised on this output.
+    pub scale: f64,
 }
 
 /// Socket path for a compositor whose Wayland socket is named

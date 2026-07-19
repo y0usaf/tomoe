@@ -228,7 +228,7 @@ impl Tomoe {
             // survivors and the lock can complete without this one.
             return;
         };
-        configure_lock_surface(&surface, geo.size, self.space.scale());
+        configure_lock_surface(&surface, geo.size, self.space.output_scale(&output));
         self.lock_surfaces.insert(output, surface);
         self.update_lock_focus();
         self.maybe_continue_to_locking();
@@ -294,7 +294,7 @@ impl Tomoe {
             self.lock_rendered.clear();
             return;
         }
-        let scale = self.space.scale();
+
         let live: Vec<(Output, Size<i32, Physical>)> = self
             .space
             .outputs()
@@ -312,7 +312,7 @@ impl Tomoe {
             .retain(|output| live.iter().any(|(o, _)| o == output));
         for (output, size) in &live {
             if let Some(surface) = self.lock_surfaces.get(output) {
-                configure_lock_surface(surface, *size, scale);
+                configure_lock_surface(surface, *size, self.space.output_scale(output));
             }
         }
         match &self.lock_state {
@@ -335,7 +335,7 @@ impl Tomoe {
         let output = self
             .seat
             .get_pointer()
-            .map(|p| coords::point_to_physical(p.current_location(), self.space.scale()))
+            .map(|p| self.space.point_to_physical(p.current_location()))
             .and_then(|pos| self.space.output_under(pos))
             .or_else(|| self.space.outputs().next())
             .cloned();

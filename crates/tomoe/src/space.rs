@@ -16,8 +16,9 @@ use crate::coords;
 
 #[derive(Default)]
 pub struct PhysicalSpace {
-    /// Uniform output scale (snapped to N/120). Uniform-for-now: per-output
-    /// scales only require storing this per entry in `outputs`.
+    /// Reference scale for the compositor's logical output placement and
+    /// surfaces that are not yet assigned to an output. Per-output client
+    /// scales live on each Smithay `Output`.
     scale: f64,
     /// Camera over the window canvas: `screen = (world - offset) * zoom`.
     /// Outputs, layer-shell, UI, and the cursor are screen-fixed; only
@@ -28,8 +29,8 @@ pub struct PhysicalSpace {
     view_offset: Point<i32, Physical>,
     view_zoom: f64,
     outputs: Vec<(Output, Point<i32, Physical>)>,
-    /// Mapped windows with their geometry origin, bottom → top.
-    windows: Vec<(Window, Point<i32, Physical>)>,
+    /// Mapped windows with geometry origin + client scale, bottom → top.
+    windows: Vec<(Window, Point<i32, Physical>, f64)>,
 }
 
 impl PhysicalSpace {
@@ -135,6 +136,70 @@ impl PhysicalSpace {
         })
     }
 
+    /// Fractional scale advertised by `output`.
+    pub fn output_scale(&self, output: &Output) -> f64 {
+        output.current_scale().fractional_scale()
+    }
+
+    /// Scale of a physical point's output, or the reference scale in a gap.
+    pub fn scale_at(&self, pos: Point<f64, Physical>) -> f64 {
+        self.output_under(pos)
+            .map(|output| self.output_scale(output))
+            .unwrap_or(self.scale)
+    }
+
+    /// Scale for a world-space point after applying the camera.
+    pub fn scale_for_world_point(&self, pos: Point<f64, Physical>) -> f64 {
+        self.scale_at(self.world_to_screen(pos))
+    }
+
+    /// Convert physical output coordinates to global protocol coordinates.
+    pub fn point_to_protocol(
+        &self,
+        pos: Point<f64, Physical>,
+    ) -> Point<f64, smithay::utils::Logical> {
+        let Some(output) = self.output_under(pos) else {
+            return coords::point_to_protocol(pos, self.scale);
+        };
+        let Some(geo) = self.output_geometry(output) else {
+            return coords::point_to_protocol(pos, self.output_scale(output));
+        };
+        output.current_location().to_f64()
+            + coords::point_to_protocol(pos - geo.loc.to_f64(), self.output_scale(output))
+    }
+
+    /// Convert global protocol coordinates back to physical output space.
+    pub fn point_to_physical(
+        &self,
+        pos: Point<f64, smithay::utils::Logical>,
+    ) -> Point<f64, Physical> {
+        for output in self.outputs() {
+            let Some(logical) = self.output_logical_geometry(output) else {
+                continue;
+            };
+            if !logical.to_f64().contains(pos) {
+                continue;
+            }
+            let Some(geo) = self.output_geometry(output) else {
+                continue;
+            };
+            return geo.loc.to_f64()
+                + coords::point_to_physical(pos - logical.loc.to_f64(), self.output_scale(output));
+        }
+        coords::point_to_physical(pos, self.scale)
+    }
+
+    /// Output geometry in the global protocol-logical canvas.
+    pub fn output_logical_geometry(
+        &self,
+        output: &Output,
+    ) -> Option<Rectangle<i32, smithay::utils::Logical>> {
+        let geo = self.output_geometry(output)?;
+        let size =
+            coords::rect_to_logical(Rectangle::from_size(geo.size), self.output_scale(output)).size;
+        Some(Rectangle::new(output.current_location(), size))
+    }
+
     /// Outputs a window's rendered (screen-space) rect overlaps — the set
     /// foreign-toplevel listeners hear `output_enter` for.
     pub fn outputs_overlapping(&self, window: &Window) -> Vec<Output> {
@@ -159,16 +224,30 @@ impl PhysicalSpace {
     /// top; moving preserves stacking order.
     pub fn map_element(&mut self, window: Window, loc: impl Into<Point<i32, Physical>>) {
         let loc = loc.into();
-        if let Some(entry) = self.windows.iter_mut().find(|(w, _)| *w == window) {
+        let scale = self.scale_for_world_point(loc.to_f64());
+        self.map_element_with_scale(window, loc, scale);
+    }
+
+    /// Map with an explicit client scale.
+    pub fn map_element_with_scale(
+        &mut self,
+        window: Window,
+        loc: impl Into<Point<i32, Physical>>,
+        scale: f64,
+    ) {
+        let loc = loc.into();
+        let scale = coords::snap_scale(scale);
+        if let Some(entry) = self.windows.iter_mut().find(|(w, _, _)| *w == window) {
             entry.1 = loc;
+            entry.2 = scale;
         } else {
-            self.windows.push((window, loc));
+            self.windows.push((window, loc, scale));
         }
     }
 
     pub fn unmap(&mut self, window: &Window) {
-        if let Some(idx) = self.windows.iter().position(|(w, _)| w == window) {
-            let (window, _) = self.windows.remove(idx);
+        if let Some(idx) = self.windows.iter().position(|(w, _, _)| w == window) {
+            let (window, _, _) = self.windows.remove(idx);
             for (output, _) in &self.outputs {
                 window.output_leave(output);
             }
@@ -177,11 +256,11 @@ impl PhysicalSpace {
 
     /// Mapped windows, bottom → top.
     pub fn elements(&self) -> impl DoubleEndedIterator<Item = &Window> {
-        self.windows.iter().map(|(w, _)| w)
+        self.windows.iter().map(|(w, _, _)| w)
     }
 
     pub fn raise_element(&mut self, window: &Window) {
-        if let Some(idx) = self.windows.iter().position(|(w, _)| w == window) {
+        if let Some(idx) = self.windows.iter().position(|(w, _, _)| w == window) {
             let entry = self.windows.remove(idx);
             self.windows.push(entry);
         }
@@ -190,8 +269,23 @@ impl PhysicalSpace {
     pub fn element_location(&self, window: &Window) -> Option<Point<i32, Physical>> {
         self.windows
             .iter()
-            .find(|(w, _)| w == window)
-            .map(|(_, loc)| *loc)
+            .find(|(w, _, _)| w == window)
+            .map(|(_, loc, _)| *loc)
+    }
+
+    /// Scale used to turn this client's logical geometry into physical pixels.
+    pub fn element_scale(&self, window: &Window) -> f64 {
+        self.windows
+            .iter()
+            .find(|(w, _, _)| w == window)
+            .map(|(_, _, scale)| *scale)
+            .unwrap_or(self.scale)
+    }
+
+    pub fn set_element_scale(&mut self, window: &Window, scale: f64) {
+        if let Some((_, _, current)) = self.windows.iter_mut().find(|(w, _, _)| w == window) {
+            *current = coords::snap_scale(scale);
+        }
     }
 
     /// Window rect in physical pixels. The size derives from the client's
@@ -199,7 +293,10 @@ impl PhysicalSpace {
     /// rounding the renderer applies, so layout and sampling always agree.
     pub fn element_geometry(&self, window: &Window) -> Option<Rectangle<i32, Physical>> {
         let loc = self.element_location(window)?;
-        let size = coords::logical_size_to_physical(window.geometry().size.to_f64(), self.scale);
+        let size = coords::logical_size_to_physical(
+            window.geometry().size.to_f64(),
+            self.element_scale(window),
+        );
         Some(Rectangle::new(loc, size))
     }
 
@@ -208,7 +305,7 @@ impl PhysicalSpace {
         &self,
         pos: Point<f64, Physical>,
     ) -> Option<(&Window, Point<i32, Physical>)> {
-        self.windows.iter().rev().find_map(|(window, loc)| {
+        self.windows.iter().rev().find_map(|(window, loc, _)| {
             self.element_geometry(window)
                 .is_some_and(|geo| geo.to_f64().contains(pos))
                 .then_some((window, *loc))
@@ -218,11 +315,12 @@ impl PhysicalSpace {
     /// Drop dead windows, refresh output enter/leave, and let windows update
     /// their internal state (mirrors `Space::refresh`).
     pub fn refresh(&mut self) {
-        self.windows.retain(|(w, _)| w.alive());
-        for (window, _) in &self.windows {
+        self.windows.retain(|(w, _, _)| w.alive());
+        for (window, _, _) in &self.windows {
             let Some(geo) = self.element_geometry(window) else {
                 continue;
             };
+            let window_scale = self.element_scale(window);
             for (output, _) in &self.outputs {
                 let Some(output_geo) = self.output_geometry(output) else {
                     continue;
@@ -237,9 +335,8 @@ impl PhysicalSpace {
                     )),
                 );
                 if let Some(mut overlap) = output_world.intersection(geo) {
-                    // output_enter expects the overlap relative to the window.
                     overlap.loc -= geo.loc;
-                    window.output_enter(output, coords::rect_to_logical(overlap, self.scale));
+                    window.output_enter(output, coords::rect_to_logical(overlap, window_scale));
                 } else {
                     window.output_leave(output);
                 }

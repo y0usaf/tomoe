@@ -152,6 +152,7 @@ A rectangle in integer physical pixels, world coordinates.
 - `y: integer`
 - `w: integer`
 - `h: integer`
+- `scale: number` — fractional client scale advertised on output
 - `usable: Geometry` — geometry minus layer-shell exclusive zones
 
 ### View
@@ -339,6 +340,7 @@ Per-output settings (`settings.displays`, tty backend).
 
 - `resolution: string` — "preferred" | "max" | "WxH", optionally "@<Hz|max>" ("2560x1440@144")
 - `position: integer[]?` — { x, y } in physical pixels; unset outputs pack left-to-right
+- `scale: number?` — client scale; omitted inherits settings.scale, snapped to N/120
 - `disabled: boolean` — leave the connector off entirely
 - `mirror: string?` — show the same world region as the named output
 - `vrr: boolean` — variable refresh rate, when the connector supports it

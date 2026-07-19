@@ -771,7 +771,7 @@ fn connector_connected(
 
     let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
     let output = Output::new(
-        name,
+        name.clone(),
         PhysicalProperties {
             size: (phys_w as i32, phys_h as i32).into(),
             subpixel: Subpixel::Unknown,
@@ -782,29 +782,25 @@ fn connector_connected(
     );
     let wl_mode = Mode::from(mode);
     // New outputs go on the right edge; reposition_outputs re-packs after
-    // every batch of changes. Outputs live at integer physical positions; the
-    // logical position (for wl_output/xdg-output) is derived at the protocol
-    // boundary.
+    // every batch of changes. Physical positions stay canonical. The global
+    // reference scale anchors logical output locations so mixed-scale output
+    // rectangles do not overlap in the protocol canvas.
     let x = space
         .outputs()
         .filter_map(|output| space.output_geometry(output))
         .map(|geo| geo.loc.x + geo.size.w)
         .max()
         .unwrap_or(0);
-    let scale = space.scale();
-    let logical_loc = crate::coords::rect_to_logical(
-        smithay::utils::Rectangle::new((x, 0).into(), wl_mode.size),
-        scale,
-    )
-    .loc;
+    let reference_scale = space.scale();
+    let output_scale = lua.settings().scale_for_output(&name);
+    let logical_loc = ((x as f64 / reference_scale).round() as i32, 0).into();
     output.change_current_state(
         Some(wl_mode),
         None,
-        Some(smithay::output::Scale::Fractional(scale)),
+        Some(smithay::output::Scale::Fractional(output_scale)),
         Some(logical_loc),
     );
     output.set_preferred(wl_mode);
-
     // Scanout buffer formats are negotiated against the GPU that renders
     // this output's frames; display-only devices import the primary's
     // buffers, where linear is the safe cross-device choice.
@@ -998,10 +994,12 @@ fn place_outputs(
 
 /// Place outputs per [`place_outputs`] and refresh their logical positions;
 /// run after any change to the output set, modes, or `settings.displays`.
+/// Physical placement is canonical; the global scale anchors protocol
+/// locations when output client scales differ.
 fn reposition_outputs(tomoe: &mut Tomoe) {
     let displays = tomoe.lua.settings().displays;
     let outputs: Vec<Output> = tomoe.space.outputs().cloned().collect();
-    let scale = tomoe.space.scale();
+    let reference_scale = tomoe.space.scale();
 
     let size_of = |output: &Output| {
         output
@@ -1018,12 +1016,14 @@ fn reposition_outputs(tomoe: &mut Tomoe) {
     let locs = place_outputs(&sized, &displays);
 
     for output in &outputs {
-        let (Some(size), Some(&loc)) = (size_of(output), locs.get(&output.name())) else {
+        let (Some(_), Some(&loc)) = (size_of(output), locs.get(&output.name())) else {
             continue;
         };
-        let logical_loc =
-            crate::coords::rect_to_logical(smithay::utils::Rectangle::new(loc.into(), size), scale)
-                .loc;
+        let logical_loc = (
+            (loc.0 as f64 / reference_scale).round() as i32,
+            (loc.1 as f64 / reference_scale).round() as i32,
+        )
+            .into();
         output.change_current_state(None, None, None, Some(logical_loc));
         tomoe.space.map_output(output, loc);
     }
@@ -1611,12 +1611,12 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     };
 
     let mut elements: Vec<OutputRenderElements<TtyRenderer<'_>>> = Vec::new();
-    let scale = space.scale();
+    let scale = space.output_scale(&surface.output);
 
     // Cursor: client-provided surface, xcursor theme, or block fallback.
-    // Pointer position converts from protocol-logical once, then everything
-    // is physical and snapped to the grid.
-    let cursor_phys = crate::coords::point_to_physical(pointer_pos, scale) - output_loc.to_f64();
+    // Pointer coordinates are global protocol values; invert using the
+    // output they were generated from, then render this output locally.
+    let cursor_phys = space.point_to_physical(pointer_pos) - output_loc.to_f64();
     elements.extend(crate::render::cursor_elements(
         &mut renderer,
         &cursor_status,

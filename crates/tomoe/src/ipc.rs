@@ -601,5 +601,6 @@ fn output_json(props: &OutputProps) -> tomoe_ipc::Output {
             w: uw,
             h: uh,
         },
+        scale: props.scale,
     }
 }

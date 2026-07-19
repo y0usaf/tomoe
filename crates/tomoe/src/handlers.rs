@@ -701,8 +701,11 @@ impl Tomoe {
                 self.fullscreen_prev.entry(id).or_insert(prev);
             }
         }
-        let (logical, _achievable) =
-            crate::coords::configure_size(output_geo.size, self.space.scale());
+        let output_scale = output
+            .as_ref()
+            .map(|output| self.space.output_scale(output))
+            .unwrap_or_else(|| self.space.scale());
+        let (logical, _achievable) = crate::coords::configure_size(output_geo.size, output_scale);
         toplevel.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Fullscreen);
             state.size = Some(logical);
@@ -714,20 +717,21 @@ impl Tomoe {
         // Only place mapped windows; unmapped ones get their spot on map.
         if let (Some(_), Some(window)) = (id, window) {
             let world = self.space.screen_to_world(output_geo.loc.to_f64());
-            self.space.map_element(
-                window.clone(),
-                Point::from((world.x.round() as i32, world.y.round() as i32)),
-            );
+            let loc = Point::from((world.x.round() as i32, world.y.round() as i32));
+            self.space
+                .map_element_with_scale(window.clone(), loc, output_scale);
             self.space.raise_element(&window);
         }
         self.queue_redraw_all();
     }
 
-    /// Undo `fullscreen_default`: drop the state and restore the remembered
-    /// geometry (no remembered geometry → the client picks its own size).
     fn unfullscreen_default(&mut self, toplevel: &ToplevelSurface, id: Option<u64>) {
         let prev = id.and_then(|id| self.fullscreen_prev.remove(&id));
-        let scale = self.space.scale();
+        let window = self.window_for_surface(toplevel.wl_surface());
+        let scale = window
+            .as_ref()
+            .map(|window| self.space.element_scale(window))
+            .unwrap_or_else(|| self.space.scale());
         toplevel.with_pending_state(|state| {
             state.states.unset(xdg_toplevel::State::Fullscreen);
             state.fullscreen_output = None;
@@ -737,8 +741,8 @@ impl Tomoe {
             toplevel.send_pending_configure();
         }
         if let Some(prev) = prev {
-            if let Some(window) = self.window_for_surface(toplevel.wl_surface()) {
-                self.space.map_element(window, prev.loc);
+            if let Some(window) = window {
+                self.space.map_element_with_scale(window, prev.loc, scale);
             }
         }
         self.queue_redraw_all();
@@ -838,7 +842,6 @@ impl Tomoe {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let scale = self.space.scale();
 
         // Build the usable area in the space the positioner works in:
         // logical, relative to the parent's window-geometry origin.
@@ -872,6 +875,7 @@ impl Tomoe {
             };
             let mut rect = output_world;
             rect.loc -= window_geo.loc;
+            let scale = self.space.scale_for_world_point(window_geo.loc.to_f64());
             crate::coords::rect_to_logical(rect, scale)
         } else {
             // Layer-shell parent: layer maps arrange in output-local logical
@@ -888,8 +892,10 @@ impl Tomoe {
                 ) else {
                     continue;
                 };
-                let mut rect =
-                    Rectangle::from_size(crate::coords::rect_to_logical(output_geo, scale).size);
+                let mut rect = Rectangle::from_size(
+                    crate::coords::rect_to_logical(output_geo, self.space.output_scale(output))
+                        .size,
+                );
                 rect.loc -= layer_geo.loc;
                 found = Some(rect);
                 break;
@@ -931,7 +937,7 @@ impl WlrLayerShellHandler for Tomoe {
             return;
         };
         let layer = LayerSurface::new(surface, namespace);
-        crate::state::send_scale(layer.wl_surface(), self.space.scale());
+        crate::state::send_scale(layer.wl_surface(), self.space.output_scale(&output));
         if let Err(err) = layer_map_for_output(&output).map_layer(&layer) {
             warn!("error mapping layer surface: {err}");
         }
@@ -1017,17 +1023,20 @@ impl PointerConstraintsHandler for Tomoe {
         }
         // The hint is surface-local; recover the surface origin from the
         // current hit-test and only honor hints from the constrained surface.
-        let scale = self.space.scale();
-        let pos = crate::coords::point_to_physical(pointer.current_location(), scale);
+        let pos = self.space.point_to_physical(pointer.current_location());
         let Some((under, origin)) = self.surface_under(pos) else {
             return;
         };
         if &under != surface {
             return;
         }
+        let scale = self
+            .window_for_surface(surface)
+            .map(|window| self.space.element_scale(&window))
+            .unwrap_or_else(|| self.space.scale_at(pos));
         let target = crate::coords::point_to_physical(origin + location, scale);
         let target = self.clamp_to_outputs(target);
-        pointer.set_location(crate::coords::point_to_protocol(target, scale));
+        pointer.set_location(self.space.point_to_protocol(target));
         // The cursor is composited, so moving it damages the output.
         self.queue_redraw_all();
     }
@@ -1166,7 +1175,20 @@ impl FractionalScaleHandler for Tomoe {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // Tell the client the exact scale up front so its very first buffer
         // is already at native pixel density.
-        crate::state::send_scale(&surface, self.space.scale());
+        let scale = if let Some(window) = self.window_for_surface(&surface) {
+            self.space.element_scale(&window)
+        } else {
+            self.space
+                .outputs()
+                .find_map(|output| {
+                    layer_map_for_output(output)
+                        .layer_for_surface(&surface, WindowSurfaceType::TOPLEVEL)
+                        .is_some()
+                        .then(|| self.space.output_scale(output))
+                })
+                .unwrap_or_else(|| self.space.scale())
+        };
+        crate::state::send_scale(&surface, scale);
     }
 }
 delegate_fractional_scale!(Tomoe);

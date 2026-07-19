@@ -267,7 +267,7 @@ impl Tomoe {
         let output = self.ui.screenshot.output()?;
         let geo = self.space.output_geometry(output)?;
         let pointer = self.seat.get_pointer()?;
-        let pos = crate::coords::point_to_physical(pointer.current_location(), self.space.scale());
+        let pos = self.space.point_to_physical(pointer.current_location());
         let local = pos - geo.loc.to_f64();
         Some(smithay::utils::Point::from((
             (local.x.round() as i32).clamp(0, geo.size.w),
@@ -289,8 +289,7 @@ impl Tomoe {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let scale = self.space.scale();
-        let location = crate::coords::point_to_protocol(pos, scale);
+        let location = self.space.point_to_protocol(pos);
 
         // Screenshot selection overlay: the cursor keeps moving (no client
         // focus, like the Lua-grab path below) and an active drag tracks it.
@@ -317,7 +316,7 @@ impl Tomoe {
         }
 
         if self.lua.pointer_grab_active() && !self.is_locked() {
-            let prev = crate::coords::point_to_physical(pointer.current_location(), scale);
+            let prev = self.space.point_to_physical(pointer.current_location());
             // Move the cursor but drop client focus: the drag is ours.
             let serial = SERIAL_COUNTER.next_serial();
             pointer.motion(
@@ -534,7 +533,8 @@ impl Tomoe {
                 let Some(pointer) = self.seat.get_pointer() else {
                     return;
                 };
-                let scale = self.space.scale();
+                let prev_pos = self.space.point_to_physical(pointer.current_location());
+                let scale = self.space.scale_at(prev_pos);
                 let relative = RelativeMotionEvent {
                     delta: event.delta(),
                     delta_unaccel: event.delta_unaccel(),
@@ -545,7 +545,7 @@ impl Tomoe {
                 // its surface holds pointer focus — smithay deactivates on
                 // focus change — so checking the surface under the pointer
                 // suffices. A locked pointer sends only relative motion.
-                let prev_pos = crate::coords::point_to_physical(pointer.current_location(), scale);
+
                 let under = self.surface_under(prev_pos);
                 let mut locked = false;
                 let mut confine_region = None;
@@ -578,10 +578,7 @@ impl Tomoe {
 
                 // Deltas are logical-paced (a swipe crosses the same fraction
                 // of the screen at any scale); position math is physical.
-                let pos = crate::coords::point_to_physical(
-                    pointer.current_location() + event.delta(),
-                    scale,
-                );
+                let pos = prev_pos + crate::coords::point_to_physical(event.delta(), scale);
                 let pos = self.clamp_to_outputs(pos);
 
                 // A confined pointer stops at the surface (or region) edge;
@@ -591,7 +588,7 @@ impl Tomoe {
                     let new_under = self.surface_under(pos);
                     let mut prevent = new_under.as_ref().map(|(s, _)| s) != Some(surface);
                     if let Some(region) = &region {
-                        let within = crate::coords::point_to_protocol(pos, scale) - *surface_loc;
+                        let within = self.space.point_to_protocol(pos) - *surface_loc;
                         if !region.contains(within.to_i32_round()) {
                             prevent = true;
                         }
@@ -623,8 +620,7 @@ impl Tomoe {
                 // Synthesize a relative event from the position difference so
                 // relative-pointer clients work on the winit backend too.
                 let relative = self.seat.get_pointer().map(|pointer| {
-                    let delta = crate::coords::point_to_protocol(pos, self.space.scale())
-                        - pointer.current_location();
+                    let delta = self.space.point_to_protocol(pos) - pointer.current_location();
                     RelativeMotionEvent {
                         delta,
                         delta_unaccel: delta,
@@ -679,10 +675,7 @@ impl Tomoe {
                         self.consumed_buttons.insert(button);
                         let hit = (button == BTN_LEFT)
                             .then(|| {
-                                let pos = crate::coords::point_to_physical(
-                                    pointer.current_location(),
-                                    self.space.scale(),
-                                );
+                                let pos = self.space.point_to_physical(pointer.current_location());
                                 let (size, local) = self.output_local_point(pos)?;
                                 self.ui.menu_click(size, local)
                             })
@@ -737,9 +730,7 @@ impl Tomoe {
                 }
 
                 if self.lua.has_pointer_button_hooks() && !self.is_locked() {
-                    let scale = self.space.scale();
-                    let screen =
-                        crate::coords::point_to_physical(pointer.current_location(), scale);
+                    let screen = self.space.point_to_physical(pointer.current_location());
                     let world = self.space.screen_to_world(screen);
                     let window_id = self
                         .space
@@ -774,10 +765,7 @@ impl Tomoe {
                 }
 
                 if pressed && !pointer.is_grabbed() && !self.is_locked() {
-                    let screen = crate::coords::point_to_physical(
-                        pointer.current_location(),
-                        self.space.scale(),
-                    );
+                    let screen = self.space.point_to_physical(pointer.current_location());
                     let world = self.space.screen_to_world(screen);
                     let under = self.space.element_under(world).map(|(w, _)| w.clone());
                     self.focus_window(under.as_ref());
@@ -806,9 +794,7 @@ impl Tomoe {
                     let Some(pointer) = self.seat.get_pointer() else {
                         return;
                     };
-                    let scale = self.space.scale();
-                    let screen =
-                        crate::coords::point_to_physical(pointer.current_location(), scale);
+                    let screen = self.space.point_to_physical(pointer.current_location());
                     let world = self.space.screen_to_world(screen);
                     let window_id = self
                         .space

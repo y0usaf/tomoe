@@ -62,10 +62,11 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
         size: backend.window_size(),
         refresh: 60_000,
     };
+    let output_scale = tomoe.lua.settings().scale_for_output("winit");
     output.change_current_state(
         Some(mode),
         None,
-        Some(Scale::Fractional(tomoe.space.scale())),
+        Some(Scale::Fractional(output_scale)),
         Some((0, 0).into()),
     );
     output.set_preferred(mode);
@@ -191,7 +192,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
             winit.backend.renderer(),
             &output,
             output_size,
-            space.scale(),
+            space.output_scale(&output),
             lock_surfaces.get(&output),
             lock_backdrops,
         )

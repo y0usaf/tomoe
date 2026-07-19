@@ -384,6 +384,7 @@ function UiWidget:close() end
 ---@field y integer
 ---@field w integer
 ---@field h integer
+---@field scale number # fractional client scale advertised on output
 ---@field usable Geometry # geometry minus layer-shell exclusive zones
 
 ---@class View
@@ -564,6 +565,7 @@ function ScreencastRequest:defer() end
 ---@class Display
 ---@field resolution string # "preferred" | "max" | "WxH", optionally "@<Hz|max>" ("2560x1440@144")
 ---@field position integer[]? # { x, y } in physical pixels; unset outputs pack left-to-right
+---@field scale number? # client scale; omitted inherits settings.scale, snapped to N/120
 ---@field disabled boolean # leave the connector off entirely
 ---@field mirror string? # show the same world region as the named output
 ---@field vrr boolean # variable refresh rate, when the connector supports it

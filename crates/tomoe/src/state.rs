@@ -686,12 +686,11 @@ impl Tomoe {
         let outputs = self.collect_output_props();
         let view_offset = self.space.view_offset();
         let view = (view_offset.x, view_offset.y, self.space.view_zoom());
-        let scale = self.space.scale();
         let pointer = self
             .seat
             .get_pointer()
             .map(|p| {
-                let screen = coords::point_to_physical(p.current_location(), scale);
+                let screen = self.space.point_to_physical(p.current_location());
                 let world = self.space.screen_to_world(screen);
                 (world.x, world.y, screen.x, screen.y)
             })
@@ -759,12 +758,12 @@ impl Tomoe {
 
     /// Current output properties, as both the Lua snapshot and IPC see them.
     pub fn collect_output_props(&self) -> Vec<OutputProps> {
-        let scale = self.space.scale();
         let mut outputs = Vec::new();
         for output in self.space.outputs() {
             let Some(geo) = self.space.output_geometry(output) else {
                 continue;
             };
+            let scale = self.space.output_scale(output);
             // Layer-shell exclusive zones are logical; Lua speaks physical.
             let zone =
                 coords::rect_to_physical(layer_map_for_output(output).non_exclusive_zone(), scale);
@@ -777,6 +776,7 @@ impl Tomoe {
                     zone.size.w,
                     zone.size.h,
                 ),
+                scale,
             });
         }
         outputs
@@ -808,13 +808,15 @@ impl Tomoe {
         self.reconcile_processes();
         self.apply_keyboard_settings();
         crate::backend::tty::apply_libinput_settings(self);
-        // Displays before scale: scale math reads output geometry. A mode
-        // change re-emits outputs_changed (recursion bottoms out: the re-pick
-        // is idempotent, so the nested pass sees no change).
+        // Display mode/placement changes run before scale resolution because
+        // layer-shell geometry is still expressed in the output's current
+        // logical units.
         if crate::backend::tty::apply_display_settings(self) {
             self.outputs_changed(false);
         }
-        self.apply_scale();
+        if self.apply_scale() {
+            self.outputs_changed(false);
+        }
         self.sync_snapshot();
         self.queue_redraw_all();
     }
@@ -906,38 +908,84 @@ impl Tomoe {
         self.applied_keyboard = kb;
     }
 
-    /// Apply a changed `settings.scale` to the space, outputs, and surfaces.
-    /// Snapshot geometry stays physical, so Lua configs are scale-agnostic;
-    /// they observe the change as an output-geometry change on the next event.
-    fn apply_scale(&mut self) {
-        let snapped = coords::snap_scale(self.lua.settings().scale);
-        if snapped == self.space.scale() {
-            return;
+    /// Apply global/per-output client scales. Layout and output bookkeeping
+    /// stay physical; only protocol scale, logical output positions, client
+    /// configure sizes, and layer arrangements change.
+    fn apply_scale(&mut self) -> bool {
+        let settings = self.lua.settings().clone();
+        let reference_scale = coords::snap_scale(settings.scale);
+        let reference_changed = reference_scale != self.space.scale();
+        if reference_changed {
+            self.space.set_scale(reference_scale);
         }
-        self.space.set_scale(snapped);
+
         let outputs: Vec<_> = self.space.outputs().cloned().collect();
+        let mut changed = reference_changed;
         for output in &outputs {
-            let logical_loc = self
-                .space
-                .output_geometry(output)
-                .map(|geo| coords::rect_to_logical(geo, snapped).loc)
-                .unwrap_or_default();
-            output.change_current_state(
-                None,
-                None,
-                Some(OutputScale::Fractional(snapped)),
-                Some(logical_loc),
-            );
+            let desired = settings.scale_for_output(&output.name());
+            let current = self.space.output_scale(output);
+            let Some(geo) = self.space.output_geometry(output) else {
+                continue;
+            };
+            let logical_loc = Point::<i32, Logical>::from((
+                (geo.loc.x as f64 / reference_scale).round() as i32,
+                (geo.loc.y as f64 / reference_scale).round() as i32,
+            ));
+            if reference_changed || current != desired {
+                output.change_current_state(
+                    None,
+                    None,
+                    Some(OutputScale::Fractional(desired)),
+                    Some(logical_loc),
+                );
+                changed = true;
+            }
+            let mut map = layer_map_for_output(output);
+            for layer in map.layers() {
+                send_scale(layer.wl_surface(), desired);
+            }
+            map.arrange();
         }
+
+        // A client buffer is quantized at its assigned output scale. Preserve
+        // each physical target when a scale changes by reconfiguring its
+        // logical size before advertising the new value.
+        let windows: Vec<_> = self.space.elements().cloned().collect();
+        for window in windows {
+            let Some(loc) = self.space.element_location(&window) else {
+                continue;
+            };
+            let desired = self.space.scale_for_world_point(loc.to_f64());
+            let current = self.space.element_scale(&window);
+            if current == desired {
+                continue;
+            }
+            let physical_size = self.space.element_geometry(&window).map(|geo| geo.size);
+            self.space.set_element_scale(&window, desired);
+            if let Some(size) = physical_size {
+                let (logical, _) = coords::configure_size(size, desired);
+                if let Some(toplevel) = window.toplevel() {
+                    send_scale(toplevel.wl_surface(), desired);
+                    toplevel.with_pending_state(|state| state.size = Some(logical));
+                    toplevel.send_pending_configure();
+                }
+            }
+            changed = true;
+        }
+
+        let fallback_scale = outputs
+            .first()
+            .map(|output| self.space.output_scale(output))
+            .unwrap_or(reference_scale);
         let surfaces: Vec<WlSurface> = self
-            .windows
-            .values()
-            .chain(self.unmapped_windows.iter())
+            .unmapped_windows
+            .iter()
             .filter_map(|w| w.toplevel().map(|t| t.wl_surface().clone()))
             .collect();
         for surface in surfaces {
-            send_scale(&surface, snapped);
+            send_scale(&surface, fallback_scale);
         }
+        changed
     }
 
     /// Schedule a repaint on every output (damage-driven; cheap if already queued).
@@ -957,10 +1005,13 @@ impl Tomoe {
                     return;
                 };
                 // Lua speaks physical pixels; xdg configure takes integer
-                // logical, so the achievable size is quantized once here.
-                let (logical, _achievable) =
-                    coords::configure_size(Size::from((w, h)), self.space.scale());
+                // logical, so quantize against destination output scale.
+                let scale = self
+                    .space
+                    .scale_for_world_point(Point::<i32, Physical>::from((x, y)).to_f64());
+                let (logical, _achievable) = coords::configure_size(Size::from((w, h)), scale);
                 if let Some(toplevel) = window.toplevel() {
+                    send_scale(toplevel.wl_surface(), scale);
                     toplevel.with_pending_state(|state| {
                         state.size = Some(logical);
                     });
@@ -970,7 +1021,8 @@ impl Tomoe {
                 // Animate the move: the target lands in the space now; the
                 // render offset (old − new) decays to zero (M6 animations).
                 let old_loc = self.space.element_location(&window);
-                self.space.map_element(window.clone(), (x, y));
+                self.space
+                    .map_element_with_scale(window.clone(), (x, y), scale);
                 if let Some(old) = old_loc {
                     let delta = old - Point::from((x, y));
                     if delta != Point::from((0, 0)) {
@@ -1081,8 +1133,14 @@ impl Tomoe {
         self.next_window_id += 1;
         self.windows.insert(id, window.clone());
         self.publish_foreign_toplevel(id, &window);
+        let initial_scale = self
+            .space
+            .outputs()
+            .next()
+            .map(|output| self.space.output_scale(output))
+            .unwrap_or_else(|| self.space.scale());
         if let Some(toplevel) = window.toplevel() {
-            send_scale(toplevel.wl_surface(), self.space.scale());
+            send_scale(toplevel.wl_surface(), initial_scale);
         }
 
         if self.lua.has_window_open_hooks() {
@@ -1098,19 +1156,21 @@ impl Tomoe {
             let output = self.space.outputs().next().cloned();
             if let Some(output) = output {
                 if let Some(geo) = self.space.output_geometry(&output) {
-                    let scale = self.space.scale();
+                    let scale = self.space.output_scale(&output);
                     let zone = coords::rect_to_physical(
                         layer_map_for_output(&output).non_exclusive_zone(),
                         scale,
                     );
                     let (logical, _achievable) = coords::configure_size(zone.size, scale);
                     if let Some(toplevel) = window.toplevel() {
+                        send_scale(toplevel.wl_surface(), scale);
                         toplevel.with_pending_state(|state| {
                             state.size = Some(logical);
                         });
                         toplevel.send_pending_configure();
                     }
-                    self.space.map_element(window.clone(), geo.loc + zone.loc);
+                    self.space
+                        .map_element_with_scale(window.clone(), geo.loc + zone.loc, scale);
                 }
             }
             self.focus_window(Some(&window));
@@ -1262,25 +1322,21 @@ impl Tomoe {
             .cloned()
     }
 
-    /// Find the surface under a physical-space position. The returned
-    /// location is protocol-logical (for the seat): clients receive
-    /// `pointer_location - surface_location`, and with both sides converted
-    /// by the same division that difference is an exact surface-local coord.
     pub fn surface_under(
         &self,
         pos: Point<f64, Physical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let scale = self.space.scale();
         let output = self.space.output_under(pos)?.clone();
         let output_geo = self.space.output_geometry(&output)?;
+        let output_scale = self.space.output_scale(&output);
+        let output_protocol_loc = output.current_location().to_f64();
 
         // While locked, the pointer can only ever land on the output's lock
         // surface — checked before anything else so no window, layer, or
         // popup is reachable.
         if self.is_locked() {
             let surface = self.lock_surfaces.get(&output)?;
-            let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), scale);
-            let output_protocol_loc = coords::point_to_protocol(output_geo.loc.to_f64(), scale);
+            let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), output_scale);
             let (surface, loc) = smithay::desktop::utils::under_from_surface_tree(
                 surface.wl_surface(),
                 rel,
@@ -1290,8 +1346,7 @@ impl Tomoe {
             return Some((surface, loc.to_f64() + output_protocol_loc));
         }
         // Layer maps arrange in output-local logical coordinates.
-        let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), scale);
-        let output_protocol_loc = coords::point_to_protocol(output_geo.loc.to_f64(), scale);
+        let rel = coords::point_to_protocol(pos - output_geo.loc.to_f64(), output_scale);
         let layers = layer_map_for_output(&output);
 
         let layer_hit = |kinds: [WlrLayer; 2]| {
@@ -1320,12 +1375,13 @@ impl Tomoe {
         // world-local (client buffer) coordinate at any pan/zoom.
         let world = self.space.screen_to_world(pos);
         if let Some((window, location)) = self.space.element_under(world) {
-            let local = coords::point_to_protocol(world - location.to_f64(), scale);
+            let window_scale = self.space.element_scale(window);
+            let local = coords::point_to_protocol(world - location.to_f64(), window_scale);
             if let Some((surface, surface_loc)) =
                 window.surface_under(local, WindowSurfaceType::ALL)
             {
                 let compensated_loc =
-                    coords::point_to_protocol(pos - world + location.to_f64(), scale);
+                    coords::point_to_protocol(pos - world + location.to_f64(), window_scale);
                 return Some((surface, surface_loc.to_f64() + compensated_loc));
             }
         }
@@ -1369,7 +1425,7 @@ impl Tomoe {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let pos = coords::point_to_physical(pointer.current_location(), self.space.scale());
+        let pos = self.space.point_to_physical(pointer.current_location());
         let Some((surface, surface_loc)) = self.surface_under(pos) else {
             return;
         };
@@ -1525,7 +1581,7 @@ impl Tomoe {
         let pos = self
             .seat
             .get_pointer()
-            .map(|p| coords::point_to_physical(p.current_location(), self.space.scale()));
+            .map(|p| self.space.point_to_physical(p.current_location()));
         pos.and_then(|pos| self.space.output_under(pos))
             .or_else(|| self.space.outputs().next())
             .cloned()

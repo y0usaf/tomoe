@@ -91,12 +91,11 @@ impl<'a> SceneParts<'a> {
         let Some(geo) = self.space.output_geometry(output) else {
             return Vec::new();
         };
-        let scale = self.space.scale();
+        let scale = self.space.output_scale(output);
 
         let mut elements: Vec<OutputRenderElements<GlesRenderer>> = Vec::new();
         if include_cursor {
-            let cursor_phys =
-                crate::coords::point_to_physical(self.pointer_pos, scale) - geo.loc.to_f64();
+            let cursor_phys = self.space.point_to_physical(self.pointer_pos) - geo.loc.to_f64();
             elements.extend(crate::render::cursor_elements(
                 renderer,
                 self.cursor_status,
@@ -177,14 +176,14 @@ impl<'a> SceneParts<'a> {
         if self.locked {
             return Vec::new();
         }
-        let scale = self.space.scale();
+        let scale = self.space.element_scale(window);
         let mut elements: Vec<OutputRenderElements<GlesRenderer>> = Vec::new();
         if include_cursor {
             if let Some(geo) = self.space.element_geometry(window) {
                 // Windows live in world coordinates; the pointer in screen.
                 let pointer_world = self
                     .space
-                    .screen_to_world(crate::coords::point_to_physical(self.pointer_pos, scale));
+                    .screen_to_world(self.space.point_to_physical(self.pointer_pos));
                 if geo.to_f64().contains(pointer_world) {
                     elements.extend(crate::render::cursor_elements(
                         renderer,
@@ -305,7 +304,7 @@ pub fn render_screencopy(
     screencopy: Screencopy,
 ) {
     let (mut parts, backend, screencopy_state, loop_handle, now) = split_tomoe!(tomoe);
-    let scale = parts.space.scale();
+    let scale = parts.space.output_scale(screencopy.output());
 
     backend.with_primary_gles(|renderer| {
         let output = screencopy.output().clone();
@@ -343,7 +342,7 @@ pub fn render_screencopy(
 /// only once its damage tracker sees a change.
 pub fn render_queued_screencopies(tomoe: &mut Tomoe, output: &Output) {
     let (mut parts, backend, screencopy_state, loop_handle, now) = split_tomoe!(tomoe);
-    let scale = parts.space.scale();
+    let scale = parts.space.output_scale(output);
 
     backend.with_primary_gles(|renderer| {
         screencopy_state.with_queues_mut(|queue| {
@@ -475,12 +474,14 @@ fn source_target(tomoe: &Tomoe, source: &ImageCaptureSource) -> Option<CaptureTa
     tomoe.windows.get(&id).cloned().map(CaptureTarget::Window)
 }
 
-/// Physical size of a window capture: the client's committed geometry at the
-/// global scale (the same rounding placement uses), floored at 1×1 so a
-/// pre-first-commit window still yields valid constraints.
+/// Physical size of a window capture: the client's committed geometry at its
+/// assigned output scale, floored at 1×1 so a pre-first-commit window still
+/// yields valid constraints.
 fn window_capture_size(space: &PhysicalSpace, window: &Window) -> Size<i32, Physical> {
-    let size =
-        crate::coords::logical_size_to_physical(window.geometry().size.to_f64(), space.scale());
+    let size = crate::coords::logical_size_to_physical(
+        window.geometry().size.to_f64(),
+        space.element_scale(window),
+    );
     Size::from((size.w.max(1), size.h.max(1)))
 }
 
@@ -555,7 +556,10 @@ pub fn render_capture_frame(tomoe: &mut Tomoe, session: &SessionRef, frame: Fram
     let include_cursor = session.draw_cursor();
 
     let (mut parts, backend, _screencopy_state, _loop_handle, now) = split_tomoe!(tomoe);
-    let scale = parts.space.scale();
+    let scale = match &target {
+        CaptureTarget::Output(output) => parts.space.output_scale(output),
+        CaptureTarget::Window(window) => parts.space.element_scale(window),
+    };
     let size = match &target {
         CaptureTarget::Output(output) => {
             let Some(geo) = parts.space.output_geometry(output) else {
@@ -633,7 +637,7 @@ pub fn capture_rgba_with_cursor(
     include_cursor: bool,
 ) -> Result<(Size<i32, Physical>, Vec<u8>)> {
     let (mut parts, backend, _screencopy_state, _loop_handle, _now) = split_tomoe!(tomoe);
-    let scale = parts.space.scale();
+    let scale = parts.space.output_scale(output);
     let geo = parts
         .space
         .output_geometry(output)

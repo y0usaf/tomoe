@@ -96,7 +96,7 @@ impl std::str::FromStr for Resolution {
 }
 
 /// Per-output settings: `settings.displays[output_name]` (tty backend).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DisplaySettings {
     pub resolution: Resolution,
     /// Explicit position in physical pixels (may be negative). Unset
@@ -112,6 +112,9 @@ pub struct DisplaySettings {
     /// Variable refresh rate (adaptive sync). Applied when the connector
     /// supports it; live-toggleable from a settings reload.
     pub vrr: bool,
+    /// Client scale for this output. `None` inherits `settings.scale`.
+    /// Values are snapped to the fractional-scale 1/120 grid.
+    pub scale: Option<f64>,
 }
 
 /// xkb keymap + key-repeat settings: `settings.keyboard`. Empty strings mean
@@ -321,8 +324,18 @@ impl Settings {
             .map(|d| d.resolution)
             .unwrap_or_default()
     }
-}
 
+    /// Client scale for an output; unlisted outputs inherit the global
+    /// reference scale, which also anchors mixed-scale logical positions.
+    pub fn scale_for_output(&self, output: &str) -> f64 {
+        crate::coords::snap_scale(
+            self.displays
+                .get(output)
+                .and_then(|display| display.scale)
+                .unwrap_or(self.scale),
+        )
+    }
+}
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -642,6 +655,8 @@ pub struct OutputProps {
     pub geometry: (i32, i32, i32, i32),
     /// Geometry minus layer-shell exclusive zones.
     pub usable: (i32, i32, i32, i32),
+    /// Fractional client scale advertised on this output.
+    pub scale: f64,
 }
 
 /// Queued operations, applied by the core after each Lua entry.
@@ -1281,6 +1296,10 @@ impl LuaRuntime {
                         }
                         if let Ok(v) = display.get::<bool>("vrr") {
                             ds.vrr = v;
+                        }
+
+                        if let Ok(scale) = display.get::<f64>("scale") {
+                            ds.scale = Some(crate::coords::snap_scale(scale));
                         }
                         settings.displays.insert(name, ds);
                     }
@@ -1989,6 +2008,7 @@ impl LuaRuntime {
                 for (i, o) in outputs.iter().enumerate() {
                     let t = lua.create_table()?;
                     t.set("name", o.name.clone())?;
+                    t.set("scale", o.scale)?;
                     t.set("x", o.geometry.0)?;
                     t.set("y", o.geometry.1)?;
                     t.set("w", o.geometry.2)?;
@@ -3580,6 +3600,7 @@ mod tests {
             name: name.into(),
             geometry: (0, 0, 1920, 1080),
             usable: (0, 0, 1920, 1080),
+            scale: 1.0,
         };
 
         // One candidate output: resolved without asking.
