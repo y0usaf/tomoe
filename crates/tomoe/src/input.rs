@@ -16,6 +16,20 @@ use crate::ui::widgets::{UiEvent, WidgetKind};
 /// Linux BTN_LEFT (input-event-codes.h).
 const BTN_LEFT: u32 = 0x110;
 
+/// Linux keycodes mapped to left bongo paw; remaining keys map right.
+/// Only coarse hand classification leaves compositor IPC.
+fn keyboard_hand(key_code: u32) -> &'static str {
+    const LEFT_KEYS: &[u32] = &[
+        1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 29, 30, 31, 32, 33, 34, 41, 42, 44, 45, 46,
+        47, 48, 56, 58, 125,
+    ];
+    if LEFT_KEYS.contains(&key_code) {
+        "left"
+    } else {
+        "right"
+    }
+}
+
 /// A dispatchable compositor action. Lua binds queue these; built-in binds
 /// carry them directly.
 #[derive(Debug, Clone)]
@@ -500,6 +514,9 @@ impl Tomoe {
                         FilterResult::Forward
                     },
                 );
+                if pressed && !self.is_locked() {
+                    crate::ipc::notify_keyboard_activity(self, keyboard_hand(key_code.into()));
+                }
                 if let Some(Some(action)) = action {
                     self.do_action(action);
                 }

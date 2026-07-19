@@ -520,6 +520,15 @@ pub fn abandon_pending_screencasts(tomoe: &mut Tomoe) {
 
 // ── Core event emitters (called from state.rs) ──
 
+/// Broadcast coarse keyboard activity for visual clients; key values never
+/// cross IPC.
+pub fn notify_keyboard_activity(tomoe: &mut Tomoe, hand: &str) {
+    if !has_subscribers(tomoe, "keyboard_activity") {
+        return;
+    }
+    broadcast(tomoe, "keyboard_activity", json!({ "hand": hand }));
+}
+
 pub fn notify_window_open(tomoe: &mut Tomoe, id: u64) {
     if !has_subscribers(tomoe, "window_open") {
         return;
