@@ -1,0 +1,22 @@
+[package]
+name = "moonshell"
+version.workspace = true
+edition.workspace = true
+# moonshell heritage: AGPL-3.0-only (the pre-fusion license), kept
+# explicit rather than inheriting the workspace AGPL-3.0-or-later.
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "moonshell"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+calloop.workspace = true
+inotify.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+moonshell-surface.workspace = true
+moonshell-render.workspace = true
+moonshell-runtime.workspace = true
+moonshell-services.workspace = true

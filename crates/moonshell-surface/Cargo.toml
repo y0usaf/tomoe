@@ -1,0 +1,15 @@
+[package]
+name = "moonshell-surface"
+version.workspace = true
+edition.workspace = true
+# moonshell heritage: AGPL-3.0-only (the pre-fusion license), kept
+# explicit rather than inheriting the workspace AGPL-3.0-or-later.
+license = "AGPL-3.0-only"
+
+[dependencies]
+thiserror.workspace = true
+calloop.workspace = true
+calloop-wayland-source.workspace = true
+smithay-client-toolkit.workspace = true
+wayland-client.workspace = true
+tracing.workspace = true

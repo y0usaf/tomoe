@@ -1,0 +1,15 @@
+[package]
+name = "moonshell-services"
+version.workspace = true
+edition.workspace = true
+# moonshell heritage: AGPL-3.0-only (the pre-fusion license), kept
+# explicit rather than inheriting the workspace AGPL-3.0-or-later.
+license = "AGPL-3.0-only"
+
+[dependencies]
+calloop.workspace = true
+rustbus.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tomoe-ipc.workspace = true
+tracing.workspace = true
