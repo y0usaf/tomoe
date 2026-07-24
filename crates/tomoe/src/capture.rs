@@ -52,6 +52,7 @@ type CaptureElement = RelocateRenderElement<OutputRenderElements<GlesRenderer>>;
 struct SceneParts<'a> {
     space: &'a PhysicalSpace,
     ui: &'a mut Ui,
+    shell: &'a crate::shell::ShellSurfaces,
     borders: &'a mut HashMap<smithay::desktop::Window, crate::render::border::BorderRenderElement>,
     shadows: &'a mut HashMap<smithay::desktop::Window, crate::render::shadow::ShadowRenderElement>,
     layer_blurs: &'a mut HashMap<
@@ -120,7 +121,9 @@ impl<'a> SceneParts<'a> {
             // Captures never include the screenshot selection overlay: the
             // screenshot itself must not contain it, and screencopy/screencast
             // consumers shouldn't record it either.
-            let ui_elements = self.ui.render_elements(renderer, output, geo.size, false);
+            let mut ui_elements = self.ui.render_elements(renderer, output, geo.size, false);
+            self.shell
+                .render_elements(renderer, &output.name(), &mut ui_elements);
             let borders = crate::render::border_elements(
                 self.space,
                 self.borders,
@@ -243,6 +246,7 @@ macro_rules! split_tomoe {
             backend,
             space,
             ui,
+            shell,
             borders,
             shadows,
             layer_blurs,
@@ -266,6 +270,7 @@ macro_rules! split_tomoe {
             SceneParts {
                 space,
                 ui,
+                shell,
                 borders,
                 shadows,
                 layer_blurs,

@@ -1563,6 +1563,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         cursor,
         cursor_fallback,
         ui,
+        shell,
         borders,
         shadows,
         layer_blurs,
@@ -1639,7 +1640,8 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ));
     } else {
         // Compositor UI (dialogs/overlays): above windows, below the cursor.
-        let ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, true);
+        let mut ui_elements = ui.render_elements(&mut renderer, &surface.output, output_size, true);
+        shell.render_elements(&mut renderer, &surface.output.name(), &mut ui_elements);
         let borders =
             crate::render::border_elements(space, borders, output_loc, animations, anim_now);
         let shadows =
