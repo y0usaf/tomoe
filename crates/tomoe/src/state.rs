@@ -271,6 +271,8 @@ pub struct Tomoe {
     pub shell_mpris: Option<moonshell_services::mpris::MprisState>,
     pub shell_notifications: Option<moonshell_services::notifications::NotificationsState>,
     pub shell_tray: Option<moonshell_services::tray::TrayState>,
+    /// Monotonic keyboard-activity counter for the shell facade.
+    shell_keyboard_seq: u64,
     /// IPC socket server state (`ipc.rs`): connected clients + subscriptions.
     pub ipc: crate::ipc::IpcState,
     /// `--config` argument; the effective path is re-resolved on each check.
@@ -461,6 +463,7 @@ impl Tomoe {
             shell_mpris: None,
             shell_notifications: None,
             shell_tray: None,
+            shell_keyboard_seq: 0,
             ipc: crate::ipc::IpcState::default(),
             config_cli_path: None,
             config_fingerprint: None,
@@ -869,6 +872,19 @@ impl Tomoe {
             notifications.as_ref(),
             tray.as_ref(),
         );
+        self.after_lua();
+    }
+
+    /// Keyboard activity for the shell (bongo-cat-grade data: hand side
+    /// only). Skipped while no shell surfaces exist — an unused facade
+    /// must not cost a Lua entry per keypress.
+    pub fn shell_keyboard_activity(&mut self, hand: &str) {
+        if self.shell.is_empty() {
+            return;
+        }
+        self.shell_keyboard_seq += 1;
+        let seq = self.shell_keyboard_seq;
+        self.lua.push_shell_keyboard(seq, hand);
         self.after_lua();
     }
 
