@@ -10,7 +10,7 @@ use smithay::input::keyboard::XkbConfig;
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
 use smithay::output::{Output, Scale as OutputScale};
-use smithay::reexports::calloop::{LoopHandle, LoopSignal};
+use smithay::reexports::calloop::{self, LoopHandle, LoopSignal};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -260,6 +260,9 @@ pub struct Tomoe {
     process_timer_active: bool,
 
     pub ui: Ui,
+    /// Native shell surfaces (FUSION F2): `shell.window{}` declarations
+    /// textured per output, composited with the scene.
+    pub shell: crate::shell::ShellSurfaces,
     /// IPC socket server state (`ipc.rs`): connected clients + subscriptions.
     pub ipc: crate::ipc::IpcState,
     /// `--config` argument; the effective path is re-resolved on each check.
@@ -444,6 +447,7 @@ impl Tomoe {
             builtin_processes: HashMap::new(),
             process_timer_active: false,
             ui: Ui::new(),
+            shell: crate::shell::ShellSurfaces::default(),
             ipc: crate::ipc::IpcState::default(),
             config_cli_path: None,
             config_fingerprint: None,
@@ -526,6 +530,11 @@ impl Tomoe {
         let saved = self.lua.save_reload_state();
 
         self.lua = new_lua;
+        // Shell surfaces are config policy too: drop them; the fresh
+        // VM's `shell.window{}` declarations re-adopt on the next drain.
+        // (Old shell timers die on their next fire — the weak VM ref is
+        // gone — and the old exec channel closes with its senders.)
+        self.shell.clear();
         // Per-window props are config policy, not persistent core state. The
         // fresh config's restore/open replay can declare them again.
         self.window_properties.clear();
@@ -765,8 +774,13 @@ impl Tomoe {
             };
             let scale = self.space.output_scale(output);
             // Layer-shell exclusive zones are logical; Lua speaks physical.
-            let zone =
-                coords::rect_to_physical(layer_map_for_output(output).non_exclusive_zone(), scale);
+            // Native shell surfaces (FUSION F2) reserve space through the
+            // same computation as layer-shell clients.
+            let zone = coords::rect_to_physical(
+                self.shell
+                    .shrink_zone(layer_map_for_output(output).non_exclusive_zone()),
+                scale,
+            );
             outputs.push(OutputProps {
                 name: output.name(),
                 geometry: (geo.loc.x, geo.loc.y, geo.size.w, geo.size.h),
@@ -817,8 +831,82 @@ impl Tomoe {
         if self.apply_scale() {
             self.outputs_changed(false);
         }
+        self.drain_shell_actions();
         self.sync_snapshot();
         self.queue_redraw_all();
+    }
+
+    /// Drain the moonshell action queue (FUSION F2): adopt declared
+    /// surfaces, schedule shell timers on calloop, and re-render dirty
+    /// element trees — here, at the Lua entry boundary, so frame
+    /// assembly never runs config code.
+    fn drain_shell_actions(&mut self) {
+        let ctx = self.lua.shell_ctx();
+        let adopted = self.shell.adopt(ctx.take_pending());
+        for timer in ctx.take_timers() {
+            let first = Timer::from_duration(timer.delay);
+            let result = self.loop_handle.insert_source(first, move |_, _, tomoe| {
+                if !tomoe.lua.fire_shell_timer(&timer) {
+                    // VM replaced by a reload: the callback died with it.
+                    return TimeoutAction::Drop;
+                }
+                tomoe.after_lua();
+                match timer.period {
+                    Some(period) => TimeoutAction::ToDuration(period),
+                    None => TimeoutAction::Drop,
+                }
+            });
+            if let Err(err) = result {
+                warn!("error inserting shell timer: {err}");
+            }
+        }
+        for _watch in ctx.take_watches() {
+            // TODO(FUSION F2): wire shell.watch_file to the config
+            // watcher's stat-poll machinery.
+            warn!("shell.watch_file is not yet wired in-process; watch dropped");
+        }
+        if let Some(channel) = ctx.take_exec_channel() {
+            let result = self
+                .loop_handle
+                .insert_source(channel, |event, _, tomoe| match event {
+                    calloop::channel::Event::Msg(reply) => {
+                        tomoe.lua.dispatch_shell_exec_reply(reply);
+                        tomoe.after_lua();
+                    }
+                    calloop::channel::Event::Closed => {}
+                });
+            if let Err(err) = result {
+                warn!("error inserting shell exec channel: {err}");
+            }
+        }
+        if ctx.take_quit() {
+            warn!("shell.quit() is a no-op for the in-process shell; use tomoe.quit()");
+        }
+        if ctx.take_dirty() {
+            self.shell.mark_dirty();
+        }
+        if adopted {
+            // A new surface may reserve screen space: recompute usable
+            // areas and let wm policy re-tile.
+            self.outputs_changed(true);
+        }
+        if self.shell.is_empty() {
+            return;
+        }
+        let outputs: Vec<(String, Size<i32, Physical>, f64)> = self
+            .space
+            .outputs()
+            .filter_map(|o| {
+                let geo = self.space.output_geometry(o)?;
+                Some((o.name(), geo.size, self.space.output_scale(o)))
+            })
+            .collect();
+        if self
+            .shell
+            .refresh(&mut self.lua, &mut self.ui.engine, &outputs)
+        {
+            self.queue_redraw_all();
+        }
     }
 
     /// Declare a compositor-owned process-manifest entry. Built-ins ride the
@@ -1158,7 +1246,8 @@ impl Tomoe {
                 if let Some(geo) = self.space.output_geometry(&output) {
                     let scale = self.space.output_scale(&output);
                     let zone = coords::rect_to_physical(
-                        layer_map_for_output(&output).non_exclusive_zone(),
+                        self.shell
+                            .shrink_zone(layer_map_for_output(&output).non_exclusive_zone()),
                         scale,
                     );
                     let (logical, _achievable) = coords::configure_size(zone.size, scale);

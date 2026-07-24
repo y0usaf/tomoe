@@ -16,6 +16,7 @@ mod process;
 mod protocols;
 mod render;
 mod screenshot;
+mod shell;
 mod space;
 mod state;
 mod ui;

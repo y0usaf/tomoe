@@ -22,6 +22,9 @@ use mlua::{
 };
 use tracing::{info, warn};
 
+use moonshell_runtime::window::WindowShared;
+use moonshell_runtime::ShellCtx;
+
 use crate::input::Action;
 use crate::process::{Launch, ProcessDecl, ProcessSpec, ReloadPolicy, RestartPolicy, RunPolicy};
 use crate::ui::widgets::{self, UiEvent, WidgetSpec};
@@ -1213,6 +1216,10 @@ impl UserData for UiHandle {
 pub struct LuaRuntime {
     lua: Lua,
     shared: Rc<Shared>,
+    /// The moonshell action queue (`shell.*` — FUSION F2). One per VM:
+    /// a reload's fresh VM gets a fresh ctx, so shell surfaces, timers,
+    /// and callbacks never leak across reloads.
+    shell_ctx: Rc<ShellCtx>,
     /// Whether the watchdog debug hook is currently installed in the VM.
     watchdog_hook_set: Cell<bool>,
 }
@@ -2206,9 +2213,47 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // ── The moonshell shell subsystem (FUSION F2): the `ui.*`
+        // element vocabulary and `shell.*` API land in this VM,
+        // first-class alongside the `tomoe` global. The inherited
+        // moonshell contract is kept as-is: `ui` is populated by the
+        // pure-Lua stdlib, bundled modules preload under `moonshell.*`
+        // (+ `nur.*` compat aliases), and `shell.*` queues actions on a
+        // `ShellCtx` the compositor drains (snapshot in, actions out —
+        // the same discipline as the rest of this file). ──
+        lua.globals().set("ui", lua.create_table()?)?;
+        for &(name, source) in moonshell_runtime::LUA_MODULES {
+            preload.set(
+                name,
+                lua.create_function(move |lua, _modname: Value| {
+                    lua.load(source).set_name(name).eval::<Value>()
+                })?,
+            )?;
+            // nur.* alias: delegate through require so both names
+            // resolve to one shared module instance.
+            let alias = format!("nur.{}", &name["moonshell.".len()..]);
+            let target = name;
+            preload.set(
+                alias,
+                lua.create_function(move |lua, _modname: Value| {
+                    let require: mlua::Function = lua.globals().get("require")?;
+                    require.call::<Value>(target)
+                })?,
+            )?;
+        }
+        lua.load(moonshell_runtime::STDLIB)
+            .set_name("moonshell/stdlib.lua")
+            .exec()?;
+        let shell_ctx = ShellCtx::new();
+        moonshell_runtime::api::register_shell(&lua, &shell_ctx)?;
+        lua.load(moonshell_runtime::SHELL_EXT)
+            .set_name("moonshell/shell_ext.lua")
+            .exec()?;
+
         Ok(Self {
             lua,
             shared,
+            shell_ctx,
             watchdog_hook_set: Cell::new(false),
         })
     }
@@ -2359,6 +2404,80 @@ impl LuaRuntime {
             }
             Err(err) => warn!("Lua ui-widget registry error: {err}"),
         }
+    }
+
+    // ── moonshell shell subsystem (FUSION F2) ──
+
+    /// The shell action queue (pending windows, timers, watches, dirty
+    /// flag), drained by the compositor loop like every other queue.
+    pub fn shell_ctx(&self) -> Rc<ShellCtx> {
+        Rc::clone(&self.shell_ctx)
+    }
+
+    /// Run a shell window's render callback under the watchdog and wrap
+    /// the result in the window shell (a bg-painting stack), exactly as
+    /// the standalone painter did. `None` = no change is possible (the
+    /// callback errored or its key is gone); the caller keeps the
+    /// previous texture on screen.
+    pub fn render_shell_root(
+        &mut self,
+        shared: &Rc<RefCell<WindowShared>>,
+    ) -> Option<moonshell_render::Element> {
+        use moonshell_render::element::{Stack, Style};
+        // Fetch everything out of the RefCell before calling into Lua —
+        // the callback may touch this very window's handle.
+        let (render_fn, bg, text) = {
+            let s = shared.borrow();
+            let f = match &s.render_key {
+                Some(key) => match self.lua.registry_value::<Function>(key) {
+                    Ok(f) => Some(f),
+                    Err(err) => {
+                        warn!("shell render key lookup failed: {err}");
+                        return None;
+                    }
+                },
+                None => None,
+            };
+            (f, s.bg, s.text)
+        };
+        let mut children = Vec::new();
+        if let Some(f) = render_fn {
+            let _watchdog = self.watchdog();
+            let table: Table = match f.call(()) {
+                Ok(t) => t,
+                Err(err) => {
+                    warn!("shell render callback failed: {err}");
+                    return None;
+                }
+            };
+            match moonshell_runtime::from_table(&table, text) {
+                Ok(el) => children.push(el),
+                Err(err) => {
+                    warn!("shell render returned an invalid element tree: {err}");
+                    return None;
+                }
+            }
+        }
+        Some(moonshell_render::Element::Stack(Stack {
+            style: Style {
+                bg: Some(bg),
+                ..Style::default()
+            },
+            children,
+        }))
+    }
+
+    /// Fire a shell timer under the watchdog. Returns false when the
+    /// timer is dead (VM replaced by a reload) and should be dropped.
+    pub fn fire_shell_timer(&mut self, timer: &moonshell_runtime::PendingTimer) -> bool {
+        let _watchdog = self.watchdog();
+        timer.fire()
+    }
+
+    /// Deliver an `exec_async` reply into the VM under the watchdog.
+    pub fn dispatch_shell_exec_reply(&mut self, reply: moonshell_runtime::ExecReply) {
+        let _watchdog = self.watchdog();
+        self.shell_ctx.dispatch_exec_reply(reply);
     }
 
     pub fn take_spawns(&mut self) -> Vec<ProcessSpec> {

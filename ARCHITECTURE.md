@@ -22,6 +22,8 @@ graph TD
   moonshell_runtime["moonshell-runtime"] --> moonshell_surface["moonshell-surface"]
   moonshell_services["moonshell-services"] --> tomoe_ipc["tomoe-ipc"]
   tomoe["tomoe"] --> moonshell_render["moonshell-render"]
+  tomoe["tomoe"] --> moonshell_runtime["moonshell-runtime"]
+  tomoe["tomoe"] --> moonshell_surface["moonshell-surface"]
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
   xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
 ```
@@ -369,6 +371,10 @@ crate tomoe
 │       ├── struct Parameters: pub(self)
 │       └── struct ShadowRenderElement: pub
 ├── mod screenshot: pub(crate)
+├── mod shell: pub(crate)
+│   ├── struct ShellSurface: pub
+│   ├── struct ShellSurfaces: pub
+│   └── struct SurfaceTexture: pub(self)
 ├── mod space: pub(crate)
 │   └── struct PhysicalSpace: pub
 ├── mod state: pub(crate)
