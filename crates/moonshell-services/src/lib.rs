@@ -14,6 +14,7 @@
 pub mod battery;
 pub mod mpris;
 pub mod network;
+pub mod notifications;
 
 mod dbus;
 

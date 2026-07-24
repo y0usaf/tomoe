@@ -170,6 +170,17 @@ fn main() -> Result<()> {
     ) {
         info!("shell mpris service unavailable: {err}");
     }
+    // The notification daemon (FUSION F3): org.freedesktop.Notifications
+    // hosted in-process; popups are Lua policy (moonshell.notifications).
+    if let Err(err) = moonshell_services::notifications::start(
+        &event_loop.handle(),
+        |tomoe: &mut state::Tomoe, snapshot| {
+            tomoe.shell_notifications = Some(snapshot.clone());
+            tomoe.push_shell_services();
+        },
+    ) {
+        info!("notification daemon off: {err}");
+    }
 
     let use_winit = match args.backend.as_str() {
         "winit" => true,

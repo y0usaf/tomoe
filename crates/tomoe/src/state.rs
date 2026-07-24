@@ -269,6 +269,7 @@ pub struct Tomoe {
     pub shell_battery: Option<moonshell_services::battery::BatteryState>,
     pub shell_network: Option<moonshell_services::network::NetworkState>,
     pub shell_mpris: Option<moonshell_services::mpris::MprisState>,
+    pub shell_notifications: Option<moonshell_services::notifications::NotificationsState>,
     /// IPC socket server state (`ipc.rs`): connected clients + subscriptions.
     pub ipc: crate::ipc::IpcState,
     /// `--config` argument; the effective path is re-resolved on each check.
@@ -457,6 +458,7 @@ impl Tomoe {
             shell_battery: None,
             shell_network: None,
             shell_mpris: None,
+            shell_notifications: None,
             ipc: crate::ipc::IpcState::default(),
             config_cli_path: None,
             config_fingerprint: None,
@@ -856,8 +858,13 @@ impl Tomoe {
         let battery = self.shell_battery.clone();
         let network = self.shell_network.clone();
         let mpris = self.shell_mpris.clone();
-        self.lua
-            .push_shell_services(battery.as_ref(), network.as_ref(), mpris.as_ref());
+        let notifications = self.shell_notifications.clone();
+        self.lua.push_shell_services(
+            battery.as_ref(),
+            network.as_ref(),
+            mpris.as_ref(),
+            notifications.as_ref(),
+        );
         self.after_lua();
     }
 
