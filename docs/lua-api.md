@@ -1,8 +1,9 @@
 # tomoe Lua API
 
-<!-- Generated from resources/meta/tomoe.lua and the built-in modules
-(resources/wm.lua, zoomer.lua, screencast.lua) by src/docgen.rs. Do not
-edit; regenerate with `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->
+<!-- Generated from resources/meta/tomoe.lua, resources/meta/moonshell.lua,
+and the built-in modules (resources/wm.lua, zoomer.lua, screencast.lua)
+by src/docgen.rs. Do not edit; regenerate with
+`TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->
 
 The config is a Lua program (`~/.config/tomoe/init.lua`, hot-reloaded on
 save); the `tomoe` global is the entire core API, and all WM policy is Lua
@@ -381,6 +382,75 @@ How to launch a process: `command` as an argv array or a shell string (`shell` i
 
 - `restart: "never"|"on_failure"|"on_exit"` — default "on_exit"
 - `reload: "keep_if_unchanged"|"always_restart"` — what a config reload does to the running process (default "keep_if_unchanged")
+
+## Shell
+- `shell.window(opts) -> ShellWindow` — Declare a compositor-internal shell surface (bar or popup), rendered in-process from element trees — no Wayland client involved. Bar mode: `position` = "top"|"bottom"|"left"|"right" stretches across that edge (`height`, or `width` for side bars, is the thickness; `exclusive` reserves space in the same usable-area computation layer-shell clients use). Popup mode: `anchor` = "top-left"|"top"|…|"bottom-right" anchors a fixed `popup_width` x `height` surface offset by `margin_*`. The surface exists once per output and survives hotplug.
+- `shell.state(initial) -> ShellState` — A reactive value: `get`/`set`; setting marks the shell dirty so render callbacks re-run (the scene diff makes unchanged trees free).
+- `shell.interval(ms, fn)` — Call `fn` every `ms` milliseconds (calloop timer, watchdog-guarded).
+- `shell.once(ms, fn)` — Call `fn` once after `ms` milliseconds.
+- `shell.exec(cmd) -> string` — Run a command through `sh -c`, blocking, returning its stdout (trailing newline stripped). For steady-state data prefer `shell.services.*` — the native services exist to eliminate subprocess polling.
+- `shell.exec_async(cmd, fn)` — Run a command through `sh -c` without blocking; `fn` receives stdout when it exits.
+- `shell.watch_file(path, fn)` — Watch a file for changes; `fn` fires on modification. (In-process wiring is a recorded F2 TODO: the watch is currently accepted and dropped with a warning.)
+- `shell.reload()` — Request a config reload (same contract as editing the file: fresh VM, surfaces re-created).
+- `shell.quit()` — Quit. In-process this is a recorded no-op — the shell shares the compositor's lifetime; use `tomoe.quit()`.
+- `shell.get_window(name) -> ShellWindow?` — Look up a named `shell.window` handle (`opts.name`).
+- `shell.displays() -> table[]` — Snapshot of connected outputs: array of `{ name, x, y, width, height, scale }`.
+
+Service facades (`shell.services.battery/network/mpris/…`), populated natively at FUSION F3; until then placeholders that render as empty state. Each exposes `:get()` returning a snapshot table.
+
+### ShellWindowOpts
+
+- `position: string?` — bar mode: "top"|"bottom"|"left"|"right"
+- `anchor: string?` — popup mode: "top-left"|"top"|"top-right"|…
+- `width: number?` — side-bar thickness / popup_width fallback
+- `height: number?` — bar thickness / popup height (default 32)
+- `popup_width: number?` — popup mode width
+- `exclusive: boolean?` — reserve screen space (default true)
+- `layer: string?` — "background"|"bottom"|"top"|"overlay" (default "top")
+- `keyboard: string?` — "none"|"on_demand"|"exclusive" (default "none")
+- `margin_top: number?` — popup-mode margins, logical px
+- `margin_right: number?`
+- `margin_bottom: number?`
+- `margin_left: number?`
+- `name: string?` — registers the handle for shell.get_window
+- `bg: string?` — window background color ("#rrggbb[aa]")
+- `fg: string?` — default text color
+- `font_size: number?` — default text size, logical px
+
+### ShellWindow
+
+- `ShellWindow:render(fn)` — Store the render callback: called (under the watchdog) when shell state changes; returns an element table (`ui.*`).
+
+### ShellState
+
+- `ShellState:get() -> any`
+- `ShellState:set(value)` — Set the value and mark the shell dirty (render callbacks re-run).
+
+## Elements
+
+The element vocabulary: constructors returning plain tables the engine rasterizes (tiny-skia + cosmic-text, damage-diffed). Containers take `children` (a sequential table); every element accepts the shared style props bg, border_radius, width, height, fill (bool) / grow (number).
+- `ui.hbox(props) -> table` — Horizontal flex row. Props: children, gap, padding/padding_*, justify ("start"|"center"|"end"), align, plus shared style props.
+- `ui.hstack(props) -> table` — Alias of `ui.hbox`.
+- `ui.vbox(props) -> table` — Vertical flex column; same props as `ui.hbox`.
+- `ui.vstack(props) -> table` — Alias of `ui.vbox`.
+- `ui.spacer() -> table` — Flexible gap that expands to fill available main-axis space.
+- `ui.text(content_or_props) -> table` — A single line of text. String, reactive state, or a props table (content/text, size, line_height, color, chip-style bg).
+- `ui.label(content_or_props) -> table` — Alias of `ui.text`.
+- `ui.icon(name_or_props) -> table` — Themed icon (SVG, pure vector). Name or props table (name, size, color).
+- `ui.button(props) -> table` — Clickable row (visual shell until F4 lands `on_click` routing).
+- `ui.separator(props) -> table` — Thin rule stretching across the container's cross axis. Props: orientation ("horizontal"|"vertical"), thickness, color.
+- `ui.progress_bar(props) -> table` — Horizontal progress bar. Props: value (0..1), width, height, color, track.
+- `ui.circular_progress(props) -> table` — Ring progress. Props: value (0..1), size, thickness, color, track.
+- `ui.image(props) -> table` — Raster image from a file path (string or props table with src).
+- `ui.slider(props) -> table` — Slider (interactive at F4; renders as a progress bar until then).
+- `ui.input(props) -> table` — Text input (lands with the launcher work re-homed at F6).
+- `ui.overlay(props) -> table` — Children overlaid on top of each other, each given the full rect.
+- `ui.stack(props) -> table` — Alias of `ui.overlay`.
+- `ui.scroll(props) -> table` — Scroll container (virtualization lands with `ui.list` at F6).
+- `ui.when(condition, element) -> table?` — `element` when `condition` is truthy, else nothing.
+- `ui.map(list, fn) -> table[]` — Map `list` through `fn`, collecting the returned elements.
+- `ui.fragment(children) -> table` — Splice a list of children into a parent's children list.
+- `ui.bar_layout(left, center, right) -> table` — Three-region bar scaffold (left / center / right), themed padding and gaps — the shape nur bars are built on.
 
 ## wm
 

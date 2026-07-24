@@ -165,7 +165,7 @@ mechanism: no Lua surface change yet.
 
 The `ui.*` vocabulary lands in tomoe's VM; a config can declare a bar.
 
-- [ ] `ui.*` element constructors and the reactive-state bridge from
+- [x] `ui.*` element constructors and the reactive-state bridge from
       `moonshell-runtime` registered in tomoe's Lua runtime, under the
       existing snapshot/queue/watchdog contract. Namespaces: the
       inherited moonshell contract is kept first-class, not aliased —
@@ -174,20 +174,46 @@ The `ui.*` vocabulary lands in tomoe's VM; a config can declare a bar.
       alongside the `tomoe` global for compositor policy. The `shell`
       global *is* moonshell; nur-era configs keep porting with at most
       mechanical edits.
-- [ ] Compositor-internal shell surfaces: anchored to output edges,
+      *Done 2026-07-24: stdlib + moonshell.*/nur.* preloads +
+      register_shell in LuaRuntime::new; ShellCtx drained in after_lua;
+      render callbacks/timers/exec replies all watchdog-guarded.
+      shell.watch_file still logs a TODO; shell.quit is a recorded
+      no-op in-process (use tomoe.quit).*
+- [x] Compositor-internal shell surfaces: anchored to output edges,
       with exclusive zones that integrate with the same usable-area
       computation layer-shell clients use; layered correctly against
       layer-shell (a native bar and waybar can coexist); per-output;
       surviving output hotplug by re-resolving anchors.
-- [ ] Hot reload: shell surfaces participate in the existing config
+      *Done: `shell.rs` — per-output TreeTextures, layer-shell anchor
+      vocabulary, exclusive zones shrink the same non_exclusive_zone
+      layer-shell clients use (verified: windows tile below the bar);
+      render callbacks run at the Lua entry boundary, never in frame
+      assembly. Native surfaces currently composite above windows,
+      below dialogs (Background/Bottom layer ordering refines when a
+      real use appears).*
+- [x] Hot reload: shell surfaces participate in the existing config
       reload contract (fresh VM, surfaces re-created, errors surface
       as the on-screen banner).
-- [ ] LuaLS stubs + docs/lua-api.md extended; parity tests hold them
+      *Done: reload drops surfaces with the VM; fresh declarations
+      re-adopt on the next drain; old timers die on their weak VM ref.
+      Verified live (bar text + height changed on save, window
+      re-tiled under the new zone).*
+- [x] LuaLS stubs + docs/lua-api.md extended; parity tests hold them
       to the runtime (existing `cargo test` gate).
+      *Done: `resources/meta/moonshell.lua` (shell.* + ui.*), rendered
+      into docs/lua-api.md by docgen; `shell_meta_matches_registered_api`
+      holds it to the live shell/ui tables.*
       *Accept: the nur/moonshell simple-bar config runs inside tomoe
       with at most namespace-level edits, live-reloads on save, and
       the bar reads `wm.active` directly from the wm module — zero
       IPC involved.*
+      *Accept verified 2026-07-24 under nested winit: the simple-bar
+      fixture runs with zero edits (live clock/sysinfo/volume; the
+      workspaces cell waits on F3 services); a bar rendering
+      `wm.active` from `require("wm")` live-updates in one VM with no
+      IPC; save → reload swaps the bar in-session; windows tile below
+      the exclusive zone. Recorded F2 leftover: `shell.watch_file`
+      wiring (accepted + warned today).*
 
 ## F3 — services in the daemon
 

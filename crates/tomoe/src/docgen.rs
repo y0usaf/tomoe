@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 const META: &str = include_str!("../../../resources/meta/tomoe.lua");
+const META_SHELL: &str = include_str!("../../../resources/meta/moonshell.lua");
 const WM: &str = include_str!("../../../resources/wm.lua");
 const ZOOMER: &str = include_str!("../../../resources/zoomer.lua");
 const SCREENCAST: &str = include_str!("../../../resources/screencast.lua");
@@ -73,7 +74,15 @@ fn function_decl(line: &str, module: Option<&str>) -> Option<(String, String)> {
     let args = rest[open + 1..close].to_string();
     let name = match module {
         Some(m) => format!("{m}.{}", name.strip_prefix("M.")?),
-        None if name.starts_with("tomoe.") || name.contains(':') => name.to_string(),
+        // Meta files: the tomoe core API, the moonshell shell subsystem's
+        // globals (FUSION F2), and `Class:method` decls.
+        None if name.starts_with("tomoe.")
+            || name.starts_with("shell.")
+            || name.starts_with("ui.")
+            || name.contains(':') =>
+        {
+            name.to_string()
+        }
         None => return None,
     };
     Some((name, args))
@@ -306,9 +315,10 @@ fn generate() -> String {
     let mut out = String::new();
     out.push_str("# tomoe Lua API\n\n");
     out.push_str(
-        "<!-- Generated from resources/meta/tomoe.lua and the built-in modules\n\
-         (resources/wm.lua, zoomer.lua, screencast.lua) by src/docgen.rs. Do not\n\
-         edit; regenerate with `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->\n\n",
+        "<!-- Generated from resources/meta/tomoe.lua, resources/meta/moonshell.lua,\n\
+         and the built-in modules (resources/wm.lua, zoomer.lua, screencast.lua)\n\
+         by src/docgen.rs. Do not edit; regenerate with\n\
+         `TOMOE_REGEN_DOCS=1 cargo test -p tomoe docgen`. -->\n\n",
     );
     out.push_str(
         "The config is a Lua program (`~/.config/tomoe/init.lua`, hot-reloaded on\n\
@@ -319,6 +329,8 @@ fn generate() -> String {
          and type checking in your editor.\n",
     );
     render_meta(&mut out, &parse(META, None));
+    // The moonshell shell subsystem (FUSION F2): shell.* + ui.*.
+    render_meta(&mut out, &parse(META_SHELL, None));
     render_module(&mut out, &parse(WM, Some("wm")), "wm");
     render_module(&mut out, &parse(ZOOMER, Some("zoomer")), "zoomer");
     render_module(
@@ -395,6 +407,41 @@ mod tests {
             documented(&items, "Window:"),
             registered,
             "resources/meta/tomoe.lua is out of sync with the Window methods"
+        );
+    }
+
+    /// The moonshell shell subsystem: every registered shell.*/ui.* function
+    /// is documented in meta/moonshell.lua, and nothing more.
+    #[test]
+    fn shell_meta_matches_registered_api() {
+        let rt = crate::lua::LuaRuntime::new().unwrap();
+        let registered: BTreeSet<String> = rt
+            .lua()
+            .load(
+                r#"
+                local names = {}
+                for _, global in ipairs({ "shell", "ui" }) do
+                  for k, v in pairs(_G[global]) do
+                    if type(v) == "function" then
+                      names[#names + 1] = global .. "." .. k
+                    end
+                  end
+                end
+                return names
+                "#,
+            )
+            .eval::<Vec<String>>()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let items = parse(META_SHELL, None);
+        let all: BTreeSet<String> = documented(&items, "shell.")
+            .union(&documented(&items, "ui."))
+            .cloned()
+            .collect();
+        assert_eq!(
+            all, registered,
+            "resources/meta/moonshell.lua is out of sync with the registered shell/ui tables"
         );
     }
 
