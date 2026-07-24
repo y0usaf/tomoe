@@ -20,6 +20,7 @@ mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
 # ui.*/shell.* Lua surface registered into tomoe's VM.
 moonshell-render.workspace = true
 moonshell-runtime.workspace = true
+moonshell-services.workspace = true
 # Transitional until F6 (surface-option vocabulary re-homes when the
 # SCTK client stack is deleted).
 moonshell-surface.workspace = true

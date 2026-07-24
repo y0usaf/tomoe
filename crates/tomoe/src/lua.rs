@@ -2467,6 +2467,35 @@ impl LuaRuntime {
         }))
     }
 
+    /// Push native-service snapshots into the `shell.services.*`
+    /// facades (FUSION F3), under the watchdog — a facade `:set` runs
+    /// subscriber callbacks. Absent facades log at debug (reload
+    /// mid-flight; the next snapshot retries).
+    pub fn push_shell_services(
+        &mut self,
+        battery: Option<&moonshell_services::battery::BatteryState>,
+        network: Option<&moonshell_services::network::NetworkState>,
+        mpris: Option<&moonshell_services::mpris::MprisState>,
+    ) {
+        use moonshell_runtime::services_bridge as bridge;
+        let _watchdog = self.watchdog();
+        if let Some(s) = battery {
+            if let Err(e) = bridge::push_battery(&self.lua, s) {
+                tracing::debug!("pushing battery state: {e}");
+            }
+        }
+        if let Some(s) = network {
+            if let Err(e) = bridge::push_network(&self.lua, s) {
+                tracing::debug!("pushing network state: {e}");
+            }
+        }
+        if let Some(s) = mpris {
+            if let Err(e) = bridge::push_mpris(&self.lua, s) {
+                tracing::debug!("pushing mpris state: {e}");
+            }
+        }
+    }
+
     /// Fire a shell timer under the watchdog. Returns false when the
     /// timer is dead (VM replaced by a reload) and should be dropped.
     pub fn fire_shell_timer(&mut self, timer: &moonshell_runtime::PendingTimer) -> bool {
