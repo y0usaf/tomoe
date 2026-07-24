@@ -3222,6 +3222,7 @@ dependencies = [
  "mlua",
  "moonshell-render",
  "moonshell-runtime",
+ "moonshell-services",
  "moonshell-surface",
  "png 0.17.16",
  "serde_json",

@@ -263,6 +263,12 @@ pub struct Tomoe {
     /// Native shell surfaces (FUSION F2): `shell.window{}` declarations
     /// textured per output, composited with the scene.
     pub shell: crate::shell::ShellSurfaces,
+    /// Latest native-service snapshots (FUSION F3): pushed into
+    /// `shell.services.*` on change and re-seeded into the fresh VM
+    /// after a reload.
+    pub shell_battery: Option<moonshell_services::battery::BatteryState>,
+    pub shell_network: Option<moonshell_services::network::NetworkState>,
+    pub shell_mpris: Option<moonshell_services::mpris::MprisState>,
     /// IPC socket server state (`ipc.rs`): connected clients + subscriptions.
     pub ipc: crate::ipc::IpcState,
     /// `--config` argument; the effective path is re-resolved on each check.
@@ -448,6 +454,9 @@ impl Tomoe {
             process_timer_active: false,
             ui: Ui::new(),
             shell: crate::shell::ShellSurfaces::default(),
+            shell_battery: None,
+            shell_network: None,
+            shell_mpris: None,
             ipc: crate::ipc::IpcState::default(),
             config_cli_path: None,
             config_fingerprint: None,
@@ -581,6 +590,10 @@ impl Tomoe {
         }
         self.in_lua = was_in_lua;
         self.after_lua();
+        // Re-seed the fresh VM's shell.services.* facades with the
+        // latest native snapshots (FUSION F3) — services only notify on
+        // change, and the change may predate this VM.
+        self.push_shell_services();
         info!("config reloaded ({restored} on_reload state(s) restored)");
     }
 
@@ -834,6 +847,18 @@ impl Tomoe {
         self.drain_shell_actions();
         self.sync_snapshot();
         self.queue_redraw_all();
+    }
+
+    /// Push the stored native-service snapshots into the shell facades
+    /// (change notification and post-reload re-seed), then drain what
+    /// the subscriber callbacks queued.
+    pub fn push_shell_services(&mut self) {
+        let battery = self.shell_battery.clone();
+        let network = self.shell_network.clone();
+        let mpris = self.shell_mpris.clone();
+        self.lua
+            .push_shell_services(battery.as_ref(), network.as_ref(), mpris.as_ref());
+        self.after_lua();
     }
 
     /// Drain the moonshell action queue (FUSION F2): adopt declared

@@ -142,6 +142,35 @@ fn main() -> Result<()> {
         })
         .map_err(|err| anyhow!("error inserting config watch timer: {err}"))?;
 
+    // Native shell services (FUSION F3): rustbus D-Bus + sysfs sources
+    // ride this event loop; snapshots publish into `shell.services.*`
+    // on change — no subprocess polling, no IPC.
+    let battery_source = moonshell_services::battery::start(
+        &event_loop.handle(),
+        |tomoe: &mut state::Tomoe, snapshot| {
+            tomoe.shell_battery = Some(snapshot.clone());
+            tomoe.push_shell_services();
+        },
+    );
+    info!("shell battery service: {battery_source}");
+    let network_source = moonshell_services::network::start(
+        &event_loop.handle(),
+        |tomoe: &mut state::Tomoe, snapshot| {
+            tomoe.shell_network = Some(snapshot.clone());
+            tomoe.push_shell_services();
+        },
+    );
+    info!("shell network service: {network_source}");
+    if let Err(err) = moonshell_services::mpris::start(
+        &event_loop.handle(),
+        |tomoe: &mut state::Tomoe, snapshot| {
+            tomoe.shell_mpris = Some(snapshot.clone());
+            tomoe.push_shell_services();
+        },
+    ) {
+        info!("shell mpris service unavailable: {err}");
+    }
+
     let use_winit = match args.backend.as_str() {
         "winit" => true,
         "tty" => false,
