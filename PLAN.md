@@ -383,11 +383,14 @@ Done and working:
 - [ ] Touch + tablet-v2 — deferred, no hardware pressure yet
 - [ ] Virtual keyboard — deferred
 
-### moonshell-driven (companion shell; see DESIGN.md "Companion project")
+### moonshell-driven — superseded by FUSION.md (2026-07-24)
 
-moonshell (`~/Dev/moonshell`, its PLAN.md "Interconnection tracker" is
-the mirror of this list) is the first external `tomoe-ipc` consumer.
-Items it pulls on:
+moonshell is no longer a companion process: it merged into this repo as
+the in-process shell subsystem (FUSION.md; the old standalone-era
+tracker survives as `docs/moonshell-PLAN.md`). The landed rows below
+stand as history; the open rows are re-homed in FUSION.md (native bar →
+F2, home-manager module → F6). `tomoe-ipc` remains the versioned wire
+for *external* clients only.
 
 - [x] Workspace/window event vocabulary sufficient for a bar — landed
       2026-07-08 with moonshell M3 §1, vocabulary only, zero wire
@@ -407,10 +410,11 @@ Items it pulls on:
       landed as wlr-foreign-toplevel-management (M5 §1); equivalent
       `tomoe-ipc` methods can still come later if moonshell prefers the
       socket over the protocol
-- [ ] Default moonshell bar config shipped as content alongside
-      `wm.lua`, once moonshell M2 (Lua runtime) lands
-- [ ] Combined home-manager module composing both flakes (post
-      moonshell M3)
+- [ ] ~~Default moonshell bar config shipped as content alongside
+      `wm.lua`~~ — **superseded by FUSION.md**: the bar becomes a
+      builtin Lua module on the in-process `ui.*`/`shell.*` surface (F2)
+- [ ] ~~Combined home-manager module composing both flakes~~ —
+      **superseded by FUSION.md**: one flake, one module (F6)
 
 ## Milestones (ordered)
 

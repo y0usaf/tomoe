@@ -1,5 +1,12 @@
 # moonshell — design & roadmap
 
+> **Superseded (2026-07-24, FUSION.md F0).** moonshell merged into
+> tomoe as its in-process shell subsystem. The compositor-agnosticism
+> ("as portable as waybar") and the locked rows "no shared Rust beyond
+> tomoe-ipc" / "integration ships as content, not code" are reversed by
+> that decision — see `../FUSION.md` and `../DESIGN.md`. Kept as
+> history of the standalone project.
+
 > **moonshell** (*lua* is Portuguese for "moon" — this is the Lua shell) —
 > a GPU-free, Lua-scriptable Wayland desktop shell: bars, launchers, OSDs,
 > notification popups, lock screens, written in `~/.config/moonshell/init.lua`.

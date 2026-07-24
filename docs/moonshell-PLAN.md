@@ -1,5 +1,11 @@
 # moonshell — build plan
 
+> **Superseded (2026-07-24, FUSION.md F0).** moonshell merged into
+> tomoe; remaining work from this plan is re-homed in `../FUSION.md`
+> (M3 services → F3, M4 interactivity → F4, M5/M6 remainders → F6).
+> Kept as history of the standalone project — "DESIGN.md" below means
+> `moonshell-DESIGN.md`.
+
 Working tracker toward the DESIGN.md vision: **QuickShell's
 extensibility, a terminal emulator's footprint, waybar's portability**.
 DESIGN.md holds doctrine and locked decisions; this file holds the
@@ -181,18 +187,19 @@ Two working inputs exist:
       `~/Dev/doctrines/conventions/lua.md` (API global, settings tables,
       module shape, `on_*` naming, `Mod`, the reload contract) — tomoe
       and moonshell both cite it instead of restating.
-- [ ] M3 §7: check whether tomoe's IPC listener accepts **multiple
-      concurrent clients** — during §4 verification a second
-      moonshell instance got ECONNREFUSED from the live socket while
-      the session bar existed (could also be a dead listener after a
-      respawn). If single-client, that's a tomoe-side fix; mirror in
-      tomoe PLAN.md when confirmed.
-- [ ] post-M3: tomoe ships a default moonshell bar config as content;
-      combined home-manager module composes both flakes.
-- [ ] M3+: taskbar widget rides ext-foreign-toplevel-list-ish data per
-      compositor; on tomoe, window control (activate/close) needs
-      either wlr-foreign-toplevel-management (tomoe PLAN M5 §1) or
-      equivalent `tomoe-ipc` methods — decide there, consume here.
+- [ ] ~~M3 §7: check whether tomoe's IPC listener accepts **multiple
+      concurrent clients**~~ — **superseded by FUSION.md**: the native
+      shell no longer connects over IPC; the multi-client question
+      remains a tomoe-ipc concern for external clients (re-home to
+      tomoe PLAN.md if it itches).
+- [ ] ~~post-M3: tomoe ships a default moonshell bar config as content;
+      combined home-manager module composes both flakes~~ — **superseded
+      by FUSION.md**: the bar is a builtin Lua module in-process (F2);
+      one home-manager module, one flake (F6).
+- [ ] ~~M3+: taskbar widget rides ext-foreign-toplevel-list-ish data per
+      compositor~~ — **superseded by FUSION.md**: on tomoe the taskbar
+      reads wm state in-VM (F2); external taskbars keep
+      wlr-foreign-toplevel-management.
 
 ## Milestone order & first steps
 
