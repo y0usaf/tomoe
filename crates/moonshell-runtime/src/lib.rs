@@ -61,6 +61,10 @@ pub const LUA_MODULES: &[(&str, &str)] = &[
         include_str!("../../../resources/moonshell/services.lua"),
     ),
     (
+        "moonshell.notifications",
+        include_str!("../../../resources/moonshell/notifications.lua"),
+    ),
+    (
         "moonshell.widgets.clock",
         include_str!("../../../resources/moonshell/widgets/clock.lua"),
     ),

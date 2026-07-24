@@ -13,6 +13,12 @@
 local wm = require("wm")
 wm.gaps = 8
 
+-- Notification popups (FUSION F3): the in-process notification daemon
+-- publishes to shell.services.notifications; this builtin renders the
+-- popups with ui.* — restyle via setup{} or drop this line and render
+-- them yourself.
+require("moonshell.notifications").setup()
+
 -- Screencast source picker: answers screen-share requests (OBS, browsers)
 -- with a compositor-drawn menu; single candidates resolve without asking.
 -- Remove to fall back to the portal's TOMOE_SCREENCAST_OUTPUT /

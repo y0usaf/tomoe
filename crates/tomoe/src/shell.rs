@@ -41,8 +41,12 @@ pub struct ShellSurface {
 
 struct SurfaceTexture {
     tex: TreeTexture,
-    /// Output-local physical rect the texture composites at.
+    /// Output-local physical rect the texture composites at (for
+    /// intrinsic-sized surfaces this follows the tree, so it is
+    /// computed at render time, not from options alone).
     rect: Rectangle<i32, Physical>,
+    /// The output geometry the rect was resolved against.
+    out: (Size<i32, Physical>, f64),
     /// Cleared when the tree must re-render (state change, resize).
     fresh: bool,
 }
@@ -65,6 +69,7 @@ fn resolve_rect(
     opts: &LayerOptions,
     output: Size<i32, Physical>,
     scale: f64,
+    intrinsic: Option<Size<i32, Physical>>,
 ) -> Rectangle<i32, Physical> {
     let Anchors {
         top,
@@ -86,11 +91,16 @@ fn resolve_rect(
     );
     let w = if left && right {
         (output.w - ml - mr).max(1)
+    } else if opts.width == 0 {
+        // Intrinsic (already physical px): the surface hugs its tree.
+        intrinsic.map(|s| s.w).unwrap_or(0).max(1)
     } else {
         px(opts.width as f64, scale).max(1)
     };
     let h = if top && bottom {
         (output.h - mt - mb).max(1)
+    } else if opts.height == 0 {
+        intrinsic.map(|s| s.h).unwrap_or(0).max(1)
     } else {
         px(opts.height as f64, scale).max(1)
     };
@@ -201,18 +211,17 @@ impl ShellSurfaces {
             s.per_output
                 .retain(|name, _| outputs.iter().any(|(n, _, _)| n == name));
             for (name, size, scale) in outputs {
-                let rect = resolve_rect(&s.options, *size, *scale);
                 let entry = s
                     .per_output
                     .entry(name.clone())
                     .or_insert_with(|| SurfaceTexture {
                         tex: TreeTexture::new(),
-                        rect,
+                        rect: Rectangle::default(),
+                        out: (Size::from((0, 0)), 0.0),
                         fresh: false,
                     });
-                let resized = entry.rect != rect;
-                entry.rect = rect;
-                if entry.fresh && !resized {
+                let out = (*size, *scale);
+                if entry.fresh && entry.out == out {
                     continue;
                 }
                 let Some(root) = lua.render_shell_root(&s.shared) else {
@@ -220,6 +229,16 @@ impl ShellSurfaces {
                     // un-fresh so a later state change retries.
                     continue;
                 };
+                // Intrinsic sizing (popups): a zero option size on an
+                // un-stretched axis follows the tree's measured size.
+                let a = &s.options.anchors;
+                let needs_intrinsic = (s.options.width == 0 && !(a.left && a.right))
+                    || (s.options.height == 0 && !(a.top && a.bottom));
+                let intrinsic = needs_intrinsic.then(|| engine.measure(&root, *scale as f32));
+                let rect = resolve_rect(&s.options, *size, *scale, intrinsic);
+                let resized = entry.rect != rect;
+                entry.rect = rect;
+                entry.out = out;
                 // A `None` update was throttled (slow tree): stay
                 // un-fresh and retry on the next refresh.
                 if let Some(damage) = entry.tex.update(engine, &root, rect.size, *scale as f32) {
@@ -290,7 +309,7 @@ mod tests {
             32,
         );
         // 2x scale: the 32-logical bar is 64 physical tall, full width.
-        let rect = resolve_rect(&o, Size::from((2560, 1440)), 2.0);
+        let rect = resolve_rect(&o, Size::from((2560, 1440)), 2.0, None);
         assert_eq!(rect, Rectangle::new((0, 0).into(), (2560, 64).into()));
 
         let mut shell = ShellSurfaces::default();
@@ -320,7 +339,7 @@ mod tests {
             100,
             0,
         );
-        let rect = resolve_rect(&o, Size::from((1920, 1080)), 1.0);
+        let rect = resolve_rect(&o, Size::from((1920, 1080)), 1.0, None);
         assert_eq!(rect, Rectangle::new((1620, 980).into(), (300, 100).into()));
     }
 }

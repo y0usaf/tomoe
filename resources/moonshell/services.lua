@@ -131,4 +131,13 @@ M.define("mpris", {
     volume      = 1.0,
 }, { "play_pause", "next", "previous", "stop" })
 
+-- Backed natively since FUSION F3: the org.freedesktop.Notifications
+-- daemon is hosted in-process; the active set arrives as a snapshot.
+-- Popups are Lua policy (see moonshell.notifications, the builtin
+-- module the default config loads — replaceable from config).
+--   notifications  { { id, app, summary, body, urgent }, ... } oldest first
+M.define("notifications", {
+    notifications = {},
+})
+
 return M

@@ -52,6 +52,26 @@ pub fn push_mpris(lua: &Lua, state: &MprisState) -> LuaResult<()> {
     set_service(lua, "mpris", t)
 }
 
+/// `shell.services.notifications:set(snapshot)`.
+pub fn push_notifications(
+    lua: &Lua,
+    state: &moonshell_services::notifications::NotificationsState,
+) -> LuaResult<()> {
+    let t = lua.create_table()?;
+    let list = lua.create_table()?;
+    for (i, n) in state.notifications.iter().enumerate() {
+        let nt = lua.create_table()?;
+        nt.set("id", n.id)?;
+        nt.set("app", n.app.as_str())?;
+        nt.set("summary", n.summary.as_str())?;
+        nt.set("body", n.body.as_str())?;
+        nt.set("urgent", n.urgent)?;
+        list.set(i + 1, nt)?;
+    }
+    t.set("notifications", list)?;
+    set_service(lua, "notifications", t)
+}
+
 fn set_service(lua: &Lua, name: &str, snapshot: LuaTable) -> LuaResult<()> {
     let shell: LuaTable = lua.globals().get("shell")?;
     let services: LuaTable = shell.get("services")?;

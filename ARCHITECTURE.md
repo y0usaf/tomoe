@@ -150,15 +150,20 @@ crate moonshell_services
 │   ├── type Notify: pub(self)
 │   ├── enum Pending: pub(self)
 │   └── struct Player: pub(self)
-└── mod network: pub
-    ├── struct Model: pub(self)
-    ├── struct NetworkState: pub
-    ├── struct Nm: pub(self)
-    ├── type Notify: pub(self)
-    ├── enum Query: pub(self)
-    ├── enum Scope: pub(self)
-    ├── enum Source: pub
-    └── enum Val: pub(self)
+├── mod network: pub
+│   ├── struct Model: pub(self)
+│   ├── struct NetworkState: pub
+│   ├── struct Nm: pub(self)
+│   ├── type Notify: pub(self)
+│   ├── enum Query: pub(self)
+│   ├── enum Scope: pub(self)
+│   ├── enum Source: pub
+│   └── enum Val: pub(self)
+└── mod notifications: pub
+    ├── struct Daemon: pub(self)
+    ├── struct Notification: pub
+    ├── struct NotificationsState: pub
+    └── type Notify: pub(self)
 ```
 
 ### `moonshell-surface`
