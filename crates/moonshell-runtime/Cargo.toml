@@ -1,0 +1,17 @@
+[package]
+name = "moonshell-runtime"
+version.workspace = true
+edition.workspace = true
+# moonshell heritage: AGPL-3.0-only (the pre-fusion license), kept
+# explicit rather than inheriting the workspace AGPL-3.0-or-later.
+license = "AGPL-3.0-only"
+
+[dependencies]
+# channel (exec_async replies) and timer types only — the loop itself
+# lives in the binary.
+calloop.workspace = true
+mlua.workspace = true
+moonshell-render.workspace = true
+moonshell-surface.workspace = true
+moonshell-services.workspace = true
+tracing.workspace = true

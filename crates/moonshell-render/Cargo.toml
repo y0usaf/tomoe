@@ -1,0 +1,14 @@
+[package]
+name = "moonshell-render"
+version.workspace = true
+edition.workspace = true
+# moonshell heritage: AGPL-3.0-only (the pre-fusion license), kept
+# explicit rather than inheriting the workspace AGPL-3.0-or-later.
+license = "AGPL-3.0-only"
+
+[dependencies]
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+resvg.workspace = true
+image.workspace = true
+tracing.workspace = true
