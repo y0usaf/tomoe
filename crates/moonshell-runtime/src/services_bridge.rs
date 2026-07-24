@@ -89,6 +89,15 @@ pub fn push_tray(lua: &Lua, state: &moonshell_services::tray::TrayState) -> LuaR
     set_service(lua, "tray", t)
 }
 
+/// `shell.services.keyboard:set(snapshot)` — coarse activity pulses
+/// (monotonic sequence + hand side); key values never cross.
+pub fn push_keyboard(lua: &Lua, sequence: u64, hand: &str) -> LuaResult<()> {
+    let t = lua.create_table()?;
+    t.set("sequence", sequence)?;
+    t.set("hand", hand)?;
+    set_service(lua, "keyboard", t)
+}
+
 fn set_service(lua: &Lua, name: &str, snapshot: LuaTable) -> LuaResult<()> {
     let shell: LuaTable = lua.globals().get("shell")?;
     let services: LuaTable = shell.get("services")?;

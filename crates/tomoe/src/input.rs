@@ -531,7 +531,9 @@ impl Tomoe {
                     },
                 );
                 if pressed && !self.is_locked() {
-                    crate::ipc::notify_keyboard_activity(self, keyboard_hand(key_code.into()));
+                    let hand = keyboard_hand(key_code.into());
+                    crate::ipc::notify_keyboard_activity(self, hand);
+                    self.shell_keyboard_activity(hand);
                 }
                 if let Some(Some(action)) = action {
                     self.do_action(action);

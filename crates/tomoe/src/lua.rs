@@ -2561,6 +2561,17 @@ impl LuaRuntime {
         }
     }
 
+    /// Push a keyboard-activity pulse into `shell.services.keyboard`
+    /// (the in-VM successor of the `keyboard_activity` IPC broadcast,
+    /// which stays for external consumers).
+    pub fn push_shell_keyboard(&mut self, sequence: u64, hand: &str) {
+        let _watchdog = self.watchdog();
+        if let Err(e) = moonshell_runtime::services_bridge::push_keyboard(&self.lua, sequence, hand)
+        {
+            tracing::debug!("pushing keyboard activity: {e}");
+        }
+    }
+
     /// Fire a shell timer under the watchdog. Returns false when the
     /// timer is dead (VM replaced by a reload) and should be dropped.
     pub fn fire_shell_timer(&mut self, timer: &moonshell_runtime::PendingTimer) -> bool {
