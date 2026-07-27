@@ -244,6 +244,9 @@ pub struct Tomoe {
 
     pub lua: LuaRuntime,
     pub binds: Vec<Bind>,
+    /// Hold-binds currently latched: (keycode, release action) pushed when a
+    /// bind with a `release_action` matches on press, dispatched on key-up.
+    pub active_hold_binds: Vec<(u32, crate::input::Action)>,
     /// Keyboard settings as last applied to the seat, so `after_lua` (which
     /// runs on every Lua entry) only rebuilds the keymap on real changes.
     applied_keyboard: KeyboardSettings,
@@ -452,6 +455,7 @@ impl Tomoe {
             clock: Clock::new(),
             lua,
             binds: Vec::new(),
+            active_hold_binds: Vec::new(),
             applied_keyboard: KeyboardSettings::default(),
             process: ProcessManager::default(),
             builtin_processes: HashMap::new(),
@@ -489,6 +493,9 @@ impl Tomoe {
 
     fn apply_binds(&mut self) {
         self.binds.clear();
+        // A still-held hold-bind key would fire the *old* release action on
+        // key-up; drop stale latches.
+        self.active_hold_binds.clear();
         let mod_key = self.lua.settings().mod_key;
         for pending in self.lua.take_binds() {
             match crate::input::parse_combo(&pending.combo, mod_key) {
@@ -497,6 +504,7 @@ impl Tomoe {
                     mods,
                     keysym,
                     action: pending.action,
+                    release_action: pending.release_action,
                     desc: pending.desc,
                 }),
                 Err(err) => warn!("invalid keybind {:?}: {err:#}", pending.combo),

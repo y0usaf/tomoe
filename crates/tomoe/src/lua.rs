@@ -748,8 +748,49 @@ fn button_name(code: u32) -> Option<&'static str> {
 pub struct PendingBind {
     pub combo: String,
     pub action: Action,
+    /// Fires on key release when set (table form of `tomoe.bind`).
+    pub release_action: Option<Action>,
     /// Human-readable label for the hotkey overlay.
     pub desc: Option<String>,
+}
+
+/// Convert a Lua bind-action value (action string or function) into an
+/// `Action`, registering functions in `fns`. Returns None after a warning
+/// for anything else. `field` names the value in warnings ("action",
+/// "press", "release").
+fn bind_action(
+    lua: &Lua,
+    value: Value,
+    fns: &mut Vec<RegistryKey>,
+    combo: &str,
+    field: &str,
+) -> Option<Action> {
+    match value {
+        Value::String(name) => match Action::parse(&name.to_string_lossy()) {
+            Ok(action) => Some(action),
+            Err(err) => {
+                warn!("tomoe.bind({combo:?}): {err:#}");
+                None
+            }
+        },
+        Value::Function(func) => match lua.create_registry_value(func) {
+            Ok(key) => {
+                fns.push(key);
+                Some(Action::LuaFn(fns.len() - 1))
+            }
+            Err(err) => {
+                warn!("tomoe.bind({combo:?}): failed to register {field}: {err:#}");
+                None
+            }
+        },
+        other => {
+            warn!(
+                "tomoe.bind({combo:?}): {field} must be an action string or function, got {}",
+                other.type_name()
+            );
+            None
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1494,36 +1535,47 @@ impl LuaRuntime {
         )?;
 
         // tomoe.bind("Alt+Return", fn | "action string" [, "overlay description"])
+        // tomoe.bind("Mod+m", { press = fn, release = fn } [, desc]) — hold
+        // bind: press fires on key-down, release on key-up (push-to-talk).
         let s = shared.clone();
         tomoe.set(
             "bind",
             lua.create_function(
                 move |lua, (combo, action, desc): (String, Value, Option<String>)| {
-                    let action = match action {
-                        Value::String(name) => match Action::parse(&name.to_string_lossy()) {
-                            Ok(action) => action,
-                            Err(err) => {
-                                warn!("tomoe.bind({combo:?}): {err:#}");
-                                return Ok(());
-                            }
-                        },
-                        Value::Function(func) => {
-                            let key = lua.create_registry_value(func)?;
+                    let (action, release_action) = match action {
+                        Value::Table(table) => {
                             let mut fns = s.bind_fns.borrow_mut();
-                            fns.push(key);
-                            Action::LuaFn(fns.len() - 1)
+                            let press = match table.get::<Value>("press")? {
+                                Value::Nil => {
+                                    warn!(
+                                        "tomoe.bind({combo:?}): table form requires a press action"
+                                    );
+                                    return Ok(());
+                                }
+                                value => bind_action(lua, value, &mut fns, &combo, "press"),
+                            };
+                            let release = match table.get::<Value>("release")? {
+                                Value::Nil => None,
+                                value => bind_action(lua, value, &mut fns, &combo, "release"),
+                            };
+                            let Some(press) = press else {
+                                return Ok(());
+                            };
+                            (press, release)
                         }
                         other => {
-                            warn!(
-                                "tomoe.bind({combo:?}): expected string or function, got {}",
-                                other.type_name()
-                            );
-                            return Ok(());
+                            let mut fns = s.bind_fns.borrow_mut();
+                            let Some(action) = bind_action(lua, other, &mut fns, &combo, "action")
+                            else {
+                                return Ok(());
+                            };
+                            (action, None)
                         }
                     };
                     s.binds.borrow_mut().push(PendingBind {
                         combo,
                         action,
+                        release_action,
                         desc,
                     });
                     Ok(())

@@ -24,9 +24,13 @@ function tomoe.settings(settings) end
 ---"reload-config", "screenshot" (region overlay), "screenshot-screen",
 ---"spawn <shell command>". Combos are "Mod+Shift+q": modifiers super|win|logo,
 ---alt, ctrl|control, shift, or mod (= `settings.mod`); keys are XKB keysym
----names ("Return", "equal", "F11").
+---names ("Return", "equal", "F11"). Hold form: pass a table
+---`{ press = fn, release = fn }` — press fires on key-down, release on
+---key-up, latched by keycode so the modifier state at release time is
+---irrelevant (push-to-talk). Both edges swallow the key; press is required,
+---release optional.
 ---@param combo string
----@param action string|fun()
+---@param action string|fun()|{ press: string|fun(), release?: string|fun() }
 ---@param desc string? # label shown in the hotkey overlay
 function tomoe.bind(combo, action, desc) end
 
