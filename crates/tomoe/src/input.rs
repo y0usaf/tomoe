@@ -126,6 +126,10 @@ pub struct Bind {
     pub mods: Mods,
     pub keysym: Keysym,
     pub action: Action,
+    /// Fires on key release when set (`tomoe.bind` table form). Latched by
+    /// keycode on press, so releasing the modifier before the key can't lose
+    /// it (push-to-talk).
+    pub release_action: Option<Action>,
     /// Overlay label (third argument to `tomoe.bind`).
     pub desc: Option<String>,
 }
@@ -489,9 +493,28 @@ impl Tomoe {
                         // Locked session: keys go straight to the lock
                         // surface (password entry). Binds, Lua, and the
                         // compositor UI are unreachable; only VT switching
-                        // (above) still works.
+                        // (above) still works. Latches are cleared when the
+                        // lock engages (see lock handling), Hyprland-style,
+                        // so no release action can fire out of a lock.
                         if tomoe.is_locked() {
                             return FilterResult::Forward;
+                        }
+                        // A latched hold-bind resolves before the modal
+                        // swallow paths below: the key-up belongs to the
+                        // hold that latched it on press (a modal opened
+                        // mid-hold must not eat the release, or the hold
+                        // action never terminates — same reason Hyprland
+                        // resolves releases from its pressed-keys list
+                        // unconditionally).
+                        if !pressed {
+                            let hold = tomoe
+                                .active_hold_binds
+                                .iter()
+                                .position(|(code, _)| *code == key_code.raw());
+                            if let Some(pos) = hold {
+                                let (_, release) = tomoe.active_hold_binds.remove(pos);
+                                return FilterResult::Intercept(Some(release));
+                            }
                         }
                         // The screenshot overlay is modal: Esc cancels,
                         // Enter/Space capture (Space with no selection means
@@ -523,6 +546,17 @@ impl Tomoe {
                         if pressed {
                             for bind in &tomoe.binds {
                                 if bind.mods.matches(mods) && raw_syms.contains(&bind.keysym) {
+                                    // A bind with a release action latches on
+                                    // press: the release fires on key-up,
+                                    // matched by keycode so the modifier
+                                    // state at release time is irrelevant.
+                                    if let Some(release) = &bind.release_action {
+                                        let code = key_code.raw();
+                                        if !tomoe.active_hold_binds.iter().any(|(c, _)| *c == code)
+                                        {
+                                            tomoe.active_hold_binds.push((code, release.clone()));
+                                        }
+                                    }
                                     return FilterResult::Intercept(Some(bind.action.clone()));
                                 }
                             }

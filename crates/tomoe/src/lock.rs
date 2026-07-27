@@ -173,6 +173,10 @@ impl Tomoe {
         for entry in self.ui.widgets.drain() {
             self.lua.drop_ui_callbacks(entry.id);
         }
+        // Hold-binds in flight are abandoned (Hyprland clears its pressed-
+        // keys list on session-inactive for the same reason): the key-up
+        // will arrive over the lock surface and must not fire an action.
+        self.active_hold_binds.clear();
         self.cursor_status = CursorImageStatus::default_named();
         self.hovered_window = None;
         self.lock_rendered.clear();
