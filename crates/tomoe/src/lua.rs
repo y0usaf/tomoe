@@ -707,6 +707,18 @@ pub enum UiOp {
     Close(u64),
 }
 
+/// Capabilities of a hotplugged input device, handed to
+/// `on_input_device_change` hooks.
+#[derive(Debug, Clone)]
+pub struct InputDeviceCapabilities {
+    pub keyboard: bool,
+    pub pointer: bool,
+    pub touch: bool,
+    pub tablet_tool: bool,
+    pub tablet_pad: bool,
+    pub gesture: bool,
+    pub switch_device: bool,
+}
 /// Data for a pointer button event handed to `on_pointer_button` hooks.
 pub struct PointerButtonData {
     pub button: u32,
@@ -804,6 +816,7 @@ struct Hooks {
     window_request: Vec<RegistryKey>,
     pointer_enter: Vec<RegistryKey>,
     pointer_leave: Vec<RegistryKey>,
+    input_device_change: Vec<RegistryKey>,
 }
 
 /// A Lua-initiated pointer grab (`tomoe.grab_pointer`): motion is routed to
@@ -1119,6 +1132,9 @@ struct Shared {
     /// the watchdog is disabled). A Cell, not a RefCell: the debug hook
     /// reads it mid-execution and must never conflict with a borrow.
     watchdog_deadline: Cell<Option<Instant>>,
+    /// Snapshot of connected input devices, refreshed by the backend on
+    /// hotplug. Read by `tomoe.input_devices()`.
+    input_devices: RefCell<Vec<(String, InputDeviceCapabilities)>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -2084,6 +2100,29 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // tomoe.input_devices() -> array of {name, keyboard, pointer, ...}
+        let s = shared.clone();
+        tomoe.set(
+            "input_devices",
+            lua.create_function(move |lua, ()| {
+                let devices = s.input_devices.borrow();
+                let list = lua.create_table()?;
+                for (i, (name, caps)) in devices.iter().enumerate() {
+                    let t = lua.create_table()?;
+                    t.set("name", name.clone())?;
+                    t.set("keyboard", caps.keyboard)?;
+                    t.set("pointer", caps.pointer)?;
+                    t.set("touch", caps.touch)?;
+                    t.set("tablet_tool", caps.tablet_tool)?;
+                    t.set("tablet_pad", caps.tablet_pad)?;
+                    t.set("gesture", caps.gesture)?;
+                    t.set("switch", caps.switch_device)?;
+                    list.set(i + 1, t)?;
+                }
+                Ok(list)
+            })?,
+        )?;
+
         // tomoe.view() -> {x, y, zoom} — the camera over the window canvas.
         let s = shared.clone();
         tomoe.set(
@@ -2199,6 +2238,7 @@ impl LuaRuntime {
             ("on_window_request", 6),
             ("on_pointer_enter", 7),
             ("on_pointer_leave", 8),
+            ("on_input_device_change", 9),
         ] {
             let s = shared.clone();
             tomoe.set(
@@ -2215,6 +2255,7 @@ impl LuaRuntime {
                         5 => hooks.pointer_axis.push(key),
                         6 => hooks.window_request.push(key),
                         7 => hooks.pointer_enter.push(key),
+                        _ if field == 9 => hooks.input_device_change.push(key),
                         _ => hooks.pointer_leave.push(key),
                     }
                     Ok(())
@@ -3025,6 +3066,57 @@ impl LuaRuntime {
         for func in keys {
             if let Err(err) = func.call::<()>(()) {
                 warn!("Lua on_outputs_changed error: {err}");
+            }
+        }
+    }
+
+    /// Register a connected input device in the shared snapshot.
+    pub fn add_input_device(&mut self, name: String, caps: InputDeviceCapabilities) {
+        self.shared.input_devices.borrow_mut().push((name, caps));
+    }
+
+    /// Remove a disconnected input device from the shared snapshot.
+    pub fn remove_input_device(&mut self, name: &str) {
+        self.shared
+            .input_devices
+            .borrow_mut()
+            .retain(|(n, _)| n != name);
+    }
+    /// Fire `on_input_device_change` hooks with the device name, whether it
+    /// was added (vs removed), and its capabilities.
+    pub fn emit_input_device_change(
+        &mut self,
+        name: &str,
+        added: bool,
+        capabilities: &InputDeviceCapabilities,
+    ) {
+        let keys: Vec<Function> = {
+            let hooks = self.shared.hooks.borrow();
+            hooks
+                .input_device_change
+                .iter()
+                .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
+                .collect()
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let _watchdog = self.watchdog();
+        for func in keys {
+            let Ok(ev) = self.lua.create_table() else {
+                continue;
+            };
+            let _ = ev.set("name", name);
+            let _ = ev.set("added", added);
+            let _ = ev.set("keyboard", capabilities.keyboard);
+            let _ = ev.set("pointer", capabilities.pointer);
+            let _ = ev.set("touch", capabilities.touch);
+            let _ = ev.set("tablet_tool", capabilities.tablet_tool);
+            let _ = ev.set("tablet_pad", capabilities.tablet_pad);
+            let _ = ev.set("gesture", capabilities.gesture);
+            let _ = ev.set("switch", capabilities.switch_device);
+            if let Err(err) = func.call::<()>(ev) {
+                warn!("Lua on_input_device_change error: {err}");
             }
         }
     }

@@ -245,9 +245,13 @@ pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
             match &mut event {
                 InputEvent::DeviceAdded { device } => on_device_added(tomoe, device),
                 InputEvent::DeviceRemoved { device } => {
+                    let caps = device_capabilities(device);
+                    let name = device.name().to_string();
                     if let Backend::Tty(data) = &mut tomoe.backend {
                         data.input_devices.retain(|d| d != device);
                     }
+                    tomoe.lua.remove_input_device(&name);
+                    tomoe.lua.emit_input_device_change(&name, false, &caps);
                 }
                 _ => {}
             }
@@ -1182,14 +1186,31 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     true
 }
 
+/// Extract capability flags from a libinput device into the shape handed to
+/// Lua `on_input_device_change` hooks.
+fn device_capabilities(device: &libinput::Device) -> crate::lua::InputDeviceCapabilities {
+    crate::lua::InputDeviceCapabilities {
+        keyboard: device.has_capability(DeviceCapability::Keyboard),
+        pointer: device.has_capability(DeviceCapability::Pointer),
+        touch: device.has_capability(DeviceCapability::Touch),
+        tablet_tool: device.has_capability(DeviceCapability::TabletTool),
+        tablet_pad: device.has_capability(DeviceCapability::TabletPad),
+        gesture: device.has_capability(DeviceCapability::Gesture),
+        switch_device: device.has_capability(DeviceCapability::Switch),
+    }
+}
 fn on_device_added(tomoe: &mut Tomoe, device: &mut libinput::Device) {
     // The name is what `settings.devices` keys on; log it for discoverability
     // (same string `libinput list-devices` prints).
     info!("input device added: {:?}", device.name());
     apply_device_config(&tomoe.lua.settings().input, device);
+    let caps = device_capabilities(device);
     if let Backend::Tty(data) = &mut tomoe.backend {
         data.input_devices.push(device.clone());
     }
+    let name = device.name().to_string();
+    tomoe.lua.add_input_device(name.clone(), caps.clone());
+    tomoe.lua.emit_input_device_change(&name, true, &caps);
 }
 
 /// Re-apply `settings.touchpad`/`settings.mouse`/`settings.devices` to every

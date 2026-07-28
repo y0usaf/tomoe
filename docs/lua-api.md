@@ -63,6 +63,31 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag — from the window's own client (xdg-shell), xdg-activation, or a taskbar (wlr-foreign-toplevel-management). Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped, xdg-activation "activate" focuses the window, "urgent" is a no-op, a taskbar "close" asks the client to close).
 - `tomoe.on_pointer_enter(fn)` — Run `fn` when the pointer enters a window.
 - `tomoe.on_pointer_leave(fn)` — Run `fn` when the pointer leaves a window.
+
+### InputDeviceChangeEvent
+
+- `name: string` — libinput device name (matches settings.devices keys)
+- `added: boolean` — true when the device was plugged in, false on removal
+- `keyboard: boolean`
+- `pointer: boolean`
+- `touch: boolean`
+- `tablet_tool: boolean`
+- `tablet_pad: boolean`
+- `gesture: boolean`
+- `switch: boolean`
+- `tomoe.on_input_device_change(fn)` — Run `fn` when an input device is plugged in or removed.
+
+### InputDeviceInfo
+
+- `name: string`
+- `keyboard: boolean`
+- `pointer: boolean`
+- `touch: boolean`
+- `tablet_tool: boolean`
+- `tablet_pad: boolean`
+- `gesture: boolean`
+- `switch: boolean`
+- `tomoe.input_devices() -> InputDeviceInfo[]` — List currently connected input devices.
 - `tomoe.on_screencast_request(fn)` — Decide what a screencast portal request captures (the ScreenCast portal asks over IPC on SelectSources). Answer by returning a selection table (`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or call `req:defer()` and answer later with `req:resolve(sel)` / `req:deny()` from another callback (e.g. a tomoe.ui.menu selection): the portal waits, the compositor never does. Single slot: registering again replaces the handler. With no handler the portal falls back to its environment-variable heuristics. The default menu picker ships as the "screencast" module.
 - `tomoe.grab_pointer(on_motion, on_release)` — Route pointer motion to `on_motion` (world coordinates) instead of clients until every button is released, then call `on_release`. Typically started from an on_pointer_button hook that returned true to consume the click.
 - `tomoe.ungrab_pointer()` — End the active grab without running its release callback.
