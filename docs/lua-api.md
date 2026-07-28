@@ -50,7 +50,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.outputs() -> Output[]` — Connected outputs with their geometry.
 - `tomoe.usable_area(index) -> Geometry` — Usable area (geometry minus layer-shell exclusive zones, e.g. bars) of the output at 1-based `index`; defaults to the first output.
 - `tomoe.view() -> View` — The camera over the window canvas: screen = (world − offset) · zoom.
-- `tomoe.set_view(view)` — Move the camera; omitted fields keep their current value. zoom is clamped to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1.
+- `tomoe.set_view(view)` — Move the camera; omitted fields keep their current value. zoom is clamped to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1. A zoom held steady (~250 ms) re-renders clients at output scale × zoom, so settled zoom is sharp; zoom in motion resamples.
 - `tomoe.pointer() -> PointerPosition` — Pointer position: x, y in world coordinates, sx, sy in screen coordinates.
 
 ## Hooks

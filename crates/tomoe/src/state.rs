@@ -10,7 +10,7 @@ use smithay::input::keyboard::XkbConfig;
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
 use smithay::output::{Output, Scale as OutputScale};
-use smithay::reexports::calloop::{self, LoopHandle, LoopSignal};
+use smithay::reexports::calloop::{self, LoopHandle, LoopSignal, RegistrationToken};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::DisplayHandle;
@@ -134,6 +134,15 @@ pub struct Tomoe {
     /// space holds layout *targets*; this holds the transient presentation
     /// deltas the backends sample each frame (M6 animation engine).
     pub animations: crate::animation::Animations,
+    /// Camera-zoom factor last baked into advertised client scales (1.0 =
+    /// clients render at output scale and zoom resamples — the transient
+    /// path). When a zoom holds steady, clients re-render at
+    /// `output_scale × zoom` and the camera transform lands 1:1.
+    pub zoom_scale_applied: f64,
+    /// Debounce timer re-armed on every zoom change; fires the steady-state
+    /// re-advertise above (per-frame reconfigures while zooming would
+    /// thrash clients).
+    zoom_scale_timer: Option<RegistrationToken>,
     pub cursor: Cursor,
 
     pub compositor_state: CompositorState,
@@ -404,6 +413,8 @@ impl Tomoe {
             corner_damage: HashMap::new(),
             window_radii: HashMap::new(),
             animations: Default::default(),
+            zoom_scale_applied: 1.0,
+            zoom_scale_timer: None,
             applied_corner_radius: 0,
             cursor: Cursor::load(),
             compositor_state,
@@ -1103,28 +1114,19 @@ impl Tomoe {
             let Some(loc) = self.space.element_location(&window) else {
                 continue;
             };
-            let desired = self.space.scale_for_world_point(loc.to_f64());
-            let current = self.space.element_scale(&window);
-            if current == desired {
-                continue;
+            let desired =
+                self.effective_window_scale(self.space.scale_for_world_point(loc.to_f64()));
+            if self.reconfigure_window_scale(&window, desired) {
+                changed = true;
             }
-            let physical_size = self.space.element_geometry(&window).map(|geo| geo.size);
-            self.space.set_element_scale(&window, desired);
-            if let Some(size) = physical_size {
-                let (logical, _) = coords::configure_size(size, desired);
-                if let Some(toplevel) = window.toplevel() {
-                    send_scale(toplevel.wl_surface(), desired);
-                    toplevel.with_pending_state(|state| state.size = Some(logical));
-                    toplevel.send_pending_configure();
-                }
-            }
-            changed = true;
         }
 
-        let fallback_scale = outputs
-            .first()
-            .map(|output| self.space.output_scale(output))
-            .unwrap_or(reference_scale);
+        let fallback_scale = self.effective_window_scale(
+            outputs
+                .first()
+                .map(|output| self.space.output_scale(output))
+                .unwrap_or(reference_scale),
+        );
         let surfaces: Vec<WlSurface> = self
             .unmapped_windows
             .iter()
@@ -1134,6 +1136,94 @@ impl Tomoe {
             send_scale(&surface, fallback_scale);
         }
         changed
+    }
+
+    /// Scale a window should be told to render at: the base (output) scale
+    /// times the steady camera-zoom factor, snapped to the 1/120 grid.
+    /// At zoom 1 — or while a zoom is still in motion — this is the plain
+    /// output scale and the camera's resampling path does the zooming.
+    pub fn effective_window_scale(&self, base: f64) -> f64 {
+        coords::snap_scale(base * self.zoom_scale_applied)
+    }
+
+    /// Advertise `desired` to a mapped window, reconfiguring its logical size
+    /// so the physical target survives the scale change. Returns whether
+    /// anything changed.
+    fn reconfigure_window_scale(&mut self, window: &Window, desired: f64) -> bool {
+        let desired = coords::snap_scale(desired);
+        if self.space.element_scale(window) == desired {
+            return false;
+        }
+        let physical_size = self.space.element_geometry(window).map(|geo| geo.size);
+        self.space.set_element_scale(window, desired);
+        if let Some(size) = physical_size {
+            let (logical, _) = coords::configure_size(size, desired);
+            if let Some(toplevel) = window.toplevel() {
+                send_scale(toplevel.wl_surface(), desired);
+                toplevel.with_pending_state(|state| state.size = Some(logical));
+                toplevel.send_pending_configure();
+            }
+        }
+        true
+    }
+
+    /// Zoom changed: (re)arm the steady-state debounce. Re-advertising per
+    /// SetView op would reconfigure clients on every animation frame, so the
+    /// re-render-at-zoom-density switch only happens once the camera holds
+    /// still for `ZOOM_SCALE_SETTLE`.
+    fn arm_zoom_scale_timer(&mut self) {
+        const ZOOM_SCALE_SETTLE: Duration = Duration::from_millis(250);
+        self.zoom_scale_timer = None;
+        let timer = Timer::from_duration(ZOOM_SCALE_SETTLE);
+        match self.loop_handle.insert_source(timer, |_, _, tomoe| {
+            tomoe.apply_zoom_scale();
+            TimeoutAction::Drop
+        }) {
+            Ok(token) => self.zoom_scale_timer = Some(token),
+            Err(err) => warn!("error arming zoom-scale timer: {err}"),
+        }
+    }
+
+    /// Steady-state zoom re-advertise (PLAN: camera follow-up): once the
+    /// camera holds a zoom, clients re-render at `output_scale × zoom` so
+    /// the zoom transform samples ~1:1 instead of stretching output-scale
+    /// buffers. Physical geometry is preserved — only buffer density and
+    /// logical configure sizes change.
+    fn apply_zoom_scale(&mut self) {
+        let zoom = self.space.view_zoom();
+        if zoom == self.zoom_scale_applied {
+            return;
+        }
+        info!(
+            "zoom settled at {zoom:.3}: re-advertising client scales (was {:.3})",
+            self.zoom_scale_applied
+        );
+        self.zoom_scale_applied = zoom;
+        let windows: Vec<_> = self.space.elements().cloned().collect();
+        for window in windows {
+            let Some(loc) = self.space.element_location(&window) else {
+                continue;
+            };
+            let desired =
+                self.effective_window_scale(self.space.scale_for_world_point(loc.to_f64()));
+            self.reconfigure_window_scale(&window, desired);
+        }
+        let fallback = self.effective_window_scale(
+            self.space
+                .outputs()
+                .next()
+                .map(|output| self.space.output_scale(output))
+                .unwrap_or_else(|| self.space.scale()),
+        );
+        let surfaces: Vec<WlSurface> = self
+            .unmapped_windows
+            .iter()
+            .filter_map(|w| w.toplevel().map(|t| t.wl_surface().clone()))
+            .collect();
+        for surface in surfaces {
+            send_scale(&surface, fallback);
+        }
+        self.queue_redraw_all();
     }
 
     /// Schedule a repaint on every output (damage-driven; cheap if already queued).
@@ -1153,10 +1243,12 @@ impl Tomoe {
                     return;
                 };
                 // Lua speaks physical pixels; xdg configure takes integer
-                // logical, so quantize against destination output scale.
-                let scale = self
-                    .space
-                    .scale_for_world_point(Point::<i32, Physical>::from((x, y)).to_f64());
+                // logical, so quantize against destination output scale
+                // (times the settled camera-zoom factor, if one is baked in).
+                let scale = self.effective_window_scale(
+                    self.space
+                        .scale_for_world_point(Point::<i32, Physical>::from((x, y)).to_f64()),
+                );
                 let (logical, _achievable) = coords::configure_size(Size::from((w, h)), scale);
                 if let Some(toplevel) = window.toplevel() {
                     send_scale(toplevel.wl_surface(), scale);
@@ -1202,7 +1294,10 @@ impl Tomoe {
                 };
                 let was_mapped = self.space.element_location(&window).is_some();
                 let loc = self.desired_loc.get(&id).copied().unwrap_or_default();
-                self.space.map_element(window.clone(), loc);
+                let scale =
+                    self.effective_window_scale(self.space.scale_for_world_point(loc.to_f64()));
+                self.space
+                    .map_element_with_scale(window.clone(), loc, scale);
                 // Re-mapping (workspace switch-in) fades like an open.
                 if !was_mapped {
                     let config = self.lua.settings().animations.window_open;
@@ -1270,7 +1365,13 @@ impl Tomoe {
                 }
             }
             WindowOp::SetView(x, y, zoom) => {
+                let old_zoom = self.space.view_zoom();
                 self.space.set_view((x, y).into(), zoom);
+                if self.space.view_zoom() != old_zoom {
+                    // Zoom in motion keeps resampling; once it holds still,
+                    // clients re-render at zoom density (apply_zoom_scale).
+                    self.arm_zoom_scale_timer();
+                }
             }
         }
     }
@@ -1281,12 +1382,13 @@ impl Tomoe {
         self.next_window_id += 1;
         self.windows.insert(id, window.clone());
         self.publish_foreign_toplevel(id, &window);
-        let initial_scale = self
-            .space
-            .outputs()
-            .next()
-            .map(|output| self.space.output_scale(output))
-            .unwrap_or_else(|| self.space.scale());
+        let initial_scale = self.effective_window_scale(
+            self.space
+                .outputs()
+                .next()
+                .map(|output| self.space.output_scale(output))
+                .unwrap_or_else(|| self.space.scale()),
+        );
         if let Some(toplevel) = window.toplevel() {
             send_scale(toplevel.wl_surface(), initial_scale);
         }
@@ -1304,7 +1406,7 @@ impl Tomoe {
             let output = self.space.outputs().next().cloned();
             if let Some(output) = output {
                 if let Some(geo) = self.space.output_geometry(&output) {
-                    let scale = self.space.output_scale(&output);
+                    let scale = self.effective_window_scale(self.space.output_scale(&output));
                     let zone = coords::rect_to_physical(
                         self.shell
                             .shrink_zone(layer_map_for_output(&output).non_exclusive_zone()),

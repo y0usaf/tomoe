@@ -210,8 +210,23 @@ Done and working:
       revert to libinput defaults so reloads are idempotent
 - [x] xkb config (rules/model/layout/variant/options) + key repeat via
       `settings.keyboard`, re-applied on change from any Lua entry
-- [ ] Steady-state zoom re-advertises effective fractional scale
-      (DESIGN.md camera follow-up)
+- [x] Steady-state zoom re-advertises effective fractional scale
+      (DESIGN.md camera follow-up) — `WindowOp::SetView` zoom changes re-arm
+      a 250 ms debounce (`arm_zoom_scale_timer`); on settle,
+      `apply_zoom_scale` re-advertises `snap(output_scale × zoom)` to every
+      mapped window via the extracted `reconfigure_window_scale` (shared with
+      `apply_scale`: set element scale, reconfigure logical size to preserve
+      the physical target, `send_scale` + pending configure). Zoom in motion
+      keeps the RescaleRenderElement resampling path — per-frame reconfigures
+      would thrash clients; zoom returning to 1 reverts through the same
+      path. Every client-scale choice (`apply_scale` per-window + unmapped
+      fallback, `SetGeometry`/`Show` ops, `add_window` initial + native
+      fullscreen fallback, `fullscreen_default`) multiplies by the applied
+      factor via `effective_window_scale`; popup constraint rects use the
+      window's actual element scale. **Pending live check** (nested winit
+      hangs in this dev environment — blocked in winit init before the event
+      loop, unrelated): zoomer at steady zoom 2, watch the `zoom settled`
+      edge-triggered log and confirm a foot window re-renders sharp.
 
 ### vs Hyprland (WM depth & eye-candy)
 

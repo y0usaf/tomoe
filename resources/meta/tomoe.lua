@@ -156,7 +156,9 @@ function tomoe.usable_area(index) end
 function tomoe.view() end
 
 ---Move the camera; omitted fields keep their current value. zoom is clamped
----to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1.
+---to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1. A zoom
+---held steady (~250 ms) re-renders clients at output scale × zoom, so settled
+---zoom is sharp; zoom in motion resamples.
 ---@param view View
 function tomoe.set_view(view) end
 

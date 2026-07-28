@@ -24,8 +24,9 @@ pub struct PhysicalSpace {
     /// Outputs, layer-shell, UI, and the cursor are screen-fixed; only
     /// windows (and their borders) live in world space. The offset is
     /// integer so the identity/pan case keeps every element on the pixel
-    /// grid; zoom != 1 is the one sanctioned resampling path (transient by
-    /// design: configs snap back to 1 for crisp steady-state).
+    /// grid; zoom != 1 resamples while in motion, and once a zoom holds
+    /// steady the core re-advertises `output_scale × zoom` to clients so
+    /// settled zoom re-renders sharp (`Tomoe::apply_zoom_scale`).
     view_offset: Point<i32, Physical>,
     view_zoom: f64,
     outputs: Vec<(Output, Point<i32, Physical>)>,
@@ -219,14 +220,6 @@ impl PhysicalSpace {
     }
 
     // ── Windows ──
-
-    /// Map a window at `loc`, or move it if already mapped. New windows go on
-    /// top; moving preserves stacking order.
-    pub fn map_element(&mut self, window: Window, loc: impl Into<Point<i32, Physical>>) {
-        let loc = loc.into();
-        let scale = self.scale_for_world_point(loc.to_f64());
-        self.map_element_with_scale(window, loc, scale);
-    }
 
     /// Map with an explicit client scale.
     pub fn map_element_with_scale(
