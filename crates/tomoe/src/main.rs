@@ -127,6 +127,24 @@ fn main() -> Result<()> {
         )
         .map_err(|err| anyhow!("error inserting display source: {err}"))?;
 
+    // Session environment for spawned children. The config's `tomoe.spawn`
+    // calls execute during `load_config` (reconcile_processes), so every
+    // variable a child may need must be set *before* it — WAYLAND_DISPLAY in
+    // particular, or Wayland CLI tools (wl-copy, ...) spawn environment-less
+    // and fail silently. `use_winit` is decided here too: it reads the
+    // inherited WAYLAND_DISPLAY/DISPLAY, which the set_var below overwrites.
+    let use_winit = match args.backend.as_str() {
+        "winit" => true,
+        "tty" => false,
+        _ => std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some(),
+    };
+    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+    info!("listening on WAYLAND_DISPLAY={socket_name:?}");
+
+    // xdg-desktop-portal picks its backends per desktop: this makes it read
+    // tomoe-portals.conf and route ScreenCast to xdg-desktop-portal-tomoe.
+    std::env::set_var("XDG_CURRENT_DESKTOP", "tomoe");
+
     // Config loads first so the backend can honor settings (e.g. winit_size).
     tomoe.load_config(args.config);
 
@@ -193,19 +211,11 @@ fn main() -> Result<()> {
         info!("tray host off: {err}");
     }
 
-    let use_winit = match args.backend.as_str() {
-        "winit" => true,
-        "tty" => false,
-        _ => std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some(),
-    };
     if use_winit {
         backend::winit::init(&mut tomoe)?;
     } else {
         backend::tty::init(&mut tomoe, args.drm_device.as_deref())?;
     }
-
-    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-    info!("listening on WAYLAND_DISPLAY={socket_name:?}");
 
     // IPC socket (`tomoe msg`, bars, the config's `tomoe.ipc.serve`
     // endpoints). Children and bus-activated services find it through
@@ -215,10 +225,6 @@ fn main() -> Result<()> {
         Ok(path) => std::env::set_var(tomoe_ipc::SOCKET_ENV, &path),
         Err(err) => warn!("error starting IPC server (continuing without): {err:#}"),
     }
-
-    // xdg-desktop-portal picks its backends per desktop: this makes it read
-    // tomoe-portals.conf and route ScreenCast to xdg-desktop-portal-tomoe.
-    std::env::set_var("XDG_CURRENT_DESKTOP", "tomoe");
 
     // xwayland-satellite: the sockets exist from here on, so DISPLAY is valid
     // for every spawned child even before satellite itself runs (connections
