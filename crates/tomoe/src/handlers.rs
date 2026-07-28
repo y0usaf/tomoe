@@ -701,10 +701,12 @@ impl Tomoe {
                 self.fullscreen_prev.entry(id).or_insert(prev);
             }
         }
-        let output_scale = output
-            .as_ref()
-            .map(|output| self.space.output_scale(output))
-            .unwrap_or_else(|| self.space.scale());
+        let output_scale = self.effective_window_scale(
+            output
+                .as_ref()
+                .map(|output| self.space.output_scale(output))
+                .unwrap_or_else(|| self.space.scale()),
+        );
         let (logical, _achievable) = crate::coords::configure_size(output_geo.size, output_scale);
         toplevel.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Fullscreen);
@@ -873,7 +875,10 @@ impl Tomoe {
             };
             let mut rect = output_world;
             rect.loc -= window_geo.loc;
-            let scale = self.space.scale_for_world_point(window_geo.loc.to_f64());
+            // The constraint rect is in the window's client units, so use the
+            // scale the window was actually configured at (includes a settled
+            // camera-zoom factor).
+            let scale = self.space.element_scale(&window);
             crate::coords::rect_to_logical(rect, scale)
         } else {
             // Layer-shell parent: layer maps arrange in output-local logical
