@@ -68,7 +68,8 @@ use tracing::{debug, info, warn};
 
 use crate::backend::Backend;
 use crate::lua::{
-    DisplaySettings, InputConfig, InputDeviceSettings, RefreshSetting, Resolution, SizeSetting,
+    DisplaySettings, InputConfig, InputDeviceSettings, ModeProps, RefreshSetting, Resolution,
+    SizeSetting,
 };
 use crate::render::OutputRenderElements;
 use crate::space::PhysicalSpace;
@@ -679,11 +680,50 @@ fn connector_connected(
     connector: connector::Info,
     crtc: crtc::Handle,
 ) -> Result<bool> {
+    // Kernel connector names ("DP-1", "HDMI-A-1"): what users key
+    // `settings.displays` by, matching every other compositor.
+    let name = format!(
+        "{}-{}",
+        connector.interface().as_str(),
+        connector.interface_id()
+    );
+
+    // Modes the connector advertises, skipping interlaced ones (they don't
+    // work reliably and pick_mode never selects them). Exposed to Lua both
+    // as the on_output_connect hook argument and via `tomoe.outputs()`.
+    let modes: Vec<ModeProps> = connector
+        .modes()
+        .iter()
+        .filter(|m| !m.flags().contains(ModeFlags::INTERLACE))
+        .map(|m| {
+            let (w, h) = m.size();
+            ModeProps {
+                w: w as i32,
+                h: h as i32,
+                refresh_mhz: Mode::from(*m).refresh,
+                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
+            }
+        })
+        .collect();
+
+    // Pre-connect policy hook (ShojiWM's output.configure(factory) shape):
+    // Lua sees the connecting output's modes plus the already-connected set
+    // and adjusts `settings.displays` — the mode pick and `disabled` check
+    // below then read the fresh settings, so the output modesets once.
+    {
+        let connected: Vec<String> = tomoe.space.outputs().map(|o| o.name()).collect();
+        let was_in_lua = tomoe.in_lua;
+        tomoe.in_lua = true;
+        tomoe.lua.emit_output_connect(&name, &modes, &connected);
+        tomoe.in_lua = was_in_lua;
+    }
+
     let Tomoe {
         backend,
         space,
         display_handle,
         lua,
+        output_modes,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else {
@@ -698,14 +738,6 @@ fn connector_connected(
     let Some(device) = devices.get_mut(&node) else {
         bail!("unknown DRM device {node}");
     };
-
-    // Kernel connector names ("DP-1", "HDMI-A-1"): what users key
-    // `settings.displays` by, matching every other compositor.
-    let name = format!(
-        "{}-{}",
-        connector.interface().as_str(),
-        connector.interface_id()
-    );
 
     if lua
         .settings()
@@ -748,6 +780,7 @@ fn connector_connected(
         .drm
         .create_surface(crtc, mode, &[connector.handle()])
         .context("error creating DRM surface")?;
+    output_modes.insert(name.clone(), (modes, Mode::from(mode).refresh));
 
     // VRR per settings.displays. Explicitly disable even when
     // unsupported/unwanted — a DRM state reset can drop vrr_capable to 0
@@ -907,6 +940,7 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
         loop_handle,
         screencopy_state,
         gamma_control_state,
+        output_modes,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
@@ -935,6 +969,7 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
     screencopy_state.remove_output(&surface.output);
     // Fail the output's gamma control so the daemon re-acquires on replug.
     gamma_control_state.output_removed(&surface.output);
+    output_modes.remove(&surface.output.name());
 }
 
 /// Pure placement policy: `(name, physical size)` in connect order plus the
@@ -1073,6 +1108,9 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     let mut vrr_toggled = false;
     let mut to_disable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     let mut to_enable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
+    // (output name, new refresh in mHz) for outputs whose mode changed;
+    // flushed into tomoe.output_modes once the backend borrow ends.
+    let mut mode_updates: Vec<(String, i32)> = Vec::new();
     {
         let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
@@ -1137,6 +1175,7 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
                 surface
                     .output
                     .change_current_state(Some(Mode::from(mode)), None, None, None);
+                mode_updates.push((name, Mode::from(mode).refresh));
                 changed = true;
             }
             device.inactive.retain(|crtc, connector| {
@@ -1146,6 +1185,12 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
                 to_enable.push((*node, *crtc, connector.clone()));
                 false
             });
+        }
+    }
+
+    for (name, refresh_mhz) in mode_updates {
+        if let Some(entry) = tomoe.output_modes.get_mut(&name) {
+            entry.1 = refresh_mhz;
         }
     }
 

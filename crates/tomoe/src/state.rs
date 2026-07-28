@@ -112,6 +112,10 @@ pub struct Tomoe {
     /// Window under the pointer as of the last motion, for enter/leave
     /// diffing and focus-follows-mouse.
     pub(crate) hovered_window: Option<u64>,
+    /// Connector-advertised modes + current refresh per connected output
+    /// (tty backend fills on connect/mode-change, clears on disconnect),
+    /// joined into `collect_output_props` for `tomoe.outputs()`.
+    pub output_modes: HashMap<String, (Vec<crate::lua::ModeProps>, i32)>,
     /// Persistent shader border rings (stable element ids for damage tracking).
     /// The ring shader leaves the window interior transparent.
     pub borders: HashMap<Window, crate::render::border::BorderRenderElement>,
@@ -406,6 +410,7 @@ impl Tomoe {
             in_lua: false,
             consumed_buttons: std::collections::HashSet::new(),
             hovered_window: None,
+            output_modes: HashMap::new(),
             borders: HashMap::new(),
             shadows: HashMap::new(),
             window_blurs: HashMap::new(),
@@ -820,8 +825,14 @@ impl Tomoe {
                     .shrink_zone(layer_map_for_output(output).non_exclusive_zone()),
                 scale,
             );
+            let name = output.name();
+            let (modes, refresh_mhz) = self
+                .output_modes
+                .get(&name)
+                .map(|(modes, refresh)| (modes.clone(), *refresh))
+                .unwrap_or_default();
             outputs.push(OutputProps {
-                name: output.name(),
+                name,
                 geometry: (geo.loc.x, geo.loc.y, geo.size.w, geo.size.h),
                 usable: (
                     geo.loc.x + zone.loc.x,
@@ -830,6 +841,8 @@ impl Tomoe {
                     zone.size.h,
                 ),
                 scale,
+                modes,
+                refresh_mhz,
             });
         }
         outputs

@@ -652,6 +652,16 @@ pub struct WinProps {
     pub maximized: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeProps {
+    pub w: i32,
+    pub h: i32,
+    /// Refresh in millihertz (wl_output units): 144 Hz → 144000.
+    pub refresh_mhz: i32,
+    /// The monitor's EDID-preferred mode.
+    pub preferred: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OutputProps {
     pub name: String,
@@ -661,6 +671,10 @@ pub struct OutputProps {
     pub usable: (i32, i32, i32, i32),
     /// Fractional client scale advertised on this output.
     pub scale: f64,
+    /// Modes the connector advertises (tty backend; empty on winit).
+    pub modes: Vec<ModeProps>,
+    /// Current mode's refresh in millihertz; 0 when unknown (winit).
+    pub refresh_mhz: i32,
 }
 
 /// Queued operations, applied by the core after each Lua entry.
@@ -818,6 +832,7 @@ struct Hooks {
     pointer_enter: Vec<RegistryKey>,
     pointer_leave: Vec<RegistryKey>,
     input_device_change: Vec<RegistryKey>,
+    output_connect: Vec<RegistryKey>,
 }
 
 /// A Lua-initiated pointer grab (`tomoe.grab_pointer`): motion is routed to
@@ -2074,7 +2089,8 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // tomoe.outputs() -> array of {name, x, y, w, h, usable = {...}}
+        // tomoe.outputs() -> array of {name, x, y, w, h, usable = {...},
+        //                              refresh_mhz, modes = {...}}
         let s = shared.clone();
         tomoe.set(
             "outputs",
@@ -2089,6 +2105,17 @@ impl LuaRuntime {
                     t.set("y", o.geometry.1)?;
                     t.set("w", o.geometry.2)?;
                     t.set("h", o.geometry.3)?;
+                    t.set("refresh_mhz", o.refresh_mhz)?;
+                    let modes = lua.create_table()?;
+                    for (j, m) in o.modes.iter().enumerate() {
+                        let mt = lua.create_table()?;
+                        mt.set("w", m.w)?;
+                        mt.set("h", m.h)?;
+                        mt.set("refresh_mhz", m.refresh_mhz)?;
+                        mt.set("preferred", m.preferred)?;
+                        modes.set(j + 1, mt)?;
+                    }
+                    t.set("modes", modes)?;
                     let u = lua.create_table()?;
                     u.set("x", o.usable.0)?;
                     u.set("y", o.usable.1)?;
@@ -2240,6 +2267,7 @@ impl LuaRuntime {
             ("on_pointer_enter", 7),
             ("on_pointer_leave", 8),
             ("on_input_device_change", 9),
+            ("on_output_connect", 10),
         ] {
             let s = shared.clone();
             tomoe.set(
@@ -2257,6 +2285,7 @@ impl LuaRuntime {
                         6 => hooks.window_request.push(key),
                         7 => hooks.pointer_enter.push(key),
                         _ if field == 9 => hooks.input_device_change.push(key),
+                        _ if field == 10 => hooks.output_connect.push(key),
                         _ => hooks.pointer_leave.push(key),
                     }
                     Ok(())
@@ -3079,6 +3108,51 @@ impl LuaRuntime {
         }
     }
 
+    /// Fire `on_output_connect` hooks before a connector is brought up:
+    /// the connecting output's name, its advertised modes, and the names of
+    /// the already-connected outputs. Hooks adjust `settings.displays`
+    /// (mode, position, disabled, mirror) for the new set; the same
+    /// `connector_connected` call then reads the fresh settings, so the
+    /// output modesets once. ShojiWM's `output.configure(factory)` shape —
+    /// re-run layout policy whenever the connected set changes.
+    pub fn emit_output_connect(&mut self, name: &str, modes: &[ModeProps], connected: &[String]) {
+        let keys: Vec<Function> = {
+            let hooks = self.shared.hooks.borrow();
+            hooks
+                .output_connect
+                .iter()
+                .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
+                .collect()
+        };
+        if keys.is_empty() {
+            return;
+        }
+        let _watchdog = self.watchdog();
+        for func in keys {
+            let Ok(info) = self.lua.create_table() else {
+                continue;
+            };
+            let Ok(mode_list) = self.lua.create_table() else {
+                continue;
+            };
+            for (i, m) in modes.iter().enumerate() {
+                let Ok(mt) = self.lua.create_table() else {
+                    continue;
+                };
+                let _ = mt.set("w", m.w);
+                let _ = mt.set("h", m.h);
+                let _ = mt.set("refresh_mhz", m.refresh_mhz);
+                let _ = mt.set("preferred", m.preferred);
+                let _ = mode_list.set(i + 1, mt);
+            }
+            let _ = info.set("modes", mode_list);
+            let _ = info.set("connected", connected.to_vec());
+            if let Err(err) = func.call::<()>((name.to_string(), info)) {
+                warn!("Lua on_output_connect error: {err}");
+            }
+        }
+    }
+
     /// Register a connected input device in the shared snapshot.
     pub fn add_input_device(&mut self, name: String, caps: InputDeviceCapabilities) {
         self.shared.input_devices.borrow_mut().push((name, caps));
@@ -3523,6 +3597,84 @@ mod tests {
         // after the Lua entry so custom focus hooks can reveal decked windows.
         assert!(!rt.emit_window_request(0, "activate", None, None));
         assert!(rt.take_ops().is_empty());
+    }
+
+    #[test]
+    fn output_connect_hook_and_modes_query() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                seen = {}
+                tomoe.on_output_connect(function(name, ev)
+                    seen.name = name
+                    seen.modes = ev.modes
+                    seen.connected = ev.connected
+                    -- ShojiWM's docked-monitor pattern: policy reacts to the
+                    -- new set by adjusting displays before the mode pick.
+                    tomoe.settings { displays = { [name] = { disabled = true } } }
+                end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        let modes = vec![
+            ModeProps {
+                w: 2560,
+                h: 1440,
+                refresh_mhz: 144000,
+                preferred: true,
+            },
+            ModeProps {
+                w: 1920,
+                h: 1080,
+                refresh_mhz: 60000,
+                preferred: false,
+            },
+        ];
+        rt.emit_output_connect("HDMI-A-1", &modes, &["eDP-1".to_string()]);
+
+        // The hook saw the connecting name, its modes, and the prior set…
+        let (name, mode_count, preferred_hz, connected): (String, i64, i64, String) = rt
+            .lua
+            .load(
+                r#"
+                return seen.name, #seen.modes, seen.modes[1].refresh_mhz, seen.connected[1]
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(name, "HDMI-A-1");
+        assert_eq!(mode_count, 2);
+        assert_eq!(preferred_hz, 144000);
+        assert_eq!(connected, "eDP-1");
+        // …and its settings mutation is visible to the mode pick that follows.
+        assert!(rt.settings().displays["HDMI-A-1"].disabled);
+
+        // tomoe.outputs() exposes the advertised modes + current refresh.
+        rt.sync(
+            HashMap::new(),
+            vec![OutputProps {
+                name: "eDP-1".into(),
+                geometry: (0, 0, 1920, 1080),
+                usable: (0, 0, 1920, 1080),
+                scale: 1.0,
+                modes,
+                refresh_mhz: 60000,
+            }],
+            (0, 0, 1.0),
+            (0.0, 0.0, 0.0, 0.0),
+        );
+        let (w, hz, preferred): (i64, i64, bool) = rt
+            .lua
+            .load(
+                "local o = tomoe.outputs()[1] \
+                 return o.modes[1].w, o.refresh_mhz, o.modes[1].preferred",
+            )
+            .eval()
+            .unwrap();
+        assert_eq!((w, hz, preferred), (2560, 60000, true));
     }
 
     #[test]
@@ -3978,6 +4130,7 @@ mod tests {
             geometry: (0, 0, 1920, 1080),
             usable: (0, 0, 1920, 1080),
             scale: 1.0,
+            ..Default::default()
         };
 
         // One candidate output: resolved without asking.

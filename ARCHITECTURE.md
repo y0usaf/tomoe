@@ -262,6 +262,7 @@ crate tomoe
 │   ├── struct LuaRuntime: pub
 │   ├── struct LuaScreencastRequest: pub(self)
 │   ├── struct LuaWindow: pub(self)
+│   ├── struct ModeProps: pub
 │   ├── struct OutputProps: pub
 │   ├── struct PendingBind: pub
 │   ├── struct PointerAxisData: pub
