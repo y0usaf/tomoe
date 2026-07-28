@@ -33,6 +33,7 @@ const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
 const ZOOMER_LUA: &str = include_str!("../../../resources/zoomer.lua");
 const SCREENCAST_LUA: &str = include_str!("../../../resources/screencast.lua");
+const SPECIAL_LUA: &str = include_str!("../../../resources/special.lua");
 
 /// Which of a connector's advertised modes to use, parsed from
 /// `"<preferred|max|WxH>[@<Hz|max>]"` (e.g. "max@max", "2560x1440@144").
@@ -2305,6 +2306,14 @@ impl LuaRuntime {
                     .eval::<Value>()
             })?,
         )?;
+        preload.set(
+            "special",
+            lua.create_function(|lua, _: Value| {
+                lua.load(SPECIAL_LUA)
+                    .set_name("special.lua")
+                    .eval::<Value>()
+            })?,
+        )?;
 
         // ── The moonshell shell subsystem (FUSION F2): the `ui.*`
         // element vocabulary and `shell.*` API land in this VM,
@@ -4149,5 +4158,28 @@ mod tests {
             .unwrap();
         assert_eq!(state["active"], 1);
         assert!(rt.has_ipc_handler("workspace/switch"));
+
+        // The special-workspaces module is policy on the public API; hold its
+        // shipped shape: loads alongside wm, registers its reload persistence,
+        // and exposes the toggle/move surface.
+        let rt = LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                r#"
+                local wm = require("wm")
+                local special = require("special")
+                assert(type(special.toggle) == "function")
+                assert(type(special.move_focused) == "function")
+                assert(type(special.is_shown) == "function")
+                assert(special.is_shown("term") == false)
+                "#,
+            )
+            .set_name("special-module-test")
+            .exec()
+            .unwrap();
+        assert!(
+            rt.shared.reload_hooks.borrow().contains_key("special"),
+            "on_reload persistence registered"
+        );
     }
 }
