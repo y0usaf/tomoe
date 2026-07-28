@@ -176,8 +176,11 @@ Done and working:
       them; `mirror` maps at its target's position so it shows the same
       world region; `disabled` connectors stay stashed per device so a
       settings change re-enables them without a replug)
-- [ ] Per-output scale (single global scale today; mixed-scale placement
-      policy noted in DESIGN.md coordinate doctrine)
+- [x] Per-output scale (`settings.displays[..].scale`, snapped to the
+      fractional-scale 1/120 grid; `PhysicalSpace` tracks per-window client
+      scale from the output under it, `apply_scale` reconfigures logical
+      sizes on change so physical geometry is preserved; layer surfaces
+      get the new scale + re-arrange) — landed in 389327c
 - [x] pointer-constraints + relative-pointer (games) — niri-shape: lock
       swallows motion, confine clamps at the surface/region edge, both keep
       sending relative motion; smithay deactivates on focus change
@@ -300,8 +303,11 @@ Done and working:
 - [x] Request events surfaced to Lua: maximize/minimize/fullscreen via
       `tomoe.on_window_request` (ShojiWM's `onWindow*Request` family);
       activate requests wait on xdg-activation (M5)
-- [ ] Input-device change events (per-device *config* landed with M1 §5;
-      the add/remove events + device query surface remain)
+- [x] Input-device change events — `tomoe.on_input_device_change(fn)` fires
+      on hotplug with `{name, added, keyboard, pointer, touch, tablet_tool,
+      tablet_pad, gesture, switch}` (ShojiWM's `onInputDeviceChange` shape);
+      `tomoe.input_devices()` returns the current device list with the same
+      capability flags. TTY backend only (libinput); winit has no hotplug.
 - [ ] Output reconfigure API (re-run config on hotplug, query available
       modes)
 - [x] LuaLS `---@meta` annotation files shipped for editor DX —

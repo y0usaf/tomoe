@@ -209,6 +209,35 @@ function tomoe.on_pointer_enter(fn) end
 ---@param fn fun(win: Window)
 function tomoe.on_pointer_leave(fn) end
 
+---@class InputDeviceChangeEvent
+---@field name string # libinput device name (matches settings.devices keys)
+---@field added boolean # true when the device was plugged in, false on removal
+---@field keyboard boolean
+---@field pointer boolean
+---@field touch boolean
+---@field tablet_tool boolean
+---@field tablet_pad boolean
+---@field gesture boolean
+---@field switch boolean
+
+---Run `fn` when an input device is plugged in or removed.
+---@param fn fun(ev: InputDeviceChangeEvent)
+function tomoe.on_input_device_change(fn) end
+
+---@class InputDeviceInfo
+---@field name string
+---@field keyboard boolean
+---@field pointer boolean
+---@field touch boolean
+---@field tablet_tool boolean
+---@field tablet_pad boolean
+---@field gesture boolean
+---@field switch boolean
+
+---List currently connected input devices.
+---@return InputDeviceInfo[]
+function tomoe.input_devices() end
+
 ---Decide what a screencast portal request captures (the ScreenCast portal
 ---asks over IPC on SelectSources). Answer by returning a selection table
 ---(`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or

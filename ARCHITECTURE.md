@@ -256,6 +256,7 @@ crate tomoe
 │   ├── struct DisplaySettings: pub
 │   ├── struct Hooks: pub(self)
 │   ├── struct InputConfig: pub
+│   ├── struct InputDeviceCapabilities: pub
 │   ├── struct InputDeviceSettings: pub
 │   ├── struct KeyboardSettings: pub
 │   ├── struct LuaRuntime: pub
