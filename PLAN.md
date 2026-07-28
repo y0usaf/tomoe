@@ -295,8 +295,20 @@ Done and working:
       framebuffer effects with invalidation halos, layer namespace and
       ext-background-effect-v1 regions, Lua per-window opt-in, and rounded
       window masks; remaining protocol/visual slices tracked in M6 §4
-- [ ] Special workspaces / groups — Lua-level per policy split; needs
-      mechanism audit (hide/show + per-window state suffice?)
+- [x] Special workspaces / groups — mechanism audit concluded Show/Hide +
+      focus/geometry ops suffice (no core change); policy ships as
+      `resources/special.lua`, preloaded as module `"special"` like wm/zoomer.
+      Named Hyprland-style scratchpads: `toggle/show/hide(name)` presents
+      parked windows as a centered 3/4-overlay over the undisturbed active
+      workspace, `move_focused(name)` parks the focused window (taken out of
+      wm's workspaces), `special = "name"` window-rule property opens windows
+      straight into a hidden special, `windows(name)`/`is_shown(name)` are the
+      bar-facing queries. Reload persistence via `on_reload("special")`
+      (window ids + shown flag). Layers on any WM module exposing
+      `arrange()`/workspaces; works standalone (bare-core fallback just
+      centers on the usable area). Groups (multi-window containers) stay
+      Lua-level on the same ops — no additional mechanism identified.
+      Shape held by the `example_configs_load` test.
 
 ### vs ShojiWM (extension surface)
 
