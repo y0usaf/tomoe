@@ -335,8 +335,21 @@ Done and working:
       tablet_pad, gesture, switch}` (ShojiWM's `onInputDeviceChange` shape);
       `tomoe.input_devices()` returns the current device list with the same
       capability flags. TTY backend only (libinput); winit has no hotplug.
-- [ ] Output reconfigure API (re-run config on hotplug, query available
-      modes)
+- [x] Output reconfigure API — two halves, both ShojiWM-shaped. Query:
+      `tomoe.outputs()` entries gain `modes` (all connector-advertised,
+      non-interlaced: `{w, h, refresh_mhz, preferred}`) and `refresh_mhz`
+      (current mode); the tty backend records them per connected output
+      (`Tomoe.output_modes`, filled on connect, refreshed on settings-driven
+      mode change, cleared on disconnect; empty on winit). Re-run config on
+      hotplug: `tomoe.on_output_connect(fn)` fires *before* a connector's
+      disabled-check and mode pick with `(name, {modes, connected = {names}})`;
+      the hook adjusts `tomoe.settings { displays = ... }` and the same
+      `connector_connected` call reads the fresh settings, so the output
+      modesets once — ShojiWM's `output.configure(factory)` / docked-monitor
+      pattern (dock → disable eDP-1) with no double modeset. Fires once per
+      output at startup too (config loads before the initial scan) and on
+      settings-driven re-enable. Unit-tested (hook args, settings mutation
+      visibility, `tomoe.outputs()` modes exposure).
 - [x] LuaLS `---@meta` annotation files shipped for editor DX —
       `resources/meta/tomoe.lua` covers the whole core API; parity +
       golden tests in `docgen.rs` hold it (and `docs/lua-api.md`) to the

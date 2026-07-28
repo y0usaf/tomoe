@@ -58,6 +58,12 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_window_close(fn)` — Run `fn` when a window closes.
 - `tomoe.on_focus_change(fn)` — Run `fn` when keyboard focus changes; win is nil when focus was cleared.
 - `tomoe.on_outputs_changed(fn)` — Run `fn` when outputs are added, removed, or reconfigured.
+
+### OutputConnectEvent
+
+- `modes: Mode[]` — modes the connector advertises
+- `connected: string[]` — names of the already-connected outputs
+- `tomoe.on_output_connect(fn)` — Run `fn` before a newly connected (or re-enabled) output is brought up (tty backend): adjust `tomoe.settings { displays = ... }` for the new set and the same connect picks it up — the output modesets once. This is ShojiWM's `output.configure(factory)` shape: re-run layout policy whenever the connected set changes (dock → disable the laptop panel, pick a mode from `ev.modes`, ...). Fires once per output at startup too.
 - `tomoe.on_pointer_button(fn)` — Run `fn` on pointer button events; return truthy to consume the event (it is not forwarded to the client under the pointer).
 - `tomoe.on_pointer_axis(fn)` — Run `fn` on scroll events; return truthy to consume.
 - `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag — from the window's own client (xdg-shell), xdg-activation, or a taskbar (wlr-foreign-toplevel-management). Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped, xdg-activation "activate" focuses the window, "urgent" is a no-op, a taskbar "close" asks the client to close).
@@ -171,6 +177,13 @@ A rectangle in integer physical pixels, world coordinates.
 - `w: integer`
 - `h: integer`
 
+### Mode
+
+- `w: integer` — physical pixels
+- `h: integer` — physical pixels
+- `refresh_mhz: integer` — refresh in millihertz (144 Hz → 144000)
+- `preferred: boolean` — the monitor's EDID-preferred mode
+
 ### Output
 
 - `name: string` — connector name ("DP-1")
@@ -180,6 +193,8 @@ A rectangle in integer physical pixels, world coordinates.
 - `h: integer`
 - `scale: number` — fractional client scale advertised on output
 - `usable: Geometry` — geometry minus layer-shell exclusive zones
+- `refresh_mhz: integer` — current mode's refresh in millihertz (0 when unknown, e.g. winit)
+- `modes: Mode[]` — modes the connector advertises (tty backend; empty on winit)
 
 ### View
 

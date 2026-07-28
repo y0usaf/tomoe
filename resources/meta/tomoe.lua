@@ -184,6 +184,19 @@ function tomoe.on_focus_change(fn) end
 ---@param fn fun()
 function tomoe.on_outputs_changed(fn) end
 
+---@class OutputConnectEvent
+---@field modes Mode[] # modes the connector advertises
+---@field connected string[] # names of the already-connected outputs
+
+---Run `fn` before a newly connected (or re-enabled) output is brought up
+---(tty backend): adjust `tomoe.settings { displays = ... }` for the new set
+---and the same connect picks it up — the output modesets once. This is
+---ShojiWM's `output.configure(factory)` shape: re-run layout policy whenever
+---the connected set changes (dock → disable the laptop panel, pick a mode
+---from `ev.modes`, ...). Fires once per output at startup too.
+---@param fn fun(name: string, ev: OutputConnectEvent)
+function tomoe.on_output_connect(fn) end
+
 ---Run `fn` on pointer button events; return truthy to consume the event
 ---(it is not forwarded to the client under the pointer).
 ---@param fn fun(ev: PointerButtonEvent): boolean?
@@ -413,6 +426,12 @@ function UiWidget:close() end
 ---@field w integer
 ---@field h integer
 
+---@class Mode
+---@field w integer # physical pixels
+---@field h integer # physical pixels
+---@field refresh_mhz integer # refresh in millihertz (144 Hz → 144000)
+---@field preferred boolean # the monitor's EDID-preferred mode
+
 ---@class Output
 ---@field name string # connector name ("DP-1")
 ---@field x integer
@@ -421,6 +440,8 @@ function UiWidget:close() end
 ---@field h integer
 ---@field scale number # fractional client scale advertised on output
 ---@field usable Geometry # geometry minus layer-shell exclusive zones
+---@field refresh_mhz integer # current mode's refresh in millihertz (0 when unknown, e.g. winit)
+---@field modes Mode[] # modes the connector advertises (tty backend; empty on winit)
 
 ---@class View
 ---@field x integer # world offset in physical pixels
