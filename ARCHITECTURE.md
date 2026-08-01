@@ -345,6 +345,9 @@ crate tomoe
 │   │   ├── struct FramebufferEffectElement: pub
 │   │   └── struct Inner: pub(self)
 │   ├── mod macros: pub(self)
+│   ├── mod math: pub
+│   │   ├── struct Mat3: pub
+│   │   └── struct Vec2: pub
 │   ├── mod renderer: pub
 │   │   ├── trait AsGlesFrame: pub
 │   │   └── trait AsGlesRenderer: pub
