@@ -40,6 +40,10 @@ function tomoe.bind(combo, action, desc) end
 ---@param cmd string
 function tomoe.spawn(cmd) end
 
+---Power off all outputs while retaining their surfaces; any input wakes them
+---and the waking event is swallowed (VT switching still works).
+function tomoe.power_off_outputs() end
+
 ---Ask to exit: shows the confirm dialog (the "quit!" action skips it).
 function tomoe.quit() end
 

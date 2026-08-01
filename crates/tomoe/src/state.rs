@@ -1777,8 +1777,20 @@ impl Tomoe {
         crate::ipc::notify_focus_change(self, id);
     }
 
+    pub fn monitors_powered_off(&self) -> bool {
+        self.backend.monitors_powered_off()
+    }
+
+    pub fn set_monitors_active(&mut self, active: bool) {
+        self.backend.set_monitors_active(active);
+        if active {
+            self.queue_redraw_all();
+        }
+    }
+
     pub fn do_action(&mut self, action: Action) {
         match action {
+            Action::PowerOffOutputs => self.set_monitors_active(false),
             Action::Quit => {
                 if !self.ui.widgets.tag_open(Tag::ExitDialog) {
                     self.ui.widgets.open(WidgetEntry::new(

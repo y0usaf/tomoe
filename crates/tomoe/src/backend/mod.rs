@@ -17,6 +17,21 @@ pub enum Backend {
 }
 
 impl Backend {
+    pub fn monitors_powered_off(&self) -> bool {
+        match self {
+            Backend::Tty(data) => !data.monitors_active,
+            _ => false,
+        }
+    }
+
+    pub fn set_monitors_active(&mut self, active: bool) {
+        match self {
+            Backend::Tty(data) => tty::set_monitors_active(data, active),
+            Backend::Winit(_) => tracing::debug!("monitor power management is a no-op on winit"),
+            Backend::Uninit => {}
+        }
+    }
+
     pub fn winit(&mut self) -> &mut WinitData {
         match self {
             Backend::Winit(data) => data,

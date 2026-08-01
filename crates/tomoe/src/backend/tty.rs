@@ -9,7 +9,7 @@
 //! was called, and an output with a frame in flight coalesces further
 //! requests until its vblank.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::iter::zip;
 use std::mem;
 use std::num::NonZeroU64;
@@ -211,6 +211,8 @@ pub struct OutputDevice {
 }
 
 pub struct TtyData {
+    /// False while CRTCs are cleared for compositor power-off.
+    pub monitors_active: bool,
     pub session: LibSeatSession,
     pub libinput: Libinput,
     pub gpu_manager: TtyGpuManager,
@@ -301,6 +303,7 @@ pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
     info!("rendering on {primary_render_node} (primary node {primary_node})");
 
     tomoe.backend = Backend::Tty(TtyData {
+        monitors_active: true,
         session,
         libinput,
         gpu_manager,
@@ -1375,6 +1378,23 @@ fn apply_device_config(config: &InputConfig, device: &mut libinput::Device) {
     }
 }
 
+pub fn set_monitors_active(data: &mut TtyData, active: bool) {
+    if data.monitors_active == active {
+        return;
+    }
+    data.monitors_active = active;
+    if !active {
+        for device in data.devices.values_mut() {
+            for surface in device.surfaces.values_mut() {
+                if let Err(err) = surface.compositor.clear() {
+                    warn!("error clearing drm surface: {err:?}");
+                }
+                surface.redraw_state = RedrawState::Idle;
+            }
+        }
+    }
+}
+
 /// Request a repaint of one output. Cheap and idempotent: every damage source
 /// (commits, Lua ops, cursor motion) calls this; the state machine coalesces.
 pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
@@ -1384,6 +1404,9 @@ pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
+    if !data.monitors_active {
+        return;
+    }
     let Some(surface) = data
         .devices
         .get_mut(&node)
@@ -1432,6 +1455,11 @@ pub fn queue_redraw_all(tomoe: &mut Tomoe) {
 }
 
 fn on_vblank(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle, meta: Option<DrmEventMetadata>) {
+    if let Backend::Tty(data) = &tomoe.backend {
+        if !data.monitors_active {
+            return;
+        }
+    }
     let now = tomoe.clock.now();
     {
         let Backend::Tty(data) = &mut tomoe.backend else {
