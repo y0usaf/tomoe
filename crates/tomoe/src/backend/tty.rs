@@ -1085,15 +1085,28 @@ fn reposition_outputs(tomoe: &mut Tomoe) {
 /// so it bails immediately unless the displays config actually changed.
 pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     let settings = tomoe.lua.settings();
-    {
+    let reenabled: HashSet<String> = {
         let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
         };
         if settings.displays == data.last_displays {
             return false;
         }
+        let names = data
+            .last_displays
+            .iter()
+            .filter(|(name, old)| {
+                old.disabled
+                    && settings
+                        .displays
+                        .get(*name)
+                        .is_some_and(|new| !new.disabled)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
         data.last_displays = settings.displays.clone();
-    }
+        names
+    };
     let geometries = |tomoe: &Tomoe| -> Vec<(String, (i32, i32, i32, i32))> {
         let mut v: Vec<_> = tomoe
             .space
@@ -1225,6 +1238,34 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
             continue;
         }
         changed = true;
+    }
+
+    // A sleeping or unplugged monitor can disappear while it is disabled, so
+    // there is neither a live surface nor a stashed connector to re-enable.
+    if !reenabled.is_empty() {
+        let mut present = HashSet::new();
+        if let Backend::Tty(data) = &tomoe.backend {
+            for device in data.devices.values() {
+                present.extend(
+                    device
+                        .surfaces
+                        .values()
+                        .map(|surface| surface.output.name()),
+                );
+                present.extend(device.inactive.values().map(|connector| {
+                    format!(
+                        "{}-{}",
+                        connector.interface().as_str(),
+                        connector.interface_id()
+                    )
+                }));
+            }
+        }
+        for name in reenabled {
+            if !present.contains(&name) {
+                warn!("output {name}: cannot re-enable: connector no longer present (monitor asleep/unplugged?) — power-cycle the monitor to re-assert hotplug");
+            }
+        }
     }
 
     // Positions/mirrors may have changed without a mode or topology change;
