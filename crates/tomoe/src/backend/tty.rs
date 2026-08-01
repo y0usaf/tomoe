@@ -59,7 +59,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::input::pointer::CursorImageStatus;
-use smithay::utils::{DeviceFd, Monotonic};
+use smithay::utils::{DeviceFd, Monotonic, Rectangle};
 use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
@@ -159,6 +159,8 @@ pub struct TtySurface {
     /// flip. Gates the estimated-vblank bypass in `queue_redraw` and the
     /// edge-triggered tearing log.
     pub tearing_active: bool,
+    /// Persistent damage injector used by the full-repaint debug knob.
+    pub full_damage: crate::render::damage::ExtraDamage,
     /// Atomic GAMMA_LUT handles for this crtc; None falls back to the
     /// legacy gamma ioctl (`set_gamma_for_crtc`).
     pub gamma_props: Option<GammaProps>,
@@ -842,6 +844,7 @@ fn connector_connected(
     // this output's frames; display-only devices import the primary's
     // buffers, where linear is the safe cross-device choice.
     let render_node_for_output = device.render_node.unwrap_or(*primary_render_node);
+    let linear_only = device.render_node.is_none() || lua.settings().debug_linear_swapchain;
     let render_formats = {
         let renderer = gpu_manager
             .single_renderer(&render_node_for_output)
@@ -852,7 +855,7 @@ fn connector_connected(
             .dmabuf_render_formats()
             .iter()
             .copied()
-            .filter(|format| device.render_node.is_some() || format.modifier == Modifier::Linear)
+            .filter(|format| !linear_only || format.modifier == Modifier::Linear)
             .collect::<FormatSet>()
     };
 
@@ -873,7 +876,9 @@ fn connector_connected(
         Ok(compositor) => compositor,
         Err(err) => {
             // Modifier negotiation can fail (bandwidth, cross-device import);
-            // retry with the invalid modifier (implicit tiling).
+            // retry with the invalid modifier (implicit tiling). This fallback
+            // can override debug_linear_swapchain when creation fails.
+
             warn!("error creating DRM compositor, retrying with invalid modifier: {err}");
             let render_formats = render_formats
                 .iter()
@@ -925,6 +930,7 @@ fn connector_connected(
             direct_scanout: false,
             supports_async_flip,
             tearing_active: false,
+            full_damage: crate::render::damage::ExtraDamage::new(),
             gamma_props,
             pending_gamma_change: None,
         },
@@ -1584,6 +1590,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     let cursor_status = tomoe.cursor_status.clone();
     let corner_radius = tomoe.lua.settings().corner_radius;
     let wait_for_frame_completion = tomoe.lua.settings().wait_for_frame_completion;
+    let debug_full_repaint = tomoe.lua.settings().debug_full_repaint;
 
     let locked = tomoe.is_locked();
 
@@ -1679,6 +1686,18 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
 
     let mut elements: Vec<OutputRenderElements<TtyRenderer<'_>>> = Vec::new();
     let scale = space.output_scale(&surface.output);
+
+    if debug_full_repaint {
+        surface.full_damage.damage_all();
+        let size = surface
+            .output
+            .current_mode()
+            .map(|mode| mode.size)
+            .unwrap_or_default();
+        elements.push(OutputRenderElements::Damage(
+            surface.full_damage.render(Rectangle::from_size(size)),
+        ));
+    }
 
     // Cursor: client-provided surface, xcursor theme, or block fallback.
     // Pointer coordinates are global protocol values; invert using the
