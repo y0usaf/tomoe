@@ -299,6 +299,8 @@ Motion event during a tomoe.grab_pointer grab.
 - `focus_follows_mouse: boolean` — sloppy focus: focus the window under the pointer (default false)
 - `tearing: boolean` — allow async page flips for fullscreen windows that request tearing (default false)
 - `wait_for_frame_completion: boolean` — NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
+- `debug_full_repaint: boolean` — force whole-output damage every frame for NVIDIA partial-repaint debugging (default false; live)
+- `debug_linear_swapchain: boolean` — use linear scanout modifiers for NVIDIA debugging (default false; output reconnect)
 - `honor_xdg_activation_with_invalid_serial: boolean` — accept stale input serials from clients such as Discord/Telegram; weakens focus-stealing protection (default false)
 - `screenshot_freeze: boolean` — freeze the scene in the interactive screenshot UI; pointer remains live (default true)
 - `watchdog_ms: integer` — wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)

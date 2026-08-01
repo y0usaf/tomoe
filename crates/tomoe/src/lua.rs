@@ -297,6 +297,13 @@ pub struct Settings {
     /// render completes hangs the whole display pipeline. Costs a little
     /// latency; off by default.
     pub wait_for_frame_completion: bool,
+    /// Force every rendered frame to damage the whole output, bypassing damage
+    /// tracking. A/B test for partial-repaint bugs on NVIDIA; live-togglable.
+    pub debug_full_repaint: bool,
+    /// Allocate compositor-owned scanout swapchains with linear modifiers
+    /// only. A/B test for NVIDIA tiled/compressed modifier issues; takes effect
+    /// when an output connects or reconnects.
+    pub debug_linear_swapchain: bool,
     /// Accept xdg-activation tokens whose input serial is older than the last
     /// keyboard/pointer enter. This accommodates clients such as Discord and
     /// Telegram that replace valid tokens with stale ones, but weakens the
@@ -359,6 +366,8 @@ impl Default for Settings {
             focus_follows_mouse: false,
             tearing: false,
             wait_for_frame_completion: false,
+            debug_full_repaint: false,
+            debug_linear_swapchain: false,
             honor_xdg_activation_with_invalid_serial: false,
             screenshot_freeze: true,
             keyboard: KeyboardSettings::default(),
@@ -1442,6 +1451,14 @@ impl LuaRuntime {
                 }
                 if let Ok(Some(wait)) = table.get::<Option<bool>>("wait_for_frame_completion") {
                     settings.wait_for_frame_completion = wait;
+                }
+                if let Ok(Some(full_repaint)) = table.get::<Option<bool>>("debug_full_repaint") {
+                    settings.debug_full_repaint = full_repaint;
+                }
+                if let Ok(Some(linear_swapchain)) =
+                    table.get::<Option<bool>>("debug_linear_swapchain")
+                {
+                    settings.debug_linear_swapchain = linear_swapchain;
                 }
                 if let Ok(Some(freeze)) = table.get::<Option<bool>>("screenshot_freeze") {
                     settings.screenshot_freeze = freeze;
@@ -3541,6 +3558,19 @@ mod tests {
             .exec()
             .unwrap();
         assert!(rt.settings().wait_for_frame_completion);
+    }
+
+    #[test]
+    fn parse_debug_repaint_settings() {
+        let rt = LuaRuntime::new().unwrap();
+        assert!(!rt.settings().debug_full_repaint);
+        assert!(!rt.settings().debug_linear_swapchain);
+        rt.lua
+            .load(r#"tomoe.settings { debug_full_repaint = true, debug_linear_swapchain = true }"#)
+            .exec()
+            .unwrap();
+        assert!(rt.settings().debug_full_repaint);
+        assert!(rt.settings().debug_linear_swapchain);
     }
 
     #[test]

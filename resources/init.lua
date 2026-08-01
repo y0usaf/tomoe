@@ -56,6 +56,12 @@ tomoe.settings {
   -- this on NVIDIA: fenced frames queued before the render completes hang
   -- the driver (whole-session freeze). Costs a little latency. Default: off.
   -- wait_for_frame_completion = true,
+  -- Force whole-output damage every frame to debug NVIDIA partial-repaint
+  -- flicker. Applies live after config reload. Default: off.
+  -- debug_full_repaint = true,
+  -- Allocate compositor-owned scanout buffers with linear modifiers only.
+  -- Takes effect when an output reconnects. Default: off.
+  -- debug_linear_swapchain = true,
   -- Discord and Telegram sometimes replace a valid activation token with an
   -- old serial. This opt-in compatibility switch allows that focus request,
   -- weakening focus-stealing protection. Default: off.
