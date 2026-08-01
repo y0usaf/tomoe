@@ -16,6 +16,7 @@ and type checking in your editor.
 - `tomoe.settings(settings)` — Apply settings; partial tables merge over previous calls (`displays` and `devices` are rebuilt per call). See Settings.
 - `tomoe.bind(combo, action, desc)` — Bind a key combo to a Lua function or an action string: "quit" (exit dialog), "quit!" (exit immediately), "close-window", "show-hotkey-overlay", "reload-config", "screenshot" (region overlay), "screenshot-screen", "spawn <shell command>". Combos are "Mod+Shift+q": modifiers super|win|logo, alt, ctrl|control, shift, or mod (= `settings.mod`); keys are XKB keysym names ("Return", "equal", "F11"). Hold form: pass a table `{ press = fn, release = fn }` — press fires on key-down, release on key-up, latched by keycode so the modifier state at release time is irrelevant (push-to-talk). Both edges swallow the key; press is required, release optional.
 - `tomoe.spawn(cmd)` — Run a shell command, fire-and-forget (the core tracks and reaps the child). The child gets a fresh xdg-activation token in both `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, so the app's first window can take focus.
+- `tomoe.power_off_outputs()` — Power off all outputs while retaining their surfaces; any input wakes them and the waking event is swallowed (VT switching still works).
 - `tomoe.quit()` — Ask to exit: shows the confirm dialog (the "quit!" action skips it).
 - `tomoe.clear_focus()` — Drop keyboard focus so no window receives keys.
 

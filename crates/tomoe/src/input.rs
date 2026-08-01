@@ -36,6 +36,8 @@ fn keyboard_hand(key_code: u32) -> &'static str {
 pub enum Action {
     /// Request exit: opens the confirmation dialog.
     Quit,
+    /// Power off all DRM outputs while retaining their surfaces.
+    PowerOffOutputs,
     /// Exit immediately (Enter in the dialog, or the "quit!" action string).
     ConfirmQuit,
     CloseWindow,
@@ -446,6 +448,18 @@ impl Tomoe {
     }
 
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        // Any user input wakes powered-off outputs. Hotplug is deliberately not
+        // wake-worthy: a sleeping monitor may drop HPD while remaining mapped.
+        let waking = !matches!(
+            event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) && self.monitors_powered_off();
+        if waking {
+            self.set_monitors_active(true);
+            if !matches!(event, InputEvent::Keyboard { .. }) {
+                return; // the waking event is swallowed
+            }
+        }
         // Every real input event is user activity for idle-notify (device
         // add/remove is a hotplug, not the user at the desk).
         if !matches!(
@@ -478,6 +492,14 @@ impl Tomoe {
                     time,
                     |tomoe, mods, handle| {
                         let raw_syms = handle.raw_syms();
+                        if waking
+                            && !raw_syms.iter().any(|sym| {
+                                (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12)
+                                    .contains(&sym.raw())
+                            })
+                        {
+                            return FilterResult::Intercept(None);
+                        }
                         if pressed {
                             // VT switching always works, even over the dialog.
                             for sym in raw_syms.iter() {

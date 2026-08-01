@@ -1956,6 +1956,16 @@ impl LuaRuntime {
             })?,
         )?;
 
+        // tomoe.power_off_outputs()
+        let s = shared.clone();
+        tomoe.set(
+            "power_off_outputs",
+            lua.create_function(move |_, ()| {
+                s.actions.borrow_mut().push(Action::PowerOffOutputs);
+                Ok(())
+            })?,
+        )?;
+
         // tomoe.quit()
         let s = shared.clone();
         tomoe.set(
@@ -3469,6 +3479,16 @@ pub fn resolve_config_path(cli: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_off_outputs_queues_action() {
+        let mut rt = LuaRuntime::new().unwrap();
+        rt.lua.load("tomoe.power_off_outputs()").exec().unwrap();
+        assert!(matches!(
+            rt.take_actions().as_slice(),
+            [Action::PowerOffOutputs]
+        ));
+    }
 
     #[test]
     fn ui_widget_ops_queue() {

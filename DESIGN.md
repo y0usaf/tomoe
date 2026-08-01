@@ -95,6 +95,7 @@ doctrine; "shell:" notes cover the fused moonshell subsystem.
 
 | Decision | Choice | Rationale |
 |---|---|---|
+| Output power | **compositor action + wake-on-any-input (swallowed)** | HPD-drop monitors remain mapped and can wake reliably. (2026-08-01) |
 | Fusion | **moonshell merges into tomoe as its shell subsystem** | See "The fusion decision" above. The name survives on the `moonshell-*` crates, the shell builtins layer, and the `shell.*` global; the product is "tomoe with moonshell". |
 | Lua namespaces | **`ui.*` + `shell.*` kept first-class alongside `tomoe.*`** | The inherited moonshell contract, not aliased: `ui.*` element vocabulary, `shell.*` shell API, `tomoe.*` compositor policy. nur-era configs keep porting with at most mechanical edits. |
 | Scripting | **mlua + LuaJIT, vendored** | µs-level calls, single binary; LuaJIT FFI is the extensibility escape hatch. Same pick both sides of the fusion — one VM was a precondition for it. |
@@ -154,6 +155,7 @@ standing entries:
   budget on real hardware (FUSION open decision).
 - **GTK/Qt theme or CSS compat for shell UI** — never; themes are Lua
   tables.
+- **wlr-output-power-management protocol** — adopt when an external client (idle daemon) needs it.
 - **taffy layout** — flex-lite covers the bar/launcher/OSD genre;
   adopt on a real grid/wrap need.
 
