@@ -8,7 +8,7 @@
 //! output-local integer physical pixels, the same space every element
 //! position uses; corner radii are physical pixels.
 
-use glam::{Mat3, Vec2};
+use super::math::{Mat3, Vec2};
 use smithay::backend::renderer::buffer_y_inverted;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
