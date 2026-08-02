@@ -176,11 +176,8 @@ Done and working:
       them; `mirror` maps at its target's position so it shows the same
       world region; `disabled` connectors stay stashed per device so a
       settings change re-enables them without a replug)
-- [x] Per-output scale (`settings.displays[..].scale`, snapped to the
-      fractional-scale 1/120 grid; `PhysicalSpace` tracks per-window client
-      scale from the output under it, `apply_scale` reconfigures logical
-      sizes on change so physical geometry is preserved; layer surfaces
-      get the new scale + re-arrange) — landed in 389327c
+- [ ] Per-output scale (single global scale today; mixed-scale placement
+      policy noted in DESIGN.md coordinate doctrine)
 - [x] pointer-constraints + relative-pointer (games) — niri-shape: lock
       swallows motion, confine clamps at the surface/region edge, both keep
       sending relative motion; smithay deactivates on focus change
@@ -210,23 +207,8 @@ Done and working:
       revert to libinput defaults so reloads are idempotent
 - [x] xkb config (rules/model/layout/variant/options) + key repeat via
       `settings.keyboard`, re-applied on change from any Lua entry
-- [x] Steady-state zoom re-advertises effective fractional scale
-      (DESIGN.md camera follow-up) — `WindowOp::SetView` zoom changes re-arm
-      a 250 ms debounce (`arm_zoom_scale_timer`); on settle,
-      `apply_zoom_scale` re-advertises `snap(output_scale × zoom)` to every
-      mapped window via the extracted `reconfigure_window_scale` (shared with
-      `apply_scale`: set element scale, reconfigure logical size to preserve
-      the physical target, `send_scale` + pending configure). Zoom in motion
-      keeps the RescaleRenderElement resampling path — per-frame reconfigures
-      would thrash clients; zoom returning to 1 reverts through the same
-      path. Every client-scale choice (`apply_scale` per-window + unmapped
-      fallback, `SetGeometry`/`Show` ops, `add_window` initial + native
-      fullscreen fallback, `fullscreen_default`) multiplies by the applied
-      factor via `effective_window_scale`; popup constraint rects use the
-      window's actual element scale. **Pending live check** (nested winit
-      hangs in this dev environment — blocked in winit init before the event
-      loop, unrelated): zoomer at steady zoom 2, watch the `zoom settled`
-      edge-triggered log and confirm a foot window re-renders sharp.
+- [ ] Steady-state zoom re-advertises effective fractional scale
+      (DESIGN.md camera follow-up)
 
 ### vs Hyprland (WM depth & eye-candy)
 
@@ -295,20 +277,8 @@ Done and working:
       framebuffer effects with invalidation halos, layer namespace and
       ext-background-effect-v1 regions, Lua per-window opt-in, and rounded
       window masks; remaining protocol/visual slices tracked in M6 §4
-- [x] Special workspaces / groups — mechanism audit concluded Show/Hide +
-      focus/geometry ops suffice (no core change); policy ships as
-      `resources/special.lua`, preloaded as module `"special"` like wm/zoomer.
-      Named Hyprland-style scratchpads: `toggle/show/hide(name)` presents
-      parked windows as a centered 3/4-overlay over the undisturbed active
-      workspace, `move_focused(name)` parks the focused window (taken out of
-      wm's workspaces), `special = "name"` window-rule property opens windows
-      straight into a hidden special, `windows(name)`/`is_shown(name)` are the
-      bar-facing queries. Reload persistence via `on_reload("special")`
-      (window ids + shown flag). Layers on any WM module exposing
-      `arrange()`/workspaces; works standalone (bare-core fallback just
-      centers on the usable area). Groups (multi-window containers) stay
-      Lua-level on the same ops — no additional mechanism identified.
-      Shape held by the `example_configs_load` test.
+- [ ] Special workspaces / groups — Lua-level per policy split; needs
+      mechanism audit (hide/show + per-window state suffice?)
 
 ### vs ShojiWM (extension surface)
 
@@ -330,26 +300,10 @@ Done and working:
 - [x] Request events surfaced to Lua: maximize/minimize/fullscreen via
       `tomoe.on_window_request` (ShojiWM's `onWindow*Request` family);
       activate requests wait on xdg-activation (M5)
-- [x] Input-device change events — `tomoe.on_input_device_change(fn)` fires
-      on hotplug with `{name, added, keyboard, pointer, touch, tablet_tool,
-      tablet_pad, gesture, switch}` (ShojiWM's `onInputDeviceChange` shape);
-      `tomoe.input_devices()` returns the current device list with the same
-      capability flags. TTY backend only (libinput); winit has no hotplug.
-- [x] Output reconfigure API — two halves, both ShojiWM-shaped. Query:
-      `tomoe.outputs()` entries gain `modes` (all connector-advertised,
-      non-interlaced: `{w, h, refresh_mhz, preferred}`) and `refresh_mhz`
-      (current mode); the tty backend records them per connected output
-      (`Tomoe.output_modes`, filled on connect, refreshed on settings-driven
-      mode change, cleared on disconnect; empty on winit). Re-run config on
-      hotplug: `tomoe.on_output_connect(fn)` fires *before* a connector's
-      disabled-check and mode pick with `(name, {modes, connected = {names}})`;
-      the hook adjusts `tomoe.settings { displays = ... }` and the same
-      `connector_connected` call reads the fresh settings, so the output
-      modesets once — ShojiWM's `output.configure(factory)` / docked-monitor
-      pattern (dock → disable eDP-1) with no double modeset. Fires once per
-      output at startup too (config loads before the initial scan) and on
-      settings-driven re-enable. Unit-tested (hook args, settings mutation
-      visibility, `tomoe.outputs()` modes exposure).
+- [ ] Input-device change events (per-device *config* landed with M1 §5;
+      the add/remove events + device query surface remain)
+- [ ] Output reconfigure API (re-run config on hotplug, query available
+      modes)
 - [x] LuaLS `---@meta` annotation files shipped for editor DX —
       `resources/meta/tomoe.lua` covers the whole core API; parity +
       golden tests in `docgen.rs` hold it (and `docs/lua-api.md`) to the

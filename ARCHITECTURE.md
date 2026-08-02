@@ -256,13 +256,11 @@ crate tomoe
 │   ├── struct DisplaySettings: pub
 │   ├── struct Hooks: pub(self)
 │   ├── struct InputConfig: pub
-│   ├── struct InputDeviceCapabilities: pub
 │   ├── struct InputDeviceSettings: pub
 │   ├── struct KeyboardSettings: pub
 │   ├── struct LuaRuntime: pub
 │   ├── struct LuaScreencastRequest: pub(self)
 │   ├── struct LuaWindow: pub(self)
-│   ├── struct ModeProps: pub
 │   ├── struct OutputProps: pub
 │   ├── struct PendingBind: pub
 │   ├── struct PointerAxisData: pub
@@ -345,9 +343,6 @@ crate tomoe
 │   │   ├── struct FramebufferEffectElement: pub
 │   │   └── struct Inner: pub(self)
 │   ├── mod macros: pub(self)
-│   ├── mod math: pub
-│   │   ├── struct Mat3: pub
-│   │   └── struct Vec2: pub
 │   ├── mod renderer: pub
 │   │   ├── trait AsGlesFrame: pub
 │   │   └── trait AsGlesRenderer: pub

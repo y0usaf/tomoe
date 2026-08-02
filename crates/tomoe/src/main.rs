@@ -27,7 +27,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
@@ -39,95 +40,41 @@ use tracing_subscriber::EnvFilter;
 use crate::process::{Launch, ProcessDecl, ProcessSpec, RunPolicy};
 use crate::state::{ClientState, Tomoe};
 
-#[derive(Debug)]
+#[derive(Parser, Debug)]
+#[command(name = "tomoe", about = "A Wayland compositor with embedded Lua")]
 struct Args {
+    /// Path to init.lua (default: ~/.config/tomoe/init.lua)
+    #[arg(long)]
     config: Option<PathBuf>,
+    /// Backend: auto, winit (nested window), or tty (DRM, run from a VT)
+    #[arg(long, default_value = "auto")]
     backend: String,
+    /// Force the render GPU for the tty backend (a /dev/dri/card* or
+    /// renderD* path). Default: the boot GPU; outputs on other GPUs still
+    /// work via buffer copies.
+    #[arg(long)]
     drm_device: Option<PathBuf>,
+    #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Debug)]
+#[derive(clap::Subcommand, Debug)]
 enum Command {
+    /// Send a request to the running compositor over its IPC socket.
+    ///
+    /// Builtins: version, windows, outputs, view, quit, subscribe. Any other
+    /// method reaches the config's `tomoe.ipc.serve` handlers. `subscribe`
+    /// keeps the connection open and prints one event per line.
     Msg {
+        /// Method name, e.g. "windows" or "workspace/switch".
         method: String,
+        /// Params as a JSON value, e.g. '{"name": "2"}'.
         params: Option<String>,
     },
 }
 
-const USAGE: &str = "A Wayland compositor with embedded Lua
-
-Usage: tomoe [OPTIONS] [COMMAND]
-
-Options:
-    --config <PATH>         Path to init.lua (default: ~/.config/tomoe/init.lua)
-    --backend <STRING>      Backend: auto, winit (nested window), or tty (DRM, run from a VT) [default: auto]
-    --drm_device <PATH>     Force the render GPU for the tty backend
-    -h, --help              Print help
-    -V, --version           Print version
-
-Commands:
-    msg <method> [params]   Send a request to the running compositor over its IPC socket.";
-
-fn parse_args() -> Result<Option<Args>> {
-    let mut args = std::env::args().skip(1);
-    let mut config = None;
-    let mut backend = String::from("auto");
-    let mut drm_device = None;
-    let mut command = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return Ok(None);
-            }
-            "-V" | "--version" => {
-                println!("tomoe {}", env!("CARGO_PKG_VERSION"));
-                return Ok(None);
-            }
-            "--config" => {
-                config = Some(PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow!("missing value for --config"))?,
-                ))
-            }
-            "--backend" => {
-                backend = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --backend"))?
-            }
-            "--drm_device" => {
-                drm_device = Some(PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow!("missing value for --drm_device"))?,
-                ))
-            }
-            "msg" if command.is_none() => {
-                let method = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing method for msg"))?;
-                let params = args.next();
-                if let Some(extra) = args.next() {
-                    bail!("unexpected argument '{extra}'");
-                }
-                command = Some(Command::Msg { method, params });
-            }
-            _ if arg.starts_with('-') => bail!("unknown argument '{arg}'"),
-            _ => bail!("unexpected argument '{arg}'"),
-        }
-    }
-    Ok(Some(Args {
-        config,
-        backend,
-        drm_device,
-        command,
-    }))
-}
-
 fn main() -> Result<()> {
-    let Some(args) = parse_args()? else {
-        return Ok(());
-    };
+    let args = Args::parse();
 
     if let Some(Command::Msg { method, params }) = args.command {
         return msg(&method, params.as_deref());
