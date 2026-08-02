@@ -20,7 +20,6 @@ pub mod clipped_surface;
 pub mod damage;
 pub mod framebuffer_effect;
 mod macros;
-pub mod math;
 pub mod renderer;
 mod resources;
 mod shader_element;

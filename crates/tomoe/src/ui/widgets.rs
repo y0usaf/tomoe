@@ -680,7 +680,6 @@ fn bind_title(bind: &Bind) -> Option<String> {
     }
     match &bind.action {
         Action::Quit => Some("Exit".to_string()),
-        Action::PowerOffOutputs => Some("Power Off Outputs".to_string()),
         Action::ConfirmQuit => Some("Exit Immediately".to_string()),
         Action::CloseWindow => Some("Close Window".to_string()),
         Action::Spawn(cmd) => Some(format!("Spawn {cmd}")),

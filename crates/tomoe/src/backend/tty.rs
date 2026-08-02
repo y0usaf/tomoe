@@ -9,7 +9,7 @@
 //! was called, and an output with a frame in flight coalesces further
 //! requests until its vblank.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::iter::zip;
 use std::mem;
 use std::num::NonZeroU64;
@@ -59,7 +59,7 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::input::pointer::CursorImageStatus;
-use smithay::utils::{DeviceFd, Monotonic, Rectangle};
+use smithay::utils::{DeviceFd, Monotonic};
 use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::wayland::drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState};
 use smithay::wayland::presentation::Refresh;
@@ -68,8 +68,7 @@ use tracing::{debug, info, warn};
 
 use crate::backend::Backend;
 use crate::lua::{
-    DisplaySettings, InputConfig, InputDeviceSettings, ModeProps, RefreshSetting, Resolution,
-    SizeSetting,
+    DisplaySettings, InputConfig, InputDeviceSettings, RefreshSetting, Resolution, SizeSetting,
 };
 use crate::render::OutputRenderElements;
 use crate::space::PhysicalSpace;
@@ -159,8 +158,6 @@ pub struct TtySurface {
     /// flip. Gates the estimated-vblank bypass in `queue_redraw` and the
     /// edge-triggered tearing log.
     pub tearing_active: bool,
-    /// Persistent damage injector used by the full-repaint debug knob.
-    pub full_damage: crate::render::damage::ExtraDamage,
     /// Atomic GAMMA_LUT handles for this crtc; None falls back to the
     /// legacy gamma ioctl (`set_gamma_for_crtc`).
     pub gamma_props: Option<GammaProps>,
@@ -211,8 +208,6 @@ pub struct OutputDevice {
 }
 
 pub struct TtyData {
-    /// False while CRTCs are cleared for compositor power-off.
-    pub monitors_active: bool,
     pub session: LibSeatSession,
     pub libinput: Libinput,
     pub gpu_manager: TtyGpuManager,
@@ -250,13 +245,9 @@ pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
             match &mut event {
                 InputEvent::DeviceAdded { device } => on_device_added(tomoe, device),
                 InputEvent::DeviceRemoved { device } => {
-                    let caps = device_capabilities(device);
-                    let name = device.name().to_string();
                     if let Backend::Tty(data) = &mut tomoe.backend {
                         data.input_devices.retain(|d| d != device);
                     }
-                    tomoe.lua.remove_input_device(&name);
-                    tomoe.lua.emit_input_device_change(&name, false, &caps);
                 }
                 _ => {}
             }
@@ -303,7 +294,6 @@ pub fn init(tomoe: &mut Tomoe, drm_device: Option<&Path>) -> Result<()> {
     info!("rendering on {primary_render_node} (primary node {primary_node})");
 
     tomoe.backend = Backend::Tty(TtyData {
-        monitors_active: true,
         session,
         libinput,
         gpu_manager,
@@ -685,50 +675,11 @@ fn connector_connected(
     connector: connector::Info,
     crtc: crtc::Handle,
 ) -> Result<bool> {
-    // Kernel connector names ("DP-1", "HDMI-A-1"): what users key
-    // `settings.displays` by, matching every other compositor.
-    let name = format!(
-        "{}-{}",
-        connector.interface().as_str(),
-        connector.interface_id()
-    );
-
-    // Modes the connector advertises, skipping interlaced ones (they don't
-    // work reliably and pick_mode never selects them). Exposed to Lua both
-    // as the on_output_connect hook argument and via `tomoe.outputs()`.
-    let modes: Vec<ModeProps> = connector
-        .modes()
-        .iter()
-        .filter(|m| !m.flags().contains(ModeFlags::INTERLACE))
-        .map(|m| {
-            let (w, h) = m.size();
-            ModeProps {
-                w: w as i32,
-                h: h as i32,
-                refresh_mhz: Mode::from(*m).refresh,
-                preferred: m.mode_type().contains(ModeTypeFlags::PREFERRED),
-            }
-        })
-        .collect();
-
-    // Pre-connect policy hook (ShojiWM's output.configure(factory) shape):
-    // Lua sees the connecting output's modes plus the already-connected set
-    // and adjusts `settings.displays` — the mode pick and `disabled` check
-    // below then read the fresh settings, so the output modesets once.
-    {
-        let connected: Vec<String> = tomoe.space.outputs().map(|o| o.name()).collect();
-        let was_in_lua = tomoe.in_lua;
-        tomoe.in_lua = true;
-        tomoe.lua.emit_output_connect(&name, &modes, &connected);
-        tomoe.in_lua = was_in_lua;
-    }
-
     let Tomoe {
         backend,
         space,
         display_handle,
         lua,
-        output_modes,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else {
@@ -743,6 +694,14 @@ fn connector_connected(
     let Some(device) = devices.get_mut(&node) else {
         bail!("unknown DRM device {node}");
     };
+
+    // Kernel connector names ("DP-1", "HDMI-A-1"): what users key
+    // `settings.displays` by, matching every other compositor.
+    let name = format!(
+        "{}-{}",
+        connector.interface().as_str(),
+        connector.interface_id()
+    );
 
     if lua
         .settings()
@@ -785,7 +744,6 @@ fn connector_connected(
         .drm
         .create_surface(crtc, mode, &[connector.handle()])
         .context("error creating DRM surface")?;
-    output_modes.insert(name.clone(), (modes, Mode::from(mode).refresh));
 
     // VRR per settings.displays. Explicitly disable even when
     // unsupported/unwanted — a DRM state reset can drop vrr_capable to 0
@@ -847,7 +805,6 @@ fn connector_connected(
     // this output's frames; display-only devices import the primary's
     // buffers, where linear is the safe cross-device choice.
     let render_node_for_output = device.render_node.unwrap_or(*primary_render_node);
-    let linear_only = device.render_node.is_none() || lua.settings().debug_linear_swapchain;
     let render_formats = {
         let renderer = gpu_manager
             .single_renderer(&render_node_for_output)
@@ -858,7 +815,7 @@ fn connector_connected(
             .dmabuf_render_formats()
             .iter()
             .copied()
-            .filter(|format| !linear_only || format.modifier == Modifier::Linear)
+            .filter(|format| device.render_node.is_some() || format.modifier == Modifier::Linear)
             .collect::<FormatSet>()
     };
 
@@ -879,9 +836,7 @@ fn connector_connected(
         Ok(compositor) => compositor,
         Err(err) => {
             // Modifier negotiation can fail (bandwidth, cross-device import);
-            // retry with the invalid modifier (implicit tiling). This fallback
-            // can override debug_linear_swapchain when creation fails.
-
+            // retry with the invalid modifier (implicit tiling).
             warn!("error creating DRM compositor, retrying with invalid modifier: {err}");
             let render_formats = render_formats
                 .iter()
@@ -933,7 +888,6 @@ fn connector_connected(
             direct_scanout: false,
             supports_async_flip,
             tearing_active: false,
-            full_damage: crate::render::damage::ExtraDamage::new(),
             gamma_props,
             pending_gamma_change: None,
         },
@@ -949,7 +903,6 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
         loop_handle,
         screencopy_state,
         gamma_control_state,
-        output_modes,
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
@@ -978,7 +931,6 @@ fn connector_disconnected(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) 
     screencopy_state.remove_output(&surface.output);
     // Fail the output's gamma control so the daemon re-acquires on replug.
     gamma_control_state.output_removed(&surface.output);
-    output_modes.remove(&surface.output.name());
 }
 
 /// Pure placement policy: `(name, physical size)` in connect order plus the
@@ -1085,28 +1037,15 @@ fn reposition_outputs(tomoe: &mut Tomoe) {
 /// so it bails immediately unless the displays config actually changed.
 pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     let settings = tomoe.lua.settings();
-    let reenabled: HashSet<String> = {
+    {
         let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
         };
         if settings.displays == data.last_displays {
             return false;
         }
-        let names = data
-            .last_displays
-            .iter()
-            .filter(|(name, old)| {
-                old.disabled
-                    && settings
-                        .displays
-                        .get(*name)
-                        .is_some_and(|new| !new.disabled)
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
         data.last_displays = settings.displays.clone();
-        names
-    };
+    }
     let geometries = |tomoe: &Tomoe| -> Vec<(String, (i32, i32, i32, i32))> {
         let mut v: Vec<_> = tomoe
             .space
@@ -1130,9 +1069,6 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     let mut vrr_toggled = false;
     let mut to_disable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
     let mut to_enable: Vec<(DrmNode, crtc::Handle, connector::Info)> = Vec::new();
-    // (output name, new refresh in mHz) for outputs whose mode changed;
-    // flushed into tomoe.output_modes once the backend borrow ends.
-    let mut mode_updates: Vec<(String, i32)> = Vec::new();
     {
         let Backend::Tty(data) = &mut tomoe.backend else {
             return false;
@@ -1197,7 +1133,6 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
                 surface
                     .output
                     .change_current_state(Some(Mode::from(mode)), None, None, None);
-                mode_updates.push((name, Mode::from(mode).refresh));
                 changed = true;
             }
             device.inactive.retain(|crtc, connector| {
@@ -1207,12 +1142,6 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
                 to_enable.push((*node, *crtc, connector.clone()));
                 false
             });
-        }
-    }
-
-    for (name, refresh_mhz) in mode_updates {
-        if let Some(entry) = tomoe.output_modes.get_mut(&name) {
-            entry.1 = refresh_mhz;
         }
     }
 
@@ -1240,34 +1169,6 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
         changed = true;
     }
 
-    // A sleeping or unplugged monitor can disappear while it is disabled, so
-    // there is neither a live surface nor a stashed connector to re-enable.
-    if !reenabled.is_empty() {
-        let mut present = HashSet::new();
-        if let Backend::Tty(data) = &tomoe.backend {
-            for device in data.devices.values() {
-                present.extend(
-                    device
-                        .surfaces
-                        .values()
-                        .map(|surface| surface.output.name()),
-                );
-                present.extend(device.inactive.values().map(|connector| {
-                    format!(
-                        "{}-{}",
-                        connector.interface().as_str(),
-                        connector.interface_id()
-                    )
-                }));
-            }
-        }
-        for name in reenabled {
-            if !present.contains(&name) {
-                warn!("output {name}: cannot re-enable: connector no longer present (monitor asleep/unplugged?) — power-cycle the monitor to re-assert hotplug");
-            }
-        }
-    }
-
     // Positions/mirrors may have changed without a mode or topology change;
     // re-place unconditionally (idempotent) and compare effective geometry.
     reposition_outputs(tomoe);
@@ -1281,31 +1182,14 @@ pub fn apply_display_settings(tomoe: &mut Tomoe) -> bool {
     true
 }
 
-/// Extract capability flags from a libinput device into the shape handed to
-/// Lua `on_input_device_change` hooks.
-fn device_capabilities(device: &libinput::Device) -> crate::lua::InputDeviceCapabilities {
-    crate::lua::InputDeviceCapabilities {
-        keyboard: device.has_capability(DeviceCapability::Keyboard),
-        pointer: device.has_capability(DeviceCapability::Pointer),
-        touch: device.has_capability(DeviceCapability::Touch),
-        tablet_tool: device.has_capability(DeviceCapability::TabletTool),
-        tablet_pad: device.has_capability(DeviceCapability::TabletPad),
-        gesture: device.has_capability(DeviceCapability::Gesture),
-        switch_device: device.has_capability(DeviceCapability::Switch),
-    }
-}
 fn on_device_added(tomoe: &mut Tomoe, device: &mut libinput::Device) {
     // The name is what `settings.devices` keys on; log it for discoverability
     // (same string `libinput list-devices` prints).
     info!("input device added: {:?}", device.name());
     apply_device_config(&tomoe.lua.settings().input, device);
-    let caps = device_capabilities(device);
     if let Backend::Tty(data) = &mut tomoe.backend {
         data.input_devices.push(device.clone());
     }
-    let name = device.name().to_string();
-    tomoe.lua.add_input_device(name.clone(), caps.clone());
-    tomoe.lua.emit_input_device_change(&name, true, &caps);
 }
 
 /// Re-apply `settings.touchpad`/`settings.mouse`/`settings.devices` to every
@@ -1419,23 +1303,6 @@ fn apply_device_config(config: &InputConfig, device: &mut libinput::Device) {
     }
 }
 
-pub fn set_monitors_active(data: &mut TtyData, active: bool) {
-    if data.monitors_active == active {
-        return;
-    }
-    data.monitors_active = active;
-    if !active {
-        for device in data.devices.values_mut() {
-            for surface in device.surfaces.values_mut() {
-                if let Err(err) = surface.compositor.clear() {
-                    warn!("error clearing drm surface: {err:?}");
-                }
-                surface.redraw_state = RedrawState::Idle;
-            }
-        }
-    }
-}
-
 /// Request a repaint of one output. Cheap and idempotent: every damage source
 /// (commits, Lua ops, cursor motion) calls this; the state machine coalesces.
 pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
@@ -1445,9 +1312,6 @@ pub fn queue_redraw(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         ..
     } = tomoe;
     let Backend::Tty(data) = backend else { return };
-    if !data.monitors_active {
-        return;
-    }
     let Some(surface) = data
         .devices
         .get_mut(&node)
@@ -1496,11 +1360,6 @@ pub fn queue_redraw_all(tomoe: &mut Tomoe) {
 }
 
 fn on_vblank(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle, meta: Option<DrmEventMetadata>) {
-    if let Backend::Tty(data) = &tomoe.backend {
-        if !data.monitors_active {
-            return;
-        }
-    }
     let now = tomoe.clock.now();
     {
         let Backend::Tty(data) = &mut tomoe.backend else {
@@ -1659,7 +1518,6 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
     let cursor_status = tomoe.cursor_status.clone();
     let corner_radius = tomoe.lua.settings().corner_radius;
     let wait_for_frame_completion = tomoe.lua.settings().wait_for_frame_completion;
-    let debug_full_repaint = tomoe.lua.settings().debug_full_repaint;
 
     let locked = tomoe.is_locked();
 
@@ -1755,18 +1613,6 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
 
     let mut elements: Vec<OutputRenderElements<TtyRenderer<'_>>> = Vec::new();
     let scale = space.output_scale(&surface.output);
-
-    if debug_full_repaint {
-        surface.full_damage.damage_all();
-        let size = surface
-            .output
-            .current_mode()
-            .map(|mode| mode.size)
-            .unwrap_or_default();
-        elements.push(OutputRenderElements::Damage(
-            surface.full_damage.render(Rectangle::from_size(size)),
-        ));
-    }
 
     // Cursor: client-provided surface, xcursor theme, or block fallback.
     // Pointer coordinates are global protocol values; invert using the

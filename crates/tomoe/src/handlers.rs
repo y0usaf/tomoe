@@ -561,6 +561,16 @@ impl XdgDecorationHandler for Tomoe {
         // preference — forcing a mode mid-handshake breaks older SDL2 apps
         // (https://github.com/libsdl-org/SDL/issues/8173), and a client that
         // insists on CSD will draw it regardless.
+        //
+        // force_server_side_decorations opts into refusing CLIENT requests:
+        // GTK4/libadwaita draws a CSD titlebar when granted CLIENT, which
+        // fights the uniform tiled border-only look. When set, always hand
+        // back ServerSide so such toolkits skip their own titlebar.
+        let mode = if self.lua.settings().force_server_side_decorations {
+            zxdg_toplevel_decoration_v1::Mode::ServerSide
+        } else {
+            mode
+        };
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(mode);
         });
@@ -701,12 +711,10 @@ impl Tomoe {
                 self.fullscreen_prev.entry(id).or_insert(prev);
             }
         }
-        let output_scale = self.effective_window_scale(
-            output
-                .as_ref()
-                .map(|output| self.space.output_scale(output))
-                .unwrap_or_else(|| self.space.scale()),
-        );
+        let output_scale = output
+            .as_ref()
+            .map(|output| self.space.output_scale(output))
+            .unwrap_or_else(|| self.space.scale());
         let (logical, _achievable) = crate::coords::configure_size(output_geo.size, output_scale);
         toplevel.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Fullscreen);
@@ -875,10 +883,7 @@ impl Tomoe {
             };
             let mut rect = output_world;
             rect.loc -= window_geo.loc;
-            // The constraint rect is in the window's client units, so use the
-            // scale the window was actually configured at (includes a settled
-            // camera-zoom factor).
-            let scale = self.space.element_scale(&window);
+            let scale = self.space.scale_for_world_point(window_geo.loc.to_f64());
             crate::coords::rect_to_logical(rect, scale)
         } else {
             // Layer-shell parent: layer maps arrange in output-local logical

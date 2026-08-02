@@ -6,8 +6,6 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
-use image::codecs::png::PngEncoder;
-use image::{ColorType, ImageEncoder};
 use smithay::output::Output;
 use smithay::utils::{Physical, Rectangle, Size};
 use tracing::{info, warn};
@@ -36,14 +34,14 @@ pub fn screenshot(
 /// Encode tightly packed RGBA8 `pixels` as an in-memory PNG.
 fn encode_png(size: Size<i32, Physical>, pixels: &[u8]) -> Result<Vec<u8>> {
     let mut png = Vec::new();
-    PngEncoder::new(&mut png)
-        .write_image(
-            pixels,
-            size.w as u32,
-            size.h as u32,
-            ColorType::Rgba8.into(),
-        )
-        .context("error encoding PNG")?;
+    let mut encoder = png::Encoder::new(&mut png, size.w as u32, size.h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().context("error writing PNG header")?;
+    writer
+        .write_image_data(pixels)
+        .context("error writing PNG data")?;
+    writer.finish().context("error finishing PNG")?;
     Ok(png)
 }
 

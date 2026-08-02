@@ -95,7 +95,6 @@ doctrine; "shell:" notes cover the fused moonshell subsystem.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Output power | **compositor action + wake-on-any-input (swallowed)** | HPD-drop monitors remain mapped and can wake reliably. (2026-08-01) |
 | Fusion | **moonshell merges into tomoe as its shell subsystem** | See "The fusion decision" above. The name survives on the `moonshell-*` crates, the shell builtins layer, and the `shell.*` global; the product is "tomoe with moonshell". |
 | Lua namespaces | **`ui.*` + `shell.*` kept first-class alongside `tomoe.*`** | The inherited moonshell contract, not aliased: `ui.*` element vocabulary, `shell.*` shell API, `tomoe.*` compositor policy. nur-era configs keep porting with at most mechanical edits. |
 | Scripting | **mlua + LuaJIT, vendored** | µs-level calls, single binary; LuaJIT FFI is the extensibility escape hatch. Same pick both sides of the fusion — one VM was a precondition for it. |
@@ -105,7 +104,6 @@ doctrine; "shell:" notes cover the fused moonshell subsystem.
 | Smithay pin | **`y0usaf/smithay#tomoe-tearing`** (niri's pin + async page flip) | Upstream lacks tearing page flips; the fork carries exactly that commit, rebased when the pin bumps. |
 | Wire | **`tomoe-ipc`, in-workspace path dep, versioned for external clients** | Fusion made it a path dep; the versioned-wire discipline stays because external consumers remain (doctrine 09). |
 | Licenses | **workspace AGPL-3.0-or-later; `moonshell-*` crates explicitly AGPL-3.0-only** | The crates keep their pre-fusion license rather than being silently relicensed by workspace inheritance. |
-| Dependency budget (2026) | hand-written code preferred over a third-party crate when the crate is the only thing pulling a subtree | Eventually removing Smithay makes fewer external crates worth extra local lines. |
 
 ## Architecture
 
@@ -155,7 +153,6 @@ standing entries:
   budget on real hardware (FUSION open decision).
 - **GTK/Qt theme or CSS compat for shell UI** — never; themes are Lua
   tables.
-- **wlr-output-power-management protocol** — adopt when an external client (idle daemon) needs it.
 - **taffy layout** — flex-lite covers the bar/launcher/OSD genre;
   adopt on a real grid/wrap need.
 

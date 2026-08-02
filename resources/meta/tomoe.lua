@@ -40,10 +40,6 @@ function tomoe.bind(combo, action, desc) end
 ---@param cmd string
 function tomoe.spawn(cmd) end
 
----Power off all outputs while retaining their surfaces; any input wakes them
----and the waking event is swallowed (VT switching still works).
-function tomoe.power_off_outputs() end
-
 ---Ask to exit: shows the confirm dialog (the "quit!" action skips it).
 function tomoe.quit() end
 
@@ -160,9 +156,7 @@ function tomoe.usable_area(index) end
 function tomoe.view() end
 
 ---Move the camera; omitted fields keep their current value. zoom is clamped
----to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1. A zoom
----held steady (~250 ms) re-renders clients at output scale × zoom, so settled
----zoom is sharp; zoom in motion resamples.
+---to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1.
 ---@param view View
 function tomoe.set_view(view) end
 
@@ -187,19 +181,6 @@ function tomoe.on_focus_change(fn) end
 ---Run `fn` when outputs are added, removed, or reconfigured.
 ---@param fn fun()
 function tomoe.on_outputs_changed(fn) end
-
----@class OutputConnectEvent
----@field modes Mode[] # modes the connector advertises
----@field connected string[] # names of the already-connected outputs
-
----Run `fn` before a newly connected (or re-enabled) output is brought up
----(tty backend): adjust `tomoe.settings { displays = ... }` for the new set
----and the same connect picks it up — the output modesets once. This is
----ShojiWM's `output.configure(factory)` shape: re-run layout policy whenever
----the connected set changes (dock → disable the laptop panel, pick a mode
----from `ev.modes`, ...). Fires once per output at startup too.
----@param fn fun(name: string, ev: OutputConnectEvent)
-function tomoe.on_output_connect(fn) end
 
 ---Run `fn` on pointer button events; return truthy to consume the event
 ---(it is not forwarded to the client under the pointer).
@@ -227,35 +208,6 @@ function tomoe.on_pointer_enter(fn) end
 ---Run `fn` when the pointer leaves a window.
 ---@param fn fun(win: Window)
 function tomoe.on_pointer_leave(fn) end
-
----@class InputDeviceChangeEvent
----@field name string # libinput device name (matches settings.devices keys)
----@field added boolean # true when the device was plugged in, false on removal
----@field keyboard boolean
----@field pointer boolean
----@field touch boolean
----@field tablet_tool boolean
----@field tablet_pad boolean
----@field gesture boolean
----@field switch boolean
-
----Run `fn` when an input device is plugged in or removed.
----@param fn fun(ev: InputDeviceChangeEvent)
-function tomoe.on_input_device_change(fn) end
-
----@class InputDeviceInfo
----@field name string
----@field keyboard boolean
----@field pointer boolean
----@field touch boolean
----@field tablet_tool boolean
----@field tablet_pad boolean
----@field gesture boolean
----@field switch boolean
-
----List currently connected input devices.
----@return InputDeviceInfo[]
-function tomoe.input_devices() end
 
 ---Decide what a screencast portal request captures (the ScreenCast portal
 ---asks over IPC on SelectSources). Answer by returning a selection table
@@ -430,12 +382,6 @@ function UiWidget:close() end
 ---@field w integer
 ---@field h integer
 
----@class Mode
----@field w integer # physical pixels
----@field h integer # physical pixels
----@field refresh_mhz integer # refresh in millihertz (144 Hz → 144000)
----@field preferred boolean # the monitor's EDID-preferred mode
-
 ---@class Output
 ---@field name string # connector name ("DP-1")
 ---@field x integer
@@ -444,8 +390,6 @@ function UiWidget:close() end
 ---@field h integer
 ---@field scale number # fractional client scale advertised on output
 ---@field usable Geometry # geometry minus layer-shell exclusive zones
----@field refresh_mhz integer # current mode's refresh in millihertz (0 when unknown, e.g. winit)
----@field modes Mode[] # modes the connector advertises (tty backend; empty on winit)
 
 ---@class View
 ---@field x integer # world offset in physical pixels
@@ -552,8 +496,6 @@ function ScreencastRequest:defer() end
 ---@field focus_follows_mouse boolean # sloppy focus: focus the window under the pointer (default false)
 ---@field tearing boolean # allow async page flips for fullscreen windows that request tearing (default false)
 ---@field wait_for_frame_completion boolean # NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
----@field debug_full_repaint boolean # force whole-output damage every frame for NVIDIA partial-repaint debugging (default false; live)
----@field debug_linear_swapchain boolean # use linear scanout modifiers for NVIDIA debugging (default false; output reconnect)
 ---@field honor_xdg_activation_with_invalid_serial boolean # accept stale input serials from clients such as Discord/Telegram; weakens focus-stealing protection (default false)
 ---@field screenshot_freeze boolean # freeze the scene in the interactive screenshot UI; pointer remains live (default true)
 ---@field watchdog_ms integer # wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)

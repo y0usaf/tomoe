@@ -33,7 +33,6 @@ const DEFAULT_CONFIG: &str = include_str!("../../../resources/init.lua");
 const WM_LUA: &str = include_str!("../../../resources/wm.lua");
 const ZOOMER_LUA: &str = include_str!("../../../resources/zoomer.lua");
 const SCREENCAST_LUA: &str = include_str!("../../../resources/screencast.lua");
-const SPECIAL_LUA: &str = include_str!("../../../resources/special.lua");
 
 /// Which of a connector's advertised modes to use, parsed from
 /// `"<preferred|max|WxH>[@<Hz|max>]"` (e.g. "max@max", "2560x1440@144").
@@ -297,18 +296,18 @@ pub struct Settings {
     /// render completes hangs the whole display pipeline. Costs a little
     /// latency; off by default.
     pub wait_for_frame_completion: bool,
-    /// Force every rendered frame to damage the whole output, bypassing damage
-    /// tracking. A/B test for partial-repaint bugs on NVIDIA; live-togglable.
-    pub debug_full_repaint: bool,
-    /// Allocate compositor-owned scanout swapchains with linear modifiers
-    /// only. A/B test for NVIDIA tiled/compressed modifier issues; takes effect
-    /// when an output connects or reconnects.
-    pub debug_linear_swapchain: bool,
     /// Accept xdg-activation tokens whose input serial is older than the last
     /// keyboard/pointer enter. This accommodates clients such as Discord and
     /// Telegram that replace valid tokens with stale ones, but weakens the
     /// focus-stealing protection; disabled by default.
     pub honor_xdg_activation_with_invalid_serial: bool,
+    /// Refuse client-side decoration requests: every toplevel that negotiates
+    /// xdg-decoration is forced into server-side mode, so CSD-drawing toolkits
+    /// (GTK4/libadwaita, Qt) skip their own titlebar and the tiled border-only
+    /// look stays uniform. Off by default — client requests are granted as
+    /// before. (Only affects the modern xdg-decoration path; the legacy KDE
+    /// server-decoration protocol is left untouched.)
+    pub force_server_side_decorations: bool,
     /// Freeze the scene when the interactive screenshot UI opens, so window
     /// updates cannot move underneath the selection. The pointer remains live.
     pub screenshot_freeze: bool,
@@ -366,9 +365,8 @@ impl Default for Settings {
             focus_follows_mouse: false,
             tearing: false,
             wait_for_frame_completion: false,
-            debug_full_repaint: false,
-            debug_linear_swapchain: false,
             honor_xdg_activation_with_invalid_serial: false,
+            force_server_side_decorations: false,
             screenshot_freeze: true,
             keyboard: KeyboardSettings::default(),
             input: InputConfig::default(),
@@ -661,16 +659,6 @@ pub struct WinProps {
     pub maximized: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModeProps {
-    pub w: i32,
-    pub h: i32,
-    /// Refresh in millihertz (wl_output units): 144 Hz → 144000.
-    pub refresh_mhz: i32,
-    /// The monitor's EDID-preferred mode.
-    pub preferred: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OutputProps {
     pub name: String,
@@ -680,10 +668,6 @@ pub struct OutputProps {
     pub usable: (i32, i32, i32, i32),
     /// Fractional client scale advertised on this output.
     pub scale: f64,
-    /// Modes the connector advertises (tty backend; empty on winit).
-    pub modes: Vec<ModeProps>,
-    /// Current mode's refresh in millihertz; 0 when unknown (winit).
-    pub refresh_mhz: i32,
 }
 
 /// Queued operations, applied by the core after each Lua entry.
@@ -731,18 +715,6 @@ pub enum UiOp {
     Close(u64),
 }
 
-/// Capabilities of a hotplugged input device, handed to
-/// `on_input_device_change` hooks.
-#[derive(Debug, Clone)]
-pub struct InputDeviceCapabilities {
-    pub keyboard: bool,
-    pub pointer: bool,
-    pub touch: bool,
-    pub tablet_tool: bool,
-    pub tablet_pad: bool,
-    pub gesture: bool,
-    pub switch_device: bool,
-}
 /// Data for a pointer button event handed to `on_pointer_button` hooks.
 pub struct PointerButtonData {
     pub button: u32,
@@ -840,8 +812,6 @@ struct Hooks {
     window_request: Vec<RegistryKey>,
     pointer_enter: Vec<RegistryKey>,
     pointer_leave: Vec<RegistryKey>,
-    input_device_change: Vec<RegistryKey>,
-    output_connect: Vec<RegistryKey>,
 }
 
 /// A Lua-initiated pointer grab (`tomoe.grab_pointer`): motion is routed to
@@ -1157,9 +1127,6 @@ struct Shared {
     /// the watchdog is disabled). A Cell, not a RefCell: the debug hook
     /// reads it mid-execution and must never conflict with a borrow.
     watchdog_deadline: Cell<Option<Instant>>,
-    /// Snapshot of connected input devices, refreshed by the backend on
-    /// hotplug. Read by `tomoe.input_devices()`.
-    input_devices: RefCell<Vec<(String, InputDeviceCapabilities)>>,
 }
 
 // ─── Window userdata ──────────────────────────────────────────────────────────
@@ -1452,14 +1419,6 @@ impl LuaRuntime {
                 if let Ok(Some(wait)) = table.get::<Option<bool>>("wait_for_frame_completion") {
                     settings.wait_for_frame_completion = wait;
                 }
-                if let Ok(Some(full_repaint)) = table.get::<Option<bool>>("debug_full_repaint") {
-                    settings.debug_full_repaint = full_repaint;
-                }
-                if let Ok(Some(linear_swapchain)) =
-                    table.get::<Option<bool>>("debug_linear_swapchain")
-                {
-                    settings.debug_linear_swapchain = linear_swapchain;
-                }
                 if let Ok(Some(freeze)) = table.get::<Option<bool>>("screenshot_freeze") {
                     settings.screenshot_freeze = freeze;
                 }
@@ -1467,6 +1426,11 @@ impl LuaRuntime {
                     table.get::<Option<bool>>("honor_xdg_activation_with_invalid_serial")
                 {
                     settings.honor_xdg_activation_with_invalid_serial = honor;
+                }
+                if let Ok(Some(force)) =
+                    table.get::<Option<bool>>("force_server_side_decorations")
+                {
+                    settings.force_server_side_decorations = force;
                 }
                 if let Ok(Some(ms)) = table.get::<Option<u64>>("watchdog_ms") {
                     settings.watchdog_ms = ms;
@@ -1956,16 +1920,6 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // tomoe.power_off_outputs()
-        let s = shared.clone();
-        tomoe.set(
-            "power_off_outputs",
-            lua.create_function(move |_, ()| {
-                s.actions.borrow_mut().push(Action::PowerOffOutputs);
-                Ok(())
-            })?,
-        )?;
-
         // tomoe.quit()
         let s = shared.clone();
         tomoe.set(
@@ -2116,8 +2070,7 @@ impl LuaRuntime {
             })?,
         )?;
 
-        // tomoe.outputs() -> array of {name, x, y, w, h, usable = {...},
-        //                              refresh_mhz, modes = {...}}
+        // tomoe.outputs() -> array of {name, x, y, w, h, usable = {...}}
         let s = shared.clone();
         tomoe.set(
             "outputs",
@@ -2132,46 +2085,12 @@ impl LuaRuntime {
                     t.set("y", o.geometry.1)?;
                     t.set("w", o.geometry.2)?;
                     t.set("h", o.geometry.3)?;
-                    t.set("refresh_mhz", o.refresh_mhz)?;
-                    let modes = lua.create_table()?;
-                    for (j, m) in o.modes.iter().enumerate() {
-                        let mt = lua.create_table()?;
-                        mt.set("w", m.w)?;
-                        mt.set("h", m.h)?;
-                        mt.set("refresh_mhz", m.refresh_mhz)?;
-                        mt.set("preferred", m.preferred)?;
-                        modes.set(j + 1, mt)?;
-                    }
-                    t.set("modes", modes)?;
                     let u = lua.create_table()?;
                     u.set("x", o.usable.0)?;
                     u.set("y", o.usable.1)?;
                     u.set("w", o.usable.2)?;
                     u.set("h", o.usable.3)?;
                     t.set("usable", u)?;
-                    list.set(i + 1, t)?;
-                }
-                Ok(list)
-            })?,
-        )?;
-
-        // tomoe.input_devices() -> array of {name, keyboard, pointer, ...}
-        let s = shared.clone();
-        tomoe.set(
-            "input_devices",
-            lua.create_function(move |lua, ()| {
-                let devices = s.input_devices.borrow();
-                let list = lua.create_table()?;
-                for (i, (name, caps)) in devices.iter().enumerate() {
-                    let t = lua.create_table()?;
-                    t.set("name", name.clone())?;
-                    t.set("keyboard", caps.keyboard)?;
-                    t.set("pointer", caps.pointer)?;
-                    t.set("touch", caps.touch)?;
-                    t.set("tablet_tool", caps.tablet_tool)?;
-                    t.set("tablet_pad", caps.tablet_pad)?;
-                    t.set("gesture", caps.gesture)?;
-                    t.set("switch", caps.switch_device)?;
                     list.set(i + 1, t)?;
                 }
                 Ok(list)
@@ -2293,8 +2212,6 @@ impl LuaRuntime {
             ("on_window_request", 6),
             ("on_pointer_enter", 7),
             ("on_pointer_leave", 8),
-            ("on_input_device_change", 9),
-            ("on_output_connect", 10),
         ] {
             let s = shared.clone();
             tomoe.set(
@@ -2311,8 +2228,6 @@ impl LuaRuntime {
                         5 => hooks.pointer_axis.push(key),
                         6 => hooks.window_request.push(key),
                         7 => hooks.pointer_enter.push(key),
-                        _ if field == 9 => hooks.input_device_change.push(key),
-                        _ if field == 10 => hooks.output_connect.push(key),
                         _ => hooks.pointer_leave.push(key),
                     }
                     Ok(())
@@ -2359,14 +2274,6 @@ impl LuaRuntime {
             lua.create_function(|lua, _: Value| {
                 lua.load(SCREENCAST_LUA)
                     .set_name("screencast.lua")
-                    .eval::<Value>()
-            })?,
-        )?;
-        preload.set(
-            "special",
-            lua.create_function(|lua, _: Value| {
-                lua.load(SPECIAL_LUA)
-                    .set_name("special.lua")
                     .eval::<Value>()
             })?,
         )?;
@@ -3135,102 +3042,6 @@ impl LuaRuntime {
         }
     }
 
-    /// Fire `on_output_connect` hooks before a connector is brought up:
-    /// the connecting output's name, its advertised modes, and the names of
-    /// the already-connected outputs. Hooks adjust `settings.displays`
-    /// (mode, position, disabled, mirror) for the new set; the same
-    /// `connector_connected` call then reads the fresh settings, so the
-    /// output modesets once. ShojiWM's `output.configure(factory)` shape —
-    /// re-run layout policy whenever the connected set changes.
-    pub fn emit_output_connect(&mut self, name: &str, modes: &[ModeProps], connected: &[String]) {
-        let keys: Vec<Function> = {
-            let hooks = self.shared.hooks.borrow();
-            hooks
-                .output_connect
-                .iter()
-                .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
-                .collect()
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let _watchdog = self.watchdog();
-        for func in keys {
-            let Ok(info) = self.lua.create_table() else {
-                continue;
-            };
-            let Ok(mode_list) = self.lua.create_table() else {
-                continue;
-            };
-            for (i, m) in modes.iter().enumerate() {
-                let Ok(mt) = self.lua.create_table() else {
-                    continue;
-                };
-                let _ = mt.set("w", m.w);
-                let _ = mt.set("h", m.h);
-                let _ = mt.set("refresh_mhz", m.refresh_mhz);
-                let _ = mt.set("preferred", m.preferred);
-                let _ = mode_list.set(i + 1, mt);
-            }
-            let _ = info.set("modes", mode_list);
-            let _ = info.set("connected", connected.to_vec());
-            if let Err(err) = func.call::<()>((name.to_string(), info)) {
-                warn!("Lua on_output_connect error: {err}");
-            }
-        }
-    }
-
-    /// Register a connected input device in the shared snapshot.
-    pub fn add_input_device(&mut self, name: String, caps: InputDeviceCapabilities) {
-        self.shared.input_devices.borrow_mut().push((name, caps));
-    }
-
-    /// Remove a disconnected input device from the shared snapshot.
-    pub fn remove_input_device(&mut self, name: &str) {
-        self.shared
-            .input_devices
-            .borrow_mut()
-            .retain(|(n, _)| n != name);
-    }
-    /// Fire `on_input_device_change` hooks with the device name, whether it
-    /// was added (vs removed), and its capabilities.
-    pub fn emit_input_device_change(
-        &mut self,
-        name: &str,
-        added: bool,
-        capabilities: &InputDeviceCapabilities,
-    ) {
-        let keys: Vec<Function> = {
-            let hooks = self.shared.hooks.borrow();
-            hooks
-                .input_device_change
-                .iter()
-                .filter_map(|k| self.lua.registry_value::<Function>(k).ok())
-                .collect()
-        };
-        if keys.is_empty() {
-            return;
-        }
-        let _watchdog = self.watchdog();
-        for func in keys {
-            let Ok(ev) = self.lua.create_table() else {
-                continue;
-            };
-            let _ = ev.set("name", name);
-            let _ = ev.set("added", added);
-            let _ = ev.set("keyboard", capabilities.keyboard);
-            let _ = ev.set("pointer", capabilities.pointer);
-            let _ = ev.set("touch", capabilities.touch);
-            let _ = ev.set("tablet_tool", capabilities.tablet_tool);
-            let _ = ev.set("tablet_pad", capabilities.tablet_pad);
-            let _ = ev.set("gesture", capabilities.gesture);
-            let _ = ev.set("switch", capabilities.switch_device);
-            if let Err(err) = func.call::<()>(ev) {
-                warn!("Lua on_input_device_change error: {err}");
-            }
-        }
-    }
-
     /// Shared fields of pointer event tables: positions, modifiers, window.
     fn pointer_event_table(
         &self,
@@ -3481,16 +3292,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn power_off_outputs_queues_action() {
-        let mut rt = LuaRuntime::new().unwrap();
-        rt.lua.load("tomoe.power_off_outputs()").exec().unwrap();
-        assert!(matches!(
-            rt.take_actions().as_slice(),
-            [Action::PowerOffOutputs]
-        ));
-    }
-
-    #[test]
     fn ui_widget_ops_queue() {
         let mut rt = LuaRuntime::new().unwrap();
         rt.lua
@@ -3581,19 +3382,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_debug_repaint_settings() {
-        let rt = LuaRuntime::new().unwrap();
-        assert!(!rt.settings().debug_full_repaint);
-        assert!(!rt.settings().debug_linear_swapchain);
-        rt.lua
-            .load(r#"tomoe.settings { debug_full_repaint = true, debug_linear_swapchain = true }"#)
-            .exec()
-            .unwrap();
-        assert!(rt.settings().debug_full_repaint);
-        assert!(rt.settings().debug_linear_swapchain);
-    }
-
-    #[test]
     fn parse_screenshot_freeze() {
         let rt = LuaRuntime::new().unwrap();
         assert!(rt.settings().screenshot_freeze);
@@ -3647,84 +3435,6 @@ mod tests {
         // after the Lua entry so custom focus hooks can reveal decked windows.
         assert!(!rt.emit_window_request(0, "activate", None, None));
         assert!(rt.take_ops().is_empty());
-    }
-
-    #[test]
-    fn output_connect_hook_and_modes_query() {
-        let mut rt = LuaRuntime::new().unwrap();
-        rt.lua
-            .load(
-                r#"
-                seen = {}
-                tomoe.on_output_connect(function(name, ev)
-                    seen.name = name
-                    seen.modes = ev.modes
-                    seen.connected = ev.connected
-                    -- ShojiWM's docked-monitor pattern: policy reacts to the
-                    -- new set by adjusting displays before the mode pick.
-                    tomoe.settings { displays = { [name] = { disabled = true } } }
-                end)
-                "#,
-            )
-            .exec()
-            .unwrap();
-
-        let modes = vec![
-            ModeProps {
-                w: 2560,
-                h: 1440,
-                refresh_mhz: 144000,
-                preferred: true,
-            },
-            ModeProps {
-                w: 1920,
-                h: 1080,
-                refresh_mhz: 60000,
-                preferred: false,
-            },
-        ];
-        rt.emit_output_connect("HDMI-A-1", &modes, &["eDP-1".to_string()]);
-
-        // The hook saw the connecting name, its modes, and the prior set…
-        let (name, mode_count, preferred_hz, connected): (String, i64, i64, String) = rt
-            .lua
-            .load(
-                r#"
-                return seen.name, #seen.modes, seen.modes[1].refresh_mhz, seen.connected[1]
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(name, "HDMI-A-1");
-        assert_eq!(mode_count, 2);
-        assert_eq!(preferred_hz, 144000);
-        assert_eq!(connected, "eDP-1");
-        // …and its settings mutation is visible to the mode pick that follows.
-        assert!(rt.settings().displays["HDMI-A-1"].disabled);
-
-        // tomoe.outputs() exposes the advertised modes + current refresh.
-        rt.sync(
-            HashMap::new(),
-            vec![OutputProps {
-                name: "eDP-1".into(),
-                geometry: (0, 0, 1920, 1080),
-                usable: (0, 0, 1920, 1080),
-                scale: 1.0,
-                modes,
-                refresh_mhz: 60000,
-            }],
-            (0, 0, 1.0),
-            (0.0, 0.0, 0.0, 0.0),
-        );
-        let (w, hz, preferred): (i64, i64, bool) = rt
-            .lua
-            .load(
-                "local o = tomoe.outputs()[1] \
-                 return o.modes[1].w, o.refresh_mhz, o.modes[1].preferred",
-            )
-            .eval()
-            .unwrap();
-        assert_eq!((w, hz, preferred), (2560, 60000, true));
     }
 
     #[test]
@@ -4180,7 +3890,6 @@ mod tests {
             geometry: (0, 0, 1920, 1080),
             usable: (0, 0, 1920, 1080),
             scale: 1.0,
-            ..Default::default()
         };
 
         // One candidate output: resolved without asking.
@@ -4361,28 +4070,5 @@ mod tests {
             .unwrap();
         assert_eq!(state["active"], 1);
         assert!(rt.has_ipc_handler("workspace/switch"));
-
-        // The special-workspaces module is policy on the public API; hold its
-        // shipped shape: loads alongside wm, registers its reload persistence,
-        // and exposes the toggle/move surface.
-        let rt = LuaRuntime::new().unwrap();
-        rt.lua
-            .load(
-                r#"
-                local wm = require("wm")
-                local special = require("special")
-                assert(type(special.toggle) == "function")
-                assert(type(special.move_focused) == "function")
-                assert(type(special.is_shown) == "function")
-                assert(special.is_shown("term") == false)
-                "#,
-            )
-            .set_name("special-module-test")
-            .exec()
-            .unwrap();
-        assert!(
-            rt.shared.reload_hooks.borrow().contains_key("special"),
-            "on_reload persistence registered"
-        );
     }
 }

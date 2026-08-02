@@ -16,7 +16,6 @@ and type checking in your editor.
 - `tomoe.settings(settings)` — Apply settings; partial tables merge over previous calls (`displays` and `devices` are rebuilt per call). See Settings.
 - `tomoe.bind(combo, action, desc)` — Bind a key combo to a Lua function or an action string: "quit" (exit dialog), "quit!" (exit immediately), "close-window", "show-hotkey-overlay", "reload-config", "screenshot" (region overlay), "screenshot-screen", "spawn <shell command>". Combos are "Mod+Shift+q": modifiers super|win|logo, alt, ctrl|control, shift, or mod (= `settings.mod`); keys are XKB keysym names ("Return", "equal", "F11"). Hold form: pass a table `{ press = fn, release = fn }` — press fires on key-down, release on key-up, latched by keycode so the modifier state at release time is irrelevant (push-to-talk). Both edges swallow the key; press is required, release optional.
 - `tomoe.spawn(cmd)` — Run a shell command, fire-and-forget (the core tracks and reaps the child). The child gets a fresh xdg-activation token in both `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`, so the app's first window can take focus.
-- `tomoe.power_off_outputs()` — Power off all outputs while retaining their surfaces; any input wakes them and the waking event is swallowed (VT switching still works).
 - `tomoe.quit()` — Ask to exit: shows the confirm dialog (the "quit!" action skips it).
 - `tomoe.clear_focus()` — Drop keyboard focus so no window receives keys.
 
@@ -51,7 +50,7 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.outputs() -> Output[]` — Connected outputs with their geometry.
 - `tomoe.usable_area(index) -> Geometry` — Usable area (geometry minus layer-shell exclusive zones, e.g. bars) of the output at 1-based `index`; defaults to the first output.
 - `tomoe.view() -> View` — The camera over the window canvas: screen = (world − offset) · zoom.
-- `tomoe.set_view(view)` — Move the camera; omitted fields keep their current value. zoom is clamped to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1. A zoom held steady (~250 ms) re-renders clients at output scale × zoom, so settled zoom is sharp; zoom in motion resamples.
+- `tomoe.set_view(view)` — Move the camera; omitted fields keep their current value. zoom is clamped to [1/16, 16]; at zoom 1 the integer offset keeps every pixel 1:1.
 - `tomoe.pointer() -> PointerPosition` — Pointer position: x, y in world coordinates, sx, sy in screen coordinates.
 
 ## Hooks
@@ -59,42 +58,11 @@ A toplevel window. Reads reflect the snapshot taken before this Lua entry; write
 - `tomoe.on_window_close(fn)` — Run `fn` when a window closes.
 - `tomoe.on_focus_change(fn)` — Run `fn` when keyboard focus changes; win is nil when focus was cleared.
 - `tomoe.on_outputs_changed(fn)` — Run `fn` when outputs are added, removed, or reconfigured.
-
-### OutputConnectEvent
-
-- `modes: Mode[]` — modes the connector advertises
-- `connected: string[]` — names of the already-connected outputs
-- `tomoe.on_output_connect(fn)` — Run `fn` before a newly connected (or re-enabled) output is brought up (tty backend): adjust `tomoe.settings { displays = ... }` for the new set and the same connect picks it up — the output modesets once. This is ShojiWM's `output.configure(factory)` shape: re-run layout policy whenever the connected set changes (dock → disable the laptop panel, pick a mode from `ev.modes`, ...). Fires once per output at startup too.
 - `tomoe.on_pointer_button(fn)` — Run `fn` on pointer button events; return truthy to consume the event (it is not forwarded to the client under the pointer).
 - `tomoe.on_pointer_axis(fn)` — Run `fn` on scroll events; return truthy to consume.
 - `tomoe.on_window_request(fn)` — Run `fn` when a client requests a state change or an interactive drag — from the window's own client (xdg-shell), xdg-activation, or a taskbar (wlr-foreign-toplevel-management). Return truthy to consume: the consumer takes over responding, typically via set_fullscreen + set_geometry, or grab_pointer for move/resize. Unconsumed requests get the native default (drags are dropped, xdg-activation "activate" focuses the window, "urgent" is a no-op, a taskbar "close" asks the client to close).
 - `tomoe.on_pointer_enter(fn)` — Run `fn` when the pointer enters a window.
 - `tomoe.on_pointer_leave(fn)` — Run `fn` when the pointer leaves a window.
-
-### InputDeviceChangeEvent
-
-- `name: string` — libinput device name (matches settings.devices keys)
-- `added: boolean` — true when the device was plugged in, false on removal
-- `keyboard: boolean`
-- `pointer: boolean`
-- `touch: boolean`
-- `tablet_tool: boolean`
-- `tablet_pad: boolean`
-- `gesture: boolean`
-- `switch: boolean`
-- `tomoe.on_input_device_change(fn)` — Run `fn` when an input device is plugged in or removed.
-
-### InputDeviceInfo
-
-- `name: string`
-- `keyboard: boolean`
-- `pointer: boolean`
-- `touch: boolean`
-- `tablet_tool: boolean`
-- `tablet_pad: boolean`
-- `gesture: boolean`
-- `switch: boolean`
-- `tomoe.input_devices() -> InputDeviceInfo[]` — List currently connected input devices.
 - `tomoe.on_screencast_request(fn)` — Decide what a screencast portal request captures (the ScreenCast portal asks over IPC on SelectSources). Answer by returning a selection table (`{ output = "DP-1" }` or `{ window = win }`) or `false` to deny — or call `req:defer()` and answer later with `req:resolve(sel)` / `req:deny()` from another callback (e.g. a tomoe.ui.menu selection): the portal waits, the compositor never does. Single slot: registering again replaces the handler. With no handler the portal falls back to its environment-variable heuristics. The default menu picker ships as the "screencast" module.
 - `tomoe.grab_pointer(on_motion, on_release)` — Route pointer motion to `on_motion` (world coordinates) instead of clients until every button is released, then call `on_release`. Typically started from an on_pointer_button hook that returned true to consume the click.
 - `tomoe.ungrab_pointer()` — End the active grab without running its release callback.
@@ -178,13 +146,6 @@ A rectangle in integer physical pixels, world coordinates.
 - `w: integer`
 - `h: integer`
 
-### Mode
-
-- `w: integer` — physical pixels
-- `h: integer` — physical pixels
-- `refresh_mhz: integer` — refresh in millihertz (144 Hz → 144000)
-- `preferred: boolean` — the monitor's EDID-preferred mode
-
 ### Output
 
 - `name: string` — connector name ("DP-1")
@@ -194,8 +155,6 @@ A rectangle in integer physical pixels, world coordinates.
 - `h: integer`
 - `scale: number` — fractional client scale advertised on output
 - `usable: Geometry` — geometry minus layer-shell exclusive zones
-- `refresh_mhz: integer` — current mode's refresh in millihertz (0 when unknown, e.g. winit)
-- `modes: Mode[]` — modes the connector advertises (tty backend; empty on winit)
 
 ### View
 
@@ -300,9 +259,8 @@ Motion event during a tomoe.grab_pointer grab.
 - `focus_follows_mouse: boolean` — sloppy focus: focus the window under the pointer (default false)
 - `tearing: boolean` — allow async page flips for fullscreen windows that request tearing (default false)
 - `wait_for_frame_completion: boolean` — NVIDIA workaround: CPU-wait for rendering before queueing to KMS (default false)
-- `debug_full_repaint: boolean` — force whole-output damage every frame for NVIDIA partial-repaint debugging (default false; live)
-- `debug_linear_swapchain: boolean` — use linear scanout modifiers for NVIDIA debugging (default false; output reconnect)
 - `honor_xdg_activation_with_invalid_serial: boolean` — accept stale input serials from clients such as Discord/Telegram; weakens focus-stealing protection (default false)
+- `force_server_side_decorations: boolean` — refuse xdg-decoration CLIENT requests and hand every toplevel ServerSide, so CSD-drawing toolkits (GTK4/libadwaita, Qt) skip their own titlebar and the tiled border-only look stays uniform (default false)
 - `screenshot_freeze: boolean` — freeze the scene in the interactive screenshot UI; pointer remains live (default true)
 - `watchdog_ms: integer` — wall-clock budget of one Lua entry before the watchdog aborts it; 0 disables and restores LuaJIT compilation (default 1000)
 - `winit_size: integer[]` — { w, h } of the nested dev window (winit backend)
