@@ -1522,16 +1522,26 @@ impl Tomoe {
         // in world coordinates, and compensate the surface origin handed to
         // the seat so `pointer_location - origin` is still the exact
         // world-local (client buffer) coordinate at any pan/zoom.
+        // `element_under` reports the xdg geometry origin, but smithay's
+        // `surface_under` speaks buffer-root (surface-tree root) coordinates
+        // and never adds `geometry().loc` for toplevels, so shift the hit
+        // point into buffer-root space with `geo_loc` and shift the returned
+        // surface location back out. Derivation: seat computes
+        // client-local = pointer_protocol_location - origin; the hit point in
+        // buffer-root space is local + geo_loc; point-in-surface =
+        // local + geo_loc - surface_loc; so origin must be
+        // compensated_loc + surface_loc - geo_loc.
         let world = self.space.screen_to_world(pos);
         if let Some((window, location)) = self.space.element_under(world) {
             let window_scale = self.space.element_scale(window);
+            let geo_loc = window.geometry().loc.to_f64();
             let local = coords::point_to_protocol(world - location.to_f64(), window_scale);
             if let Some((surface, surface_loc)) =
-                window.surface_under(local, WindowSurfaceType::ALL)
+                window.surface_under(local + geo_loc, WindowSurfaceType::ALL)
             {
                 let compensated_loc =
                     coords::point_to_protocol(pos - world + location.to_f64(), window_scale);
-                return Some((surface, surface_loc.to_f64() + compensated_loc));
+                return Some((surface, surface_loc.to_f64() - geo_loc + compensated_loc));
             }
         }
 
