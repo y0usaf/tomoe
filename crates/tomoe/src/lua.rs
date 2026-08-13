@@ -1427,8 +1427,7 @@ impl LuaRuntime {
                 {
                     settings.honor_xdg_activation_with_invalid_serial = honor;
                 }
-                if let Ok(Some(force)) =
-                    table.get::<Option<bool>>("force_server_side_decorations")
+                if let Ok(Some(force)) = table.get::<Option<bool>>("force_server_side_decorations")
                 {
                     settings.force_server_side_decorations = force;
                 }
