@@ -10,10 +10,7 @@ bytemuck = { version = "1", features = ["derive"] }
 drm-ffi = "0.9.1"
 tracing.workspace = true
 tracing-subscriber.workspace = true
-clap = { version = "4", features = ["derive"] }
 fontdue = "0.9"
-glam = "0.30"
-jiff = "0.2"
 mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
 # The fused shell (FUSION.md F1/F2): element trees raster on the CPU
 # and composite as damage-tracked textures; the runtime provides the
@@ -24,7 +21,7 @@ moonshell-services.workspace = true
 # Transitional until F6 (surface-option vocabulary re-homes when the
 # SCTK client stack is deleted).
 moonshell-surface.workspace = true
-png = "0.17"
+image.workspace = true
 serde_json.workspace = true
 smithay-drm-extras.workspace = true
 tomoe-ipc = { path = "../tomoe-ipc" }

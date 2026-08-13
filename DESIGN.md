@@ -104,6 +104,7 @@ doctrine; "shell:" notes cover the fused moonshell subsystem.
 | Smithay pin | **`y0usaf/smithay#tomoe-tearing`** (niri's pin + async page flip) | Upstream lacks tearing page flips; the fork carries exactly that commit, rebased when the pin bumps. |
 | Wire | **`tomoe-ipc`, in-workspace path dep, versioned for external clients** | Fusion made it a path dep; the versioned-wire discipline stays because external consumers remain (doctrine 09). |
 | Licenses | **workspace AGPL-3.0-or-later; `moonshell-*` crates explicitly AGPL-3.0-only** | The crates keep their pre-fusion license rather than being silently relicensed by workspace inheritance. |
+| Dependency budget (2026) | hand-written code preferred over a third-party crate when the crate is the only thing pulling a subtree | Eventually removing Smithay makes fewer external crates worth extra local lines. |
 
 ## Architecture
 
