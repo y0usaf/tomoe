@@ -6,7 +6,7 @@
 //! that needs the program simply doesn't render — so a broken driver
 //! can't take the compositor down.
 
-use glam::Mat3;
+use super::math::Mat3;
 use smithay::backend::renderer::gles::{
     GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType, UniformValue,
 };
@@ -142,7 +142,7 @@ pub fn init(renderer: &mut GlesRenderer) {
     super::resources::init(renderer);
 }
 
-/// A `mat3` uniform from a glam matrix.
+/// A `mat3` uniform from a column-major matrix.
 pub fn mat3_uniform(name: &str, mat: Mat3) -> Uniform<'_> {
     Uniform::new(
         name,
