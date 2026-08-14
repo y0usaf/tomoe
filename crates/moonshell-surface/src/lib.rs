@@ -25,6 +25,10 @@
 
 use std::collections::BTreeMap;
 
+pub mod compose;
+
+use compose::{Component, Key};
+
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
@@ -236,6 +240,9 @@ pub struct WindowId(u64);
 struct Window {
     options: LayerOptions,
     painter: Box<dyn Painter>,
+    /// The component handle in the shell's [`compose::Context`]: mount on
+    /// `create_window`, unmount (inverse replay) on `destroy_window`.
+    compose_id: usize,
     /// `None` while unmapped (before the first output, or between a
     /// compositor close and the remap).
     layer: Option<LayerSurface>,
@@ -261,10 +268,11 @@ struct Window {
 }
 
 impl Window {
-    fn new(options: LayerOptions, painter: Box<dyn Painter>) -> Self {
+    fn new(options: LayerOptions, painter: Box<dyn Painter>, compose_id: usize) -> Self {
         Self {
             options,
             painter,
+            compose_id,
             layer: None,
             was_configured: false,
             logical_size: (0, 0),
@@ -306,6 +314,12 @@ pub struct Shell {
     /// buffers are reused, never regenerated per frame.
     pool: SlotPool,
     windows: BTreeMap<WindowId, Window>,
+    /// The reactive kernel: every window is a mounted [`compose::Component`].
+    /// Its read keys are declared at create; [`Shell::set`] notifies exactly
+    /// the declared readers (declared-reader invalidation). `destroy_window`
+    /// unmounts the component, replaying its effects' inverses (the reader
+    /// subscriptions) so the context leaves no residue.
+    ctx: compose::Context,
     next_id: u64,
     /// Exit `run` once every window has committed its first frame —
     /// the doctrine-06 boot check.
@@ -339,6 +353,7 @@ impl Shell {
             shm,
             pool,
             windows: BTreeMap::new(),
+            ctx: compose::Context::new(),
             next_id: 0,
             exit_after_first_draw: false,
             exit: false,
@@ -361,21 +376,67 @@ impl Shell {
     }
 
     /// Create and map a window. Usable before `run` and from inside
-    /// source callbacks alike.
+    /// source callbacks alike. The window declares no reactive reads —
+    /// see [`Shell::create_window_reading`] for the declared-reader
+    /// model.
     pub fn create_window(&mut self, options: LayerOptions, painter: Box<dyn Painter>) -> WindowId {
+        self.create_window_reading(Vec::new(), options, painter)
+    }
+
+    /// Create and map a window that reads the given reactive keys
+    /// (theme, geometry, …). It is mounted into the shell's
+    /// [`compose::Context`]: the component's effect (recording it as a
+    /// declared reader per key) has an inverse that unmount replays —
+    /// so `destroy_window` leaves no residue in the context. A
+    /// subsequent [`Shell::set`] repaints exactly these readers —
+    /// declared-reader invalidation in place of repaint-all.
+    pub fn create_window_reading(
+        &mut self,
+        reads: Vec<Key>,
+        options: LayerOptions,
+        painter: Box<dyn Painter>,
+    ) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id += 1;
-        self.windows.insert(id, Window::new(options, painter));
+        // Register the reader subscriptions at mount; destroy replays
+        // them via the inverse.
+        let compose_id = self.ctx.mount(Component::new(reads));
+        self.windows
+            .insert(id, Window::new(options, painter, compose_id));
         self.map_window(id);
         id
     }
 
     /// Destroy a window (unmaps immediately). Returns false if the id
-    /// is already gone.
+    /// is already gone. Replays the window's component inverses in
+    /// reverse — unregistering its declared reads so the context leaves
+    /// no residue — then drops the [`LayerSurface`] (which destroys the
+    /// role object and the `wl_surface` under it).
     pub fn destroy_window(&mut self, id: WindowId) -> bool {
-        // Dropping the LayerSurface destroys the role object and the
-        // wl_surface underneath it.
-        self.windows.remove(&id).is_some()
+        let Some(win) = self.windows.remove(&id) else {
+            return false;
+        };
+        // Temporal inverse replay: undo the create-time effect (reader
+        // subscriptions) — no residue in the reactive context.
+        self.ctx.unmount(win.compose_id);
+        true
+    }
+
+    /// Commit a reactive key and notify **exactly** its declared readers
+    /// — each is marked dirty and repaints on the next loop pass. Keys
+    /// no window declares fire no reaction (declared-reader invalidation
+    /// in place of "repaint everything").
+    pub fn set(&mut self, key: Key) {
+        for reader in self.ctx.readers(key) {
+            self.mark_compose_reader_dirty(reader);
+        }
+    }
+
+    /// The compose component ids (mounted windows) that declared `key`,
+    /// ascending. Exposed for tests and callers that react outside the
+    /// dirty path. Empty when nothing declared the key.
+    pub fn declared_readers(&self, key: Key) -> Vec<usize> {
+        self.ctx.readers(key)
     }
 
     /// Mark one window's content changed; it repaints on the next loop
@@ -386,7 +447,19 @@ impl Shell {
         }
     }
 
-    /// Mark every window dirty — the notify-all reactive model.
+    /// Mark dirty every window whose compose component id is `compose_id`.
+    fn mark_compose_reader_dirty(&mut self, compose_id: usize) {
+        for (_, win) in self.windows.iter_mut() {
+            if win.compose_id == compose_id {
+                win.dirty = true;
+                return;
+            }
+        }
+    }
+
+    /// Mark every window dirty — the legacy notify-all reactive model.
+    /// Prefer [`Shell::set`] for keyed invalidation (declared readers
+    /// only); kept for callers that genuinely repaint everything.
     pub fn mark_all_dirty(&mut self) {
         for win in self.windows.values_mut() {
             win.dirty = true;

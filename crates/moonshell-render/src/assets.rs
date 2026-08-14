@@ -31,6 +31,29 @@ struct IconKey {
     tint: Option<Rgba>,
 }
 
+/// A key naming a single cache entry — the unit a [`ResourceScope`]
+/// hands out and evicts. Mounting an asset decodes it; unmounting
+/// evicts exactly this entry (the resource's inverse), so the cache
+/// leaves no residue for the owning surface.
+///
+/// Test-supported: alongside `AssetCache::{len,evict}`, this is the
+/// ingest/evict vocabulary the renderer's resource test exercises. The
+/// live consumer is the [`ResourceScope`] the renderer owns as its asset
+/// host and the draw path that reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg(test)]
+pub enum AssetKey {
+    /// A raster image at one decoded size.
+    Image(PathBuf, u32, u32),
+    /// An icon/theme lookup: the resolved `source`, rasterized at one
+    /// `px` edge, optionally tinted.
+    Icon {
+        source: String,
+        px: u32,
+        tint: Option<Rgba>,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct AssetCache {
     icons: HashMap<IconKey, Option<Rc<Pixmap>>>,
@@ -94,6 +117,31 @@ impl AssetCache {
         }
         self.icons.insert(key, pm.clone());
         pm
+    }
+}
+
+impl AssetCache {
+    /// Number of cached decoded assets (images + icons) — the
+    /// "resources held" figure the temporal no-residue test asserts on.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.images.len() + self.icons.len()
+    }
+
+    /// Remove one cached entry by [`AssetKey`] — the resource's inverse
+    /// when a surface unmounts. A no-op for an entry the cache never
+    /// held.
+    #[cfg(test)]
+    pub(crate) fn evict(&mut self, key: AssetKey) {
+        match key {
+            AssetKey::Image(src, w, h) => {
+                self.images.remove(&(src, w, h));
+            }
+            AssetKey::Icon { source, px, tint } => {
+                self.icons.remove(&IconKey { source, px, tint });
+            } // Native dimensions are metadata, not a scoped resource; a
+              // stale entry is harmless (re-read on next request).
+        }
     }
 }
 

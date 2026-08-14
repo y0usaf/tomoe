@@ -89,11 +89,15 @@ crate moonshell_render
 │   ├── enum Axis: pub(self)
 │   ├── struct LayoutNode: pub
 │   └── struct Rect: pub
-└── mod scene: pub
-    ├── struct Frame: pub(self)
-    ├── struct PixelRect: pub
-    ├── struct Scene: pub
-    └── enum SceneDamage: pub
+├── mod scene: pub
+│   ├── struct Frame: pub(self)
+│   ├── struct PixelRect: pub
+│   ├── struct Scene: pub
+│   └── enum SceneDamage: pub
+└── mod scope: pub
+    ├── type Effect: pub
+    ├── type Inverse: pub
+    └── struct ResourceScope: pub
 ```
 
 ### `moonshell-runtime`
@@ -190,7 +194,15 @@ crate moonshell_surface
 ├── struct Shell: pub
 ├── enum SurfaceError: pub
 ├── struct Window: pub(crate)
-└── struct WindowId: pub
+├── struct WindowId: pub
+└── mod compose: pub
+    ├── struct Component: pub
+    ├── struct Context: pub
+    ├── type Effect: pub
+    ├── type Inverse: pub
+    ├── type Key: pub
+    ├── type OnChange: pub
+    └── struct ScopeInner: pub(self)
 ```
 
 ### `tomoe`

@@ -96,7 +96,7 @@ fn measure(el: &Element, scale: f32, r: &mut Renderer) -> (f32, f32) {
             }
             // Native file pixels map 1:1 to buffer pixels (crisp by
             // default); style overrides rescale.
-            Element::Image(img) => match r.assets.image_size(&img.src) {
+            Element::Image(img) => match r.asset_host().image_size(&img.src) {
                 Some((w, h)) => (w as f32, h as f32),
                 None => (0.0, 0.0),
             },

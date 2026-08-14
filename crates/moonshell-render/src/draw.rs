@@ -93,7 +93,7 @@ pub fn draw(
             if px == 0 {
                 return;
             }
-            match r.assets.icon(&i.name, i.path.as_deref(), px, i.color) {
+            match r.asset_host().icon(&i.name, i.path.as_deref(), px, i.color) {
                 Some(pm) => {
                     // Centered in the (possibly non-square) rect.
                     let x = (rect.x + (rect.w - px as f32) / 2.0).round() as i32;
@@ -124,7 +124,7 @@ pub fn draw(
             if w == 0 || h == 0 {
                 return;
             }
-            if let Some(pm) = r.assets.image(&img.src, w, h) {
+            if let Some(pm) = r.asset_host().image(&img.src, w, h) {
                 r.blit(canvas, width, height, rect.x as i32, rect.y as i32, &pm);
             }
         }
