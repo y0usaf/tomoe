@@ -17,11 +17,13 @@ pub mod draw;
 pub mod element;
 pub mod layout;
 pub mod scene;
+pub mod scope;
 
 pub use draw::{draw, render_tree};
 pub use element::Element;
 pub use layout::{intrinsic_size, LayoutNode};
 pub use scene::{PixelRect, Scene, SceneDamage};
+pub use scope::{Effect, Inverse, ResourceScope};
 
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use tiny_skia::{FillRule, Paint, PathBuilder, PixmapMut, Rect, Stroke, Transform};
@@ -52,9 +54,12 @@ impl Rgba {
 pub struct Renderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
-    /// Decoded icon/image pixmaps (see `assets`); part of the same
-    /// cache budget as the glyph caches.
-    pub(crate) assets: assets::AssetCache,
+    /// Decoded icon/image pixmaps, owned as scoped render resources
+    /// (see `assets` and `scope`). A surface mounts the assets it decodes
+    /// into this scope; unmounting evicts exactly them — the temporal
+    /// inverse of the surface's scene frame. Part of the same cache
+    /// budget as the glyph caches.
+    assets: scope::ResourceScope<assets::AssetCache>,
 }
 
 impl Renderer {
@@ -64,8 +69,62 @@ impl Renderer {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
-            assets: assets::AssetCache::default(),
+            assets: scope::ResourceScope::new(assets::AssetCache::default()),
         }
+    }
+
+    /// Mount the given render resources (e.g. the assets a surface will
+    /// decode this frame) into the renderer's scope. Returns a resource
+    /// id whose unmount replays the mount effects' inverses — evicting
+    /// exactly the resources that were mounted.
+    ///
+    /// Test-supported: the renderer's asset host is internal, and today no
+    /// production caller ingests assets through the scope — the scoped
+    /// resource *mechanism* [`scope::ResourceScope`] is the live public
+    /// surface (the renderer owns one as its asset host). The runtime
+    /// slice wires surface asset ingest through this gate when it lands.
+    #[cfg(test)]
+    pub(crate) fn mount_resource(
+        &mut self,
+        effect: impl FnOnce(&mut assets::AssetCache) -> scope::Inverse<assets::AssetCache> + 'static,
+    ) -> u64 {
+        // The scope's Effect is `Fn` (mount may invoke it defensively
+        // more than once); adapt the caller's `FnOnce` by stashing it in
+        // a `Cell` and taking/invoking it exactly once.
+        let slot = std::cell::Cell::new(Some(effect));
+        let effect: scope::Effect<assets::AssetCache> = Box::new(move |host| {
+            let once = slot.take().expect("mount effect invoked after first call");
+            once(host)
+        });
+        self.assets.mount(effect)
+    }
+
+    /// The render resource scope's host — the asset cache the drawing
+    /// primitives read through. Internal to this crate; scoped resource
+    /// users go through [`Renderer::mount_resource`].
+    fn asset_host(&mut self) -> &mut assets::AssetCache {
+        self.assets.host_mut()
+    }
+
+    /// Unmount the given resource id, replaying its effects' inverses in
+    /// reverse (e.g. evicting its decoded assets). A no-op for an unknown
+    /// id.
+    #[cfg(test)]
+    pub(crate) fn unmount_resource(&mut self, id: u64) {
+        self.assets.unmount(id);
+    }
+
+    /// Live resource ids in mount order (the renderer's active resource
+    /// scope). Exposed for tests and callers that introspect the scope.
+    #[cfg(test)]
+    pub(crate) fn resource_ids(&self) -> Vec<u64> {
+        self.assets.ids()
+    }
+
+    /// The live resource count (for the temporal no-residue assertion).
+    #[cfg(test)]
+    pub(crate) fn resource_count(&self) -> usize {
+        self.assets.units_len()
     }
 
     /// Src-over a cached pixmap (already premultiplied and in buffer
@@ -393,6 +452,7 @@ fn blend_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::{AssetCache, AssetKey};
 
     /// The R<->B swizzle: an opaque red clear must produce ARGB8888
     /// little-endian bytes [B, G, R, A] = [0, 0, 255, 255].
@@ -429,5 +489,127 @@ mod tests {
         );
         assert!(advance > 0.0, "no advance — shaping produced nothing");
         assert!(buf.iter().any(|&b| b != 0), "no pixels touched");
+    }
+
+    /// Temporal proof at the renderer layer: a resource mounted into the
+    /// renderer's scoped asset host (mount → decode asset) is evicted by
+    /// its inverse on unmount — the cache returns to its pre-mount
+    /// state with no residue.
+    #[test]
+    fn scoped_resource_mount_unmount_evicts() {
+        let path = std::env::temp_dir().join(format!(
+            "moonshell-render-scoped-{}.png",
+            std::process::id()
+        ));
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+
+        let mut renderer = Renderer::new();
+        let before = renderer.assets.host().len();
+
+        // Mount: decode one image into the cache; the inverse evicts it.
+        let id = renderer.mount_resource({
+            let path = path.clone();
+            move |host: &mut AssetCache| {
+                let decoded = host.image(&path, 4, 4);
+                assert!(decoded.is_some(), "decode must succeed");
+                let key = AssetKey::Image(path, 4, 4);
+                Box::new(move |host: &mut AssetCache| host.evict(key))
+            }
+        });
+
+        let after_mount = renderer.assets.host().len();
+        assert_eq!(after_mount, before + 1, "asset decoded and held");
+
+        renderer.unmount_resource(id);
+        let after_unmount = renderer.assets.host().len();
+        assert_eq!(
+            after_unmount, before,
+            "resource residue after unmount (leaked asset)"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The renderer's resource scope starts empty and returns to empty
+    /// after every mounted unit is released — the no-residue invariant.
+    #[test]
+    fn resource_scope_drains_to_empty() {
+        let mut renderer = Renderer::new();
+        assert_eq!(renderer.resource_count(), 0);
+
+        let path = std::env::temp_dir().join(format!(
+            "moonshell-render-scoped2-{}.png",
+            std::process::id()
+        ));
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 255, 0, 255]))
+            .save(&path)
+            .unwrap();
+
+        let a = renderer.mount_resource({
+            let path = path.clone();
+            move |host: &mut AssetCache| {
+                host.image(&path, 4, 4);
+                let key = AssetKey::Image(path, 4, 4);
+                Box::new(move |host: &mut AssetCache| host.evict(key))
+            }
+        });
+        let b = renderer.mount_resource({
+            let path = path.clone();
+            move |host: &mut AssetCache| {
+                host.image(&path, 4, 4);
+                let key = AssetKey::Image(path, 4, 4);
+                Box::new(move |host: &mut AssetCache| host.evict(key))
+            }
+        });
+        assert_eq!(renderer.resource_count(), 2);
+        assert_eq!(renderer.resource_ids(), vec![a, b]);
+
+        renderer.unmount_resource(a);
+        renderer.unmount_resource(b);
+        assert_eq!(renderer.resource_count(), 0, "no residual resources");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// An SVG icon mounted as a scoped resource is evicted on unmount
+    /// exactly like an image — the `Icon` inverse path.
+    #[test]
+    fn scoped_icon_resource_evicts_on_unmount() {
+        let path = std::env::temp_dir().join(format!(
+            "moonshell-render-scoped-icon-{}.svg",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">
+                 <rect width="4" height="4" fill="#ff0000"/></svg>"##,
+        )
+        .unwrap();
+
+        let mut renderer = Renderer::new();
+        let before = renderer.assets.host().len();
+
+        let id = renderer.mount_resource({
+            let path = path.clone();
+            move |host: &mut AssetCache| {
+                let decoded = host.icon("scoped-icon", Some(&path), 8, None);
+                assert!(decoded.is_some(), "icon decode must succeed");
+                let key = AssetKey::Icon {
+                    source: path.display().to_string(),
+                    px: 8,
+                    tint: None,
+                };
+                Box::new(move |host: &mut AssetCache| host.evict(key))
+            }
+        });
+        assert_eq!(renderer.assets.host().len(), before + 1, "icon decoded");
+
+        renderer.unmount_resource(id);
+        assert_eq!(
+            renderer.assets.host().len(),
+            before,
+            "icon residue after unmount"
+        );
+        std::fs::remove_file(&path).ok();
     }
 }
