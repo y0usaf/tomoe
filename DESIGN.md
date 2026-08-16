@@ -142,6 +142,39 @@ resources/                  # the builtins layer: wm.lua, zoomer.lua,
   post-F6: generic D-Bus proxy, `ui.canvas`.
 - **Named exception:** the screenshot UI is native (PLAN.md).
 
+## Compositor-context composition (the fused shell row)
+
+The fused shell (FUSION.md) is a *composition row of the compositor
+context*, not a client: `ui.*`/`shell.*` run in the same VM that drives
+`tomoe.*` WM policy, and their element trees composite at output edges
+alongside windows. Its composition contract:
+
+- **Mount = one VM driving WM + shell.** The shell mounts by loading its
+  policy into the compositor's VM (the `shell.window{}` declarations +
+  `ui.*` render callbacks); there is no second process and no IPC
+  round-trip — the shell reads the WM's snapshot directly.
+- **Compositor context in.** The shell reads the same immutable snapshot
+  the WM does (windows, outputs, camera, pointer, settings) plus
+  `shell.displays()` (a live output manifest) and — post-F3 —
+  `shell.services.*` native-service facades. It is refreshed before every
+  Lua entry and re-attached to each fresh VM on reload.
+- **Elements out.** Render callbacks return `ui.*` element tables; the
+  core rasters them to per-output textures and composites them in the
+  layer's z-order (Overlay > Top > Bottom > Background) while the render
+  loop itself never blocks on Lua. Exclusive zones reserve screen space
+  through the one layer-shell usable-area computation, so a native bar
+  and an external waybar shrink the usable area together.
+
+**Temporal / reload contract (SP-temporal: mount → exhaust → unmount →
+remount).** Unmounting the shell is the config reload: it drops the VM
+and `ShellSurfaces`; re-mounting re-attaches the compositor snapshot to
+a fresh VM, `tomoe.on_reload` restore / open-replay reconstructs state,
+and the surfaces re-declare. The unmount must leave no residue in the
+compositor context, and the re-mount must reconstruct cleanly — both
+asserted by the `sp_temporal` test (`crates/tomoe/src/sp_temporal.rs`),
+which runs the mount → exhaust / exhaust-all-effects → unmount → diff →
+re-mount round-trip over every `ui.*`/`shell.*` effect.
+
 ## Deferred (and why)
 
 The living list is PLAN.md ("deferred" markers) and FUSION.md; the
