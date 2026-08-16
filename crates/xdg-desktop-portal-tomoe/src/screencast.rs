@@ -396,7 +396,14 @@ impl ScreenCast {
         let (node_id, width, height, source_type, stream) = match selection {
             Selection::Monitor(out) => {
                 let framerate = {
-                    let hz = (out.refresh_mhz as f32 / 1000.0).round() as u32;
+                    // refresh_mhz is in milliHz; round to nearest whole Hz in
+                    // integer i64 arithmetic instead of a float round-trip,
+                    // then clamp to the plausible video range.
+                    let hz = if out.refresh_mhz > 0 {
+                        ((i64::from(out.refresh_mhz) + 500) / 1000) as u32
+                    } else {
+                        0
+                    };
                     hz.clamp(30, 240)
                 };
                 let spec = StreamSpec {
