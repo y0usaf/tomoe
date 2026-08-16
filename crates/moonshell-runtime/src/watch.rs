@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use mlua::prelude::*;
 
+use crate::exec::LuaHook;
+
 /// A `shell.watch_file` call waiting for the binary to register it
 /// with the inotify watcher.
 pub struct PendingWatch {
@@ -22,17 +24,15 @@ pub struct PendingWatch {
 }
 
 /// The loop-thread half of a file watch: what to call when the file
-/// changes.
+/// changes. Thin wrapper over a [`LuaHook`].
 pub struct WatchCallback {
-    weak: WeakLua,
-    key: LuaRegistryKey,
+    hook: LuaHook,
 }
 
 impl WatchCallback {
     pub fn new(lua: &Lua, f: LuaFunction) -> LuaResult<Self> {
         Ok(Self {
-            weak: lua.weak(),
-            key: lua.create_registry_value(f)?,
+            hook: LuaHook::new(lua, f)?,
         })
     }
 
@@ -41,21 +41,7 @@ impl WatchCallback {
     /// registry key no longer resolves. Callback *errors* are logged
     /// and keep the watch — a transient failure must not kill it.
     pub fn call(&self, content: &str) -> bool {
-        let Some(lua) = self.weak.try_upgrade() else {
-            return false;
-        };
-        match lua.registry_value::<LuaFunction>(&self.key) {
-            Ok(f) => {
-                if let Err(e) = f.call::<()>(content) {
-                    tracing::error!("watch_file callback error: {e}");
-                }
-                true
-            }
-            Err(e) => {
-                tracing::error!("watch_file registry lookup failed: {e}");
-                false
-            }
-        }
+        self.hook.fire("watch_file callback", content)
     }
 }
 

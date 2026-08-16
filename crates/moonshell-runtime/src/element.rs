@@ -330,7 +330,11 @@ pub(crate) fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>
     let val: LuaValue = table.get(key)?;
     match val {
         LuaValue::Integer(n) => Ok(Some(rgb_u32(n as u32))),
-        LuaValue::Number(n) => Ok(Some(rgb_u32(n as u32))),
+        LuaValue::Number(n) => {
+            // Round + clamp: a fractional 0xRRGGBB color must not silently
+            // truncate to a different value.
+            Ok(Some(rgb_u32(n.round().clamp(0.0, 1_677_215.0) as u32)))
+        } // 0x00ff_ffff
         LuaValue::String(s) => {
             let s = s.to_str().map_err(|e| {
                 LuaError::RuntimeError(format!("invalid color string for '{key}': {e}"))

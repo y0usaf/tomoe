@@ -18,6 +18,7 @@ use std::rc::Rc;
 use mlua::prelude::*;
 
 use crate::api::ShellCtx;
+use crate::exec::LuaHook;
 
 type Notifier = Rc<dyn Fn()>;
 
@@ -76,20 +77,9 @@ impl LuaUserData for LuaState {
         // state:subscribe(fn) — fn() is called (no arguments, nur's
         // contract) after every set.
         methods.add_method("subscribe", |lua, this, callback: LuaFunction| {
-            let key = lua.create_registry_value(callback)?;
-            let weak = lua.weak();
+            let hook = LuaHook::new(lua, callback)?;
             this.inner.borrow_mut().notifiers.push(Rc::new(move || {
-                let Some(lua) = weak.try_upgrade() else {
-                    return; // VM already dropped (reload in flight)
-                };
-                match lua.registry_value::<LuaFunction>(&key) {
-                    Ok(f) => {
-                        if let Err(e) = f.call::<()>(()) {
-                            tracing::error!("state subscriber error: {e}");
-                        }
-                    }
-                    Err(e) => tracing::error!("state subscriber registry lookup failed: {e}"),
-                }
+                hook.fire("state subscriber", ());
             }));
             Ok(())
         });
