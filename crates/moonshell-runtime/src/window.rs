@@ -100,10 +100,12 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
         Some(h) => h,
         None => t.get::<Option<f32>>("width")?.unwrap_or(32.0),
     };
-    // Invariant: `size` (a bar thickness / popup height) comes from the
-    // Lua config and is clamped non-negative here; the `.max(0.0)` bounds
-    // it below and f32::MAX cannot reach u32::MAX, so the `as u32` cast
-    // cannot saturate in practice and keeps the non-px rounding behavior.
+    // Invariant: `size` (a bar thickness / popup height) is a config px
+    // value in realistic single/double-digit magnitudes, so after
+    // `.round()` it is tiny and exactly representable as u32; the
+    // `.max(0.0)` guarantees it stays non-negative. (Only a pathological
+    // config value would push f32 toward u32::MAX and make the `as u32`
+    // cast saturate — no real window does.)
     let size_px = size.round().max(0.0) as u32;
 
     let exclusive: bool = t.get::<Option<bool>>("exclusive")?.unwrap_or(true);
@@ -214,12 +216,16 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             anchors,
             width,
             height,
-            // Invariant: `size_px` is only ever a clamped non-negative
-            // config thickness (px); it cannot reach i32::MAX, so the
-            // u32→i32 `as` cast cannot wrap for any real window (an
-            // impractical f32 boundary would saturate at i32::MAX when
-            // exclusive).
-            exclusive_zone: if exclusive { size_px as i32 } else { 0 },
+            // Invariant: `size_px` (a config thickness in px) can exceed
+            // i32::MAX when a config value near 2^31 passes the f32→u32
+            // cast unwrapped, so it is clamped to i32::MAX below. That
+            // clamp — not saturation (integer `as` casts wrap) — is what
+            // keeps the u32→i32 `as` cast from producing a negative zone.
+            exclusive_zone: if exclusive {
+                size_px.min(i32::MAX as u32) as i32
+            } else {
+                0
+            },
             margins,
             keyboard,
         },
