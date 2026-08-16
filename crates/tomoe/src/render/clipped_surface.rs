@@ -90,7 +90,16 @@ impl<R: TomoeRenderer> ClippedSurfaceRenderElement<R> {
         let src_size = Vec2::new(view.src.size.w as f32, view.src.size.h as f32);
 
         let transform = self.inner.transform();
-        // HACK (from niri): ??? for some reason flipped ones are fine.
+        // The sampling transform below is built in buffer/texel space, where
+        // v grows *downward* (top-left origin), but `Transform::matrix()`
+        // follows the math convention with y growing *upward* (both derive
+        // from wayland's render semantics). For a quarter-turn those two
+        // handednesses disagree after the element is already projected into
+        // physical (screen, y-down) geometry by its `Element::geometry`:
+        // rotating the normalized clip coordinates with the 90° matrix
+        // visually yields 270° and vice-versa, so the two odd quarter-turns
+        // must be swapped. 0° and 180° are invariant under that mirror and
+        // pass through unchanged. (Mirrored from niri's clipped_surface.)
         let transform = match transform {
             Transform::_90 => Transform::_270,
             Transform::_270 => Transform::_90,
