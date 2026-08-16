@@ -139,6 +139,11 @@ fn prop(v: &Variant) -> Option<Prop> {
 /// `Percentage = 0`, but the snapshot must keep nur's no-battery
 /// defaults (100%, not charging) — `available` is the honest flag,
 /// the numbers stay render-safe for widgets that don't check it.
+///
+/// The model owns the *public* [`BatteryState`] directly (`raw`) —
+/// there is no parallel internal struct to re-derive from, so
+/// `apply` mutates the same fields `snapshot()` publishes. Single
+/// source of truth: keep it that way (do not reintroduce a raw twin).
 #[derive(Default)]
 struct Model {
     raw: BatteryState,

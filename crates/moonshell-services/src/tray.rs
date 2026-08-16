@@ -24,6 +24,7 @@ use std::rc::Rc;
 use calloop::generic::Generic;
 use calloop::{Interest, LoopHandle, Mode, PostAction};
 use rustbus::message_builder::MarshalledMessage;
+use rustbus::wire::errors::UnmarshalError;
 use rustbus::wire::unmarshal::traits::Variant;
 use rustbus::{MessageBuilder, RpcConn};
 
@@ -158,17 +159,30 @@ impl<D> Host<D> {
         let mut reply = call.dynheader.make_response();
         match member {
             "RegisterStatusNotifierItem" => {
-                let arg: String = call.body.parser().get().unwrap_or_default();
-                let (service, path) = split_service(&arg, sender);
-                if !service.is_empty() && !self.items.iter().any(|i| i.service == service) {
-                    self.items.push(TrayItem {
-                        service: service.clone(),
-                        path: path.clone(),
-                        ..TrayItem::default()
-                    });
-                    self.query_item(&service, &path);
-                    self.signal("StatusNotifierItemRegistered", &service);
-                    changed = true;
+                // Decode the one arg typed at the boundary; a corrupt
+                // call is rejected (error reply), never read as a blank
+                // item that still triggers a query.
+                match call.body.parser().get::<String>() {
+                    Ok(arg) => {
+                        let (service, path) = split_service(&arg, sender);
+                        if !service.is_empty() && !self.items.iter().any(|i| i.service == service) {
+                            self.items.push(TrayItem {
+                                service: service.clone(),
+                                path: path.clone(),
+                                ..TrayItem::default()
+                            });
+                            self.query_item(&service, &path);
+                            self.signal("StatusNotifierItemRegistered", &service);
+                            changed = true;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("tray: rejecting malformed StatusNotifierItem arg: {e}");
+                        reply = call.dynheader.make_error_response(
+                            "org.kde.StatusNotifierWatcher.Error.InvalidArgs",
+                            Some(format!("RegisterStatusNotifierItem arg: {e}")),
+                        );
+                    }
                 }
             }
             "RegisterStatusNotifierHost" => {
@@ -178,21 +192,41 @@ impl<D> Host<D> {
             }
             // Watcher properties, asked over org.freedesktop.DBus.Properties.
             "Get" | "GetAll" => {
-                // Minimal: hosts mostly probe IsStatusNotifierHostRegistered.
-                // Serve GetAll with the three properties as basic types is
-                // involved with rustbus variants; answer Get for the
-                // common boolean and let GetAll fall through empty.
+                // Decode the property call once, typed at the boundary;
+                // a broken wire is rejected (error reply), never read as
+                // defaults. Get carries (iface, prop); GetAll just iface.
                 let mut p = call.body.parser();
-                let _iface: String = p.get().unwrap_or_default();
-                let prop: String = p.get().unwrap_or_default();
-                if member == "Get" && prop == "IsStatusNotifierHostRegistered" {
-                    use rustbus::params::{Base, Container, Param, Variant as ParamVariant};
-                    let value = Param::Base(Base::Boolean(true));
-                    let variant = Param::Container(Container::Variant(Box::new(ParamVariant {
-                        sig: value.sig(),
-                        value,
-                    })));
-                    let _ = reply.body.push_old_param(&variant);
+                let iface: Result<String, UnmarshalError> = p.get();
+                let prop: Result<String, UnmarshalError> = if member == "Get" {
+                    p.get()
+                } else {
+                    Ok(String::new())
+                };
+                match (iface, prop) {
+                    (Ok(_iface), Ok(prop))
+                        if member == "Get" && prop == "IsStatusNotifierHostRegistered" =>
+                    {
+                        // We are the host; hosts mostly probe this bool.
+                        use rustbus::params::{Base, Container, Param, Variant as ParamVariant};
+                        let value = Param::Base(Base::Boolean(true));
+                        let variant =
+                            Param::Container(Container::Variant(Box::new(ParamVariant {
+                                sig: value.sig(),
+                                value,
+                            })));
+                        let _ = reply.body.push_old_param(&variant);
+                    }
+                    (Ok(_iface), Ok(_prop)) => {
+                        // GetAll (or a Get for a property we don't serve)
+                        // falls through to an empty reply.
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        tracing::debug!("tray: rejecting malformed properties call: {e}");
+                        reply = call.dynheader.make_error_response(
+                            "org.kde.StatusNotifierWatcher.Error.InvalidArgs",
+                            Some(format!("malformed {member} call: {e}")),
+                        );
+                    }
                 }
             }
             other => {
@@ -251,7 +285,11 @@ pub fn start<D: 'static>(
     let serial = dbus::send(&mut rpc, &mut req)?;
     let reply = rpc.wait_response(serial, SETUP)?;
     dbus::reply_ok(&reply)?;
-    let code: u32 = reply.body.parser().get().unwrap_or(0);
+    let code: u32 = reply
+        .body
+        .parser()
+        .get()
+        .map_err(|e| DbusError::Reply(format!("RequestName reply decode failed: {e}")))?;
     if code != rustbus::standard_messages::DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER {
         return Err(DbusError::Reply(format!(
             "{WATCHER_NAME} already owned (reply code {code})"

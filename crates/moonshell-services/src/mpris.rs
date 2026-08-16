@@ -93,20 +93,13 @@ pub fn start<D: 'static>(
     session_start(handle, notify)
 }
 
-/// One player's tracked state (all times in seconds).
+/// One player's tracked state. The published `MprisState` is the single
+/// source of truth, embedded inline as `state` — there is no parallel
+/// per-player struct to keep in sync, and `snapshot()` is just
+/// `active().state.clone()`. `activity` is purely heuristic bookkeeping.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Player {
-    /// Well-known name minus the MPRIS prefix.
-    name: String,
-    status: String,
-    title: String,
-    artist: String,
-    album: String,
-    art_url: String,
-    length: u64,
-    position: u64,
-    /// 1.0 until the player reports one.
-    volume: Option<f64>,
+    state: MprisState,
     /// Monotonic event counter value at this player's last signal.
     activity: u64,
 }
@@ -124,12 +117,14 @@ impl Model {
     fn add(&mut self, unique: &str, well_known: &str) {
         self.clock += 1;
         let player = Player {
-            name: well_known
-                .strip_prefix(PREFIX)
-                .unwrap_or(well_known)
-                .to_string(),
+            state: MprisState {
+                player_name: well_known
+                    .strip_prefix(PREFIX)
+                    .unwrap_or(well_known)
+                    .to_string(),
+                ..MprisState::default()
+            },
             activity: self.clock,
-            ..Player::default()
         };
         self.players.insert(unique.to_string(), player);
     }
@@ -159,20 +154,20 @@ impl Model {
             match key.as_str() {
                 "PlaybackStatus" => {
                     if let Ok(s) = v.get::<String>() {
-                        position_stale |= p.status != s;
-                        p.status = s;
+                        position_stale |= p.state.status != s;
+                        p.state.status = s;
                     }
                 }
                 "Volume" => {
                     if let Ok(d) = v.get::<Dbl>() {
-                        p.volume = Some(d.0);
+                        p.state.volume = d.0;
                     }
                 }
                 "Metadata" => {
                     if let Ok(meta) = v.get::<HashMap<String, Variant>>() {
-                        apply_metadata(p, &meta);
+                        apply_metadata(&mut p.state, &meta);
                         // New track: the old offset is meaningless.
-                        p.position = 0;
+                        p.state.position = 0;
                         position_stale = true;
                     }
                 }
@@ -185,7 +180,7 @@ impl Model {
     fn set_position(&mut self, unique: &str, us: i64) {
         self.touch(unique);
         if let Some(p) = self.players.get_mut(unique) {
-            p.position = us.max(0) as u64 / 1_000_000;
+            p.state.position = us.max(0) as u64 / 1_000_000;
         }
     }
 
@@ -194,35 +189,22 @@ impl Model {
     fn active(&self) -> Option<&Player> {
         self.players.values().max_by_key(|p| {
             (
-                p.status == "Playing",
+                p.state.status == "Playing",
                 p.activity,
-                std::cmp::Reverse(&p.name),
+                std::cmp::Reverse(&p.state.player_name),
             )
         })
     }
 
     fn snapshot(&self) -> MprisState {
-        let Some(p) = self.active() else {
-            return MprisState::default();
-        };
-        MprisState {
-            player_name: p.name.clone(),
-            status: p.status.clone(),
-            title: p.title.clone(),
-            artist: p.artist.clone(),
-            album: p.album.clone(),
-            art_url: p.art_url.clone(),
-            length: p.length,
-            position: p.position,
-            volume: p.volume.unwrap_or(1.0),
-        }
+        self.active().map(|p| p.state.clone()).unwrap_or_default()
     }
 }
 
-/// Fold an MPRIS `Metadata` dict (`a{sv}`) into a player. Length
-/// arrives as `x` per spec, but real players also send `t` and `d` —
-/// all accepted (the version-skew tolerance rule).
-fn apply_metadata(p: &mut Player, meta: &HashMap<String, Variant>) {
+/// Fold an MPRIS `Metadata` dict (`a{sv}`) into a player's published
+/// state. Length arrives as `x` per spec, but real players also send
+/// `t` and `d` — all accepted (the version-skew tolerance rule).
+fn apply_metadata(p: &mut MprisState, meta: &HashMap<String, Variant>) {
     p.title = meta
         .get("xesam:title")
         .and_then(|v| v.get::<String>().ok())
@@ -420,7 +402,11 @@ fn session_start<D: 'static>(
     let serial = dbus::send(&mut rpc, &mut list)?;
     let reply = rpc.wait_response(serial, SETUP)?;
     dbus::reply_ok(&reply)?;
-    let names: Vec<String> = reply.body.parser().get().unwrap_or_default();
+    let names: Vec<String> = reply
+        .body
+        .parser()
+        .get()
+        .map_err(|e| DbusError::Reply(format!("ListNames reply decode failed: {e}")))?;
 
     let mut model = Model::default();
     let mut seeds: Vec<String> = Vec::new();
@@ -604,13 +590,13 @@ mod tests {
         let mut m = Model::default();
         m.add(":1.1", "org.mpris.MediaPlayer2.spotify");
         m.add(":1.2", "org.mpris.MediaPlayer2.mpv");
-        m.players.get_mut(":1.1").unwrap().status = "Playing".into();
+        m.players.get_mut(":1.1").unwrap().state.status = "Playing".into();
         m.touch(":1.2"); // paused player is fresher…
-        m.players.get_mut(":1.2").unwrap().status = "Paused".into();
+        m.players.get_mut(":1.2").unwrap().state.status = "Paused".into();
         assert_eq!(m.snapshot().player_name, "spotify", "…but Playing wins");
 
         // Both paused: recency decides.
-        m.players.get_mut(":1.1").unwrap().status = "Paused".into();
+        m.players.get_mut(":1.1").unwrap().state.status = "Paused".into();
         assert_eq!(m.snapshot().player_name, "mpv");
     }
 
@@ -619,7 +605,7 @@ mod tests {
         let mut m = Model::default();
         m.add(":1.1", "org.mpris.MediaPlayer2.spotify");
         m.add(":1.2", "org.mpris.MediaPlayer2.mpv");
-        m.players.get_mut(":1.2").unwrap().status = "Playing".into();
+        m.players.get_mut(":1.2").unwrap().state.status = "Playing".into();
         assert_eq!(m.snapshot().player_name, "mpv");
         assert!(m.remove(":1.2"));
         assert_eq!(m.snapshot().player_name, "spotify");
@@ -658,8 +644,8 @@ mod tests {
             .unwrap()
             .get::<HashMap<String, Variant>>()
             .unwrap();
-        apply_metadata(&mut p, &meta);
-        assert_eq!(p.artist, "Solo");
+        apply_metadata(&mut p.state, &meta);
+        assert_eq!(p.state.artist, "Solo");
     }
 
     #[test]
