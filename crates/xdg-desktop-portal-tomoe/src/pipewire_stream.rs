@@ -3,9 +3,9 @@
 //! # Architecture: DRIVER + ALLOC_BUFFERS + wayland-driven queue
 //!
 //! The compositor pushes frames rather than the more obvious "PipeWire
-//! pulls, we push" model. The choice is what gives full output-refresh
-//! framerates instead of being pinned to the PipeWire graph driver's audio
-//! quantum (~46.875 fps = 1024/48000 — the xdpw bug).
+//! pulls, we push" model. The choice lets us deliver an output without being
+//! pinned to the PipeWire graph driver's audio quantum (~46.875 fps =
+//! 1024/48000 — the xdpw bug).
 //!
 //! ## Why each piece matters
 //!
@@ -23,13 +23,24 @@
 //!   and as a PipeWire DMA-BUF. If GBM or linux-dmabuf is unavailable we fall
 //!   back to the memfd + `wl_shm_pool` path.
 //!
-//! - **Wayland-driven queue** closes the timing loop. With DRIVER set,
-//!   `on_process` no longer fires on its own — there is no external pull. We
-//!   instead let each wlr-screencopy `ready` event call
-//!   `pw_stream_queue_buffer`, which both delivers the frame to consumers and
-//!   advances the PipeWire cycle. The next `capture_output` is issued
-//!   immediately after, so our cycle rate matches the rate at which the
-//!   compositor finishes new screencopy frames — one per vblank.
+//! - **Consumer-negotiated real-time pacing**. We do NOT pace at output
+//!   refresh. The stream is advertised with a free play rate and a
+//!   `VideoMaxFramerate` ceiling (the output refresh in Hz) so the consumer
+//!   picks the rate (e.g. 60 fps on a 240 Hz output). A `param_changed`
+//!   listener reads the negotiated `max_framerate` and derives
+//!   `min_time_between_frames = 1s / max_framerate`. The steady-state path in
+//!   `on_frame_ready` then holds each buffer submission (sleeping the residual
+//!   rather than busy-waiting) until that much real *monotonic* time has
+//!   elapsed since the last delivered frame. Pacing off real time — not
+//!   vblank cadence — is what keeps the video clock locked to the audio clock
+//!   and A/V stable.
+//!
+//! - **Wayland-driven queue** closes the capture loop. With DRIVER set,
+//!   `on_process` no longer fires on its own — there is no external pull. The
+//!   `ready` event queues the frame's buffer (`pw_stream_queue_buffer`),
+//!   delivering it to consumers and advancing the PipeWire cycle. The next
+//!   `capture_output` is issued only after the pacing gate has elapsed, so the
+//!   delivery rate is the consumer-negotiated rate, not one per vblank.
 //!
 //! - **Single thread** with `pipewire::loop_::Loop::add_io` attaching the
 //!   wayland socket fd to the same loop the PipeWire main loop polls. The
@@ -50,9 +61,11 @@
 //!      look up its paired `wl_buffer` and call `frame.copy(&wl_buffer)`.
 //!      The compositor writes pixels directly into the PipeWire-owned backing
 //!      storage.
-//!   4. `Ready` arrives → we set `chunk.size` on the pw_buffer, call
+//!   4. `Ready` arrives → the pacing gate holds the submission until
+//!      `min_time_between_frames` of real time has passed (consumer-negotiated
+//!      rate, not vblank); then we set `chunk.size` on the pw_buffer, call
 //!      `queue_raw_buffer()` (the wake-up for consumers AND the cycle advance
-//!      for the DRIVER stream), then immediately `kick_capture()` again.
+//!      for the DRIVER stream), and issue the next `kick_capture()`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -65,11 +78,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use drm_fourcc::{DrmFourcc, DrmModifier};
 use gbm::{BufferObject, BufferObjectFlags, Device as GbmDevice};
 use pipewire as pw;
 use pw::spa;
+use pw::spa::param::format::{MediaSubtype, MediaType};
+use pw::spa::param::format_utils::parse_format;
+use pw::spa::param::video::VideoInfoRaw;
+use pw::spa::param::ParamType;
 use pw::spa::pod::serialize::PodSerializer;
 use pw::spa::pod::{ChoiceValue, Object, Pod, Property, Value};
 use pw::spa::support::system::IoFlags;
@@ -84,6 +102,10 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
+
+// Give a 0.1 ms allowance for presentation-time jitter before treating a
+// frame as arriving too soon, mirroring niri's CAST_DELAY_ALLOWANCE.
+const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
 #[derive(Debug, Clone)]
 pub struct StreamSpec {
@@ -173,6 +195,18 @@ struct AppState {
     // don't dereference a stale pw_buffer.
     dying: bool,
     stop_flag: Option<Arc<AtomicBool>>,
+
+    // Real-time pacing state. The consumer negotiates a `VideoMaxFramerate`
+    // via the `param_changed` listener; we translate that into the minimum
+    // real (monotonic) interval between frames we may deliver and hold off on
+    // submitting output until it elapses. Without this, the DRIVER stream
+    // would deliver at output-vblank cadence (~240 Hz on a 240 Hz monitor)
+    // while the negotiated format advertises ~60 fps, so video time advances
+    // ~4x faster than the audio clock and A/V desync grows without bound.
+    min_time_between_frames: Duration,
+    /// Monotonic instant of the last frame actually delivered; `None` until
+    /// the first frame is submitted.
+    last_frame_time: Option<Instant>,
 }
 
 struct PendingFrame {
@@ -256,6 +290,8 @@ fn run(
         capture_kicked: false,
         dying: false,
         stop_flag: Some(stop.clone()),
+        min_time_between_frames: Duration::ZERO,
+        last_frame_time: None,
     };
 
     // Bind globals (round 1), then receive wl_output names (round 2).
@@ -324,10 +360,52 @@ fn run(
     let s_state = state_rc.clone();
     let s_add = state_rc.clone();
     let s_remove = state_rc.clone();
+    let s_param = state_rc.clone();
     let _listener = stream
         .add_local_listener_with_user_data(())
         .state_changed(move |stream, _ud, old, new| {
             s_state.borrow_mut().on_state_changed(stream, old, new);
+        })
+        .param_changed(move |_stream, _ud, id, pod| {
+            // Subscribe to the consumer-negotiated format. The interesting
+            // field is VideoMaxFramerate: the consumer picks the play rate and
+            // we derive the real-time pacing interval from it (mirrors niri's
+            // pw_utils param_changed handler). We keep it non-destructive — the
+            // buffer/modifier/meta negotiation for the screencap pipeline is
+            // driven by our EnumFormat advert + add_buffer below.
+            if ParamType::from_raw(id) != ParamType::Format {
+                return;
+            }
+            let Some(pod) = pod else {
+                return;
+            };
+            let Ok((m_type, m_subtype)) = parse_format(pod) else {
+                return;
+            };
+            if m_type != MediaType::Video || m_subtype != MediaSubtype::Raw {
+                return;
+            }
+            let mut format = VideoInfoRaw::new();
+            if format.parse(pod).is_err() {
+                return;
+            }
+            let max_framerate = format.max_framerate();
+            // Denominated per second: min interval = 1_000_000us * denom / num.
+            // Guard num == 0 (free/unbounded rate) → no pacing constraint,
+            // matching niri's zero `min_time_between_frames` default.
+            let min_time = if max_framerate.num > 0 {
+                Duration::from_micros(
+                    (1_000_000 * u64::from(max_framerate.denom)) / u64::from(max_framerate.num),
+                )
+            } else {
+                Duration::ZERO
+            };
+            s_param.borrow_mut().min_time_between_frames = min_time;
+            tracing::debug!(
+                ?max_framerate,
+                ?min_time,
+                "screencast: consumer-negotiated frame pacing"
+            );
         })
         .add_buffer(move |stream, _ud, buffer| {
             s_add.borrow_mut().on_add_buffer(stream, buffer);
@@ -868,6 +946,28 @@ impl AppState {
         if self.dying {
             return;
         }
+
+        // Real-time pacing gate (mirrors niri's check_time_and_schedule at the
+        // start of the render pass): before submitting a frame, hold until at
+        // least `min_time_between_frames` of real monotonic time has elapsed
+        // since the last delivered frame. The consumer negotiates this
+        // interval via `VideoMaxFramerate` in `param_changed`. Without the
+        // hold, the DRIVER stream pushes one frame per output vblank (~240 fps
+        // on a 240 Hz monitor) while the negotiated format advertises ~60 fps,
+        // advancing video time ~4x faster than the audio clock and growing A/V
+        // desync monotonically. We sleep the residual rather than busy-wait.
+        let now = Instant::now();
+        if let Some(last) = self.last_frame_time {
+            let next_deadline = last + self.min_time_between_frames;
+            if now < next_deadline {
+                let remaining = next_deadline - now;
+                if remaining >= CAST_DELAY_ALLOWANCE {
+                    thread::sleep(remaining);
+                }
+            }
+        }
+        self.last_frame_time = Some(Instant::now());
+
         let Some(pending) = self.pending_frame.take() else {
             return;
         };
@@ -907,8 +1007,9 @@ impl AppState {
             self.last_log_at = std::time::Instant::now();
         }
 
-        // Issue the next capture immediately — Ready arrived at compositor
-        // pace, so this paces our cycle to vblank.
+        // Issue the next capture. The pacing gate at the top of this fn
+        // already held us to the consumer-negotiated rate, so the cycle stays
+        // real-time paced rather than running at vblank cadence.
         self.kick_capture();
     }
 
@@ -964,12 +1065,13 @@ fn init_gbm_device() -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Erro
 fn build_video_format_param(
     spec: &StreamSpec,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    // Advertise like niri: `VideoFramerate` is free (0/1) so the consumer picks
+    // the play rate, and `VideoMaxFramerate` is a range capped at the output
+    // refresh in Hz (spec.framerate). The consumer coalesces on the rate it
+    // wants (e.g. 60 fps on a 240 Hz output); we then pace delivery to that
+    // negotiated max via `param_changed`.
     let max_framerate = Fraction {
         num: spec.framerate.max(1),
-        denom: 1,
-    };
-    let preferred_framerate = Fraction {
-        num: spec.framerate.clamp(1, 60),
         denom: 1,
     };
     let obj = Value::Object(Object {
@@ -995,24 +1097,19 @@ fn build_video_format_param(
                     height: spec.height,
                 }),
             ),
+            // Free play rate: the consumer chooses.
             Property::new(
                 spa_sys::SPA_FORMAT_VIDEO_framerate,
-                Value::Choice(ChoiceValue::Fraction(Choice(
-                    ChoiceFlags::empty(),
-                    ChoiceEnum::Range {
-                        default: preferred_framerate,
-                        min: Fraction { num: 0, denom: 1 },
-                        max: max_framerate,
-                    },
-                ))),
+                Value::Fraction(Fraction { num: 0, denom: 1 }),
             ),
+            // Ceiling at the output refresh; consumer picks within [1, refresh].
             Property::new(
                 spa_sys::SPA_FORMAT_VIDEO_maxFramerate,
                 Value::Choice(ChoiceValue::Fraction(Choice(
                     ChoiceFlags::empty(),
                     ChoiceEnum::Range {
-                        default: preferred_framerate,
-                        min: Fraction { num: 0, denom: 1 },
+                        default: max_framerate,
+                        min: Fraction { num: 1, denom: 1 },
                         max: max_framerate,
                     },
                 ))),
