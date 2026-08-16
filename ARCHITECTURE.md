@@ -113,7 +113,8 @@ crate moonshell_runtime
 │   └── struct TextDefaults: pub
 ├── mod exec: pub
 │   ├── struct ExecCallback: pub(crate)
-│   └── struct ExecReply: pub
+│   ├── struct ExecReply: pub
+│   └── struct LuaHook: pub(crate)
 ├── mod painter: pub
 │   └── struct LuaPainter: pub
 ├── mod services_bridge: pub
@@ -167,7 +168,8 @@ crate moonshell_services
 │   ├── struct Daemon: pub(self)
 │   ├── struct Notification: pub
 │   ├── struct NotificationsState: pub
-│   └── type Notify: pub(self)
+│   ├── type Notify: pub(self)
+│   └── struct NotifyArgs: pub(self)
 └── mod tray: pub
     ├── struct Host: pub(self)
     ├── type Notify: pub(self)
@@ -429,6 +431,8 @@ crate tomoe_ipc
 ├── struct Output: pub
 ├── struct Rect: pub
 ├── struct Request: pub
+├── struct ScreencastParams: pub
+├── struct SubscribeParams: pub
 └── struct Window: pub
 ```
 
@@ -447,6 +451,7 @@ crate xdg_desktop_portal_tomoe
 │   ├── enum BufferSlotStorage: pub(self)
 │   ├── struct FdHolder: pub(self)
 │   ├── struct PendingFrame: pub(self)
+│   ├── struct PwBuf: pub(self)
 │   ├── struct StreamHandle: pub
 │   └── struct StreamSpec: pub
 ├── mod screencast: pub(crate)
@@ -462,6 +467,7 @@ crate xdg_desktop_portal_tomoe
 │   ├── struct DiscoveredToplevel: pub(self)
 │   ├── struct FdHolder: pub(self)
 │   ├── struct PendingFrame: pub(self)
+│   ├── struct PwBuf: pub(self)
 │   ├── struct StreamHandle: pub
 │   ├── struct StreamInfo: pub
 │   └── struct StreamSpec: pub
