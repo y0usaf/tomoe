@@ -307,6 +307,9 @@ pub fn start<D: 'static>(
     }
 
     let raw = rpc.conn().as_raw_fd();
+    // SAFETY: `rpc` owns the socket and lives for the lifetime of this `Host`
+    // (it is moved into the shared cell below), so the source fd stays valid
+    // while the cloned fd behind the calloop source is in use.
     let fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
 
     let host = Rc::new(RefCell::new(Host {

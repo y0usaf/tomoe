@@ -180,6 +180,8 @@ impl Model {
     fn set_position(&mut self, unique: &str, us: i64) {
         self.touch(unique);
         if let Some(p) = self.players.get_mut(unique) {
+            // `us.max(0)` makes the value non-negative, so the cast to
+            // `u64` cannot truncate/wrap; `/1_000_000` yields seconds.
             p.state.position = us.max(0) as u64 / 1_000_000;
         }
     }
@@ -230,8 +232,11 @@ fn apply_metadata(p: &mut MprisState, meta: &HashMap<String, Variant>) {
         .get("mpris:length")
         .and_then(|v| {
             v.get::<i64>()
+                // `x.max(0)` is non-negative, so it safely fits in a `u64`.
                 .map(|x| x.max(0) as u64)
                 .or_else(|_| v.get::<u64>())
+                // Likewise `d.0.max(0.0)` is a non-negative, integer-valued
+                // f64 (it already held the whole-number microseconds).
                 .or_else(|_| v.get::<Dbl>().map(|d| d.0.max(0.0) as u64))
                 .ok()
         })
@@ -431,6 +436,9 @@ fn session_start<D: 'static>(
     }
 
     let raw = rpc.conn().as_raw_fd();
+    // SAFETY: `rpc` owns the connection socket and lives for the lifetime of
+    // this `Mpris` value (moved into the shared cell below), so its fd stays
+    // valid as long as the cloned fd the watcher holds is in use.
     let fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
 
     let last = model.snapshot();

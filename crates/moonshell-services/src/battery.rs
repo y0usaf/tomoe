@@ -156,6 +156,8 @@ impl Model {
         let s = &mut self.raw;
         match (key, value) {
             ("Percentage", Prop::F64(p)) => {
+                // `p` is clamped to [0.0, 100.0], so the rounded value
+                // always fits in a `u8` (0..=100) — the cast is safe.
                 let pct = p.clamp(0.0, 100.0).round() as u8;
                 let changed = s.percent != pct;
                 s.percent = pct;
@@ -249,6 +251,10 @@ fn upower_start<D: 'static>(
     // through the original (the watcher's dup'd-fd technique — source
     // teardown order can't invalidate either side).
     let raw = rpc.conn().as_raw_fd();
+    // SAFETY: `rpc` owns the connection socket, which stays alive for the
+    // lifetime of this `Upower` (it is moved into the shared cell below and
+    // dropped only when the source is removed). Borrowing its fd to dup it
+    // is therefore valid for the whole time the cloned fd is in use.
     let fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
 
     let be = Rc::new(RefCell::new(Upower {

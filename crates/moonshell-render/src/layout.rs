@@ -59,6 +59,11 @@ pub fn compute(
 /// Intrinsic physical size of a tree, ceiled to whole pixels — for
 /// callers sizing a canvas around content (compositor dialogs) rather
 /// than filling a fixed surface.
+///
+/// The casts are sound because `measure` never returns negative sizes:
+/// every intrinsic and override dimension is `>= 0`, so `ceil` then
+/// `.max(0.0)` keeps the value non-negative and it fits `u32` (a
+/// canvas is a bounded buffer allocation, far below `2^24`).
 pub fn intrinsic_size(root: &Element, scale: f32, r: &mut Renderer) -> (u32, u32) {
     let (w, h) = measure(root, scale, r);
     (w.ceil().max(0.0) as u32, h.ceil().max(0.0) as u32)

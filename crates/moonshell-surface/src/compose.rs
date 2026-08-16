@@ -101,6 +101,20 @@ struct ScopeInner {
 /// re-setting the very key it was notified for cannot spin forever.
 #[derive(Default)]
 pub struct Context {
+    // INVARIANT: every value stored here was written by [`Context::set`]
+    // with a concrete type `T`, boxed behind `dyn Any + Send`. A key is
+    // always written and later read with the *same* `T` (reads/writes
+    // are paired in this crate's use of the reactive context), so
+    // `get::<T>` downcasts a value that was in fact stored as `T`. This
+    // is what makes [`Context::get`]'s `downcast_ref::<T>` sound: each
+    // `Box<dyn Any + Send>` retains the exact layout it was constructed
+    // with, and a mismatched read (should one ever occur) fails cleanly
+    // with `None` rather than misinterpreting the bytes. The invariants
+    // of `std::any::Any::downcast_ref` guarantee that a downcast to the
+    // *correct* `T` is well-typed; nothing here does an unchecked
+    // cast. We keep the type-erased store on purpose: one
+    // `HashMap<Key, ...>` holds heterogeneous values (theme strings,
+    // geometry tuples, …), which a single concrete type could not.
     values: HashMap<Key, Box<dyn Any + Send>>,
     readers: HashMap<Key, HashSet<usize>>,
     scopes: HashMap<usize, ScopeInner>,
@@ -120,7 +134,16 @@ impl Context {
         Self::default()
     }
 
-    /// Read a value by key. `T` must match what the writer stored.
+    /// Read a value by key. `T` must match what the writer stored; a
+    /// type mismatch yields `None`.
+    ///
+    /// Sound: by the [`Context::values`] invariant every stored value is
+    /// a box created by [`Self::set`] with the same `T` being requested
+    /// here, so `downcast_ref::<T>` is always presented the exact type
+    /// it was boxed as. A wrong-typed read (say a caller forgetting the
+    /// writer's type) cannot resurrect arbitrary bytes as `T` — `Any`
+    /// only downcasts to the original type, otherwise returning `None`,
+    /// and `?` on the `Option` short-circuits before any dereference.
     pub fn get<T: Any + Send>(&self, key: Key) -> Option<&T> {
         self.values.get(key)?.downcast_ref::<T>()
     }
@@ -132,6 +155,10 @@ impl Context {
 
     /// The single committed write path. Stores the value and notifies
     /// only the units that declared `key` in their `reads`.
+    ///
+    /// The boxed `Box<dyn Any + Send>` records `T`'s concrete identity
+    /// (kept by the [`Context::values`] invariant), which is exactly
+    /// what [`Self::get::<T>`] later downcasts back to `T`.
     pub fn set<T: Any + Send>(&mut self, key: Key, value: T) {
         self.values.insert(key, Box::new(value));
         self.schedule(key);
@@ -351,8 +378,8 @@ mod tests {
         assert_eq!(geom_hits.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
-    /// Two mounts of the same key must not collide: each inverse is
-    /// independent, and the second's replay restores the first's value.
+    /// Two mounts of the same key must not collide: each inverse is independent, and
+    /// the second's replay restores the first's value.
     #[test]
     fn overlapping_effects_unmount_independently() {
         let mut ctx = Context::new();
