@@ -386,6 +386,10 @@ crate tomoe
 │   ├── struct ConfigFingerprint: pub(self)
 │   ├── struct DndIcon: pub
 │   └── struct Tomoe: pub
+│       ├── type KeyboardFocus: pub(self)
+│       ├── type PointerFocus: pub(self)
+│       ├── type SelectionUserData: pub(self)
+│       └── type TouchFocus: pub(self)
 ├── mod ui: pub(crate)
 │   ├── struct Ui: pub
 │   ├── mod element_tree: pub
