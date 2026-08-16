@@ -408,6 +408,14 @@ impl ScreenCast {
                 };
                 let spec = StreamSpec {
                     output_name: out.name.clone(),
+                    // `out.width/height` are `i32` (from wl_output's Mode
+                    // event); `.max(1)` makes them non-negative (still
+                    // ≤ i32::MAX) before widening to the u32 `StreamSpec`
+                    // fields. The raw format size later re-narrows to i32
+                    // (`size` below) with no loss because the value never
+                    // exceeded i32::MAX here; the widening is only a type
+                    // gate for the PipeWire POD builders, which themselves
+                    // re-validate the u32 against i32 in `xrgb8888_stride`.
                     width: out.width.max(1) as u32,
                     height: out.height.max(1) as u32,
                     framerate,
@@ -466,6 +474,11 @@ impl ScreenCast {
         let mut stream_props: HashMap<String, Value> = HashMap::new();
         stream_props.insert(
             "size".to_string(),
+            // `width`/`height` here are u32 stream dims. On the monitor path
+            // they originated as i32 `OutputInfo` values and were widened only
+            // up from ≤ i32::MAX, so this `as i32` re-narrows losslessly to the
+            // original. (SAFETY: no value here exceeds i32::MAX; the widening
+            // in `start` guarantees it for monitor sources.)
             Value::from((width as i32, height as i32)),
         );
         stream_props.insert("source_type".to_string(), Value::from(source_type));
