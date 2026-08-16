@@ -364,27 +364,26 @@ mod tests {
 
     #[test]
     fn theme_resolution_honors_inheritance_and_close_size() {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if home.is_empty() {
-            return;
-        }
-        // A "cursortest" theme under ~/.icons whose index.theme inherits
-        // "default", from which the icon resolves.
-        let tdir = Path::new(&home).join(".icons");
-        let theme_dir = tdir.join("cursortest");
-        let cursors = theme_dir.join("cursors");
-        std::fs::create_dir_all(&cursors).unwrap();
-        std::fs::write(theme_dir.join("index.theme"), "Inherits=default\n").unwrap();
-        std::fs::write(cursors.join("default"), &FIXTURE[..]).unwrap();
-        std::fs::write(cursors.join("left_ptr"), &FIXTURE[..]).unwrap();
+        // A writable scratch theme (never $HOME — the nix build sandbox
+        // sets HOME read-only). "cursortest" has no cursor files of its
+        // own; its index.theme inherits "default", where the icon lives.
+        let base = std::env::temp_dir().join(format!("tomoe-cursor-{}", std::process::id()));
+        let inherit_theme = base.join("cursortest");
+        let default_theme = base.join("default");
+        std::fs::create_dir_all(default_theme.join("cursors")).unwrap();
+        std::fs::create_dir_all(inherit_theme.join("cursors")).unwrap();
+        std::fs::write(inherit_theme.join("index.theme"), "Inherits=default\n").unwrap();
+        std::fs::write(default_theme.join("cursors").join("default"), &FIXTURE[..]).unwrap();
+        std::fs::write(default_theme.join("cursors").join("left_ptr"), &FIXTURE[..]).unwrap();
 
-        // With ~/.icons as an XCURSOR_PATH override, the theme resolves
-        // through its inheritance chain to the file, and the 4x4 image is
-        // picked for a requested size of 4 (not the (nonexistent) 24).
-        let override_ = tdir.to_string_lossy().into_owned();
-        let img = load_image("cursortest", 4, Some(&override_)).expect("theme resolves");
+        // With the scratch dir as an XCURSOR_PATH override, the theme's
+        // inheritance chain resolves the file, and the 4x4 image closest to
+        // the requested size 4 is picked (not a (nonexistent) larger one).
+        let base_str = base.to_string_lossy().into_owned();
+        let img = load_image("cursortest", 4, Some(&base_str)).expect("inherited theme resolves");
         assert_eq!((img.width, img.height, img.size), (4, 4, 4));
 
-        let _ = std::fs::remove_dir_all(&theme_dir);
+        let _ = std::fs::remove_dir_all(&inherit_theme);
+        let _ = std::fs::remove_dir_all(&default_theme);
     }
 }
