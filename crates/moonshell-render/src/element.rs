@@ -69,6 +69,10 @@ pub enum Orientation {
 pub struct Style {
     pub bg: Option<Rgba>,
     pub border_radius: f32,
+    /// Border stroke width (logical px); 0 = none.
+    pub border: f32,
+    /// Border stroke color; drawn only when `border > 0`.
+    pub border_color: Option<Rgba>,
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub grow: f32,

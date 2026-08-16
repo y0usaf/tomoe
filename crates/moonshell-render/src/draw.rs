@@ -46,6 +46,24 @@ pub fn draw(
             bg,
         );
     }
+    if style.border > 0.0 {
+        if let Some(bc) = style.border_color {
+            let t = style.border * scale;
+            let half = t / 2.0;
+            r.stroke_rounded_rect(
+                canvas,
+                width,
+                height,
+                rect.x + half,
+                rect.y + half,
+                (rect.w - t).max(0.0),
+                (rect.h - t).max(0.0),
+                (style.border_radius * scale - half).max(0.0),
+                t,
+                bc,
+            );
+        }
+    }
     match el {
         Element::HBox(f) | Element::VBox(f) => {
             for (child, child_node) in f.children.iter().zip(&node.children) {
@@ -259,6 +277,28 @@ mod tests {
         };
         assert_ne!(px(16, 2), &[0, 0, 0, 0], "12 o'clock on the ring");
         assert_eq!(px(16, 16), &[0, 0, 0, 0], "center stays empty");
+    }
+
+    /// Box with a border: the edge pixel is the border color while the
+    /// center stays the background color.
+    #[test]
+    fn border_sits_inside_box() {
+        let mut r = Renderer::new();
+        let mut buf = vec![0u8; (W * H * 4) as usize];
+        let root = Element::HBox(Flex {
+            style: Style {
+                bg: Some(Rgba::new(20, 20, 30, 255)),
+                border: 2.0,
+                border_color: Some(Rgba::new(255, 0, 0, 255)),
+                ..Style::default()
+            },
+            ..Flex::default()
+        });
+        render_tree(&mut r, &mut buf, W, H, 1.0, &root);
+        // Top edge pixel (inside the 2px border) is red.
+        assert_eq!(pixel(&buf, 20, 1), &[0, 0, 255, 255], "border is red");
+        // Center remains the background.
+        assert_eq!(pixel(&buf, 20, 4), &[30, 20, 20, 255], "center is bg");
     }
 
     /// A bar-like tree (bg + padding + text) draws without panicking on
