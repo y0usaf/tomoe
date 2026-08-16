@@ -243,6 +243,10 @@ pub struct Tomoe {
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
+    #[expect(
+        dead_code,
+        reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
+    )]
     pub dnd_icon: Option<DndIcon>,
     /// Block cursor drawn when no xcursor theme loaded and no client surface;
     /// persistent so damage trackers see a stable element id.
