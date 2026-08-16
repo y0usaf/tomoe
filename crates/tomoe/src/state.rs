@@ -80,6 +80,17 @@ fn config_fingerprint(path: Option<&Path>) -> Option<ConfigFingerprint> {
     Some(ConfigFingerprint { canonical, mtime })
 }
 
+/// Client-provided drag icon surface, rendered under the cursor during an
+/// active drag-and-drop grab.
+#[expect(
+    dead_code,
+    reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
+)]
+pub struct DndIcon {
+    pub surface: WlSurface,
+    pub offset: Point<i32, Logical>,
+}
+
 pub struct Tomoe {
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, Tomoe>,
@@ -232,6 +243,7 @@ pub struct Tomoe {
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
+    pub dnd_icon: Option<DndIcon>,
     /// Block cursor drawn when no xcursor theme loaded and no client surface;
     /// persistent so damage trackers see a stable element id.
     pub cursor_fallback: SolidColorBuffer,
@@ -450,6 +462,7 @@ impl Tomoe {
             notified_activity: false,
             seat,
             cursor_status: CursorImageStatus::default_named(),
+            dnd_icon: None,
             cursor_fallback: SolidColorBuffer::new((8, 16), [1.0, 1.0, 1.0, 1.0]),
             satellite: None,
             clock: Clock::new(),
