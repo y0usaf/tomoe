@@ -329,7 +329,15 @@ fn parse_children(table: &LuaTable, inherited: TextDefaults) -> LuaResult<Vec<El
 pub(crate) fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>> {
     let val: LuaValue = table.get(key)?;
     match val {
-        LuaValue::Integer(n) => Ok(Some(rgb_u32(n as u32))),
+        LuaValue::Integer(n) => match u32::try_from(n) {
+            // A color is an unsigned 0xRRGGBB value; a negative integer
+            // has no valid color meaning, so reject it (the old `as u32`
+            // wrap would have turned e.g. -1 into a bogus white).
+            Ok(c) => Ok(Some(rgb_u32(c))),
+            Err(_) => Err(LuaError::RuntimeError(format!(
+                "'{key}' must be a number (0xRRGGBB) or string (\"#rrggbb\")"
+            ))),
+        },
         LuaValue::Number(n) => {
             // Round + clamp: a fractional 0xRRGGBB color must not silently
             // truncate to a different value.
@@ -353,6 +361,9 @@ pub(crate) fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>
                     u32::from_str_radix(&expanded, 16).map(rgb_u32)
                 }
                 6 => u32::from_str_radix(hex, 16).map(rgb_u32),
+                // `c` is a validated #RRGGBBAA hex value, so the top eight
+                // bits (alpha) are the high byte and each `as u8` lane
+                // cleanly truncates one of the four byte-lanes of `c`.
                 8 => u32::from_str_radix(hex, 16)
                     .map(|c| Rgba::new((c >> 24) as u8, (c >> 16) as u8, (c >> 8) as u8, c as u8)),
                 _ => {
@@ -373,6 +384,8 @@ pub(crate) fn parse_color(table: &LuaTable, key: &str) -> LuaResult<Option<Rgba>
     }
 }
 
+/// Invariant: `c` is a validated unsigned 0xRRGGBB value (callers only
+/// pass a checked `u32`), so each `as u8` cleanly extracts one byte-lane.
 fn rgb_u32(c: u32) -> Rgba {
     Rgba::new((c >> 16) as u8, (c >> 8) as u8, c as u8, 0xff)
 }
