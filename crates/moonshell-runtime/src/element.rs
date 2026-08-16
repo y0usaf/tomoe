@@ -208,6 +208,12 @@ fn apply_style(table: &LuaTable, base: Style) -> LuaResult<Style> {
     if let Some(r) = table.get::<Option<f32>>("border_radius")? {
         s.border_radius = r;
     }
+    if let Some(b) = table.get::<Option<f32>>("border")? {
+        s.border = b;
+    }
+    if let Some(bc) = parse_color(table, "border_color")? {
+        s.border_color = Some(bc);
+    }
     if let Some(w) = table.get::<Option<f32>>("width")? {
         s.width = Some(w);
     }

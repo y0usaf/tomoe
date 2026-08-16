@@ -220,6 +220,41 @@ impl Renderer {
         );
     }
 
+    /// Stroke a rounded-rect outline (border), clipped to the canvas.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_rounded_rect(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        thickness: f32,
+        color: Rgba,
+    ) {
+        if thickness <= 0.0 || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let r = radius.min(w / 2.0).min(h / 2.0);
+        let Some(path) = rounded_rect_path(x, y, w, h, r) else {
+            return;
+        };
+        let mut paint = Paint::default();
+        paint.set_color(color.to_skia());
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width: thickness,
+            ..Stroke::default()
+        };
+        let Some(mut pixmap) = pixmap(canvas, width, height) else {
+            return;
+        };
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+
     /// Stroke a circular arc centered at `(cx, cy)`. Angles in degrees,
     /// 0° = 3 o'clock, positive = clockwise (screen coordinates).
     #[allow(clippy::too_many_arguments)]
