@@ -2988,7 +2988,6 @@ dependencies = [
  "tomoe-ipc",
  "tracing",
  "tracing-subscriber",
- "xcursor",
 ]
 
 [[package]]
