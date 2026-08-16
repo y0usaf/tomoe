@@ -200,8 +200,14 @@ struct BufferSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PwBuf(*mut pw::sys::pw_buffer);
 
-// Raw pw_buffer pointers don't carry Send inferred by the compiler, but the
-// whole AppState only ever lives on a single thread.
+// SAFETY: `AppState` holds raw `*mut pw_buffer` pointers (see [`PwBuf`]) that
+// the compiler cannot prove are `Send`. But every field of `AppState` is only
+// ever accessed from the single toplevel-cast thread — the wayland and PipeWire
+// listeners, the `add_io` dispatch, and `dequeue_raw_buffer`/`queue_raw_buffer`
+// all run on that one thread. So no reference to `AppState` can cross a thread
+// boundary and transferring only the owner (`Rc<RefCell<_>>`, non-`Send`)
+// between threads is never done; this impl is a sound statement of fact, not a
+// lie for the caller to uphold.
 unsafe impl Send for AppState {}
 
 /// `add_io` requires its io source to implement `AsRawFd`. We hand it a
@@ -772,6 +778,16 @@ impl AppState {
             }
         };
         unsafe {
+            // SAFETY: PipeWire calls this `add_buffer` listener once per
+            // pre-allocated slot with `buffer` pointing at a `pw_buffer` that is
+            // valid for the entire callback and is owned by the stream. Its
+            // `.buffer` field points at a live `spa_buffer` whose `datas` array
+            // of length `n_datas` is fully initialized by PipeWire before the
+            // callback, so forming a mutable slice over it (and writing the
+            // pre-negotiated `spa_data`/`spa_chunk` fields below) cannot touch
+            // freed or out-of-bounds memory. The pointer is never stored or
+            // dereferenced after this callback returns; ownership stays with
+            // the stream.
             let buf = (*buffer).buffer;
             if buf.is_null() {
                 tracing::error!("on_add_buffer: pw_buffer.buffer is null");
@@ -842,7 +858,14 @@ impl AppState {
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
+        let pw_buf = unsafe {
+            // SAFETY: `dequeue_raw_buffer` pops the next available buffer slot
+            // that PipeWire owns for this stream; the returned pointer stays
+            // owned by `stream` until we hand it back via `queue_raw_buffer`
+            // (we never dereference it through [`PwBuf`]). A null return just
+            // means no slot is free, which we back off and retry below.
+            stream.dequeue_raw_buffer()
+        };
         if pw_buf.is_null() {
             // Consumer hasn't returned a buffer yet — all slots in flight.
             // Small backoff; the natural cycle re-kicks. A dropped frame.
