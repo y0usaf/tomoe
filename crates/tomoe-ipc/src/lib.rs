@@ -81,6 +81,32 @@ pub struct Event {
     pub payload: Value,
 }
 
+/// One server → client frame, discriminated by shape:
+/// `{ "id", "result" }` for a response, `{ "id", "error" }` for an error,
+/// `{ "event", "payload" }` for an event. This is the *wire boundary* type:
+/// every frame is parsed once into a `Frame` here, so callers never re-probe
+/// raw JSON (no more `frame.get("id").and_then(...)` at use sites).
+///
+/// `#[serde(untagged)]` keeps the on-wire JSON byte-identical to the shapes
+/// documented in the module docs — it matches by field presence, it does not
+/// add a discriminant key. Variant order mirrors the legacy read precedence:
+/// `error`/response both carry `id`, and the original client checked `error`
+/// before `result`, so `Error` is tried first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Frame {
+    /// `{ "id": number, "error": string }` — an error reply.
+    Error { id: u64, error: String },
+    /// `{ "id": number, "result": value }` — a successful reply.
+    Response { id: u64, result: Value },
+    /// `{ "event": string, "payload": value }` — an event stream frame.
+    Event {
+        event: String,
+        #[serde(default)]
+        payload: Value,
+    },
+}
+
 /// Geometry rectangle in global physical pixels (like all tomoe geometry).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Rect {
@@ -183,28 +209,36 @@ impl Client {
         self.writer.write_all(line.as_bytes())?;
 
         loop {
-            let frame = self.read_frame()?;
-            if frame.get("id").and_then(Value::as_u64) != Some(id) {
-                continue;
+            match self.read_frame()? {
+                // Not our response (a different in-flight request, an event
+                // from another subscriber slot, or a mismatched id): drop it.
+                Frame::Error { id: fid, .. } if fid != id => continue,
+                Frame::Response { id: fid, .. } if fid != id => continue,
+                Frame::Error { id: fid, error } if fid == id => {
+                    return Ok(Err(error));
+                }
+                Frame::Response { id: fid, result } if fid == id => {
+                    return Ok(Ok(result));
+                }
+                // Anything else (an event frame, or a response/error whose id
+                // never matches) is not ours; keep waiting.
+                _ => continue,
             }
-            if let Some(err) = frame.get("error").and_then(Value::as_str) {
-                return Ok(Err(err.to_string()));
-            }
-            return Ok(Ok(frame.get("result").cloned().unwrap_or(Value::Null)));
         }
     }
 
     /// Block until the next event frame (call after a `subscribe` request).
     pub fn next_event(&mut self) -> io::Result<Event> {
         loop {
-            let frame = self.read_frame()?;
-            if frame.get("event").is_some() {
-                return serde_json::from_value(frame).map_err(io::Error::other);
+            match self.read_frame()? {
+                Frame::Event { event, payload } => return Ok(Event { event, payload }),
+                // Not an event frame (response/error): not ours, keep waiting.
+                _ => continue,
             }
         }
     }
 
-    fn read_frame(&mut self) -> io::Result<Value> {
+    fn read_frame(&mut self) -> io::Result<Frame> {
         loop {
             let mut line = String::new();
             if self.reader.read_line(&mut line)? == 0 {

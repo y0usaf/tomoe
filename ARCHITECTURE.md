@@ -428,6 +428,7 @@ crate tomoe
 crate tomoe_ipc
 ├── struct Client: pub
 ├── struct Event: pub
+├── enum Frame: pub
 ├── struct Output: pub
 ├── struct Rect: pub
 ├── struct Request: pub
