@@ -90,9 +90,9 @@ impl ShadowRenderElement {
     }
 
     pub fn with_location(mut self, location: Point<i32, Physical>) -> Self {
-        self.inner = self
-            .inner
-            .with_location(Point::from((location.x as f64, location.y as f64)));
+        // Already physical output pixels; the inner element takes physical
+        // coordinates directly.
+        self.inner = self.inner.with_location(location);
         self
     }
 
@@ -103,8 +103,9 @@ impl ShadowRenderElement {
             self.params.window_size.h + range * 2,
         )
             .into();
-        let size: Size<f64, smithay::utils::Logical> =
-            (full_size.w.max(0) as f64, full_size.h.max(0) as f64).into();
+        // Preserve the historical per-axis floor at zero while keeping the
+        // type physical (size already feeds geo_size in physical pixels).
+        let size: Size<i32, Physical> = (full_size.w.max(0), full_size.h.max(0)).into();
         self.inner.update(
             size,
             None,

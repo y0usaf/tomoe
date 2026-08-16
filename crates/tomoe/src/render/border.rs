@@ -73,15 +73,16 @@ impl BorderRenderElement {
     }
 
     pub fn with_location(mut self, location: Point<i32, Physical>) -> Self {
-        self.inner = self
-            .inner
-            .with_location(Point::from((location.x as f64, location.y as f64)));
+        // Location is already physical output pixels; the inner element now
+        // accepts physical coordinates directly (no logical-as-f64 round trip).
+        self.inner = self.inner.with_location(location);
         self
     }
 
     fn update_inner(&mut self) {
-        let size: Size<f64, smithay::utils::Logical> =
-            (self.params.size.w as f64, self.params.size.h as f64).into();
+        // Physical size feeds both the element geometry and the geo_size
+        // uniform; no widening to logical/re-narrowing needed.
+        let size = self.params.size;
         let radius = self.params.radius.max(0) as f32;
         self.inner.update(
             size,

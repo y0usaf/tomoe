@@ -11,7 +11,7 @@ use smithay::backend::renderer::gles::{
 use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
 use smithay::backend::renderer::DebugFlags;
 use smithay::utils::user_data::UserDataMap;
-use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
+use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size};
 
 use super::renderer::AsGlesFrame;
 use super::resources::Resources;
@@ -19,13 +19,18 @@ use super::shaders::{ProgramType, Shaders};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 
 /// Renders a shader with optional texture input, on the primary GPU.
+///
+/// Geometry is stored in **physical** output pixels (the same space the
+/// damage tracker and every element position uses); border/shadow widths,
+/// radii and locations are already physical, so no widening to a logical
+/// type and re-narrowing through `to_physical_precise_round` happens here.
 #[derive(Debug, Clone)]
 pub struct ShaderRenderElement {
     program: ProgramType,
     id: Id,
     commit_counter: CommitCounter,
-    area: Rectangle<f64, Logical>,
-    opaque_regions: Vec<Rectangle<f64, Logical>>,
+    area: Rectangle<i32, Physical>,
+    opaque_regions: Vec<Rectangle<i32, Physical>>,
     // Should only be used for visual improvements, i.e. corner radius anti-aliasing.
     scale: f32,
     alpha: f32,
@@ -182,8 +187,8 @@ impl ShaderRenderElement {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         program: ProgramType,
-        size: Size<f64, Logical>,
-        opaque_regions: Option<Vec<Rectangle<f64, Logical>>>,
+        size: Size<i32, Physical>,
+        opaque_regions: Option<Vec<Rectangle<i32, Physical>>>,
         // Should only be used for visual improvements, i.e. corner radius anti-aliasing.
         scale: f32,
         alpha: f32,
@@ -226,8 +231,8 @@ impl ShaderRenderElement {
 
     pub fn update(
         &mut self,
-        size: Size<f64, Logical>,
-        opaque_regions: Option<Vec<Rectangle<f64, Logical>>>,
+        size: Size<i32, Physical>,
+        opaque_regions: Option<Vec<Rectangle<i32, Physical>>>,
         scale: f32,
         alpha: f32,
         uniforms: Rc<[Uniform<'static>]>,
@@ -243,7 +248,7 @@ impl ShaderRenderElement {
         self.commit_counter.increment();
     }
 
-    pub fn with_location(mut self, location: Point<f64, Logical>) -> Self {
+    pub fn with_location(mut self, location: Point<i32, Physical>) -> Self {
         self.area.loc = location;
         self
     }
@@ -267,15 +272,13 @@ impl Element for ShaderRenderElement {
         Rectangle::from_size(Size::from((1., 1.)))
     }
 
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.area.to_physical_precise_round(scale)
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        // Already physical output pixels; the coordinate is not scale-scaled.
+        self.area
     }
 
-    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.opaque_regions
-            .iter()
-            .map(|region| region.to_physical_precise_down(scale))
-            .collect()
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        self.opaque_regions.iter().copied().collect()
     }
 
     fn alpha(&self) -> f32 {

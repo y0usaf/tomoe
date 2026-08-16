@@ -237,10 +237,15 @@ pub fn cursor_elements<R: TomoeRenderer>(
         CursorImageStatus::Hidden => {}
         CursorImageStatus::Surface(cursor_surface) if cursor_surface.alive() => {
             let hotspot = with_states(cursor_surface, |states| {
-                states
-                    .data_map
-                    .get::<CursorImageSurfaceData>()
-                    .map(|data| data.lock().unwrap().hotspot)
+                states.data_map.get::<CursorImageSurfaceData>().map(|data| {
+                    // Lock can only be poisoned if a thread panicked while
+                    // holding it; the poisoned guard still yields the same
+                    // data, so recover through `into_inner()` rather than
+                    // unwrap (which would panic and halt composition).
+                    data.lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .hotspot
+                })
             })
             .unwrap_or_default();
             // The hotspot is in the cursor surface's coordinates (logical).
