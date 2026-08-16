@@ -21,6 +21,7 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, LoopHandle, Mode, PostAction};
 use rustbus::message_builder::MarshalledMessage;
+use rustbus::wire::errors::UnmarshalError;
 use rustbus::wire::unmarshal::traits::Variant;
 use rustbus::{MessageBuilder, RpcConn};
 
@@ -50,6 +51,48 @@ pub struct Notification {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NotificationsState {
     pub notifications: Vec<Notification>,
+}
+
+/// The typed `Notify` payload, decoded once at the wire boundary.
+/// A corrupt call is rejected (error reply) before any of it can reach
+/// the model — nothing defaults in, `next_id` never advances for it.
+struct NotifyArgs {
+    app: String,
+    replaces: u32,
+    summary: String,
+    body: String,
+    urgent: bool,
+    timeout_ms: i32,
+}
+
+/// Parse a `Notify` call body in spec order (app, replaces, icon,
+/// summary, body, actions, hints, timeout). Every field must decode:
+/// a malformed body is `Err`, which the handler answers as an error.
+/// The `urgency` hint is folded into `urgent` here, at the boundary.
+fn parse_notify(call: &MarshalledMessage) -> Result<NotifyArgs, UnmarshalError> {
+    let mut p = call.body.parser();
+    let app: String = p.get()?;
+    let replaces: u32 = p.get()?;
+    let _icon: String = p.get()?;
+    let summary: String = p.get()?;
+    let body: String = p.get()?;
+    let _actions: Vec<String> = p.get()?;
+    let hints: HashMap<String, Variant> = p.get()?;
+    let timeout_ms: i32 = p.get()?;
+
+    let urgent = hints
+        .get("urgency")
+        .and_then(|v| v.get::<u8>().ok())
+        .map(|u| u >= 2)
+        .unwrap_or(false);
+    Ok(NotifyArgs {
+        app,
+        replaces,
+        summary,
+        body,
+        urgent,
+        timeout_ms,
+    })
 }
 
 type Notify<D> = Rc<RefCell<Box<dyn FnMut(&mut D, &NotificationsState)>>>;
@@ -101,48 +144,52 @@ impl<D> Daemon<D> {
             "GetCapabilities" => {
                 let _ = reply.body.push_param(vec!["body".to_string()]);
             }
-            "Notify" => {
-                let mut p = call.body.parser();
-                let app: String = p.get().unwrap_or_default();
-                let replaces: u32 = p.get().unwrap_or(0);
-                let _icon: String = p.get::<String>().unwrap_or_default();
-                let summary: String = p.get().unwrap_or_default();
-                let body: String = p.get().unwrap_or_default();
-                let _actions: Vec<String> = p.get().unwrap_or_default();
-                let hints: HashMap<String, Variant> = p.get().unwrap_or_default();
-                let timeout_ms: i32 = p.get().unwrap_or(-1);
-
-                let urgent = hints
-                    .get("urgency")
-                    .and_then(|v| v.get::<u8>().ok())
-                    .map(|u| u >= 2)
-                    .unwrap_or(false);
-                let id = if replaces != 0 {
-                    self.state.notifications.retain(|n| n.id != replaces);
-                    replaces
-                } else {
-                    self.next_id += 1;
-                    self.next_id
-                };
-                self.state.notifications.push(Notification {
-                    id,
-                    app,
-                    summary,
-                    body,
-                    urgent,
-                });
-                let _ = reply.body.push_param(id);
-                // 0 = never expire; -1 = server default; >0 = that many ms.
-                expiry = match timeout_ms {
-                    0 => None,
-                    t if t < 0 => Some((id, DEFAULT_TIMEOUT)),
-                    t => Some((id, Duration::from_millis(t as u64))),
-                };
-            }
-            "CloseNotification" => {
-                let id: u32 = call.body.parser().get().unwrap_or(0);
-                self.close(id, REASON_CLOSED_BY_CALL);
-            }
+            "Notify" => match parse_notify(call) {
+                Ok(args) => {
+                    let id = if args.replaces != 0 {
+                        self.state.notifications.retain(|n| n.id != args.replaces);
+                        args.replaces
+                    } else {
+                        self.next_id += 1;
+                        self.next_id
+                    };
+                    self.state.notifications.push(Notification {
+                        id,
+                        app: args.app,
+                        summary: args.summary,
+                        body: args.body,
+                        urgent: args.urgent,
+                    });
+                    let _ = reply.body.push_param(id);
+                    // 0 = never expire; -1 = server default; >0 = that many ms.
+                    expiry = match args.timeout_ms {
+                        0 => None,
+                        t if t < 0 => Some((id, DEFAULT_TIMEOUT)),
+                        t => Some((id, Duration::from_millis(t as u64))),
+                    };
+                }
+                Err(e) => {
+                    // Trust boundary: reject a corrupt Notify — no
+                    // default notification, no next_id advance.
+                    tracing::debug!("notifications: rejecting malformed Notify: {e}");
+                    reply = call.dynheader.make_error_response(
+                        "org.freedesktop.Notifications.Error.InvalidArgs",
+                        Some(format!("malformed Notify call: {e}")),
+                    );
+                }
+            },
+            "CloseNotification" => match call.body.parser().get::<u32>() {
+                Ok(id) => {
+                    self.close(id, REASON_CLOSED_BY_CALL);
+                }
+                Err(e) => {
+                    tracing::debug!("notifications: rejecting malformed CloseNotification: {e}");
+                    reply = call.dynheader.make_error_response(
+                        "org.freedesktop.Notifications.Error.InvalidArgs",
+                        Some(format!("malformed CloseNotification call: {e}")),
+                    );
+                }
+            },
             other => {
                 tracing::debug!("notifications: unhandled method {other:?}");
                 let _ = reply; // fall through to an empty reply
@@ -169,7 +216,11 @@ pub fn start<D: 'static>(
     let serial = dbus::send(&mut rpc, &mut req)?;
     let reply = rpc.wait_response(serial, SETUP)?;
     dbus::reply_ok(&reply)?;
-    let code: u32 = reply.body.parser().get().unwrap_or(0);
+    let code: u32 = reply
+        .body
+        .parser()
+        .get()
+        .map_err(|e| DbusError::Reply(format!("RequestName reply decode failed: {e}")))?;
     if code != rustbus::standard_messages::DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER {
         return Err(DbusError::Reply(format!(
             "{NAME} already owned (reply code {code}) — external daemon keeps it"
