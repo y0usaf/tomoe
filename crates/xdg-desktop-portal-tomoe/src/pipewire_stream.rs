@@ -71,7 +71,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Cursor;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -175,10 +175,10 @@ struct AppState {
 
     // PipeWire stream (cloneable Rc handle)
     stream: Option<pw::stream::StreamRc>,
-    /// pw_buffer raw ptr -> its wrapping wl_buffer + backing storage.
-    pw_buffer_slots: HashMap<usize, BufferSlot>,
-    /// pw_buffer raw ptr → its negotiated stride (cached at add_buffer time).
-    pw_buffer_stride: HashMap<usize, i32>,
+    /// pw_buffer → its wrapping wl_buffer + backing storage.
+    pw_buffer_slots: HashMap<PwBuf, BufferSlot>,
+    /// pw_buffer → its negotiated stride (cached at add_buffer time).
+    pw_buffer_stride: HashMap<PwBuf, i32>,
 
     // wlr-screencopy session state
     pending_frame: Option<PendingFrame>,
@@ -211,8 +211,10 @@ struct AppState {
 
 struct PendingFrame {
     frame: ZwlrScreencopyFrameV1,
-    /// The PW buffer this frame is being copied into.
-    pw_buffer: usize,
+    /// The PW buffer this frame is being copied into; `None` until a buffer
+    /// has actually been dequeued and attached. Presence — not a `0` sentinel
+    /// — is the flag, so there is no way to confuse "none" with a valid buf.
+    pw_buffer: Option<PwBuf>,
 }
 
 struct BufferSlot {
@@ -237,15 +239,26 @@ struct AllocatedSlot {
     fd_for_pw: OwnedFd,
     stride: i32,
     size: usize,
-    data_type: spa_sys::spa_data_type,
 }
+
+/// Identity key for a PipeWire `pw_buffer` used in the slot maps. The pointer
+/// is *never* dereferenced through this wrapper; it is a stable identity test
+/// against the same underlying object that the add/remove_buffer callbacks and
+/// `dequeue_raw_buffer` hand out. The pointer is valid only for as long as the
+/// matching [`BufferSlot`] is present in `pw_buffer_slots`, and is only ever
+/// handed back to PipeWire verbatim via `queue_raw_buffer` inside that window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PwBuf(*mut pw::sys::pw_buffer);
 
 // Raw pw_buffer pointers don't carry Send / Sync inferred by the compiler, but
 // the whole AppState only ever lives on a single thread.
 unsafe impl Send for AppState {}
 
-/// Carrier for an OwnedFd inside `add_io` (which needs `AsRawFd`).
-struct FdHolder(BorrowedFd<'static>);
+/// `add_io` requires its io source to implement `AsRawFd`. We hand it a
+/// wrapper that *owns* the cloned wayland fd, so the fd lives exactly as long
+/// as the `IoSource` PipeWire retains and its callback — no fabricated
+/// `'static` borrow of a local is required.
+struct FdHolder(OwnedFd);
 impl AsRawFd for FdHolder {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
@@ -438,11 +451,9 @@ fn run(
     // Attach the wayland fd to the PW main loop. Move event_queue into the io
     // closure — after this point all wayland dispatching is fd-driven.
     let wl_fd = conn.as_fd().try_clone_to_owned()?;
-    // SAFETY: we own the OwnedFd for the lifetime of the closure; transmuting
-    // to BorrowedFd<'static> is unsafe but the fd outlives the IoSource.
-    let wl_fd_static: BorrowedFd<'static> =
-        unsafe { std::mem::transmute::<BorrowedFd<'_>, BorrowedFd<'static>>(wl_fd.as_fd()) };
-    let fd_holder = FdHolder(wl_fd_static);
+    // Ownership of the wayland fd moves into `add_io`'s retained io source, so
+    // the fd's lifetime is tied to the IoSource — no `'static` widening.
+    let fd_holder = FdHolder(wl_fd);
 
     let s_for_io = state_rc.clone();
     let conn_for_io = conn.clone();
@@ -691,7 +702,13 @@ impl AppState {
         };
         let stride = slot.stride;
         let size = slot.size;
-        let data_type = slot.data_type;
+        // The backing type is determined by which branch produced the storage;
+        // deriving it here keeps it consistent with the enum instead of a
+        // hand-set duplicate.
+        let data_type = match &slot.storage {
+            BufferSlotStorage::Dmabuf { .. } => spa_sys::SPA_DATA_DmaBuf,
+            BufferSlotStorage::Shm { .. } => spa_sys::SPA_DATA_MemFd,
+        };
         let fd_for_pw = slot.fd_for_pw.into_raw_fd();
         let wl_buf = slot.wl_buffer;
         let storage = slot.storage;
@@ -704,6 +721,8 @@ impl AppState {
             data.flags = spa_sys::SPA_DATA_FLAG_READWRITE;
             data.fd = fd_for_pw as i64;
             data.data = std::ptr::null_mut();
+            // `size` was bounded to i32::MAX by `payload_size`, so it is
+            // provably representable in both u32 (maxsize/chunk.size) fields.
             data.maxsize = size as u32;
             data.mapoffset = 0;
 
@@ -713,7 +732,7 @@ impl AppState {
             chunk.size = size as u32;
         }
 
-        let key = buffer as usize;
+        let key = PwBuf(buffer);
         self.pw_buffer_stride.insert(key, stride);
         self.pw_buffer_slots.insert(
             key,
@@ -730,8 +749,12 @@ impl AppState {
     ) -> Result<AllocatedSlot, Box<dyn std::error::Error + Send + Sync>> {
         let dmabuf_flag = 1 << spa_sys::SPA_DATA_DmaBuf;
         let memfd_flag = 1 << spa_sys::SPA_DATA_MemFd;
-        let allows_dmabuf = data_types & dmabuf_flag != 0 || data_types == spa_sys::SPA_DATA_DmaBuf;
-        let allows_memfd = data_types & memfd_flag != 0 || data_types == spa_sys::SPA_DATA_MemFd;
+        // Sanitize the mask at the boundary: keep only the bits we understand
+        // so stray/unknown bits can't steer the fallback logic. (`==` on the
+        // raw enum index previously compared mask to index, which is wrong.)
+        let data_types = data_types & (dmabuf_flag | memfd_flag);
+        let allows_dmabuf = data_types & dmabuf_flag != 0;
+        let allows_memfd = data_types & memfd_flag != 0;
 
         if allows_dmabuf {
             match self.create_dmabuf_slot() {
@@ -782,7 +805,7 @@ impl AppState {
             .into());
         }
         let stride = bo.stride_for_plane(0) as i32;
-        let size = stride as usize * self.spec.height as usize;
+        let size = payload_size(stride, self.spec.height)?;
         let modifier = u64::from(DrmModifier::Linear);
         let modifier_hi = (modifier >> 32) as u32;
         let modifier_lo = (modifier & 0xffff_ffff) as u32;
@@ -817,13 +840,14 @@ impl AppState {
             fd_for_pw,
             stride,
             size,
-            data_type: spa_sys::SPA_DATA_DmaBuf,
         }))
     }
 
     fn create_shm_slot(&self) -> Result<AllocatedSlot, Box<dyn std::error::Error + Send + Sync>> {
-        let stride = (self.spec.width * 4) as i32;
-        let size = stride as usize * self.spec.height as usize;
+        let stride = xrgb8888_stride(self.spec.width)?;
+        let size = payload_size(stride, self.spec.height)?;
+        // size <= i32::MAX (enforced by payload_size), so these widenings are
+        // sound: u64 for ftruncate, i32 for the shm pool, u32 for maxsize.
         let memfd =
             rustix::fs::memfd_create("tomoe-portal-pwbuf", rustix::fs::MemfdFlags::CLOEXEC)?;
         rustix::fs::ftruncate(&memfd, size as u64)?;
@@ -852,12 +876,11 @@ impl AppState {
             fd_for_pw,
             stride,
             size,
-            data_type: spa_sys::SPA_DATA_MemFd,
         })
     }
 
     fn on_remove_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
-        let key = buffer as usize;
+        let key = PwBuf(buffer);
         if let Some(slot) = self.pw_buffer_slots.remove(&key) {
             slot.wl_buffer.destroy();
         }
@@ -869,7 +892,7 @@ impl AppState {
         let targets_this = self
             .pending_frame
             .as_ref()
-            .is_some_and(|p| p.pw_buffer == key);
+            .is_some_and(|p| p.pw_buffer == Some(key));
         if targets_this {
             let pending = self.pending_frame.take().unwrap();
             pending.frame.destroy();
@@ -891,7 +914,7 @@ impl AppState {
         let frame = manager.capture_output(overlay_cursor, output, &self.qh, ());
         self.pending_frame = Some(PendingFrame {
             frame,
-            pw_buffer: 0,
+            pw_buffer: None,
         });
         // Critical: flush the request to the compositor immediately. The
         // wayland fd add_io callback only fires when we receive bytes, so
@@ -926,20 +949,23 @@ impl AppState {
             self.kick_capture();
             return;
         }
-        let key = pw_buf as usize;
+        let key = PwBuf(pw_buf);
         let Some(slot) = self.pw_buffer_slots.get(&key) else {
-            tracing::error!("buffer_done: no slot for dequeued pw_buffer {key:#x}");
+            tracing::error!("buffer_done: no slot for dequeued pw_buffer");
+            // SAFETY: pw_buf was dequeued above; handing it straight back to
+            // the owning stream is the correct unwind.
             unsafe { stream.queue_raw_buffer(pw_buf) };
             return;
         };
         // Tell wlr-screencopy to copy into our wl_buffer.
         let Some(pending) = self.pending_frame.as_mut() else {
             tracing::error!("buffer_done: no pending frame");
+            // SAFETY: as above.
             unsafe { stream.queue_raw_buffer(pw_buf) };
             return;
         };
         pending.frame.copy(&slot.wl_buffer);
-        pending.pw_buffer = key;
+        pending.pw_buffer = Some(key);
     }
 
     fn on_frame_ready(&mut self) {
@@ -977,26 +1003,38 @@ impl AppState {
         // the right amount, then queue it. Re-check that the buffer still
         // exists in our slot map — PW may have freed it between dequeue and
         // ready (consumer disconnect path).
-        if pending.pw_buffer != 0 && self.pw_buffer_slots.contains_key(&pending.pw_buffer) {
-            if let Some(stream) = self.stream.clone() {
-                let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
-                unsafe {
-                    if !pw_buf.is_null()
-                        && !(*pw_buf).buffer.is_null()
-                        && (*(*pw_buf).buffer).n_datas > 0
-                    {
-                        let datas = std::slice::from_raw_parts_mut(
-                            (*(*pw_buf).buffer).datas,
-                            (*(*pw_buf).buffer).n_datas as usize,
-                        );
-                        let data = &mut datas[0];
-                        let stride = *self.pw_buffer_stride.get(&pending.pw_buffer).unwrap_or(&0);
-                        let chunk = &mut *data.chunk;
-                        chunk.offset = 0;
-                        chunk.stride = stride;
-                        chunk.size = (stride as u32) * self.spec.height;
+        if let Some(key) = pending.pw_buffer {
+            if self.pw_buffer_slots.contains_key(&key) {
+                if let Some(stream) = self.stream.clone() {
+                    // SAFETY: `key` was dequeued by dequeue_raw_buffer and is
+                    // only valid while its slot is present (checked above);
+                    // within that window we read the pre-negotiated chunk fields
+                    // and hand the same pointer back to `queue_raw_buffer`,
+                    // which restores ownership to the consumer.
+                    let pw_buf = key.0;
+                    unsafe {
+                        if !pw_buf.is_null()
+                            && !(*pw_buf).buffer.is_null()
+                            && (*(*pw_buf).buffer).n_datas > 0
+                        {
+                            let datas = std::slice::from_raw_parts_mut(
+                                (*(*pw_buf).buffer).datas,
+                                (*(*pw_buf).buffer).n_datas as usize,
+                            );
+                            let data = &mut datas[0];
+                            let stride = *self.pw_buffer_stride.get(&key).unwrap_or(&0);
+                            let chunk = &mut *data.chunk;
+                            chunk.offset = 0;
+                            chunk.stride = stride;
+                            // Same stride/height validated at add_buffer; use
+                            // checked arithmetic so an unexpected overflow
+                            // degrades to a 0-byte chunk rather than wrapping.
+                            chunk.size = (stride as usize)
+                                .checked_mul(self.spec.height as usize)
+                                .unwrap_or(0) as u32;
+                        }
+                        stream.queue_raw_buffer(pw_buf);
                     }
-                    stream.queue_raw_buffer(pw_buf);
                 }
             }
         }
@@ -1021,10 +1059,12 @@ impl AppState {
         if let Some(pending) = self.pending_frame.take() {
             pending.frame.destroy();
             // Return the dequeued buffer (if any) — PW expects buffers back.
-            if pending.pw_buffer != 0 {
+            if let Some(pw_buf) = pending.pw_buffer {
                 if let Some(stream) = self.stream.clone() {
-                    let pw_buf = pending.pw_buffer as *mut pw::sys::pw_buffer;
-                    unsafe { stream.queue_raw_buffer(pw_buf) };
+                    // SAFETY: the pointer is still owned by this stream (it
+                    // was dequeued and never queued); returning it verbatim to
+                    // `queue_raw_buffer` restores the consumer's ownership.
+                    unsafe { stream.queue_raw_buffer(pw_buf.0) };
                 }
             }
         }
@@ -1032,6 +1072,33 @@ impl AppState {
         thread::sleep(std::time::Duration::from_millis(50));
         self.kick_capture();
     }
+}
+
+/// XRGB8888 stride for a width, in checked arithmetic. Widths come from the
+/// compositor/output (untrusted); reject any that can't be expressed as an
+/// `i32` stride (the `spa_chunk.stride` field width) before any truncating
+/// cast.
+fn xrgb8888_stride(width: u32) -> Result<i32, String> {
+    let bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| format!("screencast stride overflow: {width} * 4"))?;
+    i32::try_from(bytes).map_err(|_| format!("screencast stride {bytes} exceeds i32"))
+}
+
+/// Checked stride × height payload size for the buffer backing store. The
+/// result is bounded to `i32::MAX` so it is provably representable in the `u32`
+/// `spa_data.maxsize` / `spa_chunk.size` fields and the `i32`
+/// `SPA_PARAM_BUFFERS_size` pod-value — no truncating / wrapping casts later.
+fn payload_size(stride: i32, height: u32) -> Result<usize, String> {
+    let stride = usize::try_from(stride).map_err(|_| "negative buffer stride".to_string())?;
+    let height = usize::try_from(height).map_err(|_| "height overflows usize".to_string())?;
+    let size = stride
+        .checked_mul(height)
+        .ok_or_else(|| format!("screencast payload overflow: {stride} * {height}"))?;
+    if size > i32::MAX as usize {
+        return Err(format!("screencast payload {size} exceeds i32 maxsize"));
+    }
+    Ok(size)
 }
 
 fn init_gbm_device() -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -1154,10 +1221,10 @@ fn build_buffers_param(
             ))),
         ));
     } else {
-        let stride = (spec.width * 4) as i32;
-        let size = stride * spec.height as i32;
+        let stride = xrgb8888_stride(spec.width)?;
+        let size = payload_size(stride, spec.height)?;
         properties.extend([
-            Property::new(spa_sys::SPA_PARAM_BUFFERS_size, Value::Int(size)),
+            Property::new(spa_sys::SPA_PARAM_BUFFERS_size, Value::Int(size as i32)),
             Property::new(spa_sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
             Property::new(
                 spa_sys::SPA_PARAM_BUFFERS_dataType,
