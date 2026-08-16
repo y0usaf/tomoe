@@ -637,7 +637,12 @@ impl Tomoe {
                 // A confined pointer stops at the surface (or region) edge;
                 // the blocked motion still reaches the client as relative.
                 if let Some(region) = confine_region {
-                    let (surface, surface_loc) = under.as_ref().unwrap();
+                    // SAFETY: `confine_region` is only ever set to Some()
+                    // inside the `if let Some((surface, _)) = &under` arm
+                    // above, so `under` is guaranteed Some here.
+                    let (surface, surface_loc) = under
+                        .as_ref()
+                        .expect("confine_region is only set when under is Some");
                     let new_under = self.surface_under(pos);
                     let mut prevent = new_under.as_ref().map(|(s, _)| s) != Some(surface);
                     if let Some(region) = &region {
@@ -908,6 +913,10 @@ impl Tomoe {
                     );
                     frame = frame.value(Axis::Horizontal, horizontal);
                     if let Some(v120) = horizontal_v120 {
+                        // SAFETY: libinput v120 is a small discrete step
+                        // multiplier; the f64→i32 cast saturates on overflow,
+                        // so a pathological reading can't wrap into a
+                        // spurious rewind.
                         frame = frame.v120(Axis::Horizontal, v120 as i32);
                     }
                 }
@@ -918,6 +927,8 @@ impl Tomoe {
                     );
                     frame = frame.value(Axis::Vertical, vertical);
                     if let Some(v120) = vertical_v120 {
+                        // SAFETY: see the horizontal v120 arm above — small
+                        // discrete step count, and the f64→i32 cast saturates.
                         frame = frame.v120(Axis::Vertical, v120 as i32);
                     }
                 }

@@ -27,6 +27,7 @@ use tracing::{info, warn};
 
 use crate::lua::{OutputProps, ScreencastHookOutcome, ScreencastReply, WinProps};
 use crate::state::Tomoe;
+use tomoe_ipc::{ScreencastParams, SubscribeParams};
 
 /// Outgoing-buffer cap per client: a reader this far behind is dropped —
 /// never buffer unboundedly for a stuck peer.
@@ -284,21 +285,29 @@ fn dispatch(tomoe: &mut Tomoe, client_id: u64, line: &[u8]) {
             }))
         }
         "subscribe" => {
-            let filter: Vec<String> = request
+            // Parse the filter at the request boundary: a malformed `events`
+            // payload must error the request, never silently subscribe the
+            // client to every event via the empty-filter default. The error
+            // yields as the arm's result so the normal response path sends
+            // it to the waiting client.
+            let filter = request
                 .params
                 .as_ref()
-                .and_then(|p| p.get("events"))
-                .and_then(|e| serde_json::from_value(e.clone()).ok())
-                .unwrap_or_default();
-            match tomoe.ipc.clients.get_mut(&client_id) {
-                Some(client) => {
+                .map(|p| serde_json::from_value::<SubscribeParams>(p.clone()))
+                .transpose()
+                .map(|opt| opt.map(|p| p.events).unwrap_or_default());
+            match (filter, tomoe.ipc.clients.get_mut(&client_id)) {
+                (Ok(filter), Some(client)) => {
                     client.subscribed = true;
                     client.filter = filter.clone();
                     Ok(json!({
                         "events": if filter.is_empty() { json!("all") } else { json!(filter) },
                     }))
                 }
-                None => return,
+                (Ok(_), None) => return,
+                (Err(_), _) => {
+                    Err("invalid subscribe params (expected {\"events\": [\"...\"]})".to_string())
+                }
             }
         }
         "quit" => {
@@ -314,7 +323,10 @@ fn dispatch(tomoe: &mut Tomoe, client_id: u64, line: &[u8]) {
             return;
         }
         method if tomoe.lua.has_ipc_handler(method) => {
-            let params = request.params.clone().unwrap_or(Value::Null);
+            // Thread the optional params through untouched: `None` (no params
+            // sent) stays distinct from an explicit null, which the Lua
+            // handler can observe via `...` arity.
+            let params = request.params.clone();
             tomoe.sync_snapshot();
             let was_in_lua = tomoe.in_lua;
             tomoe.in_lua = true;
@@ -412,21 +424,32 @@ fn handle_screencast_select(tomoe: &mut Tomoe, client_id: u64, request: &tomoe_i
         sweep_dead(tomoe);
         return;
     }
-    let app_id = request
+    let params = match request
         .params
         .as_ref()
-        .and_then(|p| p.get("app_id"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let types: Vec<String> = request
-        .params
-        .as_ref()
-        .and_then(|p| p.get("types"))
-        .and_then(|t| serde_json::from_value(t.clone()).ok())
-        .unwrap_or_else(|| vec!["monitor".to_string()]);
-    let monitor = types.iter().any(|t| t == "monitor");
-    let window = types.iter().any(|t| t == "window");
+        .map(|p| serde_json::from_value::<ScreencastParams>(p.clone()))
+        .transpose()
+    {
+        Ok(Some(params)) => params,
+        // No params at all: empty types → the hook decides, nothing granted.
+        Ok(None) => ScreencastParams::default(),
+        Err(err) => {
+            // Malformed `types` must never silently grant full-monitor
+            // capture: error the request instead.
+            let frame = json!({
+                "id": request_id,
+                "error": format!("invalid screencast_select params: {err}"),
+            });
+            if let Some(client) = tomoe.ipc.clients.get_mut(&client_id) {
+                client.send(&frame);
+            }
+            sweep_dead(tomoe);
+            return;
+        }
+    };
+    let app_id = params.app_id;
+    let monitor = params.types.iter().any(|t| t == "monitor");
+    let window = params.types.iter().any(|t| t == "window");
 
     let token = tomoe.ipc.next_screencast_token;
     tomoe.ipc.next_screencast_token += 1;
@@ -533,7 +556,10 @@ pub fn notify_window_open(tomoe: &mut Tomoe, id: u64) {
     if !has_subscribers(tomoe, "window_open") {
         return;
     }
-    let props = tomoe.collect_win_props().remove(&id).unwrap_or_default();
+    let Some(props) = tomoe.collect_win_props().remove(&id) else {
+        warn!("window_open: window {id} not in snapshot; skipping event");
+        return;
+    };
     broadcast(tomoe, "window_open", json!(window_json(id, &props)));
 }
 

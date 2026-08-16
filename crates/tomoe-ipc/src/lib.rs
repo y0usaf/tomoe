@@ -49,6 +49,30 @@ pub struct Request {
     pub params: Option<Value>,
 }
 
+/// Discrete params for a `subscribe` request: the event filter list.
+/// Parsed once at the wire boundary — a present-but-malformed `events`
+/// deserializes to an error instead of silently subscribing the client to
+/// every event.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubscribeParams {
+    /// Empty means "subscribe to every event" (the documented default).
+    #[serde(default)]
+    pub events: Vec<String>,
+}
+
+/// Discrete params for a `screencast_select` request: the portal source
+/// pick. Parsed once at the wire boundary; a malformed `types` field errors
+/// the whole request rather than silently granting full-monitor capture.
+/// `types` empty/absent grants nothing — the portal falls back to its own
+/// heuristics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScreencastParams {
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub types: Vec<String>,
+}
+
 /// A server → client event frame (only sent after `subscribe`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {

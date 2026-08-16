@@ -56,7 +56,6 @@ use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorati
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
@@ -249,7 +248,9 @@ impl XdgShellHandler for Tomoe {
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
-        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
         let kind = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
@@ -314,7 +315,9 @@ impl XdgShellHandler for Tomoe {
     // protocol-sanctioned response.
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial) {
-        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
         self.interactive_request(&surface, &seat, serial, "move", None);
     }
 
@@ -325,7 +328,9 @@ impl XdgShellHandler for Tomoe {
         serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
+        let Some(seat) = Seat::<Self>::from_resource(&seat) else {
+            return;
+        };
         self.interactive_request(&surface, &seat, serial, "resize", Some(edges_name(edges)));
     }
 
@@ -767,15 +772,8 @@ impl Tomoe {
             .position(|w| w.toplevel().map(|t| t.wl_surface()) == Some(surface))
         {
             let toplevel = self.unmapped_windows[idx].toplevel().unwrap().clone();
-            let initial_configure_sent = with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .initial_configure_sent
-            });
+            let initial_configure_sent =
+                crate::state::with_toplevel_data(surface, |data| data.initial_configure_sent);
             if !initial_configure_sent {
                 toplevel.send_configure();
                 return;

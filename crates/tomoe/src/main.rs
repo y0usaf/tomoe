@@ -172,8 +172,9 @@ fn main() -> Result<()> {
             Generic::new(display, Interest::READ, Mode::Level),
             |_, display, tomoe| {
                 // SAFETY: we don't drop the display.
-                unsafe {
-                    display.get_mut().dispatch_clients(tomoe).unwrap();
+                let result = unsafe { display.get_mut().dispatch_clients(tomoe) };
+                if let Err(err) = result {
+                    warn!("error dispatching Wayland clients: {err:?}");
                 }
                 Ok(PostAction::Continue)
             },

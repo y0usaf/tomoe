@@ -26,6 +26,9 @@ impl Cursor {
             .unwrap_or(24);
 
         let frame = load_image(&theme, size).map(|image| {
+            // SAFETY: xcursor bitmaps are small (a valid file would exhaust
+            // memory long before u32 dims exceed i32::MAX), so `as i32`
+            // cannot wrap for a legitimate theme.
             let buffer = MemoryRenderBuffer::from_slice(
                 &image.pixels_rgba,
                 Fourcc::Abgr8888,
@@ -34,6 +37,8 @@ impl Cursor {
                 Transform::Normal,
                 None,
             );
+            // SAFETY: hotspots are small pixel offsets (< 2^31) for the same
+            // reason; a u32 hotspot near MAX is not a real cursor theme.
             (buffer, Point::from((image.xhot as i32, image.yhot as i32)))
         });
         if frame.is_none() {
@@ -77,8 +82,10 @@ fn load_image(theme: &str, size: u32) -> Option<Image> {
         .read_to_end(&mut data)
         .ok()?;
     let images = parse_xcursor(&data)?;
-    // Pick the size closest to the requested one.
+    // Pick the size closest to the requested one. Compare in u32 (absolute
+    // difference via max-min) so a huge env XCURSOR_SIZE never wraps via a
+    // narrowing cast.
     images
         .into_iter()
-        .min_by_key(|image| (image.size as i32 - size as i32).abs())
+        .min_by_key(|image| image.size.max(size) - image.size.min(size))
 }
