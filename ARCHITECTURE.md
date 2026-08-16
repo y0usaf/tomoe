@@ -247,7 +247,9 @@ crate tomoe
 │   └── struct SceneParts: pub(self)
 ├── mod coords: pub(crate)
 ├── mod cursor: pub(crate)
-│   └── struct Cursor: pub
+│   ├── struct Bytes: pub(self)
+│   ├── struct Cursor: pub
+│   └── struct XImage: pub(self)
 ├── mod foreign_toplevel: pub(crate)
 │   └── struct ForeignWindowId: pub
 ├── mod handlers: pub(crate)
