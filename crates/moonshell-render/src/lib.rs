@@ -434,11 +434,18 @@ fn arc_path(cx: f32, cy: f32, r: f32, start: f32, sweep: f32) -> Option<tiny_ski
     pb.finish()
 }
 
-/// `None` (drawing silently skipped) if the byte length doesn't match
-/// `width * height * 4` — a caller bug, but library crates don't panic.
+/// Wrap the canvas in a `PixmapMut`. Panics (in every build, not just
+/// debug) if the byte length doesn't match `width * height * 4` — a
+/// caller bug that must never silently skip drawing.
 fn pixmap<'a>(canvas: &'a mut [u8], width: u32, height: u32) -> Option<PixmapMut<'a>> {
+    let len = canvas.len();
     let pm = PixmapMut::from_bytes(canvas, width, height);
-    debug_assert!(pm.is_some(), "canvas size mismatch");
+    assert!(
+        pm.is_some(),
+        "canvas size mismatch: expected {} bytes, got {}",
+        width * height * 4,
+        len
+    );
     pm
 }
 

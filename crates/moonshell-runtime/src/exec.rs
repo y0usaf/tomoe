@@ -25,28 +25,66 @@ pub struct ExecReply {
     pub(crate) output: String,
 }
 
-/// The loop-thread half of an in-flight `exec_async`: where the reply
-/// goes once the command finishes.
-pub(crate) struct ExecCallback {
-    pub(crate) weak: WeakLua,
-    pub(crate) key: LuaRegistryKey,
+/// The safe way to hold a Lua callback past its creating stack frame: a
+/// [`WeakLua`] + [`LuaRegistryKey`] pair. [`fire`][LuaHook::fire]
+/// re-enters Lua through the upgraded ref and invokes the stored
+/// function — the one place the dropped-VM / lost-key guard lives,
+/// shared by state subscribers, exec replies, timers and file watches
+/// so the pattern isn't copy-pasted four times.
+pub(crate) struct LuaHook {
+    weak: WeakLua,
+    key: LuaRegistryKey,
 }
 
-impl ExecCallback {
-    /// Call with the command's trimmed stdout. Must run on the loop
-    /// thread. A dropped VM discards the reply.
-    pub(crate) fn call(&self, output: String) {
+impl LuaHook {
+    pub(crate) fn new(lua: &Lua, f: LuaFunction) -> LuaResult<Self> {
+        Ok(Self {
+            weak: lua.weak(),
+            key: lua.create_registry_value(f)?,
+        })
+    }
+
+    /// Run the stored callback with `args`. Returns `false` when it
+    /// should be dropped — the VM is gone (hot reload in flight) or
+    /// the registry key no longer resolves. Callback *errors* are
+    /// logged and count as `true`: a transient failure must not kill a
+    /// timer/watch/subscriber.
+    pub(crate) fn fire<T: IntoLuaMulti>(&self, what: &str, args: T) -> bool {
         let Some(lua) = self.weak.try_upgrade() else {
-            return;
+            return false;
         };
         match lua.registry_value::<LuaFunction>(&self.key) {
             Ok(f) => {
-                if let Err(e) = f.call::<()>(output) {
-                    tracing::error!("exec_async callback error: {e}");
+                if let Err(e) = f.call::<()>(args) {
+                    tracing::error!("{what} error: {e}");
                 }
+                true
             }
-            Err(e) => tracing::error!("exec_async registry lookup failed: {e}"),
+            Err(e) => {
+                tracing::error!("{what} registry lookup failed: {e}");
+                false
+            }
         }
+    }
+}
+
+/// The loop-thread half of an in-flight `exec_async`: where the reply
+/// goes once the command finishes. Thin wrapper over a [`LuaHook`].
+pub(crate) struct ExecCallback {
+    hook: LuaHook,
+}
+
+impl ExecCallback {
+    pub(crate) fn new(lua: &Lua, f: LuaFunction) -> LuaResult<Self> {
+        Ok(Self {
+            hook: LuaHook::new(lua, f)?,
+        })
+    }
+
+    /// Call with the command's trimmed stdout. Must run on the loop
+    /// thread. A dropped VM discards the reply.
+    pub(crate) fn call(&self, output: String) {
+        self.hook.fire("exec_async callback", output);
     }
 }
 

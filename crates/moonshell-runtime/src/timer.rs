@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use mlua::prelude::*;
 
+use crate::exec::LuaHook;
+
 /// A timer waiting for the binary to insert its calloop source.
 pub struct PendingTimer {
     /// Time until the first fire.
@@ -23,8 +25,7 @@ pub struct PendingTimer {
     /// `Some(period)` = repeating (`shell.interval`), `None` =
     /// one-shot (`shell.once`).
     pub period: Option<Duration>,
-    weak: WeakLua,
-    key: LuaRegistryKey,
+    hook: LuaHook,
 }
 
 impl PendingTimer {
@@ -33,8 +34,7 @@ impl PendingTimer {
             delay: Duration::from_millis(ms),
             // Clamp the repeat period: interval(0) must not spin the loop.
             period: repeating.then(|| Duration::from_millis(ms.max(1))),
-            weak: lua.weak(),
-            key: lua.create_registry_value(f)?,
+            hook: LuaHook::new(lua, f)?,
         })
     }
 
@@ -43,20 +43,6 @@ impl PendingTimer {
     /// key no longer resolves. Callback *errors* are logged and keep
     /// the timer alive — a transient failure must not kill a clock.
     pub fn fire(&self) -> bool {
-        let Some(lua) = self.weak.try_upgrade() else {
-            return false;
-        };
-        match lua.registry_value::<LuaFunction>(&self.key) {
-            Ok(f) => {
-                if let Err(e) = f.call::<()>(()) {
-                    tracing::error!("timer callback error: {e}");
-                }
-                true
-            }
-            Err(e) => {
-                tracing::error!("timer registry lookup failed: {e}");
-                false
-            }
-        }
+        self.hook.fire("timer callback", ())
     }
 }

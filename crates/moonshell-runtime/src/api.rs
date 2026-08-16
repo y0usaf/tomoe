@@ -243,13 +243,9 @@ pub fn register_shell(lua: &Lua, ctx: &Rc<ShellCtx>) -> LuaResult<()> {
         lua.create_function(move |lua, (cmd, f): (String, LuaFunction)| {
             let id = c.next_exec_id.get();
             c.next_exec_id.set(id + 1);
-            c.exec_callbacks.borrow_mut().insert(
-                id,
-                ExecCallback {
-                    weak: lua.weak(),
-                    key: lua.create_registry_value(f)?,
-                },
-            );
+            c.exec_callbacks
+                .borrow_mut()
+                .insert(id, ExecCallback::new(lua, f)?);
             exec::spawn(cmd, id, c.exec_tx.clone());
             Ok(())
         })?,
