@@ -226,6 +226,13 @@ impl LayerOptions {
                 right: true,
             },
             height,
+            // INVARIANT: `height` is a bar height in logical pixels — a
+            // small, caller-authored display dimension, never anywhere
+            // near `i32::MAX`. The `u32 → i32` cast can therefore not
+            // wrap: for any realistic height `height <= i32::MAX`, so
+            // the exclusive zone is exactly the bar height with no sign
+            // corruption. (A height near 2^31 is physically meaningless
+            // and out of contract for this helper.)
             exclusive_zone: if exclusive { height as i32 } else { 0 },
             ..Self::default()
         }
@@ -287,6 +294,14 @@ impl Window {
 
     /// The one logical→physical conversion point.
     fn buffer_size(&self) -> (u32, u32) {
+        // INVARIANT: `scale` is the compositor-reported integer buffer
+        // scale, a tiny positive value (1..=8 in practice). `.max(1)`
+        // guarantees a minimum of 1, and the value never approaches
+        // `u32::MAX`, so the `i32 → u32` cast (identity for the
+        // non-negative scales we see) cannot wrap. Multiplying the
+        // logical width/height by a small scale can only overflow for
+        // buffer dimensions near `u32::MAX`, which no real layer surface
+        // reaches — both guards hold for all contract-conforming callers.
         let s = self.scale.max(1) as u32;
         (self.logical_size.0 * s, self.logical_size.1 * s)
     }
@@ -598,6 +613,13 @@ impl Shell {
                 continue;
             }
             let stride = width as i32 * 4;
+            // INVARIANT: `width`/`height` are buffer (physical) pixel
+            // counts from `buffer_size` — a bounded layer-surface size.
+            // As such `width`, `height`, and `width * 4` (the row stride,
+            // matching ARGB8888's 4 bytes/px) stay well under `i32::MAX`;
+            // the `u32 → i32` casts here (used by `SlotPool::create_buffer`,
+            // which takes `i32` dimensions) are therefore exact and cannot
+            // wrap or flip sign.
             let (buffer, canvas) = self.pool.create_buffer(
                 width as i32,
                 height as i32,
@@ -618,6 +640,10 @@ impl Shell {
             // the painter reported, the compositor needs the whole buffer.
             let damage = if fresh { Damage::Full } else { damage };
             let surface = layer.wl_surface();
+            // INVARIANT: `width`/`height` here are the same bounded
+            // buffer dimensions from [`Window::buffer_size`]; casting them
+            // to `i32` for `damage_buffer` is exact (see the stride cast
+            // above), so the full-buffer damage rect is always well-formed.
             match damage {
                 Damage::None => continue,
                 Damage::Full => surface.damage_buffer(0, 0, width as i32, height as i32),

@@ -165,6 +165,9 @@ impl<D> Daemon<D> {
                     expiry = match args.timeout_ms {
                         0 => None,
                         t if t < 0 => Some((id, DEFAULT_TIMEOUT)),
+                        // This arm only sees `t > 0` (0 and <0 were consumed
+                        // above), so the value is a positive i32 that fits
+                        // losslessly in a `u64`; the cast is safe.
                         t => Some((id, Duration::from_millis(t as u64))),
                     };
                 }
@@ -228,6 +231,9 @@ pub fn start<D: 'static>(
     }
 
     let raw = rpc.conn().as_raw_fd();
+    // SAFETY: `rpc` owns the socket and lives for the lifetime of this
+    // `Daemon` (it is moved into the shared cell below), so the source fd
+    // stays valid while the cloned fd behind the Generic source is in use.
     let fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
 
     let daemon = Rc::new(RefCell::new(Daemon {

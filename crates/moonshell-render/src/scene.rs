@@ -234,6 +234,12 @@ fn union_f(a: Rect, b: Rect) -> Rect {
 
 /// Draw-pass edge rounding, one pixel of inflation, canvas clamp.
 /// `None` when the result is empty (off-canvas or degenerate).
+///
+/// Each `.round() as i32` casts a finite layout coordinate (bounded to
+/// the canvas, a real pixel buffer) to i32 — saturating in Rust, so it
+/// cannot wrap — and the following `.max`/`.min` clamp against the
+/// canvas edges anyway, so an out-of-range cast is cheap to drive to a
+/// canonical value.
 fn to_pixels(r: Rect, width: u32, height: u32) -> Option<PixelRect> {
     let x0 = (r.x.round() as i32 - 1).max(0);
     let y0 = (r.y.round() as i32 - 1).max(0);

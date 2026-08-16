@@ -107,13 +107,21 @@ pub fn draw(
             }
         }
         Element::Icon(i) => {
+            // Rasterize to the largest integer px that fits the element.
+            // `px` is u32 because the icon pixmap is rasterized at a
+            // whole-pixel size; centering below re-widens this same
+            // integer, never the untruncated f32 — the pixmap is square
+            // and its numeric size (not the box's fractional min) is
+            // what must sit centered.
             let px = rect.w.min(rect.h).max(0.0) as u32;
             if px == 0 {
                 return;
             }
             match r.asset_host().icon(&i.name, i.path.as_deref(), px, i.color) {
                 Some(pm) => {
-                    // Centered in the (possibly non-square) rect.
+                    // Centered in the (possibly non-square) rect. `px as
+                    // f32` is necessarily exact (px < 2^24), so widening
+                    // the already-integer size introduces no rounding.
                     let x = (rect.x + (rect.w - px as f32) / 2.0).round() as i32;
                     let y = (rect.y + (rect.h - px as f32) / 2.0).round() as i32;
                     r.blit(canvas, width, height, x, y, &pm);
@@ -138,6 +146,11 @@ pub fn draw(
             }
         }
         Element::Image(img) => {
+            // `rect` is already integer-edged (draw::rounded), and a
+            // zero/negative dimension is rejected below, so `rect.w`/`h`
+            // cast soundly to u32; the fractional part truncates, which
+            // is intended — the image is decoded/scaled to exact whole
+            // pixel dimensions.
             let (w, h) = (rect.w as u32, rect.h as u32);
             if w == 0 || h == 0 {
                 return;

@@ -250,8 +250,14 @@ struct AllocatedSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PwBuf(*mut pw::sys::pw_buffer);
 
-// Raw pw_buffer pointers don't carry Send / Sync inferred by the compiler, but
-// the whole AppState only ever lives on a single thread.
+// SAFETY: `AppState` holds raw `*mut pw_buffer` pointers (see [`PwBuf`]) that
+// the compiler cannot prove are `Send`. But every field of `AppState` is only
+// ever accessed from the single screencast thread — the wayland and PipeWire
+// listeners, the `add_io` dispatch, and `dequeue_raw_buffer`/`queue_raw_buffer`
+// all run on that one thread. So no reference to `AppState` can cross a thread
+// boundary and transferring only the owner (`Rc<RefCell<_>>`, non-`Send`)
+// between threads is never done; this impl is a sound statement of fact, not a
+// lie for the caller to uphold.
 unsafe impl Send for AppState {}
 
 /// `add_io` requires its io source to implement `AsRawFd`. We hand it a
@@ -677,6 +683,15 @@ impl AppState {
 
     fn on_add_buffer(&mut self, _stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
         let negotiated_data_types = unsafe {
+            // SAFETY: PipeWire calls this `add_buffer` listener once per
+            // pre-allocated slot with `buffer` pointing at a `pw_buffer` that is
+            // valid for the entire callback and is owned by the stream. Its
+            // `.buffer` field points at a live `spa_buffer` whose `datas` array
+            // of length `n_datas` is fully initialized by PipeWire before the
+            // callback, so forming a mutable slice over it and reading
+            // `datas[0].type_` cannot touch freed or out-of-bounds memory. The
+            // pointer is never stored or dereferenced after this callback
+            // returns; ownership stays with the stream.
             let buf = (*buffer).buffer;
             if buf.is_null() {
                 tracing::error!("on_add_buffer: pw_buffer.buffer is null");
@@ -714,6 +729,16 @@ impl AppState {
         let storage = slot.storage;
 
         unsafe {
+            // SAFETY: we are still inside the same `add_buffer` callback, so
+            // `buffer` is live and owned by the stream (see the block above).
+            // PipeWire's contract for `ALLOC_BUFFERS` is that `add_buffer` hands
+            // us an *empty* slot and it is ours to populate: we may write the
+            // `spa_data{type,fd,maxsize,mapoffset,flags}` fields and the
+            // `spa_chunk{offset,stride,size}` pointed to by `data.chunk`. The
+            // `datas` array and `data.chunk` both belong to the same
+            // `spa_buffer` that stays allocated for as long as `buffer`, so
+            // these writes stay in-bounds and within the buffer's lifetime.
+            // `data.chunk` is a `spa_chunk` owned by the same buffer.
             let buf = (*buffer).buffer;
             let datas = std::slice::from_raw_parts_mut((*buf).datas, (*buf).n_datas as usize);
             let data = &mut datas[0];
@@ -935,7 +960,14 @@ impl AppState {
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
+        let pw_buf = unsafe {
+            // SAFETY: `dequeue_raw_buffer` pops the next available buffer slot
+            // that PipeWire owns for this stream; the returned pointer is valid
+            // and remains owned by `stream` until we hand it back via
+            // `queue_raw_buffer` (we never dereference it through `PwBuf`). A
+            // null return just means no slot is free, which we handle below.
+            stream.dequeue_raw_buffer()
+        };
         if pw_buf.is_null() {
             // Consumer hasn't returned a buffer yet — all advertised slots
             // are in flight. Frequent under slow consumers like OBS at high

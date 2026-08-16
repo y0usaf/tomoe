@@ -425,6 +425,9 @@ fn nm_start<D: 'static>(
     // calloop watches a dup of the socket fd; rustbus keeps reading
     // through the original.
     let raw = rpc.conn().as_raw_fd();
+    // SAFETY: `rpc` owns the socket and lives for the lifetime of this `Nm`
+    // value (it is moved into the shared cell below), so the source fd stays
+    // valid while the cloned fd the calloop watcher holds is in use.
     let fd: OwnedFd = unsafe { BorrowedFd::borrow_raw(raw) }.try_clone_to_owned()?;
 
     let last = model.snapshot();

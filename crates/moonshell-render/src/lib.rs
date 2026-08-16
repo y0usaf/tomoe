@@ -352,6 +352,10 @@ impl Renderer {
             .fold(0.0_f32, f32::max);
 
         let src = cosmic_text::Color::rgba(color.r, color.g, color.b, color.a);
+        // `w` is a width in buffer pixels (a caller-supplied clip bound),
+        // non-negative and far below 2^24; `.round()` lands it in i32
+        // exactly (saturating if ever out of range) so the clip edge is
+        // a whole pixel.
         let clip_x1 = max_w.map(|w| x + w.round() as i32);
         buffer.draw(
             &mut self.font_system,
@@ -361,10 +365,15 @@ impl Renderer {
                 let (gx, gw) = match clip_x1 {
                     Some(x1) => {
                         let gx0 = x + gx;
+                        // `gw` is a glyph raster width in whole pixels
+                        // (small positive u32); promoting to i32 keeps the
+                        // arithmetic in signed space before the clamp.
                         let gx1 = (gx0 + gw as i32).min(x1);
                         if gx1 <= gx0 {
                             return;
                         }
+                        // `gx1 > gx0` was just established, so the clipped
+                        // width is positive and fits u32 exactly.
                         (gx, (gx1 - gx0) as u32)
                     }
                     None => (gx, gw),

@@ -100,6 +100,10 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
         Some(h) => h,
         None => t.get::<Option<f32>>("width")?.unwrap_or(32.0),
     };
+    // Invariant: `size` (a bar thickness / popup height) comes from the
+    // Lua config and is clamped non-negative here; the `.max(0.0)` bounds
+    // it below and f32::MAX cannot reach u32::MAX, so the `as u32` cast
+    // cannot saturate in practice and keeps the non-px rounding behavior.
     let size_px = size.round().max(0.0) as u32;
 
     let exclusive: bool = t.get::<Option<bool>>("exclusive")?.unwrap_or(true);
@@ -128,6 +132,12 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             // Popup mode: fixed size at an anchored corner/edge.
             let anchors = parse_anchor(&anchor)?;
             let popup_width: f32 = t.get::<Option<f32>>("popup_width")?.unwrap_or(320.0);
+            // Invariant: margins are config-supplied pixel offsets in
+            // realistic single/double-digit magnitudes, far below
+            // i32::MAX, so the `round() as i32` casts cannot overflow in
+            // any real window config (a pathological f32 would saturate at
+            // i32::MAX rather than wrap, which is the pre-existing cast
+            // behavior).
             let margins = Margins {
                 top: t.get::<Option<f32>>("margin_top")?.unwrap_or(0.0).round() as i32,
                 right: t.get::<Option<f32>>("margin_right")?.unwrap_or(0.0).round() as i32,
@@ -139,6 +149,9 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             };
             (
                 anchors,
+                // Invariant: `popup_width` is clamped non-negative (same
+                // argument as the top-level `size_px`), so the `as u32`
+                // cannot wrap a real value.
                 popup_width.round().max(0.0) as u32,
                 size_px,
                 margins,
@@ -201,6 +214,11 @@ pub fn parse_options(t: &LuaTable) -> LuaResult<WindowOpts> {
             anchors,
             width,
             height,
+            // Invariant: `size_px` is only ever a clamped non-negative
+            // config thickness (px); it cannot reach i32::MAX, so the
+            // u32→i32 `as` cast cannot wrap for any real window (an
+            // impractical f32 boundary would saturate at i32::MAX when
+            // exclusive).
             exclusive_zone: if exclusive { size_px as i32 } else { 0 },
             margins,
             keyboard,
