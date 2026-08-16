@@ -17,6 +17,8 @@ mod protocols;
 mod render;
 mod screenshot;
 mod shell;
+#[cfg(test)]
+mod sp_temporal;
 mod space;
 mod state;
 mod ui;
