@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use moonshell_runtime::window::WindowShared;
 use moonshell_runtime::PendingWindow;
-use moonshell_surface::{Anchors, LayerOptions, Margins};
+use moonshell_surface::{Anchors, Layer, LayerOptions, Margins};
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::utils::{Logical, Physical, Rectangle, Size};
@@ -282,28 +282,36 @@ impl ShellSurfaces {
         None
     }
 
-    /// Composite the cached textures for one output (topmost first, to
-    /// match the callers' prepend order). Pure texture work — no Lua.
+    /// Composite the cached textures for one output. Higher layers draw
+    /// on top (Overlay > Top > Bottom > Background); within a layer,
+    /// the last-declared surface is topmost (reverse declaration order)
+    /// to match `click_target`'s `.rev()` hit-test order. Pure texture
+    /// work — no Lua.
     pub fn render_elements<R: TomoeRenderer>(
         &self,
         renderer: &mut R,
         output_name: &str,
         elements: &mut Vec<OutputRenderElements<R>>,
     ) {
-        for s in &self.surfaces {
-            let Some(t) = s.per_output.get(output_name) else {
-                continue;
-            };
-            if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                (t.rect.loc.x as f64, t.rect.loc.y as f64),
-                t.tex.buffer(),
-                None,
-                None,
-                None,
-                Kind::Unspecified,
-            ) {
-                elements.push(OutputRenderElements::Memory(element));
+        for layer in [Layer::Overlay, Layer::Top, Layer::Bottom, Layer::Background] {
+            for s in self.surfaces.iter().rev() {
+                if s.options.layer != layer {
+                    continue;
+                }
+                let Some(t) = s.per_output.get(output_name) else {
+                    continue;
+                };
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    (t.rect.loc.x as f64, t.rect.loc.y as f64),
+                    t.tex.buffer(),
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ) {
+                    elements.push(OutputRenderElements::Memory(element));
+                }
             }
         }
     }
