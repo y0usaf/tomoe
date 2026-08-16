@@ -17,8 +17,6 @@
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-use smithay::wayland::compositor::with_states;
-use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
 use crate::protocols::wlr_foreign_toplevel::ToplevelInfo;
 use crate::state::Tomoe;
@@ -31,13 +29,7 @@ fn window_meta(window: &Window) -> (String, String) {
     window
         .toplevel()
         .map(|toplevel| {
-            with_states(toplevel.wl_surface(), |states| {
-                let data = states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .unwrap()
-                    .lock()
-                    .unwrap();
+            crate::state::with_toplevel_data(toplevel.wl_surface(), |data| {
                 (
                     data.app_id.clone().unwrap_or_default(),
                     data.title.clone().unwrap_or_default(),

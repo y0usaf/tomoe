@@ -326,7 +326,12 @@ where
         }
 
         let state = state.screencopy_state();
-        let queue = state.queues.get_mut(manager).unwrap();
+        // The queue can already be gone if cleanup_queues() ran (the manager
+        // may be dead while pending frames are still handed to the renderer);
+        // drop the frame rather than panic on a missing queue.
+        let Some(queue) = state.queues.get_mut(manager) else {
+            return;
+        };
         queue.pending_frames.insert(frame);
     }
 
@@ -480,9 +485,12 @@ where
         );
 
         // By this point the frame should've been either copied or failed or
-        // pushed to the queue, so remove it from pending frames.
+        // pushed to the queue, so remove it from pending frames. The queue
+        // can already be gone if cleanup_queues() ran, like in `destroyed`.
         let state = state.screencopy_state();
-        let queue = state.queues.get_mut(manager).unwrap();
+        let Some(queue) = state.queues.get_mut(manager) else {
+            return;
+        };
         queue.pending_frames.remove(frame);
         if queue.is_empty() && !manager.is_alive() {
             state.queues.remove(manager);
@@ -606,7 +614,16 @@ impl Screencopy {
                 let source = Generic::new(sync_fd, Interest::READ, Mode::OneShot);
                 let mut screencopy = Some(self);
                 if let Err(err) = event_loop.insert_source(source, move |_, _, _| {
-                    screencopy.take().unwrap().submit(y_invert, timestamp);
+                    // `screencopy` is consumed exactly once: the source is
+                    // `Mode::OneShot`, so the callback runs at most a single
+                    // time and `take()` there reaches the sole owned frame. A
+                    // second wake would leave it None; log instead of unwrap.
+                    match screencopy.take() {
+                        Some(screencopy) => screencopy.submit(y_invert, timestamp),
+                        None => {
+                            warn!("screencopy sync source fired more than once; dropping frame")
+                        }
+                    }
                     Ok(PostAction::Remove)
                 }) {
                     warn!("error inserting screencopy sync source: {err}");

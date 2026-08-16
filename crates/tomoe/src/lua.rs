@@ -91,6 +91,9 @@ impl std::str::FromStr for Resolution {
                 if !hz.is_finite() || hz <= 0.0 || hz > 10_000.0 {
                     return Err(());
                 }
+                // SAFETY: hz is bounds-validated above (0 < hz <= 10000), so
+                // hz*1000 is at most 1e7 — well inside i32, and float→int
+                // casts saturate rather than wrap.
                 RefreshSetting::Exact((hz * 1000.0).round() as i32)
             }
         };
@@ -1139,12 +1142,18 @@ struct LuaWindow {
 
 impl LuaWindow {
     fn props(&self) -> WinProps {
-        self.shared
-            .windows
-            .borrow()
-            .get(&self.id)
-            .cloned()
-            .unwrap_or_default()
+        let windows = self.shared.windows.borrow();
+        match windows.get(&self.id) {
+            Some(props) => props.clone(),
+            None => {
+                warn!(
+                    "LuaWindow {} referenced but absent from the snapshot; \
+                     reporting empty window properties",
+                    self.id
+                );
+                WinProps::default()
+            }
+        }
     }
 
     fn op(&self, op: WindowOp) {
@@ -2059,13 +2068,18 @@ impl LuaRuntime {
             lua.create_function(move |lua, idx: Option<usize>| {
                 let outputs = s.outputs.borrow();
                 let output = outputs.get(idx.map(|i| i.saturating_sub(1)).unwrap_or(0));
-                let (x, y, w, h) = output.map(|o| o.usable).unwrap_or((0, 0, 1280, 800));
+                // No output geometry: return nil, not a fabricated default
+                // rectangle — a config must not get a washable usable area
+                // for nothing.
+                let Some((x, y, w, h)) = output.map(|o| o.usable) else {
+                    return Ok(Value::Nil);
+                };
                 let t = lua.create_table()?;
                 t.set("x", x)?;
                 t.set("y", y)?;
                 t.set("w", w)?;
                 t.set("h", h)?;
-                Ok(t)
+                Ok(Value::Table(t))
             })?,
         )?;
 
@@ -2766,10 +2780,13 @@ impl LuaRuntime {
     /// Run a `tomoe.ipc.serve` handler. The caller wraps this like any other
     /// Lua entry (snapshot before, `after_lua` after). Errors come back as
     /// strings — they go to the requesting IPC client, not just the log.
+    /// `params: None` calls the handler with zero arguments; `Some(null)`
+    /// passes a nil argument — distinct to Lua varargs (`...` arity), so a
+    /// config endpoint can tell "no params" from an explicit null.
     pub fn call_ipc_handler(
         &mut self,
         method: &str,
-        params: serde_json::Value,
+        params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let func = {
             let handlers = self.shared.ipc_handlers.borrow();
@@ -2780,17 +2797,21 @@ impl LuaRuntime {
                 .registry_value::<Function>(key)
                 .map_err(|err| format!("registry error: {err}"))?
         };
-        let params = if params.is_null() {
-            Value::Nil
-        } else {
-            self.lua
-                .to_value(&params)
-                .map_err(|err| format!("params conversion error: {err}"))?
-        };
         let _watchdog = self.watchdog();
-        let result = func
-            .call::<Value>(params)
-            .map_err(|err| format!("Lua error: {err}"))?;
+        let result = match params {
+            // No params: invoke with zero arguments so `...` is empty.
+            None => func
+                .call::<Value>(())
+                .map_err(|err| format!("Lua error: {err}"))?,
+            Some(params) => {
+                let params = self
+                    .lua
+                    .to_value(&params)
+                    .map_err(|err| format!("params conversion error: {err}"))?;
+                func.call::<Value>(params)
+                    .map_err(|err| format!("Lua error: {err}"))?
+            }
+        };
         if matches!(result, Value::Nil) {
             return Ok(serde_json::Value::Null);
         }
@@ -3452,16 +3473,14 @@ mod tests {
             .unwrap();
         assert_eq!(rt.settings().watchdog_ms, 30);
         // A well-behaved entry passes untouched…
-        assert!(rt.call_ipc_handler("ok", serde_json::Value::Null).is_ok());
+        assert!(rt.call_ipc_handler("ok", None).is_ok());
         // …a runaway one is aborted (this also proves the jit.off()
         // enforcement: a compiled trace would never fire the hook).
-        let err = rt
-            .call_ipc_handler("spin", serde_json::Value::Null)
-            .unwrap_err();
+        let err = rt.call_ipc_handler("spin", None).unwrap_err();
         assert!(err.contains("watchdog"), "unexpected error: {err}");
         // The deadline disarmed on exit: the next entry gets a fresh budget.
         assert!(rt.shared.watchdog_deadline.get().is_none());
-        assert!(rt.call_ipc_handler("ok", serde_json::Value::Null).is_ok());
+        assert!(rt.call_ipc_handler("ok", None).is_ok());
     }
 
     #[test]
@@ -3624,13 +3643,11 @@ mod tests {
         assert!(!rt.has_ipc_handler("missing"));
 
         let result = rt
-            .call_ipc_handler("echo", serde_json::json!({ "value": "hi", "n": 1 }))
+            .call_ipc_handler("echo", Some(serde_json::json!({ "value": "hi", "n": 1 })))
             .unwrap();
         assert_eq!(result, serde_json::json!({ "got": "hi", "n": 2 }));
 
-        let err = rt
-            .call_ipc_handler("boom", serde_json::Value::Null)
-            .unwrap_err();
+        let err = rt.call_ipc_handler("boom", None).unwrap_err();
         assert!(err.contains("nope"), "{err}");
 
         let broadcasts = rt.take_ipc_broadcasts();
@@ -4064,9 +4081,7 @@ mod tests {
         let manifest = rt.take_process_manifest().expect("manifest declared");
         assert!(manifest.contains_key("waybar") && manifest.contains_key("wallpaper"));
         // The IPC endpoint answers headless from the wm module's tables.
-        let state = rt
-            .call_ipc_handler("workspace/state", serde_json::Value::Null)
-            .unwrap();
+        let state = rt.call_ipc_handler("workspace/state", None).unwrap();
         assert_eq!(state["active"], 1);
         assert!(rt.has_ipc_handler("workspace/switch"));
     }

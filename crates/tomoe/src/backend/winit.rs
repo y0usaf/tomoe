@@ -17,7 +17,7 @@ use smithay::reexports::winit::window::Window as WinitWindow;
 use smithay::utils::Monotonic;
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub struct WinitData {
     pub backend: WinitGraphicsBackend<GlesRenderer>,
@@ -88,7 +88,11 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
     // render node) — clients like wf-recorder hard-require v4 — and fall
     // back to v3 when the node can't be determined.
     let display_handle = tomoe.display_handle.clone();
-    let winit = tomoe.backend.winit();
+    // The winit backend was installed just above; absence is a setup bug, not
+    // a runtime variant mismatch — the let-else keeps the access honest.
+    let Some(winit) = tomoe.backend.winit() else {
+        return Err(anyhow!("winit backend not registered during init"));
+    };
     let formats = winit.backend.renderer().dmabuf_formats();
     match render_node(winit.backend.renderer()) {
         Ok(node) => match DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build() {
@@ -117,7 +121,10 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
         .clone()
         .insert_source(winit_source, move |event, _, tomoe| match event {
             WinitEvent::Resized { size, .. } => {
-                tomoe.backend.winit().output.change_current_state(
+                let Some(winit) = tomoe.backend.winit() else {
+                    return;
+                };
+                winit.output.change_current_state(
                     Some(Mode {
                         size,
                         refresh: 60_000,
@@ -136,7 +143,10 @@ pub fn init(tomoe: &mut Tomoe) -> Result<()> {
         .map_err(|err| anyhow!("error inserting winit event source: {err}"))?;
 
     // First paint; afterwards redraws are requested on damage only.
-    tomoe.backend.winit().backend.window().request_redraw();
+    let Some(winit) = tomoe.backend.winit() else {
+        return Ok(());
+    };
+    winit.backend.window().request_redraw();
 
     Ok(())
 }
@@ -226,9 +236,19 @@ pub fn redraw(tomoe: &mut Tomoe) {
         )
     };
 
-    let res = {
-        let (renderer, mut framebuffer) = winit.backend.bind().unwrap();
-        winit
+    // bind()/render_output()/submit() are best-effort (EGL buffer swap, GL
+    // context, damage-tracking). A failed frame is dropped and the output is
+    // just not painted this pass — mirroring the TTY render path's graceful
+    // skip instead of trusting unwrap on a fallible result.
+    let (damage, states) = {
+        let (renderer, mut framebuffer) = match winit.backend.bind() {
+            Ok(bound) => bound,
+            Err(err) => {
+                warn!("error binding winit renderer: {err}");
+                return;
+            }
+        };
+        let res = winit
             .damage_tracker
             .render_output(
                 renderer,
@@ -237,18 +257,27 @@ pub fn redraw(tomoe: &mut Tomoe) {
                 &elements,
                 [0.05, 0.05, 0.05, 1.0],
             )
-            .unwrap()
+            .map_err(|err| {
+                warn!("error rendering winit output: {err}");
+            });
+        match res {
+            Ok(res) => (res.damage, res.states),
+            Err(()) => return,
+        }
     };
 
-    if let Some(damage) = res.damage {
-        winit.backend.submit(Some(damage)).unwrap();
+    if let Some(damage) = damage {
+        if let Err(err) = winit.backend.submit(Some(damage)) {
+            warn!("error submitting winit frame: {err}");
+            return;
+        }
         // No real vblank here; approximate presentation as "now" at the
         // output's nominal refresh so presentation-time clients keep pacing.
         let mut feedback = crate::render::take_presentation_feedback(
             space,
             &winit.output,
             lock_surfaces.get(&winit.output),
-            &res.states,
+            &states,
         );
         let refresh = winit
             .output
@@ -297,6 +326,9 @@ pub fn redraw(tomoe: &mut Tomoe) {
     // show up as visible freezes during development. Running animations are
     // their own damage source: keep painting until they settle.
     if animating {
-        tomoe.backend.winit().backend.window().request_redraw();
+        let Some(winit) = tomoe.backend.winit() else {
+            return;
+        };
+        winit.backend.window().request_redraw();
     }
 }

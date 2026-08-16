@@ -782,6 +782,17 @@ fn render_to_shm(
             .context("error mapping texture")?;
 
         unsafe {
+            // SAFETY:
+            // - `with_buffer_contents_mut` hands us the client's mapped SHM
+            //   blob with `shm_len` writable bytes (the pool mapping that
+            //   backs the buffer); the wl_shm buffer cannot be larger than the
+            //   pool, and `shm_buffer` is valid for that whole region.
+            // - `bytes` comes from `map_texture` over a framebuffer created at
+            //   `size` (w×h Xrgb8888), so its length is exactly w*h*4.
+            // - The `ensure!` above established buffer_data.stride == w*4,
+            //   height == size.h, and shm_len == stride*height == w*h*4,
+            //   so both the source (`bytes`) and destination (`shm_buffer`)
+            //   are valid for exactly `shm_len` non-overlapping bytes.
             ptr::copy_nonoverlapping(bytes.as_ptr(), shm_buffer.cast(), shm_len);
         }
 

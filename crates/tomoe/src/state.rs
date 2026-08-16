@@ -49,7 +49,7 @@ use smithay::wayland::image_copy_capture::{
     Frame as CaptureFrame, ImageCopyCaptureState, Session, SessionRef,
 };
 use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
-use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData};
+use smithay::wayland::shell::xdg::{XdgShellState, XdgToplevelSurfaceData, XdgToplevelSurfaceRoleAttributes};
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::xdg_activation::{XdgActivationState, XdgActivationTokenData};
 use tracing::{info, warn};
@@ -78,6 +78,33 @@ fn config_fingerprint(path: Option<&Path>) -> Option<ConfigFingerprint> {
     let canonical = path?.canonicalize().ok()?;
     let mtime = std::fs::metadata(&canonical).ok()?.modified().ok()?;
     Some(ConfigFingerprint { canonical, mtime })
+}
+
+/// Run a closure against a toplevel's `XdgToplevelSurfaceRoleAttributes`
+/// (the payload of `XdgToplevelSurfaceData`), holding the surface lock for
+/// the duration (the data cannot leave `with_states`, so the closure borrows
+/// it). This is the one place the stacked
+/// `get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap()` invariant is
+/// stated, so no caller repeats the guesswork.
+pub(crate) fn with_toplevel_data<T>(
+    surface: &WlSurface,
+    f: impl FnOnce(&XdgToplevelSurfaceRoleAttributes) -> T,
+) -> T {
+    with_states(surface, |states| {
+        // SAFETY: every surface that reaches here is an `xdg_toplevel`, so
+        // smithay inserted the `XdgToplevelSurfaceData` before the client
+        // could render anything (toplevels are only tracked after
+        // `new_toplevel` creates them), and the mutex is never poisoned:
+        // this is a single-threaded event-loop compositor, so no other
+        // thread can hold it across a panic.
+        let data = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .expect("toplevel surface must carry XdgToplevelSurfaceData")
+            .lock()
+            .expect("toplevel surface data mutex is never poisoned");
+        f(&data)
+    })
 }
 
 /// Client-provided drag icon surface, rendered under the cursor during an
@@ -341,6 +368,11 @@ impl Tomoe {
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         let relative_pointer_manager_state =
             RelativePointerManagerState::new::<Self>(&display_handle);
+        // SAFETY: `PresentationState::new` takes a raw u32 clockid; smithay's
+        // `ClockId` here is `repr(i32)` and `Monotonic` == CLOCK_MONOTONIC (1
+        // on Linux) — a tiny, stable constant, so the i32→u32 cast cannot lose
+        // information, and this is the clock callers' `wp_presentation`
+        // feedback `time` is measured against.
         let presentation_state =
             PresentationState::new::<Self>(&display_handle, Monotonic::ID as u32);
         let dmabuf_state = DmabufState::new();
@@ -760,13 +792,7 @@ impl Tomoe {
             let (app_id, title) = window
                 .toplevel()
                 .map(|toplevel| {
-                    with_states(toplevel.wl_surface(), |states| {
-                        let data = states
-                            .data_map
-                            .get::<XdgToplevelSurfaceData>()
-                            .unwrap()
-                            .lock()
-                            .unwrap();
+                    crate::state::with_toplevel_data(toplevel.wl_surface(), |data| {
                         (
                             data.app_id.clone().unwrap_or_default(),
                             data.title.clone().unwrap_or_default(),

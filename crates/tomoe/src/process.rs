@@ -231,15 +231,25 @@ impl ProcessManager {
 
         let ids: Vec<String> = self.services.keys().cloned().collect();
         for id in ids {
-            let status = match self.services.get_mut(&id).unwrap().child.try_wait() {
+            // Take the service out of the map exactly once and route it back
+            // if it's still alive — no `get_mut(...).unwrap()` followed by a
+            // separate `remove(...).unwrap()` for the same id.
+            let Some(mut svc) = self.services.remove(&id) else {
+                continue;
+            };
+            let status = match svc.child.try_wait() {
                 Ok(status) => status,
                 Err(err) => {
                     warn!("error polling service {id:?}: {err}");
-                    None
+                    self.services.insert(id, svc);
+                    continue;
                 }
             };
-            let Some(status) = status else { continue };
-            let svc = self.services.remove(&id).unwrap();
+            let Some(status) = status else {
+                // Still running: put it back under supervision.
+                self.services.insert(id, svc);
+                continue;
+            };
             if !should_restart(svc.restart, status) {
                 info!("service {id:?} exited ({status}); staying stopped");
                 self.suppressed.insert(id, self.generation);

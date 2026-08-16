@@ -17,18 +17,18 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn winit(&mut self) -> &mut WinitData {
+    pub fn winit(&mut self) -> Option<&mut WinitData> {
         match self {
-            Backend::Winit(data) => data,
-            _ => panic!("winit backend not initialized"),
+            Backend::Winit(data) => Some(data),
+            _ => None,
         }
     }
 
     #[allow(dead_code)]
-    pub fn tty(&mut self) -> &mut TtyData {
+    pub fn tty(&mut self) -> Option<&mut TtyData> {
         match self {
-            Backend::Tty(data) => data,
-            _ => panic!("tty backend not initialized"),
+            Backend::Tty(data) => Some(data),
+            _ => None,
         }
     }
 
