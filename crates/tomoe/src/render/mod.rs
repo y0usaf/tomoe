@@ -282,6 +282,29 @@ pub fn cursor_elements<R: TomoeRenderer>(
     }
     elements
 }
+/// Render the active client drag icon at the pointer plus its protocol offset.
+pub fn dnd_icon_elements<R: TomoeRenderer>(
+    renderer: &mut R,
+    dnd_icon: Option<&crate::state::DndIcon>,
+    pointer: Point<f64, Physical>,
+    scale: f64,
+) -> Vec<OutputRenderElements<R>> {
+    let Some(icon) = dnd_icon.filter(|icon| icon.surface.alive()) else {
+        return Vec::new();
+    };
+    let offset = coords::logical_point_to_physical(icon.offset.to_f64(), scale);
+    render_elements_from_surface_tree(
+        renderer,
+        &icon.surface,
+        (pointer + offset.to_f64()).to_i32_round(),
+        scale,
+        1.0,
+        Kind::Cursor,
+    )
+    .into_iter()
+    .map(OutputRenderElements::Surface)
+    .collect()
+}
 
 /// Committed fullscreen state (same check as the TTY tearing candidate).
 fn is_fullscreen(window: &Window) -> bool {
