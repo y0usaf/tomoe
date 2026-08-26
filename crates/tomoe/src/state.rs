@@ -521,18 +521,21 @@ impl Tomoe {
         let path = crate::lua::resolve_config_path(self.config_cli_path.as_deref());
         self.config_fingerprint = config_fingerprint(path.as_deref());
         self.process.begin_generation(path.as_deref());
+        // Config-as-WASM: the default settings surface ships as a compiled
+        // `.wasm` loaded on the cordis kernel and routed back through string/
+        // JSON keys (docs/abi.md). It seeds DEFAULTS only, so it must run
+        // before the Lua config: it wholesale-replaces the Settings struct,
+        // and running it after `lua.load` erased every `tomoe.settings`
+        // field the JSON does not carry (mod, displays, border, blur...),
+        // silently re-parsing all binds against the default mod key.
+        if let Err(err) = self.lua.load_default_settings_from_wasm() {
+            warn!("config-as-wasm error (settings read from defaults): {err:#}");
+        }
         if let Err(err) = self.lua.load(path.as_deref()) {
             warn!("config error (continuing with defaults): {err:#}");
             self.show_config_error(
                 "Failed to load the config file. Running with defaults; check the log for details.",
             );
-        }
-        // Config-as-WASM: the default settings surface ships as a compiled
-        // `.wasm` loaded on the cordis kernel and routed back through string/
-        // JSON keys (docs/abi.md). It is authoritative over the Lua `settings`
-        // table for the compositor's backend reads (winit/tty).
-        if let Err(err) = self.lua.load_default_settings_from_wasm() {
-            warn!("config-as-wasm error (settings read from defaults): {err:#}");
         }
         self.apply_binds();
         self.lua.mark_processes_dirty();
