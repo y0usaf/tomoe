@@ -1,11 +1,8 @@
 # tomoe
 
-<table>
-<tr>
-<td align="left"><img src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" height="96"></td>
-<td align="right"><img src="assets/pixel-moon.png" alt="Pixel art of Moon" height="96"></td>
-</tr>
-</table>
+<img align="left" src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" width="132" height="108">
+<img align="right" src="assets/pixel-moon.png" alt="Pixel art of Moon" width="132" height="108">
+<br clear="both">
 
 
 **tomoe** (巴, after Tomoe River — the fountain-pen paper you return to again
