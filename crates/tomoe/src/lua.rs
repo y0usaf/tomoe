@@ -2436,6 +2436,75 @@ impl LuaRuntime {
         self.shared.settings.borrow().clone()
     }
 
+    /// Source the compositor's default settings from the WASM kernel instead
+    /// of the Lua `settings` surface. Loads the default compiled config
+    /// `.wasm` at startup on a fresh [`cordis::Context`], reads the settings
+    /// JSON back out of the kernel (an extension that only WRITES —
+    /// `[[principle:no-privileged-path]]`), and overlays it onto
+    /// [`Settings::default`]. The winit/tty backend reads now ride
+    /// `settings()`, whose values originate from the cordis string/JSON keys.
+    pub fn load_default_settings_from_wasm(&self) -> Result<()> {
+        let mut ctx = cordis::Context::new();
+        let config_wasm = tomoe_config_wasm::default_config_wasm();
+        // Config mounts FIRST, before any consumer: kernel-owned inverse
+        // records every effect, so it reverts cleanly if it ever unmounts.
+        ctx.mount(&config_wasm).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to load the default config .wasm on the cordis kernel at startup: {e}"
+            )
+        })?;
+        let json = ctx.get(tomoe_config_wasm::SETTINGS_KEY).with_context(|| {
+            "the default config .wasm did not populate the settings key on the cordis kernel"
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&json)
+            .with_context(|| "settings JSON from the default config .wasm did not parse")?;
+
+        let mut settings = Settings::default();
+        if let Some(gaps) = value.get("gaps").and_then(|v| v.as_i64()) {
+            settings.gaps = gaps as i32;
+        }
+        if let Some(scale) = value.get("scale").and_then(|v| v.as_f64()) {
+            settings.scale = scale;
+        }
+        if let Some(sz) = value.get("winit_size").and_then(|v| v.as_array()) {
+            if let (Some(w), Some(h)) = (
+                sz.first().and_then(|v| v.as_i64()),
+                sz.get(1).and_then(|v| v.as_i64()),
+            ) {
+                settings.winit_size = (w as i32, h as i32);
+            }
+        }
+        if let Some(bw) = value.get("border_width").and_then(|v| v.as_i64()) {
+            settings.border_width = bw as i32;
+        }
+        if let Some(cr) = value.get("corner_radius").and_then(|v| v.as_i64()) {
+            settings.corner_radius = cr as i32;
+        }
+        if let Some(sr) = value.get("shadow_range").and_then(|v| v.as_i64()) {
+            settings.shadow_range = sr as i32;
+        }
+        if let Some(sp) = value.get("shadow_power").and_then(|v| v.as_f64()) {
+            settings.shadow_power = sp as f32;
+        }
+        if let Some(be) = value.get("blur_enabled").and_then(|v| v.as_bool()) {
+            settings.blur.enabled = be;
+        }
+        if let Some(t) = value.get("tearing").and_then(|v| v.as_bool()) {
+            settings.tearing = t;
+        }
+        if let Some(w) = value
+            .get("wait_for_frame_completion")
+            .and_then(|v| v.as_bool())
+        {
+            settings.wait_for_frame_completion = w;
+        }
+        if let Some(sf) = value.get("screenshot_freeze").and_then(|v| v.as_bool()) {
+            settings.screenshot_freeze = sf;
+        }
+        *self.shared.settings.borrow_mut() = settings;
+        Ok(())
+    }
+
     pub fn take_binds(&mut self) -> Vec<PendingBind> {
         self.shared.binds.take()
     }

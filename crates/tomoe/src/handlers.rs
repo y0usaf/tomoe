@@ -9,7 +9,10 @@ use smithay::desktop::{
 };
 use smithay::output::Output;
 use smithay::input::pointer::{CursorImageStatus, Focus, MotionEvent, PointerHandle};
-use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::input::{
+    dnd::{DnDGrab, DndGrabHandler, DndTarget, GrabType, Source},
+    Seat, SeatHandler, SeatState,
+};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -71,7 +74,6 @@ use smithay::wayland::image_copy_capture::{
     BufferConstraints, Frame as CaptureFrame, ImageCopyCaptureHandler, ImageCopyCaptureState,
     Session as CaptureSession, SessionRef,
 };
-use smithay::input::dnd::DndGrabHandler;
 
 use crate::backend::Backend;
 use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerState};
@@ -1061,8 +1063,78 @@ impl DataDeviceHandler for Tomoe {
     }
 }
 
-impl WaylandDndGrabHandler for Tomoe {}
-impl DndGrabHandler for Tomoe {}
+impl WaylandDndGrabHandler for Tomoe {
+    fn dnd_requested<S: Source>(
+        &mut self,
+        source: S,
+        icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: Serial,
+        type_: GrabType,
+    ) {
+        self.dnd_icon = icon.map(|surface| crate::state::DndIcon {
+            surface,
+            offset: Point::from((0, 0)),
+        });
+
+        match type_ {
+            GrabType::Pointer => {
+                let Some(pointer) = seat.get_pointer() else {
+                    source.cancel();
+                    self.dnd_icon = None;
+                    return;
+                };
+                let Some(start_data) = pointer.grab_start_data() else {
+                    source.cancel();
+                    self.dnd_icon = None;
+                    return;
+                };
+                pointer.set_grab(
+                    self,
+                    DnDGrab::new_pointer(&self.display_handle, start_data, source, seat),
+                    serial,
+                    Focus::Keep,
+                );
+            }
+            GrabType::Touch => {
+                let Some(touch) = seat.get_touch() else {
+                    source.cancel();
+                    self.dnd_icon = None;
+                    return;
+                };
+                let Some(start_data) = touch.grab_start_data() else {
+                    source.cancel();
+                    self.dnd_icon = None;
+                    return;
+                };
+                touch.set_grab(
+                    self,
+                    DnDGrab::new_touch(&self.display_handle, start_data, source, seat),
+                    serial,
+                );
+            }
+        }
+        self.queue_redraw_all();
+    }
+}
+
+impl DndGrabHandler for Tomoe {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        _validated: bool,
+        _seat: Seat<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+        self.dnd_icon = None;
+        self.queue_redraw_all();
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        self.dnd_icon = None;
+        self.queue_redraw_all();
+    }
+}
 delegate_data_device!(Tomoe);
 
 impl PrimarySelectionHandler for Tomoe {

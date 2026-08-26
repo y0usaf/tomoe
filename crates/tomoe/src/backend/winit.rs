@@ -169,6 +169,11 @@ pub fn redraw(tomoe: &mut Tomoe) {
             .map(|geo| (geo.loc, geo.size))
             .unwrap_or_default()
     };
+    let pointer_pos = tomoe
+        .seat
+        .get_pointer()
+        .map(|pointer| pointer.current_location())
+        .unwrap_or_default();
 
     let locked = tomoe.is_locked();
     let blur = tomoe.lua.settings().blur.clone();
@@ -191,6 +196,7 @@ pub fn redraw(tomoe: &mut Tomoe) {
         clock,
         lock_surfaces,
         lock_backdrops,
+        dnd_icon,
         ..
     } = tomoe;
     let Backend::Winit(winit) = backend else {
@@ -235,6 +241,9 @@ pub fn redraw(tomoe: &mut Tomoe) {
             anim_now,
         )
     };
+    let mut elements = elements;
+
+    let pointer_phys = space.point_to_physical(pointer_pos) - output_loc.to_f64();
 
     // bind()/render_output()/submit() are best-effort (EGL buffer swap, GL
     // context, damage-tracking). A failed frame is dropped and the output is
@@ -248,6 +257,12 @@ pub fn redraw(tomoe: &mut Tomoe) {
                 return;
             }
         };
+        elements.extend(crate::render::dnd_icon_elements(
+            renderer,
+            dnd_icon.as_ref(),
+            pointer_phys,
+            space.output_scale(&output),
+        ));
         let res = winit
             .damage_tracker
             .render_output(

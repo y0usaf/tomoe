@@ -1,0 +1,15 @@
+[package]
+name = "tomoe-config-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Default tomoe compositor config as a compiled WASM module on the cordis-rs kernel"
+
+[dependencies]
+# The shared spatiotemporal kernel. All values are String; the default
+# settings serialize as JSON in the context under `tomoe.settings`.
+cordis = { path = "../../../cordis-rs/crates/cordis" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Compiles the config WAT into the binary `.wasm` loaded at startup.
+wat = "1"
