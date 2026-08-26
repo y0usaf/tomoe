@@ -20,11 +20,14 @@ graph TD
   moonshell_runtime["moonshell-runtime"] --> moonshell_render["moonshell-render"]
   moonshell_runtime["moonshell-runtime"] --> moonshell_services["moonshell-services"]
   moonshell_runtime["moonshell-runtime"] --> moonshell_surface["moonshell-surface"]
+  tomoe["tomoe"] --> cordis["cordis"]
   tomoe["tomoe"] --> moonshell_render["moonshell-render"]
   tomoe["tomoe"] --> moonshell_runtime["moonshell-runtime"]
   tomoe["tomoe"] --> moonshell_services["moonshell-services"]
   tomoe["tomoe"] --> moonshell_surface["moonshell-surface"]
+  tomoe["tomoe"] --> tomoe_config_wasm["tomoe-config-wasm"]
   tomoe["tomoe"] --> tomoe_ipc["tomoe-ipc"]
+  tomoe_config_wasm["tomoe-config-wasm"] --> cordis["cordis"]
   xdg_desktop_portal_tomoe["xdg-desktop-portal-tomoe"] --> tomoe_ipc["tomoe-ipc"]
 ```
 
@@ -38,6 +41,7 @@ graph TD
 | `moonshell-services` | _no description in Cargo.toml_ |
 | `moonshell-surface` | _no description in Cargo.toml_ |
 | `tomoe` | _no description in Cargo.toml_ |
+| `tomoe-config-wasm` | Default tomoe compositor config as a compiled WASM module on the cordis-rs kernel |
 | `tomoe-ipc` | _no description in Cargo.toml_ |
 | `xdg-desktop-portal-tomoe` | _no description in Cargo.toml_ |
 
@@ -421,6 +425,14 @@ crate tomoe
     ├── enum ToMain: pub(self)
     ├── struct Unlink: pub(self)
     └── struct X11Connection: pub(self)
+```
+
+### `tomoe-config-wasm`
+
+```
+
+crate tomoe_config_wasm
+└── struct DefaultSettings: pub
 ```
 
 ### `tomoe-ipc`

@@ -109,10 +109,6 @@ pub(crate) fn with_toplevel_data<T>(
 
 /// Client-provided drag icon surface, rendered under the cursor during an
 /// active drag-and-drop grab.
-#[expect(
-    dead_code,
-    reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
-)]
 pub struct DndIcon {
     pub surface: WlSurface,
     pub offset: Point<i32, Logical>,
@@ -270,10 +266,6 @@ pub struct Tomoe {
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
-    #[expect(
-        dead_code,
-        reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
-    )]
     pub dnd_icon: Option<DndIcon>,
     /// Block cursor drawn when no xcursor theme loaded and no client surface;
     /// persistent so damage trackers see a stable element id.
@@ -534,6 +526,13 @@ impl Tomoe {
             self.show_config_error(
                 "Failed to load the config file. Running with defaults; check the log for details.",
             );
+        }
+        // Config-as-WASM: the default settings surface ships as a compiled
+        // `.wasm` loaded on the cordis kernel and routed back through string/
+        // JSON keys (docs/abi.md). It is authoritative over the Lua `settings`
+        // table for the compositor's backend reads (winit/tty).
+        if let Err(err) = self.lua.load_default_settings_from_wasm() {
+            warn!("config-as-wasm error (settings read from defaults): {err:#}");
         }
         self.apply_binds();
         self.lua.mark_processes_dirty();

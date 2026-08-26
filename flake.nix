@@ -1,15 +1,34 @@
 {
   description = "tomoe — a Wayland compositor built with Smithay and embedded Lua";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # The shared WASM kernel (crate `cordis`). A Cargo path dep
+    # `path=../../../cordis-rs/crates/cordis` is NOT covered by this repo's
+    # source filter, so cordis-rs is a flake input and its crates/cordis
+    # source is pulled into the build via a sibling symlink (see
+    # `cordisSymlink`).
+    cordis-rs.url = "path:/home/y0usaf/dev/cordis-rs";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, cordis-rs }:
     let
       inherit (nixpkgs) lib;
       systems = lib.intersectLists lib.systems.flakeExposed lib.platforms.linux;
       forAllSystems = lib.genAttrs systems;
       nixpkgsFor = forAllSystems (system: nixpkgs.legacyPackages.${system});
+
+      # The compositor's Cargo path deps resolve `../../../cordis-rs` from
+      # `crates/` — i.e. `$PWD/../cordis-rs`. Repoint that sibling to the
+      # flake input so the cordis crate + its crate deps resolve in the
+      # sandbox (their versions come from this repo's cargoLock).
+      # Runs from the source root (preBuild), so the Cargo path deps'
+      # `../../../cordis-rs` (a sibling of the source root) resolve to
+      # "$PWD/../cordis-rs" inside the writable sandbox build dir.
+      cordisSymlink = ''
+        ln -s "${cordis-rs}" "$PWD/../cordis-rs"
+      '';
 
       # RUSTFLAGS needed for dlopen() to find EGL/wayland-client at runtime.
       devRustflags = toString (
@@ -64,6 +83,8 @@
             allowBuiltinFetchGit = true;
             lockFile = ./Cargo.lock;
           };
+
+          preBuild = cordisSymlink;
 
           strictDeps = true;
 
@@ -221,10 +242,17 @@
                 ];
               }
               ''
-                cd ${self}
+                # ${self} is a read-only store path whose parent is not
+                # writable, so materialise a writable copy and put the cordis
+                # sibling exactly where the cargo path dep resolves.
+                cp -r ${self} $TMPDIR/tomoe
+                chmod -R u+w $TMPDIR/tomoe
+                cd $TMPDIR/tomoe
+                ${cordisSymlink}
                 cargo fmt --check
                 touch $out
               '';
+
 
           clippy = pkgs.stdenv.mkDerivation {
             name = "tomoe-clippy";
@@ -235,6 +263,7 @@
             env.RUSTFLAGS = devRustflags;
             buildPhase = ''
               export HOME=$TMPDIR
+              ${cordisSymlink}
               cargo clippy --workspace --all-targets -- -D warnings
               touch $out
             '';
@@ -322,6 +351,7 @@
             };
             buildPhase = ''
               export HOME=$TMPDIR
+              ${cordisSymlink}
               cp ARCHITECTURE.md $TMPDIR/committed.md
               bash scripts/gen-arch.sh
               diff -u $TMPDIR/committed.md ARCHITECTURE.md || {
@@ -331,6 +361,22 @@
               touch $out
             '';
             dontInstall = true;
+          };
+        }
+      );
+
+      apps = forAllSystems (system:
+        let
+          pkgs = nixpkgsFor.${system};
+        in
+        {
+          benchmark = {
+            type = "app";
+            program = toString (
+              pkgs.writeShellScript "tomoe-render-benchmark" ''
+                exec nix develop . -c cargo run -p moonshell-render --release --example renderer-bench "$@"
+              ''
+            );
           };
         }
       );
