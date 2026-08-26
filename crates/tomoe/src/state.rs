@@ -109,10 +109,6 @@ pub(crate) fn with_toplevel_data<T>(
 
 /// Client-provided drag icon surface, rendered under the cursor during an
 /// active drag-and-drop grab.
-#[expect(
-    dead_code,
-    reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
-)]
 pub struct DndIcon {
     pub surface: WlSurface,
     pub offset: Point<i32, Logical>,
@@ -270,10 +266,6 @@ pub struct Tomoe {
 
     pub seat: Seat<Tomoe>,
     pub cursor_status: CursorImageStatus,
-    #[expect(
-        dead_code,
-        reason = "DnD grab wiring lands in a follow-up; the stub is kept as the foundation."
-    )]
     pub dnd_icon: Option<DndIcon>,
     /// Block cursor drawn when no xcursor theme loaded and no client surface;
     /// persistent so damage trackers see a stable element id.
