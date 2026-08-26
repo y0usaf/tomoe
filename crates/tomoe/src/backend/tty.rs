@@ -1562,6 +1562,7 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         loop_handle,
         cursor,
         cursor_fallback,
+        dnd_icon,
         ui,
         shell,
         borders,
@@ -1623,6 +1624,12 @@ pub fn render_surface(tomoe: &mut Tomoe, node: DrmNode, crtc: crtc::Handle) {
         &cursor_status,
         cursor,
         cursor_fallback,
+        cursor_phys,
+        scale,
+    ));
+    elements.extend(crate::render::dnd_icon_elements(
+        &mut renderer,
+        dnd_icon.as_ref(),
         cursor_phys,
         scale,
     ));

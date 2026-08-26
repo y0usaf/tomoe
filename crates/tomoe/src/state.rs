@@ -535,6 +535,13 @@ impl Tomoe {
                 "Failed to load the config file. Running with defaults; check the log for details.",
             );
         }
+        // Config-as-WASM: the default settings surface ships as a compiled
+        // `.wasm` loaded on the cordis kernel and routed back through string/
+        // JSON keys (docs/abi.md). It is authoritative over the Lua `settings`
+        // table for the compositor's backend reads (winit/tty).
+        if let Err(err) = self.lua.load_default_settings_from_wasm() {
+            warn!("config-as-wasm error (settings read from defaults): {err:#}");
+        }
         self.apply_binds();
         self.lua.mark_processes_dirty();
         self.after_lua();
