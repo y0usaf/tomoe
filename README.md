@@ -6,8 +6,7 @@
 <br clear="both">
 
 
-**tomoe** (巴, after Tomoe River — the fountain-pen paper you return to again
-and again) is a Wayland compositor where the window manager is yours to
+**tomoe** (巴, after Tomoe Ansari — my cat) is a Wayland compositor where the window manager is yours to
 rewrite. The Rust core exposes mechanism — windows, outputs, input, a camera
 over an infinite canvas — and every policy decision above it (workspaces,
 tiling, focus order, even what a titlebar drag does) is Lua, hot-reloaded on
