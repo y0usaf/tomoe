@@ -1,7 +1,7 @@
 # tomoe
 
-<img align="left" src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" width="132" height="108">
-<img align="right" src="assets/pixel-moon.png" alt="Pixel art of Moon" width="132" height="108">
+<img align="left" src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" width="1320" height="1080">
+<img align="right" src="assets/pixel-moon.png" alt="Pixel art of Moon" width="1320" height="1080">
 <br clear="both">
 
 
