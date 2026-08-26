@@ -1,5 +1,13 @@
 # tomoe
 
+<table>
+<tr>
+<td align="left"><img src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" height="96"></td>
+<td align="right"><img src="assets/pixel-moon.png" alt="Pixel art of Moon" height="96"></td>
+</tr>
+</table>
+
+
 **tomoe** (巴, after Tomoe River — the fountain-pen paper you return to again
 and again) is a Wayland compositor where the window manager is yours to
 rewrite. The Rust core exposes mechanism — windows, outputs, input, a camera
