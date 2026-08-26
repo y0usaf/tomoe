@@ -24,14 +24,6 @@ impl Backend {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn tty(&mut self) -> Option<&mut TtyData> {
-        match self {
-            Backend::Tty(data) => Some(data),
-            _ => None,
-        }
-    }
-
     /// Import a client dmabuf into the renderer that composites it (the
     /// primary GPU on the TTY backend).
     pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
