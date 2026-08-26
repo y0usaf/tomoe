@@ -2,6 +2,7 @@
 
 <img align="left" src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" width="132" height="108">
 <img align="right" src="assets/pixel-moon.png" alt="Pixel art of Moon" width="132" height="108">
+<p align="center"><img src="assets/title-tomoe.svg" alt="Tomoe" width="420" height="108"></p>
 <br clear="both">
 
 
