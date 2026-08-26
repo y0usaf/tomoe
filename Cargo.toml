@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/tomoe",
+    "crates/tomoe-config-wasm",
     "crates/tomoe-ipc",
     "crates/xdg-desktop-portal-tomoe",
     "crates/moonshell",
