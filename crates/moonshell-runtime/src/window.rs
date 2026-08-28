@@ -66,6 +66,27 @@ pub struct WindowShared {
     pub handlers: std::collections::HashMap<String, LuaRegistryKey>,
 }
 
+impl WindowShared {
+    /// The `on_click` handler registered for `path` or its nearest
+    /// ancestor — the same bubble walk `LuaRuntime::click_shell`
+    /// dispatches with. Hit-path probing (`ShellSurfaces::click_target`)
+    /// and dispatch read this one walk, so they can never disagree
+    /// about what is clickable.
+    pub fn handler_along(&self, path: &str) -> Option<&LuaRegistryKey> {
+        let mut probe: &str = path;
+        loop {
+            if let Some(key) = self.handlers.get(probe) {
+                return Some(key);
+            }
+            match probe.rfind('.') {
+                Some(idx) => probe = &probe[..idx],
+                None if !probe.is_empty() => probe = "",
+                None => return None,
+            }
+        }
+    }
+}
+
 /// The userdata `shell.window` returns. `handle:render(fn)` stores the
 /// render function (as a registry key — it outlives this stack frame)
 /// and requests a repaint.

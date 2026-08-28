@@ -252,9 +252,12 @@ impl ShellSurfaces {
 
     /// Hit-test an output-local physical point against the surfaces
     /// (topmost = last declared). `Some` = the point is on a native
-    /// shell surface: the window handle plus the dotted element path
-    /// under the point (for handler lookup). Clicks on a surface are
-    /// consumed by the caller whether or not a handler exists.
+    /// shell surface whose hit path reaches an `on_click` handler
+    /// (bubbling to ancestors, [`WindowShared::handler_along`]): the
+    /// window handle plus the dotted element path. Inert surface
+    /// regions — backgrounds, transparent gaps, handler-less widgets —
+    /// return `None`, so the caller's press falls through to the
+    /// windows beneath instead of being swallowed by the overlay rect.
     pub fn click_target(
         &self,
         output_name: &str,
@@ -277,6 +280,11 @@ impl ShellSurfaces {
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join(".");
+            // Only interactive regions capture the click; the rest of
+            // this surface lets the press pass to what's beneath.
+            if s.shared.borrow().handler_along(&path).is_none() {
+                continue;
+            }
             return Some((s.shared.clone(), path));
         }
         None
@@ -425,6 +433,57 @@ mod tests {
             .collect::<Vec<_>>()
             .join(".");
         assert!(!rt.click_shell(&shared, &key));
+    }
+
+    /// FUSION F4: only interactive shell regions are click targets —
+    /// handler-less paths (surface background, text cells, transparent
+    /// gaps) are `None`, so presses fall through to the windows beneath.
+    #[test]
+    fn inert_surface_regions_are_not_click_targets() {
+        let mut rt = crate::lua::LuaRuntime::new().unwrap();
+        rt.lua()
+            .load(
+                r#"
+                clicked = 0
+                local win = shell.window({ position = "top", height = 30 })
+                win:render(function()
+                  return ui.hbox({ children = {
+                    ui.text({ content = "left", width = 50, height = 30 }),
+                    ui.button({
+                      width = 50,
+                      height = 30,
+                      on_click = function() clicked = clicked + 1 end,
+                      children = { ui.text("btn") },
+                    }),
+                  }})
+                end)
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        let mut shell = ShellSurfaces::default();
+        shell.adopt(rt.shell_ctx().take_pending());
+        let mut engine = Engine::new();
+        shell.refresh(
+            &mut rt,
+            &mut engine,
+            &[("out".to_string(), Size::from((200, 30)), 1.0)],
+        );
+
+        // The button cell: a click target carrying its handler path.
+        let (shared, path) = shell
+            .click_target("out", (75.0, 15.0))
+            .expect("interactive region is a click target");
+        assert_eq!(path, "0.1");
+        assert!(rt.click_shell(&shared, &path));
+        let clicked: i32 = rt.lua().globals().get("clicked").unwrap();
+        assert_eq!(clicked, 1);
+
+        // Everywhere else on the surface — background, text cell — is
+        // inert: the press falls through to the windows beneath.
+        assert!(shell.click_target("out", (25.0, 15.0)).is_none());
+        assert!(shell.click_target("out", (150.0, 29.0)).is_none());
     }
 
     #[test]
