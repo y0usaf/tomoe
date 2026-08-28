@@ -2680,17 +2680,8 @@ impl LuaRuntime {
     pub fn click_shell(&mut self, shared: &Rc<RefCell<WindowShared>>, path: &str) -> bool {
         let key_fn = {
             let s = shared.borrow();
-            let mut probe: &str = path;
-            loop {
-                if let Some(key) = s.handlers.get(probe) {
-                    break Some(self.lua.registry_value::<Function>(key));
-                }
-                match probe.rfind('.') {
-                    Some(idx) => probe = &probe[..idx],
-                    None if !probe.is_empty() => probe = "",
-                    None => break None,
-                }
-            }
+            s.handler_along(path)
+                .map(|key| self.lua.registry_value::<Function>(key))
         };
         match key_fn {
             Some(Ok(f)) => {

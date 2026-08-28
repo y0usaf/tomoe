@@ -749,9 +749,10 @@ impl Tomoe {
                     return;
                 }
 
-                // Native shell surfaces (FUSION F4): a press inside a
-                // surface rect is consumed by the shell — the deepest
-                // on_click along the element hit path fires in Lua.
+                // Native shell surfaces (FUSION F4): a press on a shell
+                // click target — a hit path that reaches an on_click —
+                // is consumed by the shell, the deepest handler firing
+                // in Lua. Inert surface regions fall through to clients.
                 if pressed {
                     let pos = self.space.point_to_physical(pointer.current_location());
                     if let Some((name, local)) = self.output_named_local_point(pos) {
