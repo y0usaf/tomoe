@@ -1,0 +1,7 @@
+/ref/
+/result
+/result-*
+/lisp/result
+/lisp/result-*
+/lisp/build/
+*.fasl
