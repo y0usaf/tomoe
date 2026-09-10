@@ -14,6 +14,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_swapchain_manager.h>
 #include <wlr/types/wlr_pointer.h>
@@ -33,6 +34,12 @@ struct binding {
     uint32_t modifiers, keysym;
     char *owner, *command;
 };
+/* Payload of a scene tree node owned by a window or a layer surface. Both embed
+ * it first, so pointer hit testing reads an id without knowing which kind of
+ * protocol object it found. */
+struct target {
+    uint32_t id;
+};
 struct tomoe {
     struct wl_display *display;
     struct wlr_backend *backend;
@@ -41,27 +48,51 @@ struct tomoe {
     struct wlr_scene *scene;
     struct wlr_output_layout *layout;
     struct wlr_scene_output_layout *scene_layout;
+    /* Children of the scene tree, bottom to top: windows, background/bottom/top
+     * layers, fullscreen windows, then the overlay layer. */
+    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
     struct wlr_seat *seat;
-    struct wl_list windows, outputs, keyboards, events, bindings;
-    struct wl_listener new_output, new_input, new_toplevel, new_popup;
+    struct wl_list windows, layers, outputs, keyboards, events, bindings;
+    struct wl_listener new_output, new_input, new_toplevel, new_popup, new_layer_surface;
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy;
     char *last_event;
-    uint32_t next_id, focused;
+    uint32_t next_id, focused, grab_id;
+    int grab_mode;
+    double grab_x, grab_y;
     size_t event_count;
     bool running, stopping, failed, configuring_outputs;
 };
 struct window {
+    struct target target;
     struct wl_list link;
     struct tomoe *server;
     struct wlr_xdg_toplevel *xdg;
     struct wlr_scene_tree *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
-    uint32_t id;
     int width, height;
-    bool mapped;
+    bool mapped, fullscreen_state, maximize_state;
+};
+/* Layer surface record as announced by :layer events, with the policy's
+ * overrides already resolved. */
+struct layer_state {
+    uint32_t anchor, width, height;
+    int margin[4];
+    int layer, exclusive_zone, keyboard;
+};
+struct layer {
+    struct target target;
+    struct wl_list link;
+    struct tomoe *server;
+    struct wlr_layer_surface_v1 *wlr;
+    struct wlr_scene_layer_surface_v1 *scene;
+    struct wl_listener commit, destroy, map, unmap, new_popup;
+    /* Policy overrides; -1 keeps the client's request. */
+    int override_layer, override_exclusive_zone, override_keyboard, override_visible;
+    struct layer_state last;
+    bool mapped, announced;
 };
 struct output {
     struct wl_list link;
@@ -122,15 +153,26 @@ static void end_event(struct tomoe *s, struct event *event, FILE *out) {
     wl_list_insert(s->events.prev, &event->link);
     s->event_count++;
 }
-static void window_event(struct window *w, const char *type) {
+static void window_event(struct window *w, const char *type, const char *request) {
     struct event *event; size_t size;
     FILE *out = begin_event(w->server, &event, &size);
     if (!out) return;
     fprintf(out, "(:type :%s :id %u :width %d :height %d :title ",
-        type, w->id, w->width, w->height);
+        type, w->target.id, w->width, w->height);
     quote(out, w->xdg->title);
-    fputs(" :app-id ", out); quote(out, w->xdg->app_id); fputc(')', out);
+    fputs(" :app-id ", out); quote(out, w->xdg->app_id);
+    fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
+        w->maximize_state ? "t" : "nil");
+    if (request) fprintf(out, " :request :%s", request);
+    fputc(')', out);
     end_event(w->server, event, out);
+}
+static void unmap_event(struct tomoe *s, uint32_t id) {
+    struct event *event; size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :unmap :id %u)", id);
+    end_event(s, event, out);
 }
 static void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
@@ -312,8 +354,166 @@ done:
 
 static struct window *find_window(struct tomoe *s, uint32_t id) {
     struct window *w;
-    wl_list_for_each(w, &s->windows, link) if (w->id == id && w->mapped) return w;
+    wl_list_for_each(w, &s->windows, link) if (w->target.id == id && w->mapped) return w;
     return NULL;
+}
+static struct window *find_window_any(struct tomoe *s, uint32_t id) {
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) if (w->target.id == id) return w;
+    return NULL;
+}
+static struct layer *find_layer(struct tomoe *s, uint32_t id) {
+    struct layer *l;
+    wl_list_for_each(l, &s->layers, link) if (l->target.id == id) return l;
+    return NULL;
+}
+static struct wlr_output *any_output(struct tomoe *s) {
+    if (wl_list_empty(&s->outputs)) return NULL;
+    struct output *o = wl_container_of(s->outputs.next, o, link);
+    return o->wlr;
+}
+static int layer_of(struct layer *l) {
+    return l->override_layer >= 0 ? l->override_layer : (int)l->wlr->current.layer;
+}
+static int exclusive_zone_of(struct layer *l) {
+    return l->override_exclusive_zone >= 0 ?
+        l->override_exclusive_zone : l->wlr->current.exclusive_zone;
+}
+static int keyboard_of(struct layer *l) {
+    return l->override_keyboard >= 0 ?
+        l->override_keyboard : (int)l->wlr->current.keyboard_interactive;
+}
+static bool visible_of(struct layer *l) {
+    return l->override_visible < 0 || l->override_visible != 0;
+}
+static const char *layer_name(int layer) {
+    switch (layer) {
+    case ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND: return "background";
+    case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM: return "bottom";
+    case ZWLR_LAYER_SHELL_V1_LAYER_TOP: return "top";
+    }
+    return "overlay";
+}
+static const char *keyboard_name(int keyboard) {
+    switch (keyboard) {
+    case ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE: return "none";
+    case ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE: return "exclusive";
+    }
+    return "on-demand";
+}
+static const struct {
+    uint32_t bit;
+    const char *name;
+} layer_anchors[] = {
+    { ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP, "top" },
+    { ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM, "bottom" },
+    { ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT, "left" },
+    { ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT, "right" },
+};
+static struct layer_state layer_state_of(struct layer *l) {
+    /* Events describe the client's request, never the policy's override: the
+     * Lisp runtime keeps them as external facts and must be able to fall back
+     * to them when an owner unmounts. */
+    struct wlr_layer_surface_v1_state *client = &l->wlr->current;
+    struct layer_state state = {
+        .anchor = client->anchor,
+        .width = client->actual_width,
+        .height = client->actual_height,
+        .margin = { client->margin.top, client->margin.right,
+            client->margin.bottom, client->margin.left },
+        .layer = (int)client->layer,
+        .exclusive_zone = client->exclusive_zone,
+        .keyboard = (int)client->keyboard_interactive,
+    };
+    return state;
+}
+static int layer_state_changed(struct layer_state *last, struct layer_state *state) {
+    return last->anchor != state->anchor || last->width != state->width ||
+        last->height != state->height || last->layer != state->layer ||
+        last->exclusive_zone != state->exclusive_zone ||
+        last->keyboard != state->keyboard ||
+        memcmp(last->margin, state->margin, sizeof(last->margin)) != 0;
+}
+static void layer_event(struct layer *l) {
+    if (!l->mapped) return;
+    struct layer_state state = layer_state_of(l);
+    if (l->announced && !layer_state_changed(&l->last, &state)) return;
+    struct event *event; size_t size;
+    FILE *out = begin_event(l->server, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :layer :id %u :namespace ", l->target.id);
+    quote(out, l->wlr->namespace);
+    fprintf(out, " :layer :%s :anchors (", layer_name(state.layer));
+    for (size_t i = 0; i < sizeof(layer_anchors) / sizeof(layer_anchors[0]); i++) {
+        if (state.anchor & layer_anchors[i].bit) fprintf(out, " :%s", layer_anchors[i].name);
+    }
+    fprintf(out, ") :exclusive-zone %d :margin (%d %d %d %d)"
+        " :width %u :height %u :keyboard :%s)",
+        state.exclusive_zone, state.margin[0], state.margin[1], state.margin[2],
+        state.margin[3], state.width, state.height, keyboard_name(state.keyboard));
+    l->last = state;
+    l->announced = true;
+    end_event(l->server, event, out);
+}
+static void keyboard_enter(struct tomoe *s, struct wlr_surface *surface) {
+    if (!surface) { wlr_seat_keyboard_notify_clear_focus(s->seat); return; }
+    struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(s->seat);
+    uint32_t keys[WLR_KEYBOARD_KEYS_CAP];
+    size_t count = 0;
+    struct keyboard *tracked;
+    wl_list_for_each(tracked, &s->keyboards, link) {
+        if (tracked->wlr != keyboard) continue;
+        for (size_t i = 0; i < keyboard->num_keycodes; i++) {
+            uint32_t code = keyboard->keycodes[i];
+            if (code >= 768 || !tracked->consumed[code]) keys[count++] = code;
+        }
+        break;
+    }
+    /* A consumed shortcut must not appear held in the new client's enter event. */
+    struct wlr_keyboard_modifiers empty = {0};
+    wlr_seat_keyboard_notify_enter(s->seat, surface, keys, count,
+        keyboard ? &keyboard->modifiers : &empty);
+}
+/* Exclusive layer surfaces hold the seat keyboard; otherwise the policy's
+ * focused window does. Hidden and unmapped surfaces never hold focus. */
+static void update_keyboard_focus(struct tomoe *s) {
+    struct layer *l;
+    for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; layer >= 0; layer--) {
+        wl_list_for_each(l, &s->layers, link) {
+            if (layer_of(l) != layer || !l->mapped || !visible_of(l)) continue;
+            if (keyboard_of(l) != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) continue;
+            keyboard_enter(s, l->wlr->surface);
+            return;
+        }
+    }
+    struct window *w = find_window(s, s->focused);
+    keyboard_enter(s, w ? w->xdg->base->surface : NULL);
+}
+static void arrange_layers(struct tomoe *s) {
+    struct layer *l;
+    wl_list_for_each(l, &s->layers, link) {
+        if (!l->wlr->output) l->wlr->output = any_output(s);
+    }
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        struct wlr_box full_area;
+        wlr_output_layout_get_box(s->layout, o->wlr, &full_area);
+        struct wlr_box usable_area = full_area;
+        /* Exclusive zones shrink the usable area before anything else is placed,
+         * so panels push the layers and windows below them out of the way. */
+        for (int pass = 0; pass < 2; pass++) {
+            for (int want = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; want >= 0; want--) {
+                wl_list_for_each(l, &s->layers, link) {
+                    if (!l->wlr->initialized || !l->mapped) continue;
+                    if (l->wlr->output != o->wlr || layer_of(l) != want) continue;
+                    if ((exclusive_zone_of(l) > 0) != (pass == 0)) continue;
+                    wlr_scene_layer_surface_v1_configure(l->scene, &full_area, &usable_area);
+                }
+            }
+        }
+    }
+    wl_list_for_each(l, &s->layers, link) layer_event(l);
+    update_keyboard_focus(s);
 }
 
 void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
@@ -333,28 +533,57 @@ void tomoe_focus(struct tomoe *s, uint32_t id) {
     if (s->focused == (next ? id : 0)) return;
     if (previous) wlr_xdg_toplevel_set_activated(previous->xdg, false);
     s->focused = next ? id : 0;
-    if (!next) { wlr_seat_keyboard_notify_clear_focus(s->seat); return; }
-    wlr_xdg_toplevel_set_activated(next->xdg, true);
-    struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(s->seat);
-    uint32_t keys[WLR_KEYBOARD_KEYS_CAP];
-    size_t count = 0;
-    struct keyboard *tracked;
-    wl_list_for_each(tracked, &s->keyboards, link) {
-        if (tracked->wlr != keyboard) continue;
-        for (size_t i = 0; i < keyboard->num_keycodes; i++) {
-            uint32_t code = keyboard->keycodes[i];
-            if (code >= 768 || !tracked->consumed[code]) keys[count++] = code;
-        }
-        break;
-    }
-    /* A consumed shortcut must not appear held in the new client's enter event. */
-    struct wlr_keyboard_modifiers empty = {0};
-    wlr_seat_keyboard_notify_enter(s->seat, next->xdg->base->surface,
-        keys, count, keyboard ? &keyboard->modifiers : &empty);
+    if (next) wlr_xdg_toplevel_set_activated(next->xdg, true);
+    /* An exclusive layer surface keeps the seat keyboard while it is mapped. */
+    update_keyboard_focus(s);
 }
 void tomoe_close(struct tomoe *s, uint32_t id) {
     struct window *w = find_window(s, id);
     if (w) wlr_xdg_toplevel_send_close(w->xdg);
+}
+static void grab_clear(struct tomoe *s) {
+    if (s->grab_mode == 0) return;
+    s->grab_mode = 0;
+    s->grab_id = 0;
+    wlr_cursor_set_xcursor(s->cursor, s->cursor_manager, "default");
+}
+void tomoe_grab(struct tomoe *s, uint32_t id, int mode) {
+    if (mode == 0) { grab_clear(s); return; }
+    if (mode != 1 && mode != 2) return;
+    /* The grabbed object may be unmapped; only a dead id is a no-op. */
+    if (!find_window_any(s, id) && !find_layer(s, id)) return;
+    s->grab_id = id;
+    s->grab_mode = mode;
+    s->grab_x = s->cursor->x;
+    s->grab_y = s->cursor->y;
+}
+void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximize) {
+    struct window *w = find_window_any(s, id);
+    /* A configure cannot be scheduled before the client's first commit. */
+    if (!w || !w->xdg->base->initialized) return;
+    if (w->xdg->scheduled.fullscreen != (fullscreen != 0)) {
+        wlr_xdg_toplevel_set_fullscreen(w->xdg, fullscreen != 0);
+    }
+    if (w->xdg->scheduled.maximized != (maximize != 0)) {
+        wlr_xdg_toplevel_set_maximized(w->xdg, maximize != 0);
+    }
+}
+void tomoe_layer(struct tomoe *s, uint32_t id, int layer, int exclusive_zone,
+        int keyboard, int visible) {
+    struct layer *l = find_layer(s, id);
+    if (!l) return;
+    /* -1 keeps the client's request; values outside the ABI stay unchanged. */
+    if (layer == -1 || (layer >= ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
+            layer <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY)) l->override_layer = layer;
+    if (exclusive_zone >= -1) l->override_exclusive_zone = exclusive_zone;
+    if (keyboard >= -1 &&
+            keyboard <= ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND) {
+        l->override_keyboard = keyboard;
+    }
+    if (visible >= -1 && visible <= 1) l->override_visible = visible;
+    wlr_scene_node_reparent(&l->scene->tree->node, s->layer_tree[layer_of(l)]);
+    wlr_scene_node_set_enabled(&l->scene->tree->node, visible_of(l));
+    arrange_layers(s);
 }
 uint32_t tomoe_keysym(const char *name) {
     return xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
@@ -378,44 +607,69 @@ int tomoe_bind(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
     return 1;
 }
 
+/* Fullscreen windows live in their own subtree, between the top and overlay
+ * layers. The same-parent case must not disturb the stacking order. */
+static void window_reparent(struct window *w) {
+    struct wlr_scene_tree *parent = w->fullscreen_state ?
+        w->server->fullscreen_tree : w->server->window_tree;
+    if (w->tree->node.parent != parent) wlr_scene_node_reparent(&w->tree->node, parent);
+}
 static void mapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, map);
     w->mapped = true;
     w->width = w->xdg->base->geometry.width;
     w->height = w->xdg->base->geometry.height;
-    window_event(w, "map");
+    w->fullscreen_state = w->xdg->current.fullscreen;
+    w->maximize_state = w->xdg->current.maximized;
+    window_reparent(w);
+    window_event(w, "map", NULL);
 }
 static void unmapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, unmap);
-    if (w->server->focused == w->id) tomoe_focus(w->server, 0);
+    if (w->server->focused == w->target.id) tomoe_focus(w->server, 0);
     w->mapped = false;
-    window_event(w, "unmap");
+    unmap_event(w->server, w->target.id);
 }
 static void window_commit(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, commit);
-    if (w->xdg->base->initial_commit) wlr_xdg_toplevel_set_size(w->xdg, 0, 0);
+    if (w->xdg->base->initial_commit) {
+        wlr_xdg_toplevel_set_size(w->xdg, 0, 0);
+        return;
+    }
+    bool fullscreen = w->xdg->current.fullscreen;
+    bool maximize = w->xdg->current.maximized;
+    if (fullscreen == w->fullscreen_state && maximize == w->maximize_state) return;
+    /* The client may deny a request, so only its acknowledged state counts. */
+    w->fullscreen_state = fullscreen;
+    w->maximize_state = maximize;
+    window_reparent(w);
+    if (w->mapped) window_event(w, "metadata", NULL);
 }
 static void window_title(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, title);
-    if (w->mapped) window_event(w, "metadata");
+    if (w->mapped) window_event(w, "metadata", NULL);
 }
 static void window_app_id(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, app_id);
-    if (w->mapped) window_event(w, "metadata");
+    if (w->mapped) window_event(w, "metadata", NULL);
 }
 static void window_maximize(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, maximize);
     /* Unsupported requests still require a configure, without claiming acceptance. */
     if (w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
+    if (w->mapped) window_event(w, "metadata", "maximize");
 }
 static void window_fullscreen(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, fullscreen);
     if (w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
+    if (w->mapped) window_event(w, "metadata", "fullscreen");
 }
 static void window_destroy(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, destroy);
+    struct tomoe *s = w->server;
     detach(&w->map); detach(&w->unmap); detach(&w->commit); detach(&w->destroy);
     detach(&w->title); detach(&w->app_id); detach(&w->maximize); detach(&w->fullscreen);
+    if (s->grab_id == w->target.id) grab_clear(s);
     wl_list_remove(&w->link);
     /* The xdg scene helper owns its tree until xdg_surface destruction. */
     w->tree->node.data = NULL;
@@ -427,10 +681,10 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     if (s->next_id == UINT32_MAX) { fail(s, "window IDs exhausted"); return; }
     struct window *w = calloc(1, sizeof(*w));
     if (!w) { wl_resource_post_no_memory(xdg->resource); return; }
-    w->server = s; w->xdg = xdg; w->id = ++s->next_id;
-    w->tree = wlr_scene_xdg_surface_create(&s->scene->tree, xdg->base);
+    w->server = s; w->xdg = xdg; w->target.id = ++s->next_id;
+    w->tree = wlr_scene_xdg_surface_create(s->window_tree, xdg->base);
     if (!w->tree) { free(w); wl_resource_post_no_memory(xdg->resource); return; }
-    w->tree->node.data = w;
+    w->tree->node.data = &w->target;
     xdg->base->data = w->tree;
     wl_list_insert(s->windows.prev, &w->link);
     listen(&w->map, &xdg->base->surface->events.map, mapped);
@@ -450,18 +704,97 @@ static void popup_destroy(struct wl_listener *listener, void *data) {
     struct popup *p = wl_container_of(listener, p, destroy);
     detach(&p->commit); detach(&p->destroy); free(p);
 }
-static void new_popup(struct wl_listener *listener, void *data) {
-    struct wlr_xdg_popup *xdg = data;
-    struct wlr_xdg_surface *parent = xdg->parent ?
-        wlr_xdg_surface_try_from_wlr_surface(xdg->parent) : NULL;
-    if (!parent || !parent->data) { wlr_xdg_popup_destroy(xdg); return; }
+static void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent) {
     struct popup *p = calloc(1, sizeof(*p));
     if (!p) { wl_resource_post_no_memory(xdg->resource); return; }
     p->xdg = xdg;
-    xdg->base->data = wlr_scene_xdg_surface_create(parent->data, xdg->base);
+    xdg->base->data = wlr_scene_xdg_surface_create(parent, xdg->base);
     if (!xdg->base->data) { free(p); wl_resource_post_no_memory(xdg->resource); return; }
     listen(&p->commit, &xdg->base->surface->events.commit, popup_commit);
     listen(&p->destroy, &xdg->events.destroy, popup_destroy);
+}
+static void new_popup(struct wl_listener *listener, void *data) {
+    struct wlr_xdg_popup *xdg = data;
+    /* A popup created without a parent is attached to a layer surface later,
+     * which raises that layer surface's own new_popup signal. */
+    if (!xdg->parent) return;
+    struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg->parent);
+    if (!parent || !parent->data) { wlr_xdg_popup_destroy(xdg); return; }
+    popup_create(xdg, parent->data);
+}
+
+static void layer_commit(struct wl_listener *listener, void *data) {
+    struct layer *l = wl_container_of(listener, l, commit);
+    if (l->wlr->initial_commit) {
+        /* wlroots asserts when a layer surface is configured before the commit
+         * that carries the client's desired size. */
+        wlr_layer_surface_v1_configure(l->wlr, l->wlr->pending.desired_width,
+            l->wlr->pending.desired_height);
+    }
+    /* Anchors, exclusive zones and margins need a new arrangement; any other
+     * commit only needs the acknowledged size announced. */
+    if (l->wlr->initial_commit || l->wlr->current.committed != 0) {
+        arrange_layers(l->server);
+    } else {
+        layer_event(l);
+    }
+}
+static void layer_map(struct wl_listener *listener, void *data) {
+    struct layer *l = wl_container_of(listener, l, map);
+    l->mapped = true;
+    wlr_scene_node_set_enabled(&l->scene->tree->node, visible_of(l));
+    arrange_layers(l->server);
+}
+static void layer_unmap(struct wl_listener *listener, void *data) {
+    struct layer *l = wl_container_of(listener, l, unmap);
+    l->mapped = false;
+    l->announced = false;
+    unmap_event(l->server, l->target.id);
+    arrange_layers(l->server);
+}
+static void layer_destroy(struct wl_listener *listener, void *data) {
+    struct layer *l = wl_container_of(listener, l, destroy);
+    struct tomoe *s = l->server;
+    detach(&l->commit); detach(&l->map); detach(&l->unmap);
+    detach(&l->destroy); detach(&l->new_popup);
+    if (s->grab_id == l->target.id) grab_clear(s);
+    wl_list_remove(&l->link);
+    /* The scene helper destroys the tree along with the layer surface. */
+    free(l);
+    arrange_layers(s);
+}
+static void layer_popup(struct wl_listener *listener, void *data) {
+    struct layer *l = wl_container_of(listener, l, new_popup);
+    popup_create(data, l->wlr->data);
+}
+static void new_layer_surface(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, new_layer_surface);
+    struct wlr_layer_surface_v1 *wlr = data;
+    /* The protocol allows a NULL output; the surface lands on the first one. */
+    if (!wlr->output) wlr->output = any_output(s);
+    if (s->next_id == UINT32_MAX) { fail(s, "surface IDs exhausted"); return; }
+    struct layer *l = calloc(1, sizeof(*l));
+    if (!l) { wl_resource_post_no_memory(wlr->resource); return; }
+    l->server = s;
+    l->wlr = wlr;
+    l->target.id = ++s->next_id;
+    l->override_layer = -1;
+    l->override_exclusive_zone = -1;
+    l->override_keyboard = -1;
+    l->override_visible = -1;
+    l->scene = wlr_scene_layer_surface_v1_create(
+        s->layer_tree[(int)wlr->current.layer], wlr);
+    if (!l->scene) { free(l); wl_resource_post_no_memory(wlr->resource); return; }
+    l->scene->tree->node.data = &l->target;
+    /* A layer surface, like an xdg surface, points at the scene tree that owns
+     * it; popups and hit testing resolve through that. */
+    wlr->data = l->scene->tree;
+    wl_list_insert(s->layers.prev, &l->link);
+    listen(&l->commit, &wlr->surface->events.commit, layer_commit);
+    listen(&l->map, &wlr->surface->events.map, layer_map);
+    listen(&l->unmap, &wlr->surface->events.unmap, layer_unmap);
+    listen(&l->destroy, &wlr->events.destroy, layer_destroy);
+    listen(&l->new_popup, &wlr->events.new_popup, layer_popup);
 }
 
 static void output_frame(struct wl_listener *listener, void *data) {
@@ -485,14 +818,20 @@ static void output_request(struct wl_listener *listener, void *data) {
 static void output_destroy(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, destroy);
     struct tomoe *s = o->server;
+    struct wlr_output *wlr = o->wlr;
     detach(&o->frame); detach(&o->request); detach(&o->destroy);
     wlr_output_state_finish(&o->initial); wlr_output_state_finish(&o->pending);
     wl_list_remove(&o->link); free(o);
+    /* Layer surfaces pinned to the dead output fall back to a live one. */
+    struct layer *l;
+    wl_list_for_each(l, &s->layers, link) if (l->wlr->output == wlr) l->wlr->output = NULL;
     outputs_event(s);
+    arrange_layers(s);
 }
 static void layout_change(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, layout_change);
     outputs_event(s);
+    arrange_layers(s);
 }
 static void new_output(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, new_output);
@@ -525,17 +864,20 @@ static void new_output(struct wl_listener *listener, void *data) {
     outputs_event(s);
 }
 
-static struct window *pointer_target(struct tomoe *s, struct wlr_surface **surface,
+static uint32_t pointer_target(struct tomoe *s, struct wlr_surface **surface,
         double *sx, double *sy) {
     struct wlr_scene_node *node = wlr_scene_node_at(&s->scene->tree.node,
         s->cursor->x, s->cursor->y, sx, sy);
-    if (!node || node->type != WLR_SCENE_NODE_BUFFER) return NULL;
+    if (!node || node->type != WLR_SCENE_NODE_BUFFER) return 0;
     struct wlr_scene_surface *scene_surface =
         wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(node));
-    if (!scene_surface) return NULL;
+    if (!scene_surface) return 0;
     *surface = scene_surface->surface;
     while (node && !node->data) node = node->parent ? &node->parent->node : NULL;
-    return node ? node->data : NULL;
+    /* Only window and layer trees store a target; popup, subsurface and scene
+     * nodes store nothing, so an empty hit reports id 0. */
+    struct target *target = node ? node->data : NULL;
+    return target ? target->id : 0;
 }
 static void pointer_motion(struct tomoe *s, uint32_t time) {
     struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
@@ -548,29 +890,57 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
         wlr_cursor_set_xcursor(s->cursor, s->cursor_manager, "default");
     }
 }
+static int rounded(double value) {
+    return (int)(value < 0 ? value - 0.5 : value + 0.5);
+}
+static void grab_motion(struct tomoe *s) {
+    int x = rounded(s->cursor->x), y = rounded(s->cursor->y);
+    int dx = x - rounded(s->grab_x), dy = y - rounded(s->grab_y);
+    s->grab_x = s->cursor->x;
+    s->grab_y = s->cursor->y;
+    struct event *event; size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :grab :id %u :mode :%s :x %d :y %d :dx %d :dy %d)",
+        s->grab_id, s->grab_mode == 2 ? "resize" : "move", x, y, dx, dy);
+    end_event(s, event, out);
+}
+static void pointer_update(struct tomoe *s, uint32_t time) {
+    /* A grab suppresses everything clients would otherwise receive. */
+    if (s->grab_mode != 0) { grab_motion(s); return; }
+    pointer_motion(s, time);
+}
 static void motion(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, motion);
     struct wlr_pointer_motion_event *event = data;
     wlr_cursor_move(s->cursor, &event->pointer->base, event->delta_x, event->delta_y);
-    pointer_motion(s, event->time_msec);
+    pointer_update(s, event->time_msec);
 }
 static void absolute(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, absolute);
     struct wlr_pointer_motion_absolute_event *event = data;
     wlr_cursor_warp_absolute(s->cursor, &event->pointer->base, event->x, event->y);
-    pointer_motion(s, event->time_msec);
+    pointer_update(s, event->time_msec);
 }
 static void button(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, button);
     struct wlr_pointer_button_event *input = data;
-    wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
-    if (input->state != WL_POINTER_BUTTON_STATE_PRESSED) return;
-    struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
-    struct window *w = pointer_target(s, &surface, &sx, &sy);
+    uint32_t id = s->grab_id;
+    if (s->grab_mode == 0) {
+        struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
+        id = pointer_target(s, &surface, &sx, &sy);
+        wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
+    }
+    struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(s->seat);
+    uint32_t modifiers = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
+    modifiers &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     struct event *event; size_t size;
     FILE *out = begin_event(s, &event, &size);
     if (!out) return;
-    fprintf(out, "(:type :button :id %u :button %u)", w ? w->id : 0, input->button);
+    fprintf(out, "(:type :button :id %u :button %u :state :%s :x %d :y %d :modifiers %u)",
+        id, input->button,
+        input->state == WL_POINTER_BUTTON_STATE_PRESSED ? "pressed" : "released",
+        rounded(s->cursor->x), rounded(s->cursor->y), modifiers);
     end_event(s, event, out);
 }
 static void axis(struct wl_listener *listener, void *data) {
@@ -672,13 +1042,27 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 2; }
+int tomoe_abi_version(void) { return 3; }
+/* Scene tree children are created bottom to top: windows, background/bottom/top
+ * layers, fullscreen windows, then the overlay layer. */
+static bool create_scene_trees(struct tomoe *s) {
+    s->window_tree = wlr_scene_tree_create(&s->scene->tree);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&s->scene->tree);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = wlr_scene_tree_create(&s->scene->tree);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&s->scene->tree);
+    s->fullscreen_tree = wlr_scene_tree_create(&s->scene->tree);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = wlr_scene_tree_create(&s->scene->tree);
+    for (int i = 0; i < 4; i++) {
+        if (!s->layer_tree[i]) return false;
+    }
+    return s->window_tree && s->fullscreen_tree;
+}
 struct tomoe *tomoe_create(const char *socket_name) {
     wlr_log_init(WLR_ERROR, NULL);
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
-    wl_list_init(&s->windows); wl_list_init(&s->outputs); wl_list_init(&s->keyboards);
-    wl_list_init(&s->events); wl_list_init(&s->bindings);
+    wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
+    wl_list_init(&s->keyboards); wl_list_init(&s->events); wl_list_init(&s->bindings);
     s->display = wl_display_create();
     if (!s->display) goto failed;
     s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), NULL);
@@ -694,12 +1078,15 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->layout = wlr_output_layout_create(s->display);
     s->scene = wlr_scene_create();
     if (!s->layout || !s->scene || !wlr_xdg_output_manager_v1_create(s->display, s->layout)) goto failed;
+    if (!create_scene_trees(s)) goto failed;
     s->scene_layout = wlr_scene_attach_output_layout(s->scene, s->layout);
     s->cursor = wlr_cursor_create();
     s->cursor_manager = wlr_xcursor_manager_create(NULL, 24);
     s->seat = wlr_seat_create(s->display, "seat0");
     struct wlr_xdg_shell *shell = wlr_xdg_shell_create(s->display, 3);
-    if (!s->scene_layout || !s->cursor || !s->cursor_manager || !s->seat || !shell) goto failed;
+    struct wlr_layer_shell_v1 *layer_shell = wlr_layer_shell_v1_create(s->display, 4);
+    if (!s->scene_layout || !s->cursor || !s->cursor_manager || !s->seat ||
+            !shell || !layer_shell) goto failed;
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     capabilities(s);
     listen(&s->new_output, &s->backend->events.new_output, new_output);
@@ -707,6 +1094,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     listen(&s->new_toplevel, &shell->events.new_toplevel, new_toplevel);
     listen(&s->new_popup, &shell->events.new_popup, new_popup);
+    listen(&s->new_layer_surface, &layer_shell->events.new_surface, new_layer_surface);
     listen(&s->layout_change, &s->layout->events.change, layout_change);
     listen(&s->motion, &s->cursor->events.motion, motion);
     listen(&s->absolute, &s->cursor->events.motion_absolute, absolute);
@@ -747,7 +1135,7 @@ void tomoe_destroy(struct tomoe *s) {
     s->stopping = true;
     if (s->display) wl_display_destroy_clients(s->display);
     struct wl_listener *listeners[] = {
-        &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup,
+        &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup, &s->new_layer_surface,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy
     };
