@@ -1,254 +1,414 @@
-# tomoe
+# Tomoe Lisp
 
-<img align="left" src="assets/pixel-tomoe.png" alt="Pixel art of Tomoe" width="132" height="108">
-<img align="right" src="assets/pixel-moon.png" alt="Pixel art of Moon" width="132" height="108">
-<p align="center"><img src="assets/title-tomoe.svg" alt="Tomoe" width="420" height="108"></p>
-<br clear="both">
+A new Common Lisp Wayland compositor. SBCL runs the compositor loop, extension
+runtime, window-management policy, and control server. A C library connects it
+to wlroots 0.20 for Wayland protocols, rendering, outputs, and input devices.
 
+Every desktop behaviour is a mountable extension. The shipped tiling, focus,
+window-state, drag, and command units use the same API a user file does, and the
+host has no special case for their names. Layer-shell panels, fullscreen and
+maximize state, pointer-driven move and resize, and output configuration are all
+visible to policy as context and owned effects.
 
-**tomoe** (巴, after Tomoe — my beloved pet cat) is a Wayland compositor where the window manager is yours to
-rewrite. The Rust core exposes mechanism — windows, outputs, input, a camera
-over an infinite canvas — and every policy decision above it (workspaces,
-tiling, focus order, even what a titlebar drag does) is Lua, hot-reloaded on
-save. Built on [Smithay](https://github.com/Smithay/smithay). Under active
-development, not yet stable.
+This is a working prototype, not a complete desktop compositor or a pure-Lisp
+Wayland implementation.
 
----
+Two backends satisfy one contract, so the policy runtime does not know which one
+is loaded.
 
-**Contents** —
-[Design](#design) ·
-[Architecture](#architecture) ·
-[Building](#building) ·
-[Running](#running) ·
-[Configuration](#configuration) ·
-[IPC](#ipc) ·
-[Lua API reference](#lua-api-reference) ·
-[Credits](#credits) ·
-[License](#license)
+| Backend | Native side | State |
+| --- | --- | --- |
+| `native/` | wlroots 0.20 through a 29-line C header and a 1150-line C file | Packaged. xdg-shell, layer-shell, output configuration, pointer grabs. Verified with real clients, nested and headless |
+| `backend/` | `libwayland-server` through `sb-alien`, no wlroots, no C of ours | Early. foot maps a window, the policy places it, `inspect` reports it |
 
----
+The earlier Rust/Smithay and Lua implementation is not in this tree; it stays
+reachable in the repository history (commit `6de3ba6` and earlier).
 
-## Design
+## Run
 
-### Mechanism, not policy
-
-The core implements what a compositor *must* own — protocol handling,
-rendering, input routing, output management — and stops there. Everything
-recognizable as window management ships as plain Lua built on the same public
-API user configs use: the default tiling WM is `require("wm")`, and a second,
-entirely different paradigm (`require("zoomer")`, a pannable/zoomable floating
-canvas) exists to prove the point. If the built-in WM couldn't be written on
-the public API, the API wouldn't be done. Replacing the WM wholesale means
-not requiring the module and writing your own; with no hooks registered at
-all, windows map full-screen, so a broken config still shows something.
-
-### The extension contract
-
-Lua never touches compositor state directly. Reads (windows, outputs,
-[camera](#the-camera), pointer) come from a snapshot refreshed before every
-Lua entry; writes are queued operations applied when the callback returns.
-The render loop never waits on config code. Policy is driven by
-[hooks](docs/lua-api.md#hooks) — window open/close, focus, output changes,
-pointer buttons and scroll, client requests like fullscreen or an interactive
-move — where returning a truthy value consumes the event and makes your
-config responsible for answering it. Editing the config re-runs it in a fresh
-VM and replays window-open events, so the new policy adopts the windows that
-already exist; a config error is surfaced as an on-screen notification.
-
-### Pixel-exact rendering
-
-Sharp rendering at any scale is enforced structurally rather than by
-convention:
-
-1. The canonical coordinate space is **integer physical pixels** — layout,
-   the entire Lua API, and render positions alike. Integers on the physical
-   grid cannot misalign, so there is no rounding to forget.
-2. All logical↔physical conversion lives in one module (`coords.rs`);
-   protocol objects that speak logical coordinates convert exactly once at
-   that boundary.
-3. Client sizes are quantized where the protocol demands it, while
-   compositor-drawn pixels are free at any physical integer — which is why a
-   1-device-pixel border works at every scale.
-4. Scale snaps to N/120, the only granularity `wp-fractional-scale-v1` can
-   express; with `wp-viewporter` advertised, clients render at native density
-   from their first buffer and are sampled 1:1.
-
-### The camera
-
-Windows live on a world-coordinate canvas viewed through a per-space camera:
-`screen = (world − offset) · zoom`. The offset is integer physical, so
-panning and the identity view keep every pixel on the grid; zooming is the
-one sanctioned resampling path, meant for transient states like an overview.
-Input stays in screen space and hit-testing inverts the camera, so clients
-receive exact buffer-local coordinates at any pan or zoom. The
-[`zoomer`](docs/lua-api.md#zoomer) module drives all of this from Lua — see
-[`tomoe.set_view`](docs/lua-api.md#outputs--camera).
-
-## Architecture
-
-```
-crates/
-  tomoe/                     the compositor
-    src/
-      main.rs                CLI (incl. `tomoe msg`), backend selection
-      state.rs               central state; applies queued Lua operations
-      handlers.rs            Smithay delegate impls (xdg-shell, seat, …)
-      backend/               winit (nested dev) · tty (DRM/GBM/libinput)
-      space.rs, coords.rs    physical-pixel space + the one conversion boundary
-      lua.rs                 the `tomoe` API table, snapshots, hooks
-      input.rs               combo parsing, bind dispatch, libinput config
-      render.rs, capture.rs  render elements; screencopy/screencast paths
-      ipc.rs, process.rs     JSON IPC server · process manifest supervisor
-      lock.rs, xwayland.rs   session lock · xwayland-satellite integration
-      ui/                    hotkey overlay, exit dialog, screenshot UI, …
-  tomoe-ipc/                 wire contract for the IPC socket (see IPC)
-  xdg-desktop-portal-tomoe/  ScreenCast portal backend, paced at output refresh
-resources/                   default config, wm.lua, zoomer.lua, LuaLS stubs
-docs/lua-api.md              generated API reference
-```
-
-## Building
-
-With Nix, the flake is the source of truth:
+From the repository root:
 
 ```sh
-nix build            # package
-nix develop          # dev shell (cargo build / cargo test inside)
+nix build
+nix run .
 ```
 
-Without Nix: a stable Rust toolchain, `pkg-config`, `libclang`, and dev
-headers for EGL/GBM (mesa), wayland, libinput, libseat, libxkbcommon,
-libudev, libdisplay-info, dbus, and pipewire. LuaJIT is vendored — no system
-Lua needed.
+The default backend is `auto`. It opens a nested window when a parent Wayland
+display is available; otherwise it uses DRM for a direct session from a TTY.
+An explicit `WAYLAND_DISPLAY` takes priority. When it is unset or empty, startup
+looks for a live `wayland-N` socket under `XDG_RUNTIME_DIR`, skipping stale
+sockets and lock files. No manual environment export is needed for discovery.
+
+`--backend nested` uses the same display discovery but fails if no parent is
+available. It never falls back to hardware. The compositor creates
+`tomoe-lisp-0` under `XDG_RUNTIME_DIR`. It does not change your systemd, D-Bus,
+display-manager, or surrounding desktop environment.
+
+Explicit modes:
 
 ```sh
-cargo build --release            # target/release/{tomoe,xdg-desktop-portal-tomoe}
-cargo install --path crates/tomoe
+nix run . -- --backend nested
+nix run . -- --backend headless
+nix run . -- --backend drm
+nix run . -- --bare --backend headless
 ```
 
-## Running
+DRM mode takes direct control of outputs and input devices. Run it from an
+appropriate TTY with seat access. It has not been verified on hardware.
+`--bare` loads no extensions. Clients can still map and render at their own
+initial size, without focus policy or shortcuts.
 
-Nested inside an existing session (a window, for development):
+`XDG_RUNTIME_DIR` must be an owned directory with mode `0700`. Do not put live
+runtime sockets inside this flake's source directory. Nix cannot copy sockets
+into a source archive. `--socket NAME` permits independent instances. A socket
+left behind by an exit that skipped cleanup is reclaimed on the next start; a
+name a live instance answers on is refused.
+
+The packaged default terminal is Foot. Shipped bindings use Super:
+
+| Binding | Command |
+| --- | --- |
+| Super+Return | Open a terminal |
+| Super+Tab | Focus the next window |
+| Super+f | Toggle fullscreen for the focused window |
+| Super+m | Toggle maximize for the focused window |
+| Super+q | Ask the focused client to close |
+| Super+Shift+r | Reload configured extension files |
+| Super+Shift+Escape | Quit |
+
+Holding Super with the left mouse button moves the window under the pointer;
+Super with the right button resizes it. Both drags end when the button is
+released. The default layout tiles horizontally on the first output, inside the
+area that layer-shell panels with an exclusive zone leave free. Outputs and all
+window coordinates are available to Lisp, so a replacement can use the others.
+
+## Output resolution and pixel mapping
+
+Startup loads `$XDG_CONFIG_HOME/tomoe-lisp/init.lisp`, falling back to
+`~/.config/tomoe-lisp/init.lisp`. `--config FILE` replaces that default file;
+`--bare` skips it unless you also supply `--config`. An absent file is fine.
+Output policy is an ordinary extension, with the same mount/reload/unmount
+behavior as window policy:
+
+```lisp
+(define-extension "displays" () (snapshot state event)
+  (declare (ignore snapshot state event))
+  (values nil
+          (list (configure-output "DP-4" :mode '(5120 1440)
+                                        :scale 1 :position '(0 0))
+                (configure-output "HDMI-A-2" :mode '(1920 1080 60)
+                                             :scale 1 :position '(5120 0)))
+          nil))
+```
+
+`configure-output` accepts:
+
+- `:mode :preferred`, the monitor's advertised preferred mode, the default.
+- `:mode :max`, the largest advertised pixel area at its highest refresh.
+- `:mode '(WIDTH HEIGHT)`, that pixel resolution at its highest refresh.
+- `:mode '(WIDTH HEIGHT HZ)`, the closest advertised refresh within 1 Hz.
+  For example, 60 also matches 59.94 Hz. Unsupported modes are rejected, not
+  silently replaced. Headless/nested outputs can accept custom dimensions.
+- `:scale`, from 1/4 through 8, rounded to 1/120 increments. The default is 1.
+- `:position '(X Y)`, in logical desktop coordinates. Omit it for automatic
+  horizontal placement. Disconnected output names remain configured for hotplug.
+
+Physical resolution counts monitor pixels. Window geometry, output positions,
+and pointer coordinates use logical units, like Niri. At scale 1, one logical
+unit is one physical pixel. At scale 2, a 3840x2160 output provides 1920x1080
+logical units. Tomoe's physical-coordinate policy is different; it is not copied
+into this logical-coordinate compositor.
+
+Viewporter, fractional-scale-v1, and xdg-output let compatible clients render
+buffers at the requested scale while keeping logical window sizes and input
+coordinates consistent. Fractional scale does not guarantee every logical edge
+falls on a physical pixel. Clients without fractional-scale support may render
+at an integer scale and be resampled.
+
+Later-mounted output policies win per output. Unmount restores the previous
+owner or the output's initial mode, scale, and automatic placement. The backend
+validates the full configuration before committing and attempts to restore the
+previous hardware state if a commit fails. A failed hardware rollback stops the
+compositor. Output changes then notify `:outputs` consumers to retile clients.
+The native ABI is now 2; the additive inspect fields keep control wire version 1.
+The experimental pure-Lisp backend does not yet support output configuration.
+
+## Live control
+
+These commands attach to a running instance and then exit:
 
 ```sh
-tomoe --backend winit
+nix run . -- inspect
+nix run . -- command commands terminal
+nix run . -- command focus next
+nix run . -- unmount tiles
+nix run . -- mount "$PWD/examples/monocle.lisp"
+nix run . -- unmount monocle
+nix run . -- reload
+nix run . -- event '(:type :key :owner "commands" :command "terminal")'
+nix run . -- quit
 ```
 
-As a real session, from a TTY or a display manager:
+`inspect` prints versioned Lisp data containing live windows, outputs, resolved
+geometry, focus, bindings, layer surfaces, extension state, dispatch counts, per
+extension failures, and the last error. Mutating commands print nothing on
+success and return a nonzero exit status on failure. `command OWNER NAME`
+invokes an active binding through the same extension dispatch as keyboard input.
+
+`event` sends one data property list to a live instance as an injected input
+event: its `:type` must be `:key`, `:button`, or `:grab`. It exists so a policy
+can be driven on a machine with no seat — a headless compositor, a test run, or
+a scripted demonstration.
+
+Mounting a file replaces that file's units without reloading other files.
+Unmounting removes one named unit and its state. Reloading rebuilds all configured
+files, including units previously unmounted. It preserves state for matching
+names in the same source file. Unmount before reload to reset a unit's initial
+state.
+
+## Live reload
+
+Configured sources are watched and reloaded when they change, four times a
+second. A reload waits until a source has looked the same twice in a row, so a
+half-written file is not loaded. The baseline is the content the runtime loaded,
+not the first thing the watcher sees, so an edit made while a mount is still
+settling is still caught. Success prints nothing: the new policy is visible in
+`inspect` as a higher `:generation`. A source that fails to load keeps the
+previous policy mounted and reports through the last error. `--no-watch` turns
+watching off for one instance.
+
+`examples/monocle.lisp` is an alternative layout that shows only the focused
+window. Mount it after the default policy to override tiling. Removing it
+restores the lower-priority layout without restarting clients. The other
+examples are `workspaces.lisp` (nine tags), `float.lisp` (floating windows moved
+and resized by a Super drag), and `layer-inset.lisp` (tiling that insets by
+layer exclusive zones).
+
+## Write an extension
+
+Pass an ordinary Common Lisp file with `--config /absolute/path/config.lisp`,
+or mount it through control. Use `--bare --config ...` to replace every shipped
+policy. `builtins/desktop.lisp` declares `tiles`, `focus`, `window-state`,
+`drag`, and `commands` through the same API as a user file. The host has no
+special cases for these names.
+
+The public API is in `src/api.lisp`:
+
+```lisp
+(define-extension "name" (:reads (:windows :outputs) :state nil)
+    (snapshot state event)
+  ;; Return new state, the complete set of owned effects, then one-shot commands.
+  (values state nil nil))
+
+(context snapshot :windows)
+(place id x y width height visible)
+(focus id)                         ; NIL clears focus
+(bind-key '(:super :shift) "r" :reload)
+(layer id &key layer exclusive-zone keyboard visible)
+(fullscreen id flag)
+(maximize id flag)
+(grab id mode)                     ; :move or :resize
+(launch "foot")                    ; argv, not a shell command string
+(close-window id)
+(quit)
+(reload)
+```
+
+`:state` is an expression evaluated when the file is loaded, so an initial
+property list is written `(list :tag 1)` or `'(:tag 1)`, not `(:tag 1)`.
+
+Reducers receive a copied pre-dispatch snapshot, copied private state, and an
+event property list. A property list alternates keys and values, such as
+`(:id 1 :width 1280)`. Mutating a supplied list or string cannot mutate host
+state or another reducer's snapshot. Return state as data, not closures or
+native objects.
+
+Declare every context key read with `:reads`. `context` rejects undeclared
+reads. Available keys:
+
+- `:windows`: property lists with `:id`, `:title`, `:app-id`, `:width`, `:height`,
+  `:fullscreen`, and `:maximize`. Width and height are the client's initial
+  mapped dimensions; the two flags are the state the client has acknowledged.
+- `:outputs`: `:name`, logical `:x`, `:y`, `:width`, `:height`, plus
+  `:physical-width`, `:physical-height`, `:refresh-mhz`, `:scale-120`, and the
+  Wayland `:transform` enum. Divide `:scale-120` by 120 for the scale.
+  `:modes` lists advertised pixel dimensions, refresh in mHz, and `:preferred`.
+- `:output-config`: resolved requested settings, including disconnected names.
+- `:layout`: resolved placement, with `:id`, coordinates, dimensions,
+  `:visible`, `:fullscreen`, and `:maximize`.
+- `:layers`: layer-shell surfaces, each a property list with `:id`, `:namespace`,
+  `:layer` (`:background`, `:bottom`, `:top`, or `:overlay`), `:anchors`,
+  `:exclusive-zone`, `:margin`, `:width`, `:height`, `:keyboard`, and `:visible`.
+  The layer, exclusive zone, keyboard interactivity, and visibility shown are the
+  resolved values, which are the client's request unless a unit overrides them.
+- `:focus`: a window ID or `nil`.
+- `:bindings`: resolved modifiers, keysyms, owner names, and command names.
+- `:key`, `:button`, and `:grab`: event subscriptions, not stored context values.
+
+Layer surfaces are arranged by the compositor from the client's own anchors,
+margins, and exclusive zone, and they are never in `:windows`, so a tiling policy
+does not have to know about them. A layer surface that asks for exclusive
+keyboard interactivity takes the keyboard while it is mapped, which is what a
+launcher needs; hiding it gives the keyboard back to the focused window.
+
+Events include `:map`, `:unmap`, `:metadata`, `:outputs`, `:layer`, `:key`,
+`:button`, and `:grab` in their `:type` field. Key events carry `:owner` and a
+lowercase `:command` string. Button events carry `:id` (zero for empty space, a
+layer surface id when a panel was hit), an evdev `:button` code, `:state`
+(`:pressed` or `:released`), pointer `:x` and `:y` in logical coordinates, and
+the keyboard `:modifiers` mask. `:metadata` events carry the same fields as
+`:map`, plus `:request` (`:fullscreen` or `:maximize`) when a client asked for a
+state, which is the policy's chance to accept or ignore it. While a unit owns a
+grab, pointer motion arrives as `:grab` events with `:id`, `:mode`, `:x`, `:y`,
+and the delta since the previous event. Lifecycle evaluation receives `:mount`;
+reactive reevaluation receives `:change` with the changed `:keys`.
+
+Owned effects are `place`, `focus`, `bind-key`, `configure-output`, `layer`,
+`fullscreen`, `maximize`, and `grab`. Return the complete desired set each time.
+Later-mounted units win conflicts. Omitting an effect removes that unit's
+contribution. `place` uses integer logical coordinates and positive sizes up to
+16384. Bindings accept `:super`, `:alt`, `:control`, and `:shift`, plus an XKB
+keysym name such as `Return` or `Tab`.
+
+`layer` overrides a layer surface without taking over its geometry: `:layer`
+reassigns it (`nil` keeps the client's request), `:exclusive-zone` changes how
+much of the output it reserves, `:keyboard` accepts `:none`, `:exclusive`, or
+`:on-demand`, and `:visible nil` hides it. `fullscreen` and `maximize` set the
+client-visible state; a policy that sets fullscreen usually also owns that
+window's `place` so the window fills the output. `grab` claims the pointer for a
+window: while a unit owns one, motion and buttons are not delivered to clients,
+and the owning unit is responsible for dropping the grab — normally on the
+`:button` release event. The compositor also clears a grab whose window or layer
+surface disappears.
+
+`launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
+button, and explicit control command dispatch may return them. They execute
+after effect validation and commit. They are not undoable. User-launched
+applications belong to the session, survive extension unmount, and have their
+direct child processes stopped on compositor shutdown.
+
+## Extension lifecycle
+
+`src/runtime.lisp` owns the context and the only extension-to-native write path.
+Each dispatch works on candidate module state. Each reducer in a round sees the
+same pre-round context. After the round, the runtime computes changed keys and
+runs only their declared consumers. The transaction must settle within 16
+rounds before it reaches the native scene.
+
+A dispatch has a 25 ms SBCL timeout, at most 512 effects and 32 commands, bounded
+data copying, and no host handles. Loading a source file has a one-second
+timeout. Invalid results, undeclared reads, callback errors, and dependency
+cycles retain the previous managed policy. A failure is attributed to the unit
+that caused it: `inspect` reports that unit's `:failures` count and last error
+next to the runtime-wide one, and the whole transaction is still discarded.
+Errors appear on stderr and through `inspect`. Native allocation failure during
+commit stops the compositor rather than pretending it rolled back. One-shot
+command failures cannot undo earlier commands.
+
+Unmount reconstructs geometry, visibility, stacking, focus, bindings, output
+configuration, layer overrides, window state, and the grab from remaining
+owners. The preserved facts are live client identities and metadata, initial
+client sizes, map order, output descriptions, and the layer surfaces the
+clients themselves described. Unowned windows revert to their mapped dimensions
+at the origin, an unowned layer surface to its client's request, and an unowned
+grab to none. A client's destruction is an external fact, so failure recovery
+also removes dead IDs from the previous policy.
+
+Extensions are trusted code, not a security sandbox. Common Lisp can call the OS,
+redefine internals, change global variables, or create threads. Such side effects
+are outside managed cleanup and reload rollback. SBCL timeouts are best-effort
+runtime protection, not containment for hostile code or blocking foreign calls.
+The compositor thread waits for bounded reducer dispatch; there is no separate
+policy worker. Returning state and actions is the extension contract.
+
+## Control protocol
+
+The private Unix socket is `$XDG_RUNTIME_DIR/NAME.ctl`, mode `0600`. It accepts
+one request per connection. A frame is a decimal character count, a newline,
+then that many UTF-8-decoded characters of Lisp data. The maximum is 1048576
+characters. Framing permits newlines inside window titles.
+
+Requests are `(1 :inspect)`, `(1 :reload)`, `(1 :mount "path")`,
+`(1 :unmount "name")`, `(1 :command "owner" "command")`, `(1 :event "PLIST")`,
+or `(1 :quit)`. `:event` carries one string holding a data property list whose
+`:type` must be `:key`, `:button`, or `:grab`; the compositor reads it and
+dispatches it like a real input event. Replies are `(1 :ok result)` or
+`(1 :error "message")`. Version 1 is exact; unknown versions fail explicitly.
+Reader evaluation and dispatch syntax such as `#.` and circular object labels
+are disabled, and the reader accepts exactly the data the printer emits,
+including the cons dot an extension's own state may contain. This is a data
+protocol, not an unauthenticated REPL.
+
+## Verification
+
+`nix flake check` builds the package and runs one end-to-end check, which is the
+whole automated suite by project decision.
+
+`tests/run-integration.sh` builds a small Wayland test client from `client.c`
+and protocol code generated at build time, starts the packaged compositor on the
+headless backend with `--bare --no-watch`, and drives it through its own control
+client. It asserts that no policy is mounted for `--bare`, that the fixtures
+mount cleanly, that two xdg clients map at the sizes they asked for and are
+placed inside the output by the fixture layout, that a layer client keeps its
+namespace, anchors, and height, that the fixture's layer override resolves and
+returns to the client's request when an injected key command arrives, that
+extension state containing a cons survives the control round trip, that
+unmounting the layout returns both windows to their mapped size at the origin,
+and that `quit` exits zero and removes both sockets.
+
+From the working tree:
 
 ```sh
-tomoe --backend tty
+nix develop -c ./tests/run-integration.sh
 ```
 
-On startup tomoe exports `WAYLAND_DISPLAY`, `DISPLAY` (X11 apps connect
-through xwayland-satellite, spawned on first use), and `TOMOE_SOCKET` (see
-[IPC](#ipc)) into the systemd user environment, and activates
-`graphical-session.target` through the installed `tomoe-session.target`.
-Screencasting needs the portal backend installed: the
-`xdg-desktop-portal-tomoe` binary plus the `tomoe.portal`,
-`tomoe-portals.conf`, and D-Bus service files — the flake's `postInstall`
-shows the exact layout; non-Nix installs replicate it from `resources/`.
+Observed on x86_64 Linux, in addition to the check above:
 
-## Configuration
+- `nix build` and `nix flake check` completed successfully. The aarch64 package
+  was evaluated, not built.
+- Real Foot clients mapped, tiled inside a layer panel's exclusive zone, took
+  focus, and were restored to their mapped dimensions when the layout unit was
+  unmounted.
+- An owned fullscreen effect sized a real client to the output and reverting it
+  restored the mapped size, with no native error.
+- A policy-owned grab started from an injected key, moved a window by the
+  reported delta, and released on the injected button release.
+- Editing a mounted source reloaded it without a command, and making a source
+  unreadable kept the previous policy and reported once.
+- The pure-Lisp backend still loads and answers `inspect` with the shipped
+  policy mounted.
 
-The config is a Lua program at `~/.config/tomoe/init.lua`, re-run on every
-save ([see the extension contract](#the-extension-contract)). Without one, a
-built-in default keeps the session usable. A minimal config:
+Hardware DRM, physical input (a real pointer grab, a real keyboard), failure
+recovery for native allocation, and output rotation, mirroring, and VRR remain
+unverified.
 
-```lua
-local wm = require("wm")            -- the default tiling WM; omit to replace it
-wm.gaps = 4
+## Source and limits
 
-tomoe.settings {
-  mod = "super",                    -- what "Mod" means, declared once
-  displays = {
-    ["DP-1"] = { resolution = "max@max", position = { 0, 0 }, vrr = true },
-  },
-  border = { width = 2, focused = "#7aa2f7", unfocused = "#3b4261" },
-}
+- `src/`: Common Lisp API, state/effect runtime, native bindings, control, CLI.
+- `native/backend.h`: the native ABI. No pointers cross into extension snapshots.
+- `native/backend.c`: wlroots lifetimes, scene layering, xdg-shell, layer-shell,
+  input routing, pointer grabs.
+- `builtins/desktop.lisp`: replaceable default policy.
+- `examples/`: alternative policies, each mountable on its own.
+- `tests/`: the end-to-end check, its fixtures, and its Wayland client.
+- `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
+- `DESKTOP.md`, `FINIX.md`, `LISP-BACKEND.md`, `OUTPUTS.md`, `STARTUP.md`, and
+  `WORK.md` are historical checkpoints from the prototype work. They name local
+  paths and predate the move to the repository root.
 
-tomoe.process.service("waybar", { restart = "on_exit" })
+Implemented protocols cover ordinary xdg-shell windows and popups, shared-memory
+buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1,
+xdg-output, and layer-shell. Missing desktop features include XWayland, session
+locking, screencopy, portals, input methods, touch and tablets, output rotation,
+mirroring, and VRR configuration, primary selection, and window decorations.
+Popup placement does not constrain menus to output bounds. A policy that never
+releases a grab keeps the pointer until the grabbed surface disappears. A layer
+surface's anchors, margins, and size stay the client's request: policy can move
+it between layers, change its exclusive zone and keyboard interactivity, and
+hide it, but not place it freely. Do not use this as a secure daily desktop.
 
-tomoe.bind("Mod+Return", function() tomoe.spawn("foot") end, "Terminal")
-tomoe.bind("Mod+q", wm.close_focused, "Close window")
-for i = 1, 9 do
-  tomoe.bind("Mod+" .. i, function() wm.switch(i) end)
-end
-```
-
-Every settings field — per-output modes and mirroring, xkb keymaps, libinput
-per-device overrides, tearing — is enumerated in the
-[API reference](docs/lua-api.md#settings). The default config
-(`resources/init.lua`) doubles as annotated documentation, and
-`resources/examples/` holds runnable configs (`tomoe --config <file>`):
-`extension-surface-init.lua` exercises the whole extension surface — rules,
-the process manifest, user IPC endpoints and broadcasts, reload persistence,
-`tomoe.ui` widgets, a custom screencast policy — and `zoomer-init.lua` runs
-the canvas WM. Both are load-tested in CI, so they can't drift from the API.
-
-### The wm and zoomer modules
-
-[`wm`](docs/lua-api.md#wm) is dwindle tiling with nine workspaces, focus
-cycling, and fullscreen handling — a few hundred lines of ordinary Lua whose
-state (`wm.workspaces`, `wm.active`) is plain data your config can inspect
-and mutate. [`zoomer`](docs/lua-api.md#zoomer) turns the same compositor into
-a floating, zooming canvas: `Mod+drag` moves and resizes, `Mod+scroll` zooms
-around the cursor, and numbered planes each remember their camera. Both are
-preloaded; `require` one, neither, or your own.
-
-### Processes
-
-`tomoe.process` is a declarative manifest diffed by id across config
-reloads: `once` entries bootstrap the session, `service` entries keep daemons
-alive per their restart policy, and reloading a config that no longer
-declares a process stops it. Fire-and-forget spawns exist for event handlers.
-Details in the [API reference](docs/lua-api.md#processes).
-
-### Editor support
-
-`resources/meta/tomoe.lua` ships LuaLS stubs for the entire API. Point
-lua-language-server at it for completion and type checking:
-
-```jsonc
-// .luarc.json
-{ "workspace.library": ["/path/to/tomoe/resources/meta"] }
-```
-
-## IPC
-
-A JSON socket at `$TOMOE_SOCKET` (newline-delimited request/response plus an
-event stream after `subscribe`), with a CLI:
-
-```sh
-tomoe msg windows                          # built-ins: version, windows,
-tomoe msg outputs                          #   outputs, view, subscribe, quit
-tomoe msg my/endpoint '{"arg": 1}'         # anything the config serves
-```
-
-The wire contract lives in the small, versioned `tomoe-ipc` crate; the
-*vocabulary* is open — configs register endpoints with
-[`tomoe.ipc.serve`](docs/lua-api.md#ipc) and push events to subscribers with
-`tomoe.ipc.broadcast`, so bars and scripts talk to your WM policy, not just
-to the compositor core.
-
-## Lua API reference
-
-[docs/lua-api.md](docs/lua-api.md) — one page covering the `tomoe` global
-([core](docs/lua-api.md#core), [windows](docs/lua-api.md#windows),
-[outputs & camera](docs/lua-api.md#outputs--camera),
-[hooks](docs/lua-api.md#hooks), [processes](docs/lua-api.md#processes),
-[IPC](docs/lua-api.md#ipc), all [types](docs/lua-api.md#types)) and the
-built-in modules. It is generated from the LuaLS stubs and the module
-sources, and parity tests hold it to the API the runtime actually registers:
-`cargo test` fails if they drift.
-
-## Credits
-
-An original implementation, designed by studying
-[niri](https://github.com/YaLTeR/niri) (damage-driven rendering, pixel
-exactness), [Hyprland](https://github.com/hyprwm/Hyprland) (the feature bar),
-and [ShojiWM](https://github.com/bea4dev/ShojiWM) (config as a program).
-
-## License
-
-[AGPL-3.0-or-later](LICENSE).
+Tomoe and ShojiWM informed the separation of mechanism from policy and explicit
+ownership of reactive effects. Local reference clones live in `ref/`, which
+is listed in the workspace `.gitignore`. The wlroots tinywl example and 0.20
+headers informed native API use. This implementation does not copy either
+reference compositor's Rust code.
