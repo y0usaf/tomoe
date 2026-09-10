@@ -24,7 +24,9 @@ No tests. No system rebuild.
   callable, one bind callable, one destroy callable, table-driven handlers,
   and the backend contract (`open-backend`, `%step`, `%event`, `%place`,
   `%focus`, `%close`, `%bind`, `%clear-bindings`, `%keysym`, `%destroy`).
-- `scratch/m1.lisp` (27 lines). The runner used for verification.
+- The M1 verification runner that lived in `scratch/` has been deleted, along
+  with the M0 spike beside it: the project keeps end-to-end checks only, and
+  `lisp/tests/` is that check.
 
 ## Key decisions
 - Protocol tables are generated from XML, never transcribed. The signature

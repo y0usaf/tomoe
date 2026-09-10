@@ -49,6 +49,10 @@ User decisions during the work: no unit tests; end-to-end checks only.
 - `lisp/README.md`, `README.md`: both documents describe the surface above.
 
 ## Key decisions
+- The project keeps end-to-end checks only. The unit-test suite that a first cut
+  of this increment produced was deleted, together with the two manual
+  verification runners that lived in `lisp/scratch/`; `lisp/tests/` and its Nix
+  check are the whole automated suite.
 - Mechanism stays native, policy stays Lisp: layer surfaces are arranged from
   the client's own anchors, margins and exclusive zone, and policy can only
   reassign the layer, change the exclusive zone, change keyboard interactivity,
