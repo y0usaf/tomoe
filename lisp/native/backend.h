@@ -1,0 +1,23 @@
+#ifndef TOMOE_BACKEND_H
+#define TOMOE_BACKEND_H
+#include <stdint.h>
+
+/* ABI 1. The Lisp thread owns this handle and all calls, including destruction.
+ * Events are Lisp data, never code. next_event's string lives until the next call.
+ * IDs identify live protocol objects, never addresses. A missing ID is a no-op:
+ * Wayland may destroy it before Lisp drains the queued lifetime events. */
+struct tomoe;
+int tomoe_abi_version(void);
+struct tomoe *tomoe_create(const char *socket_name);
+int tomoe_step(struct tomoe *server, int timeout_ms);
+const char *tomoe_next_event(struct tomoe *server);
+void tomoe_destroy(struct tomoe *server);
+void tomoe_place(struct tomoe *server, uint32_t id, int x, int y,
+    int width, int height, int visible);
+void tomoe_focus(struct tomoe *server, uint32_t id);
+void tomoe_close(struct tomoe *server, uint32_t id);
+uint32_t tomoe_keysym(const char *name);
+void tomoe_clear_bindings(struct tomoe *server);
+int tomoe_bind(struct tomoe *server, uint32_t modifiers, uint32_t keysym,
+    const char *owner, const char *command);
+#endif
