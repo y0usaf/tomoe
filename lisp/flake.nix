@@ -81,6 +81,52 @@
       packages = eachSystem (system: {
         default = package nixpkgs.legacyPackages.${system};
       });
+      checks = eachSystem (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          tomoe = package pkgs;
+          # The end-to-end check needs its driver, fixtures and client together.
+          tests = pkgs.lib.fileset.toSource {
+            root = ./tests;
+            fileset = ./tests;
+          };
+        in
+        {
+          integration =
+            pkgs.runCommand "tomoe-lisp-integration-test"
+              {
+                nativeBuildInputs = [
+                  pkgs.sbcl
+                  pkgs.stdenv.cc
+                  pkgs.pkg-config
+                  pkgs.wayland-scanner
+                  pkgs.wayland
+                  pkgs.wayland-protocols
+                  pkgs.wlr-protocols
+                ];
+              }
+              ''
+                # The compositor requires an owned 0700 runtime directory, and the
+                # check must not depend on the caller's session.
+                export XDG_RUNTIME_DIR="$(mktemp -d "''${TMPDIR:-$NIX_BUILD_TOP}/tomoe-runtime-XXXXXX")"
+                chmod 700 "$XDG_RUNTIME_DIR"
+                export TOMOE_TEST_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+                export TOMOE_TEST_BUILD="$(mktemp -d "''${TMPDIR:-$NIX_BUILD_TOP}/tomoe-client-XXXXXX")"
+                export TOMOE_LISP_BIN=${tomoe}/bin/tomoe-lisp
+                export LD_LIBRARY_PATH=${
+                  pkgs.lib.makeLibraryPath [
+                    pkgs.wayland
+                    pkgs.wlroots
+                    pkgs.libxkbcommon
+                    pkgs.pixman
+                  ]
+                }
+                bash ${tests}/run-integration.sh
+                touch $out
+              '';
+        }
+      );
       devShells = eachSystem (
         system:
         let
