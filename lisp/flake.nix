@@ -34,6 +34,8 @@
             pkgs.wlroots
             pkgs.wayland
             pkgs.wayland-protocols
+            pkgs.wlr-protocols
+            pkgs.wayland-scanner
             pkgs.libxkbcommon
             pkgs.pixman
           ];
@@ -43,8 +45,13 @@
           buildPhase = ''
             runHook preBuild
             mkdir build
+            # nixpkgs' wlroots ships no generated protocol headers, but includes
+            # wlr-layer-shell-unstable-v1-protocol.h from wlr/types.
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
+              build/wlr-layer-shell-unstable-v1-protocol.h
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
-              -Wno-unused-parameter -fPIC -shared \
+              -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
               $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1) \
               native/backend.c -o build/libtomoe-backend.so \
@@ -84,6 +91,8 @@
             inputsFrom = [ (package pkgs) ];
             packages = [
               pkgs.wayland-utils
+              pkgs.wayland-scanner
+              pkgs.wlr-protocols
               pkgs.foot
             ];
             # The compositor dlopens these, so ../../dev.sh needs them on the
@@ -94,6 +103,9 @@
               pkgs.libxkbcommon
               pkgs.pixman
             ];
+            # dev.sh and tests/build-client.sh read the layer-shell protocol
+            # XML from here when pkg-config cannot find wlr-protocols.
+            WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
           };
         }
       );

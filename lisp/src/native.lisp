@@ -22,6 +22,13 @@
   (width sb-alien:int) (height sb-alien:int) (visible sb-alien:int))
 (define-native ("tomoe_focus" %focus) sb-alien:void
   (server (* t)) (id sb-alien:unsigned-int))
+(define-native ("tomoe_window_state" %window-state) sb-alien:void
+  (server (* t)) (id sb-alien:unsigned-int) (fullscreen sb-alien:int) (maximize sb-alien:int))
+(define-native ("tomoe_layer" %layer) sb-alien:void
+  (server (* t)) (id sb-alien:unsigned-int) (layer sb-alien:int) (exclusive-zone sb-alien:int)
+  (keyboard sb-alien:int) (visible sb-alien:int))
+(define-native ("tomoe_grab" %grab) sb-alien:void
+  (server (* t)) (id sb-alien:unsigned-int) (mode sb-alien:int))
 (define-native ("tomoe_close" %close) sb-alien:void
   (server (* t)) (id sb-alien:unsigned-int))
 (define-native ("tomoe_keysym" %keysym) sb-alien:unsigned-int (name sb-alien:c-string))
@@ -53,7 +60,7 @@
   (let ((library (sb-ext:posix-getenv "TOMOE_LISP_BACKEND")))
     (unless library (error "TOMOE_LISP_BACKEND must name libtomoe-backend.so."))
     (sb-alien:load-shared-object library))
-  (unless (= (%abi) 2) (error "Native ABI mismatch, expected 2."))
+  (unless (= (%abi) 3) (error "Native ABI mismatch, expected 3."))
   (let ((server (%create socket)))
     (when (sb-alien:null-alien server) (error "Cannot start wlroots. See native error above."))
     server))

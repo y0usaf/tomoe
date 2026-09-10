@@ -1,12 +1,14 @@
 (defpackage #:tomoe
   (:use #:cl)
   (:export #:define-extension #:context #:place #:focus #:bind-key #:configure-output
+           #:layer #:fullscreen #:maximize #:grab
            #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
 
 (defconstant +wire-version+ 1)
-(defparameter +context-keys+ '(:windows :outputs :output-config :layout :focus :bindings :key :button))
+(defparameter +context-keys+
+  '(:windows :outputs :output-config :layout :focus :bindings :layers :key :button :grab))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 
@@ -89,6 +91,28 @@
 (defun focus (id)
   (check-type id (or null (integer 1 4294967295)))
   (%effect :focus (list id)))
+(defun layer (id &key layer exclusive-zone keyboard visible)
+  "Own a layer surface's stacking, exclusive zone, keyboard mode, and visibility.
+An omitted keyword keeps the client's request; :VISIBLE defaults to shown."
+  (check-type id (integer 1 4294967295))
+  (check-type layer (member nil :background :bottom :top :overlay))
+  (check-type exclusive-zone (or null (integer 0 4096)))
+  (check-type keyboard (member nil :none :exclusive :on-demand))
+  (check-type visible boolean)
+  (%effect :layer (list id layer exclusive-zone keyboard visible)))
+(defun fullscreen (id flag)
+  (check-type id (integer 1 4294967295))
+  (check-type flag boolean)
+  (%effect :fullscreen (list id flag)))
+(defun maximize (id flag)
+  (check-type id (integer 1 4294967295))
+  (check-type flag boolean)
+  (%effect :maximize (list id flag)))
+(defun grab (id mode)
+  "Own the single active pointer grab on ID, as :MOVE or :RESIZE. Last mounted owner wins."
+  (check-type id (integer 1 4294967295))
+  (check-type mode (member :move :resize))
+  (%effect :grab (list id mode)))
 (defun bind-key (modifiers keysym command)
   (check-type keysym string)
   (check-type command keyword)

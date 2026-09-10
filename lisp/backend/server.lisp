@@ -404,6 +404,22 @@ Setting a new key can move the list head, so the record is stored back."
   (declare (ignore backend owner command))
   (if (and (integerp modifiers) (integerp code) (plusp code)) 1 0))
 (defun %clear-bindings (backend) (declare (ignore backend)) nil)
+
+;; The Lisp backend has no input devices, so it never holds a pointer grab.
+(defun %grab (backend id mode)
+  (declare (ignore backend id mode))
+  nil)
+
+;; The Lisp backend has no xdg_toplevel state: a client keeps whatever layout it gets.
+(defun %window-state (backend id fullscreen maximize)
+  (declare (ignore backend id fullscreen maximize))
+  nil)
+
+;; The Lisp backend has no layer surfaces and advertises no layer-shell global.
+(defun %layer (backend id layer exclusive-zone keyboard visible)
+  (declare (ignore backend id layer exclusive-zone keyboard visible))
+  nil)
+
 (defun %keysym (name) (%keysym-from-name name 0))
 
 (defun tomoe::configure-native-outputs (backend outputs)
