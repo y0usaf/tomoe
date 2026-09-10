@@ -72,6 +72,17 @@ No tests. No system rebuild.
   `libxkbcommon.so.0` on the library path.
 - No Git repository exists here, so nothing is committed.
 
+## Dev loop and shipping
+- `lisp/dev.sh` runs the compositor from the working tree, no Nix build and no
+  saved image. The Lisp backend needs no compiled shim; the wlroots backend
+  compiles `native/backend.c` into `build/` on first use.
+- `~/tomoe-lisp-dev` wraps that in a launcher, so edits take effect on the next
+  run. `~/tomoe-lisp` still launches the installed profile package.
+- Source is pushed to https://github.com/y0usaf/tomoe-lisp (private). Finix
+  consumes it through the local path input, so iteration does not need a push.
+- `nh os switch` activated the configuration on 2026-09-10; the system package
+  is `/nix/store/hchqnb1wikk98lb3dkby2w67yash7sl2-tomoe-lisp-0.1.0`.
+
 ## Next
 1. Input: libinput-free path first (a parent compositor's wl_seat in nested
    mode), keymap via xkbcommon, then `%bind` dispatch through the runtime.
