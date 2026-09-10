@@ -130,8 +130,38 @@ owner or the output's initial mode, scale, and automatic placement. The backend
 validates the full configuration before committing and attempts to restore the
 previous hardware state if a commit fails. A failed hardware rollback stops the
 compositor. Output changes then notify `:outputs` consumers to retile clients.
-The native ABI is now 2; the additive inspect fields keep control wire version 1.
+The native ABI is 4; the additive inspect fields keep control wire version 1.
 The experimental pure-Lisp backend does not yet support output configuration.
+
+## X11 clients
+
+Xwayland is available in every instance, lazily: the X socket appears at startup,
+the Xwayland process starts when the first X11 client connects, stops ten
+seconds after the last one disconnects, and starts again on the next
+connection. The X11 window manager is wlroots' own, so no separate process and
+no extra program on `PATH` is involved; wlroots carries the absolute path to
+the Xwayland binary it was built against.
+
+`DISPLAY` is set for this process and its children only, never for systemd,
+D-Bus, or the surrounding session. A terminal launched by a policy command gets
+the right display; one started by hand does not. `--bare` still offers X11,
+because this is mechanism, not policy.
+
+To policy, an X11 window is an ordinary window: it appears in `:windows` with
+the window's title and its `WM_CLASS` as `:app-id`, `place` sends a configure
+the client may decline, `focus` sets the X input focus, `close-window` sends
+`WM_DELETE_WINDOW`, and `fullscreen` and `maximize` set `_NET_WM_STATE`.
+`:width` and `:height` are the dimensions the window had when it mapped.
+Override-redirect windows — menus, tooltips, drop-downs — are the exception:
+they keep their own coordinates, are never reported to policy, and sit above
+windows and below the overlay layer. One that wants the keyboard, such as an X11
+launcher, holds it until it unmaps, like an exclusive layer surface.
+
+Limits: an X11 client owns its geometry, so an application that resizes itself
+fights the tiling policy. There is no X11-specific effect, icon, or startup
+notification, and an X11 window that dies while a configure is in flight leaves
+a BadWindow line from wlroots' xcb error handler. Xwayland's own stderr (glamor
+and xkbcomp messages) passes through to this compositor's stderr.
 
 ## Live control
 
@@ -378,9 +408,21 @@ Observed on x86_64 Linux, in addition to the check above:
 - The pure-Lisp backend still loads and answers `inspect` with the shipped
   policy mounted.
 
+- A real X11 client (xeyes) mapped through Xwayland as an ordinary window,
+  carrying `WM_CLASS` as its app id, and was tiled; `xwininfo` confirmed the
+  X server had applied the configure. `command commands close` made it exit
+  through `WM_DELETE_WINDOW`. Xwayland stopped when the last X client left and
+  restarted on the next connection, giving the window a new id. A probe window
+  with `override_redirect` mapped and unmapped without ever appearing in
+  `inspect`, and a child launched by policy reported `DISPLAY` and
+  `WAYLAND_DISPLAY` of this instance. `quit` exited zero and removed the X
+  socket along with the control and Wayland ones.
+
 Hardware DRM, physical input (a real pointer grab, a real keyboard), failure
 recovery for native allocation, and output rotation, mirroring, and VRR remain
-unverified.
+unverified. X11 physical input, X11 windows on hardware, and the placement of an
+X11 application that resizes itself are unverified too; Xwayland never received
+a real key or button in these sessions.
 
 ## Source and limits
 
@@ -398,7 +440,8 @@ unverified.
 
 Implemented protocols cover ordinary xdg-shell windows and popups, shared-memory
 buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1,
-xdg-output, and layer-shell. Missing desktop features include XWayland, session
+xdg-output, and layer-shell, and X11 clients through wlroots' Xwayland and its
+XWM. Missing desktop features include session
 locking, screencopy, portals, input methods, touch and tablets, output rotation,
 mirroring, and VRR configuration, primary selection, and window decorations.
 Popup placement does not constrain menus to output bounds. A policy that never

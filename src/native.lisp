@@ -12,6 +12,7 @@
            (,entry ,@names))))))
 
 (define-native ("tomoe_abi_version" %abi) sb-alien:int)
+(define-native ("tomoe_display_name" %display-name) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_create" %create) (* t) (name sb-alien:c-string))
 (define-native ("tomoe_destroy" %destroy) sb-alien:void (server (* t)))
 (define-native ("tomoe_step" %step) sb-alien:int
@@ -60,7 +61,7 @@
   (let ((library (sb-ext:posix-getenv "TOMOE_LISP_BACKEND")))
     (unless library (error "TOMOE_LISP_BACKEND must name libtomoe-backend.so."))
     (sb-alien:load-shared-object library))
-  (unless (= (%abi) 3) (error "Native ABI mismatch, expected 3."))
+  (unless (= (%abi) 4) (error "Native ABI mismatch, expected 4."))
   (let ((server (%create socket)))
     (when (sb-alien:null-alien server) (error "Cannot start wlroots. See native error above."))
     server))
