@@ -20,6 +20,7 @@ Loads $XDG_CONFIG_HOME/tomoe-lisp/init.lisp or ~/.config/tomoe-lisp/init.lisp wh
 --config overrides that file; --bare skips it.
 Extension sources are watched and reloaded when edited; --no-watch disables that.
 event sends one data plist to a live instance as an injected input event.
+X11 clients connect to this instance's Xwayland through its DISPLAY.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
 (defun runtime-directory ()
@@ -116,7 +117,12 @@ only after it changes again."
            ;; Only this process and its children inherit the new display. Never
            ;; import it into systemd, D-Bus, or the surrounding desktop session.
            (sb-posix:setenv "WAYLAND_DISPLAY" name 1)
-           (sb-posix:unsetenv "DISPLAY")
+           ;; An X11 client needs this instance's Xwayland; an inherited DISPLAY
+           ;; would point at some other session.
+           (let ((display (or (%display-name native) "")))
+             (if (plusp (length display))
+                 (sb-posix:setenv "DISPLAY" display 1)
+                 (sb-posix:unsetenv "DISPLAY")))
            (loop for text = (%event native) while text do (dispatch-event runtime (read-data text)))
            (configure runtime sources)
            (loop while (and (runtime-running runtime) (not *stop-requested*)) do
@@ -150,7 +156,7 @@ only after it changes again."
       (loop while arguments for option = (pop arguments) do
         (cond
           ((equal option "--help") (usage) (return-from run-cli 0))
-          ((equal option "--version") (write-line "tomoe-lisp 0.1.0, wire 1, native ABI 3") (return-from run-cli 0))
+          ((equal option "--version") (write-line "tomoe-lisp 0.1.0, wire 1, native ABI 4") (return-from run-cli 0))
           ((equal option "--socket") (setf name (argument option)))
           ((equal option "--backend") (setf backend (argument option)))
           ((equal option "--config") (setf config (namestring (truename (argument option)))))

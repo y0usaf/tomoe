@@ -26,6 +26,7 @@
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
+#include <wlr/xwayland.h>
 #include <xkbcommon/xkbcommon.h>
 
 struct event { struct wl_list link; char *text; };
@@ -49,30 +50,41 @@ struct tomoe {
     struct wlr_output_layout *layout;
     struct wlr_scene_output_layout *scene_layout;
     /* Children of the scene tree, bottom to top: windows, background/bottom/top
-     * layers, fullscreen windows, then the overlay layer. */
-    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree;
+     * layers, fullscreen windows, X11 override-redirect surfaces, then the
+     * overlay layer. */
+    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree, *unmanaged_tree;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
     struct wlr_seat *seat;
+    struct wlr_xwayland *xwayland;
+    /* An X11 override-redirect surface that asked for the keyboard. */
+    struct wlr_xwayland_surface *or_focus;
     struct wl_list windows, layers, outputs, keyboards, events, bindings;
     struct wl_listener new_output, new_input, new_toplevel, new_popup, new_layer_surface;
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy;
+    struct wl_listener new_x11_surface, x11_server_ready, x11_server_destroy;
     char *last_event;
     uint32_t next_id, focused, grab_id;
     int grab_mode;
     double grab_x, grab_y;
     size_t event_count;
-    bool running, stopping, failed, configuring_outputs;
+    bool running, stopping, failed, configuring_outputs, xwayland_ready;
 };
 struct window {
     struct target target;
     struct wl_list link;
     struct tomoe *server;
+    /* Exactly one of these is set: an xdg toplevel or an X11 window. */
     struct wlr_xdg_toplevel *xdg;
+    struct wlr_xwayland_surface *x11;
     struct wlr_scene_tree *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
+    struct wl_listener associate, dissociate, request_configure, set_geometry, set_override_redirect;
     int width, height;
+    /* An X11 override-redirect surface: its client arranges it, and policy is
+     * never told it exists. */
+    bool unmanaged;
     bool mapped, fullscreen_state, maximize_state;
 };
 /* Layer surface record as announced by :layer events, with the policy's
@@ -153,14 +165,34 @@ static void end_event(struct tomoe *s, struct event *event, FILE *out) {
     wl_list_insert(s->events.prev, &event->link);
     s->event_count++;
 }
+/* The xdg and X11 protocols differ; policy sees one kind of window. */
+static struct wlr_surface *surface_of(struct window *w) {
+    return w->x11 ? w->x11->surface : w->xdg->base->surface;
+}
+static const char *title_of(struct window *w) {
+    if (!w->x11) return w->xdg->title;
+    return w->x11->title ? w->x11->title : "";
+}
+static const char *app_id_of(struct window *w) {
+    if (!w->x11) return w->xdg->app_id;
+    if (w->x11->class) return w->x11->class;
+    return w->x11->instance ? w->x11->instance : "";
+}
+static void window_activate(struct window *w, bool activated) {
+    if (w->x11) {
+        if (w->server->xwayland_ready) wlr_xwayland_surface_activate(w->x11, activated);
+    } else {
+        wlr_xdg_toplevel_set_activated(w->xdg, activated);
+    }
+}
 static void window_event(struct window *w, const char *type, const char *request) {
     struct event *event; size_t size;
     FILE *out = begin_event(w->server, &event, &size);
     if (!out) return;
     fprintf(out, "(:type :%s :id %u :width %d :height %d :title ",
         type, w->target.id, w->width, w->height);
-    quote(out, w->xdg->title);
-    fputs(" :app-id ", out); quote(out, w->xdg->app_id);
+    quote(out, title_of(w));
+    fputs(" :app-id ", out); quote(out, app_id_of(w));
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
     if (request) fprintf(out, " :request :%s", request);
@@ -486,8 +518,13 @@ static void update_keyboard_focus(struct tomoe *s) {
             return;
         }
     }
+    /* An X11 menu or launcher that asked for focus holds it until it unmaps. */
+    if (s->or_focus && s->or_focus->surface && s->or_focus->surface->mapped) {
+        keyboard_enter(s, s->or_focus->surface);
+        return;
+    }
     struct window *w = find_window(s, s->focused);
-    keyboard_enter(s, w ? w->xdg->base->surface : NULL);
+    keyboard_enter(s, w ? surface_of(w) : NULL);
 }
 static void arrange_layers(struct tomoe *s) {
     struct layer *l;
@@ -524,22 +561,30 @@ void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
     wlr_scene_node_set_enabled(&w->tree->node, visible != 0);
     /* Lisp replays placement in preserved map order to undo stacking effects. */
     wlr_scene_node_raise_to_top(&w->tree->node);
-    wlr_xdg_toplevel_set_size(w->xdg, width, height);
+    /* An X11 window owns neither its position nor its size; a configure is the
+     * compositor's request, and the client may decline it. */
+    if (w->x11) {
+        if (s->xwayland_ready) wlr_xwayland_surface_configure(w->x11, x, y, width, height);
+    } else {
+        wlr_xdg_toplevel_set_size(w->xdg, width, height);
+    }
 }
 void tomoe_focus(struct tomoe *s, uint32_t id) {
     struct window *previous = find_window(s, s->focused);
     struct window *next = find_window(s, id);
     if (next) wlr_scene_node_raise_to_top(&next->tree->node);
     if (s->focused == (next ? id : 0)) return;
-    if (previous) wlr_xdg_toplevel_set_activated(previous->xdg, false);
+    if (previous) window_activate(previous, false);
     s->focused = next ? id : 0;
-    if (next) wlr_xdg_toplevel_set_activated(next->xdg, true);
+    if (next) window_activate(next, true);
     /* An exclusive layer surface keeps the seat keyboard while it is mapped. */
     update_keyboard_focus(s);
 }
 void tomoe_close(struct tomoe *s, uint32_t id) {
     struct window *w = find_window(s, id);
-    if (w) wlr_xdg_toplevel_send_close(w->xdg);
+    if (!w) return;
+    if (w->x11) wlr_xwayland_surface_close(w->x11);
+    else wlr_xdg_toplevel_send_close(w->xdg);
 }
 static void grab_clear(struct tomoe *s) {
     if (s->grab_mode == 0) return;
@@ -559,8 +604,20 @@ void tomoe_grab(struct tomoe *s, uint32_t id, int mode) {
 }
 void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximize) {
     struct window *w = find_window_any(s, id);
+    if (!w) return;
+    if (w->x11) {
+        if (!s->xwayland_ready) return;
+        if (w->x11->fullscreen != (fullscreen != 0)) {
+            wlr_xwayland_surface_set_fullscreen(w->x11, fullscreen != 0);
+        }
+        if (w->x11->maximized_horz != (maximize != 0) ||
+                w->x11->maximized_vert != (maximize != 0)) {
+            wlr_xwayland_surface_set_maximized(w->x11, maximize != 0, maximize != 0);
+        }
+        return;
+    }
     /* A configure cannot be scheduled before the client's first commit. */
-    if (!w || !w->xdg->base->initialized) return;
+    if (!w->xdg->base->initialized) return;
     if (w->xdg->scheduled.fullscreen != (fullscreen != 0)) {
         wlr_xdg_toplevel_set_fullscreen(w->xdg, fullscreen != 0);
     }
@@ -610,38 +667,68 @@ int tomoe_bind(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
 /* Fullscreen windows live in their own subtree, between the top and overlay
  * layers. The same-parent case must not disturb the stacking order. */
 static void window_reparent(struct window *w) {
-    struct wlr_scene_tree *parent = w->fullscreen_state ?
-        w->server->fullscreen_tree : w->server->window_tree;
-    if (w->tree->node.parent != parent) wlr_scene_node_reparent(&w->tree->node, parent);
+    struct wlr_scene_tree *parent = w->unmanaged ? w->server->unmanaged_tree :
+        (w->fullscreen_state ? w->server->fullscreen_tree : w->server->window_tree);
+    if (w->tree && w->tree->node.parent != parent) {
+        wlr_scene_node_reparent(&w->tree->node, parent);
+    }
 }
 static void mapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, map);
     w->mapped = true;
-    w->width = w->xdg->base->geometry.width;
-    w->height = w->xdg->base->geometry.height;
-    w->fullscreen_state = w->xdg->current.fullscreen;
-    w->maximize_state = w->xdg->current.maximized;
+    if (w->x11) {
+        w->width = w->x11->width ? w->x11->width : (int)w->x11->surface->current.width;
+        w->height = w->x11->height ? w->x11->height : (int)w->x11->surface->current.height;
+        w->fullscreen_state = w->x11->fullscreen;
+        w->maximize_state = w->x11->maximized_horz && w->x11->maximized_vert;
+        if (w->unmanaged) {
+            /* A menu or tooltip places itself, so only the ones that want
+             * keyboard input take it, and only until they unmap. */
+            wlr_scene_node_set_position(&w->tree->node, w->x11->x, w->x11->y);
+            wlr_scene_node_set_enabled(&w->tree->node, true);
+            if (wlr_xwayland_surface_override_redirect_wants_focus(w->x11)) {
+                w->server->or_focus = w->x11;
+                update_keyboard_focus(w->server);
+            }
+            return;
+        }
+    } else {
+        w->width = w->xdg->base->geometry.width;
+        w->height = w->xdg->base->geometry.height;
+        w->fullscreen_state = w->xdg->current.fullscreen;
+        w->maximize_state = w->xdg->current.maximized;
+    }
     window_reparent(w);
     window_event(w, "map", NULL);
 }
 static void unmapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, unmap);
-    if (w->server->focused == w->target.id) tomoe_focus(w->server, 0);
     w->mapped = false;
+    if (w->unmanaged) {
+        wlr_scene_node_set_enabled(&w->tree->node, false);
+        if (w->server->or_focus == w->x11) {
+            w->server->or_focus = NULL;
+            update_keyboard_focus(w->server);
+        }
+        return;
+    }
+    if (w->server->focused == w->target.id) tomoe_focus(w->server, 0);
     unmap_event(w->server, w->target.id);
 }
 static void window_commit(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, commit);
-    if (w->xdg->base->initial_commit) {
+    if (!w->x11 && w->xdg->base->initial_commit) {
         wlr_xdg_toplevel_set_size(w->xdg, 0, 0);
         return;
     }
-    bool fullscreen = w->xdg->current.fullscreen;
-    bool maximize = w->xdg->current.maximized;
-    if (fullscreen == w->fullscreen_state && maximize == w->maximize_state) return;
     /* The client may deny a request, so only its acknowledged state counts. */
+    bool fullscreen = w->x11 ? w->x11->fullscreen : w->xdg->current.fullscreen;
+    bool maximize = w->x11 ? (w->x11->maximized_horz && w->x11->maximized_vert)
+                           : w->xdg->current.maximized;
+    if (fullscreen == w->fullscreen_state && maximize == w->maximize_state) return;
     w->fullscreen_state = fullscreen;
     w->maximize_state = maximize;
+    if (w->unmanaged) return;
     window_reparent(w);
     if (w->mapped) window_event(w, "metadata", NULL);
 }
@@ -653,26 +740,38 @@ static void window_app_id(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, app_id);
     if (w->mapped) window_event(w, "metadata", NULL);
 }
+static void window_request(struct window *w, const char *request) {
+    /* An unsupported xdg request still requires a configure, without claiming
+     * acceptance. An X11 client has already set the property it asks for, so
+     * policy answers by owning the matching window-state effect, or not. */
+    if (w->xdg && w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
+    if (w->mapped && !w->unmanaged) window_event(w, "metadata", request);
+}
 static void window_maximize(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, maximize);
-    /* Unsupported requests still require a configure, without claiming acceptance. */
-    if (w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
-    if (w->mapped) window_event(w, "metadata", "maximize");
+    window_request(w, "maximize");
 }
 static void window_fullscreen(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, fullscreen);
-    if (w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
-    if (w->mapped) window_event(w, "metadata", "fullscreen");
+    window_request(w, "fullscreen");
 }
 static void window_destroy(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, destroy);
     struct tomoe *s = w->server;
     detach(&w->map); detach(&w->unmap); detach(&w->commit); detach(&w->destroy);
     detach(&w->title); detach(&w->app_id); detach(&w->maximize); detach(&w->fullscreen);
+    detach(&w->associate); detach(&w->dissociate); detach(&w->request_configure);
+    detach(&w->set_geometry); detach(&w->set_override_redirect);
     if (s->grab_id == w->target.id) grab_clear(s);
+    if (s->or_focus == w->x11) s->or_focus = NULL;
     wl_list_remove(&w->link);
-    /* The xdg scene helper owns its tree until xdg_surface destruction. */
-    w->tree->node.data = NULL;
+    if (w->x11) {
+        /* An X11 window owns its scene tree; an xdg one leaves its own tree to
+         * the xdg scene helper, which destroys it with the surface. */
+        if (w->tree) wlr_scene_node_destroy(&w->tree->node);
+    } else {
+        w->tree->node.data = NULL;
+    }
     free(w);
 }
 static void new_toplevel(struct wl_listener *listener, void *data) {
@@ -695,6 +794,112 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     listen(&w->app_id, &xdg->events.set_app_id, window_app_id);
     listen(&w->maximize, &xdg->events.request_maximize, window_maximize);
     listen(&w->fullscreen, &xdg->events.request_fullscreen, window_fullscreen);
+}
+/* X11 windows arrive through wlroots' XWM and reach policy as ordinary windows.
+ * Override-redirect surfaces are the exception: they carry their own geometry,
+ * like layer surfaces, and policy is never told they exist. */
+static void x11_create_tree(struct window *w) {
+    struct tomoe *s = w->server;
+    w->tree = wlr_scene_tree_create(w->unmanaged ? s->unmanaged_tree :
+        (w->fullscreen_state ? s->fullscreen_tree : s->window_tree));
+    if (!w->tree || !wlr_scene_surface_create(w->tree, w->x11->surface)) {
+        if (w->tree) wlr_scene_node_destroy(&w->tree->node);
+        w->tree = NULL;
+        fail(s, "xwayland surface allocation failed");
+        return;
+    }
+    /* A hit test on an unmanaged surface reports no id, like a popup. */
+    if (!w->unmanaged) w->tree->node.data = &w->target;
+    wlr_scene_node_set_position(&w->tree->node, w->x11->x, w->x11->y);
+}
+static void x11_associate(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, associate);
+    if (!w->tree) x11_create_tree(w);
+    if (!w->tree) return;
+    listen(&w->map, &w->x11->surface->events.map, mapped);
+    listen(&w->unmap, &w->x11->surface->events.unmap, unmapped);
+    listen(&w->commit, &w->x11->surface->events.commit, window_commit);
+}
+static void x11_dissociate(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, dissociate);
+    detach(&w->map); detach(&w->unmap); detach(&w->commit);
+    if (w->tree) { wlr_scene_node_destroy(&w->tree->node); w->tree = NULL; }
+}
+static void x11_set_geometry(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, set_geometry);
+    if (w->unmanaged && w->tree) {
+        wlr_scene_node_set_position(&w->tree->node, w->x11->x, w->x11->y);
+    }
+}
+/* An X11 client that asks to be configured gets an answer either way: an
+ * unmanaged surface its own request, a managed one the placement policy owns,
+ * which is the "no change" reply to a client that wants to size itself. */
+static void x11_request_configure(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, request_configure);
+    struct wlr_xwayland_surface_configure_event *event = data;
+    if (!w->server->xwayland_ready || !w->tree) return;
+    if (w->unmanaged) {
+        wlr_xwayland_surface_configure(w->x11, event->x, event->y, event->width, event->height);
+        return;
+    }
+    wlr_xwayland_surface_configure(w->x11, w->tree->node.x, w->tree->node.y,
+        w->width > 0 ? w->width : 1, w->height > 0 ? w->height : 1);
+}
+/* A surface can change class: policy loses it or gains it, and the id keeps a
+ * second map/unmap pair honest. */
+static void x11_override_redirect(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, set_override_redirect);
+    bool unmanaged = w->x11->override_redirect != 0;
+    if (unmanaged == w->unmanaged) return;
+    bool was_mapped = w->mapped;
+    if (was_mapped) unmapped(&w->unmap, NULL);
+    w->unmanaged = unmanaged;
+    if (w->tree) { wlr_scene_node_destroy(&w->tree->node); w->tree = NULL; }
+    if (was_mapped) x11_associate(&w->associate, NULL);
+}
+static void new_xwayland_surface(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, new_x11_surface);
+    struct wlr_xwayland_surface *x11 = data;
+    if (s->next_id == UINT32_MAX) { fail(s, "window IDs exhausted"); return; }
+    struct window *w = calloc(1, sizeof(*w));
+    if (!w) { fail(s, "window allocation failed"); return; }
+    w->server = s; w->x11 = x11; w->target.id = ++s->next_id;
+    w->unmanaged = x11->override_redirect;
+    x11->data = w;
+    wl_list_insert(s->windows.prev, &w->link);
+    listen(&w->associate, &x11->events.associate, x11_associate);
+    listen(&w->dissociate, &x11->events.dissociate, x11_dissociate);
+    listen(&w->destroy, &x11->events.destroy, window_destroy);
+    listen(&w->title, &x11->events.set_title, window_title);
+    listen(&w->app_id, &x11->events.set_class, window_app_id);
+    listen(&w->maximize, &x11->events.request_maximize, window_maximize);
+    listen(&w->fullscreen, &x11->events.request_fullscreen, window_fullscreen);
+    listen(&w->request_configure, &x11->events.request_configure, x11_request_configure);
+    listen(&w->set_geometry, &x11->events.set_geometry, x11_set_geometry);
+    listen(&w->set_override_redirect, &x11->events.set_override_redirect, x11_override_redirect);
+    if (x11->surface) x11_associate(&w->associate, NULL);
+}
+static void update_workareas(struct tomoe *s) {
+    if (!s->xwayland || !s->xwayland_ready) return;
+    /* EWMH carries one workarea per virtual desktop, so the layout box is the
+     * honest one to publish. */
+    struct wlr_box box;
+    wlr_output_layout_get_box(s->layout, NULL, &box);
+    wlr_xwayland_set_workareas(s->xwayland, &box, 1);
+}
+static void xwayland_ready(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, x11_server_ready);
+    s->xwayland_ready = true;
+    update_workareas(s);
+}
+static void xwayland_destroy(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, x11_server_destroy);
+    s->xwayland = NULL;
+    s->xwayland_ready = false;
+    s->or_focus = NULL;
+    /* wlroots asserts every listener left on its destroy signal before it
+     * frees the object, so each listener takes itself off here. */
+    wl_list_remove(&s->x11_server_destroy.link);
 }
 static void popup_commit(struct wl_listener *listener, void *data) {
     struct popup *p = wl_container_of(listener, p, commit);
@@ -832,6 +1037,7 @@ static void layout_change(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, layout_change);
     outputs_event(s);
     arrange_layers(s);
+    update_workareas(s);
 }
 static void new_output(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, new_output);
@@ -1042,20 +1248,26 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 3; }
+int tomoe_abi_version(void) { return 4; }
+/* The DISPLAY an X11 client needs, or NULL when Xwayland is unavailable. */
+const char *tomoe_display_name(struct tomoe *s) {
+    return s->xwayland ? s->xwayland->display_name : NULL;
+}
 /* Scene tree children are created bottom to top: windows, background/bottom/top
- * layers, fullscreen windows, then the overlay layer. */
+ * layers, fullscreen windows, X11 override-redirect surfaces, then the overlay
+ * layer. */
 static bool create_scene_trees(struct tomoe *s) {
     s->window_tree = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&s->scene->tree);
     s->fullscreen_tree = wlr_scene_tree_create(&s->scene->tree);
+    s->unmanaged_tree = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = wlr_scene_tree_create(&s->scene->tree);
     for (int i = 0; i < 4; i++) {
         if (!s->layer_tree[i]) return false;
     }
-    return s->window_tree && s->fullscreen_tree;
+    return s->window_tree && s->fullscreen_tree && s->unmanaged_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
     wlr_log_init(WLR_ERROR, NULL);
@@ -1071,7 +1283,8 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
     s->allocator = wlr_allocator_autocreate(s->backend, s->renderer);
     if (!s->allocator) goto failed;
-    if (!wlr_compositor_create(s->display, 6, s->renderer) ||
+    struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
+    if (!compositor ||
             !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display) ||
             !wlr_viewporter_create(s->display) ||
             !wlr_fractional_scale_manager_v1_create(s->display, 1)) goto failed;
@@ -1089,6 +1302,16 @@ struct tomoe *tomoe_create(const char *socket_name) {
             !shell || !layer_shell) goto failed;
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     capabilities(s);
+    /* Xwayland and its window manager live in wlroots C; Lisp learns only the
+     * DISPLAY to hand to children, plus the windows that arrive through it. A
+     * missing Xwayland binary leaves the compositor without X11, not broken. */
+    s->xwayland = wlr_xwayland_create(s->display, compositor, true);
+    if (s->xwayland) {
+        wlr_xwayland_set_seat(s->xwayland, s->seat);
+        listen(&s->new_x11_surface, &s->xwayland->events.new_surface, new_xwayland_surface);
+        listen(&s->x11_server_ready, &s->xwayland->events.ready, xwayland_ready);
+        listen(&s->x11_server_destroy, &s->xwayland->events.destroy, xwayland_destroy);
+    }
     listen(&s->new_output, &s->backend->events.new_output, new_output);
     listen(&s->new_input, &s->backend->events.new_input, new_input);
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
@@ -1133,11 +1356,18 @@ const char *tomoe_next_event(struct tomoe *s) {
 void tomoe_destroy(struct tomoe *s) {
     if (!s) return;
     s->stopping = true;
+    /* Xwayland is both an X server and a Wayland client of this display, so it
+     * goes first, while the scene and the display are still alive. Its signal
+     * listeners leave first: wlr_xwayland_destroy asserts the lists are empty. */
+    detach(&s->new_x11_surface);
+    detach(&s->x11_server_ready);
+    if (s->xwayland) wlr_xwayland_destroy(s->xwayland);
     if (s->display) wl_display_destroy_clients(s->display);
     struct wl_listener *listeners[] = {
         &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup, &s->new_layer_surface,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
-        &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy
+        &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
+        &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);
