@@ -4,6 +4,12 @@ A new Common Lisp Wayland compositor. SBCL runs the compositor loop, extension
 runtime, window-management policy, and control server. A C library connects it
 to wlroots 0.20 for Wayland protocols, rendering, outputs, and input devices.
 
+Every desktop behaviour is a mountable extension. The shipped tiling, focus,
+window-state, drag, and command units use the same API a user file does, and the
+host has no special case for their names. Layer-shell panels, fullscreen and
+maximize state, pointer-driven move and resize, and output configuration are all
+visible to policy as context and owned effects.
+
 This is a working prototype, not a complete desktop compositor or a pure-Lisp
 Wayland implementation. It does not wrap the Rust/Lua implementation next door.
 
@@ -53,11 +59,16 @@ The packaged default terminal is Foot. Shipped bindings use Super:
 | --- | --- |
 | Super+Return | Open a terminal |
 | Super+Tab | Focus the next window |
+| Super+f | Toggle fullscreen for the focused window |
+| Super+m | Toggle maximize for the focused window |
 | Super+q | Ask the focused client to close |
 | Super+Shift+r | Reload configured extension files |
 | Super+Shift+Escape | Quit |
 
-The default layout tiles horizontally on the first output. Outputs and all
+Holding Super with the left mouse button moves the window under the pointer;
+Super with the right button resizes it. Both drags end when the button is
+released. The default layout tiles horizontally on the first output, inside the
+area that layer-shell panels with an exclusive zone leave free. Outputs and all
 window coordinates are available to Lisp, so a replacement can use the others.
 
 ## Output resolution and pixel mapping
@@ -123,31 +134,52 @@ nix run . -- unmount tiles
 nix run . -- mount "$PWD/examples/monocle.lisp"
 nix run . -- unmount monocle
 nix run . -- reload
+nix run . -- event '(:type :key :owner "commands" :command "terminal")'
 nix run . -- quit
 ```
 
 `inspect` prints versioned Lisp data containing live windows, outputs, resolved
-geometry, focus, bindings, extension state, dispatch counts, and the last error.
-Mutating commands print nothing on success and return a nonzero exit status on
-failure. `command OWNER NAME` invokes an active binding through the same
-extension dispatch as keyboard input.
+geometry, focus, bindings, layer surfaces, extension state, dispatch counts, per
+extension failures, and the last error. Mutating commands print nothing on
+success and return a nonzero exit status on failure. `command OWNER NAME`
+invokes an active binding through the same extension dispatch as keyboard input.
+
+`event` sends one data property list to a live instance as an injected input
+event: its `:type` must be `:key`, `:button`, or `:grab`. It exists so a policy
+can be driven on a machine with no seat — a headless compositor, a test run, or
+a scripted demonstration.
 
 Mounting a file replaces that file's units without reloading other files.
 Unmounting removes one named unit and its state. Reloading rebuilds all configured
 files, including units previously unmounted. It preserves state for matching
 names in the same source file. Unmount before reload to reset a unit's initial
-state. There is no automatic file watcher.
+state.
+
+## Live reload
+
+Configured sources are watched and reloaded when they change, four times a
+second. A reload waits until a source has looked the same twice in a row, so a
+half-written file is not loaded. The baseline is the content the runtime loaded,
+not the first thing the watcher sees, so an edit made while a mount is still
+settling is still caught. Success prints nothing: the new policy is visible in
+`inspect` as a higher `:generation`. A source that fails to load keeps the
+previous policy mounted and reports through the last error. `--no-watch` turns
+watching off for one instance.
 
 `examples/monocle.lisp` is an alternative layout that shows only the focused
 window. Mount it after the default policy to override tiling. Removing it
-restores the lower-priority layout without restarting clients.
+restores the lower-priority layout without restarting clients. The other
+examples are `workspaces.lisp` (nine tags), `float.lisp` (floating windows moved
+and resized by a Super drag), and `layer-inset.lisp` (tiling that insets by
+layer exclusive zones).
 
 ## Write an extension
 
 Pass an ordinary Common Lisp file with `--config /absolute/path/config.lisp`,
 or mount it through control. Use `--bare --config ...` to replace every shipped
-policy. `builtins/desktop.lisp` declares `tiles`, `focus`, and `commands` through
-the same API as a user file. The host has no special cases for these names.
+policy. `builtins/desktop.lisp` declares `tiles`, `focus`, `window-state`,
+`drag`, and `commands` through the same API as a user file. The host has no
+special cases for these names.
 
 The public API is in `src/api.lisp`:
 
@@ -161,11 +193,18 @@ The public API is in `src/api.lisp`:
 (place id x y width height visible)
 (focus id)                         ; NIL clears focus
 (bind-key '(:super :shift) "r" :reload)
+(layer id &key layer exclusive-zone keyboard visible)
+(fullscreen id flag)
+(maximize id flag)
+(grab id mode)                     ; :move or :resize
 (launch "foot")                    ; argv, not a shell command string
 (close-window id)
 (quit)
 (reload)
 ```
+
+`:state` is an expression evaluated when the file is loaded, so an initial
+property list is written `(list :tag 1)` or `'(:tag 1)`, not `(:tag 1)`.
 
 Reducers receive a copied pre-dispatch snapshot, copied private state, and an
 event property list. A property list alternates keys and values, such as
@@ -176,29 +215,60 @@ native objects.
 Declare every context key read with `:reads`. `context` rejects undeclared
 reads. Available keys:
 
-- `:windows`: property lists with `:id`, `:title`, `:app-id`, `:width`, `:height`.
-  Width and height are the client's initial mapped dimensions.
+- `:windows`: property lists with `:id`, `:title`, `:app-id`, `:width`, `:height`,
+  `:fullscreen`, and `:maximize`. Width and height are the client's initial
+  mapped dimensions; the two flags are the state the client has acknowledged.
 - `:outputs`: `:name`, logical `:x`, `:y`, `:width`, `:height`, plus
   `:physical-width`, `:physical-height`, `:refresh-mhz`, `:scale-120`, and the
   Wayland `:transform` enum. Divide `:scale-120` by 120 for the scale.
   `:modes` lists advertised pixel dimensions, refresh in mHz, and `:preferred`.
 - `:output-config`: resolved requested settings, including disconnected names.
-- `:layout`: resolved placement, with `:id`, coordinates, dimensions, and `:visible`.
+- `:layout`: resolved placement, with `:id`, coordinates, dimensions,
+  `:visible`, `:fullscreen`, and `:maximize`.
+- `:layers`: layer-shell surfaces, each a property list with `:id`, `:namespace`,
+  `:layer` (`:background`, `:bottom`, `:top`, or `:overlay`), `:anchors`,
+  `:exclusive-zone`, `:margin`, `:width`, `:height`, `:keyboard`, and `:visible`.
+  The layer, exclusive zone, keyboard interactivity, and visibility shown are the
+  resolved values, which are the client's request unless a unit overrides them.
 - `:focus`: a window ID or `nil`.
 - `:bindings`: resolved modifiers, keysyms, owner names, and command names.
-- `:key` and `:button`: event subscriptions, not stored context values.
+- `:key`, `:button`, and `:grab`: event subscriptions, not stored context values.
 
-Events include `:map`, `:unmap`, `:metadata`, `:outputs`, `:key`, and `:button`
-in their `:type` field. Key events carry `:owner` and a lowercase `:command`
-string. Button events carry `:id`, or zero for empty space, and an evdev
-`:button` code. Lifecycle evaluation receives `:mount`; reactive reevaluation
-receives `:change` with the changed `:keys`.
+Layer surfaces are arranged by the compositor from the client's own anchors,
+margins, and exclusive zone, and they are never in `:windows`, so a tiling policy
+does not have to know about them. A layer surface that asks for exclusive
+keyboard interactivity takes the keyboard while it is mapped, which is what a
+launcher needs; hiding it gives the keyboard back to the focused window.
 
-Owned effects are `place`, `focus`, `bind-key`, and `configure-output`. Return
-the complete desired set each time. Later-mounted units win conflicts. Omitting an effect removes
-that unit's contribution. `place` uses integer logical coordinates and positive
-sizes up to 16384. Bindings accept `:super`, `:alt`, `:control`, and `:shift`,
-plus an XKB keysym name such as `Return` or `Tab`.
+Events include `:map`, `:unmap`, `:metadata`, `:outputs`, `:layer`, `:key`,
+`:button`, and `:grab` in their `:type` field. Key events carry `:owner` and a
+lowercase `:command` string. Button events carry `:id` (zero for empty space, a
+layer surface id when a panel was hit), an evdev `:button` code, `:state`
+(`:pressed` or `:released`), pointer `:x` and `:y` in logical coordinates, and
+the keyboard `:modifiers` mask. `:metadata` events carry the same fields as
+`:map`, plus `:request` (`:fullscreen` or `:maximize`) when a client asked for a
+state, which is the policy's chance to accept or ignore it. While a unit owns a
+grab, pointer motion arrives as `:grab` events with `:id`, `:mode`, `:x`, `:y`,
+and the delta since the previous event. Lifecycle evaluation receives `:mount`;
+reactive reevaluation receives `:change` with the changed `:keys`.
+
+Owned effects are `place`, `focus`, `bind-key`, `configure-output`, `layer`,
+`fullscreen`, `maximize`, and `grab`. Return the complete desired set each time.
+Later-mounted units win conflicts. Omitting an effect removes that unit's
+contribution. `place` uses integer logical coordinates and positive sizes up to
+16384. Bindings accept `:super`, `:alt`, `:control`, and `:shift`, plus an XKB
+keysym name such as `Return` or `Tab`.
+
+`layer` overrides a layer surface without taking over its geometry: `:layer`
+reassigns it (`nil` keeps the client's request), `:exclusive-zone` changes how
+much of the output it reserves, `:keyboard` accepts `:none`, `:exclusive`, or
+`:on-demand`, and `:visible nil` hides it. `fullscreen` and `maximize` set the
+client-visible state; a policy that sets fullscreen usually also owns that
+window's `place` so the window fills the output. `grab` claims the pointer for a
+window: while a unit owns one, motion and buttons are not delivered to clients,
+and the owning unit is responsible for dropping the grab — normally on the
+`:button` release event. The compositor also clears a grab whose window or layer
+surface disappears.
 
 `launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
 button, and explicit control command dispatch may return them. They execute
@@ -217,16 +287,21 @@ rounds before it reaches the native scene.
 A dispatch has a 25 ms SBCL timeout, at most 512 effects and 32 commands, bounded
 data copying, and no host handles. Loading a source file has a one-second
 timeout. Invalid results, undeclared reads, callback errors, and dependency
-cycles retain the previous managed policy. Errors appear on stderr and through
-`inspect`. Native allocation failure during commit stops the compositor rather
-than pretending it rolled back. One-shot command failures cannot undo earlier
-commands.
+cycles retain the previous managed policy. A failure is attributed to the unit
+that caused it: `inspect` reports that unit's `:failures` count and last error
+next to the runtime-wide one, and the whole transaction is still discarded.
+Errors appear on stderr and through `inspect`. Native allocation failure during
+commit stops the compositor rather than pretending it rolled back. One-shot
+command failures cannot undo earlier commands.
 
-Unmount reconstructs geometry, visibility, stacking, focus, and bindings from
-remaining owners. The preserved facts are live client identities and metadata,
-initial client sizes, map order, and output descriptions. Unowned windows revert
-to their mapped dimensions at the origin. A client's destruction is an external
-fact, so failure recovery also removes dead IDs from the previous policy.
+Unmount reconstructs geometry, visibility, stacking, focus, bindings, output
+configuration, layer overrides, window state, and the grab from remaining
+owners. The preserved facts are live client identities and metadata, initial
+client sizes, map order, output descriptions, and the layer surfaces the
+clients themselves described. Unowned windows revert to their mapped dimensions
+at the origin, an unowned layer surface to its client's request, and an unowned
+grab to none. A client's destruction is an external fact, so failure recovery
+also removes dead IDs from the previous policy.
 
 Extensions are trusted code, not a security sandbox. Common Lisp can call the OS,
 redefine internals, change global variables, or create threads. Such side effects
@@ -243,45 +318,80 @@ then that many UTF-8-decoded characters of Lisp data. The maximum is 1048576
 characters. Framing permits newlines inside window titles.
 
 Requests are `(1 :inspect)`, `(1 :reload)`, `(1 :mount "path")`,
-`(1 :unmount "name")`, `(1 :command "owner" "command")`, or `(1 :quit)`.
-Replies are `(1 :ok result)` or `(1 :error "message")`. Version 1 is exact;
-unknown versions fail explicitly. Reader evaluation and dispatch syntax such as
-`#.` and circular object labels are disabled. This is a data protocol, not an
-unauthenticated REPL.
+`(1 :unmount "name")`, `(1 :command "owner" "command")`, `(1 :event "PLIST")`,
+or `(1 :quit)`. `:event` carries one string holding a data property list whose
+`:type` must be `:key`, `:button`, or `:grab`; the compositor reads it and
+dispatches it like a real input event. Replies are `(1 :ok result)` or
+`(1 :error "message")`. Version 1 is exact; unknown versions fail explicitly.
+Reader evaluation and dispatch syntax such as `#.` and circular object labels
+are disabled, and the reader accepts exactly the data the printer emits,
+including the cons dot an extension's own state may contain. This is a data
+protocol, not an unauthenticated REPL.
 
 ## Verification
 
-Observed on x86_64 Linux:
+`nix flake check` builds the package and runs one end-to-end check, which is the
+whole automated suite by project decision.
 
-- `nix build` and `nix flake check --all-systems` completed successfully. The
-  aarch64 package was evaluated, not built.
-- Two headless outputs hosted three real Foot windows. Mounting monocle,
-  cycling focus, unmounting layouts, reloading, and closing clients worked.
-- Removing every extension left the clients alive at their initial dimensions,
-  with no bindings or focus. Unrelated units did not rerun on layout removal.
-- A second, bare compositor ran nested inside that isolated parent. A real Foot
-  client attached buffers and received frame callbacks without any policy units.
-  Both instances removed their sockets and stopped on quit.
+`tests/run-integration.sh` builds a small Wayland test client from `client.c`
+and protocol code generated at build time, starts the packaged compositor on the
+headless backend with `--bare --no-watch`, and drives it through its own control
+client. It asserts that no policy is mounted for `--bare`, that the fixtures
+mount cleanly, that two xdg clients map at the sizes they asked for and are
+placed inside the output by the fixture layout, that a layer client keeps its
+namespace, anchors, and height, that the fixture's layer override resolves and
+returns to the client's request when an injected key command arrives, that
+extension state containing a cons survives the control round trip, that
+unmounting the layout returns both windows to their mapped size at the origin,
+and that `quit` exits zero and removes both sockets.
 
-Hardware DRM, physical input, timeout/failure recovery, and exhaustive protocol
-behavior remain unverified. No automated test suite was added.
+From the working tree:
+
+```sh
+nix develop ./lisp -c ./lisp/tests/run-integration.sh
+```
+
+Observed on x86_64 Linux, in addition to the check above:
+
+- `nix build` and `nix flake check` completed successfully. The aarch64 package
+  was evaluated, not built.
+- Real Foot clients mapped, tiled inside a layer panel's exclusive zone, took
+  focus, and were restored to their mapped dimensions when the layout unit was
+  unmounted.
+- An owned fullscreen effect sized a real client to the output and reverting it
+  restored the mapped size, with no native error.
+- A policy-owned grab started from an injected key, moved a window by the
+  reported delta, and released on the injected button release.
+- Editing a mounted source reloaded it without a command, and making a source
+  unreadable kept the previous policy and reported once.
+- The pure-Lisp backend still loads and answers `inspect` with the shipped
+  policy mounted.
+
+Hardware DRM, physical input (a real pointer grab, a real keyboard), failure
+recovery for native allocation, and output rotation, mirroring, and VRR remain
+unverified.
 
 ## Source and limits
 
 - `src/`: Common Lisp API, state/effect runtime, native bindings, control, CLI.
 - `native/backend.h`: the native ABI. No pointers cross into extension snapshots.
-- `native/backend.c`: wlroots lifetimes, scene rendering, xdg-shell, input routing.
+- `native/backend.c`: wlroots lifetimes, scene layering, xdg-shell, layer-shell,
+  input routing, pointer grabs.
 - `builtins/desktop.lisp`: replaceable default policy.
-- `examples/monocle.lisp`: independent layout using declared dependencies.
+- `examples/`: alternative policies, each mountable on its own.
+- `tests/`: the end-to-end check, its fixtures, and its Wayland client.
 - `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
 
 Implemented protocols cover ordinary xdg-shell windows and popups, shared-memory
-buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1, and
-xdg-output. Missing desktop features include layer-shell, XWayland,
-fullscreen/maximize policy, interactive dragging/resizing, output rotation,
-mirroring, VRR configuration, session locking, primary selection, screencopy,
-portals, touch/tablets, and input methods. Popup placement does not
-constrain menus to output bounds. Do not use this as a secure daily desktop.
+buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1,
+xdg-output, and layer-shell. Missing desktop features include XWayland, session
+locking, screencopy, portals, input methods, touch and tablets, output rotation,
+mirroring, and VRR configuration, primary selection, and window decorations.
+Popup placement does not constrain menus to output bounds. A policy that never
+releases a grab keeps the pointer until the grabbed surface disappears. A layer
+surface's anchors, margins, and size stay the client's request: policy can move
+it between layers, change its exclusive zone and keyboard interactivity, and
+hide it, but not place it freely. Do not use this as a secure daily desktop.
 
 Tomoe and ShojiWM informed the separation of mechanism from policy and explicit
 ownership of reactive effects. Local reference clones live in `../ref/`, which
