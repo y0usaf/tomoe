@@ -38,6 +38,9 @@
             pkgs.wayland-scanner
             pkgs.libxkbcommon
             pkgs.pixman
+            # wlroots' Xwayland header includes the XCB window-manager ones.
+            pkgs.libxcb
+            pkgs.xcbutilwm
           ];
           strictDeps = true;
           # strip discards the Lisp image appended to the SBCL executable.
@@ -53,7 +56,7 @@
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1) \
+              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 xcb xcb-ewmh xcb-icccm) \
               native/backend.c -o build/libtomoe-backend.so \
               $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1)
             sbcl --noinform --non-interactive --load build.lisp

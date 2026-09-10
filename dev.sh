@@ -32,7 +32,7 @@ else
   if [ ! -f "$TOMOE_LISP_BACKEND" ] || [ native/backend.c -nt "$TOMOE_LISP_BACKEND" ]; then
     cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
       -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
-      $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1) \
+      $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 xcb xcb-ewmh xcb-icccm) \
       native/backend.c -o "$TOMOE_LISP_BACKEND" \
       $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1)
   fi
