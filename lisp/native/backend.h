@@ -2,7 +2,7 @@
 #define TOMOE_BACKEND_H
 #include <stdint.h>
 
-/* ABI 1. The Lisp thread owns this handle and all calls, including destruction.
+/* ABI 2. The Lisp thread owns this handle and all calls, including destruction.
  * Events are Lisp data, never code. next_event's string lives until the next call.
  * IDs identify live protocol objects, never addresses. A missing ID is a no-op:
  * Wayland may destroy it before Lisp drains the queued lifetime events. */
@@ -20,4 +20,10 @@ uint32_t tomoe_keysym(const char *name);
 void tomoe_clear_bindings(struct tomoe *server);
 int tomoe_bind(struct tomoe *server, uint32_t modifiers, uint32_t keysym,
     const char *owner, const char *command);
+/* Output policy is staged, validated together, then applied. NULL means success.
+ * Mode: 0 preferred, 1 maximum, 2 exact. Refresh is mHz, scale is in 120ths. */
+int tomoe_outputs_begin(struct tomoe *server);
+int tomoe_output(struct tomoe *server, const char *name, int mode,
+    int width, int height, int refresh, int scale, int x, int y, int positioned);
+const char *tomoe_outputs_apply(struct tomoe *server);
 #endif

@@ -12,13 +12,17 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_output_swapchain_manager.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -47,7 +51,7 @@ struct tomoe {
     char *last_event;
     uint32_t next_id, focused;
     size_t event_count;
-    bool running, stopping, failed;
+    bool running, stopping, failed, configuring_outputs;
 };
 struct window {
     struct wl_list link;
@@ -64,6 +68,9 @@ struct output {
     struct tomoe *server;
     struct wlr_output *wlr;
     struct wl_listener frame, request, destroy;
+    struct wlr_output_state initial, pending;
+    bool configured, pending_configured, pending_positioned;
+    int pending_x, pending_y;
 };
 struct keyboard {
     struct wl_list link;
@@ -126,6 +133,7 @@ static void window_event(struct window *w, const char *type) {
     end_event(w->server, event, out);
 }
 static void outputs_event(struct tomoe *s) {
+    if (s->configuring_outputs) return;
     struct event *event; size_t size;
     FILE *out = begin_event(s, &event, &size);
     if (!out) return;
@@ -136,12 +144,172 @@ static void outputs_event(struct tomoe *s) {
         wlr_output_layout_get_box(s->layout, o->wlr, &box);
         if (box.width == 0 || box.height == 0) continue;
         fputs("(:name ", out); quote(out, o->wlr->name);
-        fprintf(out, " :x %d :y %d :width %d :height %d)",
-            box.x, box.y, box.width, box.height);
+        fprintf(out, " :x %d :y %d :width %d :height %d"
+            " :physical-width %d :physical-height %d :refresh-mhz %d"
+            " :scale-120 %.0f :transform %d :modes (",
+            box.x, box.y, box.width, box.height, o->wlr->width, o->wlr->height,
+            o->wlr->refresh, o->wlr->scale * 120.0, o->wlr->transform);
+        struct wlr_output_mode *mode;
+        wl_list_for_each(mode, &o->wlr->modes, link) {
+            fprintf(out, "(:width %d :height %d :refresh-mhz %d :preferred %s)",
+                mode->width, mode->height, mode->refresh, mode->preferred ? "t" : "nil");
+        }
+        fputs("))", out);
     }
     fputs("))", out);
     end_event(s, event, out);
 }
+
+static void snapshot_output_state(struct wlr_output *wlr, struct wlr_output_state *state) {
+    wlr_output_state_init(state);
+    wlr_output_state_set_enabled(state, wlr->enabled);
+    if (wlr->current_mode) wlr_output_state_set_mode(state, wlr->current_mode);
+    else wlr_output_state_set_custom_mode(state, wlr->width, wlr->height, wlr->refresh);
+    wlr_output_state_set_scale(state, wlr->scale);
+    wlr_output_state_set_transform(state, wlr->transform);
+}
+
+int tomoe_outputs_begin(struct tomoe *s) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        wlr_output_state_finish(&o->pending);
+        if (o->configured) {
+            wlr_output_state_init(&o->pending);
+            if (!wlr_output_state_copy(&o->pending, &o->initial)) return 0;
+        } else {
+            snapshot_output_state(o->wlr, &o->pending);
+        }
+        o->pending_configured = false;
+        o->pending_positioned = false;
+    }
+    return 1;
+}
+
+static struct wlr_output_mode *pick_output_mode(struct wlr_output *wlr,
+        int kind, int width, int height, int refresh) {
+    if (kind == 0) return wlr_output_preferred_mode(wlr);
+    struct wlr_output_mode *mode, *best = NULL;
+    int64_t best_area = 0;
+    wl_list_for_each(mode, &wlr->modes, link) {
+        int64_t area = mode->width;
+        area *= mode->height;
+        if (kind == 1) {
+            if (!best || area > best_area || (area == best_area && mode->refresh > best->refresh)) {
+                best = mode; best_area = area;
+            }
+        } else if (mode->width == width && mode->height == height) {
+            if (refresh == 0) {
+                if (!best || mode->refresh > best->refresh) best = mode;
+            } else if (abs(mode->refresh - refresh) <= 1000 &&
+                    (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh))) {
+                best = mode;
+            }
+        }
+    }
+    return best;
+}
+
+int tomoe_output(struct tomoe *s, const char *name, int kind,
+        int width, int height, int refresh, int scale, int x, int y, int positioned) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (strcmp(o->wlr->name, name) != 0) continue;
+        struct wlr_output_mode *mode = pick_output_mode(o->wlr, kind, width, height, refresh);
+        if (!mode && !wl_list_empty(&o->wlr->modes)) return 0;
+        wlr_output_state_finish(&o->pending);
+        snapshot_output_state(o->wlr, &o->pending);
+        if (mode) wlr_output_state_set_mode(&o->pending, mode);
+        else if (kind == 2) wlr_output_state_set_custom_mode(&o->pending, width, height, refresh);
+        wlr_output_state_set_scale(&o->pending, scale / 120.0f);
+        o->pending_configured = true;
+        o->pending_positioned = positioned != 0;
+        o->pending_x = x; o->pending_y = y;
+        return 1;
+    }
+    /* Output lifetime events can precede Lisp draining its event queue. */
+    return 1;
+}
+
+static const char *commit_outputs(struct tomoe *s,
+        struct wlr_backend_output_state *states, size_t count, bool *attempted) {
+    struct wlr_output_swapchain_manager manager;
+    wlr_output_swapchain_manager_init(&manager, s->backend);
+    const char *error = "Output configuration rejected by the backend; previous settings retained.";
+    /* Prepare checks backend-wide constraints and allocates correctly sized buffers. */
+    if (!wlr_output_swapchain_manager_prepare(&manager, states, count)) goto done;
+    error = "Cannot render the requested output configuration; previous settings retained.";
+    for (size_t i = 0; i < count; i++) {
+        struct wlr_scene_output_state_options options = {
+            .swapchain = wlr_output_swapchain_manager_get_swapchain(&manager, states[i].output),
+        };
+        struct wlr_scene_output *scene = wlr_scene_get_scene_output(s->scene, states[i].output);
+        if (!wlr_scene_output_build_state(scene, &states[i].base, &options)) goto done;
+    }
+    *attempted = true;
+    error = "Output commit failed.";
+    if (!wlr_backend_commit(s->backend, states, count)) goto done;
+    wlr_output_swapchain_manager_apply(&manager);
+    error = NULL;
+done:
+    wlr_output_swapchain_manager_finish(&manager);
+    return error;
+}
+
+const char *tomoe_outputs_apply(struct tomoe *s) {
+    size_t count = wl_list_length(&s->outputs), initialized = 0;
+    if (count == 0) return NULL;
+    struct wlr_backend_output_state *states = calloc(count, sizeof(*states));
+    struct wlr_backend_output_state *previous = calloc(count, sizeof(*previous));
+    const char *error = "Cannot allocate output configuration.";
+    if (!states || !previous) goto done;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        size_t i = initialized++;
+        states[i].output = previous[i].output = o->wlr;
+        wlr_output_state_init(&states[i].base);
+        snapshot_output_state(o->wlr, &previous[i].base);
+        if (!wlr_output_state_copy(&states[i].base, &o->pending)) goto done;
+    }
+    /* wlroots may commit separate GPUs independently. Restore all outputs if a
+     * later commit fails, and stop if hardware can no longer restore the scene. */
+    s->configuring_outputs = true;
+    bool attempted = false;
+    error = commit_outputs(s, states, count, &attempted);
+    if (error && attempted) {
+        bool restore_attempted = false;
+        if (commit_outputs(s, previous, count, &restore_attempted)) {
+            error = "Output rollback failed; stopping the compositor.";
+            fail(s, error);
+        } else {
+            error = "Output commit failed; previous settings restored.";
+        }
+    }
+    if (!error) {
+        /* Place fixed outputs before auto-packed outputs, including on unmount. */
+        for (int pass = 0; pass < 2; pass++) {
+            wl_list_for_each(o, &s->outputs, link) {
+                if (o->pending_positioned != (pass == 0)) continue;
+                struct wlr_output_layout_output *layout = o->pending_positioned ?
+                    wlr_output_layout_add(s->layout, o->wlr, o->pending_x, o->pending_y) :
+                    wlr_output_layout_add_auto(s->layout, o->wlr);
+                if (!layout) { error = "Output layout allocation failed."; fail(s, error); break; }
+                o->configured = o->pending_configured;
+            }
+            if (error) break;
+        }
+    }
+    s->configuring_outputs = false;
+    outputs_event(s);
+    wl_list_for_each(o, &s->outputs, link) wlr_output_schedule_frame(o->wlr);
+done:
+    for (size_t i = 0; i < initialized; i++) {
+        wlr_output_state_finish(&states[i].base);
+        wlr_output_state_finish(&previous[i].base);
+    }
+    free(states); free(previous);
+    return error;
+}
+
 static struct window *find_window(struct tomoe *s, uint32_t id) {
     struct window *w;
     wl_list_for_each(w, &s->windows, link) if (w->id == id && w->mapped) return w;
@@ -307,12 +475,18 @@ static void output_frame(struct wl_listener *listener, void *data) {
 static void output_request(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, request);
     const struct wlr_output_event_request_state *event = data;
-    if (!wlr_output_commit_state(o->wlr, event->state)) fail(o->server, "output resize failed");
+    if (!wlr_output_commit_state(o->wlr, event->state)) {
+        fail(o->server, "output resize failed");
+    } else if (!o->configured) {
+        wlr_output_state_finish(&o->initial);
+        snapshot_output_state(o->wlr, &o->initial);
+    }
 }
 static void output_destroy(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, destroy);
     struct tomoe *s = o->server;
     detach(&o->frame); detach(&o->request); detach(&o->destroy);
+    wlr_output_state_finish(&o->initial); wlr_output_state_finish(&o->pending);
     wl_list_remove(&o->link); free(o);
     outputs_event(s);
 }
@@ -326,7 +500,7 @@ static void new_output(struct wl_listener *listener, void *data) {
     if (!wlr_output_init_render(wlr, s->allocator, s->renderer)) {
         fail(s, "output renderer initialization failed"); return;
     }
-    /* Initial device mode only. Logical window placement belongs to Lisp. */
+    /* Safe baseline until Lisp's owned output policy selects a mode and scale. */
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
@@ -338,6 +512,8 @@ static void new_output(struct wl_listener *listener, void *data) {
     struct output *o = calloc(1, sizeof(*o));
     if (!o) { fail(s, "output allocation failed"); return; }
     o->server = s; o->wlr = wlr;
+    snapshot_output_state(wlr, &o->initial);
+    wlr_output_state_init(&o->pending);
     wl_list_insert(s->outputs.prev, &o->link);
     listen(&o->frame, &wlr->events.frame, output_frame);
     listen(&o->request, &wlr->events.request_state, output_request);
@@ -496,7 +672,7 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 1; }
+int tomoe_abi_version(void) { return 2; }
 struct tomoe *tomoe_create(const char *socket_name) {
     wlr_log_init(WLR_ERROR, NULL);
     struct tomoe *s = calloc(1, sizeof(*s));
@@ -511,11 +687,13 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
     s->allocator = wlr_allocator_autocreate(s->backend, s->renderer);
     if (!s->allocator) goto failed;
-    if (!wlr_compositor_create(s->display, 5, s->renderer) ||
-            !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display)) goto failed;
+    if (!wlr_compositor_create(s->display, 6, s->renderer) ||
+            !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display) ||
+            !wlr_viewporter_create(s->display) ||
+            !wlr_fractional_scale_manager_v1_create(s->display, 1)) goto failed;
     s->layout = wlr_output_layout_create(s->display);
     s->scene = wlr_scene_create();
-    if (!s->layout || !s->scene) goto failed;
+    if (!s->layout || !s->scene || !wlr_xdg_output_manager_v1_create(s->display, s->layout)) goto failed;
     s->scene_layout = wlr_scene_attach_output_layout(s->scene, s->layout);
     s->cursor = wlr_cursor_create();
     s->cursor_manager = wlr_xcursor_manager_create(NULL, 24);

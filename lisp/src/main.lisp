@@ -14,6 +14,8 @@ The lisp backend is loaded by dev.lisp and needs no wlroots.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
 Nested mode discovers live wayland-N sockets when WAYLAND_DISPLAY is unset.
 Extensions are trusted Common Lisp programs. --bare omits all shipped policy.
+Loads $XDG_CONFIG_HOME/tomoe-lisp/init.lisp or ~/.config/tomoe-lisp/init.lisp when present.
+--config overrides that file; --bare skips it.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
 (defun runtime-directory ()
@@ -90,6 +92,14 @@ Control replies are versioned Lisp data. Mutating commands are silent on success
       (unwind-protect (when runtime (stop-processes runtime))
         (unwind-protect (when native (%destroy native)) (close-control control))))))
 
+(defun default-config-file ()
+  (let* ((root (sb-ext:posix-getenv "XDG_CONFIG_HOME"))
+         (directory (if (and root (plusp (length root)))
+                        (format nil "~A/" (string-right-trim "/" root))
+                        (merge-pathnames ".config/" (user-homedir-pathname))))
+         (path (merge-pathnames "tomoe-lisp/init.lisp" directory)))
+    (when (probe-file path) (namestring (truename path)))))
+
 (defun run-cli (arguments)
   (let ((name "tomoe-lisp-0") (backend "auto") (bare nil) (config nil))
     (labels ((argument (option)
@@ -97,7 +107,7 @@ Control replies are versioned Lisp data. Mutating commands are silent on success
       (loop while arguments for option = (pop arguments) do
         (cond
           ((equal option "--help") (usage) (return-from run-cli 0))
-          ((equal option "--version") (write-line "tomoe-lisp 0.1.0, wire 1, native ABI 1") (return-from run-cli 0))
+          ((equal option "--version") (write-line "tomoe-lisp 0.1.0, wire 1, native ABI 2") (return-from run-cli 0))
           ((equal option "--socket") (setf name (argument option)))
           ((equal option "--backend") (setf backend (argument option)))
           ((equal option "--config") (setf config (namestring (truename (argument option)))))
@@ -108,6 +118,7 @@ Control replies are versioned Lisp data. Mutating commands are silent on success
            (return-from run-cli
              (control-client (socket-path name) (cdr (assoc option +operations+ :test #'equal)) arguments)))
           (t (error "Unknown option or command: ~A" option)))))
+    (unless (or bare config) (setf config (default-config-file)))
     (let ((builtins (sb-ext:posix-getenv "TOMOE_LISP_BUILTINS")))
       (unless (or bare builtins) (error "TOMOE_LISP_BUILTINS is required without --bare."))
       (run-compositor name backend

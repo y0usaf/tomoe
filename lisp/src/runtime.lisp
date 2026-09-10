@@ -10,6 +10,7 @@
     (ecase (effect-kind effect)
       (:place (destructuring-bind (id x y width height visible) args
                 (place id x y width height visible)))
+      (:output (apply #'%output-effect args))
       (:focus (destructuring-bind (id) args (focus id)))
       (:bind
        (destructuring-bind (mask keysym command) args
@@ -34,6 +35,7 @@
 (defun effect-key (effect)
   (ecase (effect-kind effect)
     (:place (list :place (first (effect-arguments effect))))
+    (:output (list :output (first (effect-arguments effect))))
     (:focus '(:focus))
     (:bind (list :bind (first (effect-arguments effect))
                  (%keysym (second (effect-arguments effect)))))))
@@ -77,6 +79,7 @@ Unmount removes a contribution, exposing the preceding owner or these defaults."
                                     :width (max 1 (getf window :width))
                                     :height (max 1 (getf window :height)) :visible t)))
         (focused nil)
+        (outputs nil)
         (bindings nil))
     (dolist (mounted mounts)
       (dolist (effect (mounted-effects mounted))
@@ -89,6 +92,12 @@ Unmount removes a contribution, exposing the preceding owner or these defaults."
                    (setf (getf window :x) x (getf window :y) y
                          (getf window :width) width (getf window :height) height
                          (getf window :visible) visible)))))
+            (:output
+             (destructuring-bind (name mode width height refresh scale x y positioned) args
+               (setf outputs (delete name outputs :test #'equal :key (lambda (o) (getf o :name))))
+               (push (list :name name :mode mode :width width :height height
+                           :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned)
+                     outputs)))
             (:focus (setf focused (first args)))
             (:bind
              (destructuring-bind (mask keysym command) args
@@ -102,6 +111,7 @@ Unmount removes a contribution, exposing the preceding owner or these defaults."
     (unless (find focused layout :key (lambda (w) (getf w :id)))
       (setf focused nil))
     (list :windows (runtime-windows runtime) :outputs (runtime-outputs runtime)
+          :output-config (sort outputs #'string< :key (lambda (o) (getf o :name)))
           :layout layout :focus focused
           :bindings (sort bindings
                           (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
@@ -110,6 +120,12 @@ Unmount removes a contribution, exposing the preceding owner or these defaults."
 
 (defun changed-keys (before after)
   (remove-if (lambda (key) (equal (getf before key) (getf after key))) +context-keys+))
+
+(defun connected-output-config (context)
+  (remove-if-not (lambda (config)
+                   (find (getf config :name) (getf context :outputs)
+                         :test #'equal :key (lambda (o) (getf o :name))))
+                 (getf context :output-config)))
 
 (defun commit-context (runtime mounts context)
   "The only extension-to-native write path. All reducers have returned and validated."
@@ -120,6 +136,9 @@ Unmount removes a contribution, exposing the preceding owner or these defaults."
                (not (getf (find (getf context :focus) (getf context :layout)
                                 :key (lambda (w) (getf w :id))) :visible)))
       (error "Cannot focus a hidden window: ~D" (getf context :focus)))
+    (let ((outputs (connected-output-config context)))
+      (unless (equal (connected-output-config old) outputs)
+        (configure-native-outputs backend outputs)))
     (unless (equal (getf old :bindings) (getf context :bindings))
       (%clear-bindings backend)
       (dolist (binding (getf context :bindings))

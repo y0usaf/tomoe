@@ -59,8 +59,57 @@ The packaged default terminal is Foot. Shipped bindings use Super:
 
 The default layout tiles horizontally on the first output. Outputs and all
 window coordinates are available to Lisp, so a replacement can use the others.
-Native output modes and physical output arrangement are not yet configurable
-through Lisp.
+
+## Output resolution and pixel mapping
+
+Startup loads `$XDG_CONFIG_HOME/tomoe-lisp/init.lisp`, falling back to
+`~/.config/tomoe-lisp/init.lisp`. `--config FILE` replaces that default file;
+`--bare` skips it unless you also supply `--config`. An absent file is fine.
+Output policy is an ordinary extension, with the same mount/reload/unmount
+behavior as window policy:
+
+```lisp
+(define-extension "displays" () (snapshot state event)
+  (declare (ignore snapshot state event))
+  (values nil
+          (list (configure-output "DP-4" :mode '(5120 1440)
+                                        :scale 1 :position '(0 0))
+                (configure-output "HDMI-A-2" :mode '(1920 1080 60)
+                                             :scale 1 :position '(5120 0)))
+          nil))
+```
+
+`configure-output` accepts:
+
+- `:mode :preferred`, the monitor's advertised preferred mode, the default.
+- `:mode :max`, the largest advertised pixel area at its highest refresh.
+- `:mode '(WIDTH HEIGHT)`, that pixel resolution at its highest refresh.
+- `:mode '(WIDTH HEIGHT HZ)`, the closest advertised refresh within 1 Hz.
+  For example, 60 also matches 59.94 Hz. Unsupported modes are rejected, not
+  silently replaced. Headless/nested outputs can accept custom dimensions.
+- `:scale`, from 1/4 through 8, rounded to 1/120 increments. The default is 1.
+- `:position '(X Y)`, in logical desktop coordinates. Omit it for automatic
+  horizontal placement. Disconnected output names remain configured for hotplug.
+
+Physical resolution counts monitor pixels. Window geometry, output positions,
+and pointer coordinates use logical units, like Niri. At scale 1, one logical
+unit is one physical pixel. At scale 2, a 3840x2160 output provides 1920x1080
+logical units. Tomoe's physical-coordinate policy is different; it is not copied
+into this logical-coordinate compositor.
+
+Viewporter, fractional-scale-v1, and xdg-output let compatible clients render
+buffers at the requested scale while keeping logical window sizes and input
+coordinates consistent. Fractional scale does not guarantee every logical edge
+falls on a physical pixel. Clients without fractional-scale support may render
+at an integer scale and be resampled.
+
+Later-mounted output policies win per output. Unmount restores the previous
+owner or the output's initial mode, scale, and automatic placement. The backend
+validates the full configuration before committing and attempts to restore the
+previous hardware state if a commit fails. A failed hardware rollback stops the
+compositor. Output changes then notify `:outputs` consumers to retile clients.
+The native ABI is now 2; the additive inspect fields keep control wire version 1.
+The experimental pure-Lisp backend does not yet support output configuration.
 
 ## Live control
 
@@ -129,7 +178,11 @@ reads. Available keys:
 
 - `:windows`: property lists with `:id`, `:title`, `:app-id`, `:width`, `:height`.
   Width and height are the client's initial mapped dimensions.
-- `:outputs`: property lists with `:name`, `:x`, `:y`, `:width`, `:height`.
+- `:outputs`: `:name`, logical `:x`, `:y`, `:width`, `:height`, plus
+  `:physical-width`, `:physical-height`, `:refresh-mhz`, `:scale-120`, and the
+  Wayland `:transform` enum. Divide `:scale-120` by 120 for the scale.
+  `:modes` lists advertised pixel dimensions, refresh in mHz, and `:preferred`.
+- `:output-config`: resolved requested settings, including disconnected names.
 - `:layout`: resolved placement, with `:id`, coordinates, dimensions, and `:visible`.
 - `:focus`: a window ID or `nil`.
 - `:bindings`: resolved modifiers, keysyms, owner names, and command names.
@@ -141,8 +194,8 @@ string. Button events carry `:id`, or zero for empty space, and an evdev
 `:button` code. Lifecycle evaluation receives `:mount`; reactive reevaluation
 receives `:change` with the changed `:keys`.
 
-Owned effects are `place`, `focus`, and `bind-key`. Return the complete desired
-set each time. Later-mounted units win conflicts. Omitting an effect removes
+Owned effects are `place`, `focus`, `bind-key`, and `configure-output`. Return
+the complete desired set each time. Later-mounted units win conflicts. Omitting an effect removes
 that unit's contribution. `place` uses integer logical coordinates and positive
 sizes up to 16384. Bindings accept `:super`, `:alt`, `:control`, and `:shift`,
 plus an XKB keysym name such as `Return` or `Tab`.
@@ -223,10 +276,11 @@ behavior remain unverified. No automated test suite was added.
 - `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
 
 Implemented protocols cover ordinary xdg-shell windows and popups, shared-memory
-buffers, subsurfaces, and clipboard selection. Missing desktop features include
-layer-shell, XWayland, fullscreen/maximize policy, interactive dragging/resizing,
-output configuration, fractional scaling, session locking, primary selection,
-screencopy, portals, touch/tablets, and input methods. Popup placement does not
+buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1, and
+xdg-output. Missing desktop features include layer-shell, XWayland,
+fullscreen/maximize policy, interactive dragging/resizing, output rotation,
+mirroring, VRR configuration, session locking, primary selection, screencopy,
+portals, touch/tablets, and input methods. Popup placement does not
 constrain menus to output bounds. Do not use this as a secure daily desktop.
 
 Tomoe and ShojiWM informed the separation of mechanism from policy and explicit
