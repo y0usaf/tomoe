@@ -32,10 +32,25 @@
 (defun deck--fronts (state) (nth (1- (getf state :active)) (getf state :fronts)))
 (defun deck--side-of (state id)
   (let ((entry (deck--entry (getf state :columns) id))) (and entry (cdr entry))))
-(defun deck--front (state side)
-  (let ((entry (assoc side (deck--fronts state)))) (and entry (cdr entry))))
 (defun deck--column (state side)
   (remove-if-not (lambda (id) (eql (deck--side-of state id) side)) (deck--workspace state)))
+(defun deck--front (state side)
+  "The window SIDE's deck shows in front. An adopted front counts only while it is
+still in that column: a front can outlive its window between a close and the
+handoff that replaces it, and a column placed against a front that is gone would
+be placed nowhere and show nothing at all."
+  (let* ((entry (assoc side (deck--fronts state)))
+         (recorded (and entry (cdr entry)))
+         (column (deck--column state side)))
+    (if (member recorded column) recorded (first column))))
+(defun deck--after-front (state order side gone)
+  "The window that takes the front of SIDE in ORDER once GONE closes, or NIL when
+the column empties. GONE still sits in ORDER, so the entry after it — wrapping,
+the way a scroll does — is the window a scroll would have revealed."
+  (let* ((column (remove-if-not (lambda (id) (eql (deck--side-of state id) side)) order))
+         (index (position gone column))
+         (next (and index (nth (mod (1+ index) (length column)) column))))
+    (unless (eql next gone) next)))
 (defun deck--manageable-p (state id)
   (and (not (member id (getf state :fullscreen))) (not (member id (getf state :floating)))))
 
@@ -338,6 +353,23 @@ against the output the layout is drawing on."
          (focused (context snapshot :focus))
          (area (deck--area snapshot))
          (type (getf event :type)))
+    ;; A front that closes hands its deck on, before the prune drops the id: the
+    ;; window after it in that column takes the front, as a scroll would, and the
+    ;; column that held the focused window keeps the keyboard. Without the handoff
+    ;; the column keeps a front that is gone, so nothing in it is placed or shown
+    ;; and no key can bring it back.
+    (when (eq type :unmap)
+      (let ((gone (getf event :id)))
+        (loop for index from 1
+              for order in (getf state :workspaces)
+              for fronts in (getf state :fronts)
+              do (dolist (side '(:left :right))
+                   (when (eql gone (cdr (assoc side fronts)))
+                     (let ((next (deck--after-front state order side gone)))
+                       (setf (cdr (assoc side fronts)) next)
+                       (when (and next (eql gone (getf state :focus))
+                                  (= index (getf state :active)))
+                         (setf (getf state :focus) next))))))))
     ;; Forget windows that are gone; ids are reused by the compositor.
     (setf (getf state :workspaces)
           (loop for order in (getf state :workspaces)
