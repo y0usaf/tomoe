@@ -28,8 +28,9 @@
       (:grab (destructuring-bind (id mode) args (grab id mode)))
       (:bind
        (destructuring-bind (mask keysym command) args
-         (check-type mask (integer 0 85))
-         (unless (zerop (logandc2 mask 85)) (error "Unsupported modifier mask."))
+         ;; SHIFT|CTRL|ALT|LOGO, the set the native backend reports.
+         (check-type mask (integer 0 77))
+         (unless (zerop (logandc2 mask 77)) (error "Unsupported modifier mask."))
          (check-type keysym string)
          (check-type command string)
          (when (or (find #\Null keysym) (find #\Null command)

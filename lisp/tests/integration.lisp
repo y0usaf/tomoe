@@ -284,6 +284,12 @@ Returns the state snapshot that satisfied PREDICATE."
     (check-equal "extension state containing a cons survives inspect"
                  '((:enabled . t))
                  (extension-state state "test-overlay"))
+    ;; Alt is the modifier most user configs bind; it must survive canonical
+    ;; validation and reach the resolved binding list.
+    (let ((binding (find-if (lambda (entry) (equal (getf entry :command) "layout-down"))
+                            (getf state :bindings))))
+      (check-equal "an Alt binding resolves through the runtime" 9 (getf binding :modifiers))
+      (check-equal "the Alt binding keeps its owner" "test-layout" (getf binding :owner)))
 
     ;; 3. Two xdg clients map at their requested size; the fixture layout places
     ;;    both of them at its fixed offset inside the output.
