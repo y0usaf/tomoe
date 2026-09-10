@@ -14,7 +14,8 @@ This is a working prototype, not a complete desktop compositor or a pure-Lisp
 Wayland implementation.
 
 Two backends satisfy one contract, so the policy runtime does not know which one
-is loaded.
+is loaded. Features land in the wlroots backend; the pure-Lisp one is an
+experiment and does not constrain them.
 
 | Backend | Native side | State |
 | --- | --- | --- |
