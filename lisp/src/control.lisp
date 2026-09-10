@@ -9,12 +9,14 @@
       (set-macro-character char (lambda (stream char)
                                   (declare (ignore stream))
                                   (error "Reader syntax ~S is not allowed in data." char))))
-    (set-macro-character #\(
-                         (lambda (stream char)
-                           (declare (ignore char))
-                           (let ((*read-depth* (1+ *read-depth*)))
-                             (when (> *read-depth* 64) (error "Data nesting exceeds 64."))
-                             (read-delimited-list #\) stream t))))
+    ;; Bound nesting with the standard list reader: it is the only one that
+    ;; understands the cons dot the printer emits for extension state.
+    (let ((read-list (get-macro-character #\( )))
+      (set-macro-character #\(
+                           (lambda (stream char)
+                             (let ((*read-depth* (1+ *read-depth*)))
+                               (when (> *read-depth* 64) (error "Data nesting exceeds 64."))
+                               (funcall read-list stream char)))))
     (multiple-value-bind (value end) (read-from-string text)
       (unless (every (lambda (c) (find c '(#\Space #\Tab #\Newline #\Return))) (subseq text end))
         (error "Trailing data after the first form."))
@@ -105,6 +107,17 @@
            (error "No active command ~A/~A." owner name))
          (transact runtime (runtime-mounts runtime)
                    (list :type :key :owner owner :command name) '(:key))) nil)
+      (:event
+       (destructuring-bind (text) args
+         (check-type text string)
+         (let ((event (read-data text)))
+           (unless (and (listp event) (getf event :type))
+             (error "Injected event must be a plist carrying :type."))
+           (unless (member (getf event :type) '(:key :button :grab))
+             (error "Injected event type must be :key, :button or :grab, not ~S."
+                    (getf event :type)))
+           (dispatch-event runtime event)))
+       nil)
       (:quit (destructuring-bind () args (setf (runtime-running runtime) nil)) nil))))
 
 (defun serve-control (runtime control)
