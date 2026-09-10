@@ -1,12 +1,12 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:place #:focus #:bind-key
+  (:export #:define-extension #:context #:place #:focus #:bind-key #:configure-output
            #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
 
 (defconstant +wire-version+ 1)
-(defparameter +context-keys+ '(:windows :outputs :layout :focus :bindings :key :button))
+(defparameter +context-keys+ '(:windows :outputs :output-config :layout :focus :bindings :key :button))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 
@@ -60,6 +60,32 @@
   (check-type height (integer 1 16384))
   (check-type visible boolean)
   (%effect :place (list id x y width height visible)))
+(defun %output-effect (name mode width height refresh scale x y positioned)
+  (check-type name string)
+  (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
+    (error "Invalid output name: ~S" name))
+  (check-type mode (member :preferred :max :exact))
+  (if (eq mode :exact)
+      (progn (check-type width (integer 1 16384)) (check-type height (integer 1 16384)))
+      (unless (and (eql width 0) (eql height 0)) (error "Only exact modes take dimensions.")))
+  (check-type refresh (integer 0 1000000))
+  (check-type scale (integer 30 960))
+  (check-type x (integer -1048576 1048576))
+  (check-type y (integer -1048576 1048576))
+  (check-type positioned boolean)
+  (%effect :output (list (copy-seq name) mode width height refresh scale x y positioned)))
+
+(defun configure-output (name &key (mode :preferred) (scale 1) position)
+  "Own an output's mode, scale, and logical position. Refresh is Hz; omit it for maximum."
+  (check-type scale (real 1/4 8))
+  (destructuring-bind (x y) (or position '(0 0))
+    (if (member mode '(:preferred :max))
+        (%output-effect name mode 0 0 0 (round (* scale 120)) x y (not (null position)))
+        (destructuring-bind (width height &optional (refresh 0)) mode
+          (check-type refresh (real 0 1000))
+          (%output-effect name :exact width height (round (* refresh 1000))
+                          (round (* scale 120)) x y (not (null position)))))))
+
 (defun focus (id)
   (check-type id (or null (integer 1 4294967295)))
   (%effect :focus (list id)))

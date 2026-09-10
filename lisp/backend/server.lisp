@@ -406,6 +406,10 @@ Setting a new key can move the list head, so the record is stored back."
 (defun %clear-bindings (backend) (declare (ignore backend)) nil)
 (defun %keysym (name) (%keysym-from-name name 0))
 
+(defun tomoe::configure-native-outputs (backend outputs)
+  (declare (ignore backend outputs))
+  (error "Output configuration requires the wlroots backend; the Lisp backend has no hardware output support yet."))
+
 (defun %destroy (backend)
   (maphash (lambda (id entry)
              (declare (ignore id))
