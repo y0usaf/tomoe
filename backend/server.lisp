@@ -80,7 +80,7 @@ Setting a new key can move the list head, so the record is stored back."
          (entry (stage "entry" (object id))))
     (cond
       ((null entry)
-       (format *error-output* "tomoe-lisp: request for dead object ~D~%" id))
+       (format *error-output* "tomoe: request for dead object ~D~%" id))
       (t
        (let* ((interface (getf entry :interface))
               (signature (stage "signature" (message-signature-of message)))
@@ -92,7 +92,7 @@ Setting a new key can move the list head, so the record is stored back."
               (serious-condition (condition)
                 (error "~A request ~D with ~S: ~A" interface opcode values condition))))
            (t
-            (format *error-output* "tomoe-lisp: unhandled ~A request ~D~%"
+            (format *error-output* "tomoe: unhandled ~A request ~D~%"
                     interface opcode)))))))
   0)
 
@@ -103,7 +103,7 @@ Setting a new key can move the list head, so the record is stored back."
   (handler-case
       (dispatch-request* resource opcode message args)
     (serious-condition (condition)
-      (format *error-output* "tomoe-lisp: dispatch ~A~%" condition)
+      (format *error-output* "tomoe: dispatch ~A~%" condition)
       0)))
 
 (sb-alien:define-alien-callable bind-global sb-alien:void
@@ -120,7 +120,7 @@ Setting a new key can move the list head, so the record is stored back."
               (let ((hook (gethash name *bind-hooks*)))
                 (when hook (funcall hook object-id)))))))
     (serious-condition (condition)
-      (format *error-output* "tomoe-lisp: bind failed: ~A~%" condition))))
+      (format *error-output* "tomoe: bind failed: ~A~%" condition))))
 
 (sb-alien:define-alien-callable destroy-resource sb-alien:void ((resource (* t)))
   (handler-case
@@ -137,7 +137,7 @@ Setting a new key can move the list head, so the record is stored back."
                (push-event :type :unmap :id role))))
           (remhash id *objects*)))
     (serious-condition (condition)
-      (format *error-output* "tomoe-lisp: destroy failed: ~A~%" condition)
+      (format *error-output* "tomoe: destroy failed: ~A~%" condition)
       (sb-debug:print-backtrace :count 14))))
 
 ;;; ---------------------------------------------------------------- globals
@@ -368,7 +368,7 @@ Setting a new key can move the list head, so the record is stored back."
     (unless (zerop status) (error "Cannot create socket ~A (status ~D)." socket-name status))
     (create-globals display)
     (push-event :type :outputs
-                :outputs (list (list :name "tomoe-lisp-0" :x 0 :y 0 :width 1280 :height 720)))
+                :outputs (list (list :name "tomoe-0" :x 0 :y 0 :width 1280 :height 720)))
     (list :display display
           :event-loop (display-event-loop display)
           :fd (event-loop-fd (display-event-loop display))

@@ -1,4 +1,4 @@
-# Tomoe Lisp
+# Tomoe
 
 A new Common Lisp Wayland compositor. SBCL runs the compositor loop, extension
 runtime, window-management policy, and control server. A C library connects it
@@ -42,7 +42,7 @@ sockets and lock files. No manual environment export is needed for discovery.
 
 `--backend nested` uses the same display discovery but fails if no parent is
 available. It never falls back to hardware. The compositor creates
-`tomoe-lisp-0` under `XDG_RUNTIME_DIR`. It does not change your systemd, D-Bus,
+`tomoe-0` under `XDG_RUNTIME_DIR`. It does not change your systemd, D-Bus,
 display-manager, or surrounding desktop environment.
 
 Explicit modes:
@@ -85,8 +85,8 @@ window coordinates are available to Lisp, so a replacement can use the others.
 
 ## Output resolution and pixel mapping
 
-Startup loads `$XDG_CONFIG_HOME/tomoe-lisp/init.lisp`, falling back to
-`~/.config/tomoe-lisp/init.lisp`. `--config FILE` replaces that default file;
+Startup loads `$XDG_CONFIG_HOME/tomoe/init.lisp`, falling back to
+`~/.config/tomoe/init.lisp`. `--config FILE` replaces that default file;
 `--bare` skips it unless you also supply `--config`. An absent file is fine.
 Output policy is an ordinary extension, with the same mount/reload/unmount
 behavior as window policy:

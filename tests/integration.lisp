@@ -1,6 +1,6 @@
 ;;; End-to-end check for the packaged compositor.
 ;;;
-;;; Starts $TOMOE_LISP_BIN on the headless backend, mounts the fixture policies
+;;; Starts $TOMOE_BIN on the headless backend, mounts the fixture policies
 ;;; through the control protocol, runs the compiled Wayland client against it,
 ;;; and asserts what the compositor reports. The control client here speaks the
 ;;; wire format itself with sb-bsd-sockets; it never loads compositor internals.
@@ -16,7 +16,7 @@
 
 (defparameter *tests-directory* (make-pathname :name nil :type nil :defaults *load-truename*))
 (defparameter *policy-directory* (merge-pathnames "policy/" *tests-directory*))
-(defparameter *binary* (sb-ext:posix-getenv "TOMOE_LISP_BIN"))
+(defparameter *binary* (sb-ext:posix-getenv "TOMOE_BIN"))
 (defparameter *client-binary* (sb-ext:posix-getenv "TOMOE_TEST_CLIENT"))
 (defparameter *runtime-directory* (sb-ext:posix-getenv "XDG_RUNTIME_DIR"))
 (defparameter *socket-name* (format nil "tomoe-test-~D" (sb-posix:getpid)))
@@ -33,8 +33,8 @@
 
 ;; Passed through to children; everything else is replaced so a run cannot
 ;; depend on the caller's session.
-(defparameter *inherited-environment* '("PATH" "HOME" "LD_LIBRARY_PATH" "TOMOE_LISP_BACKEND"
-                                        "TOMOE_LISP_BUILTINS"))
+(defparameter *inherited-environment* '("PATH" "HOME" "LD_LIBRARY_PATH" "TOMOE_BACKEND_LIB"
+                                        "TOMOE_BUILTINS"))
 
 (defvar *compositor* nil)
 (defvar *clients* nil)
@@ -242,7 +242,7 @@ Returns the state snapshot that satisfied PREDICATE."
     (sb-ext:process-exit-code process)))
 
 (defun require-environment ()
-  (unless *binary* (error "TOMOE_LISP_BIN is unset; run tests/run-integration.sh."))
+  (unless *binary* (error "TOMOE_BIN is unset; run tests/run-integration.sh."))
   (setf *binary* (namestring (truename *binary*)))
   (unless *client-binary* (error "TOMOE_TEST_CLIENT is unset; run tests/run-integration.sh."))
   (setf *client-binary* (namestring (truename *client-binary*)))

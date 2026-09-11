@@ -25,5 +25,5 @@
 
 (sb-ext:exit :code (handler-case (tomoe::main)
                      (serious-condition (condition)
-                       (format *error-output* "tomoe-lisp: ~A~%" condition)
+                       (format *error-output* "tomoe: ~A~%" condition)
                        1)))

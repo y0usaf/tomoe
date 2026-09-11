@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the end-to-end check from the working tree or inside a Nix build.
-# Needs sbcl, a C compiler, pkg-config, wayland-scanner and TOMOE_LISP_BIN.
+# Needs sbcl, a C compiler, pkg-config, wayland-scanner and TOMOE_BIN.
 set -euo pipefail
 
 # This directory holds the driver, the fixtures and the client. In the tree it
@@ -10,15 +10,15 @@ tests="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$tests")"
 build="${TOMOE_TEST_BUILD:-$root/build/tests}"
 
-export TOMOE_LISP_BIN="${TOMOE_LISP_BIN:-$root/build/tomoe-lisp}"
-[ -x "$TOMOE_LISP_BIN" ] || {
-  echo "run-integration: $TOMOE_LISP_BIN is not executable; build it or set TOMOE_LISP_BIN" >&2
+export TOMOE_BIN="${TOMOE_BIN:-$root/build/tomoe}"
+[ -x "$TOMOE_BIN" ] || {
+  echo "run-integration: $TOMOE_BIN is not executable; build it or set TOMOE_BIN" >&2
   exit 1
 }
 
 # The saved image is run directly here, so it needs the shim the wrapper sets.
-if [ -z "${TOMOE_LISP_BACKEND:-}" ] && [ -f "$root/build/libtomoe-backend.so" ]; then
-  export TOMOE_LISP_BACKEND="$root/build/libtomoe-backend.so"
+if [ -z "${TOMOE_BACKEND_LIB:-}" ] && [ -f "$root/build/libtomoe-backend.so" ]; then
+  export TOMOE_BACKEND_LIB="$root/build/libtomoe-backend.so"
 fi
 
 if [ -z "${TOMOE_TEST_CLIENT:-}" ]; then

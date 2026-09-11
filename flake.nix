@@ -1,5 +1,5 @@
 {
-  description = "Tomoe Lisp, a Common Lisp Wayland compositor with reloadable policy";
+  description = "Tomoe, a Common Lisp Wayland compositor with reloadable policy";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e52c192be9d7b2c4bd4aed326c8731b35f8bb75c";
 
@@ -14,7 +14,7 @@
       package =
         pkgs:
         pkgs.stdenv.mkDerivation {
-          pname = "tomoe-lisp";
+          pname = "tomoe";
           version = "0.1.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
@@ -64,18 +64,18 @@
           '';
           installPhase = ''
             runHook preInstall
-            install -Dm755 build/tomoe-lisp $out/libexec/tomoe-lisp
+            install -Dm755 build/tomoe $out/libexec/tomoe
             install -Dm755 build/libtomoe-backend.so $out/lib/libtomoe-backend.so
-            install -Dm644 builtins/desktop.lisp $out/share/tomoe-lisp/desktop.lisp
-            makeWrapper $out/libexec/tomoe-lisp $out/bin/tomoe-lisp \
-              --set TOMOE_LISP_BACKEND $out/lib/libtomoe-backend.so \
-              --set TOMOE_LISP_BUILTINS $out/share/tomoe-lisp/desktop.lisp \
+            install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
+            makeWrapper $out/libexec/tomoe $out/bin/tomoe \
+              --set TOMOE_BACKEND_LIB $out/lib/libtomoe-backend.so \
+              --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
               --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot ]}
             runHook postInstall
           '';
           meta = {
             description = "Common Lisp window management on wlroots";
-            mainProgram = "tomoe-lisp";
+            mainProgram = "tomoe";
             platforms = systems;
           };
         };
@@ -97,7 +97,7 @@
         in
         {
           integration =
-            pkgs.runCommand "tomoe-lisp-integration-test"
+            pkgs.runCommand "tomoe-integration-test"
               {
                 nativeBuildInputs = [
                   pkgs.sbcl
@@ -116,7 +116,7 @@
                 chmod 700 "$XDG_RUNTIME_DIR"
                 export TOMOE_TEST_RUNTIME_DIR="$XDG_RUNTIME_DIR"
                 export TOMOE_TEST_BUILD="$(mktemp -d "''${TMPDIR:-$NIX_BUILD_TOP}/tomoe-client-XXXXXX")"
-                export TOMOE_LISP_BIN=${tomoe}/bin/tomoe-lisp
+                export TOMOE_BIN=${tomoe}/bin/tomoe
                 export LD_LIBRARY_PATH=${
                   pkgs.lib.makeLibraryPath [
                     pkgs.wayland
