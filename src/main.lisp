@@ -7,16 +7,16 @@
     ("quit" . :quit)))
 
 (defun usage ()
-  (write-line "Usage: tomoe-lisp [--socket NAME] [--backend auto|nested|headless|drm|lisp] [--bare]
+  (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm|lisp] [--bare]
        [--config FILE] [--watch|--no-watch]
-       tomoe-lisp [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|quit
+       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|quit
 
-Default socket: tomoe-lisp-0. Default backend: auto.
+Default socket: tomoe-0. Default backend: auto.
 The lisp backend is loaded by dev.lisp and needs no wlroots.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
 Nested mode discovers live wayland-N sockets when WAYLAND_DISPLAY is unset.
 Extensions are trusted Common Lisp programs. --bare omits all shipped policy.
-Loads $XDG_CONFIG_HOME/tomoe-lisp/init.lisp or ~/.config/tomoe-lisp/init.lisp when present.
+Loads $XDG_CONFIG_HOME/tomoe/init.lisp or ~/.config/tomoe/init.lisp when present.
 --config overrides that file; --bare skips it.
 Extension sources are watched and reloaded when edited; --no-watch disables that.
 event sends one data plist to a live instance as an injected input event.
@@ -146,17 +146,17 @@ only after it changes again."
          (directory (if (and root (plusp (length root)))
                         (format nil "~A/" (string-right-trim "/" root))
                         (merge-pathnames ".config/" (user-homedir-pathname))))
-         (path (merge-pathnames "tomoe-lisp/init.lisp" directory)))
+         (path (merge-pathnames "tomoe/init.lisp" directory)))
     (when (probe-file path) (namestring (truename path)))))
 
 (defun run-cli (arguments)
-  (let ((name "tomoe-lisp-0") (backend "auto") (bare nil) (config nil) (watch t))
+  (let ((name "tomoe-0") (backend "auto") (bare nil) (config nil) (watch t))
     (labels ((argument (option)
                (or (pop arguments) (error "~A requires a value." option))))
       (loop while arguments for option = (pop arguments) do
         (cond
           ((equal option "--help") (usage) (return-from run-cli 0))
-          ((equal option "--version") (write-line "tomoe-lisp 0.1.0, wire 1, native ABI 4") (return-from run-cli 0))
+          ((equal option "--version") (write-line "tomoe 0.1.0, wire 1, native ABI 4") (return-from run-cli 0))
           ((equal option "--socket") (setf name (argument option)))
           ((equal option "--backend") (setf backend (argument option)))
           ((equal option "--config") (setf config (namestring (truename (argument option)))))
@@ -172,8 +172,8 @@ only after it changes again."
              (return-from run-cli (control-client (socket-path name) operation arguments))))
           (t (error "Unknown option or command: ~A" option)))))
     (unless (or bare config) (setf config (default-config-file)))
-    (let ((builtins (sb-ext:posix-getenv "TOMOE_LISP_BUILTINS")))
-      (unless (or bare builtins) (error "TOMOE_LISP_BUILTINS is required without --bare."))
+    (let ((builtins (sb-ext:posix-getenv "TOMOE_BUILTINS")))
+      (unless (or bare builtins) (error "TOMOE_BUILTINS is required without --bare."))
       (run-compositor name backend
                       (append (unless bare (list (namestring (truename builtins))))
                               (when config (list config)))
@@ -182,4 +182,4 @@ only after it changes again."
 (defun main ()
   (sb-ext:exit
    :code (handler-case (run-cli (rest sb-ext:*posix-argv*))
-           (serious-condition (condition) (format *error-output* "tomoe-lisp: ~A~%" condition) 1))))
+           (serious-condition (condition) (format *error-output* "tomoe: ~A~%" condition) 1))))
