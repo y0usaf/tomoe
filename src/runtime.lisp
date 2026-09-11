@@ -353,7 +353,7 @@ stay in the page cache, so the digest decides."
   ;; The failing unit was already charged where it failed, so an EXTENSION-ERROR
   ;; only has to reach the runtime-level message and the server log here.
   (setf (runtime-last-error runtime) (princ-to-string condition))
-  (format *error-output* "tomoe-lisp: ~A~%" condition))
+  (format *error-output* "tomoe: ~A~%" condition))
 
 (defun dispatch-event (runtime event)
   (let ((changed nil))
