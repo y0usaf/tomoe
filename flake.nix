@@ -22,6 +22,7 @@
               ./native
               ./src
               ./builtins
+              ./examples
               ./build.lisp
             ];
           };
@@ -67,6 +68,9 @@
             install -Dm755 build/tomoe $out/libexec/tomoe
             install -Dm755 build/libtomoe-backend.so $out/lib/libtomoe-backend.so
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
+            # Shipped policies: a session can seed one as a starting point.
+            install -d $out/share/tomoe/examples
+            install -m 644 examples/*.lisp $out/share/tomoe/examples/
             makeWrapper $out/libexec/tomoe $out/bin/tomoe \
               --set TOMOE_BACKEND_LIB $out/lib/libtomoe-backend.so \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
