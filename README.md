@@ -372,28 +372,12 @@ protocol, not an unauthenticated REPL.
 
 ## Verification
 
-`nix flake check` builds the package and runs one end-to-end check, which is the
-whole automated suite by project decision.
+The project ships no automated test suite: the end-to-end check, its Wayland
+test client, and its policy fixtures were removed. `nix flake check` evaluates
+the flake and builds the package; `nix build` alone is the whole automated
+check.
 
-`tests/run-integration.sh` builds a small Wayland test client from `client.c`
-and protocol code generated at build time, starts the packaged compositor on the
-headless backend with `--bare --no-watch`, and drives it through its own control
-client. It asserts that no policy is mounted for `--bare`, that the fixtures
-mount cleanly, that two xdg clients map at the sizes they asked for and are
-placed inside the output by the fixture layout, that a layer client keeps its
-namespace, anchors, and height, that the fixture's layer override resolves and
-returns to the client's request when an injected key command arrives, that
-extension state containing a cons survives the control round trip, that
-unmounting the layout returns both windows to their mapped size at the origin,
-and that `quit` exits zero and removes both sockets.
-
-From the working tree:
-
-```sh
-nix develop -c ./tests/run-integration.sh
-```
-
-Observed on x86_64 Linux, in addition to the check above:
+Observed on x86_64 Linux, driving the packaged compositor by hand:
 
 - `nix build` and `nix flake check` completed successfully. The aarch64 package
   was evaluated, not built.
@@ -433,7 +417,6 @@ a real key or button in these sessions.
   input routing, pointer grabs.
 - `builtins/desktop.lisp`: replaceable default policy.
 - `examples/`: alternative policies, each mountable on its own.
-- `tests/`: the end-to-end check, its fixtures, and its Wayland client.
 - `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
 - `DESKTOP.md`, `FINIX.md`, `LISP-BACKEND.md`, `OUTPUTS.md`, `STARTUP.md`, and
   `WORK.md` are historical checkpoints from the prototype work. They name local
