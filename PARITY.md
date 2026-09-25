@@ -105,7 +105,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 97 | `watchdog_ms` | crates/tomoe/src/lua.rs | src/api.lisp `:watchdog-ms` setting (default 1000, 0 disables), src/runtime.lisp `invoke-extension` | Done |
 | 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp "wm" | Done |
 | 99 | Zoomer canvas WM | resources/zoomer.lua | examples/zoomer.lisp (mount over the default policy) | Done |
-| 100 | Special workspaces | resources/special.lua | none | Missing |
+| 100 | Special workspaces | resources/special.lua | examples/special.lisp, `:wm-exclude` honored by builtins/desktop.lisp "wm" | Done |
 | 101 | Screencast source picker | resources/screencast.lua | none | Missing |
 | 102 | Default config: notifications, screencast, shadow and border defaults | resources/init.lua | builtins/desktop.lisp | Partial |
 | 103 | JSON IPC socket path and discovery | crates/tomoe-ipc/src/lib.rs | src/main.lisp `json-socket-path` | Done |
