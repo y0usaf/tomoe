@@ -40,7 +40,7 @@ struct popup {
     struct wlr_xdg_popup *xdg;
     struct wlr_scene_tree *tree;
     struct tomoe *server;
-    struct wl_listener commit, destroy;
+    struct wl_listener commit, destroy, reposition;
 };
 
 struct wlr_surface *surface_of(struct window *w) {
@@ -970,18 +970,68 @@ static void xwayland_destroy(struct wl_listener *listener, void *data) {
     s->or_focus = NULL;
     detach(&s->x11_server_destroy);
 }
+static void popup_unconstrain(struct popup *p) {
+    struct target *target = target_for_tree(p->tree->node.parent);
+    struct tomoe *s = p->server;
+    if (!target || !s) return;
+    struct wlr_box box = {0};
+    if (target->kind == TARGET_LAYER) {
+        struct layer *l = wl_container_of(target, l, target);
+        struct output *o;
+        wl_list_for_each(o, &s->outputs, link) {
+            if (o->wlr != l->wlr->output) continue;
+            struct wlr_box physical;
+            physical_output_box(o, &physical);
+            double scale = snapped_scale(o->wlr->scale);
+            box = (struct wlr_box){ -l->scene->tree->node.x, -l->scene->tree->node.y,
+                logical_size(physical.width, scale), logical_size(physical.height, scale) };
+        }
+    } else {
+        struct window *w = wl_container_of(target, w, target);
+        int64_t best = -1;
+        struct output *o;
+        wl_list_for_each(o, &s->outputs, link) {
+            if (!output_is_active(o)) continue;
+            struct wlr_box physical, overlap;
+            physical_output_box(o, &physical);
+            double x = physical.x, y = physical.y;
+            screen_to_world(s, &x, &y);
+            struct wlr_box world = { pixel_round(x), pixel_round(y),
+                pixel_round(physical.width / s->view_zoom), pixel_round(physical.height / s->view_zoom) };
+            struct wlr_box window = { w->target.x, w->target.y, w->width, w->height };
+            int64_t area = wlr_box_intersection(&overlap, &world, &window) ?
+                (int64_t)overlap.width * overlap.height : 0;
+            if (area <= best) continue;
+            best = area;
+            double scale = w->target.scale;
+            box = (struct wlr_box){
+                (int)floor((world.x - w->target.x) / scale) + w->target.geometry_x,
+                (int)floor((world.y - w->target.y) / scale) + w->target.geometry_y,
+                logical_size(world.width, scale), logical_size(world.height, scale) };
+        }
+        if (best < 0) return;
+    }
+    wlr_xdg_popup_unconstrain_from_box(p->xdg, &box);
+}
+static void popup_reposition(struct wl_listener *listener, void *data) {
+    struct popup *p = wl_container_of(listener, p, reposition);
+    popup_unconstrain(p);
+}
 static void popup_commit(struct wl_listener *listener, void *data) {
     struct popup *p = wl_container_of(listener, p, commit);
     struct target *target = target_for_tree(p->tree);
     if (target && p->xdg->base->surface)
         set_surface_scale(p->xdg->base->surface, target->scale);
-    if (p->xdg->base->initial_commit) wlr_xdg_surface_schedule_configure(p->xdg->base);
+    if (p->xdg->base->initial_commit) {
+        popup_unconstrain(p);
+        wlr_xdg_surface_schedule_configure(p->xdg->base);
+    }
     if (p->server) schedule_scene(p->server);
 }
 static void popup_destroy(struct wl_listener *listener, void *data) {
     struct popup *p = wl_container_of(listener, p, destroy);
     struct tomoe *s = p->server;
-    detach(&p->commit); detach(&p->destroy); free(p);
+    detach(&p->commit); detach(&p->destroy); detach(&p->reposition); free(p);
     if (s) schedule_scene(s);
 }
 void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent) {
@@ -998,6 +1048,7 @@ void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent) {
     if (!p->tree) { free(p); wl_resource_post_no_memory(xdg->resource); return; }
     listen(&p->commit, &xdg->base->surface->events.commit, popup_commit);
     listen(&p->destroy, &xdg->events.destroy, popup_destroy);
+    listen(&p->reposition, &xdg->events.reposition, popup_reposition);
 }
 static void new_popup(struct wl_listener *listener, void *data) {
     struct wlr_xdg_popup *xdg = data;
