@@ -14,5 +14,5 @@
     (declare (ignore output warnings))
     (when failure (error "Built-in policy compilation failed."))))
 
-(sb-ext:save-lisp-and-die "build/tomoe" :executable t :compression t
+(sb-ext:save-lisp-and-die "build/tomoe" :executable t
                          :toplevel #'tomoe::main :save-runtime-options t)
