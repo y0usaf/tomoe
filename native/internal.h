@@ -53,6 +53,7 @@ struct ui_set;
 struct ui_asset_pool;
 struct ui_pointer;
 
+struct wlr_drm_syncobj_timeline;
 enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_DOWN, PROGRAM_UP,
     PROGRAM_COUNT };
 struct program {
@@ -74,6 +75,8 @@ void render_quad(struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
 bool render_texture_gl(struct wlr_texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
+bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
+    uint64_t point);
 bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
     int width, int height, bool implicit);
 struct wlr_buffer *ring_acquire(struct tomoe *s, struct ring *ring);

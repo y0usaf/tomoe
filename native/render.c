@@ -570,8 +570,9 @@ failed:
     return NULL;
 }
 
-static bool wait_timeline(struct render *r, struct wlr_drm_syncobj_timeline *timeline,
+bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
         uint64_t point) {
+    struct render *r = render_of(renderer);
     int fd = wlr_drm_syncobj_timeline_export_sync_file(timeline, point);
     if (fd < 0) return false;
     EGLint attribs[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, fd, EGL_NONE };
@@ -632,7 +633,8 @@ static void pass_add_texture(struct wlr_render_pass *base,
     struct pass *pass = pass_of(base);
     struct render *r = pass->r;
     struct texture *t = texture_of(options->texture);
-    if (options->wait_timeline && !wait_timeline(r, options->wait_timeline, options->wait_point)) {
+    if (options->wait_timeline &&
+            !render_wait(&r->base, options->wait_timeline, options->wait_point)) {
         wlr_log(WLR_ERROR, "tomoe: client acquire fence wait failed");
         return;
     }

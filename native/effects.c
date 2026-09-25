@@ -88,6 +88,9 @@ bool effect_texture(struct frame *f, const struct wlr_render_texture_options *op
     bool alpha;
     if (options->transform != f->transform ||
             !render_texture_gl(options->texture, &target, &tex, &alpha)) return false;
+    if (options->wait_timeline &&
+            !render_wait(f->server->renderer, options->wait_timeline, options->wait_point))
+        return true;
     struct program *p = program(f, target == GL_TEXTURE_EXTERNAL_OES ?
         PROGRAM_EXTERNAL : PROGRAM_TEXTURE);
     if (!p) return false;
