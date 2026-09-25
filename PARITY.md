@@ -71,7 +71,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/input.c | Done |
 | 64 | Viewporter, xdg-output | crates/tomoe/src/state.rs | native/backend.c | Done |
 | 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/backend.c `wlr_renderer_init_wl_display` | Done |
-| 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | none | Missing |
+| 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | native/protocols.c `syncobj_listen`, native/space.c `render_leaf` | Done |
 | 67 | libseat session pause/resume | crates/tomoe/src/backend/tty.rs | wlroots session via native/backend.c | Done |
 | 68 | DRM hotplug | crates/tomoe/src/backend/tty.rs | native/output.c | Done |
 | 69 | Modes preferred / max / WxH, `@Hz` / `@max` | crates/tomoe/src/lua.rs, backend/tty.rs | native/output.c `pick_output_mode`, src/api.lisp `configure-output :refresh` | Done |

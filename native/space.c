@@ -3,6 +3,7 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/render/drm_syncobj.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -328,6 +329,7 @@ void frame_done(struct output *o, const struct timespec *when) {
 struct render_data {
     int x, y;
     struct wlr_render_pass *pass;
+    struct wlr_buffer *buffer;
     enum wl_output_transform transform;
     int width, height;
 };
@@ -349,6 +351,10 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(leaf->node);
     struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(buffer);
     struct wlr_texture *texture = wlr_surface_get_texture(surface->surface);
+    struct wlr_linux_drm_syncobj_surface_v1_state *sync =
+        wlr_linux_drm_syncobj_v1_get_surface_state(surface->surface);
+    if (sync && sync->acquire_timeline)
+        wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(sync, data->buffer);
     struct wlr_color_primaries primaries;
     if (buffer->primaries != 0) wlr_color_primaries_from_named(&primaries, buffer->primaries);
     wlr_render_pass_add_texture(data->pass, &(struct wlr_render_texture_options){
@@ -358,6 +364,8 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .transfer_function = buffer->transfer_function,
         .primaries = buffer->primaries ? &primaries : NULL,
         .color_encoding = buffer->color_encoding, .color_range = buffer->color_range,
+        .wait_timeline = sync ? sync->acquire_timeline : NULL,
+        .wait_point = sync ? sync->acquire_point : 0,
     });
     return false;
 }
@@ -440,7 +448,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct render_data data = { .x = planned ? planned->box.x : o->x,
-        .y = planned ? planned->box.y : o->y, .pass = pass,
+        .y = planned ? planned->box.y : o->y, .pass = pass, .buffer = buffer,
         .transform = (state->committed & WLR_OUTPUT_STATE_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height };
     wlr_output_transform_coords(data.transform, &data.width, &data.height);

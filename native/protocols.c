@@ -16,6 +16,7 @@
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_tearing_control_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -183,6 +184,12 @@ static void new_toplevel_decoration(struct wl_listener *listener, void *data) {
     decoration_apply(d);
 }
 
+static bool syncobj_listen(struct tomoe *s) {
+    if (!s->renderer->features.timeline || !s->backend->features.timeline) return true;
+    int fd = wlr_renderer_get_drm_fd(s->renderer);
+    return fd < 0 || wlr_linux_drm_syncobj_manager_v1_create(s->display, 1, fd);
+}
+
 bool protocols_listen(struct tomoe *s) {
     s->primary_selection = wlr_primary_selection_v1_device_manager_create(s->display);
     s->data_control = wlr_data_control_manager_v1_create(s->display);
@@ -217,6 +224,7 @@ bool protocols_listen(struct tomoe *s) {
     listen(&s->request_start_drag, &s->seat->events.request_start_drag, request_start_drag);
     listen(&s->seat_start_drag, &s->seat->events.start_drag, seat_start_drag);
     s->drag_icon.kind = TARGET_ICON;
+    if (!syncobj_listen(s)) return false;
     window_capture_listen(s);
     listen(&s->request_set_primary_selection,
         &s->seat->events.request_set_primary_selection, request_set_primary_selection);
