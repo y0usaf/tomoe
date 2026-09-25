@@ -70,7 +70,6 @@
          (workspaces nil)
          (full (remove-if-not (lambda (entry) (member (getf entry :id) ids))
                               (getf state :fullscreen)))
-         (maximized (intersection (getf state :maximized) ids))
          (boxes (remove-if-not (lambda (entry) (member (getf entry :id) ids))
                                (getf state :boxes)))
          (stack (remove-if-not (lambda (id) (member id ids)) (getf state :stacking)))
@@ -213,8 +212,6 @@
       (dolist (window windows)
         (let ((id (getf window :id)))
           (when (member id new-ids)
-            (when (or (getf window :maximize-requested) (getf window :maximize))
-              (pushnew id maximized))
             (let* ((props (properties id))
                    (requested-workspace (property props :workspace))
                    (number (and (realp requested-workspace) (floor requested-workspace)))
@@ -262,11 +259,6 @@
                     (when honor (set-fullscreen id t (getf event :output)))
                     (set-fullscreen id nil)))
                (:unfullscreen (set-fullscreen id nil))
-               (:maximize
-                (if (getf event :requested)
-                    (pushnew id maximized)
-                    (setf maximized (remove id maximized))))
-               (:unmaximize (setf maximized (remove id maximized)))
                (:close (push (close-window id) commands))
                (:activate
                 (loop for wins in workspaces for number from 1
@@ -281,7 +273,7 @@
                            (getf box :width) (getf box :height) shown) effects))
             (push (if shown (show-window id) (hide-window id)) effects)
             (push (fullscreen id (not (null (full-box id)))) effects)
-            (push (maximize id (not (null (member id maximized)))) effects)))
+            (push (maximize id nil) effects)))
         (dolist (id stack) (when (member id visible) (push (raise-window id) effects)))
         (push (focus (when (member focused visible) focused) :raise nil) effects)
         (dolist (binding '(("f" :fullscreen "Toggle Fullscreen") ("j" :next "Focus Next Window")
@@ -311,7 +303,7 @@
                                                               (cons "windows" (length wins)))))))))
           (push (serve-state "wm_state" value) effects)
           (push (announce "wm_state" value) effects))
-        (values (list :active active :workspaces workspaces :fullscreen full :maximized maximized
+        (values (list :active active :workspaces workspaces :fullscreen full
                       :focused focused :ids ids :boxes boxes :stacking stack
                       :visible visible :geometry-key geometry-key)
                 (nreverse effects) commands)))))

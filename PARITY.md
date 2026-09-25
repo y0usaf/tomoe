@@ -91,7 +91,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 83 | Window reads and writes (geometry, show/hide, focus, raise, fullscreen, maximize, close) | crates/tomoe/src/lua.rs | src/api.lisp | Done |
 | 84 | `outputs`, `usable_area`, `view`, `set_view` | crates/tomoe/src/lua.rs | `:outputs`, `:workareas`, `:view`, `set-view` | Done |
 | 85 | Window open/close, focus change, outputs changed hooks | crates/tomoe/src/lua.rs | reducers over `:windows`, `:focus`, `:outputs` | Done |
-| 86 | `on_window_request` full set with native defaults | crates/tomoe/src/lua.rs, handlers.rs | native/window.c, native/activation.c (subset) | Partial |
+| 86 | `on_window_request` full set with native defaults | crates/tomoe/src/lua.rs, handlers.rs | native/window.c, native/activation.c `:request` events (maximize, fullscreen, minimize, move, resize, activate, urgent, close); defaults in builtins/desktop.lisp "wm" | Done |
 | 87 | `on_reload` save/restore | crates/tomoe/src/lua.rs | src/runtime.lisp `configure` | Improved: mounted state survives reload automatically; no save/restore hooks to write |
 | 88 | Window rules and `rules_for` | crates/tomoe/src/lua.rs | src/api.lisp `window-rule`, src/rules.lisp, src/patterns.lisp | Done |
 | 89 | `process.once` with the id as default command | crates/tomoe/src/lua.rs | src/api.lisp `run-once` (command required) | Partial |
@@ -103,7 +103,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 95 | Hotkey overlay (`Mod+Shift+/`) | crates/tomoe/src/state.rs, ui/widgets.rs | builtins/desktop.lisp `commands` via `sheet-dialog`, `hotkey-label` | Done |
 | 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `report-config-error`, `:config-error` context, builtins/desktop.lisp `config-error` | Done |
 | 97 | `watchdog_ms` | crates/tomoe/src/lua.rs | src/runtime.lisp (fixed 25 ms reducer budget) | Partial |
-| 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp `wm`, `commands` | Partial |
+| 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp "wm" | Done |
 | 99 | Zoomer canvas WM | resources/zoomer.lua | none | Missing |
 | 100 | Special workspaces | resources/special.lua | none | Missing |
 | 101 | Screencast source picker | resources/screencast.lua | none | Missing |
