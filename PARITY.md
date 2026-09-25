@@ -67,7 +67,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/protocols.c (untracked WIP) | Missing |
 | 60 | Idle notify and idle inhibit | crates/tomoe/src/state.rs, handlers.rs | native/protocols.c (untracked WIP) | Missing |
 | 61 | Primary selection | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
-| 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/protocols.c (untracked WIP) | Missing |
+| 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
 | 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/input.c | Done |
 | 64 | Viewporter, xdg-output | crates/tomoe/src/state.rs | native/backend.c | Done |
 | 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/backend.c `wlr_renderer_init_wl_display` | Done |
