@@ -1,18 +1,20 @@
 #include "internal.h"
+#include <sys/random.h>
+#include "xdg-activation-v1-protocol.h"
 
 #define ACTIVATION_TOKEN_LIMIT 64u
 #define ACTIVATION_TRACKED_TOKEN_LIMIT 128u
 #define ACTIVATION_PENDING_LIMIT 64u
 #define ACTIVATION_TIMEOUT_MSEC 10000u
 
-struct tracked_token {
+struct token {
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_xdg_activation_token_v1 *token;
-    struct wl_listener destroy;
+    struct wl_resource *resource;
+    char name[33];
     uint64_t deadline_msec;
     uint32_t serial;
-    bool issued, accepted, serial_bearing, activate;
+    bool serial_bearing, committed, issued, accepted, activate;
 };
 
 struct pending_request {
@@ -59,61 +61,44 @@ static bool fresh_serial(struct tomoe *s, uint32_t serial) {
             serial_at_least(serial, s->latest_pointer_enter_serial));
 }
 
-static struct tracked_token *tracked_token_for(struct tomoe *s,
-        struct wlr_xdg_activation_token_v1 *token) {
-    struct tracked_token *tracked;
-    wl_list_for_each(tracked, &s->activation_tokens, link) {
-        if (tracked->token == token) return tracked;
-    }
-    return NULL;
-}
-
-static void tracked_token_destroy(struct wl_listener *listener, void *data) {
-    struct tracked_token *tracked = wl_container_of(listener, tracked, destroy);
-    struct tomoe *s = tracked->server;
-    detach(&tracked->destroy);
-    wl_list_remove(&tracked->link);
-    wl_list_init(&tracked->link);
-    if (tracked->issued && s->activation_token_count > 0)
-        s->activation_token_count--;
+static void token_destroy(struct token *token) {
+    struct tomoe *s = token->server;
+    if (token->resource) wl_resource_set_user_data(token->resource, NULL);
+    wl_list_remove(&token->link);
+    if (token->issued && s->activation_token_count > 0) s->activation_token_count--;
     if (s->activation_tracked_count > 0) s->activation_tracked_count--;
-    if (tracked->token) tracked->token->data = NULL;
-    free(tracked);
+    free(token);
 }
 
-static bool track_token(struct tomoe *s,
-        struct wlr_xdg_activation_token_v1 *token, bool issued) {
+static struct token *token_create(struct tomoe *s) {
+    struct token *token, *next;
+    wl_list_for_each_safe(token, next, &s->activation_tokens, link)
+        if (token->committed && deadline_expired(token->deadline_msec)) token_destroy(token);
     if (s->activation_tracked_count >= ACTIVATION_TRACKED_TOKEN_LIMIT) {
-        wlr_log(WLR_ERROR, "tomoe: activation token tracking limit reached");
-        return false;
+        wlr_log(WLR_ERROR, "tomoe: activation token limit reached");
+        return NULL;
     }
-    struct tracked_token *tracked = calloc(1, sizeof(*tracked));
-    if (!tracked) {
-        wlr_log(WLR_ERROR, "tomoe: activation token tracking allocation failed");
-        return false;
+    unsigned char bytes[16];
+    token = calloc(1, sizeof(*token));
+    if (!token || getrandom(bytes, sizeof(bytes), 0) != sizeof(bytes)) {
+        free(token);
+        wlr_log(WLR_ERROR, "tomoe: activation token allocation failed");
+        return NULL;
     }
-    tracked->server = s;
-    tracked->token = token;
-    tracked->issued = issued;
-    tracked->serial = token->serial;
-    tracked->serial_bearing = token->seat != NULL;
-    tracked->activate = issued || tracked->serial_bearing;
-    tracked->accepted = !tracked->serial_bearing || s->settings.honor_invalid_serial ||
-        fresh_serial(s, tracked->serial);
-    tracked->deadline_msec = activation_deadline();
-    tracked->destroy.notify = tracked_token_destroy;
-    token->data = tracked;
-    wl_signal_add(&token->events.destroy, &tracked->destroy);
-    wl_list_insert(s->activation_tokens.prev, &tracked->link);
+    for (size_t i = 0; i < sizeof(bytes); i++) snprintf(token->name + 2 * i, 3, "%02x", bytes[i]);
+    token->server = s;
+    wl_list_insert(s->activation_tokens.prev, &token->link);
     s->activation_tracked_count++;
-    if (issued) s->activation_token_count++;
-    return true;
+    return token;
 }
 
-static void activation_new_token(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, activation_new_token);
-    struct wlr_xdg_activation_token_v1 *token = data;
-    if (token) (void)track_token(s, token, false);
+static void token_commit(struct token *token) {
+    struct tomoe *s = token->server;
+    token->committed = true;
+    token->activate = token->issued || token->serial_bearing;
+    token->accepted = !token->serial_bearing || s->settings.honor_invalid_serial ||
+        fresh_serial(s, token->serial);
+    token->deadline_msec = activation_deadline();
 }
 
 static void pending_destroy(struct pending_request *pending) {
@@ -162,21 +147,18 @@ static void pending_map(struct tomoe *s, struct wlr_surface *surface) {
     }
 }
 
-static void activation_request(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, activation_request);
-    struct wlr_xdg_activation_v1_request_activate_event *request = data;
-    if (!request || !request->surface) return;
-
-    struct tracked_token *tracked = tracked_token_for(s, request->token);
-    if (!tracked) {
-        wlr_log(WLR_ERROR, "tomoe: untracked activation token request dropped");
-        return;
-    }
-    if (!tracked->accepted) return;
-    bool activate = tracked->activate;
-    struct wlr_surface *surface = request->surface;
-    uint64_t deadline = tracked->deadline_msec;
-    if (deadline_expired(deadline)) return;
+static void activate(struct wl_client *client, struct wl_resource *resource,
+        const char *name, struct wl_resource *surface_resource) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct token *token, *found = NULL;
+    wl_list_for_each(token, &s->activation_tokens, link)
+        if (token->committed && !strcmp(token->name, name)) found = token;
+    if (!found) return;
+    bool accepted = found->accepted, activate = found->activate;
+    uint64_t deadline = found->deadline_msec;
+    token_destroy(found);
+    if (!accepted || deadline_expired(deadline)) return;
     uint32_t id = find_window_id_for_surface(s, surface);
     if (id && window_surface_mapped(s, surface)) {
         emit_request(s, id, activate);
@@ -225,21 +207,84 @@ static void activation_request(struct wl_listener *listener, void *data) {
     s->activation_pending_count++;
 }
 
-static void activation_destroy(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, activation_destroy);
-    s->activation = NULL;
-    detach(&s->activation_destroy);
+static void token_resource_destroy(struct wl_resource *resource) {
+    struct token *token = wl_resource_get_user_data(resource);
+    if (!token) return;
+    token->resource = NULL;
+    if (!token->committed) token_destroy(token);
 }
 
-void activation_listen(struct tomoe *s) {
-    if (!s->activation) return;
-    s->activation->token_timeout_msec = ACTIVATION_TIMEOUT_MSEC;
-    listen(&s->activation_new_token, &s->activation->events.new_token,
-        activation_new_token);
-    listen(&s->activation_request, &s->activation->events.request_activate,
-        activation_request);
-    listen(&s->activation_destroy, &s->activation->events.destroy,
-        activation_destroy);
+static void token_set_serial(struct wl_client *client, struct wl_resource *resource,
+        uint32_t serial, struct wl_resource *seat) {
+    struct token *token = wl_resource_get_user_data(resource);
+    if (!token) return;
+    token->serial = serial;
+    token->serial_bearing = true;
+}
+
+static void token_ignore_string(struct wl_client *client, struct wl_resource *resource,
+        const char *text) {
+}
+
+static void token_ignore_surface(struct wl_client *client, struct wl_resource *resource,
+        struct wl_resource *surface) {
+}
+
+static void token_commit_request(struct wl_client *client, struct wl_resource *resource) {
+    struct token *token = wl_resource_get_user_data(resource);
+    if (token && token->committed) {
+        wl_resource_post_error(resource, XDG_ACTIVATION_TOKEN_V1_ERROR_ALREADY_USED,
+            "token already committed");
+        return;
+    }
+    if (token) token_commit(token);
+    xdg_activation_token_v1_send_done(resource, token ? token->name : "");
+}
+
+static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
+    wl_resource_destroy(resource);
+}
+
+static const struct xdg_activation_token_v1_interface token_impl = {
+    .set_serial = token_set_serial,
+    .set_app_id = token_ignore_string,
+    .set_surface = token_ignore_surface,
+    .commit = token_commit_request,
+    .destroy = destroy_resource,
+};
+
+static void get_activation_token(struct wl_client *client, struct wl_resource *resource,
+        uint32_t id) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    struct wl_resource *token_resource = wl_resource_create(client,
+        &xdg_activation_token_v1_interface, wl_resource_get_version(resource), id);
+    if (!token_resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    struct token *token = token_create(s);
+    if (token) token->resource = token_resource;
+    wl_resource_set_implementation(token_resource, &token_impl, token, token_resource_destroy);
+}
+
+static const struct xdg_activation_v1_interface activation_impl = {
+    .destroy = destroy_resource,
+    .get_activation_token = get_activation_token,
+    .activate = activate,
+};
+
+static void bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &xdg_activation_v1_interface,
+        version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &activation_impl, data, NULL);
+}
+
+bool activation_listen(struct tomoe *s) {
+    return wl_global_create(s->display, &xdg_activation_v1_interface, 1, s, bind);
 }
 
 void activation_surface_mapped(struct tomoe *s, struct wlr_surface *surface) {
@@ -248,39 +293,28 @@ void activation_surface_mapped(struct tomoe *s, struct wlr_surface *surface) {
 }
 
 const char *tomoe_activation_token(struct tomoe *s) {
-    if (!s || s->stopping || s->failed || !s->activation ||
+    if (!s || s->stopping || s->failed ||
             s->activation_token_count >= ACTIVATION_TOKEN_LIMIT) return NULL;
-    struct wlr_xdg_activation_token_v1 *token =
-        wlr_xdg_activation_token_v1_create(s->activation);
+    struct token *token = token_create(s);
     if (!token) return NULL;
-    if (!track_token(s, token, true)) {
-        wlr_xdg_activation_token_v1_destroy(token);
-        return NULL;
-    }
-    return wlr_xdg_activation_token_v1_get_name(token);
+    token->issued = true;
+    s->activation_token_count++;
+    token_commit(token);
+    return token->name;
 }
 
 void tomoe_activation_revoke(struct tomoe *s, const char *name) {
     if (!s || !name) return;
-    struct tracked_token *tracked, *tmp;
-    wl_list_for_each_safe(tracked, tmp, &s->activation_tokens, link) {
-        if (!tracked->issued ||
-                strcmp(name, wlr_xdg_activation_token_v1_get_name(tracked->token)) != 0)
-            continue;
-        wlr_xdg_activation_token_v1_destroy(tracked->token);
-        return;
-    }
+    struct token *token, *next;
+    wl_list_for_each_safe(token, next, &s->activation_tokens, link)
+        if (token->issued && !strcmp(token->name, name)) token_destroy(token);
 }
 
 void activation_finish(struct tomoe *s) {
     if (!s) return;
-    detach(&s->activation_request);
-    detach(&s->activation_new_token);
     struct pending_request *pending, *pending_tmp;
     wl_list_for_each_safe(pending, pending_tmp, &s->activation_pending, link)
         pending_destroy(pending);
-    struct tracked_token *tracked, *tracked_tmp;
-    wl_list_for_each_safe(tracked, tracked_tmp, &s->activation_tokens, link) {
-        if (tracked->issued) wlr_xdg_activation_token_v1_destroy(tracked->token);
-    }
+    struct token *token, *next;
+    wl_list_for_each_safe(token, next, &s->activation_tokens, link) token_destroy(token);
 }

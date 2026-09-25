@@ -32,7 +32,6 @@
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
-#include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <wlr/util/transform.h>
@@ -252,7 +251,6 @@ struct tomoe {
     struct wlr_seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
-    struct wlr_xdg_activation_v1 *activation;
     struct wl_list input_devices, background_effects;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, tracked_surfaces, virtual_pointers;
     struct wl_list activation_tokens;
@@ -264,7 +262,6 @@ struct tomoe {
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener new_virtual_pointer, new_virtual_keyboard;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
-    struct wl_listener activation_request, activation_new_token, activation_destroy;
     char *last_event;
     uint32_t next_id, focused, grab_id;
     uint64_t next_binding_id, next_device_id, next_output_id;
@@ -482,7 +479,7 @@ void pointer_sync_cursors(struct tomoe *s);
 bool virtual_pointers_listen(struct tomoe *s);
 struct wlr_output *virtual_pointer_output(struct tomoe *s, struct wlr_input_device *device);
 
-void activation_listen(struct tomoe *s);
+bool activation_listen(struct tomoe *s);
 void activation_surface_mapped(struct tomoe *s, struct wlr_surface *surface);
 void activation_finish(struct tomoe *s);
 

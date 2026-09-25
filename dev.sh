@@ -82,7 +82,7 @@ if [ ! -f build/server-decoration-protocol.c ] || [ "$kde_xml" -nt build/server-
   wayland-scanner server-header "$kde_xml" build/server-decoration-protocol.h
   wayland-scanner private-code "$kde_xml" build/server-decoration-protocol.c
 fi
-for name in ext-image-capture-source-v1 ext-image-copy-capture-v1 ext-foreign-toplevel-list-v1 tearing-control-v1; do
+for name in ext-image-capture-source-v1 ext-image-copy-capture-v1 ext-foreign-toplevel-list-v1 tearing-control-v1 xdg-activation-v1; do
   capture_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/${name%-v1}/$name.xml"
   if [ ! -f "build/$name-protocol.c" ] || [ "$capture_xml" -nt "build/$name-protocol.c" ]; then
     wayland-scanner server-header "$capture_xml" "build/$name-protocol.h"

@@ -62,11 +62,10 @@ struct tomoe *tomoe_create(const char *socket_name) {
     int size = cursor_size ? atoi(cursor_size) : 0;
     s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
     s->seat = wlr_seat_create(s->display, "seat0");
-    s->activation = wlr_xdg_activation_v1_create(s->display);
     struct wlr_xdg_shell *shell = wlr_xdg_shell_create(s->display, 3);
     struct wlr_layer_shell_v1 *layer_shell = wlr_layer_shell_v1_create(s->display, 4);
     if (!s->cursor || !s->cursor_manager || !s->seat ||
-            !s->activation || !shell || !layer_shell) goto failed;
+            !activation_listen(s) || !shell || !layer_shell) goto failed;
     surfaces_listen(s, compositor);
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     outputs_listen(s);
@@ -76,7 +75,6 @@ struct tomoe *tomoe_create(const char *socket_name) {
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     windows_listen(s, shell);
     layers_listen(s, layer_shell);
-    activation_listen(s);
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
     s->running = true;
     if (!wlr_backend_start(s->backend) || s->failed) goto failed;
