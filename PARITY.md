@@ -53,7 +53,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; grabs by wlroots xdg-shell | Done |
 | 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/decoration.c, src/api.lisp `settings` | Done |
 | 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/decoration.c | Done |
-| 48 | Layer shell | crates/tomoe/src/handlers.rs | native/layer.c | Done |
+| 48 | Layer shell | crates/tomoe/src/handlers.rs | native/layer_shell.c, native/layer.c | Done |
 | 49 | Xwayland | crates/tomoe/src/xwayland.rs (xwayland-satellite) | builtins/desktop.lisp `xwayland` service, src/main.lisp `free-x-display` | Done: xwayland-satellite, supervised through the public `service` API |
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |
 | 51 | `honor_xdg_activation_with_invalid_serial` | crates/tomoe/src/handlers.rs, lua.rs | native/activation.c, src/api.lisp `settings` | Done |
