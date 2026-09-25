@@ -93,7 +93,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 85 | Window open/close, focus change, outputs changed hooks | crates/tomoe/src/lua.rs | reducers over `:windows`, `:focus`, `:outputs` | Done |
 | 86 | `on_window_request` full set with native defaults | crates/tomoe/src/lua.rs, handlers.rs | native/window.c, native/activation.c `:request` events (maximize, fullscreen, minimize, move, resize, activate, urgent, close); defaults in builtins/desktop.lisp "wm" | Done |
 | 87 | `on_reload` save/restore | crates/tomoe/src/lua.rs | src/runtime.lisp `configure` | Improved: mounted state survives reload automatically; no save/restore hooks to write |
-| 88 | Window rules and `rules_for` | crates/tomoe/src/lua.rs | src/api.lisp `window-rule`, src/rules.lisp, src/patterns.lisp | Done |
+| 88 | Window rules and `rules_for` | crates/tomoe/src/lua.rs | src/api.lisp `window-rule`, src/rules.lisp (exact app-id, substring title, `:match` predicate) | Improved: plain Lisp matching replaces 235 lines of Lua pattern emulation; richer matching lives in the :match predicate |
 | 89 | `process.once` with the id as default command | crates/tomoe/src/lua.rs | src/api.lisp `run-once`, `service` (COMMAND optional, defaults to the name) | Done |
 | 90 | `process.service`, `process.spawn` | crates/tomoe/src/lua.rs, process.rs | src/api.lisp `service`, `spawn` | Done |
 | 91 | Shutdown stops supervised processes | crates/tomoe/src/process.rs | src/processes.lisp | Improved: session-owned one-shot children are reaped too |

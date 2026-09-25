@@ -1,7 +1,7 @@
 (require :sb-posix)
 (require :sb-bsd-sockets)
 
-(dolist (name '("api" "json" "patterns" "native" "ui" "dialogs" "runtime" "rules" "timers" "watches" "executions" "processes" "control" "ipc-transport" "ipc" "notifications" "mpris" "battery" "network" "tray" "main"))
+(dolist (name '("api" "json" "native" "ui" "dialogs" "runtime" "rules" "timers" "watches" "executions" "processes" "control" "ipc-transport" "ipc" "notifications" "mpris" "battery" "network" "tray" "main"))
   (multiple-value-bind (output warnings failure)
       (compile-file (format nil "src/~A.lisp" name) :output-file (format nil "build/~A.fasl" name))
     (declare (ignore warnings))

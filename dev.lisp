@@ -5,7 +5,7 @@
       (cons (first sb-ext:*posix-argv*)
             (cdr (member "--" sb-ext:*posix-argv* :test #'equal))))
 
-(dolist (name '("api" "json" "patterns" "ui" "dialogs" "runtime" "rules" "timers" "watches" "executions" "processes" "control" "ipc-transport" "ipc" "notifications" "mpris" "battery" "network" "tray" "main"))
+(dolist (name '("api" "json" "ui" "dialogs" "runtime" "rules" "timers" "watches" "executions" "processes" "control" "ipc-transport" "ipc" "notifications" "mpris" "battery" "network" "tray" "main"))
   (load (format nil "src/~A.lisp" name) :verbose nil :print nil))
 
 (load "src/native.lisp" :verbose nil :print nil)
