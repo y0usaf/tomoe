@@ -594,7 +594,8 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
         if (!wlr_box_intersection(&overlap, &box, &output_box)) continue;
         bool hinted = wlr_tearing_control_manager_v1_surface_hint_from_surface(s->tearing,
             surface_of(w)) == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
-        if (force || (s->settings.tearing && hinted)) return true;
+        bool allowed = w->target.style.tearing >= 0 ? w->target.style.tearing : s->settings.tearing;
+        if (force || (allowed && (w->target.style.tearing == 1 || hinted))) return true;
     }
     return false;
 }

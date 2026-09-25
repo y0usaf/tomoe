@@ -7,7 +7,7 @@
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
-           #:bind-button #:bind-scroll
+           #:bind-button #:bind-scroll #:window-properties
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
@@ -16,7 +16,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 24)
+(defconstant +native-abi-version+ 25)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :ipc :ui))
 (defvar *definitions* :not-loading)
@@ -364,6 +364,17 @@ Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS.
   (check-type id (or null (integer 1 4294967295)))
   (check-type raise boolean)
   (%effect :focus (list id raise)))
+
+(defun window-properties (id &rest properties &key radius tearing blur border)
+  "Own rendering overrides for one window. Omitted keys fall back to the
+settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
+BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
+  (declare (ignore radius tearing blur border))
+  (check-type id (integer 1 4294967295))
+  (%effect :window-properties
+           (list id (%settings-plist properties
+                                     '((:radius (:integer 0 4096)) (:tearing :boolean) (:blur :boolean)
+                                       (:border (:group (:focused :color) (:unfocused :color))))))))
 
 (defun raise-window (id)
   "Own a raise in the managed window stack without changing focus or geometry."

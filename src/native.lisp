@@ -156,6 +156,9 @@
   (server (* t)) (key sb-alien:c-string) (value sb-alien:double))
 (define-native ("tomoe_present_setting_text" %present-setting-text) sb-alien:int
   (server (* t)) (key sb-alien:c-string) (text sb-alien:c-string))
+(define-native ("tomoe_present_window_style" %present-window-style) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int) (radius sb-alien:int) (blur sb-alien:int)
+  (tearing sb-alien:int) (focused sb-alien:long-long) (unfocused sb-alien:long-long))
 (define-native ("tomoe_present_apply" %present-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_stack" %present-stack) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int))
@@ -351,7 +354,14 @@
                                         (if (getf window :visible) 1 0)
                                         (if (getf window :fullscreen) 1 0)
                                         (if (getf window :maximize) 1 0)))
-             (error "Cannot stage window ~D." (getf window :id))))
+             (error "Cannot stage window ~D." (getf window :id)))
+           (let* ((properties (getf window :properties)) (border (getf properties :border)))
+             (flet ((tri (key) (let ((entry (member key properties))) (if entry (if (second entry) 1 0) -1)))
+                    (color (key) (let ((value (getf border key))) (if value (%ui-color value) -1))))
+               (unless (= 1 (%present-window-style backend (getf window :id)
+                                                   (getf properties :radius -1) (tri :blur) (tri :tearing)
+                                                   (color :focused) (color :unfocused)))
+                 (error "Cannot stage window ~D properties." (getf window :id))))))
          (dolist (id (or (getf context :stacking) '(0)))
            (unless (= 1 (%present-stack backend id))
              (error "Cannot stage window stacking.")))

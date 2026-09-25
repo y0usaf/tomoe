@@ -62,6 +62,8 @@ int tomoe_present_keyboard(struct tomoe *server, const char *rules,
 int tomoe_present_window(struct tomoe *server, uint32_t id, int x, int y,
     int width, int height, int visible, int fullscreen, int maximize);
 int tomoe_present_stack(struct tomoe *server, uint32_t id);
+int tomoe_present_window_style(struct tomoe *server, uint32_t id, int radius, int blur,
+    int tearing, int64_t focused, int64_t unfocused);
 int tomoe_present_ui_surface(struct tomoe *server, const char *owner,
     uint64_t source_id, const char *name, const char *output,
     const char *signature, int x, int y, int width, int height, int layer);

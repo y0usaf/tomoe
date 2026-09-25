@@ -28,7 +28,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 20 | Dual-kawase blur behind listed layer namespaces | crates/tomoe/src/render/blur.rs, render/mod.rs | none | Missing |
 | 21 | ext-background-effect-v1 blur regions | crates/tomoe/src/protocols/background_effect.rs | none | Missing |
 | 22 | Per-window blur behind (zoom 1, not fullscreen) | crates/tomoe/src/render/mod.rs `render_masked` | none | Missing |
-| 23 | `Window:set_properties` radius/tearing/blur/border | crates/tomoe/src/lua.rs | none | Missing |
+| 23 | `Window:set_properties` radius/tearing/blur/border | crates/tomoe/src/lua.rs | src/api.lisp `window-properties`, native/presentation.c `tomoe_present_window_style` | Done |
 | 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | none | Missing |
 | 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/protocols.c, native/space.c `surfaces_textured` | Done |

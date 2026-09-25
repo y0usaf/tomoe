@@ -55,6 +55,8 @@
       (:announce (destructuring-bind (name value) args (announce name value)))
       (:data (destructuring-bind (name value) args (publish-state name value)))
       (:settings (apply #'settings args))
+      (:window-properties (destructuring-bind (id properties) args
+                            (apply #'window-properties id properties)))
       (:surface (%effect :surface (canonical-shell-surface args)))
       (:rule
        (destructuring-bind (name app-id title properties reads state) args
@@ -140,6 +142,7 @@
     (:output (list :output (first (effect-arguments effect))))
     (:keyboard '(:keyboard))
     (:settings '(:settings))
+    (:window-properties (list :window-properties (first (effect-arguments effect))))
     (:view '(:view))
     (:focus '(:focus))
     (:raise (list :raise (first (effect-arguments effect))))
@@ -458,7 +461,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                       collect (list :id (getf window :id) :x 0 :y 0
                                     :width (max 1 (getf window :width))
                                     :height (max 1 (getf window :height)) :visible t
-                                    :fullscreen nil :maximize nil)))
+                                    :fullscreen nil :maximize nil :properties nil)))
         (stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime)))
         (layers (copy-data (runtime-layers runtime)))
         (focused nil)
@@ -509,6 +512,13 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              (destructuring-bind (x y zoom) args
                (setf view (list :x x :y y :zoom zoom))))
             (:settings nil)
+            (:window-properties
+             (destructuring-bind (id properties) args
+               (let ((window (find id layout :key (lambda (w) (getf w :id)))))
+                 (when window
+                   (setf (getf window :properties)
+                         (%settings-merge (copy-list (getf window :properties)) properties
+                                          '((:border (:group)))))))))
             (:keyboard
              (destructuring-bind (rules model layout variant options rate delay) args
                (setf keyboard (list :rules rules :model model :layout layout :variant variant :options options

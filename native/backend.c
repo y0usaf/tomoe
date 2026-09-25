@@ -10,7 +10,7 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 24; }
+int tomoe_abi_version(void) { return 25; }
 const char *tomoe_display_name(struct tomoe *s) {
     return s->xwayland ? s->xwayland->display_name : NULL;
 }

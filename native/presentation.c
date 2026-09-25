@@ -137,6 +137,15 @@ int tomoe_present_window(struct tomoe *s, uint32_t id, int x, int y,
     return 1;
 }
 
+int tomoe_present_window_style(struct tomoe *s, uint32_t id, int radius, int blur,
+        int tearing, int64_t focused, int64_t unfocused) {
+    struct presentation *plan = s->presentation;
+    if (!plan) return 0;
+    struct presentation_target *entry = presentation_target_for(plan, id);
+    if (entry) entry->target.style = (struct window_style){ radius, blur, tearing, focused, unfocused };
+    return 1;
+}
+
 int tomoe_present_stack(struct tomoe *s, uint32_t id) {
     struct presentation *plan = s->presentation;
     if (!plan) return 0;
