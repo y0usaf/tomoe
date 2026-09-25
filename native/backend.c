@@ -81,7 +81,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     }
     outputs_listen(s);
     input_listen(s);
-    if (!virtual_pointers_listen(s) || !protocols_listen(s)) goto failed;
+    if (!virtual_pointers_listen(s) || !protocols_listen(s) || !lock_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     windows_listen(s, shell);
     layers_listen(s, layer_shell);
@@ -106,6 +106,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     refresh_scene(s);
     idle_refresh(s);
     foreign_toplevels_refresh(s);
+    lock_refresh(s);
     wl_display_flush_clients(s->display);
     return s->failed ? -1 : (s->running ? 0 : 1);
 }
@@ -114,6 +115,7 @@ void tomoe_destroy(struct tomoe *s) {
     s->stopping = true;
     finish_captures(s);
     presentation_finish(s);
+    lock_finish(s);
     ui_input_finish(s);
     ui_finish(s);
     activation_finish(s);

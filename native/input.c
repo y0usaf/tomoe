@@ -691,6 +691,7 @@ static void keyboard_enter(struct tomoe *s, struct wlr_surface *surface) {
     }
 }
 void update_keyboard_focus(struct tomoe *s) {
+    if (lock_active(s)) { keyboard_enter(s, lock_keyboard_surface(s)); return; }
     struct layer *l;
     for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; layer >= 0; layer--) {
         wl_list_for_each(l, &s->layers, link) {
@@ -789,6 +790,12 @@ static void release_binding_list(struct wl_list *bindings, bool deactivate) {
     }
 }
 
+static void keyboard_latches_cancel(struct tomoe *s);
+void input_lock_begin(struct tomoe *s) {
+    grab_clear(s);
+    keyboard_latches_cancel(s);
+    pointer_refresh(s);
+}
 static void keyboard_latches_cancel(struct tomoe *s) {
     struct keyboard *keyboard;
     wl_list_for_each(keyboard, &s->keyboards, link) {
@@ -1188,6 +1195,10 @@ static void button(struct wl_listener *listener, void *data) {
     idle_notify_activity(s);
     struct wlr_pointer_button_event *input = data;
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec);
+    if (lock_active(s)) {
+        wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
+        return;
+    }
     if (ui_pointer_button(s, input)) return;
     uint32_t id = s->grab_id;
     if (s->grab_mode == 0) {
@@ -1406,7 +1417,7 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
     uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
     mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
         WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
-    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked) {
+    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s)) {
         struct binding *b;
         wl_list_for_each(b, &s->bindings, link) for (int i = 0; i < count; i++) {
             if (b->modifiers != mods ||

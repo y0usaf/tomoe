@@ -97,7 +97,7 @@ void idle_refresh(struct tomoe *s) {
     struct wlr_idle_inhibitor_v1 *inhibitor;
     wl_list_for_each(inhibitor, &s->idle_inhibit->inhibitors, link)
         inhibited |= surface_visible(s, inhibitor->surface);
-    wlr_idle_notifier_v1_set_inhibited(s->idle_notifier, inhibited && !s->session_lock);
+    wlr_idle_notifier_v1_set_inhibited(s->idle_notifier, inhibited && !lock_active(s));
 }
 
 static void set_gamma(struct wl_listener *listener, void *data) {

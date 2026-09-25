@@ -430,10 +430,14 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         .transform = (state->committed & WLR_OUTPUT_STATE_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height };
     wlr_output_transform_coords(data.transform, &data.width, &data.height);
+    bool locked = lock_active(o->server);
     wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
-        .color = { 0, 0, 0, 1 }, .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
-    if (plan) {
+        .color = { locked ? 0.3f : 0, locked ? 0.1f : 0, locked ? 0.1f : 0, 1 },
+        .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
+    if (locked) {
+        walk_scene(o->server, &o->server->lock_tree->node, NULL, 0, 0, false, render_leaf, &data);
+    } else if (plan) {
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
             if (root->visible)
@@ -442,7 +446,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     } else {
         walk_scene(o->server, &o->server->scene->tree.node, NULL, 0, 0, false, render_leaf, &data);
     }
-    ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
+    if (!locked) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
     pixman_region32_t damage;
     pixman_region32_init_rect(&damage, 0, 0, buffer->width, buffer->height);
     if (cursors && plan)
@@ -516,12 +520,13 @@ static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
         struct wlr_surface **surface, double *sx, double *sy) {
     struct ui_hit ui;
-    if (ui_hit_at(s, x, y, &ui)) {
+    if (!lock_active(s) && ui_hit_at(s, x, y, &ui)) {
         *surface = NULL; *sx = ui.x; *sy = ui.y;
         return 0;
     }
     struct hit_data hit = { .x = x, .y = y };
-    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, hit_leaf, &hit);
+    walk_scene(s, lock_active(s) ? &s->lock_tree->node : &s->scene->tree.node,
+        NULL, 0, 0, true, hit_leaf, &hit);
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
 }

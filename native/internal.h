@@ -201,7 +201,7 @@ struct tomoe {
     struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *toplevel_capture_sources;
     struct wlr_session_lock_manager_v1 *session_lock_manager;
     struct wlr_session_lock_v1 *session_lock;
-    bool lock_rendering, lock_confirmed;
+    int lock_state;
     struct wlr_scene_tree *drag_icon_tree, *lock_tree;
     struct wl_list drag_icons, constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
@@ -372,9 +372,9 @@ bool constraint_allows(struct tomoe *s, double x, double y);
 
 bool lock_listen(struct tomoe *s);
 void lock_finish(struct tomoe *s);
-void lock_check_ready(struct tomoe *s);
+void lock_refresh(struct tomoe *s);
 void lock_frame_rendered(struct tomoe *s, struct wlr_output *output);
-void lock_inputs_refresh(struct tomoe *s);
+void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 struct wlr_surface *lock_keyboard_surface(struct tomoe *s);
 
