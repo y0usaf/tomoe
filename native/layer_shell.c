@@ -18,16 +18,16 @@ static void synced_move(void *dst, void *src) {
     ((struct layer_surface_state *)src)->committed = 0;
 }
 
-static const struct wlr_surface_synced_impl synced_impl = {
-    .state_size = sizeof(struct layer_surface_state),
-    .move_state = synced_move,
+static const struct surface_synced_impl synced_impl = {
+    .size = sizeof(struct layer_surface_state),
+    .move = synced_move,
 };
 
 static struct layer_shell_surface *from_resource(struct wl_resource *resource) {
     return wl_resource_get_user_data(resource);
 }
 
-static struct layer_shell_surface *from_surface(struct wlr_surface *surface) {
+static struct layer_shell_surface *from_surface(struct surface *surface) {
     return surface->role_resource ? wl_resource_get_user_data(surface->role_resource) : NULL;
 }
 
@@ -41,34 +41,34 @@ static void surface_free(struct layer_shell_surface *l) {
     popups_destroy(ls);
     layer_destroyed(ls);
     wl_resource_set_user_data(ls->resource, NULL);
-    wlr_surface_synced_finish(&ls->synced);
+    surface_synced_finish(&ls->synced);
     free(ls->namespace);
     free(l);
 }
 
-static void role_client_commit(struct wlr_surface *surface) {
+static void role_client_commit(struct surface *surface) {
     struct layer_shell_surface *l = from_surface(surface);
     if (!l) return;
     struct layer_surface *ls = &l->base;
     const uint32_t horizontal = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
     const uint32_t vertical = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
     uint32_t anchor = ls->pending.anchor;
-    if (wlr_surface_state_has_buffer(&surface->pending) && !ls->configured)
-        wlr_surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SHELL_V1_ERROR_ALREADY_CONSTRUCTED,
+    if (surface_state_has_buffer(&surface->pending) && !ls->configured)
+        surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SHELL_V1_ERROR_ALREADY_CONSTRUCTED,
             "layer surface committed a buffer before its first configure");
     else if (ls->pending.desired_width == 0 && (anchor & horizontal) != horizontal)
-        wlr_surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_SIZE,
+        surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_SIZE,
             "width 0 without left and right anchors");
     else if (ls->pending.desired_height == 0 && (anchor & vertical) != vertical)
-        wlr_surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_SIZE,
+        surface_reject_pending(surface, ls->resource, ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_SIZE,
             "height 0 without top and bottom anchors");
 }
 
-static void role_commit(struct wlr_surface *surface) {
+static void role_commit(struct surface *surface) {
     struct layer_shell_surface *l = from_surface(surface);
     if (!l) return;
     struct layer_surface *ls = &l->base;
-    if (surface->mapped && !wlr_surface_has_buffer(surface)) {
+    if (surface->mapped && !surface_has_buffer(surface)) {
         ls->configured = ls->initialized = ls->initial_commit = false;
         l->sent_count = 0;
         popups_destroy(ls);
@@ -76,15 +76,15 @@ static void role_commit(struct wlr_surface *surface) {
         ls->initial_commit = !ls->initialized;
         ls->initialized = true;
     }
-    if (wlr_surface_has_buffer(surface)) wlr_surface_map(surface);
+    if (surface_has_buffer(surface)) surface_map(surface);
 }
 
-static void role_destroy(struct wlr_surface *surface) {
+static void role_destroy(struct surface *surface) {
     struct layer_shell_surface *l = from_surface(surface);
     if (l) surface_free(l);
 }
 
-static const struct wlr_surface_role layer_role = {
+static const struct surface_role layer_role = {
     .name = "zwlr_layer_surface_v1",
     .client_commit = role_client_commit,
     .commit = role_commit,
@@ -227,7 +227,7 @@ static void get_layer_surface(struct wl_client *client, struct wl_resource *shel
         struct wl_resource *surface_resource, struct wl_resource *output_resource, uint32_t layer,
         const char *namespace) {
     struct tomoe *s = wl_resource_get_user_data(shell);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct surface *surface = surface_from_resource(surface_resource);
     if (!zwlr_layer_shell_v1_layer_is_valid(layer, wl_resource_get_version(shell))) {
         wl_resource_post_error(shell, ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER,
             "invalid layer %u", layer);
@@ -238,7 +238,7 @@ static void get_layer_surface(struct wl_client *client, struct wl_resource *shel
         wl_client_post_no_memory(client);
         return;
     }
-    if (!wlr_surface_set_role(surface, &layer_role, shell, ZWLR_LAYER_SHELL_V1_ERROR_ROLE)) {
+    if (!surface_set_role(surface, &layer_role, shell, ZWLR_LAYER_SHELL_V1_ERROR_ROLE)) {
         free(l);
         return;
     }
@@ -250,7 +250,8 @@ static void get_layer_surface(struct wl_client *client, struct wl_resource *shel
     wl_list_init(&ls->popups);
     ls->resource = wl_resource_create(client, &zwlr_layer_surface_v1_interface,
         wl_resource_get_version(shell), id);
-    if (!ls->namespace || !ls->resource || !wlr_surface_synced_init(&ls->synced, surface,
+    ls->pending.layer = layer;
+    if (!ls->namespace || !ls->resource || !surface_synced_init(&ls->synced, surface,
             &synced_impl, &ls->pending, &ls->current)) {
         if (ls->resource) wl_resource_destroy(ls->resource);
         free(ls->namespace);
@@ -258,13 +259,9 @@ static void get_layer_surface(struct wl_client *client, struct wl_resource *shel
         wl_client_post_no_memory(client);
         return;
     }
-    ls->current.layer = ls->pending.layer = layer;
-    struct wlr_surface_state *cached;
-    wl_list_for_each(cached, &surface->cached, cached_state_link)
-        ((struct layer_surface_state *)wlr_surface_synced_get_state(&ls->synced, cached))->layer =
-            layer;
+    ls->current.layer = layer;
     wl_resource_set_implementation(ls->resource, &surface_impl, l, NULL);
-    wlr_surface_set_role_object(surface, ls->resource);
+    surface_set_role_object(surface, ls->resource);
     layer_created(s, ls);
 }
 

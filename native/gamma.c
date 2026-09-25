@@ -127,7 +127,6 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 bool gamma_listen(struct tomoe *s) {
-    wl_list_init(&s->gammas);
     return wl_global_create(s->display, &zwlr_gamma_control_manager_v1_interface, 1, s, bind);
 }
 

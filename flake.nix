@@ -110,6 +110,10 @@
               ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
               $wp/stable/xdg-shell/xdg-shell.xml \
               $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
+              $wp/stable/viewporter/viewporter.xml \
+              $wp/stable/presentation-time/presentation-time.xml \
+              $wp/staging/fractional-scale/fractional-scale-v1.xml \
+              $wp/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml \
               $wp/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
               $wp/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
               $wp/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \

@@ -4,18 +4,18 @@
 struct tearing {
     struct wl_resource *resource;
     struct wl_list link;
-    struct wlr_surface *surface;
-    struct wlr_surface_synced synced;
+    struct surface *surface;
+    struct surface_synced synced;
     uint32_t pending, current;
     struct wl_listener surface_destroy;
 };
 
-static const struct wlr_surface_synced_impl synced_impl = { .state_size = sizeof(uint32_t) };
+static const struct surface_synced_impl synced_impl = { .size = sizeof(uint32_t) };
 
 static void tearing_detach(struct tearing *tearing) {
     if (!tearing) return;
     wl_resource_set_user_data(tearing->resource, NULL);
-    wlr_surface_synced_finish(&tearing->synced);
+    surface_synced_finish(&tearing->synced);
     detach(&tearing->surface_destroy);
     wl_list_remove(&tearing->link);
     free(tearing);
@@ -47,7 +47,7 @@ static const struct wp_tearing_control_v1_interface tearing_impl = {
 static void get_tearing_control(struct wl_client *client, struct wl_resource *manager,
         uint32_t id, struct wl_resource *surface_resource) {
     struct tomoe *s = wl_resource_get_user_data(manager);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct surface *surface = surface_from_resource(surface_resource);
     struct tearing *tearing;
     wl_list_for_each(tearing, &s->tearings, link) {
         if (tearing->surface != surface) continue;
@@ -58,7 +58,7 @@ static void get_tearing_control(struct wl_client *client, struct wl_resource *ma
     struct wl_resource *resource = wl_resource_create(client, &wp_tearing_control_v1_interface,
         wl_resource_get_version(manager), id);
     tearing = resource ? calloc(1, sizeof(*tearing)) : NULL;
-    if (!tearing || !wlr_surface_synced_init(&tearing->synced, surface, &synced_impl,
+    if (!tearing || !surface_synced_init(&tearing->synced, surface, &synced_impl,
             &tearing->pending, &tearing->current)) {
         free(tearing);
         if (resource) wl_resource_destroy(resource);
@@ -88,11 +88,10 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 bool tearing_listen(struct tomoe *s) {
-    wl_list_init(&s->tearings);
     return wl_global_create(s->display, &wp_tearing_control_manager_v1_interface, 1, s, bind);
 }
 
-bool tearing_async(struct tomoe *s, struct wlr_surface *surface) {
+bool tearing_async(struct tomoe *s, struct surface *surface) {
     struct tearing *tearing;
     wl_list_for_each(tearing, &s->tearings, link)
         if (tearing->surface == surface)

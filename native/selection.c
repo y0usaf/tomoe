@@ -45,9 +45,9 @@ struct drag {
     struct seat *seat;
     struct wl_client *client;
     struct source *source;
-    struct wlr_surface *icon, *focus;
+    struct surface *icon, *focus;
     struct seat_client *focus_client;
-    struct wlr_scene_tree *icon_tree, *icon_surface;
+    struct node *icon_tree, *icon_surface;
     struct seat_pointer_grab pointer;
     struct seat_keyboard_grab keyboard;
     struct wl_listener source_destroy, icon_destroy, icon_commit, focus_destroy;
@@ -384,14 +384,14 @@ static bool claim(struct wl_resource *device, struct source *src, uint32_t error
     return true;
 }
 
-static void drag_set_focus(struct drag *d, struct wlr_surface *surface, double sx, double sy);
+static void drag_set_focus(struct drag *d, struct surface *surface, double sx, double sy);
 
 static void drag_focus_destroyed(struct wl_listener *listener, void *data) {
     struct drag *d = wl_container_of(listener, d, focus_destroy);
     drag_set_focus(d, NULL, 0, 0);
 }
 
-static void drag_set_focus(struct drag *d, struct wlr_surface *surface, double sx, double sy) {
+static void drag_set_focus(struct drag *d, struct surface *surface, double sx, double sy) {
     if (d->focus == surface) return;
     struct seat *seat = d->seat;
     struct wl_resource *device;
@@ -454,14 +454,14 @@ static void drag_end(struct drag *d) {
     detach(&d->source_destroy);
     detach(&d->icon_destroy);
     detach(&d->icon_commit);
-    if (d->icon_tree) wlr_scene_node_destroy(&d->icon_tree->node);
+    if (d->icon_tree) node_destroy(d->icon_tree);
     free(d);
     if (s->stopping) return;
     update_keyboard_focus(s);
     pointer_refresh(s);
 }
 
-static void drag_enter(struct seat_pointer_grab *grab, struct wlr_surface *surface, double sx,
+static void drag_enter(struct seat_pointer_grab *grab, struct surface *surface, double sx,
         double sy) {
     struct drag *d = wl_container_of(grab, d, pointer);
     drag_set_focus(d, surface, sx, sy);
@@ -517,7 +517,7 @@ static const struct seat_pointer_grab_interface drag_pointer_impl = {
     .button = drag_button, .axis = drag_axis, .cancel = drag_pointer_cancel,
 };
 
-static void drag_keyboard_enter(struct seat_keyboard_grab *grab, struct wlr_surface *surface,
+static void drag_keyboard_enter(struct seat_keyboard_grab *grab, struct surface *surface,
         const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
 }
 
@@ -553,23 +553,23 @@ static void drag_icon_destroyed(struct wl_listener *listener, void *data) {
     detach(&d->icon_destroy);
     detach(&d->icon_commit);
     d->icon = NULL;
-    if (d->icon_tree) wlr_scene_node_destroy(&d->icon_tree->node);
+    if (d->icon_tree) node_destroy(d->icon_tree);
     d->icon_tree = NULL;
 }
 
 static void drag_icon_committed(struct wl_listener *listener, void *data) {
     struct drag *d = wl_container_of(listener, d, icon_commit);
-    struct wlr_scene_node *node = &d->icon_surface->node;
-    wlr_scene_node_set_position(node, node->x + d->icon->current.dx,
+    struct node *node = d->icon_surface;
+    node_set_position(node, node->x + d->icon->current.dx,
         node->y + d->icon->current.dy);
 }
 
-static void icon_role_commit(struct wlr_surface *surface) {
+static void icon_role_commit(struct surface *surface) {
     pixman_region32_clear(&surface->input_region);
-    if (wlr_surface_has_buffer(surface)) wlr_surface_map(surface);
+    if (surface_has_buffer(surface)) surface_map(surface);
 }
 
-static const struct wlr_surface_role icon_role = {
+static const struct surface_role icon_role = {
     .name = "wl_data_device-icon",
     .no_object = true,
     .commit = icon_role_commit,
@@ -586,12 +586,12 @@ static void start_drag(struct wl_client *client, struct wl_resource *device,
         struct wl_resource *icon_resource, uint32_t serial) {
     struct seat_client *c = wl_resource_get_user_data(device);
     struct source *src = source_from(source_resource);
-    struct wlr_surface *icon = icon_resource ? wlr_surface_from_resource(icon_resource) : NULL;
-    if (icon && !wlr_surface_set_role(icon, &icon_role, icon_resource, WL_DATA_DEVICE_ERROR_ROLE))
+    struct surface *icon = icon_resource ? surface_from_resource(icon_resource) : NULL;
+    if (icon && !surface_set_role(icon, &icon_role, icon_resource, WL_DATA_DEVICE_ERROR_ROLE))
         return;
     if (!claim(device, src, WL_DATA_DEVICE_ERROR_USED_SOURCE)) return;
     struct seat *seat = c ? c->seat : NULL;
-    struct wlr_surface *origin = wlr_surface_from_resource(origin_resource);
+    struct surface *origin = surface_from_resource(origin_resource);
     struct drag *d = seat && !seat->drag &&
         seat_validate_pointer_grab_serial(seat, origin, serial) ? calloc(1, sizeof(*d)) : NULL;
     if (!d) {
@@ -608,17 +608,17 @@ static void start_drag(struct wl_client *client, struct wl_resource *device,
     if (icon) {
         icon_role_commit(icon);
         d->icon = icon;
-        d->icon_tree = wlr_scene_tree_create(s->drag_icon_tree);
-        d->icon_surface = d->icon_tree ? wlr_scene_subsurface_tree_create(d->icon_tree, icon) : NULL;
+        d->icon_tree = node_create(s->drag_icon_tree);
+        d->icon_surface = d->icon_tree ? node_surface_create(d->icon_tree, icon) : NULL;
         if (!d->icon_surface) {
-            if (d->icon_tree) wlr_scene_node_destroy(&d->icon_tree->node);
+            if (d->icon_tree) node_destroy(d->icon_tree);
             detach(&d->source_destroy);
             free(d);
             if (src) source_free(src, true);
             wl_client_post_no_memory(client);
             return;
         }
-        d->icon_tree->node.data = &s->drag_icon;
+        d->icon_tree->data = &s->drag_icon;
         listen(&d->icon_destroy, &icon->events.destroy, drag_icon_destroyed);
         listen(&d->icon_commit, &icon->events.commit, drag_icon_committed);
     }

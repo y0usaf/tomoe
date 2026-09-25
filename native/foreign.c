@@ -312,9 +312,6 @@ static void bind_list(struct wl_client *client, void *data, uint32_t version, ui
 }
 
 bool foreign_listen(struct tomoe *s) {
-    wl_list_init(&s->foreigns);
-    wl_list_init(&s->foreign_managers);
-    wl_list_init(&s->foreign_lists);
     return wl_global_create(s->display, &zwlr_foreign_toplevel_manager_v1_interface, 3, s,
             bind_manager) &&
         wl_global_create(s->display, &ext_foreign_toplevel_list_v1_interface, 1, s, bind_list);

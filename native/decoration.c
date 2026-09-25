@@ -87,7 +87,7 @@ static void get_toplevel_decoration(struct wl_client *client, struct wl_resource
             "toplevel already has a decoration");
         return;
     }
-    if (wlr_surface_has_buffer(toplevel->base->surface)) {
+    if (surface_has_buffer(toplevel->base->surface)) {
         wl_resource_post_error(resource, ZXDG_TOPLEVEL_DECORATION_V1_ERROR_UNCONFIGURED_BUFFER,
             "toplevel already has a buffer");
         return;
@@ -162,7 +162,6 @@ static void bind_kde(struct wl_client *client, void *data, uint32_t version, uin
 }
 
 bool decoration_listen(struct tomoe *s) {
-    wl_list_init(&s->decorations);
     return wl_global_create(s->display, &zxdg_decoration_manager_v1_interface, 1, s, bind_xdg) &&
         wl_global_create(s->display, &org_kde_kwin_server_decoration_manager_interface, 1, s,
             bind_kde);

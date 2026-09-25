@@ -14,7 +14,7 @@ struct notification {
 struct inhibitor {
     struct wl_resource *resource;
     struct wl_list link;
-    struct wlr_surface *surface;
+    struct surface *surface;
     struct wl_listener surface_destroy;
 };
 
@@ -127,7 +127,7 @@ static void create_inhibitor(struct wl_client *client, struct wl_resource *manag
         return;
     }
     i->resource = resource;
-    i->surface = wlr_surface_from_resource(surface);
+    i->surface = surface_from_resource(surface);
     listen(&i->surface_destroy, &i->surface->events.destroy, inhibitor_surface_destroyed);
     wl_resource_set_implementation(resource, &inhibitor_impl, i, inhibitor_free);
     wl_list_insert(&s->idle_inhibitors, &i->link);
@@ -159,8 +159,6 @@ static void bind_inhibit(struct wl_client *client, void *data, uint32_t version,
 }
 
 bool idle_listen(struct tomoe *s) {
-    wl_list_init(&s->idle_notifications);
-    wl_list_init(&s->idle_inhibitors);
     return wl_global_create(s->display, &ext_idle_notifier_v1_interface, 2, s, bind_notifier) &&
         wl_global_create(s->display, &zwp_idle_inhibit_manager_v1_interface, 1, s, bind_inhibit);
 }

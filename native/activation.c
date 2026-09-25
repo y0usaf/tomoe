@@ -20,7 +20,7 @@ struct token {
 struct pending_request {
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_surface *surface;
+    struct surface *surface;
     bool activate;
     uint64_t deadline_msec;
     struct wl_listener surface_destroy;
@@ -135,7 +135,7 @@ static void emit_request(struct tomoe *s, uint32_t id, bool activate) {
     end_event(s, event, out);
 }
 
-static void pending_map(struct tomoe *s, struct wlr_surface *surface) {
+static void pending_map(struct tomoe *s, struct surface *surface) {
     struct pending_request *pending, *tmp;
     wl_list_for_each_safe(pending, tmp, &s->activation_pending, link) {
         if (pending->surface != surface) continue;
@@ -150,7 +150,7 @@ static void pending_map(struct tomoe *s, struct wlr_surface *surface) {
 static void activate(struct wl_client *client, struct wl_resource *resource,
         const char *name, struct wl_resource *surface_resource) {
     struct tomoe *s = wl_resource_get_user_data(resource);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct surface *surface = surface_from_resource(surface_resource);
     struct token *token, *found = NULL;
     wl_list_for_each(token, &s->activation_tokens, link)
         if (token->committed && !strcmp(token->name, name)) found = token;
@@ -287,7 +287,7 @@ bool activation_listen(struct tomoe *s) {
     return wl_global_create(s->display, &xdg_activation_v1_interface, 1, s, bind);
 }
 
-void activation_surface_mapped(struct tomoe *s, struct wlr_surface *surface) {
+void activation_surface_mapped(struct tomoe *s, struct surface *surface) {
     if (!s || !surface) return;
     pending_map(s, surface);
 }

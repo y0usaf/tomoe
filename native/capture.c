@@ -624,8 +624,6 @@ static void bind_window_sources(struct wl_client *client, void *data, uint32_t v
 }
 
 bool capture_listen(struct tomoe *s) {
-    wl_list_init(&s->copy_frames);
-    wl_list_init(&s->capture_sessions);
     return wl_global_create(s->display, &zwlr_screencopy_manager_v1_interface, 3, s, bind) &&
         wl_global_create(s->display, &ext_image_copy_capture_manager_v1_interface, 1, s,
             bind_copy) &&

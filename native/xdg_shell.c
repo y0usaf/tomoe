@@ -49,23 +49,23 @@ struct xdg_popup *xdg_popup_from_resource(struct wl_resource *resource) {
         wl_resource_get_user_data(resource) : NULL;
 }
 
-static const struct wlr_surface_role surface_role;
+static const struct surface_role surface_role;
 
-struct xdg_surface *xdg_surface_try_from_wlr_surface(struct wlr_surface *surface) {
+struct xdg_surface *xdg_surface_from_surface(struct surface *surface) {
     if (surface->role != &surface_role || !surface->role_resource) return NULL;
     return xdg_surface_from_resource(surface->role_resource);
 }
 
-struct xdg_toplevel *xdg_toplevel_try_from_wlr_surface(struct wlr_surface *surface) {
-    struct xdg_surface *xdg = xdg_surface_try_from_wlr_surface(surface);
+struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface) {
+    struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     return xdg && xdg->role == ROLE_TOPLEVEL ? xdg->toplevel : NULL;
 }
 
 static void scene_place(struct xdg_surface *xdg) {
     if (!xdg->scene) return;
-    wlr_scene_node_set_position(&xdg->scene_surface->node, -xdg->geometry.x, -xdg->geometry.y);
+    node_set_position(xdg->scene_surface, -xdg->geometry.x, -xdg->geometry.y);
     if (xdg->role == ROLE_POPUP && xdg->popup)
-        wlr_scene_node_set_position(&xdg->scene->node, xdg->popup->current.geometry.x,
+        node_set_position(xdg->scene, xdg->popup->current.geometry.x,
             xdg->popup->current.geometry.y);
 }
 
@@ -75,17 +75,17 @@ static void scene_destroyed(struct wl_listener *listener, void *data) {
     xdg->scene = xdg->scene_surface = NULL;
 }
 
-struct wlr_scene_tree *xdg_surface_scene(struct wlr_scene_tree *parent, struct xdg_surface *xdg) {
-    struct wlr_scene_tree *tree = wlr_scene_tree_create(parent);
-    struct wlr_scene_tree *surface = tree ? wlr_scene_subsurface_tree_create(tree, xdg->surface) :
+struct node *xdg_surface_scene(struct node *parent, struct xdg_surface *xdg) {
+    struct node *tree = node_create(parent);
+    struct node *surface = tree ? node_surface_create(tree, xdg->surface) :
         NULL;
     if (!surface) {
-        if (tree) wlr_scene_node_destroy(&tree->node);
+        if (tree) node_destroy(tree);
         return NULL;
     }
     xdg->scene = tree;
     xdg->scene_surface = surface;
-    listen(&xdg->scene_destroy, &tree->node.events.destroy, scene_destroyed);
+    listen(&xdg->scene_destroy, &tree->events.destroy, scene_destroyed);
     scene_place(xdg);
     return tree;
 }
@@ -102,7 +102,7 @@ static void grab_end(struct popup_grab *grab) {
     seat_keyboard_end_grab(grab->seat);
 }
 
-static void pointer_enter(struct seat_pointer_grab *pointer, struct wlr_surface *surface,
+static void pointer_enter(struct seat_pointer_grab *pointer, struct surface *surface,
         double sx, double sy) {
     struct popup_grab *grab = wl_container_of(pointer, grab, pointer);
     if (wl_resource_get_client(surface->resource) == grab->client)
@@ -147,7 +147,7 @@ static const struct seat_pointer_grab_interface pointer_grab_impl = {
     .frame = pointer_frame,
 };
 
-static void keyboard_enter(struct seat_keyboard_grab *keyboard, struct wlr_surface *surface,
+static void keyboard_enter(struct seat_keyboard_grab *keyboard, struct surface *surface,
         const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
 }
 
@@ -296,12 +296,12 @@ static void popup_ungrab(struct xdg_popup *popup) {
 
 static void role_object_destroy(struct xdg_surface *xdg) {
     if (!xdg->role_resource) return;
-    wlr_surface_unmap(xdg->surface);
+    surface_unmap(xdg->surface);
     if (xdg->role == ROLE_TOPLEVEL && xdg->toplevel) {
         struct xdg_toplevel *toplevel = xdg->toplevel;
         toplevel_reset(toplevel);
         wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
-        wlr_surface_synced_finish(&toplevel->synced);
+        surface_synced_finish(&toplevel->synced);
         wl_resource_set_user_data(toplevel->resource, NULL);
         xdg->toplevel = NULL;
         free(toplevel);
@@ -309,7 +309,7 @@ static void role_object_destroy(struct xdg_surface *xdg) {
         struct xdg_popup *popup = xdg->popup;
         popup_ungrab(popup);
         wl_signal_emit_mutable(&popup->events.destroy, NULL);
-        wlr_surface_synced_finish(&popup->synced);
+        surface_synced_finish(&popup->synced);
         wl_list_remove(&popup->link);
         wl_resource_set_user_data(popup->resource, NULL);
         xdg->popup = NULL;
@@ -329,9 +329,9 @@ static void surface_free(struct xdg_surface *xdg) {
     role_object_destroy(xdg);
     surface_reset(xdg);
     wl_signal_emit_mutable(&xdg->events.destroy, NULL);
-    if (xdg->scene) wlr_scene_node_destroy(&xdg->scene->node);
+    if (xdg->scene) node_destroy(xdg->scene);
     wl_list_remove(&xdg->link);
-    wlr_surface_synced_finish(&xdg->synced);
+    surface_synced_finish(&xdg->synced);
     wl_resource_set_user_data(xdg->resource, NULL);
     free(xdg);
 }
@@ -347,20 +347,20 @@ void xdg_popup_destroy(struct xdg_popup *popup) {
 
 static void update_geometry(struct xdg_surface *xdg) {
     struct wlr_box *geometry = &xdg->geometry;
-    wlr_surface_get_extents(xdg->surface, geometry);
+    surface_extents(xdg->surface, geometry);
     if (wlr_box_empty(&xdg->current.geometry)) return;
     wlr_box_intersection(geometry, geometry, &xdg->current.geometry);
     if (wlr_box_empty(geometry)) *geometry = xdg->current.geometry;
 }
 
-static void role_client_commit(struct wlr_surface *surface) {
-    struct xdg_surface *xdg = xdg_surface_try_from_wlr_surface(surface);
+static void role_client_commit(struct surface *surface) {
+    struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     if (!xdg) return;
-    if (wlr_surface_state_has_buffer(&surface->pending) && !xdg->configured) {
-        wlr_surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
+    if (surface_state_has_buffer(&surface->pending) && !xdg->configured) {
+        surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
             "xdg_surface has never been configured");
     } else if (!xdg->role_resource) {
-        wlr_surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
+        surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
             "xdg_surface must have a role object");
     } else if (xdg->role == ROLE_TOPLEVEL && xdg->toplevel) {
         struct toplevel_state *pending = &xdg->toplevel->pending;
@@ -368,18 +368,18 @@ static void role_client_commit(struct wlr_surface *surface) {
                 pending->max_height < 0 ||
                 (pending->max_width && pending->max_width < pending->min_width) ||
                 (pending->max_height && pending->max_height < pending->min_height))
-            wlr_surface_reject_pending(surface, xdg->toplevel->resource,
+            surface_reject_pending(surface, xdg->toplevel->resource,
                 XDG_TOPLEVEL_ERROR_INVALID_SIZE, "invalid min or max size");
     } else if (xdg->role == ROLE_POPUP && xdg->popup && !xdg->popup->parent) {
-        wlr_surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
+        surface_reject_pending(surface, xdg->resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
             "xdg_popup has no parent");
     }
 }
 
-static void role_commit(struct wlr_surface *surface) {
-    struct xdg_surface *xdg = xdg_surface_try_from_wlr_surface(surface);
+static void role_commit(struct surface *surface) {
+    struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     if (!xdg) return;
-    if (surface->mapped && !wlr_surface_has_buffer(surface)) {
+    if (surface->mapped && !surface_has_buffer(surface)) {
         if (xdg->role == ROLE_TOPLEVEL && xdg->toplevel) toplevel_reset(xdg->toplevel);
         if (xdg->role == ROLE_POPUP && xdg->popup) popup_ungrab(xdg->popup);
         surface_reset(xdg);
@@ -390,24 +390,24 @@ static void role_commit(struct wlr_surface *surface) {
     }
     if ((xdg->role == ROLE_TOPLEVEL && !xdg->toplevel) || (xdg->role == ROLE_POPUP && !xdg->popup))
         return;
-    if (!surface->mapped && wlr_surface_has_buffer(surface)) wlr_surface_map(surface);
+    if (!surface->mapped && surface_has_buffer(surface)) surface_map(surface);
     else update_geometry(xdg);
     scene_place(xdg);
 }
 
-static void role_map(struct wlr_surface *surface) {
-    struct xdg_surface *xdg = xdg_surface_try_from_wlr_surface(surface);
+static void role_map(struct surface *surface) {
+    struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     if (!xdg) return;
     update_geometry(xdg);
     scene_place(xdg);
 }
 
-static void role_destroy(struct wlr_surface *surface) {
-    struct xdg_surface *xdg = xdg_surface_try_from_wlr_surface(surface);
+static void role_destroy(struct surface *surface) {
+    struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     if (xdg) surface_free(xdg);
 }
 
-static const struct wlr_surface_role surface_role = {
+static const struct surface_role surface_role = {
     .name = "xdg_surface",
     .client_commit = role_client_commit,
     .commit = role_commit,
@@ -420,17 +420,17 @@ static void synced_move_surface(void *dst, void *src) {
     ((struct xdg_surface_state *)src)->committed = 0;
 }
 
-static const struct wlr_surface_synced_impl surface_synced = {
-    .state_size = sizeof(struct xdg_surface_state),
-    .move_state = synced_move_surface,
+static const struct surface_synced_impl surface_synced = {
+    .size = sizeof(struct xdg_surface_state),
+    .move = synced_move_surface,
 };
 
-static const struct wlr_surface_synced_impl toplevel_synced = {
-    .state_size = sizeof(struct toplevel_state),
+static const struct surface_synced_impl toplevel_synced = {
+    .size = sizeof(struct toplevel_state),
 };
 
-static const struct wlr_surface_synced_impl popup_synced = {
-    .state_size = sizeof(struct xdg_popup_state),
+static const struct surface_synced_impl popup_synced = {
+    .size = sizeof(struct xdg_popup_state),
 };
 
 static bool set_role(struct xdg_surface *xdg, int role) {
@@ -612,7 +612,7 @@ static void get_toplevel(struct wl_client *client, struct wl_resource *resource,
     struct xdg_surface *xdg = xdg_surface_from_resource(resource);
     if (!xdg || !set_role(xdg, ROLE_TOPLEVEL)) return;
     struct xdg_toplevel *toplevel = calloc(1, sizeof(*toplevel));
-    if (!toplevel || !wlr_surface_synced_init(&toplevel->synced, xdg->surface, &toplevel_synced,
+    if (!toplevel || !surface_synced_init(&toplevel->synced, xdg->surface, &toplevel_synced,
             &toplevel->pending, &toplevel->current)) {
         free(toplevel);
         wl_resource_post_no_memory(resource);
@@ -621,7 +621,7 @@ static void get_toplevel(struct wl_client *client, struct wl_resource *resource,
     toplevel->resource = wl_resource_create(client, &xdg_toplevel_interface,
         wl_resource_get_version(resource), id);
     if (!toplevel->resource) {
-        wlr_surface_synced_finish(&toplevel->synced);
+        surface_synced_finish(&toplevel->synced);
         free(toplevel);
         wl_resource_post_no_memory(resource);
         return;
@@ -734,7 +734,7 @@ static void get_popup(struct wl_client *client, struct wl_resource *resource, ui
         return;
     }
     struct xdg_popup *popup = calloc(1, sizeof(*popup));
-    if (!popup || !wlr_surface_synced_init(&popup->synced, xdg->surface, &popup_synced,
+    if (!popup || !surface_synced_init(&popup->synced, xdg->surface, &popup_synced,
             &popup->pending, &popup->current)) {
         free(popup);
         wl_resource_post_no_memory(resource);
@@ -743,7 +743,7 @@ static void get_popup(struct wl_client *client, struct wl_resource *resource, ui
     popup->resource = wl_resource_create(client, &xdg_popup_interface,
         wl_resource_get_version(resource), id);
     if (!popup->resource) {
-        wlr_surface_synced_finish(&popup->synced);
+        surface_synced_finish(&popup->synced);
         free(popup);
         wl_resource_post_no_memory(resource);
         return;
@@ -827,9 +827,9 @@ void xdg_toplevel_close(struct xdg_toplevel *toplevel) {
 
 void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_box *box) {
     int x = 0, y = 0;
-    struct wlr_surface *parent = popup->parent;
+    struct surface *parent = popup->parent;
     struct xdg_surface *xdg;
-    while (parent && (xdg = xdg_surface_try_from_wlr_surface(parent))) {
+    while (parent && (xdg = xdg_surface_from_surface(parent))) {
         if (xdg->role == ROLE_POPUP && xdg->popup) {
             x += xdg->popup->current.geometry.x;
             y += xdg->popup->current.geometry.y;
@@ -956,15 +956,15 @@ static void create_positioner(struct wl_client *client, struct wl_resource *reso
 static void get_xdg_surface(struct wl_client *client, struct wl_resource *resource, uint32_t id,
         struct wl_resource *surface_resource) {
     struct xdg_client *owner = wl_resource_get_user_data(resource);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
-    if (!wlr_surface_set_role(surface, &surface_role, resource, XDG_WM_BASE_ERROR_ROLE)) return;
-    if (wlr_surface_has_buffer(surface)) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (!surface_set_role(surface, &surface_role, resource, XDG_WM_BASE_ERROR_ROLE)) return;
+    if (surface_has_buffer(surface)) {
         wl_resource_post_error(resource, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
             "xdg_surface must not have a buffer at creation");
         return;
     }
     struct xdg_surface *xdg = calloc(1, sizeof(*xdg));
-    if (!xdg || !wlr_surface_synced_init(&xdg->synced, surface, &surface_synced, &xdg->pending,
+    if (!xdg || !surface_synced_init(&xdg->synced, surface, &surface_synced, &xdg->pending,
             &xdg->current)) {
         free(xdg);
         wl_client_post_no_memory(client);
@@ -973,7 +973,7 @@ static void get_xdg_surface(struct wl_client *client, struct wl_resource *resour
     xdg->resource = wl_resource_create(client, &xdg_surface_interface,
         wl_resource_get_version(resource), id);
     if (!xdg->resource) {
-        wlr_surface_synced_finish(&xdg->synced);
+        surface_synced_finish(&xdg->synced);
         free(xdg);
         wl_client_post_no_memory(client);
         return;
@@ -988,7 +988,7 @@ static void get_xdg_surface(struct wl_client *client, struct wl_resource *resour
     wl_signal_init(&xdg->events.configure);
     wl_resource_set_implementation(xdg->resource, &surface_impl, xdg, NULL);
     wl_list_insert(&owner->surfaces, &xdg->link);
-    wlr_surface_set_role_object(surface, xdg->resource);
+    surface_set_role_object(surface, xdg->resource);
 }
 
 static void pong(struct wl_client *client, struct wl_resource *resource, uint32_t serial) {

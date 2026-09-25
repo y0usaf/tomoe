@@ -13,19 +13,16 @@
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/drm_format_set.h>
 #include <wlr/render/pass.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
-#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
-#include <wlr/types/wlr_scene.h>
-#include <wlr/types/wlr_subcompositor.h>
-#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -38,7 +35,6 @@ struct event;
 struct binding;
 struct pointer_latch { uint32_t button; struct binding *binding; };
 struct window;
-struct tracked_surface;
 struct layer_plan;
 struct presentation;
 struct keyboard_profile;
@@ -100,7 +96,7 @@ struct output {
     struct wlr_buffer *presented[2];
     struct ring ring;
     bool lock_rendered, gamma_dirty;
-    struct wlr_surface *scanout;
+    struct surface *scanout;
 };
 
 static inline bool output_is_active(const struct output *output) {
@@ -143,7 +139,7 @@ void effect_blur(struct frame *f, struct wlr_fbox area, double radius, int passe
     double offset, int margin);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
-const pixman_region32_t *background_blur_region(struct tomoe *s, struct wlr_surface *surface);
+const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface);
 struct presentation_output {
     struct output *output;
     struct wlr_box box;
@@ -155,7 +151,7 @@ struct output_location {
     bool active, mirrored;
 };
 struct presentation_target {
-    struct wlr_scene_node *node;
+    struct node *node;
     struct target target;
     int layer_x, layer_y;
     int band;
@@ -231,6 +227,86 @@ struct presentation {
     bool grab_staged;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
+struct surface;
+struct subsurface;
+struct release;
+struct node;
+struct surface_role {
+    const char *name;
+    bool no_object, keep_buffer;
+    void (*client_commit)(struct surface *surface);
+    void (*commit)(struct surface *surface);
+    void (*map)(struct surface *surface);
+    void (*unmap)(struct surface *surface);
+    void (*destroy)(struct surface *surface);
+};
+struct surface_viewport {
+    bool has_src, has_dst;
+    struct wlr_fbox src;
+    int dst_width, dst_height;
+};
+struct surface_state {
+    uint32_t committed, locks, tearing;
+    struct wlr_buffer *buffer;
+    int dx, dy, width, height, buffer_width, buffer_height, scale;
+    enum wl_output_transform transform;
+    pixman_region32_t surface_damage, buffer_damage, input;
+    struct surface_viewport viewport;
+    struct wl_list frames, feedbacks, waits, synced, link;
+    struct wlr_drm_syncobj_timeline *acquire, *release;
+    uint64_t acquire_point, release_point;
+};
+struct surface {
+    struct wl_resource *resource;
+    struct tomoe *server;
+    struct wl_list link;
+    struct surface_state pending, current, *last_cached;
+    struct wl_list cached, synced, outputs, below, above, pending_below, pending_above;
+    struct wlr_texture *texture;
+    struct wlr_buffer *buffer;
+    struct release *release;
+    pixman_region32_t input_region;
+    const struct surface_role *role;
+    struct wl_resource *role_resource, *viewport, *fractional, *syncobj;
+    struct wl_listener role_resource_destroy;
+    struct subsurface *subsurface;
+    struct wlr_output *primary;
+    int preferred_scale;
+    uint32_t fractional_scale;
+    bool mapped, pending_rejected, sent_transform, seen, scene_owned;
+    struct {
+        struct wl_signal client_commit, commit, map, unmap, destroy;
+    } events;
+    void *data;
+};
+struct surface_synced;
+struct surface_synced_impl {
+    size_t size;
+    void (*init)(void *state);
+    void (*finish)(void *state);
+    void (*move)(void *dst, void *src);
+    void (*commit)(struct surface_synced *synced);
+};
+struct surface_synced {
+    struct surface *surface;
+    const struct surface_synced_impl *impl;
+    void *pending, *current;
+    struct wl_list link;
+};
+typedef bool (*surface_iterator)(struct surface *surface, int x, int y, void *data);
+struct node {
+    struct node *parent;
+    struct wl_list link, children;
+    bool enabled;
+    int x, y;
+    void *data;
+    struct surface *surface;
+    struct wl_listener surface_destroy;
+    struct {
+        struct wl_signal destroy;
+    } events;
+};
+
 struct seat;
 struct seat_client;
 struct source;
@@ -238,7 +314,7 @@ struct drag;
 struct seat_pointer_grab;
 struct seat_keyboard_grab;
 struct seat_pointer_grab_interface {
-    void (*enter)(struct seat_pointer_grab *grab, struct wlr_surface *surface, double sx, double sy);
+    void (*enter)(struct seat_pointer_grab *grab, struct surface *surface, double sx, double sy);
     void (*clear_focus)(struct seat_pointer_grab *grab);
     void (*motion)(struct seat_pointer_grab *grab, uint32_t time, double sx, double sy);
     uint32_t (*button)(struct seat_pointer_grab *grab, uint32_t time, uint32_t button,
@@ -249,7 +325,7 @@ struct seat_pointer_grab_interface {
     void (*cancel)(struct seat_pointer_grab *grab);
 };
 struct seat_keyboard_grab_interface {
-    void (*enter)(struct seat_keyboard_grab *grab, struct wlr_surface *surface,
+    void (*enter)(struct seat_keyboard_grab *grab, struct surface *surface,
         const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
     void (*clear_focus)(struct seat_keyboard_grab *grab);
     void (*key)(struct seat_keyboard_grab *grab, uint32_t time, uint32_t key, uint32_t state);
@@ -277,7 +353,7 @@ struct seat_client {
 struct seat_button { uint32_t button, pressed; };
 struct seat_pointer_state {
     struct seat_client *focused_client;
-    struct wlr_surface *focused_surface;
+    struct surface *focused_surface;
     double sx, sy;
     struct seat_pointer_grab *grab, default_grab;
     bool sent_axis_source, frame_pending;
@@ -289,7 +365,7 @@ struct seat_pointer_state {
 struct seat_keyboard_state {
     struct wlr_keyboard *keyboard;
     struct seat_client *focused_client;
-    struct wlr_surface *focused_surface;
+    struct surface *focused_surface;
     struct seat_keyboard_grab *grab, default_grab;
     struct wl_listener surface_destroy, keyboard_destroy, keymap, repeat_info;
 };
@@ -317,16 +393,17 @@ struct tomoe {
     struct wlr_session *session;
     struct wlr_renderer *renderer;
     struct wlr_allocator *allocator;
-    struct wlr_scene *scene;
+    struct node *scene;
     struct wlr_output_layout *layout;
-    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree;
+    struct node *window_tree, *layer_tree[4], *fullscreen_tree;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
     struct wl_list input_devices, background_effects;
-    struct wl_list windows, layers, outputs, keyboards, events, bindings, tracked_surfaces, virtual_pointers;
+    struct wl_list surfaces, feedbacks;
+    struct wl_list windows, layers, outputs, keyboards, events, bindings, virtual_pointers;
     struct wl_list activation_tokens;
     size_t activation_tracked_count;
     size_t activation_token_count;
@@ -334,7 +411,7 @@ struct tomoe {
     size_t activation_pending_count;
     struct wl_listener new_output, new_input;
     struct wl_listener motion, absolute, button, axis, frame;
-    struct wl_listener layout_change, backend_destroy, new_surface;
+    struct wl_listener layout_change, backend_destroy;
     char *last_event;
     uint32_t next_id, focused, grab_id;
     uint64_t next_binding_id, next_device_id, next_output_id;
@@ -343,7 +420,8 @@ struct tomoe {
     int grab_mode;
     double grab_x, grab_y;
     double pointer_x, pointer_y;
-    struct wlr_surface *cursor_surface;
+    struct surface *cursor_surface;
+    int32_t cursor_hotspot_x, cursor_hotspot_y;
     bool cursor_hidden;
     uint32_t hovered;
     char *ui_hovered;
@@ -373,7 +451,6 @@ struct tomoe {
     char *ui_stats_result;
     struct wl_list copy_frames, capture_sessions;
     struct wl_list relative_pointers;
-    struct wlr_presentation *presentation_time;
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;
     struct wl_list tearings;
@@ -384,7 +461,7 @@ struct tomoe {
     struct wl_resource *session_lock;
     bool lock_confirmed;
     int lock_state;
-    struct wlr_scene_tree *drag_icon_tree, *lock_tree;
+    struct node *drag_icon_tree, *lock_tree;
     struct wl_list constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
     struct target drag_icon;
@@ -417,7 +494,7 @@ struct xdg_toplevel {
         struct wlr_output *fullscreen_output;
         struct wl_listener fullscreen_output_destroy;
     } requested;
-    struct wlr_surface_synced synced;
+    struct surface_synced synced;
     struct {
         struct wl_signal destroy, set_title, set_app_id, request_maximize, request_fullscreen,
             request_minimize, request_move, request_resize;
@@ -430,7 +507,7 @@ struct xdg_popup_state {
 struct xdg_popup {
     struct wl_resource *resource;
     struct xdg_surface *base;
-    struct wlr_surface *parent;
+    struct surface *parent;
     struct wl_list link, grab_link;
     bool grabbed;
     struct xdg_popup_state pending, current;
@@ -440,7 +517,7 @@ struct xdg_popup {
         bool reposition;
         uint32_t token;
     } scheduled;
-    struct wlr_surface_synced synced;
+    struct surface_synced synced;
     struct { struct wl_signal destroy, reposition; } events;
 };
 struct xdg_surface_state {
@@ -458,7 +535,7 @@ struct xdg_surface {
     struct wl_resource *resource, *client, *role_resource;
     struct tomoe *server;
     struct wl_list link, popups;
-    struct wlr_surface *surface;
+    struct surface *surface;
     struct xdg_toplevel *toplevel;
     struct xdg_popup *popup;
     int role;
@@ -466,12 +543,12 @@ struct xdg_surface {
     bool initialized, initial_commit, configured;
     struct wlr_box geometry;
     struct xdg_surface_state pending, current;
-    struct wlr_surface_synced synced;
+    struct surface_synced synced;
     struct xdg_configure configures[XDG_CONFIGURES];
     size_t configure_count;
     struct wl_event_source *configure_idle;
     uint32_t scheduled_serial;
-    struct wlr_scene_tree *scene, *scene_surface;
+    struct node *scene, *scene_surface;
     void *data;
     struct { struct wl_signal destroy, configure; } events;
 };
@@ -480,9 +557,9 @@ void xdg_shell_finish(struct tomoe *s);
 struct xdg_surface *xdg_surface_from_resource(struct wl_resource *resource);
 struct xdg_toplevel *xdg_toplevel_from_resource(struct wl_resource *resource);
 struct xdg_popup *xdg_popup_from_resource(struct wl_resource *resource);
-struct xdg_surface *xdg_surface_try_from_wlr_surface(struct wlr_surface *surface);
-struct xdg_toplevel *xdg_toplevel_try_from_wlr_surface(struct wlr_surface *surface);
-struct wlr_scene_tree *xdg_surface_scene(struct wlr_scene_tree *parent, struct xdg_surface *xdg);
+struct xdg_surface *xdg_surface_from_surface(struct surface *surface);
+struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface);
+struct node *xdg_surface_scene(struct node *parent, struct xdg_surface *xdg);
 uint32_t xdg_surface_schedule_configure(struct xdg_surface *xdg);
 uint32_t xdg_toplevel_set_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height);
 uint32_t xdg_toplevel_set_activated(struct xdg_toplevel *toplevel, bool activated);
@@ -505,12 +582,12 @@ struct layer_surface_state {
 struct layer_surface {
     struct wl_resource *resource;
     struct tomoe *server;
-    struct wlr_surface *surface;
+    struct surface *surface;
     struct wlr_output *output;
     char *namespace;
     bool initialized, initial_commit, configured;
     struct layer_surface_state current, pending;
-    struct wlr_surface_synced synced;
+    struct surface_synced synced;
     struct wl_list popups;
     void *data;
 };
@@ -524,7 +601,7 @@ struct layer {
     struct wl_list link;
     struct tomoe *server;
     struct layer_surface *wlr;
-    struct wlr_scene_tree *tree;
+    struct node *tree;
     struct wl_listener commit, map, unmap;
     int override_layer, override_exclusive_zone, override_keyboard, override_visible;
     struct layer_state last;
@@ -601,26 +678,24 @@ void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
 void surfaces_textured(struct output *o);
-struct wlr_surface *scanout_surface(struct output *o);
-bool surface_visible(struct tomoe *s, struct wlr_surface *surface);
+struct surface *scanout_surface(struct output *o);
+bool surface_visible(struct tomoe *s, struct surface *surface);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
-    struct wlr_surface **surface, double *sx, double *sy);
-void set_surface_scale(struct wlr_surface *surface, double scale);
-void surfaces_listen(struct tomoe *s, struct wlr_compositor *compositor);
+    struct surface **surface, double *sx, double *sy);
 
-struct wlr_surface *surface_of(struct window *w);
+struct surface *surface_of(struct window *w);
 struct window *find_window(struct tomoe *s, uint32_t id);
 struct window *find_window_registered(struct tomoe *s, uint32_t id);
 struct window *find_window_any(struct tomoe *s, uint32_t id);
-uint32_t find_window_id_for_surface(struct tomoe *s, struct wlr_surface *surface);
-bool window_surface_mapped(struct tomoe *s, struct wlr_surface *surface);
-void popup_create(struct xdg_popup *xdg, struct wlr_scene_tree *parent);
+uint32_t find_window_id_for_surface(struct tomoe *s, struct surface *surface);
+bool window_surface_mapped(struct tomoe *s, struct surface *surface);
+void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);
 bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
-struct wlr_scene_node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
+struct node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
 bool foreign_listen(struct tomoe *s);
 void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
     uint32_t state, struct wlr_output *const *outputs, size_t output_count);
@@ -665,7 +740,7 @@ bool virtual_input_listen(struct tomoe *s);
 struct wlr_output *virtual_pointer_output(struct tomoe *s, struct wlr_input_device *device);
 
 bool activation_listen(struct tomoe *s);
-void activation_surface_mapped(struct tomoe *s, struct wlr_surface *surface);
+void activation_surface_mapped(struct tomoe *s, struct surface *surface);
 void activation_finish(struct tomoe *s);
 
 bool protocols_listen(struct tomoe *s);
@@ -679,10 +754,10 @@ void gamma_apply(struct output *o, struct wlr_output_state *state);
 bool gamma_listen(struct tomoe *s);
 bool decoration_listen(struct tomoe *s);
 bool tearing_listen(struct tomoe *s);
-bool tearing_async(struct tomoe *s, struct wlr_surface *surface);
+bool tearing_async(struct tomoe *s, struct surface *surface);
 void gamma_output_gone(struct output *o);
 void drag_icons_refresh(struct tomoe *s);
-void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);
+void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy);
 bool constraint_allows(struct tomoe *s, double x, double y);
 
 bool lock_listen(struct tomoe *s);
@@ -700,7 +775,7 @@ bool screenshot_render_frozen(struct output *o, struct frame *f);
 void screenshot_render(struct output *o, struct frame *f);
 void screenshot_output_gone(struct tomoe *s, struct output *o);
 void screenshot_finish(struct tomoe *s);
-struct wlr_surface *lock_keyboard_surface(struct tomoe *s);
+struct surface *lock_keyboard_surface(struct tomoe *s);
 
 struct seat *seat_create(struct tomoe *s);
 void seat_destroy(struct seat *seat);
@@ -709,7 +784,7 @@ struct seat_client *seat_client_from_resource(struct wl_resource *resource);
 void seat_set_capabilities(struct seat *seat, uint32_t capabilities);
 void seat_set_keyboard(struct seat *seat, struct wlr_keyboard *keyboard);
 struct wlr_keyboard *seat_get_keyboard(struct seat *seat);
-void seat_pointer_enter(struct seat *seat, struct wlr_surface *surface, double sx, double sy);
+void seat_pointer_enter(struct seat *seat, struct surface *surface, double sx, double sy);
 void seat_pointer_clear_focus(struct seat *seat);
 void seat_pointer_send_motion(struct seat *seat, uint32_t time, double sx, double sy);
 uint32_t seat_pointer_send_button(struct seat *seat, uint32_t time, uint32_t button,
@@ -719,7 +794,7 @@ void seat_pointer_send_axis(struct seat *seat, uint32_t time, uint32_t orientati
 void seat_pointer_send_frame(struct seat *seat);
 void seat_pointer_start_grab(struct seat *seat, struct seat_pointer_grab *grab);
 void seat_pointer_end_grab(struct seat *seat);
-void seat_pointer_notify_enter(struct seat *seat, struct wlr_surface *surface, double sx,
+void seat_pointer_notify_enter(struct seat *seat, struct surface *surface, double sx,
     double sy);
 void seat_pointer_notify_clear_focus(struct seat *seat);
 void seat_pointer_notify_motion(struct seat *seat, uint32_t time, double sx, double sy);
@@ -728,26 +803,65 @@ uint32_t seat_pointer_notify_button(struct seat *seat, uint32_t time, uint32_t b
 void seat_pointer_notify_axis(struct seat *seat, uint32_t time, uint32_t orientation, double value,
     int32_t discrete, uint32_t source, uint32_t direction);
 void seat_pointer_notify_frame(struct seat *seat);
-bool seat_validate_pointer_grab_serial(struct seat *seat, struct wlr_surface *origin,
+bool seat_validate_pointer_grab_serial(struct seat *seat, struct surface *origin,
     uint32_t serial);
-void seat_keyboard_enter(struct seat *seat, struct wlr_surface *surface, const uint32_t keys[],
+void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint32_t keys[],
     size_t count, const struct wlr_keyboard_modifiers *modifiers);
 void seat_keyboard_clear_focus(struct seat *seat);
 void seat_keyboard_send_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
 void seat_keyboard_send_modifiers(struct seat *seat, const struct wlr_keyboard_modifiers *modifiers);
 void seat_keyboard_start_grab(struct seat *seat, struct seat_keyboard_grab *grab);
 void seat_keyboard_end_grab(struct seat *seat);
-void seat_keyboard_notify_enter(struct seat *seat, struct wlr_surface *surface,
+void seat_keyboard_notify_enter(struct seat *seat, struct surface *surface,
     const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
 void seat_keyboard_notify_clear_focus(struct seat *seat);
 void seat_keyboard_notify_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
 void seat_keyboard_notify_modifiers(struct seat *seat,
     const struct wlr_keyboard_modifiers *modifiers);
 size_t keyboard_pressed(struct tomoe *s, uint32_t *keys);
-void cursor_requested(struct tomoe *s, struct wlr_surface *surface, int32_t x, int32_t y);
+void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y);
+void cursor_committed(struct tomoe *s, struct surface *surface);
 void cursor_default(struct tomoe *s);
 bool selection_listen(struct tomoe *s);
 bool buffers_listen(struct tomoe *s);
+bool surfaces_listen(struct tomoe *s);
+void surfaces_finish(struct tomoe *s);
+struct surface *surface_from_resource(struct wl_resource *resource);
+pixman_region32_t *region_from_resource(struct wl_resource *resource);
+bool surface_has_buffer(struct surface *surface);
+bool surface_state_has_buffer(const struct surface_state *state);
+bool surface_synced_init(struct surface_synced *synced, struct surface *surface,
+    const struct surface_synced_impl *impl, void *pending, void *current);
+void surface_synced_finish(struct surface_synced *synced);
+void surface_map(struct surface *surface);
+void surface_unmap(struct surface *surface);
+void surface_reject_pending(struct surface *surface, struct wl_resource *resource, uint32_t code,
+    const char *message);
+bool surface_set_role(struct surface *surface, const struct surface_role *role,
+    struct wl_resource *error_resource, uint32_t error_code);
+void surface_set_role_object(struct surface *surface, struct wl_resource *resource);
+struct surface *surface_root(struct surface *surface);
+void surface_extents(struct surface *surface, struct wlr_box *box);
+bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_iterator iterator,
+    void *data);
+void surface_source_box(struct surface *surface, struct wlr_fbox *box);
+bool surface_accepts_input(struct surface *surface, double sx, double sy);
+void surface_send_enter(struct surface *surface, struct wlr_output *output);
+void surface_send_leave(struct surface *surface, struct wlr_output *output);
+void surface_leave_all(struct surface *surface);
+bool surface_on_output(struct surface *surface, struct wlr_output *output);
+void surface_frame_done(struct surface *surface, const struct timespec *when);
+void surface_set_scale(struct surface *surface, double scale);
+void surface_set_tearing(struct surface *surface, uint32_t hint);
+void surface_presented(struct surface *surface, struct wlr_output *output, bool zero_copy);
+void surface_release_after(struct surface *surface, struct wlr_buffer *consumer);
+struct node *node_create(struct node *parent);
+struct node *node_surface_create(struct node *parent, struct surface *surface);
+void node_destroy(struct node *node);
+void node_set_enabled(struct node *node, bool enabled);
+void node_set_position(struct node *node, int x, int y);
+void node_raise_to_top(struct node *node);
+void node_reparent(struct node *node, struct node *parent);
 void buffers_finish(void);
 void seat_selection_focus(struct seat *seat, struct seat_client *client);
 void seat_selection_finish(struct seat *seat);

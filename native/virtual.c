@@ -290,7 +290,6 @@ static void bind_keyboard(struct wl_client *client, void *data, uint32_t version
 }
 
 bool virtual_input_listen(struct tomoe *s) {
-    wl_list_init(&s->virtual_pointers);
     return wl_global_create(s->display, &zwlr_virtual_pointer_manager_v1_interface, 2, s,
             bind_pointer) &&
         wl_global_create(s->display, &zwp_virtual_keyboard_manager_v1_interface, 1, s,

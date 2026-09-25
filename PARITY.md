@@ -31,7 +31,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 23 | `Window:set_properties` radius/tearing/blur/border | crates/tomoe/src/lua.rs | src/api.lisp `window-properties`, native/presentation.c `tomoe_present_window_style` | Done |
 | 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | native/space.c `scanout_surface`, native/output.c `output_frame` | Done |
-| 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/protocols.c, native/space.c `surfaces_textured` | Done |
+| 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/surface.c `surface_presented`, native/space.c `surfaces_textured` | Done |
 | 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/selection.c `start_drag`, native/protocols.c `drag_icons_refresh` | Done |
 | 28 | `XCURSOR_THEME` / `XCURSOR_SIZE` | crates/tomoe/src/cursor.rs | native/backend.c | Done |
 | 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | wlroots built-in cursor via native/backend.c | Improved: wlroots draws its built-in arrow when no theme loads, instead of an 8×16 white block |
@@ -71,7 +71,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/selection.c | Done |
 | 64 | Viewporter, xdg-output | crates/tomoe/src/state.rs | native/backend.c | Done |
 | 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/backend.c `wlr_renderer_init_wl_display` | Done |
-| 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | native/protocols.c `syncobj_listen`, native/space.c `render_leaf` | Done |
+| 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | native/surface.c, native/space.c `render_leaf` | Done |
 | 67 | libseat session pause/resume | crates/tomoe/src/backend/tty.rs | wlroots session via native/backend.c | Done |
 | 68 | DRM hotplug | crates/tomoe/src/backend/tty.rs | native/output.c | Done |
 | 69 | Modes preferred / max / WxH, `@Hz` / `@max` | crates/tomoe/src/lua.rs, backend/tty.rs | native/output.c `pick_output_mode`, src/api.lisp `configure-output :refresh` | Done |

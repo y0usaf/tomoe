@@ -2,20 +2,10 @@
 #include "ui.h"
 #include <wlr/backend/headless.h>
 #include <wlr/types/wlr_buffer.h>
-#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/render/drm_syncobj.h>
-#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <poll.h>
 #include <unistd.h>
 
-struct tracked_surface {
-    struct wl_list link;
-    struct tomoe *server;
-    struct wlr_surface *surface;
-    struct wlr_output *primary;
-    struct wl_listener destroy, commit;
-    bool seen, scene_owned;
-};
 
 int pixel_round(double value) {
     if (value >= INT_MAX) return INT_MAX;
@@ -78,11 +68,6 @@ void screen_to_protocol(struct tomoe *s, double *x, double *y) {
         *x /= reference_scale(s); *y /= reference_scale(s);
     }
 }
-void set_surface_scale(struct wlr_surface *surface, double scale) {
-    wlr_fractional_scale_v1_notify_scale(surface, scale);
-    wlr_surface_set_preferred_buffer_scale(surface, (int)ceil(scale));
-    wlr_surface_set_preferred_buffer_transform(surface, WL_OUTPUT_TRANSFORM_NORMAL);
-}
 void schedule_scene(struct tomoe *s) {
     if (s->stopping) return;
     s->scene_dirty = true;
@@ -100,27 +85,17 @@ void tomoe_set_view(struct tomoe *s, int x, int y, double zoom) {
 }
 
 struct leaf {
-    struct wlr_scene_node *node;
+    struct surface *surface;
     const struct target *target;
     int width, height;
     double x, y, scale, zoom;
     struct wlr_box screen;
 };
-static bool make_leaf(struct tomoe *s, struct wlr_scene_node *node,
+static bool make_leaf(struct tomoe *s, struct surface *surface,
         const struct target *target, double lx, double ly, struct leaf *leaf,
         const struct presentation *plan, const struct presentation_target *root) {
-    int width = 0, height = 0;
-    if (node->type == WLR_SCENE_NODE_BUFFER) {
-        struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
-        struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(buffer);
-        if (buffer->opacity == 0 || !surface || !wlr_surface_get_texture(surface->surface)) return false;
-        width = buffer->dst_width ? buffer->dst_width : surface->surface->current.width;
-        height = buffer->dst_height ? buffer->dst_height : surface->surface->current.height;
-    } else if (node->type == WLR_SCENE_NODE_RECT) {
-        struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
-        width = rect->width; height = rect->height;
-    }
-    if (width <= 0 || height <= 0) return false;
+    int width = surface->current.width, height = surface->current.height;
+    if (!surface->texture || width <= 0 || height <= 0) return false;
     double scale = target ? target->scale : 1.0;
     if (scale <= 0) scale = 1.0;
     double x = target ? (double)target->x - physical_offset(target->geometry_x, scale) +
@@ -132,8 +107,8 @@ static bool make_leaf(struct tomoe *s, struct wlr_scene_node *node,
     if (target && target->kind == TARGET_LAYER) {
         struct layer *layer = root ? NULL : find_layer(s, target->id);
         if (!root && !layer) return false;
-        double ox = root ? root->layer_x : layer->tree->node.x;
-        double oy = root ? root->layer_y : layer->tree->node.y;
+        double ox = root ? root->layer_x : layer->tree->x;
+        double oy = root ? root->layer_y : layer->tree->y;
         double base_x = (double)target->x - physical_offset(ox, scale);
         double base_y = (double)target->y - physical_offset(oy, scale);
         x = base_x + physical_offset(ox + lx, scale);
@@ -155,7 +130,7 @@ static bool make_leaf(struct tomoe *s, struct wlr_scene_node *node,
             zoom = s->view_zoom;
         }
     }
-    *leaf = (struct leaf){ .node = node, .target = target,
+    *leaf = (struct leaf){ .surface = surface, .target = target,
         .width = width, .height = height, .x = x, .y = y, .scale = scale, .zoom = zoom,
         .screen = { .x = pixel_round(sx), .y = pixel_round(sy) } };
     int64_t pw = (int64_t)pixel_round(right) - leaf->screen.x;
@@ -165,7 +140,22 @@ static bool make_leaf(struct tomoe *s, struct wlr_scene_node *node,
     return true;
 }
 typedef bool (*leaf_iterator)(struct tomoe *s, struct leaf *leaf, void *data);
-static bool walk_scene(struct tomoe *s, struct wlr_scene_node *node,
+struct surface_walk {
+    struct tomoe *server;
+    const struct target *target;
+    const struct presentation *plan;
+    const struct presentation_target *root;
+    double x, y;
+    leaf_iterator iterator;
+    void *data;
+};
+static bool walk_leaf(struct surface *surface, int x, int y, void *opaque) {
+    struct surface_walk *walk = opaque;
+    struct leaf leaf;
+    return make_leaf(walk->server, surface, walk->target, walk->x + x, walk->y + y, &leaf,
+        walk->plan, walk->root) && walk->iterator(walk->server, &leaf, walk->data);
+}
+static bool walk_scene(struct tomoe *s, struct node *node,
         struct target *target, double x, double y, bool reverse,
         leaf_iterator iterator, void *data) {
     if (!node->enabled) return false;
@@ -175,69 +165,36 @@ static bool walk_scene(struct tomoe *s, struct wlr_scene_node *node,
     } else {
         x += node->x; y += node->y;
     }
-    if (node->type == WLR_SCENE_NODE_TREE) {
-        struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
-        struct wlr_scene_node *child;
-        if (reverse) {
-            wl_list_for_each_reverse(child, &tree->children, link)
-                if (walk_scene(s, child, target, x, y, reverse, iterator, data)) return true;
-        } else {
-            wl_list_for_each(child, &tree->children, link)
-                if (walk_scene(s, child, target, x, y, reverse, iterator, data)) return true;
-        }
-        return false;
+    struct surface_walk walk = { .server = s, .target = target, .x = x, .y = y,
+        .iterator = iterator, .data = data };
+    if (!reverse && node->surface && surface_walk(node->surface, 0, 0, false, walk_leaf, &walk))
+        return true;
+    struct node *child;
+    if (reverse) {
+        wl_list_for_each_reverse(child, &node->children, link)
+            if (walk_scene(s, child, target, x, y, reverse, iterator, data)) return true;
+    } else {
+        wl_list_for_each(child, &node->children, link)
+            if (walk_scene(s, child, target, x, y, reverse, iterator, data)) return true;
     }
-    struct leaf leaf;
-    return make_leaf(s, node, target, x, y, &leaf, NULL, NULL) && iterator(s, &leaf, data);
+    return reverse && node->surface && surface_walk(node->surface, 0, 0, true, walk_leaf, &walk);
 }
 static void walk_presentation_root(struct tomoe *s, const struct presentation *plan,
-        const struct presentation_target *root, struct wlr_scene_node *node,
+        const struct presentation_target *root, struct node *node,
         double x, double y, leaf_iterator iterator, void *data) {
     if (node != root->node) {
         if (!node->enabled) return;
         x += node->x;
         y += node->y;
     }
-    if (node->type == WLR_SCENE_NODE_TREE) {
-        struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
-        struct wlr_scene_node *child;
-        wl_list_for_each(child, &tree->children, link)
-            walk_presentation_root(s, plan, root, child, x, y, iterator, data);
-    } else {
-        struct leaf leaf;
-        if (make_leaf(s, node, &root->target, x, y, &leaf, plan, root))
-            iterator(s, &leaf, data);
+    if (node->surface) {
+        struct surface_walk walk = { .server = s, .target = &root->target, .plan = plan,
+            .root = root, .x = x, .y = y, .iterator = iterator, .data = data };
+        surface_walk(node->surface, 0, 0, false, walk_leaf, &walk);
     }
-}
-static void tracked_destroy(struct wl_listener *listener, void *data) {
-    struct tracked_surface *track = wl_container_of(listener, track, destroy);
-    schedule_scene(track->server);
-    detach(&track->commit);
-    wl_list_remove(&track->destroy.link); wl_list_remove(&track->link);
-    free(track);
-}
-static void tracked_commit(struct wl_listener *listener, void *data) {
-    struct tracked_surface *track = wl_container_of(listener, track, commit);
-    schedule_scene(track->server);
-}
-static struct tracked_surface *track_surface(struct tomoe *s, struct wlr_surface *surface) {
-    struct tracked_surface *track;
-    wl_list_for_each(track, &s->tracked_surfaces, link)
-        if (track->surface == surface) return track;
-    track = calloc(1, sizeof(*track));
-    if (!track) { fail(s, "surface feedback allocation failed"); return NULL; }
-    track->server = s; track->surface = surface;
-    listen(&track->destroy, &surface->events.destroy, tracked_destroy);
-    listen(&track->commit, &surface->events.commit, tracked_commit);
-    wl_list_insert(s->tracked_surfaces.prev, &track->link);
-    return track;
-}
-static void new_surface(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_surface);
-    track_surface(s, data);
-}
-void surfaces_listen(struct tomoe *s, struct wlr_compositor *compositor) {
-    listen(&s->new_surface, &compositor->events.new_surface, new_surface);
+    struct node *child;
+    wl_list_for_each(child, &node->children, link)
+        walk_presentation_root(s, plan, root, child, x, y, iterator, data);
 }
 static bool overlaps_output(struct leaf *leaf, struct output *o, struct wlr_box *overlap) {
     struct wlr_box box;
@@ -245,73 +202,53 @@ static bool overlaps_output(struct leaf *leaf, struct output *o, struct wlr_box 
     return output_is_active(o) && wlr_box_intersection(overlap, &leaf->screen, &box);
 }
 static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
-    if (leaf->node->type != WLR_SCENE_NODE_BUFFER) return false;
-    struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(
-        wlr_scene_buffer_from_node(leaf->node));
-    struct tracked_surface *track = track_surface(s, ss->surface);
-    if (!track) return false;
-    track->seen = true;
-    track->scene_owned = true;
-    struct wlr_surface_output *entered, *next;
-    wl_list_for_each_safe(entered, next, &ss->surface->current_outputs, link) {
-        bool visible = false;
-        struct output *o;
-        wl_list_for_each(o, &s->outputs, link) {
-            struct wlr_box overlap;
-            if (o->wlr == entered->output && overlaps_output(leaf, o, &overlap)) visible = true;
-        }
-        if (!visible) wlr_surface_send_leave(ss->surface, entered->output);
-    }
+    struct surface *surface = leaf->surface;
+    surface->seen = surface->scene_owned = true;
     int64_t largest = 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
         struct wlr_box overlap;
-        if (!overlaps_output(leaf, o, &overlap)) continue;
-        wlr_surface_send_enter(ss->surface, o->wlr);
+        if (!overlaps_output(leaf, o, &overlap)) {
+            surface_send_leave(surface, o->wlr);
+            continue;
+        }
+        surface_send_enter(surface, o->wlr);
         int64_t area = (int64_t)overlap.width * overlap.height;
-        if (area > largest) { track->primary = o->wlr; largest = area; }
+        if (area > largest) { surface->primary = o->wlr; largest = area; }
     }
-    set_surface_scale(ss->surface, leaf->scale);
+    surface_set_scale(surface, leaf->scale);
     return false;
 }
 void refresh_scene(struct tomoe *s) {
     if (!s->scene_dirty || s->stopping) return;
     s->scene_dirty = false;
-    struct tracked_surface *track;
-    wl_list_for_each(track, &s->tracked_surfaces, link) { track->seen = false; track->primary = NULL; }
-    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, false, refresh_leaf, NULL);
-    wl_list_for_each(track, &s->tracked_surfaces, link) {
-        if (track->seen || !track->scene_owned) continue;
-        struct wlr_surface_output *entered, *next;
-        wl_list_for_each_safe(entered, next, &track->surface->current_outputs, link)
-            wlr_surface_send_leave(track->surface, entered->output);
-    }
+    struct surface *surface;
+    wl_list_for_each(surface, &s->surfaces, link) { surface->seen = false; surface->primary = NULL; }
+    walk_scene(s, s->scene, NULL, 0, 0, false, refresh_leaf, NULL);
+    wl_list_for_each(surface, &s->surfaces, link)
+        if (!surface->seen && surface->scene_owned) surface_leave_all(surface);
     pointer_refresh(s);
 }
 void forget_output(struct tomoe *s, struct wlr_output *output) {
-    struct tracked_surface *track;
-    wl_list_for_each(track, &s->tracked_surfaces, link) {
-        if (track->primary == output) track->primary = NULL;
-        if (track->scene_owned) wlr_surface_send_leave(track->surface, output);
+    struct surface *surface;
+    wl_list_for_each(surface, &s->surfaces, link) {
+        if (surface->primary == output) surface->primary = NULL;
+        if (surface->scene_owned) surface_send_leave(surface, output);
     }
 }
-bool surface_visible(struct tomoe *s, struct wlr_surface *surface) {
-    struct tracked_surface *track;
-    wl_list_for_each(track, &s->tracked_surfaces, link)
-        if (track->surface == surface) return track->seen;
-    return false;
+bool surface_visible(struct tomoe *s, struct surface *surface) {
+    return surface->seen;
 }
 void surfaces_textured(struct output *o) {
-    struct tracked_surface *track;
-    wl_list_for_each(track, &o->server->tracked_surfaces, link)
-        if (track->seen && track->primary == o->wlr)
-            wlr_presentation_surface_textured_on_output(track->surface, o->wlr);
+    struct surface *surface;
+    wl_list_for_each(surface, &o->server->surfaces, link)
+        if (surface->seen && surface->primary == o->wlr) surface_presented(surface, o->wlr, false);
 }
 void frame_done(struct output *o, const struct timespec *when) {
-    struct tracked_surface *track;
-    wl_list_for_each(track, &o->server->tracked_surfaces, link)
-        if (track->seen && track->primary == o->wlr)
-            wlr_surface_send_frame_done(track->surface, when);
+    struct surface *surface;
+    wl_list_for_each(surface, &o->server->surfaces, link)
+        if (surface->seen && surface->primary == o->wlr) surface_frame_done(surface, when);
+    if (o->server->cursor_surface) surface_frame_done(o->server->cursor_surface, when);
 }
 
 static struct wlr_fbox window_box(const struct target *t, const struct frame *f) {
@@ -323,9 +260,9 @@ static struct wlr_fbox window_box(const struct target *t, const struct frame *f)
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }
-static bool toplevel_surface(struct wlr_surface *surface) {
-    struct wlr_surface *root = wlr_surface_get_root_surface(surface);
-    return xdg_toplevel_try_from_wlr_surface(root);
+static bool toplevel_surface(struct surface *surface) {
+    struct surface *root = surface_root(surface);
+    return xdg_toplevel_from_surface(root);
 }
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
@@ -338,35 +275,20 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     local.x = (int)x; local.y = (int)y;
     struct wlr_box dst;
     wlr_box_transform(&dst, &local, wlr_output_transform_invert(data->transform), data->width, data->height);
-    if (leaf->node->type == WLR_SCENE_NODE_RECT) {
-        struct wlr_scene_rect *rect = wlr_scene_rect_from_node(leaf->node);
-        wlr_render_pass_add_rect(data->pass, &(struct wlr_render_rect_options){
-            .box = dst, .color = { rect->color[0], rect->color[1], rect->color[2], rect->color[3] } });
-        return false;
-    }
-    struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(leaf->node);
-    struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(buffer);
-    struct wlr_texture *texture = wlr_surface_get_texture(surface->surface);
-    struct wlr_linux_drm_syncobj_surface_v1_state *sync =
-        wlr_linux_drm_syncobj_v1_get_surface_state(surface->surface);
-    if (sync && sync->acquire_timeline)
-        wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(sync, data->buffer);
-    struct wlr_color_primaries primaries;
-    if (buffer->primaries != 0) wlr_color_primaries_from_named(&primaries, buffer->primaries);
+    struct surface *surface = leaf->surface;
+    surface_release_after(surface, data->buffer);
+    struct wlr_fbox src;
+    surface_source_box(surface, &src);
+    float alpha = window ? t->alpha : 1;
     struct wlr_render_texture_options options = {
-        .texture = texture, .src_box = buffer->src_box, .dst_box = dst,
-        .transform = wlr_output_transform_compose(wlr_output_transform_invert(buffer->transform), data->transform),
-        .alpha = &buffer->opacity, .filter_mode = buffer->filter_mode,
-        .transfer_function = buffer->transfer_function,
-        .primaries = buffer->primaries ? &primaries : NULL,
-        .color_encoding = buffer->color_encoding, .color_range = buffer->color_range,
-        .wait_timeline = sync ? sync->acquire_timeline : NULL,
-        .wait_point = sync ? sync->acquire_point : 0,
+        .texture = surface->texture, .src_box = src, .dst_box = dst,
+        .transform = wlr_output_transform_compose(
+            wlr_output_transform_invert(surface->current.transform), data->transform),
+        .alpha = &alpha,
+        .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
     };
-    float alpha = buffer->opacity * (window ? t->alpha : 1);
-    options.alpha = &alpha;
     if (window && !t->fullscreen && t->client_width > 0 &&
-            window_radius(s, t, data) > 0 && toplevel_surface(surface->surface) &&
+            window_radius(s, t, data) > 0 && toplevel_surface(surface) &&
             effect_texture(data, &options, (struct wlr_fbox){ local.x, local.y, local.width,
                 local.height }, window_box(t, data), window_radius(s, t, data)))
         return false;
@@ -455,7 +377,7 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     if (st->blur_enabled && t->style.blur == 1 && zoom == 1)
         effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin);
 }
-static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct target *target,
+static void render_walk(struct tomoe *s, struct node *node, struct target *target,
         double x, double y, struct frame *f) {
     if (!node->enabled) return;
     if (node->data) {
@@ -465,14 +387,13 @@ static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct tar
     } else {
         x += node->x; y += node->y;
     }
-    if (node->type == WLR_SCENE_NODE_TREE) {
-        struct wlr_scene_node *child;
-        wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link)
-            render_walk(s, child, target, x, y, f);
-        return;
+    if (node->surface) {
+        struct surface_walk walk = { .server = s, .target = target, .x = x, .y = y,
+            .iterator = render_leaf, .data = f };
+        surface_walk(node->surface, 0, 0, false, walk_leaf, &walk);
     }
-    struct leaf leaf;
-    if (make_leaf(s, node, target, x, y, &leaf, NULL, NULL)) render_leaf(s, &leaf, f);
+    struct node *child;
+    wl_list_for_each(child, &node->children, link) render_walk(s, child, target, x, y, f);
 }
 bool fenced(struct wlr_output *output) {
     return output->renderer->features.timeline && output->backend->features.timeline &&
@@ -513,7 +434,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
     bool frozen = !locked && screenshot_render_frozen(o, &data);
     if (locked) {
-        walk_scene(o->server, &o->server->lock_tree->node, NULL, 0, 0, false, render_leaf, &data);
+        walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, &data);
     } else if (frozen) {
     } else if (plan) {
         for (size_t i = 0; i < plan->target_count; i++) {
@@ -524,8 +445,9 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
             decorate(o->server, &target, &data);
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, &data);
         }
+        render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, &data);
     } else {
-        render_walk(o->server, &o->server->scene->tree.node, NULL, 0, 0, &data);
+        render_walk(o->server, o->server->scene, NULL, 0, 0, &data);
     }
     if (!locked && !frozen) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
     if (!locked && cursors) screenshot_render(o, &data);
@@ -618,63 +540,57 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffe
     return wlr_render_pass_submit(pass);
 }
 
-struct hit_data { double x, y, sx, sy, ratio; struct wlr_surface *surface; uint32_t id; };
+struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
-    if (leaf->node->type != WLR_SCENE_NODE_BUFFER || hit->x < leaf->screen.x || hit->y < leaf->screen.y ||
+    if (hit->x < leaf->screen.x || hit->y < leaf->screen.y ||
             hit->x >= (double)leaf->screen.x + leaf->screen.width ||
             hit->y >= (double)leaf->screen.y + leaf->screen.height) return false;
     double sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
     double sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
-    struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(leaf->node);
-    if (buffer->point_accepts_input && !buffer->point_accepts_input(buffer, &sx, &sy)) return false;
-    struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(buffer);
-    hit->surface = ss->surface; hit->sx = sx; hit->sy = sy;
+    if (!surface_accepts_input(leaf->surface, sx, sy)) return false;
+    hit->surface = leaf->surface; hit->sx = sx; hit->sy = sy;
     hit->ratio = (double)leaf->screen.width / leaf->width;
     hit->id = leaf->target && leaf->target->kind != TARGET_UNMANAGED ? leaf->target->id : 0;
     return true;
 }
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
-        struct wlr_surface **surface, double *sx, double *sy) {
+        struct surface **surface, double *sx, double *sy) {
     struct ui_hit ui;
     if (!lock_active(s) && ui_hit_at(s, x, y, &ui)) {
         *surface = NULL; *sx = ui.x; *sy = ui.y;
         return 0;
     }
     struct hit_data hit = { .x = x, .y = y };
-    walk_scene(s, lock_active(s) ? &s->lock_tree->node : &s->scene->tree.node,
+    walk_scene(s, lock_active(s) ? s->lock_tree : s->scene,
         NULL, 0, 0, true, hit_leaf, &hit);
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
 }
-struct scanout_data { struct wlr_box output; struct wlr_surface *surface; bool done; };
+struct scanout_data { struct wlr_box output; struct surface *surface; bool done; };
 static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct scanout_data *data = opaque;
     struct wlr_box overlap;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
     if (!wlr_box_intersection(&overlap, &leaf->screen, &data->output)) return false;
     data->done = true;
-    if (leaf->node->type != WLR_SCENE_NODE_BUFFER || !wlr_box_equal(&leaf->screen, &data->output))
-        return true;
-    struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(leaf->node);
-    struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+    if (!wlr_box_equal(&leaf->screen, &data->output)) return true;
     const struct target *t = leaf->target;
-    if (!scene_surface || buffer->opacity != 1 || (buffer->src_box.width > 0 &&
-            (buffer->src_box.x != 0 || buffer->src_box.y != 0)) ||
+    if (leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
-    data->surface = scene_surface->surface;
+    data->surface = leaf->surface;
     return true;
 }
-struct wlr_surface *scanout_surface(struct output *o) {
+struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
     if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o)) return NULL;
-    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, scanout_leaf, &data);
-    struct wlr_surface *surface = data.surface;
+    walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
+    struct surface *surface = data.surface;
     struct wlr_dmabuf_attributes dmabuf;
-    if (!surface || !surface->buffer || !wlr_buffer_get_dmabuf(&surface->buffer->base, &dmabuf) ||
+    if (!surface || !surface->buffer || !wlr_buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.transform != o->wlr->transform ||
             surface->current.buffer_width != o->wlr->width ||
             surface->current.buffer_height != o->wlr->height) return NULL;
@@ -687,11 +603,11 @@ struct wlr_surface *scanout_surface(struct output *o) {
 
 double physical_hit_ratio(struct tomoe *s, double x, double y) {
     struct hit_data hit = { .x = x, .y = y };
-    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, hit_leaf, &hit);
+    walk_scene(s, s->scene, NULL, 0, 0, true, hit_leaf, &hit);
     return hit.surface ? hit.ratio : 0;
 }
 const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
-    struct wlr_surface *surface;
+    struct surface *surface;
     double sx, sy, wx = x, wy = y;
     uint32_t id = physical_hit_test(s, x, y, &surface, &sx, &sy);
     struct ui_hit ui;

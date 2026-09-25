@@ -642,13 +642,13 @@ void pointer_sync_cursors(struct tomoe *s) {
         }
         if (!s->cursor_surface) continue;
         if (visible) {
-            wlr_surface_send_enter(s->cursor_surface, o->wlr);
+            surface_send_enter(s->cursor_surface, o->wlr);
             scale = fmax(scale, snapped_scale(o->wlr->scale));
         } else {
-            wlr_surface_send_leave(s->cursor_surface, o->wlr);
+            surface_send_leave(s->cursor_surface, o->wlr);
         }
     }
-    if (s->cursor_surface) set_surface_scale(s->cursor_surface, scale);
+    if (s->cursor_surface) surface_set_scale(s->cursor_surface, scale);
 }
 
 static void clamp_pointer(struct tomoe *s, struct wlr_output *mapped, double *x, double *y) {
@@ -667,14 +667,14 @@ static void clamp_pointer(struct tomoe *s, struct wlr_output *mapped, double *x,
     *x = nearest_x; *y = nearest_y;
 }
 
-static void keyboard_enter(struct tomoe *s, struct wlr_surface *surface) {
+static void keyboard_enter(struct tomoe *s, struct surface *surface) {
     if (!surface) { seat_keyboard_notify_clear_focus(s->seat); return; }
     struct wlr_keyboard *keyboard = s->logical_keyboard ?
         &s->logical_keyboard->wlr : seat_get_keyboard(s->seat);
     uint32_t keys[TOMOE_KEYCODE_COUNT];
     size_t count = keyboard_pressed(s, keys);
     struct wlr_keyboard_modifiers empty = {0};
-    struct wlr_surface *old_surface = s->seat->keyboard_state.focused_surface;
+    struct surface *old_surface = s->seat->keyboard_state.focused_surface;
     seat_keyboard_notify_enter(s->seat, surface, keys, count,
         keyboard ? &keyboard->modifiers : &empty);
     if (surface && old_surface != s->seat->keyboard_state.focused_surface) {
@@ -688,7 +688,7 @@ void update_keyboard_focus(struct tomoe *s) {
     for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; layer >= 0; layer--) {
         wl_list_for_each(l, &s->layers, link) {
             if (layer_of(l) != layer || !l->mapped || !visible_of(l) ||
-                    !l->tree || !l->tree->node.enabled) continue;
+                    !l->tree || !l->tree->enabled) continue;
             if (keyboard_of(l) != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) continue;
             keyboard_enter(s, l->wlr->surface);
             return;
@@ -700,7 +700,7 @@ void update_keyboard_focus(struct tomoe *s) {
 
 uint32_t tomoe_keyboard_focus(struct tomoe *s) {
     if (!s || !s->seat) return 0;
-    struct wlr_surface *surface = s->seat->keyboard_state.focused_surface;
+    struct surface *surface = s->seat->keyboard_state.focused_surface;
     return window_surface_mapped(s, surface)
         ? find_window_id_for_surface(s, surface) : 0;
 }
@@ -971,7 +971,7 @@ void presentation_input_publish(struct tomoe *s, struct presentation *plan) {
     }
 }
 
-static uint32_t pointer_target(struct tomoe *s, struct wlr_surface **surface,
+static uint32_t pointer_target(struct tomoe *s, struct surface **surface,
         double *sx, double *sy) {
     return physical_hit_test(s, s->pointer_x, s->pointer_y, surface, sx, sy);
 }
@@ -1013,7 +1013,7 @@ static void hover_event(struct tomoe *s, const char *state, uint32_t id) {
     end_event(s, event, out);
 }
 static void pointer_motion(struct tomoe *s, uint32_t time) {
-    struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
+    struct surface *surface = NULL; double sx = 0, sy = 0;
     uint32_t id = pointer_target(s, &surface, &sx, &sy);
     uint32_t hovered = find_window(s, id) ? id : 0;
     if (hovered != s->hovered && !lock_active(s)) {
@@ -1025,7 +1025,7 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
         ui_hover(s, NULL);
         if (surface == s->seat->pointer_state.focused_surface &&
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;
-        struct wlr_surface *old_surface = s->seat->pointer_state.focused_surface;
+        struct surface *old_surface = s->seat->pointer_state.focused_surface;
         if (old_surface != surface && !s->seat->drag) pointer_release_client_buttons(s, time);
         seat_pointer_notify_enter(s->seat, surface, sx, sy);
         if (old_surface != s->seat->pointer_state.focused_surface) {
@@ -1249,7 +1249,7 @@ static void pointer_fields(struct tomoe *s, FILE *out) {
 static void pointer_binding_event(struct tomoe *s, const struct binding *binding,
         const char *command, const char *state, uint32_t code, double delta) {
     if (!binding || !command || s->stopping) return;
-    struct wlr_surface *surface = NULL;
+    struct surface *surface = NULL;
     double sx, sy;
     uint32_t id = physical_hit_test(s, s->pointer_x, s->pointer_y, &surface, &sx, &sy);
     struct event *event;
@@ -1328,7 +1328,7 @@ static void button(struct wl_listener *listener, void *data) {
     if (pointer_binding_button(s, input)) return;
     uint32_t id = s->grab_id;
     if (s->grab_mode == 0) {
-        struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
+        struct surface *surface = NULL; double sx = 0, sy = 0;
         id = pointer_target(s, &surface, &sx, &sy);
         seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
     }
@@ -1361,13 +1361,29 @@ static void frame(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, frame);
     seat_pointer_notify_frame(s->seat);
 }
-void cursor_requested(struct tomoe *s, struct wlr_surface *surface, int32_t x, int32_t y) {
+static void cursor_apply(struct tomoe *s) {
+    struct surface *surface = s->cursor_surface;
+    if (surface && surface->buffer)
+        wlr_cursor_set_buffer(s->cursor, surface->buffer, s->cursor_hotspot_x,
+            s->cursor_hotspot_y, (float)surface->current.scale);
+    else
+        wlr_cursor_unset_image(s->cursor);
+}
+void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y) {
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     s->cursor_surface = surface;
     s->cursor_hidden = !surface;
+    s->cursor_hotspot_x = x;
+    s->cursor_hotspot_y = y;
     if (surface) listen(&s->cursor_surface_destroy, &surface->events.destroy, cursor_surface_destroy);
-    wlr_cursor_set_surface(s->cursor, surface, x, y);
+    cursor_apply(s);
     pointer_sync_cursors(s);
+}
+void cursor_committed(struct tomoe *s, struct surface *surface) {
+    if (surface != s->cursor_surface) return;
+    s->cursor_hotspot_x -= surface->current.dx;
+    s->cursor_hotspot_y -= surface->current.dy;
+    cursor_apply(s);
 }
 static int keyboard_binding_syms(struct logical_keyboard *keyboard,
         uint32_t keycode, const xkb_keysym_t **syms) {

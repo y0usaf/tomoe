@@ -9,9 +9,9 @@ struct lock_surface {
     struct wl_list link;
     struct tomoe *server;
     struct wl_resource *resource;
-    struct wlr_surface *surface;
+    struct surface *surface;
     struct wlr_output *output;
-    struct wlr_scene_tree *tree;
+    struct node *tree;
     struct target target;
     struct wl_listener surface_destroy, commit, output_destroy;
     int width, height, acked_width, acked_height;
@@ -45,7 +45,7 @@ static void lock_surface_configure(struct lock_surface *ls) {
     if (width == ls->width && height == ls->height) return;
     ls->width = width;
     ls->height = height;
-    set_surface_scale(ls->surface, scale);
+    surface_set_scale(ls->surface, scale);
     uint32_t serial = wl_display_next_serial(ls->server->display);
     if (ls->sent_count == LOCK_CONFIGURES) {
         memmove(ls->sent, ls->sent + 1, sizeof(ls->sent[0]) * (LOCK_CONFIGURES - 1));
@@ -65,7 +65,7 @@ static void lock_surface_free(struct lock_surface *ls, bool tree) {
     detach(&ls->commit);
     detach(&ls->surface_destroy);
     detach(&ls->output_destroy);
-    if (tree) wlr_scene_node_destroy(&ls->tree->node);
+    if (tree) node_destroy(ls->tree);
     free(ls);
     update_keyboard_focus(s);
     schedule_scene(s);
@@ -87,34 +87,34 @@ static void lock_surface_output_destroy(struct wl_listener *listener, void *data
     ls->output = NULL;
 }
 
-static struct lock_surface *lock_surface_of(struct wlr_surface *surface) {
+static struct lock_surface *lock_surface_of(struct surface *surface) {
     struct wl_resource *resource = surface->role_resource;
     return resource ? wl_resource_get_user_data(resource) : NULL;
 }
 
-static void role_client_commit(struct wlr_surface *surface) {
+static void role_client_commit(struct surface *surface) {
     struct lock_surface *ls = lock_surface_of(surface);
     if (!ls) return;
-    if (!wlr_surface_state_has_buffer(&surface->pending)) {
-        wlr_surface_reject_pending(surface, ls->resource, EXT_SESSION_LOCK_SURFACE_V1_ERROR_NULL_BUFFER,
+    if (!surface_state_has_buffer(&surface->pending)) {
+        surface_reject_pending(surface, ls->resource, EXT_SESSION_LOCK_SURFACE_V1_ERROR_NULL_BUFFER,
             "session lock surface committed a null buffer");
     } else if (!ls->configured) {
-        wlr_surface_reject_pending(surface, ls->resource,
+        surface_reject_pending(surface, ls->resource,
             EXT_SESSION_LOCK_SURFACE_V1_ERROR_COMMIT_BEFORE_FIRST_ACK,
             "session lock surface committed before its first ack");
     } else if (surface->pending.width != ls->acked_width ||
             surface->pending.height != ls->acked_height) {
-        wlr_surface_reject_pending(surface, ls->resource,
+        surface_reject_pending(surface, ls->resource,
             EXT_SESSION_LOCK_SURFACE_V1_ERROR_DIMENSIONS_MISMATCH,
             "session lock surface size differs from its last acked configure");
     }
 }
 
-static void role_commit(struct wlr_surface *surface) {
-    if (lock_surface_of(surface)) wlr_surface_map(surface);
+static void role_commit(struct surface *surface) {
+    if (lock_surface_of(surface)) surface_map(surface);
 }
 
-static const struct wlr_surface_role lock_role = {
+static const struct surface_role lock_role = {
     .name = "ext_session_lock_surface_v1",
     .client_commit = role_client_commit,
     .commit = role_commit,
@@ -174,7 +174,7 @@ static void begin_locking(struct tomoe *s) {
         o->lock_rendered = false;
         any |= output_is_active(o);
     }
-    wlr_scene_node_set_enabled(&s->lock_tree->node, true);
+    node_set_enabled(s->lock_tree, true);
     input_lock_begin(s);
     update_keyboard_focus(s);
     schedule_scene(s);
@@ -209,16 +209,16 @@ static void get_lock_surface(struct wl_client *client, struct wl_resource *lock_
             "output already has a lock surface");
         return;
     }
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
-    if (wlr_surface_has_buffer(surface)) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (surface_has_buffer(surface)) {
         wl_resource_post_error(lock_resource, EXT_SESSION_LOCK_V1_ERROR_ALREADY_CONSTRUCTED,
             "surface already has a buffer");
         return;
     }
-    if (!wlr_surface_set_role(surface, &lock_role, lock_resource, EXT_SESSION_LOCK_V1_ERROR_ROLE))
+    if (!surface_set_role(surface, &lock_role, lock_resource, EXT_SESSION_LOCK_V1_ERROR_ROLE))
         return;
     ls = calloc(1, sizeof(*ls));
-    if (!ls || !(ls->tree = wlr_scene_subsurface_tree_create(s->lock_tree, surface))) {
+    if (!ls || !(ls->tree = node_surface_create(s->lock_tree, surface))) {
         free(ls);
         wl_client_post_no_memory(client);
         return;
@@ -228,9 +228,9 @@ static void get_lock_surface(struct wl_client *client, struct wl_resource *lock_
     ls->surface = surface;
     ls->output = output;
     ls->target.kind = TARGET_UNMANAGED;
-    ls->tree->node.data = &ls->target;
+    ls->tree->data = &ls->target;
     wl_resource_set_user_data(resource, ls);
-    wlr_surface_set_role_object(surface, resource);
+    surface_set_role_object(surface, resource);
     listen(&ls->surface_destroy, &surface->events.destroy, lock_surface_surface_destroy);
     listen(&ls->commit, &surface->events.commit, lock_surface_commit);
     listen(&ls->output_destroy, &output->events.destroy, lock_surface_output_destroy);
@@ -281,7 +281,7 @@ static void unlock_and_destroy(struct wl_client *client, struct wl_resource *res
         if (s->lock_deadline_source) wl_event_source_remove(s->lock_deadline_source);
         s->lock_deadline_source = NULL;
         s->lock_state = LOCK_UNLOCKED;
-        wlr_scene_node_set_enabled(&s->lock_tree->node, false);
+        node_set_enabled(s->lock_tree, false);
         idle_notify_activity(s);
         update_keyboard_focus(s);
         pointer_refresh(s);
@@ -345,10 +345,9 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 bool lock_listen(struct tomoe *s) {
-    wl_list_init(&s->lock_surfaces);
-    s->lock_tree = wlr_scene_tree_create(&s->scene->tree);
+    s->lock_tree = node_create(s->scene);
     if (!s->lock_tree) return false;
-    wlr_scene_node_set_enabled(&s->lock_tree->node, false);
+    node_set_enabled(s->lock_tree, false);
     return wl_global_create(s->display, &ext_session_lock_manager_v1_interface, 1, s, bind);
 }
 
@@ -358,7 +357,7 @@ void lock_finish(struct tomoe *s) {
     lock_forget(s);
 }
 
-struct wlr_surface *lock_keyboard_surface(struct tomoe *s) {
+struct surface *lock_keyboard_surface(struct tomoe *s) {
     struct output *under = output_at_physical(s, s->pointer_x, s->pointer_y);
     struct lock_surface *ls, *fallback = NULL;
     wl_list_for_each(ls, &s->lock_surfaces, link) {

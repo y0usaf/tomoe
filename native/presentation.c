@@ -76,10 +76,10 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     plan->view_zoom = zoom;
     plan->focused = focus;
     plan->restack = restack != 0;
-    struct wlr_scene_tree *bands[] = { s->layer_tree[0], s->layer_tree[1],
+    struct node *bands[] = { s->layer_tree[0], s->layer_tree[1],
         s->window_tree, s->layer_tree[2], s->fullscreen_tree, s->layer_tree[3] };
     for (size_t band = 0; band < sizeof(bands) / sizeof(bands[0]); band++) {
-        struct wlr_scene_node *node;
+        struct node *node;
         wl_list_for_each(node, &bands[band]->children, link) {
             if (!node->data) continue;
             if (plan->target_count == capacity) {
@@ -189,7 +189,7 @@ void presentation_publish(struct tomoe *s) {
     if (plan->restack || s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);
     for (size_t i = 0; i < plan->target_count; i++)
-        wlr_scene_node_raise_to_top(plan->targets[i].node);
+        node_raise_to_top(plan->targets[i].node);
     schedule_scene(s);
 }
 

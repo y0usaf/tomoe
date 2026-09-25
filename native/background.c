@@ -4,7 +4,7 @@
 struct background_effect {
     struct wl_list link;
     struct wl_resource *resource;
-    struct wlr_surface *surface;
+    struct surface *surface;
     pixman_region32_t pending, current;
     bool pending_active, current_active, dirty;
     struct wl_listener commit, surface_destroy;
@@ -55,7 +55,7 @@ static void effect_set_blur_region(struct wl_client *client, struct wl_resource 
         return;
     }
     effect->pending_active = region != NULL;
-    if (region) pixman_region32_copy(&effect->pending, wlr_region_from_resource(region));
+    if (region) pixman_region32_copy(&effect->pending, region_from_resource(region));
     else pixman_region32_clear(&effect->pending);
     effect->dirty = true;
 }
@@ -72,7 +72,7 @@ static void manager_destroy(struct wl_client *client, struct wl_resource *resour
 static void manager_get(struct wl_client *client, struct wl_resource *resource,
         uint32_t id, struct wl_resource *surface_resource) {
     struct tomoe *s = wl_resource_get_user_data(resource);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct surface *surface = surface_from_resource(surface_resource);
     struct background_effect *effect;
     wl_list_for_each(effect, &s->background_effects, link) {
         if (effect->surface != surface) continue;
@@ -109,12 +109,11 @@ static void manager_bind(struct wl_client *client, void *data, uint32_t version,
 }
 
 bool background_effects_listen(struct tomoe *s) {
-    wl_list_init(&s->background_effects);
     return wl_global_create(s->display, &ext_background_effect_manager_v1_interface, 1, s,
         manager_bind) != NULL;
 }
 
-const pixman_region32_t *background_blur_region(struct tomoe *s, struct wlr_surface *surface) {
+const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface) {
     struct background_effect *effect;
     wl_list_for_each(effect, &s->background_effects, link)
         if (effect->surface == surface && effect->current_active) return &effect->current;

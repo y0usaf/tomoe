@@ -15,18 +15,18 @@ struct constraint {
     struct wl_resource *resource;
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_surface *surface;
+    struct surface *surface;
     bool locked, oneshot;
     struct constraint_state pending, current;
     pixman_region32_t region;
-    struct wlr_surface_synced synced;
+    struct surface_synced synced;
     struct wl_listener surface_destroy;
 };
 
 static void constraint_hint(struct tomoe *s) {
     struct constraint *c = s->active_constraint;
     if (!c || !c->locked || !c->current.hint_enabled) return;
-    struct wlr_surface *surface = NULL;
+    struct surface *surface = NULL;
     double sx, sy;
     physical_hit_test(s, s->pointer_x, s->pointer_y, &surface, &sx, &sy);
     double ratio = physical_hit_ratio(s, s->pointer_x, s->pointer_y);
@@ -41,7 +41,7 @@ static void constraint_free(struct constraint *c) {
     struct tomoe *s = c->server;
     if (s->active_constraint == c) s->active_constraint = NULL;
     wl_resource_set_user_data(c->resource, NULL);
-    wlr_surface_synced_finish(&c->synced);
+    surface_synced_finish(&c->synced);
     detach(&c->surface_destroy);
     wl_list_remove(&c->link);
     pixman_region32_fini(&c->region);
@@ -63,13 +63,13 @@ static void constraint_set(struct tomoe *s, struct constraint *next) {
     constraint_hint(s);
 }
 
-static struct constraint *constraint_for(struct tomoe *s, struct wlr_surface *surface) {
+static struct constraint *constraint_for(struct tomoe *s, struct surface *surface) {
     struct constraint *c;
     wl_list_for_each(c, &s->constraints, link) if (c->surface == surface) return c;
     return NULL;
 }
 
-void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy) {
+void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy) {
     struct constraint *c = s->active_constraint;
     if (c && c->surface == surface) return;
     c = surface ? constraint_for(s, surface) : NULL;
@@ -82,7 +82,7 @@ bool constraint_allows(struct tomoe *s, double x, double y) {
     struct constraint *c = s->active_constraint;
     if (!c) return true;
     if (c->locked) return false;
-    struct wlr_surface *surface = NULL;
+    struct surface *surface = NULL;
     double sx, sy;
     physical_hit_test(s, x, y, &surface, &sx, &sy);
     return surface == c->surface &&
@@ -116,17 +116,17 @@ static void state_move(void *dst_data, void *src_data) {
     src->committed = 0;
 }
 
-static void state_commit(struct wlr_surface_synced *synced) {
+static void state_commit(struct surface_synced *synced) {
     struct constraint *c = wl_container_of(synced, c, synced);
     update_region(c);
     if (c->server->active_constraint == c) constraint_hint(c->server);
 }
 
-static const struct wlr_surface_synced_impl synced_impl = {
-    .state_size = sizeof(struct constraint_state),
-    .init_state = state_init,
-    .finish_state = state_finish,
-    .move_state = state_move,
+static const struct surface_synced_impl synced_impl = {
+    .size = sizeof(struct constraint_state),
+    .init = state_init,
+    .finish = state_finish,
+    .move = state_move,
     .commit = state_commit,
 };
 
@@ -145,7 +145,7 @@ static void set_region(struct wl_client *client, struct wl_resource *resource,
     struct constraint *c = wl_resource_get_user_data(resource);
     if (!c) return;
     pixman_region32_clear(&c->pending.region);
-    if (region) pixman_region32_copy(&c->pending.region, wlr_region_from_resource(region));
+    if (region) pixman_region32_copy(&c->pending.region, region_from_resource(region));
     c->pending.committed |= CONSTRAINT_REGION;
 }
 
@@ -178,7 +178,7 @@ static void constraint_create(struct wl_client *client, struct wl_resource *mana
         struct wl_resource *surface_resource, struct wl_resource *region, uint32_t lifetime,
         bool locked) {
     struct tomoe *s = wl_resource_get_user_data(manager);
-    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    struct surface *surface = surface_from_resource(surface_resource);
     struct wl_resource *resource = wl_resource_create(client, locked ?
         &zwp_locked_pointer_v1_interface : &zwp_confined_pointer_v1_interface,
         wl_resource_get_version(manager), id);
@@ -195,7 +195,7 @@ static void constraint_create(struct wl_client *client, struct wl_resource *mana
         return;
     }
     struct constraint *c = calloc(1, sizeof(*c));
-    if (!c || !wlr_surface_synced_init(&c->synced, surface, &synced_impl, &c->pending,
+    if (!c || !surface_synced_init(&c->synced, surface, &synced_impl, &c->pending,
             &c->current)) {
         free(c);
         wl_resource_destroy(resource);
@@ -208,7 +208,7 @@ static void constraint_create(struct wl_client *client, struct wl_resource *mana
     c->locked = locked;
     c->oneshot = lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT;
     pixman_region32_init(&c->region);
-    if (region) pixman_region32_copy(&c->current.region, wlr_region_from_resource(region));
+    if (region) pixman_region32_copy(&c->current.region, region_from_resource(region));
     update_region(c);
     listen(&c->surface_destroy, &surface->events.destroy, surface_destroyed);
     wl_resource_set_user_data(resource, c);
@@ -295,8 +295,6 @@ static void bind_relative(struct wl_client *client, void *data, uint32_t version
 }
 
 bool pointer_protocols_listen(struct tomoe *s) {
-    wl_list_init(&s->constraints);
-    wl_list_init(&s->relative_pointers);
     return wl_global_create(s->display, &zwp_pointer_constraints_v1_interface, 1, s,
             bind_constraints) &&
         wl_global_create(s->display, &zwp_relative_pointer_manager_v1_interface, 1, s,

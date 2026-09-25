@@ -11,13 +11,13 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
 }
 int tomoe_abi_version(void) { return 28; }
 static bool create_scene_trees(struct tomoe *s) {
-    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&s->scene->tree);
-    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = wlr_scene_tree_create(&s->scene->tree);
-    s->window_tree = wlr_scene_tree_create(&s->scene->tree);
-    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&s->scene->tree);
-    s->fullscreen_tree = wlr_scene_tree_create(&s->scene->tree);
-    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = wlr_scene_tree_create(&s->scene->tree);
-    s->drag_icon_tree = wlr_scene_tree_create(&s->scene->tree);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = node_create(s->scene);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = node_create(s->scene);
+    s->window_tree = node_create(s->scene);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = node_create(s->scene);
+    s->fullscreen_tree = node_create(s->scene);
+    s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = node_create(s->scene);
+    s->drag_icon_tree = node_create(s->scene);
     for (int i = 0; i < 4; i++) {
         if (!s->layer_tree[i]) return false;
     }
@@ -29,8 +29,24 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s) return NULL;
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
     wl_list_init(&s->keyboards); wl_list_init(&s->input_devices); wl_list_init(&s->events); wl_list_init(&s->bindings);
-    wl_list_init(&s->tracked_surfaces);
     wl_list_init(&s->activation_tokens);
+    wl_list_init(&s->surfaces);
+    wl_list_init(&s->feedbacks);
+    wl_list_init(&s->decorations);
+    wl_list_init(&s->constraints);
+    wl_list_init(&s->relative_pointers);
+    wl_list_init(&s->lock_surfaces);
+    wl_list_init(&s->foreigns);
+    wl_list_init(&s->foreign_managers);
+    wl_list_init(&s->foreign_lists);
+    wl_list_init(&s->virtual_pointers);
+    wl_list_init(&s->background_effects);
+    wl_list_init(&s->copy_frames);
+    wl_list_init(&s->capture_sessions);
+    wl_list_init(&s->idle_notifications);
+    wl_list_init(&s->idle_inhibitors);
+    wl_list_init(&s->gammas);
+    wl_list_init(&s->tearings);
     wl_list_init(&s->activation_pending);
     s->next_binding_id = 1;
     s->next_device_id = 1;
@@ -47,13 +63,9 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->renderer || !buffers_listen(s)) goto failed;
     s->allocator = render_allocator(s->renderer);
     if (!capture_listen(s)) goto failed;
-    struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
-    if (!compositor ||
-            !wlr_subcompositor_create(s->display) ||
-            !wlr_viewporter_create(s->display) ||
-            !wlr_fractional_scale_manager_v1_create(s->display, 1)) goto failed;
+    if (!surfaces_listen(s)) goto failed;
     s->layout = wlr_output_layout_create(s->display);
-    s->scene = wlr_scene_create();
+    s->scene = node_create(NULL);
     if (!s->layout || !s->scene || !wlr_xdg_output_manager_v1_create(s->display, s->layout)) goto failed;
     if (!create_scene_trees(s)) goto failed;
     s->cursor = wlr_cursor_create();
@@ -64,7 +76,6 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->cursor || !s->cursor_manager || !s->seat ||
             !selection_listen(s) || !activation_listen(s) || !xdg_shell_listen(s) ||
             !layer_shell_listen(s)) goto failed;
-    surfaces_listen(s, compositor);
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     outputs_listen(s);
     input_listen(s);
@@ -108,13 +119,14 @@ void tomoe_destroy(struct tomoe *s) {
     activation_finish(s);
     xdg_shell_finish(s);
     if (s->display) wl_display_destroy_clients(s->display);
+    if (s->display) surfaces_finish(s);
     struct wl_listener *listeners[] = {
         &s->new_output, &s->new_input,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
-        &s->layout_change, &s->backend_destroy, &s->new_surface, &s->cursor_surface_destroy,
+        &s->layout_change, &s->backend_destroy, &s->cursor_surface_destroy,
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
-    if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);
+    if (s->scene) node_destroy(s->scene);
     if (s->cursor_manager) wlr_xcursor_manager_destroy(s->cursor_manager);
     if (s->cursor) wlr_cursor_destroy(s->cursor);
     if (s->backend) wlr_backend_destroy(s->backend);

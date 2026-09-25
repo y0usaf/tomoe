@@ -57,14 +57,16 @@ static void send_frame(struct wl_resource *pointer) {
         wl_pointer_send_frame(pointer);
 }
 
-static void cursor_role_commit(struct wlr_surface *surface) {
+static void cursor_role_commit(struct surface *surface) {
     pixman_region32_clear(&surface->input_region);
-    if (wlr_surface_has_buffer(surface)) wlr_surface_map(surface);
+    if (surface_has_buffer(surface)) surface_map(surface);
+    cursor_committed(surface->server, surface);
 }
 
-static const struct wlr_surface_role cursor_role = {
+static const struct surface_role cursor_role = {
     .name = "wl_pointer-cursor",
     .no_object = true,
+    .keep_buffer = true,
     .commit = cursor_role_commit,
 };
 
@@ -72,12 +74,13 @@ static void pointer_set_cursor(struct wl_client *client, struct wl_resource *res
         uint32_t serial, struct wl_resource *surface_resource, int32_t hotspot_x, int32_t hotspot_y) {
     struct seat_client *c = wl_resource_get_user_data(resource);
     if (!c) return;
-    struct wlr_surface *surface = NULL;
+    struct surface *surface = NULL;
     if (surface_resource) {
-        surface = wlr_surface_from_resource(surface_resource);
-        if (!wlr_surface_set_role(surface, &cursor_role, surface_resource, WL_POINTER_ERROR_ROLE))
+        surface = surface_from_resource(surface_resource);
+        if (!surface_set_role(surface, &cursor_role, surface_resource, WL_POINTER_ERROR_ROLE))
             return;
-        cursor_role_commit(surface);
+        pixman_region32_clear(&surface->input_region);
+        if (surface_has_buffer(surface)) surface_map(surface);
     }
     if (c == c->seat->pointer_state.focused_client)
         cursor_requested(c->seat->server, surface, hotspot_x, hotspot_y);
@@ -244,16 +247,15 @@ static void pointer_surface_destroyed(struct wl_listener *listener, void *data) 
     detach(listener);
     seat->pointer_state.focused_surface = NULL;
     seat->pointer_state.focused_client = NULL;
-    seat->pointer_state.sx = seat->pointer_state.sy = NAN;
-    cursor_default(seat->server);
+        cursor_default(seat->server);
 }
 
-void seat_pointer_enter(struct seat *seat, struct wlr_surface *surface, double sx, double sy) {
+void seat_pointer_enter(struct seat *seat, struct surface *surface, double sx, double sy) {
     struct seat_pointer_state *state = &seat->pointer_state;
     if (state->focused_surface == surface) return;
     struct seat_client *c = surface ?
         seat_client_for(seat, wl_resource_get_client(surface->resource)) : NULL;
-    struct wlr_surface *old = state->focused_surface;
+    struct surface *old = state->focused_surface;
     struct wl_resource *resource;
     if (state->focused_client && old) {
         uint32_t serial = wl_display_next_serial(seat->server->display);
@@ -275,8 +277,8 @@ void seat_pointer_enter(struct seat *seat, struct wlr_surface *surface, double s
     state->focused_client = c;
     state->focused_surface = surface;
     state->frame_pending = false;
-    state->sx = surface ? sx : NAN;
-    state->sy = surface ? sy : NAN;
+    state->sx = surface ? sx : 0;
+    state->sy = surface ? sy : 0;
     if (!surface) cursor_default(seat->server);
 }
 
@@ -375,7 +377,7 @@ void seat_pointer_send_frame(struct seat *seat) {
     wl_resource_for_each(resource, &c->pointers) send_frame(resource);
 }
 
-static void default_enter(struct seat_pointer_grab *grab, struct wlr_surface *surface, double sx,
+static void default_enter(struct seat_pointer_grab *grab, struct surface *surface, double sx,
         double sy) {
     seat_pointer_enter(grab->seat, surface, sx, sy);
 }
@@ -419,15 +421,15 @@ void seat_pointer_end_grab(struct seat *seat) {
     if (grab->interface->cancel) grab->interface->cancel(grab);
 }
 
-void seat_pointer_notify_enter(struct seat *seat, struct wlr_surface *surface, double sx,
+void seat_pointer_notify_enter(struct seat *seat, struct surface *surface, double sx,
         double sy) {
-    struct wlr_surface *old = seat->pointer_state.focused_surface;
+    struct surface *old = seat->pointer_state.focused_surface;
     seat->pointer_state.grab->interface->enter(seat->pointer_state.grab, surface, sx, sy);
     if (old != seat->pointer_state.focused_surface) seat->pointer_state.button_count = 0;
 }
 
 void seat_pointer_notify_clear_focus(struct seat *seat) {
-    struct wlr_surface *old = seat->pointer_state.focused_surface;
+    struct surface *old = seat->pointer_state.focused_surface;
     seat->pointer_state.grab->interface->clear_focus(seat->pointer_state.grab);
     if (old != seat->pointer_state.focused_surface) seat->pointer_state.button_count = 0;
 }
@@ -472,7 +474,7 @@ void seat_pointer_notify_frame(struct seat *seat) {
         seat->pointer_state.grab->interface->frame(seat->pointer_state.grab);
 }
 
-bool seat_validate_pointer_grab_serial(struct seat *seat, struct wlr_surface *origin,
+bool seat_validate_pointer_grab_serial(struct seat *seat, struct surface *origin,
         uint32_t serial) {
     return seat->pointer_state.button_count == 1 && seat->pointer_state.grab_serial == serial &&
         (!origin || seat->pointer_state.focused_surface == origin);
@@ -485,7 +487,7 @@ static void keyboard_surface_destroyed(struct wl_listener *listener, void *data)
     seat->keyboard_state.focused_client = NULL;
 }
 
-void seat_keyboard_enter(struct seat *seat, struct wlr_surface *surface, const uint32_t keys[],
+void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint32_t keys[],
         size_t count, const struct wlr_keyboard_modifiers *modifiers) {
     struct seat_keyboard_state *state = &seat->keyboard_state;
     if (state->focused_surface == surface) return;
@@ -530,7 +532,7 @@ void seat_keyboard_send_modifiers(struct seat *seat, const struct wlr_keyboard_m
     send_modifiers(seat, modifiers);
 }
 
-static void keyboard_default_enter(struct seat_keyboard_grab *grab, struct wlr_surface *surface,
+static void keyboard_default_enter(struct seat_keyboard_grab *grab, struct surface *surface,
         const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
     seat_keyboard_enter(grab->seat, surface, keys, count, modifiers);
 }
@@ -566,7 +568,7 @@ void seat_keyboard_end_grab(struct seat *seat) {
     if (grab->interface->cancel) grab->interface->cancel(grab);
 }
 
-void seat_keyboard_notify_enter(struct seat *seat, struct wlr_surface *surface,
+void seat_keyboard_notify_enter(struct seat *seat, struct surface *surface,
         const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
     seat->keyboard_state.grab->interface->enter(seat->keyboard_state.grab, surface, keys, count,
         modifiers);
@@ -641,7 +643,6 @@ struct seat *seat_create(struct tomoe *s) {
         &seat->primary.destroy, &seat->drag_source.destroy };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++)
         wl_list_init(&listeners[i]->link);
-    seat->pointer_state.sx = seat->pointer_state.sy = NAN;
     seat->global = wl_global_create(s->display, &wl_seat_interface, SEAT_VERSION, seat, bind);
     if (!seat->global) {
         free(seat);
