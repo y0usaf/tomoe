@@ -245,7 +245,9 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
     }
     struct input_device *device = libinput_device_get_user_data(handle);
     if (!device) return;
-    struct libinput_event_pointer *pointer = libinput_event_get_pointer_event(event);
+    struct libinput_event_pointer *pointer = type >= LIBINPUT_EVENT_POINTER_MOTION &&
+        type <= LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS ? libinput_event_get_pointer_event(event) :
+        NULL;
     switch (type) {
     case LIBINPUT_EVENT_DEVICE_REMOVED:
         input_device_destroy(device);
