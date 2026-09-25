@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 def wanted():
     return sys.argv[2:]
 
-# wayland-scanner derives the wire signature from these argument types.
 LETTER = {"int": "i", "uint": "u", "fixed": "f", "string": "s",
           "object": "o", "new_id": "n", "array": "a", "fd": "h"}
 

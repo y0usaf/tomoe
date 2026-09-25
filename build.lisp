@@ -1,15 +1,13 @@
 (require :sb-posix)
 (require :sb-bsd-sockets)
 
-(dolist (name '("api" "native" "runtime" "control" "main"))
+(dolist (name '("api" "json" "patterns" "native" "ui" "runtime" "rules" "timers" "watches" "executions" "processes" "control" "ipc-transport" "ipc" "notifications" "mpris" "battery" "network" "tray" "main"))
   (multiple-value-bind (output warnings failure)
       (compile-file (format nil "src/~A.lisp" name) :output-file (format nil "build/~A.fasl" name))
     (declare (ignore warnings))
     (when failure (error "Compilation failed: ~A" name))
     (load output)))
 
-;; Compile the shipped policy without installing it into the saved image.
-;; --bare really has no mounted policy, and regular startup uses LOAD like users do.
 (let ((tomoe::*definitions* nil) (tomoe::*source* "builtins/desktop.lisp"))
   (multiple-value-bind (output warnings failure)
       (compile-file "builtins/desktop.lisp" :output-file "build/desktop.fasl")

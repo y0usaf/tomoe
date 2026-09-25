@@ -1,9 +1,5 @@
 (in-package #:tomoe-user)
 
-;; Nine tags on Super+1..Super+9, with Super+Shift+Tab returning to the previous
-;; tag. A window belongs to the tag that was current when it mapped, and only
-;; that tag's windows stay visible. Mounted after the shipped policy it owns
-;; placement and focus while mounted, and leaves the command unit's keys alone.
 
 (defparameter +workspaces-gap+ 6)
 (defparameter +workspaces-tags+
@@ -48,29 +44,27 @@
          (assigned (loop for entry in (getf state :assigned)
                          when (member (car entry) ids) collect entry))
          (recent (getf state :recent))
-         (focused nil))
+         (focused nil)
+         (new-ids (remove-if (lambda (id) (assoc id assigned)) ids)))
+    (dolist (id new-ids) (push (cons id tag) assigned))
+    (when new-ids
+      (let ((new-focused (car (last new-ids))))
+        (setf recent (acons tag new-focused (remove tag recent :key #'car)))))
     (when (and (eq (getf event :type) :key) (equal (getf event :owner) "workspaces"))
       (if (equal (getf event :command) "previous")
           (rotatef tag previous)
           (let ((number (workspaces--tag (getf event :command))))
             (when number (setf previous tag tag number)))))
-    ;; A window starts on the tag that was current when it mapped.
-    (dolist (id ids)
-      (unless (assoc id assigned) (push (cons id tag) assigned)))
     (let* ((visible (loop for window in windows
                           when (eql (cdr (assoc (getf window :id) assigned)) tag)
                             collect window))
            (visible-ids (mapcar (lambda (window) (getf window :id)) visible))
            (remembered (cdr (assoc tag recent))))
       (setf focused
-            (cond ((and (eq (getf event :type) :map) (member (getf event :id) visible-ids))
-                   (getf event :id))
-                  ((member remembered visible-ids) remembered)
+            (cond ((member remembered visible-ids) remembered)
                   ((member resolved visible-ids) resolved)
                   (t (first visible-ids))))
       (when focused (setf recent (acons tag focused (remove tag recent :key #'car))))
-      ;; An empty compositor owns no effects. The policy arrives with the first
-      ;; output or window, and both notify this unit when they appear.
       (values (list :tag tag :previous previous :assigned assigned :recent recent)
               (when (or output windows)
                 (append (loop for window in windows

@@ -1,7 +1,5 @@
 (in-package #:tomoe-user)
 
-;; A layout replacement. Only the focused window is visible; the focus and
-;; command extensions keep working without knowing which layout is mounted.
 (define-extension "monocle" (:reads (:windows :outputs :focus) :state nil) (snapshot state event)
   (declare (ignore state event))
   (let* ((windows (context snapshot :windows))

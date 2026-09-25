@@ -1,11 +1,4 @@
-;;; libwayland-server boundary. Nothing above this file calls C.
-;;;
-;;; struct wl_message { const char *name; const char *signature; const struct wl_interface **types; }
-;;; struct wl_interface { const char *name; int version; int method_count;
-;;;                       const struct wl_message *methods; int event_count;
-;;;                       const struct wl_message *events; }
-;;; Layouts are written as byte offsets so no alien struct type is declared.
-(require :sb-posix) ; only for mmap on client buffers
+(require :sb-posix)
 (in-package #:tomoe)
 
 (sb-alien:load-shared-object "libwayland-server.so.0")
@@ -164,7 +157,7 @@
              (declare (ignore table))
              (setf (gethash name *interfaces*) 0))
            *tables*)
-  (maphash (lambda (name table) (build-interface name table)) *tables*))
+  (maphash #'build-interface *tables*))
 
 (defun signature-letters (signature)
   "Drop wayland's version digits and nullability markers: \"?oii\" -> (o i i)."

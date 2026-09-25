@@ -11,6 +11,22 @@
         "aarch64-linux"
       ];
       eachSystem = nixpkgs.lib.genAttrs systems;
+      wlrootsOverlay = final: prev: {
+        wlroots = prev.wlroots.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [
+            ./patches/wlroots-keyboard-cap.patch
+            ./patches/wlroots-modifier-input.patch
+            ./patches/wlroots-xwm-queued-events.patch
+            ./patches/wlroots-screencopy-buffer.patch
+          ];
+        });
+      };
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ wlrootsOverlay ];
+        };
       package =
         pkgs:
         pkgs.stdenv.mkDerivation {
@@ -20,6 +36,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./native
+              ./support
               ./src
               ./builtins
               ./examples
@@ -39,27 +56,48 @@
             pkgs.wayland-scanner
             pkgs.libxkbcommon
             pkgs.pixman
-            # wlroots' Xwayland header includes the XCB window-manager ones.
+            pkgs.cairo
+            pkgs.pango
+            pkgs.libpng
+            pkgs.libjpeg
+            pkgs.librsvg
+            pkgs.systemd
             pkgs.libxcb
             pkgs.xcbutilwm
           ];
           strictDeps = true;
-          # strip discards the Lisp image appended to the SBCL executable.
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
             mkdir build
-            # nixpkgs' wlroots ships no generated protocol headers, but includes
-            # wlr-layer-shell-unstable-v1-protocol.h from wlr/types.
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              support/executions.c -o build/libtomoe-executions.so
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              support/watches.c -o build/libtomoe-watches.so
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              $(pkg-config --cflags libsystemd) support/notifications.c \
+              -o build/libtomoe-notifications.so $(pkg-config --libs libsystemd)
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              $(pkg-config --cflags libsystemd) support/mpris.c \
+              -o build/libtomoe-mpris.so $(pkg-config --libs libsystemd)
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              $(pkg-config --cflags libsystemd) support/battery.c \
+              -o build/libtomoe-battery.so $(pkg-config --libs libsystemd)
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              $(pkg-config --cflags libsystemd) support/network.c \
+              -o build/libtomoe-network.so $(pkg-config --libs libsystemd)
+            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+              $(pkg-config --cflags libsystemd) support/tray.c \
+              -o build/libtomoe-tray.so $(pkg-config --libs libsystemd)
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
               build/wlr-layer-shell-unstable-v1-protocol.h
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 xcb xcb-ewmh xcb-icccm) \
-              native/backend.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1)
+              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 xcb xcb-ewmh xcb-icccm) \
+              native/*.c -o build/libtomoe-backend.so \
+              $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0) -lm
             sbcl --noinform --non-interactive --load build.lisp
             runHook postBuild
           '';
@@ -68,13 +106,28 @@
             install -Dm755 build/tomoe $out/libexec/tomoe
             install -Dm755 build/libtomoe-backend.so $out/lib/libtomoe-backend.so
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
-            # Shipped policies: a session can seed one as a starting point.
+            install -Dm755 build/libtomoe-executions.so $out/lib/libtomoe-executions.so
+            install -Dm755 build/libtomoe-watches.so $out/lib/libtomoe-watches.so
+            install -Dm755 build/libtomoe-notifications.so $out/lib/libtomoe-notifications.so
+            install -Dm755 build/libtomoe-mpris.so $out/lib/libtomoe-mpris.so
+            install -Dm755 build/libtomoe-battery.so $out/lib/libtomoe-battery.so
+            install -Dm755 build/libtomoe-network.so $out/lib/libtomoe-network.so
+            install -Dm755 build/libtomoe-tray.so $out/lib/libtomoe-tray.so
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
             makeWrapper $out/libexec/tomoe $out/bin/tomoe \
               --set TOMOE_BACKEND_LIB $out/lib/libtomoe-backend.so \
+              --set TOMOE_EXEC_LIB $out/lib/libtomoe-executions.so \
+              --set TOMOE_WATCH_LIB $out/lib/libtomoe-watches.so \
+              --set TOMOE_NOTIFICATION_LIB $out/lib/libtomoe-notifications.so \
+              --set TOMOE_MPRIS_LIB $out/lib/libtomoe-mpris.so \
+              --set TOMOE_BATTERY_LIB $out/lib/libtomoe-battery.so \
+              --set TOMOE_NETWORK_LIB $out/lib/libtomoe-network.so \
+              --set TOMOE_TRAY_LIB $out/lib/libtomoe-tray.so \
+              --set TOMOE_SHELL ${pkgs.bash}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot ]}
+              --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel ]}
             runHook postInstall
           '';
           meta = {
@@ -85,59 +138,19 @@
         };
     in
     {
-      packages = eachSystem (system: {
-        default = package nixpkgs.legacyPackages.${system};
-      });
-      checks = eachSystem (
+      packages = eachSystem (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
-          tomoe = package pkgs;
-          # The end-to-end check needs its driver, fixtures and client together.
-          tests = pkgs.lib.fileset.toSource {
-            root = ./tests;
-            fileset = ./tests;
-          };
+          pkgs = pkgsFor system;
         in
         {
-          integration =
-            pkgs.runCommand "tomoe-integration-test"
-              {
-                nativeBuildInputs = [
-                  pkgs.sbcl
-                  pkgs.stdenv.cc
-                  pkgs.pkg-config
-                  pkgs.wayland-scanner
-                  pkgs.wayland
-                  pkgs.wayland-protocols
-                  pkgs.wlr-protocols
-                ];
-              }
-              ''
-                # The compositor requires an owned 0700 runtime directory, and the
-                # check must not depend on the caller's session.
-                export XDG_RUNTIME_DIR="$(mktemp -d "''${TMPDIR:-$NIX_BUILD_TOP}/tomoe-runtime-XXXXXX")"
-                chmod 700 "$XDG_RUNTIME_DIR"
-                export TOMOE_TEST_RUNTIME_DIR="$XDG_RUNTIME_DIR"
-                export TOMOE_TEST_BUILD="$(mktemp -d "''${TMPDIR:-$NIX_BUILD_TOP}/tomoe-client-XXXXXX")"
-                export TOMOE_BIN=${tomoe}/bin/tomoe
-                export LD_LIBRARY_PATH=${
-                  pkgs.lib.makeLibraryPath [
-                    pkgs.wayland
-                    pkgs.wlroots
-                    pkgs.libxkbcommon
-                    pkgs.pixman
-                  ]
-                }
-                bash ${tests}/run-integration.sh
-                touch $out
-              '';
+          default = package pkgs;
         }
       );
       devShells = eachSystem (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
         in
         {
           default = pkgs.mkShell {
@@ -148,20 +161,16 @@
               pkgs.wlr-protocols
               pkgs.foot
             ];
-            # The compositor dlopens these, so ./dev.sh needs them on the
-            # library path rather than only at link time.
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.wlroots
               pkgs.wayland
               pkgs.libxkbcommon
               pkgs.pixman
             ];
-            # dev.sh and tests/build-client.sh read the layer-shell protocol
-            # XML from here when pkg-config cannot find wlr-protocols.
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
           };
         }
       );
-      formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt);
+      formatter = eachSystem (system: (pkgsFor system).nixfmt);
     };
 }

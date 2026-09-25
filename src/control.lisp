@@ -9,8 +9,6 @@
       (set-macro-character char (lambda (stream char)
                                   (declare (ignore stream))
                                   (error "Reader syntax ~S is not allowed in data." char))))
-    ;; Bound nesting with the standard list reader: it is the only one that
-    ;; understands the cons dot the printer emits for extension state.
     (let ((read-list (get-macro-character #\( )))
       (set-macro-character #\(
                            (lambda (stream char)
@@ -24,8 +22,6 @@
 
 (defun write-frame (stream form)
   (let* ((*package* (find-package :tomoe))
-         ;; SBCL's readable printer encodes BASE-STRING as #A, outside our data
-         ;; grammar. Escaped printing writes every string as a quoted string.
          (text (write-to-string form :readably nil :escape t :pretty nil :base 10
                                      :radix nil :level nil :length nil :circle nil :case :upcase)))
     (when (> (length text) 1048576) (error "Control frame exceeds 1 MiB characters."))
@@ -33,8 +29,6 @@
     (finish-output stream)))
 
 (defun read-frame (stream)
-  ;; The length counts decoded UTF-8 characters, not bytes. Framing permits
-  ;; embedded newlines in titles and prevents READ from consuming another request.
   (let* ((digits (loop for i from 0 for c = (read-char stream)
                       until (char= c #\Newline)
                       do (when (or (= i 7) (not (digit-char-p c))) (error "Invalid frame length."))
@@ -47,6 +41,53 @@
       (read-data text))))
 
 (defstruct control socket path)
+
+(defun %empty-hit-test (runtime screen-x screen-y)
+  "Pure-Lisp backends have no native scene hit test; retain useful coordinates."
+  (let* ((view (getf (runtime-effective runtime) :view))
+         (offset-x (getf view :x 0))
+         (offset-y (getf view :y 0))
+         (zoom (getf view :zoom 1d0)))
+    (list :id 0 :screen-x screen-x :screen-y screen-y
+          :world-x (+ offset-x (/ screen-x zoom))
+          :world-y (+ offset-y (/ screen-y zoom))
+          :surface-x nil :surface-y nil
+          :diagnostic "native hit-test unavailable")))
+
+(defun native-hit-test (runtime x y)
+  "Read and copy one native hit-test response before its C buffer is reused."
+  (flet ((plist-keys (value lengths)
+           (when (and (listp value) (member (ignore-errors (length value)) lengths))
+             (loop for key in value by #'cddr collect key)))
+         (hit-string-p (value limit)
+           (and (stringp value) (<= 1 (length value) limit) (not (find #\Null value)))))
+   (let ((screen-x (%double-float x)) (screen-y (%double-float y)))
+    (let ((text (%hit-test (runtime-backend runtime) screen-x screen-y)))
+      (if text
+          (let* ((result (read-data text))
+                 (coordinates '(:screen-x :screen-y :world-x :world-y :surface-x :surface-y))
+                 (keys (plist-keys result '(14 16)))
+                 (ui-p (member :ui keys))
+                 (ui (and ui-p (getf result :ui)))
+                 (ui-keys (plist-keys ui '(8))))
+            (unless (and keys (= (length (remove-duplicates keys)) (if ui-p 8 7))
+                         (every (lambda (key) (member key (list* :id :ui coordinates))) keys)
+                         (typep (getf result :id) '(integer 0 4294967295))
+                         (every (lambda (key) (%finite-real-p (getf result key))) coordinates)
+                         (or (not ui-p)
+                             (and (zerop (getf result :id)) ui-keys
+                                  (= (length (remove-duplicates ui-keys)) 4)
+                                  (every (lambda (key) (member key '(:owner :surface :output :element))) ui-keys)
+                                  (hit-string-p (getf ui :owner) 65536)
+                                  (hit-string-p (getf ui :surface) 128)
+                                  (hit-string-p (getf ui :output) 65536)
+                                  (or (null (getf ui :element))
+                                      (hit-string-p (getf ui :element) 128)))))
+              (error "Native hit-test returned an invalid plist: ~S" result))
+            result)
+          (if (eq *backend-kind* :lisp)
+              (%empty-hit-test runtime screen-x screen-y)
+              (error "Native hit-test returned no result.")))))))
 
 (defun socket-answering-p (path)
   "True when a process is accepting connections on the Unix socket PATH."
@@ -61,8 +102,6 @@
         (bound nil) (ready nil))
     (unwind-protect
          (progn
-           ;; A refused connection means the path was left behind by an exit that
-           ;; skipped cleanup, so reclaim it. A live listener is never taken over.
            (when (socket-answering-p path)
              (error "Another session is listening on ~A." path))
            (ignore-errors (delete-file path))
@@ -81,17 +120,27 @@
   (delete-file (control-path control)))
 
 (defun handle-request (runtime request)
+  (reconcile-backend-observations runtime)
+  (unless (and (runtime-running runtime) (not *stop-requested*))
+    (error "Compositor is stopping."))
   (destructuring-bind (version operation &rest args) request
     (unless (eql version +wire-version+)
       (error "Unsupported wire version ~S; expected ~D." version +wire-version+))
     (ecase operation
       (:inspect (destructuring-bind () args (describe-runtime runtime)))
+      (:hit-test
+       (destructuring-bind (x y) args
+         (native-hit-test runtime x y)))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount
        (destructuring-bind (path) args
          (check-type path string)
          (let ((path (namestring (truename path))))
-           (configure runtime (append (remove path (runtime-sources runtime) :test #'equal) (list path)) path)))
+           (configure runtime
+                      (if (member path (runtime-sources runtime) :test #'equal)
+                          (runtime-sources runtime)
+                          (append (runtime-sources runtime) (list path)))
+                      path)))
        nil)
       (:unmount
        (destructuring-bind (name) args (check-type name string) (unmount runtime name)) nil)
@@ -101,12 +150,16 @@
          (unless (find owner (runtime-mounts runtime) :test #'equal
                        :key (lambda (m) (spec-name (mounted-spec m))))
            (error "No mounted extension named ~A." owner))
-         (unless (find-if (lambda (b) (and (equal owner (getf b :owner))
-                                          (equal name (getf b :command))))
-                          (getf (runtime-effective runtime) :bindings))
-           (error "No active command ~A/~A." owner name))
-         (transact runtime (runtime-mounts runtime)
-                   (list :type :key :owner owner :command name) '(:key))) nil)
+         (let* ((bindings (getf (runtime-effective runtime) :bindings))
+                (press (find-if (lambda (b) (and (equal owner (getf b :owner))
+                                                (equal name (getf b :command)))) bindings))
+                (release (and (not press)
+                              (find-if (lambda (b) (and (equal owner (getf b :owner))
+                                                       (equal name (getf b :release)))) bindings))))
+           (unless (or press release) (error "No active command ~A/~A." owner name))
+           (transact runtime (runtime-mounts runtime)
+                     (list :type :key :owner owner :command name
+                           :state (if press :pressed :released)) '(:key)))) nil)
       (:event
        (destructuring-bind (text) args
          (check-type text string)

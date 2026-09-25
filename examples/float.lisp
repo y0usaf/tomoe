@@ -1,9 +1,5 @@
 (in-package #:tomoe-user)
 
-;; A floating layout: new windows open centred at two thirds of the output and
-;; cascade until they clear the others. Super+left-drag moves and Super+right-drag
-;; resizes through the grab effect; Ctrl+Super+q stops placing the focused window.
-;; Mounted after the shipped policy it owns placement and focus while mounted.
 
 (defparameter +float-cascade-step+ 32)
 (defparameter +float-max-size+ 16384)
@@ -28,7 +24,6 @@
              (step +float-cascade-step+)
              (left (+ (getf output :x) (floor (- (getf output :width) width) 2)))
              (top (+ (getf output :y) (floor (- (getf output :height) height) 2)))
-             ;; Room left on each axis before the cascade would leave the output.
              (room (min 8
                         (floor (max 0 (- (+ (getf output :x) (getf output :width))
                                          left width))
@@ -80,11 +75,13 @@
                          when (member (first entry) ids) collect entry))
          (released (intersection (getf state :released) ids))
          (drag (getf state :drag))
-         (focused (getf state :focus)))
-    ;; A grabbed window can disappear without a release; drop the drag with it.
+         (focused (getf state :focus))
+         (new-ids (remove-if (lambda (id)
+                               (or (float--box geometry id) (member id released)))
+                             ids)))
     (unless (member (getf drag :id) ids) (setf drag nil))
+    (when new-ids (setf focused (car (last new-ids))))
     (case (getf event :type)
-      (:map (setf focused (getf event :id)))
       (:button
        (let ((id (getf event :id)))
          (if (eq (getf event :state) :pressed)
@@ -121,8 +118,6 @@
                         (and (member resolved ids) resolved)
                         (first ids)))
       (values (list :geometry geometry :released released :drag drag :focus focused)
-              ;; An empty compositor owns no effects. The policy arrives with the
-              ;; first output or window, and both notify this unit when they appear.
               (when (or output windows)
                 (append (nreverse places)
                         (when windows (list (focus focused)))

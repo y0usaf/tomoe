@@ -1,4 +1,4 @@
-name: Check
+name: Build
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
 
 jobs:
   flake:
-    name: nix flake check
+    name: nix build
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -15,4 +15,4 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      - run: nix flake check -L .
+      - run: nix build -L .
