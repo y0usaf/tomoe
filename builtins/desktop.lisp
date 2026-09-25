@@ -34,7 +34,8 @@
          (focused (getf state :focused))
          (type (getf event :type))
          (geometry-key (list outputs workareas gap count))
-         (retired-full nil))
+         (retired-full nil)
+         (commands nil))
     (check-type gap (integer 0 16384))
     (check-type count (integer 1 128))
     (check-type honor boolean)
@@ -218,6 +219,7 @@
                     (pushnew id maximized)
                     (setf maximized (remove id maximized))))
                (:unmaximize (setf maximized (remove id maximized)))
+               (:close (push (close-window id) commands))
                (:activate
                 (loop for wins in workspaces for number from 1
                       when (member id wins) do (switch-workspace number) (return))
@@ -262,7 +264,7 @@
         (values (list :active active :workspaces workspaces :fullscreen full :maximized maximized
                       :focused focused :ids ids :boxes boxes :stacking stack
                       :visible visible :geometry-key geometry-key)
-                (nreverse effects) nil)))))
+                (nreverse effects) commands)))))
 
 (define-extension "drag" (:reads (:windows :layout :button :grab) :state nil) (snapshot state event)
   (labels ((drag-box (state dx dy)

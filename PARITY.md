@@ -58,7 +58,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |
 | 51 | `honor_xdg_activation_with_invalid_serial` | crates/tomoe/src/handlers.rs, lua.rs | native/activation.c, src/api.lisp `settings` | Done |
 | 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/window.c `foreign_toplevels_refresh` | Done |
-| 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | none | Missing |
+| 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/window.c `foreign_refresh_wlr`, builtins/desktop.lisp `wm` | Done |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/backend.c, native/space.c, patches/wlroots-screencopy-buffer.patch | Done |
 | 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c (untracked WIP) | Missing |
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | none | Missing |

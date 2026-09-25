@@ -1,5 +1,6 @@
 #include "internal.h"
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 
 static bool xwayland_connected(struct tomoe *s) {
     return s->xwayland && wlr_xwayland_get_xwm_connection(s->xwayland);
@@ -28,6 +29,9 @@ struct window {
     bool xdg_fullscreen_requested, xdg_maximize_requested;
     bool desired_fullscreen, desired_maximize;
     struct wlr_ext_foreign_toplevel_handle_v1 *ext_handle;
+    struct wlr_foreign_toplevel_handle_v1 *wlr_handle;
+    struct wl_listener foreign_activate, foreign_close, foreign_fullscreen;
+    struct wl_listener foreign_maximize, foreign_minimize;
 };
 struct popup {
     struct wlr_xdg_popup *xdg;
@@ -407,9 +411,84 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
     }
 }
 
+static void foreign_event(struct window *w, const char *request, int requested,
+        struct wlr_output *output) {
+    struct event *event; size_t size;
+    FILE *out = begin_event(w->server, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :request :id %u :request :%s", w->target.id, request);
+    if (requested >= 0) fprintf(out, " :requested %s", requested ? "t" : "nil");
+    if (output) { fputs(" :output ", out); quote(out, output->name); }
+    fputc(')', out);
+    end_event(w->server, event, out);
+}
+static void foreign_activate(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, foreign_activate);
+    foreign_event(w, "activate", -1, NULL);
+}
+static void foreign_close(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, foreign_close);
+    foreign_event(w, "close", -1, NULL);
+}
+static void foreign_fullscreen(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, foreign_fullscreen);
+    struct wlr_foreign_toplevel_handle_v1_fullscreen_event *event = data;
+    foreign_event(w, "fullscreen", event->fullscreen, event->fullscreen ? event->output : NULL);
+}
+static void foreign_maximize(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, foreign_maximize);
+    struct wlr_foreign_toplevel_handle_v1_maximized_event *event = data;
+    foreign_event(w, "maximize", event->maximized, NULL);
+}
+static void foreign_minimize(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, foreign_minimize);
+    struct wlr_foreign_toplevel_handle_v1_minimized_event *event = data;
+    foreign_event(w, "minimize", event->minimized, NULL);
+}
 static void foreign_retire(struct window *w) {
     if (w->ext_handle) wlr_ext_foreign_toplevel_handle_v1_destroy(w->ext_handle);
     w->ext_handle = NULL;
+    if (!w->wlr_handle) return;
+    detach(&w->foreign_activate); detach(&w->foreign_close); detach(&w->foreign_fullscreen);
+    detach(&w->foreign_maximize); detach(&w->foreign_minimize);
+    wlr_foreign_toplevel_handle_v1_destroy(w->wlr_handle);
+    w->wlr_handle = NULL;
+}
+static void foreign_refresh_wlr(struct window *w) {
+    struct tomoe *s = w->server;
+    if (!w->wlr_handle) {
+        w->wlr_handle = wlr_foreign_toplevel_handle_v1_create(s->foreign_toplevel);
+        if (!w->wlr_handle) { fail(s, "foreign toplevel allocation failed"); return; }
+        listen(&w->foreign_activate, &w->wlr_handle->events.request_activate, foreign_activate);
+        listen(&w->foreign_close, &w->wlr_handle->events.request_close, foreign_close);
+        listen(&w->foreign_fullscreen, &w->wlr_handle->events.request_fullscreen, foreign_fullscreen);
+        listen(&w->foreign_maximize, &w->wlr_handle->events.request_maximize, foreign_maximize);
+        listen(&w->foreign_minimize, &w->wlr_handle->events.request_minimize, foreign_minimize);
+    }
+    struct wlr_foreign_toplevel_handle_v1 *h = w->wlr_handle;
+    if (!h->title || strcmp(h->title, title_of(w)) != 0)
+        wlr_foreign_toplevel_handle_v1_set_title(h, title_of(w));
+    if (!h->app_id || strcmp(h->app_id, app_id_of(w)) != 0)
+        wlr_foreign_toplevel_handle_v1_set_app_id(h, app_id_of(w));
+    wlr_foreign_toplevel_handle_v1_set_fullscreen(h, w->fullscreen_state);
+    wlr_foreign_toplevel_handle_v1_set_maximized(h, w->maximize_state);
+    wlr_foreign_toplevel_handle_v1_set_activated(h, s->focused == w->target.id);
+    double x = w->target.x, y = w->target.y;
+    double right = x + w->width, bottom = y + w->height;
+    world_to_screen(s, &x, &y);
+    world_to_screen(s, &right, &bottom);
+    struct wlr_box box = { pixel_round(x), pixel_round(y),
+        pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) };
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        struct wlr_box output_box, overlap;
+        physical_output_box(o, &output_box);
+        if (output_is_active(o) && w->tree->node.enabled &&
+                wlr_box_intersection(&overlap, &box, &output_box))
+            wlr_foreign_toplevel_handle_v1_output_enter(h, o->wlr);
+        else
+            wlr_foreign_toplevel_handle_v1_output_leave(h, o->wlr);
+    }
 }
 static void foreign_refresh(struct window *w) {
     struct wlr_ext_foreign_toplevel_handle_v1_state state = {
@@ -425,11 +504,14 @@ static void foreign_refresh(struct window *w) {
     }
 }
 void foreign_toplevels_refresh(struct tomoe *s) {
-    struct window *w;
+    struct window *w, *focused = NULL;
     wl_list_for_each(w, &s->windows, link) {
-        if (managed_window(w) && w->mapped) foreign_refresh(w);
-        else foreign_retire(w);
+        if (!managed_window(w) || !w->mapped) { foreign_retire(w); continue; }
+        foreign_refresh(w);
+        if (w->target.id == s->focused) focused = w;
+        else foreign_refresh_wlr(w);
     }
+    if (focused) foreign_refresh_wlr(focused);
 }
 
 static void window_reparent(struct window *w) {
