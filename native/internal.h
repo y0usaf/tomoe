@@ -69,7 +69,7 @@ struct output {
     char mirror[129];
     char pending_mirror[129];
     struct wlr_buffer *capture_primary, *capture_buffer;
-    bool lock_rendered;
+    bool lock_rendered, gamma_dirty;
 };
 
 static inline bool output_is_active(const struct output *output) {
@@ -355,6 +355,7 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
     double dx, double dy, double dx_unaccel, double dy_unaccel);
 void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
+void gamma_apply(struct output *o, struct wlr_output_state *state);
 void drag_icons_refresh(struct tomoe *s);
 bool drag_active(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);

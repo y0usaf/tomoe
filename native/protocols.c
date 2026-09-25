@@ -8,6 +8,7 @@
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_gamma_control_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -93,6 +94,26 @@ void idle_refresh(struct tomoe *s) {
     wlr_idle_notifier_v1_set_inhibited(s->idle_notifier, inhibited && !s->session_lock);
 }
 
+static void set_gamma(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, gamma_set_gamma);
+    struct wlr_gamma_control_manager_v1_set_gamma_event *event = data;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (o->wlr != event->output) continue;
+        o->gamma_dirty = true;
+        wlr_output_schedule_frame(o->wlr);
+    }
+}
+void gamma_apply(struct output *o, struct wlr_output_state *state) {
+    o->gamma_dirty = false;
+    struct wlr_gamma_control_v1 *control =
+        wlr_gamma_control_manager_v1_get_control(o->server->gamma_control, o->wlr);
+    if (wlr_gamma_control_v1_apply(control, state) && wlr_output_test_state(o->wlr, state)) return;
+    wlr_output_state_set_color_transform(state, NULL);
+    state->committed &= ~WLR_OUTPUT_STATE_COLOR_TRANSFORM;
+    if (control) wlr_gamma_control_v1_send_failed_and_destroy(control);
+}
+
 bool protocols_listen(struct tomoe *s) {
     s->primary_selection = wlr_primary_selection_v1_device_manager_create(s->display);
     s->data_control = wlr_data_control_manager_v1_create(s->display);
@@ -102,10 +123,12 @@ bool protocols_listen(struct tomoe *s) {
     s->presentation_time = wlr_presentation_create(s->display, s->backend, 2);
     s->idle_notifier = wlr_idle_notifier_v1_create(s->display);
     s->idle_inhibit = wlr_idle_inhibit_v1_create(s->display);
-    if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit ||
+    s->gamma_control = wlr_gamma_control_manager_v1_create(s->display);
+    if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !s->gamma_control ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
+    listen(&s->gamma_set_gamma, &s->gamma_control->events.set_gamma, set_gamma);
     listen(&s->request_set_primary_selection,
         &s->seat->events.request_set_primary_selection, request_set_primary_selection);
     return true;

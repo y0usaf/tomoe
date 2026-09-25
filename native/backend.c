@@ -125,7 +125,7 @@ void tomoe_destroy(struct tomoe *s) {
         &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy, &s->new_surface,
         &s->new_virtual_pointer, &s->cursor_surface_destroy,
         &s->request_set_primary_selection, &s->new_constraint,
-        &s->constraint_commit, &s->constraint_destroy
+        &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);

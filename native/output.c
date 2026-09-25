@@ -884,6 +884,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     wlr_output_state_init(&state);
     bool success = render_output(o, &state, NULL);
     if (success) surfaces_textured(o);
+    if (success && o->gamma_dirty) gamma_apply(o, &state);
     success = success && wlr_output_commit_state(o->wlr, &state);
     finish_output_capture(o);
     wlr_output_state_finish(&state);

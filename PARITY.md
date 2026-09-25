@@ -63,7 +63,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c (untracked WIP) | Missing |
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | none | Missing |
 | 57 | ext-session-lock | crates/tomoe/src/lock.rs | native/lock.c (untracked WIP) | Missing |
-| 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/protocols.c (untracked WIP) | Missing |
+| 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/protocols.c `gamma_apply`, native/output.c | Done |
 | 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/protocols.c (untracked WIP) | Missing |
 | 60 | Idle notify and idle inhibit | crates/tomoe/src/state.rs, handlers.rs | native/protocols.c `idle_refresh`, native/input.c | Done |
 | 61 | Primary selection | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
