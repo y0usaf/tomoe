@@ -81,6 +81,8 @@ int input_setting(struct settings *settings, const char *key, double value, cons
 void settings_finish(struct settings *settings) {
     for (size_t i = 0; i < settings->device_count; i++) free(settings->devices[i].name);
     settings->device_count = 0;
+    for (size_t i = 0; i < settings->blur_namespace_count; i++) free(settings->blur_namespaces[i]);
+    settings->blur_namespace_count = 0;
 }
 
 static double pick(double class_value, double device_value) {

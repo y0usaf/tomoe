@@ -27,7 +27,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 19 | Drop shadow, range 12, #00000099, power 3 | crates/tomoe/src/render/shadow.rs | native/effects.c `effect_shadow`, native/space.c `decorate`, src/api.lisp `settings :shadow` | Done |
 | 20 | Dual-kawase blur behind listed layer namespaces | crates/tomoe/src/render/blur.rs, render/mod.rs | none | Missing |
 | 21 | ext-background-effect-v1 blur regions | crates/tomoe/src/protocols/background_effect.rs | none | Missing |
-| 22 | Per-window blur behind (zoom 1, not fullscreen) | crates/tomoe/src/render/mod.rs `render_masked` | none | Missing |
+| 22 | Per-window blur behind (zoom 1, not fullscreen) | crates/tomoe/src/render/mod.rs `render_masked` | native/effects.c `effect_blur`, native/space.c `decorate`, `window-properties :blur`, `settings :blur` | Done |
 | 23 | `Window:set_properties` radius/tearing/blur/border | crates/tomoe/src/lua.rs | src/api.lisp `window-properties`, native/presentation.c `tomoe_present_window_style` | Done |
 | 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | none | Missing |

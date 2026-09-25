@@ -152,6 +152,11 @@ struct settings {
     int shadow_range;
     uint32_t shadow_color;
     double shadow_power;
+    bool blur_enabled;
+    int blur_passes, blur_margin;
+    double blur_offset;
+    char *blur_namespaces[64];
+    size_t blur_namespace_count;
 };
 void settings_default(struct settings *settings);
 void settings_finish(struct settings *settings);

@@ -422,6 +422,8 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:border (:group (:width (:integer 0 1024) 2) (:focused :color "#7aa2f7")
                      (:unfocused :color "#3b4261") (:radius (:integer 0 4096) 0)))
     (:shadow (:group (:range (:integer 0 4096) 12) (:color :color "#00000099") (:power (:real 1 4) 3)))
+    (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
+                   (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")

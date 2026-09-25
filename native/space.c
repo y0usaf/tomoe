@@ -453,6 +453,8 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     int64_t color = focused ? t->style.focused : t->style.unfocused;
     effect_border(f, box, st->border_width * zoom, radius,
         color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, 1);
+    if (st->blur_enabled && t->style.blur == 1 && zoom == 1)
+        effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin);
 }
 static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct target *target,
         double x, double y, struct frame *f) {

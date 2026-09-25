@@ -12,6 +12,10 @@ static const struct setting_field {
     { "nested-size-width", offsetof(struct settings, nested_width), SETTING_INT },
     { "border-width", offsetof(struct settings, border_width), SETTING_INT },
     { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
+    { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
+    { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
+    { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
+    { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },
     { "shadow-color", offsetof(struct settings, shadow_color), SETTING_COLOR },
     { "shadow-power", offsetof(struct settings, shadow_power), SETTING_REAL },
     { "border-radius", offsetof(struct settings, border_radius), SETTING_INT },
@@ -26,7 +30,8 @@ static const struct setting_field {
 void settings_default(struct settings *settings) {
     *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
         .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
-        .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3 };
+        .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3,
+        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96 };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }
@@ -63,7 +68,15 @@ int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
 int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *text) {
     struct presentation *plan = s->presentation;
     if (!plan || !plan->settings || !text) return 0;
-    int handled = input_setting(plan->settings, key, NAN, text);
+    struct settings *settings = plan->settings;
+    if (strcmp(key, "blur-layer-namespaces") == 0) {
+        if (settings->blur_namespace_count == 64) return 0;
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        settings->blur_namespaces[settings->blur_namespace_count++] = copy;
+        return 1;
+    }
+    int handled = input_setting(settings, key, NAN, text);
     return handled >= 0 ? handled : 1;
 }
 
@@ -74,6 +87,7 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     settings_finish(&s->settings);
     s->settings = *plan->settings;
     plan->settings->device_count = 0;
+    plan->settings->blur_namespace_count = 0;
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
     free(plan->settings);
