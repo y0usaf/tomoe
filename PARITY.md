@@ -49,7 +49,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/protocols.c, native/input.c | Done |
 | 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c, native/input.c `motion` | Done |
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |
-| 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c (fullscreen/maximize only) | Partial |
+| 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c `window_move`, `window_resize`, `window_minimize` | Done |
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; grabs by wlroots xdg-shell | Done |
 | 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/protocols.c `decoration_apply`, src/api.lisp `settings` | Done |
 | 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/protocols.c | Done |

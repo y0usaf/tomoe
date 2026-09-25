@@ -17,6 +17,7 @@ struct window {
     struct wlr_scene_tree *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
     struct wl_listener associate, dissociate, request_configure, set_geometry, set_override_redirect;
+    struct wl_listener request_move, request_resize, request_minimize;
     int width, height;
     int client_width, client_height;
     int desired_width, desired_height;
@@ -419,16 +420,53 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
     }
 }
 
-static void foreign_event(struct window *w, const char *request, int requested,
-        struct wlr_output *output) {
+static void request_event(struct window *w, const char *request, int requested,
+        struct wlr_output *output, uint32_t edges) {
     struct event *event; size_t size;
     FILE *out = begin_event(w->server, &event, &size);
     if (!out) return;
     fprintf(out, "(:type :request :id %u :request :%s", w->target.id, request);
     if (requested >= 0) fprintf(out, " :requested %s", requested ? "t" : "nil");
     if (output) { fputs(" :output ", out); quote(out, output->name); }
+    if (edges) fprintf(out, " :edges :%s%s%s%s", edges & WLR_EDGE_TOP ? "top" : "",
+        edges & WLR_EDGE_BOTTOM ? "bottom" : "",
+        (edges & (WLR_EDGE_TOP | WLR_EDGE_BOTTOM)) && (edges & (WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) ? "-" : "",
+        edges & WLR_EDGE_LEFT ? "left" : edges & WLR_EDGE_RIGHT ? "right" : "");
     fputc(')', out);
     end_event(w->server, event, out);
+}
+static void foreign_event(struct window *w, const char *request, int requested,
+        struct wlr_output *output) {
+    request_event(w, request, requested, output, 0);
+}
+static bool interactive_allowed(struct window *w, uint32_t serial) {
+    struct wlr_surface *surface = surface_of(w);
+    if (!w->mapped || w->unmanaged || !surface) return false;
+    if (w->x11) return w->server->seat->pointer_state.button_count > 0;
+    return wlr_seat_validate_pointer_grab_serial(w->server->seat, surface, serial);
+}
+static void window_move(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, request_move);
+    struct wlr_xdg_toplevel_move_event *event = w->x11 ? NULL : data;
+    if (interactive_allowed(w, event ? event->serial : 0)) request_event(w, "move", -1, NULL, 0);
+}
+static void window_resize(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, request_resize);
+    uint32_t edges, serial = 0;
+    if (w->x11) {
+        edges = ((struct wlr_xwayland_resize_event *)data)->edges;
+    } else {
+        struct wlr_xdg_toplevel_resize_event *event = data;
+        edges = event->edges;
+        serial = event->serial;
+    }
+    if (!edges) edges = WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT;
+    if (interactive_allowed(w, serial)) request_event(w, "resize", -1, NULL, edges);
+}
+static void window_minimize(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, request_minimize);
+    bool minimize = w->x11 ? ((struct wlr_xwayland_minimize_event *)data)->minimize : true;
+    if (managed_window(w) && w->mapped) request_event(w, "minimize", minimize, NULL, 0);
 }
 static void foreign_activate(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, foreign_activate);
@@ -812,6 +850,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     detach(&w->title); detach(&w->app_id); detach(&w->maximize); detach(&w->fullscreen);
     detach(&w->associate); detach(&w->dissociate); detach(&w->request_configure);
     detach(&w->set_geometry); detach(&w->set_override_redirect);
+    detach(&w->request_move); detach(&w->request_resize); detach(&w->request_minimize);
     if (s->grab_id == w->target.id) grab_clear(s);
     if (s->focused == w->target.id) tomoe_focus(s, 0);
     if (s->or_focus == w->x11) {
@@ -856,6 +895,9 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     listen(&w->app_id, &xdg->events.set_app_id, window_app_id);
     listen(&w->maximize, &xdg->events.request_maximize, window_maximize);
     listen(&w->fullscreen, &xdg->events.request_fullscreen, window_fullscreen);
+    listen(&w->request_move, &xdg->events.request_move, window_move);
+    listen(&w->request_resize, &xdg->events.request_resize, window_resize);
+    listen(&w->request_minimize, &xdg->events.request_minimize, window_minimize);
 }
 static void x11_create_tree(struct window *w) {
     struct tomoe *s = w->server;
@@ -951,6 +993,9 @@ static void new_xwayland_surface(struct wl_listener *listener, void *data) {
     listen(&w->request_configure, &x11->events.request_configure, x11_request_configure);
     listen(&w->set_geometry, &x11->events.set_geometry, x11_set_geometry);
     listen(&w->set_override_redirect, &x11->events.set_override_redirect, x11_override_redirect);
+    listen(&w->request_move, &x11->events.request_move, window_move);
+    listen(&w->request_resize, &x11->events.request_resize, window_resize);
+    listen(&w->request_minimize, &x11->events.request_minimize, window_minimize);
     if (x11->surface) x11_associate(&w->associate, NULL);
 }
 void update_workareas(struct tomoe *s) {
