@@ -2,6 +2,7 @@
 #include <wlr/backend/wayland.h>
 #include <wlr/backend/drm.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <xf86drmMode.h>
 #include "ui.h"
 #include <inttypes.h>
@@ -926,8 +927,12 @@ static void output_frame(struct wl_listener *listener, void *data) {
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     struct wlr_surface *scanout = scanout_surface(o);
+    struct wlr_linux_drm_syncobj_surface_v1_state *sync =
+        scanout ? wlr_linux_drm_syncobj_v1_get_surface_state(scanout) : NULL;
     if (scanout) {
         wlr_output_state_set_buffer(&state, &scanout->buffer->base);
+        if (sync && sync->acquire_timeline)
+            wlr_output_state_set_wait_timeline(&state, sync->acquire_timeline, sync->acquire_point);
         if (!wlr_output_test_state(o->wlr, &state)) {
             wlr_output_state_finish(&state);
             wlr_output_state_init(&state);
@@ -952,6 +957,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
         if (!wlr_output_test_state(o->wlr, &state)) state.tearing_page_flip = false;
     }
     success = success && wlr_output_commit_state(o->wlr, &state);
+    if (success && scanout && sync && sync->acquire_timeline)
+        wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(sync, state.buffer);
     if (success && !scanout && (state.committed & WLR_OUTPUT_STATE_BUFFER)) {
         wlr_buffer_unlock(o->presented[1]);
         o->presented[1] = o->presented[0];
