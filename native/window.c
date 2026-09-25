@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
-#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_tearing_control_v1.h>
 
 struct window {
@@ -26,7 +25,6 @@ struct window {
     struct wlr_foreign_toplevel_handle_v1 *wlr_handle;
     struct wl_listener foreign_activate, foreign_close, foreign_fullscreen;
     struct wl_listener foreign_maximize, foreign_minimize;
-    struct wlr_ext_image_capture_source_v1 *capture_source;
     struct animation move, fade;
     double move_from_x, move_from_y;
 };
@@ -465,21 +463,22 @@ static void foreign_refresh(struct window *w) {
         wlr_ext_foreign_toplevel_handle_v1_update_state(w->ext_handle, &state);
     }
 }
-static void toplevel_capture_request(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_toplevel_capture_request);
-    struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request = data;
-    struct window *w = request->toplevel_handle->data;
-    if (!w) return;
-    if (!w->capture_source)
-        w->capture_source = wlr_ext_image_capture_source_v1_create_with_scene_node(&w->tree->node,
-            wl_display_get_event_loop(s->display), s->allocator, s->renderer);
-    if (w->capture_source)
-        wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(request,
-            w->capture_source);
+uint32_t window_id_for_handle(struct wlr_ext_foreign_toplevel_handle_v1 *handle) {
+    struct window *w = handle->data;
+    return w ? w->target.id : 0;
 }
-void window_capture_listen(struct tomoe *s) {
-    listen(&s->new_toplevel_capture_request, &s->toplevel_capture_sources->events.new_request,
-        toplevel_capture_request);
+struct wlr_scene_node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target) {
+    struct window *w = find_window(s, id);
+    if (!w || !w->tree) return NULL;
+    *target = w->target;
+    return &w->tree->node;
+}
+bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height) {
+    struct window *w = find_window(s, id);
+    if (!w || w->client_width <= 0 || w->client_height <= 0) return false;
+    *width = physical_size(w->client_width, w->target.scale);
+    *height = physical_size(w->client_height, w->target.scale);
+    return true;
 }
 bool windows_want_tearing(struct tomoe *s, struct output *o) {
     static int force = -1;
@@ -720,6 +719,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     if (s->grab_id == w->target.id) grab_clear(s);
     if (s->focused == w->target.id) tomoe_focus(s, 0);
     bool admitted = w->admitted;
+    capture_window_gone(s, w->target.id);
     foreign_retire(w);
     wl_list_remove(&w->link);
     w->tree->node.data = NULL;

@@ -118,6 +118,21 @@
               ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml \
               build/wlr-screencopy-unstable-v1-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
+              build/ext-image-capture-source-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
+              build/ext-image-capture-source-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
+              build/ext-image-copy-capture-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
+              build/ext-image-copy-capture-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
+              build/ext-foreign-toplevel-list-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-background-effect/ext-background-effect-v1.xml \
               build/ext-background-effect-v1-protocol.h
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \

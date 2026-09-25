@@ -728,7 +728,7 @@ static const struct wlr_drm_format_set *texture_formats(struct wlr_renderer *ren
     return NULL;
 }
 
-static const struct wlr_drm_format_set *render_formats(struct wlr_renderer *renderer) {
+const struct wlr_drm_format_set *render_formats(struct wlr_renderer *renderer) {
     return &render_of(renderer)->render_formats;
 }
 

@@ -575,7 +575,7 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
     bool success = render_scene_buffer(o, buffer, state, plan, true);
     uint64_t render_point = o->server->render_point;
     if (success) {
-        if (screencopy_wants_cursorless(o)) {
+        if (capture_wants_cursorless(o)) {
             struct wlr_buffer *capture = ring_create(o->server, ring);
             if (capture && render_scene_buffer(o, capture, state, plan, false)) {
                 o->capture_buffer = wlr_buffer_lock(capture);
@@ -596,6 +596,26 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
 
 bool render_output(struct output *o, struct wlr_output_state *state) {
     return render_presentation(o, state, NULL, NULL);
+}
+
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer) {
+    struct presentation_target root = {0};
+    root.node = window_capture_node(s, id, &root.target);
+    if (!root.node) return false;
+    root.target.offset_x = root.target.offset_y = 0;
+    root.target.alpha = 1;
+    struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
+        .view_zoom = 1 };
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(s->renderer, buffer, NULL);
+    if (!pass) return false;
+    struct frame f = { .server = s, .pass = pass, .buffer = buffer, .width = buffer->width,
+        .height = buffer->height, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
+        .view_x = plan.view_x, .view_y = plan.view_y, .zoom = 1 };
+    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+        .box = { .width = buffer->width, .height = buffer->height },
+        .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
+    walk_presentation_root(s, &plan, &root, root.node, 0, 0, render_leaf, &f);
+    return wlr_render_pass_submit(pass);
 }
 
 struct hit_data { double x, y, sx, sy, ratio; struct wlr_surface *surface; uint32_t id; };

@@ -47,7 +47,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->renderer = render_create(s->backend);
     if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
     s->allocator = render_allocator(s->renderer);
-    if (!screencopy_listen(s)) goto failed;
+    if (!capture_listen(s)) goto failed;
     struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
     if (!compositor ||
             !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display) ||
@@ -122,7 +122,6 @@ void tomoe_destroy(struct tomoe *s) {
         &s->request_set_primary_selection, &s->new_constraint,
         &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma,
         &s->request_start_drag, &s->seat_start_drag, &s->new_toplevel_decoration,
-        &s->new_toplevel_capture_request
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);

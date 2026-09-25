@@ -977,7 +977,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
         o->presented[0] = wlr_buffer_lock(state.buffer);
     }
     if (success && (state.committed & WLR_OUTPUT_STATE_BUFFER))
-        screencopy_serve(o, state.buffer, scanout != NULL);
+        capture_serve(o, state.buffer, scanout != NULL);
     finish_output_capture(o);
     wlr_output_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
@@ -1022,7 +1022,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     wlr_buffer_unlock(o->presented[1]);
     ring_finish(&o->ring);
     screenshot_output_gone(s, o);
-    screencopy_output_gone(s, wlr);
+    capture_output_gone(s, o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);

@@ -74,6 +74,7 @@ void render_quad(struct program *p, const float pos[8], const float local[8],
 bool render_texture_gl(struct wlr_texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
 uint32_t render_read_format(struct wlr_renderer *renderer);
+const struct wlr_drm_format_set *render_formats(struct wlr_renderer *renderer);
 bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
     uint64_t point);
 bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
@@ -300,7 +301,7 @@ struct tomoe {
     struct ui_asset_pool *ui_assets;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
-    struct wl_list copy_frames;
+    struct wl_list copy_frames, capture_sessions;
     struct wlr_primary_selection_v1_device_manager *primary_selection;
     struct wlr_data_control_manager_v1 *data_control;
     struct wlr_ext_data_control_manager_v1 *ext_data_control;
@@ -316,9 +317,6 @@ struct tomoe {
     struct wlr_pointer_constraint_v1 *active_constraint;
     struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel;
     struct wlr_ext_foreign_toplevel_list_v1 *foreign_toplevel_list;
-    struct wlr_ext_image_copy_capture_manager_v1 *image_copy_capture;
-    struct wlr_ext_output_image_capture_source_manager_v1 *output_capture_sources;
-    struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1 *toplevel_capture_sources;
     struct wlr_session_lock_manager_v1 *session_lock_manager;
     struct wlr_session_lock_v1 *session_lock;
     int lock_state;
@@ -329,7 +327,6 @@ struct tomoe {
     struct target drag_icon;
     struct wl_listener new_toplevel_decoration, new_constraint, gamma_set_gamma, constraint_commit,
         constraint_destroy;
-    struct wl_listener new_toplevel_capture_request;
     struct wl_listener new_lock, lock_new_surface, lock_unlock, lock_destroy;
 };
 struct layer_state {
@@ -414,10 +411,11 @@ void forget_output(struct tomoe *s, struct wlr_output *output);
 bool render_output(struct output *o, struct wlr_output_state *state);
 bool render_presentation(struct output *o, struct wlr_output_state *state,
     struct ring *ring, const struct presentation *plan);
-bool screencopy_listen(struct tomoe *s);
-bool screencopy_wants_cursorless(struct output *o);
-void screencopy_serve(struct output *o, struct wlr_buffer *committed, bool scanout);
-void screencopy_output_gone(struct tomoe *s, struct wlr_output *output);
+bool capture_listen(struct tomoe *s);
+bool capture_wants_cursorless(struct output *o);
+void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout);
+void capture_output_gone(struct tomoe *s, struct output *o);
+void capture_window_gone(struct tomoe *s, uint32_t id);
 void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
@@ -441,7 +439,11 @@ void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);
-void window_capture_listen(struct tomoe *s);
+bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
+struct wlr_scene_node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
+struct wlr_ext_foreign_toplevel_handle_v1;
+uint32_t window_id_for_handle(struct wlr_ext_foreign_toplevel_handle_v1 *handle);
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan);
