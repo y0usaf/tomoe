@@ -442,7 +442,20 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
     return NULL;
 }
 
+static void decorate_layer(struct tomoe *s, const struct target *t, struct frame *f) {
+    const struct settings *st = &s->settings;
+    struct layer *l = find_layer(s, t->id);
+    if (!st->blur_enabled || !l || !l->wlr->namespace) return;
+    for (size_t i = 0; i < st->blur_namespace_count; i++) {
+        if (strcmp(st->blur_namespaces[i], l->wlr->namespace) != 0) continue;
+        struct wlr_fbox box = { t->x, t->y, physical_size(l->wlr->current.actual_width, t->scale),
+            physical_size(l->wlr->current.actual_height, t->scale) };
+        effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin);
+        return;
+    }
+}
 static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
+    if (t->kind == TARGET_LAYER) decorate_layer(s, t, f);
     if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
     const struct settings *st = &s->settings;
     bool focused = t->id == f->focused;
