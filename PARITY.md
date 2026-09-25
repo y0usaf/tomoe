@@ -52,7 +52,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c (fullscreen/maximize only) | Partial |
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c (placement only) | Partial |
 | 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/protocols.c `decoration_apply`, src/api.lisp `settings` | Done |
-| 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/protocols.c (untracked WIP) | Missing |
+| 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
 | 48 | Layer shell | crates/tomoe/src/handlers.rs | native/layer.c | Done |
 | 49 | Xwayland | crates/tomoe/src/xwayland.rs (xwayland-satellite) | native/window.c (wlroots XWM, lazy) | Improved: in-process XWM, no satellite process to supervise |
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |

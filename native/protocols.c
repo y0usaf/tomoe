@@ -10,6 +10,7 @@
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_server_decoration.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -188,12 +189,15 @@ bool protocols_listen(struct tomoe *s) {
     s->idle_inhibit = wlr_idle_inhibit_v1_create(s->display);
     s->gamma_control = wlr_gamma_control_manager_v1_create(s->display);
     s->xdg_decoration = wlr_xdg_decoration_manager_v1_create(s->display);
+    s->server_decoration = wlr_server_decoration_manager_create(s->display);
     if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !s->gamma_control ||
-            !s->xdg_decoration ||
+            !s->xdg_decoration || !s->server_decoration ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
     listen(&s->gamma_set_gamma, &s->gamma_control->events.set_gamma, set_gamma);
+    wlr_server_decoration_manager_set_default_mode(s->server_decoration,
+        WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
     listen(&s->new_toplevel_decoration, &s->xdg_decoration->events.new_toplevel_decoration,
         new_toplevel_decoration);
     listen(&s->request_start_drag, &s->seat->events.request_start_drag, request_start_drag);
