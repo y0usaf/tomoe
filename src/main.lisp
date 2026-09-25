@@ -163,7 +163,7 @@ only after it changes again."
   (cond
     ((equal backend "nested") (sb-posix:setenv "WLR_BACKENDS" "wayland" 1))
     ((equal backend "headless") (sb-posix:setenv "WLR_BACKENDS" "headless" 1))
-    ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm,libinput" 1))
+    ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm" 1))
     (t (error "Unknown backend: ~A" backend)))
   (when drm-device
     (sb-posix:setenv "WLR_DRM_DEVICES" (primary-drm-devices drm-device) 1))

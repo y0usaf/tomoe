@@ -79,6 +79,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     outputs_listen(s);
     input_listen(s);
+    if (!libinput_listen(s)) goto failed;
     if (!virtual_input_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
             !background_effects_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
@@ -121,14 +122,14 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->display) wl_display_destroy_clients(s->display);
     if (s->display) surfaces_finish(s);
     struct wl_listener *listeners[] = {
-        &s->new_output, &s->new_input,
-        &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
+        &s->new_output,
         &s->layout_change, &s->backend_destroy, &s->cursor_surface_destroy,
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) node_destroy(s->scene);
     if (s->cursor_manager) wlr_xcursor_manager_destroy(s->cursor_manager);
     if (s->cursor) wlr_cursor_destroy(s->cursor);
+    libinput_finish(s);
     if (s->backend) wlr_backend_destroy(s->backend);
     keyboard_logical_finish(s);
     seat_destroy(s->seat);

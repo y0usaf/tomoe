@@ -148,7 +148,7 @@ static const struct seat_pointer_grab_interface pointer_grab_impl = {
 };
 
 static void keyboard_enter(struct seat_keyboard_grab *keyboard, struct surface *surface,
-        const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
+        const uint32_t keys[], size_t count, const struct keyboard_modifiers *modifiers) {
 }
 
 static void keyboard_clear_focus(struct seat_keyboard_grab *keyboard) {
@@ -160,7 +160,7 @@ static void keyboard_key(struct seat_keyboard_grab *keyboard, uint32_t time, uin
 }
 
 static void keyboard_modifiers(struct seat_keyboard_grab *keyboard,
-        const struct wlr_keyboard_modifiers *modifiers) {
+        const struct keyboard_modifiers *modifiers) {
     seat_keyboard_send_modifiers(keyboard->seat, modifiers);
 }
 

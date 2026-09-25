@@ -19,10 +19,7 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
-#include <wlr/types/wlr_keyboard.h>
-#include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
-#include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -38,6 +35,65 @@ struct window;
 struct layer_plan;
 struct presentation;
 struct keyboard_profile;
+struct keyboard;
+struct keyboard_modifiers {
+    uint32_t depressed, latched, locked, group;
+};
+enum {
+    MOD_SHIFT = 1 << 0, MOD_CAPS = 1 << 1, MOD_CTRL = 1 << 2, MOD_ALT = 1 << 3,
+    MOD_MOD2 = 1 << 4, MOD_MOD3 = 1 << 5, MOD_LOGO = 1 << 6, MOD_MOD5 = 1 << 7,
+};
+#define LED_COUNT 3
+#define MODIFIER_COUNT 8
+struct keymap_slot {
+    struct xkb_keymap *keymap;
+    struct xkb_state *xkb_state;
+    char *keymap_string;
+    size_t keymap_size;
+    int keymap_fd;
+    xkb_led_index_t led_indexes[LED_COUNT];
+    xkb_mod_index_t mod_indexes[MODIFIER_COUNT];
+    struct keyboard_modifiers modifiers;
+    uint32_t leds;
+    struct { int32_t rate, delay; } repeat_info;
+};
+enum { INPUT_KEYBOARD = 1 << 0, INPUT_POINTER = 1 << 1 };
+struct input_device {
+    struct wl_list link;
+    struct tomoe *server;
+    char *name, *output_name;
+    uint32_t caps;
+    struct libinput_device *libinput;
+    struct keyboard *keyboard;
+    void *data;
+    struct {
+        struct wl_signal destroy;
+    } events;
+};
+struct pointer_motion {
+    struct input_device *device;
+    uint32_t time_msec;
+    double delta_x, delta_y, unaccel_dx, unaccel_dy;
+};
+struct pointer_absolute {
+    struct input_device *device;
+    uint32_t time_msec;
+    double x, y;
+};
+struct pointer_button {
+    struct input_device *device;
+    uint32_t time_msec, button;
+    enum wl_pointer_button_state state;
+};
+struct pointer_axis {
+    struct input_device *device;
+    uint32_t time_msec;
+    enum wl_pointer_axis orientation;
+    enum wl_pointer_axis_source source;
+    enum wl_pointer_axis_relative_direction relative_direction;
+    double delta;
+    int32_t delta_discrete;
+};
 struct logical_keyboard;
 struct ui_set;
 struct ui_asset_pool;
@@ -206,7 +262,21 @@ void settings_finish(struct settings *settings);
 void input_config_unset(struct input_config *config);
 int input_setting(struct settings *settings, const char *key, double value, const char *text);
 void input_devices_apply(struct tomoe *s);
-void input_device_track(struct tomoe *s, struct wlr_input_device *wlr);
+bool libinput_listen(struct tomoe *s);
+void libinput_finish(struct tomoe *s);
+struct input_device *input_device_create(struct tomoe *s, const char *name, uint32_t caps);
+void input_device_destroy(struct input_device *device);
+void input_device_leds(struct input_device *device, uint32_t leds);
+void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode, uint32_t state);
+void input_modifiers(struct input_device *device, const struct keyboard_modifiers *modifiers);
+void input_pointer_motion(struct pointer_motion *event);
+void input_pointer_absolute(struct pointer_absolute *event);
+void input_pointer_button(struct pointer_button *event);
+void input_pointer_axis(struct pointer_axis *event);
+void input_pointer_frame(struct input_device *device);
+bool keymap_slot_set(struct keymap_slot *slot, struct xkb_keymap *keymap);
+void keymap_slot_finish(struct keymap_slot *slot);
+uint32_t keymap_slot_modifiers(const struct keymap_slot *slot);
 struct presentation {
     struct presentation_output *outputs;
     size_t output_count;
@@ -326,11 +396,11 @@ struct seat_pointer_grab_interface {
 };
 struct seat_keyboard_grab_interface {
     void (*enter)(struct seat_keyboard_grab *grab, struct surface *surface,
-        const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
+        const uint32_t keys[], size_t count, const struct keyboard_modifiers *modifiers);
     void (*clear_focus)(struct seat_keyboard_grab *grab);
     void (*key)(struct seat_keyboard_grab *grab, uint32_t time, uint32_t key, uint32_t state);
     void (*modifiers)(struct seat_keyboard_grab *grab,
-        const struct wlr_keyboard_modifiers *modifiers);
+        const struct keyboard_modifiers *modifiers);
     void (*cancel)(struct seat_keyboard_grab *grab);
 };
 struct seat_pointer_grab {
@@ -363,11 +433,11 @@ struct seat_pointer_state {
     struct wl_listener surface_destroy;
 };
 struct seat_keyboard_state {
-    struct wlr_keyboard *keyboard;
+    struct keymap_slot *keyboard;
     struct seat_client *focused_client;
     struct surface *focused_surface;
     struct seat_keyboard_grab *grab, default_grab;
-    struct wl_listener surface_destroy, keyboard_destroy, keymap, repeat_info;
+    struct wl_listener surface_destroy;
 };
 struct selection_slot {
     struct source *source;
@@ -410,7 +480,10 @@ struct tomoe {
     struct wl_list activation_pending;
     size_t activation_pending_count;
     struct wl_listener new_output, new_input;
-    struct wl_listener motion, absolute, button, axis, frame;
+    struct libinput *libinput;
+    struct wl_event_source *libinput_source;
+    struct wl_list libinput_fds;
+    struct wl_listener session_active;
     struct wl_listener layout_change, backend_destroy;
     char *last_event;
     uint32_t next_id, focused, grab_id;
@@ -737,7 +810,7 @@ void pointer_refresh(struct tomoe *s);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);
-struct wlr_output *virtual_pointer_output(struct tomoe *s, struct wlr_input_device *device);
+struct wlr_output *virtual_pointer_output(struct tomoe *s, struct input_device *device);
 
 bool activation_listen(struct tomoe *s);
 void activation_surface_mapped(struct tomoe *s, struct surface *surface);
@@ -782,8 +855,9 @@ void seat_destroy(struct seat *seat);
 struct seat_client *seat_client_for(struct seat *seat, struct wl_client *client);
 struct seat_client *seat_client_from_resource(struct wl_resource *resource);
 void seat_set_capabilities(struct seat *seat, uint32_t capabilities);
-void seat_set_keyboard(struct seat *seat, struct wlr_keyboard *keyboard);
-struct wlr_keyboard *seat_get_keyboard(struct seat *seat);
+void seat_set_keyboard(struct seat *seat, struct keymap_slot *keyboard);
+struct keymap_slot *seat_get_keyboard(struct seat *seat);
+void seat_keyboard_keymap_changed(struct seat *seat);
 void seat_pointer_enter(struct seat *seat, struct surface *surface, double sx, double sy);
 void seat_pointer_clear_focus(struct seat *seat);
 void seat_pointer_send_motion(struct seat *seat, uint32_t time, double sx, double sy);
@@ -806,18 +880,18 @@ void seat_pointer_notify_frame(struct seat *seat);
 bool seat_validate_pointer_grab_serial(struct seat *seat, struct surface *origin,
     uint32_t serial);
 void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint32_t keys[],
-    size_t count, const struct wlr_keyboard_modifiers *modifiers);
+    size_t count, const struct keyboard_modifiers *modifiers);
 void seat_keyboard_clear_focus(struct seat *seat);
 void seat_keyboard_send_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
-void seat_keyboard_send_modifiers(struct seat *seat, const struct wlr_keyboard_modifiers *modifiers);
+void seat_keyboard_send_modifiers(struct seat *seat, const struct keyboard_modifiers *modifiers);
 void seat_keyboard_start_grab(struct seat *seat, struct seat_keyboard_grab *grab);
 void seat_keyboard_end_grab(struct seat *seat);
 void seat_keyboard_notify_enter(struct seat *seat, struct surface *surface,
-    const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
+    const uint32_t keys[], size_t count, const struct keyboard_modifiers *modifiers);
 void seat_keyboard_notify_clear_focus(struct seat *seat);
 void seat_keyboard_notify_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
 void seat_keyboard_notify_modifiers(struct seat *seat,
-    const struct wlr_keyboard_modifiers *modifiers);
+    const struct keyboard_modifiers *modifiers);
 size_t keyboard_pressed(struct tomoe *s, uint32_t *keys);
 void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y);
 void cursor_committed(struct tomoe *s, struct surface *surface);
@@ -865,6 +939,7 @@ void buffers_finish(void);
 void seat_selection_focus(struct seat *seat, struct seat_client *client);
 void seat_selection_finish(struct seat *seat);
 void seat_drag_client_gone(struct seat *seat, struct seat_client *client);
-void input_add(struct tomoe *s, struct wlr_input_device *device);
+void input_add(struct tomoe *s, struct input_device *device);
+void input_remove(struct tomoe *s, struct input_device *device);
 
 #endif

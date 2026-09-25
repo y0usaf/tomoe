@@ -518,7 +518,7 @@ static const struct seat_pointer_grab_interface drag_pointer_impl = {
 };
 
 static void drag_keyboard_enter(struct seat_keyboard_grab *grab, struct surface *surface,
-        const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers) {
+        const uint32_t keys[], size_t count, const struct keyboard_modifiers *modifiers) {
 }
 
 static void drag_keyboard_clear_focus(struct seat_keyboard_grab *grab) {
@@ -528,7 +528,7 @@ static void drag_key(struct seat_keyboard_grab *grab, uint32_t time, uint32_t ke
 }
 
 static void drag_modifiers(struct seat_keyboard_grab *grab,
-        const struct wlr_keyboard_modifiers *modifiers) {
+        const struct keyboard_modifiers *modifiers) {
 }
 
 static void drag_keyboard_cancel(struct seat_keyboard_grab *grab) {

@@ -24,13 +24,14 @@ wlroots couples these at `wlr_output`: its backends consume `wlr_buffer`,
 `wlr_allocator` and `wlr_renderer`, and hand out `wlr_output` and input devices.
 So the cut goes bottom-up in three steps, each leaving the DRM session usable.
 
-1. **Input.** libinput through a context whose devices open via the existing
-   session, xkbcommon keyboards owned by input.c instead of `wlr_keyboard`,
-   pointer events and cursor position computed in Tomoe, xcursor themes loaded
-   by Tomoe and shown through `wlr_output_cursor`. Virtual keyboard and pointer
-   feed the same device path. The nested backend's host keyboard and pointer
-   still arrive as wlroots devices; a small adapter forwards them until step 2
-   removes it.
+1. **Input.** Done. libinput through a context whose devices open via the
+   existing session, keymaps and xkb state in Tomoe's `keymap_slot` instead of
+   `wlr_keyboard`, pointer events as plain structs into input.c, which already
+   computed the cursor position. Virtual keyboard and pointer feed the same
+   device path. The nested backend's host keyboard and pointer still arrive as
+   wlroots devices; an adapter in libinput.c forwards them until step 2
+   removes it. Cursor images stay on `wlr_cursor`, which no longer sees any
+   input device, until outputs move.
 2. **Outputs and backends.** A Tomoe display core (output, modes, state,
    test/commit, frame scheduling, present feedback, cursors, wl_output,
    xdg-output) with three backends: DRM/KMS on libseat, headless, and nested
