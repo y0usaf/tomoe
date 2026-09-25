@@ -6,7 +6,7 @@
            #:ui #:shell-surface
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
-           #:layer #:fullscreen #:maximize #:grab #:set-view
+           #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
@@ -15,9 +15,9 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 23)
+(defconstant +native-abi-version+ 24)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :layers :surfaces :key :button :grab :request :ipc :ui))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :grab :request :ipc :ui))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
@@ -391,6 +391,59 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
         (error "Keyboard names must contain at most 1024 characters and no NUL.")))
     (%effect :keyboard (list (copy-seq rules) (copy-seq model) (copy-seq layout) (copy-seq variant)
                              (when options (copy-seq options)) repeat-rate repeat-delay))))
+
+(defparameter +settings+
+  '((:force-server-side-decorations :boolean nil)
+    (:honor-xdg-activation-with-invalid-serial :boolean nil))
+  "Compositor settings: (key type default). A :group type holds its own table.")
+
+(defun %setting-value (type value key)
+  (flet ((bad () (error "Invalid setting ~S: ~S" key value)))
+    (ecase (if (consp type) (first type) type)
+      (:boolean (unless (typep value 'boolean) (bad)) value)
+      (:integer (unless (typep value `(integer ,(second type) ,(third type))) (bad)) value)
+      (:real (unless (and (%finite-real-p value) (<= (second type) value (third type))) (bad))
+       (%double-float value))
+      (:member (unless (member value (rest type)) (bad)) value)
+      (:color (%ui-color value) (copy-seq value))
+      (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
+       (mapcar #'copy-seq value))
+      (:group (%settings-plist value (rest type) key)))))
+
+(defun %settings-plist (plist table &optional context)
+  (unless (and (listp plist) (evenp (length plist)))
+    (error "Settings~@[ for ~S~] need key/value pairs: ~S" context plist))
+  (let ((seen nil))
+    (loop for (key value) on plist by #'cddr
+          for entry = (or (assoc key table) (error "Unknown setting ~S~@[ in ~S~]." key context))
+          do (when (member key seen) (error "Duplicate setting ~S." key))
+             (push key seen)
+          append (list key (%setting-value (second entry) value key)))))
+
+(defun settings (&rest plist)
+  "Own compositor settings. Later owners replace individual keys; grouped keys
+merge field by field. Omission restores the preceding owner or the default."
+  (%effect :settings (%settings-plist plist +settings+)))
+
+(defun %settings-defaults (table)
+  (loop for (key type default) in table
+        append (list key (if (and (consp type) (eq (first type) :group))
+                             (%settings-defaults (rest type))
+                             default))))
+
+(defun %settings-merge (settings plist table)
+  (loop for (key value) on plist by #'cddr
+        for type = (second (assoc key table))
+        do (setf (getf settings key)
+                 (if (and (consp type) (eq (first type) :group))
+                     (%settings-merge (copy-list (getf settings key)) value (rest type))
+                     value)))
+  settings)
+
+(defun setting (snapshot &rest path)
+  "Read a resolved compositor setting. Declare :SETTINGS as a dependency."
+  (let ((value (context snapshot :settings)))
+    (dolist (key path (copy-data value)) (setf value (getf value key)))))
 
 (defun default-keyboard-config ()
   (list :rules "" :model "" :layout "" :variant "" :options nil :repeat-rate 25 :repeat-delay 600))

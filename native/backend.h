@@ -86,6 +86,9 @@ uint64_t tomoe_ui_text_size(const char *text, const char *font,
     double size, double line_height);
 int tomoe_ui_callback_current(struct tomoe *server, uint64_t callback_id);
 const char *tomoe_ui_stats(struct tomoe *server);
+int tomoe_present_settings(struct tomoe *server);
+int tomoe_present_setting(struct tomoe *server, const char *key, double value);
+int tomoe_present_setting_text(struct tomoe *server, const char *key, const char *text);
 const char *tomoe_present_apply(struct tomoe *server);
 void tomoe_present_abort(struct tomoe *server);
 #endif

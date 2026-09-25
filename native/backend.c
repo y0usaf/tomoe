@@ -9,7 +9,7 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 23; }
+int tomoe_abi_version(void) { return 24; }
 const char *tomoe_display_name(struct tomoe *s) {
     return s->xwayland ? s->xwayland->display_name : NULL;
 }
@@ -42,6 +42,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->next_output_id = 1;
     s->next_ui_callback_id = 1;
     s->view_zoom = 1.0;
+    settings_default(&s->settings);
     s->display = wl_display_create();
     if (!s->display) goto failed;
     s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), NULL);
@@ -127,7 +128,7 @@ void tomoe_destroy(struct tomoe *s) {
         &s->new_virtual_pointer, &s->cursor_surface_destroy,
         &s->request_set_primary_selection, &s->new_constraint,
         &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma,
-        &s->request_start_drag, &s->seat_start_drag
+        &s->request_start_drag, &s->seat_start_drag, &s->new_toplevel_decoration
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);

@@ -151,6 +151,11 @@
   (server (* t)) (id sb-alien:unsigned-int) (x sb-alien:int) (y sb-alien:int)
   (width sb-alien:int) (height sb-alien:int) (visible sb-alien:int)
   (fullscreen sb-alien:int) (maximize sb-alien:int))
+(define-native ("tomoe_present_settings" %present-settings) sb-alien:int (server (* t)))
+(define-native ("tomoe_present_setting" %present-setting) sb-alien:int
+  (server (* t)) (key sb-alien:c-string) (value sb-alien:double))
+(define-native ("tomoe_present_setting_text" %present-setting-text) sb-alien:int
+  (server (* t)) (key sb-alien:c-string) (text sb-alien:c-string))
 (define-native ("tomoe_present_apply" %present-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_stack" %present-stack) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int))
@@ -278,8 +283,31 @@
                                          (getf hit :x) (getf hit :y) (getf hit :width) (getf hit :height))))
           (require-ui (%present-ui-end backend)))))))
 
+(defun stage-native-settings (backend settings)
+  "Stage the complete resolved settings as flat native keys; groups prefix them."
+  (unless (= 1 (%present-settings backend)) (error "Cannot stage compositor settings."))
+  (labels ((number (name value)
+             (unless (= 1 (%present-setting backend name (%double-float value)))
+               (error "Cannot stage setting ~A." name)))
+           (text (name value)
+             (unless (= 1 (%present-setting-text backend name value))
+               (error "Cannot stage setting ~A." name)))
+           (stage (plist table prefix)
+             (loop for (key type) in table
+                   for value = (getf plist key)
+                   for name = (format nil "~@[~A-~]~(~A~)" prefix key) do
+               (ecase (if (consp type) (first type) type)
+                 (:boolean (number name (if value 1 0)))
+                 ((:integer :real) (number name value))
+                 (:color (number name (%ui-color value)))
+                 (:member (text name (string-downcase value)))
+                 (:strings (dolist (item value) (text name item)))
+                 (:group (stage value (rest type) name))))))
+    (stage settings +settings+ nil)))
+
 (defun configure-native-presentation (backend outputs context overrides restack
-                                      outputs-changed bindings-changed grab &optional keyboard-changed)
+                                      outputs-changed bindings-changed grab
+                                      &optional keyboard-changed settings-changed)
   "Prepare all owned native state, then publish the accepted presentation once."
   (unwind-protect
        (progn
@@ -299,6 +327,7 @@
                                             (getf config :layout) (getf config :variant) (getf config :options)
                                             (getf config :repeat-rate) (getf config :repeat-delay)))
                (error "Cannot prepare keyboard configuration (invalid XKB names or allocation failure)."))))
+         (when settings-changed (stage-native-settings backend (getf context :settings)))
          (when bindings-changed
            (dolist (binding (getf context :bindings))
              (unless (= 1 (%present-bind backend (getf binding :modifiers)

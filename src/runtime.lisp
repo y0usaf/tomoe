@@ -54,6 +54,7 @@
             (%effect :method (list (ipc-name name) :command value))))))
       (:announce (destructuring-bind (name value) args (announce name value)))
       (:data (destructuring-bind (name value) args (publish-state name value)))
+      (:settings (apply #'settings args))
       (:surface (%effect :surface (canonical-shell-surface args)))
       (:rule
        (destructuring-bind (name app-id title properties reads state) args
@@ -138,6 +139,7 @@
     (:place (list :place (first (effect-arguments effect))))
     (:output (list :output (first (effect-arguments effect))))
     (:keyboard '(:keyboard))
+    (:settings '(:settings))
     (:view '(:view))
     (:focus '(:focus))
     (:raise (list :raise (first (effect-arguments effect))))
@@ -464,6 +466,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         (outputs nil)
         (bindings nil)
         (keyboard (default-keyboard-config))
+        (settings (%settings-defaults +settings+))
         (view (list :x 0 :y 0 :zoom 1d0)))
     (dolist (mounted mounts)
       (dolist (effect (mounted-effects mounted))
@@ -499,6 +502,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
             (:view
              (destructuring-bind (x y zoom) args
                (setf view (list :x x :y y :zoom zoom))))
+            (:settings (setf settings (%settings-merge settings args +settings+)))
             (:keyboard
              (destructuring-bind (rules model layout variant options rate delay) args
                (setf keyboard (list :rules rules :model model :layout layout :variant variant :options options
@@ -589,7 +593,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
               :stacking (remove-if-not
                          (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
                          stacking)
-              :layers resolved-layers :focus focused :keyboard keyboard
+              :layers resolved-layers :focus focused :keyboard keyboard :settings settings
               :bindings (sort bindings
                               (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                 (and (= (getf a :modifiers) (getf b :modifiers))
@@ -621,6 +625,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                               (not (equal (resolved-native-output-config old) outputs))))
          (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
          (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
+         (settings-changed (not (equal (getf old :settings) (getf context :settings))))
          (overrides (resolved-layer-overrides mounts))
          (grab (resolved-grab runtime mounts))
          (timers (prepare-timers runtime mounts))
@@ -629,7 +634,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
          (spawns (prepare-session-spawns runtime commands processes))
          (pending-spawns (append (remove nil spawns) (runtime-pending-spawns runtime))))
     (when (or (member :outputs (runtime-pending-context runtime))
-              outputs-changed bindings-changed keyboard-changed restack layout-changed focus-changed
+              outputs-changed bindings-changed keyboard-changed settings-changed
+              restack layout-changed focus-changed
               (not (equal (getf old :outputs) (getf context :outputs)))
               (not (equal (getf old :view) (getf context :view)))
               (not (equal (getf old :layers) (getf context :layers)))
@@ -637,7 +643,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
               (not (equal (resolved-layer-overrides (runtime-mounts runtime)) overrides))
               (not (equal grab (applied-grab backend))))
       (configure-native-presentation backend outputs context overrides restack
-                                     outputs-changed bindings-changed grab keyboard-changed))
+                                     outputs-changed bindings-changed grab keyboard-changed
+                                     settings-changed))
     (when outputs-changed
       (setf (runtime-outputs runtime) (getf context :outputs)
             (runtime-connectors runtime) (getf context :connectors))

@@ -9,6 +9,7 @@
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -139,6 +140,43 @@ static void seat_start_drag(struct wl_listener *listener, void *data) {
     drag_icons_refresh(s);
 }
 
+struct decoration {
+    struct tomoe *server;
+    struct wlr_xdg_toplevel_decoration_v1 *wlr;
+    struct wl_listener request_mode, commit, destroy;
+};
+static void decoration_apply(struct decoration *d) {
+    if (!d->wlr->toplevel->base->initialized) return;
+    enum wlr_xdg_toplevel_decoration_v1_mode mode = d->wlr->requested_mode;
+    if (d->server->settings.force_ssd || mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE)
+        mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    wlr_xdg_toplevel_decoration_v1_set_mode(d->wlr, mode);
+}
+static void decoration_request_mode(struct wl_listener *listener, void *data) {
+    struct decoration *d = wl_container_of(listener, d, request_mode);
+    decoration_apply(d);
+}
+static void decoration_commit(struct wl_listener *listener, void *data) {
+    struct decoration *d = wl_container_of(listener, d, commit);
+    if (d->wlr->toplevel->base->initial_commit) decoration_apply(d);
+}
+static void decoration_destroy(struct wl_listener *listener, void *data) {
+    struct decoration *d = wl_container_of(listener, d, destroy);
+    detach(&d->request_mode); detach(&d->commit); detach(&d->destroy);
+    free(d);
+}
+static void new_toplevel_decoration(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, new_toplevel_decoration);
+    struct decoration *d = calloc(1, sizeof(*d));
+    if (!d) { fail(s, "decoration allocation failed"); return; }
+    d->server = s;
+    d->wlr = data;
+    listen(&d->request_mode, &d->wlr->events.request_mode, decoration_request_mode);
+    listen(&d->commit, &d->wlr->toplevel->base->surface->events.commit, decoration_commit);
+    listen(&d->destroy, &d->wlr->events.destroy, decoration_destroy);
+    decoration_apply(d);
+}
+
 bool protocols_listen(struct tomoe *s) {
     s->primary_selection = wlr_primary_selection_v1_device_manager_create(s->display);
     s->data_control = wlr_data_control_manager_v1_create(s->display);
@@ -149,11 +187,15 @@ bool protocols_listen(struct tomoe *s) {
     s->idle_notifier = wlr_idle_notifier_v1_create(s->display);
     s->idle_inhibit = wlr_idle_inhibit_v1_create(s->display);
     s->gamma_control = wlr_gamma_control_manager_v1_create(s->display);
+    s->xdg_decoration = wlr_xdg_decoration_manager_v1_create(s->display);
     if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !s->gamma_control ||
+            !s->xdg_decoration ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
     listen(&s->gamma_set_gamma, &s->gamma_control->events.set_gamma, set_gamma);
+    listen(&s->new_toplevel_decoration, &s->xdg_decoration->events.new_toplevel_decoration,
+        new_toplevel_decoration);
     listen(&s->request_start_drag, &s->seat->events.request_start_drag, request_start_drag);
     listen(&s->seat_start_drag, &s->seat->events.start_drag, seat_start_drag);
     s->drag_icon.kind = TARGET_ICON;

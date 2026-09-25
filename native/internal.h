@@ -103,6 +103,10 @@ struct presentation_target {
     bool visible, desired_visible, staged;
     int width, height, fullscreen, maximize;
 };
+struct settings {
+    bool force_ssd, honor_invalid_serial;
+};
+void settings_default(struct settings *settings);
 struct presentation {
     struct presentation_output *outputs;
     size_t output_count;
@@ -117,9 +121,12 @@ struct presentation {
     struct keyboard_profile *keyboard;
     bool restack, explicit_stacking, outputs_changed, replace_bindings;
     struct ui_set *ui;
+    struct settings *settings;
 };
+void settings_publish(struct tomoe *s, struct presentation *plan);
 struct tomoe {
     struct wl_display *display;
+    struct settings settings;
     struct wlr_backend *backend;
     struct wlr_renderer *renderer;
     struct wlr_allocator *allocator;
