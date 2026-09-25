@@ -7,6 +7,7 @@
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
+           #:bind-button #:bind-scroll
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
@@ -511,6 +512,17 @@ or replacing the binding/source cancels that callback and still swallows key-up.
       (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64)))))
     (%effect :bind (list mask (copy-seq keysym) (string-downcase command)
                          (when release (string-downcase release))))))
+(defun bind-button (modifiers button command &key release)
+  "Own a pointer button shortcut. BUTTON is :LEFT, :RIGHT, :MIDDLE, :SIDE, :EXTRA,
+:FORWARD, :BACK or a kernel code. The press never reaches clients; the event
+carries :BUTTON, :WINDOW under the pointer, world :X :Y and screen :SX :SY."
+  (check-type button (or (member :left :right :middle :side :extra :forward :back)
+                         (integer 1 65535)))
+  (bind-key modifiers (format nil "button-~(~A~)" button) command :release release))
+(defun bind-scroll (modifiers direction command)
+  "Own scrolling in DIRECTION (:UP :DOWN :LEFT :RIGHT); the event carries :DELTA."
+  (check-type direction (member :up :down :left :right))
+  (bind-key modifiers (format nil "scroll-~(~A~)" direction) command))
 (defun launch (&rest argv)
   "Launch literal argv once after acceptance; the session owns the child."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)

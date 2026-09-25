@@ -760,7 +760,24 @@ uint32_t tomoe_grab_id(struct tomoe *s) {
 int tomoe_grab_mode(struct tomoe *s) {
     return s->grab_mode;
 }
+#define POINTER_BINDING 0x40000000u
+#define SCROLL_BINDING (POINTER_BINDING + 0x10000u)
 uint32_t tomoe_keysym(const char *name) {
+    static const char *const buttons[] = { "left", "right", "middle", "side", "extra",
+        "forward", "back" };
+    static const char *const scrolls[] = { "up", "down", "left", "right" };
+    if (strncmp(name, "button-", 7) == 0) {
+        for (uint32_t i = 0; i < 7; i++)
+            if (strcmp(name + 7, buttons[i]) == 0) return POINTER_BINDING + 272 + i;
+        char *end;
+        unsigned long code = strtoul(name + 7, &end, 10);
+        return *end || end == name + 7 || code == 0 || code > 0xffff ? 0 : POINTER_BINDING + code;
+    }
+    if (strncmp(name, "scroll-", 7) == 0) {
+        for (uint32_t i = 0; i < 4; i++)
+            if (strcmp(name + 7, scrolls[i]) == 0) return SCROLL_BINDING + i;
+        return 0;
+    }
     return xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
 }
 static void binding_free(struct binding *binding) {
@@ -1192,6 +1209,76 @@ static bool ui_pointer_button(struct tomoe *s, struct wlr_pointer_button_event *
     end_event(s, event, out);
     return true;
 }
+static void pointer_fields(struct tomoe *s, FILE *out) {
+    double x = s->pointer_x, y = s->pointer_y;
+    screen_to_world(s, &x, &y);
+    fprintf(out, " :x %.17fd0 :y %.17fd0 :sx %.17fd0 :sy %.17fd0", x, y, s->pointer_x, s->pointer_y);
+}
+static void pointer_binding_event(struct tomoe *s, const struct binding *binding,
+        const char *command, const char *state, uint32_t code, double delta) {
+    if (!binding || !command || s->stopping) return;
+    struct wlr_surface *surface = NULL;
+    double sx, sy;
+    uint32_t id = physical_hit_test(s, s->pointer_x, s->pointer_y, &surface, &sx, &sy);
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fputs("(:type :key :owner ", out);
+    quote(out, binding->owner);
+    fputs(" :command ", out);
+    quote(out, command);
+    fprintf(out, " :state :%s :source-id %" PRIu64 " :binding-id %" PRIu64
+        " :device 0 :button %u :window %u :delta %.17fd0", state, binding->source_id,
+        binding->id, code, find_window(s, id) ? id : 0, delta);
+    pointer_fields(s, out);
+    fputc(')', out);
+    end_event(s, event, out);
+}
+static struct binding *pointer_binding(struct tomoe *s, uint32_t code) {
+    struct wlr_keyboard *keyboard = s->logical_keyboard ?
+        &s->logical_keyboard->wlr : wlr_seat_get_keyboard(s->seat);
+    uint32_t mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
+    mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
+    struct binding *b;
+    wl_list_for_each(b, &s->bindings, link)
+        if (b->keysym == code && b->modifiers == mods) return b;
+    return NULL;
+}
+static bool pointer_binding_button(struct tomoe *s, struct wlr_pointer_button_event *input) {
+    size_t count = s->pointer_latch_count;
+    for (size_t i = 0; i < count; i++) {
+        struct pointer_latch *latch = &s->pointer_latches[i];
+        if (latch->button != input->button) continue;
+        if (input->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+            if (latch->binding->active)
+                pointer_binding_event(s, latch->binding, latch->binding->release, "released",
+                    input->button, 0);
+            binding_unref(latch->binding);
+            *latch = s->pointer_latches[--s->pointer_latch_count];
+        }
+        return true;
+    }
+    if (input->state != WL_POINTER_BUTTON_STATE_PRESSED || s->grab_mode != 0 ||
+            count == sizeof(s->pointer_latches) / sizeof(s->pointer_latches[0])) return false;
+    struct binding *binding = pointer_binding(s, POINTER_BINDING + input->button);
+    if (!binding) return false;
+    binding_ref(binding);
+    s->pointer_latches[s->pointer_latch_count++] =
+        (struct pointer_latch){ .button = input->button, .binding = binding };
+    pointer_binding_event(s, binding, binding->press, "pressed", input->button, 0);
+    return true;
+}
+static bool pointer_binding_axis(struct tomoe *s, struct wlr_pointer_axis_event *event) {
+    if (s->grab_mode != 0 || event->delta == 0) return false;
+    bool vertical = event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL;
+    uint32_t code = SCROLL_BINDING + (vertical ? 0 : 2) + (event->delta > 0 ? 1 : 0);
+    struct binding *binding = pointer_binding(s, code);
+    if (!binding) return false;
+    pointer_binding_event(s, binding, binding->press, "pressed", 0, event->delta);
+    return true;
+}
+
 static void button(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, button);
     idle_notify_activity(s);
@@ -1202,6 +1289,7 @@ static void button(struct wl_listener *listener, void *data) {
         return;
     }
     if (ui_pointer_button(s, input)) return;
+    if (pointer_binding_button(s, input)) return;
     uint32_t id = s->grab_id;
     if (s->grab_mode == 0) {
         struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
@@ -1229,6 +1317,7 @@ static void axis(struct wl_listener *listener, void *data) {
     if (s->grab_mode != 0) return;
     struct wlr_pointer_axis_event *event = data;
     pointer_motion(s, event->time_msec);
+    if (!lock_active(s) && pointer_binding_axis(s, event)) return;
     wlr_seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source, event->relative_direction);
 }
@@ -1284,8 +1373,10 @@ static void binding_event(struct keyboard *keyboard, const struct binding *bindi
     fputs(" :command ", out);
     quote(out, command);
     fprintf(out, " :state :%s :source-id %" PRIu64
-        " :binding-id %" PRIu64 " :device %" PRIu64 " :keycode %u)",
+        " :binding-id %" PRIu64 " :device %" PRIu64 " :keycode %u",
         state, binding->source_id, binding->id, keyboard->id, keycode);
+    pointer_fields(s, out);
+    fputc(')', out);
     end_event(s, event, out);
 }
 

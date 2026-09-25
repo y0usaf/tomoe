@@ -18,7 +18,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 10 | Output enter/leave by overlap | crates/tomoe/src/space.rs `refresh` | native/space.c `refresh_leaf` | Done |
 | 11 | Off-output window culling | crates/tomoe/src/render/mod.rs | native/space.c `render_leaf` | Done |
 | 12 | Clear color 0.05 grey | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c `render_scene_buffer` | Done |
-| 13 | `tomoe.pointer()` world/screen pointer position | crates/tomoe/src/lua.rs | none | Missing |
+| 13 | `tomoe.pointer()` world/screen pointer position | crates/tomoe/src/lua.rs | `:x :y :sx :sy` on every binding event, native/input.c `pointer_fields` | Done |
 | 14 | Spring/ease animation engine, `window_move` spring (1.0, 800) | crates/tomoe/src/animation.rs | none | Missing |
 | 15 | `window_open` fade, 150 ms ease_out_expo, also on show | crates/tomoe/src/animation.rs, state.rs | none | Missing |
 | 16 | `animations` setting (false/true/per-property spec, bezier curves) | crates/tomoe/src/lua.rs | none | Missing |
@@ -41,8 +41,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 33 | Hold bindings (press/release latched by keycode) | crates/tomoe/src/input.rs | src/api.lisp `bind-key :release`, native/input.c | Done |
 | 34 | VT switching (XF86Switch_VT_1..12) | crates/tomoe/src/input.rs, backend/tty.rs | native/input.c `keyboard_key`, native/backend.c session | Done |
 | 35 | libinput settings: touchpad/mouse classes and per-device overrides | crates/tomoe/src/backend/tty.rs, lua.rs | native/libinput.c, src/api.lisp `settings :touchpad :mouse :devices` | Done |
-| 36 | `on_pointer_button` with consume and named buttons | crates/tomoe/src/lua.rs, input.rs | native/input.c `:button` (observe only) | Partial |
-| 37 | `on_pointer_axis` with consume | crates/tomoe/src/lua.rs | none | Missing |
+| 36 | `on_pointer_button` with consume and named buttons | crates/tomoe/src/lua.rs, input.rs | src/api.lisp `bind-button`, native/input.c `pointer_binding_button`; unbound presses still arrive as `:button` events | Improved: consumption is declared as a binding matched in C, so a consumed press never waits on Lisp or leaks to the client |
+| 37 | `on_pointer_axis` with consume | crates/tomoe/src/lua.rs | src/api.lisp `bind-scroll`, native/input.c `pointer_binding_axis` | Improved: consumed scrolling is a declared binding matched in C, like buttons |
 | 38 | `on_pointer_enter` / `on_pointer_leave` | crates/tomoe/src/lua.rs, input.rs | none | Missing |
 | 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | none | Missing |
 | 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab` (window move/resize only) | Partial |

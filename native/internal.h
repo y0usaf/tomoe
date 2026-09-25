@@ -42,6 +42,8 @@
 #include <xkbcommon/xkbcommon.h>
 
 struct event;
+struct binding;
+struct pointer_latch { uint32_t button; struct binding *binding; };
 struct window;
 struct tracked_surface;
 struct layer_plan;
@@ -183,6 +185,8 @@ struct tomoe {
     double pointer_x, pointer_y;
     struct wlr_surface *cursor_surface;
     bool cursor_hidden;
+    struct pointer_latch pointer_latches[32];
+    size_t pointer_latch_count;
     struct wlr_drm_syncobj_timeline *render_timeline;
     uint64_t render_point;
     struct wl_listener cursor_surface_destroy;
