@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <wlr/backend/wayland.h>
 #include "ui.h"
 #include <inttypes.h>
 
@@ -901,6 +902,19 @@ static void output_frame(struct wl_listener *listener, void *data) {
 static void output_needs_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, needs_frame);
     if (output_is_active(o)) wlr_output_schedule_frame(o->wlr);
+}
+void outputs_request_nested_size(struct tomoe *s) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (!wlr_output_is_wl(o->wlr)) continue;
+        struct wlr_output_state state;
+        wlr_output_state_init(&state);
+        wlr_output_state_set_custom_mode(&state, s->settings.nested_width,
+            s->settings.nested_height, 0);
+        if (!store_output_request(o, &state)) fail(s, "output request could not be retained");
+        wlr_output_state_finish(&state);
+    }
+    outputs_event(s);
 }
 static void output_request(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, request);

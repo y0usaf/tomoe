@@ -9,13 +9,15 @@ static const struct setting_field {
 } fields[] = {
     { "force-server-side-decorations", offsetof(struct settings, force_ssd), SETTING_BOOL },
     { "tearing", offsetof(struct settings, tearing), SETTING_BOOL },
+    { "nested-size-width", offsetof(struct settings, nested_width), SETTING_INT },
+    { "nested-size-height", offsetof(struct settings, nested_height), SETTING_INT },
     { "wait-for-frame-completion", offsetof(struct settings, wait_frame), SETTING_BOOL },
     { "honor-xdg-activation-with-invalid-serial",
         offsetof(struct settings, honor_invalid_serial), SETTING_BOOL },
 };
 
 void settings_default(struct settings *settings) {
-    *settings = (struct settings){0};
+    *settings = (struct settings){ .nested_width = 1280, .nested_height = 800 };
 }
 
 int tomoe_present_settings(struct tomoe *s) {
@@ -50,7 +52,10 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
 
 void settings_publish(struct tomoe *s, struct presentation *plan) {
     if (!plan->settings) return;
+    bool resized = s->settings.nested_width != plan->settings->nested_width ||
+        s->settings.nested_height != plan->settings->nested_height;
     s->settings = *plan->settings;
+    if (resized) outputs_request_nested_size(s);
     free(plan->settings);
     plan->settings = NULL;
 }

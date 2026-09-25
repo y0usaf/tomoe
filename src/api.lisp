@@ -395,6 +395,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 (defparameter +settings+
   '((:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
+    (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")

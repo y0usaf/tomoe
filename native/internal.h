@@ -105,6 +105,7 @@ struct presentation_target {
 };
 struct settings {
     bool force_ssd, honor_invalid_serial, tearing, wait_frame;
+    int nested_width, nested_height;
 };
 void settings_default(struct settings *settings);
 struct presentation {
@@ -261,6 +262,7 @@ void unmap_event(struct tomoe *s, uint32_t id);
 
 struct wlr_output *any_output(struct tomoe *s);
 void outputs_listen(struct tomoe *s);
+void outputs_request_nested_size(struct tomoe *s);
 int tomoe_outputs_pending(struct tomoe *s);
 bool presentation_outputs(struct tomoe *s, struct presentation *plan);
 bool output_locations(struct tomoe *s, bool pending,

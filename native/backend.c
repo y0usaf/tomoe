@@ -44,6 +44,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->next_ui_callback_id = 1;
     s->view_zoom = 1.0;
     settings_default(&s->settings);
+    s->settings.nested_width = s->settings.nested_height = 0;
     s->display = wl_display_create();
     if (!s->display) goto failed;
     s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), NULL);

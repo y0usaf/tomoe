@@ -80,7 +80,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 72 | Output disable and explicit position | crates/tomoe/src/lua.rs | native/output.c | Done |
 | 73 | `wait_for_frame_completion` | crates/tomoe/src/backend/tty.rs | native/space.c `render_scene_buffer`, src/api.lisp `settings` | Done |
 | 74 | `--drm_device` render GPU override | crates/tomoe/src/main.rs | src/main.lisp `primary-drm-devices` | Done |
-| 75 | `winit_size` nested window size (1280×800) | crates/tomoe/src/backend/winit.rs | none | Missing |
+| 75 | `winit_size` nested window size (1280×800) | crates/tomoe/src/backend/winit.rs | native/output.c `outputs_request_nested_size`, src/api.lisp `settings :nested-size` | Done |
 | 76 | `--backend winit\|tty` names | crates/tomoe/src/main.rs | src/main.lisp `run-cli` | Done |
 | 77 | `-h` / `-V` | crates/tomoe/src/main.rs | src/main.lisp `run-cli` | Done |
 | 78 | Action strings (`quit`, `quit!`, `close-window`, `reload-config`, `spawn …`) | crates/tomoe/src/input.rs | builtins/desktop.lisp commands | Partial |
