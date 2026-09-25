@@ -165,7 +165,7 @@
 (defun invoke-extension (runtime mounted context event)
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted)))
     (handler-case
-        (sb-ext:with-timeout 0.025
+        (sb-ext:with-timeout (/ (getf (getf context :settings) :watchdog-ms 1000) 1000)
           (multiple-value-bind (state effects commands)
               (funcall (if (mounted-rule-parent mounted)
                            (lambda (snapshot state event)

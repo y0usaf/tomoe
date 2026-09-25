@@ -437,6 +437,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
     (:animations :animations t)
     (:screenshot-freeze :boolean t)
+    (:watchdog-ms (:integer 0 60000) 1000)
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")
