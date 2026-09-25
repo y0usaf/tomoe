@@ -87,8 +87,7 @@ focus properties are ignored. An active fullscreen rule focuses the window even
 when `:focus` is explicitly `nil`, matching the former Rust WM. Later metadata
 changes do not repeat admission. An xdg buffer detach retains the admitted
 window, workspace and rule state; remapping the same role does not readmit it.
-Role destruction ends that lifetime. Native X11 unmap still withdraws its managed
-window. Reload preserves workspace order and state.
+Role destruction ends that lifetime. Reload preserves workspace order and state.
 
 Client fullscreen requests are denied by default; unfullscreen requests are
 always honored. Maximize requests are acknowledged while retaining tiled
@@ -214,42 +213,24 @@ are quantized against those candidate scales. Matching native confirmations
 do not rerun consumers; output revisions discard older queued confirmations
 after a newer commit. External output changes still notify consumers.
 Layer geometry and usable output areas resolve in the same dependency rounds.
-The native ABI is 23; the additive inspect fields keep control wire version 1.
+The native ABI is 28; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
-Xwayland is available in every instance, lazily: the X socket appears at startup,
-the Xwayland process starts when the first X11 client connects, stops ten
-seconds after the last one disconnects, and starts again on the next
-connection. The X11 window manager is wlroots' own, so no separate process and
-no extra program on `PATH` is involved; wlroots carries the absolute path to
-the Xwayland binary it was built against.
+X11 clients run through xwayland-satellite, which presents each X11 window to
+Tomoe as an ordinary xdg toplevel. At startup the host picks the first display
+without a `/tmp/.X<n>-lock` file and exports it as `DISPLAY`
+to this process and its children, never to systemd, D-Bus or the surrounding
+session. The shipped `xwayland` extension runs `xwayland-satellite` on that
+display as a `service`, restarting it when it exits. `--bare` has no X11 until
+a policy declares that service. The package puts `xwayland-satellite` on the
+wrapper's `PATH`.
 
-The pinned wlroots build drains queued XCB events during Wayland's checked
-dispatch, including when the X socket is no longer readable. A synchronous XCB
-reply can consume the socket's bytes while leaving window events in XCB's queue;
-window admission must process those events without waiting for further X traffic.
-
-`DISPLAY` is set for this process and its children only, never for systemd,
-D-Bus, or the surrounding session. A terminal launched by a policy command gets
-the right display; one started by hand does not. `--bare` still offers X11,
-because this is mechanism, not policy.
-
-To policy, an X11 window is an ordinary window: it appears in `:windows` with
-the window's title and its `WM_CLASS` as `:app-id`, `place` sends a configure
-the client may decline, `focus` sets the X input focus, `close-window` sends
-`WM_DELETE_WINDOW`, and `fullscreen` and `maximize` set `_NET_WM_STATE`.
-`:width` and `:height` are the dimensions the window had when it mapped.
-Override-redirect windows — menus, tooltips, drop-downs — are the exception:
-they keep their own coordinates, are never reported to policy, and sit above
-windows and below the overlay layer. One that wants the keyboard, such as an X11
-launcher, holds it until it unmaps, like an exclusive layer surface.
-
-Limits: an X11 client owns its geometry, so an application that resizes itself
-fights the tiling policy. There is no X11-specific effect, icon, or startup
-notification, and an X11 window that dies while a configure is in flight leaves
-a BadWindow line from wlroots' xcb error handler. Xwayland's own stderr (glamor
-and xkbcomp messages) passes through to this compositor's stderr.
+To policy, an X11 window is an xdg window: its title and app id come from
+satellite, `place` sends a configure, and fullscreen and maximize go through
+xdg state. Menus, tooltips and other override-redirect windows are satellite's
+popups and subsurfaces. Satellite's own stderr passes through to this
+compositor's stderr.
 
 ## Live control
 
@@ -269,8 +250,8 @@ nix run . -- quit
 
 `inspect` prints versioned Lisp data containing live windows, outputs, resolved
 geometry, focus, bindings, layer surfaces, extension state, dispatch counts, per
-extension failures, and the last error. Its `:x-display` field is this instance's
-Xwayland display name, or `nil` when unavailable. Mutating commands print nothing on
+extension failures, and the last error. Its `:x-display` field is the `DISPLAY` this
+instance exported for X11 clients. Mutating commands print nothing on
 success and return a nonzero exit status on failure. `command OWNER NAME`
 invokes an active binding through the same extension dispatch as keyboard input.
 
@@ -502,7 +483,7 @@ resources remain alive. An xdg buffer detach also retains these owners, while
 its visible committed rectangle becomes 0×0. `:buffer` reports `:attached t/nil`
 and committed logical `:width`/`:height`; it updates `:windows` and
 `:window-geometry`. `:map` admits an xdg window once, and `:unmap` withdraws it
-when the role is destroyed. Layer and native X11 unmap still withdraw their rows.
+when the role is destroyed. Layer unmap still withdraws its row.
 Visibility and keyboard focus are independent: hiding a focused window retains
 its focus, and a hidden live window can be focused without showing it. A focus
 policy can explicitly clear or transfer focus. Buffer detach clears actual seat
@@ -791,7 +772,7 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the wlroots backend is native ABI 23.
+process-group pidfd signals; the wlroots backend is native ABI 28.
 
 `spawn`, `launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
@@ -1292,16 +1273,15 @@ Built-ins take precedence over extension methods.
 `windows` returns ascending IDs, metadata, visible committed physical geometry,
 actual seat focus, and acknowledged fullscreen/maximized flags. A pending client
 configure changes neither the reported logical size nor these flags. Hidden geometry is null
-and `mapped` is false. An exclusive layer or unmanaged X11 surface can hold
+and `mapped` is false. An exclusive layer surface can hold
 the keyboard while policy retains a window focus target. `outputs` includes
 physical geometry, usable areas, and scales. Core events are `window_open`,
 `window_close`, `focus_change`, `outputs_changed`, and coarse `keyboard_activity`
 with a `hand` of `left` or `right`. An xdg buffer detach emits neither
 `window_close` nor another `window_open` on reattachment. A policy-visible
 detached window remains `mapped:true` with its old world position and 0×0 size;
-policy-hidden geometry remains null. Native X11 unmap still ends its registry
-lifetime; Rust's external satellite bridge does not establish an equivalent
-native X11 lifetime contract.
+policy-hidden geometry remains null. X11 windows follow the same xdg lifetime
+through xwayland-satellite.
 
 Subscribe with omitted/null params, `{}`, or `{"events":[]}` for all events;
 otherwise use an array of exact event names. Repeating subscribe replaces the
@@ -1374,7 +1354,7 @@ protocol, not an unauthenticated REPL.
 - `native/space.c`: physical transforms, rendering, hit testing, output membership,
   and frame callbacks. Scene trees retain client lifetime and stacking; frames
   redraw in full.
-- `native/window.c`: xdg toplevels and popups, X11 surfaces through Xwayland.
+- `native/window.c`: xdg toplevels and popups.
 - `native/layer.c`: layer-shell surfaces and arrangement.
 - `native/ui.c`, `src/ui.lisp`: retained shell textures, text/vector rasterization,
   declarative layout, and clipped hit targets.

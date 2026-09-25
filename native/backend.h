@@ -5,7 +5,6 @@
 struct tomoe;
 int tomoe_abi_version(void);
 struct tomoe *tomoe_create(const char *socket_name);
-const char *tomoe_display_name(struct tomoe *server);
 const char *tomoe_activation_token(struct tomoe *server);
 void tomoe_activation_revoke(struct tomoe *server, const char *token);
 int tomoe_step(struct tomoe *server, int timeout_ms);

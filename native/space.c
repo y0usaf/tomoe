@@ -67,19 +67,6 @@ struct output *output_for_world(struct tomoe *s, double x, double y) {
     world_to_screen(s, &x, &y);
     return output_at_physical(s, x, y);
 }
-void protocol_to_screen(struct tomoe *s, double *x, double *y) {
-    struct wlr_output *wlr = wlr_output_layout_output_at(s->layout, *x, *y);
-    struct output *o;
-    wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr != wlr) continue;
-        struct wlr_box logical;
-        wlr_output_layout_get_box(s->layout, wlr, &logical);
-        *x = o->x + (*x - logical.x) * snapped_scale(wlr->scale);
-        *y = o->y + (*y - logical.y) * snapped_scale(wlr->scale);
-        return;
-    }
-    *x *= reference_scale(s); *y *= reference_scale(s);
-}
 void screen_to_protocol(struct tomoe *s, double *x, double *y) {
     struct output *o = output_at_physical(s, *x, *y);
     if (o) {
@@ -338,8 +325,7 @@ static double window_radius(struct tomoe *s, const struct target *t, const struc
 }
 static bool toplevel_surface(struct wlr_surface *surface) {
     struct wlr_surface *root = wlr_surface_get_root_surface(surface);
-    return wlr_xdg_toplevel_try_from_wlr_surface(root) ||
-        wlr_xwayland_surface_try_from_wlr_surface(root);
+    return wlr_xdg_toplevel_try_from_wlr_surface(root);
 }
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;

@@ -912,7 +912,6 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
                 }
                 i++;
             }
-            update_workareas(s);
             outputs_event(s);
             schedule_scene(s);
         }
@@ -1046,7 +1045,6 @@ static void layout_change(struct wl_listener *listener, void *data) {
     if (s->configuring_outputs) return;
     outputs_event(s);
     arrange_layers(s);
-    update_workareas(s);
     windows_refresh(s);
     schedule_scene(s);
 }

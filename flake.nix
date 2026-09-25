@@ -16,7 +16,6 @@
           patches = (old.patches or [ ]) ++ [
             ./patches/wlroots-keyboard-cap.patch
             ./patches/wlroots-modifier-input.patch
-            ./patches/wlroots-xwm-queued-events.patch
             ./patches/wlroots-screencopy-buffer.patch
           ];
         });
@@ -85,8 +84,6 @@
             pkgs.libjpeg
             pkgs.librsvg
             pkgs.systemd
-            pkgs.libxcb
-            pkgs.xcbutilwm
           ];
           strictDeps = true;
           dontStrip = true;
@@ -124,7 +121,7 @@
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm xcb xcb-ewmh xcb-icccm) \
+              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
               $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) -lm
             sbcl --noinform --non-interactive --load build.lisp
@@ -163,7 +160,7 @@
               --set TOMOE_SHELL ${pkgs.bash}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
               --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel ]}
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel pkgs.xwayland-satellite ]}
             runHook postInstall
           '';
           meta = {

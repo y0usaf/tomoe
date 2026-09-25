@@ -10,23 +10,19 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 27; }
-const char *tomoe_display_name(struct tomoe *s) {
-    return s->xwayland ? s->xwayland->display_name : NULL;
-}
+int tomoe_abi_version(void) { return 28; }
 static bool create_scene_trees(struct tomoe *s) {
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = wlr_scene_tree_create(&s->scene->tree);
     s->window_tree = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = wlr_scene_tree_create(&s->scene->tree);
     s->fullscreen_tree = wlr_scene_tree_create(&s->scene->tree);
-    s->unmanaged_tree = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = wlr_scene_tree_create(&s->scene->tree);
     s->drag_icon_tree = wlr_scene_tree_create(&s->scene->tree);
     for (int i = 0; i < 4; i++) {
         if (!s->layer_tree[i]) return false;
     }
-    return s->window_tree && s->fullscreen_tree && s->unmanaged_tree && s->drag_icon_tree;
+    return s->window_tree && s->fullscreen_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
     wlr_log_init(WLR_ERROR, NULL);
@@ -77,11 +73,6 @@ struct tomoe *tomoe_create(const char *socket_name) {
             !s->activation || !shell || !layer_shell) goto failed;
     surfaces_listen(s, compositor);
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
-    s->xwayland = wlr_xwayland_create(s->display, compositor, true);
-    if (s->xwayland) {
-        wlr_xwayland_set_seat(s->xwayland, s->seat);
-        xwayland_listen(s);
-    }
     outputs_listen(s);
     input_listen(s);
     if (!virtual_pointers_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
@@ -125,15 +116,12 @@ void tomoe_destroy(struct tomoe *s) {
     ui_input_finish(s);
     ui_finish(s);
     activation_finish(s);
-    detach(&s->new_x11_surface);
-    detach(&s->x11_server_ready);
-    if (s->xwayland) wlr_xwayland_destroy(s->xwayland);
     if (s->display) wl_display_destroy_clients(s->display);
     struct wl_listener *listeners[] = {
         &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup, &s->new_layer_surface,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
-        &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy, &s->new_surface,
+        &s->new_surface,
         &s->new_virtual_pointer, &s->new_virtual_keyboard, &s->cursor_surface_destroy,
         &s->request_set_primary_selection, &s->new_constraint,
         &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma,

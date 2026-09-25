@@ -454,6 +454,10 @@
                                                 (getf request :app-id))))))
             commands)))
 
+(define-extension "xwayland" (:reads () :state nil) (snapshot state event)
+  (declare (ignore snapshot event))
+  (values state (list (service :xwayland-satellite "exec xwayland-satellite \"$DISPLAY\"")) nil))
+
 (define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil) (snapshot state event)
   (declare (ignore snapshot))
   (values state nil

@@ -40,7 +40,7 @@ Loads $XDG_CONFIG_HOME/tomoe/init.lisp or ~/.config/tomoe/init.lisp when present
 Extension sources are watched and reloaded when edited; --no-watch disables that.
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
-X11 clients connect to this instance's Xwayland through its DISPLAY.
+X11 clients connect through DISPLAY to the xwayland-satellite the xwayland extension runs.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
 (defun json-socket-path (name)
@@ -116,6 +116,13 @@ only after it changes again."
            (handler-case (configure runtime (runtime-sources runtime) path)
              (serious-condition (condition) (report-config-error runtime condition nil)))))))))
 
+(defun free-x-display ()
+  "The first X display name without a lock file."
+  (loop for n below 64
+        unless (probe-file (format nil "/tmp/.X~D-lock" n))
+          return (format nil ":~D" n)
+        finally (error "No free X display below :64.")))
+
 (defun primary-drm-devices (path)
   "WLR_DRM_DEVICES naming PATH's card first, then every other card."
   (let* ((name (file-namestring path))
@@ -176,10 +183,7 @@ only after it changes again."
            (setf (runtime-watch runtime) watch)
            (sb-posix:setenv "WAYLAND_DISPLAY" name 1)
            (sb-posix:setenv "TOMOE_SOCKET" (json-server-path json-server) 1)
-           (let ((display (or (%display-name native) "")))
-             (if (plusp (length display))
-                 (sb-posix:setenv "DISPLAY" display 1)
-                 (sb-posix:unsetenv "DISPLAY")))
+           (sb-posix:setenv "DISPLAY" (free-x-display) 1)
            (sb-posix:setenv "XDG_CURRENT_DESKTOP" "tomoe" 1)
            (when (equal backend "drm") (start-session))
            (start-notifications runtime)

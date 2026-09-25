@@ -9,7 +9,6 @@
            (,entry ,@names))))))
 
 (define-native ("tomoe_abi_version" %abi) sb-alien:int)
-(define-native ("tomoe_display_name" %display-name) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_activation_token" %activation-token) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_activation_revoke" %activation-revoke) sb-alien:void
   (server (* t)) (token sb-alien:c-string))

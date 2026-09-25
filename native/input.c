@@ -705,10 +705,6 @@ void update_keyboard_focus(struct tomoe *s) {
             return;
         }
     }
-    if (s->or_focus && s->or_focus->surface && s->or_focus->surface->mapped) {
-        keyboard_enter(s, s->or_focus->surface);
-        return;
-    }
     struct window *w = find_window(s, s->focused);
     keyboard_enter(s, w ? surface_of(w) : NULL);
 }

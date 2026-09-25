@@ -1107,7 +1107,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
                             unless (member key '(:surface-plans :native-output-config :output-failures))
                               append (list key value)))
             (list :socket (runtime-socket runtime) :generation (runtime-generation runtime)
-                  :x-display (%display-name (runtime-backend runtime))
+                  :x-display (sb-ext:posix-getenv "DISPLAY")
                   :last-error (runtime-last-error runtime)
                   :pending-context (copy-list (runtime-pending-context runtime))
                   :grab (describe-grab grab)

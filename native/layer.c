@@ -522,7 +522,7 @@ static int layer_presentation_band(int layer) {
     case ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND: return 0;
     case ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM: return 1;
     case ZWLR_LAYER_SHELL_V1_LAYER_TOP: return 3;
-    case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY: return 6;
+    case ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY: return 5;
     default: return -1;
     }
 }

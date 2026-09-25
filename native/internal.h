@@ -37,7 +37,6 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <wlr/util/transform.h>
-#include <wlr/xwayland.h>
 #include <xkbcommon/xkbcommon.h>
 
 struct event;
@@ -246,15 +245,13 @@ struct tomoe {
     struct wlr_allocator *allocator;
     struct wlr_scene *scene;
     struct wlr_output_layout *layout;
-    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree, *unmanaged_tree;
+    struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
     struct wlr_seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
     struct wlr_xdg_activation_v1 *activation;
-    struct wlr_xwayland *xwayland;
-    struct wlr_xwayland_surface *or_focus;
     struct wl_list input_devices, background_effects;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, tracked_surfaces, virtual_pointers;
     struct wl_list activation_tokens;
@@ -266,7 +263,6 @@ struct tomoe {
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener new_virtual_pointer, new_virtual_keyboard;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
-    struct wl_listener new_x11_surface, x11_server_ready, x11_server_destroy;
     struct wl_listener activation_request, activation_new_token, activation_destroy;
     char *last_event;
     uint32_t next_id, focused, grab_id;
@@ -397,7 +393,6 @@ const struct presentation_output *presentation_output_for(const struct presentat
     struct wlr_output *output);
 const struct presentation_output *presentation_output_at(const struct presentation *plan,
     double x, double y);
-void presentation_protocol_to_screen(const struct presentation *plan, double *x, double *y);
 bool presentation_prepare(struct tomoe *s);
 void presentation_publish(struct tomoe *s);
 
@@ -411,7 +406,6 @@ struct output *output_at_physical(struct tomoe *s, double x, double y);
 struct output *output_for_world(struct tomoe *s, double x, double y);
 void world_to_screen(struct tomoe *s, double *x, double *y);
 void screen_to_world(struct tomoe *s, double *x, double *y);
-void protocol_to_screen(struct tomoe *s, double *x, double *y);
 void screen_to_protocol(struct tomoe *s, double *x, double *y);
 void physical_output_box(struct output *o, struct wlr_box *box);
 void schedule_scene(struct tomoe *s);
@@ -441,9 +435,7 @@ struct window *find_window_any(struct tomoe *s, uint32_t id);
 uint32_t find_window_id_for_surface(struct tomoe *s, struct wlr_surface *surface);
 bool window_surface_mapped(struct tomoe *s, struct wlr_surface *surface);
 void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent);
-void update_workareas(struct tomoe *s);
 void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell);
-void xwayland_listen(struct tomoe *s);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);

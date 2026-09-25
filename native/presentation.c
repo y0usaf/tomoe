@@ -45,25 +45,6 @@ const struct presentation_output *presentation_output_at(const struct presentati
     return NULL;
 }
 
-void presentation_protocol_to_screen(const struct presentation *plan, double *x, double *y) {
-    double reference = plan->output_count ? plan->outputs[0].scale_120 / 120.0 : 1.0;
-    for (size_t i = 0; i < plan->output_count; i++) {
-        const struct presentation_output *output = &plan->outputs[i];
-        double scale = output->scale_120 / 120.0;
-        int lx = pixel_round(output->box.x / reference);
-        int ly = pixel_round(output->box.y / reference);
-        int width = (int)((int64_t)output->box.width * 120 / output->scale_120);
-        int height = (int)((int64_t)output->box.height * 120 / output->scale_120);
-        if (*x >= lx && *y >= ly && *x < (double)lx + width && *y < (double)ly + height) {
-            *x = output->box.x + (*x - lx) * scale;
-            *y = output->box.y + (*y - ly) * scale;
-            return;
-        }
-    }
-    *x *= reference;
-    *y *= reference;
-}
-
 int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
         double zoom, uint32_t focus, int restack, int outputs_changed,
         int replace_bindings, uint32_t grab_id, int grab_mode) {
@@ -96,8 +77,7 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     plan->focused = focus;
     plan->restack = restack != 0;
     struct wlr_scene_tree *bands[] = { s->layer_tree[0], s->layer_tree[1],
-        s->window_tree, s->layer_tree[2], s->fullscreen_tree,
-        s->unmanaged_tree, s->layer_tree[3] };
+        s->window_tree, s->layer_tree[2], s->fullscreen_tree, s->layer_tree[3] };
     for (size_t band = 0; band < sizeof(bands) / sizeof(bands[0]); band++) {
         struct wlr_scene_node *node;
         wl_list_for_each(node, &bands[band]->children, link) {
