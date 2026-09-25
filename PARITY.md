@@ -74,7 +74,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | none | Missing |
 | 67 | libseat session pause/resume | crates/tomoe/src/backend/tty.rs | wlroots session via native/backend.c | Done |
 | 68 | DRM hotplug | crates/tomoe/src/backend/tty.rs | native/output.c | Done |
-| 69 | Modes preferred / max / WxH, `@Hz` / `@max` | crates/tomoe/src/lua.rs, backend/tty.rs | src/api.lisp `configure-output`, native/output.c | Partial |
+| 69 | Modes preferred / max / WxH, `@Hz` / `@max` | crates/tomoe/src/lua.rs, backend/tty.rs | native/output.c `pick_output_mode`, src/api.lisp `configure-output :refresh` | Done |
 | 70 | VRR per output | crates/tomoe/src/backend/tty.rs | native/output.c | Done |
 | 71 | Output mirroring | crates/tomoe/src/lua.rs | native/output.c | Done |
 | 72 | Output disable and explicit position | crates/tomoe/src/lua.rs | native/output.c | Done |

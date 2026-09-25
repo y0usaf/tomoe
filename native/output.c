@@ -1,5 +1,7 @@
 #include "internal.h"
 #include <wlr/backend/wayland.h>
+#include <wlr/backend/drm.h>
+#include <xf86drmMode.h>
 #include "ui.h"
 #include <inttypes.h>
 
@@ -615,37 +617,40 @@ int tomoe_outputs_pending(struct tomoe *s) {
     return 0;
 }
 
+static bool interlaced(struct wlr_output *wlr, struct wlr_output_mode *mode) {
+    if (!wlr_output_is_drm(wlr)) return false;
+    const drmModeModeInfo *info = wlr_drm_mode_get_info(mode);
+    return info && (info->flags & DRM_MODE_FLAG_INTERLACE);
+}
+
 static struct wlr_output_mode *pick_output_mode(struct wlr_output *wlr,
         int kind, int width, int height, int refresh) {
     struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr);
-    if (kind == 0) {
-        if (preferred) return preferred;
-        return first_output_mode(wlr);
-    }
+    if (!preferred) preferred = first_output_mode(wlr);
+    if (!preferred) return NULL;
+    if (kind == 0 && refresh == 0) return preferred;
     struct wlr_output_mode *mode, *best = NULL;
-    int64_t best_area = 0;
+    if (kind == 0) {
+        width = preferred->width; height = preferred->height;
+    } else if (kind == 1) {
+        int64_t area = 0;
+        wl_list_for_each(mode, &wlr->modes, link) {
+            if (interlaced(wlr, mode) || (int64_t)mode->width * mode->height <= area) continue;
+            area = (int64_t)mode->width * mode->height;
+            width = mode->width; height = mode->height;
+        }
+        if (!area) return preferred;
+    }
     wl_list_for_each(mode, &wlr->modes, link) {
-        int64_t area = mode->width;
-        area *= mode->height;
-        if (kind == 1) {
-            if (!best || area > best_area || (area == best_area && mode->refresh > best->refresh)) {
-                best = mode; best_area = area;
-            }
-        } else if (mode->width == width && mode->height == height) {
-            if (refresh == 0) {
-                if (!best || mode->refresh > best->refresh) best = mode;
-            } else if (abs(mode->refresh - refresh) <= 1000 &&
-                    (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh))) {
-                best = mode;
-            }
+        if (interlaced(wlr, mode) || mode->width != width || mode->height != height) continue;
+        if (refresh <= 0) {
+            if (!best || mode->refresh > best->refresh) best = mode;
+        } else if (abs(mode->refresh - refresh) <= 1000 &&
+                (!best || abs(mode->refresh - refresh) < abs(best->refresh - refresh))) {
+            best = mode;
         }
     }
-    if (best) return best;
-    if (!wl_list_empty(&wlr->modes)) {
-        if (preferred) return preferred;
-        return first_output_mode(wlr);
-    }
-    return NULL;
+    return best ? best : preferred;
 }
 
 int tomoe_output(struct tomoe *s, const char *name, int kind,

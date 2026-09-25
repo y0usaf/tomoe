@@ -50,6 +50,7 @@
           ];
           buildInputs = [
             pkgs.wlroots
+            pkgs.libdrm
             pkgs.wayland
             pkgs.wayland-protocols
             pkgs.wlr-protocols
@@ -95,7 +96,7 @@
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 xcb xcb-ewmh xcb-icccm) \
+              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm xcb xcb-ewmh xcb-icccm) \
               native/*.c -o build/libtomoe-backend.so \
               $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0) -lm
             sbcl --noinform --non-interactive --load build.lisp
