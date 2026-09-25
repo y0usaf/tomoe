@@ -64,7 +64,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | native/screenshot.c, `(screenshot)`/`(screenshot :screen)`, `:screenshot-freeze`, builtins/desktop.lisp "screenshot-clipboard" | Done |
 | 57 | ext-session-lock | crates/tomoe/src/lock.rs | native/lock.c | Done |
 | 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/gamma.c on libwayland-server, native/output.c | Done |
-| 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/window.c `windows_want_tearing`, native/output.c, src/api.lisp `settings` | Done |
+| 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/tearing.c, native/window.c `windows_want_tearing`, native/output.c, src/api.lisp `settings` | Done |
 | 60 | Idle notify and idle inhibit | crates/tomoe/src/state.rs, handlers.rs | native/protocols.c `idle_refresh`, native/input.c | Done |
 | 61 | Primary selection | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
 | 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/protocols.c | Done |

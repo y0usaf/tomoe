@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
-#include <wlr/types/wlr_tearing_control_v1.h>
 
 struct window {
     struct target target;
@@ -498,8 +497,7 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
         struct wlr_box box = { pixel_round(x), pixel_round(y),
             pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) }, overlap;
         if (!wlr_box_intersection(&overlap, &box, &output_box)) continue;
-        bool hinted = wlr_tearing_control_manager_v1_surface_hint_from_surface(s->tearing,
-            surface_of(w)) == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+        bool hinted = tearing_async(s, surface_of(w));
         bool allowed = w->target.style.tearing >= 0 ? w->target.style.tearing : s->settings.tearing;
         if (force || (allowed && (w->target.style.tearing == 1 || hinted))) return true;
     }

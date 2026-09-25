@@ -139,6 +139,12 @@
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
               build/ext-foreign-toplevel-list-v1-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/tearing-control/tearing-control-v1.xml \
+              build/tearing-control-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/tearing-control/tearing-control-v1.xml \
+              build/tearing-control-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-background-effect/ext-background-effect-v1.xml \
               build/ext-background-effect-v1-protocol.h
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \

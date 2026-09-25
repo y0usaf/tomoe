@@ -311,7 +311,7 @@ struct tomoe {
     struct wlr_presentation *presentation_time;
     struct wlr_idle_notifier_v1 *idle_notifier;
     struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
-    struct wlr_tearing_control_manager_v1 *tearing;
+    struct wl_list tearings;
     struct wl_list gammas;
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wlr_pointer_constraint_v1 *active_constraint;
@@ -490,6 +490,8 @@ void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
 void gamma_apply(struct output *o, struct wlr_output_state *state);
 bool gamma_listen(struct tomoe *s);
+bool tearing_listen(struct tomoe *s);
+bool tearing_async(struct tomoe *s, struct wlr_surface *surface);
 void gamma_output_gone(struct output *o);
 void drag_icons_refresh(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);
