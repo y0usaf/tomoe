@@ -139,6 +139,15 @@
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
               build/ext-foreign-toplevel-list-v1-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
+              build/ext-foreign-toplevel-list-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-foreign-toplevel-management-unstable-v1.xml \
+              build/wlr-foreign-toplevel-management-unstable-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-foreign-toplevel-management-unstable-v1.xml \
+              build/wlr-foreign-toplevel-management-unstable-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/tearing-control/tearing-control-v1.xml \
               build/tearing-control-v1-protocol.h
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \

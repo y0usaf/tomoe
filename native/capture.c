@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <drm_fourcc.h>
 #include <sys/stat.h>
-#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include "ext-image-capture-source-v1-protocol.h"
 #include "ext-image-copy-capture-v1-protocol.h"
 #include "wlr-screencopy-unstable-v1-protocol.h"
@@ -588,10 +587,7 @@ static const struct ext_output_image_capture_source_manager_v1_interface output_
 
 static void create_window_source(struct wl_client *client, struct wl_resource *manager,
         uint32_t id, struct wl_resource *handle_resource) {
-    struct wlr_ext_foreign_toplevel_handle_v1 *handle =
-        wlr_ext_foreign_toplevel_handle_v1_from_resource(handle_resource);
-    create_source(client, manager, id, SOURCE_WINDOW,
-        handle ? window_id_for_handle(handle) : 0);
+    create_source(client, manager, id, SOURCE_WINDOW, foreign_handle_window(handle_resource));
 }
 
 static const struct ext_foreign_toplevel_image_capture_source_manager_v1_interface

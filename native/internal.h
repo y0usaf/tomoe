@@ -315,8 +315,7 @@ struct tomoe {
     struct wl_list gammas;
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wlr_pointer_constraint_v1 *active_constraint;
-    struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel;
-    struct wlr_ext_foreign_toplevel_list_v1 *foreign_toplevel_list;
+    struct wl_list foreigns, foreign_managers, foreign_lists;
     struct wlr_session_lock_manager_v1 *session_lock_manager;
     struct wlr_session_lock_v1 *session_lock;
     int lock_state;
@@ -441,8 +440,14 @@ void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);
 bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
 struct wlr_scene_node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
-struct wlr_ext_foreign_toplevel_handle_v1;
-uint32_t window_id_for_handle(struct wlr_ext_foreign_toplevel_handle_v1 *handle);
+bool foreign_listen(struct tomoe *s);
+void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
+    uint32_t state, struct wlr_output *const *outputs, size_t output_count);
+void foreign_forget(struct tomoe *s, uint32_t id);
+const char *foreign_identifier(struct tomoe *s, uint32_t id);
+uint32_t foreign_handle_window(struct wl_resource *handle);
+void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
+    struct wlr_output *output);
 bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);

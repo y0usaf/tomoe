@@ -10,8 +10,6 @@
 #include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
-#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
-#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
@@ -177,11 +175,8 @@ bool protocols_listen(struct tomoe *s) {
     s->idle_inhibit = wlr_idle_inhibit_v1_create(s->display);
     s->xdg_decoration = wlr_xdg_decoration_manager_v1_create(s->display);
     s->server_decoration = wlr_server_decoration_manager_create(s->display);
-    s->foreign_toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(s->display, 1);
-    s->foreign_toplevel = wlr_foreign_toplevel_manager_v1_create(s->display);
     if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !gamma_listen(s) ||
-            !s->xdg_decoration || !s->server_decoration || !s->foreign_toplevel_list ||
-            !s->foreign_toplevel || !tearing_listen(s) ||
+            !s->xdg_decoration || !s->server_decoration || !foreign_listen(s) || !tearing_listen(s) ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);

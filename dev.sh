@@ -62,7 +62,7 @@ fi
 if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
   wayland-scanner server-header "$xml" "$protocol"
 fi
-for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1; do
+for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1 wlr-foreign-toplevel-management-unstable-v1; do
   wlr_xml="$(dirname "$xml")/$name.xml"
   if [ ! -f "build/$name-protocol.c" ] || [ "$wlr_xml" -nt "build/$name-protocol.c" ]; then
     wayland-scanner server-header "$wlr_xml" "build/$name-protocol.h"

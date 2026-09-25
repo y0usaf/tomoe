@@ -57,8 +57,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 49 | Xwayland | crates/tomoe/src/xwayland.rs (xwayland-satellite) | builtins/desktop.lisp `xwayland` service, src/main.lisp `free-x-display` | Done: xwayland-satellite, supervised through the public `service` API |
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |
 | 51 | `honor_xdg_activation_with_invalid_serial` | crates/tomoe/src/handlers.rs, lua.rs | native/activation.c, src/api.lisp `settings` | Done |
-| 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/window.c `foreign_toplevels_refresh` | Done |
-| 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/window.c `foreign_refresh_wlr`, builtins/desktop.lisp `wm` | Done |
+| 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/foreign.c, native/window.c `foreign_toplevels_refresh` | Done |
+| 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/foreign.c, native/window.c `window_foreign_request`, builtins/desktop.lisp `wm` | Done |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/capture.c on libwayland-server | Done |
 | 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/capture.c on libwayland-server, native/space.c `render_window_buffer` | Done |
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | native/screenshot.c, `(screenshot)`/`(screenshot :screen)`, `:screenshot-freeze`, builtins/desktop.lisp "screenshot-clipboard" | Done |
