@@ -732,7 +732,7 @@ static bool mapped_grab_target(struct tomoe *s, uint32_t id) {
 }
 int tomoe_grab(struct tomoe *s, uint32_t id, int mode) {
     if (mode == 0) { grab_clear(s); return 1; }
-    if ((mode != 1 && mode != 2) || !mapped_grab_target(s, id)) {
+    if (mode < 1 || mode > 3 || (mode != 3 && !mapped_grab_target(s, id))) {
         grab_clear(s);
         return 0;
     }
@@ -1033,7 +1033,7 @@ static void grab_motion(struct tomoe *s) {
     double x = s->pointer_x, y = s->pointer_y;
     double old_x = s->grab_x, old_y = s->grab_y;
     s->grab_x = x; s->grab_y = y;
-    if (find_window(s, s->grab_id)) {
+    if (s->grab_mode == 3 || find_window(s, s->grab_id)) {
         screen_to_world(s, &x, &y);
         screen_to_world(s, &old_x, &old_y);
     }
@@ -1042,7 +1042,8 @@ static void grab_motion(struct tomoe *s) {
     FILE *out = begin_event(s, &event, &size);
     if (!out) return;
     fprintf(out, "(:type :grab :id %u :mode :%s :x %d :y %d :dx %d :dy %d)",
-        s->grab_id, s->grab_mode == 2 ? "resize" : "move", pixel_round(x), pixel_round(y), dx, dy);
+        s->grab_id, (const char *[]){ "", "move", "resize", "pointer" }[s->grab_mode],
+        pixel_round(x), pixel_round(y), dx, dy);
     end_event(s, event, out);
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {

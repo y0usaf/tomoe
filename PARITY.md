@@ -45,7 +45,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 37 | `on_pointer_axis` with consume | crates/tomoe/src/lua.rs | src/api.lisp `bind-scroll`, native/input.c `pointer_binding_axis` | Improved: consumed scrolling is a declared binding matched in C, like buttons |
 | 38 | `on_pointer_enter` / `on_pointer_leave` | crates/tomoe/src/lua.rs, input.rs | none | Missing |
 | 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | none | Missing |
-| 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab` (window move/resize only) | Partial |
+| 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab nil :pointer`, native/input.c `grab_motion` | Done |
 | 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/protocols.c, native/input.c | Done |
 | 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c, native/input.c `motion` | Done |
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |

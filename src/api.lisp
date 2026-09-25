@@ -494,9 +494,11 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (check-type flag boolean)
   (%effect :maximize (list id flag)))
 (defun grab (id mode &key buffer-generation)
-  "Own a pointer grab, optionally restricted to one window buffer lifetime."
-  (check-type id (integer 1 4294967295))
-  (check-type mode (member :move :resize))
+  "Own a pointer grab, optionally restricted to one window buffer lifetime.
+:POINTER takes a NIL id and routes world-space motion as :GRAB events."
+  (check-type mode (member :move :resize :pointer))
+  (if (eq mode :pointer) (setf id (or id 0)) (check-type id (integer 1 4294967295)))
+  (check-type id (integer 0 4294967295))
   (check-type buffer-generation (or null (integer 1 *)))
   (%effect :grab (if buffer-generation (list id mode buffer-generation) (list id mode))))
 (defun bind-key (modifiers keysym command &key release)

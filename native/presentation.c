@@ -67,7 +67,7 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
         int replace_bindings, uint32_t grab_id, int grab_mode) {
     presentation_finish(s);
     if (!isfinite(zoom) || zoom < 1.0 / 16.0 || zoom > 16.0 ||
-            grab_mode < 0 || grab_mode > 2) return 0;
+            grab_mode < 0 || grab_mode > 3) return 0;
     struct presentation *plan = calloc(1, sizeof(*plan));
     if (!plan) return 0;
     wl_list_init(&plan->bindings);

@@ -328,7 +328,7 @@
                                        (getf view :zoom) (or (getf context :focus) 0)
                                        (if restack 1 0) (if outputs-changed 1 0)
                                        (if bindings-changed 1 0) (or (first grab) 0)
-                                       (ecase (second grab) ((nil) 0) (:move 1) (:resize 2))))
+                                       (ecase (second grab) ((nil) 0) (:move 1) (:resize 2) (:pointer 3))))
              (error "Cannot allocate candidate presentation.")))
          (when keyboard-changed
            (let ((config (getf context :keyboard)))

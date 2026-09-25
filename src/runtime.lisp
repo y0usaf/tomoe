@@ -212,7 +212,8 @@ cannot mask another owner's available grab. Registry lifetime is independent."
                  (id (first args))
                  (generation (third args))
                  (window (find id (runtime-windows runtime) :key (lambda (w) (getf w :id)))))
-            (when (or (and window (getf window :buffered t)
+            (when (or (eq (second args) :pointer)
+                      (and window (getf window :buffered t)
                            (or (null generation) (eql generation (getf window :buffer-generation))))
                       (and (null generation)
                            (find id (runtime-layers runtime) :key (lambda (l) (getf l :id)))))
@@ -238,8 +239,8 @@ removing the final owner restores the native protocol's live defaults."
 (defun applied-grab (backend)
   "Read the backend's actual grab. No Lisp cache can outlive a native target."
   (let ((id (%grab-id backend)))
-    (unless (zerop id)
-      (list id (ecase (%grab-mode backend) (1 :move) (2 :resize))))))
+    (unless (zerop (%grab-mode backend))
+      (list id (ecase (%grab-mode backend) (1 :move) (2 :resize) (3 :pointer))))))
 
 (defun describe-grab (grab)
   (when grab (list :id (first grab) :mode (second grab))))
