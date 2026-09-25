@@ -384,6 +384,16 @@
                nil))
       (t (values nil nil nil))))))
 
+(define-extension "config-error" (:reads (:config-error) :state nil) (snapshot hidden event)
+  (let* ((failure (context snapshot :config-error))
+         (serial (getf failure :serial))
+         (timer (and serial (intern (format nil "HIDE-~D" serial) :keyword)))
+         (hidden (if (and timer (eq (getf event :type) :timer) (eq (getf event :name) timer)) serial hidden)))
+    (values hidden
+            (when (and serial (not (eql serial hidden)))
+              (cons (once timer 5000) (toast :config-error (getf failure :message) :urgent t)))
+            nil)))
+
 (define-extension "notification-popups" (:reads (:services :outputs) :state nil)
     (snapshot state event)
   (declare (ignore state event))

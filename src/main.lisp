@@ -114,7 +114,7 @@ only after it changes again."
          (when (>= (getf entry :stable) 2)
            (setf (getf entry :loaded) current (getf entry :stable) 0)
            (handler-case (configure runtime (runtime-sources runtime) path)
-             (serious-condition (condition) (record-error runtime condition)))))))))
+             (serious-condition (condition) (report-config-error runtime condition nil)))))))))
 
 (defun primary-drm-devices (path)
   "WLR_DRM_DEVICES naming PATH's card first, then every other card."
@@ -171,7 +171,12 @@ only after it changes again."
            (start-battery runtime)
            (start-network runtime)
            (start-tray runtime)
-           (configure runtime sources)
+           (if (rest sources)
+               (handler-case (configure runtime sources)
+                 (serious-condition (condition)
+                   (configure runtime (butlast sources))
+                   (report-config-error runtime condition t)))
+               (configure runtime sources))
            (loop while (and (runtime-running runtime) (not *stop-requested*)) do
              (let ((status (%step native (if (plusp (%event-count native)) 0
                                             (tray-wait-milliseconds

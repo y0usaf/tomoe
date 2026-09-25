@@ -31,7 +31,8 @@
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
-  json-server ipc-call (ipc-sequence 0) ipc-published-context ipc-published-announcements)
+  json-server ipc-call (ipc-sequence 0) ipc-published-context ipc-published-announcements
+  config-error)
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
@@ -624,6 +625,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                          (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
                          stacking)
               :layers resolved-layers :focus focused :keyboard keyboard :settings settings
+              :config-error (copy-data (runtime-config-error runtime))
               :keyboard-grab keyboard-grab
               :bindings (sort bindings
                               (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
@@ -909,6 +911,18 @@ stay in the page cache, so the digest decides."
 (defun record-error (runtime condition)
   (setf (runtime-last-error runtime) (princ-to-string condition))
   (format *error-output* "tomoe: ~A~%" condition))
+
+(defun report-config-error (runtime condition fallback)
+  "Record a failed source load and publish it as :CONFIG-ERROR."
+  (record-error runtime condition)
+  (setf (runtime-config-error runtime)
+        (list :serial (1+ (getf (runtime-config-error runtime) :serial 0))
+              :message (if fallback
+                           "Failed to load the config file. Running with defaults; check the log for details."
+                           "Failed to load the config file. Keeping the running config; check the log for details.")))
+  (handler-case (transact runtime (runtime-mounts runtime) '(:type :change :keys (:config-error))
+                          '(:config-error))
+    (serious-condition (failure) (record-error runtime failure))))
 
 (defun reconcile-backend-observations (runtime)
   "Adopt queued external observations before selecting a private callback.

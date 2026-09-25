@@ -101,7 +101,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 93 | `tomoe.ui` confirm / menu / toast / sheet and `close` | crates/tomoe/src/lua.rs, ui/widgets.rs | src/dialogs.lisp `confirm-dialog` `menu-dialog` `sheet-dialog` `toast`, src/api.lisp `keyboard-grab`, native/input.c `ui_hover` | Done |
 | 94 | Exit confirm dialog | crates/tomoe/src/state.rs | builtins/desktop.lisp `commands` via `confirm-dialog` | Done |
 | 95 | Hotkey overlay (`Mod+Shift+/`) | crates/tomoe/src/state.rs, ui/widgets.rs | builtins/desktop.lisp `commands` via `sheet-dialog`, `hotkey-label` | Done |
-| 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `record-error` (stderr only) | Missing |
+| 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `report-config-error`, `:config-error` context, builtins/desktop.lisp `config-error` | Done |
 | 97 | `watchdog_ms` | crates/tomoe/src/lua.rs | src/runtime.lisp (fixed 25 ms reducer budget) | Partial |
 | 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp `wm`, `commands` | Partial |
 | 99 | Zoomer canvas WM | resources/zoomer.lua | none | Missing |
