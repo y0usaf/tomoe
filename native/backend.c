@@ -66,7 +66,9 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->layout || !s->scene || !wlr_xdg_output_manager_v1_create(s->display, s->layout)) goto failed;
     if (!create_scene_trees(s)) goto failed;
     s->cursor = wlr_cursor_create();
-    s->cursor_manager = wlr_xcursor_manager_create(NULL, 24);
+    const char *cursor_size = getenv("XCURSOR_SIZE");
+    int size = cursor_size ? atoi(cursor_size) : 0;
+    s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
     s->seat = wlr_seat_create(s->display, "seat0");
     s->activation = wlr_xdg_activation_v1_create(s->display);
     struct wlr_xdg_shell *shell = wlr_xdg_shell_create(s->display, 3);
