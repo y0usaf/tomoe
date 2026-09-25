@@ -242,15 +242,15 @@
         (dolist (id stack) (when (member id visible) (push (raise-window id) effects)))
         (push (focus (when (member focused visible) focused) :raise nil) effects)
         (dolist (binding '(("j" :next) ("Tab" :next) ("k" :previous) ("f" :fullscreen)))
-          (push (bind-key '(:super) (first binding) (second binding)) effects))
+          (push (bind-key '(:mod) (first binding) (second binding)) effects))
         (loop for number from 1 to (min count 9)
               for switch in '(:workspace-1 :workspace-2 :workspace-3 :workspace-4 :workspace-5
                               :workspace-6 :workspace-7 :workspace-8 :workspace-9)
               for move in '(:move-1 :move-2 :move-3 :move-4 :move-5 :move-6 :move-7 :move-8 :move-9)
               do
-          (push (bind-key '(:super) (princ-to-string number)
+          (push (bind-key '(:mod) (princ-to-string number)
                           switch) effects)
-          (push (bind-key '(:super :shift) (princ-to-string number)
+          (push (bind-key '(:mod :shift) (princ-to-string number)
                           move) effects))
         (push (publish-state :wm-state
                              (list :active active :workspaces
@@ -271,7 +271,7 @@
                       :visible visible :geometry-key geometry-key)
                 (nreverse effects) commands)))))
 
-(define-extension "drag" (:reads (:windows :layout :button :grab) :state nil) (snapshot state event)
+(define-extension "drag" (:reads (:windows :layout :button :grab :settings) :state nil) (snapshot state event)
   (labels ((drag-box (state dx dy)
              (flet ((bound (value) (min 1048576 (max -1048576 value)))
                     (size (value) (min 16384 (max 64 value))))
@@ -299,7 +299,9 @@
        (values nil nil nil))
       ((and (eq type :button) (eq (getf event :state) :pressed) target
             (member (getf event :id) ids) (member (getf event :button) '(272 273))
-            (integerp modifiers) (logtest 64 modifiers))
+            (integerp modifiers)
+            (logtest (ecase (setting snapshot :mod) (:shift 1) (:control 4) (:alt 8) (:super 64))
+                     modifiers))
        (let* ((window-id (getf event :id))
              (buffer-generation (getf (find window-id windows :key (lambda (w) (getf w :id)))
                                       :buffer-generation))
@@ -343,12 +345,12 @@
         (command (when (and (eq (getf event :type) :key) (equal (getf event :owner) "commands"))
                    (getf event :command))))
     (values nil
-            (list (bind-key '(:super) "Return" :terminal)
-                  (bind-key '(:super) "q" :close)
-                  (bind-key '(:super) "d" :launcher)
-                  (bind-key '(:super :shift) "e" :quit)
-                  (bind-key '(:super :shift) "r" :reload)
-                  (bind-key '(:super :shift) "Escape" :quit))
+            (list (bind-key '(:mod) "Return" :terminal)
+                  (bind-key '(:mod) "q" :close)
+                  (bind-key '(:mod) "d" :launcher)
+                  (bind-key '(:mod :shift) "e" :quit)
+                  (bind-key '(:mod :shift) "r" :reload)
+                  (bind-key '(:mod :shift) "Escape" :quit))
             (cond ((equal command "terminal") (list (launch "foot")))
                   ((equal command "launcher") (list (launch "fuzzel")))
                   ((and (equal command "close") focused) (list (close-window focused)))

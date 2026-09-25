@@ -37,7 +37,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | wlroots built-in cursor via native/backend.c | Improved: wlroots draws its built-in arrow when no theme loads, instead of an 8×16 white block |
 | 30 | Client cursor surfaces, hidden cursor | crates/tomoe/src/render/mod.rs | native/input.c `request_cursor` | Done |
 | 31 | XKB keymap and repeat settings | crates/tomoe/src/lua.rs, state.rs | src/api.lisp `configure-keyboard`, native/input.c | Done |
-| 32 | Key bindings with configurable `mod` | crates/tomoe/src/input.rs, lua.rs | src/api.lisp `bind-key` (no `mod`) | Partial |
+| 32 | Key bindings with configurable `mod` | crates/tomoe/src/input.rs, lua.rs | src/api.lisp `bind-key :mod`, `settings :mod`, src/runtime.lisp `materialize` | Done |
 | 33 | Hold bindings (press/release latched by keycode) | crates/tomoe/src/input.rs | src/api.lisp `bind-key :release`, native/input.c | Done |
 | 34 | VT switching (XF86Switch_VT_1..12) | crates/tomoe/src/input.rs, backend/tty.rs | native/input.c `keyboard_key`, native/backend.c session | Done |
 | 35 | libinput settings: touchpad/mouse classes and per-device overrides | crates/tomoe/src/backend/tty.rs, lua.rs | native/libinput.c, src/api.lisp `settings :touchpad :mouse :devices` | Done |

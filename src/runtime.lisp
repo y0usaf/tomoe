@@ -97,8 +97,8 @@
                (grab id mode :buffer-generation buffer-generation)))
       (:bind
        (destructuring-bind (mask keysym command &optional release) args
-         (check-type mask (integer 0 77))
-         (unless (zerop (logandc2 mask 77)) (error "Unsupported modifier mask."))
+         (check-type mask (integer 0 205))
+         (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
          (check-type keysym string)
          (check-type command string)
          (check-type release (or null string))
@@ -467,7 +467,12 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         (outputs nil)
         (bindings nil)
         (keyboard (default-keyboard-config))
-        (settings (%settings-defaults +settings+))
+        (settings (%settings-defaults +settings+)))
+    (dolist (mounted mounts)
+      (dolist (effect (mounted-effects mounted))
+        (when (eq (effect-kind effect) :settings)
+          (setf settings (%settings-merge settings (effect-arguments effect) +settings+)))))
+    (let ((mod-bit (ecase (getf settings :mod) (:shift 1) (:control 4) (:alt 8) (:super 64)))
         (view (list :x 0 :y 0 :zoom 1d0)))
     (dolist (mounted mounts)
       (dolist (effect (mounted-effects mounted))
@@ -503,7 +508,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
             (:view
              (destructuring-bind (x y zoom) args
                (setf view (list :x x :y y :zoom zoom))))
-            (:settings (setf settings (%settings-merge settings args +settings+)))
+            (:settings nil)
             (:keyboard
              (destructuring-bind (rules model layout variant options rate delay) args
                (setf keyboard (list :rules rules :model model :layout layout :variant variant :options options
@@ -543,7 +548,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
             ((:grab :timer :watch :exec :process :rule :method :announce) nil)
             (:bind
              (destructuring-bind (mask keysym command release) args
-               (let ((code (%keysym keysym)))
+               (let ((code (%keysym keysym))
+                     (mask (if (logtest 128 mask) (logior (logandc2 mask 128) mod-bit) mask)))
                  (setf bindings
                        (delete-if (lambda (b) (and (= mask (getf b :modifiers))
                                                    (= code (getf b :code)))) bindings))
@@ -598,7 +604,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
               :bindings (sort bindings
                               (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                 (and (= (getf a :modifiers) (getf b :modifiers))
-                                                     (< (getf a :code) (getf b :code))))))))))))
+                                                     (< (getf a :code) (getf b :code)))))))))))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE

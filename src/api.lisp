@@ -400,6 +400,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 
 (defparameter +settings+
   '((:scale (:real 1/4 8) 1)
+    (:mod (:member :super :alt :control :shift) :super)
     (:focus-follows-mouse :boolean nil)
     (:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
@@ -504,6 +505,7 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (%effect :grab (if buffer-generation (list id mode buffer-generation) (list id mode))))
 (defun bind-key (modifiers keysym command &key release)
   "Own a shortcut, optionally with a command for its physical key release.
+Modifiers are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the :MOD setting.
 Release follows the original device/key even after modifiers change. Removing
 or replacing the binding/source cancels that callback and still swallows key-up."
   (check-type keysym string)
@@ -512,7 +514,7 @@ or replacing the binding/source cancels that callback and still swallows key-up.
   (when (or (zerop (length keysym)) (find #\Null keysym)) (error "Invalid keysym name."))
   (let ((mask 0))
     (dolist (modifier modifiers)
-      (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64)))))
+      (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64) (:mod 128)))))
     (%effect :bind (list mask (copy-seq keysym) (string-downcase command)
                          (when release (string-downcase release))))))
 (defun bind-button (modifiers button command &key release)
