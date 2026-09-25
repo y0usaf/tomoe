@@ -312,7 +312,7 @@ struct tomoe {
     struct wlr_idle_notifier_v1 *idle_notifier;
     struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
     struct wlr_tearing_control_manager_v1 *tearing;
-    struct wlr_gamma_control_manager_v1 *gamma_control;
+    struct wl_list gammas;
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wlr_pointer_constraint_v1 *active_constraint;
     struct wlr_foreign_toplevel_manager_v1 *foreign_toplevel;
@@ -325,7 +325,7 @@ struct tomoe {
     struct wl_event_source *lock_deadline_source;
     struct wl_listener request_set_primary_selection, request_start_drag, seat_start_drag;
     struct target drag_icon;
-    struct wl_listener new_toplevel_decoration, new_constraint, gamma_set_gamma, constraint_commit,
+    struct wl_listener new_toplevel_decoration, new_constraint, constraint_commit,
         constraint_destroy;
     struct wl_listener new_lock, lock_new_surface, lock_unlock, lock_destroy;
 };
@@ -489,6 +489,8 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
 void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
 void gamma_apply(struct output *o, struct wlr_output_state *state);
+bool gamma_listen(struct tomoe *s);
+void gamma_output_gone(struct output *o);
 void drag_icons_refresh(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);
 bool constraint_allows(struct tomoe *s, double x, double y);

@@ -1023,6 +1023,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     ring_finish(&o->ring);
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
+    gamma_output_gone(o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);

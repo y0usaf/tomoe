@@ -62,11 +62,13 @@ fi
 if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
   wayland-scanner server-header "$xml" "$protocol"
 fi
-copy_xml="$(dirname "$xml")/wlr-screencopy-unstable-v1.xml"
-if [ ! -f build/wlr-screencopy-unstable-v1-protocol.c ] || [ "$copy_xml" -nt build/wlr-screencopy-unstable-v1-protocol.c ]; then
-  wayland-scanner server-header "$copy_xml" build/wlr-screencopy-unstable-v1-protocol.h
-  wayland-scanner private-code "$copy_xml" build/wlr-screencopy-unstable-v1-protocol.c
-fi
+for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1; do
+  wlr_xml="$(dirname "$xml")/$name.xml"
+  if [ ! -f "build/$name-protocol.c" ] || [ "$wlr_xml" -nt "build/$name-protocol.c" ]; then
+    wayland-scanner server-header "$wlr_xml" "build/$name-protocol.h"
+    wayland-scanner private-code "$wlr_xml" "build/$name-protocol.c"
+  fi
+done
 effect_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/ext-background-effect-v1.xml"
 for name in ext-image-capture-source-v1 ext-image-copy-capture-v1 ext-foreign-toplevel-list-v1; do
   capture_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/${name%-v1}/$name.xml"

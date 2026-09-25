@@ -11,11 +11,12 @@ moves as one step when its members share wlroots state that cannot be split.
 | X11 | xwayland-satellite as the `xwayland` builtin `service` | `wlr_xwayland`, the XWM patch, xcb |
 | wlr-screencopy-v1 | `native/capture.c` from Tomoe's presented frames | `wlr_screencopy_v1`, the screencopy patch |
 | ext-image-copy-capture, output and toplevel sources | `native/capture.c`, `render_window_buffer` | wlroots' managers, its output swapchain use and scene-node source |
+| wlr-gamma-control-v1 | `native/gamma.c`, applied as the frame's color transform | `wlr_gamma_control_v1` |
 
 ## Output state
 
-gamma-control, tearing-control. Tomoe already applies gamma and chooses
-tearing per window; wlroots only holds the requests. Standalone.
+tearing-control. Tomoe already chooses tearing per window; wlroots only holds
+the hints. Standalone.
 
 ## Surface roles
 
