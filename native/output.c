@@ -3,6 +3,7 @@
 #include <wlr/backend/drm.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
+#include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "ui.h"
 #include <inttypes.h>
@@ -241,6 +242,22 @@ static bool write_output_modes(FILE *out, struct output *o) {
     return fputc(')', out) != EOF;
 }
 
+static bool write_render(FILE *out, struct output *o) {
+    if (!o->ring.format.len) return fputs(" :render nil", out) >= 0;
+    char *name = drmGetFormatName(o->ring.format.formats[0].format);
+    bool ok = fputs(" :render (:format ", out) >= 0;
+    quote(out, name ? name : "?");
+    free(name);
+    struct wlr_dmabuf_attributes dmabuf;
+    if (o->ring.slots[0] && wlr_buffer_get_dmabuf(o->ring.slots[0], &dmabuf))
+        ok = ok && fprintf(out, " :modifier %" PRIu64, dmabuf.modifier) >= 0;
+    else
+        ok = ok && fputs(" :modifier nil", out) >= 0;
+    return ok && fprintf(out, " :implicit %s :width %d :height %d :fenced %s)",
+        o->ring.implicit ? "t" : "nil", o->ring.width, o->ring.height,
+        o->wlr->renderer && fenced(o->wlr) ? "t" : "nil") >= 0;
+}
+
 static bool write_connector(FILE *out, struct output *o, bool pending) {
     struct output_facts facts;
     output_state_facts(o, pending, &facts);
@@ -253,7 +270,7 @@ static bool write_connector(FILE *out, struct output *o, bool pending) {
             facts.adaptive_sync_supported ? "t" : "nil",
             facts.adaptive_sync ? "t" : "nil", facts.request_id,
             facts.request_pending ? "t" : "nil") < 0) return false;
-    return write_output_modes(out, o) && fputc(')', out) != EOF;
+    return write_output_modes(out, o) && write_render(out, o) && fputc(')', out) != EOF;
 }
 
 static bool write_active_outputs(FILE *out, struct tomoe *s, bool pending) {

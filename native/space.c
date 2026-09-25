@@ -515,7 +515,7 @@ static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct tar
     struct leaf leaf;
     if (make_leaf(s, node, target, x, y, &leaf, NULL, NULL)) render_leaf(s, &leaf, f);
 }
-static bool fenced(struct wlr_output *output) {
+bool fenced(struct wlr_output *output) {
     return output->renderer->features.timeline && output->backend->features.timeline &&
         !wlr_output_is_headless(output);
 }

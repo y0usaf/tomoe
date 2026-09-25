@@ -414,6 +414,10 @@ reads. Available keys:
 - `:connectors`: every connected port, including disabled ones, with `:name`,
   `:enabled`, `:adaptive-sync-supported`, and `:adaptive-sync`. These facts
   participate in prospective settlement and selective dependency updates.
+  `:render` describes the output buffer ring: `:format`, the allocated
+  `:modifier`, `:implicit` when explicit modifiers failed the backend test,
+  `:width`, `:height`, and `:fenced` when each frame's page flip waits on a
+  render-done fence rather than a CPU wait. It is `nil` for a disabled output.
 - `:output-config`: resolved requested settings, including disconnected names.
 - `:workareas`: one physical usable rectangle per output, with `:name`, `:x`,
   `:y`, `:width`, and `:height`. The native layer planner applies visible

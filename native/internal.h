@@ -82,6 +82,7 @@ bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *outpu
 struct wlr_buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct wlr_buffer *ring_create(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
+bool fenced(struct wlr_output *output);
 
 struct output {
     struct wl_list link;
