@@ -9,7 +9,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 1 | Scale snapping to N/120 | crates/tomoe/src/coords.rs | native/space.c `snapped_scale` | Done |
 | 2 | Configure-size quantization (logical round trip) | crates/tomoe/src/coords.rs | native/space.c, src/runtime.lisp `%quantize-layout` | Done |
 | 3 | Integer physical world coordinates | crates/tomoe/src/space.rs | native/space.c | Done |
-| 4 | Global `scale` setting for outputs without their own | crates/tomoe/src/lua.rs (settings.scale) | src/api.lisp `configure-output` (per output only) | Partial |
+| 4 | Global `scale` setting for outputs without their own | crates/tomoe/src/lua.rs (settings.scale) | src/runtime.lisp `default-output-config`, src/api.lisp `settings :scale` | Done |
 | 5 | Fractional-scale and preferred buffer scale | crates/tomoe/src/state.rs `send_scale` | native/space.c `set_surface_scale` | Done |
 | 6 | Infinite canvas camera, screen = (world − offset)·zoom | crates/tomoe/src/space.rs | native/space.c `tomoe_set_view`, src/api.lisp `set-view` | Done |
 | 7 | Zoom clamp 1/16..16 | crates/tomoe/src/space.rs | native/space.c, src/api.lisp | Done |

@@ -550,9 +550,9 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                              :owner (spec-name (mounted-spec mounted)) :command command :release release
                              :source-id (spec-id (mounted-spec mounted)))
                        bindings))))))))
-    (let* ((output-config (sort outputs #'string< :key (lambda (o) (getf o :name))))
-           (live-connectors (or (runtime-connectors runtime)
+    (let* ((live-connectors (or (runtime-connectors runtime)
                                 (output-connectors (list :outputs (runtime-outputs runtime)))))
+           (output-config (default-output-config outputs live-connectors (getf settings :scale)))
            (connected
              (connected-output-config
               (list :connectors live-connectors :output-config output-config)))
@@ -598,6 +598,24 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                               (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                 (and (= (getf a :modifiers) (getf b :modifiers))
                                                      (< (getf a :code) (getf b :code))))))))))))
+
+(defun default-output-config (outputs connectors scale)
+  "Fill omitted scales from SCALE, and configure every other connector at SCALE
+when it is not 1."
+  (let ((scale-120 (%round-away-positive (* scale 120))))
+    (sort (append
+           (loop for output in outputs
+                 collect (let ((copy (copy-list output)))
+                           (unless (getf copy :scale-120) (setf (getf copy :scale-120) scale-120))
+                           copy))
+           (unless (= scale-120 120)
+             (loop for connector in connectors
+                   for name = (getf connector :name)
+                   unless (find name outputs :test #'equal :key (lambda (o) (getf o :name)))
+                     collect (list :name name :mode :preferred :width 0 :height 0 :refresh-mhz 0
+                                   :scale-120 scale-120 :x 0 :y 0 :positioned nil
+                                   :disabled nil :mirror nil :vrr nil))))
+          #'string< :key (lambda (o) (getf o :name)))))
 
 (defun changed-keys (before after)
   (remove-if (lambda (key) (equal (getf before key) (getf after key))) +context-keys+))

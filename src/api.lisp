@@ -325,7 +325,7 @@ and clamped to the native camera's range."
       (progn (check-type width (integer 1 16384)) (check-type height (integer 1 16384)))
       (unless (and (eql width 0) (eql height 0)) (error "Only exact modes take dimensions.")))
   (check-type refresh (integer 0 1000000))
-  (check-type scale (integer 30 960))
+  (check-type scale (or null (integer 30 960)))
   (check-type x (integer -1048576 1048576))
   (check-type y (integer -1048576 1048576))
   (check-type positioned boolean)
@@ -338,20 +338,20 @@ and clamped to the native camera's range."
   (%effect :output (list (copy-seq name) mode width height refresh scale x y positioned
                         disabled (and mirror (copy-seq mirror)) vrr)))
 
-(defun configure-output (name &key (mode :preferred) (scale 1) position disabled mirror vrr)
+(defun configure-output (name &key (mode :preferred) scale position disabled mirror vrr)
   "Own an output's mode, scale, position, enablement, mirror target and VRR request.
 Refresh is Hz; omit it for maximum. MIRROR names an active non-mirroring output.
+Omitted SCALE inherits the :SCALE setting.
 Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS."
-  (check-type scale (real 1/4 8))
-  (destructuring-bind (x y) (or position '(0 0))
-    (if (member mode '(:preferred :max))
-        (%output-effect name mode 0 0 0 (%round-away-positive (* scale 120))
-                        x y (not (null position)) disabled mirror vrr)
-        (destructuring-bind (width height &optional (refresh 0)) mode
-          (check-type refresh (real 0 1000))
-          (%output-effect name :exact width height (round (* refresh 1000))
-                          (%round-away-positive (* scale 120)) x y (not (null position))
-                          disabled mirror vrr)))))
+  (check-type scale (or null (real 1/4 8)))
+  (let ((scale-120 (and scale (%round-away-positive (* scale 120)))))
+    (destructuring-bind (x y) (or position '(0 0))
+      (if (member mode '(:preferred :max))
+          (%output-effect name mode 0 0 0 scale-120 x y (not (null position)) disabled mirror vrr)
+          (destructuring-bind (width height &optional (refresh 0)) mode
+            (check-type refresh (real 0 1000))
+            (%output-effect name :exact width height (round (* refresh 1000)) scale-120
+                            x y (not (null position)) disabled mirror vrr))))))
 
 (defun focus (id &key (raise t))
   "Own keyboard focus. RAISE also contributes this window's stacking order."
@@ -393,7 +393,8 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                              (when options (copy-seq options)) repeat-rate repeat-delay))))
 
 (defparameter +settings+
-  '((:tearing :boolean nil)
+  '((:scale (:real 1/4 8) 1)
+    (:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
     (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))
     (:force-server-side-decorations :boolean nil)
