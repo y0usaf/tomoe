@@ -79,7 +79,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     }
     outputs_listen(s);
     input_listen(s);
-    if (!virtual_pointers_listen(s)) goto failed;
+    if (!virtual_pointers_listen(s) || !protocols_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     windows_listen(s, shell);
     layers_listen(s, layer_shell);
@@ -122,7 +122,8 @@ void tomoe_destroy(struct tomoe *s) {
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
         &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy, &s->new_surface,
-        &s->new_virtual_pointer, &s->cursor_surface_destroy
+        &s->new_virtual_pointer, &s->cursor_surface_destroy,
+        &s->request_set_primary_selection
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);
