@@ -557,20 +557,24 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (check-type id (integer 0 4294967295))
   (check-type buffer-generation (or null (integer 1 *)))
   (%effect :grab (if buffer-generation (list id mode buffer-generation) (list id mode))))
-(defun bind-key (modifiers keysym command &key release)
+(defun bind-key (modifiers keysym command &key release description)
   "Own a shortcut, optionally with a command for its physical key release.
 Modifiers are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the :MOD setting.
+DESCRIPTION labels the binding in the hotkey overlay.
 Release follows the original device/key even after modifiers change. Removing
 or replacing the binding/source cancels that callback and still swallows key-up."
   (check-type keysym string)
   (check-type command keyword)
   (check-type release (or null keyword))
+  (check-type description (or null string))
   (when (or (zerop (length keysym)) (find #\Null keysym)) (error "Invalid keysym name."))
+  (when (and description (> (length description) 256)) (error "Binding description exceeds 256 characters."))
   (let ((mask 0))
     (dolist (modifier modifiers)
       (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64) (:mod 128)))))
     (%effect :bind (list mask (copy-seq keysym) (string-downcase command)
-                         (when release (string-downcase release))))))
+                         (when release (string-downcase release))
+                         (when description (copy-seq description))))))
 (defun bind-button (modifiers button command &key release)
   "Own a pointer button shortcut. BUTTON is :LEFT, :RIGHT, :MIDDLE, :SIDE, :EXTRA,
 :FORWARD, :BACK or a kernel code. The press never reaches clients; the event

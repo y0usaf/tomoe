@@ -101,7 +101,7 @@
       (:grab (destructuring-bind (id mode &optional buffer-generation) args
                (grab id mode :buffer-generation buffer-generation)))
       (:bind
-       (destructuring-bind (mask keysym command &optional release) args
+       (destructuring-bind (mask keysym command &optional release description) args
          (check-type mask (integer 0 205))
          (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
          (check-type keysym string)
@@ -111,7 +111,8 @@
                    (zerop (length command)) (zerop (%keysym keysym))
                    (and release (or (zerop (length release)) (find #\Null release))))
            (error "Invalid key binding: ~S" args))
-         (%effect :bind (list mask keysym command release)))))))
+         (check-type description (or null string))
+         (%effect :bind (list mask keysym command release description)))))))
 
 (defun canonical-command (command &optional source)
   (check-type command command)
@@ -474,6 +475,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         (keyboard-grab nil)
         (outputs nil)
         (bindings nil)
+        (binding-order 0)
         (keyboard (default-keyboard-config))
         (settings (%settings-defaults +settings+)))
     (dolist (mounted mounts)
@@ -566,15 +568,17 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                  (when window (setf (getf window :maximize) (and flag t))))))
             ((:grab :timer :watch :exec :process :rule :method :announce) nil)
             (:bind
-             (destructuring-bind (mask keysym command release) args
-               (let ((code (%keysym keysym))
+             (destructuring-bind (mask keysym command release &optional description) args
+               (let ((code (%keysym keysym)) (declared mask)
                      (mask (if (logtest 128 mask) (logior (logandc2 mask 128) mod-bit) mask)))
                  (setf bindings
                        (delete-if (lambda (b) (and (= mask (getf b :modifiers))
                                                    (= code (getf b :code)))) bindings))
                  (push (list :modifiers mask :code code :keysym keysym
                              :owner (spec-name (mounted-spec mounted)) :command command :release release
-                             :source-id (spec-id (mounted-spec mounted)))
+                             :source-id (spec-id (mounted-spec mounted))
+                             :description description :declared declared
+                             :order (incf binding-order))
                        bindings))))))))
     (let* ((live-connectors (or (runtime-connectors runtime)
                                 (output-connectors (list :outputs (runtime-outputs runtime)))))

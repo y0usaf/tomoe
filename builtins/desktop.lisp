@@ -1,6 +1,49 @@
 (in-package #:tomoe-user)
 
 
+(defun hotkey-label (binding)
+  "Old overlay spelling: \"Mod + Shift + /\"."
+  (let ((declared (getf binding :declared)) (key (getf binding :keysym)))
+    (format nil "~{~A~^ + ~}"
+            (append (loop for (bit name) in '((128 "Mod") (64 "Super") (4 "Ctrl") (8 "Alt") (1 "Shift"))
+                          when (logtest bit declared) collect name)
+                    (list (cond ((equal key "Return") "Enter") ((equal key "slash") "/")
+                                ((equal key "comma") ",") ((equal key "period") ".")
+                                ((equal key "space") "Space") ((equal key "minus") "-")
+                                ((equal key "equal") "=")
+                                (t (string-capitalize key :end (min 1 (length key))))))))))
+
+(define-extension "commands" (:reads (:key :ui :focus :bindings :settings)
+                               :state '(:exit nil :overlay nil))
+    (snapshot state event)
+  (let* ((focused (context snapshot :focus))
+         (command (when (and (member (getf event :type) '(:key :ui)) (equal (getf event :owner) "commands"))
+                    (getf event :command)))
+         (exit (cond ((equal command "quit") t)
+                     ((member command '("exit-confirm" "exit-cancel") :test #'equal) nil)
+                     (t (getf state :exit))))
+         (overlay (cond ((equal command "hotkeys") (not (getf state :overlay)))
+                        ((equal command "hotkeys-dismiss") nil)
+                        (t (getf state :overlay))))
+         (rows (loop for binding in (sort (copy-list (context snapshot :bindings)) #'< :key (lambda (b) (getf b :order)))
+                     when (getf binding :description)
+                       collect (list (hotkey-label binding) (getf binding :description)))))
+    (values (list :exit exit :overlay overlay)
+            (append (list (bind-key '(:mod) "Return" :terminal :description "Spawn foot")
+                          (bind-key '(:mod) "d" :launcher :description "Run an Application")
+                          (bind-key '(:mod) "q" :close :description "Close Window")
+                          (bind-key '(:mod :shift) "e" :quit :description "Exit")
+                          (bind-key '(:mod :shift) "slash" :hotkeys :description "Show Important Hotkeys"))
+                    (when exit
+                      (confirm-dialog :exit "Are you sure you want to exit tomoe?"
+                                      :confirm :exit-confirm :cancel :exit-cancel))
+                    (when (and overlay (not exit))
+                      (sheet-dialog :hotkeys rows :title "Important Hotkeys" :dismiss :hotkeys-dismiss)))
+            (cond ((equal command "terminal") (list (launch "foot")))
+                  ((equal command "launcher") (list (launch "fuzzel")))
+                  ((and (equal command "close") focused) (list (close-window focused)))
+                  ((equal command "exit-confirm") (list (quit)))))))
+
 (define-extension "wm"
     (:reads (:windows :rules :data :outputs :workareas :layout :focus :button :pointer :key :request
              :settings)
@@ -241,17 +284,19 @@
             (push (maximize id (not (null (member id maximized)))) effects)))
         (dolist (id stack) (when (member id visible) (push (raise-window id) effects)))
         (push (focus (when (member focused visible) focused) :raise nil) effects)
-        (dolist (binding '(("j" :next) ("Tab" :next) ("k" :previous) ("f" :fullscreen)))
-          (push (bind-key '(:mod) (first binding) (second binding)) effects))
+        (dolist (binding '(("f" :fullscreen "Toggle Fullscreen") ("j" :next "Focus Next Window")
+                           ("k" :previous "Focus Previous Window")))
+          (destructuring-bind (key command description) binding
+            (push (bind-key '(:mod) key command :description description) effects)))
         (loop for number from 1 to (min count 9)
               for switch in '(:workspace-1 :workspace-2 :workspace-3 :workspace-4 :workspace-5
                               :workspace-6 :workspace-7 :workspace-8 :workspace-9)
               for move in '(:move-1 :move-2 :move-3 :move-4 :move-5 :move-6 :move-7 :move-8 :move-9)
               do
-          (push (bind-key '(:mod) (princ-to-string number)
-                          switch) effects)
-          (push (bind-key '(:mod :shift) (princ-to-string number)
-                          move) effects))
+          (push (bind-key '(:mod) (princ-to-string number) switch
+                          :description (when (= number 1) "Switch to Workspace 1-9")) effects)
+          (push (bind-key '(:mod :shift) (princ-to-string number) move
+                          :description (when (= number 1) "Move Window to Workspace 1-9")) effects))
         (push (publish-state :wm-state
                              (list :active active :workspaces
                                    (loop for wins in workspaces for number from 1
@@ -338,24 +383,6 @@
                      (fullscreen id nil))
                nil))
       (t (values nil nil nil))))))
-
-(define-extension "commands" (:reads (:key :focus) :state nil) (snapshot state event)
-  (declare (ignore state))
-  (let ((focused (context snapshot :focus))
-        (command (when (and (eq (getf event :type) :key) (equal (getf event :owner) "commands"))
-                   (getf event :command))))
-    (values nil
-            (list (bind-key '(:mod) "Return" :terminal)
-                  (bind-key '(:mod) "q" :close)
-                  (bind-key '(:mod) "d" :launcher)
-                  (bind-key '(:mod :shift) "e" :quit)
-                  (bind-key '(:mod :shift) "r" :reload)
-                  (bind-key '(:mod :shift) "Escape" :quit))
-            (cond ((equal command "terminal") (list (launch "foot")))
-                  ((equal command "launcher") (list (launch "fuzzel")))
-                  ((and (equal command "close") focused) (list (close-window focused)))
-                  ((equal command "reload") (list (reload)))
-                  ((equal command "quit") (list (quit)))))))
 
 (define-extension "notification-popups" (:reads (:services :outputs) :state nil)
     (snapshot state event)

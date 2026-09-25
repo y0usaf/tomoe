@@ -83,10 +83,10 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 75 | `winit_size` nested window size (1280×800) | crates/tomoe/src/backend/winit.rs | native/output.c `outputs_request_nested_size`, src/api.lisp `settings :nested-size` | Done |
 | 76 | `--backend winit\|tty` names | crates/tomoe/src/main.rs | src/main.lisp `run-cli` | Done |
 | 77 | `-h` / `-V` | crates/tomoe/src/main.rs | src/main.lisp `run-cli` | Done |
-| 78 | Action strings (`quit`, `quit!`, `close-window`, `reload-config`, `spawn …`) | crates/tomoe/src/input.rs | builtins/desktop.lisp commands | Partial |
-| 79 | Bind descriptions for the hotkey overlay | crates/tomoe/src/lua.rs, ui/widgets.rs | none | Missing |
+| 78 | Action strings (`quit`, `quit!`, `close-window`, `reload-config`, `spawn …`) | crates/tomoe/src/input.rs | commands returned by reducers: `quit`, `close-window`, `reload`, `spawn`; builtins/desktop.lisp `commands` | Done |
+| 79 | Bind descriptions for the hotkey overlay | crates/tomoe/src/lua.rs, ui/widgets.rs | src/api.lisp `bind-key :description`, `:bindings` context `:order` `:declared` | Done |
 | 80 | `tomoe.spawn` with activation token | crates/tomoe/src/lua.rs | src/api.lisp `spawn`, src/processes.lisp | Done |
-| 81 | `tomoe.quit()` opens the exit dialog | crates/tomoe/src/lua.rs, state.rs | src/api.lisp `quit` (immediate) | Partial |
+| 81 | `tomoe.quit()` opens the exit dialog | crates/tomoe/src/lua.rs, state.rs | builtins/desktop.lisp `commands` (`:quit` opens the dialog; `(quit)` is the immediate form) | Done |
 | 82 | `clear_focus`, `windows`, `window`, `focused_window` | crates/tomoe/src/lua.rs | `(focus nil)`, `:windows`, `:focus` context | Done |
 | 83 | Window reads and writes (geometry, show/hide, focus, raise, fullscreen, maximize, close) | crates/tomoe/src/lua.rs | src/api.lisp | Done |
 | 84 | `outputs`, `usable_area`, `view`, `set_view` | crates/tomoe/src/lua.rs | `:outputs`, `:workareas`, `:view`, `set-view` | Done |
@@ -99,8 +99,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 91 | Shutdown stops supervised processes | crates/tomoe/src/process.rs | src/processes.lisp | Improved: session-owned one-shot children are reaped too |
 | 92 | `ipc.serve`, `ipc.broadcast` | crates/tomoe/src/lua.rs | src/api.lisp `serve-state`, `serve-method`, `ipc-reply`, `broadcast`, `announce` | Done |
 | 93 | `tomoe.ui` confirm / menu / toast / sheet and `close` | crates/tomoe/src/lua.rs, ui/widgets.rs | src/dialogs.lisp `confirm-dialog` `menu-dialog` `sheet-dialog` `toast`, src/api.lisp `keyboard-grab`, native/input.c `ui_hover` | Done |
-| 94 | Exit confirm dialog | crates/tomoe/src/state.rs | none | Missing |
-| 95 | Hotkey overlay (`Mod+Shift+/`) | crates/tomoe/src/state.rs, ui/widgets.rs | none | Missing |
+| 94 | Exit confirm dialog | crates/tomoe/src/state.rs | builtins/desktop.lisp `commands` via `confirm-dialog` | Done |
+| 95 | Hotkey overlay (`Mod+Shift+/`) | crates/tomoe/src/state.rs, ui/widgets.rs | builtins/desktop.lisp `commands` via `sheet-dialog`, `hotkey-label` | Done |
 | 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `record-error` (stderr only) | Missing |
 | 97 | `watchdog_ms` | crates/tomoe/src/lua.rs | src/runtime.lisp (fixed 25 ms reducer budget) | Partial |
 | 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp `wm`, `commands` | Partial |

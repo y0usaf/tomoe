@@ -1582,14 +1582,18 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
         }
     }
     int count = keyboard_binding_syms(logical, input->keycode, &syms);
+    uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
+    mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
+        WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     if (s->grab_owner && tracked && !lock_active(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             struct binding_latch *latch = &k->latches[input->keycode];
             latch->consumed = true;
             struct binding *b, *match = NULL;
-            wl_list_for_each(b, &s->bindings, link) for (int i = 0; !match && i < count; i++)
-                if (strcmp(b->owner, s->grab_owner) == 0 &&
-                        xkb_keysym_to_lower(syms[i]) == xkb_keysym_to_lower(b->keysym)) match = b;
+            for (int exact = 1; exact >= 0 && !match; exact--)
+                wl_list_for_each(b, &s->bindings, link) for (int i = 0; !match && i < count; i++)
+                    if (strcmp(b->owner, s->grab_owner) == 0 && (!exact || b->modifiers == mods) &&
+                            xkb_keysym_to_lower(syms[i]) == xkb_keysym_to_lower(b->keysym)) match = b;
             if (match) {
                 binding_ref(match);
                 latch->binding = match;
@@ -1602,9 +1606,6 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
     }
-    uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
-    mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
-        WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s)) {
         struct binding *b;
         wl_list_for_each(b, &s->bindings, link) for (int i = 0; i < count; i++) {
