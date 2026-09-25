@@ -9,6 +9,7 @@
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
            #:bind-button #:bind-scroll #:window-properties #:keyboard-grab
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
+           #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
@@ -171,7 +172,7 @@ own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
       (and (stringp key) (member key '("app_id" "title" "match" "apply") :test #'string=))))
 
 (defun window-rule (name &key app-id title match properties reads state apply)
-  "Own a named window rule. APP-ID and TITLE are case-sensitive Lua patterns.
+  "Own a named window rule. APP-ID must equal the app id; TITLE must occur in the title.
 PROPERTIES is an alist of copied data; later matching rules replace equal keys.
 MATCH, when present, receives (window snapshot). APPLY is a per-window reducer:
 (window snapshot state event) -> state, owned effects, one-shot commands.

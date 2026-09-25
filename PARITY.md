@@ -120,15 +120,15 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 112 | Element vocabulary (row/column/text/icon/button/separator/progress/image/stack) | crates/moonshell-runtime/src/element.rs | src/ui.lisp | Done |
 | 113 | `slider`, `scroll`, `input` elements | crates/moonshell-runtime/src/element.rs | none | Dropped: the old parser rejected all three |
 | 114 | `ui.when`, `ui.map`, `ui.fragment`, utils | resources/moonshell/stdlib.lua, utils.lua | none | Dropped: plain Lisp covers them |
-| 115 | Theme palette, presets, `theme:set`, spacing tokens | resources/moonshell/theme.lua, shell_ext.lua | src/ui.lisp (fixed defaults) | Partial |
-| 116 | `ui.bar_layout` | resources/moonshell/stdlib.lua | none | Missing |
-| 117 | Workspaces widget | resources/moonshell/widgets/workspaces.lua | none | Missing |
-| 118 | Clock widget | resources/moonshell/widgets/clock.lua | none | Missing |
+| 115 | Theme palette, presets, `theme:set`, spacing tokens | resources/moonshell/theme.lua, shell_ext.lua | src/dialogs.lisp `theme`, `+theme+`, `+theme-presets+` | Done |
+| 116 | `ui.bar_layout` | resources/moonshell/stdlib.lua | src/dialogs.lisp `bar-layout` | Done |
+| 117 | Workspaces widget | resources/moonshell/widgets/workspaces.lua | src/dialogs.lisp `workspaces-widget` | Done |
+| 118 | Clock widget | resources/moonshell/widgets/clock.lua | src/dialogs.lisp `clock-text`, examples/bar.lisp | Done |
 | 119 | Battery widget | resources/moonshell/widgets/battery.lua | examples/battery.lisp | Done |
 | 120 | Network widget | resources/moonshell/widgets/network.lua | examples/network.lisp | Done |
 | 121 | MPRIS label widget | resources/moonshell/widgets/mpris.lua | examples/media.lisp | Done |
-| 122 | Media panel | resources/moonshell/widgets/media_panel.lua | none | Missing |
-| 123 | Volume panel | resources/moonshell/widgets/volume_panel.lua | none | Missing |
+| 122 | Media panel | resources/moonshell/widgets/media_panel.lua | examples/bar.lisp media panel | Improved: controls call the player over D-Bus; the old service actions were no-ops (hover tint dropped: UI hover reports enter only) |
+| 123 | Volume panel | resources/moonshell/widgets/volume_panel.lua | examples/bar.lisp volume panel | Improved: reads and sets the real volume through wpctl; the old audio service was fixed at 100% (hover tint dropped: UI hover reports enter only) |
 | 124 | Sysinfo service | resources/moonshell/services.lua | src/runtime.lisp placeholder | Dropped: the old service was a placeholder fixed at 0 |
 | 125 | Battery, network, MPRIS services | crates/moonshell-services | support/*.c, src/battery.lisp, network.lisp, mpris.lisp | Done |
 | 126 | Notification daemon | crates/moonshell-services/src/notifications.rs | support/notifications.c, src/notifications.lisp | Done |
