@@ -85,19 +85,21 @@ for xml in \
   "$wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml" \
   "$wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" \
   "$wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" \
+  "$wp/unstable/xdg-output/xdg-output-unstable-v1.xml" \
   "$wp/unstable/primary-selection/primary-selection-unstable-v1.xml"; do
   name=$(basename "$xml" .xml)
   if [ ! -f "build/$name-protocol.c" ] || [ "$xml" -nt "build/$name-protocol.c" ]; then
     wayland-scanner server-header "$xml" "build/$name-protocol.h"
     wayland-scanner private-code "$xml" "build/$name-protocol.c"
+    wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
   fi
 done
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
     -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
-    $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) \
+    $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
     native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
-    $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) -lm
+    $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
 fi
 
 export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"

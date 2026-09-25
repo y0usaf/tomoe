@@ -8,7 +8,7 @@
 struct copy_frame {
     struct wl_resource *resource;
     struct wl_list link;
-    struct wlr_output *output;
+    struct screen *output;
     struct wlr_box box;
     uint32_t shm_format, dmabuf_format;
     bool cursor, damage, cursor_locked;
@@ -25,7 +25,7 @@ static void frame_finish(struct copy_frame *frame) {
     if (!frame) return;
     wl_resource_set_user_data(frame->resource, NULL);
     wl_list_remove(&frame->link);
-    if (frame->cursor_locked) wlr_output_lock_software_cursors(frame->output, false);
+    if (frame->cursor_locked) screen_lock_software_cursors(frame->output, false);
     wlr_buffer_unlock(frame->buffer);
     free(frame);
 }
@@ -82,10 +82,10 @@ static void frame_request(struct wl_resource *resource, struct wl_resource *buff
     frame->buffer = buffer;
     frame->damage = damage;
     if (frame->cursor) {
-        wlr_output_lock_software_cursors(frame->output, true);
+        screen_lock_software_cursors(frame->output, true);
         frame->cursor_locked = true;
     }
-    if (!damage) wlr_output_schedule_frame(frame->output);
+    if (!damage) screen_schedule_frame(frame->output);
 }
 
 static void frame_copy(struct wl_client *client, struct wl_resource *resource,
@@ -114,14 +114,14 @@ static void capture(struct wl_client *client, struct wl_resource *manager, uint3
         return;
     }
     wl_resource_set_implementation(resource, &frame_impl, NULL, frame_resource_destroy);
-    struct wlr_output *output = wlr_output_from_resource(output_resource);
+    struct screen *output = screen_from_resource(output_resource);
     struct output *o = NULL, *candidate;
     wl_list_for_each(candidate, &s->outputs, link)
-        if (candidate->wlr == output && output_is_active(candidate)) o = candidate;
+        if (candidate->screen == output && output_is_active(candidate)) o = candidate;
     struct wlr_box box = { 0, 0, output ? output->width : 0, output ? output->height : 0 };
     if (o && region) {
         int width, height;
-        wlr_output_effective_resolution(output, &width, &height);
+        screen_effective_resolution(output, &width, &height);
         wlr_box_transform(&box, region, wlr_output_transform_invert(output->transform),
             width, height);
         box = (struct wlr_box){ pixel_round(box.x * output->scale),
@@ -249,8 +249,8 @@ static bool source_size(struct tomoe *s, const struct source *source, int *width
         uint32_t *format) {
     struct output *o = source_output(s, source);
     if (o) {
-        *width = o->wlr->width;
-        *height = o->wlr->height;
+        *width = o->screen->width;
+        *height = o->screen->height;
         *format = o->ring.format.len ? o->ring.format.formats[0].format : DRM_FORMAT_XRGB8888;
         return true;
     }
@@ -364,7 +364,7 @@ static void image_frame_capture(struct wl_client *client, struct wl_resource *re
         return;
     }
     struct output *o = source_output(session->server, &session->source);
-    if (o) wlr_output_schedule_frame(o->wlr);
+    if (o) screen_schedule_frame(o->screen);
     else schedule_scene(session->server);
 }
 
@@ -402,10 +402,10 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     if (session->source.kind == SOURCE_OUTPUT) {
         struct wlr_buffer *source = session->cursors || scanout ? committed : o->capture_buffer;
         if (!source) {
-            wlr_output_schedule_frame(o->wlr);
+            screen_schedule_frame(o->screen);
             return;
         }
-        transform = o->wlr->transform;
+        transform = o->screen->transform;
         ok = blit(s, frame->buffer, source, box);
     } else {
         struct wlr_dmabuf_attributes dmabuf;
@@ -573,10 +573,10 @@ static void create_source(struct wl_client *client, struct wl_resource *manager,
 static void create_output_source(struct wl_client *client, struct wl_resource *manager,
         uint32_t id, struct wl_resource *output_resource) {
     struct tomoe *s = wl_resource_get_user_data(manager);
-    struct wlr_output *output = wlr_output_from_resource(output_resource);
+    struct screen *output = screen_from_resource(output_resource);
     uint64_t source_id = 0;
     struct output *o;
-    wl_list_for_each(o, &s->outputs, link) if (o->wlr == output) source_id = o->id;
+    wl_list_for_each(o, &s->outputs, link) if (o->screen == output) source_id = o->id;
     create_source(client, manager, id, SOURCE_OUTPUT, source_id);
 }
 
@@ -636,7 +636,7 @@ bool capture_listen(struct tomoe *s) {
 bool capture_wants_cursorless(struct output *o) {
     struct copy_frame *frame;
     wl_list_for_each(frame, &o->server->copy_frames, link)
-        if (frame->output == o->wlr && frame->buffer && !frame->cursor) return true;
+        if (frame->output == o->screen && frame->buffer && !frame->cursor) return true;
     struct session *session;
     wl_list_for_each(session, &o->server->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id &&
@@ -655,10 +655,10 @@ void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout)
             serve_session(s, session, o, committed, scanout, &now);
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link) {
-        if (frame->output != o->wlr || !frame->buffer) continue;
+        if (frame->output != o->screen || !frame->buffer) continue;
         struct wlr_buffer *source = frame->cursor || scanout ? committed : o->capture_buffer;
         if (!source) {
-            wlr_output_schedule_frame(o->wlr);
+            screen_schedule_frame(o->screen);
             continue;
         }
         if (!blit(s, frame->buffer, source, frame->box)) {
@@ -678,7 +678,7 @@ void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout)
 void capture_output_gone(struct tomoe *s, struct output *o) {
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link)
-        if (frame->output == o->wlr) frame_fail(frame);
+        if (frame->output == o->screen) frame_fail(frame);
     struct session *session, *next_session;
     wl_list_for_each_safe(session, next_session, &s->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)

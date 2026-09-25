@@ -5,7 +5,7 @@ static const char *keyboard_name(int keyboard);
 
 struct layer_plan_output {
     struct output *output;
-    struct wlr_output *wlr;
+    struct screen *wlr;
     bool enabled_at_plan;
     bool included;
     int x, y, width, height;
@@ -18,7 +18,7 @@ struct layer_plan_surface {
     struct layer *layer;
     struct layer_surface *wlr;
     struct node *scene_node;
-    struct wlr_output *native_output;
+    struct screen *native_output;
     bool mapped_at_plan, initialized_at_plan;
     bool included;
     bool staged;
@@ -251,10 +251,10 @@ static struct layer_plan_surface *plan_surface_for(struct layer_plan *plan,
 }
 
 static struct layer_plan_output *plan_output_for_native(
-        struct layer_plan *plan, struct wlr_output *wlr) {
+        struct layer_plan *plan, struct screen *wlr) {
     for (size_t i = 0; i < plan->output_count; i++) {
         if (plan->outputs[i].included && plan->outputs[i].output &&
-                plan->outputs[i].output->wlr == wlr) return &plan->outputs[i];
+                plan->outputs[i].output->screen == wlr) return &plan->outputs[i];
     }
     return NULL;
 }
@@ -314,7 +314,7 @@ static bool plan_prepare_outputs(struct layer_plan *plan) {
         struct layer_plan_output *output = &plan->outputs[i];
         const struct output_location *location = output_location_for(locations,
             location_count, output->output);
-        output->wlr = output->output ? output->output->wlr : NULL;
+        output->wlr = output->output ? output->output->screen : NULL;
         output->enabled_at_plan = location && location->active;
         if (output->enabled_at_plan) plan->active_output_count++;
         if (!location || !output->included || !output->enabled_at_plan ||
@@ -459,8 +459,8 @@ static bool plan_lifetime_valid(struct tomoe *s, const struct layer_plan *plan,
     for (size_t i = 0; i < plan->output_count; i++) {
         const struct layer_plan_output *candidate = &plan->outputs[i];
         struct output *output = candidate->output;
-        if (!live_output(s, output) || !output->wlr ||
-                candidate->wlr != output->wlr ||
+        if (!live_output(s, output) || !output->screen ||
+                candidate->wlr != output->screen ||
             (check_enabled &&
                  candidate->enabled_at_plan != output_is_active(output))) return false;
         if (candidate->included &&
@@ -505,7 +505,7 @@ static bool plan_lifetime_valid(struct tomoe *s, const struct layer_plan *plan,
         }
         if (!candidate->output || !candidate->configured ||
                 !candidate->output->output ||
-                candidate->output->wlr != candidate->output->output->wlr ||
+                candidate->output->wlr != candidate->output->output->screen ||
                 candidate->output->full.width <= 0 ||
                 candidate->output->full.height <= 0 ||
                 candidate->resolved_layer < ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND ||
@@ -666,7 +666,7 @@ bool layers_prepare_presentation(struct tomoe *s, struct presentation *plan) {
         copied.x = surface->physical_x;
         copied.y = surface->physical_y;
         if (!surface->unplaced) copied.scale = surface->output->scale_120 / 120.0;
-        copied.output = surface->unplaced ? NULL : surface->output->output->wlr;
+        copied.output = surface->unplaced ? NULL : surface->output->output->screen;
         *target = (struct presentation_target){
             .node = surface->scene_node,
             .target = copied,
@@ -731,7 +731,7 @@ static bool plan_init_live(struct tomoe *s, struct layer_plan *plan) {
         dst->width = location ? location->width : 0;
         dst->height = location ? location->height : 0;
         dst->scale_120 = location ? location->scale_120 : 120;
-        dst->wlr = output->wlr;
+        dst->wlr = output->screen;
         dst->enabled_at_plan = location && location->active;
     }
     free(locations);
@@ -784,7 +784,7 @@ int tomoe_layers_begin(struct tomoe *s) {
         plan->outputs[i].width = location ? location->width : 0;
         plan->outputs[i].height = location ? location->height : 0;
         plan->outputs[i].scale_120 = location ? location->scale_120 : 120;
-        plan->outputs[i].wlr = output->wlr;
+        plan->outputs[i].wlr = output->screen;
         plan->outputs[i].enabled_at_plan = location && location->active;
         i++;
     }
@@ -811,7 +811,7 @@ int tomoe_layers_output(struct tomoe *s, const char *name,
     struct layer_plan_output *output = NULL;
     for (size_t i = 0; i < plan->output_count; i++) {
         struct output *candidate = plan->outputs[i].output;
-        if (candidate && strcmp(candidate->wlr->name, name) == 0) {
+        if (candidate && strcmp(candidate->screen->name, name) == 0) {
             output = &plan->outputs[i];
             break;
         }
@@ -896,7 +896,7 @@ static bool write_layer_plan(FILE *out, const struct layer_plan_surface *surface
                 physical_margin[2], physical_margin[3], surface->physical_width,
                 surface->physical_height, keyboard_name(surface->resolved_keyboard),
                 scale) < 0) return false;
-    quote(out, surface->unplaced ? "" : surface->output->output->wlr->name);
+    quote(out, surface->unplaced ? "" : surface->output->output->screen->name);
     if (fprintf(out, " :visible %s :x %d :y %d :exclusive-edge ",
             surface->resolved_visible && !surface->unplaced ? "t" : "nil", surface->physical_x,
             surface->physical_y) < 0 || !write_edge(out, surface->exclusive_edge))
@@ -926,7 +926,7 @@ static bool write_workarea(FILE *out, const struct layer_plan_output *output) {
     int width = int_from_i64(width64);
     int height = int_from_i64(height64);
     return fprintf(out, "(:name ") >= 0 &&
-        (quote(out, output->output->wlr->name),
+        (quote(out, output->output->screen->name),
          fprintf(out, " :x %d :y %d :width %d :height %d)",
              int_from_i64((int64_t)output->x + left),
              int_from_i64((int64_t)output->y + top), width, height) >= 0);
@@ -1128,12 +1128,12 @@ static bool publish_layer_plan(struct tomoe *s, struct layer_plan *plan,
             return false;
 
         struct layer_plan_output *output = surface->output;
-        struct wlr_output *wlr_output = output && output->output ?
-            output->output->wlr : layer->wlr->output;
+        struct screen *wlr_output = output && output->output ?
+            output->output->screen : layer->wlr->output;
         struct output *live_output_record = NULL;
         struct output *candidate_output;
         wl_list_for_each(candidate_output, &s->outputs, link) {
-            if (candidate_output->wlr != wlr_output) continue;
+            if (candidate_output->screen != wlr_output) continue;
             live_output_record = candidate_output;
             break;
         }

@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <wlr/backend/session.h>
 #include <fcntl.h>
+#include <drm_fourcc.h>
 #include <sys/mman.h>
 #include "ui.h"
 #include <inttypes.h>
@@ -660,40 +661,52 @@ static void cursor_surface_destroy(struct wl_listener *listener, void *data) {
 void cursor_default(struct tomoe *s) {
     s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
-    wlr_cursor_set_xcursor(s->cursor, s->cursor_manager, "default");
+    float scale = 1;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (o->screen->enabled && o->screen->scale > scale) scale = o->screen->scale;
+    if (!s->default_cursor || s->default_cursor_scale != scale) {
+        wlr_xcursor_manager_load(s->cursor_manager, scale);
+        struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(s->cursor_manager,
+            "default", scale);
+        struct wlr_xcursor_image *image = xcursor ? xcursor->images[0] : NULL;
+        if (!image) return;
+        if (s->default_cursor) wlr_buffer_drop(s->default_cursor);
+        s->default_cursor = pixel_buffer_create((int)image->width, (int)image->height,
+            image->width * 4, DRM_FORMAT_ARGB8888, image->buffer);
+        s->default_cursor_scale = scale;
+        s->default_hotspot_x = (int)image->hotspot_x;
+        s->default_hotspot_y = (int)image->hotspot_y;
+    }
+    cursor_show(s, s->default_cursor, s->default_hotspot_x, s->default_hotspot_y, scale);
 }
 
 void pointer_sync_cursors(struct tomoe *s) {
-    if (s->stopping || !s->cursor) return;
-    double x = s->pointer_x, y = s->pointer_y;
-    screen_to_protocol(s, &x, &y);
-    s->cursor->x = x; s->cursor->y = y;
+    if (s->stopping) return;
     double scale = 1.0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        struct wlr_output_cursor *cursor;
-        bool visible = false;
-        wl_list_for_each(cursor, &o->wlr->cursors, link) {
-            wlr_output_cursor_move(cursor, (s->pointer_x - o->x) / o->wlr->scale,
-                (s->pointer_y - o->y) / o->wlr->scale);
-            visible |= cursor->enabled && cursor->visible && o->wlr->enabled;
-        }
+        struct wlr_box box;
+        physical_output_box(o, &box);
+        screen_cursor_move(o->screen, s->pointer_x - o->x, s->pointer_y - o->y);
+        bool visible = output_is_active(o) && s->pointer_x >= box.x && s->pointer_y >= box.y &&
+            s->pointer_x < (double)box.x + box.width && s->pointer_y < (double)box.y + box.height;
         if (!s->cursor_surface) continue;
         if (visible) {
-            surface_send_enter(s->cursor_surface, o->wlr);
-            scale = fmax(scale, snapped_scale(o->wlr->scale));
+            surface_send_enter(s->cursor_surface, o->screen);
+            scale = fmax(scale, snapped_scale(o->screen->scale));
         } else {
-            surface_send_leave(s->cursor_surface, o->wlr);
+            surface_send_leave(s->cursor_surface, o->screen);
         }
     }
     if (s->cursor_surface) surface_set_scale(s->cursor_surface, scale);
 }
 
-static void clamp_pointer(struct tomoe *s, struct wlr_output *mapped, double *x, double *y) {
+static void clamp_pointer(struct tomoe *s, struct screen *mapped, double *x, double *y) {
     double nearest = HUGE_VAL, nearest_x = *x, nearest_y = *y;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (!o->wlr->enabled || (mapped && mapped != o->wlr)) continue;
+        if (!o->screen->enabled || (mapped && mapped != o->screen)) continue;
         struct wlr_box box;
         physical_output_box(o, &box);
         if (box.width <= 0 || box.height <= 0) continue;
@@ -1126,10 +1139,10 @@ void input_pointer_motion(struct pointer_motion *event) {
     idle_notify_activity(s);
     relative_motion_forward(s, event->time_msec, event->delta_x, event->delta_y,
         event->unaccel_dx, event->unaccel_dy);
-    struct wlr_output *mapped = virtual_pointer_output(s, event->device);
+    struct screen *mapped = virtual_pointer_output(s, event->device);
     struct output *previous = output_at_physical(s, s->pointer_x, s->pointer_y);
     double scale = mapped ? snapped_scale(mapped->scale) :
-        previous ? snapped_scale(previous->wlr->scale) : reference_scale(s);
+        previous ? snapped_scale(previous->screen->scale) : reference_scale(s);
     double x = s->pointer_x, y = s->pointer_y;
     if (isfinite(event->delta_x)) x += event->delta_x * scale;
     if (isfinite(event->delta_y)) y += event->delta_y * scale;
@@ -1138,19 +1151,19 @@ void input_pointer_motion(struct pointer_motion *event) {
     s->pointer_x = x; s->pointer_y = y;
     pointer_update(s, event->time_msec);
 }
-static struct wlr_output *named_pointer_output(struct tomoe *s, struct input_device *pointer) {
+static struct screen *named_pointer_output(struct tomoe *s, struct input_device *pointer) {
     if (!pointer->output_name) return NULL;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr->enabled && strcmp(o->wlr->name, pointer->output_name) == 0)
-            return o->wlr;
+        if (o->screen->enabled && strcmp(o->screen->name, pointer->output_name) == 0)
+            return o->screen;
     }
     return NULL;
 }
 void input_pointer_absolute(struct pointer_absolute *event) {
     struct tomoe *s = event->device->server;
     idle_notify_activity(s);
-    struct wlr_output *mapped = virtual_pointer_output(s, event->device);
+    struct screen *mapped = virtual_pointer_output(s, event->device);
     double x = event->x, y = event->y;
     if (!mapped) {
         mapped = named_pointer_output(s, event->device);
@@ -1165,7 +1178,7 @@ void input_pointer_absolute(struct pointer_absolute *event) {
     bool first = true;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (!o->wlr->enabled || (mapped && mapped != o->wlr)) continue;
+        if (!o->screen->enabled || (mapped && mapped != o->screen)) continue;
         struct wlr_box box;
         physical_output_box(o, &box);
         if (first) { extent = box; first = false; }
@@ -1398,10 +1411,10 @@ void input_pointer_frame(struct input_device *device) {
 static void cursor_apply(struct tomoe *s) {
     struct surface *surface = s->cursor_surface;
     if (surface && surface->buffer)
-        wlr_cursor_set_buffer(s->cursor, surface->buffer, s->cursor_hotspot_x,
-            s->cursor_hotspot_y, (float)surface->current.scale);
+        cursor_show(s, surface->buffer, s->cursor_hotspot_x, s->cursor_hotspot_y,
+            (float)surface->current.scale);
     else
-        wlr_cursor_unset_image(s->cursor);
+        cursor_show(s, NULL, 0, 0, 1);
 }
 void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y) {
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
@@ -1604,7 +1617,7 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         int raw = xkb_state_key_get_syms(logical->xkb.xkb_state, input->keycode + 8, &syms);
         for (int i = 0; i < raw; i++) {
             if (syms[i] < XKB_KEY_XF86Switch_VT_1 || syms[i] > XKB_KEY_XF86Switch_VT_12) continue;
-            if (s->session) wlr_session_change_vt(s->session, syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
+            if (s->session) session_change_vt(s, syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
             k->latches[input->keycode].consumed = true;
             logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
             return;

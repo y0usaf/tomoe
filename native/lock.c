@@ -10,7 +10,7 @@ struct lock_surface {
     struct tomoe *server;
     struct wl_resource *resource;
     struct surface *surface;
-    struct wlr_output *output;
+    struct screen *output;
     struct node *tree;
     struct target target;
     struct wl_listener surface_destroy, commit, output_destroy;
@@ -24,10 +24,10 @@ bool lock_active(struct tomoe *s) {
     return s->lock_state == LOCK_LOCKING || s->lock_state == LOCK_LOCKED;
 }
 
-static struct output *output_of(struct tomoe *s, struct wlr_output *wlr) {
+static struct output *output_of(struct tomoe *s, struct screen *wlr) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
-        if (o->wlr == wlr && output_is_active(o)) return o;
+        if (o->screen == wlr && output_is_active(o)) return o;
     return NULL;
 }
 
@@ -36,11 +36,11 @@ static void lock_surface_configure(struct lock_surface *ls) {
     if (!o) return;
     struct wlr_box box;
     physical_output_box(o, &box);
-    double scale = snapped_scale(o->wlr->scale);
+    double scale = snapped_scale(o->screen->scale);
     ls->target.x = box.x;
     ls->target.y = box.y;
     ls->target.scale = scale;
-    ls->target.output = o->wlr;
+    ls->target.output = o->screen;
     int width = logical_size(box.width, scale), height = logical_size(box.height, scale);
     if (width == ls->width && height == ls->height) return;
     ls->width = width;
@@ -152,7 +152,7 @@ static bool surfaces_ready(struct tomoe *s) {
         bool found = false;
         struct lock_surface *ls;
         wl_list_for_each(ls, &s->lock_surfaces, link)
-            found |= ls->output == o->wlr && ls->surface->mapped;
+            found |= ls->output == o->screen && ls->surface->mapped;
         if (!found) return false;
     }
     return true;
@@ -200,7 +200,7 @@ static void get_lock_surface(struct wl_client *client, struct wl_resource *lock_
     }
     wl_resource_set_implementation(resource, &lock_surface_impl, NULL,
         lock_surface_resource_destroy);
-    struct wlr_output *output = wlr_output_from_resource(output_resource);
+    struct screen *output = screen_from_resource(output_resource);
     if (!s || s->session_lock != lock_resource || !output) return;
     struct lock_surface *ls;
     wl_list_for_each(ls, &s->lock_surfaces, link) {
@@ -244,12 +244,12 @@ void lock_refresh(struct tomoe *s) {
     if (s->lock_state == LOCK_WAITING && surfaces_ready(s)) begin_locking(s);
 }
 
-void lock_frame_rendered(struct tomoe *s, struct wlr_output *wlr) {
+void lock_frame_rendered(struct tomoe *s, struct screen *wlr) {
     if (s->lock_state != LOCK_LOCKING) return;
     struct output *o;
     bool all = true;
     wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr == wlr) o->lock_rendered = true;
+        if (o->screen == wlr) o->lock_rendered = true;
         if (output_is_active(o) && !o->lock_rendered) all = false;
     }
     if (all) confirm(s);
@@ -362,7 +362,7 @@ struct surface *lock_keyboard_surface(struct tomoe *s) {
     struct lock_surface *ls, *fallback = NULL;
     wl_list_for_each(ls, &s->lock_surfaces, link) {
         if (!ls->surface->mapped) continue;
-        if (under && ls->output == under->wlr) return ls->surface;
+        if (under && ls->output == under->screen) return ls->surface;
         if (!fallback) fallback = ls;
     }
     return fallback ? fallback->surface : NULL;

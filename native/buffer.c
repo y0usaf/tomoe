@@ -435,3 +435,45 @@ void buffers_finish(void) {
     if (dmabuf.table_fd >= 0) close(dmabuf.table_fd);
     dmabuf.table_fd = dmabuf.drm_fd = -1;
 }
+
+struct pixel_buffer {
+    struct wlr_buffer base;
+    uint32_t format;
+    size_t stride;
+    uint8_t data[];
+};
+
+static void pixel_buffer_destroy(struct wlr_buffer *base) {
+    struct pixel_buffer *b = wl_container_of(base, b, base);
+    wlr_buffer_finish(base);
+    free(b);
+}
+
+static bool pixel_buffer_begin(struct wlr_buffer *base, uint32_t flags, void **data,
+        uint32_t *format, size_t *stride) {
+    struct pixel_buffer *b = wl_container_of(base, b, base);
+    *data = b->data;
+    *format = b->format;
+    *stride = b->stride;
+    return true;
+}
+
+static void pixel_buffer_end(struct wlr_buffer *base) {
+}
+
+static const struct wlr_buffer_impl pixel_buffer_impl = {
+    .destroy = pixel_buffer_destroy,
+    .begin_data_ptr_access = pixel_buffer_begin,
+    .end_data_ptr_access = pixel_buffer_end,
+};
+
+struct wlr_buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
+        const void *pixels) {
+    struct pixel_buffer *b = calloc(1, sizeof(*b) + stride * (size_t)height);
+    if (!b) return NULL;
+    wlr_buffer_init(&b->base, &pixel_buffer_impl, width, height);
+    b->format = format;
+    b->stride = stride;
+    memcpy(b->data, pixels, stride * (size_t)height);
+    return &b->base;
+}

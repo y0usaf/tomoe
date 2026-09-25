@@ -18,7 +18,7 @@ static void gamma_detach(struct gamma *gamma) {
     if (!gamma) return;
     if (gamma->table) {
         gamma->output->gamma_dirty = true;
-        wlr_output_schedule_frame(gamma->output->wlr);
+        screen_schedule_frame(gamma->output->screen);
     }
     wl_resource_set_user_data(gamma->resource, NULL);
     wl_list_remove(&gamma->link);
@@ -61,7 +61,7 @@ static void gamma_set(struct wl_client *client, struct wl_resource *resource, in
     free(gamma->table);
     gamma->table = table;
     gamma->output->gamma_dirty = true;
-    wlr_output_schedule_frame(gamma->output->wlr);
+    screen_schedule_frame(gamma->output->screen);
 }
 
 static void gamma_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -90,10 +90,10 @@ static void get_gamma_control(struct wl_client *client, struct wl_resource *mana
         return;
     }
     wl_resource_set_implementation(resource, &gamma_impl, NULL, gamma_resource_destroy);
-    struct wlr_output *wlr = wlr_output_from_resource(output_resource);
+    struct screen *wlr = screen_from_resource(output_resource);
     struct output *o = NULL, *candidate;
-    wl_list_for_each(candidate, &s->outputs, link) if (candidate->wlr == wlr) o = candidate;
-    size_t size = o ? wlr_output_get_gamma_size(wlr) : 0;
+    wl_list_for_each(candidate, &s->outputs, link) if (candidate->screen == wlr) o = candidate;
+    size_t size = o ? screen_gamma_size(wlr) : 0;
     struct gamma *gamma = size && !gamma_for(o) ? calloc(1, sizeof(*gamma)) : NULL;
     if (!gamma) {
         zwlr_gamma_control_v1_send_failed(resource);
@@ -130,21 +130,17 @@ bool gamma_listen(struct tomoe *s) {
     return wl_global_create(s->display, &zwlr_gamma_control_manager_v1_interface, 1, s, bind);
 }
 
-void gamma_apply(struct output *o, struct wlr_output_state *state) {
+void gamma_apply(struct output *o, struct screen_state *state) {
     o->gamma_dirty = false;
     struct gamma *gamma = gamma_for(o);
-    struct wlr_color_transform *transform = gamma && gamma->table ?
-        wlr_color_transform_init_lut_3x1d(gamma->size, gamma->table,
-            gamma->table + gamma->size, gamma->table + 2 * gamma->size) : NULL;
-    if (gamma && gamma->table && !transform) {
-        gamma_fail(gamma);
+    bool table = gamma && gamma->table;
+    if (!screen_state_set_gamma(state, table ? gamma->table : NULL, table ? gamma->size : 0)) {
+        if (gamma) gamma_fail(gamma);
         return;
     }
-    wlr_output_state_set_color_transform(state, transform);
-    wlr_color_transform_unref(transform);
-    if (wlr_output_test_state(o->wlr, state)) return;
-    wlr_output_state_set_color_transform(state, NULL);
-    state->committed &= ~WLR_OUTPUT_STATE_COLOR_TRANSFORM;
+    if (screen_test(o->screen, state)) return;
+    screen_state_set_gamma(state, NULL, 0);
+    state->committed &= ~SCREEN_GAMMA;
     if (gamma) gamma_fail(gamma);
 }
 

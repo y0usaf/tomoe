@@ -28,37 +28,37 @@ static int scale_120(double scale) {
 
 static void output_state_facts(struct output *o, bool pending,
         struct output_facts *facts) {
-    struct wlr_output *wlr = o->wlr;
-    const struct wlr_output_state *state = pending ? &o->pending : NULL;
+    struct screen *wlr = o->screen;
+    const struct screen_state *state = pending ? &o->pending : NULL;
     int physical_width = wlr->width, physical_height = wlr->height;
     int refresh = wlr->refresh;
-    if (state && (state->committed & WLR_OUTPUT_STATE_MODE)) {
-        if (state->mode_type == WLR_OUTPUT_STATE_MODE_FIXED && state->mode) {
+    if (state && (state->committed & SCREEN_MODE)) {
+        if (state->mode_type == SCREEN_MODE_FIXED && state->mode) {
             physical_width = state->mode->width;
             physical_height = state->mode->height;
             refresh = state->mode->refresh;
-        } else if (state->mode_type == WLR_OUTPUT_STATE_MODE_CUSTOM) {
+        } else if (state->mode_type == SCREEN_MODE_CUSTOM) {
             physical_width = state->custom_mode.width;
             physical_height = state->custom_mode.height;
             refresh = state->custom_mode.refresh;
         }
     }
     enum wl_output_transform transform = (state &&
-            (state->committed & WLR_OUTPUT_STATE_TRANSFORM)) ?
+            (state->committed & SCREEN_TRANSFORM)) ?
         state->transform : wlr->transform;
     int width = physical_width, height = physical_height;
     if ((int)transform % 2 != 0) {
         width = physical_height; height = physical_width;
     }
-    double scale = (state && (state->committed & WLR_OUTPUT_STATE_SCALE)) ?
+    double scale = (state && (state->committed & SCREEN_SCALE)) ?
         state->scale : wlr->scale;
-    bool enabled = state && (state->committed & WLR_OUTPUT_STATE_ENABLED) ?
+    bool enabled = state && (state->committed & SCREEN_ENABLED) ?
         state->enabled : wlr->enabled;
     if (!pending && !o->admitted) enabled = false;
     bool adaptive_sync_supported = wlr->adaptive_sync_supported;
     bool adaptive_sync = enabled && adaptive_sync_supported &&
-        wlr->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
-    if (state && (state->committed & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED))
+        wlr->adaptive_sync;
+    if (state && (state->committed & SCREEN_VRR))
         adaptive_sync = enabled && adaptive_sync_supported && state->adaptive_sync_enabled;
     *facts = (struct output_facts){
         .width = width, .height = height,
@@ -162,7 +162,7 @@ bool output_locations(struct tomoe *s, bool pending,
             struct output_location *candidate = &resolved[target_index];
             if (!candidate->active || output_mirror(candidate->output, pending)[0] ||
                     candidate->output == location->output ||
-                    strcmp(candidate->output->wlr->name, mirror) != 0) continue;
+                    strcmp(candidate->output->screen->name, mirror) != 0) continue;
             target = candidate;
             break;
         }
@@ -210,7 +210,7 @@ static bool write_output_facts(FILE *out, struct output *o,
         const struct output_facts *facts) {
     if (!facts->enabled || facts->width == 0 || facts->height == 0) return true;
     if (fputs("(:name ", out) < 0) return false;
-    quote(out, o->wlr->name);
+    quote(out, o->screen->name);
     if (fprintf(out, " :x %d :y %d :width %d :height %d"
             " :physical-width %d :physical-height %d :refresh-mhz %d"
             " :scale-120 %d :transform %d :adaptive-sync-supported %s"
@@ -220,8 +220,8 @@ static bool write_output_facts(FILE *out, struct output *o,
             facts->scale_120, facts->transform,
             facts->adaptive_sync_supported ? "t" : "nil",
             facts->adaptive_sync ? "t" : "nil") < 0) return false;
-    struct wlr_output_mode *mode;
-    wl_list_for_each(mode, &o->wlr->modes, link) {
+    struct screen_mode *mode;
+    wl_list_for_each(mode, &o->screen->modes, link) {
         if (fprintf(out, "(:width %d :height %d :refresh-mhz %d :preferred %s)",
                 mode->width, mode->height, mode->refresh,
                 mode->preferred ? "t" : "nil") < 0) return false;
@@ -231,8 +231,8 @@ static bool write_output_facts(FILE *out, struct output *o,
 
 static bool write_output_modes(FILE *out, struct output *o) {
     if (fputs(" :modes (", out) < 0) return false;
-    struct wlr_output_mode *mode;
-    wl_list_for_each(mode, &o->wlr->modes, link) {
+    struct screen_mode *mode;
+    wl_list_for_each(mode, &o->screen->modes, link) {
         if (fprintf(out, "(:width %d :height %d :refresh-mhz %d :preferred %s)",
                 mode->width, mode->height, mode->refresh,
                 mode->preferred ? "t" : "nil") < 0) return false;
@@ -253,14 +253,14 @@ static bool write_render(FILE *out, struct output *o) {
         ok = ok && fputs(" :modifier nil", out) >= 0;
     return ok && fprintf(out, " :implicit %s :width %d :height %d :fenced %s)",
         o->ring.implicit ? "t" : "nil", o->ring.width, o->ring.height,
-        o->wlr->renderer && fenced(o->wlr) ? "t" : "nil") >= 0;
+        fenced(o->screen) ? "t" : "nil") >= 0;
 }
 
 static bool write_connector(FILE *out, struct output *o, bool pending) {
     struct output_facts facts;
     output_state_facts(o, pending, &facts);
     if (fprintf(out, "(:id %" PRIu64 " :name ", o->id) < 0) return false;
-    quote(out, o->wlr->name);
+    quote(out, o->screen->name);
     if (fprintf(out, " :enabled %s :pending %s :adaptive-sync-supported %s"
             " :adaptive-sync %s :request-id %" PRIu64
             " :request-pending %s", facts.enabled ? "t" : "nil",
@@ -406,38 +406,38 @@ const char *tomoe_outputs_preview(struct tomoe *s) {
     return s->output_preview;
 }
 
-static struct wlr_output_mode *first_output_mode(struct wlr_output *wlr) {
+static struct screen_mode *first_output_mode(struct screen *wlr) {
     if (!wlr || wl_list_empty(&wlr->modes)) return NULL;
-    struct wlr_output_mode *mode;
+    struct screen_mode *mode;
     return wl_container_of(wlr->modes.next, mode, link);
 }
 
-static void snapshot_output_state(struct wlr_output *wlr, struct wlr_output_state *state) {
-    wlr_output_state_init(state);
-    wlr_output_state_set_enabled(state, wlr->enabled);
-    if (wlr->current_mode) wlr_output_state_set_mode(state, wlr->current_mode);
-    else wlr_output_state_set_custom_mode(state, wlr->width, wlr->height, wlr->refresh);
-    wlr_output_state_set_scale(state, wlr->scale);
-    wlr_output_state_set_transform(state, wlr->transform);
+static void snapshot_output_state(struct screen *wlr, struct screen_state *state) {
+    screen_state_init(state);
+    screen_state_set_enabled(state, wlr->enabled);
+    if (wlr->current_mode) screen_state_set_mode(state, wlr->current_mode);
+    else screen_state_set_custom_mode(state, wlr->width, wlr->height, wlr->refresh);
+    screen_state_set_scale(state, wlr->scale);
+    screen_state_set_transform(state, wlr->transform);
     if (wlr->adaptive_sync_supported)
-        wlr_output_state_set_adaptive_sync_enabled(state,
-            wlr->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+        screen_state_set_adaptive_sync_enabled(state,
+            wlr->adaptive_sync);
 }
 
-static void snapshot_output_baseline(struct wlr_output *wlr,
-        struct wlr_output_state *state) {
-    wlr_output_state_init(state);
-    wlr_output_state_set_enabled(state, true);
-    struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr);
+static void snapshot_output_baseline(struct screen *wlr,
+        struct screen_state *state) {
+    screen_state_init(state);
+    screen_state_set_enabled(state, true);
+    struct screen_mode *mode = screen_preferred_mode(wlr);
     if (!mode) mode = first_output_mode(wlr);
-    if (mode) wlr_output_state_set_mode(state, mode);
-    else wlr_output_state_set_custom_mode(state, wlr->width, wlr->height,
+    if (mode) screen_state_set_mode(state, mode);
+    else screen_state_set_custom_mode(state, wlr->width, wlr->height,
         wlr->refresh);
-    wlr_output_state_set_scale(state, wlr->scale);
-    wlr_output_state_set_transform(state, wlr->transform);
+    screen_state_set_scale(state, wlr->scale);
+    screen_state_set_transform(state, wlr->transform);
     if (wlr->adaptive_sync_supported)
-        wlr_output_state_set_adaptive_sync_enabled(state,
-            wlr->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+        screen_state_set_adaptive_sync_enabled(state,
+            wlr->adaptive_sync);
 }
 
 static bool next_output_id(struct tomoe *s, uint64_t *id) {
@@ -448,57 +448,57 @@ static bool next_output_id(struct tomoe *s, uint64_t *id) {
     return true;
 }
 
-static bool copy_output_state(struct wlr_output_state *destination,
-        const struct wlr_output_state *source) {
-    wlr_output_state_init(destination);
-    return wlr_output_state_copy(destination, source);
+static bool copy_output_state(struct screen_state *destination,
+        const struct screen_state *source) {
+    screen_state_init(destination);
+    return screen_state_copy(destination, source);
 }
 
-#define OUTPUT_REQUEST_FIELDS (WLR_OUTPUT_STATE_MODE | \
-    WLR_OUTPUT_STATE_SCALE | WLR_OUTPUT_STATE_TRANSFORM | \
-    WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
+#define OUTPUT_REQUEST_FIELDS (SCREEN_MODE | \
+    SCREEN_SCALE | SCREEN_TRANSFORM | \
+    SCREEN_VRR)
 
-static bool has_output_request_fields(const struct wlr_output_state *state) {
+static bool has_output_request_fields(const struct screen_state *state) {
     return state && (state->committed & OUTPUT_REQUEST_FIELDS) != 0;
 }
 
-static bool set_output_state_fields(struct wlr_output_state *destination,
-        const struct wlr_output_state *source, uint32_t fields) {
+static bool set_output_state_fields(struct screen_state *destination,
+        const struct screen_state *source, uint32_t fields) {
     if (!destination || !source) return false;
-    if (fields & WLR_OUTPUT_STATE_ENABLED)
-        wlr_output_state_set_enabled(destination, source->enabled);
-    if (fields & WLR_OUTPUT_STATE_MODE) {
-        if (source->mode_type == WLR_OUTPUT_STATE_MODE_FIXED) {
+    if (fields & SCREEN_ENABLED)
+        screen_state_set_enabled(destination, source->enabled);
+    if (fields & SCREEN_MODE) {
+        if (source->mode_type == SCREEN_MODE_FIXED) {
             if (!source->mode) return false;
-            wlr_output_state_set_mode(destination, source->mode);
-        } else if (source->mode_type == WLR_OUTPUT_STATE_MODE_CUSTOM) {
-            wlr_output_state_set_custom_mode(destination,
+            screen_state_set_mode(destination, source->mode);
+        } else if (source->mode_type == SCREEN_MODE_CUSTOM) {
+            screen_state_set_custom_mode(destination,
                 source->custom_mode.width, source->custom_mode.height,
                 source->custom_mode.refresh);
         } else {
             return false;
         }
     }
-    if (fields & WLR_OUTPUT_STATE_SCALE)
-        wlr_output_state_set_scale(destination, source->scale);
-    if (fields & WLR_OUTPUT_STATE_TRANSFORM)
-        wlr_output_state_set_transform(destination, source->transform);
-    if (fields & WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED)
-        wlr_output_state_set_adaptive_sync_enabled(destination,
+    if (fields & SCREEN_SCALE)
+        screen_state_set_scale(destination, source->scale);
+    if (fields & SCREEN_TRANSFORM)
+        screen_state_set_transform(destination, source->transform);
+    if (fields & SCREEN_VRR)
+        screen_state_set_adaptive_sync_enabled(destination,
             source->adaptive_sync_enabled);
     return true;
 }
 
-static bool copy_output_request_state(struct wlr_output_state *destination,
-        const struct wlr_output_state *source) {
-    wlr_output_state_init(destination);
+static bool copy_output_request_state(struct screen_state *destination,
+        const struct screen_state *source) {
+    screen_state_init(destination);
     return set_output_state_fields(destination, source,
-        source ? source->committed & (WLR_OUTPUT_STATE_ENABLED |
+        source ? source->committed & (SCREEN_ENABLED |
             OUTPUT_REQUEST_FIELDS) : 0);
 }
 
-static bool overlay_output_request(struct wlr_output_state *destination,
-        const struct wlr_output_state *request) {
+static bool overlay_output_request(struct screen_state *destination,
+        const struct screen_state *request) {
     return set_output_state_fields(destination, request,
         request ? request->committed & OUTPUT_REQUEST_FIELDS : 0);
 }
@@ -510,10 +510,10 @@ static bool next_output_request_id(struct output *o) {
 }
 
 static bool store_output_request(struct output *o,
-        const struct wlr_output_state *request) {
+        const struct screen_state *request) {
     if (!o || !has_output_request_fields(request)) return true;
 
-    struct wlr_output_state deferred;
+    struct screen_state deferred;
     bool copied;
     if (o->request_pending) {
         copied = copy_output_request_state(&deferred, &o->deferred);
@@ -521,15 +521,15 @@ static bool store_output_request(struct output *o,
         copied = copy_output_request_state(&deferred, &o->initial);
     }
     if (!copied || !overlay_output_request(&deferred, request)) {
-        wlr_output_state_finish(&deferred);
+        screen_state_finish(&deferred);
         return false;
     }
     if (!next_output_request_id(o)) {
-        wlr_output_state_finish(&deferred);
+        screen_state_finish(&deferred);
         return false;
     }
 
-    wlr_output_state_finish(&o->deferred);
+    screen_state_finish(&o->deferred);
     o->deferred = deferred;
     o->request_pending = true;
     return true;
@@ -537,32 +537,32 @@ static bool store_output_request(struct output *o,
 
 static void clear_output_request(struct output *o) {
     if (!o) return;
-    wlr_output_state_finish(&o->deferred);
-    wlr_output_state_init(&o->deferred);
+    screen_state_finish(&o->deferred);
+    screen_state_init(&o->deferred);
     o->request_pending = false;
 }
 
 static void promote_output_request_snapshot(struct output *o,
-        struct wlr_output_state *baseline) {
+        struct screen_state *baseline) {
     if (!o || !baseline) return;
-    wlr_output_state_finish(&o->initial);
+    screen_state_finish(&o->initial);
     o->initial = *baseline;
-    wlr_output_state_init(baseline);
+    screen_state_init(baseline);
 }
 
-static void strip_disabled_state(struct wlr_output_state *state) {
-    if (!(state->committed & WLR_OUTPUT_STATE_ENABLED) || state->enabled) return;
-    state->committed &= ~(WLR_OUTPUT_STATE_BUFFER |
-        WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED |
+static void strip_disabled_state(struct screen_state *state) {
+    if (!(state->committed & SCREEN_ENABLED) || state->enabled) return;
+    state->committed &= ~(SCREEN_BUFFER |
+        SCREEN_MODE | SCREEN_VRR |
         WLR_OUTPUT_STATE_RENDER_FORMAT | WLR_OUTPUT_STATE_SUBPIXEL |
-        WLR_OUTPUT_STATE_LAYERS | WLR_OUTPUT_STATE_WAIT_TIMELINE |
-        WLR_OUTPUT_STATE_SIGNAL_TIMELINE | WLR_OUTPUT_STATE_COLOR_TRANSFORM |
+        WLR_OUTPUT_STATE_LAYERS | SCREEN_WAIT |
+        WLR_OUTPUT_STATE_SIGNAL_TIMELINE | SCREEN_GAMMA |
         WLR_OUTPUT_STATE_IMAGE_DESCRIPTION);
 }
 
-static bool output_state_enabled(const struct wlr_backend_output_state *state) {
+static bool output_state_enabled(const struct screen_update *state) {
     if (!state || !state->output) return false;
-    return (state->base.committed & WLR_OUTPUT_STATE_ENABLED) ?
+    return (state->base.committed & SCREEN_ENABLED) ?
         state->base.enabled : state->output->enabled;
 }
 
@@ -579,7 +579,7 @@ static bool place_outputs(struct tomoe *s) {
         locations[i].output->y = locations[i].y;
     }
     for (size_t i = 0; i < count; i++)
-        if (!locations[i].active) forget_output(s, locations[i].output->wlr);
+        if (!locations[i].active) forget_output(s, locations[i].output->screen);
     pointer_sync_cursors(s);
     double scale = reference_scale(s);
     bool configuring = s->configuring_outputs;
@@ -587,15 +587,9 @@ static bool place_outputs(struct tomoe *s) {
     bool success = true;
     for (size_t i = 0; i < count; i++) {
         struct output *o = locations[i].output;
-        if (!locations[i].active) {
-            wlr_output_layout_remove(s->layout, o->wlr);
-            continue;
-        }
-        if (!wlr_output_layout_add(s->layout, o->wlr,
-                pixel_round(locations[i].x / scale),
-                pixel_round(locations[i].y / scale))) {
-            success = false; fail(s, "output layout allocation failed"); break;
-        }
+        if (!locations[i].active) continue;
+        screen_set_position(o->screen, pixel_round(locations[i].x / scale),
+            pixel_round(locations[i].y / scale));
     }
     s->configuring_outputs = configuring;
     free(locations);
@@ -605,18 +599,18 @@ static bool place_outputs(struct tomoe *s) {
 int tomoe_outputs_begin(struct tomoe *s) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        wlr_output_state_finish(&o->pending);
+        screen_state_finish(&o->pending);
         if (o->request_pending) {
-            wlr_output_state_init(&o->pending);
+            screen_state_init(&o->pending);
             if (!copy_output_state(&o->pending, &o->deferred)) {
-                wlr_output_state_finish(&o->pending);
+                screen_state_finish(&o->pending);
                 return 0;
             }
         } else if (!o->admitted || o->configured) {
-            wlr_output_state_init(&o->pending);
-            if (!wlr_output_state_copy(&o->pending, &o->initial)) return 0;
+            screen_state_init(&o->pending);
+            if (!screen_state_copy(&o->pending, &o->initial)) return 0;
         } else {
-            snapshot_output_state(o->wlr, &o->pending);
+            snapshot_output_state(o->screen, &o->pending);
         }
         o->pending_configured = false;
         o->pending_hold = false;
@@ -634,19 +628,17 @@ int tomoe_outputs_pending(struct tomoe *s) {
     return 0;
 }
 
-static bool interlaced(struct wlr_output *wlr, struct wlr_output_mode *mode) {
-    if (!wlr_output_is_drm(wlr)) return false;
-    const drmModeModeInfo *info = wlr_drm_mode_get_info(mode);
-    return info && (info->flags & DRM_MODE_FLAG_INTERLACE);
+static bool interlaced(struct screen *wlr, struct screen_mode *mode) {
+    return mode->interlaced;
 }
 
-static struct wlr_output_mode *pick_output_mode(struct wlr_output *wlr,
+static struct screen_mode *pick_output_mode(struct screen *wlr,
         int kind, int width, int height, int refresh) {
-    struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr);
+    struct screen_mode *preferred = screen_preferred_mode(wlr);
     if (!preferred) preferred = first_output_mode(wlr);
     if (!preferred) return NULL;
     if (kind == 0 && refresh == 0) return preferred;
-    struct wlr_output_mode *mode, *best = NULL;
+    struct screen_mode *mode, *best = NULL;
     if (kind == 0) {
         width = preferred->width; height = preferred->height;
     } else if (kind == 1) {
@@ -675,11 +667,11 @@ int tomoe_output(struct tomoe *s, const char *name, int kind,
     if (!s || !name) return 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (strcmp(o->wlr->name, name) != 0) continue;
-        struct wlr_output_mode *mode = pick_output_mode(o->wlr, kind, width, height, refresh);
-        if (mode) wlr_output_state_set_mode(&o->pending, mode);
-        else if (kind == 2) wlr_output_state_set_custom_mode(&o->pending, width, height, refresh);
-        wlr_output_state_set_scale(&o->pending, scale / 120.0f);
+        if (strcmp(o->screen->name, name) != 0) continue;
+        struct screen_mode *mode = pick_output_mode(o->screen, kind, width, height, refresh);
+        if (mode) screen_state_set_mode(&o->pending, mode);
+        else if (kind == 2) screen_state_set_custom_mode(&o->pending, width, height, refresh);
+        screen_state_set_scale(&o->pending, scale / 120.0f);
         o->pending_configured = true;
         o->pending_hold = false;
         o->pending_positioned = positioned != 0;
@@ -699,10 +691,10 @@ int tomoe_output_options(struct tomoe *s, const char *name, int enabled,
     if (strnlen(requested_mirror, 129) > 128) return 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (strcmp(o->wlr->name, name) != 0) continue;
-        wlr_output_state_set_enabled(&o->pending, enabled != 0);
-        if (o->wlr->adaptive_sync_supported)
-            wlr_output_state_set_adaptive_sync_enabled(&o->pending,
+        if (strcmp(o->screen->name, name) != 0) continue;
+        screen_state_set_enabled(&o->pending, enabled != 0);
+        if (o->screen->adaptive_sync_supported)
+            screen_state_set_adaptive_sync_enabled(&o->pending,
                 adaptive_sync != 0);
         memcpy(o->pending_mirror, requested_mirror,
             strlen(requested_mirror) + 1);
@@ -716,14 +708,14 @@ int tomoe_output_hold(struct tomoe *s, const char *name) {
     if (!s || !name || !name[0] || strnlen(name, 129) > 128) return 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (strcmp(o->wlr->name, name) != 0) continue;
-        wlr_output_state_finish(&o->pending);
+        if (strcmp(o->screen->name, name) != 0) continue;
+        screen_state_finish(&o->pending);
         if (o->admitted) {
-            snapshot_output_state(o->wlr, &o->pending);
+            snapshot_output_state(o->screen, &o->pending);
         } else {
-            wlr_output_state_init(&o->pending);
-            if (!wlr_output_state_copy(&o->pending, &o->initial)) return 0;
-            wlr_output_state_set_enabled(&o->pending, false);
+            screen_state_init(&o->pending);
+            if (!screen_state_copy(&o->pending, &o->initial)) return 0;
+            screen_state_set_enabled(&o->pending, false);
         }
         o->pending_configured = true;
         o->pending_hold = true;
@@ -735,16 +727,16 @@ int tomoe_output_hold(struct tomoe *s, const char *name) {
     return 1;
 }
 
-static void state_size(const struct wlr_backend_output_state *state, int *width, int *height) {
+static void state_size(const struct screen_update *state, int *width, int *height) {
     *width = state->output->width;
     *height = state->output->height;
-    if (!(state->base.committed & WLR_OUTPUT_STATE_MODE)) return;
-    bool fixed = state->base.mode_type == WLR_OUTPUT_STATE_MODE_FIXED;
+    if (!(state->base.committed & SCREEN_MODE)) return;
+    bool fixed = state->base.mode_type == SCREEN_MODE_FIXED;
     *width = fixed ? state->base.mode->width : state->base.custom_mode.width;
     *height = fixed ? state->base.mode->height : state->base.custom_mode.height;
 }
 
-static bool test_rings(struct tomoe *s, struct wlr_backend_output_state *states, size_t count,
+static bool test_rings(struct tomoe *s, struct screen_update *states, size_t count,
         struct ring *rings, bool implicit) {
     bool ok = true;
     for (size_t i = 0; ok && i < count; i++) {
@@ -753,35 +745,29 @@ static bool test_rings(struct tomoe *s, struct wlr_backend_output_state *states,
         state_size(&states[i], &width, &height);
         struct wlr_buffer *buffer = ring_configure(s, &rings[i], states[i].output, width, height,
             implicit) ? ring_acquire(s, &rings[i]) : NULL;
-        if (buffer) wlr_output_state_set_buffer(&states[i].base, buffer);
+        if (buffer) screen_state_set_buffer(&states[i].base, buffer);
         wlr_buffer_unlock(buffer);
         ok = buffer != NULL;
     }
-    ok = ok && wlr_backend_test(s->backend, states, count);
+    ok = ok && screens_test(states, count);
     for (size_t i = 0; i < count; i++) {
-        if (!(states[i].base.committed & WLR_OUTPUT_STATE_BUFFER)) continue;
+        if (!(states[i].base.committed & SCREEN_BUFFER)) continue;
         wlr_buffer_unlock(states[i].base.buffer);
         states[i].base.buffer = NULL;
-        states[i].base.committed &= ~WLR_OUTPUT_STATE_BUFFER;
+        states[i].base.committed &= ~SCREEN_BUFFER;
     }
     return ok;
 }
 
 static const char *commit_outputs(struct tomoe *s,
-        struct wlr_backend_output_state *states, size_t count, bool *attempted,
+        struct screen_update *states, size_t count, bool *attempted,
         const struct presentation *plan) {
     struct ring *rings = calloc(count ? count : 1, sizeof(*rings));
     const char *error = "Output renderer initialization failed; previous settings retained.";
     size_t enabled_count = 0;
     if (!rings) goto done;
-    for (size_t i = 0; i < count; i++) {
-        if (!output_state_enabled(&states[i])) continue;
-        enabled_count++;
-        if (states[i].output->renderer) continue;
-        if (!wlr_output_init_render(states[i].output, s->allocator, s->renderer)) {
-            goto done;
-        }
-    }
+    for (size_t i = 0; i < count; i++)
+        if (output_state_enabled(&states[i])) enabled_count++;
     for (size_t i = 0; i < count; i++) strip_disabled_state(&states[i].base);
     error = "Output configuration rejected by the backend; previous settings retained.";
     if (enabled_count && !test_rings(s, states, count, rings, false) &&
@@ -791,18 +777,18 @@ static const char *commit_outputs(struct tomoe *s,
         if (!output_state_enabled(&states[i])) continue;
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
-            if (o->wlr != states[i].output) continue;
+            if (o->screen != states[i].output) continue;
             if (!render_presentation(o, &states[i].base, &rings[i], plan)) goto done;
             break;
         }
     }
     *attempted = true;
     error = "Output commit failed.";
-    if (!wlr_backend_commit(s->backend, states, count)) goto done;
+    if (!screens_commit(states, count)) goto done;
     for (size_t i = 0; i < count; i++) {
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
-            if (o->wlr != states[i].output) continue;
+            if (o->screen != states[i].output) continue;
             ring_finish(&o->ring);
             o->ring = rings[i];
             rings[i] = (struct ring){0};
@@ -822,25 +808,25 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
         if (s->presentation) presentation_publish(s);
         return s->failed ? "Presentation publication failed; stopping the compositor." : NULL;
     }
-    struct wlr_backend_output_state *states = calloc(count, sizeof(*states));
-    struct wlr_backend_output_state *previous = calloc(count, sizeof(*previous));
+    struct screen_update *states = calloc(count, sizeof(*states));
+    struct screen_update *previous = calloc(count, sizeof(*previous));
     uint64_t *request_ids = calloc(count, sizeof(*request_ids));
     bool *request_holds = calloc(count, sizeof(*request_holds));
-    struct wlr_output_state *request_states = calloc(count, sizeof(*request_states));
+    struct screen_state *request_states = calloc(count, sizeof(*request_states));
     const char *error = "Cannot allocate output configuration.";
     if (!states || !previous || !request_ids || !request_holds || !request_states) goto done;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
         size_t i = initialized++;
-        states[i].output = previous[i].output = o->wlr;
+        states[i].output = previous[i].output = o->screen;
         request_ids[i] = o->request_pending ? o->request_id : 0;
         request_holds[i] = o->pending_hold;
-        wlr_output_state_init(&request_states[i]);
-        wlr_output_state_init(&states[i].base);
-        snapshot_output_state(o->wlr, &previous[i].base);
+        screen_state_init(&request_states[i]);
+        screen_state_init(&states[i].base);
+        snapshot_output_state(o->screen, &previous[i].base);
         if (o->request_pending &&
-                !wlr_output_state_copy(&request_states[i], &o->deferred)) goto done;
-        if (!wlr_output_state_copy(&states[i].base, &o->pending)) goto done;
+                !screen_state_copy(&request_states[i], &o->deferred)) goto done;
+        if (!screen_state_copy(&states[i].base, &o->pending)) goto done;
     }
     s->configuring_outputs = true;
     bool attempted = false;
@@ -873,7 +859,7 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
     }
     if (!error) {
         wl_list_for_each(o, &s->outputs, link)
-            wlr_xcursor_manager_load(s->cursor_manager, o->wlr->scale);
+            wlr_xcursor_manager_load(s->cursor_manager, o->screen->scale);
     }
     s->configuring_outputs = false;
     if (error && (!attempted || rollback_completed) && !s->failed) {
@@ -914,42 +900,42 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
     }
 done:
     for (size_t i = 0; i < initialized; i++) {
-        wlr_output_state_finish(&states[i].base);
-        wlr_output_state_finish(&previous[i].base);
-        wlr_output_state_finish(&request_states[i]);
+        screen_state_finish(&states[i].base);
+        screen_state_finish(&previous[i].base);
+        screen_state_finish(&request_states[i]);
     }
     free(states); free(previous); free(request_ids); free(request_holds);
     free(request_states);
     return error;
 }
 
-struct wlr_output *any_output(struct tomoe *s) {
+struct screen *any_output(struct tomoe *s) {
     if (!s) return NULL;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
-        if (output_is_active(o)) return o->wlr;
+        if (output_is_active(o)) return o->screen;
     return NULL;
 }
 
 static void output_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, frame);
     if (!output_is_active(o)) return;
-    struct wlr_output_state state;
-    wlr_output_state_init(&state);
+    struct screen_state state;
+    screen_state_init(&state);
     struct surface *scanout = scanout_surface(o);
     if (scanout) {
-        wlr_output_state_set_buffer(&state, scanout->buffer);
+        screen_state_set_buffer(&state, scanout->buffer);
         if (scanout->current.acquire)
-            wlr_output_state_set_wait_timeline(&state, scanout->current.acquire,
+            screen_state_set_wait_timeline(&state, scanout->current.acquire,
                 scanout->current.acquire_point);
-        if (!wlr_output_test_state(o->wlr, &state)) {
-            wlr_output_state_finish(&state);
-            wlr_output_state_init(&state);
+        if (!screen_test(o->screen, &state)) {
+            screen_state_finish(&state);
+            screen_state_init(&state);
             scanout = NULL;
         }
     }
     if (scanout != o->scanout)
-        wlr_log(WLR_DEBUG, "tomoe: output %s direct scanout %s", o->wlr->name,
+        wlr_log(WLR_DEBUG, "tomoe: output %s direct scanout %s", o->screen->name,
             scanout ? "engaged" : "disengaged");
     o->scanout = scanout;
     if (scanout) {
@@ -958,61 +944,61 @@ static void output_frame(struct wl_listener *listener, void *data) {
     }
     bool success = scanout || render_output(o, &state);
     if (success && scanout)
-        surface_presented(scanout, o->wlr, true);
+        surface_presented(scanout, o->screen, true);
     else if (success) surfaces_textured(o);
     if (success && o->gamma_dirty) gamma_apply(o, &state);
     if (success && scanout && windows_want_tearing(o->server, o)) {
         state.tearing_page_flip = true;
-        if (!wlr_output_test_state(o->wlr, &state)) state.tearing_page_flip = false;
+        if (!screen_test(o->screen, &state)) state.tearing_page_flip = false;
     }
-    success = success && wlr_output_commit_state(o->wlr, &state);
+    success = success && screen_commit(o->screen, &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
-    if (success && !scanout && (state.committed & WLR_OUTPUT_STATE_BUFFER)) {
+    if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
         wlr_buffer_unlock(o->presented[1]);
         o->presented[1] = o->presented[0];
         o->presented[0] = wlr_buffer_lock(state.buffer);
     }
-    if (success && (state.committed & WLR_OUTPUT_STATE_BUFFER))
+    if (success && (state.committed & SCREEN_BUFFER))
         capture_serve(o, state.buffer, scanout != NULL);
     finish_output_capture(o);
-    wlr_output_state_finish(&state);
+    screen_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
-    lock_frame_rendered(o->server, o->wlr);
-    if (windows_animate(o->server)) wlr_output_schedule_frame(o->wlr);
+    lock_frame_rendered(o->server, o->screen);
+    if (windows_animate(o->server)) screen_schedule_frame(o->screen);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     frame_done(o, &now);
 }
 static void output_needs_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, needs_frame);
-    if (output_is_active(o)) wlr_output_schedule_frame(o->wlr);
+    if (output_is_active(o)) screen_schedule_frame(o->screen);
 }
 void outputs_request_nested_size(struct tomoe *s) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (!wlr_output_is_wl(o->wlr)) continue;
-        struct wlr_output_state state;
-        wlr_output_state_init(&state);
-        wlr_output_state_set_custom_mode(&state, s->settings.nested_width,
+        if (o->screen->kind != SCREEN_NESTED) continue;
+        struct screen_state state;
+        screen_state_init(&state);
+        screen_state_set_custom_mode(&state, s->settings.nested_width,
             s->settings.nested_height, 0);
         if (!store_output_request(o, &state)) fail(s, "output request could not be retained");
-        wlr_output_state_finish(&state);
+        screen_state_finish(&state);
     }
     outputs_event(s);
 }
 static void output_request(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, request);
-    const struct wlr_output_event_request_state *event = data;
-    if (!store_output_request(o, event ? event->state : NULL)) {
+    const struct screen_state *event = data;
+    if (!store_output_request(o, event)) {
         fail(o->server, "output request could not be retained");
-    } else if (has_output_request_fields(event ? event->state : NULL)) {
+    } else if (has_output_request_fields(event)) {
         outputs_event(o->server);
     }
 }
 static void output_destroy(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, destroy);
     struct tomoe *s = o->server;
-    struct wlr_output *wlr = o->wlr;
+    struct screen *wlr = o->screen;
     finish_output_capture(o);
     wlr_buffer_unlock(o->presented[0]);
     wlr_buffer_unlock(o->presented[1]);
@@ -1023,9 +1009,9 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);
-    wlr_output_state_finish(&o->initial);
-    wlr_output_state_finish(&o->pending);
-    wlr_output_state_finish(&o->deferred);
+    screen_state_finish(&o->initial);
+    screen_state_finish(&o->pending);
+    screen_state_finish(&o->deferred);
     wl_list_remove(&o->link); free(o);
     if (s->stopping) return;
     struct layer *l;
@@ -1036,29 +1022,19 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     arrange_layers(s);
     schedule_scene(s);
 }
-static void layout_change(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, layout_change);
-    if (s->configuring_outputs) return;
-    outputs_event(s);
-    arrange_layers(s);
-    windows_refresh(s);
-    schedule_scene(s);
-}
-static void new_output(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_output);
-    struct wlr_output *wlr = data;
+void output_added(struct tomoe *s, struct screen *wlr) {
     uint64_t id;
     if (!next_output_id(s, &id)) {
         fail(s, "output identifiers exhausted"); return;
     }
     struct output *o = calloc(1, sizeof(*o));
     if (!o) { fail(s, "output allocation failed"); return; }
-    o->server = s; o->wlr = wlr; o->id = id;
+    o->server = s; o->screen = wlr; o->id = id;
     o->admitted = false;
     snapshot_output_baseline(wlr, &o->initial);
-    wlr_output_state_init(&o->deferred);
+    screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {
-        wlr_output_state_finish(&o->initial);
+        screen_state_finish(&o->initial);
         free(o);
         fail(s, "output baseline allocation failed");
         return;
@@ -1069,8 +1045,4 @@ static void new_output(struct wl_listener *listener, void *data) {
     listen(&o->destroy, &wlr->events.destroy, output_destroy);
     listen(&o->needs_frame, &wlr->events.needs_frame, output_needs_frame);
     outputs_event(s);
-}
-void outputs_listen(struct tomoe *s) {
-    listen(&s->new_output, &s->backend->events.new_output, new_output);
-    listen(&s->layout_change, &s->layout->events.change, layout_change);
 }

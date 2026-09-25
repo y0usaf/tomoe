@@ -124,7 +124,7 @@ only after it changes again."
         finally (error "No free X display below :64.")))
 
 (defun primary-drm-devices (path)
-  "WLR_DRM_DEVICES naming PATH's card first, then every other card."
+  "TOMOE_DRM_DEVICES naming PATH's card first, then every other card."
   (let* ((name (file-namestring path))
          (card (if (and (>= (length name) 7) (string= "renderD" name :end2 7))
                    (let ((match (first (directory (format nil "/sys/class/drm/~A/device/drm/card*" name)))))
@@ -161,12 +161,12 @@ only after it changes again."
         (t (error "No live Wayland display found in ~A. Set WAYLAND_DISPLAY for a custom socket, or use --backend headless or drm."
                   (runtime-directory))))))
   (cond
-    ((equal backend "nested") (sb-posix:setenv "WLR_BACKENDS" "wayland" 1))
-    ((equal backend "headless") (sb-posix:setenv "WLR_BACKENDS" "headless" 1))
-    ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm" 1))
+    ((equal backend "nested") (sb-posix:setenv "TOMOE_BACKEND" "nested" 1))
+    ((equal backend "headless") (sb-posix:setenv "TOMOE_BACKEND" "headless" 1))
+    ((equal backend "drm") (sb-posix:setenv "TOMOE_BACKEND" "drm" 1))
     (t (error "Unknown backend: ~A" backend)))
   (when drm-device
-    (sb-posix:setenv "WLR_DRM_DEVICES" (primary-drm-devices drm-device) 1))
+    (sb-posix:setenv "TOMOE_DRM_DEVICES" (primary-drm-devices drm-device) 1))
   (setf *stop-requested* nil)
   (flet ((stop (signal info context)
            (declare (ignore signal info context)) (setf *stop-requested* t)))

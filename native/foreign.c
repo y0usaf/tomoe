@@ -12,7 +12,7 @@ struct foreign {
     char identifier[33];
     char *title, *app_id;
     uint32_t state;
-    struct wlr_output *outputs[FOREIGN_OUTPUTS];
+    struct screen *outputs[FOREIGN_OUTPUTS];
     size_t output_count;
     struct wl_list wlr_handles, ext_handles;
 };
@@ -20,7 +20,7 @@ struct foreign {
 static const struct zwlr_foreign_toplevel_handle_v1_interface wlr_handle_impl;
 static const struct ext_foreign_toplevel_handle_v1_interface ext_handle_impl;
 
-static void send_output(struct wl_resource *handle, struct wlr_output *output, bool enter) {
+static void send_output(struct wl_resource *handle, struct screen *output, bool enter) {
     struct wl_resource *resource;
     wl_resource_for_each(resource, &output->resources) {
         if (wl_resource_get_client(resource) != wl_resource_get_client(handle)) continue;
@@ -117,7 +117,7 @@ static bool replace(char **slot, const char *text) {
 }
 
 void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
-        uint32_t state, struct wlr_output *const *outputs, size_t output_count) {
+        uint32_t state, struct screen *const *outputs, size_t output_count) {
     struct foreign *f = foreign_find(s, id);
     if (!f && !(f = foreign_create(s, id))) return;
     if (output_count > FOREIGN_OUTPUTS) output_count = FOREIGN_OUTPUTS;
@@ -196,7 +196,7 @@ static void request(struct wl_resource *handle, const char *name, int requested,
         struct wl_resource *output) {
     struct foreign *f = wl_resource_get_user_data(handle);
     if (f) window_foreign_request(f->server, f->id, name, requested,
-        output ? wlr_output_from_resource(output) : NULL);
+        output ? screen_from_resource(output) : NULL);
 }
 
 static void set_maximized(struct wl_client *client, struct wl_resource *handle) {

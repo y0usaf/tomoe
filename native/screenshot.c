@@ -43,7 +43,7 @@ static void local_pointer(struct tomoe *s, int *x, int *y) {
 
 static struct wlr_box selection(struct screenshot *shot) {
     int width, height;
-    wlr_output_transformed_resolution(shot->output->wlr, &width, &height);
+    screen_transformed_resolution(shot->output->screen, &width, &height);
     int x0 = fmin(shot->ax, shot->bx), x1 = fmax(shot->ax, shot->bx);
     int y0 = fmin(shot->ay, shot->by), y1 = fmax(shot->ay, shot->by);
     x0 = fmax(0, fmin(x0, width)); x1 = fmax(0, fmin(x1, width));
@@ -77,8 +77,8 @@ static void capture(struct tomoe *s, struct output *o, struct wlr_box region) {
         region = (struct wlr_box){ 0, 0, buffer ? buffer->width : 0, buffer ? buffer->height : 0 };
     else if (buffer) {
         int width = buffer->width, height = buffer->height;
-        wlr_output_transform_coords(o->wlr->transform, &width, &height);
-        wlr_box_transform(&region, &region, wlr_output_transform_invert(o->wlr->transform), width, height);
+        wlr_output_transform_coords(o->screen->transform, &width, &height);
+        wlr_box_transform(&region, &region, wlr_output_transform_invert(o->screen->transform), width, height);
     }
     int stride = region.width * 4;
     uint8_t *pixels = texture ? malloc((size_t)stride * region.height) : NULL;
@@ -179,7 +179,7 @@ static struct wlr_texture *hint_texture(struct tomoe *s, bool selected) {
     cairo_t *cairo = cairo_create(probe);
     PangoLayout *layout = pango_cairo_create_layout(cairo);
     PangoFontDescription *font = pango_font_description_from_string("sans");
-    double scale = snapped_scale(s->screenshot->output->wlr->scale);
+    double scale = snapped_scale(s->screenshot->output->screen->scale);
     pango_font_description_set_absolute_size(font, 17 * scale * PANGO_SCALE);
     pango_layout_set_font_description(layout, font);
     pango_font_description_free(font);
@@ -238,7 +238,7 @@ void screenshot_render(struct output *o, struct frame *f) {
         rect(f, (struct wlr_box){ 0, y1, w, h - y1 }, backdrop);
         rect(f, (struct wlr_box){ 0, sel.y, sel.x, sel.height }, backdrop);
         rect(f, (struct wlr_box){ x1, sel.y, w - x1, sel.height }, backdrop);
-        int b = pixel_round(2 * snapped_scale(o->wlr->scale));
+        int b = pixel_round(2 * snapped_scale(o->screen->scale));
         int bx0 = fmax(0, sel.x - b), by0 = fmax(0, sel.y - b);
         int bx1 = fmin(w, x1 + b), by1 = fmin(h, y1 + b);
         rect(f, (struct wlr_box){ bx0, by0, bx1 - bx0, sel.y - by0 }, accent);
@@ -255,7 +255,7 @@ void screenshot_render(struct output *o, struct frame *f) {
     }
     if (!shot->hint) return;
     struct wlr_box box = { (w - (int)shot->hint->width) / 2,
-        h - (int)shot->hint->height - pixel_round(32 * snapped_scale(o->wlr->scale)),
+        h - (int)shot->hint->height - pixel_round(32 * snapped_scale(o->screen->scale)),
         shot->hint->width, shot->hint->height };
     wlr_box_transform(&box, &box, wlr_output_transform_invert(f->transform), f->width, f->height);
     wlr_render_pass_add_texture(f->pass, &(struct wlr_render_texture_options){

@@ -1362,6 +1362,10 @@ protocol, not an unauthenticated REPL.
 - `native/surface.c`: wl_surface, subsurfaces, regions, viewports, fractional
   scale, presentation feedback, and explicit sync.
 - `native/node.c`: the stacking tree surfaces and shell chrome render from.
+- `native/screen.c`: outputs, their state and commits, frame scheduling,
+  wl_output, xdg-output, and the cursor image.
+- `native/kms.c`, `native/session.c`: DRM/KMS on libseat, with udev hotplug.
+- `native/nested.c`, `native/headless.c`: the nested Wayland and headless backends.
 - `native/seat.c`: wl_seat, pointer and keyboard focus, grabs, cursor role.
 - `native/selection.c`: clipboard, primary selection, data control, drag and drop.
 - `native/virtual.c`: virtual keyboard and pointer devices, output mapping lifetime.

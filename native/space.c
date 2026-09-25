@@ -28,12 +28,12 @@ int physical_size(int logical, double scale) {
     return size > 0 ? size : 1;
 }
 double reference_scale(struct tomoe *s) {
-    struct wlr_output *output = any_output(s);
+    struct screen *output = any_output(s);
     return output ? snapped_scale(output->scale) : 1.0;
 }
 void physical_output_box(struct output *o, struct wlr_box *box) {
     box->x = o->x; box->y = o->y;
-    wlr_output_transformed_resolution(o->wlr, &box->width, &box->height);
+    screen_transformed_resolution(o->screen, &box->width, &box->height);
 }
 struct output *output_at_physical(struct tomoe *s, double x, double y) {
     struct output *o;
@@ -60,10 +60,8 @@ struct output *output_for_world(struct tomoe *s, double x, double y) {
 void screen_to_protocol(struct tomoe *s, double *x, double *y) {
     struct output *o = output_at_physical(s, *x, *y);
     if (o) {
-        struct wlr_box logical;
-        wlr_output_layout_get_box(s->layout, o->wlr, &logical);
-        *x = logical.x + (*x - o->x) / snapped_scale(o->wlr->scale);
-        *y = logical.y + (*y - o->y) / snapped_scale(o->wlr->scale);
+        *x = o->screen->lx + (*x - o->x) / snapped_scale(o->screen->scale);
+        *y = o->screen->ly + (*y - o->y) / snapped_scale(o->screen->scale);
     } else {
         *x /= reference_scale(s); *y /= reference_scale(s);
     }
@@ -73,7 +71,7 @@ void schedule_scene(struct tomoe *s) {
     s->scene_dirty = true;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
-        if (output_is_active(o)) wlr_output_schedule_frame(o->wlr);
+        if (output_is_active(o)) screen_schedule_frame(o->screen);
 }
 void tomoe_set_view(struct tomoe *s, int x, int y, double zoom) {
     if (!isfinite(zoom)) zoom = 1.0;
@@ -209,12 +207,12 @@ static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
     wl_list_for_each(o, &s->outputs, link) {
         struct wlr_box overlap;
         if (!overlaps_output(leaf, o, &overlap)) {
-            surface_send_leave(surface, o->wlr);
+            surface_send_leave(surface, o->screen);
             continue;
         }
-        surface_send_enter(surface, o->wlr);
+        surface_send_enter(surface, o->screen);
         int64_t area = (int64_t)overlap.width * overlap.height;
-        if (area > largest) { surface->primary = o->wlr; largest = area; }
+        if (area > largest) { surface->primary = o->screen; largest = area; }
     }
     surface_set_scale(surface, leaf->scale);
     return false;
@@ -229,7 +227,7 @@ void refresh_scene(struct tomoe *s) {
         if (!surface->seen && surface->scene_owned) surface_leave_all(surface);
     pointer_refresh(s);
 }
-void forget_output(struct tomoe *s, struct wlr_output *output) {
+void forget_output(struct tomoe *s, struct screen *output) {
     struct surface *surface;
     wl_list_for_each(surface, &s->surfaces, link) {
         if (surface->primary == output) surface->primary = NULL;
@@ -242,12 +240,12 @@ bool surface_visible(struct tomoe *s, struct surface *surface) {
 void surfaces_textured(struct output *o) {
     struct surface *surface;
     wl_list_for_each(surface, &o->server->surfaces, link)
-        if (surface->seen && surface->primary == o->wlr) surface_presented(surface, o->wlr, false);
+        if (surface->seen && surface->primary == o->screen) surface_presented(surface, o->screen, false);
 }
 void frame_done(struct output *o, const struct timespec *when) {
     struct surface *surface;
     wl_list_for_each(surface, &o->server->surfaces, link)
-        if (surface->seen && surface->primary == o->wlr) surface_frame_done(surface, when);
+        if (surface->seen && surface->primary == o->screen) surface_frame_done(surface, when);
     if (o->server->cursor_surface) surface_frame_done(o->server->cursor_surface, when);
 }
 
@@ -295,29 +293,26 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     wlr_render_pass_add_texture(data->pass, &options);
     return false;
 }
-static void render_presentation_cursors(struct output *o, struct frame *data,
-        const struct presentation *plan) {
-    const struct presentation_output *planned = presentation_output_for(plan, o->wlr);
-    if (!planned) return;
-    double ratio = (planned->scale_120 / 120.0) / snapped_scale(o->wlr->scale);
-    struct wlr_output_cursor *cursor;
-    wl_list_for_each(cursor, &o->wlr->cursors, link) {
-        if (!cursor->enabled || !cursor->texture || o->wlr->hardware_cursor == cursor) continue;
-        struct wlr_box box = {
-            .x = pixel_round(o->server->pointer_x - data->x - cursor->hotspot_x * ratio),
-            .y = pixel_round(o->server->pointer_y - data->y - cursor->hotspot_y * ratio),
-            .width = pixel_round(cursor->width * ratio),
-            .height = pixel_round(cursor->height * ratio),
-        };
-        struct wlr_box bounds = { .width = data->width, .height = data->height }, overlap;
-        if (!wlr_box_intersection(&overlap, &box, &bounds)) continue;
-        wlr_box_transform(&box, &box, wlr_output_transform_invert(data->transform),
-            data->width, data->height);
-        wlr_render_pass_add_texture(data->pass, &(struct wlr_render_texture_options){
-            .texture = cursor->texture, .src_box = cursor->src_box,
-            .dst_box = box, .transform = data->transform,
-        });
-    }
+static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {
+    const struct cursor_image *image = &o->server->cursor_image;
+    const struct presentation_output *planned = plan ? presentation_output_for(plan, o->screen) :
+        NULL;
+    if (!image->texture || o->screen->hardware_cursor || (plan && !planned)) return;
+    double ratio = (planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale)) /
+        image->scale;
+    struct wlr_box box = {
+        .x = pixel_round(o->server->pointer_x - data->x - image->hotspot_x * ratio),
+        .y = pixel_round(o->server->pointer_y - data->y - image->hotspot_y * ratio),
+        .width = pixel_round(image->texture->width * ratio),
+        .height = pixel_round(image->texture->height * ratio),
+    };
+    struct wlr_box bounds = { .width = data->width, .height = data->height }, overlap;
+    if (!wlr_box_intersection(&overlap, &box, &bounds)) return;
+    wlr_box_transform(&box, &box, wlr_output_transform_invert(data->transform),
+        data->width, data->height);
+    wlr_render_pass_add_texture(data->pass, &(struct wlr_render_texture_options){
+        .texture = image->texture, .dst_box = box, .transform = data->transform,
+    });
 }
 
 void finish_output_capture(struct output *o) {
@@ -395,31 +390,30 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
     struct node *child;
     wl_list_for_each(child, &node->children, link) render_walk(s, child, target, x, y, f);
 }
-bool fenced(struct wlr_output *output) {
-    return output->renderer->features.timeline && output->backend->features.timeline &&
-        !wlr_output_is_headless(output);
+bool fenced(struct screen *output) {
+    return output->server->renderer->features.timeline && output->kind == SCREEN_DRM;
 }
 static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
-        const struct wlr_output_state *state, const struct presentation *plan,
+        const struct screen_state *state, const struct presentation *plan,
         bool cursors) {
-    struct wlr_output *output = o->wlr;
+    struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct wlr_buffer_pass_options options = {0};
     if (fenced(output)) {
         if (!s->render_timeline)
             s->render_timeline = wlr_drm_syncobj_timeline_create(
-                wlr_renderer_get_drm_fd(output->renderer));
+                wlr_renderer_get_drm_fd(s->renderer));
         if (s->render_timeline) {
             options.signal_timeline = s->render_timeline;
             options.signal_point = ++s->render_point;
         }
     }
-    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(output->renderer, buffer, &options);
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(s->renderer, buffer, &options);
     if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
         .y = planned ? planned->box.y : o->y, .pass = pass, .buffer = buffer,
-        .transform = (state->committed & WLR_OUTPUT_STATE_TRANSFORM) ? state->transform : output->transform,
+        .transform = (state->committed & SCREEN_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height,
         .view_x = plan ? plan->view_x : o->server->view_x,
         .view_y = plan ? plan->view_y : o->server->view_y,
@@ -451,14 +445,8 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     }
     if (!locked && !frozen) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
     if (!locked && cursors) screenshot_render(o, &data);
-    pixman_region32_t damage;
-    pixman_region32_init_rect(&damage, 0, 0, buffer->width, buffer->height);
-    if (cursors && plan)
-        render_presentation_cursors(o, &data, plan);
-    else if (cursors && data.transform == output->transform)
-        wlr_output_add_software_cursors_to_render_pass(output, pass, &damage);
+    if (cursors) render_cursor(o, &data, plan);
     bool success = wlr_render_pass_submit(pass);
-    pixman_region32_fini(&damage);
     if (success && s->settings.wait_frame && options.signal_timeline) {
         int fd = wlr_drm_syncobj_timeline_export_sync_file(options.signal_timeline,
             options.signal_point);
@@ -471,15 +459,15 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
 }
 
 bool render_output_buffer(struct output *o, struct wlr_buffer *buffer) {
-    struct wlr_output_state state = {0};
+    struct screen_state state = {0};
     return render_scene_buffer(o, buffer, &state, NULL, false);
 }
 
-bool render_presentation(struct output *o, struct wlr_output_state *state,
+bool render_presentation(struct output *o, struct screen_state *state,
         struct ring *ring, const struct presentation *plan) {
-    struct wlr_output *output = o->wlr;
+    struct screen *output = o->screen;
     finish_output_capture(o);
-    if ((state->committed & WLR_OUTPUT_STATE_ENABLED) && !state->enabled) return true;
+    if ((state->committed & SCREEN_ENABLED) && !state->enabled) return true;
     if (!ring) {
         ring = &o->ring;
         if ((ring->width != output->width || ring->height != output->height) &&
@@ -504,19 +492,15 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
             }
             wlr_buffer_drop(capture);
         }
-        pixman_region32_t damage;
-        pixman_region32_init_rect(&damage, 0, 0, buffer->width, buffer->height);
-        wlr_output_state_set_buffer(state, buffer);
-        wlr_output_state_set_damage(state, &damage);
-        pixman_region32_fini(&damage);
+        screen_state_set_buffer(state, buffer);
         if (o->server->render_timeline && fenced(output))
-            wlr_output_state_set_wait_timeline(state, o->server->render_timeline, render_point);
+            screen_state_set_wait_timeline(state, o->server->render_timeline, render_point);
     }
     wlr_buffer_unlock(buffer);
     return success;
 }
 
-bool render_output(struct output *o, struct wlr_output_state *state) {
+bool render_output(struct output *o, struct screen_state *state) {
     return render_presentation(o, state, NULL, NULL);
 }
 
@@ -591,13 +575,13 @@ struct surface *scanout_surface(struct output *o) {
     struct surface *surface = data.surface;
     struct wlr_dmabuf_attributes dmabuf;
     if (!surface || !surface->buffer || !wlr_buffer_get_dmabuf(surface->buffer, &dmabuf) ||
-            surface->current.transform != o->wlr->transform ||
-            surface->current.buffer_width != o->wlr->width ||
-            surface->current.buffer_height != o->wlr->height) return NULL;
+            surface->current.transform != o->screen->transform ||
+            surface->current.buffer_width != o->screen->width ||
+            surface->current.buffer_height != o->screen->height) return NULL;
     bool cursor_here = !s->cursor_hidden && s->pointer_x >= data.output.x &&
         s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
         s->pointer_y < data.output.y + data.output.height;
-    if (cursor_here && !o->wlr->hardware_cursor) return NULL;
+    if (cursor_here && !o->screen->hardware_cursor) return NULL;
     return surface;
 }
 

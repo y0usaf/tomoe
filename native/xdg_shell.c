@@ -263,12 +263,12 @@ static void ack_configure(struct wl_client *client, struct wl_resource *resource
         "wrong configure serial %u", serial);
 }
 
-void xdg_popup_destroy(struct xdg_popup *popup);
+void xdg_popup_dismiss(struct xdg_popup *popup);
 
 static void surface_reset(struct xdg_surface *xdg) {
     xdg->configured = xdg->initialized = false;
     struct xdg_popup *popup, *next;
-    wl_list_for_each_safe(popup, next, &xdg->popups, link) xdg_popup_destroy(popup);
+    wl_list_for_each_safe(popup, next, &xdg->popups, link) xdg_popup_dismiss(popup);
     xdg->configure_count = 0;
     if (xdg->configure_idle) wl_event_source_remove(xdg->configure_idle);
     xdg->configure_idle = NULL;
@@ -336,10 +336,10 @@ static void surface_free(struct xdg_surface *xdg) {
     free(xdg);
 }
 
-void xdg_popup_destroy(struct xdg_popup *popup) {
+void xdg_popup_dismiss(struct xdg_popup *popup) {
     if (!popup) return;
     struct xdg_popup *child, *next;
-    wl_list_for_each_safe(child, next, &popup->base->popups, link) xdg_popup_destroy(child);
+    wl_list_for_each_safe(child, next, &popup->base->popups, link) xdg_popup_dismiss(child);
     xdg_popup_send_popup_done(popup->resource);
     struct xdg_surface *xdg = popup->base;
     role_object_destroy(xdg);
@@ -568,7 +568,7 @@ static void request_fullscreen(struct wl_resource *resource, bool fullscreen,
     if (!toplevel) return;
     detach(&toplevel->requested.fullscreen_output_destroy);
     toplevel->requested.fullscreen = fullscreen;
-    toplevel->requested.fullscreen_output = output ? wlr_output_from_resource(output) : NULL;
+    toplevel->requested.fullscreen_output = output ? screen_from_resource(output) : NULL;
     if (toplevel->requested.fullscreen_output)
         listen(&toplevel->requested.fullscreen_output_destroy,
             &toplevel->requested.fullscreen_output->events.destroy, fullscreen_output_destroyed);
@@ -645,7 +645,7 @@ static void popup_grab_request(struct wl_client *client, struct wl_resource *res
     if (!popup) return;
     struct seat_client *seat_client = seat_client_from_resource(seat_resource);
     if (!seat_client) {
-        xdg_popup_destroy(popup);
+        xdg_popup_dismiss(popup);
         return;
     }
     if (popup->base->surface->mapped) {
@@ -800,23 +800,23 @@ static const struct xdg_surface_interface surface_impl = {
     .set_window_geometry = set_window_geometry,
 };
 
-uint32_t xdg_toplevel_set_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height) {
+uint32_t xdg_toplevel_configure_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height) {
     toplevel->scheduled.width = width;
     toplevel->scheduled.height = height;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
-uint32_t xdg_toplevel_set_activated(struct xdg_toplevel *toplevel, bool activated) {
+uint32_t xdg_toplevel_configure_activated(struct xdg_toplevel *toplevel, bool activated) {
     toplevel->scheduled.activated = activated;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
-uint32_t xdg_toplevel_set_maximized(struct xdg_toplevel *toplevel, bool maximized) {
+uint32_t xdg_toplevel_configure_maximized(struct xdg_toplevel *toplevel, bool maximized) {
     toplevel->scheduled.maximized = maximized;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
-uint32_t xdg_toplevel_set_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen) {
+uint32_t xdg_toplevel_configure_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen) {
     toplevel->scheduled.fullscreen = fullscreen;
     return xdg_surface_schedule_configure(toplevel->base);
 }

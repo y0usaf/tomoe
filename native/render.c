@@ -849,8 +849,7 @@ struct wlr_allocator *render_allocator(struct wlr_renderer *renderer) {
     return &render_of(renderer)->allocator;
 }
 
-static int open_render_node(struct wlr_backend *backend) {
-    int backend_fd = wlr_backend_get_drm_fd(backend);
+static int open_render_node(int backend_fd) {
     char *name = backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
     if (backend_fd < 0) {
         drmDevicePtr devices[64];
@@ -977,12 +976,12 @@ static bool programs_init(struct render *r) {
         link_program(&p[PROGRAM_UP], "", up_source);
 }
 
-struct wlr_renderer *render_create(struct wlr_backend *backend) {
+struct wlr_renderer *render_create(int drm_fd) {
     struct render *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
     wl_list_init(&r->images);
     wl_list_init(&r->bos);
-    r->fd = open_render_node(backend);
+    r->fd = open_render_node(drm_fd);
     if (r->fd < 0) goto failed;
     r->gbm = gbm_create_device(r->fd);
     if (!r->gbm) {
@@ -1009,11 +1008,11 @@ failed:
     return NULL;
 }
 
-static bool ring_pick(struct tomoe *s, struct wlr_output *output, bool implicit,
+static bool ring_pick(struct tomoe *s, struct screen *output, bool implicit,
         struct wlr_drm_format_set *out) {
     struct render *r = render_of(s->renderer);
     const struct wlr_drm_format_set *display =
-        wlr_output_get_primary_formats(output, WLR_BUFFER_CAP_DMABUF);
+        screen_primary_formats(output);
     const uint32_t codes[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         const struct wlr_drm_format *rendered = wlr_drm_format_set_get(&r->render_formats, codes[i]);
@@ -1038,7 +1037,7 @@ void ring_finish(struct ring *ring) {
     ring->width = ring->height = 0;
 }
 
-bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
+bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
         int width, int height, bool implicit) {
     ring_finish(ring);
     ring->width = width;

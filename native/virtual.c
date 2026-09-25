@@ -8,7 +8,7 @@ struct virtual_pointer {
     struct wl_list link;
     struct tomoe *server;
     struct wl_resource *resource;
-    struct wlr_output *output;
+    struct screen *output;
     struct wl_listener output_destroy;
     struct pointer_axis axis[2];
     bool axis_pending[2];
@@ -30,7 +30,7 @@ static void output_destroyed(struct wl_listener *listener, void *data) {
     p->output = NULL;
 }
 
-struct wlr_output *virtual_pointer_output(struct tomoe *s, struct input_device *device) {
+struct screen *virtual_pointer_output(struct tomoe *s, struct input_device *device) {
     struct virtual_pointer *p;
     wl_list_for_each(p, &s->virtual_pointers, link)
         if (p->device == device) return p->output;
@@ -155,10 +155,10 @@ static void create_pointer_with_output(struct wl_client *client, struct wl_resou
     p->resource = resource;
     wl_resource_set_implementation(resource, &pointer_impl_requests, p, pointer_resource_destroy);
     wl_list_insert(&s->virtual_pointers, &p->link);
-    struct wlr_output *target = output ? wlr_output_from_resource(output) : NULL;
+    struct screen *target = output ? screen_from_resource(output) : NULL;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr != target) continue;
+        if (o->screen != target) continue;
         p->output = target;
         listen(&p->output_destroy, &target->events.destroy, output_destroyed);
     }

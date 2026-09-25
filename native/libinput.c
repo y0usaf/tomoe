@@ -1,20 +1,10 @@
 #include "internal.h"
 #include <stddef.h>
 #include <libinput.h>
-#include <wlr/backend/session.h>
-#include <wlr/interfaces/wlr_keyboard.h>
-#include <wlr/types/wlr_pointer.h>
 
 struct opened {
     struct wl_list link;
-    int fd;
-    struct wlr_device *device;
-};
-
-struct adapter {
-    struct input_device *device;
-    struct wlr_input_device *wlr;
-    struct wl_listener destroy, key, modifiers, motion, absolute, button, axis, frame;
+    int fd, device;
 };
 
 enum input_field_kind { INPUT_BOOL, INPUT_REAL, INPUT_BUTTON, INPUT_CHOICE };
@@ -324,15 +314,14 @@ static int dispatch(int fd, uint32_t mask, void *data) {
 static int open_restricted(const char *path, int flags, void *data) {
     struct tomoe *s = data;
     struct opened *opened = calloc(1, sizeof(*opened));
-    struct wlr_device *device = opened ? wlr_session_open_file(s->session, path) : NULL;
-    if (!device) {
+    int fd = opened ? session_open(s, path, &opened->device) : -1;
+    if (fd < 0) {
         free(opened);
         return -ENOENT;
     }
-    opened->fd = device->fd;
-    opened->device = device;
+    opened->fd = fd;
     wl_list_insert(&s->libinput_fds, &opened->link);
-    return device->fd;
+    return fd;
 }
 
 static void close_restricted(int fd, void *data) {
@@ -340,7 +329,7 @@ static void close_restricted(int fd, void *data) {
     struct opened *opened;
     wl_list_for_each(opened, &s->libinput_fds, link) {
         if (opened->fd != fd) continue;
-        wlr_session_close_file(s->session, opened->device);
+        session_close(s, opened->device, opened->fd);
         wl_list_remove(&opened->link);
         free(opened);
         return;
@@ -352,117 +341,26 @@ static const struct libinput_interface libinput_impl = {
     .close_restricted = close_restricted,
 };
 
-static void session_active(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, session_active);
-    if (s->session->active) libinput_resume(s->libinput);
+void libinput_active(struct tomoe *s, bool active) {
+    if (!s->libinput) return;
+    if (active) libinput_resume(s->libinput);
     else libinput_suspend(s->libinput);
 }
 
-static void adapter_destroyed(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, destroy);
-    struct wl_listener *listeners[] = { &a->destroy, &a->key, &a->modifiers, &a->motion,
-        &a->absolute, &a->button, &a->axis, &a->frame };
-    for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
-    input_device_destroy(a->device);
-    free(a);
-}
-
-static void adapter_key(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, key);
-    struct wlr_keyboard_key_event *event = data;
-    input_key(a->device, event->time_msec, event->keycode, event->state);
-}
-
-static void adapter_modifiers(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, modifiers);
-    struct wlr_keyboard *keyboard = wlr_keyboard_from_input_device(a->wlr);
-    input_modifiers(a->device, &(struct keyboard_modifiers){ keyboard->modifiers.depressed,
-        keyboard->modifiers.latched, keyboard->modifiers.locked, keyboard->modifiers.group });
-}
-
-static void adapter_motion(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, motion);
-    struct wlr_pointer_motion_event *event = data;
-    input_pointer_motion(&(struct pointer_motion){ a->device, event->time_msec, event->delta_x,
-        event->delta_y, event->unaccel_dx, event->unaccel_dy });
-}
-
-static void adapter_absolute(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, absolute);
-    struct wlr_pointer_motion_absolute_event *event = data;
-    input_pointer_absolute(&(struct pointer_absolute){ a->device, event->time_msec, event->x,
-        event->y });
-}
-
-static void adapter_button(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, button);
-    struct wlr_pointer_button_event *event = data;
-    input_pointer_button(&(struct pointer_button){ a->device, event->time_msec, event->button,
-        event->state });
-}
-
-static void adapter_axis(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, axis);
-    struct wlr_pointer_axis_event *event = data;
-    input_pointer_axis(&(struct pointer_axis){ .device = a->device, .time_msec = event->time_msec,
-        .orientation = event->orientation, .source = event->source,
-        .relative_direction = event->relative_direction, .delta = event->delta,
-        .delta_discrete = event->delta_discrete });
-}
-
-static void adapter_frame(struct wl_listener *listener, void *data) {
-    struct adapter *a = wl_container_of(listener, a, frame);
-    input_pointer_frame(a->device);
-}
-
-static void new_input(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_input);
-    struct wlr_input_device *wlr = data;
-    uint32_t caps = wlr->type == WLR_INPUT_DEVICE_KEYBOARD ? INPUT_KEYBOARD :
-        wlr->type == WLR_INPUT_DEVICE_POINTER ? INPUT_POINTER : 0;
-    struct adapter *a = caps ? calloc(1, sizeof(*a)) : NULL;
-    if (!a) return;
-    a->wlr = wlr;
-    a->device = input_device_create(s, wlr->name ? wlr->name : "wayland", caps);
-    if (!a->device) {
-        free(a);
-        return;
-    }
-    listen(&a->destroy, &wlr->events.destroy, adapter_destroyed);
-    if (caps == INPUT_KEYBOARD) {
-        struct wlr_keyboard *keyboard = wlr_keyboard_from_input_device(wlr);
-        listen(&a->key, &keyboard->events.key, adapter_key);
-        listen(&a->modifiers, &keyboard->events.modifiers, adapter_modifiers);
-    } else {
-        struct wlr_pointer *pointer = wlr_pointer_from_input_device(wlr);
-        if (pointer->output_name) a->device->output_name = strdup(pointer->output_name);
-        listen(&a->motion, &pointer->events.motion, adapter_motion);
-        listen(&a->absolute, &pointer->events.motion_absolute, adapter_absolute);
-        listen(&a->button, &pointer->events.button, adapter_button);
-        listen(&a->axis, &pointer->events.axis, adapter_axis);
-        listen(&a->frame, &pointer->events.frame, adapter_frame);
-    }
-    input_add(s, a->device);
-}
-
 bool libinput_listen(struct tomoe *s) {
-    listen(&s->new_input, &s->backend->events.new_input, new_input);
     if (!s->session) return true;
-    s->libinput = libinput_udev_create_context(&libinput_impl, s, s->session->udev);
-    if (!s->libinput || libinput_udev_assign_seat(s->libinput, s->session->seat) != 0) {
+    s->libinput = libinput_udev_create_context(&libinput_impl, s, kms_udev(s));
+    if (!s->libinput || libinput_udev_assign_seat(s->libinput, session_seat_name(s)) != 0) {
         fail(s, "libinput context creation failed");
         return false;
     }
     s->libinput_source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
         libinput_get_fd(s->libinput), WL_EVENT_READABLE, dispatch, s);
-    listen(&s->session_active, &s->session->events.active, session_active);
     dispatch(0, 0, s);
     return s->libinput_source != NULL;
 }
 
 void libinput_finish(struct tomoe *s) {
-    detach(&s->session_active);
-    detach(&s->new_input);
     if (s->libinput_source) wl_event_source_remove(s->libinput_source);
     s->libinput_source = NULL;
     struct input_device *device, *next;

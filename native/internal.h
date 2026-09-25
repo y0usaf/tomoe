@@ -28,6 +28,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 
+struct screen;
+
 struct event;
 struct binding;
 struct pointer_latch { uint32_t button; struct binding *binding; };
@@ -114,7 +116,7 @@ struct ring {
     bool implicit;
     struct wlr_drm_format_set format;
 };
-struct wlr_renderer *render_create(struct wlr_backend *backend);
+struct wlr_renderer *render_create(int drm_fd);
 struct wlr_allocator *render_allocator(struct wlr_renderer *renderer);
 struct program *render_program(struct wlr_renderer *renderer, int kind);
 void render_quad(struct program *p, const float pos[8], const float local[8],
@@ -125,20 +127,107 @@ uint32_t render_read_format(struct wlr_renderer *renderer);
 const struct wlr_drm_format_set *render_formats(struct wlr_renderer *renderer);
 bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
     uint64_t point);
-bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
+bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
     int width, int height, bool implicit);
 struct wlr_buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct wlr_buffer *ring_create(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
-bool fenced(struct wlr_output *output);
+bool fenced(struct screen *output);
+
+struct screen;
+struct session;
+struct kms;
+struct cursor_image {
+    struct wlr_buffer *buffer;
+    struct wlr_texture *texture;
+    int hotspot_x, hotspot_y;
+    float scale;
+};
+struct screen_mode {
+    int32_t width, height, refresh;
+    bool preferred, interlaced;
+    struct wl_list link;
+    void *data;
+};
+enum {
+    SCREEN_ENABLED = 1 << 0, SCREEN_MODE = 1 << 1, SCREEN_SCALE = 1 << 2,
+    SCREEN_TRANSFORM = 1 << 3, SCREEN_VRR = 1 << 4, SCREEN_BUFFER = 1 << 5,
+    SCREEN_WAIT = 1 << 6, SCREEN_GAMMA = 1 << 7,
+};
+enum screen_mode_type { SCREEN_MODE_FIXED, SCREEN_MODE_CUSTOM };
+enum screen_kind { SCREEN_DRM, SCREEN_NESTED, SCREEN_HEADLESS };
+struct screen_state {
+    uint32_t committed;
+    bool enabled, adaptive_sync_enabled, tearing_page_flip;
+    float scale;
+    enum wl_output_transform transform;
+    enum screen_mode_type mode_type;
+    struct screen_mode *mode;
+    struct { int32_t width, height, refresh; } custom_mode;
+    struct wlr_buffer *buffer;
+    struct wlr_drm_syncobj_timeline *wait_timeline;
+    uint64_t wait_point;
+    uint16_t *gamma;
+    size_t gamma_size;
+};
+struct screen_update {
+    struct screen *output;
+    struct screen_state base;
+};
+struct screen_impl {
+    bool (*test)(struct screen_update *updates, size_t count);
+    bool (*commit)(struct screen_update *updates, size_t count);
+    const struct wlr_drm_format_set *(*formats)(struct screen *screen);
+    size_t (*gamma_size)(struct screen *screen);
+    bool (*cursor)(struct screen *screen, struct wlr_buffer *buffer, int hotspot_x, int hotspot_y);
+    void (*move_cursor)(struct screen *screen, int x, int y);
+    void (*destroy)(struct screen *screen);
+};
+struct screen_present {
+    struct screen *output;
+    size_t commit_seq;
+    bool presented;
+    struct timespec when;
+    unsigned seq;
+    int refresh;
+    uint32_t flags;
+};
+struct screen_bind {
+    struct screen *output;
+    struct wl_resource *resource;
+};
+struct screen {
+    struct tomoe *server;
+    const struct screen_impl *impl;
+    enum screen_kind kind;
+    char *name, *description, *make, *model, *serial;
+    int32_t phys_width, phys_height;
+    struct wl_list modes;
+    struct screen_mode *current_mode;
+    int32_t width, height, refresh;
+    float scale;
+    enum wl_output_transform transform;
+    bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
+    bool frame_pending;
+    int lx, ly, software_cursor_locks;
+    double cursor_x, cursor_y;
+    size_t commit_seq;
+    struct wl_event_source *idle_frame;
+    struct wl_global *global;
+    struct wl_list resources, xdg_resources;
+    struct {
+        struct wl_signal frame, needs_frame, present, request_state, commit, destroy, bind;
+    } events;
+    void *data;
+};
 
 struct output {
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_output *wlr;
+    struct screen *screen;
     struct wl_listener frame, request, destroy, needs_frame;
-    struct wlr_output_state initial, pending;
-    struct wlr_output_state deferred;
+    struct screen_state initial, pending;
+    struct screen_state deferred;
     bool configured, admitted, pending_configured, pending_positioned;
     bool request_pending, pending_hold;
     uint64_t id;
@@ -156,7 +245,7 @@ struct output {
 };
 
 static inline bool output_is_active(const struct output *output) {
-    return output && output->admitted && output->wlr && output->wlr->enabled;
+    return output && output->admitted && output->screen && output->screen->enabled;
 }
 
 enum target_kind { TARGET_WINDOW, TARGET_LAYER, TARGET_UNMANAGED, TARGET_ICON };
@@ -169,7 +258,7 @@ struct target {
     enum target_kind kind;
     int x, y, geometry_x, geometry_y;
     double scale;
-    struct wlr_output *output;
+    struct screen *output;
     int client_width, client_height;
     bool fullscreen;
     double offset_x, offset_y, alpha;
@@ -340,7 +429,7 @@ struct surface {
     struct wl_resource *role_resource, *viewport, *fractional, *syncobj;
     struct wl_listener role_resource_destroy;
     struct subsurface *subsurface;
-    struct wlr_output *primary;
+    struct screen *primary;
     int preferred_scale;
     uint32_t fractional_scale;
     bool mapped, pending_rejected, sent_transform, seen, scene_owned;
@@ -459,14 +548,17 @@ struct tomoe {
     struct settings settings;
     struct effects *effects;
     struct screenshot *screenshot;
-    struct wlr_backend *backend;
-    struct wlr_session *session;
+    struct session *session;
+    struct kms *kms;
+    enum screen_kind backend;
     struct wlr_renderer *renderer;
     struct wlr_allocator *allocator;
     struct node *scene;
-    struct wlr_output_layout *layout;
     struct node *window_tree, *layer_tree[4], *fullscreen_tree;
-    struct wlr_cursor *cursor;
+    struct cursor_image cursor_image;
+    struct wlr_buffer *default_cursor;
+    float default_cursor_scale;
+    int default_hotspot_x, default_hotspot_y;
     struct wlr_xcursor_manager *cursor_manager;
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
@@ -479,12 +571,11 @@ struct tomoe {
     size_t activation_token_count;
     struct wl_list activation_pending;
     size_t activation_pending_count;
-    struct wl_listener new_output, new_input;
+    struct wl_listener new_input;
     struct libinput *libinput;
     struct wl_event_source *libinput_source;
     struct wl_list libinput_fds;
-    struct wl_listener session_active;
-    struct wl_listener layout_change, backend_destroy;
+
     char *last_event;
     uint32_t next_id, focused, grab_id;
     uint64_t next_binding_id, next_device_id, next_output_id;
@@ -564,7 +655,7 @@ struct xdg_toplevel {
     struct toplevel_state pending, current, scheduled;
     struct {
         bool maximized, fullscreen, minimized;
-        struct wlr_output *fullscreen_output;
+        struct screen *fullscreen_output;
         struct wl_listener fullscreen_output_destroy;
     } requested;
     struct surface_synced synced;
@@ -634,12 +725,12 @@ struct xdg_surface *xdg_surface_from_surface(struct surface *surface);
 struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface);
 struct node *xdg_surface_scene(struct node *parent, struct xdg_surface *xdg);
 uint32_t xdg_surface_schedule_configure(struct xdg_surface *xdg);
-uint32_t xdg_toplevel_set_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height);
-uint32_t xdg_toplevel_set_activated(struct xdg_toplevel *toplevel, bool activated);
-uint32_t xdg_toplevel_set_maximized(struct xdg_toplevel *toplevel, bool maximized);
-uint32_t xdg_toplevel_set_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen);
+uint32_t xdg_toplevel_configure_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height);
+uint32_t xdg_toplevel_configure_activated(struct xdg_toplevel *toplevel, bool activated);
+uint32_t xdg_toplevel_configure_maximized(struct xdg_toplevel *toplevel, bool maximized);
+uint32_t xdg_toplevel_configure_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen);
 void xdg_toplevel_close(struct xdg_toplevel *toplevel);
-void xdg_popup_destroy(struct xdg_popup *popup);
+void xdg_popup_dismiss(struct xdg_popup *popup);
 void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_box *box);
 void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
 void xdg_popup_created(struct tomoe *s, struct xdg_popup *popup);
@@ -656,7 +747,7 @@ struct layer_surface {
     struct wl_resource *resource;
     struct tomoe *server;
     struct surface *surface;
-    struct wlr_output *output;
+    struct screen *output;
     char *namespace;
     bool initialized, initial_commit, configured;
     struct layer_surface_state current, pending;
@@ -704,8 +795,8 @@ FILE *begin_event(struct tomoe *s, struct event **event, size_t *size);
 void end_event(struct tomoe *s, struct event *event, FILE *out);
 void unmap_event(struct tomoe *s, uint32_t id);
 
-struct wlr_output *any_output(struct tomoe *s);
-void outputs_listen(struct tomoe *s);
+struct screen *any_output(struct tomoe *s);
+void output_added(struct tomoe *s, struct screen *screen);
 void outputs_request_nested_size(struct tomoe *s);
 int tomoe_outputs_pending(struct tomoe *s);
 bool presentation_outputs(struct tomoe *s, struct presentation *plan);
@@ -718,7 +809,7 @@ const struct output_location *output_location_for(
 void presentation_finish(struct tomoe *s);
 struct presentation_target *presentation_target_for(struct presentation *plan, uint32_t id);
 const struct presentation_output *presentation_output_for(const struct presentation *plan,
-    struct wlr_output *output);
+    struct screen *output);
 const struct presentation_output *presentation_output_at(const struct presentation *plan,
     double x, double y);
 bool presentation_prepare(struct tomoe *s);
@@ -738,9 +829,9 @@ void screen_to_protocol(struct tomoe *s, double *x, double *y);
 void physical_output_box(struct output *o, struct wlr_box *box);
 void schedule_scene(struct tomoe *s);
 void refresh_scene(struct tomoe *s);
-void forget_output(struct tomoe *s, struct wlr_output *output);
-bool render_output(struct output *o, struct wlr_output_state *state);
-bool render_presentation(struct output *o, struct wlr_output_state *state,
+void forget_output(struct tomoe *s, struct screen *output);
+bool render_output(struct output *o, struct screen_state *state);
+bool render_presentation(struct output *o, struct screen_state *state,
     struct ring *ring, const struct presentation *plan);
 bool capture_listen(struct tomoe *s);
 bool capture_wants_cursorless(struct output *o);
@@ -771,12 +862,12 @@ bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
 struct node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
 bool foreign_listen(struct tomoe *s);
 void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
-    uint32_t state, struct wlr_output *const *outputs, size_t output_count);
+    uint32_t state, struct screen *const *outputs, size_t output_count);
 void foreign_forget(struct tomoe *s, uint32_t id);
 const char *foreign_identifier(struct tomoe *s, uint32_t id);
 uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
-    struct wlr_output *output);
+    struct screen *output);
 bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
@@ -810,7 +901,7 @@ void pointer_refresh(struct tomoe *s);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);
-struct wlr_output *virtual_pointer_output(struct tomoe *s, struct input_device *device);
+struct screen *virtual_pointer_output(struct tomoe *s, struct input_device *device);
 
 bool activation_listen(struct tomoe *s);
 void activation_surface_mapped(struct tomoe *s, struct surface *surface);
@@ -823,7 +914,7 @@ void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
 bool idle_listen(struct tomoe *s);
 bool pointer_protocols_listen(struct tomoe *s);
-void gamma_apply(struct output *o, struct wlr_output_state *state);
+void gamma_apply(struct output *o, struct screen_state *state);
 bool gamma_listen(struct tomoe *s);
 bool decoration_listen(struct tomoe *s);
 bool tearing_listen(struct tomoe *s);
@@ -836,7 +927,7 @@ bool constraint_allows(struct tomoe *s, double x, double y);
 bool lock_listen(struct tomoe *s);
 void lock_finish(struct tomoe *s);
 void lock_refresh(struct tomoe *s);
-void lock_frame_rendered(struct tomoe *s, struct wlr_output *output);
+void lock_frame_rendered(struct tomoe *s, struct screen *output);
 void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 bool render_output_buffer(struct output *o, struct wlr_buffer *buffer);
@@ -897,6 +988,69 @@ void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32
 void cursor_committed(struct tomoe *s, struct surface *surface);
 void cursor_default(struct tomoe *s);
 bool selection_listen(struct tomoe *s);
+void screen_state_init(struct screen_state *state);
+void screen_state_finish(struct screen_state *state);
+bool screen_state_copy(struct screen_state *dst, const struct screen_state *src);
+void screen_state_set_enabled(struct screen_state *state, bool enabled);
+void screen_state_set_mode(struct screen_state *state, struct screen_mode *mode);
+void screen_state_set_custom_mode(struct screen_state *state, int32_t width, int32_t height,
+    int32_t refresh);
+void screen_state_set_scale(struct screen_state *state, float scale);
+void screen_state_set_transform(struct screen_state *state, enum wl_output_transform transform);
+void screen_state_set_adaptive_sync_enabled(struct screen_state *state, bool enabled);
+void screen_state_set_buffer(struct screen_state *state, struct wlr_buffer *buffer);
+void screen_state_set_wait_timeline(struct screen_state *state,
+    struct wlr_drm_syncobj_timeline *timeline, uint64_t point);
+bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, size_t size);
+void screen_init(struct screen *screen, struct tomoe *s, const struct screen_impl *impl,
+    enum screen_kind kind, const char *name);
+void screen_describe(struct screen *screen);
+struct screen_mode *screen_add_mode(struct screen *screen, int32_t width, int32_t height,
+    int32_t refresh, bool preferred);
+void screen_destroy(struct screen *screen);
+struct screen *screen_from_resource(struct wl_resource *resource);
+struct screen_mode *screen_preferred_mode(struct screen *screen);
+void screen_transformed_resolution(struct screen *screen, int *width, int *height);
+void screen_effective_resolution(struct screen *screen, int *width, int *height);
+bool screen_test(struct screen *screen, const struct screen_state *state);
+bool screen_commit(struct screen *screen, const struct screen_state *state);
+bool screens_test(struct screen_update *updates, size_t count);
+bool screens_commit(struct screen_update *updates, size_t count);
+const struct wlr_drm_format_set *screen_primary_formats(struct screen *screen);
+size_t screen_gamma_size(struct screen *screen);
+void screen_schedule_frame(struct screen *screen);
+void screen_send_frame(struct screen *screen);
+void screen_send_present(struct screen *screen, struct screen_present *present);
+void screen_request_state(struct screen *screen, struct screen_state *state);
+void screen_set_position(struct screen *screen, int lx, int ly);
+void screen_cursor_move(struct screen *screen, double x, double y);
+void screen_lock_software_cursors(struct screen *screen, bool lock);
+bool screens_listen(struct tomoe *s);
+void cursor_show(struct tomoe *s, struct wlr_buffer *buffer, int hotspot_x, int hotspot_y,
+    float scale);
+void cursor_finish(struct tomoe *s);
+struct wlr_buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
+    const void *pixels);
+bool session_create(struct tomoe *s);
+void session_finish(struct tomoe *s);
+const char *session_seat_name(struct tomoe *s);
+bool session_active(struct tomoe *s);
+int session_open(struct tomoe *s, const char *path, int *device);
+void session_close(struct tomoe *s, int device, int fd);
+void session_change_vt(struct tomoe *s, int vt);
+int kms_create(struct tomoe *s);
+void kms_start(struct tomoe *s);
+void kms_pause(struct tomoe *s);
+void kms_resume(struct tomoe *s);
+void kms_destroy(struct tomoe *s);
+struct udev *kms_udev(struct tomoe *s);
+int nested_create(struct tomoe *s);
+bool nested_start(struct tomoe *s);
+void nested_finish(struct tomoe *s);
+bool headless_start(struct tomoe *s);
+void headless_finish(struct tomoe *s);
+void libinput_active(struct tomoe *s, bool active);
+
 bool buffers_listen(struct tomoe *s);
 bool surfaces_listen(struct tomoe *s);
 void surfaces_finish(struct tomoe *s);
@@ -920,13 +1074,13 @@ bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_i
     void *data);
 void surface_source_box(struct surface *surface, struct wlr_fbox *box);
 bool surface_accepts_input(struct surface *surface, double sx, double sy);
-void surface_send_enter(struct surface *surface, struct wlr_output *output);
-void surface_send_leave(struct surface *surface, struct wlr_output *output);
+void surface_send_enter(struct surface *surface, struct screen *output);
+void surface_send_leave(struct surface *surface, struct screen *output);
 void surface_leave_all(struct surface *surface);
-bool surface_on_output(struct surface *surface, struct wlr_output *output);
+bool surface_on_output(struct surface *surface, struct screen *output);
 void surface_frame_done(struct surface *surface, const struct timespec *when);
 void surface_set_scale(struct surface *surface, double scale);
-void surface_presented(struct surface *surface, struct wlr_output *output, bool zero_copy);
+void surface_presented(struct surface *surface, struct screen *output, bool zero_copy);
 void surface_release_after(struct surface *surface, struct wlr_buffer *consumer);
 struct node *node_create(struct node *parent);
 struct node *node_surface_create(struct node *parent, struct surface *surface);

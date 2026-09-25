@@ -2,12 +2,29 @@
 #include "ui.h"
 #include <wlr/render/drm_syncobj.h>
 
-static void backend_destroy(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, backend_destroy);
-    detach(&s->new_input); detach(&s->new_output); detach(&s->backend_destroy);
-    wl_list_init(&s->new_input.link); wl_list_init(&s->new_output.link);
-    wl_list_init(&s->backend_destroy.link);
-    s->backend = NULL; s->running = false;
+#include <unistd.h>
+
+static int backend_open(struct tomoe *s) {
+    const char *kind = getenv("TOMOE_BACKEND");
+    if (kind && !strcmp(kind, "headless")) {
+        s->backend = SCREEN_HEADLESS;
+        return -1;
+    }
+    if (kind && !strcmp(kind, "nested")) {
+        s->backend = SCREEN_NESTED;
+        return nested_create(s);
+    }
+    s->backend = SCREEN_DRM;
+    if (!session_create(s)) return -2;
+    int fd = kms_create(s);
+    return fd < 0 ? -2 : fd;
+}
+
+static bool backend_start(struct tomoe *s) {
+    if (s->backend == SCREEN_HEADLESS) return headless_start(s);
+    if (s->backend == SCREEN_NESTED) return nested_start(s);
+    kms_start(s);
+    return true;
 }
 int tomoe_abi_version(void) { return 28; }
 static bool create_scene_trees(struct tomoe *s) {
@@ -57,35 +74,31 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->settings.nested_width = s->settings.nested_height = 0;
     s->display = wl_display_create();
     if (!s->display) goto failed;
-    s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), &s->session);
-    if (!s->backend) goto failed;
-    s->renderer = render_create(s->backend);
+    int drm_fd = backend_open(s);
+    if (drm_fd == -2) goto failed;
+    s->renderer = render_create(drm_fd);
+    if (s->backend == SCREEN_NESTED && drm_fd >= 0) close(drm_fd);
     if (!s->renderer || !buffers_listen(s)) goto failed;
     s->allocator = render_allocator(s->renderer);
     if (!capture_listen(s)) goto failed;
     if (!surfaces_listen(s)) goto failed;
-    s->layout = wlr_output_layout_create(s->display);
     s->scene = node_create(NULL);
-    if (!s->layout || !s->scene || !wlr_xdg_output_manager_v1_create(s->display, s->layout)) goto failed;
+    if (!s->scene || !screens_listen(s)) goto failed;
     if (!create_scene_trees(s)) goto failed;
-    s->cursor = wlr_cursor_create();
     const char *cursor_size = getenv("XCURSOR_SIZE");
     int size = cursor_size ? atoi(cursor_size) : 0;
     s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
     s->seat = seat_create(s);
-    if (!s->cursor || !s->cursor_manager || !s->seat ||
+    if (!s->cursor_manager || !s->seat ||
             !selection_listen(s) || !activation_listen(s) || !xdg_shell_listen(s) ||
             !layer_shell_listen(s)) goto failed;
-    wlr_cursor_attach_output_layout(s->cursor, s->layout);
-    outputs_listen(s);
     input_listen(s);
     if (!libinput_listen(s)) goto failed;
     if (!virtual_input_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
             !background_effects_listen(s)) goto failed;
-    listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
     s->running = true;
-    if (!wlr_backend_start(s->backend) || s->failed) goto failed;
+    if (!backend_start(s) || s->failed) goto failed;
     return s;
 failed:
     wlr_log(WLR_ERROR, "tomoe: backend startup failed");
@@ -121,16 +134,16 @@ void tomoe_destroy(struct tomoe *s) {
     xdg_shell_finish(s);
     if (s->display) wl_display_destroy_clients(s->display);
     if (s->display) surfaces_finish(s);
-    struct wl_listener *listeners[] = {
-        &s->new_output,
-        &s->layout_change, &s->backend_destroy, &s->cursor_surface_destroy,
-    };
-    for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
+    detach(&s->cursor_surface_destroy);
     if (s->scene) node_destroy(s->scene);
     if (s->cursor_manager) wlr_xcursor_manager_destroy(s->cursor_manager);
-    if (s->cursor) wlr_cursor_destroy(s->cursor);
+    cursor_finish(s);
+    if (s->default_cursor) wlr_buffer_drop(s->default_cursor);
     libinput_finish(s);
-    if (s->backend) wlr_backend_destroy(s->backend);
+    headless_finish(s);
+    nested_finish(s);
+    kms_destroy(s);
+    session_finish(s);
     keyboard_logical_finish(s);
     seat_destroy(s->seat);
     settings_finish(&s->settings);

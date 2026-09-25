@@ -59,6 +59,7 @@
             pkgs.wlroots
             pkgs.libdrm
             pkgs.libinput
+            pkgs.seatd
             pkgs.libGL
             pkgs.libgbm
             pkgs.wayland
@@ -127,17 +128,19 @@
               $wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
               $wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
               $wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+              $wp/unstable/xdg-output/xdg-output-unstable-v1.xml \
               $wp/unstable/primary-selection/primary-selection-unstable-v1.xml; do
               name=$(basename "$xml" .xml)
               wayland-scanner server-header "$xml" "build/$name-protocol.h"
               wayland-scanner private-code "$xml" "build/$name-protocol.c"
+              wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
             done
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) \
+              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm) -lm
+              $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
             sbcl --noinform --non-interactive --load build.lisp
             runHook postBuild
           '';

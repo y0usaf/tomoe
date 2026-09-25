@@ -29,7 +29,7 @@ struct release_hold {
 
 struct feedback {
     struct wl_list resources, link;
-    struct wlr_output *output;
+    struct screen *output;
     bool zero_copy, committed;
     size_t commit_seq;
     struct wl_listener commit, present, output_destroy;
@@ -43,7 +43,7 @@ struct acquire_wait {
 };
 
 struct surface_output {
-    struct wlr_output *output;
+    struct screen *output;
     struct surface *surface;
     struct wl_list link;
     struct wl_listener bind, destroy;
@@ -939,7 +939,7 @@ bool surface_accepts_input(struct surface *surface, double sx, double sy) {
 
 static void output_bound(struct wl_listener *listener, void *data) {
     struct surface_output *so = wl_container_of(listener, so, bind);
-    struct wlr_output_event_bind *event = data;
+    struct screen_bind *event = data;
     if (wl_resource_get_client(event->resource) == wl_resource_get_client(so->surface->resource))
         wl_surface_send_enter(so->surface->resource, event->resource);
 }
@@ -949,7 +949,7 @@ static void output_gone(struct wl_listener *listener, void *data) {
     surface_output_free(so);
 }
 
-static void output_resources(struct surface *surface, struct wlr_output *output, bool enter) {
+static void output_resources(struct surface *surface, struct screen *output, bool enter) {
     struct wl_client *client = wl_resource_get_client(surface->resource);
     struct wl_resource *resource;
     wl_resource_for_each(resource, &output->resources) {
@@ -959,7 +959,7 @@ static void output_resources(struct surface *surface, struct wlr_output *output,
     }
 }
 
-void surface_send_enter(struct surface *surface, struct wlr_output *output) {
+void surface_send_enter(struct surface *surface, struct screen *output) {
     struct surface_output *so;
     wl_list_for_each(so, &surface->outputs, link) if (so->output == output) return;
     so = calloc(1, sizeof(*so));
@@ -972,7 +972,7 @@ void surface_send_enter(struct surface *surface, struct wlr_output *output) {
     output_resources(surface, output, true);
 }
 
-void surface_send_leave(struct surface *surface, struct wlr_output *output) {
+void surface_send_leave(struct surface *surface, struct screen *output) {
     struct surface_output *so, *next;
     wl_list_for_each_safe(so, next, &surface->outputs, link) {
         if (so->output != output) continue;
@@ -989,7 +989,7 @@ void surface_leave_all(struct surface *surface) {
     }
 }
 
-bool surface_on_output(struct surface *surface, struct wlr_output *output) {
+bool surface_on_output(struct surface *surface, struct screen *output) {
     struct surface_output *so;
     wl_list_for_each(so, &surface->outputs, link) if (so->output == output) return true;
     return false;
@@ -1030,7 +1030,7 @@ static void feedback_committed(struct wl_listener *listener, void *data) {
 
 static void feedback_presented(struct wl_listener *listener, void *data) {
     struct feedback *f = wl_container_of(listener, f, present);
-    struct wlr_output_event_present *event = data;
+    struct screen_present *event = data;
     if (!f->committed || event->commit_seq != f->commit_seq) return;
     if (event->presented) {
         uint32_t flags = event->flags;
@@ -1056,7 +1056,7 @@ static void feedback_output_destroyed(struct wl_listener *listener, void *data) 
     feedback_free(f);
 }
 
-void surface_presented(struct surface *surface, struct wlr_output *output, bool zero_copy) {
+void surface_presented(struct surface *surface, struct screen *output, bool zero_copy) {
     if (wl_list_empty(&surface->current.feedbacks)) return;
     struct feedback *f = calloc(1, sizeof(*f));
     if (!f) return;
@@ -1464,7 +1464,7 @@ bool surfaces_listen(struct tomoe *s) {
         wl_global_create(s->display, &wp_presentation_interface, 2, s, bind_presentation);
     if (!ok) return false;
     drm_fd = wlr_renderer_get_drm_fd(s->renderer);
-    if (!s->renderer->features.timeline || !s->backend->features.timeline || drm_fd < 0) return true;
+    if (!s->renderer->features.timeline || !s->kms || drm_fd < 0) return true;
     return wl_global_create(s->display, &wp_linux_drm_syncobj_manager_v1_interface, 1, s,
         bind_syncobj);
 }

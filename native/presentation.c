@@ -27,9 +27,9 @@ struct presentation_target *presentation_target_for(struct presentation *plan, u
 }
 
 const struct presentation_output *presentation_output_for(const struct presentation *plan,
-        struct wlr_output *output) {
+        struct screen *output) {
     for (size_t i = 0; i < plan->output_count; i++)
-        if (plan->outputs[i].output->wlr == output) return &plan->outputs[i];
+        if (plan->outputs[i].output->screen == output) return &plan->outputs[i];
     return NULL;
 }
 

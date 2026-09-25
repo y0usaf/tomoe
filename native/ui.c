@@ -738,7 +738,7 @@ static bool surface_output_live(struct tomoe *s, const struct ui_surface *surfac
     wl_list_for_each(output, &s->outputs, link) {
         if (!output_is_active(output)) continue;
         if (!surface->output[0] ||
-                (output->wlr->name && strcmp(surface->output, output->wlr->name) == 0))
+                (output->screen->name && strcmp(surface->output, output->screen->name) == 0))
             return true;
     }
     return false;
@@ -746,11 +746,11 @@ static bool surface_output_live(struct tomoe *s, const struct ui_surface *surfac
 
 static bool surface_matches_output(const struct ui_surface *surface,
         const struct output *output, const struct presentation *plan) {
-    if (!surface || !output || !output->wlr) return false;
-    if (plan ? !presentation_output_for(plan, output->wlr) :
+    if (!surface || !output || !output->screen) return false;
+    if (plan ? !presentation_output_for(plan, output->screen) :
         (!output_is_active(output) && !output->server->configuring_outputs)) return false;
-    return !surface->output[0] || (output->wlr->name &&
-        strcmp(surface->output, output->wlr->name) == 0);
+    return !surface->output[0] || (output->screen->name &&
+        strcmp(surface->output, output->screen->name) == 0);
 }
 
 static bool point_in_box(double x, double y, const struct wlr_box *box) {
@@ -763,7 +763,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
     struct output *output;
     bool on_live_output = false;
     wl_list_for_each(output, &s->outputs, link) {
-        if (!output->wlr) continue;
+        if (!output->screen) continue;
         struct wlr_box box;
         physical_output_box(output, &box);
         if (output_is_active(output) && point_in_box(x, y, &box)) {
@@ -820,8 +820,8 @@ bool ui_on_output(struct output *o) {
 void ui_render(struct output *o, struct wlr_render_pass *pass,
         const struct presentation *plan, int x, int y, int width, int height,
         enum wl_output_transform transform) {
-    if (!o || !o->server || !o->wlr || !pass) return;
-    if (plan ? !presentation_output_for(plan, o->wlr) :
+    if (!o || !o->server || !o->screen || !pass) return;
+    if (plan ? !presentation_output_for(plan, o->screen) :
             (!output_is_active(o) && !o->server->configuring_outputs)) return;
     const struct ui_set *set = plan ? plan->ui : o->server->ui;
     if (!set) return;

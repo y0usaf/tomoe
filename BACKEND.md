@@ -32,7 +32,8 @@ So the cut goes bottom-up in three steps, each leaving the DRM session usable.
    wlroots devices; an adapter in libinput.c forwards them until step 2
    removes it. Cursor images stay on `wlr_cursor`, which no longer sees any
    input device, until outputs move.
-2. **Outputs and backends.** A Tomoe display core (output, modes, state,
+2. **Outputs and backends.** Done in code; the DRM path awaits a hardware
+   session. A Tomoe display core (output, modes, state,
    test/commit, frame scheduling, present feedback, cursors, wl_output,
    xdg-output) with three backends: DRM/KMS on libseat, headless, and nested
    Wayland. DRM does atomic commits with test commits, falls back from explicit

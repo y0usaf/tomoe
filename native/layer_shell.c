@@ -33,7 +33,7 @@ static struct layer_shell_surface *from_surface(struct surface *surface) {
 
 static void popups_destroy(struct layer_surface *ls) {
     struct xdg_popup *popup, *next;
-    wl_list_for_each_safe(popup, next, &ls->popups, link) xdg_popup_destroy(popup);
+    wl_list_for_each_safe(popup, next, &ls->popups, link) xdg_popup_dismiss(popup);
 }
 
 static void surface_free(struct layer_shell_surface *l) {
@@ -245,7 +245,7 @@ static void get_layer_surface(struct wl_client *client, struct wl_resource *shel
     struct layer_surface *ls = &l->base;
     ls->server = s;
     ls->surface = surface;
-    ls->output = output_resource ? wlr_output_from_resource(output_resource) : NULL;
+    ls->output = output_resource ? screen_from_resource(output_resource) : NULL;
     ls->namespace = strdup(namespace);
     wl_list_init(&ls->popups);
     ls->resource = wl_resource_create(client, &zwlr_layer_surface_v1_interface,

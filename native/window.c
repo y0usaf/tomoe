@@ -76,12 +76,12 @@ static struct tomoe *server_for_target(struct target *target) {
 
 static void window_update_scale(struct window *w) {
     struct output *output = output_for_world(w->server, w->target.x, w->target.y);
-    double scale = output ? snapped_scale(output->wlr->scale) : reference_scale(w->server);
+    double scale = output ? snapped_scale(output->screen->scale) : reference_scale(w->server);
     if (!isfinite(scale) || scale <= 0) scale = 1.0;
     bool changed = w->target.scale != scale ||
-        w->target.output != (output ? output->wlr : NULL);
+        w->target.output != (output ? output->screen : NULL);
     w->target.scale = scale;
-    w->target.output = output ? output->wlr : NULL;
+    w->target.output = output ? output->screen : NULL;
     struct surface *surface = surface_of(w);
     if (changed && surface) surface_set_scale(surface, scale);
 }
@@ -118,7 +118,7 @@ static void configure_xdg(struct window *w) {
     if (w->configured && w->configured_scale == w->target.scale &&
             w->configured_width == width && w->configured_height == height) return;
     surface_set_scale(w->xdg->base->surface, w->target.scale);
-    xdg_toplevel_set_size(w->xdg, width, height);
+    xdg_toplevel_configure_size(w->xdg, width, height);
     w->configured = true;
     w->configured_scale = w->target.scale;
     w->configured_width = width;
@@ -180,7 +180,7 @@ static const char *app_id_of(struct window *w) {
     return w->xdg_app_id ? w->xdg_app_id : "";
 }
 static void window_activate(struct window *w, bool activated) {
-    if (w->xdg->base->initialized) xdg_toplevel_set_activated(w->xdg, activated);
+    if (w->xdg->base->initialized) xdg_toplevel_configure_activated(w->xdg, activated);
 }
 static void window_event(struct window *w, const char *type, const char *request) {
     struct event *event; size_t size;
@@ -327,15 +327,15 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
     w->desired_maximize = maximize != 0;
     if (!w->xdg->base->initialized) return;
     if (w->xdg->scheduled.fullscreen != (fullscreen != 0)) {
-        xdg_toplevel_set_fullscreen(w->xdg, fullscreen != 0);
+        xdg_toplevel_configure_fullscreen(w->xdg, fullscreen != 0);
     }
     if (w->xdg->scheduled.maximized != (maximize != 0)) {
-        xdg_toplevel_set_maximized(w->xdg, maximize != 0);
+        xdg_toplevel_configure_maximized(w->xdg, maximize != 0);
     }
 }
 
 static void request_event(struct window *w, const char *request, int requested,
-        struct wlr_output *output, uint32_t edges) {
+        struct screen *output, uint32_t edges) {
     struct event *event; size_t size;
     FILE *out = begin_event(w->server, &event, &size);
     if (!out) return;
@@ -350,7 +350,7 @@ static void request_event(struct window *w, const char *request, int requested,
     end_event(w->server, event, out);
 }
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
-        struct wlr_output *output) {
+        struct screen *output) {
     struct window *w = find_window_registered(s, id);
     if (w) request_event(w, request, requested, output, 0);
 }
@@ -424,14 +424,14 @@ void foreign_toplevels_refresh(struct tomoe *s) {
         world_to_screen(s, &right, &bottom);
         struct wlr_box box = { pixel_round(x), pixel_round(y),
             pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) };
-        struct wlr_output *outputs[16];
+        struct screen *outputs[16];
         size_t count = 0;
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             struct wlr_box output_box, overlap;
             physical_output_box(o, &output_box);
             if (count < 16 && output_is_active(o) && w->tree->enabled &&
-                    wlr_box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->wlr;
+                    wlr_box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->screen;
         }
         foreign_update(s, w->target.id, title_of(w), app_id_of(w), state, outputs, count);
     }
@@ -456,7 +456,7 @@ void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
         const struct presentation_output *output = presentation_output_at(plan, x, y);
         entry->target.scale = output ? output->scale_120 / 120.0 :
             (plan->output_count ? plan->outputs[0].scale_120 / 120.0 : 1.0);
-        entry->target.output = output ? output->output->wlr : NULL;
+        entry->target.output = output ? output->output->screen : NULL;
         entry->visible = entry->visible && w->mapped && entry->staged;
     }
 }
@@ -563,16 +563,16 @@ static void window_commit(struct wl_listener *listener, void *data) {
     window_update_scale(w);
     if (w->xdg->base->initial_commit) {
         if (!w->admitted) {
-            xdg_toplevel_set_size(w->xdg, 0, 0);
+            xdg_toplevel_configure_size(w->xdg, 0, 0);
             schedule_scene(w->server);
             return;
         }
         int width = positive_logical_size(w->desired_width, w->target.scale);
         int height = positive_logical_size(w->desired_height, w->target.scale);
-        xdg_toplevel_set_size(w->xdg, width, height);
-        xdg_toplevel_set_fullscreen(w->xdg, w->desired_fullscreen);
-        xdg_toplevel_set_maximized(w->xdg, w->desired_maximize);
-        xdg_toplevel_set_activated(w->xdg, w->server->focused == w->target.id);
+        xdg_toplevel_configure_size(w->xdg, width, height);
+        xdg_toplevel_configure_fullscreen(w->xdg, w->desired_fullscreen);
+        xdg_toplevel_configure_maximized(w->xdg, w->desired_maximize);
+        xdg_toplevel_configure_activated(w->xdg, w->server->focused == w->target.id);
         w->configured = true;
         w->configured_scale = w->target.scale;
         w->configured_width = width;
@@ -687,10 +687,10 @@ static void popup_unconstrain(struct popup *p) {
         struct layer *l = wl_container_of(target, l, target);
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
-            if (o->wlr != l->wlr->output) continue;
+            if (o->screen != l->wlr->output) continue;
             struct wlr_box physical;
             physical_output_box(o, &physical);
-            double scale = snapped_scale(o->wlr->scale);
+            double scale = snapped_scale(o->screen->scale);
             box = (struct wlr_box){ -l->tree->x, -l->tree->y,
                 logical_size(physical.width, scale), logical_size(physical.height, scale) };
         }
@@ -761,7 +761,7 @@ void popup_create(struct xdg_popup *xdg, struct node *parent) {
 void xdg_popup_created(struct tomoe *s, struct xdg_popup *xdg) {
     if (!xdg->parent) return;
     struct xdg_surface *parent = xdg_surface_from_surface(xdg->parent);
-    if (!parent || !parent->data) { xdg_popup_destroy(xdg); return; }
+    if (!parent || !parent->data) { xdg_popup_dismiss(xdg); return; }
     popup_create(xdg, parent->data);
 }
 
