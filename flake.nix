@@ -40,6 +40,7 @@
               ./src
               ./builtins
               ./examples
+              ./share
               ./build.lisp
             ];
           };
@@ -122,6 +123,8 @@
             install -Dm755 build/libtomoe-battery.so $out/lib/libtomoe-battery.so
             install -Dm755 build/libtomoe-network.so $out/lib/libtomoe-network.so
             install -Dm755 build/libtomoe-tray.so $out/lib/libtomoe-tray.so
+            install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
+            install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
             makeWrapper $out/libexec/tomoe $out/bin/tomoe \

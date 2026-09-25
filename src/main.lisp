@@ -127,6 +127,22 @@ only after it changes again."
          (others (remove card (mapcar #'namestring (directory "/dev/dri/card*")) :test #'equal)))
     (format nil "~{~A~^:~}" (cons card others))))
 
+(defparameter +session-variables+
+  '("WAYLAND_DISPLAY" "DISPLAY" "XDG_CURRENT_DESKTOP" "TOMOE_PORTAL_CHOOSER" "TOMOE_SOCKET")
+  "Variables pushed into the systemd user and D-Bus activation environments.")
+
+(defun session-shell (script &optional (wait t))
+  (ignore-errors (sb-ext:run-program (or (sb-ext:posix-getenv "TOMOE_SHELL") "/bin/sh") (list "-c" script) :wait wait :output nil :error nil)))
+
+(defun start-session ()
+  "Publish the session environment and bring tomoe-session.target up."
+  (let ((variables (format nil "~{~A~^ ~}" (remove-if-not #'sb-ext:posix-getenv +session-variables+))))
+    (session-shell (format nil "hash systemctl 2>/dev/null && systemctl --user import-environment ~A; hash dbus-update-activation-environment 2>/dev/null && dbus-update-activation-environment ~:*~A; exit 0" variables)))
+  (session-shell "hash systemctl 2>/dev/null || exit 0; systemctl --user start tomoe-session.target; timeout 10 systemctl --user start xdg-desktop-portal-gtk.service; systemctl --user try-restart xdg-desktop-portal.service" nil))
+
+(defun stop-session ()
+  (session-shell (format nil "hash systemctl 2>/dev/null || exit 0; systemctl --user stop tomoe-session.target; systemctl --user unset-environment ~{~A~^ ~}" +session-variables+)))
+
 (defun run-compositor (name backend sources watch &optional drm-device)
   (when (member backend '("auto" "nested") :test #'equal)
     (let ((display (parent-wayland-display)))
@@ -166,6 +182,8 @@ only after it changes again."
              (if (plusp (length display))
                  (sb-posix:setenv "DISPLAY" display 1)
                  (sb-posix:unsetenv "DISPLAY")))
+           (sb-posix:setenv "XDG_CURRENT_DESKTOP" "tomoe" 1)
+           (when (equal backend "drm") (start-session))
            (start-notifications runtime)
            (start-mpris runtime)
            (start-battery runtime)
@@ -220,8 +238,9 @@ only after it changes again."
                                   (unwind-protect (stop-watches runtime)
                                     (unwind-protect (stop-executions runtime)
                                       (stop-managed-processes runtime)))))))))
-        (unwind-protect (when native (%destroy native))
-          (unwind-protect (close-json-control json-server) (close-control control)))))))
+        (unwind-protect (when (and runtime (equal backend "drm")) (stop-session))
+          (unwind-protect (when native (%destroy native))
+            (unwind-protect (close-json-control json-server) (close-control control))))))))
 
 (defun default-config-file ()
   (let* ((root (sb-ext:posix-getenv "XDG_CONFIG_HOME"))

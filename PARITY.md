@@ -114,8 +114,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 106 | `window_open`/`window_close`/`focus_change`/`outputs_changed` events | crates/tomoe/src/ipc.rs | src/ipc.lisp | Done |
 | 107 | `screencast_select` answered by policy, deferrable | crates/tomoe/src/ipc.rs, lua.rs | src/ipc.lisp `screencast_select` → `:screencast` event, `screencast-answer` command (deferrable; fallback when nothing reads `:screencast`) | Done |
 | 108 | `tomoe msg` CLI | crates/tomoe/src/main.rs | src/main.lisp, src/ipc-transport.lisp | Done |
-| 109 | Session environment import (systemd, D-Bus), `XDG_CURRENT_DESKTOP=tomoe` | crates/tomoe/src/main.rs | none | Missing |
-| 110 | tomoe-session.target start/stop and portal restart | crates/tomoe/src/main.rs | none | Missing |
+| 109 | Session environment import (systemd, D-Bus), `XDG_CURRENT_DESKTOP=tomoe` | crates/tomoe/src/main.rs | src/main.lisp `start-session` (drm only), `XDG_CURRENT_DESKTOP=tomoe` always | Done |
+| 110 | tomoe-session.target start/stop and portal restart | crates/tomoe/src/main.rs | src/main.lisp `start-session`/`stop-session`, share/tomoe-session.target | Done |
 | 111 | In-process shell surfaces | crates/tomoe/src/shell.rs, crates/moonshell-* | src/ui.lisp, native/ui.c | Done |
 | 112 | Element vocabulary (row/column/text/icon/button/separator/progress/image/stack) | crates/moonshell-runtime/src/element.rs | src/ui.lisp | Done |
 | 113 | `slider`, `scroll`, `input` elements | crates/moonshell-runtime/src/element.rs | none | Dropped: the old parser rejected all three |
