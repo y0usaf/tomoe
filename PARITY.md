@@ -135,8 +135,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 127 | Notification popups | resources/moonshell/notifications.lua | builtins/desktop.lisp `notification-popups` | Done |
 | 128 | Tray watcher and host | crates/moonshell-services/src/tray.rs | support/tray.c, src/tray.lisp, examples/tray.lisp | Done |
 | 129 | Standalone moonshell layer-shell binary | crates/moonshell | none | Dropped: only ever run by a boot check; the in-process shell replaced it |
-| 130 | ScreenCast portal (monitor and window, hidden/embedded cursor, PipeWire) | crates/xdg-desktop-portal-tomoe | none | Missing |
-| 131 | Portal env fallbacks and `TOMOE_PORTAL_CHOOSER` | crates/xdg-desktop-portal-tomoe/src/screencast.rs | none | Missing |
-| 132 | tomoe.portal, tomoe-portals.conf, tomoe-session.target, D-Bus service install | resources/, flake.nix | none | Missing |
+| 130 | ScreenCast portal (monitor and window, hidden/embedded cursor, PipeWire) | crates/xdg-desktop-portal-tomoe | portal/ (vendored unchanged), installed at libexec/xdg-desktop-portal-tomoe | Done |
+| 131 | Portal env fallbacks and `TOMOE_PORTAL_CHOOSER` | crates/xdg-desktop-portal-tomoe/src/screencast.rs | portal/crates/xdg-desktop-portal-tomoe/src/screencast.rs | Done |
+| 132 | tomoe.portal, tomoe-portals.conf, tomoe-session.target, D-Bus service install | resources/, flake.nix | share/, flake.nix (portal, portals.conf, session target, D-Bus service) | Done |
 | 133 | run-tty.sh | run-tty.sh | dev.sh | Dropped: `nix run . -- --backend drm` replaces it |
 | 134 | Pure-Lisp backend | none | backend/ (deleted) | Improved: nothing shipped loaded it; deleting it removed a second backend contract |

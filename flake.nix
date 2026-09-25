@@ -27,6 +27,24 @@
           inherit system;
           overlays = [ wlrootsOverlay ];
         };
+      portal =
+        pkgs:
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "xdg-desktop-portal-tomoe";
+          version = "0.1.0";
+          src = ./portal;
+          cargoLock.lockFile = ./portal/Cargo.lock;
+          nativeBuildInputs = [
+            pkgs.rustPlatform.bindgenHook
+            pkgs.pkg-config
+          ];
+          buildInputs = [
+            pkgs.pipewire
+            pkgs.libgbm
+            pkgs.libdrm
+          ];
+          doCheck = false;
+        };
       package =
         pkgs:
         pkgs.stdenv.mkDerivation {
@@ -125,6 +143,11 @@
             install -Dm755 build/libtomoe-tray.so $out/lib/libtomoe-tray.so
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
+            install -Dm644 share/tomoe.portal $out/share/xdg-desktop-portal/portals/tomoe.portal
+            install -Dm755 ${portal pkgs}/bin/xdg-desktop-portal-tomoe $out/libexec/xdg-desktop-portal-tomoe
+            install -d $out/share/dbus-1/services
+            printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.tomoe\nExec=%s/libexec/xdg-desktop-portal-tomoe\n' \
+              "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
             makeWrapper $out/libexec/tomoe $out/bin/tomoe \
