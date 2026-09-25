@@ -520,7 +520,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     struct wlr_output *output = o->wlr;
     struct tomoe *s = o->server;
     struct wlr_buffer_pass_options options = {0};
-    if (s->settings.wait_frame && output->renderer->features.timeline) {
+    if (output->renderer->features.timeline) {
         if (!s->render_timeline)
             s->render_timeline = wlr_drm_syncobj_timeline_create(
                 wlr_renderer_get_drm_fd(output->renderer));
@@ -573,7 +573,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         wlr_output_add_software_cursors_to_render_pass(output, pass, &damage);
     bool success = wlr_render_pass_submit(pass);
     pixman_region32_fini(&damage);
-    if (success && options.signal_timeline) {
+    if (success && s->settings.wait_frame && options.signal_timeline) {
         int fd = wlr_drm_syncobj_timeline_export_sync_file(options.signal_timeline,
             options.signal_point);
         if (fd >= 0) {
@@ -607,6 +607,7 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
         }
     }
     bool success = render_scene_buffer(o, buffer, state, plan, true);
+    uint64_t render_point = o->server->render_point;
     if (success) {
         if (needs_cursorless_capture(o)) {
             struct wlr_buffer *capture = wlr_allocator_create_buffer(
@@ -622,6 +623,8 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
         wlr_output_state_set_buffer(state, buffer);
         wlr_output_state_set_damage(state, &damage);
         pixman_region32_fini(&damage);
+        if (o->server->render_timeline && output->backend->features.timeline)
+            wlr_output_state_set_wait_timeline(state, o->server->render_timeline, render_point);
     }
     wlr_buffer_unlock(buffer);
     return success;
