@@ -104,7 +104,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `report-config-error`, `:config-error` context, builtins/desktop.lisp `config-error` | Done |
 | 97 | `watchdog_ms` | crates/tomoe/src/lua.rs | src/api.lisp `:watchdog-ms` setting (default 1000, 0 disables), src/runtime.lisp `invoke-extension` | Done |
 | 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp "wm" | Done |
-| 99 | Zoomer canvas WM | resources/zoomer.lua | none | Missing |
+| 99 | Zoomer canvas WM | resources/zoomer.lua | examples/zoomer.lisp (mount over the default policy) | Done |
 | 100 | Special workspaces | resources/special.lua | none | Missing |
 | 101 | Screencast source picker | resources/screencast.lua | none | Missing |
 | 102 | Default config: notifications, screencast, shadow and border defaults | resources/init.lua | builtins/desktop.lisp | Partial |

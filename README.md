@@ -302,8 +302,11 @@ source auto-reload off for one instance; owned `watch-file` effects still run.
 window. Mount it after the default policy to override tiling. Removing it
 restores the lower-priority layout without restarting clients. The other
 examples are `workspaces.lisp` (nine tags), `float.lisp` (floating windows moved
-and resized by a Super drag), and `layer-inset.lisp` (tiling that insets by
-layer exclusive zones).
+and resized by a Super drag), `layer-inset.lisp` (tiling that insets by
+layer exclusive zones), and `zoomer.lisp` (a floating canvas with planes, where
+Mod+drag moves, resizes or pans, Mod+scroll zooms around the cursor, Mod+Tab and
+Mod+1..9 switch planes, and Mod+f fits a window to the view; publish
+`:zoomer-settings` to change its step sizes).
 
 ## Write an extension
 
