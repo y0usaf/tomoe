@@ -916,6 +916,11 @@ static void output_frame(struct wl_listener *listener, void *data) {
         if (!wlr_output_test_state(o->wlr, &state)) state.tearing_page_flip = false;
     }
     success = success && wlr_output_commit_state(o->wlr, &state);
+    if (success && !scanout && (state.committed & WLR_OUTPUT_STATE_BUFFER)) {
+        wlr_buffer_unlock(o->presented[1]);
+        o->presented[1] = o->presented[0];
+        o->presented[0] = wlr_buffer_lock(state.buffer);
+    }
     finish_output_capture(o);
     wlr_output_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
@@ -956,6 +961,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = o->server;
     struct wlr_output *wlr = o->wlr;
     finish_output_capture(o);
+    wlr_buffer_unlock(o->presented[0]);
+    wlr_buffer_unlock(o->presented[1]);
     screenshot_output_gone(s, o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);

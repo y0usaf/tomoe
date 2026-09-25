@@ -71,6 +71,7 @@ struct output {
     char mirror[129];
     char pending_mirror[129];
     struct wlr_buffer *capture_primary, *capture_buffer;
+    struct wlr_buffer *presented[2];
     bool lock_rendered, gamma_dirty;
     struct wlr_surface *scanout;
 };
