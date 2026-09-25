@@ -31,7 +31,7 @@
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
-  json-server ipc-call (ipc-sequence 0) ipc-published-context ipc-published-announcements
+  json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error)
 
 (define-condition extension-error (error)
@@ -131,6 +131,7 @@
                   result)))
       (:close (destructuring-bind (id) args (close-window id)))
       (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
+      (:screencast (destructuring-bind (token answer value) args (screencast-answer token answer value)))
       (:quit (unless (null args) (error "QUIT takes no arguments.")) (quit))
       (:reload (unless (null args) (error "RELOAD takes no arguments.")) (reload)))))
 
@@ -181,9 +182,9 @@
             (when (> (length effects) 512) (error "More than 512 effects."))
             (when (> (length commands) 32) (error "More than 32 commands."))
             (when (and commands
-                       (not (or (member (getf event :type) '(:key :button :timer :watch :exec :request :screenshot :ipc :ui))
+                       (not (or (member (getf event :type) '(:key :button :timer :watch :exec :request :screenshot :screencast :ipc :ui))
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
-              (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, IPC, or UI command event."))
+              (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI command event."))
             (let ((effects (mapcar #'canonical-effect effects))
                   (commands (mapcar (lambda (command) (canonical-command command (spec-source spec))) commands))
                   (keys (make-hash-table :test #'equal)))
@@ -906,6 +907,7 @@ stay in the page cache, so the digest decides."
      (unless spawn (error "Session spawn was not reserved before publication."))
      (start-managed-process runtime spawn))
     (:close (%close (runtime-backend runtime) (first (command-arguments command))))
+    (:screencast (apply #'answer-screencast runtime (command-arguments command)))
     (:screenshot (%screenshot (runtime-backend runtime) (if (first (command-arguments command)) 0 1)))
     (:quit (setf (runtime-running runtime) nil))
     (:reload (configure runtime (runtime-sources runtime)))))
@@ -1072,6 +1074,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
       (:button (push :button changed))
       (:pointer (push :pointer changed))
       (:screenshot (push :screenshot changed))
+      (:screencast (push :screencast changed))
       (:grab (push :grab changed)))
     (setf (runtime-pending-context runtime)
           (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services))

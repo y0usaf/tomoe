@@ -42,6 +42,8 @@
 (define-native ("tomoe_grab_mode" %grab-mode) sb-alien:int (server (* t)))
 (define-native ("tomoe_close" %close) sb-alien:void
   (server (* t)) (id sb-alien:unsigned-int))
+(define-native ("tomoe_window_identifier" %window-identifier) sb-alien:c-string
+  (server (* t)) (id sb-alien:unsigned-int))
 (define-native ("tomoe_screenshot" %screenshot) sb-alien:void
   (server (* t)) (interactive sb-alien:int))
 (define-native ("tomoe_keysym" %keysym) sb-alien:unsigned-int (name sb-alien:c-string))

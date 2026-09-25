@@ -133,6 +133,22 @@
                 (getf call :result))
            (setf (runtime-ipc-call runtime) nil)))))))
 
+(defun answer-screencast (runtime token answer value)
+  (let ((pending (assoc token (runtime-screencasts runtime))))
+    (when pending
+      (setf (runtime-screencasts runtime) (remove pending (runtime-screencasts runtime)))
+      (destructuring-bind (client id) (rest pending)
+        (let ((identifier (and (eq answer :window) (%window-identifier (runtime-backend runtime) value))))
+          (json-send (runtime-json-server runtime) client
+                     (json-object
+                      (cons "id" id)
+                      (cons "result"
+                            (cond ((eq answer :output)
+                                   (json-object "action" "resolve" "type" "output" "output" value))
+                                  (identifier
+                                   (json-object "action" "resolve" "type" "window" "identifier" identifier))
+                                  (t (json-object "action" "deny")))))))))))
+
 (defun handle-json-request (runtime server client request)
   (reconcile-backend-observations runtime)
   (unless (and (runtime-running runtime) (not *stop-requested*))
@@ -156,7 +172,18 @@
                   ((equal method "quit") (setf (runtime-running runtime) nil) t)
                   ((equal method "screencast_select")
                    (unless id (return-from handle-json-request))
-                   (json-object (cons "action" "fallback")))
+                   (if (notany (lambda (mounted) (member :screencast (mount-context-reads mounted)))
+                               (runtime-mounts runtime))
+                       (json-object (cons "action" "fallback"))
+                       (let ((token (incf (runtime-ipc-sequence runtime)))
+                             (types (and params (json-get params "types"))))
+                         (push (list token client id) (runtime-screencasts runtime))
+                         (dispatch-event runtime
+                                         (list :type :screencast :token token
+                                               :app-id (or (and params (json-get params "app_id")) "")
+                                               :monitor (and (member "monitor" (second types) :test #'equal) t)
+                                               :window (and (member "window" (second types) :test #'equal) t)))
+                         (return-from handle-json-request))))
                   (t (let ((record (assoc method (resolved-ipc-effects (runtime-mounts runtime) :method)
                                          :test #'equal)))
                        (unless record (error "unknown method: ~A" method))

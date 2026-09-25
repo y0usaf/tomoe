@@ -1,6 +1,6 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot
+  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer
            #:window-rule #:rules-for #:raise-window #:show-window #:hide-window
            #:publish-state #:state-value #:service-state #:window-geometry
            #:ui #:shell-surface
@@ -19,7 +19,7 @@
 (defconstant +wire-version+ 1)
 (defconstant +native-abi-version+ 27)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :ipc :ui))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
@@ -621,6 +621,15 @@ The session owns the child, and native launches receive an activation token."
 (defun screenshot (&optional mode)
   (check-type mode (member nil :screen))
   (%command :screenshot (list (eq mode :screen))))
+(defun screencast-answer (token answer &optional value)
+  "Answer a :SCREENCAST request TOKEN with :OUTPUT and an output name, :WINDOW and
+a window id, or :DENY."
+  (check-type token (integer 1 *))
+  (ecase answer
+    (:output (check-type value string))
+    (:window (check-type value (integer 1 4294967295)))
+    (:deny (check-type value null)))
+  (%command :screencast (list token answer value)))
 (defun quit () (%command :quit nil))
 (defun reload () (%command :reload nil))
 

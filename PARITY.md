@@ -106,13 +106,13 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 98 | Default tiling WM (wm.lua) | resources/wm.lua, resources/init.lua | builtins/desktop.lisp "wm" | Done |
 | 99 | Zoomer canvas WM | resources/zoomer.lua | examples/zoomer.lisp (mount over the default policy) | Done |
 | 100 | Special workspaces | resources/special.lua | examples/special.lisp, `:wm-exclude` honored by builtins/desktop.lisp "wm" | Done |
-| 101 | Screencast source picker | resources/screencast.lua | none | Missing |
+| 101 | Screencast source picker | resources/screencast.lua | builtins/desktop.lisp "screencast" (rules `:screencast` nil/output, menu-dialog picker) | Done |
 | 102 | Default config: notifications, screencast, shadow and border defaults | resources/init.lua | builtins/desktop.lisp | Partial |
 | 103 | JSON IPC socket path and discovery | crates/tomoe-ipc/src/lib.rs | src/main.lisp `json-socket-path` | Done |
 | 104 | JSON IPC framing, wire 2 | crates/tomoe-ipc/src/lib.rs | src/ipc-transport.lisp | Done |
 | 105 | `version`, `windows`, `outputs`, `view`, `subscribe`, `quit` methods | crates/tomoe/src/ipc.rs | src/ipc.lisp | Done |
 | 106 | `window_open`/`window_close`/`focus_change`/`outputs_changed` events | crates/tomoe/src/ipc.rs | src/ipc.lisp | Done |
-| 107 | `screencast_select` answered by policy, deferrable | crates/tomoe/src/ipc.rs, lua.rs | src/ipc.lisp (always `fallback`) | Partial |
+| 107 | `screencast_select` answered by policy, deferrable | crates/tomoe/src/ipc.rs, lua.rs | src/ipc.lisp `screencast_select` → `:screencast` event, `screencast-answer` command (deferrable; fallback when nothing reads `:screencast`) | Done |
 | 108 | `tomoe msg` CLI | crates/tomoe/src/main.rs | src/main.lisp, src/ipc-transport.lisp | Done |
 | 109 | Session environment import (systemd, D-Bus), `XDG_CURRENT_DESKTOP=tomoe` | crates/tomoe/src/main.rs | none | Missing |
 | 110 | tomoe-session.target start/stop and portal restart | crates/tomoe/src/main.rs | none | Missing |

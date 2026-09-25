@@ -403,6 +403,10 @@ void tomoe_close(struct tomoe *s, uint32_t id) {
     if (w->x11) wlr_xwayland_surface_close(w->x11);
     else wlr_xdg_toplevel_send_close(w->xdg);
 }
+const char *tomoe_window_identifier(struct tomoe *s, uint32_t id) {
+    struct window *w = find_window_registered(s, id);
+    return w && w->ext_handle ? w->ext_handle->identifier : NULL;
+}
 void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximize) {
     struct window *w = find_window_any(s, id);
     if (!w) return;

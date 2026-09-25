@@ -388,6 +388,61 @@
               (cons (once timer 5000) (toast :config-error (getf failure :message) :urgent t)))
             nil)))
 
+(defun screencast-request (snapshot event)
+  "The immediate answer to a screencast EVENT as (ANSWER VALUE), or a menu as
+(:menu ITEMS PICKS)."
+  (let ((app-id (getf event :app-id)) (items nil) (picks nil))
+    (dolist (window (context snapshot :windows))
+      (when (equal app-id (getf window :app-id))
+        (let ((rule (assoc :screencast (rules-for snapshot (getf window :id)))))
+          (cond ((and rule (null (cdr rule))) (return-from screencast-request (list :deny nil)))
+                ((stringp (cdr rule)) (return-from screencast-request (list :output (cdr rule))))))))
+    (when (getf event :monitor)
+      (dolist (output (context snapshot :outputs))
+        (push (format nil "output ~A (~Dx~D)" (getf output :name) (getf output :width) (getf output :height))
+              items)
+        (push (list :output (getf output :name)) picks)))
+    (when (getf event :window)
+      (dolist (window (context snapshot :windows))
+        (push (format nil "window ~A" (if (equal (getf window :title) "") (getf window :app-id)
+                                          (getf window :title)))
+              items)
+        (push (list :window (getf window :id)) picks)))
+    (case (length items)
+      (0 (list :deny nil))
+      (1 (first picks))
+      (t (list :menu (nreverse items) (nreverse picks))))))
+
+(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :key :ui) :state nil)
+    (snapshot state event)
+  (let ((queue (getf state :queue)) (selected (getf state :selected 0)) (commands nil))
+    (flet ((answer (token pick) (push (screencast-answer token (first pick) (second pick)) commands)))
+      (if (eq (getf event :type) :screencast)
+          (let ((result (screencast-request snapshot event)))
+            (if (eq (first result) :menu)
+                (setf queue (append queue (list (list :token (getf event :token)
+                                                      :app-id (getf event :app-id)
+                                                      :items (second result) :picks (third result)))))
+                (answer (getf event :token) result)))
+          (when (and queue (equal (getf event :owner) "screencast"))
+            (let ((request (first queue)))
+              (multiple-value-bind (action index)
+                  (menu-choice event selected (length (getf request :items)))
+                (case action
+                  (:select (answer (getf request :token) (nth index (getf request :picks)))
+                   (setf queue (rest queue) selected 0))
+                  (:cancel (answer (getf request :token) (list :deny nil))
+                   (setf queue (rest queue) selected 0))
+                  (:move (setf selected index))))))))
+    (values (list :queue queue :selected selected)
+            (when queue
+              (let ((request (first queue)))
+                (menu-dialog :screencast (getf request :items) selected
+                             :title (format nil "Share screen with ~A"
+                                            (if (equal (getf request :app-id) "") "an application"
+                                                (getf request :app-id))))))
+            commands)))
+
 (define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil) (snapshot state event)
   (declare (ignore snapshot))
   (values state nil
