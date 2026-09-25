@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "ui.h"
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 
 static void backend_destroy(struct wl_listener *listener, void *data) {
@@ -140,6 +141,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->cursor) wlr_cursor_destroy(s->cursor);
     if (s->backend) wlr_backend_destroy(s->backend);
     keyboard_logical_finish(s);
+    if (s->render_timeline) wlr_drm_syncobj_timeline_unref(s->render_timeline);
     if (s->allocator) wlr_allocator_destroy(s->allocator);
     if (s->renderer) wlr_renderer_destroy(s->renderer);
     if (s->display) wl_display_destroy(s->display);

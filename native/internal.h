@@ -104,7 +104,7 @@ struct presentation_target {
     int width, height, fullscreen, maximize;
 };
 struct settings {
-    bool force_ssd, honor_invalid_serial, tearing;
+    bool force_ssd, honor_invalid_serial, tearing, wait_frame;
 };
 void settings_default(struct settings *settings);
 struct presentation {
@@ -163,6 +163,8 @@ struct tomoe {
     double pointer_x, pointer_y;
     struct wlr_surface *cursor_surface;
     bool cursor_hidden;
+    struct wlr_drm_syncobj_timeline *render_timeline;
+    uint64_t render_point;
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
     double view_zoom;

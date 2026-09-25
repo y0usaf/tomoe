@@ -9,6 +9,7 @@ static const struct setting_field {
 } fields[] = {
     { "force-server-side-decorations", offsetof(struct settings, force_ssd), SETTING_BOOL },
     { "tearing", offsetof(struct settings, tearing), SETTING_BOOL },
+    { "wait-for-frame-completion", offsetof(struct settings, wait_frame), SETTING_BOOL },
     { "honor-xdg-activation-with-invalid-serial",
         offsetof(struct settings, honor_invalid_serial), SETTING_BOOL },
 };

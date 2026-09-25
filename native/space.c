@@ -2,6 +2,9 @@
 #include "ui.h"
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/render/drm_syncobj.h>
+#include <poll.h>
+#include <unistd.h>
 
 struct tracked_surface {
     struct wl_list link;
@@ -422,7 +425,18 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         const struct wlr_output_state *state, const struct presentation *plan,
         bool cursors) {
     struct wlr_output *output = o->wlr;
-    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(output->renderer, buffer, NULL);
+    struct tomoe *s = o->server;
+    struct wlr_buffer_pass_options options = {0};
+    if (s->settings.wait_frame && output->renderer->features.timeline) {
+        if (!s->render_timeline)
+            s->render_timeline = wlr_drm_syncobj_timeline_create(
+                wlr_renderer_get_drm_fd(output->renderer));
+        if (s->render_timeline) {
+            options.signal_timeline = s->render_timeline;
+            options.signal_point = ++s->render_point;
+        }
+    }
+    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(output->renderer, buffer, &options);
     if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct render_data data = { .x = planned ? planned->box.x : o->x,
@@ -455,6 +469,14 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         wlr_output_add_software_cursors_to_render_pass(output, pass, &damage);
     bool success = wlr_render_pass_submit(pass);
     pixman_region32_fini(&damage);
+    if (success && options.signal_timeline) {
+        int fd = wlr_drm_syncobj_timeline_export_sync_file(options.signal_timeline,
+            options.signal_point);
+        if (fd >= 0) {
+            poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
+            close(fd);
+        }
+    }
     return success;
 }
 

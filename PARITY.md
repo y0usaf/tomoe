@@ -78,7 +78,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 70 | VRR per output | crates/tomoe/src/backend/tty.rs | native/output.c | Done |
 | 71 | Output mirroring | crates/tomoe/src/lua.rs | native/output.c | Done |
 | 72 | Output disable and explicit position | crates/tomoe/src/lua.rs | native/output.c | Done |
-| 73 | `wait_for_frame_completion` | crates/tomoe/src/backend/tty.rs | none | Missing |
+| 73 | `wait_for_frame_completion` | crates/tomoe/src/backend/tty.rs | native/space.c `render_scene_buffer`, src/api.lisp `settings` | Done |
 | 74 | `--drm_device` render GPU override | crates/tomoe/src/main.rs | none | Missing |
 | 75 | `winit_size` nested window size (1280×800) | crates/tomoe/src/backend/winit.rs | none | Missing |
 | 76 | `--backend winit\|tty` names | crates/tomoe/src/main.rs | src/main.lisp (nested/drm) | Partial |
