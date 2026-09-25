@@ -1274,8 +1274,15 @@ Each UTF-8 line is a request such as `{"id":1,"method":"windows"}`. Replies are
 `{"id":1,"result":VALUE}` or `{"id":1,"error":"message"}`; omitted or null IDs
 execute without a reply. IDs are unsigned 64-bit integers. Events are
 `{"event":"NAME","payload":VALUE}`. Built-ins are `version`, `windows`, `outputs`,
-`view`, `subscribe`, and `quit`. `screencast_select` currently returns
-`{"action":"fallback"}` because the portal selection hook is not implemented.
+`view`, `subscribe`, `quit`, and `screencast_select`. The portal's
+`screencast_select` (params `app_id`, `types`) becomes a `(:type :screencast
+:token N :app-id S :monitor B :window B)` event; an extension answers it, now or
+from a later key or UI event, with `(screencast-answer N :output NAME)`,
+`(screencast-answer N :window ID)` or `(screencast-answer N :deny)`. With no
+extension reading `:screencast` the reply is `{"action":"fallback"}`. The
+builtin `screencast` picker honours a window rule property `:screencast`
+(`nil` denies, an output name casts it) for the requesting app, answers a single
+candidate directly, and otherwise opens a menu.
 Built-ins take precedence over extension methods.
 
 `windows` returns ascending IDs, metadata, visible committed physical geometry,
