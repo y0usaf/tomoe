@@ -79,13 +79,38 @@ static inline bool output_is_active(const struct output *output) {
 }
 
 enum target_kind { TARGET_WINDOW, TARGET_LAYER, TARGET_UNMANAGED, TARGET_ICON };
+struct window_style {
+    int radius, blur, tearing;
+    int64_t focused, unfocused;
+};
 struct target {
     uint32_t id;
     enum target_kind kind;
     int x, y, geometry_x, geometry_y;
     double scale;
     struct wlr_output *output;
+    int client_width, client_height;
+    bool fullscreen;
+    struct window_style style;
 };
+struct frame {
+    struct tomoe *server;
+    struct wlr_render_pass *pass;
+    struct wlr_buffer *buffer;
+    int x, y, width, height;
+    enum wl_output_transform transform;
+};
+struct effects;
+bool effects_available(struct frame *f);
+void effect_border(struct frame *f, struct wlr_fbox geometry, double width, double radius,
+    uint32_t rgba, float alpha);
+void effect_shadow(struct frame *f, struct wlr_fbox geometry, double range, double radius,
+    uint32_t rgba, double power, float alpha);
+bool effect_texture(struct frame *f, const struct wlr_render_texture_options *options,
+    struct wlr_fbox dst, struct wlr_fbox clip, double radius);
+void effect_blur(struct frame *f, struct wlr_fbox area, double radius, int passes,
+    double offset, int margin);
+void effects_finish(struct tomoe *s);
 struct presentation_output {
     struct output *output;
     struct wlr_box box;
@@ -120,6 +145,8 @@ struct settings {
     size_t device_count;
     bool force_ssd, honor_invalid_serial, tearing, wait_frame;
     int nested_width, nested_height;
+    int border_width, border_radius;
+    uint32_t border_focused, border_unfocused;
 };
 void settings_default(struct settings *settings);
 void settings_finish(struct settings *settings);
@@ -147,6 +174,7 @@ void settings_publish(struct tomoe *s, struct presentation *plan);
 struct tomoe {
     struct wl_display *display;
     struct settings settings;
+    struct effects *effects;
     struct wlr_backend *backend;
     struct wlr_session *session;
     struct wlr_renderer *renderer;

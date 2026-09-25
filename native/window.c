@@ -53,6 +53,12 @@ static void window_park(struct window *w) {
         INT_MIN / 2 + (int)(w->target.id % 32768) * 32768);
 }
 
+static void target_sync(struct window *w) {
+    w->target.client_width = w->mapped ? w->client_width : 0;
+    w->target.client_height = w->mapped ? w->client_height : 0;
+    w->target.fullscreen = w->fullscreen_state;
+}
+
 static bool managed_window(const struct window *w) {
     return w != NULL && !w->unmanaged && w->target.kind == TARGET_WINDOW;
 }
@@ -730,6 +736,7 @@ static void mapped(struct wl_listener *listener, void *data) {
     else
         buffer_event(w, true);
     activation_surface_mapped(w->server, surface_of(w));
+    target_sync(w);
     if (w->xdg && w->server->focused == w->target.id)
         update_keyboard_focus(w->server);
     schedule_scene(w->server);
@@ -814,6 +821,7 @@ static void window_commit(struct wl_listener *listener, void *data) {
         }
     }
     if (geometry_changed && !changed) window_geometry_event(w);
+    target_sync(w);
     schedule_scene(w->server);
 }
 static void window_title(struct wl_listener *listener, void *data) {
@@ -880,6 +888,7 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     if (!w) { wl_resource_post_no_memory(xdg->resource); return; }
     w->server = s; w->xdg = xdg; w->target.id = ++s->next_id;
     w->target.kind = TARGET_WINDOW;
+    w->target.style = (struct window_style){ -1, -1, -1, -1, -1 };
     w->target.scale = reference_scale(s);
     set_surface_scale(xdg->base->surface, w->target.scale);
     w->tree = wlr_scene_xdg_surface_create(s->window_tree, xdg->base);
@@ -980,6 +989,7 @@ static void new_xwayland_surface(struct wl_listener *listener, void *data) {
     w->server = s; w->x11 = x11; w->target.id = ++s->next_id;
     w->unmanaged = x11->override_redirect;
     w->target.kind = w->unmanaged ? TARGET_UNMANAGED : TARGET_WINDOW;
+    w->target.style = (struct window_style){ -1, -1, -1, -1, -1 };
     w->target.scale = reference_scale(s);
     x11->data = w;
     wl_list_insert(s->windows.prev, &w->link);

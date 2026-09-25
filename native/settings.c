@@ -10,6 +10,10 @@ static const struct setting_field {
     { "force-server-side-decorations", offsetof(struct settings, force_ssd), SETTING_BOOL },
     { "tearing", offsetof(struct settings, tearing), SETTING_BOOL },
     { "nested-size-width", offsetof(struct settings, nested_width), SETTING_INT },
+    { "border-width", offsetof(struct settings, border_width), SETTING_INT },
+    { "border-radius", offsetof(struct settings, border_radius), SETTING_INT },
+    { "border-focused", offsetof(struct settings, border_focused), SETTING_COLOR },
+    { "border-unfocused", offsetof(struct settings, border_unfocused), SETTING_COLOR },
     { "nested-size-height", offsetof(struct settings, nested_height), SETTING_INT },
     { "wait-for-frame-completion", offsetof(struct settings, wait_frame), SETTING_BOOL },
     { "honor-xdg-activation-with-invalid-serial",
@@ -17,7 +21,8 @@ static const struct setting_field {
 };
 
 void settings_default(struct settings *settings) {
-    *settings = (struct settings){ .nested_width = 1280, .nested_height = 800 };
+    *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
+        .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }

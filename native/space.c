@@ -326,15 +326,8 @@ void frame_done(struct output *o, const struct timespec *when) {
             wlr_surface_send_frame_done(track->surface, when);
 }
 
-struct render_data {
-    int x, y;
-    struct wlr_render_pass *pass;
-    struct wlr_buffer *buffer;
-    enum wl_output_transform transform;
-    int width, height;
-};
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
-    struct render_data *data = opaque;
+    struct frame *data = opaque;
     struct wlr_box local = leaf->screen;
     int64_t x = (int64_t)local.x - data->x;
     int64_t y = (int64_t)local.y - data->y;
@@ -369,7 +362,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     });
     return false;
 }
-static void render_presentation_cursors(struct output *o, struct render_data *data,
+static void render_presentation_cursors(struct output *o, struct frame *data,
         const struct presentation *plan) {
     const struct presentation_output *planned = presentation_output_for(plan, o->wlr);
     if (!planned) return;
@@ -429,6 +422,37 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
     return NULL;
 }
 
+static void decorate(struct tomoe *s, const struct target *t, bool focused,
+        double view_x, double view_y, double zoom, struct frame *f) {
+    if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
+    const struct settings *st = &s->settings;
+    struct wlr_fbox box = { (t->x - view_x) * zoom, (t->y - view_y) * zoom,
+        physical_size(t->client_width, t->scale) * zoom,
+        physical_size(t->client_height, t->scale) * zoom };
+    double radius = (t->style.radius >= 0 ? t->style.radius : st->border_radius) * zoom;
+    int64_t color = focused ? t->style.focused : t->style.unfocused;
+    effect_border(f, box, st->border_width * zoom, radius,
+        color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, 1);
+}
+static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct target *target,
+        double x, double y, struct frame *f) {
+    if (!node->enabled) return;
+    if (node->data) {
+        target = node->data;
+        x = y = 0;
+        decorate(s, target, target->id == s->focused, s->view_x, s->view_y, s->view_zoom, f);
+    } else {
+        x += node->x; y += node->y;
+    }
+    if (node->type == WLR_SCENE_NODE_TREE) {
+        struct wlr_scene_node *child;
+        wl_list_for_each(child, &wlr_scene_tree_from_node(node)->children, link)
+            render_walk(s, child, target, x, y, f);
+        return;
+    }
+    struct leaf leaf;
+    if (make_leaf(s, node, target, x, y, &leaf, NULL, NULL)) render_leaf(s, &leaf, f);
+}
 static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         const struct wlr_output_state *state, const struct presentation *plan,
         bool cursors) {
@@ -447,7 +471,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(output->renderer, buffer, &options);
     if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
-    struct render_data data = { .x = planned ? planned->box.x : o->x,
+    struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
         .y = planned ? planned->box.y : o->y, .pass = pass, .buffer = buffer,
         .transform = (state->committed & WLR_OUTPUT_STATE_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height };
@@ -462,11 +486,15 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     } else if (plan) {
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
-            if (root->visible)
-                walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, &data);
+            if (!root->visible) continue;
+            struct target target = root->target;
+            target.fullscreen = root->fullscreen;
+            decorate(o->server, &target, target.id == plan->focused, plan->view_x, plan->view_y,
+                plan->view_zoom, &data);
+            walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, &data);
         }
     } else {
-        walk_scene(o->server, &o->server->scene->tree.node, NULL, 0, 0, false, render_leaf, &data);
+        render_walk(o->server, &o->server->scene->tree.node, NULL, 0, 0, &data);
     }
     if (!locked) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
     pixman_region32_t damage;
