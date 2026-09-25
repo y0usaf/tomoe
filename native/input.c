@@ -1026,6 +1026,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
 }
 static void motion(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, motion);
+    idle_notify_activity(s);
     struct wlr_pointer_motion_event *event = data;
     relative_motion_forward(s, event->time_msec, event->delta_x, event->delta_y,
         event->unaccel_dx, event->unaccel_dy);
@@ -1052,6 +1053,7 @@ static struct wlr_output *named_pointer_output(struct tomoe *s, struct wlr_point
 }
 static void absolute(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, absolute);
+    idle_notify_activity(s);
     struct wlr_pointer_motion_absolute_event *event = data;
     struct wlr_output *mapped = virtual_pointer_output(s, &event->pointer->base);
     double x = event->x, y = event->y;
@@ -1182,6 +1184,7 @@ static bool ui_pointer_button(struct tomoe *s, struct wlr_pointer_button_event *
 }
 static void button(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, button);
+    idle_notify_activity(s);
     struct wlr_pointer_button_event *input = data;
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec);
     if (ui_pointer_button(s, input)) return;
@@ -1208,6 +1211,7 @@ static void button(struct wl_listener *listener, void *data) {
 }
 static void axis(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, axis);
+    idle_notify_activity(s);
     if (s->grab_mode != 0) return;
     struct wlr_pointer_axis_event *event = data;
     pointer_motion(s, event->time_msec);
@@ -1358,6 +1362,7 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
     struct keyboard *k = wl_container_of(listener, k, key);
     struct wlr_keyboard_key_event *input = data;
     struct tomoe *s = k->server;
+    idle_notify_activity(s);
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED)
         keyboard_activity(s, input->keycode);
     bool tracked = input->keycode < TOMOE_KEYCODE_COUNT;

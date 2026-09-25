@@ -294,6 +294,7 @@ void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
 void surfaces_textured(struct output *o);
+bool surface_visible(struct tomoe *s, struct wlr_surface *surface);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     struct wlr_surface **surface, double *sx, double *sy);
@@ -353,6 +354,7 @@ bool protocols_listen(struct tomoe *s);
 void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
     double dx, double dy, double dx_unaccel, double dy_unaccel);
 void idle_notify_activity(struct tomoe *s);
+void idle_refresh(struct tomoe *s);
 void drag_icons_refresh(struct tomoe *s);
 bool drag_active(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);

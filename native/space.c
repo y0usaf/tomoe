@@ -303,6 +303,12 @@ void forget_output(struct tomoe *s, struct wlr_output *output) {
         if (track->scene_owned) wlr_surface_send_leave(track->surface, output);
     }
 }
+bool surface_visible(struct tomoe *s, struct wlr_surface *surface) {
+    struct tracked_surface *track;
+    wl_list_for_each(track, &s->tracked_surfaces, link)
+        if (track->surface == surface) return track->seen;
+    return false;
+}
 void surfaces_textured(struct output *o) {
     struct tracked_surface *track;
     wl_list_for_each(track, &o->server->tracked_surfaces, link)
