@@ -64,6 +64,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wl_list_init(&s->gammas);
     wl_list_init(&s->tearings);
     wl_list_init(&s->activation_pending);
+    wl_list_init(&s->libinput_fds);
     s->next_binding_id = 1;
     s->next_device_id = 1;
     s->next_output_id = 1;
