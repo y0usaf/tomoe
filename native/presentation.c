@@ -37,7 +37,7 @@ const struct presentation_output *presentation_output_at(const struct presentati
         double x, double y) {
     for (size_t i = 0; i < plan->output_count; i++) {
         const struct presentation_output *output = &plan->outputs[i];
-        const struct wlr_box *box = &output->box;
+        const struct box *box = &output->box;
         if (x >= box->x && y >= box->y &&
                 x < (double)box->x + box->width && y < (double)box->y + box->height)
             return output;

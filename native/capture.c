@@ -9,10 +9,10 @@ struct copy_frame {
     struct wl_resource *resource;
     struct wl_list link;
     struct screen *output;
-    struct wlr_box box;
+    struct box box;
     uint32_t shm_format, dmabuf_format;
     bool cursor, damage, cursor_locked;
-    struct wlr_buffer *buffer;
+    struct buffer *buffer;
 };
 
 static const struct zwlr_screencopy_frame_v1_interface frame_impl;
@@ -26,7 +26,7 @@ static void frame_finish(struct copy_frame *frame) {
     wl_resource_set_user_data(frame->resource, NULL);
     wl_list_remove(&frame->link);
     if (frame->cursor_locked) screen_lock_software_cursors(frame->output, false);
-    wlr_buffer_unlock(frame->buffer);
+    buffer_unlock(frame->buffer);
     free(frame);
 }
 
@@ -52,30 +52,30 @@ static void frame_request(struct wl_resource *resource, struct wl_resource *buff
             "frame already used");
         return;
     }
-    struct wlr_buffer *buffer = wlr_buffer_try_from_resource(buffer_resource);
-    struct wlr_dmabuf_attributes dmabuf;
+    struct buffer *buffer = buffer_from_resource(buffer_resource);
+    struct dmabuf_attributes dmabuf;
     void *data;
     uint32_t format = DRM_FORMAT_INVALID;
     size_t stride = 0;
     bool valid = buffer && buffer->width == frame->box.width &&
         buffer->height == frame->box.height;
-    if (valid && wlr_buffer_get_dmabuf(buffer, &dmabuf)) {
+    if (valid && buffer_get_dmabuf(buffer, &dmabuf)) {
         valid = dmabuf.format == frame->dmabuf_format;
-    } else if (valid && wlr_buffer_begin_data_ptr_access(buffer,
-            WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride)) {
-        wlr_buffer_end_data_ptr_access(buffer);
+    } else if (valid && buffer_begin_access(buffer,
+            BUFFER_WRITE, &data, &format, &stride)) {
+        buffer_end_access(buffer);
         valid = format == frame->shm_format && stride == (size_t)frame->box.width * 4;
     } else {
         valid = false;
     }
     if (!valid) {
-        wlr_buffer_unlock(buffer);
+        buffer_unlock(buffer);
         wl_resource_post_error(resource, ZWLR_SCREENCOPY_FRAME_V1_ERROR_INVALID_BUFFER,
             "invalid buffer");
         return;
     }
     if (!frame->output->enabled) {
-        wlr_buffer_unlock(buffer);
+        buffer_unlock(buffer);
         frame_fail(frame);
         return;
     }
@@ -105,7 +105,7 @@ static const struct zwlr_screencopy_frame_v1_interface frame_impl = {
 };
 
 static void capture(struct wl_client *client, struct wl_resource *manager, uint32_t id,
-        int32_t cursor, struct wl_resource *output_resource, const struct wlr_box *region) {
+        int32_t cursor, struct wl_resource *output_resource, const struct box *region) {
     struct tomoe *s = wl_resource_get_user_data(manager);
     struct wl_resource *resource = wl_resource_create(client, &zwlr_screencopy_frame_v1_interface,
         wl_resource_get_version(manager), id);
@@ -118,17 +118,17 @@ static void capture(struct wl_client *client, struct wl_resource *manager, uint3
     struct output *o = NULL, *candidate;
     wl_list_for_each(candidate, &s->outputs, link)
         if (candidate->screen == output && output_is_active(candidate)) o = candidate;
-    struct wlr_box box = { 0, 0, output ? output->width : 0, output ? output->height : 0 };
+    struct box box = { 0, 0, output ? output->width : 0, output ? output->height : 0 };
     if (o && region) {
         int width, height;
         screen_effective_resolution(output, &width, &height);
-        wlr_box_transform(&box, region, wlr_output_transform_invert(output->transform),
+        box_transform(&box, region, transform_invert(output->transform),
             width, height);
-        box = (struct wlr_box){ pixel_round(box.x * output->scale),
+        box = (struct box){ pixel_round(box.x * output->scale),
             pixel_round(box.y * output->scale), pixel_round(box.width * output->scale),
             pixel_round(box.height * output->scale) };
-        struct wlr_box bounds = { 0, 0, output->width, output->height };
-        if (!wlr_box_intersection(&box, &box, &bounds)) o = NULL;
+        struct box bounds = { 0, 0, output->width, output->height };
+        if (!box_intersection(&box, &box, &bounds)) o = NULL;
     }
     struct copy_frame *frame = o ? calloc(1, sizeof(*frame)) : NULL;
     if (!frame) {
@@ -162,7 +162,7 @@ static void capture_output(struct wl_client *client, struct wl_resource *manager
 static void capture_output_region(struct wl_client *client, struct wl_resource *manager,
         uint32_t id, int32_t cursor, struct wl_resource *output, int32_t x, int32_t y,
         int32_t width, int32_t height) {
-    capture(client, manager, id, cursor, output, &(struct wlr_box){ x, y, width, height });
+    capture(client, manager, id, cursor, output, &(struct box){ x, y, width, height });
 }
 
 static void manager_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -185,31 +185,31 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
     wl_resource_set_implementation(resource, &manager_impl, data, NULL);
 }
 
-static bool blit(struct tomoe *s, struct wlr_buffer *target, struct wlr_buffer *source,
-        struct wlr_box box) {
-    struct wlr_texture *texture = wlr_texture_from_buffer(s->renderer, source);
+static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
+        struct box box) {
+    struct texture *texture = texture_from_buffer(s->renderer, source);
     if (!texture) return false;
-    struct wlr_dmabuf_attributes dmabuf;
+    struct dmabuf_attributes dmabuf;
     void *data;
     uint32_t format;
     size_t stride;
     bool ok = false;
-    if (wlr_buffer_get_dmabuf(target, &dmabuf)) {
-        struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(s->renderer, target, NULL);
+    if (buffer_get_dmabuf(target, &dmabuf)) {
+        struct pass *pass = render_begin(s->renderer, target, NULL, 0);
         if (pass) {
-            wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
+            pass_add_texture(pass, &(struct texture_options){
                 .texture = texture, .src_box = { box.x, box.y, box.width, box.height },
                 .dst_box = { 0, 0, box.width, box.height },
-                .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
-            ok = wlr_render_pass_submit(pass);
+                .blend_mode = BLEND_NONE });
+            ok = pass_submit(pass);
         }
-    } else if (wlr_buffer_begin_data_ptr_access(target, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
+    } else if (buffer_begin_access(target, BUFFER_WRITE,
             &data, &format, &stride)) {
-        ok = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options){
+        ok = texture_read_pixels(texture, &(struct read_options){
             .data = data, .format = format, .stride = stride, .src_box = box });
-        wlr_buffer_end_data_ptr_access(target);
+        buffer_end_access(target);
     }
-    wlr_texture_destroy(texture);
+    texture_destroy(texture);
     return ok;
 }
 
@@ -234,7 +234,7 @@ struct session {
 struct image_frame {
     struct wl_resource *resource;
     struct session *session;
-    struct wlr_buffer *buffer;
+    struct buffer *buffer;
     bool capturing;
 };
 
@@ -261,7 +261,7 @@ static bool source_size(struct tomoe *s, const struct source *source, int *width
 
 static void image_frame_fail(struct image_frame *frame, uint32_t reason) {
     ext_image_copy_capture_frame_v1_send_failed(frame->resource, reason);
-    wlr_buffer_unlock(frame->buffer);
+    buffer_unlock(frame->buffer);
     frame->buffer = NULL;
     frame->capturing = false;
 }
@@ -276,14 +276,14 @@ static void session_constraints(struct tomoe *s, struct session *session) {
         shm == DRM_FORMAT_ARGB8888 ? WL_SHM_FORMAT_ARGB8888 :
         shm == DRM_FORMAT_XRGB8888 ? WL_SHM_FORMAT_XRGB8888 : shm);
     struct stat st;
-    if (fstat(wlr_renderer_get_drm_fd(s->renderer), &st) == 0) {
+    if (fstat(render_drm_fd(s->renderer), &st) == 0) {
         struct wl_array device;
         wl_array_init(&device);
         dev_t *slot = wl_array_add(&device, sizeof(st.st_rdev));
         if (slot) *slot = st.st_rdev;
         ext_image_copy_capture_session_v1_send_dmabuf_device(resource, &device);
         wl_array_release(&device);
-        const struct wlr_drm_format *format = wlr_drm_format_set_get(
+        const struct format *format = format_set_get(
             render_formats(s->renderer), session->format);
         struct wl_array modifiers;
         wl_array_init(&modifiers);
@@ -309,7 +309,7 @@ static void session_stop(struct session *session) {
 static void image_frame_resource_destroy(struct wl_resource *resource) {
     struct image_frame *frame = wl_resource_get_user_data(resource);
     if (frame->session) frame->session->frame = NULL;
-    wlr_buffer_unlock(frame->buffer);
+    buffer_unlock(frame->buffer);
     free(frame);
 }
 
@@ -321,8 +321,8 @@ static void image_frame_attach(struct wl_client *client, struct wl_resource *res
             "frame already captured");
         return;
     }
-    wlr_buffer_unlock(frame->buffer);
-    frame->buffer = wlr_buffer_try_from_resource(buffer);
+    buffer_unlock(frame->buffer);
+    frame->buffer = buffer_from_resource(buffer);
 }
 
 static void image_frame_damage(struct wl_client *client, struct wl_resource *resource,
@@ -332,16 +332,16 @@ static void image_frame_damage(struct wl_client *client, struct wl_resource *res
             "invalid buffer damage");
 }
 
-static bool buffer_fits(struct tomoe *s, struct session *session, struct wlr_buffer *buffer) {
-    struct wlr_dmabuf_attributes dmabuf;
+static bool buffer_fits(struct tomoe *s, struct session *session, struct buffer *buffer) {
+    struct dmabuf_attributes dmabuf;
     void *data;
     uint32_t format;
     size_t stride;
     if (buffer->width != session->width || buffer->height != session->height) return false;
-    if (wlr_buffer_get_dmabuf(buffer, &dmabuf)) return dmabuf.format == session->format;
-    if (!wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
+    if (buffer_get_dmabuf(buffer, &dmabuf)) return dmabuf.format == session->format;
+    if (!buffer_begin_access(buffer, BUFFER_WRITE,
             &data, &format, &stride)) return false;
-    wlr_buffer_end_data_ptr_access(buffer);
+    buffer_end_access(buffer);
     return stride == (size_t)buffer->width * 4;
 }
 
@@ -380,7 +380,7 @@ static const struct ext_image_copy_capture_frame_v1_interface image_frame_impl =
 };
 
 static void serve_session(struct tomoe *s, struct session *session, struct output *o,
-        struct wlr_buffer *committed, bool scanout, const struct timespec *now) {
+        struct buffer *committed, bool scanout, const struct timespec *now) {
     struct image_frame *frame = session->frame;
     if (!frame || !frame->capturing) return;
     int width, height;
@@ -398,9 +398,9 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     }
     bool ok;
     enum wl_output_transform transform = WL_OUTPUT_TRANSFORM_NORMAL;
-    struct wlr_box box = { 0, 0, width, height };
+    struct box box = { 0, 0, width, height };
     if (session->source.kind == SOURCE_OUTPUT) {
-        struct wlr_buffer *source = session->cursors || scanout ? committed : o->capture_buffer;
+        struct buffer *source = session->cursors || scanout ? committed : o->capture_buffer;
         if (!source) {
             screen_schedule_frame(o->screen);
             return;
@@ -408,17 +408,17 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         transform = o->screen->transform;
         ok = blit(s, frame->buffer, source, box);
     } else {
-        struct wlr_dmabuf_attributes dmabuf;
-        if (wlr_buffer_get_dmabuf(frame->buffer, &dmabuf)) {
+        struct dmabuf_attributes dmabuf;
+        if (buffer_get_dmabuf(frame->buffer, &dmabuf)) {
             ok = render_window_buffer(s, (uint32_t)session->source.id, frame->buffer);
         } else {
-            const struct wlr_drm_format *render = wlr_drm_format_set_get(
+            const struct format *render = format_set_get(
                 render_formats(s->renderer), format);
-            struct wlr_buffer *scratch = render ?
-                wlr_allocator_create_buffer(s->allocator, width, height, render) : NULL;
+            struct buffer *scratch = render ?
+                render_allocate(s->renderer, width, height, render) : NULL;
             ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch) &&
                 blit(s, frame->buffer, scratch, box);
-            if (scratch) wlr_buffer_drop(scratch);
+            if (scratch) buffer_drop(scratch);
         }
     }
     if (!ok) {
@@ -430,7 +430,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     ext_image_copy_capture_frame_v1_send_presentation_time(frame->resource,
         (uint32_t)((uint64_t)now->tv_sec >> 32), (uint32_t)now->tv_sec, (uint32_t)now->tv_nsec);
     ext_image_copy_capture_frame_v1_send_ready(frame->resource);
-    wlr_buffer_unlock(frame->buffer);
+    buffer_unlock(frame->buffer);
     frame->buffer = NULL;
     frame->capturing = false;
 }
@@ -644,7 +644,7 @@ bool capture_wants_cursorless(struct output *o) {
     return false;
 }
 
-void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout) {
+void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
     struct tomoe *s = o->server;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -656,7 +656,7 @@ void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout)
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link) {
         if (frame->output != o->screen || !frame->buffer) continue;
-        struct wlr_buffer *source = frame->cursor || scanout ? committed : o->capture_buffer;
+        struct buffer *source = frame->cursor || scanout ? committed : o->capture_buffer;
         if (!source) {
             screen_schedule_frame(o->screen);
             continue;

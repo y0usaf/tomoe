@@ -10,7 +10,7 @@ struct output;
 struct presentation;
 struct tomoe;
 struct ui_set;
-struct wlr_render_pass;
+struct pass;
 
 struct ui_hit {
     const char *owner;
@@ -48,7 +48,7 @@ int tomoe_ui_callback_current(struct tomoe *s, uint64_t callback_id);
 const char *tomoe_ui_stats(struct tomoe *s);
 
 bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out);
-void ui_render(struct output *o, struct wlr_render_pass *pass,
+void ui_render(struct output *o, struct pass *pass,
     const struct presentation *plan, int x, int y, int width, int height,
     enum wl_output_transform transform);
 void ui_output_finish(struct tomoe *s, const char *output);

@@ -56,7 +56,6 @@
             pkgs.wayland-scanner
           ];
           buildInputs = [
-            pkgs.wlroots
             pkgs.libdrm
             pkgs.libinput
             pkgs.seatd
@@ -107,7 +106,7 @@
               $wlr/wlr-foreign-toplevel-management-unstable-v1.xml \
               $wlr/wlr-data-control-unstable-v1.xml \
               $wlr/wlr-virtual-pointer-unstable-v1.xml \
-              ${pkgs.wlroots.src}/protocol/virtual-keyboard-unstable-v1.xml \
+              native/virtual-keyboard-unstable-v1.xml \
               ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
               $wp/stable/xdg-shell/xdg-shell.xml \
               $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
@@ -135,12 +134,12 @@
               wayland-scanner private-code "$xml" "build/$name-protocol.c"
               wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
             done
-            $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
+            $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
+              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
+              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
             sbcl --noinform --non-interactive --load build.lisp
             runHook postBuild
           '';
@@ -181,7 +180,7 @@
             runHook postInstall
           '';
           meta = {
-            description = "Common Lisp window management on wlroots";
+            description = "Common Lisp window management on a native Wayland stack";
             mainProgram = "tomoe";
             platforms = systems;
           };
@@ -212,14 +211,12 @@
               pkgs.foot
             ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              pkgs.wlroots
               pkgs.wayland
               pkgs.libxkbcommon
               pkgs.pixman
             ];
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
             PLASMA_WAYLAND_PROTOCOLS_XML = "${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols";
-            WLROOTS_PROTOCOLS_XML = "${pkgs.wlroots.src}/protocol";
           };
         }
       );

@@ -1,5 +1,4 @@
 #include "internal.h"
-#include <wlr/render/drm_syncobj.h>
 #include "xdg-output-unstable-v1-protocol.h"
 
 #define OUTPUT_VERSION 4
@@ -14,8 +13,8 @@ void screen_state_init(struct screen_state *state) {
 }
 
 void screen_state_finish(struct screen_state *state) {
-    wlr_buffer_unlock(state->buffer);
-    wlr_drm_syncobj_timeline_unref(state->wait_timeline);
+    buffer_unlock(state->buffer);
+    timeline_unref(state->wait_timeline);
     free(state->gamma);
     screen_state_init(state);
 }
@@ -27,8 +26,8 @@ bool screen_state_copy(struct screen_state *dst, const struct screen_state *src)
     screen_state_finish(dst);
     *dst = *src;
     dst->gamma = gamma;
-    if (dst->buffer) wlr_buffer_lock(dst->buffer);
-    if (dst->wait_timeline) wlr_drm_syncobj_timeline_ref(dst->wait_timeline);
+    if (dst->buffer) buffer_lock(dst->buffer);
+    if (dst->wait_timeline) timeline_ref(dst->wait_timeline);
     return true;
 }
 
@@ -68,17 +67,17 @@ void screen_state_set_adaptive_sync_enabled(struct screen_state *state, bool ena
     state->adaptive_sync_enabled = enabled;
 }
 
-void screen_state_set_buffer(struct screen_state *state, struct wlr_buffer *buffer) {
+void screen_state_set_buffer(struct screen_state *state, struct buffer *buffer) {
     state->committed |= SCREEN_BUFFER;
-    wlr_buffer_unlock(state->buffer);
-    state->buffer = wlr_buffer_lock(buffer);
+    buffer_unlock(state->buffer);
+    state->buffer = buffer_lock(buffer);
 }
 
 void screen_state_set_wait_timeline(struct screen_state *state,
-        struct wlr_drm_syncobj_timeline *timeline, uint64_t point) {
+        struct timeline *timeline, uint64_t point) {
     state->committed |= SCREEN_WAIT;
-    wlr_drm_syncobj_timeline_unref(state->wait_timeline);
-    state->wait_timeline = wlr_drm_syncobj_timeline_ref(timeline);
+    timeline_unref(state->wait_timeline);
+    state->wait_timeline = timeline_ref(timeline);
     state->wait_point = point;
 }
 
@@ -263,7 +262,7 @@ bool screen_commit(struct screen *screen, const struct screen_state *state) {
     return screens_commit(&update, 1);
 }
 
-const struct wlr_drm_format_set *screen_primary_formats(struct screen *screen) {
+const struct format_set *screen_primary_formats(struct screen *screen) {
     return screen->impl->formats ? screen->impl->formats(screen) : NULL;
 }
 
@@ -415,14 +414,14 @@ static void cursor_update(struct screen *screen) {
     if (!hardware) screen_schedule_frame(screen);
 }
 
-void cursor_show(struct tomoe *s, struct wlr_buffer *buffer, int hotspot_x, int hotspot_y,
+void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,
         float scale) {
     struct cursor_image *image = &s->cursor_image;
     if (buffer != image->buffer) {
-        wlr_texture_destroy(image->texture);
-        image->texture = buffer ? wlr_texture_from_buffer(s->renderer, buffer) : NULL;
-        wlr_buffer_unlock(image->buffer);
-        image->buffer = buffer ? wlr_buffer_lock(buffer) : NULL;
+        texture_destroy(image->texture);
+        image->texture = buffer ? texture_from_buffer(s->renderer, buffer) : NULL;
+        buffer_unlock(image->buffer);
+        image->buffer = buffer ? buffer_lock(buffer) : NULL;
     }
     image->hotspot_x = hotspot_x;
     image->hotspot_y = hotspot_y;
@@ -432,8 +431,8 @@ void cursor_show(struct tomoe *s, struct wlr_buffer *buffer, int hotspot_x, int 
 }
 
 void cursor_finish(struct tomoe *s) {
-    wlr_texture_destroy(s->cursor_image.texture);
-    wlr_buffer_unlock(s->cursor_image.buffer);
+    texture_destroy(s->cursor_image.texture);
+    buffer_unlock(s->cursor_image.buffer);
     s->cursor_image = (struct cursor_image){0};
 }
 

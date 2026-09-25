@@ -1,8 +1,6 @@
 #include "internal.h"
 #include <unistd.h>
 #include <drm_fourcc.h>
-#include <wlr/render/drm_syncobj.h>
-#include <wlr/util/region.h>
 #include "fractional-scale-v1-protocol.h"
 #include "linux-drm-syncobj-v1-protocol.h"
 #include "presentation-time-protocol.h"
@@ -17,7 +15,7 @@ enum {
 };
 
 struct release {
-    struct wlr_drm_syncobj_timeline *timeline;
+    struct timeline *timeline;
     uint64_t point;
     int refs;
 };
@@ -39,7 +37,7 @@ struct acquire_wait {
     struct surface *surface;
     struct surface_state *state;
     struct wl_list link;
-    struct wlr_drm_syncobj_timeline_waiter waiter;
+    struct timeline_waiter waiter;
 };
 
 struct surface_output {
@@ -81,8 +79,8 @@ static void destroy_resource(struct wl_client *client, struct wl_resource *resou
 
 static void release_unref(struct release *r) {
     if (!r || --r->refs > 0) return;
-    wlr_drm_syncobj_timeline_signal(r->timeline, r->point);
-    wlr_drm_syncobj_timeline_unref(r->timeline);
+    timeline_signal(r->timeline, r->point);
+    timeline_unref(r->timeline);
     free(r);
 }
 
@@ -93,7 +91,7 @@ static void hold_released(struct wl_listener *listener, void *data) {
     free(hold);
 }
 
-void surface_release_after(struct surface *surface, struct wlr_buffer *consumer) {
+void surface_release_after(struct surface *surface, struct buffer *consumer) {
     if (!surface->release || !consumer) return;
     struct release_hold *hold = calloc(1, sizeof(*hold));
     if (!hold) return;
@@ -211,15 +209,15 @@ static void feedbacks_discard(struct wl_list *list) {
 static void state_finish(struct surface_state *state) {
     struct synced_entry *entry, *next;
     wl_list_for_each_safe(entry, next, &state->synced, link) entry_free(entry);
-    wlr_buffer_unlock(state->buffer);
+    buffer_unlock(state->buffer);
     state->buffer = NULL;
     pixman_region32_fini(&state->surface_damage);
     pixman_region32_fini(&state->buffer_damage);
     pixman_region32_fini(&state->input);
     resources_destroy(&state->frames);
     feedbacks_discard(&state->feedbacks);
-    wlr_drm_syncobj_timeline_unref(state->acquire);
-    wlr_drm_syncobj_timeline_unref(state->release);
+    timeline_unref(state->acquire);
+    timeline_unref(state->release);
     state->acquire = state->release = NULL;
 }
 
@@ -238,11 +236,11 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
     }
     src->dx = src->dy = 0;
     if (src->committed & STATE_BUFFER) {
-        wlr_buffer_unlock(dst->buffer);
+        buffer_unlock(dst->buffer);
         dst->buffer = src->buffer;
         src->buffer = NULL;
-        wlr_drm_syncobj_timeline_unref(dst->acquire);
-        wlr_drm_syncobj_timeline_unref(dst->release);
+        timeline_unref(dst->acquire);
+        timeline_unref(dst->release);
         dst->acquire = src->acquire;
         dst->release = src->release;
         dst->acquire_point = src->acquire_point;
@@ -284,7 +282,7 @@ bool surface_has_buffer(struct surface *surface) {
 static bool state_buffer_size(struct surface_state *state, int *width, int *height) {
     *width = state->buffer_width;
     *height = state->buffer_height;
-    wlr_output_transform_coords(state->transform, width, height);
+    transform_coords(state->transform, width, height);
     return *width && *height;
 }
 
@@ -337,48 +335,48 @@ static void buffer_damage(struct surface *surface, pixman_region32_t *out) {
     if (s->viewport.has_dst && s->width && s->height) {
         double src_w = s->viewport.has_src ? s->viewport.src.width : (double)width / s->scale;
         double src_h = s->viewport.has_src ? s->viewport.src.height : (double)height / s->scale;
-        wlr_region_scale_xy(out, out, src_w / s->width, src_h / s->height);
+        region_scale_xy(out, out, src_w / s->width, src_h / s->height);
     }
     if (s->viewport.has_src)
         pixman_region32_translate(out, (int)floor(s->viewport.src.x), (int)floor(s->viewport.src.y));
-    wlr_region_scale(out, out, s->scale);
-    wlr_region_transform(out, out, wlr_output_transform_invert(s->transform), width, height);
+    region_scale(out, out, s->scale);
+    region_transform(out, out, transform_invert(s->transform), width, height);
     pixman_region32_union(out, out, &s->buffer_damage);
     pixman_region32_intersect_rect(out, out, 0, 0, s->buffer_width, s->buffer_height);
 }
 
 static void apply_buffer(struct surface *surface) {
-    struct wlr_buffer *next = surface->current.buffer;
+    struct buffer *next = surface->current.buffer;
     release_unref(surface->release);
     surface->release = NULL;
     if (!next) {
-        wlr_texture_destroy(surface->texture);
+        texture_destroy(surface->texture);
         surface->texture = NULL;
-        wlr_buffer_unlock(surface->buffer);
+        buffer_unlock(surface->buffer);
         surface->buffer = NULL;
         return;
     }
-    struct wlr_dmabuf_attributes dmabuf;
-    bool gpu = wlr_buffer_get_dmabuf(next, &dmabuf);
+    struct dmabuf_attributes dmabuf;
+    bool gpu = buffer_get_dmabuf(next, &dmabuf);
     pixman_region32_t damage;
     pixman_region32_init(&damage);
     buffer_damage(surface, &damage);
     bool reused = !gpu && surface->texture &&
-        wlr_texture_update_from_buffer(surface->texture, next, &damage);
+        texture_update(surface->texture, next, &damage);
     pixman_region32_fini(&damage);
     if (!reused) {
-        struct wlr_texture *texture = wlr_texture_from_buffer(surface->server->renderer, next);
-        if (!texture) wlr_log(WLR_ERROR, "tomoe: client buffer upload failed");
-        wlr_texture_destroy(surface->texture);
+        struct texture *texture = texture_from_buffer(surface->server->renderer, next);
+        if (!texture) tomoe_log(LOG_ERROR, "tomoe: client buffer upload failed");
+        texture_destroy(surface->texture);
         surface->texture = texture;
     }
-    wlr_buffer_unlock(surface->buffer);
+    buffer_unlock(surface->buffer);
     bool keep = gpu || !surface->role || surface->role->keep_buffer;
-    surface->buffer = keep ? wlr_buffer_lock(next) : NULL;
+    surface->buffer = keep ? buffer_lock(next) : NULL;
     if (surface->current.release) {
         surface->release = calloc(1, sizeof(*surface->release));
         if (surface->release) {
-            surface->release->timeline = wlr_drm_syncobj_timeline_ref(surface->current.release);
+            surface->release->timeline = timeline_ref(surface->current.release);
             surface->release->point = surface->current.release_point;
             surface->release->refs = 1;
         }
@@ -444,7 +442,7 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
         surface->role->commit(surface);
     wl_signal_emit_mutable(&surface->events.commit, surface);
     schedule_scene(surface->server);
-    wlr_buffer_unlock(surface->current.buffer);
+    buffer_unlock(surface->current.buffer);
     surface->current.buffer = NULL;
 }
 
@@ -495,11 +493,11 @@ static bool subsurface_synchronized(struct subsurface *sub) {
     return false;
 }
 
-static void acquire_ready(struct wlr_drm_syncobj_timeline_waiter *waiter) {
+static void acquire_ready(struct timeline_waiter *waiter) {
     struct acquire_wait *wait = wl_container_of(waiter, wait, waiter);
     struct surface *surface = wait->surface;
     struct surface_state *state = wait->state;
-    wlr_drm_syncobj_timeline_waiter_finish(&wait->waiter);
+    timeline_waiter_finish(&wait->waiter);
     wl_list_remove(&wait->link);
     free(wait);
     surface_unlock(surface, state);
@@ -525,8 +523,8 @@ static bool syncobj_check(struct surface *surface) {
         error = "acquire and release points conflict";
         code = WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_CONFLICTING_POINTS;
     } else if (attached) {
-        struct wlr_dmabuf_attributes dmabuf;
-        if (!wlr_buffer_get_dmabuf(p->buffer, &dmabuf)) {
+        struct dmabuf_attributes dmabuf;
+        if (!buffer_get_dmabuf(p->buffer, &dmabuf)) {
             error = "buffer is not a dmabuf";
             code = WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_UNSUPPORTED_BUFFER;
         }
@@ -551,7 +549,7 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
     bool wait = false;
     if (p->acquire) {
         bool ready = false;
-        if (!wlr_drm_syncobj_timeline_check(p->acquire, p->acquire_point,
+        if (!timeline_check(p->acquire, p->acquire_point,
                 DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE, &ready)) {
             wl_resource_post_no_memory(resource);
             return;
@@ -579,7 +577,7 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
     }
     if (wait) {
         struct acquire_wait *w = calloc(1, sizeof(*w));
-        if (!w || !wlr_drm_syncobj_timeline_waiter_init(&w->waiter, cached->acquire,
+        if (!w || !timeline_waiter_init(&w->waiter, cached->acquire,
                 cached->acquire_point, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
                 wl_display_get_event_loop(surface->server->display), acquire_ready)) {
             free(w);
@@ -602,12 +600,12 @@ static void surface_attach(struct wl_client *client, struct wl_resource *resourc
             "non-zero attach offset is not allowed");
         return;
     }
-    struct wlr_buffer *buffer = NULL;
-    if (buffer_resource && !(buffer = wlr_buffer_try_from_resource(buffer_resource))) {
+    struct buffer *buffer = NULL;
+    if (buffer_resource && !(buffer = buffer_from_resource(buffer_resource))) {
         wl_resource_post_error(resource, 0, "unknown buffer type");
         return;
     }
-    wlr_buffer_unlock(p->buffer);
+    buffer_unlock(p->buffer);
     p->buffer = buffer;
     p->committed |= STATE_BUFFER;
     if (dx || dy) {
@@ -718,7 +716,7 @@ static void surface_output_free(struct surface_output *so) {
 static void surface_state_waits_free(struct surface_state *state) {
     struct acquire_wait *w, *next;
     wl_list_for_each_safe(w, next, &state->waits, link) {
-        wlr_drm_syncobj_timeline_waiter_finish(&w->waiter);
+        timeline_waiter_finish(&w->waiter);
         wl_list_remove(&w->link);
         free(w);
     }
@@ -744,8 +742,8 @@ static void surface_free(struct wl_resource *resource) {
     struct surface_output *so, *so_next;
     wl_list_for_each_safe(so, so_next, &surface->outputs, link) surface_output_free(so);
     release_unref(surface->release);
-    wlr_texture_destroy(surface->texture);
-    wlr_buffer_unlock(surface->buffer);
+    texture_destroy(surface->texture);
+    buffer_unlock(surface->buffer);
     pixman_region32_fini(&surface->input_region);
     if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
     if (surface->fractional) wl_resource_set_user_data(surface->fractional, NULL);
@@ -870,9 +868,9 @@ struct surface *surface_root(struct surface *surface) {
     return surface;
 }
 
-static void extents(struct surface *surface, int x, int y, struct wlr_box *box, bool *first) {
+static void extents(struct surface *surface, int x, int y, struct box *box, bool *first) {
     if (!surface->mapped && !*first) return;
-    struct wlr_box own = { x, y, surface->current.width, surface->current.height };
+    struct box own = { x, y, surface->current.width, surface->current.height };
     if (*first) {
         *box = own;
     } else {
@@ -890,9 +888,9 @@ static void extents(struct surface *surface, int x, int y, struct wlr_box *box, 
         extents(sub->surface, x + sub->x, y + sub->y, box, first);
 }
 
-void surface_extents(struct surface *surface, struct wlr_box *box) {
+void surface_extents(struct surface *surface, struct box *box) {
     bool first = true;
-    *box = (struct wlr_box){0};
+    *box = (struct box){0};
     extents(surface, 0, 0, box, &first);
 }
 
@@ -921,15 +919,15 @@ bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_i
         walk_list(last, x, y, reverse, iterator, data);
 }
 
-void surface_source_box(struct surface *surface, struct wlr_fbox *box) {
+void surface_source_box(struct surface *surface, struct fbox *box) {
     struct surface_state *s = &surface->current;
-    *box = (struct wlr_fbox){ 0, 0, s->buffer_width, s->buffer_height };
+    *box = (struct fbox){ 0, 0, s->buffer_width, s->buffer_height };
     if (!s->viewport.has_src) return;
-    *box = (struct wlr_fbox){ s->viewport.src.x * s->scale, s->viewport.src.y * s->scale,
+    *box = (struct fbox){ s->viewport.src.x * s->scale, s->viewport.src.y * s->scale,
         s->viewport.src.width * s->scale, s->viewport.src.height * s->scale };
     int width, height;
     state_buffer_size(s, &width, &height);
-    wlr_fbox_transform(box, box, wlr_output_transform_invert(s->transform), width, height);
+    fbox_transform(box, box, transform_invert(s->transform), width, height);
 }
 
 bool surface_accepts_input(struct surface *surface, double sx, double sy) {
@@ -1229,7 +1227,7 @@ static void viewport_set_source(struct wl_client *client, struct wl_resource *re
         return;
     } else {
         p->viewport.has_src = true;
-        p->viewport.src = (struct wlr_fbox){ fx, fy, fw, fh };
+        p->viewport.src = (struct fbox){ fx, fy, fw, fh };
     }
     p->committed |= STATE_VIEWPORT;
 }
@@ -1359,10 +1357,10 @@ static void set_point(struct wl_resource *resource, struct wl_resource *timeline
         return;
     }
     struct surface_state *p = &sync->surface->pending;
-    struct wlr_drm_syncobj_timeline *timeline = wl_resource_get_user_data(timeline_resource);
-    struct wlr_drm_syncobj_timeline **slot = acquire ? &p->acquire : &p->release;
-    wlr_drm_syncobj_timeline_unref(*slot);
-    *slot = wlr_drm_syncobj_timeline_ref(timeline);
+    struct timeline *timeline = wl_resource_get_user_data(timeline_resource);
+    struct timeline **slot = acquire ? &p->acquire : &p->release;
+    timeline_unref(*slot);
+    *slot = timeline_ref(timeline);
     *(acquire ? &p->acquire_point : &p->release_point) = ((uint64_t)hi << 32) | lo;
 }
 
@@ -1404,7 +1402,7 @@ static void syncobj_get_surface(struct wl_client *client, struct wl_resource *ma
 }
 
 static void timeline_free(struct wl_resource *resource) {
-    wlr_drm_syncobj_timeline_unref(wl_resource_get_user_data(resource));
+    timeline_unref(wl_resource_get_user_data(resource));
 }
 
 static const struct wp_linux_drm_syncobj_timeline_v1_interface timeline_impl = {
@@ -1413,7 +1411,7 @@ static const struct wp_linux_drm_syncobj_timeline_v1_interface timeline_impl = {
 
 static void import_timeline(struct wl_client *client, struct wl_resource *manager, uint32_t id,
         int32_t fd) {
-    struct wlr_drm_syncobj_timeline *timeline = wlr_drm_syncobj_timeline_import(drm_fd, fd);
+    struct timeline *timeline = timeline_import(drm_fd, fd);
     close(fd);
     if (!timeline) {
         wl_resource_post_error(manager, WP_LINUX_DRM_SYNCOBJ_MANAGER_V1_ERROR_INVALID_TIMELINE,
@@ -1423,7 +1421,7 @@ static void import_timeline(struct wl_client *client, struct wl_resource *manage
     struct wl_resource *resource = wl_resource_create(client,
         &wp_linux_drm_syncobj_timeline_v1_interface, wl_resource_get_version(manager), id);
     if (!resource) {
-        wlr_drm_syncobj_timeline_unref(timeline);
+        timeline_unref(timeline);
         wl_client_post_no_memory(client);
         return;
     }
@@ -1463,8 +1461,8 @@ bool surfaces_listen(struct tomoe *s) {
             bind_fractional) &&
         wl_global_create(s->display, &wp_presentation_interface, 2, s, bind_presentation);
     if (!ok) return false;
-    drm_fd = wlr_renderer_get_drm_fd(s->renderer);
-    if (!s->renderer->features.timeline || !s->kms || drm_fd < 0) return true;
+    drm_fd = render_drm_fd(s->renderer);
+    if (!render_has_timeline(s->renderer) || !s->kms || drm_fd < 0) return true;
     return wl_global_create(s->display, &wp_linux_drm_syncobj_manager_v1_interface, 1, s,
         bind_syncobj);
 }

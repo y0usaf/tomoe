@@ -41,9 +41,14 @@ So the cut goes bottom-up in three steps, each leaving the DRM session usable.
    udev, VT switching through libseat, gamma LUTs, VRR, async flips, cursor
    planes and direct scanout, and passes the syncobj acquire point as the
    plane's in-fence. The step-1 adapter goes away here.
-3. **Types.** render.c stops implementing wlroots interfaces: Tomoe buffer,
-   texture and render calls, its own format sets, syncobj timelines, boxes,
-   regions and positioner math. wlroots leaves flake.nix and dev.sh.
+3. **Types.** Done. render.c is called directly (`texture_from_buffer`,
+   `render_begin`, `pass_add_texture`, `render_allocate`) instead of
+   implementing wlroots' renderer, texture, pass and allocator interfaces.
+   `native/base.c` holds the Tomoe buffer with its locks and addons, format
+   sets, syncobj timelines and waiters, boxes, regions, transforms, xdg
+   positioner math, the xcursor theme loader and logging. The
+   virtual-keyboard XML is vendored in `native/`. wlroots has left flake.nix,
+   dev.sh and the closure.
 
 ## Invariants carried forward
 
@@ -62,3 +67,6 @@ cursor code another 3,500. Tomoe needs one GPU vendor path verified on this
 machine and loud failure elsewhere, not wlroots' coverage; the target is under
 5,000 lines for all three steps, with each wlroots path deleted in the step
 that replaces it.
+
+Result: 3,029 lines across kms.c, screen.c, session.c, nested.c, headless.c,
+libinput.c and base.c.

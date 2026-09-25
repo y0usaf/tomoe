@@ -43,14 +43,14 @@ bool session_create(struct tomoe *s) {
     libseat_set_log_level(LIBSEAT_LOG_LEVEL_ERROR);
     session->seat = libseat_open_seat(&listener, s);
     if (!session->seat) {
-        wlr_log(WLR_ERROR, "tomoe: libseat could not open a seat");
+        tomoe_log(LOG_ERROR, "tomoe: libseat could not open a seat");
         return false;
     }
     session->source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
         libseat_get_fd(session->seat), WL_EVENT_READABLE, dispatch, s);
     for (int tries = 0; !session->active && tries < 100; tries++)
         if (libseat_dispatch(session->seat, 100) < 0) break;
-    if (!session->active) wlr_log(WLR_ERROR, "tomoe: libseat never activated the seat");
+    if (!session->active) tomoe_log(LOG_ERROR, "tomoe: libseat never activated the seat");
     return session->source && session->active;
 }
 

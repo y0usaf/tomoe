@@ -11,22 +11,185 @@
 #include <time.h>
 #include <GLES2/gl2.h>
 #include <wayland-server-core.h>
-#include <wlr/backend.h>
-#include <wlr/render/allocator.h>
-#include <wlr/render/drm_format_set.h>
-#include <wlr/render/pass.h>
-#include <wlr/render/wlr_texture.h>
-#include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_compositor.h>
-#include <wlr/types/wlr_cursor.h>
-#include <wlr/types/wlr_output_layout.h>
-#include <wlr/types/wlr_xcursor_manager.h>
-#include <wlr/types/wlr_xdg_output_v1.h>
-#include <wlr/types/wlr_xdg_shell.h>
-#include <wlr/util/log.h>
-#include <wlr/util/transform.h>
+#include <drm_fourcc.h>
+#include <pixman.h>
 #include <xkbcommon/xkbcommon.h>
 #include "wlr-layer-shell-unstable-v1-protocol.h"
+#include "xdg-shell-protocol.h"
+
+enum { LOG_ERROR = 1, LOG_INFO, LOG_DEBUG };
+extern int log_verbosity;
+void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+struct box { int x, y, width, height; };
+struct fbox { double x, y, width, height; };
+enum edges { EDGE_NONE = 0, EDGE_TOP = 1, EDGE_BOTTOM = 2, EDGE_LEFT = 4, EDGE_RIGHT = 8 };
+bool box_empty(const struct box *box);
+bool box_equal(const struct box *a, const struct box *b);
+bool box_intersection(struct box *dest, const struct box *a, const struct box *b);
+void box_transform(struct box *dest, const struct box *box, enum wl_output_transform transform,
+    int width, int height);
+void fbox_transform(struct fbox *dest, const struct fbox *box, enum wl_output_transform transform,
+    double width, double height);
+enum wl_output_transform transform_invert(enum wl_output_transform transform);
+enum wl_output_transform transform_compose(enum wl_output_transform a, enum wl_output_transform b);
+void transform_coords(enum wl_output_transform transform, int *x, int *y);
+void region_scale(pixman_region32_t *dst, const pixman_region32_t *src, float scale);
+void region_scale_xy(pixman_region32_t *dst, const pixman_region32_t *src, float sx, float sy);
+void region_transform(pixman_region32_t *dst, const pixman_region32_t *src,
+    enum wl_output_transform transform, int width, int height);
+
+struct addon {
+    struct wl_list link;
+    const void *owner;
+    void (*destroy)(struct addon *addon);
+};
+void addon_init(struct addon *addon, struct wl_list *addons, const void *owner,
+    void (*destroy)(struct addon *addon));
+void addon_finish(struct addon *addon);
+struct addon *addon_find(struct wl_list *addons, const void *owner,
+    void (*destroy)(struct addon *addon));
+
+#define DMABUF_MAX_PLANES 4
+struct dmabuf_attributes {
+    int32_t width, height;
+    uint32_t format;
+    uint64_t modifier;
+    int n_planes;
+    uint32_t offset[DMABUF_MAX_PLANES], stride[DMABUF_MAX_PLANES];
+    int fd[DMABUF_MAX_PLANES];
+};
+void dmabuf_attributes_finish(struct dmabuf_attributes *attributes);
+
+enum { BUFFER_READ = 1 << 0, BUFFER_WRITE = 1 << 1 };
+struct buffer;
+struct buffer_impl {
+    void (*destroy)(struct buffer *buffer);
+    bool (*get_dmabuf)(struct buffer *buffer, struct dmabuf_attributes *attributes);
+    bool (*begin_access)(struct buffer *buffer, uint32_t flags, void **data, uint32_t *format,
+        size_t *stride);
+    void (*end_access)(struct buffer *buffer);
+};
+struct buffer {
+    const struct buffer_impl *impl;
+    int width, height;
+    bool dropped, accessing;
+    size_t n_locks;
+    struct wl_list addons;
+    struct { struct wl_signal destroy, release; } events;
+};
+void buffer_init(struct buffer *buffer, const struct buffer_impl *impl, int width, int height);
+void buffer_finish(struct buffer *buffer);
+void buffer_drop(struct buffer *buffer);
+struct buffer *buffer_lock(struct buffer *buffer);
+void buffer_unlock(struct buffer *buffer);
+bool buffer_get_dmabuf(struct buffer *buffer, struct dmabuf_attributes *attributes);
+bool buffer_begin_access(struct buffer *buffer, uint32_t flags, void **data, uint32_t *format,
+    size_t *stride);
+void buffer_end_access(struct buffer *buffer);
+struct buffer *buffer_from_resource(struct wl_resource *resource);
+
+struct format {
+    uint32_t format;
+    size_t len;
+    uint64_t *modifiers;
+};
+struct format_set {
+    size_t len;
+    struct format *formats;
+};
+struct format *format_set_get(const struct format_set *set, uint32_t format);
+bool format_has(const struct format *format, uint64_t modifier);
+bool format_set_has(const struct format_set *set, uint32_t format, uint64_t modifier);
+bool format_set_add(struct format_set *set, uint32_t format, uint64_t modifier);
+void format_set_finish(struct format_set *set);
+
+struct timeline {
+    int drm_fd;
+    uint32_t handle;
+    size_t refs;
+};
+struct timeline_waiter {
+    int fd;
+    struct wl_event_source *source;
+    void (*callback)(struct timeline_waiter *waiter);
+};
+struct timeline *timeline_create(int drm_fd);
+struct timeline *timeline_import(int drm_fd, int syncobj_fd);
+struct timeline *timeline_ref(struct timeline *timeline);
+void timeline_unref(struct timeline *timeline);
+int timeline_export_sync_file(struct timeline *timeline, uint64_t point);
+bool timeline_import_sync_file(struct timeline *timeline, uint64_t point, int fd);
+bool timeline_check(struct timeline *timeline, uint64_t point, uint32_t flags, bool *ready);
+bool timeline_signal(struct timeline *timeline, uint64_t point);
+bool timeline_waiter_init(struct timeline_waiter *waiter, struct timeline *timeline,
+    uint64_t point, uint32_t flags, struct wl_event_loop *loop,
+    void (*callback)(struct timeline_waiter *waiter));
+void timeline_waiter_finish(struct timeline_waiter *waiter);
+
+struct positioner_rules {
+    struct box anchor_rect;
+    enum xdg_positioner_anchor anchor;
+    enum xdg_positioner_gravity gravity;
+    enum xdg_positioner_constraint_adjustment constraint_adjustment;
+    bool reactive, has_parent_configure_serial;
+    uint32_t parent_configure_serial;
+    struct { int32_t width, height; } size, parent_size;
+    struct { int32_t x, y; } offset;
+};
+void positioner_geometry(const struct positioner_rules *rules, struct box *box);
+void positioner_unconstrain(const struct positioner_rules *rules, const struct box *constraint,
+    struct box *box);
+struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *hotspot_y);
+
+struct render;
+struct texture { uint32_t width, height; };
+enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE };
+enum filter_mode { FILTER_BILINEAR, FILTER_NEAREST };
+struct color { float r, g, b, a; };
+struct texture_options {
+    struct texture *texture;
+    struct fbox src_box;
+    struct box dst_box;
+    const float *alpha;
+    const pixman_region32_t *clip;
+    enum wl_output_transform transform;
+    enum filter_mode filter_mode;
+    enum blend_mode blend_mode;
+    struct timeline *wait_timeline;
+    uint64_t wait_point;
+};
+struct rect_options {
+    struct box box;
+    struct color color;
+    const pixman_region32_t *clip;
+    enum blend_mode blend_mode;
+};
+struct read_options {
+    void *data;
+    uint32_t format, stride;
+    struct box src_box;
+};
+struct pass;
+void render_destroy(struct render *r);
+int render_drm_fd(struct render *r);
+bool render_has_timeline(struct render *r);
+const struct format_set *render_texture_formats(struct render *r);
+const struct format_set *render_shm_formats(struct render *r);
+struct buffer *render_allocate(struct render *r, int width, int height,
+    const struct format *format);
+struct texture *texture_from_buffer(struct render *r, struct buffer *buffer);
+struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
+    uint32_t width, uint32_t height, const void *data);
+bool texture_update(struct texture *texture, struct buffer *buffer,
+    const pixman_region32_t *damage);
+bool texture_read_pixels(struct texture *texture, const struct read_options *options);
+void texture_destroy(struct texture *texture);
+struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeline *signal,
+    uint64_t point);
+void pass_add_texture(struct pass *pass, const struct texture_options *options);
+void pass_add_rect(struct pass *pass, const struct rect_options *options);
+bool pass_submit(struct pass *pass);
 
 struct screen;
 
@@ -101,7 +264,7 @@ struct ui_set;
 struct ui_asset_pool;
 struct ui_pointer;
 
-struct wlr_drm_syncobj_timeline;
+struct timeline;
 enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_DOWN, PROGRAM_UP,
     PROGRAM_COUNT };
 struct program {
@@ -111,26 +274,25 @@ struct program {
 };
 #define RING_SLOTS 4
 struct ring {
-    struct wlr_buffer *slots[RING_SLOTS];
+    struct buffer *slots[RING_SLOTS];
     int width, height;
     bool implicit;
-    struct wlr_drm_format_set format;
+    struct format_set format;
 };
-struct wlr_renderer *render_create(int drm_fd);
-struct wlr_allocator *render_allocator(struct wlr_renderer *renderer);
-struct program *render_program(struct wlr_renderer *renderer, int kind);
+struct render *render_create(int drm_fd);
+struct program *render_program(struct render *renderer, int kind);
 void render_quad(struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
-bool render_texture_gl(struct wlr_texture *texture, GLenum *target, GLuint *tex, bool *alpha);
-GLuint render_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
-uint32_t render_read_format(struct wlr_renderer *renderer);
-const struct wlr_drm_format_set *render_formats(struct wlr_renderer *renderer);
-bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
+bool render_texture_gl(struct texture *texture, GLenum *target, GLuint *tex, bool *alpha);
+GLuint render_buffer_fbo(struct render *renderer, struct buffer *buffer);
+uint32_t render_read_format(struct render *renderer);
+const struct format_set *render_formats(struct render *renderer);
+bool render_wait(struct render *renderer, struct timeline *timeline,
     uint64_t point);
 bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
     int width, int height, bool implicit);
-struct wlr_buffer *ring_acquire(struct tomoe *s, struct ring *ring);
-struct wlr_buffer *ring_create(struct tomoe *s, struct ring *ring);
+struct buffer *ring_acquire(struct tomoe *s, struct ring *ring);
+struct buffer *ring_create(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
 bool fenced(struct screen *output);
 
@@ -138,8 +300,8 @@ struct screen;
 struct session;
 struct kms;
 struct cursor_image {
-    struct wlr_buffer *buffer;
-    struct wlr_texture *texture;
+    struct buffer *buffer;
+    struct texture *texture;
     int hotspot_x, hotspot_y;
     float scale;
 };
@@ -164,8 +326,8 @@ struct screen_state {
     enum screen_mode_type mode_type;
     struct screen_mode *mode;
     struct { int32_t width, height, refresh; } custom_mode;
-    struct wlr_buffer *buffer;
-    struct wlr_drm_syncobj_timeline *wait_timeline;
+    struct buffer *buffer;
+    struct timeline *wait_timeline;
     uint64_t wait_point;
     uint16_t *gamma;
     size_t gamma_size;
@@ -177,9 +339,9 @@ struct screen_update {
 struct screen_impl {
     bool (*test)(struct screen_update *updates, size_t count);
     bool (*commit)(struct screen_update *updates, size_t count);
-    const struct wlr_drm_format_set *(*formats)(struct screen *screen);
+    const struct format_set *(*formats)(struct screen *screen);
     size_t (*gamma_size)(struct screen *screen);
-    bool (*cursor)(struct screen *screen, struct wlr_buffer *buffer, int hotspot_x, int hotspot_y);
+    bool (*cursor)(struct screen *screen, struct buffer *buffer, int hotspot_x, int hotspot_y);
     void (*move_cursor)(struct screen *screen, int x, int y);
     void (*destroy)(struct screen *screen);
 };
@@ -237,8 +399,8 @@ struct output {
     bool positioned;
     char mirror[129];
     char pending_mirror[129];
-    struct wlr_buffer *capture_buffer;
-    struct wlr_buffer *presented[2];
+    struct buffer *capture_buffer;
+    struct buffer *presented[2];
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
@@ -266,28 +428,28 @@ struct target {
 };
 struct frame {
     struct tomoe *server;
-    struct wlr_render_pass *pass;
-    struct wlr_buffer *buffer;
+    struct pass *pass;
+    struct buffer *buffer;
     int x, y, width, height;
     enum wl_output_transform transform;
     double view_x, view_y, zoom;
     uint32_t focused;
 };
 struct effects;
-void effect_border(struct frame *f, struct wlr_fbox geometry, double width, double radius,
+void effect_border(struct frame *f, struct fbox geometry, double width, double radius,
     uint32_t rgba, float alpha);
-void effect_shadow(struct frame *f, struct wlr_fbox geometry, double range, double radius,
+void effect_shadow(struct frame *f, struct fbox geometry, double range, double radius,
     uint32_t rgba, double power, float alpha);
-bool effect_texture(struct frame *f, const struct wlr_render_texture_options *options,
-    struct wlr_fbox dst, struct wlr_fbox clip, double radius);
-void effect_blur(struct frame *f, struct wlr_fbox area, double radius, int passes,
+bool effect_texture(struct frame *f, const struct texture_options *options,
+    struct fbox dst, struct fbox clip, double radius);
+void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface);
 struct presentation_output {
     struct output *output;
-    struct wlr_box box;
+    struct box box;
     int scale_120;
 };
 struct output_location {
@@ -401,18 +563,18 @@ struct surface_role {
 };
 struct surface_viewport {
     bool has_src, has_dst;
-    struct wlr_fbox src;
+    struct fbox src;
     int dst_width, dst_height;
 };
 struct surface_state {
     uint32_t committed, locks;
-    struct wlr_buffer *buffer;
+    struct buffer *buffer;
     int dx, dy, width, height, buffer_width, buffer_height, scale;
     enum wl_output_transform transform;
     pixman_region32_t surface_damage, buffer_damage, input;
     struct surface_viewport viewport;
     struct wl_list frames, feedbacks, waits, synced, link;
-    struct wlr_drm_syncobj_timeline *acquire, *release;
+    struct timeline *acquire, *release;
     uint64_t acquire_point, release_point;
 };
 struct surface {
@@ -421,8 +583,8 @@ struct surface {
     struct wl_list link;
     struct surface_state pending, current, *last_cached;
     struct wl_list cached, synced, outputs, below, above, pending_below, pending_above;
-    struct wlr_texture *texture;
-    struct wlr_buffer *buffer;
+    struct texture *texture;
+    struct buffer *buffer;
     struct release *release;
     pixman_region32_t input_region;
     const struct surface_role *role;
@@ -551,15 +713,13 @@ struct tomoe {
     struct session *session;
     struct kms *kms;
     enum screen_kind backend;
-    struct wlr_renderer *renderer;
-    struct wlr_allocator *allocator;
+    struct render *renderer;
     struct node *scene;
     struct node *window_tree, *layer_tree[4], *fullscreen_tree;
     struct cursor_image cursor_image;
-    struct wlr_buffer *default_cursor;
+    struct buffer *default_cursor;
     float default_cursor_scale;
     int default_hotspot_x, default_hotspot_y;
-    struct wlr_xcursor_manager *cursor_manager;
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
@@ -593,7 +753,7 @@ struct tomoe {
     char *grab_owner, *grab_otherwise;
     uint64_t grab_source;
     size_t pointer_latch_count;
-    struct wlr_drm_syncobj_timeline *render_timeline;
+    struct timeline *render_timeline;
     uint64_t render_point;
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
@@ -665,7 +825,7 @@ struct xdg_toplevel {
     } events;
 };
 struct xdg_popup_state {
-    struct wlr_box geometry;
+    struct box geometry;
     bool reactive;
 };
 struct xdg_popup {
@@ -676,8 +836,8 @@ struct xdg_popup {
     bool grabbed;
     struct xdg_popup_state pending, current;
     struct {
-        struct wlr_box geometry;
-        struct wlr_xdg_positioner_rules rules;
+        struct box geometry;
+        struct positioner_rules rules;
         bool reposition;
         uint32_t token;
     } scheduled;
@@ -685,13 +845,13 @@ struct xdg_popup {
     struct { struct wl_signal destroy, reposition; } events;
 };
 struct xdg_surface_state {
-    struct wlr_box geometry;
+    struct box geometry;
     uint32_t configure_serial, committed;
 };
 struct xdg_configure {
     uint32_t serial;
     struct toplevel_state toplevel;
-    struct wlr_box popup_geometry;
+    struct box popup_geometry;
     bool reactive;
 };
 #define XDG_CONFIGURES 16
@@ -705,7 +865,7 @@ struct xdg_surface {
     int role;
     struct wl_listener role_resource_destroy, scene_destroy;
     bool initialized, initial_commit, configured;
-    struct wlr_box geometry;
+    struct box geometry;
     struct xdg_surface_state pending, current;
     struct surface_synced synced;
     struct xdg_configure configures[XDG_CONFIGURES];
@@ -731,7 +891,7 @@ uint32_t xdg_toplevel_configure_maximized(struct xdg_toplevel *toplevel, bool ma
 uint32_t xdg_toplevel_configure_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen);
 void xdg_toplevel_close(struct xdg_toplevel *toplevel);
 void xdg_popup_dismiss(struct xdg_popup *popup);
-void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_box *box);
+void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct box *box);
 void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
 void xdg_popup_created(struct tomoe *s, struct xdg_popup *popup);
 enum { LAYER_STATE_SIZE = 1, LAYER_STATE_ANCHOR = 2, LAYER_STATE_ZONE = 4, LAYER_STATE_MARGIN = 8,
@@ -785,7 +945,7 @@ static inline void detach(struct wl_listener *listener) {
     wl_list_init(&listener->link);
 }
 static inline void fail(struct tomoe *s, const char *message) {
-    wlr_log(WLR_ERROR, "tomoe: %s", message);
+    tomoe_log(LOG_ERROR, "tomoe: %s", message);
     s->failed = true;
     s->running = false;
 }
@@ -826,7 +986,7 @@ struct output *output_for_world(struct tomoe *s, double x, double y);
 void world_to_screen(struct tomoe *s, double *x, double *y);
 void screen_to_world(struct tomoe *s, double *x, double *y);
 void screen_to_protocol(struct tomoe *s, double *x, double *y);
-void physical_output_box(struct output *o, struct wlr_box *box);
+void physical_output_box(struct output *o, struct box *box);
 void schedule_scene(struct tomoe *s);
 void refresh_scene(struct tomoe *s);
 void forget_output(struct tomoe *s, struct screen *output);
@@ -835,7 +995,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
     struct ring *ring, const struct presentation *plan);
 bool capture_listen(struct tomoe *s);
 bool capture_wants_cursorless(struct output *o);
-void capture_serve(struct output *o, struct wlr_buffer *committed, bool scanout);
+void capture_serve(struct output *o, struct buffer *committed, bool scanout);
 void capture_output_gone(struct tomoe *s, struct output *o);
 void capture_window_gone(struct tomoe *s, uint32_t id);
 void finish_output_capture(struct output *o);
@@ -868,7 +1028,7 @@ const char *foreign_identifier(struct tomoe *s, uint32_t id);
 uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
     struct screen *output);
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer);
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan);
@@ -930,7 +1090,7 @@ void lock_refresh(struct tomoe *s);
 void lock_frame_rendered(struct tomoe *s, struct screen *output);
 void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
-bool render_output_buffer(struct output *o, struct wlr_buffer *buffer);
+bool render_output_buffer(struct output *o, struct buffer *buffer);
 struct screenshot;
 bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, bool pressed);
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
@@ -998,9 +1158,9 @@ void screen_state_set_custom_mode(struct screen_state *state, int32_t width, int
 void screen_state_set_scale(struct screen_state *state, float scale);
 void screen_state_set_transform(struct screen_state *state, enum wl_output_transform transform);
 void screen_state_set_adaptive_sync_enabled(struct screen_state *state, bool enabled);
-void screen_state_set_buffer(struct screen_state *state, struct wlr_buffer *buffer);
+void screen_state_set_buffer(struct screen_state *state, struct buffer *buffer);
 void screen_state_set_wait_timeline(struct screen_state *state,
-    struct wlr_drm_syncobj_timeline *timeline, uint64_t point);
+    struct timeline *timeline, uint64_t point);
 bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, size_t size);
 void screen_init(struct screen *screen, struct tomoe *s, const struct screen_impl *impl,
     enum screen_kind kind, const char *name);
@@ -1016,7 +1176,7 @@ bool screen_test(struct screen *screen, const struct screen_state *state);
 bool screen_commit(struct screen *screen, const struct screen_state *state);
 bool screens_test(struct screen_update *updates, size_t count);
 bool screens_commit(struct screen_update *updates, size_t count);
-const struct wlr_drm_format_set *screen_primary_formats(struct screen *screen);
+const struct format_set *screen_primary_formats(struct screen *screen);
 size_t screen_gamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_send_frame(struct screen *screen);
@@ -1026,10 +1186,10 @@ void screen_set_position(struct screen *screen, int lx, int ly);
 void screen_cursor_move(struct screen *screen, double x, double y);
 void screen_lock_software_cursors(struct screen *screen, bool lock);
 bool screens_listen(struct tomoe *s);
-void cursor_show(struct tomoe *s, struct wlr_buffer *buffer, int hotspot_x, int hotspot_y,
+void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,
     float scale);
 void cursor_finish(struct tomoe *s);
-struct wlr_buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
+struct buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
     const void *pixels);
 bool session_create(struct tomoe *s);
 void session_finish(struct tomoe *s);
@@ -1069,10 +1229,10 @@ bool surface_set_role(struct surface *surface, const struct surface_role *role,
     struct wl_resource *error_resource, uint32_t error_code);
 void surface_set_role_object(struct surface *surface, struct wl_resource *resource);
 struct surface *surface_root(struct surface *surface);
-void surface_extents(struct surface *surface, struct wlr_box *box);
+void surface_extents(struct surface *surface, struct box *box);
 bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_iterator iterator,
     void *data);
-void surface_source_box(struct surface *surface, struct wlr_fbox *box);
+void surface_source_box(struct surface *surface, struct fbox *box);
 bool surface_accepts_input(struct surface *surface, double sx, double sy);
 void surface_send_enter(struct surface *surface, struct screen *output);
 void surface_send_leave(struct surface *surface, struct screen *output);
@@ -1081,7 +1241,7 @@ bool surface_on_output(struct surface *surface, struct screen *output);
 void surface_frame_done(struct surface *surface, const struct timespec *when);
 void surface_set_scale(struct surface *surface, double scale);
 void surface_presented(struct surface *surface, struct screen *output, bool zero_copy);
-void surface_release_after(struct surface *surface, struct wlr_buffer *consumer);
+void surface_release_after(struct surface *surface, struct buffer *consumer);
 struct node *node_create(struct node *parent);
 struct node *node_surface_create(struct node *parent, struct surface *surface);
 void node_destroy(struct node *node);

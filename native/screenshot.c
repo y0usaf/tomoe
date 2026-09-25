@@ -8,8 +8,8 @@ struct screenshot {
     struct output *output;
     bool dragging, selected;
     int ax, ay, bx, by;
-    struct wlr_buffer *frozen;
-    struct wlr_texture *frozen_texture, *hint;
+    struct buffer *frozen;
+    struct texture *frozen_texture, *hint;
     bool hint_selected;
 };
 
@@ -19,18 +19,18 @@ static const float backdrop[4] = { 0, 0, 0, 0.4f };
 static void screenshot_close(struct tomoe *s) {
     struct screenshot *shot = s->screenshot;
     if (!shot) return;
-    if (shot->frozen_texture) wlr_texture_destroy(shot->frozen_texture);
-    if (shot->hint) wlr_texture_destroy(shot->hint);
-    wlr_buffer_drop(shot->frozen);
+    if (shot->frozen_texture) texture_destroy(shot->frozen_texture);
+    if (shot->hint) texture_destroy(shot->hint);
+    buffer_drop(shot->frozen);
     free(shot);
     s->screenshot = NULL;
     schedule_scene(s);
 }
 
-static struct wlr_buffer *render_clean(struct output *o) {
-    struct wlr_buffer *buffer = ring_create(o->server, &o->ring);
+static struct buffer *render_clean(struct output *o) {
+    struct buffer *buffer = ring_create(o->server, &o->ring);
     if (buffer && !render_output_buffer(o, buffer)) {
-        wlr_buffer_drop(buffer);
+        buffer_drop(buffer);
         buffer = NULL;
     }
     return buffer;
@@ -41,14 +41,14 @@ static void local_pointer(struct tomoe *s, int *x, int *y) {
     *y = pixel_round(s->pointer_y) - s->screenshot->output->y;
 }
 
-static struct wlr_box selection(struct screenshot *shot) {
+static struct box selection(struct screenshot *shot) {
     int width, height;
     screen_transformed_resolution(shot->output->screen, &width, &height);
     int x0 = fmin(shot->ax, shot->bx), x1 = fmax(shot->ax, shot->bx);
     int y0 = fmin(shot->ay, shot->by), y1 = fmax(shot->ay, shot->by);
     x0 = fmax(0, fmin(x0, width)); x1 = fmax(0, fmin(x1, width));
     y0 = fmax(0, fmin(y0, height)); y1 = fmax(0, fmin(y1, height));
-    return (struct wlr_box){ x0, y0, x1 - x0, y1 - y0 };
+    return (struct box){ x0, y0, x1 - x0, y1 - y0 };
 }
 
 static bool write_png(const char *path, const uint8_t *pixels, int width, int height, int stride) {
@@ -69,20 +69,20 @@ static bool write_png(const char *path, const uint8_t *pixels, int width, int he
     return fclose(file) == 0 && ok;
 }
 
-static void capture(struct tomoe *s, struct output *o, struct wlr_box region) {
+static void capture(struct tomoe *s, struct output *o, struct box region) {
     bool frozen = s->screenshot && s->screenshot->frozen;
-    struct wlr_buffer *buffer = frozen ? s->screenshot->frozen : render_clean(o);
-    struct wlr_texture *texture = buffer ? wlr_texture_from_buffer(s->renderer, buffer) : NULL;
+    struct buffer *buffer = frozen ? s->screenshot->frozen : render_clean(o);
+    struct texture *texture = buffer ? texture_from_buffer(s->renderer, buffer) : NULL;
     if (region.width <= 0 || region.height <= 0)
-        region = (struct wlr_box){ 0, 0, buffer ? buffer->width : 0, buffer ? buffer->height : 0 };
+        region = (struct box){ 0, 0, buffer ? buffer->width : 0, buffer ? buffer->height : 0 };
     else if (buffer) {
         int width = buffer->width, height = buffer->height;
-        wlr_output_transform_coords(o->screen->transform, &width, &height);
-        wlr_box_transform(&region, &region, wlr_output_transform_invert(o->screen->transform), width, height);
+        transform_coords(o->screen->transform, &width, &height);
+        box_transform(&region, &region, transform_invert(o->screen->transform), width, height);
     }
     int stride = region.width * 4;
     uint8_t *pixels = texture ? malloc((size_t)stride * region.height) : NULL;
-    bool ok = pixels && wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options){
+    bool ok = pixels && texture_read_pixels(texture, &(struct read_options){
         .data = pixels, .format = DRM_FORMAT_ABGR8888, .stride = stride, .src_box = region });
     char *path = NULL;
     const char *runtime = getenv("XDG_RUNTIME_DIR");
@@ -102,8 +102,8 @@ static void capture(struct tomoe *s, struct output *o, struct wlr_box region) {
     }
     free(path);
     free(pixels);
-    if (texture) wlr_texture_destroy(texture);
-    if (!frozen) wlr_buffer_drop(buffer);
+    if (texture) texture_destroy(texture);
+    if (!frozen) buffer_drop(buffer);
 }
 
 static struct output *pointer_output(struct tomoe *s) {
@@ -117,14 +117,14 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
     if (lock_active(s)) return;
     struct output *o = pointer_output(s);
     if (!o) return;
-    if (!interactive) { capture(s, o, (struct wlr_box){0}); return; }
+    if (!interactive) { capture(s, o, (struct box){0}); return; }
     if (s->screenshot) return;
     struct screenshot *shot = calloc(1, sizeof(*shot));
     if (!shot) return;
     shot->output = o;
     if (s->settings.screenshot_freeze) {
         shot->frozen = render_clean(o);
-        if (shot->frozen) shot->frozen_texture = wlr_texture_from_buffer(s->renderer, shot->frozen);
+        if (shot->frozen) shot->frozen_texture = texture_from_buffer(s->renderer, shot->frozen);
     }
     s->screenshot = shot;
     grab_clear(s);
@@ -137,7 +137,7 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, bool pressed) {
     struct screenshot *shot = s->screenshot;
     if (sym == XKB_KEY_Escape) screenshot_close(s);
     else if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter || sym == XKB_KEY_space) {
-        capture(s, shot->output, shot->selected ? selection(shot) : (struct wlr_box){0});
+        capture(s, shot->output, shot->selected ? selection(shot) : (struct box){0});
         screenshot_close(s);
     }
     return true;
@@ -154,7 +154,7 @@ bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed) {
         shot->selected = false;
     } else if (shot->dragging) {
         shot->dragging = false;
-        struct wlr_box box = selection(shot);
+        struct box box = selection(shot);
         shot->selected = box.width >= 2 && box.height >= 2;
     }
     schedule_scene(s);
@@ -169,7 +169,7 @@ void screenshot_motion(struct tomoe *s) {
     schedule_scene(s);
 }
 
-static struct wlr_texture *hint_texture(struct tomoe *s, bool selected) {
+static struct texture *hint_texture(struct tomoe *s, bool selected) {
     const char *markup = selected ?
         "<span background='#45454f'> Enter </span> / <span background='#45454f'> Space </span>"
         " capture    Drag to reselect    <span background='#45454f'> Esc </span> cancel" :
@@ -200,7 +200,7 @@ static struct wlr_texture *hint_texture(struct tomoe *s, bool selected) {
     pango_cairo_update_layout(draw, layout);
     pango_cairo_show_layout(draw, layout);
     cairo_surface_flush(surface);
-    struct wlr_texture *texture = wlr_texture_from_pixels(s->renderer, DRM_FORMAT_ARGB8888,
+    struct texture *texture = texture_from_pixels(s->renderer, DRM_FORMAT_ARGB8888,
         cairo_image_surface_get_stride(surface), width, height, cairo_image_surface_get_data(surface));
     g_object_unref(layout);
     cairo_destroy(draw);
@@ -210,17 +210,17 @@ static struct wlr_texture *hint_texture(struct tomoe *s, bool selected) {
     return texture;
 }
 
-static void rect(struct frame *f, struct wlr_box box, const float color[4]) {
+static void rect(struct frame *f, struct box box, const float color[4]) {
     if (box.width <= 0 || box.height <= 0) return;
-    wlr_box_transform(&box, &box, wlr_output_transform_invert(f->transform), f->width, f->height);
-    wlr_render_pass_add_rect(f->pass, &(struct wlr_render_rect_options){ .box = box,
+    box_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
+    pass_add_rect(f->pass, &(struct rect_options){ .box = box,
         .color = { color[0] * color[3], color[1] * color[3], color[2] * color[3], color[3] } });
 }
 
 bool screenshot_render_frozen(struct output *o, struct frame *f) {
     struct screenshot *shot = o->server->screenshot;
     if (!shot || shot->output != o || !shot->frozen_texture) return false;
-    wlr_render_pass_add_texture(f->pass, &(struct wlr_render_texture_options){
+    pass_add_texture(f->pass, &(struct texture_options){
         .texture = shot->frozen_texture,
         .dst_box = { 0, 0, shot->frozen->width, shot->frozen->height } });
     return true;
@@ -232,33 +232,33 @@ void screenshot_render(struct output *o, struct frame *f) {
     if (!shot || shot->output != o) return;
     int w = f->width, h = f->height;
     if (shot->selected) {
-        struct wlr_box sel = selection(shot);
+        struct box sel = selection(shot);
         int x1 = sel.x + sel.width, y1 = sel.y + sel.height;
-        rect(f, (struct wlr_box){ 0, 0, w, sel.y }, backdrop);
-        rect(f, (struct wlr_box){ 0, y1, w, h - y1 }, backdrop);
-        rect(f, (struct wlr_box){ 0, sel.y, sel.x, sel.height }, backdrop);
-        rect(f, (struct wlr_box){ x1, sel.y, w - x1, sel.height }, backdrop);
+        rect(f, (struct box){ 0, 0, w, sel.y }, backdrop);
+        rect(f, (struct box){ 0, y1, w, h - y1 }, backdrop);
+        rect(f, (struct box){ 0, sel.y, sel.x, sel.height }, backdrop);
+        rect(f, (struct box){ x1, sel.y, w - x1, sel.height }, backdrop);
         int b = pixel_round(2 * snapped_scale(o->screen->scale));
         int bx0 = fmax(0, sel.x - b), by0 = fmax(0, sel.y - b);
         int bx1 = fmin(w, x1 + b), by1 = fmin(h, y1 + b);
-        rect(f, (struct wlr_box){ bx0, by0, bx1 - bx0, sel.y - by0 }, accent);
-        rect(f, (struct wlr_box){ bx0, y1, bx1 - bx0, by1 - y1 }, accent);
-        rect(f, (struct wlr_box){ bx0, sel.y, sel.x - bx0, sel.height }, accent);
-        rect(f, (struct wlr_box){ x1, sel.y, bx1 - x1, sel.height }, accent);
+        rect(f, (struct box){ bx0, by0, bx1 - bx0, sel.y - by0 }, accent);
+        rect(f, (struct box){ bx0, y1, bx1 - bx0, by1 - y1 }, accent);
+        rect(f, (struct box){ bx0, sel.y, sel.x - bx0, sel.height }, accent);
+        rect(f, (struct box){ x1, sel.y, bx1 - x1, sel.height }, accent);
     } else {
-        rect(f, (struct wlr_box){ 0, 0, w, h }, backdrop);
+        rect(f, (struct box){ 0, 0, w, h }, backdrop);
     }
     if (!shot->hint || shot->hint_selected != shot->selected) {
-        if (shot->hint) wlr_texture_destroy(shot->hint);
+        if (shot->hint) texture_destroy(shot->hint);
         shot->hint = hint_texture(s, shot->selected);
         shot->hint_selected = shot->selected;
     }
     if (!shot->hint) return;
-    struct wlr_box box = { (w - (int)shot->hint->width) / 2,
+    struct box box = { (w - (int)shot->hint->width) / 2,
         h - (int)shot->hint->height - pixel_round(32 * snapped_scale(o->screen->scale)),
         shot->hint->width, shot->hint->height };
-    wlr_box_transform(&box, &box, wlr_output_transform_invert(f->transform), f->width, f->height);
-    wlr_render_pass_add_texture(f->pass, &(struct wlr_render_texture_options){
+    box_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
+    pass_add_texture(f->pass, &(struct texture_options){
         .texture = shot->hint, .dst_box = box, .transform = f->transform });
 }
 

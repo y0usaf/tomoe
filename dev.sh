@@ -56,7 +56,6 @@ fi
 wlr="${WLR_PROTOCOLS_XML:-$(pkg-config --variable=pkgdatadir wlr-protocols)}/unstable"
 wp="$(pkg-config --variable=pkgdatadir wayland-protocols)"
 kde="${PLASMA_WAYLAND_PROTOCOLS_XML:?set PLASMA_WAYLAND_PROTOCOLS_XML to the plasma-wayland-protocols share directory}"
-wlroots="${WLROOTS_PROTOCOLS_XML:?set WLROOTS_PROTOCOLS_XML to the wlroots source protocol directory}"
 for xml in \
   "$wlr/wlr-layer-shell-unstable-v1.xml" \
   "$wlr/wlr-screencopy-unstable-v1.xml" \
@@ -64,7 +63,7 @@ for xml in \
   "$wlr/wlr-foreign-toplevel-management-unstable-v1.xml" \
   "$wlr/wlr-data-control-unstable-v1.xml" \
   "$wlr/wlr-virtual-pointer-unstable-v1.xml" \
-  "$wlroots/virtual-keyboard-unstable-v1.xml" \
+  native/virtual-keyboard-unstable-v1.xml \
   "$kde/server-decoration.xml" \
   "$wp/stable/xdg-shell/xdg-shell.xml" \
   "$wp/stable/linux-dmabuf/linux-dmabuf-v1.xml" \
@@ -95,11 +94,11 @@ for xml in \
   fi
 done
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
-  cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
+  cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter \
     -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
-    $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
+    $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
     native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
-    $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
+    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
 fi
 
 export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"

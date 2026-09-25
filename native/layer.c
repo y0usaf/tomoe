@@ -10,8 +10,8 @@ struct layer_plan_output {
     bool included;
     int x, y, width, height;
     int scale_120;
-    struct wlr_box full;
-    struct wlr_box usable;
+    struct box full;
+    struct box usable;
 };
 
 struct layer_plan_surface {
@@ -31,7 +31,7 @@ struct layer_plan_surface {
     uint32_t anchor, request_exclusive_edge, exclusive_edge;
     uint32_t desired_width, desired_height;
     int margin[4];
-    struct wlr_box logical;
+    struct box logical;
     int physical_x, physical_y, physical_width, physical_height;
 };
 
@@ -106,9 +106,9 @@ static int resolved_zone_for_scale(const struct layer *layer, int override,
         scale_120_value(scale_120)));
 }
 
-static enum wlr_edges exclusive_edge_for(const struct layer_surface *surface,
+static enum edges exclusive_edge_for(const struct layer_surface *surface,
         int zone) {
-    if (zone <= 0) return WLR_EDGE_NONE;
+    if (zone <= 0) return EDGE_NONE;
     uint32_t anchor = surface->current.anchor;
     if (surface->current.exclusive_edge != 0)
         anchor = surface->current.exclusive_edge;
@@ -117,29 +117,29 @@ static enum wlr_edges exclusive_edge_for(const struct layer_surface *surface,
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP:
-        return WLR_EDGE_TOP;
+        return EDGE_TOP;
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM:
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM:
-        return WLR_EDGE_BOTTOM;
+        return EDGE_BOTTOM;
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT:
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT:
-        return WLR_EDGE_LEFT;
+        return EDGE_LEFT;
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT:
     case ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
             ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT:
-        return WLR_EDGE_RIGHT;
+        return EDGE_RIGHT;
     default:
-        return WLR_EDGE_NONE;
+        return EDGE_NONE;
     }
 }
 
 static void plan_output_reset(struct layer_plan_output *output) {
-    output->full = (struct wlr_box){
+    output->full = (struct box){
         .x = 0, .y = 0,
         .width = int_from_i64(logical_floor(output->width, output->scale_120)),
         .height = int_from_i64(logical_floor(output->height, output->scale_120)),
@@ -148,7 +148,7 @@ static void plan_output_reset(struct layer_plan_output *output) {
 }
 
 static void plan_layer_geometry(struct layer_plan_surface *surface,
-        struct wlr_box bounds) {
+        struct box bounds) {
     const int64_t margin_top = surface->margin[0];
     const int64_t margin_right = surface->margin[1];
     const int64_t margin_bottom = surface->margin[2];
@@ -187,32 +187,32 @@ static void plan_layer_geometry(struct layer_plan_surface *surface,
 
     if (width < 0) width = 0;
     if (height < 0) height = 0;
-    surface->logical = (struct wlr_box){
+    surface->logical = (struct box){
         .x = int_from_i64(x), .y = int_from_i64(y),
         .width = int_from_i64(width), .height = int_from_i64(height),
     };
 }
 
 static void plan_reserve(struct layer_plan_output *output,
-        const struct layer_plan_surface *surface, enum wlr_edges edge) {
-    if (edge == WLR_EDGE_NONE || surface->resolved_zone <= 0) return;
+        const struct layer_plan_surface *surface, enum edges edge) {
+    if (edge == EDGE_NONE || surface->resolved_zone <= 0) return;
     int64_t amount;
     switch (edge) {
-    case WLR_EDGE_TOP:
+    case EDGE_TOP:
         amount = (int64_t)surface->resolved_zone + surface->margin[0];
         output->usable.y = int_from_i64((int64_t)output->usable.y + amount);
         output->usable.height = int_from_i64((int64_t)output->usable.height - amount);
         break;
-    case WLR_EDGE_BOTTOM:
+    case EDGE_BOTTOM:
         amount = (int64_t)surface->resolved_zone + surface->margin[2];
         output->usable.height = int_from_i64((int64_t)output->usable.height - amount);
         break;
-    case WLR_EDGE_LEFT:
+    case EDGE_LEFT:
         amount = (int64_t)surface->resolved_zone + surface->margin[3];
         output->usable.x = int_from_i64((int64_t)output->usable.x + amount);
         output->usable.width = int_from_i64((int64_t)output->usable.width - amount);
         break;
-    case WLR_EDGE_RIGHT:
+    case EDGE_RIGHT:
         amount = (int64_t)surface->resolved_zone + surface->margin[1];
         output->usable.width = int_from_i64((int64_t)output->usable.width - amount);
         break;
@@ -320,7 +320,7 @@ static bool plan_prepare_outputs(struct layer_plan *plan) {
         if (!location || !output->included || !output->enabled_at_plan ||
                 output->width <= 0 || output->height <= 0 ||
                 !output->output || !output->wlr) {
-            output->full = (struct wlr_box){0};
+            output->full = (struct box){0};
             output->usable = output->full;
             continue;
         }
@@ -368,7 +368,7 @@ static bool plan_layers(struct layer_plan *plan) {
             surface->exclusive_edge = exclusive_edge_for(surface->wlr, surface->resolved_zone);
             surface->physical_x = surface->layer->target.x;
             surface->physical_y = surface->layer->target.y;
-            surface->logical = (struct wlr_box){
+            surface->logical = (struct box){
                 .x = surface->scene_node->x, .y = surface->scene_node->y,
                 .width = int_from_i64(surface->wlr->current.actual_width),
                 .height = int_from_i64(surface->wlr->current.actual_height) };
@@ -396,16 +396,16 @@ static bool plan_layers(struct layer_plan *plan) {
                 if (!surface->output || surface->resolved_layer != want ||
                         (surface->resolved_zone > 0) != (pass == 0)) continue;
                 struct layer_plan_output *output = surface->output;
-                struct wlr_box bounds = surface->resolved_zone == -1 ?
+                struct box bounds = surface->resolved_zone == -1 ?
                     output->full : output->usable;
                 plan_layer_geometry(surface, bounds);
-                enum wlr_edges edge = exclusive_edge_for(surface->layer->wlr,
+                enum edges edge = exclusive_edge_for(surface->layer->wlr,
                     surface->resolved_zone);
                 surface->exclusive_edge = edge;
                 surface->configured = true;
                 surface->reserve = surface->layer->mapped &&
                     surface->resolved_visible && surface->resolved_zone > 0 &&
-                    edge != WLR_EDGE_NONE;
+                    edge != EDGE_NONE;
                 if (surface->reserve) plan_reserve(output, surface, edge);
                 int scale = output->scale_120;
                 surface->physical_x = int_from_i64((int64_t)output->x +
@@ -846,10 +846,10 @@ int tomoe_layers_surface(struct tomoe *s, uint32_t id,
 
 static const char *edge_name(uint32_t edge) {
     switch (edge) {
-    case WLR_EDGE_TOP: return "top";
-    case WLR_EDGE_RIGHT: return "right";
-    case WLR_EDGE_BOTTOM: return "bottom";
-    case WLR_EDGE_LEFT: return "left";
+    case EDGE_TOP: return "top";
+    case EDGE_RIGHT: return "right";
+    case EDGE_BOTTOM: return "bottom";
+    case EDGE_LEFT: return "left";
     default: return NULL;
     }
 }
@@ -909,8 +909,8 @@ static int physical_inset(int64_t logical, int scale_120) {
 }
 
 static bool write_workarea(FILE *out, const struct layer_plan_output *output) {
-    struct wlr_box full = output->full;
-    struct wlr_box usable = output->usable;
+    struct box full = output->full;
+    struct box usable = output->usable;
     int left = physical_inset(usable.x - full.x, output->scale_120);
     int top = physical_inset(usable.y - full.y, output->scale_120);
     int right = physical_inset((int64_t)full.x + full.width - usable.x - usable.width,

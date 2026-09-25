@@ -1,8 +1,5 @@
 #include "internal.h"
 #include "ui.h"
-#include <wlr/backend/headless.h>
-#include <wlr/types/wlr_buffer.h>
-#include <wlr/render/drm_syncobj.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -31,14 +28,14 @@ double reference_scale(struct tomoe *s) {
     struct screen *output = any_output(s);
     return output ? snapped_scale(output->scale) : 1.0;
 }
-void physical_output_box(struct output *o, struct wlr_box *box) {
+void physical_output_box(struct output *o, struct box *box) {
     box->x = o->x; box->y = o->y;
     screen_transformed_resolution(o->screen, &box->width, &box->height);
 }
 struct output *output_at_physical(struct tomoe *s, double x, double y) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        struct wlr_box box;
+        struct box box;
         physical_output_box(o, &box);
         if (output_is_active(o) && x >= box.x && y >= box.y &&
                 x < (double)box.x + box.width && y < (double)box.y + box.height) return o;
@@ -87,7 +84,7 @@ struct leaf {
     const struct target *target;
     int width, height;
     double x, y, scale, zoom;
-    struct wlr_box screen;
+    struct box screen;
 };
 static bool make_leaf(struct tomoe *s, struct surface *surface,
         const struct target *target, double lx, double ly, struct leaf *leaf,
@@ -194,10 +191,10 @@ static void walk_presentation_root(struct tomoe *s, const struct presentation *p
     wl_list_for_each(child, &node->children, link)
         walk_presentation_root(s, plan, root, child, x, y, iterator, data);
 }
-static bool overlaps_output(struct leaf *leaf, struct output *o, struct wlr_box *overlap) {
-    struct wlr_box box;
+static bool overlaps_output(struct leaf *leaf, struct output *o, struct box *overlap) {
+    struct box box;
     physical_output_box(o, &box);
-    return output_is_active(o) && wlr_box_intersection(overlap, &leaf->screen, &box);
+    return output_is_active(o) && box_intersection(overlap, &leaf->screen, &box);
 }
 static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
     struct surface *surface = leaf->surface;
@@ -205,7 +202,7 @@ static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
     int64_t largest = 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        struct wlr_box overlap;
+        struct box overlap;
         if (!overlaps_output(leaf, o, &overlap)) {
             surface_send_leave(surface, o->screen);
             continue;
@@ -249,8 +246,8 @@ void frame_done(struct output *o, const struct timespec *when) {
     if (o->server->cursor_surface) surface_frame_done(o->server->cursor_surface, when);
 }
 
-static struct wlr_fbox window_box(const struct target *t, const struct frame *f) {
-    return (struct wlr_fbox){ (t->x + t->offset_x - f->view_x) * f->zoom,
+static struct fbox window_box(const struct target *t, const struct frame *f) {
+    return (struct fbox){ (t->x + t->offset_x - f->view_x) * f->zoom,
         (t->y + t->offset_y - f->view_y) * f->zoom,
         physical_size(t->client_width, t->scale) * f->zoom,
         physical_size(t->client_height, t->scale) * f->zoom };
@@ -264,33 +261,33 @@ static bool toplevel_surface(struct surface *surface) {
 }
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
-    struct wlr_box local = leaf->screen;
+    struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
     int64_t x = (int64_t)local.x - data->x + (window ? pixel_round(t->offset_x * data->zoom) : 0);
     int64_t y = (int64_t)local.y - data->y + (window ? pixel_round(t->offset_y * data->zoom) : 0);
     if (x >= data->width || y >= data->height || x + local.width <= 0 || y + local.height <= 0) return false;
     local.x = (int)x; local.y = (int)y;
-    struct wlr_box dst;
-    wlr_box_transform(&dst, &local, wlr_output_transform_invert(data->transform), data->width, data->height);
+    struct box dst;
+    box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
     struct surface *surface = leaf->surface;
     surface_release_after(surface, data->buffer);
-    struct wlr_fbox src;
+    struct fbox src;
     surface_source_box(surface, &src);
     float alpha = window ? t->alpha : 1;
-    struct wlr_render_texture_options options = {
+    struct texture_options options = {
         .texture = surface->texture, .src_box = src, .dst_box = dst,
-        .transform = wlr_output_transform_compose(
-            wlr_output_transform_invert(surface->current.transform), data->transform),
+        .transform = transform_compose(
+            transform_invert(surface->current.transform), data->transform),
         .alpha = &alpha,
         .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
     };
     if (window && !t->fullscreen && t->client_width > 0 &&
             window_radius(s, t, data) > 0 && toplevel_surface(surface) &&
-            effect_texture(data, &options, (struct wlr_fbox){ local.x, local.y, local.width,
+            effect_texture(data, &options, (struct fbox){ local.x, local.y, local.width,
                 local.height }, window_box(t, data), window_radius(s, t, data)))
         return false;
-    wlr_render_pass_add_texture(data->pass, &options);
+    pass_add_texture(data->pass, &options);
     return false;
 }
 static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {
@@ -300,23 +297,23 @@ static void render_cursor(struct output *o, struct frame *data, const struct pre
     if (!image->texture || o->screen->hardware_cursor || (plan && !planned)) return;
     double ratio = (planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale)) /
         image->scale;
-    struct wlr_box box = {
+    struct box box = {
         .x = pixel_round(o->server->pointer_x - data->x - image->hotspot_x * ratio),
         .y = pixel_round(o->server->pointer_y - data->y - image->hotspot_y * ratio),
         .width = pixel_round(image->texture->width * ratio),
         .height = pixel_round(image->texture->height * ratio),
     };
-    struct wlr_box bounds = { .width = data->width, .height = data->height }, overlap;
-    if (!wlr_box_intersection(&overlap, &box, &bounds)) return;
-    wlr_box_transform(&box, &box, wlr_output_transform_invert(data->transform),
+    struct box bounds = { .width = data->width, .height = data->height }, overlap;
+    if (!box_intersection(&overlap, &box, &bounds)) return;
+    box_transform(&box, &box, transform_invert(data->transform),
         data->width, data->height);
-    wlr_render_pass_add_texture(data->pass, &(struct wlr_render_texture_options){
+    pass_add_texture(data->pass, &(struct texture_options){
         .texture = image->texture, .dst_box = box, .transform = data->transform,
     });
 }
 
 void finish_output_capture(struct output *o) {
-    wlr_buffer_unlock(o->capture_buffer);
+    buffer_unlock(o->capture_buffer);
     o->capture_buffer = NULL;
 }
 
@@ -340,7 +337,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
             int y2 = rects[i].y2 < (int)l->wlr->current.actual_height ?
                 rects[i].y2 : (int)l->wlr->current.actual_height;
             if (x2 <= x1 || y2 <= y1) continue;
-            struct wlr_fbox box = { t->x + physical_offset(x1, t->scale),
+            struct fbox box = { t->x + physical_offset(x1, t->scale),
                 t->y + physical_offset(y1, t->scale),
                 physical_offset(x2, t->scale) - physical_offset(x1, t->scale),
                 physical_offset(y2, t->scale) - physical_offset(y1, t->scale) };
@@ -351,7 +348,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
     if (!l->wlr->namespace) return;
     for (size_t i = 0; i < st->blur_namespace_count; i++) {
         if (strcmp(st->blur_namespaces[i], l->wlr->namespace) != 0) continue;
-        struct wlr_fbox box = { t->x, t->y, physical_size(l->wlr->current.actual_width, t->scale),
+        struct fbox box = { t->x, t->y, physical_size(l->wlr->current.actual_width, t->scale),
             physical_size(l->wlr->current.actual_height, t->scale) };
         effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin);
         return;
@@ -363,7 +360,7 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     const struct settings *st = &s->settings;
     bool focused = t->id == f->focused;
     double zoom = f->zoom;
-    struct wlr_fbox box = window_box(t, f);
+    struct fbox box = window_box(t, f);
     double radius = window_radius(s, t, f);
     effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, t->alpha);
     int64_t color = focused ? t->style.focused : t->style.unfocused;
@@ -391,24 +388,20 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
     wl_list_for_each(child, &node->children, link) render_walk(s, child, target, x, y, f);
 }
 bool fenced(struct screen *output) {
-    return output->server->renderer->features.timeline && output->kind == SCREEN_DRM;
+    return render_has_timeline(output->server->renderer) && output->kind == SCREEN_DRM;
 }
-static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
+static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
         bool cursors) {
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
-    struct wlr_buffer_pass_options options = {0};
+    struct timeline *signal = NULL;
     if (fenced(output)) {
         if (!s->render_timeline)
-            s->render_timeline = wlr_drm_syncobj_timeline_create(
-                wlr_renderer_get_drm_fd(s->renderer));
-        if (s->render_timeline) {
-            options.signal_timeline = s->render_timeline;
-            options.signal_point = ++s->render_point;
-        }
+            s->render_timeline = timeline_create(render_drm_fd(s->renderer));
+        if ((signal = s->render_timeline)) ++s->render_point;
     }
-    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(s->renderer, buffer, &options);
+    struct pass *pass = render_begin(s->renderer, buffer, signal, s->render_point);
     if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
@@ -419,13 +412,13 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         .view_y = plan ? plan->view_y : o->server->view_y,
         .zoom = plan ? plan->view_zoom : o->server->view_zoom,
         .focused = plan ? plan->focused : o->server->focused };
-    wlr_output_transform_coords(data.transform, &data.width, &data.height);
+    transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
     windows_animate(o->server);
-    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+    pass_add_rect(pass, &(struct rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
-        .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
+        .blend_mode = BLEND_NONE });
     bool frozen = !locked && screenshot_render_frozen(o, &data);
     if (locked) {
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, &data);
@@ -446,10 +439,9 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     if (!locked && !frozen) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
     if (!locked && cursors) screenshot_render(o, &data);
     if (cursors) render_cursor(o, &data, plan);
-    bool success = wlr_render_pass_submit(pass);
-    if (success && s->settings.wait_frame && options.signal_timeline) {
-        int fd = wlr_drm_syncobj_timeline_export_sync_file(options.signal_timeline,
-            options.signal_point);
+    bool success = pass_submit(pass);
+    if (success && s->settings.wait_frame && signal) {
+        int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {
             poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
             close(fd);
@@ -458,7 +450,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     return success;
 }
 
-bool render_output_buffer(struct output *o, struct wlr_buffer *buffer) {
+bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
     return render_scene_buffer(o, buffer, &state, NULL, false);
 }
@@ -474,7 +466,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
                 !ring_configure(o->server, ring, output, output->width, output->height,
                     ring->implicit)) return false;
     }
-    struct wlr_buffer *buffer = ring_acquire(o->server, ring);
+    struct buffer *buffer = ring_acquire(o->server, ring);
     if (!buffer) return false;
     if (!plan) {
         if (!o->server->configuring_outputs) {
@@ -486,17 +478,17 @@ bool render_presentation(struct output *o, struct screen_state *state,
     uint64_t render_point = o->server->render_point;
     if (success) {
         if (capture_wants_cursorless(o)) {
-            struct wlr_buffer *capture = ring_create(o->server, ring);
+            struct buffer *capture = ring_create(o->server, ring);
             if (capture && render_scene_buffer(o, capture, state, plan, false)) {
-                o->capture_buffer = wlr_buffer_lock(capture);
+                o->capture_buffer = buffer_lock(capture);
             }
-            wlr_buffer_drop(capture);
+            buffer_drop(capture);
         }
         screen_state_set_buffer(state, buffer);
         if (o->server->render_timeline && fenced(output))
             screen_state_set_wait_timeline(state, o->server->render_timeline, render_point);
     }
-    wlr_buffer_unlock(buffer);
+    buffer_unlock(buffer);
     return success;
 }
 
@@ -504,7 +496,7 @@ bool render_output(struct output *o, struct screen_state *state) {
     return render_presentation(o, state, NULL, NULL);
 }
 
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffer) {
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer) {
     struct presentation_target root = {0};
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
@@ -512,16 +504,16 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct wlr_buffer *buffe
     root.target.alpha = 1;
     struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
         .view_zoom = 1 };
-    struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(s->renderer, buffer, NULL);
+    struct pass *pass = render_begin(s->renderer, buffer, NULL, 0);
     if (!pass) return false;
     struct frame f = { .server = s, .pass = pass, .buffer = buffer, .width = buffer->width,
         .height = buffer->height, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
         .view_x = plan.view_x, .view_y = plan.view_y, .zoom = 1 };
-    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+    pass_add_rect(pass, &(struct rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
-        .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
+        .blend_mode = BLEND_NONE });
     walk_presentation_root(s, &plan, &root, root.node, 0, 0, render_leaf, &f);
-    return wlr_render_pass_submit(pass);
+    return pass_submit(pass);
 }
 
 struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t id; };
@@ -552,14 +544,14 @@ uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
 }
-struct scanout_data { struct wlr_box output; struct surface *surface; bool done; };
+struct scanout_data { struct box output; struct surface *surface; bool done; };
 static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct scanout_data *data = opaque;
-    struct wlr_box overlap;
+    struct box overlap;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
-    if (!wlr_box_intersection(&overlap, &leaf->screen, &data->output)) return false;
+    if (!box_intersection(&overlap, &leaf->screen, &data->output)) return false;
     data->done = true;
-    if (!wlr_box_equal(&leaf->screen, &data->output)) return true;
+    if (!box_equal(&leaf->screen, &data->output)) return true;
     const struct target *t = leaf->target;
     if (leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
@@ -573,8 +565,8 @@ struct surface *scanout_surface(struct output *o) {
     if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
-    struct wlr_dmabuf_attributes dmabuf;
-    if (!surface || !surface->buffer || !wlr_buffer_get_dmabuf(surface->buffer, &dmabuf) ||
+    struct dmabuf_attributes dmabuf;
+    if (!surface || !surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.transform != o->screen->transform ||
             surface->current.buffer_width != o->screen->width ||
             surface->current.buffer_height != o->screen->height) return NULL;

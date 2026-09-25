@@ -33,8 +33,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | native/space.c `scanout_surface`, native/output.c `output_frame` | Done |
 | 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/surface.c `surface_presented`, native/space.c `surfaces_textured` | Done |
 | 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/selection.c `start_drag`, native/protocols.c `drag_icons_refresh` | Done |
-| 28 | `XCURSOR_THEME` / `XCURSOR_SIZE` | crates/tomoe/src/cursor.rs | native/backend.c | Done |
-| 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | wlroots built-in cursor via native/backend.c | Improved: wlroots draws its built-in arrow when no theme loads, instead of an 8×16 white block |
+| 28 | `XCURSOR_THEME` / `XCURSOR_SIZE` | crates/tomoe/src/cursor.rs | native/base.c `xcursor_load` | Done |
+| 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | native/input.c `cursor_default` | Done: an 8×16 white block, scaled, when no xcursor theme loads |
 | 30 | Client cursor surfaces, hidden cursor | crates/tomoe/src/render/mod.rs | native/input.c `request_cursor` | Done |
 | 31 | XKB keymap and repeat settings | crates/tomoe/src/lua.rs, state.rs | src/api.lisp `configure-keyboard`, native/input.c | Done |
 | 32 | Key bindings with configurable `mod` | crates/tomoe/src/input.rs, lua.rs | src/api.lisp `bind-key :mod`, `settings :mod`, src/runtime.lisp `materialize` | Done |
@@ -70,7 +70,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/selection.c | Done |
 | 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/selection.c | Done |
 | 64 | Viewporter, xdg-output | crates/tomoe/src/state.rs | native/backend.c | Done |
-| 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/backend.c `wlr_renderer_init_wl_display` | Done |
+| 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/buffer.c | Done |
 | 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | native/surface.c, native/space.c `render_leaf` | Done |
 | 67 | libseat session pause/resume | crates/tomoe/src/backend/tty.rs | native/session.c, native/kms.c `kms_pause`/`kms_resume` | Done |
 | 68 | DRM hotplug | crates/tomoe/src/backend/tty.rs | native/output.c | Done |

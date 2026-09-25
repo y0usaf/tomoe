@@ -34,7 +34,7 @@ static struct output *output_of(struct tomoe *s, struct screen *wlr) {
 static void lock_surface_configure(struct lock_surface *ls) {
     struct output *o = ls->output ? output_of(ls->server, ls->output) : NULL;
     if (!o) return;
-    struct wlr_box box;
+    struct box box;
     physical_output_box(o, &box);
     double scale = snapped_scale(o->screen->scale);
     ls->target.x = box.x;

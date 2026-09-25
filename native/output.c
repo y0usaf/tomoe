@@ -1,6 +1,4 @@
 #include "internal.h"
-#include <wlr/backend/wayland.h>
-#include <wlr/backend/drm.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "ui.h"
@@ -246,8 +244,8 @@ static bool write_render(FILE *out, struct output *o) {
     bool ok = fputs(" :render (:format ", out) >= 0;
     quote(out, name ? name : "?");
     free(name);
-    struct wlr_dmabuf_attributes dmabuf;
-    if (o->ring.slots[0] && wlr_buffer_get_dmabuf(o->ring.slots[0], &dmabuf))
+    struct dmabuf_attributes dmabuf;
+    if (o->ring.slots[0] && buffer_get_dmabuf(o->ring.slots[0], &dmabuf))
         ok = ok && fprintf(out, " :modifier %" PRIu64, dmabuf.modifier) >= 0;
     else
         ok = ok && fputs(" :modifier nil", out) >= 0;
@@ -379,7 +377,7 @@ bool presentation_outputs(struct tomoe *s, struct presentation *plan) {
         struct presentation_output *entry = &plan->outputs[next++];
         entry->output = locations[i].output;
         entry->scale_120 = locations[i].scale_120;
-        entry->box = (struct wlr_box){ .x = locations[i].x, .y = locations[i].y,
+        entry->box = (struct box){ .x = locations[i].x, .y = locations[i].y,
             .width = locations[i].width, .height = locations[i].height };
     }
     free(locations);
@@ -553,11 +551,7 @@ static void promote_output_request_snapshot(struct output *o,
 static void strip_disabled_state(struct screen_state *state) {
     if (!(state->committed & SCREEN_ENABLED) || state->enabled) return;
     state->committed &= ~(SCREEN_BUFFER |
-        SCREEN_MODE | SCREEN_VRR |
-        WLR_OUTPUT_STATE_RENDER_FORMAT | WLR_OUTPUT_STATE_SUBPIXEL |
-        WLR_OUTPUT_STATE_LAYERS | SCREEN_WAIT |
-        WLR_OUTPUT_STATE_SIGNAL_TIMELINE | SCREEN_GAMMA |
-        WLR_OUTPUT_STATE_IMAGE_DESCRIPTION);
+        SCREEN_MODE | SCREEN_VRR | SCREEN_WAIT | SCREEN_GAMMA);
 }
 
 static bool output_state_enabled(const struct screen_update *state) {
@@ -743,16 +737,16 @@ static bool test_rings(struct tomoe *s, struct screen_update *states, size_t cou
         if (!output_state_enabled(&states[i])) continue;
         int width, height;
         state_size(&states[i], &width, &height);
-        struct wlr_buffer *buffer = ring_configure(s, &rings[i], states[i].output, width, height,
+        struct buffer *buffer = ring_configure(s, &rings[i], states[i].output, width, height,
             implicit) ? ring_acquire(s, &rings[i]) : NULL;
         if (buffer) screen_state_set_buffer(&states[i].base, buffer);
-        wlr_buffer_unlock(buffer);
+        buffer_unlock(buffer);
         ok = buffer != NULL;
     }
     ok = ok && screens_test(states, count);
     for (size_t i = 0; i < count; i++) {
         if (!(states[i].base.committed & SCREEN_BUFFER)) continue;
-        wlr_buffer_unlock(states[i].base.buffer);
+        buffer_unlock(states[i].base.buffer);
         states[i].base.buffer = NULL;
         states[i].base.committed &= ~SCREEN_BUFFER;
     }
@@ -857,10 +851,6 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
         }
         if (!place_outputs(s)) error = "Output layout allocation failed.";
     }
-    if (!error) {
-        wl_list_for_each(o, &s->outputs, link)
-            wlr_xcursor_manager_load(s->cursor_manager, o->screen->scale);
-    }
     s->configuring_outputs = false;
     if (error && (!attempted || rollback_completed) && !s->failed) {
         bool notify_request = false;
@@ -935,7 +925,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
         }
     }
     if (scanout != o->scanout)
-        wlr_log(WLR_DEBUG, "tomoe: output %s direct scanout %s", o->screen->name,
+        tomoe_log(LOG_DEBUG, "tomoe: output %s direct scanout %s", o->screen->name,
             scanout ? "engaged" : "disengaged");
     o->scanout = scanout;
     if (scanout) {
@@ -954,9 +944,9 @@ static void output_frame(struct wl_listener *listener, void *data) {
     success = success && screen_commit(o->screen, &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
-        wlr_buffer_unlock(o->presented[1]);
+        buffer_unlock(o->presented[1]);
         o->presented[1] = o->presented[0];
-        o->presented[0] = wlr_buffer_lock(state.buffer);
+        o->presented[0] = buffer_lock(state.buffer);
     }
     if (success && (state.committed & SCREEN_BUFFER))
         capture_serve(o, state.buffer, scanout != NULL);
@@ -1000,8 +990,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = o->server;
     struct screen *wlr = o->screen;
     finish_output_capture(o);
-    wlr_buffer_unlock(o->presented[0]);
-    wlr_buffer_unlock(o->presented[1]);
+    buffer_unlock(o->presented[0]);
+    buffer_unlock(o->presented[1]);
     ring_finish(&o->ring);
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);

@@ -18,7 +18,7 @@ moves as one step when its members share wlroots state that cannot be split.
 | xdg-activation | `native/activation.c`, whose token records are the tokens | `wlr_xdg_activation_v1` and the mirror records Tomoe kept beside it |
 | ext-session-lock | `native/lock.c`, a Tomoe surface role | `wlr_session_lock_v1` |
 | wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
-| xdg-shell v3 | `native/xdg_shell.c`; positioner math from wlroots' pure `wlr_xdg_positioner_rules` functions until phase 3 | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
+| xdg-shell v3 | `native/xdg_shell.c`; positioner math in `native/base.c` | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
 | ext-idle-notify, idle-inhibit | `native/idle.c`; the seat argument is accepted and unused, since Tomoe has one seat | `wlr_idle_notifier_v1`, `wlr_idle_inhibit_v1` |
 | relative-pointer, pointer-constraints | `native/pointer.c` | both wlroots managers |
 | wl_seat v9 | `native/seat.c`: pointer and keyboard focus, grabs, cursor role, enter keys from Tomoe's held-key set; touch is advertised never and stays inert | `wlr_seat`, both keyboard patches |
@@ -30,4 +30,4 @@ moves as one step when its members share wlroots state that cannot be split.
 
 ## Phase 3
 
-wl_output and xdg-output stay with `wlr_output` until DRM/KMS moves.
+wl_output and xdg-output moved to `native/screen.c` with the display core.

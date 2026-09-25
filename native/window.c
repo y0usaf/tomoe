@@ -342,10 +342,10 @@ static void request_event(struct window *w, const char *request, int requested,
     fprintf(out, "(:type :request :id %u :request :%s", w->target.id, request);
     if (requested >= 0) fprintf(out, " :requested %s", requested ? "t" : "nil");
     if (output) { fputs(" :output ", out); quote(out, output->name); }
-    if (edges) fprintf(out, " :edges :%s%s%s%s", edges & WLR_EDGE_TOP ? "top" : "",
-        edges & WLR_EDGE_BOTTOM ? "bottom" : "",
-        (edges & (WLR_EDGE_TOP | WLR_EDGE_BOTTOM)) && (edges & (WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) ? "-" : "",
-        edges & WLR_EDGE_LEFT ? "left" : edges & WLR_EDGE_RIGHT ? "right" : "");
+    if (edges) fprintf(out, " :edges :%s%s%s%s", edges & EDGE_TOP ? "top" : "",
+        edges & EDGE_BOTTOM ? "bottom" : "",
+        (edges & (EDGE_TOP | EDGE_BOTTOM)) && (edges & (EDGE_LEFT | EDGE_RIGHT)) ? "-" : "",
+        edges & EDGE_LEFT ? "left" : edges & EDGE_RIGHT ? "right" : "");
     fputc(')', out);
     end_event(w->server, event, out);
 }
@@ -367,7 +367,7 @@ static void window_move(struct wl_listener *listener, void *data) {
 static void window_resize(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, request_resize);
     struct xdg_toplevel_request *event = data;
-    uint32_t edges = event->edges ? event->edges : WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT;
+    uint32_t edges = event->edges ? event->edges : EDGE_BOTTOM | EDGE_RIGHT;
     if (interactive_allowed(w, event->serial)) request_event(w, "resize", -1, NULL, edges);
 }
 static void window_minimize(struct wl_listener *listener, void *data) {
@@ -390,7 +390,7 @@ bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height) 
 bool windows_want_tearing(struct tomoe *s, struct output *o) {
     static int force = -1;
     if (force < 0) force = getenv("TOMOE_FORCE_TEARING") && !strcmp(getenv("TOMOE_FORCE_TEARING"), "1");
-    struct wlr_box output_box;
+    struct box output_box;
     physical_output_box(o, &output_box);
     if (!s->cursor_hidden && s->pointer_x >= output_box.x && s->pointer_y >= output_box.y &&
             s->pointer_x < output_box.x + output_box.width &&
@@ -402,9 +402,9 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
         double x = w->target.x, y = w->target.y, right = x + w->width, bottom = y + w->height;
         world_to_screen(s, &x, &y);
         world_to_screen(s, &right, &bottom);
-        struct wlr_box box = { pixel_round(x), pixel_round(y),
+        struct box box = { pixel_round(x), pixel_round(y),
             pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) }, overlap;
-        if (!wlr_box_intersection(&overlap, &box, &output_box)) continue;
+        if (!box_intersection(&overlap, &box, &output_box)) continue;
         bool hinted = tearing_async(s, surface_of(w));
         bool allowed = w->target.style.tearing >= 0 ? w->target.style.tearing : s->settings.tearing;
         if (force || (allowed && (w->target.style.tearing == 1 || hinted))) return true;
@@ -422,16 +422,16 @@ void foreign_toplevels_refresh(struct tomoe *s) {
         double right = x + w->width, bottom = y + w->height;
         world_to_screen(s, &x, &y);
         world_to_screen(s, &right, &bottom);
-        struct wlr_box box = { pixel_round(x), pixel_round(y),
+        struct box box = { pixel_round(x), pixel_round(y),
             pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) };
         struct screen *outputs[16];
         size_t count = 0;
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
-            struct wlr_box output_box, overlap;
+            struct box output_box, overlap;
             physical_output_box(o, &output_box);
             if (count < 16 && output_is_active(o) && w->tree->enabled &&
-                    wlr_box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->screen;
+                    box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->screen;
         }
         foreign_update(s, w->target.id, title_of(w), app_id_of(w), state, outputs, count);
     }
@@ -682,16 +682,16 @@ static void popup_unconstrain(struct popup *p) {
     struct target *target = target_for_tree(p->tree->parent);
     struct tomoe *s = p->server;
     if (!target || !s) return;
-    struct wlr_box box = {0};
+    struct box box = {0};
     if (target->kind == TARGET_LAYER) {
         struct layer *l = wl_container_of(target, l, target);
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             if (o->screen != l->wlr->output) continue;
-            struct wlr_box physical;
+            struct box physical;
             physical_output_box(o, &physical);
             double scale = snapped_scale(o->screen->scale);
-            box = (struct wlr_box){ -l->tree->x, -l->tree->y,
+            box = (struct box){ -l->tree->x, -l->tree->y,
                 logical_size(physical.width, scale), logical_size(physical.height, scale) };
         }
     } else {
@@ -700,19 +700,19 @@ static void popup_unconstrain(struct popup *p) {
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             if (!output_is_active(o)) continue;
-            struct wlr_box physical, overlap;
+            struct box physical, overlap;
             physical_output_box(o, &physical);
             double x = physical.x, y = physical.y;
             screen_to_world(s, &x, &y);
-            struct wlr_box world = { pixel_round(x), pixel_round(y),
+            struct box world = { pixel_round(x), pixel_round(y),
                 pixel_round(physical.width / s->view_zoom), pixel_round(physical.height / s->view_zoom) };
-            struct wlr_box window = { w->target.x, w->target.y, w->width, w->height };
-            int64_t area = wlr_box_intersection(&overlap, &world, &window) ?
+            struct box window = { w->target.x, w->target.y, w->width, w->height };
+            int64_t area = box_intersection(&overlap, &world, &window) ?
                 (int64_t)overlap.width * overlap.height : 0;
             if (area <= best) continue;
             best = area;
             double scale = w->target.scale;
-            box = (struct wlr_box){
+            box = (struct box){
                 (int)floor((world.x - w->target.x) / scale) + w->target.geometry_x,
                 (int)floor((world.y - w->target.y) / scale) + w->target.geometry_y,
                 logical_size(world.width, scale), logical_size(world.height, scale) };

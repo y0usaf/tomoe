@@ -204,7 +204,7 @@ static void device_added(struct tomoe *s, struct libinput_device *handle) {
     if (!device) return;
     device->libinput = libinput_device_ref(handle);
     libinput_device_set_user_data(handle, device);
-    wlr_log(WLR_INFO, "tomoe: input device \"%s\"", name);
+    tomoe_log(LOG_INFO, "tomoe: input device \"%s\"", name);
     apply(s, handle, name);
     input_add(s, device);
 }

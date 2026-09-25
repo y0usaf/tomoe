@@ -42,7 +42,7 @@ struct ui_surface {
     unsigned char *pixels;
     cairo_surface_t *cairo_surface;
     cairo_t *cairo;
-    struct wlr_texture *texture;
+    struct texture *texture;
     struct ui_hit_entry *hits;
     size_t hit_count, hit_capacity;
     struct ui_surface_asset *assets;
@@ -124,7 +124,7 @@ static uint64_t union_bytes(const struct ui_set *left, const struct ui_set *righ
 
 static void surface_free(struct ui_surface *surface) {
     if (!surface) return;
-    if (surface->texture) wlr_texture_destroy(surface->texture);
+    if (surface->texture) texture_destroy(surface->texture);
     if (surface->cairo) cairo_destroy(surface->cairo);
     if (surface->cairo_surface) cairo_surface_destroy(surface->cairo_surface);
     free(surface->pixels);
@@ -675,7 +675,7 @@ int tomoe_present_ui_end(struct tomoe *s) {
     cairo_surface_destroy(surface->cairo_surface);
     surface->cairo_surface = NULL;
 
-    struct wlr_texture *texture = wlr_texture_from_pixels(s->renderer,
+    struct texture *texture = texture_from_pixels(s->renderer,
         TOMOE_DRM_FORMAT_ARGB8888, surface->stride,
         (uint32_t)surface->width, (uint32_t)surface->height, surface->pixels);
     free(surface->pixels);
@@ -753,7 +753,7 @@ static bool surface_matches_output(const struct ui_surface *surface,
         strcmp(surface->output, output->screen->name) == 0);
 }
 
-static bool point_in_box(double x, double y, const struct wlr_box *box) {
+static bool point_in_box(double x, double y, const struct box *box) {
     return x >= box->x && y >= box->y &&
         x < (double)box->x + box->width && y < (double)box->y + box->height;
 }
@@ -764,7 +764,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
     bool on_live_output = false;
     wl_list_for_each(output, &s->outputs, link) {
         if (!output->screen) continue;
-        struct wlr_box box;
+        struct box box;
         physical_output_box(output, &box);
         if (output_is_active(output) && point_in_box(x, y, &box)) {
             on_live_output = true;
@@ -776,7 +776,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
         struct ui_surface *surface = s->ui->surfaces[index - 1];
         bool output_matches = false;
         wl_list_for_each(output, &s->outputs, link) {
-            struct wlr_box box;
+            struct box box;
             physical_output_box(output, &box);
             if (surface_matches_output(surface, output, NULL) &&
                     point_in_box(x, y, &box)) {
@@ -817,7 +817,7 @@ bool ui_on_output(struct output *o) {
     return false;
 }
 
-void ui_render(struct output *o, struct wlr_render_pass *pass,
+void ui_render(struct output *o, struct pass *pass,
         const struct presentation *plan, int x, int y, int width, int height,
         enum wl_output_transform transform) {
     if (!o || !o->server || !o->screen || !pass) return;
@@ -825,27 +825,27 @@ void ui_render(struct output *o, struct wlr_render_pass *pass,
             (!output_is_active(o) && !o->server->configuring_outputs)) return;
     const struct ui_set *set = plan ? plan->ui : o->server->ui;
     if (!set) return;
-    struct wlr_box bounds = { .x = 0, .y = 0, .width = width, .height = height };
+    struct box bounds = { .x = 0, .y = 0, .width = width, .height = height };
     for (size_t i = 0; i < set->count; i++) {
         const struct ui_surface *surface = set->surfaces[i];
         if (!surface_matches_output(surface, o, plan) || !surface->texture) continue;
-        struct wlr_box source = {
+        struct box source = {
             .x = surface->x - x, .y = surface->y - y,
             .width = surface->width, .height = surface->height };
-        struct wlr_box destination;
-        if (!wlr_box_intersection(&destination, &source, &bounds)) continue;
-        struct wlr_fbox source_box = {
+        struct box destination;
+        if (!box_intersection(&destination, &source, &bounds)) continue;
+        struct fbox source_box = {
             .x = (double)(destination.x - source.x),
             .y = (double)(destination.y - source.y),
             .width = destination.width,
             .height = destination.height };
-        wlr_box_transform(&destination, &destination,
-            wlr_output_transform_invert(transform), width, height);
-        wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
+        box_transform(&destination, &destination,
+            transform_invert(transform), width, height);
+        pass_add_texture(pass, &(struct texture_options){
             .texture = surface->texture, .src_box = source_box,
             .dst_box = destination, .transform = transform,
-            .filter_mode = WLR_SCALE_FILTER_BILINEAR,
-            .blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED });
+            .filter_mode = FILTER_BILINEAR,
+            .blend_mode = BLEND_PREMULTIPLIED });
     }
 }
 

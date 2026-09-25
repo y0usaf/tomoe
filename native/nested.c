@@ -3,7 +3,6 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <xf86drm.h>
-#include <wlr/util/addon.h>
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
@@ -45,9 +44,9 @@ struct nested_output {
 };
 
 struct host_buffer {
-    struct wlr_addon addon;
+    struct addon addon;
     struct wl_buffer *buffer;
-    struct wlr_buffer *wlr;
+    struct buffer *wlr;
     bool locked;
 };
 
@@ -59,34 +58,30 @@ struct feedback {
 
 static struct nested *nested;
 
-static void host_buffer_destroy(struct wlr_addon *addon) {
+static void host_buffer_destroy(struct addon *addon) {
     struct host_buffer *b = wl_container_of(addon, b, addon);
     wl_buffer_destroy(b->buffer);
-    wlr_addon_finish(addon);
+    addon_finish(addon);
     free(b);
 }
-
-static const struct wlr_addon_interface host_buffer_addon = {
-    .name = "tomoe-nested-buffer", .destroy = host_buffer_destroy,
-};
 
 static void host_buffer_release(void *data, struct wl_buffer *buffer) {
     struct host_buffer *b = data;
     if (!b->locked) return;
     b->locked = false;
-    wlr_buffer_unlock(b->wlr);
+    buffer_unlock(b->wlr);
 }
 
 static const struct wl_buffer_listener host_buffer_listener = { .release = host_buffer_release };
 
-static struct host_buffer *host_buffer_for(struct wlr_buffer *buffer) {
-    struct wlr_addon *addon = wlr_addon_find(&buffer->addons, nested, &host_buffer_addon);
+static struct host_buffer *host_buffer_for(struct buffer *buffer) {
+    struct addon *addon = addon_find(&buffer->addons, nested, host_buffer_destroy);
     if (addon) {
         struct host_buffer *b = wl_container_of(addon, b, addon);
         return b;
     }
-    struct wlr_dmabuf_attributes dmabuf;
-    if (!nested->dmabuf || !wlr_buffer_get_dmabuf(buffer, &dmabuf)) return NULL;
+    struct dmabuf_attributes dmabuf;
+    if (!nested->dmabuf || !buffer_get_dmabuf(buffer, &dmabuf)) return NULL;
     struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(nested->dmabuf);
     for (int i = 0; i < dmabuf.n_planes; i++)
         zwp_linux_buffer_params_v1_add(params, dmabuf.fd[i], (uint32_t)i, dmabuf.offset[i],
@@ -102,15 +97,15 @@ static struct host_buffer *host_buffer_for(struct wlr_buffer *buffer) {
     b->buffer = host;
     b->wlr = buffer;
     wl_buffer_add_listener(host, &host_buffer_listener, b);
-    wlr_addon_init(&b->addon, &buffer->addons, nested, &host_buffer_addon);
+    addon_init(&b->addon, &buffer->addons, nested, host_buffer_destroy);
     return b;
 }
 
 static bool output_test(struct screen_update *updates, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        struct wlr_dmabuf_attributes dmabuf;
+        struct dmabuf_attributes dmabuf;
         const struct screen_state *state = &updates[i].base;
-        if ((state->committed & SCREEN_BUFFER) && !wlr_buffer_get_dmabuf(state->buffer, &dmabuf))
+        if ((state->committed & SCREEN_BUFFER) && !buffer_get_dmabuf(state->buffer, &dmabuf))
             return false;
         if (state->tearing_page_flip || (state->committed & SCREEN_GAMMA)) return false;
     }
@@ -170,7 +165,7 @@ static bool output_commit(struct screen_update *updates, size_t count) {
         if (!b) return false;
         if (!b->locked) {
             b->locked = true;
-            wlr_buffer_lock(b->wlr);
+            buffer_lock(b->wlr);
         }
         o->seq = o->screen.commit_seq + 1;
         wl_surface_attach(o->surface, b->buffer, 0, 0);
@@ -511,7 +506,7 @@ static const struct wl_registry_listener registry_listener = {
 static int host_event(int fd, uint32_t mask, void *data) {
     struct tomoe *s = data;
     if ((mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) || wl_display_dispatch(nested->host) < 0) {
-        wlr_log(WLR_ERROR, "tomoe: lost the host Wayland display");
+        tomoe_log(LOG_ERROR, "tomoe: lost the host Wayland display");
         wl_display_terminate(s->display);
         return 0;
     }
@@ -524,14 +519,14 @@ int nested_create(struct tomoe *s) {
     nested->server = s;
     nested->host = wl_display_connect(NULL);
     if (!nested->host) {
-        wlr_log(WLR_ERROR, "tomoe: cannot connect to the host Wayland display");
+        tomoe_log(LOG_ERROR, "tomoe: cannot connect to the host Wayland display");
         return -2;
     }
     nested->registry = wl_display_get_registry(nested->host);
     wl_registry_add_listener(nested->registry, &registry_listener, NULL);
     wl_display_roundtrip(nested->host);
     if (!nested->compositor || !nested->wm || !nested->dmabuf) {
-        wlr_log(WLR_ERROR, "tomoe: the host lacks wl_compositor, xdg_wm_base or linux-dmabuf v3");
+        tomoe_log(LOG_ERROR, "tomoe: the host lacks wl_compositor, xdg_wm_base or linux-dmabuf v3");
         return -2;
     }
     if (zwp_linux_dmabuf_v1_get_version(nested->dmabuf) >= 4) {

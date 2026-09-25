@@ -405,5 +405,5 @@
   (unless (= (%abi) +native-abi-version+)
     (error "Native ABI mismatch, expected ~D." +native-abi-version+))
   (let ((server (%create socket)))
-    (when (sb-alien:null-alien server) (error "Cannot start wlroots. See native error above."))
+    (when (sb-alien:null-alien server) (error "Cannot start the native backend. See native error above."))
     server))

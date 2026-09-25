@@ -5,11 +5,10 @@
 #include <unistd.h>
 #include <drm_fourcc.h>
 #include <xf86drm.h>
-#include <wlr/interfaces/wlr_buffer.h>
 #include "linux-dmabuf-v1-protocol.h"
 
 struct shm_buffer {
-    struct wlr_buffer base;
+    struct buffer base;
     struct wl_resource *resource;
     struct wl_shm_buffer *shm;
     struct wl_shm_pool *pool;
@@ -20,14 +19,14 @@ struct shm_buffer {
 };
 
 struct dmabuf_buffer {
-    struct wlr_buffer base;
+    struct buffer base;
     struct wl_resource *resource;
-    struct wlr_dmabuf_attributes attributes;
+    struct dmabuf_attributes attributes;
     struct wl_listener release;
 };
 
 struct dmabuf_params {
-    struct wlr_dmabuf_attributes attributes;
+    struct dmabuf_attributes attributes;
     struct tomoe *server;
     bool has_modifier;
 };
@@ -48,16 +47,16 @@ static uint32_t shm_to_drm(uint32_t format) {
         format == WL_SHM_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888 : format;
 }
 
-static void shm_buffer_destroy(struct wlr_buffer *base) {
+static void shm_buffer_destroy(struct buffer *base) {
     struct shm_buffer *b = wl_container_of(base, b, base);
     detach(&b->release);
     detach(&b->resource_destroy);
-    wlr_buffer_finish(base);
+    buffer_finish(base);
     wl_shm_pool_unref(b->pool);
     free(b);
 }
 
-static bool shm_buffer_begin(struct wlr_buffer *base, uint32_t flags, void **data,
+static bool shm_buffer_begin(struct buffer *base, uint32_t flags, void **data,
         uint32_t *format, size_t *stride) {
     struct shm_buffer *b = wl_container_of(base, b, base);
     if (b->shm) wl_shm_buffer_begin_access(b->shm);
@@ -67,15 +66,15 @@ static bool shm_buffer_begin(struct wlr_buffer *base, uint32_t flags, void **dat
     return true;
 }
 
-static void shm_buffer_end(struct wlr_buffer *base) {
+static void shm_buffer_end(struct buffer *base) {
     struct shm_buffer *b = wl_container_of(base, b, base);
     if (b->shm) wl_shm_buffer_end_access(b->shm);
 }
 
-static const struct wlr_buffer_impl shm_buffer_impl = {
+static const struct buffer_impl shm_buffer_impl = {
     .destroy = shm_buffer_destroy,
-    .begin_data_ptr_access = shm_buffer_begin,
-    .end_data_ptr_access = shm_buffer_end,
+    .begin_access = shm_buffer_begin,
+    .end_access = shm_buffer_end,
 };
 
 static void shm_resource_destroyed(struct wl_listener *listener, void *data) {
@@ -83,7 +82,7 @@ static void shm_resource_destroyed(struct wl_listener *listener, void *data) {
     detach(&b->resource_destroy);
     b->resource = NULL;
     b->shm = NULL;
-    wlr_buffer_drop(&b->base);
+    buffer_drop(&b->base);
 }
 
 static void shm_released(struct wl_listener *listener, void *data) {
@@ -95,7 +94,7 @@ static bool shm_is_instance(struct wl_resource *resource) {
     return wl_shm_buffer_get(resource) != NULL;
 }
 
-static struct wlr_buffer *shm_from_resource(struct wl_resource *resource) {
+static struct buffer *shm_from_resource(struct wl_resource *resource) {
     struct wl_listener *existing =
         wl_resource_get_destroy_listener(resource, shm_resource_destroyed);
     if (existing) {
@@ -105,7 +104,7 @@ static struct wlr_buffer *shm_from_resource(struct wl_resource *resource) {
     struct wl_shm_buffer *shm = wl_shm_buffer_get(resource);
     struct shm_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
-    wlr_buffer_init(&b->base, &shm_buffer_impl, wl_shm_buffer_get_width(shm),
+    buffer_init(&b->base, &shm_buffer_impl, wl_shm_buffer_get_width(shm),
         wl_shm_buffer_get_height(shm));
     b->resource = resource;
     b->shm = shm;
@@ -119,12 +118,6 @@ static struct wlr_buffer *shm_from_resource(struct wl_resource *resource) {
     return &b->base;
 }
 
-static const struct wlr_buffer_resource_interface shm_resource_interface = {
-    .name = "wl_shm",
-    .is_instance = shm_is_instance,
-    .from_resource = shm_from_resource,
-};
-
 static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
     wl_resource_destroy(resource);
 }
@@ -133,22 +126,22 @@ static const struct wl_buffer_interface dmabuf_wl_buffer_impl = {
     .destroy = destroy_resource,
 };
 
-static void dmabuf_buffer_destroy(struct wlr_buffer *base) {
+static void dmabuf_buffer_destroy(struct buffer *base) {
     struct dmabuf_buffer *b = wl_container_of(base, b, base);
     detach(&b->release);
-    wlr_buffer_finish(base);
+    buffer_finish(base);
     if (b->resource) wl_resource_set_user_data(b->resource, NULL);
-    wlr_dmabuf_attributes_finish(&b->attributes);
+    dmabuf_attributes_finish(&b->attributes);
     free(b);
 }
 
-static bool dmabuf_buffer_get(struct wlr_buffer *base, struct wlr_dmabuf_attributes *attributes) {
+static bool dmabuf_buffer_get(struct buffer *base, struct dmabuf_attributes *attributes) {
     struct dmabuf_buffer *b = wl_container_of(base, b, base);
     *attributes = b->attributes;
     return true;
 }
 
-static const struct wlr_buffer_impl dmabuf_buffer_impl = {
+static const struct buffer_impl dmabuf_buffer_impl = {
     .destroy = dmabuf_buffer_destroy,
     .get_dmabuf = dmabuf_buffer_get,
 };
@@ -158,22 +151,16 @@ static bool dmabuf_is_instance(struct wl_resource *resource) {
         wl_resource_get_user_data(resource);
 }
 
-static struct wlr_buffer *dmabuf_from_resource(struct wl_resource *resource) {
+static struct buffer *dmabuf_from_resource(struct wl_resource *resource) {
     struct dmabuf_buffer *b = wl_resource_get_user_data(resource);
     return &b->base;
 }
-
-static const struct wlr_buffer_resource_interface dmabuf_resource_interface = {
-    .name = "zwp_linux_dmabuf_v1",
-    .is_instance = dmabuf_is_instance,
-    .from_resource = dmabuf_from_resource,
-};
 
 static void dmabuf_resource_destroyed(struct wl_resource *resource) {
     struct dmabuf_buffer *b = wl_resource_get_user_data(resource);
     if (!b) return;
     b->resource = NULL;
-    wlr_buffer_drop(&b->base);
+    buffer_drop(&b->base);
 }
 
 static void dmabuf_released(struct wl_listener *listener, void *data) {
@@ -184,7 +171,7 @@ static void dmabuf_released(struct wl_listener *listener, void *data) {
 static void params_free(struct wl_resource *resource) {
     struct dmabuf_params *p = wl_resource_get_user_data(resource);
     if (!p) return;
-    wlr_dmabuf_attributes_finish(&p->attributes);
+    dmabuf_attributes_finish(&p->attributes);
     free(p);
 }
 
@@ -193,13 +180,13 @@ static void params_add(struct wl_client *client, struct wl_resource *resource, i
         uint32_t modifier_lo) {
     struct dmabuf_params *p = wl_resource_get_user_data(resource);
     uint64_t modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
-    const char *error = !p ? "params already used" : plane >= WLR_DMABUF_MAX_PLANES ?
+    const char *error = !p ? "params already used" : plane >= DMABUF_MAX_PLANES ?
         "plane index out of range" : p->attributes.fd[plane] != -1 ? "plane already set" :
         p->has_modifier && modifier != p->attributes.modifier ? "modifier differs between planes" :
         NULL;
     if (error) {
         uint32_t code = !p ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_ALREADY_USED :
-            plane >= WLR_DMABUF_MAX_PLANES ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX :
+            plane >= DMABUF_MAX_PLANES ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_IDX :
             p->attributes.fd[plane] != -1 ? ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_PLANE_SET :
             ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
         wl_resource_post_error(resource, code, "%s", error);
@@ -214,7 +201,7 @@ static void params_add(struct wl_client *client, struct wl_resource *resource, i
     p->attributes.n_planes++;
 }
 
-static const char *params_invalid(struct wlr_dmabuf_attributes *a, uint32_t *code) {
+static const char *params_invalid(struct dmabuf_attributes *a, uint32_t *code) {
     *code = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE;
     if (!a->n_planes || a->fd[0] == -1) return "no dmabuf for plane 0";
     for (int i = 1; i < a->n_planes; i++) if (a->fd[i] == -1) return "gap in dmabuf planes";
@@ -233,7 +220,7 @@ static const char *params_invalid(struct wlr_dmabuf_attributes *a, uint32_t *cod
     return NULL;
 }
 
-static bool importable(const struct wlr_dmabuf_attributes *a) {
+static bool importable(const struct dmabuf_attributes *a) {
     for (int i = 0; dmabuf.drm_fd >= 0 && i < a->n_planes; i++) {
         uint32_t handle = 0;
         if (drmPrimeFDToHandle(dmabuf.drm_fd, a->fd[i], &handle) != 0) return false;
@@ -250,7 +237,7 @@ static void params_create_common(struct wl_resource *resource, uint32_t id, int3
             "params already used");
         return;
     }
-    struct wlr_dmabuf_attributes attributes = p->attributes;
+    struct dmabuf_attributes attributes = p->attributes;
     wl_resource_set_user_data(resource, NULL);
     free(p);
     attributes.width = width;
@@ -260,7 +247,7 @@ static void params_create_common(struct wl_resource *resource, uint32_t id, int3
     const char *invalid = flags ? NULL : params_invalid(&attributes, &code);
     if (invalid) {
         wl_resource_post_error(resource, code, "%s", invalid);
-        wlr_dmabuf_attributes_finish(&attributes);
+        dmabuf_attributes_finish(&attributes);
         return;
     }
     struct dmabuf_buffer *b = !flags && importable(&attributes) ? calloc(1, sizeof(*b)) : NULL;
@@ -268,13 +255,13 @@ static void params_create_common(struct wl_resource *resource, uint32_t id, int3
         &wl_buffer_interface, 1, id) : NULL;
     if (!buffer) {
         free(b);
-        wlr_dmabuf_attributes_finish(&attributes);
+        dmabuf_attributes_finish(&attributes);
         if (!id) zwp_linux_buffer_params_v1_send_failed(resource);
         else wl_resource_post_error(resource, ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_WL_BUFFER,
             "dmabuf import failed");
         return;
     }
-    wlr_buffer_init(&b->base, &dmabuf_buffer_impl, width, height);
+    buffer_init(&b->base, &dmabuf_buffer_impl, width, height);
     b->resource = buffer;
     b->attributes = attributes;
     wl_resource_set_implementation(buffer, &dmabuf_wl_buffer_impl, b, dmabuf_resource_destroyed);
@@ -308,7 +295,7 @@ static void create_params(struct wl_client *client, struct wl_resource *manager,
         wl_client_post_no_memory(client);
         return;
     }
-    for (int i = 0; i < WLR_DMABUF_MAX_PLANES; i++) p->attributes.fd[i] = -1;
+    for (int i = 0; i < DMABUF_MAX_PLANES; i++) p->attributes.fd[i] = -1;
     wl_resource_set_implementation(resource, &params_impl, p, params_free);
 }
 
@@ -369,10 +356,10 @@ static void bind_dmabuf(struct wl_client *client, void *data, uint32_t version, 
     }
     wl_resource_set_implementation(resource, &dmabuf_impl, s, NULL);
     if (version >= ZWP_LINUX_DMABUF_V1_GET_DEFAULT_FEEDBACK_SINCE_VERSION) return;
-    const struct wlr_drm_format_set *formats =
-        wlr_renderer_get_texture_formats(s->renderer, WLR_BUFFER_CAP_DMABUF);
+    const struct format_set *formats =
+        render_texture_formats(s->renderer);
     for (size_t i = 0; i < formats->len; i++) {
-        const struct wlr_drm_format *f = &formats->formats[i];
+        const struct format *f = &formats->formats[i];
         if (version < ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION) {
             zwp_linux_dmabuf_v1_send_format(resource, f->format);
             continue;
@@ -383,7 +370,7 @@ static void bind_dmabuf(struct wl_client *client, void *data, uint32_t version, 
     }
 }
 
-static bool dmabuf_table(const struct wlr_drm_format_set *formats) {
+static bool dmabuf_table(const struct format_set *formats) {
     size_t count = 0;
     for (size_t i = 0; i < formats->len; i++) count += formats->formats[i].len;
     if (!count || count > UINT16_MAX) return false;
@@ -411,23 +398,21 @@ static bool dmabuf_table(const struct wlr_drm_format_set *formats) {
 
 bool buffers_listen(struct tomoe *s) {
     if (wl_display_init_shm(s->display) != 0) return false;
-    const struct wlr_drm_format_set *shm =
-        wlr_renderer_get_texture_formats(s->renderer, WLR_BUFFER_CAP_DATA_PTR);
+    const struct format_set *shm =
+        render_shm_formats(s->renderer);
     for (size_t i = 0; shm && i < shm->len; i++) {
         uint32_t format = shm->formats[i].format;
         if (format != DRM_FORMAT_ARGB8888 && format != DRM_FORMAT_XRGB8888)
             wl_display_add_shm_format(s->display, format);
     }
-    wlr_buffer_register_resource_interface(&shm_resource_interface);
-    const struct wlr_drm_format_set *formats =
-        wlr_renderer_get_texture_formats(s->renderer, WLR_BUFFER_CAP_DMABUF);
-    int fd = wlr_renderer_get_drm_fd(s->renderer);
+    const struct format_set *formats =
+        render_texture_formats(s->renderer);
+    int fd = render_drm_fd(s->renderer);
     struct stat st;
     if (!formats || !formats->len || fd < 0 || fstat(fd, &st) != 0) return true;
     dmabuf.drm_fd = fd;
     dmabuf.device = st.st_rdev;
     if (!dmabuf_table(formats)) return false;
-    wlr_buffer_register_resource_interface(&dmabuf_resource_interface);
     return wl_global_create(s->display, &zwp_linux_dmabuf_v1_interface, 4, s, bind_dmabuf);
 }
 
@@ -437,19 +422,26 @@ void buffers_finish(void) {
 }
 
 struct pixel_buffer {
-    struct wlr_buffer base;
+    struct buffer base;
     uint32_t format;
     size_t stride;
     uint8_t data[];
 };
 
-static void pixel_buffer_destroy(struct wlr_buffer *base) {
+struct buffer *buffer_from_resource(struct wl_resource *resource) {
+    struct buffer *buffer = shm_is_instance(resource) ? shm_from_resource(resource) :
+        dmabuf_is_instance(resource) ? dmabuf_from_resource(resource) : NULL;
+    if (!buffer) tomoe_log(LOG_ERROR, "tomoe: unknown buffer type");
+    return buffer ? buffer_lock(buffer) : NULL;
+}
+
+static void pixel_buffer_destroy(struct buffer *base) {
     struct pixel_buffer *b = wl_container_of(base, b, base);
-    wlr_buffer_finish(base);
+    buffer_finish(base);
     free(b);
 }
 
-static bool pixel_buffer_begin(struct wlr_buffer *base, uint32_t flags, void **data,
+static bool pixel_buffer_begin(struct buffer *base, uint32_t flags, void **data,
         uint32_t *format, size_t *stride) {
     struct pixel_buffer *b = wl_container_of(base, b, base);
     *data = b->data;
@@ -458,20 +450,20 @@ static bool pixel_buffer_begin(struct wlr_buffer *base, uint32_t flags, void **d
     return true;
 }
 
-static void pixel_buffer_end(struct wlr_buffer *base) {
+static void pixel_buffer_end(struct buffer *base) {
 }
 
-static const struct wlr_buffer_impl pixel_buffer_impl = {
+static const struct buffer_impl pixel_buffer_impl = {
     .destroy = pixel_buffer_destroy,
-    .begin_data_ptr_access = pixel_buffer_begin,
-    .end_data_ptr_access = pixel_buffer_end,
+    .begin_access = pixel_buffer_begin,
+    .end_access = pixel_buffer_end,
 };
 
-struct wlr_buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
+struct buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
         const void *pixels) {
     struct pixel_buffer *b = calloc(1, sizeof(*b) + stride * (size_t)height);
     if (!b) return NULL;
-    wlr_buffer_init(&b->base, &pixel_buffer_impl, width, height);
+    buffer_init(&b->base, &pixel_buffer_impl, width, height);
     b->format = format;
     b->stride = stride;
     memcpy(b->data, pixels, stride * (size_t)height);

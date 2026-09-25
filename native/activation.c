@@ -75,14 +75,14 @@ static struct token *token_create(struct tomoe *s) {
     wl_list_for_each_safe(token, next, &s->activation_tokens, link)
         if (token->committed && deadline_expired(token->deadline_msec)) token_destroy(token);
     if (s->activation_tracked_count >= ACTIVATION_TRACKED_TOKEN_LIMIT) {
-        wlr_log(WLR_ERROR, "tomoe: activation token limit reached");
+        tomoe_log(LOG_ERROR, "tomoe: activation token limit reached");
         return NULL;
     }
     unsigned char bytes[16];
     token = calloc(1, sizeof(*token));
     if (!token || getrandom(bytes, sizeof(bytes), 0) != sizeof(bytes)) {
         free(token);
-        wlr_log(WLR_ERROR, "tomoe: activation token allocation failed");
+        tomoe_log(LOG_ERROR, "tomoe: activation token allocation failed");
         return NULL;
     }
     for (size_t i = 0; i < sizeof(bytes); i++) snprintf(token->name + 2 * i, 3, "%02x", bytes[i]);
@@ -177,13 +177,13 @@ static void activate(struct wl_client *client, struct wl_resource *resource,
         return;
     }
     if (s->activation_pending_count >= ACTIVATION_PENDING_LIMIT) {
-        wlr_log(WLR_ERROR, "tomoe: activation pending request limit reached");
+        tomoe_log(LOG_ERROR, "tomoe: activation pending request limit reached");
         return;
     }
 
     pending = calloc(1, sizeof(*pending));
     if (!pending) {
-        wlr_log(WLR_ERROR, "tomoe: activation pending request allocation failed");
+        tomoe_log(LOG_ERROR, "tomoe: activation pending request allocation failed");
         return;
     }
     pending->server = s;
@@ -197,7 +197,7 @@ static void activate(struct wl_client *client, struct wl_resource *resource,
     if (!pending->timeout) {
         detach(&pending->surface_destroy);
         free(pending);
-        wlr_log(WLR_ERROR, "tomoe: activation pending timer allocation failed");
+        tomoe_log(LOG_ERROR, "tomoe: activation pending timer allocation failed");
         return;
     }
     uint32_t remaining = deadline_remaining(deadline);

@@ -8,8 +8,6 @@
 #include <libudev.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <wlr/render/drm_syncobj.h>
-#include <wlr/util/addon.h>
 #include "presentation-time-protocol.h"
 
 enum { PROP_CRTC_ID, PROP_MODE_ID, PROP_ACTIVE, PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE,
@@ -30,7 +28,7 @@ struct props {
 struct plane {
     uint32_t id, type, possible_crtcs;
     struct props props;
-    struct wlr_drm_format_set formats;
+    struct format_set formats;
 };
 
 struct crtc {
@@ -52,7 +50,7 @@ struct connector {
     struct props props;
     uint32_t possible_crtcs;
     struct crtc *crtc, *kernel_crtc;
-    struct wlr_buffer *queued, *current;
+    struct buffer *queued, *current;
     bool flip_pending, present_pending;
     size_t flip_seq;
     struct gbm_bo *cursor_bo[2];
@@ -80,7 +78,7 @@ struct kms {
 };
 
 struct fb {
-    struct wlr_addon addon;
+    struct addon addon;
     struct kms *kms;
     uint32_t id;
 };
@@ -103,23 +101,22 @@ static void props_read(int fd, uint32_t object, uint32_t type, struct props *pro
     drmModeFreeObjectProperties(list);
 }
 
-static void fb_destroy(struct wlr_addon *addon) {
+static void fb_destroy(struct addon *addon) {
     struct fb *fb = wl_container_of(addon, fb, addon);
     drmModeRmFB(fb->kms->fd, fb->id);
-    wlr_addon_finish(addon);
+    addon_finish(addon);
     free(fb);
 }
 
-static const struct wlr_addon_interface fb_addon = { .name = "tomoe-kms-fb", .destroy = fb_destroy };
 
-static uint32_t fb_for(struct kms *kms, struct wlr_buffer *buffer) {
-    struct wlr_addon *addon = wlr_addon_find(&buffer->addons, kms, &fb_addon);
+static uint32_t fb_for(struct kms *kms, struct buffer *buffer) {
+    struct addon *addon = addon_find(&buffer->addons, kms, fb_destroy);
     if (addon) {
         struct fb *fb = wl_container_of(addon, fb, addon);
         return fb->id;
     }
-    struct wlr_dmabuf_attributes dmabuf;
-    if (!wlr_buffer_get_dmabuf(buffer, &dmabuf)) return 0;
+    struct dmabuf_attributes dmabuf;
+    if (!buffer_get_dmabuf(buffer, &dmabuf)) return 0;
     uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
     uint64_t modifiers[4] = {0};
     for (int i = 0; i < dmabuf.n_planes; i++) {
@@ -148,7 +145,7 @@ static uint32_t fb_for(struct kms *kms, struct wlr_buffer *buffer) {
     }
     fb->kms = kms;
     fb->id = id;
-    wlr_addon_init(&fb->addon, &buffer->addons, kms, &fb_addon);
+    addon_init(&fb->addon, &buffer->addons, kms, fb_destroy);
     return id;
 }
 
@@ -191,14 +188,14 @@ static void read_formats(struct kms *kms, struct plane *plane) {
     if (blob) {
         drmModeFormatModifierIterator iter = {0};
         while (drmModeFormatModifierBlobIterNext(blob, &iter))
-            wlr_drm_format_set_add(&plane->formats, iter.fmt, iter.mod);
+            format_set_add(&plane->formats, iter.fmt, iter.mod);
         drmModeFreePropertyBlob(blob);
         return;
     }
     drmModePlane *info = drmModeGetPlane(kms->fd, plane->id);
     for (uint32_t i = 0; info && i < info->count_formats; i++) {
-        wlr_drm_format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_INVALID);
-        wlr_drm_format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_LINEAR);
+        format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_INVALID);
+        format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_LINEAR);
     }
     drmModeFreePlane(info);
 }
@@ -292,7 +289,7 @@ static bool mode_for(struct connector *c, const struct screen_state *state, drmM
 
 static int sync_file(const struct screen_state *state) {
     if (!(state->committed & SCREEN_WAIT) || !state->wait_timeline) return -1;
-    return wlr_drm_syncobj_timeline_export_sync_file(state->wait_timeline, state->wait_point);
+    return timeline_export_sync_file(state->wait_timeline, state->wait_point);
 }
 
 static bool enabled_after(const struct connector *c, const struct screen_state *state) {
@@ -381,7 +378,7 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         p->modeset = !p->crtc->active || p->crtc->owner != c ||
             memcmp(&p->mode, &p->crtc->mode, sizeof(p->mode));
         modeset |= p->modeset;
-        struct wlr_buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->queued ?
+        struct buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->queued ?
             c->queued : c->current;
         p->fb = buffer ? fb_for(kms, buffer) : 0;
         ok = p->fb != 0;
@@ -444,8 +441,8 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
                 p->crtc->owner = NULL;
             }
             c->crtc = NULL;
-            wlr_buffer_unlock(c->queued);
-            wlr_buffer_unlock(c->current);
+            buffer_unlock(c->queued);
+            buffer_unlock(c->current);
             c->queued = c->current = NULL;
             c->flip_pending = false;
             continue;
@@ -463,8 +460,8 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
             p->crtc->gamma_blob = p->gamma_blob;
         }
         if (state->committed & SCREEN_BUFFER) {
-            wlr_buffer_unlock(c->queued);
-            c->queued = wlr_buffer_lock(state->buffer);
+            buffer_unlock(c->queued);
+            c->queued = buffer_lock(state->buffer);
             c->flip_pending = true;
             c->flip_seq = c->screen.commit_seq + 1;
         }
@@ -505,15 +502,15 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
             c->crtc->active = false;
             c->crtc->owner = NULL;
             c->crtc = NULL;
-            wlr_buffer_unlock(c->queued);
-            wlr_buffer_unlock(c->current);
+            buffer_unlock(c->queued);
+            buffer_unlock(c->current);
             c->queued = c->current = NULL;
             continue;
         }
         struct crtc *crtc = pick_crtc(c);
         drmModeModeInfo mode;
         if (!crtc || !mode_for(c, state, &mode)) return false;
-        struct wlr_buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->current;
+        struct buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->current;
         uint32_t fb = buffer ? fb_for(kms, buffer) : 0;
         if (!fb || state->tearing_page_flip) return false;
         if (test) continue;
@@ -525,16 +522,16 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
             crtc->active = true;
             crtc->owner = c;
             c->crtc = crtc;
-            wlr_buffer_unlock(c->current);
-            c->current = wlr_buffer_lock(buffer);
+            buffer_unlock(c->current);
+            c->current = buffer_lock(buffer);
             c->present_pending = true;
             c->flip_seq = c->screen.commit_seq + 1;
             wl_event_loop_add_idle(wl_display_get_event_loop(kms->server->display),
                 legacy_modeset_done, c);
         } else if (state->committed & SCREEN_BUFFER) {
             if (drmModePageFlip(kms->fd, crtc->id, fb, DRM_MODE_PAGE_FLIP_EVENT, kms)) return false;
-            wlr_buffer_unlock(c->queued);
-            c->queued = wlr_buffer_lock(buffer);
+            buffer_unlock(c->queued);
+            c->queued = buffer_lock(buffer);
             c->flip_pending = true;
             c->flip_seq = c->screen.commit_seq + 1;
         }
@@ -561,7 +558,7 @@ static bool connector_commit(struct screen_update *updates, size_t count) {
     return commit(updates, count, false);
 }
 
-static const struct wlr_drm_format_set *connector_formats(struct screen *screen) {
+static const struct format_set *connector_formats(struct screen *screen) {
     struct connector *c = wl_container_of(screen, c, screen);
     struct crtc *crtc = pick_crtc(c);
     return crtc && crtc->primary ? &crtc->primary->formats : NULL;
@@ -573,13 +570,13 @@ static size_t connector_gamma_size(struct screen *screen) {
     return crtc ? crtc->gamma_size : 0;
 }
 
-static bool cursor_upload(struct connector *c, struct wlr_buffer *buffer) {
+static bool cursor_upload(struct connector *c, struct buffer *buffer) {
     struct kms *kms = c->kms;
     void *data;
     uint32_t format;
     size_t stride;
     if (buffer->width > (int)kms->cursor_width || buffer->height > (int)kms->cursor_height ||
-            !wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ, &data,
+            !buffer_begin_access(buffer, BUFFER_READ, &data,
                 &format, &stride)) return false;
     bool ok = format == DRM_FORMAT_ARGB8888;
     int back = c->cursor_front ^ 1;
@@ -602,12 +599,12 @@ static bool cursor_upload(struct connector *c, struct wlr_buffer *buffer) {
         ok = ok && gbm_bo_write(c->cursor_bo[back], pixels, size) == 0;
         free(pixels);
     }
-    wlr_buffer_end_data_ptr_access(buffer);
+    buffer_end_access(buffer);
     if (ok) c->cursor_front = back;
     return ok;
 }
 
-static bool connector_cursor(struct screen *screen, struct wlr_buffer *buffer, int hotspot_x,
+static bool connector_cursor(struct screen *screen, struct buffer *buffer, int hotspot_x,
         int hotspot_y) {
     struct connector *c = wl_container_of(screen, c, screen);
     if (!c->crtc || (c->kms->atomic && !c->crtc->cursor)) return false;
@@ -643,8 +640,8 @@ static void connector_destroy(struct screen *screen) {
         c->crtc->owner = NULL;
         c->crtc->active = false;
     }
-    wlr_buffer_unlock(c->queued);
-    wlr_buffer_unlock(c->current);
+    buffer_unlock(c->queued);
+    buffer_unlock(c->current);
     for (int i = 0; i < 2; i++) {
         if (c->cursor_fb[i]) drmModeRmFB(c->kms->fd, c->cursor_fb[i]);
         if (c->cursor_bo[i]) gbm_bo_destroy(c->cursor_bo[i]);
@@ -681,7 +678,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
     wl_list_for_each(c, &kms->connectors, link) {
         if (!c->crtc || c->crtc->id != crtc_id || !c->flip_pending) continue;
         c->flip_pending = false;
-        wlr_buffer_unlock(c->current);
+        buffer_unlock(c->current);
         c->current = c->queued;
         c->queued = NULL;
         present(c, seq, sec, usec);
@@ -755,7 +752,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
         c->screen.refresh = preferred->refresh;
     }
     wl_list_insert(kms->connectors.prev, &c->link);
-    wlr_log(WLR_INFO, "tomoe: connector %s (%s)", c->screen.name, c->screen.description);
+    tomoe_log(LOG_INFO, "tomoe: connector %s (%s)", c->screen.name, c->screen.description);
     output_added(kms->server, &c->screen);
 }
 
@@ -813,7 +810,7 @@ int kms_create(struct tomoe *s) {
     if (!kms || !path) {
         free(kms);
         free(path);
-        wlr_log(WLR_ERROR, "tomoe: no DRM device found");
+        tomoe_log(LOG_ERROR, "tomoe: no DRM device found");
         return -1;
     }
     kms->server = s;
@@ -823,7 +820,7 @@ int kms_create(struct tomoe *s) {
     kms->fd = session_open(s, path, &kms->device);
     struct stat st;
     if (kms->fd < 0 || fstat(kms->fd, &st) != 0) {
-        wlr_log(WLR_ERROR, "tomoe: could not open %s", path);
+        tomoe_log(LOG_ERROR, "tomoe: could not open %s", path);
         free(path);
         return -1;
     }
@@ -838,7 +835,7 @@ int kms_create(struct tomoe *s) {
     kms->cursor_height = drmGetCap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) == 0 && cap ? cap : 64;
     kms->gbm = gbm_create_device(kms->fd);
     if (!kms->gbm || !read_resources(kms)) {
-        wlr_log(WLR_ERROR, "tomoe: DRM resources unavailable");
+        tomoe_log(LOG_ERROR, "tomoe: DRM resources unavailable");
         return -1;
     }
     struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
@@ -851,7 +848,7 @@ int kms_create(struct tomoe *s) {
         kms->monitor_source = wl_event_loop_add_fd(loop, udev_monitor_get_fd(kms->monitor),
             WL_EVENT_READABLE, udev_event, kms);
     }
-    wlr_log(WLR_INFO, "tomoe: DRM %s, modifiers %s, async flips %s",
+    tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s",
         kms->atomic ? "atomic" : "legacy", kms->modifiers ? "yes" : "no",
         kms->async_atomic ? "yes" : "no");
     return kms->fd;
@@ -894,7 +891,7 @@ void kms_destroy(struct tomoe *s) {
     if (kms->monitor_source) wl_event_source_remove(kms->monitor_source);
     if (kms->monitor) udev_monitor_unref(kms->monitor);
     if (kms->udev) udev_unref(kms->udev);
-    for (size_t i = 0; i < kms->plane_count; i++) wlr_drm_format_set_finish(&kms->planes[i].formats);
+    for (size_t i = 0; i < kms->plane_count; i++) format_set_finish(&kms->planes[i].formats);
     for (size_t i = 0; i < kms->crtc_count; i++) {
         if (kms->crtcs[i].mode_blob) drmModeDestroyPropertyBlob(kms->fd, kms->crtcs[i].mode_blob);
         if (kms->crtcs[i].gamma_blob) drmModeDestroyPropertyBlob(kms->fd, kms->crtcs[i].gamma_blob);

@@ -346,11 +346,11 @@ void xdg_popup_dismiss(struct xdg_popup *popup) {
 }
 
 static void update_geometry(struct xdg_surface *xdg) {
-    struct wlr_box *geometry = &xdg->geometry;
+    struct box *geometry = &xdg->geometry;
     surface_extents(xdg->surface, geometry);
-    if (wlr_box_empty(&xdg->current.geometry)) return;
-    wlr_box_intersection(geometry, geometry, &xdg->current.geometry);
-    if (wlr_box_empty(geometry)) *geometry = xdg->current.geometry;
+    if (box_empty(&xdg->current.geometry)) return;
+    box_intersection(geometry, geometry, &xdg->current.geometry);
+    if (box_empty(geometry)) *geometry = xdg->current.geometry;
 }
 
 static void role_client_commit(struct surface *surface) {
@@ -677,7 +677,7 @@ static void popup_grab_request(struct wl_client *client, struct wl_resource *res
     seat_keyboard_start_grab(grab->seat, &grab->keyboard);
 }
 
-static bool positioner_complete(const struct wlr_xdg_positioner_rules *rules) {
+static bool positioner_complete(const struct positioner_rules *rules) {
     return rules->size.width > 0 && rules->size.height > 0 &&
         rules->anchor_rect.width > 0 && rules->anchor_rect.height > 0;
 }
@@ -685,14 +685,14 @@ static bool positioner_complete(const struct wlr_xdg_positioner_rules *rules) {
 static void popup_reposition(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *positioner_resource, uint32_t token) {
     struct xdg_popup *popup = xdg_popup_from_resource(resource);
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(positioner_resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(positioner_resource);
     if (!popup) return;
     if (!positioner_complete(rules)) {
         wl_resource_post_error(popup->base->client, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
             "positioner object is not complete");
         return;
     }
-    wlr_xdg_positioner_rules_get_geometry(rules, &popup->scheduled.geometry);
+    positioner_geometry(rules, &popup->scheduled.geometry);
     popup->scheduled.rules = *rules;
     popup->scheduled.reposition = true;
     popup->scheduled.token = token;
@@ -720,7 +720,7 @@ static void get_popup(struct wl_client *client, struct wl_resource *resource, ui
         struct wl_resource *parent_resource, struct wl_resource *positioner_resource) {
     struct xdg_surface *xdg = xdg_surface_from_resource(resource);
     struct xdg_surface *parent = parent_resource ? xdg_surface_from_resource(parent_resource) : NULL;
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(positioner_resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(positioner_resource);
     if (!xdg) return;
     if (!positioner_complete(rules)) {
         wl_resource_post_error(xdg->client, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
@@ -750,7 +750,7 @@ static void get_popup(struct wl_client *client, struct wl_resource *resource, ui
     }
     wl_resource_set_implementation(popup->resource, &popup_impl, popup, NULL);
     popup->base = xdg;
-    wlr_xdg_positioner_rules_get_geometry(rules, &popup->scheduled.geometry);
+    positioner_geometry(rules, &popup->scheduled.geometry);
     popup->scheduled.rules = *rules;
     wl_signal_init(&popup->events.destroy);
     wl_signal_init(&popup->events.reposition);
@@ -778,7 +778,7 @@ static void set_window_geometry(struct wl_client *client, struct wl_resource *re
         wl_resource_post_error(resource, XDG_SURFACE_ERROR_INVALID_SIZE, "invalid window geometry");
         return;
     }
-    xdg->pending.geometry = (struct wlr_box){ x, y, width, height };
+    xdg->pending.geometry = (struct box){ x, y, width, height };
     xdg->pending.committed |= 1;
 }
 
@@ -825,7 +825,7 @@ void xdg_toplevel_close(struct xdg_toplevel *toplevel) {
     xdg_toplevel_send_close(toplevel->resource);
 }
 
-void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_box *box) {
+void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct box *box) {
     int x = 0, y = 0;
     struct surface *parent = popup->parent;
     struct xdg_surface *xdg;
@@ -840,8 +840,8 @@ void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_bo
             break;
         }
     }
-    struct wlr_box constraint = { box->x - x, box->y - y, box->width, box->height };
-    wlr_xdg_positioner_rules_unconstrain_box(&popup->scheduled.rules, &constraint,
+    struct box constraint = { box->x - x, box->y - y, box->width, box->height };
+    positioner_unconstrain(&popup->scheduled.rules, &constraint,
         &popup->scheduled.geometry);
     xdg_surface_schedule_configure(popup->base);
 }
@@ -853,7 +853,7 @@ static void positioner_set_size(struct wl_client *client, struct wl_resource *re
             "width and height must be positive");
         return;
     }
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(resource);
     rules->size.width = width;
     rules->size.height = height;
 }
@@ -865,8 +865,8 @@ static void positioner_set_anchor_rect(struct wl_client *client, struct wl_resou
             "width and height must be positive");
         return;
     }
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(resource);
-    rules->anchor_rect = (struct wlr_box){ x, y, width, height };
+    struct positioner_rules *rules = wl_resource_get_user_data(resource);
+    rules->anchor_rect = (struct box){ x, y, width, height };
 }
 
 static void positioner_set_anchor(struct wl_client *client, struct wl_resource *resource,
@@ -875,7 +875,7 @@ static void positioner_set_anchor(struct wl_client *client, struct wl_resource *
         wl_resource_post_error(resource, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid anchor");
         return;
     }
-    ((struct wlr_xdg_positioner_rules *)wl_resource_get_user_data(resource))->anchor = anchor;
+    ((struct positioner_rules *)wl_resource_get_user_data(resource))->anchor = anchor;
 }
 
 static void positioner_set_gravity(struct wl_client *client, struct wl_resource *resource,
@@ -884,7 +884,7 @@ static void positioner_set_gravity(struct wl_client *client, struct wl_resource 
         wl_resource_post_error(resource, XDG_POSITIONER_ERROR_INVALID_INPUT, "invalid gravity");
         return;
     }
-    ((struct wlr_xdg_positioner_rules *)wl_resource_get_user_data(resource))->gravity = gravity;
+    ((struct positioner_rules *)wl_resource_get_user_data(resource))->gravity = gravity;
 }
 
 static void positioner_set_constraint_adjustment(struct wl_client *client,
@@ -895,31 +895,31 @@ static void positioner_set_constraint_adjustment(struct wl_client *client,
             "invalid constraint adjustment");
         return;
     }
-    ((struct wlr_xdg_positioner_rules *)wl_resource_get_user_data(resource))->constraint_adjustment =
+    ((struct positioner_rules *)wl_resource_get_user_data(resource))->constraint_adjustment =
         adjustment;
 }
 
 static void positioner_set_offset(struct wl_client *client, struct wl_resource *resource,
         int32_t x, int32_t y) {
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(resource);
     rules->offset.x = x;
     rules->offset.y = y;
 }
 
 static void positioner_set_reactive(struct wl_client *client, struct wl_resource *resource) {
-    ((struct wlr_xdg_positioner_rules *)wl_resource_get_user_data(resource))->reactive = true;
+    ((struct positioner_rules *)wl_resource_get_user_data(resource))->reactive = true;
 }
 
 static void positioner_set_parent_size(struct wl_client *client, struct wl_resource *resource,
         int32_t width, int32_t height) {
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(resource);
     rules->parent_size.width = width;
     rules->parent_size.height = height;
 }
 
 static void positioner_set_parent_configure(struct wl_client *client,
         struct wl_resource *resource, uint32_t serial) {
-    struct wlr_xdg_positioner_rules *rules = wl_resource_get_user_data(resource);
+    struct positioner_rules *rules = wl_resource_get_user_data(resource);
     rules->has_parent_configure_serial = true;
     rules->parent_configure_serial = serial;
 }
@@ -942,7 +942,7 @@ static void positioner_resource_destroy(struct wl_resource *resource) {
 }
 
 static void create_positioner(struct wl_client *client, struct wl_resource *resource, uint32_t id) {
-    struct wlr_xdg_positioner_rules *rules = calloc(1, sizeof(*rules));
+    struct positioner_rules *rules = calloc(1, sizeof(*rules));
     struct wl_resource *positioner = rules ? wl_resource_create(client, &xdg_positioner_interface,
         wl_resource_get_version(resource), id) : NULL;
     if (!positioner) {

@@ -1,5 +1,4 @@
 #include "internal.h"
-#include <wlr/backend/session.h>
 #include <fcntl.h>
 #include <drm_fourcc.h>
 #include <sys/mman.h>
@@ -666,17 +665,24 @@ void cursor_default(struct tomoe *s) {
     wl_list_for_each(o, &s->outputs, link)
         if (o->screen->enabled && o->screen->scale > scale) scale = o->screen->scale;
     if (!s->default_cursor || s->default_cursor_scale != scale) {
-        wlr_xcursor_manager_load(s->cursor_manager, scale);
-        struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(s->cursor_manager,
-            "default", scale);
-        struct wlr_xcursor_image *image = xcursor ? xcursor->images[0] : NULL;
+        int x, y;
+        struct buffer *image = xcursor_load("default", scale, &x, &y);
+        if (!image) image = xcursor_load("left_ptr", scale, &x, &y);
+        if (!image) {
+            tomoe_log(LOG_ERROR, "tomoe: no cursor theme loaded, drawing a block cursor");
+            int w = (int)ceil(8 * scale), h = (int)ceil(16 * scale);
+            uint32_t *white = malloc((size_t)w * h * 4);
+            if (white) memset(white, 0xff, (size_t)w * h * 4);
+            image = white ? pixel_buffer_create(w, h, (size_t)w * 4, DRM_FORMAT_ARGB8888, white) : NULL;
+            free(white);
+            x = y = 0;
+        }
         if (!image) return;
-        if (s->default_cursor) wlr_buffer_drop(s->default_cursor);
-        s->default_cursor = pixel_buffer_create((int)image->width, (int)image->height,
-            image->width * 4, DRM_FORMAT_ARGB8888, image->buffer);
+        buffer_drop(s->default_cursor);
+        s->default_cursor = image;
         s->default_cursor_scale = scale;
-        s->default_hotspot_x = (int)image->hotspot_x;
-        s->default_hotspot_y = (int)image->hotspot_y;
+        s->default_hotspot_x = x;
+        s->default_hotspot_y = y;
     }
     cursor_show(s, s->default_cursor, s->default_hotspot_x, s->default_hotspot_y, scale);
 }
@@ -686,7 +692,7 @@ void pointer_sync_cursors(struct tomoe *s) {
     double scale = 1.0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        struct wlr_box box;
+        struct box box;
         physical_output_box(o, &box);
         screen_cursor_move(o->screen, s->pointer_x - o->x, s->pointer_y - o->y);
         bool visible = output_is_active(o) && s->pointer_x >= box.x && s->pointer_y >= box.y &&
@@ -707,7 +713,7 @@ static void clamp_pointer(struct tomoe *s, struct screen *mapped, double *x, dou
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
         if (!o->screen->enabled || (mapped && mapped != o->screen)) continue;
-        struct wlr_box box;
+        struct box box;
         physical_output_box(o, &box);
         if (box.width <= 0 || box.height <= 0) continue;
         double cx = fmax(box.x, fmin(*x, (double)box.x + box.width - 1.0 / 256.0));
@@ -1169,17 +1175,17 @@ void input_pointer_absolute(struct pointer_absolute *event) {
         mapped = named_pointer_output(s, event->device);
         if (event->device->output_name && !mapped) return;
         if (mapped) {
-            struct wlr_fbox point = {.x = x, .y = y};
-            wlr_fbox_transform(&point, &point, mapped->transform, 1, 1);
+            struct fbox point = {.x = x, .y = y};
+            fbox_transform(&point, &point, mapped->transform, 1, 1);
             x = point.x; y = point.y;
         }
     }
-    struct wlr_box extent = {0};
+    struct box extent = {0};
     bool first = true;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
         if (!o->screen->enabled || (mapped && mapped != o->screen)) continue;
-        struct wlr_box box;
+        struct box box;
         physical_output_box(o, &box);
         if (first) { extent = box; first = false; }
         else {
@@ -1800,7 +1806,7 @@ void input_add(struct tomoe *s, struct input_device *device) {
     keyboard_replay_state(k->pressed, k->shadow_state);
     keyboard_shadow_refresh(k);
     if (!next_device_id(s, &k->id)) {
-        wlr_log(WLR_ERROR, "tomoe: keyboard device IDs exhausted");
+        tomoe_log(LOG_ERROR, "tomoe: keyboard device IDs exhausted");
         xkb_state_unref(k->shadow_state);
         keymap_slot_finish(&k->xkb);
         free(k);
@@ -1832,6 +1838,5 @@ void input_listen(struct tomoe *s) {
         return;
     }
     s->keyboard_profile = profile;
-    wlr_xcursor_manager_load(s->cursor_manager, 1);
     capabilities(s);
 }

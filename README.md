@@ -1,8 +1,9 @@
 # Tomoe
 
 A new Common Lisp Wayland compositor. SBCL runs the compositor loop, extension
-runtime, window-management policy, and control server. A C library connects it
-to wlroots 0.20 for Wayland protocols, rendering, outputs, and input devices.
+runtime, window-management policy, and control server. A C library serves the
+Wayland protocols on libwayland-server and drives rendering (EGL/GLES2 on GBM),
+outputs (DRM/KMS on libseat, nested Wayland, headless), and input (libinput).
 
 Every desktop behaviour is a mountable extension. The shipped window manager,
 drag, and command units use the same API a user file does, and the
@@ -10,8 +11,8 @@ host has no special case for their names. Layer-shell panels, fullscreen and
 maximize state, pointer-driven move and resize, and output configuration are all
 visible to policy as context and owned effects.
 
-The native side is wlroots 0.20 behind the ABI header `native/backend.h`, split
-into C modules by concern.
+The native side sits behind the ABI header `native/backend.h`, split into C
+modules by concern.
 
 The earlier Rust/Smithay and Lua implementation is not in this tree; it stays
 reachable in the repository history (commit `6de3ba6` and earlier).
@@ -510,8 +511,7 @@ release, including when a new binding is installed while it is held. One logical
 seat keyboard owns modifiers, locks, and the active layout group: Shift on one
 device affects bindings on another, and Caps Lock or layout changes survive
 device changes. Source-local modifier reports cannot clear another device's
-held modifiers. Tomoe's own seat tracks all 768 evdev key codes, so builds use
-stock wlroots.
+held modifiers. Tomoe's own seat tracks all 768 evdev key codes.
 
 `bind-key` owns one physical shortcut for its extension. Its form is
 `(bind-key MODIFIERS KEYSYM PRESS &key release)`, where `PRESS` and the optional
@@ -770,7 +770,7 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the wlroots backend is native ABI 28.
+process-group pidfd signals; the native backend is ABI 28.
 
 `spawn`, `launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
@@ -1359,6 +1359,8 @@ protocol, not an unauthenticated REPL.
 - `native/ui-assets.c`: source-owned PNG/JPEG/SVG decoding and retained asset lifetimes.
 - `native/input.c`: pointer routing, keyboards, key bindings, pointer grabs.
 - `native/buffer.c`: wl_shm and linux-dmabuf client buffers.
+- `native/base.c`: buffers, boxes, regions, transforms, format sets, syncobj
+  timelines, xdg positioner math, xcursor themes, logging.
 - `native/surface.c`: wl_surface, subsurfaces, regions, viewports, fractional
   scale, presentation feedback, and explicit sync.
 - `native/node.c`: the stacking tree surfaces and shell chrome render from.
@@ -1400,5 +1402,5 @@ stay the client's request.
 
 Tomoe and ShojiWM informed the separation of mechanism from policy and explicit
 ownership of reactive effects. Local reference clones live in `ref/`, which
-is listed in the workspace `.gitignore`. The wlroots tinywl example and 0.20
-headers informed native API use.
+is listed in the workspace `.gitignore`. wlroots 0.20, which Tomoe was built on
+until it replaced each layer, informed native API use and fallback paths.

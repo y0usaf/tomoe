@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <fcntl.h>
 #include <unistd.h>
-#include <wlr/render/color.h>
 #include "wlr-gamma-control-unstable-v1-protocol.h"
 
 struct gamma {

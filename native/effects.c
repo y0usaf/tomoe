@@ -13,14 +13,14 @@ static struct program *program(struct frame *f, int kind) {
 }
 
 static void to_buffer(struct frame *f, double x, double y, double *bx, double *by) {
-    struct wlr_fbox point = { .x = x, .y = y };
-    wlr_fbox_transform(&point, &point, wlr_output_transform_invert(f->transform),
+    struct fbox point = { .x = x, .y = y };
+    fbox_transform(&point, &point, transform_invert(f->transform),
         f->width, f->height);
     *bx = point.x;
     *by = point.y;
 }
 
-static void quad(struct frame *f, struct program *p, struct wlr_fbox box,
+static void quad(struct frame *f, struct program *p, struct fbox box,
         const float texcoords[8], double origin_x, double origin_y) {
     GLfloat pos[8], local[8];
     double xs[] = { box.x, box.x + box.width, box.x, box.x + box.width };
@@ -42,16 +42,16 @@ static void color_uniform(GLint location, uint32_t rgba) {
         (rgba >> 8 & 0xff) / 255.0f, (rgba & 0xff) / 255.0f);
 }
 
-static struct wlr_fbox local_box(struct frame *f, struct wlr_fbox box) {
+static struct fbox local_box(struct frame *f, struct fbox box) {
     box.x -= f->x;
     box.y -= f->y;
     return box;
 }
 
-void effect_border(struct frame *f, struct wlr_fbox geometry, double width, double radius,
+void effect_border(struct frame *f, struct fbox geometry, double width, double radius,
         uint32_t rgba, float alpha) {
     if (width <= 0) return;
-    struct wlr_fbox box = local_box(f, (struct wlr_fbox){ geometry.x - width, geometry.y - width,
+    struct fbox box = local_box(f, (struct fbox){ geometry.x - width, geometry.y - width,
         geometry.width + 2 * width, geometry.height + 2 * width });
     struct program *p = program(f, PROGRAM_SDF);
     glUseProgram(p->id);
@@ -64,10 +64,10 @@ void effect_border(struct frame *f, struct wlr_fbox geometry, double width, doub
     quad(f, p, box, NULL, box.x, box.y);
 }
 
-void effect_shadow(struct frame *f, struct wlr_fbox geometry, double range, double radius,
+void effect_shadow(struct frame *f, struct fbox geometry, double range, double radius,
         uint32_t rgba, double power, float alpha) {
     if (range <= 0) return;
-    struct wlr_fbox box = local_box(f, (struct wlr_fbox){ geometry.x - range, geometry.y - range,
+    struct fbox box = local_box(f, (struct fbox){ geometry.x - range, geometry.y - range,
         geometry.width + 2 * range, geometry.height + 2 * range });
     struct program *p = program(f, PROGRAM_SDF);
     glUseProgram(p->id);
@@ -81,8 +81,8 @@ void effect_shadow(struct frame *f, struct wlr_fbox geometry, double range, doub
     quad(f, p, box, NULL, box.x, box.y);
 }
 
-bool effect_texture(struct frame *f, const struct wlr_render_texture_options *options,
-        struct wlr_fbox dst, struct wlr_fbox clip, double radius) {
+bool effect_texture(struct frame *f, const struct texture_options *options,
+        struct fbox dst, struct fbox clip, double radius) {
     GLenum target;
     GLuint tex;
     bool alpha;
@@ -94,9 +94,9 @@ bool effect_texture(struct frame *f, const struct wlr_render_texture_options *op
     struct program *p = program(f, target == GL_TEXTURE_EXTERNAL_OES ?
         PROGRAM_EXTERNAL : PROGRAM_TEXTURE);
     if (!p) return false;
-    struct wlr_fbox src = options->src_box;
+    struct fbox src = options->src_box;
     if (src.width <= 0 || src.height <= 0)
-        src = (struct wlr_fbox){ 0, 0, options->texture->width, options->texture->height };
+        src = (struct fbox){ 0, 0, options->texture->width, options->texture->height };
     float u0 = src.x / options->texture->width, v0 = src.y / options->texture->height;
     float u1 = (src.x + src.width) / options->texture->width;
     float v1 = (src.y + src.height) / options->texture->height;
@@ -105,7 +105,7 @@ bool effect_texture(struct frame *f, const struct wlr_render_texture_options *op
     glUseProgram(p->id);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(target, tex);
-    GLint filter = options->filter_mode == WLR_SCALE_FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
+    GLint filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
     glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
     glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
     glUniform1i(p->tex, 0);
@@ -157,21 +157,21 @@ static void sample_pass(struct program *p, struct level *from, struct level *to,
     glDisableVertexAttribArray(p->texcoord);
 }
 
-void effect_blur(struct frame *f, struct wlr_fbox area, double radius, int passes,
+void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         double offset, int margin) {
     if (!f->server->effects) f->server->effects = calloc(1, sizeof(*f->server->effects));
     struct effects *e = f->server->effects;
     if (!e || passes < 1) return;
-    struct wlr_fbox box = local_box(f, area);
-    struct wlr_box region = { pixel_round(box.x), pixel_round(box.y),
+    struct fbox box = local_box(f, area);
+    struct box region = { pixel_round(box.x), pixel_round(box.y),
         pixel_round(box.x + box.width) - pixel_round(box.x),
         pixel_round(box.y + box.height) - pixel_round(box.y) };
-    wlr_box_transform(&region, &region, wlr_output_transform_invert(f->transform),
+    box_transform(&region, &region, transform_invert(f->transform),
         f->width, f->height);
-    struct wlr_box bounds = { 0, 0, f->buffer->width, f->buffer->height };
-    struct wlr_box grown = { region.x - margin, region.y - margin,
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height };
+    struct box grown = { region.x - margin, region.y - margin,
         region.width + 2 * margin, region.height + 2 * margin };
-    if (!wlr_box_intersection(&grown, &grown, &bounds)) return;
+    if (!box_intersection(&grown, &grown, &bounds)) return;
     if (passes > 31) passes = 31;
     bool ok = level_ensure(&e->levels[0], grown.width, grown.height);
     for (int i = 1; ok && i <= passes; i++)

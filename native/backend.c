@@ -1,6 +1,5 @@
 #include "internal.h"
 #include "ui.h"
-#include <wlr/render/drm_syncobj.h>
 
 #include <unistd.h>
 
@@ -41,7 +40,7 @@ static bool create_scene_trees(struct tomoe *s) {
     return s->window_tree && s->fullscreen_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
-    wlr_log_init(getenv("TOMOE_DEBUG") ? WLR_DEBUG : WLR_ERROR, NULL);
+    log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_ERROR;
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
@@ -79,17 +78,13 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->renderer = render_create(drm_fd);
     if (s->backend == SCREEN_NESTED && drm_fd >= 0) close(drm_fd);
     if (!s->renderer || !buffers_listen(s)) goto failed;
-    s->allocator = render_allocator(s->renderer);
     if (!capture_listen(s)) goto failed;
     if (!surfaces_listen(s)) goto failed;
     s->scene = node_create(NULL);
     if (!s->scene || !screens_listen(s)) goto failed;
     if (!create_scene_trees(s)) goto failed;
-    const char *cursor_size = getenv("XCURSOR_SIZE");
-    int size = cursor_size ? atoi(cursor_size) : 0;
-    s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
     s->seat = seat_create(s);
-    if (!s->cursor_manager || !s->seat ||
+    if (!s->seat ||
             !selection_listen(s) || !activation_listen(s) || !xdg_shell_listen(s) ||
             !layer_shell_listen(s)) goto failed;
     input_listen(s);
@@ -101,7 +96,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!backend_start(s) || s->failed) goto failed;
     return s;
 failed:
-    wlr_log(WLR_ERROR, "tomoe: backend startup failed");
+    tomoe_log(LOG_ERROR, "tomoe: backend startup failed");
     tomoe_destroy(s);
     return NULL;
 }
@@ -136,9 +131,8 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->display) surfaces_finish(s);
     detach(&s->cursor_surface_destroy);
     if (s->scene) node_destroy(s->scene);
-    if (s->cursor_manager) wlr_xcursor_manager_destroy(s->cursor_manager);
     cursor_finish(s);
-    if (s->default_cursor) wlr_buffer_drop(s->default_cursor);
+    if (s->default_cursor) buffer_drop(s->default_cursor);
     libinput_finish(s);
     headless_finish(s);
     nested_finish(s);
@@ -147,9 +141,8 @@ void tomoe_destroy(struct tomoe *s) {
     keyboard_logical_finish(s);
     seat_destroy(s->seat);
     settings_finish(&s->settings);
-    if (s->render_timeline) wlr_drm_syncobj_timeline_unref(s->render_timeline);
-    if (s->allocator) wlr_allocator_destroy(s->allocator);
-    if (s->renderer) wlr_renderer_destroy(s->renderer);
+    if (s->render_timeline) timeline_unref(s->render_timeline);
+    if (s->renderer) render_destroy(s->renderer);
     if (s->display) wl_display_destroy(s->display);
     buffers_finish();
     tomoe_clear_bindings(s);
