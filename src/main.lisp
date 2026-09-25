@@ -27,7 +27,7 @@ turn; materialization already refreshes their authoritative native snapshot."
 
 (defun usage ()
   (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm] [--bare]
-       [--config FILE] [--watch|--no-watch]
+       [--config FILE] [--watch|--no-watch] [--drm_device PATH]
        tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
@@ -116,7 +116,18 @@ only after it changes again."
            (handler-case (configure runtime (runtime-sources runtime) path)
              (serious-condition (condition) (record-error runtime condition)))))))))
 
-(defun run-compositor (name backend sources watch)
+(defun primary-drm-devices (path)
+  "WLR_DRM_DEVICES naming PATH's card first, then every other card."
+  (let* ((name (file-namestring path))
+         (card (if (and (>= (length name) 7) (string= "renderD" name :end2 7))
+                   (let ((match (first (directory (format nil "/sys/class/drm/~A/device/drm/card*" name)))))
+                     (unless match (error "No card node for ~A." path))
+                     (format nil "/dev/dri/~A" (car (last (pathname-directory match)))))
+                   (namestring (truename path))))
+         (others (remove card (mapcar #'namestring (directory "/dev/dri/card*")) :test #'equal)))
+    (format nil "~{~A~^:~}" (cons card others))))
+
+(defun run-compositor (name backend sources watch &optional drm-device)
   (when (member backend '("auto" "nested") :test #'equal)
     (let ((display (parent-wayland-display)))
       (cond
@@ -133,6 +144,8 @@ only after it changes again."
      (unless (sb-ext:posix-getenv "WLR_RENDERER") (sb-posix:setenv "WLR_RENDERER" "pixman" 1)))
     ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm,libinput" 1))
     (t (error "Unknown backend: ~A" backend)))
+  (when drm-device
+    (sb-posix:setenv "WLR_DRM_DEVICES" (primary-drm-devices drm-device) 1))
   (setf *stop-requested* nil)
   (flet ((stop (signal info context)
            (declare (ignore signal info context)) (setf *stop-requested* t)))
@@ -214,7 +227,8 @@ only after it changes again."
     (when (probe-file path) (namestring (truename path)))))
 
 (defun run-cli (arguments)
-  (let ((name "tomoe-0") (explicit-name nil) (backend "auto") (bare nil) (config nil) (watch t))
+  (let ((name "tomoe-0") (explicit-name nil) (backend "auto") (bare nil) (config nil) (watch t)
+        (drm-device nil))
     (labels ((argument (option)
                (or (pop arguments) (error "~A requires a value." option))))
       (loop while arguments for option = (pop arguments) do
@@ -231,6 +245,7 @@ only after it changes again."
                                  ((equal value "tty") "drm")
                                  (t value)))))
           ((equal option "--config") (setf config (namestring (truename (argument option)))))
+          ((equal option "--drm_device") (setf drm-device (argument option)))
           ((equal option "--bare") (setf bare t))
           ((equal option "--watch") (setf watch t))
           ((equal option "--no-watch") (setf watch nil))
@@ -266,7 +281,7 @@ only after it changes again."
       (run-compositor name backend
                       (append (unless bare (list (namestring (truename builtins))))
                               (when config (list config)))
-                      watch))))
+                      watch drm-device))))
 
 (defun main ()
   (sb-ext:exit
