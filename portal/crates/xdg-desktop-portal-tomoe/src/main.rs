@@ -34,8 +34,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tracing::info!(bus = BUS_NAME, "claimed D-Bus name; serving ScreenCast");
 
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("shutting down (ctrl-c)");
+    let mut messages = zbus::MessageStream::from(&connection);
+    let closed = async {
+        use zbus::export::futures_core::Stream;
+        while std::future::poll_fn(|cx| std::pin::Pin::new(&mut messages).poll_next(cx))
+            .await
+            .is_some()
+        {}
+    };
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            tracing::info!("shutting down (ctrl-c)");
+        }
+        _ = closed => tracing::info!("session bus closed; shutting down"),
+    }
     drop(connection);
     Ok(())
 }
