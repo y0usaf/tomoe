@@ -1,16 +1,23 @@
 #include "internal.h"
-#include <wlr/types/wlr_session_lock_v1.h>
+#include "ext-session-lock-v1-protocol.h"
 
 enum { LOCK_UNLOCKED, LOCK_WAITING, LOCK_LOCKING, LOCK_LOCKED };
+
+#define LOCK_CONFIGURES 8
 
 struct lock_surface {
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_session_lock_surface_v1 *wlr;
+    struct wl_resource *resource;
+    struct wlr_surface *surface;
+    struct wlr_output *output;
     struct wlr_scene_tree *tree;
     struct target target;
-    struct wl_listener destroy, commit;
-    int width, height;
+    struct wl_listener surface_destroy, commit, output_destroy;
+    int width, height, acked_width, acked_height;
+    struct { uint32_t serial; int width, height; } sent[LOCK_CONFIGURES];
+    size_t sent_count;
+    bool configured;
 };
 
 bool lock_active(struct tomoe *s) {
@@ -25,7 +32,7 @@ static struct output *output_of(struct tomoe *s, struct wlr_output *wlr) {
 }
 
 static void lock_surface_configure(struct lock_surface *ls) {
-    struct output *o = output_of(ls->server, ls->wlr->output);
+    struct output *o = ls->output ? output_of(ls->server, ls->output) : NULL;
     if (!o) return;
     struct wlr_box box;
     physical_output_box(o, &box);
@@ -38,18 +45,105 @@ static void lock_surface_configure(struct lock_surface *ls) {
     if (width == ls->width && height == ls->height) return;
     ls->width = width;
     ls->height = height;
-    set_surface_scale(ls->wlr->surface, scale);
-    wlr_session_lock_surface_v1_configure(ls->wlr, width, height);
+    set_surface_scale(ls->surface, scale);
+    uint32_t serial = wl_display_next_serial(ls->server->display);
+    if (ls->sent_count == LOCK_CONFIGURES) {
+        memmove(ls->sent, ls->sent + 1, sizeof(ls->sent[0]) * (LOCK_CONFIGURES - 1));
+        ls->sent_count--;
+    }
+    ls->sent[ls->sent_count].serial = serial;
+    ls->sent[ls->sent_count].width = width;
+    ls->sent[ls->sent_count].height = height;
+    ls->sent_count++;
+    ext_session_lock_surface_v1_send_configure(ls->resource, serial, width, height);
 }
 
-static void lock_surface_destroy(struct wl_listener *listener, void *data) {
-    struct lock_surface *ls = wl_container_of(listener, ls, destroy);
+static void lock_surface_free(struct lock_surface *ls, bool tree) {
+    struct tomoe *s = ls->server;
+    wl_resource_set_user_data(ls->resource, NULL);
     wl_list_remove(&ls->link);
-    detach(&ls->commit); detach(&ls->destroy);
-    update_keyboard_focus(ls->server);
-    schedule_scene(ls->server);
+    detach(&ls->commit);
+    detach(&ls->surface_destroy);
+    detach(&ls->output_destroy);
+    if (tree) wlr_scene_node_destroy(&ls->tree->node);
     free(ls);
+    update_keyboard_focus(s);
+    schedule_scene(s);
 }
+
+static void lock_surface_resource_destroy(struct wl_resource *resource) {
+    struct lock_surface *ls = wl_resource_get_user_data(resource);
+    if (ls) lock_surface_free(ls, true);
+}
+
+static void lock_surface_surface_destroy(struct wl_listener *listener, void *data) {
+    struct lock_surface *ls = wl_container_of(listener, ls, surface_destroy);
+    lock_surface_free(ls, false);
+}
+
+static void lock_surface_output_destroy(struct wl_listener *listener, void *data) {
+    struct lock_surface *ls = wl_container_of(listener, ls, output_destroy);
+    detach(&ls->output_destroy);
+    ls->output = NULL;
+}
+
+static struct lock_surface *lock_surface_of(struct wlr_surface *surface) {
+    struct wl_resource *resource = surface->role_resource;
+    return resource ? wl_resource_get_user_data(resource) : NULL;
+}
+
+static void role_client_commit(struct wlr_surface *surface) {
+    struct lock_surface *ls = lock_surface_of(surface);
+    if (!ls) return;
+    if (!wlr_surface_state_has_buffer(&surface->pending)) {
+        wlr_surface_reject_pending(surface, ls->resource, EXT_SESSION_LOCK_SURFACE_V1_ERROR_NULL_BUFFER,
+            "session lock surface committed a null buffer");
+    } else if (!ls->configured) {
+        wlr_surface_reject_pending(surface, ls->resource,
+            EXT_SESSION_LOCK_SURFACE_V1_ERROR_COMMIT_BEFORE_FIRST_ACK,
+            "session lock surface committed before its first ack");
+    } else if (surface->pending.width != ls->acked_width ||
+            surface->pending.height != ls->acked_height) {
+        wlr_surface_reject_pending(surface, ls->resource,
+            EXT_SESSION_LOCK_SURFACE_V1_ERROR_DIMENSIONS_MISMATCH,
+            "session lock surface size differs from its last acked configure");
+    }
+}
+
+static void role_commit(struct wlr_surface *surface) {
+    if (lock_surface_of(surface)) wlr_surface_map(surface);
+}
+
+static const struct wlr_surface_role lock_role = {
+    .name = "ext_session_lock_surface_v1",
+    .client_commit = role_client_commit,
+    .commit = role_commit,
+};
+
+static void ack_configure(struct wl_client *client, struct wl_resource *resource, uint32_t serial) {
+    struct lock_surface *ls = wl_resource_get_user_data(resource);
+    if (!ls) return;
+    for (size_t i = 0; i < ls->sent_count; i++) {
+        if (ls->sent[i].serial != serial) continue;
+        ls->acked_width = ls->sent[i].width;
+        ls->acked_height = ls->sent[i].height;
+        ls->configured = true;
+        memmove(ls->sent, ls->sent + i + 1, sizeof(ls->sent[0]) * (ls->sent_count - i - 1));
+        ls->sent_count -= i + 1;
+        return;
+    }
+    wl_resource_post_error(resource, EXT_SESSION_LOCK_SURFACE_V1_ERROR_INVALID_SERIAL,
+        "ack_configure serial %u matches no configure", serial);
+}
+
+static void destroy_resource(struct wl_client *client, struct wl_resource *resource) {
+    wl_resource_destroy(resource);
+}
+
+static const struct ext_session_lock_surface_v1_interface lock_surface_impl = {
+    .destroy = destroy_resource,
+    .ack_configure = ack_configure,
+};
 
 static bool surfaces_ready(struct tomoe *s) {
     struct output *o;
@@ -58,7 +152,7 @@ static bool surfaces_ready(struct tomoe *s) {
         bool found = false;
         struct lock_surface *ls;
         wl_list_for_each(ls, &s->lock_surfaces, link)
-            found |= ls->wlr->output == o->wlr && ls->wlr->surface->mapped;
+            found |= ls->output == o->wlr && ls->surface->mapped;
         if (!found) return false;
     }
     return true;
@@ -66,7 +160,8 @@ static bool surfaces_ready(struct tomoe *s) {
 
 static void confirm(struct tomoe *s) {
     s->lock_state = LOCK_LOCKED;
-    if (s->session_lock) wlr_session_lock_v1_send_locked(s->session_lock);
+    if (s->session_lock && !s->lock_confirmed) ext_session_lock_v1_send_locked(s->session_lock);
+    s->lock_confirmed = s->session_lock != NULL;
 }
 
 static void begin_locking(struct tomoe *s) {
@@ -94,19 +189,51 @@ static void lock_surface_commit(struct wl_listener *listener, void *data) {
     schedule_scene(ls->server);
 }
 
-static void new_lock_surface(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, lock_new_surface);
-    struct wlr_session_lock_surface_v1 *wlr = data;
-    struct lock_surface *ls = calloc(1, sizeof(*ls));
-    if (!ls) { wl_client_post_no_memory(wl_resource_get_client(wlr->resource)); return; }
+static void get_lock_surface(struct wl_client *client, struct wl_resource *lock_resource,
+        uint32_t id, struct wl_resource *surface_resource, struct wl_resource *output_resource) {
+    struct tomoe *s = wl_resource_get_user_data(lock_resource);
+    struct wl_resource *resource = wl_resource_create(client, &ext_session_lock_surface_v1_interface,
+        wl_resource_get_version(lock_resource), id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &lock_surface_impl, NULL,
+        lock_surface_resource_destroy);
+    struct wlr_output *output = wlr_output_from_resource(output_resource);
+    if (!s || s->session_lock != lock_resource || !output) return;
+    struct lock_surface *ls;
+    wl_list_for_each(ls, &s->lock_surfaces, link) {
+        if (ls->output != output) continue;
+        wl_resource_post_error(lock_resource, EXT_SESSION_LOCK_V1_ERROR_DUPLICATE_OUTPUT,
+            "output already has a lock surface");
+        return;
+    }
+    struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+    if (wlr_surface_has_buffer(surface)) {
+        wl_resource_post_error(lock_resource, EXT_SESSION_LOCK_V1_ERROR_ALREADY_CONSTRUCTED,
+            "surface already has a buffer");
+        return;
+    }
+    if (!wlr_surface_set_role(surface, &lock_role, lock_resource, EXT_SESSION_LOCK_V1_ERROR_ROLE))
+        return;
+    ls = calloc(1, sizeof(*ls));
+    if (!ls || !(ls->tree = wlr_scene_subsurface_tree_create(s->lock_tree, surface))) {
+        free(ls);
+        wl_client_post_no_memory(client);
+        return;
+    }
     ls->server = s;
-    ls->wlr = wlr;
+    ls->resource = resource;
+    ls->surface = surface;
+    ls->output = output;
     ls->target.kind = TARGET_UNMANAGED;
-    ls->tree = wlr_scene_subsurface_tree_create(s->lock_tree, wlr->surface);
-    if (!ls->tree) { free(ls); wl_client_post_no_memory(wl_resource_get_client(wlr->resource)); return; }
     ls->tree->node.data = &ls->target;
-    listen(&ls->destroy, &wlr->events.destroy, lock_surface_destroy);
-    listen(&ls->commit, &wlr->surface->events.commit, lock_surface_commit);
+    wl_resource_set_user_data(resource, ls);
+    wlr_surface_set_role_object(surface, resource);
+    listen(&ls->surface_destroy, &surface->events.destroy, lock_surface_surface_destroy);
+    listen(&ls->commit, &surface->events.commit, lock_surface_commit);
+    listen(&ls->output_destroy, &output->events.destroy, lock_surface_output_destroy);
     wl_list_insert(s->lock_surfaces.prev, &ls->link);
     lock_surface_configure(ls);
 }
@@ -135,41 +262,62 @@ static int lock_deadline(void *data) {
     return 0;
 }
 
-static void lock_detach(struct tomoe *s) {
-    detach(&s->lock_new_surface); detach(&s->lock_unlock); detach(&s->lock_destroy);
+static void lock_forget(struct tomoe *s) {
     s->session_lock = NULL;
+    s->lock_confirmed = false;
+    struct lock_surface *ls, *next;
+    wl_list_for_each_safe(ls, next, &s->lock_surfaces, link) lock_surface_free(ls, true);
 }
 
-static void lock_unlocked(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, lock_unlock);
-    lock_detach(s);
-    if (s->lock_deadline_source) wl_event_source_remove(s->lock_deadline_source);
-    s->lock_deadline_source = NULL;
-    s->lock_state = LOCK_UNLOCKED;
-    wlr_scene_node_set_enabled(&s->lock_tree->node, false);
-    idle_notify_activity(s);
-    update_keyboard_focus(s);
-    pointer_refresh(s);
-    schedule_scene(s);
+static void unlock_and_destroy(struct wl_client *client, struct wl_resource *resource) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    if (s && s->session_lock == resource && !s->lock_confirmed) {
+        wl_resource_post_error(resource, EXT_SESSION_LOCK_V1_ERROR_INVALID_UNLOCK,
+            "the locked event was never sent");
+        return;
+    }
+    if (s && s->session_lock == resource) {
+        lock_forget(s);
+        if (s->lock_deadline_source) wl_event_source_remove(s->lock_deadline_source);
+        s->lock_deadline_source = NULL;
+        s->lock_state = LOCK_UNLOCKED;
+        wlr_scene_node_set_enabled(&s->lock_tree->node, false);
+        idle_notify_activity(s);
+        update_keyboard_focus(s);
+        pointer_refresh(s);
+        schedule_scene(s);
+    }
+    wl_resource_destroy(resource);
 }
 
-static void lock_destroyed(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, lock_destroy);
-    lock_detach(s);
+static const struct ext_session_lock_v1_interface lock_impl = {
+    .destroy = destroy_resource,
+    .get_lock_surface = get_lock_surface,
+    .unlock_and_destroy = unlock_and_destroy,
+};
+
+static void lock_resource_destroy(struct wl_resource *resource) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    if (!s || s->session_lock != resource) return;
+    lock_forget(s);
     if (s->lock_state == LOCK_WAITING) begin_locking(s);
 }
 
-static void new_lock(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_lock);
-    struct wlr_session_lock_v1 *lock = data;
-    if (s->session_lock) {
-        wlr_session_lock_v1_destroy(lock);
+static void lock(struct wl_client *client, struct wl_resource *manager, uint32_t id) {
+    struct tomoe *s = wl_resource_get_user_data(manager);
+    struct wl_resource *resource = wl_resource_create(client, &ext_session_lock_v1_interface,
+        wl_resource_get_version(manager), id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
         return;
     }
-    s->session_lock = lock;
-    listen(&s->lock_new_surface, &lock->events.new_surface, new_lock_surface);
-    listen(&s->lock_unlock, &lock->events.unlock, lock_unlocked);
-    listen(&s->lock_destroy, &lock->events.destroy, lock_destroyed);
+    if (s->session_lock) {
+        wl_resource_set_implementation(resource, &lock_impl, NULL, NULL);
+        ext_session_lock_v1_send_finished(resource);
+        return;
+    }
+    wl_resource_set_implementation(resource, &lock_impl, s, lock_resource_destroy);
+    s->session_lock = resource;
     if (lock_active(s)) {
         confirm(s);
         return;
@@ -181,30 +329,42 @@ static void new_lock(struct wl_listener *listener, void *data) {
     wl_event_source_timer_update(s->lock_deadline_source, 1000);
 }
 
+static const struct ext_session_lock_manager_v1_interface manager_impl = {
+    .destroy = destroy_resource,
+    .lock = lock,
+};
+
+static void bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &ext_session_lock_manager_v1_interface,
+        version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &manager_impl, data, NULL);
+}
+
 bool lock_listen(struct tomoe *s) {
     wl_list_init(&s->lock_surfaces);
     s->lock_tree = wlr_scene_tree_create(&s->scene->tree);
-    s->session_lock_manager = wlr_session_lock_manager_v1_create(s->display);
-    if (!s->lock_tree || !s->session_lock_manager) return false;
+    if (!s->lock_tree) return false;
     wlr_scene_node_set_enabled(&s->lock_tree->node, false);
-    listen(&s->new_lock, &s->session_lock_manager->events.new_lock, new_lock);
-    return true;
+    return wl_global_create(s->display, &ext_session_lock_manager_v1_interface, 1, s, bind);
 }
 
 void lock_finish(struct tomoe *s) {
     if (s->lock_deadline_source) wl_event_source_remove(s->lock_deadline_source);
     s->lock_deadline_source = NULL;
-    lock_detach(s);
-    detach(&s->new_lock);
+    lock_forget(s);
 }
 
 struct wlr_surface *lock_keyboard_surface(struct tomoe *s) {
     struct output *under = output_at_physical(s, s->pointer_x, s->pointer_y);
     struct lock_surface *ls, *fallback = NULL;
     wl_list_for_each(ls, &s->lock_surfaces, link) {
-        if (!ls->wlr->surface->mapped) continue;
-        if (under && ls->wlr->output == under->wlr) return ls->wlr->surface;
+        if (!ls->surface->mapped) continue;
+        if (under && ls->output == under->wlr) return ls->surface;
         if (!fallback) fallback = ls;
     }
-    return fallback ? fallback->wlr->surface : NULL;
+    return fallback ? fallback->surface : NULL;
 }

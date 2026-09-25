@@ -16,12 +16,13 @@ moves as one step when its members share wlroots state that cannot be split.
 | wlr-foreign-toplevel-management, ext-foreign-toplevel-list | `native/foreign.c`, fed each step from `foreign_toplevels_refresh` | both wlroots managers |
 | xdg-decoration, KDE server-decoration | `native/decoration.c`, mode sent with each xdg configure | both wlroots managers |
 | xdg-activation | `native/activation.c`, whose token records are the tokens | `wlr_xdg_activation_v1` and the mirror records Tomoe kept beside it |
+| ext-session-lock | `native/lock.c`, a `wlr_surface` role until the surface core moves | `wlr_session_lock_v1` |
 
 ## Surface roles
 
-layer-shell and session-lock. Each is a role or side object on
+layer-shell. Each is a role or side object on
 `wlr_surface`, served through wlroots' public surface-role API until the
-surface core moves. Tomoe already plans layers and the lock itself.
+surface core moves. Tomoe already plans layers itself.
 
 ## xdg-shell
 

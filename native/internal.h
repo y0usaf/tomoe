@@ -311,8 +311,8 @@ struct tomoe {
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wlr_pointer_constraint_v1 *active_constraint;
     struct wl_list foreigns, foreign_managers, foreign_lists;
-    struct wlr_session_lock_manager_v1 *session_lock_manager;
-    struct wlr_session_lock_v1 *session_lock;
+    struct wl_resource *session_lock;
+    bool lock_confirmed;
     int lock_state;
     struct wlr_scene_tree *drag_icon_tree, *lock_tree;
     struct wl_list drag_icons, constraints, lock_surfaces;
@@ -321,7 +321,6 @@ struct tomoe {
     struct target drag_icon;
     struct wl_listener new_constraint, constraint_commit,
         constraint_destroy;
-    struct wl_listener new_lock, lock_new_surface, lock_unlock, lock_destroy;
 };
 struct layer_state {
     uint32_t anchor, width, height;
