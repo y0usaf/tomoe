@@ -94,7 +94,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 86 | `on_window_request` full set with native defaults | crates/tomoe/src/lua.rs, handlers.rs | native/window.c, native/activation.c `:request` events (maximize, fullscreen, minimize, move, resize, activate, urgent, close); defaults in builtins/desktop.lisp "wm" | Done |
 | 87 | `on_reload` save/restore | crates/tomoe/src/lua.rs | src/runtime.lisp `configure` | Improved: mounted state survives reload automatically; no save/restore hooks to write |
 | 88 | Window rules and `rules_for` | crates/tomoe/src/lua.rs | src/api.lisp `window-rule`, src/rules.lisp, src/patterns.lisp | Done |
-| 89 | `process.once` with the id as default command | crates/tomoe/src/lua.rs | src/api.lisp `run-once` (command required) | Partial |
+| 89 | `process.once` with the id as default command | crates/tomoe/src/lua.rs | src/api.lisp `run-once`, `service` (COMMAND optional, defaults to the name) | Done |
 | 90 | `process.service`, `process.spawn` | crates/tomoe/src/lua.rs, process.rs | src/api.lisp `service`, `spawn` | Done |
 | 91 | Shutdown stops supervised processes | crates/tomoe/src/process.rs | src/processes.lisp | Improved: session-owned one-shot children are reaped too |
 | 92 | `ipc.serve`, `ipc.broadcast` | crates/tomoe/src/lua.rs | src/api.lisp `serve-state`, `serve-method`, `ipc-reply`, `broadcast`, `announce` | Done |

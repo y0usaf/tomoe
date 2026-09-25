@@ -281,22 +281,32 @@ TIMEOUT is milliseconds; OUTPUT-LIMIT bounds combined stdout/stderr bytes."
             (push (cons name value) environment)))
         (values launch directory (sort environment #'string< :key #'car))))))
 
-(defun run-once (name command &key cwd env (run :once-per-session))
-  "Declare a one-shot session launch. COMMAND is a shell string or argv list.
-RUN is :ONCE-PER-SESSION or :ONCE-PER-CONFIG-VERSION. A started child survives unmount."
+(defun %process-command (name arguments)
   (check-type name keyword)
-  (check-type run (member :once-per-session :once-per-config-version))
-  (multiple-value-bind (launch directory environment) (process-options command cwd env)
-    (%effect :process (list :once name launch directory environment run nil nil))))
+  (if (oddp (length arguments))
+      (values (first arguments) (rest arguments))
+      (values (list (string-downcase name)) arguments)))
 
-(defun service (name command &key cwd env (restart :on-exit) (reload :keep-if-unchanged))
-  "Own a supervised process. Equal declarations can survive successful reload.
+(defun run-once (name &rest arguments)
+  "Declare a one-shot session launch: (run-once name [command] &key cwd env run).
+COMMAND is a shell string or argv list and defaults to NAME as the program.
+RUN is :ONCE-PER-SESSION or :ONCE-PER-CONFIG-VERSION. A started child survives unmount."
+  (multiple-value-bind (command options) (%process-command name arguments)
+    (destructuring-bind (&key cwd env (run :once-per-session)) options
+      (check-type run (member :once-per-session :once-per-config-version))
+      (multiple-value-bind (launch directory environment) (process-options command cwd env)
+        (%effect :process (list :once name launch directory environment run nil nil))))))
+
+(defun service (name &rest arguments)
+  "Own a supervised process: (service name [command] &key cwd env restart reload).
+COMMAND defaults to NAME as the program. Equal declarations can survive successful reload.
 RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART."
-  (check-type name keyword)
-  (check-type restart (member :never :on-failure :on-exit))
-  (check-type reload (member :keep-if-unchanged :always-restart))
-  (multiple-value-bind (launch directory environment) (process-options command cwd env)
-    (%effect :process (list :service name launch directory environment nil restart reload))))
+  (multiple-value-bind (command options) (%process-command name arguments)
+    (destructuring-bind (&key cwd env (restart :on-exit) (reload :keep-if-unchanged)) options
+      (check-type restart (member :never :on-failure :on-exit))
+      (check-type reload (member :keep-if-unchanged :always-restart))
+      (multiple-value-bind (launch directory environment) (process-options command cwd env)
+        (%effect :process (list :service name launch directory environment nil restart reload))))))
 
 (defun place (id x y width height &optional (visible t))
   (check-type id (integer 1 4294967295))

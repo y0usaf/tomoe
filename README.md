@@ -710,10 +710,11 @@ allows 64 active declarations and 128 active plus retiring records. A rejected
 transaction starts no new command and preserves current ownership. Unmount
 cancels a command but cannot undo external work it already performed.
 
-`(run-once NAME COMMAND &key cwd env run)` declares a session launch, while
-`(service NAME COMMAND &key cwd env restart reload)` declares a supervised
+`(run-once NAME [COMMAND] &key cwd env run)` declares a session launch, while
+`(service NAME [COMMAND] &key cwd env restart reload)` declares a supervised
 owner-scoped process. Names are keywords local to the declaring owner; both
-forms share the same process-name namespace. For example:
+forms share the same process-name namespace. COMMAND defaults to the name as
+the program. For example:
 
 ```lisp
 (list
