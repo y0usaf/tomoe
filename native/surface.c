@@ -13,7 +13,7 @@
 enum {
     STATE_BUFFER = 1 << 0, STATE_SURFACE_DAMAGE = 1 << 1, STATE_BUFFER_DAMAGE = 1 << 2,
     STATE_INPUT = 1 << 4, STATE_TRANSFORM = 1 << 5, STATE_SCALE = 1 << 6,
-    STATE_FRAME = 1 << 7, STATE_VIEWPORT = 1 << 8, STATE_OFFSET = 1 << 9, STATE_TEARING = 1 << 10,
+    STATE_FRAME = 1 << 7, STATE_VIEWPORT = 1 << 8, STATE_OFFSET = 1 << 9,
 };
 
 struct release {
@@ -230,7 +230,6 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
     dst->buffer_height = src->buffer_height;
     if (src->committed & STATE_SCALE) dst->scale = src->scale;
     if (src->committed & STATE_TRANSFORM) dst->transform = src->transform;
-    if (src->committed & STATE_TEARING) dst->tearing = src->tearing;
     if (src->committed & STATE_OFFSET) {
         dst->dx = src->dx;
         dst->dy = src->dy;
@@ -1003,11 +1002,6 @@ void surface_frame_done(struct surface *surface, const struct timespec *when) {
         wl_callback_send_done(resource, ms);
         wl_resource_destroy(resource);
     }
-}
-
-void surface_set_tearing(struct surface *surface, uint32_t hint) {
-    surface->pending.tearing = hint;
-    surface->pending.committed |= STATE_TEARING;
 }
 
 void surface_set_scale(struct surface *surface, double scale) {

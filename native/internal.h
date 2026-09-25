@@ -246,7 +246,7 @@ struct surface_viewport {
     int dst_width, dst_height;
 };
 struct surface_state {
-    uint32_t committed, locks, tearing;
+    uint32_t committed, locks;
     struct wlr_buffer *buffer;
     int dx, dy, width, height, buffer_width, buffer_height, scale;
     enum wl_output_transform transform;
@@ -852,7 +852,6 @@ void surface_leave_all(struct surface *surface);
 bool surface_on_output(struct surface *surface, struct wlr_output *output);
 void surface_frame_done(struct surface *surface, const struct timespec *when);
 void surface_set_scale(struct surface *surface, double scale);
-void surface_set_tearing(struct surface *surface, uint32_t hint);
 void surface_presented(struct surface *surface, struct wlr_output *output, bool zero_copy);
 void surface_release_after(struct surface *surface, struct wlr_buffer *consumer);
 struct node *node_create(struct node *parent);
