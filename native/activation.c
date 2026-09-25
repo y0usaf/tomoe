@@ -98,7 +98,7 @@ static bool track_token(struct tomoe *s,
     tracked->serial = token->serial;
     tracked->serial_bearing = token->seat != NULL;
     tracked->activate = issued || tracked->serial_bearing;
-    tracked->accepted = !tracked->serial_bearing ||
+    tracked->accepted = !tracked->serial_bearing || s->settings.honor_invalid_serial ||
         fresh_serial(s, tracked->serial);
     tracked->deadline_msec = activation_deadline();
     tracked->destroy.notify = tracked_token_destroy;
