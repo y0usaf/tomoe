@@ -72,6 +72,7 @@ struct output {
     char pending_mirror[129];
     struct wlr_buffer *capture_primary, *capture_buffer;
     bool lock_rendered, gamma_dirty;
+    struct wlr_surface *scanout;
 };
 
 static inline bool output_is_active(const struct output *output) {
@@ -387,6 +388,7 @@ void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
 void surfaces_textured(struct output *o);
+struct wlr_surface *scanout_surface(struct output *o);
 bool surface_visible(struct tomoe *s, struct wlr_surface *surface);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,

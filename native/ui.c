@@ -866,6 +866,13 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
     return false;
 }
 
+bool ui_on_output(struct output *o) {
+    const struct ui_set *set = o->server->ui;
+    for (size_t i = 0; set && i < set->count; i++)
+        if (surface_matches_output(set->surfaces[i], o, NULL) && set->surfaces[i]->texture) return true;
+    return false;
+}
+
 void ui_render(struct output *o, struct wlr_render_pass *pass,
         const struct presentation *plan, int x, int y, int width, int height,
         enum wl_output_transform transform) {

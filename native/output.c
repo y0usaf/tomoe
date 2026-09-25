@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <wlr/backend/wayland.h>
 #include <wlr/backend/drm.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <xf86drmMode.h>
 #include "ui.h"
 #include <inttypes.h>
@@ -888,10 +889,29 @@ static void output_frame(struct wl_listener *listener, void *data) {
     if (!output_is_active(o)) return;
     struct wlr_output_state state;
     wlr_output_state_init(&state);
-    bool success = render_output(o, &state, NULL);
-    if (success) surfaces_textured(o);
+    struct wlr_surface *scanout = scanout_surface(o);
+    if (scanout) {
+        wlr_output_state_set_buffer(&state, &scanout->buffer->base);
+        if (!wlr_output_test_state(o->wlr, &state)) {
+            wlr_output_state_finish(&state);
+            wlr_output_state_init(&state);
+            scanout = NULL;
+        }
+    }
+    if (scanout != o->scanout)
+        wlr_log(WLR_DEBUG, "tomoe: output %s direct scanout %s", o->wlr->name,
+            scanout ? "engaged" : "disengaged");
+    o->scanout = scanout;
+    if (scanout) {
+        refresh_scene(o->server);
+        pointer_sync_cursors(o->server);
+    }
+    bool success = scanout || render_output(o, &state, NULL);
+    if (success && scanout)
+        wlr_presentation_surface_scanned_out_on_output(scanout, o->wlr);
+    else if (success) surfaces_textured(o);
     if (success && o->gamma_dirty) gamma_apply(o, &state);
-    if (success && !lock_active(o->server) && windows_want_tearing(o->server, o)) {
+    if (success && scanout && windows_want_tearing(o->server, o)) {
         state.tearing_page_flip = true;
         if (!wlr_output_test_state(o->wlr, &state)) state.tearing_page_flip = false;
     }

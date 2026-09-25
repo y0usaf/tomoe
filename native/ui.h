@@ -52,6 +52,7 @@ void ui_render(struct output *o, struct wlr_render_pass *pass,
     const struct presentation *plan, int x, int y, int width, int height,
     enum wl_output_transform transform);
 void ui_output_finish(struct tomoe *s, const char *output);
+bool ui_on_output(struct output *o);
 bool ui_prepare(struct tomoe *s);
 void ui_publish(struct tomoe *s);
 void ui_set_finish(struct ui_set *set);

@@ -440,8 +440,10 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
     struct tomoe *s = data;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr == frame->output && o->capture_primary == state->buffer &&
-                o->capture_buffer) return wlr_buffer_lock(o->capture_buffer);
+        if (o->wlr != frame->output) continue;
+        if (o->scanout) return wlr_buffer_lock(state->buffer);
+        if (o->capture_primary == state->buffer && o->capture_buffer)
+            return wlr_buffer_lock(o->capture_buffer);
     }
     return NULL;
 }
@@ -651,6 +653,43 @@ uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
 }
+struct scanout_data { struct wlr_box output; struct wlr_surface *surface; bool done; };
+static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
+    struct scanout_data *data = opaque;
+    struct wlr_box overlap;
+    if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
+    if (!wlr_box_intersection(&overlap, &leaf->screen, &data->output)) return false;
+    data->done = true;
+    if (leaf->node->type != WLR_SCENE_NODE_BUFFER || !wlr_box_equal(&leaf->screen, &data->output))
+        return true;
+    struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(leaf->node);
+    struct wlr_scene_surface *scene_surface = wlr_scene_surface_try_from_buffer(buffer);
+    const struct target *t = leaf->target;
+    if (!scene_surface || buffer->opacity != 1 || (buffer->src_box.width > 0 &&
+            (buffer->src_box.x != 0 || buffer->src_box.y != 0)) ||
+            (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
+    data->surface = scene_surface->surface;
+    return true;
+}
+struct wlr_surface *scanout_surface(struct output *o) {
+    struct tomoe *s = o->server;
+    struct scanout_data data = {0};
+    physical_output_box(o, &data.output);
+    if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o)) return NULL;
+    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, scanout_leaf, &data);
+    struct wlr_surface *surface = data.surface;
+    struct wlr_dmabuf_attributes dmabuf;
+    if (!surface || !surface->buffer || !wlr_buffer_get_dmabuf(&surface->buffer->base, &dmabuf) ||
+            surface->current.transform != o->wlr->transform ||
+            surface->current.buffer_width != o->wlr->width ||
+            surface->current.buffer_height != o->wlr->height) return NULL;
+    bool cursor_here = !s->cursor_hidden && s->pointer_x >= data.output.x &&
+        s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
+        s->pointer_y < data.output.y + data.output.height;
+    if (cursor_here && !o->wlr->hardware_cursor) return NULL;
+    return surface;
+}
+
 double physical_hit_ratio(struct tomoe *s, double x, double y) {
     struct hit_data hit = { .x = x, .y = y };
     walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, hit_leaf, &hit);
