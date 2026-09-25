@@ -147,6 +147,9 @@ struct settings {
     int nested_width, nested_height;
     int border_width, border_radius;
     uint32_t border_focused, border_unfocused;
+    int shadow_range;
+    uint32_t shadow_color;
+    double shadow_power;
 };
 void settings_default(struct settings *settings);
 void settings_finish(struct settings *settings);

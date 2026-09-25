@@ -11,6 +11,9 @@ static const struct setting_field {
     { "tearing", offsetof(struct settings, tearing), SETTING_BOOL },
     { "nested-size-width", offsetof(struct settings, nested_width), SETTING_INT },
     { "border-width", offsetof(struct settings, border_width), SETTING_INT },
+    { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
+    { "shadow-color", offsetof(struct settings, shadow_color), SETTING_COLOR },
+    { "shadow-power", offsetof(struct settings, shadow_power), SETTING_REAL },
     { "border-radius", offsetof(struct settings, border_radius), SETTING_INT },
     { "border-focused", offsetof(struct settings, border_focused), SETTING_COLOR },
     { "border-unfocused", offsetof(struct settings, border_unfocused), SETTING_COLOR },
@@ -22,7 +25,8 @@ static const struct setting_field {
 
 void settings_default(struct settings *settings) {
     *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
-        .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff };
+        .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
+        .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3 };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }

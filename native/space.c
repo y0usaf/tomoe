@@ -430,6 +430,7 @@ static void decorate(struct tomoe *s, const struct target *t, bool focused,
         physical_size(t->client_width, t->scale) * zoom,
         physical_size(t->client_height, t->scale) * zoom };
     double radius = (t->style.radius >= 0 ? t->style.radius : st->border_radius) * zoom;
+    effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, 1);
     int64_t color = focused ? t->style.focused : t->style.unfocused;
     effect_border(f, box, st->border_width * zoom, radius,
         color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, 1);
