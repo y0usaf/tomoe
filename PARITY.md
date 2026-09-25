@@ -107,7 +107,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 99 | Zoomer canvas WM | resources/zoomer.lua | examples/zoomer.lisp (mount over the default policy) | Done |
 | 100 | Special workspaces | resources/special.lua | examples/special.lisp, `:wm-exclude` honored by builtins/desktop.lisp "wm" | Done |
 | 101 | Screencast source picker | resources/screencast.lua | builtins/desktop.lisp "screencast" (rules `:screencast` nil/output, menu-dialog picker) | Done |
-| 102 | Default config: notifications, screencast, shadow and border defaults | resources/init.lua | builtins/desktop.lisp | Partial |
+| 102 | Default config: notifications, screencast, shadow and border defaults | resources/init.lua | builtins/desktop.lisp ("commands", "wm", "screencast", "notification-popups"; `+settings+` defaults; hotkey sheet in init.lua order) | Done |
 | 103 | JSON IPC socket path and discovery | crates/tomoe-ipc/src/lib.rs | src/main.lisp `json-socket-path` | Done |
 | 104 | JSON IPC framing, wire 2 | crates/tomoe-ipc/src/lib.rs | src/ipc-transport.lisp | Done |
 | 105 | `version`, `windows`, `outputs`, `view`, `subscribe`, `quit` methods | crates/tomoe/src/ipc.rs | src/ipc.lisp | Done |

@@ -13,6 +13,12 @@
                                 ((equal key "equal") "=")
                                 (t (string-capitalize key :end (min 1 (length key))))))))))
 
+(defparameter +hotkey-order+
+  '("Spawn foot" "Run an Application" "Close Window" "Toggle Fullscreen" "Exit"
+    "Show Important Hotkeys" "Focus Next Window" "Focus Previous Window"
+    "Switch to Workspace 1-9" "Move Window to Workspace 1-9")
+  "The old init.lua declaration order of the shipped bindings, for the hotkey sheet.")
+
 (define-extension "commands" (:reads (:key :ui :focus :bindings :settings)
                                :state '(:exit nil :overlay nil))
     (snapshot state event)
@@ -25,7 +31,12 @@
          (overlay (cond ((equal command "hotkeys") (not (getf state :overlay)))
                         ((equal command "hotkeys-dismiss") nil)
                         (t (getf state :overlay))))
-         (rows (loop for binding in (sort (copy-list (context snapshot :bindings)) #'< :key (lambda (b) (getf b :order)))
+         (rows (loop for binding in (stable-sort (sort (copy-list (context snapshot :bindings)) #'<
+                                                       :key (lambda (b) (getf b :order)))
+                                                 #'< :key (lambda (b)
+                                                            (or (position (getf b :description) +hotkey-order+
+                                                                          :test #'equal)
+                                                                (length +hotkey-order+))))
                      when (getf binding :description)
                        collect (list (hotkey-label binding) (getf binding :description)))))
     (values (list :exit exit :overlay overlay)
