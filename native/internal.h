@@ -27,7 +27,6 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
-#include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -74,6 +73,7 @@ void render_quad(struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
 bool render_texture_gl(struct wlr_texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
+uint32_t render_read_format(struct wlr_renderer *renderer);
 bool render_wait(struct wlr_renderer *renderer, struct wlr_drm_syncobj_timeline *timeline,
     uint64_t point);
 bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
@@ -99,7 +99,7 @@ struct output {
     bool positioned;
     char mirror[129];
     char pending_mirror[129];
-    struct wlr_buffer *capture_primary, *capture_buffer;
+    struct wlr_buffer *capture_buffer;
     struct wlr_buffer *presented[2];
     struct ring ring;
     bool lock_rendered, gamma_dirty;
@@ -300,7 +300,7 @@ struct tomoe {
     struct ui_asset_pool *ui_assets;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
-    struct wlr_screencopy_manager_v1 *screencopy;
+    struct wl_list copy_frames;
     struct wlr_primary_selection_v1_device_manager *primary_selection;
     struct wlr_data_control_manager_v1 *data_control;
     struct wlr_ext_data_control_manager_v1 *ext_data_control;
@@ -414,8 +414,10 @@ void forget_output(struct tomoe *s, struct wlr_output *output);
 bool render_output(struct output *o, struct wlr_output_state *state);
 bool render_presentation(struct output *o, struct wlr_output_state *state,
     struct ring *ring, const struct presentation *plan);
-struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
-    const struct wlr_output_state *state, void *data);
+bool screencopy_listen(struct tomoe *s);
+bool screencopy_wants_cursorless(struct output *o);
+void screencopy_serve(struct output *o, struct wlr_buffer *committed, bool scanout);
+void screencopy_output_gone(struct tomoe *s, struct wlr_output *output);
 void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);

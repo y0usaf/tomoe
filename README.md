@@ -1380,9 +1380,9 @@ drag and drop, viewporter, fractional-scale-v1, xdg-output, layer-shell,
 session lock, idle notify and inhibit, gamma control, presentation time,
 tearing control, linux-drm-syncobj, relative pointer, pointer constraints,
 virtual pointer and keyboard, xdg-activation, wlr and ext foreign toplevels,
-wlr-screencopy-v1 and ext-image-copy-capture (outputs and toplevels),
-ext-background-effect-v1, and X11 clients through wlroots' Xwayland and its
-XWM. The ScreenCast portal is the Rust `xdg-desktop-portal-tomoe` in
+wlr-screencopy-v1 (Tomoe's own, in `native/screencopy.c`), ext-image-copy-capture
+(outputs and toplevels), ext-background-effect-v1, and X11 clients through
+xwayland-satellite. The ScreenCast portal is the Rust `xdg-desktop-portal-tomoe` in
 `portal/`, carried over unchanged from the previous tomoe and installed with
 its `.portal`, `portals.conf` and D-Bus service files. Input methods, touch and
 tablets are missing. A policy that never releases a grab keeps the pointer until

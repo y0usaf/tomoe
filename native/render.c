@@ -841,6 +841,10 @@ static const struct wlr_allocator_interface allocator_impl = {
     .create_buffer = allocate, .destroy = allocator_destroy,
 };
 
+uint32_t render_read_format(struct wlr_renderer *renderer) {
+    return render_of(renderer)->read_bgra ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_XBGR8888;
+}
+
 struct wlr_allocator *render_allocator(struct wlr_renderer *renderer) {
     return &render_of(renderer)->allocator;
 }

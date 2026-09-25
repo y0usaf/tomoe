@@ -1,7 +1,6 @@
 #include "internal.h"
 #include "ui.h"
 #include <wlr/render/drm_syncobj.h>
-#include <wlr/types/wlr_screencopy_v1.h>
 
 static void backend_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, backend_destroy);
@@ -48,10 +47,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->renderer = render_create(s->backend);
     if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
     s->allocator = render_allocator(s->renderer);
-    s->screencopy = wlr_screencopy_manager_v1_create(s->display);
-    if (!s->screencopy) goto failed;
-    wlr_screencopy_manager_v1_set_buffer_provider(s->screencopy,
-        screencopy_buffer, s);
+    if (!screencopy_listen(s)) goto failed;
     struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
     if (!compositor ||
             !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display) ||

@@ -400,39 +400,12 @@ static void render_presentation_cursors(struct output *o, struct frame *data,
 
 void finish_output_capture(struct output *o) {
     wlr_buffer_unlock(o->capture_buffer);
-    wlr_buffer_unlock(o->capture_primary);
-    o->capture_buffer = o->capture_primary = NULL;
+    o->capture_buffer = NULL;
 }
 
 void finish_captures(struct tomoe *s) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) finish_output_capture(o);
-}
-
-static bool needs_cursorless_capture(struct output *o) {
-    struct wlr_screencopy_manager_v1 *manager = o->server->screencopy;
-    if (!manager || manager->suspended) return false;
-    struct wlr_screencopy_frame_v1 *frame;
-    wl_list_for_each(frame, &manager->frames, link) {
-        if (frame->output == o->wlr && frame->buffer && !frame->overlay_cursor)
-            return true;
-    }
-    return false;
-}
-
-struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
-        const struct wlr_output_state *state, void *data) {
-    if (!state->buffer) return NULL;
-    if (frame->overlay_cursor) return wlr_buffer_lock(state->buffer);
-    struct tomoe *s = data;
-    struct output *o;
-    wl_list_for_each(o, &s->outputs, link) {
-        if (o->wlr != frame->output) continue;
-        if (o->scanout) return wlr_buffer_lock(state->buffer);
-        if (o->capture_primary == state->buffer && o->capture_buffer)
-            return wlr_buffer_lock(o->capture_buffer);
-    }
-    return NULL;
 }
 
 static void decorate_layer(struct tomoe *s, const struct target *t, struct frame *f) {
@@ -602,11 +575,10 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
     bool success = render_scene_buffer(o, buffer, state, plan, true);
     uint64_t render_point = o->server->render_point;
     if (success) {
-        if (needs_cursorless_capture(o)) {
+        if (screencopy_wants_cursorless(o)) {
             struct wlr_buffer *capture = ring_create(o->server, ring);
             if (capture && render_scene_buffer(o, capture, state, plan, false)) {
                 o->capture_buffer = wlr_buffer_lock(capture);
-                o->capture_primary = wlr_buffer_lock(buffer);
             }
             wlr_buffer_drop(capture);
         }

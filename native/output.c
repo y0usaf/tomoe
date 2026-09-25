@@ -824,8 +824,6 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
         if (s->presentation) presentation_publish(s);
         return s->failed ? "Presentation publication failed; stopping the compositor." : NULL;
     }
-    bool was_suspended = s->screencopy && s->screencopy->suspended;
-    if (s->screencopy) wlr_screencopy_manager_v1_set_suspended(s->screencopy, true);
     struct wlr_backend_output_state *states = calloc(count, sizeof(*states));
     struct wlr_backend_output_state *previous = calloc(count, sizeof(*previous));
     uint64_t *request_ids = calloc(count, sizeof(*request_ids));
@@ -924,8 +922,6 @@ done:
     }
     free(states); free(previous); free(request_ids); free(request_holds);
     free(request_states);
-    if (s->screencopy && !was_suspended)
-        wlr_screencopy_manager_v1_set_suspended(s->screencopy, false);
     return error;
 }
 
@@ -980,6 +976,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
         o->presented[1] = o->presented[0];
         o->presented[0] = wlr_buffer_lock(state.buffer);
     }
+    if (success && (state.committed & WLR_OUTPUT_STATE_BUFFER))
+        screencopy_serve(o, state.buffer, scanout != NULL);
     finish_output_capture(o);
     wlr_output_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
@@ -1024,6 +1022,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     wlr_buffer_unlock(o->presented[1]);
     ring_finish(&o->ring);
     screenshot_output_gone(s, o);
+    screencopy_output_gone(s, wlr);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);

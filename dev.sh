@@ -62,6 +62,11 @@ fi
 if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
   wayland-scanner server-header "$xml" "$protocol"
 fi
+copy_xml="$(dirname "$xml")/wlr-screencopy-unstable-v1.xml"
+if [ ! -f build/wlr-screencopy-unstable-v1-protocol.c ] || [ "$copy_xml" -nt build/wlr-screencopy-unstable-v1-protocol.c ]; then
+  wayland-scanner server-header "$copy_xml" build/wlr-screencopy-unstable-v1-protocol.h
+  wayland-scanner private-code "$copy_xml" build/wlr-screencopy-unstable-v1-protocol.c
+fi
 effect_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/ext-background-effect-v1.xml"
 if [ ! -f build/ext-background-effect-v1-protocol.c ] || [ "$effect_xml" -nt build/ext-background-effect-v1-protocol.c ]; then
   wayland-scanner server-header "$effect_xml" build/ext-background-effect-v1-protocol.h
