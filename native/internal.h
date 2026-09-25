@@ -304,8 +304,8 @@ struct tomoe {
     struct wlr_ext_data_control_manager_v1 *ext_data_control;
     struct wlr_relative_pointer_manager_v1 *relative_pointer;
     struct wlr_presentation *presentation_time;
-    struct wlr_idle_notifier_v1 *idle_notifier;
-    struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
+    struct wl_list idle_notifications, idle_inhibitors;
+    bool idle_inhibited;
     struct wl_list tearings;
     struct wl_list gammas, decorations;
     struct popup_grab *popup_grab;
@@ -607,6 +607,7 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
     double dx, double dy, double dx_unaccel, double dy_unaccel);
 void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
+bool idle_listen(struct tomoe *s);
 void gamma_apply(struct output *o, struct wlr_output_state *state);
 bool gamma_listen(struct tomoe *s);
 bool decoration_listen(struct tomoe *s);

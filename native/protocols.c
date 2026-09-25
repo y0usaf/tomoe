@@ -6,8 +6,6 @@
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
-#include <wlr/types/wlr_idle_notify_v1.h>
-#include <wlr/types/wlr_idle_inhibit_v1.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
@@ -83,16 +81,6 @@ bool constraint_allows(struct tomoe *s, double x, double y) {
         pixman_region32_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL);
 }
 
-void idle_notify_activity(struct tomoe *s) {
-    wlr_idle_notifier_v1_notify_activity(s->idle_notifier, s->seat);
-}
-void idle_refresh(struct tomoe *s) {
-    bool inhibited = false;
-    struct wlr_idle_inhibitor_v1 *inhibitor;
-    wl_list_for_each(inhibitor, &s->idle_inhibit->inhibitors, link)
-        inhibited |= surface_visible(s, inhibitor->surface);
-    wlr_idle_notifier_v1_set_inhibited(s->idle_notifier, inhibited && !lock_active(s));
-}
 
 static void request_start_drag(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_start_drag);
@@ -132,9 +120,7 @@ bool protocols_listen(struct tomoe *s) {
     s->relative_pointer = wlr_relative_pointer_manager_v1_create(s->display);
     s->pointer_constraints = wlr_pointer_constraints_v1_create(s->display);
     s->presentation_time = wlr_presentation_create(s->display, s->backend, 2);
-    s->idle_notifier = wlr_idle_notifier_v1_create(s->display);
-    s->idle_inhibit = wlr_idle_inhibit_v1_create(s->display);
-    if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !gamma_listen(s) ||
+    if (!s->presentation_time || !idle_listen(s) || !gamma_listen(s) ||
             !decoration_listen(s) || !foreign_listen(s) || !tearing_listen(s) ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;

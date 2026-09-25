@@ -19,13 +19,14 @@ moves as one step when its members share wlroots state that cannot be split.
 | ext-session-lock | `native/lock.c`, a `wlr_surface` role until the surface core moves | `wlr_session_lock_v1` |
 | wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
 | xdg-shell v3 | `native/xdg_shell.c`; positioner math from wlroots' pure `wlr_xdg_positioner_rules` functions until phase 3 | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
+| ext-idle-notify, idle-inhibit | `native/idle.c`; the seat argument is accepted and unused, since Tomoe has one seat | `wlr_idle_notifier_v1`, `wlr_idle_inhibit_v1` |
 
 ## Seat
 
 wl_seat, data-device and drag and drop, primary selection, wlr and ext data
-control, relative pointer, pointer constraints, virtual keyboard and pointer,
-idle notify and inhibit. wlroots ties all of them to `wlr_seat`, so they move
-together. This removes the two keyboard patches: Tomoe's logical keyboard
+control, relative pointer, pointer constraints, virtual keyboard and pointer.
+Protocols that only read seat state or call `wlr_seat`'s public API move one at a
+time first; wl_seat and data-device, which share its internals, move last. This removes the two keyboard patches: Tomoe's logical keyboard
 already tracks every held key and builds its own enter arrays. xdg popup grabs
 move from `wlr_seat`'s grab API onto Tomoe's seat in the same step.
 

@@ -80,6 +80,13 @@ if [ ! -f build/xdg-decoration-unstable-v1-protocol.c ] || [ "$decoration_xml" -
   wayland-scanner private-code "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.c
   wayland-scanner server-header "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.h
 fi
+for path in staging/ext-idle-notify/ext-idle-notify-v1 unstable/idle-inhibit/idle-inhibit-unstable-v1; do
+  name="${path##*/}"
+  if [ ! -f "build/$name-protocol.c" ] || [ "$protocols/$path.xml" -nt "build/$name-protocol.c" ]; then
+    wayland-scanner server-header "$protocols/$path.xml" "build/$name-protocol.h"
+    wayland-scanner private-code "$protocols/$path.xml" "build/$name-protocol.c"
+  fi
+done
 if [ ! -f build/server-decoration-protocol.c ] || [ "$kde_xml" -nt build/server-decoration-protocol.c ]; then
   wayland-scanner server-header "$kde_xml" build/server-decoration-protocol.h
   wayland-scanner private-code "$kde_xml" build/server-decoration-protocol.c
