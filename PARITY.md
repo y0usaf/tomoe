@@ -17,7 +17,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 9 | World-space hit testing | crates/tomoe/src/space.rs, input.rs | native/space.c `physical_hit_test` | Done |
 | 10 | Output enter/leave by overlap | crates/tomoe/src/space.rs `refresh` | native/space.c `refresh_leaf` | Done |
 | 11 | Off-output window culling | crates/tomoe/src/render/mod.rs | native/space.c `render_leaf` | Done |
-| 12 | Clear color 0.05 grey | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c `render_scene_buffer` (black) | Partial |
+| 12 | Clear color 0.05 grey | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c `render_scene_buffer` | Done |
 | 13 | `tomoe.pointer()` world/screen pointer position | crates/tomoe/src/lua.rs | none | Missing |
 | 14 | Spring/ease animation engine, `window_move` spring (1.0, 800) | crates/tomoe/src/animation.rs | none | Missing |
 | 15 | `window_open` fade, 150 ms ease_out_expo, also on show | crates/tomoe/src/animation.rs, state.rs | none | Missing |

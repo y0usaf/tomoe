@@ -447,7 +447,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     bool locked = lock_active(o->server);
     wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
-        .color = { locked ? 0.3f : 0, locked ? 0.1f : 0, locked ? 0.1f : 0, 1 },
+        .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
         .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
     if (locked) {
         walk_scene(o->server, &o->server->lock_tree->node, NULL, 0, 0, false, render_leaf, &data);
