@@ -18,12 +18,15 @@ static const struct setting_field {
 
 void settings_default(struct settings *settings) {
     *settings = (struct settings){ .nested_width = 1280, .nested_height = 800 };
+    input_config_unset(&settings->touchpad);
+    input_config_unset(&settings->mouse);
 }
 
 int tomoe_present_settings(struct tomoe *s) {
     struct presentation *plan = s->presentation;
     if (!plan) return 0;
-    if (!plan->settings) plan->settings = calloc(1, sizeof(*plan->settings));
+    if (plan->settings) settings_finish(plan->settings);
+    else plan->settings = calloc(1, sizeof(*plan->settings));
     if (!plan->settings) return 0;
     settings_default(plan->settings);
     return 1;
@@ -32,6 +35,8 @@ int tomoe_present_settings(struct tomoe *s) {
 int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
     struct presentation *plan = s->presentation;
     if (!plan || !plan->settings || !isfinite(value)) return 0;
+    int handled = input_setting(plan->settings, key, value, NULL);
+    if (handled >= 0) return handled;
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
         if (strcmp(fields[i].name, key) != 0) continue;
         char *field = (char *)plan->settings + fields[i].offset;
@@ -47,15 +52,21 @@ int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
 }
 
 int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *text) {
-    return s->presentation && s->presentation->settings && text ? 1 : 0;
+    struct presentation *plan = s->presentation;
+    if (!plan || !plan->settings || !text) return 0;
+    int handled = input_setting(plan->settings, key, NAN, text);
+    return handled >= 0 ? handled : 1;
 }
 
 void settings_publish(struct tomoe *s, struct presentation *plan) {
     if (!plan->settings) return;
     bool resized = s->settings.nested_width != plan->settings->nested_width ||
         s->settings.nested_height != plan->settings->nested_height;
+    settings_finish(&s->settings);
     s->settings = *plan->settings;
+    plan->settings->device_count = 0;
     if (resized) outputs_request_nested_size(s);
+    input_devices_apply(s);
     free(plan->settings);
     plan->settings = NULL;
 }

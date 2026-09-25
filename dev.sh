@@ -65,9 +65,9 @@ fi
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
     -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
-    $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm xcb xcb-ewmh xcb-icccm) \
+    $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput xcb xcb-ewmh xcb-icccm) \
     native/*.c -o "$TOMOE_BACKEND_LIB" \
-    $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0) -lm
+    $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libinput) -lm
 fi
 
 export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"

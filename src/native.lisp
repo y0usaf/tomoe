@@ -292,6 +292,12 @@
            (text (name value)
              (unless (= 1 (%present-setting-text backend name value))
                (error "Cannot stage setting ~A." name)))
+           (device (plist prefix)
+             (loop for (key value) on plist by #'cddr
+                   for name = (format nil "~A-~(~A~)" prefix key) do
+               (cond ((keywordp value) (text name (string-downcase value)))
+                     ((member value '(t nil)) (number name (if value 1 0)))
+                     (t (number name value)))))
            (stage (plist table prefix)
              (loop for (key type) in table
                    for value = (getf plist key)
@@ -302,6 +308,9 @@
                  (:color (number name (%ui-color value)))
                  (:member (text name (string-downcase value)))
                  (:strings (dolist (item value) (text name item)))
+                 (:device (device value name))
+                 (:devices (loop for (device-name . plist) in value
+                                 do (text name device-name) (device plist "device")))
                  (:group (stage value (rest type) name))))))
     (stage settings +settings+ nil)))
 

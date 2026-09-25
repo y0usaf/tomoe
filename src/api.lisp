@@ -402,9 +402,21 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
     (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))
+    (:touchpad :device nil)
+    (:mouse :device nil)
+    (:devices :devices nil)
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")
+
+(defparameter +input-device-settings+
+  '((:disabled :boolean) (:disabled-on-external-mouse :boolean) (:tap :boolean)
+    (:tap-drag :boolean) (:tap-drag-lock :boolean) (:natural-scroll :boolean)
+    (:accel-speed (:real -1 1)) (:accel-profile (:member :flat :adaptive)) (:dwt :boolean)
+    (:left-handed :boolean) (:middle-emulation :boolean)
+    (:scroll-method (:member :none :two-finger :edge :on-button-down))
+    (:scroll-button (:integer 0 4294967295)) (:click-method (:member :button-areas :clickfinger)))
+  "libinput device fields. Unset fields keep the device's libinput default.")
 
 (defun %setting-value (type value key)
   (flet ((bad () (error "Invalid setting ~S: ~S" key value)))
@@ -417,7 +429,14 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
       (:color (%ui-color value) (copy-seq value))
       (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
        (mapcar #'copy-seq value))
-      (:group (%settings-plist value (rest type) key)))))
+      (:group (%settings-plist value (rest type) key))
+      (:device (%settings-plist value +input-device-settings+ key))
+      (:devices
+       (unless (and (listp value) (<= (length value) 64)) (bad))
+       (loop for entry in value
+             do (unless (and (consp entry) (stringp (car entry)) (<= 1 (length (car entry)) 256)) (bad))
+             collect (cons (copy-seq (car entry))
+                           (%settings-plist (cdr entry) +input-device-settings+ key)))))))
 
 (defun %settings-plist (plist table &optional context)
   (unless (and (listp plist) (evenp (length plist)))

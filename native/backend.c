@@ -33,7 +33,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
-    wl_list_init(&s->keyboards); wl_list_init(&s->events); wl_list_init(&s->bindings);
+    wl_list_init(&s->keyboards); wl_list_init(&s->input_devices); wl_list_init(&s->events); wl_list_init(&s->bindings);
     wl_list_init(&s->tracked_surfaces);
     wl_list_init(&s->virtual_pointers);
     wl_list_init(&s->activation_tokens);
@@ -144,6 +144,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->cursor) wlr_cursor_destroy(s->cursor);
     if (s->backend) wlr_backend_destroy(s->backend);
     keyboard_logical_finish(s);
+    settings_finish(&s->settings);
     if (s->render_timeline) wlr_drm_syncobj_timeline_unref(s->render_timeline);
     if (s->allocator) wlr_allocator_destroy(s->allocator);
     if (s->renderer) wlr_renderer_destroy(s->renderer);

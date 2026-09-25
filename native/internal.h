@@ -103,11 +103,28 @@ struct presentation_target {
     bool visible, desired_visible, staged;
     int width, height, fullscreen, maximize;
 };
+struct input_config {
+    double disabled, disabled_on_external_mouse, tap, tap_drag, tap_drag_lock, natural_scroll;
+    double accel_speed, accel_profile, dwt, left_handed, middle_emulation;
+    double scroll_method, scroll_button, click_method;
+};
+struct named_input_config {
+    char *name;
+    struct input_config config;
+};
 struct settings {
+    struct input_config touchpad, mouse;
+    struct named_input_config devices[64];
+    size_t device_count;
     bool force_ssd, honor_invalid_serial, tearing, wait_frame;
     int nested_width, nested_height;
 };
 void settings_default(struct settings *settings);
+void settings_finish(struct settings *settings);
+void input_config_unset(struct input_config *config);
+int input_setting(struct settings *settings, const char *key, double value, const char *text);
+void input_devices_apply(struct tomoe *s);
+void input_device_track(struct tomoe *s, struct wlr_input_device *wlr);
 struct presentation {
     struct presentation_output *outputs;
     size_t output_count;
@@ -143,6 +160,7 @@ struct tomoe {
     struct wlr_xdg_activation_v1 *activation;
     struct wlr_xwayland *xwayland;
     struct wlr_xwayland_surface *or_focus;
+    struct wl_list input_devices;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, tracked_surfaces, virtual_pointers;
     struct wl_list activation_tokens;
     size_t activation_tracked_count;

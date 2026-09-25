@@ -6,6 +6,7 @@ void presentation_finish(struct tomoe *s) {
     ui_set_finish(s->presentation->ui);
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
+    if (s->presentation->settings) settings_finish(s->presentation->settings);
     free(s->presentation->settings);
     free(s->presentation->outputs);
     free(s->presentation->targets);

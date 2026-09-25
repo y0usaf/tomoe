@@ -1553,6 +1553,7 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
 static void new_input(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, new_input);
     struct wlr_input_device *device = data;
+    input_device_track(s, device);
     if (device->type == WLR_INPUT_DEVICE_POINTER)
         wlr_cursor_attach_input_device(s->cursor, device);
     if (device->type != WLR_INPUT_DEVICE_KEYBOARD) return;

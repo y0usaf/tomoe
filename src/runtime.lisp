@@ -814,7 +814,8 @@ stay in the page cache, so the digest decides."
 
 (defun load-specs (path)
   (let* ((*source* (namestring (truename path)))
-         (*definitions* nil) (*package* (find-package :tomoe-user)) (*read-eval* nil))
+         (*definitions* nil) (*package* (find-package :tomoe-user)) (*read-eval* nil)
+         (*read-default-float-format* 'double-float))
     (sb-ext:with-timeout 1
       (with-open-file (stream *source*)
         (when (> (file-length stream) 1048576) (error "Extension file exceeds 1 MiB."))
