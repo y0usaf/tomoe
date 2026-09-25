@@ -58,6 +58,7 @@ void session_finish(struct tomoe *s) {
     struct session *session = s->session;
     if (!session) return;
     if (session->source) wl_event_source_remove(session->source);
+    if (session->seat) libseat_dispatch(session->seat, 0);
     if (session->seat) libseat_close_seat(session->seat);
     free(session);
     s->session = NULL;

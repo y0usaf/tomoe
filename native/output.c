@@ -952,7 +952,10 @@ static void output_frame(struct wl_listener *listener, void *data) {
         capture_serve(o, state.buffer, scanout != NULL);
     finish_output_capture(o);
     screen_state_finish(&state);
-    if (!success) { fail(o->server, "output commit failed"); return; }
+    if (!success) {
+        tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
+        return;
+    }
     lock_frame_rendered(o->server, o->screen);
     if (windows_animate(o->server)) screen_schedule_frame(o->screen);
     struct timespec now;
