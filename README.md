@@ -220,12 +220,15 @@ The native ABI is 28; the additive inspect fields keep control wire version 1.
 
 X11 clients run through xwayland-satellite, which presents each X11 window to
 Tomoe as an ordinary xdg toplevel. At startup the host picks the first display
-without a `/tmp/.X<n>-lock` file and exports it as `DISPLAY`
-to this process and its children, never to systemd, D-Bus or the surrounding
-session. The shipped `xwayland` extension runs `xwayland-satellite` on that
-display as a `service`, restarting it when it exits. `--bare` has no X11 until
-a policy declares that service. The package puts `xwayland-satellite` on the
-wrapper's `PATH`.
+whose `/tmp/.X<n>-lock` file is absent or names a dead process and exports it
+as `DISPLAY` to this process and its children, never to systemd, D-Bus or the
+surrounding session. The shipped `xwayland` extension runs `tomoe-xwayland` on
+that display as a `service`, restarting it when it exits: it takes the lock,
+listens on the display's sockets, and on the first X11 connection becomes
+`xwayland-satellite -listenfd`, so Xwayland only starts once an X11 client
+connects. `--bare` has no X11 until a policy declares that service. The
+package puts `tomoe-xwayland` and `xwayland-satellite` on the wrapper's
+`PATH`.
 
 To policy, an X11 window is an xdg window: its title and app id come from
 satellite, `place` sends a configure, and fullscreen and maximize go through

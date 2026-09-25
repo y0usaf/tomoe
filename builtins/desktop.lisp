@@ -456,7 +456,7 @@
 
 (define-extension "xwayland" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot event))
-  (values state (list (service :xwayland-satellite "exec xwayland-satellite \"$DISPLAY\"")) nil))
+  (values state (list (service :xwayland-satellite "exec tomoe-xwayland \"$DISPLAY\" xwayland-satellite")) nil))
 
 (define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil) (snapshot state event)
   (declare (ignore snapshot))

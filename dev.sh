@@ -48,6 +48,11 @@ if [ ! -f "$TOMOE_TRAY_LIB" ] || [ support/tray.c -nt "$TOMOE_TRAY_LIB" ] || [ s
     -o "$TOMOE_TRAY_LIB" $(pkg-config --libs libsystemd)
 fi
 
+if [ ! -f build/tomoe-xwayland ] || [ support/xwayland.c -nt build/tomoe-xwayland ]; then
+  cc -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
+fi
+export PATH="$PWD/build:$PATH"
+
 export TOMOE_BACKEND_LIB="$PWD/build/libtomoe-backend.so"
 if ! command -v wayland-scanner >/dev/null 2>&1; then
   echo "dev.sh: wayland-scanner is required to build the backend" >&2

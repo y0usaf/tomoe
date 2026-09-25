@@ -97,6 +97,7 @@
             $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
               $(pkg-config --cflags libsystemd) support/tray.c \
               -o build/libtomoe-tray.so $(pkg-config --libs libsystemd)
+            $CC -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
             wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
             wp=${pkgs.wayland-protocols}/share/wayland-protocols
             for xml in \
@@ -146,6 +147,7 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/libexec/tomoe
+            install -Dm755 build/tomoe-xwayland $out/libexec/tomoe-bin/tomoe-xwayland
             install -Dm755 build/libtomoe-backend.so $out/lib/libtomoe-backend.so
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
             install -Dm755 build/libtomoe-executions.so $out/lib/libtomoe-executions.so
@@ -176,7 +178,7 @@
               --set TOMOE_SHELL ${pkgs.bash}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
               --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel pkgs.xwayland-satellite ]}
+              --prefix PATH : $out/libexec/tomoe-bin:${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel pkgs.xwayland-satellite ]}
             runHook postInstall
           '';
           meta = {

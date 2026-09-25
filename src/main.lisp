@@ -40,7 +40,7 @@ Loads $XDG_CONFIG_HOME/tomoe/init.lisp or ~/.config/tomoe/init.lisp when present
 Extension sources are watched and reloaded when edited; --no-watch disables that.
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
-X11 clients connect through DISPLAY to the xwayland-satellite the xwayland extension runs.
+X11 clients connect through DISPLAY; the xwayland extension starts xwayland-satellite on the first connection.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
 (defun json-socket-path (name)
@@ -117,9 +117,12 @@ only after it changes again."
              (serious-condition (condition) (report-config-error runtime condition nil)))))))))
 
 (defun free-x-display ()
-  "The first X display name without a lock file."
+  "The first X display name whose lock file is absent or names a dead process."
   (loop for n below 64
-        unless (probe-file (format nil "/tmp/.X~D-lock" n))
+        for lock = (format nil "/tmp/.X~D-lock" n)
+        for pid = (ignore-errors
+                   (with-open-file (in lock) (parse-integer (read-line in) :junk-allowed t)))
+        unless (and (probe-file lock) (or (null pid) (probe-file (format nil "/proc/~D" pid))))
           return (format nil ":~D" n)
         finally (error "No free X display below :64.")))
 
