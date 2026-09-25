@@ -8,6 +8,7 @@ static const struct setting_field {
     enum setting_kind kind;
 } fields[] = {
     { "force-server-side-decorations", offsetof(struct settings, force_ssd), SETTING_BOOL },
+    { "tearing", offsetof(struct settings, tearing), SETTING_BOOL },
     { "honor-xdg-activation-with-invalid-serial",
         offsetof(struct settings, honor_invalid_serial), SETTING_BOOL },
 };

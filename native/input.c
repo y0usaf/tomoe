@@ -620,6 +620,7 @@ static void cursor_surface_destroy(struct wl_listener *listener, void *data) {
     s->cursor_surface = NULL;
 }
 static void cursor_default(struct tomoe *s) {
+    s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     wlr_cursor_set_xcursor(s->cursor, s->cursor_manager, "default");
 }
@@ -1240,6 +1241,7 @@ static void request_cursor(struct wl_listener *listener, void *data) {
     if (event->seat_client == s->seat->pointer_state.focused_client) {
         if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
         s->cursor_surface = event->surface;
+        s->cursor_hidden = !event->surface;
         if (s->cursor_surface)
             listen(&s->cursor_surface_destroy, &s->cursor_surface->events.destroy, cursor_surface_destroy);
         wlr_cursor_set_surface(s->cursor, event->surface, event->hotspot_x, event->hotspot_y);

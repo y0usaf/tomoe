@@ -393,7 +393,8 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                              (when options (copy-seq options)) repeat-rate repeat-delay))))
 
 (defparameter +settings+
-  '((:force-server-side-decorations :boolean nil)
+  '((:tearing :boolean nil)
+    (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")
 

@@ -104,7 +104,7 @@ struct presentation_target {
     int width, height, fullscreen, maximize;
 };
 struct settings {
-    bool force_ssd, honor_invalid_serial;
+    bool force_ssd, honor_invalid_serial, tearing;
 };
 void settings_default(struct settings *settings);
 struct presentation {
@@ -162,6 +162,7 @@ struct tomoe {
     double grab_x, grab_y;
     double pointer_x, pointer_y;
     struct wlr_surface *cursor_surface;
+    bool cursor_hidden;
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
     double view_zoom;
@@ -322,6 +323,7 @@ void xwayland_listen(struct tomoe *s);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 void window_capture_listen(struct tomoe *s);
+bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan);
 

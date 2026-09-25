@@ -2,6 +2,7 @@
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
+#include <wlr/types/wlr_tearing_control_v1.h>
 
 static bool xwayland_connected(struct tomoe *s) {
     return s->xwayland && wlr_xwayland_get_xwm_connection(s->xwayland);
@@ -528,6 +529,30 @@ static void toplevel_capture_request(struct wl_listener *listener, void *data) {
 void window_capture_listen(struct tomoe *s) {
     listen(&s->new_toplevel_capture_request, &s->toplevel_capture_sources->events.new_request,
         toplevel_capture_request);
+}
+bool windows_want_tearing(struct tomoe *s, struct output *o) {
+    static int force = -1;
+    if (force < 0) force = getenv("TOMOE_FORCE_TEARING") && !strcmp(getenv("TOMOE_FORCE_TEARING"), "1");
+    struct wlr_box output_box;
+    physical_output_box(o, &output_box);
+    if (!s->cursor_hidden && s->pointer_x >= output_box.x && s->pointer_y >= output_box.y &&
+            s->pointer_x < output_box.x + output_box.width &&
+            s->pointer_y < output_box.y + output_box.height) return false;
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) {
+        if (!managed_window(w) || !w->mapped || !w->fullscreen_state || !w->tree->node.enabled)
+            continue;
+        double x = w->target.x, y = w->target.y, right = x + w->width, bottom = y + w->height;
+        world_to_screen(s, &x, &y);
+        world_to_screen(s, &right, &bottom);
+        struct wlr_box box = { pixel_round(x), pixel_round(y),
+            pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) }, overlap;
+        if (!wlr_box_intersection(&overlap, &box, &output_box)) continue;
+        bool hinted = wlr_tearing_control_manager_v1_surface_hint_from_surface(s->tearing,
+            surface_of(w)) == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+        if (force || (s->settings.tearing && hinted)) return true;
+    }
+    return false;
 }
 void foreign_toplevels_refresh(struct tomoe *s) {
     struct window *w, *focused = NULL;
