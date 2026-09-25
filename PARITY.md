@@ -81,7 +81,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 73 | `wait_for_frame_completion` | crates/tomoe/src/backend/tty.rs | native/space.c `render_scene_buffer`, src/api.lisp `settings` | Done |
 | 74 | `--drm_device` render GPU override | crates/tomoe/src/main.rs | none | Missing |
 | 75 | `winit_size` nested window size (1280×800) | crates/tomoe/src/backend/winit.rs | none | Missing |
-| 76 | `--backend winit\|tty` names | crates/tomoe/src/main.rs | src/main.lisp (nested/drm) | Partial |
+| 76 | `--backend winit\|tty` names | crates/tomoe/src/main.rs | src/main.lisp `run-cli` | Done |
 | 77 | `-h` / `-V` | crates/tomoe/src/main.rs | src/main.lisp (long forms only) | Partial |
 | 78 | Action strings (`quit`, `quit!`, `close-window`, `reload-config`, `spawn …`) | crates/tomoe/src/input.rs | builtins/desktop.lisp commands | Partial |
 | 79 | Bind descriptions for the hotkey overlay | crates/tomoe/src/lua.rs, ui/widgets.rs | none | Missing |

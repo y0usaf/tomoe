@@ -31,7 +31,7 @@ turn; materialization already refreshes their authoritative native snapshot."
        tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
-Default socket: tomoe-0. Default backend: auto.
+Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
 Nested mode discovers live wayland-N sockets when WAYLAND_DISPLAY is unset.
 Extensions are trusted Common Lisp programs. --bare omits all shipped policy.
@@ -225,7 +225,11 @@ only after it changes again."
                    +wire-version+ +native-abi-version+)
            (return-from run-cli 0))
           ((equal option "--socket") (setf name (argument option) explicit-name name))
-          ((equal option "--backend") (setf backend (argument option)))
+          ((equal option "--backend")
+           (setf backend (let ((value (argument option)))
+                           (cond ((equal value "winit") "nested")
+                                 ((equal value "tty") "drm")
+                                 (t value)))))
           ((equal option "--config") (setf config (namestring (truename (argument option)))))
           ((equal option "--bare") (setf bare t))
           ((equal option "--watch") (setf watch t))
