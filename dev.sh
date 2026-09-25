@@ -62,11 +62,16 @@ fi
 if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
   wayland-scanner server-header "$xml" "$protocol"
 fi
+effect_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/ext-background-effect-v1.xml"
+if [ ! -f build/ext-background-effect-v1-protocol.c ] || [ "$effect_xml" -nt build/ext-background-effect-v1-protocol.c ]; then
+  wayland-scanner server-header "$effect_xml" build/ext-background-effect-v1-protocol.h
+  wayland-scanner private-code "$effect_xml" build/ext-background-effect-v1-protocol.c
+fi
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
     -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
     $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 xcb xcb-ewmh xcb-icccm) \
-    native/*.c -o "$TOMOE_BACKEND_LIB" \
+    native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
     $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libinput glesv2) -lm
 fi
 

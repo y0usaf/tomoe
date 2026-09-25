@@ -85,7 +85,8 @@ struct tomoe *tomoe_create(const char *socket_name) {
     }
     outputs_listen(s);
     input_listen(s);
-    if (!virtual_pointers_listen(s) || !protocols_listen(s) || !lock_listen(s)) goto failed;
+    if (!virtual_pointers_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
+            !background_effects_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     windows_listen(s, shell);
     layers_listen(s, layer_shell);

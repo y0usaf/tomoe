@@ -113,6 +113,8 @@ bool effect_texture(struct frame *f, const struct wlr_render_texture_options *op
 void effect_blur(struct frame *f, struct wlr_fbox area, double radius, int passes,
     double offset, int margin);
 void effects_finish(struct tomoe *s);
+bool background_effects_listen(struct tomoe *s);
+const pixman_region32_t *background_blur_region(struct tomoe *s, struct wlr_surface *surface);
 struct presentation_output {
     struct output *output;
     struct wlr_box box;
@@ -200,7 +202,7 @@ struct tomoe {
     struct wlr_xdg_activation_v1 *activation;
     struct wlr_xwayland *xwayland;
     struct wlr_xwayland_surface *or_focus;
-    struct wl_list input_devices;
+    struct wl_list input_devices, background_effects;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, tracked_surfaces, virtual_pointers;
     struct wl_list activation_tokens;
     size_t activation_tracked_count;

@@ -445,7 +445,27 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
 static void decorate_layer(struct tomoe *s, const struct target *t, struct frame *f) {
     const struct settings *st = &s->settings;
     struct layer *l = find_layer(s, t->id);
-    if (!st->blur_enabled || !l || !l->wlr->namespace) return;
+    if (!st->blur_enabled || !l) return;
+    const pixman_region32_t *region = background_blur_region(s, l->wlr->surface);
+    if (region) {
+        int count = 0;
+        const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+        for (int i = 0; i < count; i++) {
+            int x1 = rects[i].x1 > 0 ? rects[i].x1 : 0, y1 = rects[i].y1 > 0 ? rects[i].y1 : 0;
+            int x2 = rects[i].x2 < (int)l->wlr->current.actual_width ?
+                rects[i].x2 : (int)l->wlr->current.actual_width;
+            int y2 = rects[i].y2 < (int)l->wlr->current.actual_height ?
+                rects[i].y2 : (int)l->wlr->current.actual_height;
+            if (x2 <= x1 || y2 <= y1) continue;
+            struct wlr_fbox box = { t->x + physical_offset(x1, t->scale),
+                t->y + physical_offset(y1, t->scale),
+                physical_offset(x2, t->scale) - physical_offset(x1, t->scale),
+                physical_offset(y2, t->scale) - physical_offset(y1, t->scale) };
+            effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin);
+        }
+        return;
+    }
+    if (!l->wlr->namespace) return;
     for (size_t i = 0; i < st->blur_namespace_count; i++) {
         if (strcmp(st->blur_namespaces[i], l->wlr->namespace) != 0) continue;
         struct wlr_fbox box = { t->x, t->y, physical_size(l->wlr->current.actual_width, t->scale),
