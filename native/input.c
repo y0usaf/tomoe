@@ -978,7 +978,9 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
             s->have_pointer_enter_serial = true;
         }
         wlr_seat_pointer_notify_motion(s->seat, time, sx, sy);
+        constraint_focus(s, surface, sx, sy);
     } else {
+        constraint_focus(s, NULL, 0, 0);
         struct ui_hit hit;
         if (s->seat->pointer_state.focused_surface ||
                 ui_hit_at(s, s->pointer_x, s->pointer_y, &hit))
@@ -1031,9 +1033,12 @@ static void motion(struct wl_listener *listener, void *data) {
     struct output *previous = output_at_physical(s, s->pointer_x, s->pointer_y);
     double scale = mapped ? snapped_scale(mapped->scale) :
         previous ? snapped_scale(previous->wlr->scale) : reference_scale(s);
-    if (isfinite(event->delta_x)) s->pointer_x += event->delta_x * scale;
-    if (isfinite(event->delta_y)) s->pointer_y += event->delta_y * scale;
-    clamp_pointer(s, mapped, &s->pointer_x, &s->pointer_y);
+    double x = s->pointer_x, y = s->pointer_y;
+    if (isfinite(event->delta_x)) x += event->delta_x * scale;
+    if (isfinite(event->delta_y)) y += event->delta_y * scale;
+    clamp_pointer(s, mapped, &x, &y);
+    if (s->grab_mode == 0 && !constraint_allows(s, x, y)) return;
+    s->pointer_x = x; s->pointer_y = y;
     pointer_update(s, event->time_msec);
 }
 static struct wlr_output *named_pointer_output(struct tomoe *s, struct wlr_pointer *pointer) {

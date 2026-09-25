@@ -483,7 +483,7 @@ bool render_output(struct output *o, struct wlr_output_state *state, struct wlr_
     return render_presentation(o, state, swapchain, NULL);
 }
 
-struct hit_data { double x, y, sx, sy; struct wlr_surface *surface; uint32_t id; };
+struct hit_data { double x, y, sx, sy, ratio; struct wlr_surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->node->type != WLR_SCENE_NODE_BUFFER || hit->x < leaf->screen.x || hit->y < leaf->screen.y ||
@@ -495,6 +495,7 @@ static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (buffer->point_accepts_input && !buffer->point_accepts_input(buffer, &sx, &sy)) return false;
     struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(buffer);
     hit->surface = ss->surface; hit->sx = sx; hit->sy = sy;
+    hit->ratio = (double)leaf->screen.width / leaf->width;
     hit->id = leaf->target && leaf->target->kind != TARGET_UNMANAGED ? leaf->target->id : 0;
     return true;
 }
@@ -509,6 +510,11 @@ uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, hit_leaf, &hit);
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
+}
+double physical_hit_ratio(struct tomoe *s, double x, double y) {
+    struct hit_data hit = { .x = x, .y = y };
+    walk_scene(s, &s->scene->tree.node, NULL, 0, 0, true, hit_leaf, &hit);
+    return hit.surface ? hit.ratio : 0;
 }
 const char *tomoe_hit_test(struct tomoe *s, double x, double y) {
     struct wlr_surface *surface;

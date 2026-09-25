@@ -199,7 +199,8 @@ struct tomoe {
     struct wl_list drag_icons, constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
     struct wl_listener request_set_primary_selection, request_start_drag, seat_start_drag;
-    struct wl_listener new_toplevel_decoration, new_constraint, gamma_set_gamma;
+    struct wl_listener new_toplevel_decoration, new_constraint, gamma_set_gamma, constraint_commit,
+        constraint_destroy;
     struct wl_listener new_toplevel_capture_request;
     struct wl_listener new_lock, lock_new_surface, lock_unlock, lock_destroy;
 };
@@ -292,6 +293,7 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
 void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
+double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     struct wlr_surface **surface, double *sx, double *sy);
 void set_surface_scale(struct wlr_surface *surface, double scale);
@@ -352,8 +354,8 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
 void idle_notify_activity(struct tomoe *s);
 void drag_icons_refresh(struct tomoe *s);
 bool drag_active(struct tomoe *s);
-void constraint_focus(struct tomoe *s, struct wlr_surface *surface);
-bool constraint_clamp(struct tomoe *s, double *x, double *y);
+void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);
+bool constraint_allows(struct tomoe *s, double x, double y);
 
 bool lock_listen(struct tomoe *s);
 void lock_finish(struct tomoe *s);
