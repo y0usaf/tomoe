@@ -43,8 +43,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 35 | libinput settings: touchpad/mouse classes and per-device overrides | crates/tomoe/src/backend/tty.rs, lua.rs | native/libinput.c, src/api.lisp `settings :touchpad :mouse :devices` | Done |
 | 36 | `on_pointer_button` with consume and named buttons | crates/tomoe/src/lua.rs, input.rs | src/api.lisp `bind-button`, native/input.c `pointer_binding_button`; unbound presses still arrive as `:button` events | Improved: consumption is declared as a binding matched in C, so a consumed press never waits on Lisp or leaks to the client |
 | 37 | `on_pointer_axis` with consume | crates/tomoe/src/lua.rs | src/api.lisp `bind-scroll`, native/input.c `pointer_binding_axis` | Improved: consumed scrolling is a declared binding matched in C, like buttons |
-| 38 | `on_pointer_enter` / `on_pointer_leave` | crates/tomoe/src/lua.rs, input.rs | none | Missing |
-| 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | none | Missing |
+| 38 | `on_pointer_enter` / `on_pointer_leave` | crates/tomoe/src/lua.rs, input.rs | native/input.c `hover_event` → `:pointer` events | Done |
+| 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | builtins/desktop.lisp `wm`, src/api.lisp `settings :focus-follows-mouse` | Done |
 | 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab nil :pointer`, native/input.c `grab_motion` | Done |
 | 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/protocols.c, native/input.c | Done |
 | 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c, native/input.c `motion` | Done |

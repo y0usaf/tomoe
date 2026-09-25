@@ -185,6 +185,7 @@ struct tomoe {
     double pointer_x, pointer_y;
     struct wlr_surface *cursor_surface;
     bool cursor_hidden;
+    uint32_t hovered;
     struct pointer_latch pointer_latches[32];
     size_t pointer_latch_count;
     struct wlr_drm_syncobj_timeline *render_timeline;

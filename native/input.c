@@ -990,9 +990,22 @@ static void pointer_release_client_buttons(struct tomoe *s, uint32_t time) {
             s->seat->pointer_state.buttons[0].button, WL_POINTER_BUTTON_STATE_RELEASED);
     wlr_seat_pointer_notify_frame(s->seat);
 }
+static void hover_event(struct tomoe *s, const char *state, uint32_t id) {
+    struct event *event; size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :pointer :state :%s :id %u)", state, id);
+    end_event(s, event, out);
+}
 static void pointer_motion(struct tomoe *s, uint32_t time) {
     struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
-    pointer_target(s, &surface, &sx, &sy);
+    uint32_t id = pointer_target(s, &surface, &sx, &sy);
+    uint32_t hovered = find_window(s, id) ? id : 0;
+    if (hovered != s->hovered && !lock_active(s)) {
+        if (s->hovered) hover_event(s, "leave", s->hovered);
+        if (hovered) hover_event(s, "enter", hovered);
+        s->hovered = hovered;
+    }
     if (surface) {
         if (surface == s->seat->pointer_state.focused_surface &&
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;

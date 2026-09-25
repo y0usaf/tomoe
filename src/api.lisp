@@ -18,7 +18,7 @@
 (defconstant +wire-version+ 1)
 (defconstant +native-abi-version+ 24)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :grab :request :ipc :ui))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :ipc :ui))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
@@ -400,6 +400,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 
 (defparameter +settings+
   '((:scale (:real 1/4 8) 1)
+    (:focus-follows-mouse :boolean nil)
     (:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
     (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))
