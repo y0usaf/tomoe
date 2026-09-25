@@ -25,11 +25,12 @@ moves as one step when its members share wlroots state that cannot be split.
 | wl_data_device v3 with drag and drop, primary-selection, wlr data-control v2, ext data-control | `native/selection.c`, one source and offer type for all four; the drag icon is a Tomoe scene tree | `wlr_data_device`, `wlr_primary_selection_v1`, both data-control managers, `wlr_scene_drag_icon` |
 | virtual-keyboard, wlr-virtual-pointer | `native/virtual.c`, still producing `wlr_keyboard` and `wlr_pointer` devices for input.c | both wlroots managers |
 | xdg popup grabs | `native/xdg_shell.c` on Tomoe's seat grabs | `wlr_seat` grab API |
+| wl_shm, linux-dmabuf v4 | `native/buffer.c`: libwayland's own wl_shm and SIGBUS guard, a Tomoe dmabuf global with one default feedback tranche; both register as wlroots buffer resource types so `wlr_compositor` keeps consuming them | `wlr_shm`, `wlr_linux_dmabuf_v1`, `wlr_renderer_init_wl_display` |
 
 ## Surface core
 
-wl_compositor, subcompositor, viewporter, fractional-scale, presentation-time,
-linux-dmabuf, wl_shm and linux-drm-syncobj, and `wlr_scene` with them. Last in
+wl_compositor, subcompositor, viewporter, fractional-scale, presentation-time
+and linux-drm-syncobj, and `wlr_scene` with them. Last in
 phase 2 because every group above sits on `wlr_surface`. After this the
 renderer's wlroots interface serves only cursors and the DRM backend.
 

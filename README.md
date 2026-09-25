@@ -1358,6 +1358,7 @@ protocol, not an unauthenticated REPL.
   declarative layout, and clipped hit targets.
 - `native/ui-assets.c`: source-owned PNG/JPEG/SVG decoding and retained asset lifetimes.
 - `native/input.c`: pointer routing, keyboards, key bindings, pointer grabs.
+- `native/buffer.c`: wl_shm and linux-dmabuf client buffers.
 - `native/seat.c`: wl_seat, pointer and keyboard focus, grabs, cursor role.
 - `native/selection.c`: clipboard, primary selection, data control, drag and drop.
 - `native/virtual.c`: virtual keyboard and pointer devices, output mapping lifetime.

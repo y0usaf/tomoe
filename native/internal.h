@@ -747,6 +747,8 @@ size_t keyboard_pressed(struct tomoe *s, uint32_t *keys);
 void cursor_requested(struct tomoe *s, struct wlr_surface *surface, int32_t x, int32_t y);
 void cursor_default(struct tomoe *s);
 bool selection_listen(struct tomoe *s);
+bool buffers_listen(struct tomoe *s);
+void buffers_finish(void);
 void seat_selection_focus(struct seat *seat, struct seat_client *client);
 void seat_selection_finish(struct seat *seat);
 void seat_drag_client_gone(struct seat *seat, struct seat_client *client);

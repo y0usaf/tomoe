@@ -44,7 +44,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), &s->session);
     if (!s->backend) goto failed;
     s->renderer = render_create(s->backend);
-    if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
+    if (!s->renderer || !buffers_listen(s)) goto failed;
     s->allocator = render_allocator(s->renderer);
     if (!capture_listen(s)) goto failed;
     struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
@@ -125,6 +125,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->allocator) wlr_allocator_destroy(s->allocator);
     if (s->renderer) wlr_renderer_destroy(s->renderer);
     if (s->display) wl_display_destroy(s->display);
+    buffers_finish();
     tomoe_clear_bindings(s);
     free(s->ui_hovered);
     free(s->grab_owner);
