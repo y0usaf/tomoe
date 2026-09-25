@@ -900,6 +900,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     wlr_output_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
     lock_frame_rendered(o->server, o->wlr);
+    if (windows_animate(o->server)) wlr_output_schedule_frame(o->wlr);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     frame_done(o, &now);

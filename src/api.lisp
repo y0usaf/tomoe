@@ -424,6 +424,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:shadow (:group (:range (:integer 0 4096) 12) (:color :color "#00000099") (:power (:real 1 4) 3)))
     (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
+    (:animations :animations t)
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")
@@ -449,6 +450,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
       (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
        (mapcar #'copy-seq value))
       (:group (%settings-plist value (rest type) key))
+      (:animations (%animation-settings value))
       (:device (%settings-plist value +input-device-settings+ key))
       (:devices
        (unless (and (listp value) (<= (length value) 64)) (bad))
@@ -467,6 +469,41 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
              (push key seen)
           append (list key (%setting-value (second entry) value key)))))
 
+(defun %animation-spec (value default)
+  "Normalize NIL (off), T (DEFAULT), (:SPRING plist) or (:EASE plist)."
+  (flet ((bad () (error "Invalid animation: ~S" value)))
+    (cond ((null value) (list :kind :off))
+          ((eq value t) (%animation-spec default default))
+          ((and (consp value) (eq (first value) :kind)
+                (member (second value) '(:off :spring :ease)))
+           (copy-list value))
+          ((not (and (consp value) (member (first value) '(:spring :ease)) (= 2 (length value)))) (bad))
+          ((eq (first value) :spring)
+           (destructuring-bind (&key (damping-ratio 1) (stiffness 800) (epsilon 1/10000))
+               (%settings-plist (second value) '((:damping-ratio (:real 0 1000)) (:stiffness (:real 0 100000))
+                                                 (:epsilon (:real 0 1))) :spring)
+             (list :kind :spring :damping-ratio (%double-float damping-ratio)
+                   :stiffness (%double-float stiffness) :epsilon (%double-float epsilon))))
+          (t
+           (destructuring-bind (&key (duration-ms 150) (curve :ease-out-cubic)) (second value)
+             (unless (typep duration-ms '(integer 1 600000)) (bad))
+             (unless (or (member curve '(:linear :ease-out-quad :ease-out-cubic :ease-out-expo))
+                         (and (listp curve) (= 4 (length curve)) (every #'%finite-real-p curve)))
+               (bad))
+             (list :kind :ease :duration-ms duration-ms
+                   :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
+
+(defun %animation-settings (value)
+  "Normalize :ANIMATIONS: T, NIL, or (:WINDOW-MOVE spec :WINDOW-OPEN spec)."
+  (let ((defaults '(:window-move (:spring nil) :window-open (:ease (:duration-ms 150 :curve :ease-out-expo)))))
+    (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
+      (error "Invalid animations: ~S" value))
+    (loop for (key default) on defaults by #'cddr
+          append (list key (%animation-spec (cond ((member value '(t nil)) value)
+                                                   ((member key value) (getf value key))
+                                                   (t t))
+                                             default)))))
+
 (defun settings (&rest plist)
   "Own compositor settings. Later owners replace individual keys; grouped keys
 merge field by field. Omission restores the preceding owner or the default."
@@ -474,9 +511,9 @@ merge field by field. Omission restores the preceding owner or the default."
 
 (defun %settings-defaults (table)
   (loop for (key type default) in table
-        append (list key (if (and (consp type) (eq (first type) :group))
-                             (%settings-defaults (rest type))
-                             default))))
+        append (list key (cond ((and (consp type) (eq (first type) :group)) (%settings-defaults (rest type)))
+                               ((eq type :animations) (%animation-settings default))
+                               (t default)))))
 
 (defun %settings-merge (settings plist table)
   (loop for (key value) on plist by #'cddr

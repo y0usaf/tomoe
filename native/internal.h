@@ -91,6 +91,7 @@ struct target {
     struct wlr_output *output;
     int client_width, client_height;
     bool fullscreen;
+    double offset_x, offset_y, alpha;
     struct window_style style;
 };
 struct frame {
@@ -134,6 +135,20 @@ struct presentation_target {
     bool visible, desired_visible, staged;
     int width, height, fullscreen, maximize;
 };
+enum animation_kind { ANIMATION_OFF, ANIMATION_SPRING, ANIMATION_EASE };
+struct animation_config {
+    int kind, duration_ms, curve;
+    double damping_ratio, stiffness, epsilon, bezier[4];
+};
+struct animation {
+    double from, to, start, duration;
+    struct animation_config config;
+    bool active;
+};
+double animation_now(void);
+void animation_start(struct animation *a, const struct animation_config *config,
+    double from, double to, double now);
+double animation_value(struct animation *a, double now);
 struct input_config {
     double disabled, disabled_on_external_mouse, tap, tap_drag, tap_drag_lock, natural_scroll;
     double accel_speed, accel_profile, dwt, left_handed, middle_emulation;
@@ -157,6 +172,7 @@ struct settings {
     bool blur_enabled;
     int blur_passes, blur_margin;
     double blur_offset;
+    struct animation_config window_move, window_open;
     char *blur_namespaces[64];
     size_t blur_namespace_count;
 };
@@ -390,6 +406,7 @@ void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell);
 void xwayland_listen(struct tomoe *s);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
+bool windows_animate(struct tomoe *s);
 void window_capture_listen(struct tomoe *s);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);

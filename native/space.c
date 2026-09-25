@@ -327,7 +327,8 @@ void frame_done(struct output *o, const struct timespec *when) {
 }
 
 static struct wlr_fbox window_box(const struct target *t, const struct frame *f) {
-    return (struct wlr_fbox){ (t->x - f->view_x) * f->zoom, (t->y - f->view_y) * f->zoom,
+    return (struct wlr_fbox){ (t->x + t->offset_x - f->view_x) * f->zoom,
+        (t->y + t->offset_y - f->view_y) * f->zoom,
         physical_size(t->client_width, t->scale) * f->zoom,
         physical_size(t->client_height, t->scale) * f->zoom };
 }
@@ -342,8 +343,10 @@ static bool toplevel_surface(struct wlr_surface *surface) {
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
     struct wlr_box local = leaf->screen;
-    int64_t x = (int64_t)local.x - data->x;
-    int64_t y = (int64_t)local.y - data->y;
+    const struct target *t = leaf->target;
+    bool window = t && t->kind == TARGET_WINDOW;
+    int64_t x = (int64_t)local.x - data->x + (window ? pixel_round(t->offset_x * data->zoom) : 0);
+    int64_t y = (int64_t)local.y - data->y + (window ? pixel_round(t->offset_y * data->zoom) : 0);
     if (x >= data->width || y >= data->height || x + local.width <= 0 || y + local.height <= 0) return false;
     local.x = (int)x; local.y = (int)y;
     struct wlr_box dst;
@@ -373,8 +376,9 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .wait_timeline = sync ? sync->acquire_timeline : NULL,
         .wait_point = sync ? sync->acquire_point : 0,
     };
-    const struct target *t = leaf->target;
-    if (t && t->kind == TARGET_WINDOW && !t->fullscreen && t->client_width > 0 &&
+    float alpha = buffer->opacity * (window ? t->alpha : 1);
+    options.alpha = &alpha;
+    if (window && !t->fullscreen && t->client_width > 0 &&
             window_radius(s, t, data) > 0 && toplevel_surface(surface->surface) &&
             effect_texture(data, &options, (struct wlr_fbox){ local.x, local.y, local.width,
                 local.height }, window_box(t, data), window_radius(s, t, data)))
@@ -482,10 +486,10 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     double zoom = f->zoom;
     struct wlr_fbox box = window_box(t, f);
     double radius = window_radius(s, t, f);
-    effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, 1);
+    effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, t->alpha);
     int64_t color = focused ? t->style.focused : t->style.unfocused;
     effect_border(f, box, st->border_width * zoom, radius,
-        color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, 1);
+        color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, t->alpha);
     if (st->blur_enabled && t->style.blur == 1 && zoom == 1)
         effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin);
 }
@@ -536,6 +540,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         .focused = plan ? plan->focused : o->server->focused };
     wlr_output_transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
+    windows_animate(o->server);
     wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },

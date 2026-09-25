@@ -312,6 +312,20 @@
                  (:member (text name (string-downcase value)))
                  (:strings (dolist (item value) (text name item)))
                  (:device (device value name))
+                 (:animations
+                  (loop for (property spec) on value by #'cddr
+                        for prefix = (format nil "~A-~(~A~)" name property) do
+                    (number (format nil "~A-kind" prefix) (ecase (getf spec :kind) (:off 0) (:spring 1) (:ease 2)))
+                    (loop for key in '(:damping-ratio :stiffness :epsilon :duration-ms)
+                          when (getf spec key) do (number (format nil "~A-~(~A~)" prefix key) (getf spec key)))
+                    (let ((curve (getf spec :curve)))
+                      (when curve
+                        (number (format nil "~A-curve" prefix)
+                                (if (listp curve) 4
+                                    (position curve '(:linear :ease-out-quad :ease-out-cubic :ease-out-expo))))
+                        (when (listp curve)
+                          (loop for point in curve for axis in '("x1" "y1" "x2" "y2")
+                                do (number (format nil "~A-~A" prefix axis) point)))))))
                  (:devices (loop for (device-name . plist) in value
                                  do (text name device-name) (device plist "device")))
                  (:group (stage value (rest type) name))))))

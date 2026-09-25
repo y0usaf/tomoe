@@ -36,6 +36,8 @@ struct window {
     struct wl_listener foreign_activate, foreign_close, foreign_fullscreen;
     struct wl_listener foreign_maximize, foreign_minimize;
     struct wlr_ext_image_capture_source_v1 *capture_source;
+    struct animation move, fade;
+    double move_from_x, move_from_y;
 };
 struct popup {
     struct wlr_xdg_popup *xdg;
@@ -661,13 +663,45 @@ void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
     }
 }
 
+static void window_animate_move(struct window *w, int old_x, int old_y) {
+    double now = animation_now();
+    double progress = animation_value(&w->move, now);
+    double from_x = w->move_from_x * progress + old_x - w->target.x;
+    double from_y = w->move_from_y * progress + old_y - w->target.y;
+    animation_start(&w->move, &w->server->settings.window_move, 1, 0, now);
+    w->move_from_x = from_x;
+    w->move_from_y = from_y;
+    if (from_x == 0 && from_y == 0) w->move.active = false;
+}
+static void window_animate_open(struct window *w) {
+    animation_start(&w->fade, &w->server->settings.window_open, 0, 1, animation_now());
+}
+bool windows_animate(struct tomoe *s) {
+    double now = animation_now();
+    bool active = false;
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) {
+        double progress = animation_value(&w->move, now);
+        w->target.offset_x = round(w->move_from_x * progress);
+        w->target.offset_y = round(w->move_from_y * progress);
+        w->target.alpha = w->fade.active || w->fade.to ? animation_value(&w->fade, now) : 1;
+        active |= w->move.active || w->fade.active;
+    }
+    return active;
+}
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
         struct presentation_target *entry = presentation_target_for(plan, w->target.id);
         if (!entry || !w->tree) continue;
         bool scale_changed = w->target.scale != entry->target.scale;
+        int old_x = w->target.x, old_y = w->target.y;
+        bool shown = w->tree->node.enabled;
         w->target = entry->target;
+        if (w->mapped && !w->unmanaged && shown && entry->visible &&
+                (old_x != w->target.x || old_y != w->target.y))
+            window_animate_move(w, old_x, old_y);
+        if (w->mapped && !w->unmanaged && !shown && entry->visible) window_animate_open(w);
         if (scale_changed && surface_of(w)) set_surface_scale(surface_of(w), w->target.scale);
         if (entry->staged) {
             w->desired_visible = entry->desired_visible;
@@ -738,6 +772,7 @@ static void mapped(struct wl_listener *listener, void *data) {
         buffer_event(w, true);
     activation_surface_mapped(w->server, surface_of(w));
     target_sync(w);
+    if (!w->unmanaged && w->desired_visible) window_animate_open(w);
     if (w->xdg && w->server->focused == w->target.id)
         update_keyboard_focus(w->server);
     schedule_scene(w->server);
@@ -890,6 +925,7 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     w->server = s; w->xdg = xdg; w->target.id = ++s->next_id;
     w->target.kind = TARGET_WINDOW;
     w->target.style = (struct window_style){ -1, -1, -1, -1, -1 };
+    w->target.alpha = 1;
     w->target.scale = reference_scale(s);
     set_surface_scale(xdg->base->surface, w->target.scale);
     w->tree = wlr_scene_xdg_surface_create(s->window_tree, xdg->base);
@@ -991,6 +1027,7 @@ static void new_xwayland_surface(struct wl_listener *listener, void *data) {
     w->unmanaged = x11->override_redirect;
     w->target.kind = w->unmanaged ? TARGET_UNMANAGED : TARGET_WINDOW;
     w->target.style = (struct window_style){ -1, -1, -1, -1, -1 };
+    w->target.alpha = 1;
     w->target.scale = reference_scale(s);
     x11->data = w;
     wl_list_insert(s->windows.prev, &w->link);

@@ -19,9 +19,9 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 11 | Off-output window culling | crates/tomoe/src/render/mod.rs | native/space.c `render_leaf` | Done |
 | 12 | Clear color 0.05 grey | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c `render_scene_buffer` | Done |
 | 13 | `tomoe.pointer()` world/screen pointer position | crates/tomoe/src/lua.rs | `:x :y :sx :sy` on every binding event, native/input.c `pointer_fields` | Done |
-| 14 | Spring/ease animation engine, `window_move` spring (1.0, 800) | crates/tomoe/src/animation.rs | none | Missing |
-| 15 | `window_open` fade, 150 ms ease_out_expo, also on show | crates/tomoe/src/animation.rs, state.rs | none | Missing |
-| 16 | `animations` setting (false/true/per-property spec, bezier curves) | crates/tomoe/src/lua.rs | none | Missing |
+| 14 | Spring/ease animation engine, `window_move` spring (1.0, 800) | crates/tomoe/src/animation.rs | native/animation.c, native/window.c `window_animate_move` | Done |
+| 15 | `window_open` fade, 150 ms ease_out_expo, also on show | crates/tomoe/src/animation.rs, state.rs | native/window.c `window_animate_open`, native/space.c `render_leaf` | Done |
+| 16 | `animations` setting (false/true/per-property spec, bezier curves) | crates/tomoe/src/lua.rs | src/api.lisp `settings :animations` | Done |
 | 17 | Window border ring, width 2, #7aa2f7 / #3b4261, none when fullscreen | crates/tomoe/src/render/border.rs, layout.rs | native/effects.c `effect_border`, native/space.c `decorate`, src/api.lisp `settings :border` | Done |
 | 18 | Rounded window corners (`border.radius`), none when fullscreen | crates/tomoe/src/render/clipped_surface.rs | native/effects.c `effect_texture`, native/space.c `render_leaf`, `settings :border :radius` | Done |
 | 19 | Drop shadow, range 12, #00000099, power 3 | crates/tomoe/src/render/shadow.rs | native/effects.c `effect_shadow`, native/space.c `decorate`, src/api.lisp `settings :shadow` | Done |

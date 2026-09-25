@@ -13,6 +13,19 @@ static const struct setting_field {
     { "border-width", offsetof(struct settings, border_width), SETTING_INT },
     { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
     { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
+#define ANIMATION_FIELDS(prefix, member) \
+    { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
+    { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
+    { prefix "-stiffness", offsetof(struct settings, member.stiffness), SETTING_REAL }, \
+    { prefix "-epsilon", offsetof(struct settings, member.epsilon), SETTING_REAL }, \
+    { prefix "-duration-ms", offsetof(struct settings, member.duration_ms), SETTING_INT }, \
+    { prefix "-curve", offsetof(struct settings, member.curve), SETTING_INT }, \
+    { prefix "-x1", offsetof(struct settings, member.bezier[0]), SETTING_REAL }, \
+    { prefix "-y1", offsetof(struct settings, member.bezier[1]), SETTING_REAL }, \
+    { prefix "-x2", offsetof(struct settings, member.bezier[2]), SETTING_REAL }, \
+    { prefix "-y2", offsetof(struct settings, member.bezier[3]), SETTING_REAL },
+    ANIMATION_FIELDS("animations-window-move", window_move)
+    ANIMATION_FIELDS("animations-window-open", window_open)
     { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
     { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
     { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },
@@ -31,7 +44,10 @@ void settings_default(struct settings *settings) {
     *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
         .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
         .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3,
-        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96 };
+        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96,
+        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 800,
+            .epsilon = 0.0001 },
+        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 150, .curve = 3 } };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }
