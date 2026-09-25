@@ -99,6 +99,8 @@ struct frame {
     struct wlr_buffer *buffer;
     int x, y, width, height;
     enum wl_output_transform transform;
+    double view_x, view_y, zoom;
+    uint32_t focused;
 };
 struct effects;
 bool effects_available(struct frame *f);

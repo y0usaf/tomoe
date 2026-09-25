@@ -326,6 +326,19 @@ void frame_done(struct output *o, const struct timespec *when) {
             wlr_surface_send_frame_done(track->surface, when);
 }
 
+static struct wlr_fbox window_box(const struct target *t, const struct frame *f) {
+    return (struct wlr_fbox){ (t->x - f->view_x) * f->zoom, (t->y - f->view_y) * f->zoom,
+        physical_size(t->client_width, t->scale) * f->zoom,
+        physical_size(t->client_height, t->scale) * f->zoom };
+}
+static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
+    return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
+}
+static bool toplevel_surface(struct wlr_surface *surface) {
+    struct wlr_surface *root = wlr_surface_get_root_surface(surface);
+    return wlr_xdg_toplevel_try_from_wlr_surface(root) ||
+        wlr_xwayland_surface_try_from_wlr_surface(root);
+}
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
     struct wlr_box local = leaf->screen;
@@ -350,7 +363,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(sync, data->buffer);
     struct wlr_color_primaries primaries;
     if (buffer->primaries != 0) wlr_color_primaries_from_named(&primaries, buffer->primaries);
-    wlr_render_pass_add_texture(data->pass, &(struct wlr_render_texture_options){
+    struct wlr_render_texture_options options = {
         .texture = texture, .src_box = buffer->src_box, .dst_box = dst,
         .transform = wlr_output_transform_compose(wlr_output_transform_invert(buffer->transform), data->transform),
         .alpha = &buffer->opacity, .filter_mode = buffer->filter_mode,
@@ -359,7 +372,14 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .color_encoding = buffer->color_encoding, .color_range = buffer->color_range,
         .wait_timeline = sync ? sync->acquire_timeline : NULL,
         .wait_point = sync ? sync->acquire_point : 0,
-    });
+    };
+    const struct target *t = leaf->target;
+    if (t && t->kind == TARGET_WINDOW && !t->fullscreen && t->client_width > 0 &&
+            window_radius(s, t, data) > 0 && toplevel_surface(surface->surface) &&
+            effect_texture(data, &options, (struct wlr_fbox){ local.x, local.y, local.width,
+                local.height }, window_box(t, data), window_radius(s, t, data)))
+        return false;
+    wlr_render_pass_add_texture(data->pass, &options);
     return false;
 }
 static void render_presentation_cursors(struct output *o, struct frame *data,
@@ -422,14 +442,13 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
     return NULL;
 }
 
-static void decorate(struct tomoe *s, const struct target *t, bool focused,
-        double view_x, double view_y, double zoom, struct frame *f) {
+static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
     const struct settings *st = &s->settings;
-    struct wlr_fbox box = { (t->x - view_x) * zoom, (t->y - view_y) * zoom,
-        physical_size(t->client_width, t->scale) * zoom,
-        physical_size(t->client_height, t->scale) * zoom };
-    double radius = (t->style.radius >= 0 ? t->style.radius : st->border_radius) * zoom;
+    bool focused = t->id == f->focused;
+    double zoom = f->zoom;
+    struct wlr_fbox box = window_box(t, f);
+    double radius = window_radius(s, t, f);
     effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, 1);
     int64_t color = focused ? t->style.focused : t->style.unfocused;
     effect_border(f, box, st->border_width * zoom, radius,
@@ -441,7 +460,7 @@ static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct tar
     if (node->data) {
         target = node->data;
         x = y = 0;
-        decorate(s, target, target->id == s->focused, s->view_x, s->view_y, s->view_zoom, f);
+        decorate(s, target, f);
     } else {
         x += node->x; y += node->y;
     }
@@ -475,7 +494,11 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
         .y = planned ? planned->box.y : o->y, .pass = pass, .buffer = buffer,
         .transform = (state->committed & WLR_OUTPUT_STATE_TRANSFORM) ? state->transform : output->transform,
-        .width = buffer->width, .height = buffer->height };
+        .width = buffer->width, .height = buffer->height,
+        .view_x = plan ? plan->view_x : o->server->view_x,
+        .view_y = plan ? plan->view_y : o->server->view_y,
+        .zoom = plan ? plan->view_zoom : o->server->view_zoom,
+        .focused = plan ? plan->focused : o->server->focused };
     wlr_output_transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
     wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
@@ -490,8 +513,7 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
             if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
-            decorate(o->server, &target, target.id == plan->focused, plan->view_x, plan->view_y,
-                plan->view_zoom, &data);
+            decorate(o->server, &target, &data);
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, &data);
         }
     } else {

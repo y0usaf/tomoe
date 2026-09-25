@@ -23,7 +23,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 15 | `window_open` fade, 150 ms ease_out_expo, also on show | crates/tomoe/src/animation.rs, state.rs | none | Missing |
 | 16 | `animations` setting (false/true/per-property spec, bezier curves) | crates/tomoe/src/lua.rs | none | Missing |
 | 17 | Window border ring, width 2, #7aa2f7 / #3b4261, none when fullscreen | crates/tomoe/src/render/border.rs, layout.rs | native/effects.c `effect_border`, native/space.c `decorate`, src/api.lisp `settings :border` | Done |
-| 18 | Rounded window corners (`border.radius`), none when fullscreen | crates/tomoe/src/render/clipped_surface.rs | none | Missing |
+| 18 | Rounded window corners (`border.radius`), none when fullscreen | crates/tomoe/src/render/clipped_surface.rs | native/effects.c `effect_texture`, native/space.c `render_leaf`, `settings :border :radius` | Done |
 | 19 | Drop shadow, range 12, #00000099, power 3 | crates/tomoe/src/render/shadow.rs | native/effects.c `effect_shadow`, native/space.c `decorate`, src/api.lisp `settings :shadow` | Done |
 | 20 | Dual-kawase blur behind listed layer namespaces | crates/tomoe/src/render/blur.rs, render/mod.rs | none | Missing |
 | 21 | ext-background-effect-v1 blur regions | crates/tomoe/src/protocols/background_effect.rs | none | Missing |
