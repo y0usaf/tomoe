@@ -1025,6 +1025,8 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
 static void motion(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, motion);
     struct wlr_pointer_motion_event *event = data;
+    relative_motion_forward(s, event->time_msec, event->delta_x, event->delta_y,
+        event->unaccel_dx, event->unaccel_dy);
     struct wlr_output *mapped = virtual_pointer_output(s, &event->pointer->base);
     struct output *previous = output_at_physical(s, s->pointer_x, s->pointer_y);
     double scale = mapped ? snapped_scale(mapped->scale) :

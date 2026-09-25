@@ -47,7 +47,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | none | Missing |
 | 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab` (window move/resize only) | Partial |
 | 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/protocols.c (untracked WIP) | Missing |
-| 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c (untracked WIP) | Missing |
+| 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c, native/input.c `motion` | Done |
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |
 | 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c (fullscreen/maximize only) | Partial |
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c (placement only) | Partial |
