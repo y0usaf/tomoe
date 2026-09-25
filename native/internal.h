@@ -293,6 +293,7 @@ struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
 void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
+void surfaces_textured(struct output *o);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     struct wlr_surface **surface, double *sx, double *sy);

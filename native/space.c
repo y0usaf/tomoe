@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "ui.h"
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_presentation_time.h>
 
 struct tracked_surface {
     struct wl_list link;
@@ -301,6 +302,12 @@ void forget_output(struct tomoe *s, struct wlr_output *output) {
         if (track->primary == output) track->primary = NULL;
         if (track->scene_owned) wlr_surface_send_leave(track->surface, output);
     }
+}
+void surfaces_textured(struct output *o) {
+    struct tracked_surface *track;
+    wl_list_for_each(track, &o->server->tracked_surfaces, link)
+        if (track->seen && track->primary == o->wlr)
+            wlr_presentation_surface_textured_on_output(track->surface, o->wlr);
 }
 void frame_done(struct output *o, const struct timespec *when) {
     struct tracked_surface *track;

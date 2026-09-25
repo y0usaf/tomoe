@@ -5,6 +5,7 @@
 #include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -85,7 +86,9 @@ bool protocols_listen(struct tomoe *s) {
     s->ext_data_control = wlr_ext_data_control_manager_v1_create(s->display, 1);
     s->relative_pointer = wlr_relative_pointer_manager_v1_create(s->display);
     s->pointer_constraints = wlr_pointer_constraints_v1_create(s->display);
-    if (!s->primary_selection || !s->data_control || !s->ext_data_control ||
+    s->presentation_time = wlr_presentation_create(s->display, s->backend, 2);
+    if (!s->presentation_time ||
+            !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
     listen(&s->request_set_primary_selection,

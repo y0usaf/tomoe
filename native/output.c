@@ -882,7 +882,9 @@ static void output_frame(struct wl_listener *listener, void *data) {
     if (!output_is_active(o)) return;
     struct wlr_output_state state;
     wlr_output_state_init(&state);
-    bool success = render_output(o, &state, NULL) && wlr_output_commit_state(o->wlr, &state);
+    bool success = render_output(o, &state, NULL);
+    if (success) surfaces_textured(o);
+    success = success && wlr_output_commit_state(o->wlr, &state);
     finish_output_capture(o);
     wlr_output_state_finish(&state);
     if (!success) { fail(o->server, "output commit failed"); return; }
