@@ -51,8 +51,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |
 | 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c `window_move`, `window_resize`, `window_minimize` | Done |
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; grabs by wlroots xdg-shell | Done |
-| 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/protocols.c `decoration_apply`, src/api.lisp `settings` | Done |
-| 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
+| 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/decoration.c, src/api.lisp `settings` | Done |
+| 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/decoration.c | Done |
 | 48 | Layer shell | crates/tomoe/src/handlers.rs | native/layer.c | Done |
 | 49 | Xwayland | crates/tomoe/src/xwayland.rs (xwayland-satellite) | builtins/desktop.lisp `xwayland` service, src/main.lisp `free-x-display` | Done: xwayland-satellite, supervised through the public `service` API |
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |

@@ -14,11 +14,11 @@ moves as one step when its members share wlroots state that cannot be split.
 | wlr-gamma-control-v1 | `native/gamma.c`, applied as the frame's color transform | `wlr_gamma_control_v1` |
 | tearing-control-v1 | `native/tearing.c`, double-buffered through `wlr_surface_synced` | `wlr_tearing_control_v1` |
 | wlr-foreign-toplevel-management, ext-foreign-toplevel-list | `native/foreign.c`, fed each step from `foreign_toplevels_refresh` | both wlroots managers |
+| xdg-decoration, KDE server-decoration | `native/decoration.c`, mode sent with each xdg configure | both wlroots managers |
 
 ## Surface roles
 
-layer-shell, session-lock, xdg-activation, xdg-decoration and the KDE
-server-decoration. Each is a role or side object on
+layer-shell, session-lock and xdg-activation. Each is a role or side object on
 `wlr_surface`, served through wlroots' public surface-role API until the
 surface core moves. Tomoe already plans layers, lock and activation itself.
 

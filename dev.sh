@@ -70,6 +70,18 @@ for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1 wlr-foreign
   fi
 done
 effect_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/ext-background-effect-v1.xml"
+protocols="$(pkg-config --variable=pkgdatadir wayland-protocols)"
+decoration_xml="$protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml"
+kde_xml="${PLASMA_WAYLAND_PROTOCOLS_XML:?set PLASMA_WAYLAND_PROTOCOLS_XML to the plasma-wayland-protocols share directory}/server-decoration.xml"
+if [ ! -f build/xdg-decoration-unstable-v1-protocol.c ] || [ "$decoration_xml" -nt build/xdg-decoration-unstable-v1-protocol.c ]; then
+  wayland-scanner server-header "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.h
+  wayland-scanner private-code "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.c
+  wayland-scanner private-code "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.c
+fi
+if [ ! -f build/server-decoration-protocol.c ] || [ "$kde_xml" -nt build/server-decoration-protocol.c ]; then
+  wayland-scanner server-header "$kde_xml" build/server-decoration-protocol.h
+  wayland-scanner private-code "$kde_xml" build/server-decoration-protocol.c
+fi
 for name in ext-image-capture-source-v1 ext-image-copy-capture-v1 ext-foreign-toplevel-list-v1 tearing-control-v1; do
   capture_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/${name%-v1}/$name.xml"
   if [ ! -f "build/$name-protocol.c" ] || [ "$capture_xml" -nt "build/$name-protocol.c" ]; then

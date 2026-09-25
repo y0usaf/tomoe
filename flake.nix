@@ -139,6 +139,21 @@
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
               build/ext-foreign-toplevel-list-v1-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+              build/xdg-decoration-unstable-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+              build/xdg-decoration-unstable-v1-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
+              build/server-decoration-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
+              build/server-decoration-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+              build/xdg-shell-protocol.c
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
               build/ext-foreign-toplevel-list-v1-protocol.h
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
@@ -242,6 +257,7 @@
               pkgs.pixman
             ];
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
+            PLASMA_WAYLAND_PROTOCOLS_XML = "${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols";
           };
         }
       );
