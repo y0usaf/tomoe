@@ -394,6 +394,13 @@
               (cons (once timer 5000) (toast :config-error (getf failure :message) :urgent t)))
             nil)))
 
+(define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil) (snapshot state event)
+  (declare (ignore snapshot))
+  (values state nil
+          (when (eq (getf event :type) :screenshot)
+            (list (spawn (list "sh" "-c" "wl-copy -t image/png < \"$1\"; rm -f \"$1\""
+                               "sh" (getf event :path)))))))
+
 (define-extension "notification-popups" (:reads (:services :outputs) :state nil)
     (snapshot state event)
   (declare (ignore state event))

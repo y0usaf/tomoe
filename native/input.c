@@ -1094,6 +1094,7 @@ static void grab_motion(struct tomoe *s) {
 static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);
     drag_icons_refresh(s);
+    if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }
     if (s->grab_mode != 0) { grab_motion(s); return; }
     pointer_motion(s, time);
 }
@@ -1329,6 +1330,10 @@ static void button(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, button);
     idle_notify_activity(s);
     struct wlr_pointer_button_event *input = data;
+    if (s->screenshot && !lock_active(s)) {
+        screenshot_button(s, input->button, input->state == WL_POINTER_BUTTON_STATE_PRESSED);
+        return;
+    }
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec);
     if (lock_active(s)) {
         wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
@@ -1585,6 +1590,14 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
     uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
     mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
         WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
+    if (s->screenshot && tracked && !lock_active(s)) {
+        if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            k->latches[input->keycode].consumed = true;
+            if (count) screenshot_key(s, syms[0], true);
+        }
+        logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
+        return;
+    }
     if (s->grab_owner && tracked && !lock_active(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             struct binding_latch *latch = &k->latches[input->keycode];

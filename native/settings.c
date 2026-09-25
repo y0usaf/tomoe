@@ -13,6 +13,7 @@ static const struct setting_field {
     { "border-width", offsetof(struct settings, border_width), SETTING_INT },
     { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
     { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
+    { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
 #define ANIMATION_FIELDS(prefix, member) \
     { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
@@ -44,7 +45,7 @@ void settings_default(struct settings *settings) {
     *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
         .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
         .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3,
-        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96,
+        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96, .screenshot_freeze = true,
         .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 800,
             .epsilon = 0.0001 },
         .window_open = { .kind = ANIMATION_EASE, .duration_ms = 150, .curve = 3 } };

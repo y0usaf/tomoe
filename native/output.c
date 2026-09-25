@@ -956,6 +956,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = o->server;
     struct wlr_output *wlr = o->wlr;
     finish_output_capture(o);
+    screenshot_output_gone(s, o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);

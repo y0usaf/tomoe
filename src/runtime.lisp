@@ -130,6 +130,7 @@
                           (concatenate 'string (directory-namestring source) cwd)))
                   result)))
       (:close (destructuring-bind (id) args (close-window id)))
+      (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
       (:quit (unless (null args) (error "QUIT takes no arguments.")) (quit))
       (:reload (unless (null args) (error "RELOAD takes no arguments.")) (reload)))))
 
@@ -180,9 +181,9 @@
             (when (> (length effects) 512) (error "More than 512 effects."))
             (when (> (length commands) 32) (error "More than 32 commands."))
             (when (and commands
-                       (not (or (member (getf event :type) '(:key :button :timer :watch :exec :request :ipc :ui))
+                       (not (or (member (getf event :type) '(:key :button :timer :watch :exec :request :screenshot :ipc :ui))
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
-              (error "One-shot commands require a key, button, timer, watch, exec, request, IPC, or UI command event."))
+              (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, IPC, or UI command event."))
             (let ((effects (mapcar #'canonical-effect effects))
                   (commands (mapcar (lambda (command) (canonical-command command (spec-source spec))) commands))
                   (keys (make-hash-table :test #'equal)))
@@ -905,6 +906,7 @@ stay in the page cache, so the digest decides."
      (unless spawn (error "Session spawn was not reserved before publication."))
      (start-managed-process runtime spawn))
     (:close (%close (runtime-backend runtime) (first (command-arguments command))))
+    (:screenshot (%screenshot (runtime-backend runtime) (if (first (command-arguments command)) 0 1)))
     (:quit (setf (runtime-running runtime) nil))
     (:reload (configure runtime (runtime-sources runtime)))))
 
@@ -1069,6 +1071,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
          (push :request changed)))
       (:button (push :button changed))
       (:pointer (push :pointer changed))
+      (:screenshot (push :screenshot changed))
       (:grab (push :grab changed)))
     (setf (runtime-pending-context runtime)
           (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services))

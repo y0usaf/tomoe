@@ -547,8 +547,10 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
         .blend_mode = WLR_RENDER_BLEND_MODE_NONE });
+    bool frozen = !locked && screenshot_render_frozen(o, &data);
     if (locked) {
         walk_scene(o->server, &o->server->lock_tree->node, NULL, 0, 0, false, render_leaf, &data);
+    } else if (frozen) {
     } else if (plan) {
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
@@ -561,7 +563,8 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
     } else {
         render_walk(o->server, &o->server->scene->tree.node, NULL, 0, 0, &data);
     }
-    if (!locked) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
+    if (!locked && !frozen) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
+    if (!locked && cursors) screenshot_render(o, &data);
     pixman_region32_t damage;
     pixman_region32_init_rect(&damage, 0, 0, buffer->width, buffer->height);
     if (cursors && plan)
@@ -579,6 +582,11 @@ static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         }
     }
     return success;
+}
+
+bool render_output_buffer(struct output *o, struct wlr_buffer *buffer) {
+    struct wlr_output_state state = {0};
+    return render_scene_buffer(o, buffer, &state, NULL, false);
 }
 
 bool render_presentation(struct output *o, struct wlr_output_state *state,

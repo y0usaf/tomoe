@@ -61,7 +61,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/window.c `foreign_refresh_wlr`, builtins/desktop.lisp `wm` | Done |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/backend.c, native/space.c, patches/wlroots-screencopy-buffer.patch | Done |
 | 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c, native/window.c `toplevel_capture_request` | Done |
-| 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | none | Missing |
+| 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | native/screenshot.c, `(screenshot)`/`(screenshot :screen)`, `:screenshot-freeze`, builtins/desktop.lisp "screenshot-clipboard" | Done |
 | 57 | ext-session-lock | crates/tomoe/src/lock.rs | native/lock.c | Done |
 | 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/protocols.c `gamma_apply`, native/output.c | Done |
 | 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/window.c `windows_want_tearing`, native/output.c, src/api.lisp `settings` | Done |

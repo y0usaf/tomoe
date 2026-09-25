@@ -121,6 +121,7 @@ void tomoe_destroy(struct tomoe *s) {
     finish_captures(s);
     presentation_finish(s);
     lock_finish(s);
+    screenshot_finish(s);
     effects_finish(s);
     ui_input_finish(s);
     ui_finish(s);

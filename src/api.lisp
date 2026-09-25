@@ -1,6 +1,6 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard
+  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot
            #:window-rule #:rules-for #:raise-window #:show-window #:hide-window
            #:publish-state #:state-value #:service-state #:window-geometry
            #:ui #:shell-surface
@@ -19,7 +19,7 @@
 (defconstant +wire-version+ 1)
 (defconstant +native-abi-version+ 27)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :ipc :ui))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :ipc :ui))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
@@ -426,6 +426,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
     (:animations :animations t)
+    (:screenshot-freeze :boolean t)
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
   "Compositor settings: (key type default). A :group type holds its own table.")
@@ -606,6 +607,9 @@ The session owns the child, and native launches receive an activation token."
 (defun close-window (id)
   (check-type id (integer 1 4294967295))
   (%command :close (list id)))
+(defun screenshot (&optional mode)
+  (check-type mode (member nil :screen))
+  (%command :screenshot (list (eq mode :screen))))
 (defun quit () (%command :quit nil))
 (defun reload () (%command :reload nil))
 

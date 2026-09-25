@@ -173,6 +173,7 @@ struct settings {
     bool blur_enabled;
     int blur_passes, blur_margin;
     double blur_offset;
+    bool screenshot_freeze;
     struct animation_config window_move, window_open;
     char *blur_namespaces[64];
     size_t blur_namespace_count;
@@ -207,6 +208,7 @@ struct tomoe {
     struct wl_display *display;
     struct settings settings;
     struct effects *effects;
+    struct screenshot *screenshot;
     struct wlr_backend *backend;
     struct wlr_session *session;
     struct wlr_renderer *renderer;
@@ -471,6 +473,15 @@ void lock_refresh(struct tomoe *s);
 void lock_frame_rendered(struct tomoe *s, struct wlr_output *output);
 void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
+bool render_output_buffer(struct output *o, struct wlr_buffer *buffer);
+struct screenshot;
+bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, bool pressed);
+bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
+void screenshot_motion(struct tomoe *s);
+bool screenshot_render_frozen(struct output *o, struct frame *f);
+void screenshot_render(struct output *o, struct frame *f);
+void screenshot_output_gone(struct tomoe *s, struct output *o);
+void screenshot_finish(struct tomoe *s);
 struct wlr_surface *lock_keyboard_surface(struct tomoe *s);
 
 #endif
