@@ -20,6 +20,7 @@ moves as one step when its members share wlroots state that cannot be split.
 | wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
 | xdg-shell v3 | `native/xdg_shell.c`; positioner math from wlroots' pure `wlr_xdg_positioner_rules` functions until phase 3 | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
 | ext-idle-notify, idle-inhibit | `native/idle.c`; the seat argument is accepted and unused, since Tomoe has one seat | `wlr_idle_notifier_v1`, `wlr_idle_inhibit_v1` |
+| relative-pointer, pointer-constraints | `native/pointer.c`; reads the focused client from `wlr_seat` until the seat moves | both wlroots managers |
 
 ## Seat
 

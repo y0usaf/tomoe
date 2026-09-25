@@ -114,8 +114,7 @@ void tomoe_destroy(struct tomoe *s) {
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
         &s->new_surface,
         &s->new_virtual_pointer, &s->new_virtual_keyboard, &s->cursor_surface_destroy,
-        &s->request_set_primary_selection, &s->new_constraint,
-        &s->constraint_commit, &s->constraint_destroy,
+        &s->request_set_primary_selection,
         &s->request_start_drag, &s->seat_start_drag,
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);

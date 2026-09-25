@@ -302,15 +302,14 @@ struct tomoe {
     struct wlr_primary_selection_v1_device_manager *primary_selection;
     struct wlr_data_control_manager_v1 *data_control;
     struct wlr_ext_data_control_manager_v1 *ext_data_control;
-    struct wlr_relative_pointer_manager_v1 *relative_pointer;
+    struct wl_list relative_pointers;
     struct wlr_presentation *presentation_time;
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;
     struct wl_list tearings;
     struct wl_list gammas, decorations;
     struct popup_grab *popup_grab;
-    struct wlr_pointer_constraints_v1 *pointer_constraints;
-    struct wlr_pointer_constraint_v1 *active_constraint;
+    struct constraint *active_constraint;
     struct wl_list foreigns, foreign_managers, foreign_lists;
     struct wl_resource *session_lock;
     bool lock_confirmed;
@@ -320,8 +319,6 @@ struct tomoe {
     struct wl_event_source *lock_deadline_source;
     struct wl_listener request_set_primary_selection, request_start_drag, seat_start_drag;
     struct target drag_icon;
-    struct wl_listener new_constraint, constraint_commit,
-        constraint_destroy;
 };
 struct layer_state {
     uint32_t anchor, width, height;
@@ -608,6 +605,7 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
 void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
 bool idle_listen(struct tomoe *s);
+bool pointer_protocols_listen(struct tomoe *s);
 void gamma_apply(struct output *o, struct wlr_output_state *state);
 bool gamma_listen(struct tomoe *s);
 bool decoration_listen(struct tomoe *s);

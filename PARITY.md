@@ -46,8 +46,8 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 38 | `on_pointer_enter` / `on_pointer_leave` | crates/tomoe/src/lua.rs, input.rs | native/input.c `hover_event` → `:pointer` events | Done |
 | 39 | `focus_follows_mouse` (sloppy) | crates/tomoe/src/input.rs | builtins/desktop.lisp `wm`, src/api.lisp `settings :focus-follows-mouse` | Done |
 | 40 | `grab_pointer` / `ungrab_pointer` for arbitrary motion (pan) | crates/tomoe/src/lua.rs | src/api.lisp `grab nil :pointer`, native/input.c `grab_motion` | Done |
-| 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/protocols.c, native/input.c | Done |
-| 42 | Relative pointer | crates/tomoe/src/input.rs | native/protocols.c, native/input.c `motion` | Done |
+| 41 | Pointer constraints (lock/confine, cursor hint) | crates/tomoe/src/handlers.rs, input.rs | native/pointer.c, native/input.c | Done |
+| 42 | Relative pointer | crates/tomoe/src/input.rs | native/pointer.c, native/input.c `motion` | Done |
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |
 | 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c `window_move`, `window_resize`, `window_minimize` | Done |
 | 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; native/xdg_shell.c grabs through `wlr_seat` until the seat moves | Done |
