@@ -155,9 +155,7 @@ only after it changes again."
                   (runtime-directory))))))
   (cond
     ((equal backend "nested") (sb-posix:setenv "WLR_BACKENDS" "wayland" 1))
-    ((equal backend "headless")
-     (sb-posix:setenv "WLR_BACKENDS" "headless" 1)
-     (unless (sb-ext:posix-getenv "WLR_RENDERER") (sb-posix:setenv "WLR_RENDERER" "pixman" 1)))
+    ((equal backend "headless") (sb-posix:setenv "WLR_BACKENDS" "headless" 1))
     ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm,libinput" 1))
     (t (error "Unknown backend: ~A" backend)))
   (when drm-device

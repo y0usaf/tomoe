@@ -719,19 +719,48 @@ int tomoe_output_hold(struct tomoe *s, const char *name) {
     return 1;
 }
 
+static void state_size(const struct wlr_backend_output_state *state, int *width, int *height) {
+    *width = state->output->width;
+    *height = state->output->height;
+    if (!(state->base.committed & WLR_OUTPUT_STATE_MODE)) return;
+    bool fixed = state->base.mode_type == WLR_OUTPUT_STATE_MODE_FIXED;
+    *width = fixed ? state->base.mode->width : state->base.custom_mode.width;
+    *height = fixed ? state->base.mode->height : state->base.custom_mode.height;
+}
+
+static bool test_rings(struct tomoe *s, struct wlr_backend_output_state *states, size_t count,
+        struct ring *rings, bool implicit) {
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; i++) {
+        if (!output_state_enabled(&states[i])) continue;
+        int width, height;
+        state_size(&states[i], &width, &height);
+        struct wlr_buffer *buffer = ring_configure(s, &rings[i], states[i].output, width, height,
+            implicit) ? ring_acquire(s, &rings[i]) : NULL;
+        if (buffer) wlr_output_state_set_buffer(&states[i].base, buffer);
+        wlr_buffer_unlock(buffer);
+        ok = buffer != NULL;
+    }
+    ok = ok && wlr_backend_test(s->backend, states, count);
+    for (size_t i = 0; i < count; i++) {
+        if (!(states[i].base.committed & WLR_OUTPUT_STATE_BUFFER)) continue;
+        wlr_buffer_unlock(states[i].base.buffer);
+        states[i].base.buffer = NULL;
+        states[i].base.committed &= ~WLR_OUTPUT_STATE_BUFFER;
+    }
+    return ok;
+}
+
 static const char *commit_outputs(struct tomoe *s,
         struct wlr_backend_output_state *states, size_t count, bool *attempted,
         const struct presentation *plan) {
-    struct wlr_output_swapchain_manager manager;
-    wlr_output_swapchain_manager_init(&manager, s->backend);
-    struct wlr_backend_output_state *enabled_states =
-        calloc(count ? count : 1, sizeof(*enabled_states));
+    struct ring *rings = calloc(count ? count : 1, sizeof(*rings));
     const char *error = "Output renderer initialization failed; previous settings retained.";
     size_t enabled_count = 0;
-    if (!enabled_states) goto done;
+    if (!rings) goto done;
     for (size_t i = 0; i < count; i++) {
         if (!output_state_enabled(&states[i])) continue;
-        enabled_states[enabled_count++] = states[i];
+        enabled_count++;
         if (states[i].output->renderer) continue;
         if (!wlr_output_init_render(states[i].output, s->allocator, s->renderer)) {
             goto done;
@@ -739,28 +768,35 @@ static const char *commit_outputs(struct tomoe *s,
     }
     for (size_t i = 0; i < count; i++) strip_disabled_state(&states[i].base);
     error = "Output configuration rejected by the backend; previous settings retained.";
-    if (enabled_count && !wlr_output_swapchain_manager_prepare(&manager,
-            enabled_states, enabled_count)) goto done;
+    if (enabled_count && !test_rings(s, states, count, rings, false) &&
+            !test_rings(s, states, count, rings, true)) goto done;
     error = "Cannot render the requested output configuration; previous settings retained.";
     for (size_t i = 0; i < count; i++) {
         if (!output_state_enabled(&states[i])) continue;
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             if (o->wlr != states[i].output) continue;
-            if (!render_presentation(o, &states[i].base,
-                    wlr_output_swapchain_manager_get_swapchain(&manager, states[i].output), plan)) goto done;
+            if (!render_presentation(o, &states[i].base, &rings[i], plan)) goto done;
             break;
         }
     }
     *attempted = true;
     error = "Output commit failed.";
     if (!wlr_backend_commit(s->backend, states, count)) goto done;
-    wlr_output_swapchain_manager_apply(&manager);
+    for (size_t i = 0; i < count; i++) {
+        struct output *o;
+        wl_list_for_each(o, &s->outputs, link) {
+            if (o->wlr != states[i].output) continue;
+            ring_finish(&o->ring);
+            o->ring = rings[i];
+            rings[i] = (struct ring){0};
+        }
+    }
     error = NULL;
 done:
     finish_captures(s);
-    wlr_output_swapchain_manager_finish(&manager);
-    free(enabled_states);
+    for (size_t i = 0; rings && i < count; i++) ring_finish(&rings[i]);
+    free(rings);
     return error;
 }
 
@@ -906,7 +942,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
         refresh_scene(o->server);
         pointer_sync_cursors(o->server);
     }
-    bool success = scanout || render_output(o, &state, NULL);
+    bool success = scanout || render_output(o, &state);
     if (success && scanout)
         wlr_presentation_surface_scanned_out_on_output(scanout, o->wlr);
     else if (success) surfaces_textured(o);
@@ -963,6 +999,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     finish_output_capture(o);
     wlr_buffer_unlock(o->presented[0]);
     wlr_buffer_unlock(o->presented[1]);
+    ring_finish(&o->ring);
     screenshot_output_gone(s, o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);

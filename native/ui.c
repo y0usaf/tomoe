@@ -5,7 +5,6 @@
 #include <cairo.h>
 #include <inttypes.h>
 #include <pango/pangocairo.h>
-#include <wlr/interfaces/wlr_buffer.h>
 
 #include <float.h>
 #include <stdint.h>
@@ -17,60 +16,6 @@
 #define UI_MAX_STRING (size_t)(8 * 1024 * 1024)
 
 #define TOMOE_DRM_FORMAT_ARGB8888 UINT32_C(0x34325241)
-
-struct ui_pixel_buffer {
-    struct wlr_buffer base;
-    unsigned char *pixels;
-    uint32_t format;
-    size_t stride;
-};
-
-static struct ui_pixel_buffer *ui_pixel_buffer_from_base(
-        struct wlr_buffer *base) {
-    struct ui_pixel_buffer *buffer =
-        wl_container_of(base, buffer, base);
-    return buffer;
-}
-
-static void ui_pixel_buffer_destroy(struct wlr_buffer *base) {
-    struct ui_pixel_buffer *buffer = ui_pixel_buffer_from_base(base);
-    wlr_buffer_finish(base);
-    free(buffer->pixels);
-    free(buffer);
-}
-
-static bool ui_pixel_buffer_begin_data_ptr_access(struct wlr_buffer *base,
-        uint32_t flags, void **data, uint32_t *format, size_t *stride) {
-    struct ui_pixel_buffer *buffer = ui_pixel_buffer_from_base(base);
-    if (!buffer->pixels || (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE)) return false;
-    *data = buffer->pixels;
-    *format = buffer->format;
-    *stride = buffer->stride;
-    return true;
-}
-
-static void ui_pixel_buffer_end_data_ptr_access(struct wlr_buffer *base) {
-    (void)base;
-}
-
-static const struct wlr_buffer_impl ui_pixel_buffer_impl = {
-    .destroy = ui_pixel_buffer_destroy,
-    .begin_data_ptr_access = ui_pixel_buffer_begin_data_ptr_access,
-    .end_data_ptr_access = ui_pixel_buffer_end_data_ptr_access,
-};
-
-static struct ui_pixel_buffer *ui_pixel_buffer_create(uint32_t format,
-        size_t stride, uint32_t width, uint32_t height,
-        unsigned char *pixels) {
-    struct ui_pixel_buffer *buffer = calloc(1, sizeof(*buffer));
-    if (!buffer) return NULL;
-    wlr_buffer_init(&buffer->base, &ui_pixel_buffer_impl,
-        (int)width, (int)height);
-    buffer->pixels = pixels;
-    buffer->format = format;
-    buffer->stride = stride;
-    return buffer;
-}
 
 struct ui_hit_entry {
     char *key;
@@ -730,14 +675,11 @@ int tomoe_present_ui_end(struct tomoe *s) {
     cairo_surface_destroy(surface->cairo_surface);
     surface->cairo_surface = NULL;
 
-    struct ui_pixel_buffer *buffer = ui_pixel_buffer_create(
+    struct wlr_texture *texture = wlr_texture_from_pixels(s->renderer,
         TOMOE_DRM_FORMAT_ARGB8888, surface->stride,
         (uint32_t)surface->width, (uint32_t)surface->height, surface->pixels);
-    if (!buffer) goto failed;
+    free(surface->pixels);
     surface->pixels = NULL;
-
-    struct wlr_texture *texture = wlr_texture_from_buffer(s->renderer, &buffer->base);
-    wlr_buffer_drop(&buffer->base);
     if (!texture) goto failed;
     surface->texture = texture;
     surface->building = false;

@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "ui.h"
+#include <wlr/backend/headless.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/render/drm_syncobj.h>
@@ -514,13 +515,17 @@ static void render_walk(struct tomoe *s, struct wlr_scene_node *node, struct tar
     struct leaf leaf;
     if (make_leaf(s, node, target, x, y, &leaf, NULL, NULL)) render_leaf(s, &leaf, f);
 }
+static bool fenced(struct wlr_output *output) {
+    return output->renderer->features.timeline && output->backend->features.timeline &&
+        !wlr_output_is_headless(output);
+}
 static bool render_scene_buffer(struct output *o, struct wlr_buffer *buffer,
         const struct wlr_output_state *state, const struct presentation *plan,
         bool cursors) {
     struct wlr_output *output = o->wlr;
     struct tomoe *s = o->server;
     struct wlr_buffer_pass_options options = {0};
-    if (output->renderer->features.timeline) {
+    if (fenced(output)) {
         if (!s->render_timeline)
             s->render_timeline = wlr_drm_syncobj_timeline_create(
                 wlr_renderer_get_drm_fd(output->renderer));
@@ -590,15 +595,17 @@ bool render_output_buffer(struct output *o, struct wlr_buffer *buffer) {
 }
 
 bool render_presentation(struct output *o, struct wlr_output_state *state,
-        struct wlr_swapchain *swapchain, const struct presentation *plan) {
+        struct ring *ring, const struct presentation *plan) {
     struct wlr_output *output = o->wlr;
     finish_output_capture(o);
     if ((state->committed & WLR_OUTPUT_STATE_ENABLED) && !state->enabled) return true;
-    if (!swapchain) {
-        if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) return false;
-        swapchain = output->swapchain;
+    if (!ring) {
+        ring = &o->ring;
+        if ((ring->width != output->width || ring->height != output->height) &&
+                !ring_configure(o->server, ring, output, output->width, output->height,
+                    ring->implicit)) return false;
     }
-    struct wlr_buffer *buffer = wlr_swapchain_acquire(swapchain);
+    struct wlr_buffer *buffer = ring_acquire(o->server, ring);
     if (!buffer) return false;
     if (!plan) {
         if (!o->server->configuring_outputs) {
@@ -610,8 +617,7 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
     uint64_t render_point = o->server->render_point;
     if (success) {
         if (needs_cursorless_capture(o)) {
-            struct wlr_buffer *capture = wlr_allocator_create_buffer(
-                swapchain->allocator, buffer->width, buffer->height, &swapchain->format);
+            struct wlr_buffer *capture = ring_create(o->server, ring);
             if (capture && render_scene_buffer(o, capture, state, plan, false)) {
                 o->capture_buffer = wlr_buffer_lock(capture);
                 o->capture_primary = wlr_buffer_lock(buffer);
@@ -623,15 +629,15 @@ bool render_presentation(struct output *o, struct wlr_output_state *state,
         wlr_output_state_set_buffer(state, buffer);
         wlr_output_state_set_damage(state, &damage);
         pixman_region32_fini(&damage);
-        if (o->server->render_timeline && output->backend->features.timeline)
+        if (o->server->render_timeline && fenced(output))
             wlr_output_state_set_wait_timeline(state, o->server->render_timeline, render_point);
     }
     wlr_buffer_unlock(buffer);
     return success;
 }
 
-bool render_output(struct output *o, struct wlr_output_state *state, struct wlr_swapchain *swapchain) {
-    return render_presentation(o, state, swapchain, NULL);
+bool render_output(struct output *o, struct wlr_output_state *state) {
+    return render_presentation(o, state, NULL, NULL);
 }
 
 struct hit_data { double x, y, sx, sy, ratio; struct wlr_surface *surface; uint32_t id; };

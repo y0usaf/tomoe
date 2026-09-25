@@ -9,11 +9,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <GLES2/gl2.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/pass.h>
-#include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
@@ -25,7 +25,6 @@
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
-#include <wlr/types/wlr_output_swapchain_manager.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
@@ -54,6 +53,33 @@ struct ui_set;
 struct ui_asset_pool;
 struct ui_pointer;
 
+enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_DOWN, PROGRAM_UP,
+    PROGRAM_COUNT };
+struct program {
+    GLuint id;
+    GLint pos, local, texcoord;
+    GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
+};
+#define RING_SLOTS 4
+struct ring {
+    struct wlr_buffer *slots[RING_SLOTS];
+    int width, height;
+    bool implicit;
+    struct wlr_drm_format_set format;
+};
+struct wlr_renderer *render_create(struct wlr_backend *backend);
+struct wlr_allocator *render_allocator(struct wlr_renderer *renderer);
+struct program *render_program(struct wlr_renderer *renderer, int kind);
+void render_quad(struct program *p, const float pos[8], const float local[8],
+    const float texcoords[8]);
+bool render_texture_gl(struct wlr_texture *texture, GLenum *target, GLuint *tex, bool *alpha);
+GLuint render_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
+bool ring_configure(struct tomoe *s, struct ring *ring, struct wlr_output *output,
+    int width, int height, bool implicit);
+struct wlr_buffer *ring_acquire(struct tomoe *s, struct ring *ring);
+struct wlr_buffer *ring_create(struct tomoe *s, struct ring *ring);
+void ring_finish(struct ring *ring);
+
 struct output {
     struct wl_list link;
     struct tomoe *server;
@@ -72,6 +98,7 @@ struct output {
     char pending_mirror[129];
     struct wlr_buffer *capture_primary, *capture_buffer;
     struct wlr_buffer *presented[2];
+    struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct wlr_surface *scanout;
 };
@@ -106,7 +133,6 @@ struct frame {
     uint32_t focused;
 };
 struct effects;
-bool effects_available(struct frame *f);
 void effect_border(struct frame *f, struct wlr_fbox geometry, double width, double radius,
     uint32_t rgba, float alpha);
 void effect_shadow(struct frame *f, struct wlr_fbox geometry, double range, double radius,
@@ -387,10 +413,9 @@ void physical_output_box(struct output *o, struct wlr_box *box);
 void schedule_scene(struct tomoe *s);
 void refresh_scene(struct tomoe *s);
 void forget_output(struct tomoe *s, struct wlr_output *output);
-bool render_output(struct output *o, struct wlr_output_state *state,
-    struct wlr_swapchain *swapchain);
+bool render_output(struct output *o, struct wlr_output_state *state);
 bool render_presentation(struct output *o, struct wlr_output_state *state,
-    struct wlr_swapchain *swapchain, const struct presentation *plan);
+    struct ring *ring, const struct presentation *plan);
 struct wlr_buffer *screencopy_buffer(struct wlr_screencopy_frame_v1 *frame,
     const struct wlr_output_state *state, void *data);
 void finish_output_capture(struct output *o);

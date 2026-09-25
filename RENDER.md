@@ -49,12 +49,14 @@ fences as sync files on a DRM syncobj timeline, a GBM allocator, and the output
 buffer ring with explicit-then-implicit modifier fallback across all outputs in
 one backend test. The ring never hands out a buffer that the backend or
 `presented[]` still holds. It serves wlroots through the interfaces above and
-has no second implementation. Estimate: +650 lines.
+has no second implementation. Estimate: +650 lines. Actual: 1,065 lines,
+including the 120 lines of shaders moved from effects.c.
 
 Removed: the wlroots renderer and allocator autocreate, the swapchain manager,
 `wlr_output_configure_primary_swapchain` and `wlr_swapchain_acquire` calls,
 the GLES2 introspection in effects.c, the non-GL border fallback, and
-`ui_pixel_buffer`. Estimate: -120 lines.
+`ui_pixel_buffer`. Estimate: -120 lines. Actual: the whole change is +1,201
+and -342 lines, or +859 net.
 
 Dropped: the pixman renderer that the headless backend used. Headless now
 renders with GL on a render node and fails loudly when there is none.

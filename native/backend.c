@@ -49,10 +49,9 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!s->display) goto failed;
     s->backend = wlr_backend_autocreate(wl_display_get_event_loop(s->display), &s->session);
     if (!s->backend) goto failed;
-    s->renderer = wlr_renderer_autocreate(s->backend);
+    s->renderer = render_create(s->backend);
     if (!s->renderer || !wlr_renderer_init_wl_display(s->renderer, s->display)) goto failed;
-    s->allocator = wlr_allocator_autocreate(s->backend, s->renderer);
-    if (!s->allocator) goto failed;
+    s->allocator = render_allocator(s->renderer);
     s->screencopy = wlr_screencopy_manager_v1_create(s->display);
     if (!s->screencopy) goto failed;
     wlr_screencopy_manager_v1_set_buffer_provider(s->screencopy,

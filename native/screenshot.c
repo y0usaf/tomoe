@@ -28,10 +28,7 @@ static void screenshot_close(struct tomoe *s) {
 }
 
 static struct wlr_buffer *render_clean(struct output *o) {
-    struct wlr_swapchain *swapchain = o->wlr->swapchain;
-    if (!swapchain) return NULL;
-    struct wlr_buffer *buffer = wlr_allocator_create_buffer(swapchain->allocator,
-        swapchain->width, swapchain->height, &swapchain->format);
+    struct wlr_buffer *buffer = ring_create(o->server, &o->ring);
     if (buffer && !render_output_buffer(o, buffer)) {
         wlr_buffer_drop(buffer);
         buffer = NULL;
