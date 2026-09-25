@@ -148,7 +148,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
     (incf (managed-process-attempts job))
     (handler-case
         (progn
-          (when (and (eq :session (process-kind job)) (eq *backend-kind* :native))
+          (when (eq :session (process-kind job))
             (setf token (%activation-token (runtime-backend runtime)))
             (unless token (error "Cannot issue application activation token.")))
           (call-with-process-strings

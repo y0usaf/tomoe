@@ -10,17 +10,8 @@ host has no special case for their names. Layer-shell panels, fullscreen and
 maximize state, pointer-driven move and resize, and output configuration are all
 visible to policy as context and owned effects.
 
-This is a working prototype, not a complete desktop compositor or a pure-Lisp
-Wayland implementation.
-
-Two backends satisfy one contract, so the policy runtime does not know which one
-is loaded. Features land in the wlroots backend; the pure-Lisp one is an
-experiment and does not constrain them.
-
-| Backend | Native side | State |
-| --- | --- | --- |
-| `native/` | wlroots 0.20 through an ABI header and C modules split by concern | Packaged. xdg-shell, layer-shell, output configuration, pointer grabs. Verified with real clients, nested and headless |
-| `backend/` | `libwayland-server` through `sb-alien`, without the wlroots backend C modules | Early. foot maps a window, the policy places it, `inspect` reports it |
+The native side is wlroots 0.20 behind the ABI header `native/backend.h`, split
+into C modules by concern.
 
 The earlier Rust/Smithay and Lua implementation is not in this tree; it stays
 reachable in the repository history (commit `6de3ba6` and earlier).
@@ -195,8 +186,7 @@ and world location. A client can acknowledge a configure later or choose another
 size, so this rectangle can differ from `:layout`. Geometry readers see policy
 placement, visibility, camera and output changes during settlement; client size
 changes arrive when the surface commits. Size-only commits leave `:windows`
-readers idle. The experimental Lisp backend tracks root-buffer scale, transform
-and xdg geometry but has no viewport or subsurface geometry support.
+readers idle.
 
 Viewporter, fractional-scale-v1, and xdg-output let compatible clients render
 buffers at the requested scale while keeping logical window sizes and input
@@ -225,7 +215,6 @@ do not rerun consumers; output revisions discard older queued confirmations
 after a newer commit. External output changes still notify consumers.
 Layer geometry and usable output areas resolve in the same dependency rounds.
 The native ABI is 23; the additive inspect fields keep control wire version 1.
-The experimental pure-Lisp backend does not yet support output configuration.
 
 ## X11 clients
 
@@ -599,8 +588,6 @@ previous accepted keymap and repeat settings remain active, with no partial
 device or logical seat update. Equal maps retain held modifiers, lock state,
 and the active layout group across repeat-only updates. A different keymap rebuilds state from
 physically held keys and resets prior latched/locked modifiers and layout group.
-The pure-Lisp backend has no physical keyboard configuration and
-rejects a non-default keyboard policy.
 
 `(set-view X Y ZOOM)` owns the canvas camera: screen positions are
 `(world - offset) * zoom`. Zoom defaults to 1, accepts finite real numbers, and
@@ -808,8 +795,6 @@ commit and export it as `XDG_ACTIVATION_TOKEN` and `DESKTOP_STARTUP_ID`.
 Explicit environment entries override either variable independently. A failed
 spawn revokes its generated token and reports a runtime error; it does not undo
 accepted policy. Declarative services and run-once launches do not mint tokens.
-The pure Lisp backend supports these process options and lifetimes but does not
-yet advertise xdg activation.
 
 Activation tokens expire after ten seconds and are consumed on use. Client
 tokens without input serials request urgency; serial-bearing tokens must pass
@@ -907,8 +892,7 @@ replacement has identical geometry, restoring the shell with fresh callbacks.
 `inspect` includes `:native-ui` resource and rasterization counters, with
 `:assets`, `:asset-bytes`, and cumulative `:asset-loads` for the asset pool;
 `hit-test` adds optional `:ui` metadata. Trees, dimensions, surface counts, and
-retained memory have explicit bounds. The pure Lisp backend rejects this effect
-until it has a renderer. Shell keyboard ownership, the remaining service widgets,
+retained memory have explicit bounds. Shell keyboard ownership, the remaining service widgets,
 and the complete Rust shell ceremony remain unfinished parity work.
 
 ## Notifications
@@ -1693,7 +1677,7 @@ growth, and actual pure-backend observation (`tests/watch-helper.py`,
 - `examples/`: alternative policies, each mountable on its own.
 - `tests/`: the end-to-end check, its fixtures, and its Wayland and X11 clients.
 - `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
-- `DESKTOP.md`, `FINIX.md`, `LISP-BACKEND.md`, `OUTPUTS.md`, `STARTUP.md`, and
+- `DESKTOP.md`, `FINIX.md`, `OUTPUTS.md`, `STARTUP.md`, and
   `WORK.md` are historical checkpoints from the prototype work. They name local
   paths and predate the move to the repository root.
 

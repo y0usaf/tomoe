@@ -42,18 +42,6 @@
 
 (defstruct control socket path)
 
-(defun %empty-hit-test (runtime screen-x screen-y)
-  "Pure-Lisp backends have no native scene hit test; retain useful coordinates."
-  (let* ((view (getf (runtime-effective runtime) :view))
-         (offset-x (getf view :x 0))
-         (offset-y (getf view :y 0))
-         (zoom (getf view :zoom 1d0)))
-    (list :id 0 :screen-x screen-x :screen-y screen-y
-          :world-x (+ offset-x (/ screen-x zoom))
-          :world-y (+ offset-y (/ screen-y zoom))
-          :surface-x nil :surface-y nil
-          :diagnostic "native hit-test unavailable")))
-
 (defun native-hit-test (runtime x y)
   "Read and copy one native hit-test response before its C buffer is reused."
   (flet ((plist-keys (value lengths)
@@ -85,9 +73,7 @@
                                       (hit-string-p (getf ui :element) 128)))))
               (error "Native hit-test returned an invalid plist: ~S" result))
             result)
-          (if (eq *backend-kind* :lisp)
-              (%empty-hit-test runtime screen-x screen-y)
-              (error "Native hit-test returned no result.")))))))
+          (error "Native hit-test returned no result."))))))
 
 (defun socket-answering-p (path)
   "True when a process is accepting connections on the Unix socket PATH."

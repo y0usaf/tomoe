@@ -12,7 +12,7 @@
                (cons "w" (getf record :width)) (cons "h" (getf record :height))))
 
 (defun ipc-focused-window (runtime context)
-  (if (and (eq *backend-kind* :native) (runtime-backend runtime))
+  (if (runtime-backend runtime)
       (let ((id (%keyboard-focus (runtime-backend runtime)))) (unless (zerop id) id))
       (let* ((id (getf context :focus))
              (window (find id (runtime-windows runtime) :key (lambda (window) (getf window :id)))))

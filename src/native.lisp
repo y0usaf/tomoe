@@ -91,7 +91,7 @@
   (tint sb-alien:int) (rgba sb-alien:unsigned-int))
 
 (defun native-ui-asset-loader (backend)
-  (when (and backend (eq *backend-kind* :native))
+  (when backend
     (lambda (declaration tree)
       (let* ((image-p (eq (getf tree :kind) :image))
              (raw (getf tree (if image-p :src :path)))
@@ -207,7 +207,7 @@
             (error "Cannot stage output options for ~A." (getf output :name)))))))
 
 (defun pending-native-outputs-p (backend)
-  (and backend (eq *backend-kind* :native) (= 1 (%outputs-pending backend))))
+  (and backend (= 1 (%outputs-pending backend))))
 
 (defun preview-native-outputs (backend outputs)
   "Resolve candidate active outputs and connected ports without native writes."

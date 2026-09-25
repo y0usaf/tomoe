@@ -26,13 +26,12 @@ turn; materialization already refreshes their authoritative native snapshot."
     ("hit-test" . :hit-test) ("quit" . :quit)))
 
 (defun usage ()
-  (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm|lisp] [--bare]
+  (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm] [--bare]
        [--config FILE] [--watch|--no-watch]
        tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
 Default socket: tomoe-0. Default backend: auto.
-The lisp backend is loaded by dev.lisp and needs no wlroots.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
 Nested mode discovers live wayland-N sockets when WAYLAND_DISPLAY is unset.
 Extensions are trusted Common Lisp programs. --bare omits all shipped policy.
@@ -133,9 +132,6 @@ only after it changes again."
      (sb-posix:setenv "WLR_BACKENDS" "headless" 1)
      (unless (sb-ext:posix-getenv "WLR_RENDERER") (sb-posix:setenv "WLR_RENDERER" "pixman" 1)))
     ((equal backend "drm") (sb-posix:setenv "WLR_BACKENDS" "drm,libinput" 1))
-    ((equal backend "lisp")
-     (unless (eq *backend-kind* :lisp)
-       (error "The lisp backend is only available under dev.lisp.")))
     (t (error "Unknown backend: ~A" backend)))
   (setf *stop-requested* nil)
   (flet ((stop (signal info context)

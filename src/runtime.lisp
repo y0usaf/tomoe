@@ -387,7 +387,7 @@ while other owners can settle; a new request or declaration permits recovery."
 
 (defun newer-native-output-request-p (runtime)
   (let ((backend (runtime-backend runtime)))
-    (when (and backend (eq *backend-kind* :native)
+    (when (and backend
                (> (%outputs-revision backend) (runtime-outputs-revision runtime)))
       (loop for connector in (output-connectors (current-native-outputs backend))
             for previous = (find (getf connector :name) (runtime-connectors runtime)
@@ -567,11 +567,9 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
               (values layers (full-workareas output-facts)))
         (unless (find focused layout :key (lambda (w) (getf w :id)))
           (setf focused nil))
-        (when (and surfaces (eq *backend-kind* :lisp))
-          (error "Retained shell rendering requires the native backend."))
         (multiple-value-bind (surface-plans shell-workareas)
             (resolve-shell-surfaces (nreverse surfaces) output-facts workareas
-                                    (when (and (eq *backend-kind* :native) (runtime-backend runtime))
+                                    (when (runtime-backend runtime)
                                       (native-ui-asset-loader (runtime-backend runtime))))
         (list :windows (runtime-windows runtime)
               :window-geometry (resolved-window-geometry runtime layout view output-facts)
@@ -660,7 +658,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
     (discard-ui-asset-scratch runtime)))
 
 (defun discard-ui-asset-scratch (runtime)
-  (when (and (runtime-backend runtime) (eq *backend-kind* :native))
+  (when (runtime-backend runtime)
     (%ui-assets-discard (runtime-backend runtime))))
 
 (defun %transact (runtime mounts event changed &optional force)
@@ -880,7 +878,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
        (let ((owner (find (getf event :owner) (runtime-mounts runtime)
                           :test #'equal :key (lambda (mounted) (spec-name (mounted-spec mounted))))))
          (unless (and owner (eql (getf event :source-id) (spec-id (mounted-spec owner)))
-                      (eq *backend-kind* :native) (runtime-backend runtime)
+                      (runtime-backend runtime)
                       (typep (getf event :callback-id) '(integer 1 18446744073709551615))
                       (= 1 (%ui-callback-current (runtime-backend runtime) (getf event :callback-id))))
            (return-from dispatch-event))
@@ -989,7 +987,6 @@ accepted registry. Never enter this helper inside a candidate transaction."
                              :key (lambda (mount) (spec-name (mounted-spec mount)))))
                 (source-id (and owner (spec-id (mounted-spec owner)))))
            (unless (and source-id (eql source-id (getf event :source-id))
-                        (eq *backend-kind* :native)
                         (runtime-backend runtime)
                         (typep (getf event :binding-id) '(integer 1 18446744073709551615))
                         (= 1 (%binding-current (runtime-backend runtime) (getf event :binding-id))))
@@ -1036,7 +1033,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
                   :pending-context (copy-list (runtime-pending-context runtime))
                   :grab (describe-grab grab)
                   :native-grab (describe-grab (applied-grab (runtime-backend runtime)))
-                  :native-ui (when (and (runtime-backend runtime) (eq *backend-kind* :native))
+                  :native-ui (when (runtime-backend runtime)
                                (read-data (%ui-stats (runtime-backend runtime))))
                   :watch (runtime-watch runtime)
                   :timers (describe-timers runtime)

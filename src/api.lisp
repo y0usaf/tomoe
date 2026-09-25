@@ -21,9 +21,6 @@
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
-(defvar *backend-kind* :native
-  "Which backend contract is loaded: :native for the wlroots shim, :lisp for the
-pure-Lisp backend, which sets this when its sources load.")
 
 (defun %finite-float-p (value)
   "True when VALUE is an IEEE float with a finite value."
