@@ -57,7 +57,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 49 | Xwayland | crates/tomoe/src/xwayland.rs (xwayland-satellite) | native/window.c (wlroots XWM, lazy) | Improved: in-process XWM, no satellite process to supervise |
 | 50 | xdg-activation, 10 s tokens, urgent without serial | crates/tomoe/src/handlers.rs | native/activation.c | Done |
 | 51 | `honor_xdg_activation_with_invalid_serial` | crates/tomoe/src/handlers.rs, lua.rs | native/activation.c, src/api.lisp `settings` | Done |
-| 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | none | Missing |
+| 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/window.c `foreign_toplevels_refresh` | Done |
 | 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | none | Missing |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/backend.c, native/space.c, patches/wlroots-screencopy-buffer.patch | Done |
 | 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c (untracked WIP) | Missing |

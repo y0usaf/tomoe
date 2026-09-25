@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 
 static bool xwayland_connected(struct tomoe *s) {
     return s->xwayland && wlr_xwayland_get_xwm_connection(s->xwayland);
@@ -26,6 +27,7 @@ struct window {
     char *xdg_title, *xdg_app_id, *xdg_fullscreen_output;
     bool xdg_fullscreen_requested, xdg_maximize_requested;
     bool desired_fullscreen, desired_maximize;
+    struct wlr_ext_foreign_toplevel_handle_v1 *ext_handle;
 };
 struct popup {
     struct wlr_xdg_popup *xdg;
@@ -405,6 +407,31 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
     }
 }
 
+static void foreign_retire(struct window *w) {
+    if (w->ext_handle) wlr_ext_foreign_toplevel_handle_v1_destroy(w->ext_handle);
+    w->ext_handle = NULL;
+}
+static void foreign_refresh(struct window *w) {
+    struct wlr_ext_foreign_toplevel_handle_v1_state state = {
+        .title = title_of(w), .app_id = app_id_of(w) };
+    if (!w->ext_handle) {
+        w->ext_handle = wlr_ext_foreign_toplevel_handle_v1_create(
+            w->server->foreign_toplevel_list, &state);
+        if (!w->ext_handle) { fail(w->server, "foreign toplevel allocation failed"); return; }
+        w->ext_handle->data = w;
+    } else if (strcmp(w->ext_handle->title, state.title) != 0 ||
+            strcmp(w->ext_handle->app_id, state.app_id) != 0) {
+        wlr_ext_foreign_toplevel_handle_v1_update_state(w->ext_handle, &state);
+    }
+}
+void foreign_toplevels_refresh(struct tomoe *s) {
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link) {
+        if (managed_window(w) && w->mapped) foreign_refresh(w);
+        else foreign_retire(w);
+    }
+}
+
 static void window_reparent(struct window *w) {
     struct wlr_scene_tree *parent = w->unmanaged ? w->server->unmanaged_tree :
         w->server->window_tree;
@@ -659,6 +686,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
         update_keyboard_focus(s);
     }
     bool final_xdg = w->xdg && w->admitted;
+    foreign_retire(w);
     wl_list_remove(&w->link);
     if (w->x11) {
         if (w->tree) wlr_scene_node_destroy(&w->tree->node);

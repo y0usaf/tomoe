@@ -11,6 +11,7 @@
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -190,8 +191,9 @@ bool protocols_listen(struct tomoe *s) {
     s->gamma_control = wlr_gamma_control_manager_v1_create(s->display);
     s->xdg_decoration = wlr_xdg_decoration_manager_v1_create(s->display);
     s->server_decoration = wlr_server_decoration_manager_create(s->display);
+    s->foreign_toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(s->display, 1);
     if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !s->gamma_control ||
-            !s->xdg_decoration || !s->server_decoration ||
+            !s->xdg_decoration || !s->server_decoration || !s->foreign_toplevel_list ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
