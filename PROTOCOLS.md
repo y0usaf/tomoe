@@ -17,18 +17,13 @@ moves as one step when its members share wlroots state that cannot be split.
 | xdg-decoration, KDE server-decoration | `native/decoration.c`, mode sent with each xdg configure | both wlroots managers |
 | xdg-activation | `native/activation.c`, whose token records are the tokens | `wlr_xdg_activation_v1` and the mirror records Tomoe kept beside it |
 | ext-session-lock | `native/lock.c`, a `wlr_surface` role until the surface core moves | `wlr_session_lock_v1` |
-
-## Surface roles
-
-layer-shell. Each is a role or side object on
-`wlr_surface`, served through wlroots' public surface-role API until the
-surface core moves. Tomoe already plans layers itself.
+| wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
 
 ## xdg-shell
 
 Toplevels and popups. The largest fight: Tomoe parks windows at far
 coordinates and walks `wlr_scene_xdg_surface` trees only for their surface
-lists. Moves after the roles above so the role pattern is settled.
+lists. The surface roles above settled the pattern it follows.
 
 ## Seat
 

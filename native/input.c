@@ -699,7 +699,7 @@ void update_keyboard_focus(struct tomoe *s) {
     for (int layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; layer >= 0; layer--) {
         wl_list_for_each(l, &s->layers, link) {
             if (layer_of(l) != layer || !l->mapped || !visible_of(l) ||
-                    !l->scene || !l->scene->tree->node.enabled) continue;
+                    !l->tree || !l->tree->node.enabled) continue;
             if (keyboard_of(l) != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) continue;
             keyboard_enter(s, l->wlr->surface);
             return;

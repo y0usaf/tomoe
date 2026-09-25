@@ -693,7 +693,7 @@ static void popup_unconstrain(struct popup *p) {
             struct wlr_box physical;
             physical_output_box(o, &physical);
             double scale = snapped_scale(o->wlr->scale);
-            box = (struct wlr_box){ -l->scene->tree->node.x, -l->scene->tree->node.y,
+            box = (struct wlr_box){ -l->tree->node.x, -l->tree->node.y,
                 logical_size(physical.width, scale), logical_size(physical.height, scale) };
         }
     } else {

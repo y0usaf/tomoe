@@ -16,7 +16,7 @@ struct layer_plan_output {
 
 struct layer_plan_surface {
     struct layer *layer;
-    struct wlr_layer_surface_v1 *wlr;
+    struct layer_surface *wlr;
     struct wlr_scene_node *scene_node;
     struct wlr_output *native_output;
     bool mapped_at_plan, initialized_at_plan;
@@ -106,7 +106,7 @@ static int resolved_zone_for_scale(const struct layer *layer, int override,
         scale_120_value(scale_120)));
 }
 
-static enum wlr_edges exclusive_edge_for(const struct wlr_layer_surface_v1 *surface,
+static enum wlr_edges exclusive_edge_for(const struct layer_surface *surface,
         int zone) {
     if (zone <= 0) return WLR_EDGE_NONE;
     uint32_t anchor = surface->current.anchor;
@@ -275,7 +275,7 @@ static struct layer_plan_output *plan_output_for_layer(
 }
 
 static void plan_layer_request(struct layer_plan_surface *surface) {
-    struct wlr_layer_surface_v1_state *state = &surface->layer->wlr->current;
+    struct layer_surface_state *state = &surface->layer->wlr->current;
     surface->anchor = state->anchor;
     surface->desired_width = state->desired_width;
     surface->desired_height = state->desired_height;
@@ -347,8 +347,8 @@ static bool plan_layers(struct layer_plan *plan) {
         surface->initialized_at_plan = false;
         if (!surface->included || !surface->layer) continue;
         surface->wlr = surface->layer->wlr;
-        surface->scene_node = surface->layer->scene ?
-            &surface->layer->scene->tree->node : NULL;
+        surface->scene_node = surface->layer->tree ?
+            &surface->layer->tree->node : NULL;
         surface->native_output = surface->wlr ? surface->wlr->output : NULL;
         surface->mapped_at_plan = surface->layer->mapped;
         surface->initialized_at_plan = surface->wlr && surface->wlr->initialized;
@@ -477,14 +477,14 @@ static bool plan_lifetime_valid(struct tomoe *s, const struct layer_plan *plan,
         if (!live_layer(s, layer)) return false;
         if (!candidate->included) continue;
         if (!candidate->wlr || !candidate->scene_node ||
-                candidate->wlr != layer->wlr || !layer->scene ||
-                candidate->scene_node != &layer->scene->tree->node ||
+                candidate->wlr != layer->wlr || !layer->tree ||
+                candidate->scene_node != &layer->tree->node ||
                 layer->target.id == 0 ||
                 candidate->mapped_at_plan != layer->mapped ||
                 candidate->initialized_at_plan != layer->wlr->initialized ||
                 candidate->native_output != layer->wlr->output) return false;
 
-        const struct wlr_layer_surface_v1_state *state = &layer->wlr->current;
+        const struct layer_surface_state *state = &layer->wlr->current;
         if (candidate->anchor != state->anchor ||
                 candidate->desired_width != state->desired_width ||
                 candidate->desired_height != state->desired_height ||
@@ -596,7 +596,7 @@ static void configure_layer_if_needed(struct layer *layer, int width, int height
         return;
     }
 
-    wlr_layer_surface_v1_configure(layer->wlr, width, height);
+    layer_surface_configure(layer->wlr, width, height);
     layer->last_configure_width = width;
     layer->last_configure_height = height;
     layer->configure_sent = true;
@@ -1015,7 +1015,7 @@ static const struct {
     { ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT, "right" },
 };
 static struct layer_state layer_state_of(struct layer *l) {
-    struct wlr_layer_surface_v1_state *client = &l->wlr->current;
+    struct layer_surface_state *client = &l->wlr->current;
     struct layer_state state = {
         .anchor = client->anchor,
         .width = physical_offset(client->actual_width, l->target.scale),
@@ -1069,7 +1069,7 @@ static void layer_event(struct layer *l) {
         state.margin[3], state.width, state.height, keyboard_name(state.keyboard),
         l->target.scale * 120.0);
     quote(out, l->wlr->output ? l->wlr->output->name : "");
-    struct wlr_layer_surface_v1_state *client = &l->wlr->current;
+    struct layer_surface_state *client = &l->wlr->current;
     fprintf(out, " :request (:width %u :height %u :margin (%d %d %d %d)"
         " :exclusive-zone %d :anchors ", client->desired_width,
         client->desired_height, client->margin.top, client->margin.right,
@@ -1089,8 +1089,8 @@ static void layer_reparent_to(struct layer *l, int layer) {
     if (!l || layer < ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND ||
             layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) return;
     struct wlr_scene_tree *parent = l->server->layer_tree[layer];
-    if (l->scene->tree->node.parent != parent)
-        wlr_scene_node_reparent(&l->scene->tree->node, parent);
+    if (l->tree->node.parent != parent)
+        wlr_scene_node_reparent(&l->tree->node, parent);
 }
 
 static void layer_reparent(struct layer *l) {
@@ -1118,9 +1118,9 @@ static bool publish_layer_plan(struct tomoe *s, struct layer_plan *plan,
     for (size_t i = 0; i < plan->layer_count; i++) {
         struct layer_plan_surface *surface = &plan->layers[i];
         struct layer *layer = surface->layer;
-        if (!layer || !layer->wlr || !layer->scene) continue;
+        if (!layer || !layer->wlr || !layer->tree) continue;
         if (candidate && layer->mapped && !surface->included) {
-            wlr_scene_node_set_enabled(&layer->scene->tree->node, false);
+            wlr_scene_node_set_enabled(&layer->tree->node, false);
             continue;
         }
         if (candidate && layer->mapped && !surface->unplaced &&
@@ -1157,11 +1157,11 @@ static bool publish_layer_plan(struct tomoe *s, struct layer_plan *plan,
         bool visible = surface->configured ? surface->resolved_visible :
             visible_of(layer);
         layer_reparent_to(layer, resolved_layer);
-        wlr_scene_node_set_enabled(&layer->scene->tree->node,
+        wlr_scene_node_set_enabled(&layer->tree->node,
             layer->mapped && visible && !surface->unplaced);
 
         if (!surface->configured || !output || (candidate && !layer->mapped)) continue;
-        wlr_scene_node_set_position(&layer->scene->tree->node,
+        wlr_scene_node_set_position(&layer->tree->node,
             surface->logical.x, surface->logical.y);
         configure_layer_if_needed(layer, surface->logical.width,
             surface->logical.height);
@@ -1223,7 +1223,7 @@ void tomoe_layer(struct tomoe *s, uint32_t id, int layer, int exclusive_zone,
     if (!l) return;
     layer_set_override(l, layer, exclusive_zone, keyboard, visible);
     layer_reparent(l);
-    wlr_scene_node_set_enabled(&l->scene->tree->node,
+    wlr_scene_node_set_enabled(&l->tree->node,
         l->mapped && visible_of(l));
     arrange_layers(s);
 }
@@ -1242,7 +1242,7 @@ static void layer_commit(struct wl_listener *listener, void *data) {
 static void layer_map(struct wl_listener *listener, void *data) {
     struct layer *l = wl_container_of(listener, l, map);
     l->mapped = true;
-    wlr_scene_node_set_enabled(&l->scene->tree->node, visible_of(l));
+    wlr_scene_node_set_enabled(&l->tree->node, visible_of(l));
     arrange_layers(l->server);
 }
 static void layer_unmap(struct wl_listener *listener, void *data) {
@@ -1256,34 +1256,40 @@ static void layer_unmap(struct wl_listener *listener, void *data) {
     l->override_exclusive_zone = -1;
     l->override_keyboard = -1;
     l->override_visible = -1;
-    wlr_scene_node_set_enabled(&l->scene->tree->node, false);
+    wlr_scene_node_set_enabled(&l->tree->node, false);
     unmap_event(l->server, l->target.id);
     arrange_layers(l->server);
 }
-static void layer_destroy(struct wl_listener *listener, void *data) {
-    struct layer *l = wl_container_of(listener, l, destroy);
+void layer_destroyed(struct layer_surface *ls) {
+    struct layer *l = ls->data;
     struct tomoe *s = l->server;
     detach(&l->commit); detach(&l->map); detach(&l->unmap);
-    detach(&l->destroy); detach(&l->new_popup);
     if (s->grab_id == l->target.id) grab_clear(s);
+    wlr_scene_node_destroy(&l->tree->node);
     wl_list_remove(&l->link);
     free(l);
     arrange_layers(s);
 }
-static void layer_popup(struct wl_listener *listener, void *data) {
-    struct layer *l = wl_container_of(listener, l, new_popup);
-    popup_create(data, l->wlr->data);
+void layer_popup_created(struct layer_surface *ls, struct wlr_xdg_popup *popup) {
+    struct layer *l = ls->data;
+    popup_create(popup, l->tree);
 }
-static void new_layer_surface(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_layer_surface);
-    struct wlr_layer_surface_v1 *wlr = data;
+void layer_created(struct tomoe *s, struct layer_surface *wlr) {
     if (!wlr->output) wlr->output = any_output(s);
     if (s->next_id == UINT32_MAX) { fail(s, "surface IDs exhausted"); return; }
     struct layer *l = calloc(1, sizeof(*l));
-    if (!l) { wl_resource_post_no_memory(wlr->resource); return; }
+    struct wlr_scene_tree *tree = l ? wlr_scene_tree_create(
+        s->layer_tree[(int)wlr->current.layer]) : NULL;
+    if (!tree || !wlr_scene_subsurface_tree_create(tree, wlr->surface)) {
+        if (tree) wlr_scene_node_destroy(&tree->node);
+        free(l);
+        wl_resource_post_no_memory(wlr->resource);
+        return;
+    }
     reset_layer_configure(l);
     l->server = s;
     l->wlr = wlr;
+    l->tree = tree;
     l->target.id = ++s->next_id;
     l->target.kind = TARGET_LAYER;
     l->target.output = wlr->output;
@@ -1293,18 +1299,11 @@ static void new_layer_surface(struct wl_listener *listener, void *data) {
     l->override_exclusive_zone = -1;
     l->override_keyboard = -1;
     l->override_visible = -1;
-    l->scene = wlr_scene_layer_surface_v1_create(
-        s->layer_tree[(int)wlr->current.layer], wlr);
-    if (!l->scene) { free(l); wl_resource_post_no_memory(wlr->resource); return; }
-    l->scene->tree->node.data = &l->target;
-    wlr->data = l->scene->tree;
+    l->tree->node.data = &l->target;
+    wlr_scene_node_set_enabled(&l->tree->node, false);
+    wlr->data = l;
     wl_list_insert(s->layers.prev, &l->link);
     listen(&l->commit, &wlr->surface->events.commit, layer_commit);
     listen(&l->map, &wlr->surface->events.map, layer_map);
     listen(&l->unmap, &wlr->surface->events.unmap, layer_unmap);
-    listen(&l->destroy, &wlr->events.destroy, layer_destroy);
-    listen(&l->new_popup, &wlr->events.new_popup, layer_popup);
-}
-void layers_listen(struct tomoe *s, struct wlr_layer_shell_v1 *layer_shell) {
-    listen(&s->new_layer_surface, &layer_shell->events.new_surface, new_layer_surface);
 }

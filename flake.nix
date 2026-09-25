@@ -111,6 +111,9 @@
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
               build/wlr-layer-shell-unstable-v1-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
+              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
+              build/wlr-layer-shell-unstable-v1-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml \
               build/wlr-screencopy-unstable-v1-protocol.h

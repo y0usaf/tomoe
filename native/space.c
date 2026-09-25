@@ -132,8 +132,8 @@ static bool make_leaf(struct tomoe *s, struct wlr_scene_node *node,
     if (target && target->kind == TARGET_LAYER) {
         struct layer *layer = root ? NULL : find_layer(s, target->id);
         if (!root && !layer) return false;
-        double ox = root ? root->layer_x : layer->scene->tree->node.x;
-        double oy = root ? root->layer_y : layer->scene->tree->node.y;
+        double ox = root ? root->layer_x : layer->tree->node.x;
+        double oy = root ? root->layer_y : layer->tree->node.y;
         double base_x = (double)target->x - physical_offset(ox, scale);
         double base_y = (double)target->y - physical_offset(oy, scale);
         x = base_x + physical_offset(ox + lx, scale);

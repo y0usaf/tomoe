@@ -61,6 +61,7 @@ if [ ! -f "$xml" ]; then
 fi
 if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
   wayland-scanner server-header "$xml" "$protocol"
+  wayland-scanner private-code "$xml" build/wlr-layer-shell-unstable-v1-protocol.c
 fi
 for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1 wlr-foreign-toplevel-management-unstable-v1; do
   wlr_xml="$(dirname "$xml")/$name.xml"

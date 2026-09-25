@@ -63,9 +63,8 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
     s->seat = wlr_seat_create(s->display, "seat0");
     struct wlr_xdg_shell *shell = wlr_xdg_shell_create(s->display, 3);
-    struct wlr_layer_shell_v1 *layer_shell = wlr_layer_shell_v1_create(s->display, 4);
     if (!s->cursor || !s->cursor_manager || !s->seat ||
-            !activation_listen(s) || !shell || !layer_shell) goto failed;
+            !activation_listen(s) || !shell || !layer_shell_listen(s)) goto failed;
     surfaces_listen(s, compositor);
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     outputs_listen(s);
@@ -74,7 +73,6 @@ struct tomoe *tomoe_create(const char *socket_name) {
             !background_effects_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     windows_listen(s, shell);
-    layers_listen(s, layer_shell);
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
     s->running = true;
     if (!wlr_backend_start(s->backend) || s->failed) goto failed;
@@ -112,7 +110,7 @@ void tomoe_destroy(struct tomoe *s) {
     activation_finish(s);
     if (s->display) wl_display_destroy_clients(s->display);
     struct wl_listener *listeners[] = {
-        &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup, &s->new_layer_surface,
+        &s->new_output, &s->new_input, &s->new_toplevel, &s->new_popup,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
         &s->new_surface,

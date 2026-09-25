@@ -23,7 +23,6 @@
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_keyboard.h>
-#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
@@ -36,6 +35,7 @@
 #include <wlr/util/log.h>
 #include <wlr/util/transform.h>
 #include <xkbcommon/xkbcommon.h>
+#include "wlr-layer-shell-unstable-v1-protocol.h"
 
 struct event;
 struct binding;
@@ -258,7 +258,7 @@ struct tomoe {
     size_t activation_token_count;
     struct wl_list activation_pending;
     size_t activation_pending_count;
-    struct wl_listener new_output, new_input, new_toplevel, new_popup, new_layer_surface;
+    struct wl_listener new_output, new_input, new_toplevel, new_popup;
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener new_virtual_pointer, new_virtual_keyboard;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
@@ -331,13 +331,39 @@ struct layer_state {
     int request_exclusive_zone;
     uint32_t exclusive_edge;
 };
+enum { LAYER_STATE_SIZE = 1, LAYER_STATE_ANCHOR = 2, LAYER_STATE_ZONE = 4, LAYER_STATE_MARGIN = 8,
+    LAYER_STATE_KEYBOARD = 16, LAYER_STATE_LAYER = 32 };
+struct layer_surface_state {
+    uint32_t committed, anchor;
+    int32_t exclusive_zone;
+    struct { int32_t top, right, bottom, left; } margin;
+    uint32_t keyboard_interactive, desired_width, desired_height, layer, exclusive_edge;
+    uint32_t actual_width, actual_height, configure_serial;
+};
+struct layer_surface {
+    struct wl_resource *resource;
+    struct tomoe *server;
+    struct wlr_surface *surface;
+    struct wlr_output *output;
+    char *namespace;
+    bool initialized, initial_commit, configured;
+    struct layer_surface_state current, pending;
+    struct wlr_surface_synced synced;
+    struct wl_list popups;
+    void *data;
+};
+bool layer_shell_listen(struct tomoe *s);
+uint32_t layer_surface_configure(struct layer_surface *ls, uint32_t width, uint32_t height);
+void layer_created(struct tomoe *s, struct layer_surface *ls);
+void layer_destroyed(struct layer_surface *ls);
+void layer_popup_created(struct layer_surface *ls, struct wlr_xdg_popup *popup);
 struct layer {
     struct target target;
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_layer_surface_v1 *wlr;
-    struct wlr_scene_layer_surface_v1 *scene;
-    struct wl_listener commit, destroy, map, unmap, new_popup;
+    struct layer_surface *wlr;
+    struct wlr_scene_tree *tree;
+    struct wl_listener commit, map, unmap;
     int override_layer, override_exclusive_zone, override_keyboard, override_visible;
     struct layer_state last;
     int last_configure_width, last_configure_height;
@@ -456,7 +482,6 @@ int exclusive_zone_of(struct layer *l);
 int keyboard_of(struct layer *l);
 bool visible_of(struct layer *l);
 void arrange_layers(struct tomoe *s);
-void layers_listen(struct tomoe *s, struct wlr_layer_shell_v1 *layer_shell);
 
 int tomoe_present_keyboard(struct tomoe *s, const char *rules, const char *model,
     const char *layout, const char *variant, const char *options,
