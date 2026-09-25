@@ -311,5 +311,11 @@ only after it changes again."
 
 (defun main ()
   (sb-ext:exit
-   :code (handler-case (run-cli (rest sb-ext:*posix-argv*))
+   :code (handler-case
+             (handler-bind ((serious-condition
+                              (lambda (condition)
+                                (declare (ignore condition))
+                                (when (sb-ext:posix-getenv "TOMOE_DEBUG")
+                                  (sb-debug:print-backtrace :count 40 :stream *error-output*)))))
+               (run-cli (rest sb-ext:*posix-argv*)))
            (serious-condition (condition) (format *error-output* "tomoe: ~A~%" condition) 1))))
