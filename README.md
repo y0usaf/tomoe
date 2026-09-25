@@ -1128,10 +1128,10 @@ retried indefinitely. Consumer IPC exports also obey the ordinary JSON limits.
 
 ## Window rules
 
-`window-rule` declares a named, owned rule. App-ID and title patterns use Lua
-5.4 string-pattern semantics: case-sensitive, unanchored unless explicitly
-anchored, and matched as UTF-8 bytes. All supplied patterns and the optional
-predicate must match. Omitting them matches every known window.
+`window-rule` declares a named, owned rule. `:app-id` must equal the window's
+app id and `:title` must occur in its title, both case-sensitive; anything
+richer goes in the `:match` predicate. All supplied matchers must match.
+Omitting them matches every known window.
 
 ```lisp
 (define-extension "editor-rules" (:reads () :state nil)
@@ -1139,8 +1139,8 @@ predicate must match. Omitting them matches every known window.
   (declare (ignore snapshot event))
   (values state
     (list
-      (window-rule :editor :app-id "^org%.example%.Editor$"
-        :title "Project %d+"
+      (window-rule :editor :app-id "org.example.Editor"
+        :title "Project"
         :properties '((:workspace . 2) (:border . "#89b4fa"))
         :state '(:ticks 0)
         :apply (lambda (window snapshot local event)
@@ -1358,312 +1358,6 @@ are disabled, and the reader accepts exactly the data the printer emits,
 including the cons dot an extension's own state may contain. This is a data
 protocol, not an unauthenticated REPL.
 
-## Verification
-
-`nix flake check` builds the package and runs one end-to-end check, which is the
-whole automated suite by project decision.
-
-`tests/run-integration.sh` builds Wayland, X11, and virtual-pointer test clients
-from `client.c`, `x11-client.c`, and `pointer-client.c`, with Wayland protocol code
-generated at build time. It starts the packaged compositor on the
-headless backend with `--bare --no-watch`, and drives it through its own control
-client. It asserts that no policy is mounted for `--bare`, that the fixtures
-mount cleanly, that two xdg clients map at the sizes they asked for and are
-placed inside the output by the fixture layout, that a layer client keeps its
-namespace, anchors, and height, that the fixture's layer override resolves and
-returns to the client's request when an injected key command arrives, that
-real layer configure sizes follow hidden panels and overlapping zone owners,
-that removing owners restores the client's latest request, that screencopy
-pixels reflect background/window stacking and live client layer changes, that
-source reload preserves conflict precedence, that extension state containing a
-cons survives the control round trip, that a live X11 window survives three
-managed/unmanaged cycles with the same identity and regains its layout, that
-unmounting the layout returns both windows to their mapped size at the origin,
-and that `quit` exits zero and removes both sockets.
-
-Grab checks compare resolved ownership with native input through real target
-unmap, remap, destruction, and a failing reducer. Recovery checks inject faults
-during real window lifecycle and metadata changes, then reconcile through a
-later key or source remount. They verify current snapshots, rollback of sibling
-state/effects, bounded pending context, and commands that must not replay.
-`tests/policy-recovery.lisp` exercises the shipped WM, float, workspaces, and
-deck policies through the same fault boundary, including click precedence and
-workspace assignment before a later tag switch.
-
-`tests/wm-native.lisp` adds 115 checks of the shipped desktop with real clients:
-dwindle pixels/hits, layer reservations, ordered workspace movement and focus,
-rule admission, client state requests before/after mapping, named fullscreen
-outputs, drag/fullscreen interaction, hidden-window activation, and reload.
-Rejected detach/remap cannot restore capture from an earlier drag, and a fresh
-press after recovery starts a new interaction.
-`tests/published-state.lisp` checks owned data, copied prior context, refined
-admission, final-command dispatch, rule scope creation, and cycle rollback.
-`tests/desktop-policy.lisp` adds 53 reducer checks for outputless lifetimes,
-fullscreen output boundaries, dwindle rounding, workspace-count changes, and
-input recalculation against an independent focus owner. Buffer detach ends an
-interactive drag, and remapping cannot revive it through a later motion event.
-
-`tests/window-geometry.py` pauses a real xdg client to compare requested placement
-with committed geometry and native hits, then checks fractional output scale,
-atomic size/state acknowledgments, selective dependencies and hide/show.
-`tests/window-geometry.lisp` covers 60 geometry dependency and recovery checks,
-including detach/remap during a rejected transaction without replacing rule
-state or timer ownership. `tests/window-lifetime.py` verifies first admission,
-repeated same-ID detach/remap, retained private rule state, open/close events,
-zero detached geometry, focus and hits, policy updates while hidden, closing
-without a buffer, and activation changes during a delayed remap handshake.
-`tests/pure-geometry.lisp` verifies buffered geometry requests, root-buffer
-scale/transform, buffer-object release, registry retention, and final withdrawal.
-
-The latest native run passes **1041 assertions**. `tests/coordinates.lisp` adds
-captured physical edges at scales 180/120 and 123/120, negative output origins,
-XDG geometry offsets, camera projection, screen-fixed layers, inverse hits
-through rounded pixel strips, and camera ownership/rollback. The pure-Lisp
-backend separately passes camera ownership, its unavailable-hit diagnostic,
-and clean shutdown. `tests/input-mapping.lisp` drives real Wayland input across
-three outputs at scales 2,1,1, checks named output mapping, client coordinates,
-cursor pixels and membership, absence of duplicate cursors, and stationary
-camera retargeting. `tests/pointer-grab.lisp` checks two devices holding one
-button, balanced releases, world-space grab motion, input suppression, and
-stationary focus/cursor restoration. Hardware input still needs verification.
-`tests/keyboard.lisp` adds 79 assertions using two test keyboards routed through
-the native input handlers and a real Wayland client: keymap/repeat delivery,
-held Shift, base-level bindings, layout groups, hotplug, ownership restoration,
-and rejection during preparation of the second device or later binding staging.
-It also checks a real client's complete 33-key focus-enter list and release of
-the extra key on device removal. `tests/held-keys.lisp` adds 32 assertions for
-per-device press/release leases, modifier/layout changes, consumed client edges,
-reload/remount cancellation, failed callbacks/publication, IPC release commands,
-invalid declarations, and teardown. `tests/held-events.lisp` adds twelve standalone
-scenarios for queued-event ownership, source generations, rejected reloads,
-cross-owner held-state settlement, all 36 releases on device removal, and a held
-modifier beyond the former 32-key cache limit surviving keymap replacement. Session-lock
-behavior, physical hardware input, and the remaining advanced input paths still
-need separate verification.
-`tests/keyboard-seat.lisp` adds 39 assertions for cross-device client edge
-balancing, repeated/unmatched events, combined focus-enter keys, device removal
-with a surviving key/modifier snapshot, overlapping consumed and client-routed
-keys, bindings introduced during a physical hold, and keyboard resources
-recreated by a focused client with 34 keys held across two devices. That last
-case also covers the highest evdev keycode, duplicate and consumed holds, and
-subsequent device removal.
-`tests/logical-keyboard.lisp` adds 47 assertions for shared Shift, Caps Lock,
-layout groups and LEDs, raw-key/backend modifier ordering, duplicate modifiers,
-hotplug and last-device replacement, unchanged and changed maps, and rejection
-during physical or logical keymap staging. Both new fixtures reproduced
-failures against the preceding package before passing with the fixes.
-The pure-Lisp backend smoke verifies that unsupported keyboard policy is rejected
-without changing its accepted generation or bindings.
-Its IPC smoke also verifies press/release commands and legacy three-argument
-bindings without physical device metadata.
-`tests/rules-native.lisp` adds 75 assertions with two real clients for Lua
-matching, merged properties, placement/fullscreen/focus refinement, independent
-state and timers, native binding dispatch, held-release cancellation, successful
-reload, callback/backend rollback, metadata match loss, remap, and unmount.
-The standalone `tests/window-rules.lisp` suite checks copied data and callback
-metadata, ownership stability, failed external-lifetime recovery, command
-boundaries, and nested-rule settlement. Deferred nested key/timer/execution
-events are delivered once and cannot survive rejection or instance withdrawal.
-`tests/lua-patterns.lisp` runs 4,572 checks, including 4,440 comparisons against
-the pinned Lua 5.4 interpreter for byte-oriented pattern behavior.
-`tests/window-stacking.lisp` adds 138 assertions for independent ordering,
-visibility and focus with real clients. It checks pixels and hits across owner
-changes, focus without raising, movement, hide/show, fullscreen acknowledgments,
-top layers, reload rejection, and unmap/remap. Hidden focused clients still
-receive keyboard input, while visible unfocused clients do not. Rule scopes and
-timers survive policy hiding and xdg buffer detach, and retire on role destruction. Configuration-commit
-samples verify that the candidate stack is rendered before publication and that
-backend rejection restores the previous pixels and ownership.
-`tests/xwayland-idle.lisp` lets the lazy X server stop, reconfigures outputs,
-then checks X11 restart and output ownership restoration. Native X11 writes
-check the live XWM connection, and each restart restores its seat association.
-`tests/output-settlement.lisp` verifies prospective output facts, placement
-quantization, restoration, and rejection of an output dependency cycle without
-changing native hit testing or captured pixels. `tests/output-revisions.lisp`
-checks consecutive command/reload commits before their confirmations drain,
-including exact screencopy dimensions; its isolated run passes 14 assertions.
-`tests/layer-settlement.lisp` and `tests/workarea-recovery.lisp` verify prospective
-layer geometry, per-output reservations, shared fractional pixel/input edges,
-cycle rejection without client configures, and recovery of consumers that read
-only workareas. The layer fixture also passes 41 assertions in isolation.
-`tests/presentation.lisp` inspects the buffer passed to the output configuration
-commit, using a test-only preload probe. Its 21 isolated assertions verify the
-first frame's candidate camera, placement, output origin/scale, and layer
-geometry, then inject a rejected backend commit and check rollback pixels,
-native hit testing, and absence of client configures. The preceding ABI 8 build
-fails the first-frame and extra-layer-configure checks.
-`tests/scene-publication.lisp` passes 29 assertions in isolation. It checks
-simultaneous panel reservations, final client sizes, camera/window pixels and
-hits, quiet unrelated input, cycle rejection, and unmount. A test-only binding
-allocation failure preserves owned facts and native hits; retry and unmount
-succeed. ABI 9 fails the mount/unmount configure checks by sending intermediate
-stretched-layer sizes, then stops on that allocation failure.
-The Nix check also runs `tests/empty-presentation.py` against the native ABI: a
-transaction with no remaining outputs must still publish its camera, and
-releasing its staging data must preserve that publication.
-`tests/layer-lifecycle.py` removes and restores the final headless output around
-a real mapped panel. It verifies that the unplaced panel stays in the preview,
-accepts and releases ownership while hidden, cannot take exclusive keyboard
-focus, and returns with the client's reservation without extra configures.
-It also creates a panel while no output exists and remaps an existing panel
-across output loss. Each changes its request before output return and receives
-exactly the configure needed to map. The preceding build never configures
-these initialized, unmapped panels after their second bufferless commit.
-`tests/timer-scheduler.lisp` checks cancellation of already-due events, private
-delivery during pending external reconciliation, fairness across bounded
-passes, source reload during delivery, recurrence after successful and failed
-handlers, preserved deadlines during preparation, and resource-budget rejection.
-`tests/timers.lisp` adds 26 packaged API assertions for independent owners,
-one-shot commands, cancellation, source reload, failure consumption, duplicate
-rejection, and native allocation failure before timer adoption, followed by retry.
-An isolated pure Lisp backend smoke test also verifies that one-shot delivery
-does not rearm during quiet inspection and that unmount empties its registry.
-The execution checks currently comprise 38 packaged API assertions in
-`tests/executions.lisp`, five helper checks in `tests/execution-helper.py`, and
-ten direct scheduler scenarios in `tests/execution-scheduler.lisp`. The pure
-Lisp smoke observes one private `:exec` completion with exit code 7 and `"pure"`
-stdout, preserves its state during quiet inspection, and leaves both execution
-registries empty after unmount. These execution checks are included in the
-current full-suite run, which completed with 1041 assertions passing. The process
-supervisor checks add 29 packaged API assertions in `tests/processes.lisp`, four
-process-helper groups in `tests/process-helper.py`, and twelve direct scheduler
-scenarios in `tests/process-scheduler.lisp`; they cover shell/argv spawning,
-source-relative cwd and canonical environment overrides, service restart and
-reload policy, session-owned background groups, failure suppression, and
-shutdown cleanup. The scheduler checks also reject excess declarations across
-owners and a third generation beyond 128 live session processes without changing
-accepted state. A pure Lisp backend smoke retained service and session-child
-identities across reload, cancelled the service on unmount, and stopped the
-remaining session child on shutdown.
-Activation and imperative spawning add 36 packaged assertions in
-`tests/activation.lisp`: real valid/stale pointer serials, validity across later
-focus changes, urgency before/after map, original-deadline expiry, single use,
-reducer/native-publication rollback, request commands, env overrides, shipped
-focus ownership, and session cleanup. `tests/activation-helper.py` checks the
-native token pool, revocation, ten-second expiry, and destruction with live
-tokens. A pure Lisp backend smoke also verified imperative argv/env/cwd, reload
-retention, unmount survival, empty pending reservations, and shutdown cleanup.
-Earlier full runs intermittently timed out waiting for the first X11 window to
-map without a runtime error, including a run after scene staging was
-generalized; the latest full run completed without that timeout. The intermittent
-failure remains unresolved.
-Rendering redraws full frames. Policy output changes now render an immutable
-candidate presentation before publishing scene geometry or sending client
-configures. Scene-only transactions publish the same prepared geometry once,
-with input bindings allocated in advance and grabs applied against the final
-scene. Unchanged layer sizes do not send duplicate configures. Allocation
-recovery after publication, backend-initiated output
-changes, and atomic commits across multiple GPUs still need work and validation.
-
-From the working tree:
-
-```sh
-nix develop -c ./tests/run-integration.sh
-```
-
-Observed on x86_64 Linux, in addition to the check above:
-
-- `nix build` and `nix flake check` completed successfully; the x86_64 check
-  reported 1041 passed and 0 failed. The aarch64 package was evaluated, not built.
-- Real Foot clients mapped, tiled inside a layer panel's exclusive zone, took
-  focus, and were restored to their mapped dimensions when the layout unit was
-  unmounted.
-- An owned fullscreen effect sized a real client to the output and reverting it
-  restored the mapped size, with no native error.
-- A policy-owned grab started from an injected key, moved a window by the
-  reported delta, and released on the injected button release.
-- Editing a mounted source reloaded it without a command, and making a source
-  unreadable kept the previous policy and reported once.
-- The pure-Lisp backend still loads and answers `inspect` with the shipped
-  policy mounted. A real xdg client also mapped, resized once, stayed quiet
-  through unrelated binding changes, and restored its baseline size on unmount;
-  the client and backend exited without runtime errors.
-
-- A real X11 client (xeyes) mapped through Xwayland as an ordinary window,
-  carrying `WM_CLASS` as its app id, and was tiled; `xwininfo` confirmed the
-  X server had applied the configure. `command commands close` made it exit
-  through `WM_DELETE_WINDOW`. Xwayland stopped when the last X client left and
-  restarted on the next connection, giving the window a new id. A probe window
-  with `override_redirect` mapped and unmapped without ever appearing in
-  `inspect`, and a child launched by policy reported `DISPLAY` and
-  `WAYLAND_DISPLAY` of this instance. `quit` exited zero and removed the X
-  socket along with the control and Wayland ones.
-
-Hardware DRM, physical input devices (libinput pointer and keyboard), failure
-recovery for native allocation, hardware output rotation, and hardware mirroring/VRR remain
-unverified. X11 physical input, X11 windows on hardware, and the placement of an
-X11 application that resizes itself are unverified too; Xwayland never received
-a real key or button in these sessions.
-
-`tests/output-hotplug.py` adds and removes real headless backend outputs and
-observes their enable commits, Wayland globals and shell pixels. It covers
-startup and latent disablement, preferred-mode fallback after a changed monitor
-returns, admission with no preferred/current mode, and a partial backend failure.
-Unrelated owners remain usable while the rejected connector stays inactive;
-declaration changes and owner removal recover it, and owned arrival processes
-run once per connector lifetime through recovery.
-
-`tests/output-requests.py` sends real backend request signals and checks that
-their callbacks leave native geometry unchanged. The first accepted buffer
-contains the settled shell and client pixels. Coverage includes coalescing,
-fractional scale, transforms, reducer and partial backend rejection, stable
-client configuration and output membership, independent owners, and restoration
-of underlying settings after mode-only and scale-only requests. Commit-callback
-requests verify that a successful request's baseline survives a newer rejection
-and that an owner's provisional settings cannot enter the backend baseline.
-Requests arriving during failed owner mounts, private IPC actions, and output
-commits are delivered after rollback. The next accepted buffer already contains
-the new request's settled UI; rejected private state and replies stay rejected.
-A request on another connector preserves the unchanged connector's failure hold.
-`tests/output-requests-nested.py` also resizes a real nested Wayland compositor
-through its parent's policy, checking shell pixels, rejection and recovery.
-
-`tests/native-event-fairness.py` exercises a finite chain of actual commit
-callbacks. Read-only IPC, an owned timer, and an asynchronous completion progress
-before the chain ends; shutdown interrupts a second chain and retires its
-resources. `tests/native-event-scheduler.lisp` uses the real native FIFO with
-synthetic lifetime payloads to check lossless yields, stop handling, observation
-fences, and cancellation of a later timer after an earlier callback withdraws
-its window scope.
-
-`tests/x11-queued-events.py` verifies X11 admission when XCB has already buffered XWM events.
-A test-only preload probe buffers real XWM events through a synchronous reply,
-confirms that the fd is unreadable, then observes delivery through Wayland's
-actual checked callback. It requires events for the real client's XID, window
-admission, and clean removal. The preceding unpatched package deterministically
-fails admission; the patched package passes. The fix is in
-`patches/wlroots-xwm-queued-events.patch` and is used by the package and development shell.
-
-The retained shell adds 165 layout checks in `tests/ui-layout.lisp` and real
-compositor checks in `tests/shell-ui.py`: shaped text and vector pixels, two
-outputs with fractional scaling, reservations that resize a client, private
-clicks, unchanged texture reuse, candidate output buffers, rollback, failed and
-successful reload, fresh remount, and zero retained UI resources after unmount.
-PNG/JPEG/SVG pixel checks cover fractional scaling, alpha, tint, theme lookup,
-missing-asset fallbacks, source-relative isolation, and immutable caches.
-An injected output commit failure preserves accepted pixels and releases new
-assets; retry verifies new asset pixels in the first committed output buffer.
-Source reload refreshes both successful and failed lookups. The native asset
-suite (`tests/ui-assets-native.py`) also checks ownership, clipped references,
-candidate aborts, output loss, decoder formats, and resource limits.
-Two-click batches verify that a redraw or a hitbox resize preserves both queued
-callbacks, while removing the handler on the first click cancels the second.
-Held-button tests cover shell takeover, canceled releases across two devices,
-pointer removal, and ordinary empty-space button pairs. Both takeover and
-cross-device cancellation regressions fail against their preceding builds.
-`tests/ui-native.py` separately checks immutable cache ordering, callback tokens,
-redraw/movement continuity, command and source replacement, abort, teardown,
-and rejection of callbacks for a departed output.
-`tests/shell-output-lifetime.lisp` replaces a real headless output before draining
-its events, checking restoration at identical geometry without reviving old
-callbacks or rebuilding textures for unchanged confirmations.
-
-Owned file watch checks cover direct inotify behavior and overflow recovery,
-private scheduler delivery and cancellation, native publication rollback,
-source-relative content and shell pixels, repeated reload without descriptor
-growth, and actual pure-backend observation (`tests/watch-helper.py`,
-`tests/watch-scheduler.lisp`, `tests/watches.py`, `tests/watch-pure.lisp`).
-
 ## Source and limits
 
 - `src/`: Common Lisp API, state/effect runtime, native bindings, control, CLI.
@@ -1675,7 +1369,7 @@ growth, and actual pure-backend observation (`tests/watch-helper.py`,
 - `native/output.c`: output lifecycle and staged mode/scale/position commits.
 - `native/space.c`: physical transforms, rendering, hit testing, output membership,
   and frame callbacks. Scene trees retain client lifetime and stacking; frames
-  currently redraw in full.
+  redraw in full.
 - `native/window.c`: xdg toplevels and popups, X11 surfaces through Xwayland.
 - `native/layer.c`: layer-shell surfaces and arrangement.
 - `native/ui.c`, `src/ui.lisp`: retained shell textures, text/vector rasterization,
@@ -1690,32 +1384,28 @@ growth, and actual pure-backend observation (`tests/watch-helper.py`,
   owned watch preparation, bounded content delivery, and cleanup (watch ABI 1).
 - `builtins/desktop.lisp`: replaceable default policy.
 - `examples/`: alternative policies, each mountable on its own.
-- `tests/`: the end-to-end check, its fixtures, and its Wayland and X11 clients.
 - `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
 - `DESKTOP.md`, `FINIX.md`, `OUTPUTS.md`, `STARTUP.md`, and
   `WORK.md` are historical checkpoints from the prototype work. They name local
   paths and predate the move to the repository root.
 
-Implemented protocols cover ordinary xdg-shell windows and popups, shared-memory
-buffers, subsurfaces, clipboard selection, viewporter, fractional-scale-v1,
-xdg-output, layer-shell, wlr-virtual-pointer-v1, legacy wlr-screencopy-v1, and X11 clients through wlroots'
-Xwayland and its XWM. Legacy screencopy can include or exclude software cursors
-without changing the displayed cursor. Pending copies wait through output
-transactions and rollback, then capture the accepted scene. Cropped requests
-use output-local logical coordinates, clip to the output, and report damage
-relative to the captured buffer. Headless shared-memory tests cover these paths;
-hardware DMA-BUF capture remains unverified. The screenshot UI, modern image-copy
-capture, and portal integration are still missing. Missing desktop features include session
-locking, portals, input methods, touch and tablets, owned output rotation,
-primary selection, and window decorations.
-Popup placement does not constrain menus to output bounds. A policy that never
-releases a grab keeps the pointer until the grabbed surface disappears. A layer
-surface's anchors, margins, and size stay the client's request: policy can move
-it between layers, change its exclusive zone and keyboard interactivity, and
-hide it, but not place it freely. Do not use this as a secure daily desktop.
+Implemented protocols cover xdg-shell windows and popups (constrained to the
+output), xdg-decoration and KDE server decoration, shared-memory and DMA-BUF
+buffers, subsurfaces, clipboard, primary selection, wlr and ext data control,
+drag and drop, viewporter, fractional-scale-v1, xdg-output, layer-shell,
+session lock, idle notify and inhibit, gamma control, presentation time,
+tearing control, linux-drm-syncobj, relative pointer, pointer constraints,
+virtual pointer and keyboard, xdg-activation, wlr and ext foreign toplevels,
+wlr-screencopy-v1 and ext-image-copy-capture (outputs and toplevels),
+ext-background-effect-v1, and X11 clients through wlroots' Xwayland and its
+XWM. The ScreenCast portal is the Rust `xdg-desktop-portal-tomoe` in
+`portal/`, carried over unchanged from the previous tomoe and installed with
+its `.portal`, `portals.conf` and D-Bus service files. Input methods, touch and
+tablets are missing. A policy that never releases a grab keeps the pointer until
+the grabbed surface disappears. A layer surface's anchors, margins, and size
+stay the client's request.
 
 Tomoe and ShojiWM informed the separation of mechanism from policy and explicit
 ownership of reactive effects. Local reference clones live in `ref/`, which
 is listed in the workspace `.gitignore`. The wlroots tinywl example and 0.20
-headers informed native API use. This implementation does not copy either
-reference compositor's Rust code.
+headers informed native API use.
