@@ -41,7 +41,7 @@ static bool create_scene_trees(struct tomoe *s) {
     return s->window_tree && s->fullscreen_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
-    wlr_log_init(WLR_ERROR, NULL);
+    wlr_log_init(getenv("TOMOE_DEBUG") ? WLR_DEBUG : WLR_ERROR, NULL);
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
