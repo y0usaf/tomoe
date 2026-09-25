@@ -78,6 +78,7 @@ if [ ! -f build/xdg-decoration-unstable-v1-protocol.c ] || [ "$decoration_xml" -
   wayland-scanner server-header "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.h
   wayland-scanner private-code "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.c
   wayland-scanner private-code "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.c
+  wayland-scanner server-header "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.h
 fi
 if [ ! -f build/server-decoration-protocol.c ] || [ "$kde_xml" -nt build/server-decoration-protocol.c ]; then
   wayland-scanner server-header "$kde_xml" build/server-decoration-protocol.h

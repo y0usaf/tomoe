@@ -1270,7 +1270,7 @@ void layer_destroyed(struct layer_surface *ls) {
     free(l);
     arrange_layers(s);
 }
-void layer_popup_created(struct layer_surface *ls, struct wlr_xdg_popup *popup) {
+void layer_popup_created(struct layer_surface *ls, struct xdg_popup *popup) {
     struct layer *l = ls->data;
     popup_create(popup, l->tree);
 }

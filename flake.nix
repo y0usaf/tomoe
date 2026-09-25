@@ -169,6 +169,9 @@
               ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
               build/xdg-shell-protocol.c
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+              ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+              build/xdg-shell-protocol.h
+            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
               ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
               build/ext-foreign-toplevel-list-v1-protocol.h
             ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \

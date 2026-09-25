@@ -258,7 +258,7 @@ struct tomoe {
     size_t activation_token_count;
     struct wl_list activation_pending;
     size_t activation_pending_count;
-    struct wl_listener new_output, new_input, new_toplevel, new_popup;
+    struct wl_listener new_output, new_input;
     struct wl_listener motion, absolute, button, axis, frame;
     struct wl_listener new_virtual_pointer, new_virtual_keyboard;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
@@ -308,6 +308,7 @@ struct tomoe {
     struct wlr_idle_inhibit_manager_v1 *idle_inhibit;
     struct wl_list tearings;
     struct wl_list gammas, decorations;
+    struct popup_grab *popup_grab;
     struct wlr_pointer_constraints_v1 *pointer_constraints;
     struct wlr_pointer_constraint_v1 *active_constraint;
     struct wl_list foreigns, foreign_managers, foreign_lists;
@@ -331,6 +332,101 @@ struct layer_state {
     int request_exclusive_zone;
     uint32_t exclusive_edge;
 };
+struct xdg_surface;
+struct popup_grab;
+struct toplevel_state {
+    bool maximized, fullscreen, activated, resizing;
+    int32_t width, height, min_width, min_height, max_width, max_height;
+};
+struct xdg_toplevel_request {
+    uint32_t serial, edges;
+};
+struct xdg_toplevel {
+    struct wl_resource *resource;
+    struct xdg_surface *base;
+    char *title, *app_id;
+    struct toplevel_state pending, current, scheduled;
+    struct {
+        bool maximized, fullscreen, minimized;
+        struct wlr_output *fullscreen_output;
+        struct wl_listener fullscreen_output_destroy;
+    } requested;
+    struct wlr_surface_synced synced;
+    struct {
+        struct wl_signal destroy, set_title, set_app_id, request_maximize, request_fullscreen,
+            request_minimize, request_move, request_resize;
+    } events;
+};
+struct xdg_popup_state {
+    struct wlr_box geometry;
+    bool reactive;
+};
+struct xdg_popup {
+    struct wl_resource *resource;
+    struct xdg_surface *base;
+    struct wlr_surface *parent;
+    struct wl_list link, grab_link;
+    bool grabbed;
+    struct xdg_popup_state pending, current;
+    struct {
+        struct wlr_box geometry;
+        struct wlr_xdg_positioner_rules rules;
+        bool reposition;
+        uint32_t token;
+    } scheduled;
+    struct wlr_surface_synced synced;
+    struct { struct wl_signal destroy, reposition; } events;
+};
+struct xdg_surface_state {
+    struct wlr_box geometry;
+    uint32_t configure_serial, committed;
+};
+struct xdg_configure {
+    uint32_t serial;
+    struct toplevel_state toplevel;
+    struct wlr_box popup_geometry;
+    bool reactive;
+};
+#define XDG_CONFIGURES 16
+struct xdg_surface {
+    struct wl_resource *resource, *client, *role_resource;
+    struct tomoe *server;
+    struct wl_list link, popups;
+    struct wlr_surface *surface;
+    struct xdg_toplevel *toplevel;
+    struct xdg_popup *popup;
+    int role;
+    struct wl_listener role_resource_destroy, scene_destroy;
+    bool initialized, initial_commit, configured;
+    struct wlr_box geometry;
+    struct xdg_surface_state pending, current;
+    struct wlr_surface_synced synced;
+    struct xdg_configure configures[XDG_CONFIGURES];
+    size_t configure_count;
+    struct wl_event_source *configure_idle;
+    uint32_t scheduled_serial;
+    struct wlr_scene_tree *scene, *scene_surface;
+    void *data;
+    struct { struct wl_signal destroy, configure; } events;
+};
+bool xdg_shell_listen(struct tomoe *s);
+void xdg_shell_finish(struct tomoe *s);
+struct xdg_surface *xdg_surface_from_resource(struct wl_resource *resource);
+struct xdg_toplevel *xdg_toplevel_from_resource(struct wl_resource *resource);
+struct xdg_popup *xdg_popup_from_resource(struct wl_resource *resource);
+struct xdg_surface *xdg_surface_try_from_wlr_surface(struct wlr_surface *surface);
+struct xdg_toplevel *xdg_toplevel_try_from_wlr_surface(struct wlr_surface *surface);
+struct wlr_scene_tree *xdg_surface_scene(struct wlr_scene_tree *parent, struct xdg_surface *xdg);
+uint32_t xdg_surface_schedule_configure(struct xdg_surface *xdg);
+uint32_t xdg_toplevel_set_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height);
+uint32_t xdg_toplevel_set_activated(struct xdg_toplevel *toplevel, bool activated);
+uint32_t xdg_toplevel_set_maximized(struct xdg_toplevel *toplevel, bool maximized);
+uint32_t xdg_toplevel_set_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen);
+void xdg_toplevel_close(struct xdg_toplevel *toplevel);
+void xdg_popup_destroy(struct xdg_popup *popup);
+void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct wlr_box *box);
+void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
+void xdg_popup_created(struct tomoe *s, struct xdg_popup *popup);
 enum { LAYER_STATE_SIZE = 1, LAYER_STATE_ANCHOR = 2, LAYER_STATE_ZONE = 4, LAYER_STATE_MARGIN = 8,
     LAYER_STATE_KEYBOARD = 16, LAYER_STATE_LAYER = 32 };
 struct layer_surface_state {
@@ -356,7 +452,7 @@ bool layer_shell_listen(struct tomoe *s);
 uint32_t layer_surface_configure(struct layer_surface *ls, uint32_t width, uint32_t height);
 void layer_created(struct tomoe *s, struct layer_surface *ls);
 void layer_destroyed(struct layer_surface *ls);
-void layer_popup_created(struct layer_surface *ls, struct wlr_xdg_popup *popup);
+void layer_popup_created(struct layer_surface *ls, struct xdg_popup *popup);
 struct layer {
     struct target target;
     struct wl_list link;
@@ -453,8 +549,7 @@ struct window *find_window_registered(struct tomoe *s, uint32_t id);
 struct window *find_window_any(struct tomoe *s, uint32_t id);
 uint32_t find_window_id_for_surface(struct tomoe *s, struct wlr_surface *surface);
 bool window_surface_mapped(struct tomoe *s, struct wlr_surface *surface);
-void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent);
-void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell);
+void popup_create(struct xdg_popup *xdg, struct wlr_scene_tree *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);

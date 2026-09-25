@@ -6,7 +6,7 @@ struct decoration {
     struct wl_resource *resource;
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_xdg_toplevel *toplevel;
+    struct xdg_toplevel *toplevel;
     uint32_t requested;
     struct wl_listener configure, toplevel_destroy;
 };
@@ -41,7 +41,7 @@ static void request_mode(struct wl_resource *resource, uint32_t mode) {
     struct decoration *d = wl_resource_get_user_data(resource);
     if (!d) return;
     d->requested = mode;
-    if (d->toplevel->base->initialized) wlr_xdg_surface_schedule_configure(d->toplevel->base);
+    if (d->toplevel->base->initialized) xdg_surface_schedule_configure(d->toplevel->base);
 }
 
 static void set_mode(struct wl_client *client, struct wl_resource *resource, uint32_t mode) {
@@ -71,7 +71,7 @@ static const struct zxdg_toplevel_decoration_v1_interface decoration_impl = {
 static void get_toplevel_decoration(struct wl_client *client, struct wl_resource *manager,
         uint32_t id, struct wl_resource *toplevel_resource) {
     struct tomoe *s = wl_resource_get_user_data(manager);
-    struct wlr_xdg_toplevel *toplevel = wlr_xdg_toplevel_from_resource(toplevel_resource);
+    struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(toplevel_resource);
     struct wl_resource *resource = wl_resource_create(client,
         &zxdg_toplevel_decoration_v1_interface, wl_resource_get_version(manager), id);
     if (!resource) {
@@ -79,6 +79,7 @@ static void get_toplevel_decoration(struct wl_client *client, struct wl_resource
         return;
     }
     wl_resource_set_implementation(resource, &decoration_impl, NULL, resource_destroyed);
+    if (!toplevel) return;
     struct decoration *d;
     wl_list_for_each(d, &s->decorations, link) {
         if (d->toplevel != toplevel) continue;
@@ -103,7 +104,7 @@ static void get_toplevel_decoration(struct wl_client *client, struct wl_resource
     wl_list_insert(&s->decorations, &d->link);
     listen(&d->configure, &toplevel->base->events.configure, configured);
     listen(&d->toplevel_destroy, &toplevel->events.destroy, toplevel_destroyed);
-    if (toplevel->base->initialized) wlr_xdg_surface_schedule_configure(toplevel->base);
+    if (toplevel->base->initialized) xdg_surface_schedule_configure(toplevel->base);
 }
 
 static const struct zxdg_decoration_manager_v1_interface manager_impl = {

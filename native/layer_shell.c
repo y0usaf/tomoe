@@ -32,8 +32,8 @@ static struct layer_shell_surface *from_surface(struct wlr_surface *surface) {
 }
 
 static void popups_destroy(struct layer_surface *ls) {
-    struct wlr_xdg_popup *popup, *next;
-    wl_list_for_each_safe(popup, next, &ls->popups, link) wlr_xdg_popup_destroy(popup);
+    struct xdg_popup *popup, *next;
+    wl_list_for_each_safe(popup, next, &ls->popups, link) xdg_popup_destroy(popup);
 }
 
 static void surface_free(struct layer_shell_surface *l) {
@@ -167,7 +167,7 @@ static void set_keyboard_interactivity(struct wl_client *client, struct wl_resou
 static void get_popup(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *popup_resource) {
     struct layer_shell_surface *l = from_resource(resource);
-    struct wlr_xdg_popup *popup = wlr_xdg_popup_from_resource(popup_resource);
+    struct xdg_popup *popup = xdg_popup_from_resource(popup_resource);
     if (!l || !popup) return;
     if (popup->parent) {
         wl_resource_post_error(resource, -1, "xdg_popup already has a parent");

@@ -325,7 +325,7 @@ static double window_radius(struct tomoe *s, const struct target *t, const struc
 }
 static bool toplevel_surface(struct wlr_surface *surface) {
     struct wlr_surface *root = wlr_surface_get_root_surface(surface);
-    return wlr_xdg_toplevel_try_from_wlr_surface(root);
+    return xdg_toplevel_try_from_wlr_surface(root);
 }
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;

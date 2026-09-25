@@ -5,7 +5,7 @@ struct window {
     struct target target;
     struct wl_list link;
     struct tomoe *server;
-    struct wlr_xdg_toplevel *xdg;
+    struct xdg_toplevel *xdg;
     struct wlr_scene_tree *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
     struct wl_listener request_move, request_resize, request_minimize;
@@ -23,7 +23,7 @@ struct window {
     double move_from_x, move_from_y;
 };
 struct popup {
-    struct wlr_xdg_popup *xdg;
+    struct xdg_popup *xdg;
     struct wlr_scene_tree *tree;
     struct tomoe *server;
     struct wl_listener commit, destroy, reposition;
@@ -118,7 +118,7 @@ static void configure_xdg(struct window *w) {
     if (w->configured && w->configured_scale == w->target.scale &&
             w->configured_width == width && w->configured_height == height) return;
     set_surface_scale(w->xdg->base->surface, w->target.scale);
-    wlr_xdg_toplevel_set_size(w->xdg, width, height);
+    xdg_toplevel_set_size(w->xdg, width, height);
     w->configured = true;
     w->configured_scale = w->target.scale;
     w->configured_width = width;
@@ -180,7 +180,7 @@ static const char *app_id_of(struct window *w) {
     return w->xdg_app_id ? w->xdg_app_id : "";
 }
 static void window_activate(struct window *w, bool activated) {
-    if (w->xdg->base->initialized) wlr_xdg_toplevel_set_activated(w->xdg, activated);
+    if (w->xdg->base->initialized) xdg_toplevel_set_activated(w->xdg, activated);
 }
 static void window_event(struct window *w, const char *type, const char *request) {
     struct event *event; size_t size;
@@ -314,7 +314,7 @@ void tomoe_focus(struct tomoe *s, uint32_t id) {
 void tomoe_close(struct tomoe *s, uint32_t id) {
     struct window *w = find_window_registered(s, id);
     if (!w) return;
-    wlr_xdg_toplevel_send_close(w->xdg);
+    xdg_toplevel_close(w->xdg);
 }
 const char *tomoe_window_identifier(struct tomoe *s, uint32_t id) {
     struct window *w = find_window_registered(s, id);
@@ -327,10 +327,10 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
     w->desired_maximize = maximize != 0;
     if (!w->xdg->base->initialized) return;
     if (w->xdg->scheduled.fullscreen != (fullscreen != 0)) {
-        wlr_xdg_toplevel_set_fullscreen(w->xdg, fullscreen != 0);
+        xdg_toplevel_set_fullscreen(w->xdg, fullscreen != 0);
     }
     if (w->xdg->scheduled.maximized != (maximize != 0)) {
-        wlr_xdg_toplevel_set_maximized(w->xdg, maximize != 0);
+        xdg_toplevel_set_maximized(w->xdg, maximize != 0);
     }
 }
 
@@ -361,12 +361,12 @@ static bool interactive_allowed(struct window *w, uint32_t serial) {
 }
 static void window_move(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, request_move);
-    struct wlr_xdg_toplevel_move_event *event = data;
+    struct xdg_toplevel_request *event = data;
     if (interactive_allowed(w, event->serial)) request_event(w, "move", -1, NULL, 0);
 }
 static void window_resize(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, request_resize);
-    struct wlr_xdg_toplevel_resize_event *event = data;
+    struct xdg_toplevel_request *event = data;
     uint32_t edges = event->edges ? event->edges : WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT;
     if (interactive_allowed(w, event->serial)) request_event(w, "resize", -1, NULL, edges);
 }
@@ -563,16 +563,16 @@ static void window_commit(struct wl_listener *listener, void *data) {
     window_update_scale(w);
     if (w->xdg->base->initial_commit) {
         if (!w->admitted) {
-            wlr_xdg_toplevel_set_size(w->xdg, 0, 0);
+            xdg_toplevel_set_size(w->xdg, 0, 0);
             schedule_scene(w->server);
             return;
         }
         int width = positive_logical_size(w->desired_width, w->target.scale);
         int height = positive_logical_size(w->desired_height, w->target.scale);
-        wlr_xdg_toplevel_set_size(w->xdg, width, height);
-        wlr_xdg_toplevel_set_fullscreen(w->xdg, w->desired_fullscreen);
-        wlr_xdg_toplevel_set_maximized(w->xdg, w->desired_maximize);
-        wlr_xdg_toplevel_set_activated(w->xdg, w->server->focused == w->target.id);
+        xdg_toplevel_set_size(w->xdg, width, height);
+        xdg_toplevel_set_fullscreen(w->xdg, w->desired_fullscreen);
+        xdg_toplevel_set_maximized(w->xdg, w->desired_maximize);
+        xdg_toplevel_set_activated(w->xdg, w->server->focused == w->target.id);
         w->configured = true;
         w->configured_scale = w->target.scale;
         w->configured_width = width;
@@ -620,7 +620,7 @@ static void window_app_id(struct wl_listener *listener, void *data) {
 }
 static void window_request(struct window *w, const char *request) {
     if (!cache_xdg_requested(w, request)) return;
-    if (w->xdg->base->initialized) wlr_xdg_surface_schedule_configure(w->xdg->base);
+    if (w->xdg->base->initialized) xdg_surface_schedule_configure(w->xdg->base);
     if (w->mapped || w->admitted) window_event(w, "metadata", request);
 }
 static void window_maximize(struct wl_listener *listener, void *data) {
@@ -651,9 +651,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     free(w->xdg_fullscreen_output);
     free(w);
 }
-static void new_toplevel(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_toplevel);
-    struct wlr_xdg_toplevel *xdg = data;
+void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *xdg) {
     if (s->next_id == UINT32_MAX) { fail(s, "window IDs exhausted"); return; }
     struct window *w = calloc(1, sizeof(*w));
     if (!w) { wl_resource_post_no_memory(xdg->resource); return; }
@@ -663,7 +661,7 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
     w->target.alpha = 1;
     w->target.scale = reference_scale(s);
     set_surface_scale(xdg->base->surface, w->target.scale);
-    w->tree = wlr_scene_xdg_surface_create(s->window_tree, xdg->base);
+    w->tree = xdg_surface_scene(s->window_tree, xdg->base);
     if (!w->tree) { free(w); wl_resource_post_no_memory(xdg->resource); return; }
     w->tree->node.data = &w->target;
     xdg->base->data = w->tree;
@@ -721,7 +719,7 @@ static void popup_unconstrain(struct popup *p) {
         }
         if (best < 0) return;
     }
-    wlr_xdg_popup_unconstrain_from_box(p->xdg, &box);
+    xdg_popup_unconstrain_from_box(p->xdg, &box);
 }
 static void popup_reposition(struct wl_listener *listener, void *data) {
     struct popup *p = wl_container_of(listener, p, reposition);
@@ -734,7 +732,7 @@ static void popup_commit(struct wl_listener *listener, void *data) {
         set_surface_scale(p->xdg->base->surface, target->scale);
     if (p->xdg->base->initial_commit) {
         popup_unconstrain(p);
-        wlr_xdg_surface_schedule_configure(p->xdg->base);
+        xdg_surface_schedule_configure(p->xdg->base);
     }
     if (p->server) schedule_scene(p->server);
 }
@@ -744,7 +742,7 @@ static void popup_destroy(struct wl_listener *listener, void *data) {
     detach(&p->commit); detach(&p->destroy); detach(&p->reposition); free(p);
     if (s) schedule_scene(s);
 }
-void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent) {
+void popup_create(struct xdg_popup *xdg, struct wlr_scene_tree *parent) {
     struct popup *p = calloc(1, sizeof(*p));
     if (!p) { wl_resource_post_no_memory(xdg->resource); return; }
     p->xdg = xdg;
@@ -753,22 +751,17 @@ void popup_create(struct wlr_xdg_popup *xdg, struct wlr_scene_tree *parent) {
         p->server = server_for_target(target);
         set_surface_scale(xdg->base->surface, target->scale);
     }
-    p->tree = wlr_scene_xdg_surface_create(parent, xdg->base);
+    p->tree = xdg_surface_scene(parent, xdg->base);
     xdg->base->data = p->tree;
     if (!p->tree) { free(p); wl_resource_post_no_memory(xdg->resource); return; }
     listen(&p->commit, &xdg->base->surface->events.commit, popup_commit);
     listen(&p->destroy, &xdg->events.destroy, popup_destroy);
     listen(&p->reposition, &xdg->events.reposition, popup_reposition);
 }
-static void new_popup(struct wl_listener *listener, void *data) {
-    struct wlr_xdg_popup *xdg = data;
+void xdg_popup_created(struct tomoe *s, struct xdg_popup *xdg) {
     if (!xdg->parent) return;
-    struct wlr_xdg_surface *parent = wlr_xdg_surface_try_from_wlr_surface(xdg->parent);
-    if (!parent || !parent->data) { wlr_xdg_popup_destroy(xdg); return; }
+    struct xdg_surface *parent = xdg_surface_try_from_wlr_surface(xdg->parent);
+    if (!parent || !parent->data) { xdg_popup_destroy(xdg); return; }
     popup_create(xdg, parent->data);
 }
 
-void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell) {
-    listen(&s->new_toplevel, &shell->events.new_toplevel, new_toplevel);
-    listen(&s->new_popup, &shell->events.new_popup, new_popup);
-}
