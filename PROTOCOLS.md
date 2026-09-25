@@ -20,16 +20,11 @@ moves as one step when its members share wlroots state that cannot be split.
 | wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
 | xdg-shell v3 | `native/xdg_shell.c`; positioner math from wlroots' pure `wlr_xdg_positioner_rules` functions until phase 3 | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
 | ext-idle-notify, idle-inhibit | `native/idle.c`; the seat argument is accepted and unused, since Tomoe has one seat | `wlr_idle_notifier_v1`, `wlr_idle_inhibit_v1` |
-| relative-pointer, pointer-constraints | `native/pointer.c`; reads the focused client from `wlr_seat` until the seat moves | both wlroots managers |
-
-## Seat
-
-wl_seat, data-device and drag and drop, primary selection, wlr and ext data
-control, relative pointer, pointer constraints, virtual keyboard and pointer.
-Protocols that only read seat state or call `wlr_seat`'s public API move one at a
-time first; wl_seat and data-device, which share its internals, move last. This removes the two keyboard patches: Tomoe's logical keyboard
-already tracks every held key and builds its own enter arrays. xdg popup grabs
-move from `wlr_seat`'s grab API onto Tomoe's seat in the same step.
+| relative-pointer, pointer-constraints | `native/pointer.c` | both wlroots managers |
+| wl_seat v9 | `native/seat.c`: pointer and keyboard focus, grabs, cursor role, enter keys from Tomoe's held-key set; touch is advertised never and stays inert | `wlr_seat`, both keyboard patches |
+| wl_data_device v3 with drag and drop, primary-selection, wlr data-control v2, ext data-control | `native/selection.c`, one source and offer type for all four; the drag icon is a Tomoe scene tree | `wlr_data_device`, `wlr_primary_selection_v1`, both data-control managers, `wlr_scene_drag_icon` |
+| virtual-keyboard, wlr-virtual-pointer | `native/virtual.c`, still producing `wlr_keyboard` and `wlr_pointer` devices for input.c | both wlroots managers |
+| xdg popup grabs | `native/xdg_shell.c` on Tomoe's seat grabs | `wlr_seat` grab API |
 
 ## Surface core
 

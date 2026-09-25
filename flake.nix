@@ -11,20 +11,9 @@
         "aarch64-linux"
       ];
       eachSystem = nixpkgs.lib.genAttrs systems;
-      wlrootsOverlay = final: prev: {
-        wlroots = prev.wlroots.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [
-            ./patches/wlroots-keyboard-cap.patch
-            ./patches/wlroots-modifier-input.patch
-          ];
-        });
-      };
       pkgsFor =
         system:
-        import nixpkgs {
-          inherit system;
-          overlays = [ wlrootsOverlay ];
-        };
+        import nixpkgs { inherit system; };
       portal =
         pkgs:
         pkgs.rustPlatform.buildRustPackage {
@@ -64,6 +53,7 @@
             pkgs.pkg-config
             pkgs.sbcl
             pkgs.makeWrapper
+            pkgs.wayland-scanner
           ];
           buildInputs = [
             pkgs.wlroots
@@ -74,7 +64,6 @@
             pkgs.wayland
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            pkgs.wayland-scanner
             pkgs.libxkbcommon
             pkgs.pixman
             pkgs.cairo
@@ -108,114 +97,36 @@
             $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
               $(pkg-config --cflags libsystemd) support/tray.c \
               -o build/libtomoe-tray.so $(pkg-config --libs libsystemd)
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
-              build/wlr-layer-shell-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
-              build/wlr-layer-shell-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml \
-              build/wlr-screencopy-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml \
-              build/wlr-screencopy-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-gamma-control-unstable-v1.xml \
-              build/wlr-gamma-control-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-gamma-control-unstable-v1.xml \
-              build/wlr-gamma-control-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
-              build/ext-image-capture-source-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
-              build/ext-image-capture-source-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
-              build/ext-image-copy-capture-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
-              build/ext-image-copy-capture-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
-              build/ext-foreign-toplevel-list-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml \
-              build/pointer-constraints-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml \
-              build/pointer-constraints-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
-              build/relative-pointer-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
-              build/relative-pointer-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-idle-notify/ext-idle-notify-v1.xml \
-              build/ext-idle-notify-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-idle-notify/ext-idle-notify-v1.xml \
-              build/ext-idle-notify-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
-              build/idle-inhibit-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
-              build/idle-inhibit-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml \
-              build/ext-session-lock-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml \
-              build/ext-session-lock-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-activation/xdg-activation-v1.xml \
-              build/xdg-activation-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-activation/xdg-activation-v1.xml \
-              build/xdg-activation-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
-              build/xdg-decoration-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
-              build/xdg-decoration-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
+            wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
+            wp=${pkgs.wayland-protocols}/share/wayland-protocols
+            for xml in \
+              $wlr/wlr-layer-shell-unstable-v1.xml \
+              $wlr/wlr-screencopy-unstable-v1.xml \
+              $wlr/wlr-gamma-control-unstable-v1.xml \
+              $wlr/wlr-foreign-toplevel-management-unstable-v1.xml \
+              $wlr/wlr-data-control-unstable-v1.xml \
+              $wlr/wlr-virtual-pointer-unstable-v1.xml \
+              ${pkgs.wlroots.src}/protocol/virtual-keyboard-unstable-v1.xml \
               ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
-              build/server-decoration-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
-              build/server-decoration-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
-              build/xdg-shell-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
-              build/xdg-shell-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
-              build/ext-foreign-toplevel-list-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-foreign-toplevel-management-unstable-v1.xml \
-              build/wlr-foreign-toplevel-management-unstable-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-foreign-toplevel-management-unstable-v1.xml \
-              build/wlr-foreign-toplevel-management-unstable-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/tearing-control/tearing-control-v1.xml \
-              build/tearing-control-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/tearing-control/tearing-control-v1.xml \
-              build/tearing-control-v1-protocol.c
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner server-header \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-background-effect/ext-background-effect-v1.xml \
-              build/ext-background-effect-v1-protocol.h
-            ${pkgs.lib.getBin pkgs.wayland-scanner}/bin/wayland-scanner private-code \
-              ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-background-effect/ext-background-effect-v1.xml \
-              build/ext-background-effect-v1-protocol.c
+              $wp/stable/xdg-shell/xdg-shell.xml \
+              $wp/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
+              $wp/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
+              $wp/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
+              $wp/staging/ext-idle-notify/ext-idle-notify-v1.xml \
+              $wp/staging/ext-session-lock/ext-session-lock-v1.xml \
+              $wp/staging/xdg-activation/xdg-activation-v1.xml \
+              $wp/staging/tearing-control/tearing-control-v1.xml \
+              $wp/staging/ext-background-effect/ext-background-effect-v1.xml \
+              $wp/staging/ext-data-control/ext-data-control-v1.xml \
+              $wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml \
+              $wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
+              $wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
+              $wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+              $wp/unstable/primary-selection/primary-selection-unstable-v1.xml; do
+              name=$(basename "$xml" .xml)
+              wayland-scanner server-header "$xml" "build/$name-protocol.h"
+              wayland-scanner private-code "$xml" "build/$name-protocol.c"
+            done
             $CC -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
@@ -300,6 +211,7 @@
             ];
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
             PLASMA_WAYLAND_PROTOCOLS_XML = "${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols";
+            WLROOTS_PROTOCOLS_XML = "${pkgs.wlroots.src}/protocol";
           };
         }
       );

@@ -30,7 +30,6 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);
     wl_list_init(&s->keyboards); wl_list_init(&s->input_devices); wl_list_init(&s->events); wl_list_init(&s->bindings);
     wl_list_init(&s->tracked_surfaces);
-    wl_list_init(&s->virtual_pointers);
     wl_list_init(&s->activation_tokens);
     wl_list_init(&s->activation_pending);
     s->next_binding_id = 1;
@@ -50,7 +49,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (!capture_listen(s)) goto failed;
     struct wlr_compositor *compositor = wlr_compositor_create(s->display, 6, s->renderer);
     if (!compositor ||
-            !wlr_subcompositor_create(s->display) || !wlr_data_device_manager_create(s->display) ||
+            !wlr_subcompositor_create(s->display) ||
             !wlr_viewporter_create(s->display) ||
             !wlr_fractional_scale_manager_v1_create(s->display, 1)) goto failed;
     s->layout = wlr_output_layout_create(s->display);
@@ -61,14 +60,15 @@ struct tomoe *tomoe_create(const char *socket_name) {
     const char *cursor_size = getenv("XCURSOR_SIZE");
     int size = cursor_size ? atoi(cursor_size) : 0;
     s->cursor_manager = wlr_xcursor_manager_create(getenv("XCURSOR_THEME"), size > 0 ? size : 24);
-    s->seat = wlr_seat_create(s->display, "seat0");
+    s->seat = seat_create(s);
     if (!s->cursor || !s->cursor_manager || !s->seat ||
-            !activation_listen(s) || !xdg_shell_listen(s) || !layer_shell_listen(s)) goto failed;
+            !selection_listen(s) || !activation_listen(s) || !xdg_shell_listen(s) ||
+            !layer_shell_listen(s)) goto failed;
     surfaces_listen(s, compositor);
     wlr_cursor_attach_output_layout(s->cursor, s->layout);
     outputs_listen(s);
     input_listen(s);
-    if (!virtual_pointers_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
+    if (!virtual_input_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
             !background_effects_listen(s)) goto failed;
     listen(&s->backend_destroy, &s->backend->events.destroy, backend_destroy);
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
@@ -111,11 +111,7 @@ void tomoe_destroy(struct tomoe *s) {
     struct wl_listener *listeners[] = {
         &s->new_output, &s->new_input,
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
-        &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
-        &s->new_surface,
-        &s->new_virtual_pointer, &s->new_virtual_keyboard, &s->cursor_surface_destroy,
-        &s->request_set_primary_selection,
-        &s->request_start_drag, &s->seat_start_drag,
+        &s->layout_change, &s->backend_destroy, &s->new_surface, &s->cursor_surface_destroy,
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);
@@ -123,6 +119,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->cursor) wlr_cursor_destroy(s->cursor);
     if (s->backend) wlr_backend_destroy(s->backend);
     keyboard_logical_finish(s);
+    seat_destroy(s->seat);
     settings_finish(&s->settings);
     if (s->render_timeline) wlr_drm_syncobj_timeline_unref(s->render_timeline);
     if (s->allocator) wlr_allocator_destroy(s->allocator);

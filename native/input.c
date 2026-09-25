@@ -1,6 +1,6 @@
 #include "internal.h"
 #include <wlr/backend/session.h>
-#include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/backend/libinput.h>
 #include "ui.h"
 #include <inttypes.h>
 #include <unistd.h>
@@ -8,8 +8,6 @@
 #define TOMOE_XKB_NAME_MAX 4096
 #define TOMOE_XKB_NAMES_MAX (TOMOE_XKB_NAME_MAX * 5)
 #define TOMOE_KEYCODE_COUNT 768
-_Static_assert(WLR_KEYBOARD_KEYS_CAP >= TOMOE_KEYCODE_COUNT,
-    "Tomoe needs its patched wlroots keyboard cache and matching library");
 
 struct keyboard_profile;
 
@@ -232,8 +230,8 @@ static void logical_refresh(struct tomoe *s, bool notify) {
             wlr_keyboard_led_update(keyboard->wlr, leds);
 
     if (notify && !keyboard_modifiers_equal(&old, &logical->wlr.modifiers) &&
-            wlr_seat_get_keyboard(s->seat) == &logical->wlr)
-        wlr_seat_keyboard_notify_modifiers(s->seat, &logical->wlr.modifiers);
+            seat_get_keyboard(s->seat) == &logical->wlr)
+        seat_keyboard_notify_modifiers(s->seat, &logical->wlr.modifiers);
 }
 
 void keyboard_sync_leds(struct tomoe *s) {
@@ -605,8 +603,8 @@ bool keyboard_logical_init(struct tomoe *s, struct xkb_keymap *keymap,
 void keyboard_logical_finish(struct tomoe *s) {
     if (!s || !s->logical_keyboard) return;
     struct logical_keyboard *logical = s->logical_keyboard;
-    if (s->seat && wlr_seat_get_keyboard(s->seat) == &logical->wlr)
-        wlr_seat_set_keyboard(s->seat, NULL);
+    if (s->seat && seat_get_keyboard(s->seat) == &logical->wlr)
+        seat_set_keyboard(s->seat, NULL);
     xkb_state_unref(logical->projection_state);
     logical->projection_state = NULL;
     logical->wlr.num_keycodes = 0;
@@ -621,7 +619,7 @@ static void cursor_surface_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->cursor_surface_destroy.link);
     s->cursor_surface = NULL;
 }
-static void cursor_default(struct tomoe *s) {
+void cursor_default(struct tomoe *s) {
     s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     wlr_cursor_set_xcursor(s->cursor, s->cursor_manager, "default");
@@ -670,23 +668,14 @@ static void clamp_pointer(struct tomoe *s, struct wlr_output *mapped, double *x,
 }
 
 static void keyboard_enter(struct tomoe *s, struct wlr_surface *surface) {
-    if (!surface) { wlr_seat_keyboard_notify_clear_focus(s->seat); return; }
+    if (!surface) { seat_keyboard_notify_clear_focus(s->seat); return; }
     struct wlr_keyboard *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->wlr : wlr_seat_get_keyboard(s->seat);
+        &s->logical_keyboard->wlr : seat_get_keyboard(s->seat);
     uint32_t keys[TOMOE_KEYCODE_COUNT];
-    size_t count = 0;
-    for (size_t code = 0; code < TOMOE_KEYCODE_COUNT; code++) {
-        struct keyboard *tracked;
-        wl_list_for_each(tracked, &s->keyboards, link) {
-            if (tracked->pressed[code] && !tracked->latches[code].consumed) {
-                keys[count++] = (uint32_t)code;
-                break;
-            }
-        }
-    }
+    size_t count = keyboard_pressed(s, keys);
     struct wlr_keyboard_modifiers empty = {0};
     struct wlr_surface *old_surface = s->seat->keyboard_state.focused_surface;
-    wlr_seat_keyboard_notify_enter(s->seat, surface, keys, count,
+    seat_keyboard_notify_enter(s->seat, surface, keys, count,
         keyboard ? &keyboard->modifiers : &empty);
     if (surface && old_surface != s->seat->keyboard_state.focused_surface) {
         s->latest_keyboard_enter_serial = wl_display_get_serial(s->display);
@@ -742,13 +731,13 @@ int tomoe_grab(struct tomoe *s, uint32_t id, int mode) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         uint32_t msec = (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
         while (s->seat->pointer_state.button_count) {
-            wlr_seat_pointer_notify_button(s->seat, msec,
+            seat_pointer_notify_button(s->seat, msec,
                 s->seat->pointer_state.buttons[0].button,
                 WL_POINTER_BUTTON_STATE_RELEASED);
         }
-        wlr_seat_pointer_notify_frame(s->seat);
+        seat_pointer_notify_frame(s->seat);
     }
-    wlr_seat_pointer_notify_clear_focus(s->seat);
+    seat_pointer_notify_clear_focus(s->seat);
     return 1;
 }
 uint32_t tomoe_grab_id(struct tomoe *s) {
@@ -991,9 +980,9 @@ static void pointer_release_client_buttons(struct tomoe *s, uint32_t time) {
     ui_cancel_client_edges(s);
     if (!s->seat->pointer_state.button_count) return;
     while (s->seat->pointer_state.button_count)
-        wlr_seat_pointer_notify_button(s->seat, time,
+        seat_pointer_notify_button(s->seat, time,
             s->seat->pointer_state.buttons[0].button, WL_POINTER_BUTTON_STATE_RELEASED);
-    wlr_seat_pointer_notify_frame(s->seat);
+    seat_pointer_notify_frame(s->seat);
 }
 static void ui_hover(struct tomoe *s, const struct ui_hit *hit) {
     char *key = NULL;
@@ -1038,12 +1027,12 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;
         struct wlr_surface *old_surface = s->seat->pointer_state.focused_surface;
         if (old_surface != surface && !s->seat->drag) pointer_release_client_buttons(s, time);
-        wlr_seat_pointer_notify_enter(s->seat, surface, sx, sy);
+        seat_pointer_notify_enter(s->seat, surface, sx, sy);
         if (old_surface != s->seat->pointer_state.focused_surface) {
             s->latest_pointer_enter_serial = wl_display_get_serial(s->display);
             s->have_pointer_enter_serial = true;
         }
-        wlr_seat_pointer_notify_motion(s->seat, time, sx, sy);
+        seat_pointer_notify_motion(s->seat, time, sx, sy);
         constraint_focus(s, surface, sx, sy);
     } else {
         constraint_focus(s, NULL, 0, 0);
@@ -1052,7 +1041,7 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
         ui_hover(s, over_ui ? &hit : NULL);
         if (!s->seat->drag && (s->seat->pointer_state.focused_surface || over_ui))
             pointer_release_client_buttons(s, time);
-        wlr_seat_pointer_notify_clear_focus(s->seat);
+        seat_pointer_notify_clear_focus(s->seat);
         cursor_default(s);
     }
 }
@@ -1068,7 +1057,7 @@ void pointer_refresh(struct tomoe *s) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     pointer_motion(s, (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000));
-    wlr_seat_pointer_notify_frame(s->seat);
+    seat_pointer_notify_frame(s->seat);
 }
 static void grab_motion(struct tomoe *s) {
     double x = s->pointer_x, y = s->pointer_y;
@@ -1183,11 +1172,11 @@ static void ui_pointer_destroy(struct wl_listener *listener, void *data) {
         bool released = false;
         for (size_t i = 0; i < pointer->count; i++) {
             if (pointer->buttons[i].consumed) continue;
-            wlr_seat_pointer_notify_button(s->seat, time,
+            seat_pointer_notify_button(s->seat, time,
                 pointer->buttons[i].button, WL_POINTER_BUTTON_STATE_RELEASED);
             released = true;
         }
-        if (released) wlr_seat_pointer_notify_frame(s->seat);
+        if (released) seat_pointer_notify_frame(s->seat);
     }
     free(pointer);
 }
@@ -1231,11 +1220,11 @@ static bool ui_pointer_button(struct tomoe *s, struct wlr_pointer_button_event *
     pointer->buttons[pointer->count++].consumed = consumed;
     if (!consumed) return false;
     pointer_release_client_buttons(s, input->time_msec);
-    wlr_seat_pointer_notify_clear_focus(s->seat);
+    seat_pointer_notify_clear_focus(s->seat);
     cursor_default(s);
     if (input->button != 272 || !hit.command || !hit.callback_id) return true;
     struct wlr_keyboard *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->wlr : wlr_seat_get_keyboard(s->seat);
+        &s->logical_keyboard->wlr : seat_get_keyboard(s->seat);
     uint32_t modifiers = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
     modifiers &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     struct event *event; size_t size;
@@ -1280,7 +1269,7 @@ static void pointer_binding_event(struct tomoe *s, const struct binding *binding
 }
 static struct binding *pointer_binding(struct tomoe *s, uint32_t code) {
     struct wlr_keyboard *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->wlr : wlr_seat_get_keyboard(s->seat);
+        &s->logical_keyboard->wlr : seat_get_keyboard(s->seat);
     uint32_t mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
     mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     struct binding *b;
@@ -1332,7 +1321,7 @@ static void button(struct wl_listener *listener, void *data) {
     }
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec);
     if (lock_active(s)) {
-        wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
+        seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
         return;
     }
     if (ui_pointer_button(s, input)) return;
@@ -1341,10 +1330,10 @@ static void button(struct wl_listener *listener, void *data) {
     if (s->grab_mode == 0) {
         struct wlr_surface *surface = NULL; double sx = 0, sy = 0;
         id = pointer_target(s, &surface, &sx, &sy);
-        wlr_seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
+        seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
     }
     struct wlr_keyboard *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->wlr : wlr_seat_get_keyboard(s->seat);
+        &s->logical_keyboard->wlr : seat_get_keyboard(s->seat);
     uint32_t modifiers = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
     modifiers &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
     struct event *event; size_t size;
@@ -1365,35 +1354,20 @@ static void axis(struct wl_listener *listener, void *data) {
     struct wlr_pointer_axis_event *event = data;
     pointer_motion(s, event->time_msec);
     if (!lock_active(s) && pointer_binding_axis(s, event)) return;
-    wlr_seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
+    seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source, event->relative_direction);
 }
 static void frame(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, frame);
-    wlr_seat_pointer_notify_frame(s->seat);
+    seat_pointer_notify_frame(s->seat);
 }
-static void request_cursor(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, request_cursor);
-    struct wlr_seat_pointer_request_set_cursor_event *event = data;
-    if (event->seat_client == s->seat->pointer_state.focused_client) {
-        if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
-        s->cursor_surface = event->surface;
-        s->cursor_hidden = !event->surface;
-        if (s->cursor_surface)
-            listen(&s->cursor_surface_destroy, &s->cursor_surface->events.destroy, cursor_surface_destroy);
-        wlr_cursor_set_surface(s->cursor, event->surface, event->hotspot_x, event->hotspot_y);
-        pointer_sync_cursors(s);
-    }
-}
-static void pointer_focus(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, pointer_focus);
-    struct wlr_seat_pointer_focus_change_event *event = data;
-    if (!event->new_surface) cursor_default(s);
-}
-static void selection(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, selection);
-    struct wlr_seat_request_set_selection_event *event = data;
-    wlr_seat_set_selection(s->seat, event->source, event->serial);
+void cursor_requested(struct tomoe *s, struct wlr_surface *surface, int32_t x, int32_t y) {
+    if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
+    s->cursor_surface = surface;
+    s->cursor_hidden = !surface;
+    if (surface) listen(&s->cursor_surface_destroy, &surface->events.destroy, cursor_surface_destroy);
+    wlr_cursor_set_surface(s->cursor, surface, x, y);
+    pointer_sync_cursors(s);
 }
 static int keyboard_binding_syms(struct logical_keyboard *keyboard,
         uint32_t keycode, const xkb_keysym_t **syms) {
@@ -1457,13 +1431,11 @@ static bool keyboard_has_unconsumed(struct tomoe *s,
     return false;
 }
 
-static void logical_sync_keycodes(struct tomoe *s) {
-    if (!s->logical_keyboard) return;
-    struct wlr_keyboard *logical = &s->logical_keyboard->wlr;
-    logical->num_keycodes = 0;
+size_t keyboard_pressed(struct tomoe *s, uint32_t *keys) {
+    size_t count = 0;
     for (uint32_t code = 0; code < TOMOE_KEYCODE_COUNT; code++)
-        if (keyboard_has_unconsumed(s, NULL, code))
-            logical->keycodes[logical->num_keycodes++] = code;
+        if (keyboard_has_unconsumed(s, NULL, code)) keys[count++] = code;
+    return count;
 }
 
 static void keyboard_shadow_key(struct keyboard *keyboard,
@@ -1504,7 +1476,6 @@ static void logical_external_modifiers(struct tomoe *s, struct keyboard *source,
 
 static void logical_key_event_done(struct tomoe *s, uint32_t keycode,
         enum wl_keyboard_key_state state, bool first, bool last) {
-    logical_sync_keycodes(s);
     if (first || last)
         logical_key_transition(s, keycode, state);
 }
@@ -1632,19 +1603,17 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
         }
     }
     if (tracked && input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        logical_sync_keycodes(s);
         bool duplicate = keyboard_has_unconsumed(s, k, input->keycode);
         if (!duplicate && logical)
-            wlr_seat_keyboard_notify_key(s->seat, input->time_msec,
+            seat_keyboard_notify_key(s->seat, input->time_msec,
                 input->keycode, input->state);
     } else if (tracked && input->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-        logical_sync_keycodes(s);
         bool held_elsewhere = keyboard_has_unconsumed(s, k, input->keycode);
         if (!held_elsewhere && logical)
-            wlr_seat_keyboard_notify_key(s->seat, input->time_msec,
+            seat_keyboard_notify_key(s->seat, input->time_msec,
                 input->keycode, input->state);
     } else if (logical) {
-        wlr_seat_keyboard_notify_key(s->seat, input->time_msec,
+        seat_keyboard_notify_key(s->seat, input->time_msec,
             input->keycode, input->state);
     }
     logical_key_event_done(s, input->keycode, input->state,
@@ -1653,8 +1622,7 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 
 static void keyboard_modifiers(struct wl_listener *listener, void *data) {
     struct keyboard *k = wl_container_of(listener, k, modifiers);
-    struct wlr_keyboard_modifiers incoming =
-        *(const struct wlr_keyboard_modifiers *)data;
+    struct wlr_keyboard_modifiers incoming = k->wlr->modifiers;
     if (keyboard_modifiers_equal(&incoming, &k->shadow_modifiers)) return;
     struct wlr_keyboard_modifiers old = k->shadow_modifiers;
     if (k->shadow_state) {
@@ -1674,7 +1642,7 @@ static void keyboard_modifiers(struct wl_listener *listener, void *data) {
 }
 
 static void capabilities(struct tomoe *s) {
-    wlr_seat_set_capabilities(s->seat, WL_SEAT_CAPABILITY_POINTER |
+    seat_set_capabilities(s->seat, WL_SEAT_CAPABILITY_POINTER |
         (wl_list_empty(&s->keyboards) ? 0 : WL_SEAT_CAPABILITY_KEYBOARD));
 }
 static void keyboard_latches_finish(struct keyboard *keyboard) {
@@ -1699,7 +1667,7 @@ static void keyboard_latches_finish(struct keyboard *keyboard) {
                 WL_KEYBOARD_KEY_STATE_RELEASED);
         if (!s->stopping && was_pressed && !consumed && last_unconsumed &&
                 s->logical_keyboard &&
-                wlr_seat_get_keyboard(s->seat) == &s->logical_keyboard->wlr) {
+                seat_get_keyboard(s->seat) == &s->logical_keyboard->wlr) {
             if (!have_release_time) {
                 struct timespec now;
                 clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1707,7 +1675,7 @@ static void keyboard_latches_finish(struct keyboard *keyboard) {
                     now.tv_nsec / 1000000u);
                 have_release_time = true;
             }
-            wlr_seat_keyboard_notify_key(s->seat, release_time, (uint32_t)code,
+            seat_keyboard_notify_key(s->seat, release_time, (uint32_t)code,
                 WL_KEYBOARD_KEY_STATE_RELEASED);
         }
         binding_unref(binding);
@@ -1722,30 +1690,23 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
     detach(&k->key); detach(&k->modifiers); detach(&k->destroy);
     keyboard_latches_finish(k);
     wl_list_remove(&k->link);
-    logical_sync_keycodes(s);
     xkb_state_unref(k->shadow_state);
     k->shadow_state = NULL;
     free(k);
     if (wl_list_empty(&s->keyboards))
-        wlr_seat_set_keyboard(s->seat, NULL);
+        seat_set_keyboard(s->seat, NULL);
     else if (s->logical_keyboard &&
-            wlr_seat_get_keyboard(s->seat) != &s->logical_keyboard->wlr)
-        wlr_seat_set_keyboard(s->seat, &s->logical_keyboard->wlr);
+            seat_get_keyboard(s->seat) != &s->logical_keyboard->wlr)
+        seat_set_keyboard(s->seat, &s->logical_keyboard->wlr);
     logical_refresh(s, true);
     capabilities(s);
 }
 
-static void input_add(struct tomoe *s, struct wlr_input_device *device);
 static void new_input(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, new_input);
     input_add(s, data);
 }
-static void new_virtual_keyboard(struct wl_listener *listener, void *data) {
-    struct tomoe *s = wl_container_of(listener, s, new_virtual_keyboard);
-    struct wlr_virtual_keyboard_v1 *keyboard = data;
-    input_add(s, &keyboard->keyboard.base);
-}
-static void input_add(struct tomoe *s, struct wlr_input_device *device) {
+void input_add(struct tomoe *s, struct wlr_input_device *device) {
     input_device_track(s, device);
     if (device->type == WLR_INPUT_DEVICE_POINTER)
         wlr_cursor_attach_input_device(s->cursor, device);
@@ -1779,7 +1740,8 @@ static void input_add(struct tomoe *s, struct wlr_input_device *device) {
         s->keyboard_profile->repeat_delay);
     wl_list_insert(&s->keyboards, &k->link);
     listen(&k->key, &k->wlr->events.key, keyboard_key);
-    listen(&k->modifiers, &k->wlr->events.modifiers_input, keyboard_modifiers);
+    if (!wlr_input_device_is_libinput(device))
+        listen(&k->modifiers, &k->wlr->events.modifiers, keyboard_modifiers);
     listen(&k->destroy, &device->events.destroy, keyboard_destroy);
 
     for (size_t code = 0; code < TOMOE_KEYCODE_COUNT; code++) {
@@ -1787,10 +1749,9 @@ static void input_add(struct tomoe *s, struct wlr_input_device *device) {
             logical_key_transition(s, (uint32_t)code,
                 WL_KEYBOARD_KEY_STATE_PRESSED);
     }
-    logical_sync_keycodes(s);
     if (s->logical_keyboard &&
-            wlr_seat_get_keyboard(s->seat) != &s->logical_keyboard->wlr)
-        wlr_seat_set_keyboard(s->seat, &s->logical_keyboard->wlr);
+            seat_get_keyboard(s->seat) != &s->logical_keyboard->wlr)
+        seat_set_keyboard(s->seat, &s->logical_keyboard->wlr);
     capabilities(s);
 }
 void input_listen(struct tomoe *s) {
@@ -1804,18 +1765,10 @@ void input_listen(struct tomoe *s) {
     s->keyboard_profile = profile;
     wlr_xcursor_manager_load(s->cursor_manager, 1);
     listen(&s->new_input, &s->backend->events.new_input, new_input);
-    struct wlr_virtual_keyboard_manager_v1 *virtual_keyboards =
-        wlr_virtual_keyboard_manager_v1_create(s->display);
-    if (!virtual_keyboards) { fail(s, "virtual keyboard manager allocation failed"); return; }
-    listen(&s->new_virtual_keyboard, &virtual_keyboards->events.new_virtual_keyboard,
-        new_virtual_keyboard);
     listen(&s->motion, &s->cursor->events.motion, motion);
     listen(&s->absolute, &s->cursor->events.motion_absolute, absolute);
     listen(&s->button, &s->cursor->events.button, button);
     listen(&s->axis, &s->cursor->events.axis, axis);
     listen(&s->frame, &s->cursor->events.frame, frame);
-    listen(&s->request_cursor, &s->seat->events.request_set_cursor, request_cursor);
-    listen(&s->pointer_focus, &s->seat->pointer_state.events.focus_change, pointer_focus);
-    listen(&s->selection, &s->seat->events.request_set_selection, selection);
     capabilities(s);
 }

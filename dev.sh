@@ -49,59 +49,44 @@ if [ ! -f "$TOMOE_TRAY_LIB" ] || [ support/tray.c -nt "$TOMOE_TRAY_LIB" ] || [ s
 fi
 
 export TOMOE_BACKEND_LIB="$PWD/build/libtomoe-backend.so"
-protocol=build/wlr-layer-shell-unstable-v1-protocol.h
-xml="${WLR_PROTOCOLS_XML:-$(pkg-config --variable=pkgdatadir wlr-protocols 2>/dev/null || true)}/unstable/wlr-layer-shell-unstable-v1.xml"
 if ! command -v wayland-scanner >/dev/null 2>&1; then
-  echo "dev.sh: wayland-scanner is required to build the wlroots backend" >&2
+  echo "dev.sh: wayland-scanner is required to build the backend" >&2
   exit 1
 fi
-if [ ! -f "$xml" ]; then
-  echo "dev.sh: cannot find wlr-layer-shell-unstable-v1.xml; set WLR_PROTOCOLS_XML to the wlr-protocols share directory" >&2
-  exit 1
-fi
-if [ ! -f "$protocol" ] || [ "$xml" -nt "$protocol" ]; then
-  wayland-scanner server-header "$xml" "$protocol"
-  wayland-scanner private-code "$xml" build/wlr-layer-shell-unstable-v1-protocol.c
-fi
-for name in wlr-screencopy-unstable-v1 wlr-gamma-control-unstable-v1 wlr-foreign-toplevel-management-unstable-v1; do
-  wlr_xml="$(dirname "$xml")/$name.xml"
-  if [ ! -f "build/$name-protocol.c" ] || [ "$wlr_xml" -nt "build/$name-protocol.c" ]; then
-    wayland-scanner server-header "$wlr_xml" "build/$name-protocol.h"
-    wayland-scanner private-code "$wlr_xml" "build/$name-protocol.c"
+wlr="${WLR_PROTOCOLS_XML:-$(pkg-config --variable=pkgdatadir wlr-protocols)}/unstable"
+wp="$(pkg-config --variable=pkgdatadir wayland-protocols)"
+kde="${PLASMA_WAYLAND_PROTOCOLS_XML:?set PLASMA_WAYLAND_PROTOCOLS_XML to the plasma-wayland-protocols share directory}"
+wlroots="${WLROOTS_PROTOCOLS_XML:?set WLROOTS_PROTOCOLS_XML to the wlroots source protocol directory}"
+for xml in \
+  "$wlr/wlr-layer-shell-unstable-v1.xml" \
+  "$wlr/wlr-screencopy-unstable-v1.xml" \
+  "$wlr/wlr-gamma-control-unstable-v1.xml" \
+  "$wlr/wlr-foreign-toplevel-management-unstable-v1.xml" \
+  "$wlr/wlr-data-control-unstable-v1.xml" \
+  "$wlr/wlr-virtual-pointer-unstable-v1.xml" \
+  "$wlroots/virtual-keyboard-unstable-v1.xml" \
+  "$kde/server-decoration.xml" \
+  "$wp/stable/xdg-shell/xdg-shell.xml" \
+  "$wp/staging/ext-image-capture-source/ext-image-capture-source-v1.xml" \
+  "$wp/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml" \
+  "$wp/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml" \
+  "$wp/staging/ext-idle-notify/ext-idle-notify-v1.xml" \
+  "$wp/staging/ext-session-lock/ext-session-lock-v1.xml" \
+  "$wp/staging/xdg-activation/xdg-activation-v1.xml" \
+  "$wp/staging/tearing-control/tearing-control-v1.xml" \
+  "$wp/staging/ext-background-effect/ext-background-effect-v1.xml" \
+  "$wp/staging/ext-data-control/ext-data-control-v1.xml" \
+  "$wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" \
+  "$wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml" \
+  "$wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" \
+  "$wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" \
+  "$wp/unstable/primary-selection/primary-selection-unstable-v1.xml"; do
+  name=$(basename "$xml" .xml)
+  if [ ! -f "build/$name-protocol.c" ] || [ "$xml" -nt "build/$name-protocol.c" ]; then
+    wayland-scanner server-header "$xml" "build/$name-protocol.h"
+    wayland-scanner private-code "$xml" "build/$name-protocol.c"
   fi
 done
-effect_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/ext-background-effect-v1.xml"
-protocols="$(pkg-config --variable=pkgdatadir wayland-protocols)"
-decoration_xml="$protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml"
-kde_xml="${PLASMA_WAYLAND_PROTOCOLS_XML:?set PLASMA_WAYLAND_PROTOCOLS_XML to the plasma-wayland-protocols share directory}/server-decoration.xml"
-if [ ! -f build/xdg-decoration-unstable-v1-protocol.c ] || [ "$decoration_xml" -nt build/xdg-decoration-unstable-v1-protocol.c ]; then
-  wayland-scanner server-header "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.h
-  wayland-scanner private-code "$decoration_xml" build/xdg-decoration-unstable-v1-protocol.c
-  wayland-scanner private-code "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.c
-  wayland-scanner server-header "$protocols/stable/xdg-shell/xdg-shell.xml" build/xdg-shell-protocol.h
-fi
-for path in staging/ext-idle-notify/ext-idle-notify-v1 unstable/idle-inhibit/idle-inhibit-unstable-v1 unstable/pointer-constraints/pointer-constraints-unstable-v1 unstable/relative-pointer/relative-pointer-unstable-v1; do
-  name="${path##*/}"
-  if [ ! -f "build/$name-protocol.c" ] || [ "$protocols/$path.xml" -nt "build/$name-protocol.c" ]; then
-    wayland-scanner server-header "$protocols/$path.xml" "build/$name-protocol.h"
-    wayland-scanner private-code "$protocols/$path.xml" "build/$name-protocol.c"
-  fi
-done
-if [ ! -f build/server-decoration-protocol.c ] || [ "$kde_xml" -nt build/server-decoration-protocol.c ]; then
-  wayland-scanner server-header "$kde_xml" build/server-decoration-protocol.h
-  wayland-scanner private-code "$kde_xml" build/server-decoration-protocol.c
-fi
-for name in ext-image-capture-source-v1 ext-image-copy-capture-v1 ext-foreign-toplevel-list-v1 tearing-control-v1 xdg-activation-v1 ext-session-lock-v1; do
-  capture_xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/staging/${name%-v1}/$name.xml"
-  if [ ! -f "build/$name-protocol.c" ] || [ "$capture_xml" -nt "build/$name-protocol.c" ]; then
-    wayland-scanner server-header "$capture_xml" "build/$name-protocol.h"
-    wayland-scanner private-code "$capture_xml" "build/$name-protocol.c"
-  fi
-done
-if [ ! -f build/ext-background-effect-v1-protocol.c ] || [ "$effect_xml" -nt build/ext-background-effect-v1-protocol.c ]; then
-  wayland-scanner server-header "$effect_xml" build/ext-background-effect-v1-protocol.h
-  wayland-scanner private-code "$effect_xml" build/ext-background-effect-v1-protocol.c
-fi
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -DWLR_USE_UNSTABLE -Wall -Wextra -Werror -Wno-unused-parameter \
     -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \

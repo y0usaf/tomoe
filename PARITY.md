@@ -32,7 +32,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | native/space.c `scanout_surface`, native/output.c `output_frame` | Done |
 | 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/protocols.c, native/space.c `surfaces_textured` | Done |
-| 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/protocols.c `seat_start_drag`, native/input.c | Done |
+| 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/selection.c `start_drag`, native/protocols.c `drag_icons_refresh` | Done |
 | 28 | `XCURSOR_THEME` / `XCURSOR_SIZE` | crates/tomoe/src/cursor.rs | native/backend.c | Done |
 | 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | wlroots built-in cursor via native/backend.c | Improved: wlroots draws its built-in arrow when no theme loads, instead of an 8×16 white block |
 | 30 | Client cursor surfaces, hidden cursor | crates/tomoe/src/render/mod.rs | native/input.c `request_cursor` | Done |
@@ -50,7 +50,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 42 | Relative pointer | crates/tomoe/src/input.rs | native/pointer.c, native/input.c `motion` | Done |
 | 43 | `keyboard_activity` IPC event | crates/tomoe/src/ipc.rs | src/runtime.lisp `:activity` | Done |
 | 44 | xdg move/resize/minimize requests from clients | crates/tomoe/src/handlers.rs | native/window.c `window_move`, `window_resize`, `window_minimize` | Done |
-| 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; native/xdg_shell.c grabs through `wlr_seat` until the seat moves | Done |
+| 45 | xdg popup unconstraining and popup grabs | crates/tomoe/src/handlers.rs | native/window.c `popup_unconstrain`; native/xdg_shell.c grabs on native/seat.c | Done |
 | 46 | xdg-decoration, `force_server_side_decorations` | crates/tomoe/src/handlers.rs, lua.rs | native/decoration.c, src/api.lisp `settings` | Done |
 | 47 | KDE server-decoration | crates/tomoe/src/handlers.rs | native/decoration.c | Done |
 | 48 | Layer shell | crates/tomoe/src/handlers.rs | native/layer_shell.c, native/layer.c | Done |
@@ -66,9 +66,9 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/gamma.c on libwayland-server, native/output.c | Done |
 | 59 | Tearing control, `tearing` setting | crates/tomoe/src/protocols/tearing_control.rs, backend/tty.rs | native/tearing.c, native/window.c `windows_want_tearing`, native/output.c, src/api.lisp `settings` | Done |
 | 60 | Idle notify and idle inhibit | crates/tomoe/src/state.rs, handlers.rs | native/idle.c `idle_refresh`, native/input.c | Done |
-| 61 | Primary selection | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
-| 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/protocols.c | Done |
-| 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/input.c | Done |
+| 61 | Primary selection | crates/tomoe/src/handlers.rs | native/selection.c | Done |
+| 62 | wlr and ext data-control | crates/tomoe/src/handlers.rs | native/selection.c | Done |
+| 63 | Clipboard selection | crates/tomoe/src/handlers.rs | native/selection.c | Done |
 | 64 | Viewporter, xdg-output | crates/tomoe/src/state.rs | native/backend.c | Done |
 | 65 | linux-dmabuf | crates/tomoe/src/backend/tty.rs | native/backend.c `wlr_renderer_init_wl_display` | Done |
 | 66 | linux-drm-syncobj | crates/tomoe/src/backend/tty.rs | native/protocols.c `syncobj_listen`, native/space.c `render_leaf` | Done |

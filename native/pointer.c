@@ -262,7 +262,7 @@ static const struct zwp_relative_pointer_manager_v1_interface relative_manager_i
 
 void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
         double dx, double dy, double dx_unaccel, double dy_unaccel) {
-    struct wlr_seat_client *focused = s->seat->pointer_state.focused_client;
+    struct seat_client *focused = s->seat->pointer_state.focused_client;
     if (!focused) return;
     uint64_t usec = (uint64_t)time_msec * 1000;
     struct wl_resource *resource;

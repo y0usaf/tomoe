@@ -18,15 +18,12 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
-#include <wlr/types/wlr_virtual_pointer_v1.h>
-#include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
-#include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -234,6 +231,83 @@ struct presentation {
     bool grab_staged;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
+struct seat;
+struct seat_client;
+struct source;
+struct drag;
+struct seat_pointer_grab;
+struct seat_keyboard_grab;
+struct seat_pointer_grab_interface {
+    void (*enter)(struct seat_pointer_grab *grab, struct wlr_surface *surface, double sx, double sy);
+    void (*clear_focus)(struct seat_pointer_grab *grab);
+    void (*motion)(struct seat_pointer_grab *grab, uint32_t time, double sx, double sy);
+    uint32_t (*button)(struct seat_pointer_grab *grab, uint32_t time, uint32_t button,
+        uint32_t state);
+    void (*axis)(struct seat_pointer_grab *grab, uint32_t time, uint32_t orientation, double value,
+        int32_t discrete, uint32_t source, uint32_t direction);
+    void (*frame)(struct seat_pointer_grab *grab);
+    void (*cancel)(struct seat_pointer_grab *grab);
+};
+struct seat_keyboard_grab_interface {
+    void (*enter)(struct seat_keyboard_grab *grab, struct wlr_surface *surface,
+        const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
+    void (*clear_focus)(struct seat_keyboard_grab *grab);
+    void (*key)(struct seat_keyboard_grab *grab, uint32_t time, uint32_t key, uint32_t state);
+    void (*modifiers)(struct seat_keyboard_grab *grab,
+        const struct wlr_keyboard_modifiers *modifiers);
+    void (*cancel)(struct seat_keyboard_grab *grab);
+};
+struct seat_pointer_grab {
+    const struct seat_pointer_grab_interface *interface;
+    struct seat *seat;
+};
+struct seat_keyboard_grab {
+    const struct seat_keyboard_grab_interface *interface;
+    struct seat *seat;
+};
+struct seat_client {
+    struct wl_list link;
+    struct seat *seat;
+    struct wl_client *client;
+    struct wl_list resources, pointers, keyboards, data_devices, primary_devices;
+    int32_t acc_discrete[2], last_discrete[2];
+    double acc_axis[2];
+};
+#define SEAT_BUTTONS 16
+struct seat_button { uint32_t button, pressed; };
+struct seat_pointer_state {
+    struct seat_client *focused_client;
+    struct wlr_surface *focused_surface;
+    double sx, sy;
+    struct seat_pointer_grab *grab, default_grab;
+    bool sent_axis_source, frame_pending;
+    struct seat_button buttons[SEAT_BUTTONS];
+    size_t button_count;
+    uint32_t grab_button, grab_serial;
+    struct wl_listener surface_destroy;
+};
+struct seat_keyboard_state {
+    struct wlr_keyboard *keyboard;
+    struct seat_client *focused_client;
+    struct wlr_surface *focused_surface;
+    struct seat_keyboard_grab *grab, default_grab;
+    struct wl_listener surface_destroy, keyboard_destroy, keymap, repeat_info;
+};
+struct selection_slot {
+    struct source *source;
+    struct wl_listener destroy;
+};
+struct seat {
+    struct tomoe *server;
+    struct wl_global *global;
+    uint32_t capabilities;
+    struct wl_list clients, controls, drag_offers;
+    struct seat_pointer_state pointer_state;
+    struct seat_keyboard_state keyboard_state;
+    struct selection_slot selection, primary, drag_source;
+    struct drag *drag;
+};
+
 struct tomoe {
     struct wl_display *display;
     struct settings settings;
@@ -248,7 +322,7 @@ struct tomoe {
     struct wlr_scene_tree *window_tree, *layer_tree[4], *fullscreen_tree;
     struct wlr_cursor *cursor;
     struct wlr_xcursor_manager *cursor_manager;
-    struct wlr_seat *seat;
+    struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
     struct wl_list input_devices, background_effects;
@@ -260,8 +334,7 @@ struct tomoe {
     size_t activation_pending_count;
     struct wl_listener new_output, new_input;
     struct wl_listener motion, absolute, button, axis, frame;
-    struct wl_listener new_virtual_pointer, new_virtual_keyboard;
-    struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
+    struct wl_listener layout_change, backend_destroy, new_surface;
     char *last_event;
     uint32_t next_id, focused, grab_id;
     uint64_t next_binding_id, next_device_id, next_output_id;
@@ -299,9 +372,6 @@ struct tomoe {
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
     struct wl_list copy_frames, capture_sessions;
-    struct wlr_primary_selection_v1_device_manager *primary_selection;
-    struct wlr_data_control_manager_v1 *data_control;
-    struct wlr_ext_data_control_manager_v1 *ext_data_control;
     struct wl_list relative_pointers;
     struct wlr_presentation *presentation_time;
     struct wl_list idle_notifications, idle_inhibitors;
@@ -315,9 +385,8 @@ struct tomoe {
     bool lock_confirmed;
     int lock_state;
     struct wlr_scene_tree *drag_icon_tree, *lock_tree;
-    struct wl_list drag_icons, constraints, lock_surfaces;
+    struct wl_list constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
-    struct wl_listener request_set_primary_selection, request_start_drag, seat_start_drag;
     struct target drag_icon;
 };
 struct layer_state {
@@ -592,7 +661,7 @@ void presentation_input_publish(struct tomoe *s, struct presentation *plan);
 void pointer_refresh(struct tomoe *s);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
-bool virtual_pointers_listen(struct tomoe *s);
+bool virtual_input_listen(struct tomoe *s);
 struct wlr_output *virtual_pointer_output(struct tomoe *s, struct wlr_input_device *device);
 
 bool activation_listen(struct tomoe *s);
@@ -632,5 +701,55 @@ void screenshot_render(struct output *o, struct frame *f);
 void screenshot_output_gone(struct tomoe *s, struct output *o);
 void screenshot_finish(struct tomoe *s);
 struct wlr_surface *lock_keyboard_surface(struct tomoe *s);
+
+struct seat *seat_create(struct tomoe *s);
+void seat_destroy(struct seat *seat);
+struct seat_client *seat_client_for(struct seat *seat, struct wl_client *client);
+struct seat_client *seat_client_from_resource(struct wl_resource *resource);
+void seat_set_capabilities(struct seat *seat, uint32_t capabilities);
+void seat_set_keyboard(struct seat *seat, struct wlr_keyboard *keyboard);
+struct wlr_keyboard *seat_get_keyboard(struct seat *seat);
+void seat_pointer_enter(struct seat *seat, struct wlr_surface *surface, double sx, double sy);
+void seat_pointer_clear_focus(struct seat *seat);
+void seat_pointer_send_motion(struct seat *seat, uint32_t time, double sx, double sy);
+uint32_t seat_pointer_send_button(struct seat *seat, uint32_t time, uint32_t button,
+    uint32_t state);
+void seat_pointer_send_axis(struct seat *seat, uint32_t time, uint32_t orientation, double value,
+    int32_t discrete, uint32_t source, uint32_t direction);
+void seat_pointer_send_frame(struct seat *seat);
+void seat_pointer_start_grab(struct seat *seat, struct seat_pointer_grab *grab);
+void seat_pointer_end_grab(struct seat *seat);
+void seat_pointer_notify_enter(struct seat *seat, struct wlr_surface *surface, double sx,
+    double sy);
+void seat_pointer_notify_clear_focus(struct seat *seat);
+void seat_pointer_notify_motion(struct seat *seat, uint32_t time, double sx, double sy);
+uint32_t seat_pointer_notify_button(struct seat *seat, uint32_t time, uint32_t button,
+    uint32_t state);
+void seat_pointer_notify_axis(struct seat *seat, uint32_t time, uint32_t orientation, double value,
+    int32_t discrete, uint32_t source, uint32_t direction);
+void seat_pointer_notify_frame(struct seat *seat);
+bool seat_validate_pointer_grab_serial(struct seat *seat, struct wlr_surface *origin,
+    uint32_t serial);
+void seat_keyboard_enter(struct seat *seat, struct wlr_surface *surface, const uint32_t keys[],
+    size_t count, const struct wlr_keyboard_modifiers *modifiers);
+void seat_keyboard_clear_focus(struct seat *seat);
+void seat_keyboard_send_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
+void seat_keyboard_send_modifiers(struct seat *seat, const struct wlr_keyboard_modifiers *modifiers);
+void seat_keyboard_start_grab(struct seat *seat, struct seat_keyboard_grab *grab);
+void seat_keyboard_end_grab(struct seat *seat);
+void seat_keyboard_notify_enter(struct seat *seat, struct wlr_surface *surface,
+    const uint32_t keys[], size_t count, const struct wlr_keyboard_modifiers *modifiers);
+void seat_keyboard_notify_clear_focus(struct seat *seat);
+void seat_keyboard_notify_key(struct seat *seat, uint32_t time, uint32_t key, uint32_t state);
+void seat_keyboard_notify_modifiers(struct seat *seat,
+    const struct wlr_keyboard_modifiers *modifiers);
+size_t keyboard_pressed(struct tomoe *s, uint32_t *keys);
+void cursor_requested(struct tomoe *s, struct wlr_surface *surface, int32_t x, int32_t y);
+void cursor_default(struct tomoe *s);
+bool selection_listen(struct tomoe *s);
+void seat_selection_focus(struct seat *seat, struct seat_client *client);
+void seat_selection_finish(struct seat *seat);
+void seat_drag_client_gone(struct seat *seat, struct seat_client *client);
+void input_add(struct tomoe *s, struct wlr_input_device *device);
 
 #endif

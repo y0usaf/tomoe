@@ -510,10 +510,8 @@ release, including when a new binding is installed while it is held. One logical
 seat keyboard owns modifiers, locks, and the active layout group: Shift on one
 device affects bindings on another, and Caps Lock or layout changes survive
 device changes. Source-local modifier reports cannot clear another device's
-held modifiers. The Nix package and development shell use pinned wlroots
-patches that expand its keyboard cache to the complete 768-code evdev domain
-and expose every explicit backend modifier snapshot. Native builds require
-those matching headers and library.
+held modifiers. Tomoe's own seat tracks all 768 evdev key codes, so builds use
+stock wlroots.
 
 `bind-key` owns one physical shortcut for its extension. Its form is
 `(bind-key MODIFIERS KEYSYM PRESS &key release)`, where `PRESS` and the optional
@@ -1360,7 +1358,9 @@ protocol, not an unauthenticated REPL.
   declarative layout, and clipped hit targets.
 - `native/ui-assets.c`: source-owned PNG/JPEG/SVG decoding and retained asset lifetimes.
 - `native/input.c`: pointer routing, keyboards, key bindings, pointer grabs.
-- `native/virtual-pointer.c`: virtual pointer devices and output mapping lifetime.
+- `native/seat.c`: wl_seat, pointer and keyboard focus, grabs, cursor role.
+- `native/selection.c`: clipboard, primary selection, data control, drag and drop.
+- `native/virtual.c`: virtual keyboard and pointer devices, output mapping lifetime.
 - `native/backend.c`: server lifetime — create, step, destroy.
 - `support/executions.c`: Linux pidfd process-group helpers for policy-owned
   commands (separate exec/process ABI 1; requires Linux 6.9+).

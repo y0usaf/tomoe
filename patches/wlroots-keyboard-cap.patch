@@ -1,6 +1,0 @@
-diff --git a/include/wlr/types/wlr_keyboard.h b/include/wlr/types/wlr_keyboard.h
---- a/include/wlr/types/wlr_keyboard.h
-+++ b/include/wlr/types/wlr_keyboard.h
-@@ -42 +42 @@
--#define WLR_KEYBOARD_KEYS_CAP 32
-+#define WLR_KEYBOARD_KEYS_CAP 768

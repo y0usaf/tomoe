@@ -357,7 +357,7 @@ void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, i
 static bool interactive_allowed(struct window *w, uint32_t serial) {
     struct wlr_surface *surface = surface_of(w);
     if (!w->mapped || !surface) return false;
-    return wlr_seat_validate_pointer_grab_serial(w->server->seat, surface, serial);
+    return seat_validate_pointer_grab_serial(w->server->seat, surface, serial);
 }
 static void window_move(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, request_move);
