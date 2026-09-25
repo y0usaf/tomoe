@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 
 static bool xwayland_connected(struct tomoe *s) {
     return s->xwayland && wlr_xwayland_get_xwm_connection(s->xwayland);
@@ -32,6 +33,7 @@ struct window {
     struct wlr_foreign_toplevel_handle_v1 *wlr_handle;
     struct wl_listener foreign_activate, foreign_close, foreign_fullscreen;
     struct wl_listener foreign_maximize, foreign_minimize;
+    struct wlr_ext_image_capture_source_v1 *capture_source;
 };
 struct popup {
     struct wlr_xdg_popup *xdg;
@@ -42,6 +44,11 @@ struct popup {
 
 struct wlr_surface *surface_of(struct window *w) {
     return w->x11 ? w->x11->surface : w->xdg->base->surface;
+}
+
+static void window_park(struct window *w) {
+    wlr_scene_node_set_position(&w->tree->node, 0,
+        INT_MIN / 2 + (int)(w->target.id % 32768) * 32768);
 }
 
 static bool managed_window(const struct window *w) {
@@ -353,7 +360,7 @@ void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
     w->desired_width = width;
     w->desired_height = height;
     w->desired_visible = visible != 0;
-    wlr_scene_node_set_position(&w->tree->node, 0, 0);
+    window_park(w);
     wlr_scene_node_set_enabled(&w->tree->node, w->mapped && w->desired_visible);
     window_update_scale(w);
     wlr_scene_node_raise_to_top(&w->tree->node);
@@ -446,7 +453,10 @@ static void foreign_minimize(struct wl_listener *listener, void *data) {
     foreign_event(w, "minimize", event->minimized, NULL);
 }
 static void foreign_retire(struct window *w) {
-    if (w->ext_handle) wlr_ext_foreign_toplevel_handle_v1_destroy(w->ext_handle);
+    if (w->ext_handle) {
+        w->ext_handle->data = NULL;
+        wlr_ext_foreign_toplevel_handle_v1_destroy(w->ext_handle);
+    }
     w->ext_handle = NULL;
     if (!w->wlr_handle) return;
     detach(&w->foreign_activate); detach(&w->foreign_close); detach(&w->foreign_fullscreen);
@@ -503,6 +513,22 @@ static void foreign_refresh(struct window *w) {
         wlr_ext_foreign_toplevel_handle_v1_update_state(w->ext_handle, &state);
     }
 }
+static void toplevel_capture_request(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, new_toplevel_capture_request);
+    struct wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request *request = data;
+    struct window *w = request->toplevel_handle->data;
+    if (!w) return;
+    if (!w->capture_source)
+        w->capture_source = wlr_ext_image_capture_source_v1_create_with_scene_node(&w->tree->node,
+            wl_display_get_event_loop(s->display), s->allocator, s->renderer);
+    if (w->capture_source)
+        wlr_ext_foreign_toplevel_image_capture_source_manager_v1_request_accept(request,
+            w->capture_source);
+}
+void window_capture_listen(struct tomoe *s) {
+    listen(&s->new_toplevel_capture_request, &s->toplevel_capture_sources->events.new_request,
+        toplevel_capture_request);
+}
 void foreign_toplevels_refresh(struct tomoe *s) {
     struct window *w, *focused = NULL;
     wl_list_for_each(w, &s->windows, link) {
@@ -520,7 +546,7 @@ static void window_reparent(struct window *w) {
     if (w->tree && w->tree->node.parent != parent) {
         wlr_scene_node_reparent(&w->tree->node, parent);
     }
-    if (w->tree) wlr_scene_node_set_position(&w->tree->node, 0, 0);
+    if (w->tree) window_park(w);
 }
 
 void windows_refresh(struct tomoe *s) {
@@ -580,7 +606,7 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
             tomoe_window_state(s, w->target.id, entry->fullscreen, entry->maximize);
         }
         wlr_scene_node_set_enabled(&w->tree->node, entry->visible);
-        wlr_scene_node_set_position(&w->tree->node, 0, 0);
+        window_park(w);
         if (!w->mapped || w->unmanaged) continue;
         if (w->x11) configure_x11(w);
         else configure_xdg(w);
@@ -609,7 +635,7 @@ static void mapped(struct wl_listener *listener, void *data) {
         w->fullscreen_state = w->x11->fullscreen;
         w->maximize_state = w->x11->maximized_horz && w->x11->maximized_vert;
         if (w->unmanaged) {
-            wlr_scene_node_set_position(&w->tree->node, 0, 0);
+            window_park(w);
             wlr_scene_node_set_enabled(&w->tree->node, true);
             if (wlr_xwayland_surface_override_redirect_wants_focus(w->x11)) {
                 w->server->or_focus = w->x11;
@@ -816,7 +842,7 @@ static void x11_create_tree(struct window *w) {
         return;
     }
     w->tree->node.data = &w->target;
-    wlr_scene_node_set_position(&w->tree->node, 0, 0);
+    window_park(w);
 }
 static void x11_associate(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, associate);
@@ -851,7 +877,7 @@ static void x11_set_geometry(struct wl_listener *listener, void *data) {
     if (w->unmanaged && w->tree) {
         x11_target_from_protocol(w);
         window_update_scale(w);
-        wlr_scene_node_set_position(&w->tree->node, 0, 0);
+        window_park(w);
         schedule_scene(w->server);
     }
 }

@@ -321,6 +321,7 @@ void windows_listen(struct tomoe *s, struct wlr_xdg_shell *shell);
 void xwayland_listen(struct tomoe *s);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
+void window_capture_listen(struct tomoe *s);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan);
 

@@ -60,7 +60,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/window.c `foreign_toplevels_refresh` | Done |
 | 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/window.c `foreign_refresh_wlr`, builtins/desktop.lisp `wm` | Done |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/backend.c, native/space.c, patches/wlroots-screencopy-buffer.patch | Done |
-| 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c (untracked WIP) | Missing |
+| 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/protocols.c, native/window.c `toplevel_capture_request` | Done |
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | none | Missing |
 | 57 | ext-session-lock | crates/tomoe/src/lock.rs | native/lock.c (untracked WIP) | Missing |
 | 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/protocols.c `gamma_apply`, native/output.c | Done |

@@ -13,6 +13,8 @@
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_ext_image_copy_capture_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
 
 static void request_set_primary_selection(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, request_set_primary_selection);
@@ -194,9 +196,14 @@ bool protocols_listen(struct tomoe *s) {
     s->server_decoration = wlr_server_decoration_manager_create(s->display);
     s->foreign_toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(s->display, 1);
     s->foreign_toplevel = wlr_foreign_toplevel_manager_v1_create(s->display);
+    s->image_copy_capture = wlr_ext_image_copy_capture_manager_v1_create(s->display, 1);
+    s->output_capture_sources = wlr_ext_output_image_capture_source_manager_v1_create(s->display, 1);
+    s->toplevel_capture_sources =
+        wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(s->display, 1);
     if (!s->presentation_time || !s->idle_notifier || !s->idle_inhibit || !s->gamma_control ||
             !s->xdg_decoration || !s->server_decoration || !s->foreign_toplevel_list ||
-            !s->foreign_toplevel ||
+            !s->foreign_toplevel || !s->image_copy_capture || !s->output_capture_sources ||
+            !s->toplevel_capture_sources ||
             !s->primary_selection || !s->data_control || !s->ext_data_control ||
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
@@ -208,6 +215,7 @@ bool protocols_listen(struct tomoe *s) {
     listen(&s->request_start_drag, &s->seat->events.request_start_drag, request_start_drag);
     listen(&s->seat_start_drag, &s->seat->events.start_drag, seat_start_drag);
     s->drag_icon.kind = TARGET_ICON;
+    window_capture_listen(s);
     listen(&s->request_set_primary_selection,
         &s->seat->events.request_set_primary_selection, request_set_primary_selection);
     return true;
