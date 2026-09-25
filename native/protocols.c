@@ -114,6 +114,31 @@ void gamma_apply(struct output *o, struct wlr_output_state *state) {
     if (control) wlr_gamma_control_v1_send_failed_and_destroy(control);
 }
 
+static void request_start_drag(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, request_start_drag);
+    struct wlr_seat_request_start_drag_event *event = data;
+    if (wlr_seat_validate_pointer_grab_serial(s->seat, event->origin, event->serial))
+        wlr_seat_start_pointer_drag(s->seat, event->drag, event->serial);
+    else
+        wlr_data_source_destroy(event->drag->source);
+}
+void drag_icons_refresh(struct tomoe *s) {
+    struct output *o = output_at_physical(s, s->pointer_x, s->pointer_y);
+    s->drag_icon.x = pixel_round(s->pointer_x);
+    s->drag_icon.y = pixel_round(s->pointer_y);
+    s->drag_icon.scale = o ? snapped_scale(o->wlr->scale) : reference_scale(s);
+    if (!wl_list_empty(&s->drag_icon_tree->children)) schedule_scene(s);
+}
+static void seat_start_drag(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, seat_start_drag);
+    struct wlr_drag *drag = data;
+    if (!drag->icon) return;
+    struct wlr_scene_tree *tree = wlr_scene_drag_icon_create(s->drag_icon_tree, drag->icon);
+    if (!tree) { fail(s, "drag icon scene allocation failed"); return; }
+    tree->node.data = &s->drag_icon;
+    drag_icons_refresh(s);
+}
+
 bool protocols_listen(struct tomoe *s) {
     s->primary_selection = wlr_primary_selection_v1_device_manager_create(s->display);
     s->data_control = wlr_data_control_manager_v1_create(s->display);
@@ -129,6 +154,9 @@ bool protocols_listen(struct tomoe *s) {
             !s->relative_pointer || !s->pointer_constraints) return false;
     listen(&s->new_constraint, &s->pointer_constraints->events.new_constraint, new_constraint);
     listen(&s->gamma_set_gamma, &s->gamma_control->events.set_gamma, set_gamma);
+    listen(&s->request_start_drag, &s->seat->events.request_start_drag, request_start_drag);
+    listen(&s->seat_start_drag, &s->seat->events.start_drag, seat_start_drag);
+    s->drag_icon.kind = TARGET_ICON;
     listen(&s->request_set_primary_selection,
         &s->seat->events.request_set_primary_selection, request_set_primary_selection);
     return true;

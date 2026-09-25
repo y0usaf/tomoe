@@ -499,6 +499,7 @@ bool render_output(struct output *o, struct wlr_output_state *state, struct wlr_
 struct hit_data { double x, y, sx, sy, ratio; struct wlr_surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
+    if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
     if (leaf->node->type != WLR_SCENE_NODE_BUFFER || hit->x < leaf->screen.x || hit->y < leaf->screen.y ||
             hit->x >= (double)leaf->screen.x + leaf->screen.width ||
             hit->y >= (double)leaf->screen.y + leaf->screen.height) return false;

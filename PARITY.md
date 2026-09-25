@@ -32,7 +32,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | none | Missing |
 | 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/protocols.c, native/space.c `surfaces_textured` | Done |
-| 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/protocols.c (untracked WIP) | Missing |
+| 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/protocols.c `seat_start_drag`, native/input.c | Done |
 | 28 | `XCURSOR_THEME` / `XCURSOR_SIZE` | crates/tomoe/src/cursor.rs | native/backend.c (fixed size 24, default theme) | Partial |
 | 29 | Block cursor when no theme loads | crates/tomoe/src/state.rs, render/mod.rs | none | Missing |
 | 30 | Client cursor surfaces, hidden cursor | crates/tomoe/src/render/mod.rs | native/input.c `request_cursor` | Done |

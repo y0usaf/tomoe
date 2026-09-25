@@ -21,10 +21,11 @@ static bool create_scene_trees(struct tomoe *s) {
     s->fullscreen_tree = wlr_scene_tree_create(&s->scene->tree);
     s->unmanaged_tree = wlr_scene_tree_create(&s->scene->tree);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = wlr_scene_tree_create(&s->scene->tree);
+    s->drag_icon_tree = wlr_scene_tree_create(&s->scene->tree);
     for (int i = 0; i < 4; i++) {
         if (!s->layer_tree[i]) return false;
     }
-    return s->window_tree && s->fullscreen_tree && s->unmanaged_tree;
+    return s->window_tree && s->fullscreen_tree && s->unmanaged_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
     wlr_log_init(WLR_ERROR, NULL);
@@ -125,7 +126,8 @@ void tomoe_destroy(struct tomoe *s) {
         &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy, &s->new_surface,
         &s->new_virtual_pointer, &s->cursor_surface_destroy,
         &s->request_set_primary_selection, &s->new_constraint,
-        &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma
+        &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma,
+        &s->request_start_drag, &s->seat_start_drag
     };
     for (size_t i = 0; i < sizeof(listeners) / sizeof(listeners[0]); i++) detach(listeners[i]);
     if (s->scene) wlr_scene_node_destroy(&s->scene->tree.node);

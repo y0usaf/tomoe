@@ -76,7 +76,7 @@ static inline bool output_is_active(const struct output *output) {
     return output && output->admitted && output->wlr && output->wlr->enabled;
 }
 
-enum target_kind { TARGET_WINDOW, TARGET_LAYER, TARGET_UNMANAGED };
+enum target_kind { TARGET_WINDOW, TARGET_LAYER, TARGET_UNMANAGED, TARGET_ICON };
 struct target {
     uint32_t id;
     enum target_kind kind;
@@ -199,6 +199,7 @@ struct tomoe {
     struct wl_list drag_icons, constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
     struct wl_listener request_set_primary_selection, request_start_drag, seat_start_drag;
+    struct target drag_icon;
     struct wl_listener new_toplevel_decoration, new_constraint, gamma_set_gamma, constraint_commit,
         constraint_destroy;
     struct wl_listener new_toplevel_capture_request;
@@ -357,7 +358,6 @@ void idle_notify_activity(struct tomoe *s);
 void idle_refresh(struct tomoe *s);
 void gamma_apply(struct output *o, struct wlr_output_state *state);
 void drag_icons_refresh(struct tomoe *s);
-bool drag_active(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct wlr_surface *surface, double sx, double sy);
 bool constraint_allows(struct tomoe *s, double x, double y);
 

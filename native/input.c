@@ -971,7 +971,7 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
         if (surface == s->seat->pointer_state.focused_surface &&
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;
         struct wlr_surface *old_surface = s->seat->pointer_state.focused_surface;
-        if (old_surface != surface) pointer_release_client_buttons(s, time);
+        if (old_surface != surface && !s->seat->drag) pointer_release_client_buttons(s, time);
         wlr_seat_pointer_notify_enter(s->seat, surface, sx, sy);
         if (old_surface != s->seat->pointer_state.focused_surface) {
             s->latest_pointer_enter_serial = wl_display_get_serial(s->display);
@@ -982,8 +982,8 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
     } else {
         constraint_focus(s, NULL, 0, 0);
         struct ui_hit hit;
-        if (s->seat->pointer_state.focused_surface ||
-                ui_hit_at(s, s->pointer_x, s->pointer_y, &hit))
+        if (!s->seat->drag && (s->seat->pointer_state.focused_surface ||
+                ui_hit_at(s, s->pointer_x, s->pointer_y, &hit)))
             pointer_release_client_buttons(s, time);
         wlr_seat_pointer_notify_clear_focus(s->seat);
         cursor_default(s);
@@ -1021,6 +1021,7 @@ static void grab_motion(struct tomoe *s) {
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);
+    drag_icons_refresh(s);
     if (s->grab_mode != 0) { grab_motion(s); return; }
     pointer_motion(s, time);
 }
