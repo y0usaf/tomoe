@@ -98,7 +98,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 90 | `process.service`, `process.spawn` | crates/tomoe/src/lua.rs, process.rs | src/api.lisp `service`, `spawn` | Done |
 | 91 | Shutdown stops supervised processes | crates/tomoe/src/process.rs | src/processes.lisp | Improved: session-owned one-shot children are reaped too |
 | 92 | `ipc.serve`, `ipc.broadcast` | crates/tomoe/src/lua.rs | src/api.lisp `serve-state`, `serve-method`, `ipc-reply`, `broadcast`, `announce` | Done |
-| 93 | `tomoe.ui` confirm / menu / toast / sheet and `close` | crates/tomoe/src/lua.rs, ui/widgets.rs | none | Missing |
+| 93 | `tomoe.ui` confirm / menu / toast / sheet and `close` | crates/tomoe/src/lua.rs, ui/widgets.rs | src/dialogs.lisp `confirm-dialog` `menu-dialog` `sheet-dialog` `toast`, src/api.lisp `keyboard-grab`, native/input.c `ui_hover` | Done |
 | 94 | Exit confirm dialog | crates/tomoe/src/state.rs | none | Missing |
 | 95 | Hotkey overlay (`Mod+Shift+/`) | crates/tomoe/src/state.rs, ui/widgets.rs | none | Missing |
 | 96 | Config-error banner | crates/tomoe/src/state.rs | src/runtime.lisp `record-error` (stderr only) | Missing |

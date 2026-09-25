@@ -97,7 +97,7 @@
                  (error "UI tree exceeds 512 nodes or depth 32."))
                (let* ((kind (progn (%ui-list node 64 "UI node") (getf node :kind)))
                       (common '(:kind :width :height :grow :background :border-color
-                                :radius :border :key :on-click))
+                                :radius :border :key :on-click :on-hover))
                       (extra
                         (case kind
                           ((:row :column :button) '(:children :gap :padding :align :justify))
@@ -122,9 +122,10 @@
                               ((:grow :radius :border :gap :thickness) (%ui-length value))
                               ((:background :border-color :color) (%ui-color value t))
                               (:track (%ui-color value))
-                              ((:key :on-click) (%ui-key value t))
+                              ((:key :on-click :on-hover) (%ui-key value t))
                               (:padding (%ui-edges value))
-                              ((:align :justify) (%ui-choice value '(:start :center :end)))
+                              (:align (%ui-choice value '(:start :center :end :stretch)))
+                              (:justify (%ui-choice value '(:start :center :end)))
                               (:orientation (%ui-choice value '(:horizontal :vertical)))
                               (:text (%ui-string value 65536))
                               (:font (%ui-string value 128 nil))
@@ -146,7 +147,7 @@
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
-                             :exclusive-zone :visible :output :background :color :font-size))
+                             :exclusive-zone :visible :output :background :color :font-size :stack))
   (let ((anchors (getf arguments :anchors '(:top :left :right)))
         (visible (getf arguments :visible t)))
     (%ui-list anchors 4 "Shell anchors")
@@ -168,7 +169,8 @@
                     (when output (%ui-string output 65536 nil)))
           :background (%ui-color (getf arguments :background #x1e1e2eff))
           :color (%ui-color (getf arguments :color #xcdd6f4ff))
-          :font-size (%ui-length (getf arguments :font-size 13)))))
+          :font-size (%ui-length (getf arguments :font-size 13))
+          :stack (%ui-key (getf arguments :stack) t))))
 
 (defun shell-surface (name tree &rest options)
   "Own a retained shell surface and its click commands in this extension."
@@ -300,7 +302,7 @@
                       (radius (* scale (%ui-property tree :radius)))
                       (border (* scale (%ui-property tree :border))))
                  (when (and (plusp (third clip)) (plusp (fourth clip)))
-                   (when (%ui-property tree :on-click)
+                   (when (or (%ui-property tree :on-click) (%ui-property tree :on-hover))
                      (let ((key (if (%ui-property tree :key)
                                     (string-downcase (symbol-name (%ui-property tree :key)))
                                     (format nil "node-~D" index))))
@@ -308,7 +310,9 @@
                          (error "Duplicate shell click key ~S within one surface." key))
                        (setf (gethash key hit-keys) t)
                        (push (list :key key
-                                   :command (string-downcase (symbol-name (%ui-property tree :on-click)))
+                                   :command (string-downcase (symbol-name (or (%ui-property tree :on-click) :none)))
+                                   :hover (let ((hover (%ui-property tree :on-hover)))
+                                            (when hover (string-downcase (symbol-name hover))))
                                    :x (first clip) :y (second clip) :width (third clip) :height (fourth clip)) hits)))
                    (fill-rect box (%ui-property tree :background) radius 0d0 clip)
                    (when (plusp border) (fill-rect box (%ui-property tree :border-color) radius border clip))
@@ -382,11 +386,12 @@
                  (dolist (child children)
                    (let* ((main (+ (getf child main-key)
                                    (if (plusp grow) (* leftover (/ (%ui-property (getf child :tree) :grow) grow)) 0d0)))
-                          (cross (if (eq (getf (getf child :tree) :kind) :separator)
+                          (cross (if (or (eq (getf (getf child :tree) :kind) :separator)
+                                         (eq (%ui-property tree :align) :stretch))
                                      inner-cross (min inner-cross (getf child cross-key))))
                           (cross-position (+ (if horizontal y x)
                                              (ecase (%ui-property tree :align)
-                                               (:start 0d0) (:center (/ (- inner-cross cross) 2d0))
+                                               ((:start :stretch) 0d0) (:center (/ (- inner-cross cross) 2d0))
                                                (:end (- inner-cross cross))))))
                      (place child (if horizontal (list cursor cross-position main cross)
                                      (list cross-position cursor cross main)) content-clip)
@@ -415,7 +420,7 @@
   "Return complete draw/hit plans and sequential reservations, without mutation."
   (%ui-list declarations 64 "Shell declarations")
   (%ui-list outputs 64 "Shell outputs")
-  (let ((plans nil) (areas (copy-data workareas)) (seen nil) (pixels 0))
+  (let ((plans nil) (areas (copy-data workareas)) (seen nil) (pixels 0) (stacks nil))
     (dolist (declaration declarations)
       (let* ((owner (%ui-string (getf declaration :owner) 65536 nil))
              (source-id (getf declaration :source-id))
@@ -451,7 +456,10 @@
                            (cond ((member :left anchors) (fourth margin))
                                  ((member :right anchors) (- ow width (second margin)))
                                  (t (truncate (- ow width) 2)))))
-                     (y (+ (getf output :y)
+                     (stack (and (getf declaration :stack)
+                                 (list (getf declaration :stack) (getf output :name))))
+                     (stacked (or (cdr (assoc stack stacks :test #'equal)) 0))
+                     (y (+ (getf output :y) stacked
                            (cond ((member :top anchors) (first margin))
                                  ((member :bottom anchors) (- oh height (third margin)))
                                  (t (truncate (- oh height) 2)))))
@@ -459,6 +467,8 @@
                 (unless (and (every (lambda (n) (typep n '(signed-byte 32))) (list x y width height))
                              (<= (* width height) (* 16 1024 1024)))
                   (error "Shell surface exceeds its physical canvas budget."))
+                (when stack
+                  (push (cons stack (+ stacked height (%ui-round (* 8 scale)))) stacks))
                 (incf pixels (* width height))
                 (when (or (>= (length plans) 64) (> pixels (* 32 1024 1024)))
                   (error "Shell surface set exceeds its canvas budget."))

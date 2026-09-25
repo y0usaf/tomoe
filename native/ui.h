@@ -17,7 +17,7 @@ struct ui_hit {
     const char *name;
     const char *output;
     const char *key;
-    const char *command;
+    const char *command, *hover;
     uint64_t source_id;
     uint64_t callback_id;
     double x;
@@ -39,7 +39,7 @@ int tomoe_present_ui_text(struct tomoe *s, double x, double y,
 int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     double thickness, double start, double end, uint32_t rgba);
 int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
-    int x, int y, int width, int height);
+    const char *hover, int x, int y, int width, int height);
 int tomoe_present_ui_end(struct tomoe *s);
 
 uint64_t tomoe_ui_text_size(const char *text, const char *font,

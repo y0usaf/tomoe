@@ -10,7 +10,7 @@ static void backend_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->backend_destroy.link);
     s->backend = NULL; s->running = false;
 }
-int tomoe_abi_version(void) { return 25; }
+int tomoe_abi_version(void) { return 27; }
 const char *tomoe_display_name(struct tomoe *s) {
     return s->xwayland ? s->xwayland->display_name : NULL;
 }
@@ -134,7 +134,7 @@ void tomoe_destroy(struct tomoe *s) {
         &s->motion, &s->absolute, &s->button, &s->axis, &s->frame,
         &s->request_cursor, &s->pointer_focus, &s->selection, &s->layout_change, &s->backend_destroy,
         &s->new_x11_surface, &s->x11_server_ready, &s->x11_server_destroy, &s->new_surface,
-        &s->new_virtual_pointer, &s->cursor_surface_destroy,
+        &s->new_virtual_pointer, &s->new_virtual_keyboard, &s->cursor_surface_destroy,
         &s->request_set_primary_selection, &s->new_constraint,
         &s->constraint_commit, &s->constraint_destroy, &s->gamma_set_gamma,
         &s->request_start_drag, &s->seat_start_drag, &s->new_toplevel_decoration,
@@ -152,6 +152,9 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->renderer) wlr_renderer_destroy(s->renderer);
     if (s->display) wl_display_destroy(s->display);
     tomoe_clear_bindings(s);
+    free(s->ui_hovered);
+    free(s->grab_owner);
+    free(s->grab_otherwise);
     while (tomoe_next_event(s)) { }
     free(s->hit_result);
     free(s->output_preview);

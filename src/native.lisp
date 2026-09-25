@@ -71,7 +71,7 @@
   (server (* t)) (cx sb-alien:double) (cy sb-alien:double) (radius sb-alien:double)
   (thickness sb-alien:double) (start sb-alien:double) (end sb-alien:double) (rgba sb-alien:unsigned-int))
 (define-native ("tomoe_present_ui_hit" %present-ui-hit) sb-alien:int
-  (server (* t)) (key sb-alien:c-string) (command sb-alien:c-string)
+  (server (* t)) (key sb-alien:c-string) (command sb-alien:c-string) (hover sb-alien:c-string)
   (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int))
 (define-native ("tomoe_present_ui_end" %present-ui-end) sb-alien:int (server (* t)))
 (define-native ("tomoe_ui_callback_current" %ui-callback-current) sb-alien:int
@@ -159,6 +159,9 @@
 (define-native ("tomoe_present_window_style" %present-window-style) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int) (radius sb-alien:int) (blur sb-alien:int)
   (tearing sb-alien:int) (focused sb-alien:long-long) (unfocused sb-alien:long-long))
+(define-native ("tomoe_present_keyboard_grab" %present-keyboard-grab) sb-alien:int
+  (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
+  (otherwise sb-alien:c-string))
 (define-native ("tomoe_present_apply" %present-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_stack" %present-stack) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int))
@@ -283,7 +286,7 @@
                                    (%double-float start) (%double-float end) rgba))))))
           (dolist (hit (getf plan :hits))
             (require-ui (%present-ui-hit backend (getf hit :key) (getf hit :command)
-                                         (getf hit :x) (getf hit :y) (getf hit :width) (getf hit :height))))
+                                         (or (getf hit :hover) "") (getf hit :x) (getf hit :y) (getf hit :width) (getf hit :height))))
           (require-ui (%present-ui-end backend)))))))
 
 (defun stage-native-settings (backend settings)
@@ -354,6 +357,10 @@
                                             (getf config :repeat-rate) (getf config :repeat-delay)))
                (error "Cannot prepare keyboard configuration (invalid XKB names or allocation failure)."))))
          (when settings-changed (stage-native-settings backend (getf context :settings)))
+         (let ((grab (getf context :keyboard-grab)))
+           (unless (= 1 (%present-keyboard-grab backend (or (getf grab :owner) "") (or (getf grab :source-id) 0)
+                                               (or (getf grab :otherwise) "")))
+             (error "Cannot stage the keyboard grab.")))
          (when bindings-changed
            (dolist (binding (getf context :bindings))
              (unless (= 1 (%present-bind backend (getf binding :modifiers)

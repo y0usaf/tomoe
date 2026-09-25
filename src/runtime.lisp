@@ -55,6 +55,9 @@
       (:announce (destructuring-bind (name value) args (announce name value)))
       (:data (destructuring-bind (name value) args (publish-state name value)))
       (:settings (apply #'settings args))
+      (:keyboard-grab (destructuring-bind (otherwise) args
+                        (check-type otherwise (or null string))
+                        (%effect :keyboard-grab (list otherwise))))
       (:window-properties (destructuring-bind (id properties) args
                             (apply #'window-properties id properties)))
       (:surface (%effect :surface (canonical-shell-surface args)))
@@ -142,6 +145,7 @@
     (:output (list :output (first (effect-arguments effect))))
     (:keyboard '(:keyboard))
     (:settings '(:settings))
+    (:keyboard-grab '(:keyboard-grab))
     (:window-properties (list :window-properties (first (effect-arguments effect))))
     (:view '(:view))
     (:focus '(:focus))
@@ -467,6 +471,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         (focused nil)
         (data nil)
         (surfaces nil)
+        (keyboard-grab nil)
         (outputs nil)
         (bindings nil)
         (keyboard (default-keyboard-config))
@@ -512,6 +517,10 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              (destructuring-bind (x y zoom) args
                (setf view (list :x x :y y :zoom zoom))))
             (:settings nil)
+            (:keyboard-grab
+             (setf keyboard-grab (list :owner (spec-name (mounted-spec mounted))
+                                       :source-id (spec-id (mounted-spec mounted))
+                                       :otherwise (first args))))
             (:window-properties
              (destructuring-bind (id properties) args
                (let ((window (find id layout :key (lambda (w) (getf w :id)))))
@@ -611,6 +620,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                          (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
                          stacking)
               :layers resolved-layers :focus focused :keyboard keyboard :settings settings
+              :keyboard-grab keyboard-grab
               :bindings (sort bindings
                               (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                 (and (= (getf a :modifiers) (getf b :modifiers))
@@ -661,6 +671,7 @@ when it is not 1."
          (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
          (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
          (settings-changed (not (equal (getf old :settings) (getf context :settings))))
+         (grab-changed (not (equal (getf old :keyboard-grab) (getf context :keyboard-grab))))
          (overrides (resolved-layer-overrides mounts))
          (grab (resolved-grab runtime mounts))
          (timers (prepare-timers runtime mounts))
@@ -669,7 +680,7 @@ when it is not 1."
          (spawns (prepare-session-spawns runtime commands processes))
          (pending-spawns (append (remove nil spawns) (runtime-pending-spawns runtime))))
     (when (or (member :outputs (runtime-pending-context runtime))
-              outputs-changed bindings-changed keyboard-changed settings-changed
+              outputs-changed bindings-changed keyboard-changed settings-changed grab-changed
               restack layout-changed focus-changed
               (not (equal (getf old :outputs) (getf context :outputs)))
               (not (equal (getf old :view) (getf context :view)))

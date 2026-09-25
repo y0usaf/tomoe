@@ -7,7 +7,8 @@
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
-           #:bind-button #:bind-scroll #:window-properties
+           #:bind-button #:bind-scroll #:window-properties #:keyboard-grab
+           #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
@@ -16,7 +17,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 25)
+(defconstant +native-abi-version+ 27)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :ipc :ui))
 (defvar *definitions* :not-loading)
@@ -581,6 +582,12 @@ carries :BUTTON, :WINDOW under the pointer, world :X :Y and screen :SX :SY."
   "Own scrolling in DIRECTION (:UP :DOWN :LEFT :RIGHT); the event carries :DELTA."
   (check-type direction (member :up :down :left :right))
   (bind-key modifiers (format nil "scroll-~(~A~)" direction) command))
+(defun keyboard-grab (&key otherwise)
+  "Own the keyboard: only this extension's bindings fire, whatever the held
+modifiers, and no key reaches a client. OTHERWISE, a keyword, fires for other
+non-modifier keys with :KEYSYM. The latest owner wins."
+  (check-type otherwise (or null keyword))
+  (%effect :keyboard-grab (list (when otherwise (string-downcase otherwise)))))
 (defun launch (&rest argv)
   "Launch literal argv once after acceptance; the session owns the child."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)

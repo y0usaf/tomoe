@@ -1,5 +1,6 @@
 #include "internal.h"
 #include <wlr/backend/session.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include "ui.h"
 #include <inttypes.h>
 #include <unistd.h>
@@ -975,6 +976,14 @@ void presentation_input_publish(struct tomoe *s, struct presentation *plan) {
     }
     if (s->grab_id != plan->grab_id || s->grab_mode != plan->grab_mode)
         tomoe_grab(s, plan->grab_id, plan->grab_mode);
+    if (plan->grab_staged) {
+        free(s->grab_owner);
+        free(s->grab_otherwise);
+        s->grab_owner = plan->grab_owner;
+        s->grab_otherwise = plan->grab_otherwise;
+        s->grab_source = plan->grab_source;
+        plan->grab_owner = plan->grab_otherwise = NULL;
+    }
 }
 
 static uint32_t pointer_target(struct tomoe *s, struct wlr_surface **surface,
@@ -989,6 +998,27 @@ static void pointer_release_client_buttons(struct tomoe *s, uint32_t time) {
         wlr_seat_pointer_notify_button(s->seat, time,
             s->seat->pointer_state.buttons[0].button, WL_POINTER_BUTTON_STATE_RELEASED);
     wlr_seat_pointer_notify_frame(s->seat);
+}
+static void ui_hover(struct tomoe *s, const struct ui_hit *hit) {
+    char *key = NULL;
+    if (hit && hit->hover && hit->key &&
+            asprintf(&key, "%s\x1f%s\x1f%s\x1f%s", hit->owner, hit->name, hit->output, hit->key) < 0)
+        key = NULL;
+    bool same = (!key && !s->ui_hovered) || (key && s->ui_hovered && !strcmp(key, s->ui_hovered));
+    free(s->ui_hovered);
+    s->ui_hovered = key;
+    if (same || !key) return;
+    struct event *event; size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fputs("(:type :ui :owner ", out); quote(out, hit->owner);
+    fprintf(out, " :source-id %" PRIu64 " :callback-id %" PRIu64, hit->source_id, hit->callback_id);
+    fputs(" :surface ", out); quote(out, hit->name);
+    fputs(" :output ", out); quote(out, hit->output);
+    fputs(" :element ", out); quote(out, hit->key);
+    fputs(" :command ", out); quote(out, hit->hover);
+    fprintf(out, " :x %.17fd0 :y %.17fd0 :button 0 :modifiers 0)", hit->x, hit->y);
+    end_event(s, event, out);
 }
 static void hover_event(struct tomoe *s, const char *state, uint32_t id) {
     struct event *event; size_t size;
@@ -1007,6 +1037,7 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
         s->hovered = hovered;
     }
     if (surface) {
+        ui_hover(s, NULL);
         if (surface == s->seat->pointer_state.focused_surface &&
                 sx == s->seat->pointer_state.sx && sy == s->seat->pointer_state.sy) return;
         struct wlr_surface *old_surface = s->seat->pointer_state.focused_surface;
@@ -1021,8 +1052,9 @@ static void pointer_motion(struct tomoe *s, uint32_t time) {
     } else {
         constraint_focus(s, NULL, 0, 0);
         struct ui_hit hit;
-        if (!s->seat->drag && (s->seat->pointer_state.focused_surface ||
-                ui_hit_at(s, s->pointer_x, s->pointer_y, &hit)))
+        bool over_ui = ui_hit_at(s, s->pointer_x, s->pointer_y, &hit);
+        ui_hover(s, over_ui ? &hit : NULL);
+        if (!s->seat->drag && (s->seat->pointer_state.focused_surface || over_ui))
             pointer_release_client_buttons(s, time);
         wlr_seat_pointer_notify_clear_focus(s->seat);
         cursor_default(s);
@@ -1373,6 +1405,24 @@ static int keyboard_binding_syms(struct logical_keyboard *keyboard,
         keycode + 8, layout, 0, syms);
 }
 
+static void grab_event(struct keyboard *keyboard, uint32_t keycode, xkb_keysym_t sym) {
+    struct tomoe *s = keyboard->server;
+    char name[64];
+    xkb_keysym_get_name(sym, name, sizeof(name));
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fputs("(:type :key :owner ", out);
+    quote(out, s->grab_owner);
+    fputs(" :command ", out);
+    quote(out, s->grab_otherwise);
+    fprintf(out, " :state :pressed :source-id %" PRIu64 " :device %" PRIu64 " :keycode %u :keysym ",
+        s->grab_source, keyboard->id, keycode);
+    quote(out, name);
+    fputc(')', out);
+    end_event(s, event, out);
+}
 static void binding_event(struct keyboard *keyboard, const struct binding *binding,
         const char *command, const char *state, uint32_t keycode) {
     if (!binding || !command) return;
@@ -1532,6 +1582,26 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
         }
     }
     int count = keyboard_binding_syms(logical, input->keycode, &syms);
+    if (s->grab_owner && tracked && !lock_active(s)) {
+        if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            struct binding_latch *latch = &k->latches[input->keycode];
+            latch->consumed = true;
+            struct binding *b, *match = NULL;
+            wl_list_for_each(b, &s->bindings, link) for (int i = 0; !match && i < count; i++)
+                if (strcmp(b->owner, s->grab_owner) == 0 &&
+                        xkb_keysym_to_lower(syms[i]) == xkb_keysym_to_lower(b->keysym)) match = b;
+            if (match) {
+                binding_ref(match);
+                latch->binding = match;
+                binding_event(k, match, match->press, "pressed", input->keycode);
+            } else if (s->grab_otherwise && count && !((syms[0] >= XKB_KEY_Shift_L && syms[0] <= XKB_KEY_Hyper_R) ||
+                    (syms[0] >= XKB_KEY_ISO_Lock && syms[0] <= XKB_KEY_ISO_Level5_Lock))) {
+                grab_event(k, input->keycode, syms[0]);
+            }
+        }
+        logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
+        return;
+    }
     uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
     mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
         WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO;
@@ -1655,9 +1725,17 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
     capabilities(s);
 }
 
+static void input_add(struct tomoe *s, struct wlr_input_device *device);
 static void new_input(struct wl_listener *listener, void *data) {
     struct tomoe *s = wl_container_of(listener, s, new_input);
-    struct wlr_input_device *device = data;
+    input_add(s, data);
+}
+static void new_virtual_keyboard(struct wl_listener *listener, void *data) {
+    struct tomoe *s = wl_container_of(listener, s, new_virtual_keyboard);
+    struct wlr_virtual_keyboard_v1 *keyboard = data;
+    input_add(s, &keyboard->keyboard.base);
+}
+static void input_add(struct tomoe *s, struct wlr_input_device *device) {
     input_device_track(s, device);
     if (device->type == WLR_INPUT_DEVICE_POINTER)
         wlr_cursor_attach_input_device(s->cursor, device);
@@ -1716,6 +1794,11 @@ void input_listen(struct tomoe *s) {
     s->keyboard_profile = profile;
     wlr_xcursor_manager_load(s->cursor_manager, 1);
     listen(&s->new_input, &s->backend->events.new_input, new_input);
+    struct wlr_virtual_keyboard_manager_v1 *virtual_keyboards =
+        wlr_virtual_keyboard_manager_v1_create(s->display);
+    if (!virtual_keyboards) { fail(s, "virtual keyboard manager allocation failed"); return; }
+    listen(&s->new_virtual_keyboard, &virtual_keyboards->events.new_virtual_keyboard,
+        new_virtual_keyboard);
     listen(&s->motion, &s->cursor->events.motion, motion);
     listen(&s->absolute, &s->cursor->events.motion_absolute, absolute);
     listen(&s->button, &s->cursor->events.button, button);

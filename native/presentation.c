@@ -7,6 +7,8 @@ void presentation_finish(struct tomoe *s) {
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
     if (s->presentation->settings) settings_finish(s->presentation->settings);
+    free(s->presentation->grab_owner);
+    free(s->presentation->grab_otherwise);
     free(s->presentation->settings);
     free(s->presentation->outputs);
     free(s->presentation->targets);
@@ -144,6 +146,19 @@ int tomoe_present_window_style(struct tomoe *s, uint32_t id, int radius, int blu
     struct presentation_target *entry = presentation_target_for(plan, id);
     if (entry) entry->target.style = (struct window_style){ radius, blur, tearing, focused, unfocused };
     return 1;
+}
+
+int tomoe_present_keyboard_grab(struct tomoe *s, const char *owner, uint64_t source_id,
+        const char *otherwise) {
+    struct presentation *plan = s->presentation;
+    if (!plan) return 0;
+    free(plan->grab_owner);
+    free(plan->grab_otherwise);
+    plan->grab_owner = owner && owner[0] ? strdup(owner) : NULL;
+    plan->grab_otherwise = otherwise && otherwise[0] ? strdup(otherwise) : NULL;
+    plan->grab_source = source_id;
+    plan->grab_staged = true;
+    return (!owner || !owner[0] || plan->grab_owner) && (!otherwise || !otherwise[0] || plan->grab_otherwise);
 }
 
 int tomoe_present_stack(struct tomoe *s, uint32_t id) {

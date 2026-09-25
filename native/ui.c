@@ -74,7 +74,7 @@ static struct ui_pixel_buffer *ui_pixel_buffer_create(uint32_t format,
 
 struct ui_hit_entry {
     char *key;
-    char *command;
+    char *command, *hover;
     int x, y, width, height;
     uint64_t callback_id;
 };
@@ -186,6 +186,7 @@ static void surface_free(struct ui_surface *surface) {
     for (size_t i = 0; i < surface->hit_count; i++) {
         free(surface->hits[i].key);
         free(surface->hits[i].command);
+        free(surface->hits[i].hover);
     }
     free(surface->hits);
     for (size_t i = 0; i < surface->asset_count; i++)
@@ -675,7 +676,7 @@ static bool checked_hit_rect(const struct ui_surface *surface, int *x, int *y,
 }
 
 int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
-        int x, int y, int width, int height) {
+        const char *hover, int x, int y, int width, int height) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface)) return 0;
     if (!key || !command || width < 0 || height < 0 ||
@@ -698,8 +699,9 @@ int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
     if (callback_id == 0 && s->next_ui_callback_id == 0) return 0;
     char *key_copy = copy_string(key);
     char *command_copy = copy_string(command);
-    if (!key_copy || !command_copy) {
-        free(key_copy); free(command_copy);
+    char *hover_copy = hover && hover[0] ? copy_string(hover) : NULL;
+    if (!key_copy || !command_copy || (hover && hover[0] && !hover_copy)) {
+        free(key_copy); free(command_copy); free(hover_copy);
         return 0;
     }
     if (callback_id == 0) {
@@ -708,7 +710,7 @@ int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
         else s->next_ui_callback_id++;
     }
     surface->hits[surface->hit_count++] = (struct ui_hit_entry){
-        .key = key_copy, .command = command_copy, .x = x, .y = y,
+        .key = key_copy, .command = command_copy, .hover = hover_copy, .x = x, .y = y,
         .width = width, .height = height, .callback_id = callback_id };
     return 1;
 }
@@ -853,7 +855,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
             *out = (struct ui_hit){
                 .owner = surface->owner, .name = surface->name,
                 .output = surface->output, .key = hit->key,
-                .command = hit->command, .source_id = surface->source_id,
+                .command = hit->command, .hover = hit->hover, .source_id = surface->source_id,
                 .callback_id = hit->callback_id, .x = local_x, .y = local_y };
             return true;
         }

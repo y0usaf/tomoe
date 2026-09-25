@@ -198,6 +198,9 @@ struct presentation {
     bool restack, explicit_stacking, outputs_changed, replace_bindings;
     struct ui_set *ui;
     struct settings *settings;
+    char *grab_owner, *grab_otherwise;
+    uint64_t grab_source;
+    bool grab_staged;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
 struct tomoe {
@@ -228,7 +231,7 @@ struct tomoe {
     size_t activation_pending_count;
     struct wl_listener new_output, new_input, new_toplevel, new_popup, new_layer_surface;
     struct wl_listener motion, absolute, button, axis, frame;
-    struct wl_listener new_virtual_pointer;
+    struct wl_listener new_virtual_pointer, new_virtual_keyboard;
     struct wl_listener request_cursor, pointer_focus, selection, layout_change, backend_destroy, new_surface;
     struct wl_listener new_x11_surface, x11_server_ready, x11_server_destroy;
     struct wl_listener activation_request, activation_new_token, activation_destroy;
@@ -243,7 +246,10 @@ struct tomoe {
     struct wlr_surface *cursor_surface;
     bool cursor_hidden;
     uint32_t hovered;
+    char *ui_hovered;
     struct pointer_latch pointer_latches[32];
+    char *grab_owner, *grab_otherwise;
+    uint64_t grab_source;
     size_t pointer_latch_count;
     struct wlr_drm_syncobj_timeline *render_timeline;
     uint64_t render_point;
