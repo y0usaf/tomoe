@@ -219,8 +219,8 @@ only after it changes again."
                (or (pop arguments) (error "~A requires a value." option))))
       (loop while arguments for option = (pop arguments) do
         (cond
-          ((equal option "--help") (usage) (return-from run-cli 0))
-          ((equal option "--version")
+          ((member option '("-h" "--help") :test #'equal) (usage) (return-from run-cli 0))
+          ((member option '("-V" "--version") :test #'equal)
            (format t "tomoe 0.1.0, JSON wire 2, control wire ~D, native ABI ~D~%"
                    +wire-version+ +native-abi-version+)
            (return-from run-cli 0))
