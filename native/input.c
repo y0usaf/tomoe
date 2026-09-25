@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <wlr/backend/session.h>
 #include "ui.h"
 #include <inttypes.h>
 #include <unistd.h>
@@ -1415,6 +1416,16 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 
     struct logical_keyboard *logical = s->logical_keyboard;
     const xkb_keysym_t *syms = NULL;
+    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && logical && logical->wlr.xkb_state) {
+        int raw = xkb_state_key_get_syms(logical->wlr.xkb_state, input->keycode + 8, &syms);
+        for (int i = 0; i < raw; i++) {
+            if (syms[i] < XKB_KEY_XF86Switch_VT_1 || syms[i] > XKB_KEY_XF86Switch_VT_12) continue;
+            if (s->session) wlr_session_change_vt(s->session, syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
+            k->latches[input->keycode].consumed = true;
+            logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
+            return;
+        }
+    }
     int count = keyboard_binding_syms(logical, input->keycode, &syms);
     uint32_t mods = logical ? wlr_keyboard_get_modifiers(&logical->wlr) : 0;
     mods &= WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |

@@ -129,6 +129,7 @@ struct tomoe {
     struct wl_display *display;
     struct settings settings;
     struct wlr_backend *backend;
+    struct wlr_session *session;
     struct wlr_renderer *renderer;
     struct wlr_allocator *allocator;
     struct wlr_scene *scene;

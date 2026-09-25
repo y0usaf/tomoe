@@ -39,7 +39,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 31 | XKB keymap and repeat settings | crates/tomoe/src/lua.rs, state.rs | src/api.lisp `configure-keyboard`, native/input.c | Done |
 | 32 | Key bindings with configurable `mod` | crates/tomoe/src/input.rs, lua.rs | src/api.lisp `bind-key` (no `mod`) | Partial |
 | 33 | Hold bindings (press/release latched by keycode) | crates/tomoe/src/input.rs | src/api.lisp `bind-key :release`, native/input.c | Done |
-| 34 | VT switching (XF86Switch_VT_1..12) | crates/tomoe/src/input.rs, backend/tty.rs | none | Missing |
+| 34 | VT switching (XF86Switch_VT_1..12) | crates/tomoe/src/input.rs, backend/tty.rs | native/input.c `keyboard_key`, native/backend.c session | Done |
 | 35 | libinput settings: touchpad/mouse classes and per-device overrides | crates/tomoe/src/backend/tty.rs, lua.rs | none | Missing |
 | 36 | `on_pointer_button` with consume and named buttons | crates/tomoe/src/lua.rs, input.rs | native/input.c `:button` (observe only) | Partial |
 | 37 | `on_pointer_axis` with consume | crates/tomoe/src/lua.rs | none | Missing |
