@@ -1,22 +1,30 @@
 (in-package #:tomoe)
 
 (defvar *read-depth* 0)
-(defun read-data (text)
-  "Read one data form. Disable dispatch macros and reader syntax that can run code."
-  (let ((*read-eval* nil) (*readtable* (copy-readtable nil)) (*read-base* 10)
-        (*read-depth* 0) (*package* (find-package :tomoe)))
+(defparameter *data-readtable*
+  (let ((table (copy-readtable nil)))
     (dolist (char '(#\# #\' #\` #\,))
       (set-macro-character char (lambda (stream char)
                                   (declare (ignore stream))
-                                  (error "Reader syntax ~S is not allowed in data." char))))
-    (let ((read-list (get-macro-character #\( )))
+                                  (error "Reader syntax ~S is not allowed in data." char))
+                           nil table))
+    (let ((read-list (get-macro-character #\( table)))
       (set-macro-character #\(
                            (lambda (stream char)
                              (let ((*read-depth* (1+ *read-depth*)))
                                (when (> *read-depth* 64) (error "Data nesting exceeds 64."))
-                               (funcall read-list stream char)))))
+                               (funcall read-list stream char)))
+                           nil table))
+    table)
+  "The data readtable: dispatch macros and reader syntax that can run code signal errors.")
+
+(defun read-data (text)
+  "Read one data form. Disable dispatch macros and reader syntax that can run code."
+  (let ((*read-eval* nil) (*readtable* *data-readtable*) (*read-base* 10)
+        (*read-depth* 0) (*package* (find-package :tomoe)))
     (multiple-value-bind (value end) (read-from-string text)
-      (unless (every (lambda (c) (find c '(#\Space #\Tab #\Newline #\Return))) (subseq text end))
+      (when (position-if-not (lambda (c) (find c '(#\Space #\Tab #\Newline #\Return))) text
+                             :start end)
         (error "Trailing data after the first form."))
       (copy-data value))))
 
