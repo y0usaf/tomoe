@@ -52,7 +52,7 @@
           nativeBuildInputs = [
             pkgs.pkg-config
             pkgs.sbcl
-            pkgs.makeWrapper
+            pkgs.makeBinaryWrapper
             pkgs.wayland-scanner
           ];
           buildInputs = [
@@ -70,7 +70,7 @@
             pkgs.pango
             pkgs.libjpeg
             pkgs.librsvg
-            pkgs.systemd
+            pkgs.systemdLibs
           ];
           strictDeps = true;
           dontStrip = true;
@@ -137,7 +137,6 @@
             done
             $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
-              -I$(pkg-config --variable=includedir wayland-protocols) \
               $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
               $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
@@ -175,7 +174,7 @@
               --set TOMOE_BATTERY_LIB $out/lib/libtomoe-battery.so \
               --set TOMOE_NETWORK_LIB $out/lib/libtomoe-network.so \
               --set TOMOE_TRAY_LIB $out/lib/libtomoe-tray.so \
-              --set TOMOE_SHELL ${pkgs.bash}/bin/sh \
+              --set TOMOE_SHELL ${pkgs.bashNonInteractive}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
               --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
               --prefix PATH : $out/libexec/tomoe-bin:${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel pkgs.xwayland-satellite ]}

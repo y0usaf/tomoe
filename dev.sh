@@ -99,7 +99,7 @@ for xml in \
 done
 if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter \
-    -fPIC -shared -Ibuild -I"$(pkg-config --variable=includedir wayland-protocols)" \
+    -fPIC -shared -Ibuild \
     $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
     native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
     $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
