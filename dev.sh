@@ -60,7 +60,6 @@ if ! command -v wayland-scanner >/dev/null 2>&1; then
 fi
 wlr="${WLR_PROTOCOLS_XML:-$(pkg-config --variable=pkgdatadir wlr-protocols)}/unstable"
 wp="$(pkg-config --variable=pkgdatadir wayland-protocols)"
-kde="${PLASMA_WAYLAND_PROTOCOLS_XML:?set PLASMA_WAYLAND_PROTOCOLS_XML to the plasma-wayland-protocols share directory}"
 for xml in \
   "$wlr/wlr-layer-shell-unstable-v1.xml" \
   "$wlr/wlr-screencopy-unstable-v1.xml" \
@@ -69,7 +68,7 @@ for xml in \
   "$wlr/wlr-data-control-unstable-v1.xml" \
   "$wlr/wlr-virtual-pointer-unstable-v1.xml" \
   native/virtual-keyboard-unstable-v1.xml \
-  "$kde/server-decoration.xml" \
+  native/server-decoration.xml \
   "$wp/stable/xdg-shell/xdg-shell.xml" \
   "$wp/stable/linux-dmabuf/linux-dmabuf-v1.xml" \
   "$wp/stable/viewporter/viewporter.xml" \

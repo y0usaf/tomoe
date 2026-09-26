@@ -107,7 +107,7 @@
               $wlr/wlr-data-control-unstable-v1.xml \
               $wlr/wlr-virtual-pointer-unstable-v1.xml \
               native/virtual-keyboard-unstable-v1.xml \
-              ${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/server-decoration.xml \
+              native/server-decoration.xml \
               $wp/stable/xdg-shell/xdg-shell.xml \
               $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
               $wp/stable/viewporter/viewporter.xml \
@@ -218,7 +218,6 @@
               pkgs.pixman
             ];
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
-            PLASMA_WAYLAND_PROTOCOLS_XML = "${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols";
           };
         }
       );
