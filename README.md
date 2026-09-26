@@ -214,7 +214,13 @@ are quantized against those candidate scales. Matching native confirmations
 do not rerun consumers; output revisions discard older queued confirmations
 after a newer commit. External output changes still notify consumers.
 Layer geometry and usable output areas resolve in the same dependency rounds.
-The native ABI is 29; the additive inspect fields keep control wire version 1.
+`output-power` turns a display off without leaving the layout: the CRTC shuts
+down so the monitor sleeps, the output stops rendering and sending frame
+callbacks, and windows keep their places. Power on renders a fresh frame through
+a full modeset. Connectors report `:power`, and wlr-output-power-management
+clients such as `wlopm` drive the same state. A session lock does not wait on a
+dark output.
+The native ABI is 30; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -331,6 +337,7 @@ The public API is in `src/api.lisp`:
 (launch "foot")                    ; argv, not a shell command string
 (spawn '("./worker" "--foreground") :cwd "bin" :env '(("MODE" . "desktop")))
 (close-window id)
+(output-power :toggle)             ; :on, :off or :toggle; optional connector name
 (quit)
 (reload)
 ```
@@ -785,9 +792,9 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the native backend is ABI 29.
+process-group pidfd signals; the native backend is ABI 30.
 
-`spawn`, `launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
+`spawn`, `launch`, `close-window`, `output-power`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
 They execute after effect validation and commit. They are not undoable. User-launched
 applications belong to the session, survive extension unmount, and use the same
@@ -1402,7 +1409,8 @@ Implemented protocols cover xdg-shell windows and popups (constrained to the
 output), xdg-decoration and KDE server decoration, shared-memory and DMA-BUF
 buffers, subsurfaces, clipboard, primary selection, wlr and ext data control,
 drag and drop, viewporter, fractional-scale-v1, xdg-output, layer-shell,
-session lock, idle notify and inhibit, gamma control, presentation time,
+session lock, idle notify and inhibit, gamma control, wlr output power management,
+presentation time,
 tearing control, linux-drm-syncobj, relative pointer, pointer constraints,
 virtual pointer and keyboard, xdg-activation, wlr and ext foreign toplevels,
 wlr-screencopy-v1 and ext-image-copy-capture for outputs and toplevels (Tomoe's

@@ -10,7 +10,7 @@
            #:bind-button #:bind-scroll #:window-properties #:keyboard-grab
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
-           #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:quit #:reload))
+           #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
 
@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 29)
+(defconstant +native-abi-version+ 30)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui))
 (defvar *definitions* :not-loading)
@@ -631,6 +631,13 @@ a window id, or :DENY."
     (:window (check-type value (integer 1 4294967295)))
     (:deny (check-type value null)))
   (%command :screencast (list token answer value)))
+(defun output-power (mode &optional name)
+  "Turn displays :ON, :OFF or :TOGGLE while their outputs keep their place in the
+layout. NAME picks one connector; without it every output follows, and :TOGGLE
+turns them all off while any is lit."
+  (check-type mode (member :on :off :toggle))
+  (check-type name (or null string))
+  (%command :power (list mode name)))
 (defun quit () (%command :quit nil))
 (defun reload () (%command :reload nil))
 

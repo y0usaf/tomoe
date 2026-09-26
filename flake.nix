@@ -135,6 +135,7 @@
               $wlr/wlr-layer-shell-unstable-v1.xml \
               $wlr/wlr-screencopy-unstable-v1.xml \
               $wlr/wlr-gamma-control-unstable-v1.xml \
+              $wlr/wlr-output-power-management-unstable-v1.xml \
               $wlr/wlr-foreign-toplevel-management-unstable-v1.xml \
               $wlr/wlr-data-control-unstable-v1.xml \
               $wlr/wlr-virtual-pointer-unstable-v1.xml \

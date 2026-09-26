@@ -132,6 +132,7 @@
       (:close (destructuring-bind (id) args (close-window id)))
       (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
       (:screencast (destructuring-bind (token answer value) args (screencast-answer token answer value)))
+      (:power (destructuring-bind (mode name) args (output-power mode name)))
       (:quit (unless (null args) (error "QUIT takes no arguments.")) (quit))
       (:reload (unless (null args) (error "RELOAD takes no arguments.")) (reload)))))
 
@@ -909,6 +910,9 @@ stay in the page cache, so the digest decides."
     (:close (%close (runtime-backend runtime) (first (command-arguments command))))
     (:screencast (apply #'answer-screencast runtime (command-arguments command)))
     (:screenshot (%screenshot (runtime-backend runtime) (if (first (command-arguments command)) 0 1)))
+    (:power (destructuring-bind (mode name) (command-arguments command)
+              (%output-power (runtime-backend runtime) name
+                             (ecase mode (:off 0) (:on 1) (:toggle 2)))))
     (:quit (setf (runtime-running runtime) nil))
     (:reload (configure runtime (runtime-sources runtime)))))
 

@@ -388,7 +388,7 @@ struct screen {
     float scale;
     enum wl_output_transform transform;
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
-    bool frame_pending;
+    bool frame_pending, power_off;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
     size_t commit_seq;
@@ -803,7 +803,7 @@ struct tomoe {
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;
     struct wl_list tearings;
-    struct wl_list gammas, decorations;
+    struct wl_list gammas, decorations, powers;
     struct popup_grab *popup_grab;
     struct constraint *active_constraint;
     struct wl_list foreigns, foreign_managers, foreign_lists;
@@ -1105,6 +1105,10 @@ bool decoration_listen(struct tomoe *s);
 bool tearing_listen(struct tomoe *s);
 bool tearing_async(struct tomoe *s, struct surface *surface);
 void gamma_output_gone(struct output *o);
+bool power_listen(struct tomoe *s);
+bool output_power(struct output *o, bool on);
+void power_output_gone(struct output *o);
+void outputs_event(struct tomoe *s);
 void drag_icons_refresh(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy);
 bool constraint_allows(struct tomoe *s, double x, double y);

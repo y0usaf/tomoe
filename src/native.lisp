@@ -116,6 +116,8 @@
 
 (define-native ("tomoe_outputs_begin" %outputs-begin) sb-alien:int (server (* t)))
 (define-native ("tomoe_outputs_pending" %outputs-pending) sb-alien:int (server (* t)))
+(define-native ("tomoe_output_power" %output-power) sb-alien:int
+  (server (* t)) (name sb-alien:c-string) (mode sb-alien:int))
 (define-native ("tomoe_output_hold" %output-hold) sb-alien:int
   (server (* t)) (name sb-alien:c-string))
 (define-native ("tomoe_output" %output) sb-alien:int

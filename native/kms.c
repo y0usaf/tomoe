@@ -293,7 +293,8 @@ static int sync_file(const struct screen_state *state) {
 }
 
 static bool enabled_after(const struct connector *c, const struct screen_state *state) {
-    return (state->committed & SCREEN_ENABLED) ? state->enabled : c->screen.enabled;
+    return !c->screen.power_off &&
+        ((state->committed & SCREEN_ENABLED) ? state->enabled : c->screen.enabled);
 }
 
 static uint32_t gamma_blob(struct kms *kms, const struct screen_state *state) {

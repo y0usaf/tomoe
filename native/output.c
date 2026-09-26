@@ -261,11 +261,12 @@ static bool write_connector(FILE *out, struct output *o, bool pending) {
     quote(out, o->screen->name);
     if (fprintf(out, " :enabled %s :pending %s :adaptive-sync-supported %s"
             " :adaptive-sync %s :request-id %" PRIu64
-            " :request-pending %s", facts.enabled ? "t" : "nil",
+            " :request-pending %s :power %s", facts.enabled ? "t" : "nil",
             (pending || o->admitted) ? "nil" : "t",
             facts.adaptive_sync_supported ? "t" : "nil",
             facts.adaptive_sync ? "t" : "nil", facts.request_id,
-            facts.request_pending ? "t" : "nil") < 0) return false;
+            facts.request_pending ? "t" : "nil", o->screen->power_off ? "nil" : "t") < 0)
+        return false;
     return write_output_modes(out, o) && write_render(out, o) && fputc(')', out) != EOF;
 }
 
@@ -303,7 +304,7 @@ static bool write_outputs_payload(FILE *out, struct tomoe *s, bool pending) {
         write_connectors(out, s, pending) && fputs(")", out) >= 0;
 }
 
-static void outputs_event(struct tomoe *s) {
+void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
     uint64_t revision = s->outputs_revision + 1;
     char *text = NULL;
@@ -1027,6 +1028,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
+    power_output_gone(o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
     forget_output(s, wlr);

@@ -172,7 +172,7 @@ static void begin_locking(struct tomoe *s) {
     bool any = false;
     wl_list_for_each(o, &s->outputs, link) {
         o->lock_rendered = false;
-        any |= output_is_active(o);
+        any |= output_is_active(o) && !o->screen->power_off;
     }
     node_set_enabled(s->lock_tree, true);
     input_lock_begin(s);
@@ -250,7 +250,7 @@ void lock_frame_rendered(struct tomoe *s, struct screen *wlr) {
     bool all = true;
     wl_list_for_each(o, &s->outputs, link) {
         if (o->screen == wlr) o->lock_rendered = true;
-        if (output_is_active(o) && !o->lock_rendered) all = false;
+        if (output_is_active(o) && !o->screen->power_off && !o->lock_rendered) all = false;
     }
     if (all) confirm(s);
 }

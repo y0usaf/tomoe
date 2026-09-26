@@ -272,7 +272,7 @@ size_t screen_gamma_size(struct screen *screen) {
 
 void screen_send_frame(struct screen *screen) {
     screen->frame_pending = false;
-    if (screen->enabled) wl_signal_emit_mutable(&screen->events.frame, screen);
+    if (screen->enabled && !screen->power_off) wl_signal_emit_mutable(&screen->events.frame, screen);
 }
 
 static void idle_frame(void *data) {
