@@ -29,7 +29,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     const char *signature, int x, int y, int width, int height, int layer);
 int tomoe_present_ui_clip(struct tomoe *s, int x, int y, int width, int height);
 int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id);
-int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id);
+int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps);
 int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
     double x, double y, double width, double height, int tint, uint32_t rgba);
 int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,

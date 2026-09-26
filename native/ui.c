@@ -48,6 +48,7 @@ struct ui_surface {
     struct ui_surface_asset *assets;
     size_t asset_count, asset_capacity;
     struct ui_asset *backdrop, *fallback;
+    double fps;
     bool building;
     bool complete;
     bool drawn;
@@ -62,6 +63,12 @@ struct ui_set {
 };
 
 static const char empty_string[] = "";
+
+static double monotonic_seconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / 1e9;
+}
 
 static const char *string_or_empty(const char *value) {
     return value ? value : empty_string;
@@ -454,17 +461,23 @@ int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id) {
     return 1;
 }
 
-static struct ui_asset *shown_backdrop(const struct ui_surface *surface) {
-    return ui_asset_backdrop(surface->backdrop, NULL, NULL) ? surface->backdrop : surface->fallback;
+static bool backdrop_ready(const struct ui_asset *asset) {
+    return ui_asset_backdrop(asset, NULL, NULL) || ui_asset_shader(asset, NULL);
 }
 
-int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id) {
+static struct ui_asset *shown_backdrop(const struct ui_surface *surface) {
+    return backdrop_ready(surface->backdrop) ? surface->backdrop : surface->fallback;
+}
+
+int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps) {
     struct ui_surface *surface = NULL;
-    if (!surface_is_current(s, &surface) || surface->backdrop) return 0;
+    if (!surface_is_current(s, &surface) || surface->backdrop || !isfinite(fps) ||
+            fps < 0 || fps > 1000) return 0;
     for (size_t i = 0; i < surface->asset_count; i++)
         if (surface->assets[i].id == id) surface->backdrop = surface->assets[i].asset;
     if (!surface->backdrop) return 0;
-    if (ui_asset_backdrop(surface->backdrop, NULL, NULL) || !s->ui) return 1;
+    surface->fps = fps;
+    if (backdrop_ready(surface->backdrop) || !s->ui) return 1;
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *live = s->ui->surfaces[i];
         if (!same_declaration(live, surface->owner, surface->name, surface->output)) continue;
@@ -479,7 +492,7 @@ void ui_backdrops_ready(struct tomoe *s) {
     for (size_t k = 0; k < 2; k++) {
         for (size_t i = 0; sets[k] && i < sets[k]->count; i++) {
             struct ui_surface *surface = sets[k]->surfaces[i];
-            if (!surface->fallback || !ui_asset_backdrop(surface->backdrop, NULL, NULL)) continue;
+            if (!surface->fallback || !backdrop_ready(surface->backdrop)) continue;
             ui_asset_release(surface->fallback);
             surface->fallback = NULL;
         }
@@ -885,12 +898,21 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             (!output_is_active(o) && !o->server->configuring_outputs)) return;
     const struct ui_set *set = plan ? plan->ui : o->server->ui;
     if (!set) return;
+    double now = monotonic_seconds();
     for (size_t i = 0; i < set->count; i++) {
         const struct ui_surface *surface = set->surfaces[i];
         if (surface->layer != layer || !surface_matches_output(surface, o, plan)) continue;
+        struct ui_asset *shown = shown_backdrop(surface);
         int x, y;
-        struct texture *backdrop = ui_asset_backdrop(shown_backdrop(surface), &x, &y);
-        if (backdrop) draw_texture(f, backdrop, surface->x + x, surface->y + y);
+        double epoch;
+        struct texture *image = ui_asset_backdrop(shown, &x, &y);
+        struct program *shader = ui_asset_shader(shown, &epoch);
+        if (image) draw_texture(f, image, surface->x + x, surface->y + y);
+        if (shader) {
+            double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
+            effect_shader(f, shader, (struct fbox){ surface->x, surface->y, surface->width,
+                surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
+        }
         if (surface->texture) draw_texture(f, surface->texture, surface->x, surface->y);
     }
 }

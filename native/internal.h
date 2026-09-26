@@ -288,7 +288,10 @@ struct program {
     GLuint id;
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
+    GLint resolution, time, frame;
 };
+struct program *render_shader_create(struct render *r, const char *source);
+void render_shader_destroy(struct program *program);
 #define RING_SLOTS 4
 struct ring {
     struct buffer *slots[RING_SLOTS];
@@ -466,6 +469,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     struct fbox dst, struct fbox clip, double radius);
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin);
+void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface);

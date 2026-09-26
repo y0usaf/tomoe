@@ -26,6 +26,7 @@
 #define BACKDROP_FILE_LIMIT (UINT64_C(128) * 1024 * 1024)
 #define BACKDROP_SOURCE_LIMIT (UINT64_C(512) * 1024 * 1024)
 #define BACKDROP_DIMENSION_LIMIT 32767u
+#define SHADER_FILE_LIMIT (256u * 1024u)
 
 enum asset_status { ASSET_OK, ASSET_MISSING, ASSET_HARD };
 enum { FIT_COVER, FIT_CONTAIN, FIT_FILL };
@@ -56,6 +57,8 @@ struct ui_asset {
     struct backdrop_job *job;
     struct texture *texture;
     int x, y;
+    struct program *shader;
+    double epoch;
 };
 
 struct ui_asset_pool {
@@ -319,10 +322,12 @@ static void backdrop_cancel(struct ui_asset *asset) {
 static void free_content(struct ui_asset *asset) {
     if (asset->job) backdrop_cancel(asset);
     if (asset->texture) texture_destroy(asset->texture);
+    render_shader_destroy(asset->shader);
     if (asset->raster) cairo_surface_destroy(asset->raster);
     if (asset->svg) g_object_unref(asset->svg);
     free(asset->pixels);
-    asset->texture = NULL; asset->raster = NULL; asset->svg = NULL; asset->pixels = NULL;
+    asset->texture = NULL; asset->shader = NULL;
+    asset->raster = NULL; asset->svg = NULL; asset->pixels = NULL;
     asset->width = asset->height = 0; asset->bytes = 0;
 }
 
@@ -533,14 +538,34 @@ static enum asset_status backdrop_start(struct tomoe *s, struct ui_asset *asset,
     return ASSET_OK;
 }
 
+static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
+        uint64_t available) {
+    struct asset_data data = {0};
+    enum asset_status status = read_asset(asset->path, SHADER_FILE_LIMIT, &data);
+    if (status != ASSET_OK) return status;
+    data.bytes[data.length] = '\0';
+    if (data.length > available) status = ASSET_HARD;
+    else if (s->renderer && strlen((char *)data.bytes) == data.length)
+        asset->shader = render_shader_create(s->renderer, (char *)data.bytes);
+    free(data.bytes);
+    if (status != ASSET_OK) return status;
+    if (!asset->shader) return ASSET_MISSING;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    asset->epoch = now.tv_sec + now.tv_nsec / 1e9;
+    asset->bytes = data.length;
+    return ASSET_OK;
+}
+
 uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
         uint64_t source_id, int kind, const char *path, const char *name) {
+    static const char *const labels[] = { "", "image", "icon", "background", "shader" };
     uint32_t width = 0, height = 0;
     int fit = FIT_COVER;
     if (!s || !source_id || !bounded_string(owner) || !*owner ||
             !bounded_string(path) || !bounded_string(name) ||
-            kind < 1 || kind > 3 || (*path && *path != '/') ||
-            (kind == 1 && (!*path || *name)) || (kind == 2 && !*name) ||
+            kind < 1 || kind > 4 || (*path && *path != '/') ||
+            ((kind == 1 || kind == 4) && (!*path || *name)) || (kind == 2 && !*name) ||
             (kind == 3 && (!*path || !backdrop_name(name, &width, &height, &fit)))) return 0;
     if (!s->ui_assets) {
         s->ui_assets = calloc(1, sizeof(*s->ui_assets));
@@ -568,9 +593,10 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     if (pool->loads != UINT64_MAX) pool->loads++;
     uint64_t available = ASSET_POOL_LIMIT - pool->bytes;
     if (available > ASSET_RASTER_LIMIT) available = ASSET_RASTER_LIMIT;
-    enum asset_status status = kind == 3 ? backdrop_start(s, asset, width, height, fit, available) :
+    enum asset_status status = kind == 4 ? shader_start(s, asset, available) :
+        kind == 3 ? backdrop_start(s, asset, width, height, fit, available) :
         kind == 1 ? read_asset(path, ASSET_FILE_LIMIT, &data) : read_icon(path, name, &data);
-    if (status == ASSET_OK && kind != 3) {
+    if (status == ASSET_OK && kind < 3) {
         if (kind == 2) status = decode_svg(asset, &data, available);
         else if (data.length >= 8 && !memcmp(data.bytes, "\x89PNG\r\n\x1a\n", 8)) status = decode_png(asset, &data, available);
         else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8)
@@ -586,8 +612,7 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     if (status == ASSET_HARD) { free_asset(asset); return 0; }
     if (status == ASSET_MISSING) {
         free_content(asset);
-        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n",
-            kind == 1 ? "image" : kind == 2 ? "icon" : "background", *path ? path : name);
+        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n", labels[kind], *path ? path : name);
     }
     asset->references = 1; asset->scratch = true;
     asset->id = pool->next_id;
@@ -620,6 +645,12 @@ struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y) 
     if (x) *x = asset->x;
     if (y) *y = asset->y;
     return asset->texture;
+}
+
+struct program *ui_asset_shader(const struct ui_asset *asset, double *epoch) {
+    if (!asset || !asset->shader) return NULL;
+    if (epoch) *epoch = asset->epoch;
+    return asset->shader;
 }
 
 bool ui_asset_owned_by(const struct ui_asset *asset, const char *owner, uint64_t source_id) {

@@ -94,7 +94,7 @@
   (x sb-alien:double) (y sb-alien:double) (width sb-alien:double) (height sb-alien:double)
   (tint sb-alien:int) (rgba sb-alien:unsigned-int))
 (define-native ("tomoe_present_ui_backdrop" %present-ui-backdrop) sb-alien:int
-  (server (* t)) (id sb-alien:unsigned-long-long))
+  (server (* t)) (id sb-alien:unsigned-long-long) (fps sb-alien:double))
 
 (defun native-ui-asset-loader (backend)
   (when backend
@@ -110,7 +110,7 @@
                               (error "Relative shell asset paths require a declaring source."))
                             (concatenate 'string (directory-namestring source) raw)))))
              (id (%ui-asset-load backend (getf declaration :owner) (getf declaration :source-id)
-                                 (ecase kind (:image 1) (:icon 2) (:backdrop 3)) path
+                                 (ecase kind (:image 1) (:icon 2) (:backdrop 3) (:shader 4)) path
                                  (case kind
                                    (:icon (getf tree :name))
                                    (:backdrop (format nil "~Dx~D:~(~A~)" (getf tree :width)
@@ -270,8 +270,8 @@
         (when (= status 1)
           (dolist (id (getf plan :assets))
             (require-ui (%present-ui-asset-ref backend id)))
-          (when (getf plan :backdrop)
-            (require-ui (%present-ui-backdrop backend (getf plan :backdrop))))
+          (destructuring-bind (&optional id fps) (getf plan :backdrop)
+            (when id (require-ui (%present-ui-backdrop backend id (%double-float fps)))))
           (dolist (operation (getf plan :draw))
             (require-ui (apply #'%present-ui-clip backend (car (last operation))))
             (require-ui

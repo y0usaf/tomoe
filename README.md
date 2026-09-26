@@ -866,21 +866,41 @@ counting decoded raster bytes and encoded SVG bytes, not SVG library overhead.
 Limit or allocation failures reject the proposal. Missing or malformed files
 are cached fallbacks. SVGs cannot load external file or URL references.
 
-A surface `:background` is a color or `(:image PATH :fit FIT)`, which paints a
-PNG or JPEG beneath the tree. FIT is `:cover` (the default; fills and crops),
-`:contain` (letterboxes), or `:fill` (stretches). A worker thread decodes the
-file and scales it once to the surface's physical size, so the compositor thread
-never decodes and only a surface-sized texture stays resident. Until a new image
-is ready, and when it is missing or malformed, the surface keeps showing its
-previous image and the failure is logged. Files may reach 128 MiB and decode to
-32767 pixels per axis and 512 MiB; the scaled result counts toward the asset
-pool. A surface whose tree draws nothing keeps no canvas texture.
+A surface `:background` is a color, `(:image PATH :fit FIT)`, or
+`(:shader PATH :fps FPS)`. An image paints a PNG or JPEG beneath the tree. FIT
+is `:cover` (the default; fills and crops), `:contain` (letterboxes), or `:fill`
+(stretches). A worker thread decodes the file and scales it once to the
+surface's physical size, so the compositor thread never decodes and only a
+surface-sized texture stays resident. Until a new image is ready, and when it is
+missing or malformed, the surface keeps showing its previous background and the
+failure is logged. Files may reach 128 MiB and decode to 32767 pixels per axis
+and 512 MiB; the scaled result counts toward the asset pool. A surface whose
+tree draws nothing keeps no canvas texture.
 [examples/wallpaper.lisp](examples/wallpaper.lisp) shuffles a directory with Mod+w:
 
 ```lisp
 (shell-surface :wallpaper (ui :stack)
   :anchors '(:top :right :bottom :left) :layer :background
   :background '(:image "/home/me/Pictures/wall.png"))
+```
+
+A shader paints a GLSL ES 3.00 fragment shader beneath the tree, in Shadertoy's
+convention: the file defines `void mainImage(out vec4 fragColor, in vec2 fragCoord)`,
+with `fragCoord` in physical pixels from the surface's bottom-left corner. Tomoe
+declares `iResolution` (the surface size), `iTime` (seconds since the shader
+compiled), `iFrame`, and an always-zero `iMouse`; shaders that read channels or
+other inputs fail to compile. Output alpha is ignored. `iTime` advances in steps
+of 1/FPS (default 30, from 0 to 1000; 0 draws one still frame), and the shader
+runs only to repaint its area after a step, not on every frame. A fullscreen
+client on direct scanout stops it entirely. The file compiles when the
+declaration is prepared, on the compositor thread; a compile error logs the GLSL
+message and keeps the previous background. Shader files may reach 256 KiB.
+
+```glsl
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord / iResolution.xy;
+    fragColor = vec4(0.5 + 0.5 * cos(iTime + uv.xyx + vec3(0, 2, 4)), 1.0);
+}
 ```
 
 Explicit UI dimensions, margins, padding, font sizes, and reservations are logical units,

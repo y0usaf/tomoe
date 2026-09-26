@@ -178,6 +178,36 @@ static const char up_source[] =
     "    gl_FragColor = sum / 12.0;\n"
     "}\n";
 
+static const char shader_vertex_source[] =
+    "#version 300 es\n"
+    "in vec2 pos;\n"
+    "in vec2 local;\n"
+    "out vec2 v_local;\n"
+    "void main() {\n"
+    "    v_local = local;\n"
+    "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+    "}\n";
+
+static const char shader_prelude[] =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform vec3 iResolution;\n"
+    "uniform float iTime;\n"
+    "uniform int iFrame;\n"
+    "uniform vec4 iMouse;\n"
+    "in vec2 v_local;\n"
+    "out vec4 tomoe_color;\n"
+    "#line 1\n";
+
+static const char shader_main[] =
+    "\nvoid main() {\n"
+    "    mainImage(tomoe_color, vec2(v_local.x, iResolution.y - v_local.y));\n"
+    "    tomoe_color.a = 1.0;\n"
+    "}\n";
+
+struct shader { struct program program; struct render *r; };
+
 static const float transforms[][4] = {
     [WL_OUTPUT_TRANSFORM_NORMAL] = { 1, 0, 0, 1 },
     [WL_OUTPUT_TRANSFORM_90] = { 0, 1, -1, 0 },
@@ -239,12 +269,14 @@ static GLuint compile(GLenum type, const char *const *sources, int count) {
     return 0;
 }
 
-static bool link_program(struct program *p, const char *prelude, const char *body) {
-    const char *fragment[] = { prelude, "precision highp float;\n", rounding_source, body };
-    const char *vertex[] = { vertex_source };
-    GLuint vs = compile(GL_VERTEX_SHADER, vertex, 1);
-    GLuint fs = compile(GL_FRAGMENT_SHADER, fragment, 4);
-    if (!vs || !fs) return false;
+static bool link_sources(struct program *p, const char *const *vertex, int vertex_count,
+        const char *const *fragment, int fragment_count) {
+    GLuint vs = compile(GL_VERTEX_SHADER, vertex, vertex_count);
+    GLuint fs = vs ? compile(GL_FRAGMENT_SHADER, fragment, fragment_count) : 0;
+    if (!fs) {
+        glDeleteShader(vs);
+        return false;
+    }
     p->id = glCreateProgram();
     glAttachShader(p->id, vs);
     glAttachShader(p->id, fs);
@@ -253,17 +285,53 @@ static bool link_program(struct program *p, const char *prelude, const char *bod
     glDeleteShader(fs);
     GLint ok = 0;
     glGetProgramiv(p->id, GL_LINK_STATUS, &ok);
-    if (!ok) return false;
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(p->id, sizeof(log), NULL, log);
+        tomoe_log(LOG_ERROR, "tomoe: shader link: %s", log);
+        glDeleteProgram(p->id);
+        p->id = 0;
+        return false;
+    }
     p->pos = glGetAttribLocation(p->id, "pos");
     p->local = glGetAttribLocation(p->id, "local");
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
-        "color", "range", "power", "half_pixel", "offset" };
+        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
-        &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset };
+        &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
+        &p->time, &p->frame };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;
+}
+
+static bool link_program(struct program *p, const char *prelude, const char *body) {
+    const char *fragment[] = { prelude, "precision highp float;\n", rounding_source, body };
+    const char *vertex[] = { vertex_source };
+    return link_sources(p, vertex, 1, fragment, 4);
+}
+
+struct program *render_shader_create(struct render *r, const char *source) {
+    struct shader *shader = calloc(1, sizeof(*shader));
+    if (!shader) return NULL;
+    const char *vertex[] = { shader_vertex_source };
+    const char *fragment[] = { shader_prelude, source, shader_main };
+    current(r);
+    if (link_sources(&shader->program, vertex, 1, fragment, 3)) {
+        shader->r = r;
+        return &shader->program;
+    }
+    free(shader);
+    return NULL;
+}
+
+void render_shader_destroy(struct program *program) {
+    if (!program) return;
+    struct shader *shader = wl_container_of(program, shader, program);
+    current(shader->r);
+    glDeleteProgram(program->id);
+    free(shader);
 }
 
 static void render_quad(struct program *p, const float pos[8], const float local[8],

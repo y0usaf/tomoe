@@ -147,11 +147,16 @@
 
 (defun %ui-backdrop (value)
   (%ui-list value 4 "Shell background")
-  (unless (eq (first value) :image)
-    (error "Shell background must be a color or (:image PATH [:fit FIT])."))
-  (%ui-properties (cddr value) '(:fit))
-  (list :image (%ui-string (second value) 65536 nil)
-        :fit (%ui-choice (getf (cddr value) :fit :cover) '(:cover :contain :fill))))
+  (let ((kind (first value)) (options (cddr value)))
+    (unless (member kind '(:image :shader))
+      (error "Shell background must be a color, (:image PATH [:fit FIT]), or (:shader PATH [:fps FPS])."))
+    (%ui-properties options (if (eq kind :image) '(:fit) '(:fps)))
+    (list* kind (%ui-string (second value) 65536 nil)
+           (if (eq kind :image)
+               (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
+               (let ((fps (%double-float (getf options :fps 30))))
+                 (unless (<= 0d0 fps 1000d0) (error "Shell shader :fps must be from 0 to 1000."))
+                 (list :fps fps))))))
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
@@ -484,20 +489,23 @@
                 (let* ((background (getf declaration :background))
                        (backdrop (when (consp background)
                                    (list (%ui-load-asset asset-loader declaration
-                                                         (list :kind :backdrop :src (second background)
-                                                               :fit (getf (cddr background) :fit)
-                                                               :width width :height height))))))
+                                                         (list* :kind (if (eq (first background) :image)
+                                                                          :backdrop :shader)
+                                                                :src (second background)
+                                                                :width width :height height
+                                                                (cddr background)))
+                                         (getf (cddr background) :fps 0d0)))))
                   (multiple-value-bind (draw hits)
                       (%ui-draw-plan measured width height scale (unless backdrop background)
                                      (getf declaration :color) (getf declaration :font-size))
                     (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
                                       :output (copy-seq (getf output :name)) :x x :y y
                                       :width width :height height :layer (getf declaration :layer)))
-                          (asset-ids (append (%ui-asset-ids measured) backdrop)))
+                          (asset-ids (append (%ui-asset-ids measured) (when backdrop (list (first backdrop))))))
                       (when asset-ids
                         (setf plan (nconc plan (list :assets asset-ids))))
                       (when backdrop
-                        (setf plan (nconc plan (list :backdrop (first backdrop)))))
+                        (setf plan (nconc plan (list :backdrop backdrop))))
                       (setf plan (nconc plan (list :draw draw :hits hits)))
                       (push plan plans))))
                 (when (and area (plusp (getf declaration :exclusive-zone)))

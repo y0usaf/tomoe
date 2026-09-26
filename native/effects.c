@@ -249,6 +249,17 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame) {
+    struct fbox box = local_box(f, area);
+    double params[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time };
+    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
+    glUseProgram(p->id);
+    glUniform3f(p->resolution, box.width, box.height, 1);
+    glUniform1f(p->time, time);
+    glUniform1i(p->frame, frame);
+    quad(f, p, box, NULL, box.x, box.y);
+}
+
 void effects_finish(struct tomoe *s) {
     free(s->effects);
     s->effects = NULL;
