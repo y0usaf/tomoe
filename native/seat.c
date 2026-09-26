@@ -148,7 +148,8 @@ static void get_pointer(struct wl_client *client, struct wl_resource *seat_resou
     wl_list_insert(&c->pointers, wl_resource_get_link(resource));
     struct seat *seat = c->seat;
     if (seat->pointer_state.focused_client != c || !seat->pointer_state.focused_surface) return;
-    wl_pointer_send_enter(resource, wl_display_next_serial(seat->server->display),
+    seat->pointer_state.enter_serial = wl_display_next_serial(seat->server->display);
+    wl_pointer_send_enter(resource, seat->pointer_state.enter_serial,
         seat->pointer_state.focused_surface->resource,
         wl_fixed_from_double(seat->pointer_state.sx), wl_fixed_from_double(seat->pointer_state.sy));
     send_frame(resource);
@@ -266,6 +267,7 @@ void seat_pointer_enter(struct seat *seat, struct surface *surface, double sx, d
     }
     if (c && surface) {
         uint32_t serial = wl_display_next_serial(seat->server->display);
+        state->enter_serial = serial;
         wl_resource_for_each(resource, &c->pointers) {
             wl_pointer_send_enter(resource, serial, surface->resource, wl_fixed_from_double(sx),
                 wl_fixed_from_double(sy));

@@ -20,7 +20,7 @@ moves as one step when its members share wlroots state that cannot be split.
 | wlr-layer-shell v4 | `native/layer_shell.c`, planned by `native/layer.c` | `wlr_layer_shell_v1`, `wlr_scene_layer_surface_v1` |
 | xdg-shell v3 | `native/xdg_shell.c`; positioner math in `native/base.c` | `wlr_xdg_shell`, `wlr_scene_xdg_surface` |
 | ext-idle-notify, idle-inhibit | `native/idle.c`; the seat argument is accepted and unused, since Tomoe has one seat | `wlr_idle_notifier_v1`, `wlr_idle_inhibit_v1` |
-| relative-pointer, pointer-constraints | `native/pointer.c` | both wlroots managers |
+| relative-pointer, pointer-constraints, pointer-warp | `native/pointer.c` | both wlroots managers |
 | wl_seat v9 | `native/seat.c`: pointer and keyboard focus, grabs, cursor role, enter keys from Tomoe's held-key set; touch is advertised never and stays inert | `wlr_seat`, both keyboard patches |
 | wl_data_device v3 with drag and drop, primary-selection, wlr data-control v2, ext data-control | `native/selection.c`, one source and offer type for all four; the drag icon is a Tomoe surface node | `wlr_data_device`, `wlr_primary_selection_v1`, both data-control managers, `wlr_scene_drag_icon` |
 | virtual-keyboard, wlr-virtual-pointer | `native/virtual.c`, still producing `wlr_keyboard` and `wlr_pointer` devices for input.c | both wlroots managers |

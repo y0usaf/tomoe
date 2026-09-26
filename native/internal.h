@@ -680,7 +680,7 @@ struct seat_pointer_state {
     bool sent_axis_source, frame_pending;
     struct seat_button buttons[SEAT_BUTTONS];
     size_t button_count;
-    uint32_t grab_button, grab_serial;
+    uint32_t grab_button, grab_serial, enter_serial;
     struct wl_listener surface_destroy;
 };
 struct seat_keyboard_state {

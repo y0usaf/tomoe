@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "pointer-constraints-unstable-v1-protocol.h"
+#include "pointer-warp-v1-protocol.h"
 #include "relative-pointer-unstable-v1-protocol.h"
 
 enum { CONSTRAINT_REGION = 1, CONSTRAINT_HINT = 2 };
@@ -294,9 +295,48 @@ static void bind_relative(struct wl_client *client, void *data, uint32_t version
     wl_resource_set_implementation(resource, &relative_manager_impl, data, NULL);
 }
 
+static void warp_pointer(struct wl_client *client, struct wl_resource *resource,
+        struct wl_resource *surface_resource, struct wl_resource *pointer, wl_fixed_t x,
+        wl_fixed_t y, uint32_t serial) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    if (!s->seat || s->grab_mode != 0) return;
+    struct seat_pointer_state *state = &s->seat->pointer_state;
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (!state->focused_client || state->focused_client->client != client ||
+            state->focused_surface != surface || state->enter_serial != serial) return;
+    double ratio = physical_hit_ratio(s, s->pointer_x, s->pointer_y);
+    if (ratio <= 0) return;
+    double nx = s->pointer_x + (wl_fixed_to_double(x) - state->sx) * ratio;
+    double ny = s->pointer_y + (wl_fixed_to_double(y) - state->sy) * ratio;
+    struct surface *hit = NULL;
+    double sx, sy;
+    physical_hit_test(s, nx, ny, &hit, &sx, &sy);
+    if (hit != surface || !constraint_allows(s, nx, ny)) return;
+    s->pointer_x = nx;
+    s->pointer_y = ny;
+    pointer_refresh(s);
+    schedule_scene(s);
+}
+
+static const struct wp_pointer_warp_v1_interface warp_impl = {
+    .destroy = destroy_resource,
+    .warp_pointer = warp_pointer,
+};
+
+static void bind_warp(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &wp_pointer_warp_v1_interface,
+        version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &warp_impl, data, NULL);
+}
+
 bool pointer_protocols_listen(struct tomoe *s) {
     return wl_global_create(s->display, &zwp_pointer_constraints_v1_interface, 1, s,
             bind_constraints) &&
         wl_global_create(s->display, &zwp_relative_pointer_manager_v1_interface, 1, s,
-            bind_relative);
+            bind_relative) &&
+        wl_global_create(s->display, &wp_pointer_warp_v1_interface, 1, s, bind_warp);
 }
