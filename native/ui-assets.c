@@ -1,12 +1,17 @@
 #include "internal.h"
+#include "ui.h"
 #include "ui-assets.h"
 
+#include <drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jpeglib.h>
 #include <jerror.h>
 #include <librsvg/rsvg.h>
+#include <pthread.h>
 #include <setjmp.h>
+#include <signal.h>
+#include <sys/eventfd.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -18,8 +23,22 @@
 #define ASSET_COUNT_LIMIT 256u
 #define ASSET_STRING_LIMIT 65536u
 #define ASSET_XDG_DIR_LIMIT 64u
+#define BACKDROP_FILE_LIMIT (UINT64_C(128) * 1024 * 1024)
+#define BACKDROP_SOURCE_LIMIT (UINT64_C(512) * 1024 * 1024)
+#define BACKDROP_DIMENSION_LIMIT 32767u
 
 enum asset_status { ASSET_OK, ASSET_MISSING, ASSET_HARD };
+enum { FIT_COVER, FIT_CONTAIN, FIT_FILL };
+
+struct backdrop_job {
+    struct backdrop_job *next;
+    struct ui_asset *asset;
+    char *path;
+    uint32_t width, height;
+    int fit;
+    cairo_surface_t *result;
+    const char *reason;
+};
 
 struct ui_asset {
     struct ui_asset_pool *pool;
@@ -34,11 +53,21 @@ struct ui_asset {
     cairo_surface_t *raster;
     RsvgHandle *svg;
     double svg_width, svg_height;
+    struct backdrop_job *job;
+    struct texture *texture;
+    int x, y;
 };
 
 struct ui_asset_pool {
     struct ui_asset *assets;
     uint64_t count, bytes, loads, next_id;
+    pthread_t worker;
+    pthread_mutex_t lock;
+    pthread_cond_t wake;
+    struct backdrop_job *queue, *done;
+    struct wl_event_source *source;
+    int wakeup;
+    bool working, stopping;
 };
 
 struct asset_data { unsigned char *bytes; size_t length; };
@@ -47,12 +76,11 @@ static bool bounded_string(const char *text) {
     return text && strnlen(text, ASSET_STRING_LIMIT + 1) <= ASSET_STRING_LIMIT;
 }
 
-static bool raster_bytes(uint32_t width, uint32_t height,
+static bool raster_bytes(uint32_t width, uint32_t height, uint32_t dimension,
         uint64_t available, uint64_t *bytes) {
-    if (!width || !height || width > ASSET_DIMENSION_LIMIT ||
-            height > ASSET_DIMENSION_LIMIT) return false;
+    if (!width || !height || width > dimension || height > dimension) return false;
     *bytes = (uint64_t)width * height * 4;
-    return *bytes <= ASSET_RASTER_LIMIT && *bytes <= available;
+    return *bytes <= available;
 }
 
 static enum asset_status read_asset(const char *path, size_t limit,
@@ -151,7 +179,8 @@ static enum asset_status decode_png(struct ui_asset *asset,
     asset->width = big_endian(data->bytes + 16);
     asset->height = big_endian(data->bytes + 20);
     if (!asset->width || !asset->height) return ASSET_MISSING;
-    if (!raster_bytes(asset->width, asset->height, available, &asset->bytes)) return ASSET_HARD;
+    if (!raster_bytes(asset->width, asset->height, ASSET_DIMENSION_LIMIT, available, &asset->bytes))
+        return ASSET_HARD;
     cairo_surface_t *image = cairo_image_surface_create_from_png_stream(png_read_bytes,
         &(struct png_read){ .data = data });
     cairo_status_t status = cairo_surface_status(image);
@@ -194,7 +223,7 @@ static void jpeg_failure(j_common_ptr common) {
 static void jpeg_message_ignore(j_common_ptr common) { (void)common; }
 
 static enum asset_status decode_jpeg(struct ui_asset *asset,
-        const struct asset_data *data, uint64_t available) {
+        const struct asset_data *data, uint32_t dimension, uint64_t available) {
     struct jpeg_decode *decode = calloc(1, sizeof(*decode));
     if (!decode) return ASSET_HARD;
     decode->jpeg.err = jpeg_std_error(&decode->error);
@@ -207,7 +236,10 @@ static enum asset_status decode_jpeg(struct ui_asset *asset,
     jpeg_mem_src(&decode->jpeg, data->bytes, (unsigned long)data->length);
     if (jpeg_read_header(&decode->jpeg, TRUE) != JPEG_HEADER_OK) goto done;
     asset->width = decode->jpeg.image_width; asset->height = decode->jpeg.image_height;
-    if (!raster_bytes(asset->width, asset->height, available, &asset->bytes)) { result = ASSET_HARD; goto done; }
+    if (!raster_bytes(asset->width, asset->height, dimension, available, &asset->bytes)) {
+        result = ASSET_HARD;
+        goto done;
+    }
     bool cmyk = decode->jpeg.jpeg_color_space == JCS_CMYK || decode->jpeg.jpeg_color_space == JCS_YCCK;
     decode->jpeg.out_color_space = cmyk ? JCS_CMYK : JCS_RGB;
     if (!jpeg_start_decompress(&decode->jpeg)) goto done;
@@ -265,11 +297,32 @@ static enum asset_status decode_svg(struct ui_asset *asset,
     return ASSET_OK;
 }
 
+static void job_free(struct backdrop_job *job) {
+    if (job->result) cairo_surface_destroy(job->result);
+    free(job->path);
+    free(job);
+}
+
+static void backdrop_cancel(struct ui_asset *asset) {
+    struct ui_asset_pool *pool = asset->pool;
+    struct backdrop_job *job = asset->job, **link = &pool->queue;
+    asset->job = NULL;
+    job->asset = NULL;
+    pthread_mutex_lock(&pool->lock);
+    while (*link && *link != job) link = &(*link)->next;
+    bool queued = *link != NULL;
+    if (queued) *link = job->next;
+    pthread_mutex_unlock(&pool->lock);
+    if (queued) job_free(job);
+}
+
 static void free_content(struct ui_asset *asset) {
+    if (asset->job) backdrop_cancel(asset);
+    if (asset->texture) texture_destroy(asset->texture);
     if (asset->raster) cairo_surface_destroy(asset->raster);
     if (asset->svg) g_object_unref(asset->svg);
     free(asset->pixels);
-    asset->raster = NULL; asset->svg = NULL; asset->pixels = NULL;
+    asset->texture = NULL; asset->raster = NULL; asset->svg = NULL; asset->pixels = NULL;
     asset->width = asset->height = 0; asset->bytes = 0;
 }
 
@@ -286,12 +339,209 @@ static struct ui_asset *find_asset(struct tomoe *s, uint64_t id) {
     return NULL;
 }
 
+static cairo_surface_t *backdrop_scale(cairo_surface_t *source, uint32_t width,
+        uint32_t height, int fit) {
+    double iw = cairo_image_surface_get_width(source), ih = cairo_image_surface_get_height(source);
+    double sx = width / iw, sy = height / ih;
+    if (fit == FIT_COVER) sx = sy = fmax(sx, sy);
+    else if (fit == FIT_CONTAIN) sx = sy = fmin(sx, sy);
+    int w = fit == FIT_CONTAIN ? (int)fmax(1, round(iw * sx)) : (int)width;
+    int h = fit == FIT_CONTAIN ? (int)fmax(1, round(ih * sy)) : (int)height;
+    cairo_surface_t *target = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+    cairo_t *cairo = cairo_create(target);
+    cairo_translate(cairo, (w - iw * sx) / 2, (h - ih * sy) / 2);
+    cairo_scale(cairo, sx, sy);
+    cairo_set_source_surface(cairo, source, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_GOOD);
+    cairo_pattern_set_extend(cairo_get_source(cairo), CAIRO_EXTEND_PAD);
+    cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+    cairo_paint(cairo);
+    bool ok = cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    cairo_destroy(cairo);
+    cairo_surface_flush(target);
+    if (ok && cairo_surface_status(target) == CAIRO_STATUS_SUCCESS) return target;
+    cairo_surface_destroy(target);
+    return NULL;
+}
+
+static void backdrop_decode(struct backdrop_job *job) {
+    struct asset_data data = {0};
+    struct ui_asset decoded = {0};
+    cairo_surface_t *source = NULL;
+    uint64_t bytes;
+    if (read_asset(job->path, BACKDROP_FILE_LIMIT, &data) == ASSET_OK) {
+        if (data.length >= 24 && !memcmp(data.bytes, "\x89PNG\r\n\x1a\n", 8) &&
+                !memcmp(data.bytes + 12, "IHDR", 4) &&
+                raster_bytes(big_endian(data.bytes + 16), big_endian(data.bytes + 20),
+                    BACKDROP_DIMENSION_LIMIT, BACKDROP_SOURCE_LIMIT, &bytes))
+            source = cairo_image_surface_create_from_png_stream(png_read_bytes,
+                &(struct png_read){ .data = &data });
+        else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8 &&
+                decode_jpeg(&decoded, &data, BACKDROP_DIMENSION_LIMIT, BACKDROP_SOURCE_LIMIT) == ASSET_OK)
+            source = cairo_image_surface_create_for_data(decoded.pixels, CAIRO_FORMAT_ARGB32,
+                (int)decoded.width, (int)decoded.height, (int)decoded.width * 4);
+    }
+    free(data.bytes);
+    if (source && cairo_surface_status(source) == CAIRO_STATUS_SUCCESS)
+        job->result = backdrop_scale(source, job->width, job->height, job->fit);
+    if (source) cairo_surface_destroy(source);
+    free(decoded.pixels);
+}
+
+static void *backdrop_worker(void *data) {
+    struct ui_asset_pool *pool = data;
+    pthread_mutex_lock(&pool->lock);
+    while (!pool->stopping) {
+        struct backdrop_job *job = pool->queue;
+        if (!job) {
+            pthread_cond_wait(&pool->wake, &pool->lock);
+            continue;
+        }
+        pool->queue = job->next;
+        pthread_mutex_unlock(&pool->lock);
+        backdrop_decode(job);
+        pthread_mutex_lock(&pool->lock);
+        job->next = pool->done;
+        pool->done = job;
+        ssize_t written = write(pool->wakeup, &(uint64_t){ 1 }, sizeof(uint64_t));
+        (void)written;
+    }
+    pthread_mutex_unlock(&pool->lock);
+    return NULL;
+}
+
+static int backdrops_done(int fd, uint32_t mask, void *data) {
+    struct tomoe *s = data;
+    struct ui_asset_pool *pool = s->ui_assets;
+    uint64_t count;
+    if (read(fd, &count, sizeof(count)) < 0 && errno != EAGAIN)
+        fprintf(stderr, "tomoe: shell background wakeup failed: %s\n", strerror(errno));
+    pthread_mutex_lock(&pool->lock);
+    struct backdrop_job *job = pool->done;
+    pool->done = NULL;
+    pthread_mutex_unlock(&pool->lock);
+    while (job) {
+        struct backdrop_job *next = job->next;
+        struct ui_asset *asset = job->asset;
+        if (asset) {
+            asset->job = NULL;
+            if (job->result && s->renderer)
+                asset->texture = texture_from_pixels(s->renderer, DRM_FORMAT_ARGB8888,
+                    (uint32_t)cairo_image_surface_get_stride(job->result),
+                    (uint32_t)cairo_image_surface_get_width(job->result),
+                    (uint32_t)cairo_image_surface_get_height(job->result),
+                    cairo_image_surface_get_data(job->result));
+            if (asset->texture) {
+                asset->x = ((int)asset->width - (int)asset->texture->width) / 2;
+                asset->y = ((int)asset->height - (int)asset->texture->height) / 2;
+            } else {
+                fprintf(stderr, "tomoe: shell background asset unavailable: %s\n", asset->path);
+            }
+        }
+        job_free(job);
+        job = next;
+    }
+    ui_backdrops_ready(s);
+    return 0;
+}
+
+static bool backdrop_worker_start(struct tomoe *s, struct ui_asset_pool *pool) {
+    if (pool->working) return true;
+    int wakeup = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    struct wl_event_source *source = wakeup < 0 ? NULL : wl_event_loop_add_fd(
+        wl_display_get_event_loop(s->display), wakeup, WL_EVENT_READABLE, backdrops_done, s);
+    if (!source) {
+        if (wakeup >= 0) close(wakeup);
+        return false;
+    }
+    pool->wakeup = wakeup;
+    pool->source = source;
+    pthread_mutex_init(&pool->lock, NULL);
+    pthread_cond_init(&pool->wake, NULL);
+    sigset_t all, previous;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &previous);
+    pool->working = pthread_create(&pool->worker, NULL, backdrop_worker, pool) == 0;
+    pthread_sigmask(SIG_SETMASK, &previous, NULL);
+    if (pool->working) return true;
+    pthread_cond_destroy(&pool->wake);
+    pthread_mutex_destroy(&pool->lock);
+    wl_event_source_remove(source);
+    close(wakeup);
+    return false;
+}
+
+static void backdrop_worker_stop(struct ui_asset_pool *pool) {
+    if (!pool->working) return;
+    pthread_mutex_lock(&pool->lock);
+    pool->stopping = true;
+    pthread_cond_signal(&pool->wake);
+    pthread_mutex_unlock(&pool->lock);
+    pthread_join(pool->worker, NULL);
+    struct backdrop_job *lists[] = { pool->queue, pool->done };
+    for (size_t i = 0; i < 2; i++) {
+        for (struct backdrop_job *job = lists[i], *next; job; job = next) {
+            next = job->next;
+            if (job->asset) job->asset->job = NULL;
+            job_free(job);
+        }
+    }
+    pool->queue = pool->done = NULL;
+    wl_event_source_remove(pool->source);
+    close(pool->wakeup);
+    pthread_cond_destroy(&pool->wake);
+    pthread_mutex_destroy(&pool->lock);
+    pool->working = false;
+}
+
+static bool backdrop_name(const char *name, uint32_t *width, uint32_t *height, int *fit) {
+    static const char *const fits[] = { "cover", "contain", "fill" };
+    char mode[8];
+    int end = 0;
+    if (sscanf(name, "%ux%u:%7[a-z]%n", width, height, mode, &end) != 3 || name[end] ||
+            !*width || !*height || *width > ASSET_DIMENSION_LIMIT ||
+            *height > ASSET_DIMENSION_LIMIT) return false;
+    for (*fit = FIT_COVER; *fit <= FIT_FILL; ++*fit)
+        if (!strcmp(mode, fits[*fit])) return true;
+    return false;
+}
+
+static enum asset_status backdrop_start(struct tomoe *s, struct ui_asset *asset,
+        uint32_t width, uint32_t height, int fit, uint64_t available) {
+    struct ui_asset_pool *pool = asset->pool;
+    uint64_t bytes;
+    struct stat info;
+    if (!raster_bytes(width, height, ASSET_DIMENSION_LIMIT, available, &bytes)) return ASSET_HARD;
+    if (stat(asset->path, &info) != 0 || !S_ISREG(info.st_mode)) return ASSET_MISSING;
+    if ((uint64_t)info.st_size > BACKDROP_FILE_LIMIT || !backdrop_worker_start(s, pool))
+        return ASSET_HARD;
+    struct backdrop_job *job = calloc(1, sizeof(*job));
+    char *path = strdup(asset->path);
+    if (!job || !path) {
+        free(job);
+        free(path);
+        return ASSET_HARD;
+    }
+    *job = (struct backdrop_job){ .asset = asset, .path = path, .width = width,
+        .height = height, .fit = fit };
+    asset->width = width; asset->height = height; asset->bytes = bytes; asset->job = job;
+    pthread_mutex_lock(&pool->lock);
+    job->next = pool->queue;
+    pool->queue = job;
+    pthread_cond_signal(&pool->wake);
+    pthread_mutex_unlock(&pool->lock);
+    return ASSET_OK;
+}
+
 uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
         uint64_t source_id, int kind, const char *path, const char *name) {
+    uint32_t width = 0, height = 0;
+    int fit = FIT_COVER;
     if (!s || !source_id || !bounded_string(owner) || !*owner ||
             !bounded_string(path) || !bounded_string(name) ||
-            (kind != 1 && kind != 2) || (*path && *path != '/') ||
-            (kind == 1 && (!*path || *name)) || (kind == 2 && !*name)) return 0;
+            kind < 1 || kind > 3 || (*path && *path != '/') ||
+            (kind == 1 && (!*path || *name)) || (kind == 2 && !*name) ||
+            (kind == 3 && (!*path || !backdrop_name(name, &width, &height, &fit)))) return 0;
     if (!s->ui_assets) {
         s->ui_assets = calloc(1, sizeof(*s->ui_assets));
         if (!s->ui_assets) return 0;
@@ -313,15 +563,18 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     if (!asset) return 0;
     asset->owner = strdup(owner); asset->path = strdup(path); asset->name = strdup(name);
     if (!asset->owner || !asset->path || !asset->name) { free_asset(asset); return 0; }
-    asset->kind = kind; asset->source_id = source_id;
+    asset->kind = kind; asset->source_id = source_id; asset->pool = pool;
     struct asset_data data = {0};
     if (pool->loads != UINT64_MAX) pool->loads++;
-    enum asset_status status = kind == 1 ? read_asset(path, ASSET_FILE_LIMIT, &data) : read_icon(path, name, &data);
     uint64_t available = ASSET_POOL_LIMIT - pool->bytes;
-    if (status == ASSET_OK) {
+    if (available > ASSET_RASTER_LIMIT) available = ASSET_RASTER_LIMIT;
+    enum asset_status status = kind == 3 ? backdrop_start(s, asset, width, height, fit, available) :
+        kind == 1 ? read_asset(path, ASSET_FILE_LIMIT, &data) : read_icon(path, name, &data);
+    if (status == ASSET_OK && kind != 3) {
         if (kind == 2) status = decode_svg(asset, &data, available);
         else if (data.length >= 8 && !memcmp(data.bytes, "\x89PNG\r\n\x1a\n", 8)) status = decode_png(asset, &data, available);
-        else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8) status = decode_jpeg(asset, &data, available);
+        else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8)
+            status = decode_jpeg(asset, &data, ASSET_DIMENSION_LIMIT, available);
         else status = ASSET_MISSING;
     }
     free(data.bytes);
@@ -333,9 +586,10 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     if (status == ASSET_HARD) { free_asset(asset); return 0; }
     if (status == ASSET_MISSING) {
         free_content(asset);
-        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n", kind == 1 ? "image" : "icon", *path ? path : name);
+        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n",
+            kind == 1 ? "image" : kind == 2 ? "icon" : "background", *path ? path : name);
     }
-    asset->pool = pool; asset->references = 1; asset->scratch = true;
+    asset->references = 1; asset->scratch = true;
     asset->id = pool->next_id;
     pool->next_id = pool->next_id == UINT64_MAX ? 0 : pool->next_id + 1;
     asset->next = pool->assets; pool->assets = asset;
@@ -353,6 +607,19 @@ struct ui_asset *ui_asset_acquire(struct tomoe *s, uint64_t id) {
     if (!asset || asset->references == SIZE_MAX) return NULL;
     asset->references++;
     return asset;
+}
+
+struct ui_asset *ui_asset_retain(struct ui_asset *asset) {
+    if (!asset || asset->references == SIZE_MAX) return NULL;
+    asset->references++;
+    return asset;
+}
+
+struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y) {
+    if (!asset || !asset->texture) return NULL;
+    if (x) *x = asset->x;
+    if (y) *y = asset->y;
+    return asset->texture;
 }
 
 bool ui_asset_owned_by(const struct ui_asset *asset, const char *owner, uint64_t source_id) {
@@ -397,7 +664,8 @@ bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
             width < 0 || height < 0 || width > ASSET_DIMENSION_LIMIT || height > ASSET_DIMENSION_LIMIT) return false;
     if (!width || !height || (!asset->raster && !asset->svg)) return true;
     uint64_t bytes;
-    if (!raster_bytes((uint32_t)ceil(width), (uint32_t)ceil(height), ASSET_RASTER_LIMIT, &bytes)) return false;
+    if (!raster_bytes((uint32_t)ceil(width), (uint32_t)ceil(height), ASSET_DIMENSION_LIMIT,
+            ASSET_RASTER_LIMIT, &bytes)) return false;
     cairo_surface_t *source = asset->raster;
     cairo_surface_t *temporary = NULL;
     if (tint) {
@@ -460,6 +728,7 @@ uint64_t ui_assets_loads(struct tomoe *s) { return s && s->ui_assets ? s->ui_ass
 void ui_assets_finish(struct tomoe *s) {
     if (!s || !s->ui_assets) return;
     tomoe_ui_assets_discard(s);
+    backdrop_worker_stop(s->ui_assets);
     while (s->ui_assets->assets) {
         struct ui_asset *asset = s->ui_assets->assets;
         s->ui_assets->assets = asset->next;

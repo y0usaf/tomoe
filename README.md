@@ -866,6 +866,23 @@ counting decoded raster bytes and encoded SVG bytes, not SVG library overhead.
 Limit or allocation failures reject the proposal. Missing or malformed files
 are cached fallbacks. SVGs cannot load external file or URL references.
 
+A surface `:background` is a color or `(:image PATH :fit FIT)`, which paints a
+PNG or JPEG beneath the tree. FIT is `:cover` (the default; fills and crops),
+`:contain` (letterboxes), or `:fill` (stretches). A worker thread decodes the
+file and scales it once to the surface's physical size, so the compositor thread
+never decodes and only a surface-sized texture stays resident. Until a new image
+is ready, and when it is missing or malformed, the surface keeps showing its
+previous image and the failure is logged. Files may reach 128 MiB and decode to
+32767 pixels per axis and 512 MiB; the scaled result counts toward the asset
+pool. A surface whose tree draws nothing keeps no canvas texture.
+[examples/wallpaper.lisp](examples/wallpaper.lisp) shuffles a directory with Mod+w:
+
+```lisp
+(shell-surface :wallpaper (ui :stack)
+  :anchors '(:top :right :bottom :left) :layer :background
+  :background '(:image "/home/me/Pictures/wall.png"))
+```
+
 Explicit UI dimensions, margins, padding, font sizes, and reservations are logical units,
 scaled once on each output. A surface defaults to every connected output,
 top/left/right anchors, intrinsic unstretched dimensions, zero margins and zone,

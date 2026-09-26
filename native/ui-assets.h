@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <cairo.h>
 
+struct texture;
 struct tomoe;
 struct ui_asset;
 struct ui_asset_pool;
@@ -14,6 +15,8 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
 uint64_t tomoe_ui_asset_size(struct tomoe *s, uint64_t id);
 void tomoe_ui_assets_discard(struct tomoe *s);
 struct ui_asset *ui_asset_acquire(struct tomoe *s, uint64_t id);
+struct ui_asset *ui_asset_retain(struct ui_asset *asset);
+struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y);
 bool ui_asset_owned_by(const struct ui_asset *asset, const char *owner, uint64_t source_id);
 void ui_asset_release(struct ui_asset *asset);
 bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,

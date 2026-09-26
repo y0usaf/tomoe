@@ -93,12 +93,14 @@
   (server (* t)) (id sb-alien:unsigned-long-long)
   (x sb-alien:double) (y sb-alien:double) (width sb-alien:double) (height sb-alien:double)
   (tint sb-alien:int) (rgba sb-alien:unsigned-int))
+(define-native ("tomoe_present_ui_backdrop" %present-ui-backdrop) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-long-long))
 
 (defun native-ui-asset-loader (backend)
   (when backend
     (lambda (declaration tree)
-      (let* ((image-p (eq (getf tree :kind) :image))
-             (raw (getf tree (if image-p :src :path)))
+      (let* ((kind (getf tree :kind))
+             (raw (getf tree (if (eq kind :icon) :path :src)))
              (path (cond ((or (null raw) (zerop (length raw))) "")
                          ((char= (char raw 0) #\/) raw)
                          (t
@@ -108,7 +110,12 @@
                               (error "Relative shell asset paths require a declaring source."))
                             (concatenate 'string (directory-namestring source) raw)))))
              (id (%ui-asset-load backend (getf declaration :owner) (getf declaration :source-id)
-                                 (if image-p 1 2) path (if image-p "" (getf tree :name)))))
+                                 (ecase kind (:image 1) (:icon 2) (:backdrop 3)) path
+                                 (case kind
+                                   (:icon (getf tree :name))
+                                   (:backdrop (format nil "~Dx~D:~(~A~)" (getf tree :width)
+                                                      (getf tree :height) (getf tree :fit)))
+                                   (t "")))))
         (when (zerop id) (error "Cannot prepare shell asset ~S." (or raw (getf tree :name))))
         (let ((dimensions (%ui-asset-size backend id)))
           (when (= dimensions #xffffffffffffffff) (error "Shell asset lost during preparation."))
@@ -263,6 +270,8 @@
         (when (= status 1)
           (dolist (id (getf plan :assets))
             (require-ui (%present-ui-asset-ref backend id)))
+          (when (getf plan :backdrop)
+            (require-ui (%present-ui-backdrop backend (getf plan :backdrop))))
           (dolist (operation (getf plan :draw))
             (require-ui (apply #'%present-ui-clip backend (car (last operation))))
             (require-ui

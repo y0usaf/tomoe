@@ -145,6 +145,14 @@
   "Construct an immutable-by-ownership element declaration, never a native handle."
   (canonical-ui (cons :kind (cons kind properties))))
 
+(defun %ui-backdrop (value)
+  (%ui-list value 4 "Shell background")
+  (unless (eq (first value) :image)
+    (error "Shell background must be a color or (:image PATH [:fit FIT])."))
+  (%ui-properties (cddr value) '(:fit))
+  (list :image (%ui-string (second value) 65536 nil)
+        :fit (%ui-choice (getf (cddr value) :fit :cover) '(:cover :contain :fill))))
+
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
                              :exclusive-zone :visible :output :background :color :font-size :stack))
@@ -167,7 +175,8 @@
           :visible visible
           :output (let ((output (getf arguments :output)))
                     (when output (%ui-string output 65536 nil)))
-          :background (%ui-color (getf arguments :background #x1e1e2eff))
+          :background (let ((background (getf arguments :background #x1e1e2eff)))
+                        (if (consp background) (%ui-backdrop background) (%ui-color background)))
           :color (%ui-color (getf arguments :color #xcdd6f4ff))
           :font-size (%ui-length (getf arguments :font-size 13))
           :stack (%ui-key (getf arguments :stack) t))))
@@ -472,17 +481,25 @@
                 (incf pixels (* width height))
                 (when (or (>= (length plans) 64) (> pixels (* 32 1024 1024)))
                   (error "Shell surface set exceeds its canvas budget."))
-                (multiple-value-bind (draw hits)
-                    (%ui-draw-plan measured width height scale (getf declaration :background)
-                                   (getf declaration :color) (getf declaration :font-size))
-                  (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
-                                    :output (copy-seq (getf output :name)) :x x :y y
-                                    :width width :height height :layer (getf declaration :layer))))
-                    (let ((asset-ids (%ui-asset-ids measured)))
+                (let* ((background (getf declaration :background))
+                       (backdrop (when (consp background)
+                                   (list (%ui-load-asset asset-loader declaration
+                                                         (list :kind :backdrop :src (second background)
+                                                               :fit (getf (cddr background) :fit)
+                                                               :width width :height height))))))
+                  (multiple-value-bind (draw hits)
+                      (%ui-draw-plan measured width height scale (unless backdrop background)
+                                     (getf declaration :color) (getf declaration :font-size))
+                    (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
+                                      :output (copy-seq (getf output :name)) :x x :y y
+                                      :width width :height height :layer (getf declaration :layer)))
+                          (asset-ids (append (%ui-asset-ids measured) backdrop)))
                       (when asset-ids
-                        (setf plan (nconc plan (list :assets asset-ids)))))
-                    (setf plan (nconc plan (list :draw draw :hits hits)))
-                    (push plan plans)))
+                        (setf plan (nconc plan (list :assets asset-ids))))
+                      (when backdrop
+                        (setf plan (nconc plan (list :backdrop (first backdrop)))))
+                      (setf plan (nconc plan (list :draw draw :hits hits)))
+                      (push plan plans))))
                 (when (and area (plusp (getf declaration :exclusive-zone)))
                   (%ui-reserve area anchors (%ui-round (* scale (getf declaration :exclusive-zone)))))))))))
     (values (nreverse plans) areas)))

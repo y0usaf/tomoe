@@ -47,8 +47,10 @@ struct ui_surface {
     size_t hit_count, hit_capacity;
     struct ui_surface_asset *assets;
     size_t asset_count, asset_capacity;
+    struct ui_asset *backdrop, *fallback;
     bool building;
     bool complete;
+    bool drawn;
     bool clip_set;
     int clip_x, clip_y, clip_width, clip_height;
 };
@@ -136,6 +138,7 @@ static void surface_free(struct ui_surface *surface) {
     free(surface->hits);
     for (size_t i = 0; i < surface->asset_count; i++)
         ui_asset_release(surface->assets[i].asset);
+    ui_asset_release(surface->fallback);
     free(surface->assets);
     free(surface->owner);
     free(surface->name);
@@ -199,7 +202,7 @@ static bool same_cached_surface(const struct ui_surface *surface,
         string_equal(surface->output, output) &&
         string_equal(surface->signature, signature) && surface->x == x &&
         surface->y == y && surface->width == width && surface->height == height &&
-        surface->layer == layer && surface->complete && surface->texture;
+        surface->layer == layer && surface->complete;
 }
 
 static uint64_t reusable_callback_id(struct tomoe *s,
@@ -412,6 +415,7 @@ static void rounded_path(cairo_t *cairo, double x, double y, double width,
 static bool cairo_begin_clip(struct ui_surface *surface) {
     cairo_t *cairo = surface->cairo;
     if (!cairo || cairo_status(cairo) != CAIRO_STATUS_SUCCESS) return false;
+    surface->drawn = true;
     cairo_save(cairo);
     if (surface->clip_set) {
         cairo_rectangle(cairo, surface->clip_x, surface->clip_y,
@@ -448,6 +452,39 @@ int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id) {
     }
     surface->assets[surface->asset_count++] = (struct ui_surface_asset){ id, asset };
     return 1;
+}
+
+static struct ui_asset *shown_backdrop(const struct ui_surface *surface) {
+    return ui_asset_backdrop(surface->backdrop, NULL, NULL) ? surface->backdrop : surface->fallback;
+}
+
+int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id) {
+    struct ui_surface *surface = NULL;
+    if (!surface_is_current(s, &surface) || surface->backdrop) return 0;
+    for (size_t i = 0; i < surface->asset_count; i++)
+        if (surface->assets[i].id == id) surface->backdrop = surface->assets[i].asset;
+    if (!surface->backdrop) return 0;
+    if (ui_asset_backdrop(surface->backdrop, NULL, NULL) || !s->ui) return 1;
+    for (size_t i = 0; i < s->ui->count; i++) {
+        struct ui_surface *live = s->ui->surfaces[i];
+        if (!same_declaration(live, surface->owner, surface->name, surface->output)) continue;
+        surface->fallback = ui_asset_retain(shown_backdrop(live));
+        break;
+    }
+    return 1;
+}
+
+void ui_backdrops_ready(struct tomoe *s) {
+    struct ui_set *sets[] = { s->ui, candidate_set(s) };
+    for (size_t k = 0; k < 2; k++) {
+        for (size_t i = 0; sets[k] && i < sets[k]->count; i++) {
+            struct ui_surface *surface = sets[k]->surfaces[i];
+            if (!surface->fallback || !ui_asset_backdrop(surface->backdrop, NULL, NULL)) continue;
+            ui_asset_release(surface->fallback);
+            surface->fallback = NULL;
+        }
+    }
+    schedule_scene(s);
 }
 
 int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
@@ -675,16 +712,17 @@ int tomoe_present_ui_end(struct tomoe *s) {
     cairo_surface_destroy(surface->cairo_surface);
     surface->cairo_surface = NULL;
 
-    struct texture *texture = texture_from_pixels(s->renderer,
+    struct texture *texture = surface->drawn ? texture_from_pixels(s->renderer,
         TOMOE_DRM_FORMAT_ARGB8888, surface->stride,
-        (uint32_t)surface->width, (uint32_t)surface->height, surface->pixels);
+        (uint32_t)surface->width, (uint32_t)surface->height, surface->pixels) : NULL;
     free(surface->pixels);
     surface->pixels = NULL;
-    if (!texture) goto failed;
+    if (surface->drawn && !texture) goto failed;
     surface->texture = texture;
     surface->building = false;
     surface->complete = true;
-    s->ui_rasterizations++;
+    if (!texture) surface->bytes = 0;
+    else s->ui_rasterizations++;
     return 1;
 failed:
     remove_surface(set, surface);
@@ -711,8 +749,7 @@ bool ui_prepare(struct tomoe *s) {
     if (set->current) return false;
     for (size_t i = 0; i < set->count; i++) {
         struct ui_surface *surface = set->surfaces[i];
-        if (!surface->complete || !surface->texture || surface->bytes > UI_MAX_SURFACE_BYTES)
-            return false;
+        if (!surface->complete || surface->bytes > UI_MAX_SURFACE_BYTES) return false;
         for (size_t j = i + 1; j < set->count; j++)
             if (same_declaration(surface, set->surfaces[j]->owner,
                     set->surfaces[j]->name, set->surfaces[j]->output)) return false;
@@ -816,9 +853,30 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
 bool ui_on_output(struct output *o, int layer) {
     const struct ui_set *set = o->server->ui;
     for (size_t i = 0; set && i < set->count; i++)
-        if (set->surfaces[i]->layer >= layer && set->surfaces[i]->texture &&
+        if (set->surfaces[i]->layer >= layer &&
+                (set->surfaces[i]->texture || set->surfaces[i]->backdrop) &&
                 surface_matches_output(set->surfaces[i], o, NULL)) return true;
     return false;
+}
+
+static void draw_texture(struct frame *f, struct texture *texture, int x, int y) {
+    struct box bounds = { .x = 0, .y = 0, .width = f->width, .height = f->height };
+    struct box source = { .x = x - f->x, .y = y - f->y,
+        .width = (int)texture->width, .height = (int)texture->height };
+    struct box destination;
+    if (!box_intersection(&destination, &source, &bounds)) return;
+    struct fbox source_box = {
+        .x = (double)(destination.x - source.x),
+        .y = (double)(destination.y - source.y),
+        .width = destination.width,
+        .height = destination.height };
+    box_transform(&destination, &destination,
+        transform_invert(f->transform), f->width, f->height);
+    pass_add_texture(f->pass, &(struct texture_options){
+        .texture = texture, .src_box = source_box,
+        .dst_box = destination, .transform = f->transform,
+        .filter_mode = FILTER_BILINEAR,
+        .blend_mode = BLEND_PREMULTIPLIED });
 }
 
 void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer) {
@@ -827,28 +885,13 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             (!output_is_active(o) && !o->server->configuring_outputs)) return;
     const struct ui_set *set = plan ? plan->ui : o->server->ui;
     if (!set) return;
-    struct box bounds = { .x = 0, .y = 0, .width = f->width, .height = f->height };
     for (size_t i = 0; i < set->count; i++) {
         const struct ui_surface *surface = set->surfaces[i];
-        if (surface->layer != layer || !surface_matches_output(surface, o, plan) ||
-                !surface->texture) continue;
-        struct box source = {
-            .x = surface->x - f->x, .y = surface->y - f->y,
-            .width = surface->width, .height = surface->height };
-        struct box destination;
-        if (!box_intersection(&destination, &source, &bounds)) continue;
-        struct fbox source_box = {
-            .x = (double)(destination.x - source.x),
-            .y = (double)(destination.y - source.y),
-            .width = destination.width,
-            .height = destination.height };
-        box_transform(&destination, &destination,
-            transform_invert(f->transform), f->width, f->height);
-        pass_add_texture(f->pass, &(struct texture_options){
-            .texture = surface->texture, .src_box = source_box,
-            .dst_box = destination, .transform = f->transform,
-            .filter_mode = FILTER_BILINEAR,
-            .blend_mode = BLEND_PREMULTIPLIED });
+        if (surface->layer != layer || !surface_matches_output(surface, o, plan)) continue;
+        int x, y;
+        struct texture *backdrop = ui_asset_backdrop(shown_backdrop(surface), &x, &y);
+        if (backdrop) draw_texture(f, backdrop, surface->x + x, surface->y + y);
+        if (surface->texture) draw_texture(f, surface->texture, surface->x, surface->y);
     }
 }
 
