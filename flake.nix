@@ -11,9 +11,7 @@
         "aarch64-linux"
       ];
       eachSystem = nixpkgs.lib.genAttrs systems;
-      pkgsFor =
-        system:
-        import nixpkgs { inherit system; };
+      pkgsFor = system: import nixpkgs { inherit system; };
       pipewire =
         pkgs:
         pkgs.pipewire.overrideAttrs {
@@ -214,12 +212,22 @@
               --prefix PATH : $out/libexec/tomoe-bin:${
                 pkgs.lib.makeBinPath [
                   pkgs.foot
-                  pkgs.fuzzel
+                  (pkgs.fuzzel.override { svgBackend = "librsvg"; })
                   (pkgs.xwayland-satellite.override {
-                    xwayland = pkgs.xwayland.override {
-                      libdecor = null;
-                      libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
-                    };
+                    xwayland =
+                      (pkgs.xwayland.override {
+                        bash = pkgs.bashNonInteractive;
+                        openssl = pkgs.libmd;
+                        libdecor = null;
+                        libtirpc = null;
+                        libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
+                      }).overrideAttrs
+                        (old: {
+                          mesonFlags = old.mesonFlags ++ [
+                            "-Dsha1=libmd"
+                            "-Dsecure-rpc=false"
+                          ];
+                        });
                   })
                 ]
               }
