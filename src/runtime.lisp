@@ -19,6 +19,11 @@
 (defun default-sysinfo-state ()
   (list :cpu-percent 0 :memory-percent 0))
 
+(defvar *materialized* nil
+  "Within a transaction: the mounts, invocation count and context of its last materialization.")
+(defvar *invocations* 0
+  "Counts accepted reducer results and rule definitions replaced in place.")
+
 (defstruct mounted spec state effects (dispatches 0) (failures 0) last-error
   rule-parent rule-name rule-window rule-definition rule-pending)
 (defstruct runtime backend socket sources mounts windows client-geometries outputs connectors effective layers
@@ -197,6 +202,7 @@
                   (setf (gethash key keys) t)))
               (setf (mounted-state mounted) (copy-data state)
                     (mounted-effects mounted) effects)
+              (incf *invocations*)
               (when (mounted-rule-parent mounted) (setf (mounted-rule-pending mounted) nil))
               (incf (mounted-dispatches mounted))
               commands)))
@@ -456,6 +462,18 @@ while other owners can settle; a new request or declaration permits recovery."
       t)))
 
 (defun materialize (runtime mounts)
+  "Reconstruct owned context. Within a transaction, the same mounts with no
+invocation since the last materialization yield that context again."
+  (let ((memo *materialized*))
+    (if (and memo (eql (second memo) *invocations*)
+             (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
+        (third memo)
+        (let ((context (%materialize runtime mounts)))
+          (when memo
+            (setf (first memo) (copy-list mounts) (second memo) *invocations* (third memo) context))
+          context))))
+
+(defun %materialize (runtime mounts)
   "Reconstruct owned context. Preserve live clients, output facts, and map order.
 Unmount removes a contribution, exposing the preceding owner or these defaults.
 The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
@@ -722,7 +740,8 @@ when it is not 1."
   "Stage reducers and dependency propagation before touching the native scene.
 A bad callback or a dependency cycle discards the entire candidate transaction.
 Pending external invalidations join the current event, never an event replay."
-  (let* ((candidate (prune-rule-mounts
+  (let* ((*materialized* (list nil -1 nil))
+         (candidate (prune-rule-mounts
                      runtime (mapcar #'copy-mounted
                                      (append (root-mounts mounts)
                                              (rule-instances (runtime-mounts runtime))))))

@@ -100,6 +100,8 @@ Return complete mounts, new instance names, and changed callback definitions."
                         (cond ((null old) (push (spec-name (mounted-spec instance)) new))
                               ((not (eq (mounted-rule-definition old) definition))
                                (push (spec-name (mounted-spec instance)) changed)))
+                        (unless (eq (mounted-rule-definition instance) definition)
+                          (incf *invocations*))
                         (setf (mounted-rule-definition instance) definition)
                         (setf result (nconc result (list instance)))))))
               (serious-condition (condition)
