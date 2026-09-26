@@ -6,7 +6,6 @@
 #include <jpeglib.h>
 #include <jerror.h>
 #include <librsvg/rsvg.h>
-#include <png.h>
 #include <setjmp.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -132,102 +131,47 @@ done:
     return result;
 }
 
-struct png_decode {
-    jmp_buf jump;
-    png_structp png;
-    png_infop info;
-    const struct asset_data *data;
-    size_t offset;
-    unsigned char *pixels;
-    png_bytep *rows;
-    bool hard;
-};
+struct png_read { const struct asset_data *data; size_t offset; };
 
-static void png_failure(png_structp png, png_const_charp message) {
-    (void)message;
-    struct png_decode *decode = png_get_error_ptr(png);
-    longjmp(decode->jump, 1);
+static cairo_status_t png_read_bytes(void *closure, unsigned char *output, unsigned int length) {
+    struct png_read *read = closure;
+    if (length > read->data->length - read->offset) return CAIRO_STATUS_READ_ERROR;
+    memcpy(output, read->data->bytes + read->offset, length);
+    read->offset += length;
+    return CAIRO_STATUS_SUCCESS;
 }
 
-static void png_warning_ignore(png_structp png, png_const_charp message) {
-    (void)png; (void)message;
-}
-
-static png_voidp png_allocate(png_structp png, png_alloc_size_t size) {
-    struct png_decode *decode = png_get_mem_ptr(png);
-    void *memory = malloc(size);
-    if (!memory) decode->hard = true;
-    return memory;
-}
-
-static void png_deallocate(png_structp png, png_voidp memory) {
-    (void)png;
-    free(memory);
-}
-
-static void png_read_bytes(png_structp png, png_bytep output, png_size_t length) {
-    struct png_decode *decode = png_get_io_ptr(png);
-    if (length > decode->data->length - decode->offset) png_error(png, "truncated PNG");
-    memcpy(output, decode->data->bytes + decode->offset, length);
-    decode->offset += length;
+static uint32_t big_endian(const unsigned char *bytes) {
+    return (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 | (uint32_t)bytes[2] << 8 | bytes[3];
 }
 
 static enum asset_status decode_png(struct ui_asset *asset,
         const struct asset_data *data, uint64_t available) {
-    struct png_decode *decode = calloc(1, sizeof(*decode));
-    if (!decode) return ASSET_HARD;
-    decode->data = data;
-    volatile enum asset_status result = ASSET_MISSING;
-    if (setjmp(decode->jump)) { result = decode->hard ? ASSET_HARD : ASSET_MISSING; goto done; }
-    decode->png = png_create_read_struct_2(PNG_LIBPNG_VER_STRING, decode,
-        png_failure, png_warning_ignore, decode, png_allocate, png_deallocate);
-    if (!decode->png) { result = ASSET_HARD; goto done; }
-    decode->info = png_create_info_struct(decode->png);
-    if (!decode->info) { result = ASSET_HARD; goto done; }
-    png_set_read_fn(decode->png, decode, png_read_bytes);
-    if (data->length >= 24 && !memcmp(data->bytes + 12, "IHDR", 4)) {
-        uint32_t width = png_get_uint_32(data->bytes + 16);
-        uint32_t height = png_get_uint_32(data->bytes + 20);
-        if (!width || !height) goto done;
-        if (!raster_bytes(width, height, available, &asset->bytes)) { result = ASSET_HARD; goto done; }
+    if (data->length < 24 || memcmp(data->bytes + 12, "IHDR", 4)) return ASSET_MISSING;
+    asset->width = big_endian(data->bytes + 16);
+    asset->height = big_endian(data->bytes + 20);
+    if (!asset->width || !asset->height) return ASSET_MISSING;
+    if (!raster_bytes(asset->width, asset->height, available, &asset->bytes)) return ASSET_HARD;
+    cairo_surface_t *image = cairo_image_surface_create_from_png_stream(png_read_bytes,
+        &(struct png_read){ .data = data });
+    cairo_status_t status = cairo_surface_status(image);
+    enum asset_status result = status == CAIRO_STATUS_NO_MEMORY ? ASSET_HARD : ASSET_MISSING;
+    if (status == CAIRO_STATUS_SUCCESS &&
+            (uint32_t)cairo_image_surface_get_width(image) == asset->width &&
+            (uint32_t)cairo_image_surface_get_height(image) == asset->height)
+        result = (asset->pixels = malloc((size_t)asset->bytes)) ? ASSET_OK : ASSET_HARD;
+    if (result == ASSET_OK) {
+        cairo_surface_t *target = cairo_image_surface_create_for_data(asset->pixels, CAIRO_FORMAT_ARGB32,
+            (int)asset->width, (int)asset->height, (int)asset->width * 4);
+        cairo_t *cairo = cairo_create(target);
+        cairo_set_source_surface(cairo, image, 0, 0);
+        cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+        cairo_paint(cairo);
+        if (cairo_status(cairo) != CAIRO_STATUS_SUCCESS) result = ASSET_HARD;
+        cairo_destroy(cairo);
+        cairo_surface_destroy(target);
     }
-    png_set_user_limits(decode->png, ASSET_DIMENSION_LIMIT, ASSET_DIMENSION_LIMIT);
-    png_set_chunk_malloc_max(decode->png, ASSET_FILE_LIMIT);
-    png_read_info(decode->png, decode->info);
-    asset->width = png_get_image_width(decode->png, decode->info);
-    asset->height = png_get_image_height(decode->png, decode->info);
-    if (!raster_bytes(asset->width, asset->height, available, &asset->bytes)) { result = ASSET_HARD; goto done; }
-    int depth = png_get_bit_depth(decode->png, decode->info);
-    int color = png_get_color_type(decode->png, decode->info);
-    if (depth == 16) png_set_strip_16(decode->png);
-    if (color == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(decode->png);
-    if (color == PNG_COLOR_TYPE_GRAY && depth < 8) png_set_expand_gray_1_2_4_to_8(decode->png);
-    bool alpha = png_get_valid(decode->png, decode->info, PNG_INFO_tRNS);
-    if (alpha) png_set_tRNS_to_alpha(decode->png);
-    if (color == PNG_COLOR_TYPE_GRAY || color == PNG_COLOR_TYPE_GRAY_ALPHA) png_set_gray_to_rgb(decode->png);
-    if (!(color & PNG_COLOR_MASK_ALPHA) && !alpha) png_set_add_alpha(decode->png, 255, PNG_FILLER_AFTER);
-    png_set_interlace_handling(decode->png);
-    png_read_update_info(decode->png, decode->info);
-    if (png_get_rowbytes(decode->png, decode->info) != (size_t)asset->width * 4) goto done;
-    decode->pixels = malloc((size_t)asset->bytes);
-    decode->rows = malloc((size_t)asset->height * sizeof(*decode->rows));
-    if (!decode->pixels || !decode->rows) { result = ASSET_HARD; goto done; }
-    for (uint32_t y = 0; y < asset->height; y++) decode->rows[y] = decode->pixels + (size_t)y * asset->width * 4;
-    png_read_image(decode->png, decode->rows);
-    png_read_end(decode->png, NULL);
-    for (uint64_t offset = 0; offset < asset->bytes; offset += 4) {
-        unsigned char *pixel = decode->pixels + offset;
-        unsigned a = pixel[3];
-        uint32_t value = (a << 24) | (((pixel[0] * a + 127) / 255) << 16) |
-            (((pixel[1] * a + 127) / 255) << 8) | ((pixel[2] * a + 127) / 255);
-        memcpy(pixel, &value, sizeof(value));
-    }
-    asset->pixels = decode->pixels;
-    decode->pixels = NULL;
-    result = ASSET_OK;
-done:
-    png_destroy_read_struct(&decode->png, &decode->info, NULL);
-    free(decode->rows); free(decode->pixels); free(decode);
+    cairo_surface_destroy(image);
     return result;
 }
 
@@ -376,7 +320,7 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     uint64_t available = ASSET_POOL_LIMIT - pool->bytes;
     if (status == ASSET_OK) {
         if (kind == 2) status = decode_svg(asset, &data, available);
-        else if (data.length >= 8 && !png_sig_cmp(data.bytes, 0, 8)) status = decode_png(asset, &data, available);
+        else if (data.length >= 8 && !memcmp(data.bytes, "\x89PNG\r\n\x1a\n", 8)) status = decode_png(asset, &data, available);
         else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8) status = decode_jpeg(asset, &data, available);
         else status = ASSET_MISSING;
     }

@@ -68,7 +68,6 @@
             pkgs.pixman
             pkgs.cairo
             pkgs.pango
-            pkgs.libpng
             pkgs.libjpeg
             pkgs.librsvg
             pkgs.systemd
@@ -139,9 +138,9 @@
             $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               -I$(pkg-config --variable=includedir wayland-protocols) \
-              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
+              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libpng libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
+              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg librsvg-2.0 libdrm libinput glesv2 egl gbm libseat libudev wayland-client) -lm
             sbcl --noinform --non-interactive --load build.lisp
             runHook postBuild
           '';

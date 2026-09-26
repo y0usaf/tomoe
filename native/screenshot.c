@@ -1,6 +1,5 @@
 #include "internal.h"
 #include <drm_fourcc.h>
-#include <png.h>
 #include <pango/pangocairo.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -51,24 +50,6 @@ static struct box selection(struct screenshot *shot) {
     return (struct box){ x0, y0, x1 - x0, y1 - y0 };
 }
 
-static bool write_png(const char *path, const uint8_t *pixels, int width, int height, int stride) {
-    FILE *file = fopen(path, "wb");
-    if (!file) return false;
-    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    png_infop info = png ? png_create_info_struct(png) : NULL;
-    bool ok = png && info && !setjmp(png_jmpbuf(png));
-    if (ok) {
-        png_init_io(png, file);
-        png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
-            PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-        png_write_info(png, info);
-        for (int y = 0; y < height; y++) png_write_row(png, (png_bytep)(pixels + (size_t)y * stride));
-        png_write_end(png, NULL);
-    }
-    png_destroy_write_struct(&png, &info);
-    return fclose(file) == 0 && ok;
-}
-
 static void capture(struct tomoe *s, struct output *o, struct box region) {
     bool frozen = s->screenshot && s->screenshot->frozen;
     struct buffer *buffer = frozen ? s->screenshot->frozen : render_clean(o);
@@ -88,8 +69,16 @@ static void capture(struct tomoe *s, struct output *o, struct box region) {
     const char *runtime = getenv("XDG_RUNTIME_DIR");
     if (ok && runtime && asprintf(&path, "%s/tomoe-screenshot-%d-%ld.png", runtime, getpid(),
             (long)time(NULL)) > 0) {
-        for (int i = 3; i < stride * region.height; i += 4) pixels[i] = 255;
-        if (write_png(path, pixels, region.width, region.height, stride)) {
+        for (int i = 0; i < stride * region.height; i += 4) {
+            uint32_t value = UINT32_C(0xff000000) | (uint32_t)pixels[i] << 16 |
+                (uint32_t)pixels[i + 1] << 8 | pixels[i + 2];
+            memcpy(pixels + i, &value, sizeof(value));
+        }
+        cairo_surface_t *surface = cairo_image_surface_create_for_data(pixels, CAIRO_FORMAT_ARGB32,
+            region.width, region.height, stride);
+        cairo_status_t written = cairo_surface_write_to_png(surface, path);
+        cairo_surface_destroy(surface);
+        if (written == CAIRO_STATUS_SUCCESS) {
             struct event *event; size_t size;
             FILE *out = begin_event(s, &event, &size);
             if (out) {
