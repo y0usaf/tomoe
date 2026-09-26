@@ -205,7 +205,7 @@ Duplicate keys are replaced by their last value, like serde_json::Value."
   (when (oddp (length pairs))
     (error "JSON object needs alternating key/value arguments."))
   (let ((members nil)
-        (seen (make-hash-table :test #'equal)))
+        (seen (make-hash-table :test #'equal :size (floor (length pairs) 2))))
     (loop for tail = pairs then (cddr tail) while tail do
       (let ((key (car tail)) (value (second tail)))
         (check-type key string)

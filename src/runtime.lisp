@@ -188,7 +188,7 @@
               (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI command event."))
             (let ((effects (mapcar #'canonical-effect effects))
                   (commands (mapcar (lambda (command) (canonical-command command (spec-source spec))) commands))
-                  (keys (make-hash-table :test #'equal)))
+                  (keys (make-hash-table :test #'equal :size (length effects))))
               (let ((replies (count :reply commands :key #'command-kind)))
                 (when (plusp replies)
                   (unless (and (= replies 1) (eq (getf event :type) :ipc)
