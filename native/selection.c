@@ -635,6 +635,7 @@ static void data_device_set_selection(struct wl_client *client, struct wl_resour
         struct wl_resource *source_resource, uint32_t serial) {
     struct seat_client *c = wl_resource_get_user_data(device);
     struct source *src = source_from(source_resource);
+    if (c && src && c->seat->selection.source == src) return;
     if (!claim(device, src, WL_DATA_DEVICE_ERROR_USED_SOURCE)) return;
     if (!c) {
         if (src) source_free(src, true);
