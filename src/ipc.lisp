@@ -62,7 +62,17 @@
             (if old (setf (cdr old) (cdr record))
                 (setf records (nconc records (list record))))))))))
 
-(defun publish-json-context (runtime context mounts)
+(defun json-subscribed-p (server)
+  "True when a live client has subscribed to events."
+  (some (lambda (client) (and (json-client-subscribed client) (not (json-client-dead client))))
+        (json-server-clients server)))
+
+(defun publish-json-context (runtime context mounts &optional baseline)
+  "Emit the events between the last published context and CONTEXT. Nothing is
+built while no client subscribes; BASELINE builds anyway, so that a first
+subscriber's events start from the present state."
+  (unless (or baseline (json-subscribed-p (runtime-json-server runtime)))
+    (return-from publish-json-context))
   (handler-case
       (let* ((server (runtime-json-server runtime))
              (windows (second (ipc-windows runtime context)))
@@ -92,13 +102,15 @@
               (runtime-ipc-published-announcements runtime) announcements))
     (serious-condition (condition) (json-transport-log "event publication failed" condition))))
 
-(defun ipc-subscribe (client params)
+(defun ipc-subscribe (runtime client params)
   (let* ((events (and (json-object-p params) (json-get params "events" :absent)))
          (all (or (null params) (eq events :absent))))
     (unless (or all (and (consp events) (eq (first events) :json-array)
                          (every #'stringp (second events))))
       (error "invalid subscribe params (expected {~S: [~S]})" "events" "..."))
     (let ((names (unless all (second events))))
+      (unless (json-subscribed-p (runtime-json-server runtime))
+        (publish-json-context runtime (runtime-effective runtime) (runtime-mounts runtime) t))
       (setf (json-client-subscribed client) t (json-client-events client) names)
       (json-object (cons "events" (if names (apply #'json-array names) "all"))))))
 
@@ -168,7 +180,7 @@
                   ((equal method "windows") (ipc-windows runtime (runtime-effective runtime)))
                   ((equal method "outputs") (ipc-outputs (runtime-effective runtime)))
                   ((equal method "view") (ipc-view (runtime-effective runtime)))
-                  ((equal method "subscribe") (ipc-subscribe client params))
+                  ((equal method "subscribe") (ipc-subscribe runtime client params))
                   ((equal method "quit") (setf (runtime-running runtime) nil) t)
                   ((equal method "screencast_select")
                    (unless id (return-from handle-json-request))
