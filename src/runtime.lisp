@@ -993,7 +993,10 @@ accepted registry. Never enter this helper inside a candidate transaction."
        (when (runtime-json-server runtime)
          (json-broadcast (runtime-json-server runtime) "keyboard_activity"
                          (json-object (cons "hand" (getf event :hand)))))
-       (return-from dispatch-event))
+       (unless (find :activity (runtime-mounts runtime)
+                     :test (lambda (key mounted) (member key (mount-context-reads mounted))))
+         (return-from dispatch-event))
+       (push :activity changed))
       ((:map :metadata)
        (let* ((id (getf event :id))
               (old (find id (runtime-windows runtime) :key (lambda (w) (getf w :id))))

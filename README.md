@@ -444,7 +444,7 @@ reads. Available keys:
   XKB defaults. `:options nil` uses `XKB_DEFAULT_OPTIONS`; `:options ""`
   explicitly disables those defaults. A later owner replaces the complete
   policy, and removing it restores the preceding owner or the session default.
-- `:key`, `:button`, `:grab`, `:request`, and `:ui`: event subscriptions, not stored context values.
+- `:key`, `:button`, `:grab`, `:request`, `:ui`, and `:activity`: event subscriptions, not stored context values.
 
 Layer surfaces are arranged by the compositor from the client's own anchors,
 margins, and exclusive zone, and they are never in `:windows`, so a tiling policy
@@ -465,7 +465,11 @@ grab, pointer motion arrives as `:grab` events with `:id`, `:mode`, `:x`, `:y`,
 and the delta since the previous event. Lifecycle evaluation receives `:mount`;
 reactive reevaluation receives `:change` with the changed `:keys`. An owned timer
 delivers `(:type :timer :name NAME)` to its declaring reducer; other reducers
-receive only the resulting context changes.
+receive only the resulting context changes. Every physical key press delivers
+`(:type :activity :hand "left")` or `"right"` to the reducers that read
+`:activity`: the same coarse hand as the `keyboard_activity` IPC event, never
+the key. While nothing reads it, a key press runs no transaction. Activity
+events cannot return one-shot commands.
 
 Native xdg activation delivers `(:type :request :id ID :request :activate)` or
 `:urgent`. These requests leave window facts unchanged and are delivered once.
