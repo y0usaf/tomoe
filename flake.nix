@@ -27,7 +27,12 @@
             pkgs.pkg-config
             pkgs.python3
           ];
-          buildInputs = [ pkgs.dbus ];
+          buildInputs = [
+            (pkgs.dbus.override {
+              enableSystemd = false;
+              x11Support = false;
+            })
+          ];
           mesonFlags = [
             "-Dauto_features=disabled"
             "-Dexamples=disabled"
