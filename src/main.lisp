@@ -315,6 +315,7 @@ only after it changes again."
                       watch drm-device))))
 
 (defun main ()
+  (setf (sb-ext:bytes-consed-between-gcs) (* 16 1024 1024))
   (setf *gc-count* 0 *gc-longest* 0 *gc-seen* sb-ext:*gc-real-time*)
   (sb-ext:exit
    :code (handler-case
