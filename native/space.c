@@ -443,7 +443,9 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     if (success && s->settings.wait_frame && signal) {
         int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {
-            poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
+            if (poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, 100) == 0)
+                tomoe_log(LOG_ERROR, "tomoe: output %s render fence still pending after 100 ms",
+                    output->name);
             close(fd);
         }
     }
