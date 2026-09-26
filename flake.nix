@@ -206,7 +206,13 @@
               --set TOMOE_SHELL ${pkgs.bashNonInteractive}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
               --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
-              --prefix PATH : $out/libexec/tomoe-bin:${pkgs.lib.makeBinPath [ pkgs.foot pkgs.fuzzel pkgs.xwayland-satellite ]}
+              --prefix PATH : $out/libexec/tomoe-bin:${
+                pkgs.lib.makeBinPath [
+                  pkgs.foot
+                  pkgs.fuzzel
+                  (pkgs.xwayland-satellite.override { xwayland = pkgs.xwayland.override { libdecor = null; }; })
+                ]
+              }
             runHook postInstall
           '';
           meta = {
