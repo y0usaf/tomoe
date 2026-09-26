@@ -83,7 +83,7 @@
           };
           nativeBuildInputs = [
             pkgs.pkg-config
-            pkgs.sbcl
+            (pkgs.sbcl.overrideAttrs { markRegionGC = false; })
             pkgs.makeBinaryWrapper
             pkgs.wayland-scanner
           ];
