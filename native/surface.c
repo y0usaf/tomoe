@@ -22,6 +22,7 @@ struct release {
 
 struct release_hold {
     struct release *release;
+    struct buffer *buffer;
     struct wl_listener buffer_release;
 };
 
@@ -88,15 +89,20 @@ static void hold_released(struct wl_listener *listener, void *data) {
     struct release_hold *hold = wl_container_of(listener, hold, buffer_release);
     detach(&hold->buffer_release);
     release_unref(hold->release);
+    buffer_unlock(hold->buffer);
     free(hold);
 }
 
 void surface_release_after(struct surface *surface, struct buffer *consumer) {
-    if (!surface->release || !consumer) return;
+    struct dmabuf_attributes dmabuf;
+    bool read = !surface->release && surface->buffer && surface->buffer != consumer &&
+        buffer_get_dmabuf(surface->buffer, &dmabuf);
+    if (!consumer || (!surface->release && !read)) return;
     struct release_hold *hold = calloc(1, sizeof(*hold));
     if (!hold) return;
     hold->release = surface->release;
-    hold->release->refs++;
+    if (hold->release) hold->release->refs++;
+    if (read) hold->buffer = buffer_lock(surface->buffer);
     listen(&hold->buffer_release, &consumer->events.release, hold_released);
 }
 
