@@ -990,7 +990,8 @@ static void frame_timed(struct output *o, const struct timespec *start) {
 
 static void output_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, frame);
-    if (!output_is_active(o)) return;
+    if (!output_is_active(o) || !o->screen->needs_frame) return;
+    o->screen->needs_frame = false;
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     struct screen_state state;
@@ -1047,10 +1048,6 @@ static void output_frame(struct wl_listener *listener, void *data) {
     frame_done(o, &now);
     frame_timed(o, &start);
 }
-static void output_needs_frame(struct wl_listener *listener, void *data) {
-    struct output *o = wl_container_of(listener, o, needs_frame);
-    if (output_is_active(o)) screen_schedule_frame(o->screen);
-}
 void outputs_request_nested_size(struct tomoe *s) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
@@ -1089,7 +1086,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     gamma_output_gone(o);
     power_output_gone(o);
     ui_output_finish(s, wlr->name);
-    detach(&o->frame); detach(&o->request); detach(&o->destroy); detach(&o->needs_frame);
+    detach(&o->frame); detach(&o->request); detach(&o->destroy);
+    if (o->tick) wl_event_source_remove(o->tick);
     forget_output(s, wlr);
     screen_state_finish(&o->initial);
     screen_state_finish(&o->pending);
@@ -1127,6 +1125,5 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     listen(&o->frame, &wlr->events.frame, output_frame);
     listen(&o->request, &wlr->events.request_state, output_request);
     listen(&o->destroy, &wlr->events.destroy, output_destroy);
-    listen(&o->needs_frame, &wlr->events.needs_frame, output_needs_frame);
     outputs_event(s);
 }

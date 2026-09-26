@@ -392,7 +392,7 @@ struct screen {
     float scale;
     enum wl_output_transform transform;
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
-    bool frame_pending, power_off;
+    bool frame_pending, needs_frame, power_off;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
     size_t commit_seq;
@@ -400,7 +400,7 @@ struct screen {
     struct wl_global *global;
     struct wl_list resources, xdg_resources;
     struct {
-        struct wl_signal frame, needs_frame, present, request_state, commit, destroy, bind;
+        struct wl_signal frame, present, request_state, commit, destroy, bind;
     } events;
     void *data;
 };
@@ -409,7 +409,7 @@ struct output {
     struct wl_list link;
     struct tomoe *server;
     struct screen *screen;
-    struct wl_listener frame, request, destroy, needs_frame;
+    struct wl_listener frame, request, destroy;
     struct screen_state initial, pending;
     struct screen_state deferred;
     bool configured, admitted, pending_configured, pending_positioned;
@@ -426,6 +426,8 @@ struct output {
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
+    struct wl_event_source *tick;
+    double tick_at;
     struct oplist ops;
     uint64_t frames;
     pixman_region32_t damage[8];

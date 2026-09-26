@@ -282,6 +282,7 @@ static void idle_frame(void *data) {
 }
 
 void screen_schedule_frame(struct screen *screen) {
+    screen->needs_frame = true;
     if (screen->frame_pending || screen->idle_frame) return;
     screen->idle_frame = wl_event_loop_add_idle(
         wl_display_get_event_loop(screen->server->display), idle_frame, screen);
@@ -307,7 +308,6 @@ void screen_init(struct screen *screen, struct tomoe *s, const struct screen_imp
     wl_list_init(&screen->resources);
     wl_list_init(&screen->xdg_resources);
     wl_signal_init(&screen->events.frame);
-    wl_signal_init(&screen->events.needs_frame);
     wl_signal_init(&screen->events.present);
     wl_signal_init(&screen->events.request_state);
     wl_signal_init(&screen->events.commit);

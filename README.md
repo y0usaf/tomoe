@@ -598,6 +598,11 @@ last view owner restores `(:x 0 :y 0 :zoom 1d0)`. The read-only control query
 and reports the hit ID plus screen, world, and client-local surface coordinates.
 Its hit path is also used by native pointer input.
 
+An output draws and commits a frame only when something asks for one: a
+client commit, a policy, shell or cursor change, an animation, a capture or
+gamma request, or a shader background's next step. With nothing to show it
+stays idle and commits nothing.
+
 Each output frame redraws only what changed since the output buffer it reuses
 last held. The frame is first walked without drawing, recording every draw
 with a hash of its parameters. Draws that appear, disappear, move, change

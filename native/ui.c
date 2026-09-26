@@ -872,6 +872,22 @@ bool ui_on_output(struct output *o, int layer) {
     return false;
 }
 
+static int shader_step(void *data) {
+    struct output *o = data;
+    o->tick_at = 0;
+    screen_schedule_frame(o->screen);
+    return 0;
+}
+
+static void schedule_step(struct output *o, double due, double now) {
+    if (o->tick_at > now && o->tick_at <= due) return;
+    if (!o->tick) o->tick = wl_event_loop_add_timer(
+        wl_display_get_event_loop(o->server->display), shader_step, o);
+    if (!o->tick) return;
+    o->tick_at = due;
+    wl_event_source_timer_update(o->tick, (int)fmax(1, ceil((due - now) * 1000)));
+}
+
 static void draw_texture(struct frame *f, struct texture *texture, int x, int y) {
     struct box bounds = { .x = 0, .y = 0, .width = f->width, .height = f->height };
     struct box source = { .x = x - f->x, .y = y - f->y,
@@ -912,6 +928,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
             effect_shader(f, shader, (struct fbox){ surface->x, surface->y, surface->width,
                 surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
+            if (surface->fps > 0) schedule_step(o, epoch + (tick + 1) / surface->fps, now);
         }
         if (surface->texture) draw_texture(f, surface->texture, surface->x, surface->y);
     }
