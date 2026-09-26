@@ -14,6 +14,35 @@
       pkgsFor =
         system:
         import nixpkgs { inherit system; };
+      pipewire =
+        pkgs:
+        pkgs.pipewire.overrideAttrs {
+          outputs = [
+            "out"
+            "dev"
+          ];
+          nativeBuildInputs = [
+            pkgs.meson
+            pkgs.ninja
+            pkgs.pkg-config
+            pkgs.python3
+          ];
+          buildInputs = [ pkgs.dbus ];
+          mesonFlags = [
+            "-Dauto_features=disabled"
+            "-Dexamples=disabled"
+            "-Dtests=disabled"
+            "-Dpipewire-jack=disabled"
+            "-Dpipewire-v4l2=disabled"
+            "-Dflatpak=disabled"
+            "-Dsession-managers=[]"
+            "-Drlimits-install=false"
+            "-Dsysconfdir=/etc"
+          ];
+          postInstall = "";
+          doCheck = false;
+          doInstallCheck = false;
+        };
       portal =
         pkgs:
         pkgs.rustPlatform.buildRustPackage {
@@ -26,7 +55,7 @@
             pkgs.pkg-config
           ];
           buildInputs = [
-            pkgs.pipewire
+            (pipewire pkgs)
             pkgs.libgbm
             pkgs.libdrm
           ];
