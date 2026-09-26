@@ -272,6 +272,7 @@ void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
         zwp_relative_pointer_v1_send_relative_motion(resource, (uint32_t)(usec >> 32),
             (uint32_t)usec, wl_fixed_from_double(dx), wl_fixed_from_double(dy),
             wl_fixed_from_double(dx_unaccel), wl_fixed_from_double(dy_unaccel));
+        s->seat->pointer_state.frame_pending = true;
     }
 }
 
