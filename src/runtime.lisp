@@ -836,17 +836,28 @@ Pending external invalidations join the current event, never an event replay."
               (return-from %transact t)))))
       (error "Extension dependencies did not settle within 16 rounds."))))
 
+(defvar *stamp-buffer* (make-array 0 :element-type '(unsigned-byte 8)))
+
 (defun source-stamp (path)
   "Stamp PATH as (write-date length digest), or nil when it is missing or unreadable.
 The write date resolves to one second, so a same-length edit inside the second a
 source was loaded would otherwise be invisible. Extension files are small and
-stay in the page cache, so the digest decides."
+stay in the page cache, so the digest decides. It is FNV-1a over the octets, read
+into one reused buffer, so watching allocates nothing per file."
   (handler-case
-      (with-open-file (stream path :if-does-not-exist nil)
+      (with-open-file (stream path :if-does-not-exist nil :element-type '(unsigned-byte 8))
         (when stream
-          (let* ((size (file-length stream))
-                 (text (make-string (min size 1048576))))
-            (list (file-write-date stream) size (read-sequence text stream) (sxhash text)))))
+          (let ((size (min (file-length stream) 1048576)))
+            (when (< (length *stamp-buffer*) size)
+              (setf *stamp-buffer* (make-array size :element-type '(unsigned-byte 8))))
+            (let* ((buffer *stamp-buffer*)
+                   (count (read-sequence buffer stream :end size))
+                   (hash 14695981039346656037))
+              (declare (type (simple-array (unsigned-byte 8) (*)) buffer)
+                       (type (unsigned-byte 64) hash) (type fixnum count))
+              (dotimes (i count)
+                (setf hash (ldb (byte 64 0) (* (logxor hash (aref buffer i)) 1099511628211))))
+              (list (file-write-date stream) (file-length stream) count hash)))))
     (serious-condition () nil)))
 
 (defun load-specs (path)
