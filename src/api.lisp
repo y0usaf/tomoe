@@ -126,8 +126,9 @@ unlike CONTEXT, this value is stable while candidate dependencies settle."
   (copy-seq name))
 
 (defun ipc-value (value)
-  (let* ((value (copy-data value)) (text (write-json value)))
-    (when (> (length (sb-ext:string-to-octets text :external-format :utf-8)) 1044480)
+  (let ((value (copy-data value)))
+    (%json-validate-value value)
+    (when (> (%json-output-size value 0 nil) 1044480)
       (error "IPC payload exceeds the frame budget."))
     (copy-data (list :json-object (list (cons "event" "") (cons "payload" value))))
     value))
