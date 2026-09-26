@@ -14,5 +14,7 @@
     (declare (ignore output warnings))
     (when failure (error "Built-in policy compilation failed."))))
 
+(setf (logical-pathname-translations "SYS") nil)
+
 (sb-ext:save-lisp-and-die "build/tomoe" :executable t
                          :toplevel #'tomoe::main :save-runtime-options t)
