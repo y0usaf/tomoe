@@ -573,68 +573,65 @@ void texture_destroy(struct texture *base) {
     free(t);
 }
 
+struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
+        uint32_t width, uint32_t height, const void *data) {
+    struct gl_texture *t = calloc(1, sizeof(*t));
+    if (!t) return NULL;
+    if (!pixel_format(format, &t->gl, &t->alpha) || stride % 4 != 0) {
+        tomoe_log(LOG_ERROR, "tomoe: unsupported pixel buffer format 0x%08x", format);
+        free(t);
+        return NULL;
+    }
+    t->base = (struct texture){ width, height, ++serials };
+    t->r = r;
+    t->format = format;
+    t->target = GL_TEXTURE_2D;
+    current(r);
+    glGenTextures(1, &t->tex);
+    glBindTexture(GL_TEXTURE_2D, t->tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, t->gl, width, height, 0, t->gl, GL_UNSIGNED_BYTE, NULL);
+    upload(t, data, stride, &(pixman_box32_t){ 0, 0, width, height }, 1);
+    t->bytes = (uint64_t)width * height * 4;
+    r->textures++;
+    r->texture_bytes += t->bytes;
+    return &t->base;
+}
+
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
+    struct dmabuf_attributes dmabuf;
+    if (!buffer_get_dmabuf(buffer, &dmabuf)) {
+        void *data;
+        uint32_t format;
+        size_t stride;
+        if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return NULL;
+        struct texture *texture = texture_from_pixels(r, format, (uint32_t)stride,
+            (uint32_t)buffer->width, (uint32_t)buffer->height, data);
+        buffer_end_access(buffer);
+        return texture;
+    }
+    struct image *image = image_for(r, buffer);
+    if (!image || (image->external && !r->programs[PROGRAM_EXTERNAL].id)) return NULL;
     struct gl_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
     t->base = (struct texture){ buffer->width, buffer->height, ++serials };
     t->r = r;
-    struct dmabuf_attributes dmabuf;
-    void *data;
-    uint32_t format;
-    size_t stride;
-    if (buffer_get_dmabuf(buffer, &dmabuf)) {
-        struct image *image = image_for(r, buffer);
-        if (!image) goto failed;
-        t->target = image->external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
-        if (image->external && !r->programs[PROGRAM_EXTERNAL].id) goto failed;
-        t->alpha = format_alpha(dmabuf.format);
-        current(r);
-        bool fresh = !image->tex;
-        if (fresh) glGenTextures(1, &image->tex);
-        if (fresh || !image->external) {
-            glBindTexture(t->target, image->tex);
-            glTexParameteri(t->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(t->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            r->image_texture(t->target, image->egl);
-            glBindTexture(t->target, 0);
-        }
-        t->tex = image->tex;
-        t->buffer = buffer_lock(buffer);
-        return &t->base;
+    t->target = image->external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+    t->alpha = format_alpha(dmabuf.format);
+    current(r);
+    bool fresh = !image->tex;
+    if (fresh) glGenTextures(1, &image->tex);
+    if (fresh || !image->external) {
+        glBindTexture(t->target, image->tex);
+        glTexParameteri(t->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(t->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        r->image_texture(t->target, image->egl);
+        glBindTexture(t->target, 0);
     }
-    if (!buffer_begin_access(buffer, BUFFER_READ,
-            &data, &format, &stride)) goto failed;
-    bool ok = pixel_format(format, &t->gl, &t->alpha) && stride % 4 == 0;
-    if (ok) {
-        t->format = format;
-        t->target = GL_TEXTURE_2D;
-        current(r);
-        glGenTextures(1, &t->tex);
-        glBindTexture(GL_TEXTURE_2D, t->tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, t->gl, buffer->width, buffer->height, 0, t->gl,
-            GL_UNSIGNED_BYTE, NULL);
-        upload(t, data, stride, &(pixman_box32_t){ 0, 0, buffer->width, buffer->height }, 1);
-        t->bytes = (uint64_t)buffer->width * buffer->height * 4;
-        r->textures++;
-        r->texture_bytes += t->bytes;
-    } else {
-        tomoe_log(LOG_ERROR, "tomoe: unsupported pixel buffer format 0x%08x", format);
-    }
-    buffer_end_access(buffer);
-    if (ok) return &t->base;
-failed:
-    free(t);
-    return NULL;
-}
-
-struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
-        uint32_t width, uint32_t height, const void *data) {
-    struct buffer *buffer = pixel_buffer_create(width, height, stride, format, data);
-    struct texture *texture = buffer ? texture_from_buffer(r, buffer) : NULL;
-    buffer_drop(buffer);
-    return texture;
+    t->tex = image->tex;
+    t->buffer = buffer_lock(buffer);
+    return &t->base;
 }
 
 bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
