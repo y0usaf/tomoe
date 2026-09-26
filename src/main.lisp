@@ -23,12 +23,12 @@ turn; materialization already refreshes their authoritative native snapshot."
 (defparameter +operations+
   '(("inspect" . :inspect) ("reload" . :reload) ("mount" . :mount)
     ("unmount" . :unmount) ("command" . :command) ("event" . :event)
-    ("hit-test" . :hit-test) ("frames" . :frames) ("quit" . :quit)))
+    ("hit-test" . :hit-test) ("frames" . :frames) ("memory" . :memory) ("quit" . :quit)))
 
 (defun usage ()
   (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm] [--bare]
        [--config FILE] [--watch|--no-watch] [--drm_device PATH]
-       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|frames|quit
+       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|frames|memory|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
 Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
@@ -41,6 +41,7 @@ Extension sources are watched and reloaded when edited; --no-watch disables that
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
+memory reads the Lisp heap and collector, the native heap, textures and output buffers.
 X11 clients connect through DISPLAY; the xwayland extension starts xwayland-satellite on the first connection.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
@@ -314,6 +315,7 @@ only after it changes again."
                       watch drm-device))))
 
 (defun main ()
+  (setf *gc-count* 0 *gc-longest* 0 *gc-seen* sb-ext:*gc-real-time*)
   (sb-ext:exit
    :code (handler-case
              (handler-bind ((serious-condition

@@ -220,7 +220,7 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 30; the additive inspect fields keep control wire version 1.
+The native ABI is 33; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -794,7 +794,7 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the native backend is ABI 30.
+process-group pidfd signals; the native backend is ABI 33.
 
 `spawn`, `launch`, `close-window`, `output-power`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
@@ -1393,11 +1393,17 @@ one request per connection. A frame is a decimal character count, a newline,
 then that many UTF-8-decoded characters of Lisp data. The maximum is 1048576
 characters. Framing permits newlines inside window titles.
 
-Requests are `(1 :inspect)`, `(1 :hit-test X Y)`, `(1 :frames)`, `(1 :reload)`, `(1 :mount "path")`,
-`(1 :unmount "name")`, `(1 :command "owner" "command")`, `(1 :event "PLIST")`,
-or `(1 :quit)`. `:event` carries one string holding a data property list whose
+Requests are `(1 :inspect)`, `(1 :hit-test X Y)`, `(1 :frames)`, `(1 :memory)`, `(1 :reload)`,
+`(1 :mount "path")`, `(1 :unmount "name")`, `(1 :command "owner" "command")`,
+`(1 :event "PLIST")`, or `(1 :quit)`. `:event` carries one string holding a data property list whose
 `:type` must be `:key`, `:button`, or `:grab`; the compositor reads it and
-dispatches it like a real input event. Replies are `(1 :ok result)` or
+dispatches it like a real input event. `:memory`, or CLI `memory`, reports the
+Lisp heap's `:dynamic-usage` and `:dynamic-space-size`, `:bytes-consed`,
+`:bytes-consed-between-gcs`, the `:gc-count`, total, longest and CPU
+microseconds of collection, the C heap's `:heap-used` and `:heap-held` bytes,
+the renderer's own `:textures` and `:texture-bytes`, its dmabuf `:images`, the
+live `:surfaces`, and each output's allocated `:buffers` and `:buffer-bytes`.
+Replies are `(1 :ok result)` or
 `(1 :error "message")`. Version 1 is exact; unknown versions fail explicitly.
 Reader evaluation and dispatch syntax such as `#.` and circular object labels
 are disabled, and the reader accepts exactly the data the printer emits,

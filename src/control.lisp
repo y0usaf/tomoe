@@ -42,6 +42,33 @@
 
 (defstruct control socket path)
 
+(defvar *gc-count* 0)
+(defvar *gc-longest* 0)
+(defvar *gc-seen* 0)
+
+(defun note-gc ()
+  "Count collections and keep the longest pause for the memory report."
+  (let ((real sb-ext:*gc-real-time*))
+    (setf *gc-count* (1+ *gc-count*)
+          *gc-longest* (max *gc-longest* (- real *gc-seen*))
+          *gc-seen* real)))
+
+(pushnew 'note-gc sb-ext:*after-gc-hooks*)
+
+(defun memory-report (runtime)
+  "The Lisp heap and collector, then the native heap, textures and output buffers."
+  (flet ((microseconds (ticks) (round (* ticks 1000000) internal-time-units-per-second)))
+    (append (list :dynamic-usage (sb-kernel:dynamic-usage)
+                  :dynamic-space-size (sb-ext:dynamic-space-size)
+                  :bytes-consed (sb-ext:get-bytes-consed)
+                  :bytes-consed-between-gcs (sb-ext:bytes-consed-between-gcs)
+                  :gc-count *gc-count*
+                  :gc-us (microseconds sb-ext:*gc-real-time*)
+                  :gc-longest-us (microseconds *gc-longest*)
+                  :gc-run-us (microseconds sb-ext:*gc-run-time*))
+            (read-data (or (%memory (runtime-backend runtime))
+                           (error "Cannot serialize native memory use."))))))
+
 (defun native-hit-test (runtime x y)
   "Read and copy one native hit-test response before its C buffer is reused."
   (flet ((plist-keys (value lengths)
@@ -121,6 +148,7 @@
        (destructuring-bind () args
          (read-data (or (%frames (runtime-backend runtime))
                         (error "Cannot serialize native frame counters.")))))
+      (:memory (destructuring-bind () args (memory-report runtime)))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount
        (destructuring-bind (path) args

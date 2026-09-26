@@ -186,6 +186,7 @@ void oplist_expand(const struct oplist *list, pixman_region32_t *region);
 void render_destroy(struct render *r);
 int render_drm_fd(struct render *r);
 bool render_has_timeline(struct render *r);
+void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, size_t *images);
 const struct format_set *render_texture_formats(struct render *r);
 const struct format_set *render_shm_formats(struct render *r);
 struct buffer *render_allocate(struct render *r, int width, int height,
@@ -788,7 +789,7 @@ struct tomoe {
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
     double view_zoom;
-    char *hit_result, *frames_result;
+    char *hit_result, *frames_result, *memory_result;
     char *output_preview;
     char *output_current;
     uint64_t outputs_revision;

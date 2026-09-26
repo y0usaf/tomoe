@@ -11,6 +11,8 @@
 struct render {
     int fd;
     bool timeline;
+    size_t textures;
+    uint64_t texture_bytes;
     struct gbm_device *gbm;
     EGLDisplay display;
     EGLContext context;
@@ -44,6 +46,7 @@ struct gl_texture {
     GLuint tex, fbo;
     bool alpha;
     uint32_t format;
+    uint64_t bytes;
     struct buffer *buffer;
 };
 
@@ -564,6 +567,8 @@ void texture_destroy(struct texture *base) {
         current(t->r);
         glDeleteTextures(1, &t->tex);
         glDeleteFramebuffers(1, &t->fbo);
+        t->r->textures--;
+        t->r->texture_bytes -= t->bytes;
     }
     free(t);
 }
@@ -611,6 +616,9 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
         glTexImage2D(GL_TEXTURE_2D, 0, t->gl, buffer->width, buffer->height, 0, t->gl,
             GL_UNSIGNED_BYTE, NULL);
         upload(t, data, stride, &(pixman_box32_t){ 0, 0, buffer->width, buffer->height }, 1);
+        t->bytes = (uint64_t)buffer->width * buffer->height * 4;
+        r->textures++;
+        r->texture_bytes += t->bytes;
     } else {
         tomoe_log(LOG_ERROR, "tomoe: unsupported pixel buffer format 0x%08x", format);
     }
@@ -958,6 +966,12 @@ int render_drm_fd(struct render *r) {
 
 bool render_has_timeline(struct render *r) {
     return r->timeline;
+}
+
+void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, size_t *images) {
+    *textures = r->textures;
+    *texture_bytes = r->texture_bytes;
+    *images = (size_t)wl_list_length(&r->images);
 }
 
 static void render_free(struct render *r) {
