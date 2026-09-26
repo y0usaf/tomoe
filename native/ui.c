@@ -788,6 +788,8 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
         if (x < surface->x || y < surface->y ||
                 x >= (double)surface->x + surface->width ||
                 y >= (double)surface->y + surface->height) continue;
+        bool below = surface->layer < 2;
+        if (below && scene_covers(s, x, y, surface->layer)) return false;
         double local_x = x - surface->x, local_y = y - surface->y;
         for (size_t hit_index = surface->hit_count; hit_index > 0; hit_index--) {
             const struct ui_hit_entry *hit = &surface->hits[hit_index - 1];
@@ -801,6 +803,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
                 .callback_id = hit->callback_id, .x = local_x, .y = local_y };
             return true;
         }
+        if (below) continue;
         *out = (struct ui_hit){
             .owner = surface->owner, .name = surface->name,
             .output = surface->output, .source_id = surface->source_id,
@@ -810,27 +813,27 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
     return false;
 }
 
-bool ui_on_output(struct output *o) {
+bool ui_on_output(struct output *o, int layer) {
     const struct ui_set *set = o->server->ui;
     for (size_t i = 0; set && i < set->count; i++)
-        if (surface_matches_output(set->surfaces[i], o, NULL) && set->surfaces[i]->texture) return true;
+        if (set->surfaces[i]->layer >= layer && set->surfaces[i]->texture &&
+                surface_matches_output(set->surfaces[i], o, NULL)) return true;
     return false;
 }
 
-void ui_render(struct output *o, struct pass *pass,
-        const struct presentation *plan, int x, int y, int width, int height,
-        enum wl_output_transform transform) {
-    if (!o || !o->server || !o->screen || !pass) return;
+void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer) {
+    if (!o || !o->server || !o->screen || !f->pass) return;
     if (plan ? !presentation_output_for(plan, o->screen) :
             (!output_is_active(o) && !o->server->configuring_outputs)) return;
     const struct ui_set *set = plan ? plan->ui : o->server->ui;
     if (!set) return;
-    struct box bounds = { .x = 0, .y = 0, .width = width, .height = height };
+    struct box bounds = { .x = 0, .y = 0, .width = f->width, .height = f->height };
     for (size_t i = 0; i < set->count; i++) {
         const struct ui_surface *surface = set->surfaces[i];
-        if (!surface_matches_output(surface, o, plan) || !surface->texture) continue;
+        if (surface->layer != layer || !surface_matches_output(surface, o, plan) ||
+                !surface->texture) continue;
         struct box source = {
-            .x = surface->x - x, .y = surface->y - y,
+            .x = surface->x - f->x, .y = surface->y - f->y,
             .width = surface->width, .height = surface->height };
         struct box destination;
         if (!box_intersection(&destination, &source, &bounds)) continue;
@@ -840,10 +843,10 @@ void ui_render(struct output *o, struct pass *pass,
             .width = destination.width,
             .height = destination.height };
         box_transform(&destination, &destination,
-            transform_invert(transform), width, height);
-        pass_add_texture(pass, &(struct texture_options){
+            transform_invert(f->transform), f->width, f->height);
+        pass_add_texture(f->pass, &(struct texture_options){
             .texture = surface->texture, .src_box = source_box,
-            .dst_box = destination, .transform = transform,
+            .dst_box = destination, .transform = f->transform,
             .filter_mode = FILTER_BILINEAR,
             .blend_mode = BLEND_PREMULTIPLIED });
     }

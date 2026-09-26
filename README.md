@@ -873,9 +873,10 @@ layer `:top`, background `#1e1e2e`, text `#cdd6f4`, and font size 13.
 Opposing anchors stretch across the output; other zero surface dimensions use
 the tree's intrinsic size. Positive exclusive zones reduce `:workareas` after
 external layer reservations, without adding margins. Surfaces remain fixed to
-the screen as the camera moves. All shell layers render above external clients
-and layers, below the cursor; `:layer` orders shell surfaces among themselves.
-Hit testing follows that same order and the drawing clips.
+the screen as the camera moves. `:background` and `:bottom` surfaces render just
+above external layer surfaces of the same layer, so windows cover them; `:top`
+and `:overlay` surfaces render above every client, below the cursor. Hit testing
+follows that same order and the drawing clips.
 
 Set `:on-click` to a keyword command and optionally set a stable `:key` on the
 element. Visible click keys must be unique within a surface; omitted keys use
@@ -884,10 +885,12 @@ when dynamically reordering nodes.
 A left press delivers a private `:ui` event to the owning reducer with
 lowercase `:command`, `:surface`, `:output`, and `:element` strings, surface-local
 physical `:x`/`:y`, `:button`, and `:modifiers`. The deepest eligible element
-handles the click; a parent handles uncovered descendants. Blank surface regions
-and other buttons consume both edges without a callback. A held press retains
-only its consumed edge after unmount; stale callbacks cannot enter a replacement
-source. Other reducers observe resulting context changes, without receiving the
+handles the click; a parent handles uncovered descendants. On `:top` and
+`:overlay` surfaces, blank regions and other buttons consume both edges without a
+callback. On `:background` and `:bottom` surfaces, input outside elements with
+`:on-click` or `:on-hover` passes through to bindings and the layers below. A
+held press retains only its consumed edge after unmount; stale callbacks cannot
+enter a replacement source. Other reducers observe resulting context changes, without receiving the
 private click. Command effects returned by this event run after publication.
 
 Pango shapes text, and Cairo rasterizes text, vectors, images, and icons before

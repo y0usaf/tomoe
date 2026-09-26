@@ -1032,6 +1032,7 @@ bool surface_visible(struct tomoe *s, struct surface *surface);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     struct surface **surface, double *sx, double *sy);
+bool scene_covers(struct tomoe *s, double x, double y, int layer);
 
 struct surface *surface_of(struct window *w);
 struct window *find_window(struct tomoe *s, uint32_t id);

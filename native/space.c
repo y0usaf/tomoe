@@ -404,20 +404,27 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
     } else if (frozen) {
     } else if (plan) {
+        int layer = 0;
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
+            for (; layer < 2 && root->band > layer; layer++) ui_render(o, data, plan, layer);
             if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
             decorate(o->server, &target, data);
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
         }
+        for (; layer < 2; layer++) ui_render(o, data, plan, layer);
         render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
     } else {
-        render_walk(o->server, o->server->scene, NULL, 0, 0, data);
+        struct node *child;
+        wl_list_for_each(child, &o->server->scene->children, link) {
+            render_walk(o->server, child, NULL, 0, 0, data);
+            for (int layer = 0; layer < 2; layer++)
+                if (child == o->server->layer_tree[layer]) ui_render(o, data, NULL, layer);
+        }
     }
-    if (!locked && !frozen)
-        ui_render(o, pass, plan, data->x, data->y, data->width, data->height, data->transform);
+    for (int layer = 2; !locked && !frozen && layer < 4; layer++) ui_render(o, data, plan, layer);
     if (!locked && cursors) screenshot_render(o, data);
     if (cursors) render_cursor(o, data, plan);
 }
@@ -627,7 +634,16 @@ uint32_t physical_hit_test(struct tomoe *s, double x, double y,
     *surface = hit.surface; *sx = hit.sx; *sy = hit.sy;
     return hit.id;
 }
-struct scanout_data { struct box output; struct surface *surface; bool done; };
+bool scene_covers(struct tomoe *s, double x, double y, int layer) {
+    struct hit_data hit = { .x = x, .y = y };
+    struct node *child;
+    wl_list_for_each_reverse(child, &s->scene->children, link) {
+        if (child == s->layer_tree[layer]) return false;
+        if (walk_scene(s, child, NULL, 0, 0, true, hit_leaf, &hit)) return true;
+    }
+    return false;
+}
+struct scanout_data { struct box output; struct surface *surface; bool done, window; };
 static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct scanout_data *data = opaque;
     struct box overlap;
@@ -639,17 +655,19 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
     data->surface = leaf->surface;
+    data->window = t && t->kind == TARGET_WINDOW;
     return true;
 }
 struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
-    if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o)) return NULL;
+    if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o, 2)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
     struct dmabuf_attributes dmabuf;
-    if (!surface || !surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
+    if (!surface || (!data.window && ui_on_output(o, 0)) ||
+            !surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.transform != o->screen->transform ||
             surface->current.buffer_width != o->screen->width ||
             surface->current.buffer_height != o->screen->height) return NULL;
