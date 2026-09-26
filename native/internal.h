@@ -429,6 +429,7 @@ struct output {
     uint64_t frames;
     pixman_region32_t damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
+    struct { uint64_t ns, counts[8]; } timing;
 };
 
 static inline bool output_is_active(const struct output *output) {

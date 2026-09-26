@@ -352,9 +352,14 @@ const char *tomoe_frames(struct tomoe *s) {
         fputs("(:name ", out);
         quote(out, o->screen->name);
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
-            " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s)",
+            " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
+            " :frame-ns %" PRIu64 " :frame-times (",
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
-            (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil");
+            (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
+            o->timing.ns);
+        for (size_t i = 0; i < sizeof(o->timing.counts) / sizeof(o->timing.counts[0]); i++)
+            fprintf(out, i ? " %" PRIu64 : "%" PRIu64, o->timing.counts[i]);
+        fputs("))", out);
     }
     fputc(')', out);
     bool success = !ferror(out);
@@ -933,9 +938,23 @@ struct screen *any_output(struct tomoe *s) {
     return NULL;
 }
 
+static void frame_timed(struct output *o, const struct timespec *start) {
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    int64_t ns = (int64_t)(end.tv_sec - start->tv_sec) * 1000000000 +
+        (end.tv_nsec - start->tv_nsec);
+    if (ns < 0) ns = 0;
+    size_t bucket = 0;
+    for (int64_t bound = 250000; bucket < 7 && ns >= bound; bound *= 2) bucket++;
+    o->timing.ns += (uint64_t)ns;
+    o->timing.counts[bucket]++;
+}
+
 static void output_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, frame);
     if (!output_is_active(o)) return;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     struct screen_state state;
     screen_state_init(&state);
     struct surface *scanout = scanout_surface(o);
@@ -980,6 +999,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     screen_state_finish(&state);
     if (!success) {
         tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
+        frame_timed(o, &start);
         return;
     }
     lock_frame_rendered(o->server, o->screen);
@@ -987,6 +1007,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     frame_done(o, &now);
+    frame_timed(o, &start);
 }
 static void output_needs_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, needs_frame);

@@ -606,8 +606,10 @@ only its declared buffer damage. Blur that overlaps damage widens it to the
 blur's sampled area. The union of damage over the buffer's age clips the real
 pass. Captures, configuration previews, and buffers older than eight frames
 draw in full. `(1 :frames)` or CLI `frames` reports each output's frame
-counter, last drawn frame, buffer age, drawn and total pixels, draw count, and
-direct scanout state. `TOMOE_DEBUG_DAMAGE=1` draws every frame in full and
+counter, last drawn frame, buffer age, drawn and total pixels, draw count,
+direct scanout state, the wall time spent producing frames in `:frame-ns`, and
+`:frame-times`, the number of frames that took under 0.25, 0.5, 1, 2, 4, 8 and
+16 ms, then longer. `TOMOE_DEBUG_DAMAGE=1` draws every frame in full and
 tints the damage the frame computed.
 
 `layer` overrides a layer surface without taking over its geometry: `:layer`

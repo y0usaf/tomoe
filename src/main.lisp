@@ -40,7 +40,7 @@ Loads $XDG_CONFIG_HOME/tomoe/init.lisp or ~/.config/tomoe/init.lisp when present
 Extension sources are watched and reloaded when edited; --no-watch disables that.
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
-frames reads each output's frame counter, last drawn frame, buffer age and drawn pixels.
+frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
 X11 clients connect through DISPLAY; the xwayland extension starts xwayland-satellite on the first connection.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
