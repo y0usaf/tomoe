@@ -87,7 +87,7 @@
           buildInputs = [
             pkgs.libdrm
             pkgs.libinput
-            pkgs.seatd
+            (pkgs.seatd.override { systemd = pkgs.systemdLibs; })
             pkgs.libGL
             pkgs.libgbm
             pkgs.wayland
@@ -210,7 +210,12 @@
                 pkgs.lib.makeBinPath [
                   pkgs.foot
                   pkgs.fuzzel
-                  (pkgs.xwayland-satellite.override { xwayland = pkgs.xwayland.override { libdecor = null; }; })
+                  (pkgs.xwayland-satellite.override {
+                    xwayland = pkgs.xwayland.override {
+                      libdecor = null;
+                      libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
+                    };
+                  })
                 ]
               }
             runHook postInstall
