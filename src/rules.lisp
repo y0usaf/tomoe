@@ -47,9 +47,7 @@ has failed. Retain only descendants whose parent and declaration still exist."
           (length (symbol-name name)) (symbol-name name) window-id))
 
 (defun rule-snapshot (context reads &optional previous)
-  (make-snapshot (loop for key in reads append (list key (copy-data (getf context key))))
-                 (copy-list reads)
-                 (loop for key in reads append (list key (copy-data (getf previous key))))))
+  (make-snapshot context (copy-list reads) previous))
 
 (defun rule-matches-p (definition window context &optional previous)
   (destructuring-bind (name app-id title properties reads state) (effect-arguments definition)

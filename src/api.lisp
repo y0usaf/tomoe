@@ -89,19 +89,29 @@
       (walk value 0))))
 
 (defstruct (snapshot (:constructor make-snapshot (data reads &optional previous)))
-  (data nil :read-only t) (reads nil :read-only t) (previous nil :read-only t))
+  (data nil :read-only t) (reads nil :read-only t) (previous nil :read-only t)
+  (copies nil) (previous-copies nil))
 (defun context (snapshot key)
-  "Read a declared context key. Values belong to this invocation, not the host."
+  "Read a declared context key. Values belong to this invocation, not the host:
+a key is copied on its first read, and later reads return that copy."
   (unless (member key (snapshot-reads snapshot))
     (error "Undeclared context dependency: ~S" key))
-  (getf (snapshot-data snapshot) key))
+  (let ((entry (assoc key (snapshot-copies snapshot))))
+    (if entry
+        (cdr entry)
+        (cdar (push (cons key (copy-data (getf (snapshot-data snapshot) key)))
+                    (snapshot-copies snapshot))))))
 
 (defun previous-context (snapshot key)
   "Read the context before this transaction. Shares CONTEXT's declared reads;
 unlike CONTEXT, this value is stable while candidate dependencies settle."
   (unless (member key (snapshot-reads snapshot))
     (error "Undeclared context dependency: ~S" key))
-  (getf (snapshot-previous snapshot) key))
+  (let ((entry (assoc key (snapshot-previous-copies snapshot))))
+    (if entry
+        (cdr entry)
+        (cdar (push (cons key (copy-data (getf (snapshot-previous snapshot) key)))
+                    (snapshot-previous-copies snapshot))))))
 
 (defstruct (effect (:constructor %effect (kind arguments &optional predicate application)))
   (kind nil :read-only t) (arguments nil :read-only t)

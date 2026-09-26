@@ -173,12 +173,7 @@
                            (lambda (snapshot state event)
                              (invoke-rule-application runtime mounted snapshot state event))
                            (spec-update spec))
-                       (make-snapshot
-                        (loop for key in reads
-                              append (list key (copy-data (getf context key))))
-                        (copy-list reads)
-                        (loop for key in reads
-                              append (list key (copy-data (getf (runtime-effective runtime) key)))))
+                       (make-snapshot context (copy-list reads) (runtime-effective runtime))
                        (copy-data (mounted-state mounted)) (copy-data event))
             (when (> (length effects) 512) (error "More than 512 effects."))
             (when (> (length commands) 32) (error "More than 32 commands."))
