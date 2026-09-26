@@ -143,7 +143,7 @@ void positioner_unconstrain(const struct positioner_rules *rules, const struct b
 struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *hotspot_y);
 
 struct render;
-struct texture { uint32_t width, height; };
+struct texture { uint32_t width, height; uint64_t serial; };
 enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE };
 enum filter_mode { FILTER_BILINEAR, FILTER_NEAREST };
 struct color { float r, g, b, a; };
@@ -158,6 +158,7 @@ struct texture_options {
     enum blend_mode blend_mode;
     struct timeline *wait_timeline;
     uint64_t wait_point;
+    const struct surface *surface;
 };
 struct rect_options {
     struct box box;
@@ -171,6 +172,17 @@ struct read_options {
     struct box src_box;
 };
 struct pass;
+struct op {
+    uint64_t hash, seq;
+    const struct surface *surface;
+    struct box box, reach;
+    struct fbox src;
+    bool mapped;
+};
+struct oplist { struct op *ops; size_t len, cap; bool lost; };
+void oplist_finish(struct oplist *list);
+bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_region32_t *out);
+void oplist_expand(const struct oplist *list, pixman_region32_t *region);
 void render_destroy(struct render *r);
 int render_drm_fd(struct render *r);
 bool render_has_timeline(struct render *r);
@@ -190,6 +202,11 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
 void pass_add_texture(struct pass *pass, const struct texture_options *options);
 void pass_add_rect(struct pass *pass, const struct rect_options *options);
 bool pass_submit(struct pass *pass);
+struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list);
+bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
+    struct box reach, const double *params, size_t count);
+void pass_clip(struct pass *pass, const pixman_region32_t *clip);
+bool pass_touches(struct pass *pass, struct box box);
 
 struct screen;
 
@@ -275,13 +292,14 @@ struct program {
 #define RING_SLOTS 4
 struct ring {
     struct buffer *slots[RING_SLOTS];
+    uint64_t frames[RING_SLOTS];
     int width, height;
     bool implicit;
     struct format_set format;
 };
 struct render *render_create(int drm_fd);
 struct program *render_program(struct render *renderer, int kind);
-void render_quad(struct program *p, const float pos[8], const float local[8],
+void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
 bool render_texture_gl(struct texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct render *renderer, struct buffer *buffer);
@@ -404,6 +422,10 @@ struct output {
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
+    struct oplist ops;
+    uint64_t frames;
+    pixman_region32_t damage[8];
+    struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
 };
 
 static inline bool output_is_active(const struct output *output) {
@@ -592,6 +614,8 @@ struct surface {
     struct wl_listener role_resource_destroy;
     struct subsurface *subsurface;
     struct screen *primary;
+    uint64_t commit_seq;
+    struct { uint64_t seq, prev; struct box box; } commits[4];
     int preferred_scale;
     uint32_t fractional_scale;
     bool mapped, pending_rejected, sent_transform, seen, scene_owned;
@@ -614,6 +638,7 @@ struct surface_synced {
     void *pending, *current;
     struct wl_list link;
 };
+bool surface_damage_since(const struct surface *surface, uint64_t seq, struct box *out);
 typedef bool (*surface_iterator)(struct surface *surface, int x, int y, void *data);
 struct node {
     struct node *parent;
@@ -758,7 +783,7 @@ struct tomoe {
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
     double view_zoom;
-    char *hit_result;
+    char *hit_result, *frames_result;
     char *output_preview;
     char *output_current;
     uint64_t outputs_revision;

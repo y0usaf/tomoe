@@ -339,6 +339,31 @@ uint64_t tomoe_outputs_revision(struct tomoe *s) {
     return s->outputs_revision;
 }
 
+const char *tomoe_frames(struct tomoe *s) {
+    free(s->frames_result);
+    s->frames_result = NULL;
+    size_t size = 0;
+    FILE *out = open_memstream(&s->frames_result, &size);
+    if (!out) return NULL;
+    fputc('(', out);
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        fputs("(:name ", out);
+        quote(out, o->screen->name);
+        fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
+            " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s)",
+            o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
+            (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil");
+    }
+    fputc(')', out);
+    bool success = !ferror(out);
+    if (fclose(out) != 0 || !success) {
+        free(s->frames_result);
+        s->frames_result = NULL;
+    }
+    return s->frames_result;
+}
+
 const char *tomoe_outputs_current(struct tomoe *s) {
     char *text = NULL;
     size_t size = 0;
@@ -996,6 +1021,9 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     buffer_unlock(o->presented[0]);
     buffer_unlock(o->presented[1]);
     ring_finish(&o->ring);
+    oplist_finish(&o->ops);
+    for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
+        pixman_region32_fini(&o->damage[i]);
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
@@ -1024,6 +1052,8 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     if (!o) { fail(s, "output allocation failed"); return; }
     o->server = s; o->screen = wlr; o->id = id;
     o->admitted = false;
+    for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
+        pixman_region32_init(&o->damage[i]);
     snapshot_output_baseline(wlr, &o->initial);
     screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {

@@ -214,7 +214,7 @@ are quantized against those candidate scales. Matching native confirmations
 do not rerun consumers; output revisions discard older queued confirmations
 after a newer commit. External output changes still notify consumers.
 Layer geometry and usable output areas resolve in the same dependency rounds.
-The native ABI is 28; the additive inspect fields keep control wire version 1.
+The native ABI is 29; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -591,6 +591,18 @@ last view owner restores `(:x 0 :y 0 :zoom 1d0)`. The read-only control query
 and reports the hit ID plus screen, world, and client-local surface coordinates.
 Its hit path is also used by native pointer input.
 
+Each output frame redraws only what changed since the output buffer it reuses
+last held. The frame is first walked without drawing, recording every draw
+with a hash of its parameters. Draws that appear, disappear, move, change
+parameters or change stacking order damage their boxes; a client commit damages
+only its declared buffer damage. Blur that overlaps damage widens it to the
+blur's sampled area. The union of damage over the buffer's age clips the real
+pass. Captures, configuration previews, and buffers older than eight frames
+draw in full. `(1 :frames)` or CLI `frames` reports each output's frame
+counter, last drawn frame, buffer age, drawn and total pixels, draw count, and
+direct scanout state. `TOMOE_DEBUG_DAMAGE=1` draws every frame in full and
+tints the damage the frame computed.
+
 `layer` overrides a layer surface without taking over its geometry: `:layer`
 reassigns it, `:exclusive-zone` changes how
 much of the output it reserves, `:keyboard` accepts `:none`, `:exclusive`, or
@@ -773,7 +785,7 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the native backend is ABI 28.
+process-group pidfd signals; the native backend is ABI 29.
 
 `spawn`, `launch`, `close-window`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
@@ -1332,7 +1344,7 @@ one request per connection. A frame is a decimal character count, a newline,
 then that many UTF-8-decoded characters of Lisp data. The maximum is 1048576
 characters. Framing permits newlines inside window titles.
 
-Requests are `(1 :inspect)`, `(1 :hit-test X Y)`, `(1 :reload)`, `(1 :mount "path")`,
+Requests are `(1 :inspect)`, `(1 :hit-test X Y)`, `(1 :frames)`, `(1 :reload)`, `(1 :mount "path")`,
 `(1 :unmount "name")`, `(1 :command "owner" "command")`, `(1 :event "PLIST")`,
 or `(1 :quit)`. `:event` carries one string holding a data property list whose
 `:type` must be `:key`, `:button`, or `:grab`; the compositor reads it and

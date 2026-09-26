@@ -52,7 +52,11 @@ struct pass {
     struct buffer *buffer;
     struct timeline *signal;
     uint64_t point;
+    struct oplist *record;
+    const pixman_region32_t *clip;
 };
+
+static uint64_t serials;
 
 struct bo {
     struct buffer base;
@@ -262,7 +266,7 @@ static bool link_program(struct program *p, const char *prelude, const char *bod
     return true;
 }
 
-void render_quad(struct program *p, const float pos[8], const float local[8],
+static void render_quad(struct program *p, const float pos[8], const float local[8],
         const float texcoords[8]) {
     glVertexAttribPointer(p->pos, 2, GL_FLOAT, GL_FALSE, 0, pos);
     glEnableVertexAttribArray(p->pos);
@@ -278,6 +282,22 @@ void render_quad(struct program *p, const float pos[8], const float local[8],
     glDisableVertexAttribArray(p->pos);
     if (p->local >= 0 && local) glDisableVertexAttribArray(p->local);
     if (p->texcoord >= 0 && texcoords) glDisableVertexAttribArray(p->texcoord);
+}
+
+void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
+        const float texcoords[8]) {
+    if (!pass->clip) {
+        render_quad(p, pos, local, texcoords);
+        return;
+    }
+    int count = 0;
+    const pixman_box32_t *rects = pixman_region32_rectangles(pass->clip, &count);
+    glEnable(GL_SCISSOR_TEST);
+    for (int i = 0; i < count; i++) {
+        glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
+        render_quad(p, pos, local, texcoords);
+    }
+    glDisable(GL_SCISSOR_TEST);
 }
 
 struct program *render_program(struct render *renderer, int kind) {
@@ -424,6 +444,7 @@ bool texture_update(struct texture *base, struct buffer *buffer,
         const pixman_box32_t *rects = pixman_region32_rectangles(damage, &count);
         current(t->r);
         upload(t, data, stride, rects, count);
+        base->serial = ++serials;
     }
     buffer_end_access(buffer);
     return ok;
@@ -482,7 +503,7 @@ void texture_destroy(struct texture *base) {
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
     struct gl_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
-    t->base = (struct texture){ buffer->width, buffer->height };
+    t->base = (struct texture){ buffer->width, buffer->height, ++serials };
     t->r = r;
     struct dmabuf_attributes dmabuf;
     void *data;
@@ -568,6 +589,7 @@ static void draw(struct pass *pass, struct program *p, struct box box,
     pixman_region32_t region;
     pixman_region32_init_rect(&region, box.x, box.y, box.width, box.height);
     if (clip) pixman_region32_intersect(&region, &region, clip);
+    if (pass->clip) pixman_region32_intersect(&region, &region, pass->clip);
     int count = 0;
     const pixman_box32_t *rects = pixman_region32_rectangles(&region, &count);
     glEnable(GL_SCISSOR_TEST);
@@ -584,6 +606,16 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     const struct color *c = &options->color;
     struct box box = box_empty(&options->box) ?
         (struct box){ 0, 0, pass->buffer->width, pass->buffer->height } : options->box;
+    if (pass->record) {
+        struct box shown = box;
+        pixman_box32_t *e = options->clip ? pixman_region32_extents(options->clip) : NULL;
+        if (e && !box_intersection(&shown, &box,
+                &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
+        double params[] = { 1, c->r, c->g, c->b, c->a, options->blend_mode,
+            e ? e->x1 : 0, e ? e->y1 : 0, e ? e->x2 : 0, e ? e->y2 : 0 };
+        pass_record(pass, NULL, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
+        return;
+    }
     blend(c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED);
     glUseProgram(p->id);
     glUniform4f(p->color, c->r, c->g, c->b, c->a);
@@ -593,6 +625,20 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
 void pass_add_texture(struct pass *pass, const struct texture_options *options) {
     struct render *r = pass->r;
     struct gl_texture *t = texture_of(options->texture);
+    if (pass->record) {
+        struct box dst = options->dst_box, shown;
+        if (box_empty(&dst)) {
+            dst.width = options->texture->width;
+            dst.height = options->texture->height;
+        }
+        shown = dst;
+        pixman_box32_t *e = options->clip ? pixman_region32_extents(options->clip) : NULL;
+        if (e && !box_intersection(&shown, &dst,
+                &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
+        double params[] = { 2, dst.x, dst.y, dst.width, dst.height };
+        pass_record(pass, options, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
+        return;
+    }
     if (options->wait_timeline &&
             !render_wait(r, options->wait_timeline, options->wait_point)) {
         tomoe_log(LOG_ERROR, "tomoe: client acquire fence wait failed");
@@ -636,6 +682,12 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
 
 bool pass_submit(struct pass *pass) {
     struct render *r = pass->r;
+    if (pass->record) {
+        bool complete = !pass->record->lost;
+        buffer_unlock(pass->buffer);
+        free(pass);
+        return complete;
+    }
     current(r);
     bool ok = true;
     if (pass->signal) {
@@ -675,6 +727,149 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_SCISSOR_TEST);
     return pass;
+}
+
+struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list) {
+    struct pass *pass = calloc(1, sizeof(*pass));
+    if (!pass) return NULL;
+    list->len = 0;
+    list->lost = false;
+    *pass = (struct pass){ .r = r, .buffer = buffer_lock(buffer), .record = list };
+    return pass;
+}
+
+void pass_clip(struct pass *pass, const pixman_region32_t *clip) {
+    pass->clip = clip;
+}
+
+bool pass_touches(struct pass *pass, struct box box) {
+    pixman_box32_t r = { box.x, box.y, box.x + box.width, box.y + box.height };
+    return !pass->clip || pixman_region32_contains_rectangle(pass->clip, &r) != PIXMAN_REGION_OUT;
+}
+
+static uint64_t mix(uint64_t hash, const void *data, size_t size) {
+    const unsigned char *bytes = data;
+    for (size_t i = 0; i < size; i++) hash = (hash ^ bytes[i]) * 0x100000001b3ull;
+    return hash;
+}
+
+bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
+        struct box reach, const double *params, size_t count) {
+    struct oplist *list = pass->record;
+    if (!list) return false;
+    if (list->lost || box_empty(&box)) return true;
+    if (list->len == list->cap) {
+        size_t cap = list->cap ? list->cap * 2 : 64;
+        struct op *ops = realloc(list->ops, cap * sizeof(*ops));
+        if (!ops) {
+            list->lost = true;
+            return true;
+        }
+        list->ops = ops;
+        list->cap = cap;
+    }
+    struct op op = { .box = box, .reach = reach };
+    op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
+    if (texture) {
+        const struct surface *surface = texture->surface;
+        double fields[] = { texture->src_box.x, texture->src_box.y, texture->src_box.width,
+            texture->src_box.height, texture->transform, texture->alpha ? *texture->alpha : 1,
+            texture->filter_mode, texture->blend_mode, texture_of(texture->texture)->alpha,
+            surface ? 0 : (double)texture->texture->serial };
+        op.hash = mix(op.hash, fields, sizeof(fields));
+        op.hash = mix(op.hash, &surface, sizeof(surface));
+        if (surface) {
+            op.surface = surface;
+            op.seq = surface->commit_seq;
+            op.src = texture->src_box;
+            if (op.src.width <= 0 || op.src.height <= 0)
+                op.src = (struct fbox){ 0, 0, texture->texture->width, texture->texture->height };
+            op.mapped = texture->transform == WL_OUTPUT_TRANSFORM_NORMAL;
+        }
+    }
+    list->ops[list->len++] = op;
+    return true;
+}
+
+void oplist_finish(struct oplist *list) {
+    free(list->ops);
+    *list = (struct oplist){0};
+}
+
+static void damage_box(pixman_region32_t *out, struct box box) {
+    if (!box_empty(&box)) pixman_region32_union_rect(out, out, box.x, box.y, box.width, box.height);
+}
+
+static void damage_content(pixman_region32_t *out, const struct op *was, const struct op *op) {
+    struct box changed;
+    if (!op->mapped || !surface_damage_since(op->surface, was->seq, &changed)) {
+        damage_box(out, op->box);
+        return;
+    }
+    if (box_empty(&changed)) return;
+    double sx = op->box.width / op->src.width, sy = op->box.height / op->src.height;
+    int x1 = (int)floor(op->box.x + (changed.x - op->src.x) * sx) - 1;
+    int y1 = (int)floor(op->box.y + (changed.y - op->src.y) * sy) - 1;
+    int x2 = (int)ceil(op->box.x + (changed.x + changed.width - op->src.x) * sx) + 1;
+    int y2 = (int)ceil(op->box.y + (changed.y + changed.height - op->src.y) * sy) + 1;
+    struct box mapped = { x1, y1, x2 - x1, y2 - y1 };
+    if (box_intersection(&mapped, &mapped, &op->box)) damage_box(out, mapped);
+}
+
+bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_region32_t *out) {
+    if (old->lost || now->lost) return false;
+    size_t *match = malloc((now->len + 1) * sizeof(*match));
+    bool *used = calloc(old->len + 1, sizeof(*used));
+    if (!match || !used) {
+        free(match);
+        free(used);
+        return false;
+    }
+    size_t start = 0;
+    for (size_t i = 0; i < now->len; i++) {
+        match[i] = SIZE_MAX;
+        for (size_t n = 0; n < old->len; n++) {
+            size_t j = (start + n) % old->len;
+            if (used[j] || old->ops[j].hash != now->ops[i].hash) continue;
+            match[i] = j;
+            used[j] = true;
+            start = j + 1;
+            break;
+        }
+        const struct op *op = &now->ops[i];
+        if (match[i] == SIZE_MAX) damage_box(out, op->box);
+        else if (op->surface && op->seq != old->ops[match[i]].seq)
+            damage_content(out, &old->ops[match[i]], op);
+    }
+    for (size_t j = 0; j < old->len; j++)
+        if (!used[j]) damage_box(out, old->ops[j].box);
+    for (size_t i = 0; i < now->len; i++) {
+        if (match[i] == SIZE_MAX) continue;
+        for (size_t k = i + 1; k < now->len; k++) {
+            struct box overlap;
+            if (match[k] != SIZE_MAX && match[k] < match[i] &&
+                    box_intersection(&overlap, &now->ops[i].box, &now->ops[k].box))
+                damage_box(out, overlap);
+        }
+    }
+    free(match);
+    free(used);
+    return true;
+}
+
+void oplist_expand(const struct oplist *list, pixman_region32_t *region) {
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (size_t i = 0; i < list->len; i++) {
+            const struct box *reach = &list->ops[i].reach;
+            if (box_empty(reach)) continue;
+            pixman_box32_t r = { reach->x, reach->y, reach->x + reach->width,
+                reach->y + reach->height };
+            if (pixman_region32_contains_rectangle(region, &r) != PIXMAN_REGION_PART) continue;
+            damage_box(region, *reach);
+            grew = true;
+        }
+    }
 }
 
 const struct format_set *render_texture_formats(struct render *r) {
@@ -970,6 +1165,7 @@ void ring_finish(struct ring *ring) {
     for (size_t i = 0; i < RING_SLOTS; i++) {
         if (ring->slots[i]) buffer_drop(ring->slots[i]);
         ring->slots[i] = NULL;
+        ring->frames[i] = 0;
     }
     format_set_finish(&ring->format);
     ring->width = ring->height = 0;

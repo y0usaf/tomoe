@@ -363,6 +363,13 @@ static void apply_buffer(struct surface *surface) {
     buffer_damage(surface, &damage);
     bool reused = !gpu && surface->texture &&
         texture_update(surface->texture, next, &damage);
+    static uint64_t commits;
+    pixman_box32_t *e = pixman_region32_extents(&damage);
+    memmove(&surface->commits[1], &surface->commits[0],
+        sizeof(surface->commits) - sizeof(surface->commits[0]));
+    surface->commits[0].prev = surface->commit_seq;
+    surface->commits[0].seq = surface->commit_seq = ++commits;
+    surface->commits[0].box = (struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 };
     pixman_region32_fini(&damage);
     if (!reused) {
         struct texture *texture = texture_from_buffer(surface->server->renderer, next);
@@ -917,6 +924,24 @@ bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_i
     struct wl_list *last = reverse ? &surface->below : &surface->above;
     return walk_list(first, x, y, reverse, iterator, data) || iterator(surface, x, y, data) ||
         walk_list(last, x, y, reverse, iterator, data);
+}
+
+bool surface_damage_since(const struct surface *surface, uint64_t seq, struct box *out) {
+    pixman_region32_t changed;
+    pixman_region32_init(&changed);
+    size_t count = sizeof(surface->commits) / sizeof(surface->commits[0]), i = 0;
+    for (uint64_t at = surface->commit_seq; at != seq; at = surface->commits[i++].prev) {
+        if (i == count || surface->commits[i].seq != at) {
+            pixman_region32_fini(&changed);
+            return false;
+        }
+        const struct box *b = &surface->commits[i].box;
+        pixman_region32_union_rect(&changed, &changed, b->x, b->y, b->width, b->height);
+    }
+    pixman_box32_t *e = pixman_region32_extents(&changed);
+    *out = (struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 };
+    pixman_region32_fini(&changed);
+    return true;
 }
 
 void surface_source_box(struct surface *surface, struct fbox *box) {

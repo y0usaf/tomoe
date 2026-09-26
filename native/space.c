@@ -271,7 +271,8 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct box dst;
     box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
     struct surface *surface = leaf->surface;
-    surface_release_after(surface, data->buffer);
+    if (!pass_record(data->pass, NULL, (struct box){0}, (struct box){0}, NULL, 0))
+        surface_release_after(surface, data->buffer);
     struct fbox src;
     surface_source_box(surface, &src);
     float alpha = window ? t->alpha : 1;
@@ -281,6 +282,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
             transform_invert(surface->current.transform), data->transform),
         .alpha = &alpha,
         .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
+        .surface = surface,
     };
     if (window && !t->fullscreen && t->client_width > 0 &&
             window_radius(s, t, data) > 0 && toplevel_surface(surface) &&
@@ -390,22 +392,95 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
 bool fenced(struct screen *output) {
     return render_has_timeline(output->server->renderer) && output->kind == SCREEN_DRM;
 }
+static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
+        bool locked, bool cursors) {
+    struct pass *pass = data->pass;
+    pass_add_rect(pass, &(struct rect_options){
+        .box = { .width = data->buffer->width, .height = data->buffer->height },
+        .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
+        .blend_mode = BLEND_NONE });
+    bool frozen = !locked && screenshot_render_frozen(o, data);
+    if (locked) {
+        walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
+    } else if (frozen) {
+    } else if (plan) {
+        for (size_t i = 0; i < plan->target_count; i++) {
+            const struct presentation_target *root = &plan->targets[i];
+            if (!root->visible) continue;
+            struct target target = root->target;
+            target.fullscreen = root->fullscreen;
+            decorate(o->server, &target, data);
+            walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
+        }
+        render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
+    } else {
+        render_walk(o->server, o->server->scene, NULL, 0, 0, data);
+    }
+    if (!locked && !frozen)
+        ui_render(o, pass, plan, data->x, data->y, data->width, data->height, data->transform);
+    if (!locked && cursors) screenshot_render(o, data);
+    if (cursors) render_cursor(o, data, plan);
+}
+static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
+    size_t slot = 0;
+    while (slot < RING_SLOTS && ring->slots[slot] != buffer) slot++;
+    return slot;
+}
+static bool scene_damage(struct output *o, const struct frame *data, bool locked,
+        pixman_region32_t *changed, pixman_region32_t *clip) {
+    struct oplist now = {0};
+    struct frame record = *data;
+    record.pass = render_record(o->server->renderer, data->buffer, &now);
+    if (!record.pass) return false;
+    draw_scene(o, &record, NULL, locked, true);
+    bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
+    oplist_finish(&o->ops);
+    o->ops = now;
+    size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
+    uint64_t frame = ++o->frames;
+    pixman_region32_t *slot_damage = &o->damage[frame % history];
+    if (complete) pixman_region32_copy(slot_damage, changed);
+    else {
+        pixman_region32_fini(slot_damage);
+        pixman_region32_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
+    }
+    size_t slot = ring_slot(&o->ring, data->buffer);
+    uint64_t rendered = slot < RING_SLOTS ? o->ring.frames[slot] : 0;
+    if (slot < RING_SLOTS) o->ring.frames[slot] = frame;
+    o->drawn.frame = frame;
+    o->drawn.age = rendered ? frame - rendered : 0;
+    o->drawn.ops = now.len;
+    if (!complete || !rendered || frame - rendered > history) return false;
+    for (uint64_t f = rendered + 1; f <= frame; f++)
+        pixman_region32_union(clip, clip, &o->damage[f % history]);
+    oplist_expand(&o->ops, clip);
+    pixman_region32_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
+    int count = 0;
+    pixman_region32_rectangles(clip, &count);
+    if (count > 16) {
+        pixman_box32_t e = *pixman_region32_extents(clip);
+        pixman_region32_fini(clip);
+        pixman_region32_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+    }
+    return true;
+}
+static int64_t region_area(const pixman_region32_t *region) {
+    int count = 0;
+    const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+    int64_t area = 0;
+    for (int i = 0; i < count; i++)
+        area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
+    return area;
+}
 static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
-        bool cursors) {
+        bool cursors, bool track) {
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct timeline *signal = NULL;
-    if (fenced(output)) {
-        if (!s->render_timeline)
-            s->render_timeline = timeline_create(render_drm_fd(s->renderer));
-        if ((signal = s->render_timeline)) ++s->render_point;
-    }
-    struct pass *pass = render_begin(s->renderer, buffer, signal, s->render_point);
-    if (!pass) return false;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
-        .y = planned ? planned->box.y : o->y, .pass = pass, .buffer = buffer,
+        .y = planned ? planned->box.y : o->y, .buffer = buffer,
         .transform = (state->committed & SCREEN_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height,
         .view_x = plan ? plan->view_x : o->server->view_x,
@@ -415,31 +490,36 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
     windows_animate(o->server);
-    pass_add_rect(pass, &(struct rect_options){
-        .box = { .width = buffer->width, .height = buffer->height },
-        .color = { locked ? 0.3f : 0.05f, locked ? 0.1f : 0.05f, locked ? 0.1f : 0.05f, 1 },
-        .blend_mode = BLEND_NONE });
-    bool frozen = !locked && screenshot_render_frozen(o, &data);
-    if (locked) {
-        walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, &data);
-    } else if (frozen) {
-    } else if (plan) {
-        for (size_t i = 0; i < plan->target_count; i++) {
-            const struct presentation_target *root = &plan->targets[i];
-            if (!root->visible) continue;
-            struct target target = root->target;
-            target.fullscreen = root->fullscreen;
-            decorate(o->server, &target, &data);
-            walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, &data);
-        }
-        render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, &data);
-    } else {
-        render_walk(o->server, o->server->scene, NULL, 0, 0, &data);
+    pixman_region32_t changed, clip;
+    pixman_region32_init(&changed);
+    pixman_region32_init(&clip);
+    bool partial = track && scene_damage(o, &data, locked, &changed, &clip);
+    bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
+    if (highlight) partial = false;
+    if (fenced(output)) {
+        if (!s->render_timeline)
+            s->render_timeline = timeline_create(render_drm_fd(s->renderer));
+        if ((signal = s->render_timeline)) ++s->render_point;
     }
-    if (!locked && !frozen) ui_render(o, pass, plan, data.x, data.y, data.width, data.height, data.transform);
-    if (!locked && cursors) screenshot_render(o, &data);
-    if (cursors) render_cursor(o, &data, plan);
+    struct pass *pass = render_begin(s->renderer, buffer, signal, s->render_point);
+    if (!pass) {
+        size_t slot = ring_slot(&o->ring, buffer);
+        if (track && slot < RING_SLOTS) o->ring.frames[slot] = 0;
+        pixman_region32_fini(&changed);
+        pixman_region32_fini(&clip);
+        return false;
+    }
+    data.pass = pass;
+    if (partial) pass_clip(pass, &clip);
+    if (track) o->drawn.pixels = partial ? region_area(&clip) :
+        (int64_t)buffer->width * buffer->height;
+    draw_scene(o, &data, plan, locked, cursors);
+    if (highlight) pass_add_rect(pass, &(struct rect_options){
+        .box = { .width = buffer->width, .height = buffer->height },
+        .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
+    pixman_region32_fini(&changed);
+    pixman_region32_fini(&clip);
     if (success && s->settings.wait_frame && signal) {
         int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {
@@ -454,7 +534,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
 
 bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
-    return render_scene_buffer(o, buffer, &state, NULL, false);
+    return render_scene_buffer(o, buffer, &state, NULL, false, false);
 }
 
 bool render_presentation(struct output *o, struct screen_state *state,
@@ -462,6 +542,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
     struct screen *output = o->screen;
     finish_output_capture(o);
     if ((state->committed & SCREEN_ENABLED) && !state->enabled) return true;
+    bool track = !ring && !plan;
     if (!ring) {
         ring = &o->ring;
         if ((ring->width != output->width || ring->height != output->height) &&
@@ -476,12 +557,12 @@ bool render_presentation(struct output *o, struct screen_state *state,
             pointer_sync_cursors(o->server);
         }
     }
-    bool success = render_scene_buffer(o, buffer, state, plan, true);
+    bool success = render_scene_buffer(o, buffer, state, plan, true, track);
     uint64_t render_point = o->server->render_point;
     if (success) {
         if (capture_wants_cursorless(o)) {
             struct buffer *capture = ring_create(o->server, ring);
-            if (capture && render_scene_buffer(o, capture, state, plan, false)) {
+            if (capture && render_scene_buffer(o, capture, state, plan, false, false)) {
                 o->capture_buffer = buffer_lock(capture);
             }
             buffer_drop(capture);

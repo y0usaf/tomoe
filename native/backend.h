@@ -14,6 +14,7 @@ int tomoe_event_barrier(struct tomoe *server);
 void tomoe_destroy(struct tomoe *server);
 void tomoe_set_view(struct tomoe *server, int x, int y, double zoom);
 const char *tomoe_hit_test(struct tomoe *server, double x, double y);
+const char *tomoe_frames(struct tomoe *server);
 void tomoe_place(struct tomoe *server, uint32_t id, int x, int y,
     int width, int height, int visible);
 void tomoe_focus(struct tomoe *server, uint32_t id);

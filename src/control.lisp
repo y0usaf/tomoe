@@ -117,6 +117,10 @@
       (:hit-test
        (destructuring-bind (x y) args
          (native-hit-test runtime x y)))
+      (:frames
+       (destructuring-bind () args
+         (read-data (or (%frames (runtime-backend runtime))
+                        (error "Cannot serialize native frame counters.")))))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount
        (destructuring-bind (path) args

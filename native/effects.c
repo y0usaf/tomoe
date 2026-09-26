@@ -34,7 +34,20 @@ static void quad(struct frame *f, struct program *p, struct fbox box,
         local[2 * i + 1] = ys[i] - origin_y;
     }
     glEnable(GL_BLEND);
-    render_quad(p, pos, local, texcoords);
+    pass_quad(f->pass, p, pos, local, texcoords);
+}
+
+static struct box covering(struct frame *f, struct fbox box) {
+    fbox_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
+    int x = (int)floor(box.x) - 1, y = (int)floor(box.y) - 1;
+    return (struct box){ x, y, (int)ceil(box.x + box.width) + 1 - x,
+        (int)ceil(box.y + box.height) + 1 - y };
+}
+
+static bool record(struct frame *f, const struct texture_options *texture, struct fbox box,
+        const double *params, size_t count) {
+    struct box covered = covering(f, box);
+    return pass_record(f->pass, texture, covered, (struct box){0}, params, count);
 }
 
 static void color_uniform(GLint location, uint32_t rgba) {
@@ -53,6 +66,8 @@ void effect_border(struct frame *f, struct fbox geometry, double width, double r
     if (width <= 0) return;
     struct fbox box = local_box(f, (struct fbox){ geometry.x - width, geometry.y - width,
         geometry.width + 2 * width, geometry.height + 2 * width });
+    double params[] = { 3, box.x, box.y, box.width, box.height, width, radius, rgba, alpha };
+    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
     struct program *p = program(f, PROGRAM_SDF);
     glUseProgram(p->id);
     glUniform2f(p->size, box.width, box.height);
@@ -69,6 +84,9 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
     if (range <= 0) return;
     struct fbox box = local_box(f, (struct fbox){ geometry.x - range, geometry.y - range,
         geometry.width + 2 * range, geometry.height + 2 * range });
+    double params[] = { 4, box.x, box.y, box.width, box.height, range, radius, rgba, power,
+        alpha };
+    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
     struct program *p = program(f, PROGRAM_SDF);
     glUseProgram(p->id);
     glUniform2f(p->size, box.width, box.height);
@@ -88,6 +106,10 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     bool alpha;
     if (options->transform != f->transform ||
             !render_texture_gl(options->texture, &target, &tex, &alpha)) return false;
+    struct fbox local = local_box(f, clip);
+    double params[] = { 5, dst.x, dst.y, dst.width, dst.height, local.x, local.y, local.width,
+        local.height, radius };
+    if (record(f, options, dst, params, sizeof(params) / sizeof(params[0]))) return true;
     if (options->wait_timeline &&
             !render_wait(f->server->renderer, options->wait_timeline, options->wait_point))
         return true;
@@ -172,6 +194,17 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     struct box grown = { region.x - margin, region.y - margin,
         region.width + 2 * margin, region.height + 2 * margin };
     if (!box_intersection(&grown, &grown, &bounds)) return;
+    double params[] = { 6, box.x, box.y, box.width, box.height, radius, passes, offset, margin };
+    struct box covered = covering(f, box), reach = grown;
+    int x2 = fmax(grown.x + grown.width, covered.x + covered.width);
+    int y2 = fmax(grown.y + grown.height, covered.y + covered.height);
+    reach.x = fmin(grown.x, covered.x);
+    reach.y = fmin(grown.y, covered.y);
+    reach.width = x2 - reach.x;
+    reach.height = y2 - reach.y;
+    if (pass_record(f->pass, NULL, covered, reach, params, sizeof(params) / sizeof(params[0])) ||
+            !pass_touches(f->pass, reach))
+        return;
     if (passes > 31) passes = 31;
     bool ok = level_ensure(&e->levels[0], grown.width, grown.height);
     for (int i = 1; ok && i <= passes; i++)

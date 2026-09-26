@@ -29,7 +29,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 21 | ext-background-effect-v1 blur regions | crates/tomoe/src/protocols/background_effect.rs | native/background.c, native/space.c `decorate_layer` | Done |
 | 22 | Per-window blur behind (zoom 1, not fullscreen) | crates/tomoe/src/render/mod.rs `render_masked` | native/effects.c `effect_blur`, native/space.c `decorate`, `window-properties :blur`, `settings :blur` | Done |
 | 23 | `Window:set_properties` radius/tearing/blur/border | crates/tomoe/src/lua.rs | src/api.lisp `window-properties`, native/presentation.c `tomoe_present_window_style` | Done |
-| 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c (full-frame damage) | Partial |
+| 24 | Damage tracking (redraw only damaged regions) | crates/tomoe/src/backend/winit.rs, tty.rs | native/space.c `scene_damage`, native/render.c `oplist_damage` | Done: draw-list diff with per-commit client damage, buffer age, blur widening |
 | 25 | Direct scanout for fullscreen windows | crates/tomoe/src/backend/tty.rs | native/space.c `scanout_surface`, native/output.c `output_frame` | Done |
 | 26 | wp-presentation-time feedback | crates/tomoe/src/state.rs, tty.rs | native/surface.c `surface_presented`, native/space.c `surfaces_textured` | Done |
 | 27 | Drag-and-drop with drag icon | crates/tomoe/src/handlers.rs, render/mod.rs | native/selection.c `start_drag`, native/protocols.c `drag_icons_refresh` | Done |

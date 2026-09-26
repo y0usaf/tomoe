@@ -26,6 +26,7 @@
   (server (* t)) (x sb-alien:int) (y sb-alien:int) (zoom sb-alien:double))
 (define-native ("tomoe_hit_test" %hit-test) sb-alien:c-string
   (server (* t)) (screen-x sb-alien:double) (screen-y sb-alien:double))
+(define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_focus" %focus) sb-alien:void
   (server (* t)) (id sb-alien:unsigned-int))
 (define-native ("tomoe_keyboard_focus" %keyboard-focus) sb-alien:unsigned-int
