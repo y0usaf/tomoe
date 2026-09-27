@@ -1,6 +1,5 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_battery_abi" %battery-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_battery_open" %battery-open) (* t)
   (sysfs-root sb-alien:c-string) (error (* sb-alien:int)))
 (sb-alien:define-alien-routine ("tomoe_battery_poll" %battery-poll) sb-alien:int
@@ -12,8 +11,6 @@
 (sb-alien:define-alien-routine ("tomoe_battery_close" %battery-close) sb-alien:void
   (producer (* t)))
 
-(defvar *battery-support-loaded* nil)
-
 (defun stop-battery (runtime)
   (let ((native (runtime-battery-producer runtime)))
     (when native
@@ -23,22 +20,16 @@
 (defun start-battery (runtime)
   "Start the session producer. Missing UPower and battery hardware are normal."
   (handler-case
-      (progn
-        (unless *battery-support-loaded*
-          (sb-alien:load-shared-object
-           (or (sb-ext:posix-getenv "TOMOE_BATTERY_LIB") "build/libtomoe-battery.so"))
-          (unless (= 1 (%battery-abi)) (error "Incompatible battery helper ABI."))
-          (setf *battery-support-loaded* t))
-        (sb-alien:with-alien ((error-code sb-alien:int))
-          (let ((native (%battery-open
-                         (or (sb-ext:posix-getenv "TOMOE_POWER_SUPPLY_ROOT")
-                             "/sys/class/power_supply")
-                         (sb-alien:addr error-code))))
-            (unless (sb-alien:null-alien native)
-              (setf (runtime-battery-producer runtime) native
-                    (getf (runtime-services runtime) :battery)
-                    (read-data (or (%battery-snapshot native)
-                                   (error "Cannot allocate battery snapshot."))))))))
+      (sb-alien:with-alien ((error-code sb-alien:int))
+        (let ((native (%battery-open
+                       (or (sb-ext:posix-getenv "TOMOE_POWER_SUPPLY_ROOT")
+                           "/sys/class/power_supply")
+                       (sb-alien:addr error-code))))
+          (unless (sb-alien:null-alien native)
+            (setf (runtime-battery-producer runtime) native
+                  (getf (runtime-services runtime) :battery)
+                  (read-data (or (%battery-snapshot native)
+                                 (error "Cannot allocate battery snapshot.")))))))
     (serious-condition (condition)
       (stop-battery runtime)
       (format *error-output* "tomoe: battery unavailable: ~A~%" condition))))

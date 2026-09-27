@@ -23,10 +23,6 @@
 extern char **environ;
 struct execution { int pidfd, out, err, status, code; };
 
-int tomoe_exec_abi(void) { return 1; }
-
-int tomoe_process_abi(void) { return 1; }
-
 int tomoe_exec_supported(void) {
     int fd = pidfd_open(getpid(), 0);
     if (fd < 0) return -errno;

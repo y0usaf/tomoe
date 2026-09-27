@@ -5,8 +5,6 @@
 
 struct tomoe_battery;
 
-int tomoe_battery_abi(void);
-
 struct tomoe_battery *tomoe_battery_open(const char *sysfs_root, int *error);
 
 int tomoe_battery_poll(struct tomoe_battery *battery);

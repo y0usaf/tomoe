@@ -1,9 +1,13 @@
 # Tomoe
 
 A new Common Lisp Wayland compositor. SBCL runs the compositor loop, extension
-runtime, window-management policy, and control server. A C library serves the
-Wayland protocols on libwayland-server and drives rendering (EGL/GLES2 on GBM),
-outputs (DRM/KMS on libseat, nested Wayland, headless), and input (libinput).
+runtime, window-management policy, and control server. C code linked into
+SBCL's runtime serves the Wayland protocols on libwayland-server and drives
+rendering (EGL/GLES2 on GBM), outputs (DRM/KMS on libseat, nested Wayland,
+headless), and input (libinput). The package's `bin/tomoe` is that runtime
+with the saved Lisp image appended: one executable, no wrapper. The shell,
+shipped policy, fallback font configuration and helper programs it uses are
+store paths fixed when the image is built.
 
 Every desktop behaviour is a mountable extension. The shipped window manager,
 drag, and command units use the same API a user file does, and the
@@ -242,8 +246,8 @@ that display as a `service`, restarting it when it exits: it takes the lock,
 listens on the display's sockets, and on the first X11 connection becomes
 `xwayland-satellite -listenfd`, so Xwayland only starts once an X11 client
 connects. `--bare` has no X11 until a policy declares that service. The
-package puts `tomoe-xwayland` and `xwayland-satellite` on the wrapper's
-`PATH`.
+compositor puts `tomoe-xwayland` and `xwayland-satellite` from its package
+first on the `PATH` it hands its children.
 
 To policy, an X11 window is an xdg window: its title and app id come from
 satellite, `place` sends a configure, and fullscreen and maximize go through
@@ -815,7 +819,7 @@ characters. The native helper bounds each argv/environment vector to 1 MiB,
 argv to 128 entries, the full environment to 4096 strings, and `PATH` lookup to
 256 segments.
 
-On Linux, `support/executions.c` exports separate ABI 1 helpers for captured
+On Linux, `support/executions.c` provides helpers for captured
 `exec-async` commands and inherited-stdio managed processes. Both use private
 process groups and pidfds; the managed process API supplies `/dev/null` stdin,
 inherits stdout/stderr, and reaps only its direct child. Group liveness remains
@@ -1472,12 +1476,13 @@ protocol, not an unauthenticated REPL.
 - `native/virtual.c`: virtual keyboard and pointer devices, output mapping lifetime.
 - `native/backend.c`: server lifetime — create, step, destroy.
 - `support/executions.c`: Linux pidfd process-group helpers for policy-owned
-  commands (separate exec/process ABI 1; requires Linux 6.9+).
+  commands (requires Linux 6.9+).
 - `support/watches.c`, `src/watches.lisp`: Linux inotify file observation,
-  owned watch preparation, bounded content delivery, and cleanup (watch ABI 1).
+  owned watch preparation, bounded content delivery, and cleanup.
 - `builtins/desktop.lisp`: replaceable default policy.
 - `examples/`: alternative policies, each mountable on its own.
-- `flake.nix`, `build.lisp`: native compilation and saved SBCL executable.
+- `flake.nix`, `build.lisp`, `dev.sh`: native compilation linked into SBCL's
+  runtime (`sbcl.o`), and the saved executable or a development session.
 - `DESKTOP.md`, `FINIX.md`, `OUTPUTS.md`, `STARTUP.md`, and
   `WORK.md` are historical checkpoints from the prototype work. They name local
   paths and predate the move to the repository root.

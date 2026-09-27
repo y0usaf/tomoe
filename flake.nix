@@ -73,6 +73,25 @@
         };
       package =
         pkgs:
+        let
+          sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
+          xwayland-satellite = pkgs.xwayland-satellite.override {
+            xwayland =
+              (pkgs.xwayland.override {
+                bash = pkgs.bashNonInteractive;
+                openssl = pkgs.libmd;
+                libdecor = null;
+                libtirpc = null;
+                libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
+              }).overrideAttrs
+                (old: {
+                  mesonFlags = old.mesonFlags ++ [
+                    "-Dsha1=libmd"
+                    "-Dsecure-rpc=false"
+                  ];
+                });
+          };
+        in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
           version = "0.1.0";
@@ -90,8 +109,7 @@
           };
           nativeBuildInputs = [
             pkgs.pkg-config
-            (pkgs.sbcl.overrideAttrs { markRegionGC = false; })
-            pkgs.makeBinaryWrapper
+            sbcl
             pkgs.wayland-scanner
           ];
           buildInputs = [
@@ -111,31 +129,17 @@
             (resvg pkgs)
             pkgs.systemdLibs
             pkgs.lcms2
+            pkgs.zstd
           ];
           strictDeps = true;
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
             mkdir build
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              support/executions.c -o build/libtomoe-executions.so
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              support/watches.c -o build/libtomoe-watches.so
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              $(pkg-config --cflags libsystemd) support/notifications.c \
-              -o build/libtomoe-notifications.so $(pkg-config --libs libsystemd)
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              $(pkg-config --cflags libsystemd) support/mpris.c \
-              -o build/libtomoe-mpris.so $(pkg-config --libs libsystemd)
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              $(pkg-config --cflags libsystemd) support/battery.c \
-              -o build/libtomoe-battery.so $(pkg-config --libs libsystemd)
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              $(pkg-config --cflags libsystemd) support/network.c \
-              -o build/libtomoe-network.so $(pkg-config --libs libsystemd)
-            $CC -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-              $(pkg-config --cflags libsystemd) support/tray.c \
-              -o build/libtomoe-tray.so $(pkg-config --libs libsystemd)
+            for module in executions watches notifications mpris battery network tray; do
+              $CC -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) \
+                -c support/$module.c -o build/$module.o
+            done
             $CC -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
             wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
             wp=${pkgs.wayland-protocols}/share/wayland-protocols
@@ -177,26 +181,31 @@
               wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
             done
             $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
-              -Wno-unused-parameter -fPIC -shared -Ibuild \
+              -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
               $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
-              native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -lresvg -lm
-            sbcl --noinform --non-interactive --load build.lisp
+              ${sbcl}/lib/sbcl/sbcl.o native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
+              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libsystemd) \
+              -lresvg -ldl -lpthread -lzstd -lm
+            SBCL_HOME=${sbcl}/lib/sbcl \
+            TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
+            TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
+            TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
+            TOMOE_PATH=$out/libexec/tomoe-bin:${
+              pkgs.lib.makeBinPath [
+                pkgs.foot
+                (pkgs.fuzzel.override { resvg = resvg pkgs; })
+                xwayland-satellite
+              ]
+            } \
+              build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \
+              --non-interactive --no-userinit --load build.lisp
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            install -Dm755 build/tomoe $out/libexec/tomoe
+            install -Dm755 build/tomoe $out/bin/tomoe
             install -Dm755 build/tomoe-xwayland $out/libexec/tomoe-bin/tomoe-xwayland
-            install -Dm755 build/libtomoe-backend.so $out/lib/libtomoe-backend.so
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
-            install -Dm755 build/libtomoe-executions.so $out/lib/libtomoe-executions.so
-            install -Dm755 build/libtomoe-watches.so $out/lib/libtomoe-watches.so
-            install -Dm755 build/libtomoe-notifications.so $out/lib/libtomoe-notifications.so
-            install -Dm755 build/libtomoe-mpris.so $out/lib/libtomoe-mpris.so
-            install -Dm755 build/libtomoe-battery.so $out/lib/libtomoe-battery.so
-            install -Dm755 build/libtomoe-network.so $out/lib/libtomoe-network.so
-            install -Dm755 build/libtomoe-tray.so $out/lib/libtomoe-tray.so
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
             install -Dm644 share/tomoe.portal $out/share/xdg-desktop-portal/portals/tomoe.portal
@@ -206,40 +215,6 @@
               "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
-            makeWrapper $out/libexec/tomoe $out/bin/tomoe \
-              --set TOMOE_BACKEND_LIB $out/lib/libtomoe-backend.so \
-              --set TOMOE_EXEC_LIB $out/lib/libtomoe-executions.so \
-              --set TOMOE_WATCH_LIB $out/lib/libtomoe-watches.so \
-              --set TOMOE_NOTIFICATION_LIB $out/lib/libtomoe-notifications.so \
-              --set TOMOE_MPRIS_LIB $out/lib/libtomoe-mpris.so \
-              --set TOMOE_BATTERY_LIB $out/lib/libtomoe-battery.so \
-              --set TOMOE_NETWORK_LIB $out/lib/libtomoe-network.so \
-              --set TOMOE_TRAY_LIB $out/lib/libtomoe-tray.so \
-              --set TOMOE_SHELL ${pkgs.bashNonInteractive}/bin/sh \
-              --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
-              --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
-              --prefix PATH : $out/libexec/tomoe-bin:${
-                pkgs.lib.makeBinPath [
-                  pkgs.foot
-                  (pkgs.fuzzel.override { resvg = resvg pkgs; })
-                  (pkgs.xwayland-satellite.override {
-                    xwayland =
-                      (pkgs.xwayland.override {
-                        bash = pkgs.bashNonInteractive;
-                        openssl = pkgs.libmd;
-                        libdecor = null;
-                        libtirpc = null;
-                        libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
-                      }).overrideAttrs
-                        (old: {
-                          mesonFlags = old.mesonFlags ++ [
-                            "-Dsha1=libmd"
-                            "-Dsecure-rpc=false"
-                          ];
-                        });
-                  })
-                ]
-              }
             runHook postInstall
           '';
           meta = {

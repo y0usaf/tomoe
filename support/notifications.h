@@ -5,8 +5,6 @@
 
 struct tomoe_notifications;
 
-int tomoe_notifications_abi(void);
-
 struct tomoe_notifications *tomoe_notifications_open(int *error);
 
 int tomoe_notifications_poll(struct tomoe_notifications *notifications);

@@ -5,7 +5,6 @@
 
 struct tomoe_network;
 
-int tomoe_network_abi(void);
 struct tomoe_network *tomoe_network_open(const char *sysfs_root, int *error);
 int tomoe_network_poll(struct tomoe_network *network);
 uint64_t tomoe_network_revision(const struct tomoe_network *network);

@@ -5,7 +5,6 @@
 
 struct tomoe_tray;
 
-int tomoe_tray_abi(void);
 struct tomoe_tray *tomoe_tray_open(int *error);
 
 int tomoe_tray_poll(struct tomoe_tray *tray);

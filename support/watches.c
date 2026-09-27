@@ -24,8 +24,6 @@ struct file_watch {
     char *parent, *name, *path;
 };
 
-int tomoe_watch_abi(void) { return 1; }
-
 static void deactivate(struct file_watch *watch) {
     if (watch->fd >= 0) close(watch->fd);
     watch->fd = watch->wd = -1;

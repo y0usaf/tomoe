@@ -1,6 +1,5 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_network_abi" %network-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_network_open" %network-open) (* t)
   (sysfs-root sb-alien:c-string) (error (* sb-alien:int)))
 (sb-alien:define-alien-routine ("tomoe_network_poll" %network-poll) sb-alien:int
@@ -11,8 +10,6 @@
   (producer (* t)) (maximum sb-alien:int))
 (sb-alien:define-alien-routine ("tomoe_network_close" %network-close) sb-alien:void
   (producer (* t)))
-
-(defvar *network-support-loaded* nil)
 
 (defun decode-network-snapshot (text)
   (let* ((snapshot (read-data (or text (error "Cannot allocate network snapshot."))))
@@ -39,21 +36,15 @@
 (defun start-network (runtime)
   "Start the session producer. Missing NetworkManager or sysfs is normal."
   (handler-case
-      (progn
-        (unless *network-support-loaded*
-          (sb-alien:load-shared-object
-           (or (sb-ext:posix-getenv "TOMOE_NETWORK_LIB") "build/libtomoe-network.so"))
-          (unless (= 1 (%network-abi)) (error "Incompatible network helper ABI."))
-          (setf *network-support-loaded* t))
-        (sb-alien:with-alien ((error-code sb-alien:int))
-          (let ((native (%network-open
-                         (or (sb-ext:posix-getenv "TOMOE_NETWORK_SYSFS_ROOT")
-                             "/sys/class/net")
-                         (sb-alien:addr error-code))))
-            (unless (sb-alien:null-alien native)
-              (setf (runtime-network-producer runtime) native
-                    (getf (runtime-services runtime) :network)
-                    (decode-network-snapshot (%network-snapshot native)))))))
+      (sb-alien:with-alien ((error-code sb-alien:int))
+        (let ((native (%network-open
+                       (or (sb-ext:posix-getenv "TOMOE_NETWORK_SYSFS_ROOT")
+                           "/sys/class/net")
+                       (sb-alien:addr error-code))))
+          (unless (sb-alien:null-alien native)
+            (setf (runtime-network-producer runtime) native
+                  (getf (runtime-services runtime) :network)
+                  (decode-network-snapshot (%network-snapshot native))))))
     (serious-condition (condition)
       (stop-network runtime)
       (format *error-output* "tomoe: network unavailable: ~A~%" condition))))

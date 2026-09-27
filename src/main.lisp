@@ -144,7 +144,7 @@ only after it changes again."
   "Variables pushed into the systemd user and D-Bus activation environments.")
 
 (defun session-shell (script &optional (wait t))
-  (ignore-errors (sb-ext:run-program (or (sb-ext:posix-getenv "TOMOE_SHELL") "/bin/sh") (list "-c" script) :wait wait :output nil :error nil)))
+  (ignore-errors (sb-ext:run-program *shell* (list "-c" script) :wait wait :output nil :error nil)))
 
 (defun start-session ()
   "Publish the session environment and bring tomoe-session.target up."
@@ -155,7 +155,15 @@ only after it changes again."
 (defun stop-session ()
   (session-shell (format nil "hash systemctl 2>/dev/null || exit 0; systemctl --user stop tomoe-session.target; systemctl --user unset-environment ~{~A~^ ~}" +session-variables+)))
 
+(defvar *builtins* (sb-ext:posix-getenv "TOMOE_BUILTINS"))
+(defvar *path* (sb-ext:posix-getenv "TOMOE_PATH"))
+(defvar *fontconfig-file* (sb-ext:posix-getenv "TOMOE_FONTCONFIG_FILE"))
+
 (defun run-compositor (name backend sources watch &optional drm-device)
+  (when *path*
+    (sb-posix:setenv "PATH" (format nil "~A~@[:~A~]" *path* (sb-ext:posix-getenv "PATH")) 1))
+  (when *fontconfig-file*
+    (sb-posix:setenv "FONTCONFIG_FILE" *fontconfig-file* 0))
   (when (member backend '("auto" "nested") :test #'equal)
     (let ((display (parent-wayland-display)))
       (cond
@@ -307,7 +315,7 @@ only after it changes again."
              (return-from run-cli (control-client (socket-path name) operation arguments))))
           (t (error "Unknown option or command: ~A" option)))))
     (unless (or bare config) (setf config (default-config-file)))
-    (let ((builtins (sb-ext:posix-getenv "TOMOE_BUILTINS")))
+    (let ((builtins *builtins*))
       (unless (or bare builtins) (error "TOMOE_BUILTINS is required without --bare."))
       (run-compositor name backend
                       (append (unless bare (list (namestring (truename builtins))))

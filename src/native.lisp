@@ -416,9 +416,6 @@
     (%present-abort backend)))
 
 (defun open-backend (socket)
-  (let ((library (sb-ext:posix-getenv "TOMOE_BACKEND_LIB")))
-    (unless library (error "TOMOE_BACKEND_LIB must name libtomoe-backend.so."))
-    (sb-alien:load-shared-object library))
   (unless (= (%abi) +native-abi-version+)
     (error "Native ABI mismatch, expected ~D." +native-abi-version+))
   (let ((server (%create socket)))

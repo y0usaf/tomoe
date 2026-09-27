@@ -1,6 +1,7 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_process_abi" %process-abi) sb-alien:int)
+(defvar *shell* (or (sb-ext:posix-getenv "TOMOE_SHELL") "/bin/sh"))
+
 (sb-alien:define-alien-routine ("tomoe_process_group_alive" %process-group-alive) sb-alien:int (job (* t)))
 (sb-alien:define-alien-routine ("tomoe_process_start" %process-start) (* t)
   (argv (* (* sb-alien:unsigned-char))) (cwd (sb-alien:c-string :external-format :utf-8))
@@ -74,9 +75,7 @@
                                        (runtime-managed-processes runtime)))))
       (when (> (managed-process-reservations runtime active retired) 128)
         (error "More than 128 live or reserved managed processes."))
-      (when (plusp count)
-        (open-execution-support)
-        (unless (= 1 (%process-abi)) (error "Incompatible process helper ABI.")))
+      (when (plusp count) (require-execution-support))
       (make-process-plan :active (nreverse active) :retired retired :history history))))
 
 (defun prepare-session-spawns (runtime commands plan)
@@ -86,9 +85,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
     (when (> (+ count (managed-process-reservations runtime (process-plan-active plan)
                                                     (process-plan-retired plan))) 128)
       (error "More than 128 live or reserved managed processes."))
-    (when (plusp count)
-      (open-execution-support)
-      (unless (= 1 (%process-abi)) (error "Incompatible process helper ABI.")))
+    (when (plusp count) (require-execution-support))
     (loop for command in commands collect
       (when (member (command-kind command) '(:launch :spawn))
         (destructuring-bind (launch cwd env)
@@ -140,7 +137,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
 (defun start-managed-process (runtime job)
   (let* ((args (managed-process-arguments job)) (command (third args))
          (argv (if (stringp command)
-                   (list (or (sb-ext:posix-getenv "TOMOE_SHELL") "/bin/sh") "-c" command)
+                   (list *shell* "-c" command)
                    command))
          (cwd (fourth args)) (lease (managed-process-lease job)) (token nil))
     (when (and cwd (not (char= (char cwd 0) #\/)))

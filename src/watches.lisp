@@ -1,7 +1,6 @@
 (in-package #:tomoe)
 
 
-(sb-alien:define-alien-routine ("tomoe_watch_abi" %watch-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_watch_open" %watch-open) (* t)
   (path sb-alien:c-string) (error (* sb-alien:int)))
 (sb-alien:define-alien-routine ("tomoe_watch_poll" %watch-poll) sb-alien:int
@@ -10,8 +9,6 @@
   (watch (* t)) (buffer (* sb-alien:unsigned-char)) (limit sb-alien:unsigned-long))
 (sb-alien:define-alien-routine ("tomoe_watch_close" %watch-close) sb-alien:void
   (watch (* t)))
-
-(defvar *watch-support-loaded* nil)
 
 (defconstant +watch-changed+ 1)
 (defconstant +watch-overflow+ 2)
@@ -23,16 +20,6 @@
   (status :ready) error retry-deadline (active t) (turn 0))
 
 (defstruct watch-plan active retired created (adopted nil))
-
-(defun open-watch-support ()
-  "Load the independent helper only when a new native watch is needed."
-  (unless *watch-support-loaded*
-    (sb-alien:load-shared-object
-     (or (sb-ext:posix-getenv "TOMOE_WATCH_LIB")
-         "build/libtomoe-watches.so"))
-    (unless (= 1 (%watch-abi))
-      (error "Incompatible file-watch helper ABI."))
-    (setf *watch-support-loaded* t)))
 
 (defun %watch-error-text (condition)
   (let* ((text (princ-to-string condition))
@@ -59,7 +46,6 @@
       (concatenate 'string (spec-directory owner) declared-path)))
 
 (defun %watch-open-path (path)
-  (open-watch-support)
   (sb-alien:with-alien ((error-code sb-alien:int))
     (let ((native (%watch-open path (sb-alien:addr error-code))))
       (if (sb-alien:null-alien native)

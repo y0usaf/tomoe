@@ -1,6 +1,5 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_mpris_abi" %mpris-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_mpris_open" %mpris-open) (* t)
   (error (* sb-alien:int)))
 (sb-alien:define-alien-routine ("tomoe_mpris_poll" %mpris-poll) sb-alien:int
@@ -12,8 +11,6 @@
 (sb-alien:define-alien-routine ("tomoe_mpris_close" %mpris-close) sb-alien:void
   (producer (* t)))
 
-(defvar *mpris-support-loaded* nil)
-
 (defun stop-mpris (runtime)
   (let ((native (runtime-mpris-producer runtime)))
     (when native
@@ -23,19 +20,13 @@
 (defun start-mpris (runtime)
   "Start the session observer. An absent bus leaves the default facts."
   (handler-case
-      (progn
-        (unless *mpris-support-loaded*
-          (sb-alien:load-shared-object
-           (or (sb-ext:posix-getenv "TOMOE_MPRIS_LIB") "build/libtomoe-mpris.so"))
-          (unless (= 1 (%mpris-abi)) (error "Incompatible MPRIS helper ABI."))
-          (setf *mpris-support-loaded* t))
-        (sb-alien:with-alien ((error-code sb-alien:int))
-          (let ((native (%mpris-open (sb-alien:addr error-code))))
-            (unless (sb-alien:null-alien native)
-              (setf (runtime-mpris-producer runtime) native
-                    (getf (runtime-services runtime) :mpris)
-                    (read-data (or (%mpris-snapshot native)
-                                   (error "Cannot allocate MPRIS snapshot."))))))))
+      (sb-alien:with-alien ((error-code sb-alien:int))
+        (let ((native (%mpris-open (sb-alien:addr error-code))))
+          (unless (sb-alien:null-alien native)
+            (setf (runtime-mpris-producer runtime) native
+                  (getf (runtime-services runtime) :mpris)
+                  (read-data (or (%mpris-snapshot native)
+                                 (error "Cannot allocate MPRIS snapshot.")))))))
     (serious-condition (condition)
       (stop-mpris runtime)
       (format *error-output* "tomoe: MPRIS unavailable: ~A~%" condition))))

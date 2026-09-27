@@ -1,6 +1,5 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_tray_abi" %tray-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_tray_open" %tray-open) (* t)
   (error (* sb-alien:int)))
 (sb-alien:define-alien-routine ("tomoe_tray_poll" %tray-poll) sb-alien:int
@@ -12,8 +11,6 @@
 (sb-alien:define-alien-routine ("tomoe_tray_close" %tray-close) sb-alien:void
   (producer (* t)))
 
-(defvar *tray-support-loaded* nil)
-
 (defun stop-tray (runtime)
   (let ((native (runtime-tray-producer runtime)))
     (when native
@@ -23,19 +20,13 @@
 (defun start-tray (runtime)
   "Acquire the session watcher once. An absent bus or another watcher is normal."
   (handler-case
-      (progn
-        (unless *tray-support-loaded*
-          (sb-alien:load-shared-object
-           (or (sb-ext:posix-getenv "TOMOE_TRAY_LIB") "build/libtomoe-tray.so"))
-          (unless (= 1 (%tray-abi)) (error "Incompatible tray helper ABI."))
-          (setf *tray-support-loaded* t))
-        (sb-alien:with-alien ((error-code sb-alien:int))
-          (let ((native (%tray-open (sb-alien:addr error-code))))
-            (unless (sb-alien:null-alien native)
-              (setf (runtime-tray-producer runtime) native
-                    (getf (runtime-services runtime) :tray)
-                    (read-data (or (%tray-snapshot native)
-                                   (error "Cannot allocate tray snapshot."))))))))
+      (sb-alien:with-alien ((error-code sb-alien:int))
+        (let ((native (%tray-open (sb-alien:addr error-code))))
+          (unless (sb-alien:null-alien native)
+            (setf (runtime-tray-producer runtime) native
+                  (getf (runtime-services runtime) :tray)
+                  (read-data (or (%tray-snapshot native)
+                                 (error "Cannot allocate tray snapshot.")))))))
     (serious-condition (condition)
       (stop-tray runtime)
       (format *error-output* "tomoe: tray unavailable: ~A~%" condition))))

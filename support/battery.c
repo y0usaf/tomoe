@@ -112,8 +112,6 @@ struct tomoe_battery {
 
 static void cancel_stale_calls(struct tomoe_battery *battery);
 
-int tomoe_battery_abi(void) { return 1; }
-
 static uint64_t monotonic_usec(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) return 0;

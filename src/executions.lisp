@@ -1,6 +1,5 @@
 (in-package #:tomoe)
 
-(sb-alien:define-alien-routine ("tomoe_exec_abi" %exec-abi) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_exec_supported" %exec-supported) sb-alien:int)
 (sb-alien:define-alien-routine ("tomoe_exec_start" %exec-start) (* t)
   (command sb-alien:c-string) (error (* sb-alien:int)))
@@ -11,15 +10,12 @@
 (sb-alien:define-alien-routine ("tomoe_exec_stop" %exec-stop) sb-alien:int (job (* t)))
 (sb-alien:define-alien-routine ("tomoe_exec_release" %exec-release) sb-alien:int (job (* t)))
 
-(defvar *execution-support-loaded* nil)
-(defun open-execution-support ()
-  (unless *execution-support-loaded*
-    (sb-alien:load-shared-object
-     (or (sb-ext:posix-getenv "TOMOE_EXEC_LIB") "build/libtomoe-executions.so"))
-    (unless (= 1 (%exec-abi)) (error "Incompatible execution helper ABI."))
+(defvar *execution-supported* nil)
+(defun require-execution-support ()
+  (unless *execution-supported*
     (unless (= 1 (%exec-supported))
       (error "Owned execution requires Linux 6.9 process-group pidfd signals."))
-    (setf *execution-support-loaded* t)))
+    (setf *execution-supported* t)))
 
 (defstruct process-lease process stopped stop-error)
 (defstruct (owned-execution (:include process-lease))
@@ -54,7 +50,7 @@
                                       (runtime-executions runtime)))))
       (when (> (+ count (length retired)) 128)
         (error "More than 128 active or retiring executions."))
-      (when (plusp count) (open-execution-support))
+      (when (plusp count) (require-execution-support))
       (make-execution-plan :active (nreverse active) :retired retired))))
 
 (defun execution-error-text (condition)

@@ -5,8 +5,6 @@
 
 struct tomoe_mpris;
 
-int tomoe_mpris_abi(void);
-
 struct tomoe_mpris *tomoe_mpris_open(int *error);
 
 int tomoe_mpris_poll(struct tomoe_mpris *mpris);

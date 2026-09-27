@@ -2,58 +2,22 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
-export TOMOE_EXEC_LIB="$PWD/build/libtomoe-executions.so"
 export TOMOE_SHELL="${TOMOE_SHELL:-$(command -v sh)}"
-if [ ! -f "$TOMOE_EXEC_LIB" ] || [ support/executions.c -nt "$TOMOE_EXEC_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared support/executions.c -o "$TOMOE_EXEC_LIB"
-fi
+export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"
+SBCL_HOME="$(dirname "$(readlink -f "$(command -v sbcl)")")/../lib/sbcl"
+export SBCL_HOME
 
-export TOMOE_WATCH_LIB="$PWD/build/libtomoe-watches.so"
-if [ ! -f "$TOMOE_WATCH_LIB" ] || [ support/watches.c -nt "$TOMOE_WATCH_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared support/watches.c -o "$TOMOE_WATCH_LIB"
-fi
-
-export TOMOE_NOTIFICATION_LIB="$PWD/build/libtomoe-notifications.so"
-if [ ! -f "$TOMOE_NOTIFICATION_LIB" ] || [ support/notifications.c -nt "$TOMOE_NOTIFICATION_LIB" ] || [ support/notifications.h -nt "$TOMOE_NOTIFICATION_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    $(pkg-config --cflags libsystemd) support/notifications.c \
-    -o "$TOMOE_NOTIFICATION_LIB" $(pkg-config --libs libsystemd)
-fi
-
-export TOMOE_MPRIS_LIB="$PWD/build/libtomoe-mpris.so"
-if [ ! -f "$TOMOE_MPRIS_LIB" ] || [ support/mpris.c -nt "$TOMOE_MPRIS_LIB" ] || [ support/mpris.h -nt "$TOMOE_MPRIS_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    $(pkg-config --cflags libsystemd) support/mpris.c \
-    -o "$TOMOE_MPRIS_LIB" $(pkg-config --libs libsystemd)
-fi
-
-export TOMOE_BATTERY_LIB="$PWD/build/libtomoe-battery.so"
-if [ ! -f "$TOMOE_BATTERY_LIB" ] || [ support/battery.c -nt "$TOMOE_BATTERY_LIB" ] || [ support/battery.h -nt "$TOMOE_BATTERY_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    $(pkg-config --cflags libsystemd) support/battery.c \
-    -o "$TOMOE_BATTERY_LIB" $(pkg-config --libs libsystemd)
-fi
-
-export TOMOE_NETWORK_LIB="$PWD/build/libtomoe-network.so"
-if [ ! -f "$TOMOE_NETWORK_LIB" ] || [ support/network.c -nt "$TOMOE_NETWORK_LIB" ] || [ support/network.h -nt "$TOMOE_NETWORK_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    $(pkg-config --cflags libsystemd) support/network.c \
-    -o "$TOMOE_NETWORK_LIB" $(pkg-config --libs libsystemd)
-fi
-
-export TOMOE_TRAY_LIB="$PWD/build/libtomoe-tray.so"
-if [ ! -f "$TOMOE_TRAY_LIB" ] || [ support/tray.c -nt "$TOMOE_TRAY_LIB" ] || [ support/tray.h -nt "$TOMOE_TRAY_LIB" ]; then
-  cc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
-    $(pkg-config --cflags libsystemd) support/tray.c \
-    -o "$TOMOE_TRAY_LIB" $(pkg-config --libs libsystemd)
-fi
+for module in executions watches notifications mpris battery network tray; do
+  if [ ! -f "build/$module.o" ] || [ "support/$module.c" -nt "build/$module.o" ] || [ "support/$module.h" -nt "build/$module.o" ]; then
+    cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
+  fi
+done
 
 if [ ! -f build/tomoe-xwayland ] || [ support/xwayland.c -nt build/tomoe-xwayland ]; then
   cc -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
 fi
 export PATH="$PWD/build:$PATH"
 
-export TOMOE_BACKEND_LIB="$PWD/build/libtomoe-backend.so"
 if ! command -v wayland-scanner >/dev/null 2>&1; then
   echo "dev.sh: wayland-scanner is required to build the backend" >&2
   exit 1
@@ -85,6 +49,7 @@ for xml in \
   "$wp/staging/tearing-control/tearing-control-v1.xml" \
   "$wp/staging/ext-background-effect/ext-background-effect-v1.xml" \
   "$wp/staging/ext-data-control/ext-data-control-v1.xml" \
+  "$wp/staging/pointer-warp/pointer-warp-v1.xml" \
   "$wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" \
   "$wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml" \
   "$wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" \
@@ -98,13 +63,12 @@ for xml in \
     wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
   fi
 done
-if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOMOE_BACKEND_LIB" -print -quit)" ]; then
-  cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter \
-    -fPIC -shared -Ibuild \
+if [ ! -f build/tomoe-runtime ] || [ -n "$(find native build -newer build/tomoe-runtime \( -name '*.[ch]' -o -name '*.o' \) -print -quit)" ]; then
+  cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
     $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
-    native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
-    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -lresvg -lm
+    "$SBCL_HOME/sbcl.o" native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
+    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libsystemd) \
+    -lresvg -ldl -lpthread -lzstd -lm
 fi
 
-export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"
-exec sbcl --noinform --load dev.lisp -- "$@"
+exec build/tomoe-runtime --core "$SBCL_HOME/sbcl.core" --noinform --load dev.lisp -- "$@"
