@@ -133,13 +133,27 @@ void gamma_apply(struct output *o, struct screen_state *state) {
     o->gamma_dirty = false;
     struct gamma *gamma = gamma_for(o);
     bool table = gamma && gamma->table;
-    if (!screen_state_set_gamma(state, table ? gamma->table : NULL, table ? gamma->size : 0)) {
-        if (gamma) gamma_fail(gamma);
+    struct profile *profile = o->profile;
+    uint16_t *ramps = profile ?
+        profile_ramps(profile, table ? gamma->table : NULL, table ? gamma->size : 0) : NULL;
+    bool set = (!profile || ramps) && screen_state_set_gamma(state,
+        profile ? ramps : table ? gamma->table : NULL,
+        profile ? profile->gamma_size : table ? gamma->size : 0);
+    free(ramps);
+    screen_state_set_profile(state, profile);
+    if (set && screen_test(o->screen, state)) return;
+    if (profile) {
+        tomoe_log(LOG_ERROR, "tomoe: output %s rejected ICC profile %s", o->screen->name,
+            profile->path);
+        o->profile = NULL;
+        o->profile_error = "the driver rejected the degamma, CTM and gamma LUTs";
+        profile_unref(profile);
+        outputs_event(o->server);
+        gamma_apply(o, state);
         return;
     }
-    if (screen_test(o->screen, state)) return;
     screen_state_set_gamma(state, NULL, 0);
-    state->committed &= ~SCREEN_GAMMA;
+    state->committed &= ~(SCREEN_GAMMA | SCREEN_PROFILE);
     if (gamma) gamma_fail(gamma);
 }
 

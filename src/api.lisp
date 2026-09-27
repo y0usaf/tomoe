@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 33)
+(defconstant +native-abi-version+ 34)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity))
 (defvar *definitions* :not-loading)
@@ -340,7 +340,7 @@ and clamped to the native camera's range."
     (%effect :view (list x y zoom))))
 
 (defun %output-effect (name mode width height refresh scale x y positioned
-                       &optional disabled mirror vrr)
+                       &optional disabled mirror vrr icc)
   (check-type name string)
   (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
     (error "Invalid output name: ~S" name))
@@ -359,15 +359,20 @@ and clamped to the native camera's range."
     (check-type mirror string)
     (unless (and (<= 1 (length mirror) 128) (not (find #\Null mirror)))
       (error "Invalid mirror output name: ~S" mirror)))
+  (when icc
+    (check-type icc string)
+    (unless (and (<= 1 (length icc) 4096) (not (find #\Null icc)))
+      (error "Invalid ICC profile path: ~S" icc)))
   (%effect :output (list (copy-seq name) mode width height refresh scale x y positioned
-                        disabled (and mirror (copy-seq mirror)) vrr)))
+                        disabled (and mirror (copy-seq mirror)) vrr (and icc (copy-seq icc)))))
 
-(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr)
-  "Own an output's mode, scale, position, enablement, mirror target and VRR request.
+(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr icc)
+  "Own an output's mode, scale, position, enablement, mirror target, VRR request and ICC profile.
 MODE is :PREFERRED, :MAX (largest progressive), or (WIDTH HEIGHT [HZ]). REFRESH
 is :MAX or Hz, matched within 1 Hz. Without it :PREFERRED keeps the preferred
 mode and other sizes take their highest rate. MIRROR names an active non-mirroring output.
-Omitted SCALE inherits the :SCALE setting.
+Omitted SCALE inherits the :SCALE setting. ICC names an RGB display profile that
+maps sRGB content to the panel's colors.
 Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS."
   (check-type scale (or null (real 1/4 8)))
   (flet ((millihertz (refresh)
@@ -377,10 +382,10 @@ Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS.
       (destructuring-bind (x y) (or position '(0 0))
         (if (member mode '(:preferred :max))
             (%output-effect name mode 0 0 (millihertz refresh) scale-120
-                            x y (not (null position)) disabled mirror vrr)
+                            x y (not (null position)) disabled mirror vrr icc)
             (destructuring-bind (width height &optional hz) mode
               (%output-effect name :exact width height (millihertz (or hz refresh)) scale-120
-                              x y (not (null position)) disabled mirror vrr)))))))
+                              x y (not (null position)) disabled mirror vrr icc)))))))
 
 (defun focus (id &key (raise t))
   "Own keyboard focus. RAISE also contributes this window's stacking order."

@@ -148,6 +148,15 @@ behavior as window policy:
 - `:vrr t`, to request adaptive sync when the backend advertises support.
   Adaptive sync stays off on unsupported outputs; a supported backend's rejection rolls back
   the transaction. Hardware VRR operation remains unverified.
+- `:icc "/path/profile.icc"`, an RGB display profile with colorants and tone
+  curves, plus an optional `vcgt` calibration. sRGB content, taken as gamma 2.2,
+  is shown in the panel's colors through the CRTC's `DEGAMMA_LUT`, `CTM` and
+  `GAMMA_LUT`, so it costs no rendering and holds for direct scanout. The
+  degamma curve is linear below the gamma LUT's first entry, so grays round-trip
+  exactly through uniformly spaced LUTs. Gamma-control clients apply on top.
+  `:icc` in `:outputs` names the profile in use; when a profile cannot be read,
+  the backend has no such LUTs, or the driver refuses them, the output runs
+  without one and `:icc-error` says why.
 
 These fields belong to the same output declaration. A later owner replaces the
 whole declaration; removal restores the preceding owner or native baseline.
@@ -220,7 +229,7 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 33; the additive inspect fields keep control wire version 1.
+The native ABI is 34; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 

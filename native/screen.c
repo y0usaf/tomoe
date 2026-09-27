@@ -92,6 +92,11 @@ bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, s
     return true;
 }
 
+void screen_state_set_profile(struct screen_state *state, const struct profile *profile) {
+    state->committed |= SCREEN_PROFILE;
+    state->profile = profile;
+}
+
 void screen_transformed_resolution(struct screen *screen, int *width, int *height) {
     *width = screen->width;
     *height = screen->height;
@@ -268,6 +273,10 @@ const struct format_set *screen_primary_formats(struct screen *screen) {
 
 size_t screen_gamma_size(struct screen *screen) {
     return screen->impl->gamma_size ? screen->impl->gamma_size(screen) : 0;
+}
+
+size_t screen_degamma_size(struct screen *screen) {
+    return screen->impl->degamma_size ? screen->impl->degamma_size(screen) : 0;
 }
 
 void screen_send_frame(struct screen *screen) {

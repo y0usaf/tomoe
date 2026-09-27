@@ -336,7 +336,14 @@ struct screen_mode {
 enum {
     SCREEN_ENABLED = 1 << 0, SCREEN_MODE = 1 << 1, SCREEN_SCALE = 1 << 2,
     SCREEN_TRANSFORM = 1 << 3, SCREEN_VRR = 1 << 4, SCREEN_BUFFER = 1 << 5,
-    SCREEN_WAIT = 1 << 6, SCREEN_GAMMA = 1 << 7,
+    SCREEN_WAIT = 1 << 6, SCREEN_GAMMA = 1 << 7, SCREEN_PROFILE = 1 << 8,
+};
+struct profile {
+    int refs;
+    char *path;
+    uint16_t *degamma, *gamma;
+    size_t degamma_size, gamma_size;
+    uint64_t ctm[9];
 };
 enum screen_mode_type { SCREEN_MODE_FIXED, SCREEN_MODE_CUSTOM };
 enum screen_kind { SCREEN_DRM, SCREEN_NESTED, SCREEN_HEADLESS };
@@ -353,6 +360,7 @@ struct screen_state {
     uint64_t wait_point;
     uint16_t *gamma;
     size_t gamma_size;
+    const struct profile *profile;
 };
 struct screen_update {
     struct screen *output;
@@ -363,6 +371,7 @@ struct screen_impl {
     bool (*commit)(struct screen_update *updates, size_t count);
     const struct format_set *(*formats)(struct screen *screen);
     size_t (*gamma_size)(struct screen *screen);
+    size_t (*degamma_size)(struct screen *screen);
     bool (*cursor)(struct screen *screen, struct buffer *buffer, int hotspot_x, int hotspot_y);
     void (*move_cursor)(struct screen *screen, int x, int y);
     void (*destroy)(struct screen *screen);
@@ -421,6 +430,8 @@ struct output {
     bool positioned;
     char mirror[129];
     char pending_mirror[129];
+    struct profile *profile, *pending_profile;
+    const char *profile_error, *pending_profile_error;
     struct buffer *capture_buffer;
     struct buffer *presented[2];
     struct ring ring;
@@ -1114,6 +1125,11 @@ bool decoration_listen(struct tomoe *s);
 bool tearing_listen(struct tomoe *s);
 bool tearing_async(struct tomoe *s, struct surface *surface);
 void gamma_output_gone(struct output *o);
+const char *profile_load(const char *path, size_t degamma_size, size_t gamma_size,
+    struct profile **out);
+struct profile *profile_ref(struct profile *profile);
+void profile_unref(struct profile *profile);
+uint16_t *profile_ramps(const struct profile *profile, const uint16_t *ramps, size_t size);
 bool power_listen(struct tomoe *s);
 bool output_power(struct output *o, bool on);
 void power_output_gone(struct output *o);
@@ -1200,6 +1216,7 @@ void screen_state_set_buffer(struct screen_state *state, struct buffer *buffer);
 void screen_state_set_wait_timeline(struct screen_state *state,
     struct timeline *timeline, uint64_t point);
 bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, size_t size);
+void screen_state_set_profile(struct screen_state *state, const struct profile *profile);
 void screen_init(struct screen *screen, struct tomoe *s, const struct screen_impl *impl,
     enum screen_kind kind, const char *name);
 void screen_describe(struct screen *screen);
@@ -1216,6 +1233,7 @@ bool screens_test(struct screen_update *updates, size_t count);
 bool screens_commit(struct screen_update *updates, size_t count);
 const struct format_set *screen_primary_formats(struct screen *screen);
 size_t screen_gamma_size(struct screen *screen);
+size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_send_frame(struct screen *screen);
 void screen_send_present(struct screen *screen, struct screen_present *present);

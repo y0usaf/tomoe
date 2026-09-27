@@ -11,14 +11,15 @@
 #include "presentation-time-protocol.h"
 
 enum { PROP_CRTC_ID, PROP_MODE_ID, PROP_ACTIVE, PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE,
-    PROP_VRR_ENABLED, PROP_FB_ID, PROP_SRC_X, PROP_SRC_Y, PROP_SRC_W, PROP_SRC_H, PROP_CRTC_X,
-    PROP_CRTC_Y, PROP_CRTC_W, PROP_CRTC_H, PROP_IN_FENCE_FD, PROP_TYPE, PROP_IN_FORMATS,
-    PROP_VRR_CAPABLE, PROP_NON_DESKTOP, PROP_EDID, PROP_LINK_STATUS, PROP_COUNT };
+    PROP_DEGAMMA_LUT, PROP_DEGAMMA_LUT_SIZE, PROP_CTM, PROP_VRR_ENABLED, PROP_FB_ID, PROP_SRC_X,
+    PROP_SRC_Y, PROP_SRC_W, PROP_SRC_H, PROP_CRTC_X, PROP_CRTC_Y, PROP_CRTC_W, PROP_CRTC_H,
+    PROP_IN_FENCE_FD, PROP_TYPE, PROP_IN_FORMATS, PROP_VRR_CAPABLE, PROP_NON_DESKTOP, PROP_EDID,
+    PROP_LINK_STATUS, PROP_COUNT };
 
 static const char *const prop_names[PROP_COUNT] = { "CRTC_ID", "MODE_ID", "ACTIVE", "GAMMA_LUT",
-    "GAMMA_LUT_SIZE", "VRR_ENABLED", "FB_ID", "SRC_X", "SRC_Y", "SRC_W", "SRC_H", "CRTC_X",
-    "CRTC_Y", "CRTC_W", "CRTC_H", "IN_FENCE_FD", "type", "IN_FORMATS", "vrr_capable",
-    "non-desktop", "EDID", "link-status" };
+    "GAMMA_LUT_SIZE", "DEGAMMA_LUT", "DEGAMMA_LUT_SIZE", "CTM", "VRR_ENABLED", "FB_ID", "SRC_X",
+    "SRC_Y", "SRC_W", "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "IN_FENCE_FD", "type",
+    "IN_FORMATS", "vrr_capable", "non-desktop", "EDID", "link-status" };
 
 struct props {
     uint32_t id[PROP_COUNT];
@@ -37,10 +38,10 @@ struct crtc {
     struct plane *primary, *cursor;
     struct props props;
     struct connector *owner;
-    uint32_t mode_blob, gamma_blob;
+    uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob;
     drmModeModeInfo mode;
     bool active;
-    size_t gamma_size;
+    size_t gamma_size, degamma_size;
 };
 
 struct connector {
@@ -223,6 +224,9 @@ static bool read_resources(struct kms *kms) {
             crtc->gamma_size = info ? (size_t)info->gamma_size : 0;
             drmModeFreeCrtc(info);
         }
+        crtc->degamma_size = kms->atomic && crtc->props.id[PROP_GAMMA_LUT] &&
+            crtc->props.id[PROP_DEGAMMA_LUT] && crtc->props.id[PROP_CTM] ?
+            (size_t)crtc->props.value[PROP_DEGAMMA_LUT_SIZE] : 0;
     }
     for (size_t i = 0; ok && i < kms->plane_count; i++) {
         struct plane *plane = &kms->planes[i];
@@ -297,18 +301,29 @@ static bool enabled_after(const struct connector *c, const struct screen_state *
         ((state->committed & SCREEN_ENABLED) ? state->enabled : c->screen.enabled);
 }
 
-static uint32_t gamma_blob(struct kms *kms, const struct screen_state *state) {
-    if (!state->gamma) return 0;
-    struct drm_color_lut *lut = calloc(state->gamma_size, sizeof(*lut));
+static uint32_t lut_blob(struct kms *kms, const uint16_t *red, const uint16_t *green,
+        const uint16_t *blue, size_t size) {
+    struct drm_color_lut *lut = calloc(size, sizeof(*lut));
     if (!lut) return 0;
-    for (size_t i = 0; i < state->gamma_size; i++) {
-        lut[i].red = state->gamma[i];
-        lut[i].green = state->gamma[state->gamma_size + i];
-        lut[i].blue = state->gamma[state->gamma_size * 2 + i];
-    }
+    for (size_t i = 0; i < size; i++)
+        lut[i] = (struct drm_color_lut){ .red = red[i], .green = green[i], .blue = blue[i] };
     uint32_t blob = 0;
-    drmModeCreatePropertyBlob(kms->fd, lut, state->gamma_size * sizeof(*lut), &blob);
+    drmModeCreatePropertyBlob(kms->fd, lut, size * sizeof(*lut), &blob);
     free(lut);
+    return blob;
+}
+
+static uint32_t gamma_blob(struct kms *kms, const struct screen_state *state) {
+    size_t n = state->gamma_size;
+    return state->gamma ?
+        lut_blob(kms, state->gamma, state->gamma + n, state->gamma + n * 2, n) : 0;
+}
+
+static uint32_t ctm_blob(struct kms *kms, const struct profile *profile) {
+    struct drm_color_ctm ctm;
+    memcpy(ctm.matrix, profile->ctm, sizeof(ctm.matrix));
+    uint32_t blob = 0;
+    drmModeCreatePropertyBlob(kms->fd, &ctm, sizeof(ctm), &blob);
     return blob;
 }
 
@@ -334,9 +349,9 @@ static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc,
 struct plan {
     struct crtc *crtc;
     drmModeModeInfo mode;
-    uint32_t mode_blob, gamma_blob, fb;
+    uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob, fb;
     int fence;
-    bool enable, modeset, gamma;
+    bool enable, modeset, gamma, profile;
 };
 
 static int drm_event(int fd, uint32_t mask, void *data);
@@ -406,6 +421,19 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
             p->gamma_blob = gamma_blob(kms, state);
             add(req, p->crtc->id, &p->crtc->props, PROP_GAMMA_LUT, p->gamma_blob);
         }
+        p->profile = (state->committed & SCREEN_PROFILE) &&
+            (state->profile || p->crtc->degamma_blob || p->crtc->ctm_blob);
+        if (p->profile && state->profile) {
+            const struct profile *profile = state->profile;
+            p->degamma_blob = lut_blob(kms, profile->degamma, profile->degamma, profile->degamma,
+                profile->degamma_size);
+            p->ctm_blob = ctm_blob(kms, profile);
+            ok = ok && p->degamma_blob && p->ctm_blob;
+        }
+        if (p->profile) {
+            add(req, p->crtc->id, &p->crtc->props, PROP_DEGAMMA_LUT, p->degamma_blob);
+            add(req, p->crtc->id, &p->crtc->props, PROP_CTM, p->ctm_blob);
+        }
         if (p->crtc->cursor) {
             if (c->cursor_on)
                 plane_set(req, p->crtc->cursor, p->crtc->id, c->cursor_fb[c->cursor_front],
@@ -432,6 +460,8 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         if (!ok || test) {
             if (p->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->mode_blob);
             if (p->gamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->gamma_blob);
+            if (p->degamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->degamma_blob);
+            if (p->ctm_blob) drmModeDestroyPropertyBlob(kms->fd, p->ctm_blob);
             continue;
         }
         if (!p->enable) {
@@ -459,6 +489,12 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         if (p->gamma) {
             if (p->crtc->gamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->gamma_blob);
             p->crtc->gamma_blob = p->gamma_blob;
+        }
+        if (p->profile) {
+            if (p->crtc->degamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->degamma_blob);
+            if (p->crtc->ctm_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->ctm_blob);
+            p->crtc->degamma_blob = p->degamma_blob;
+            p->crtc->ctm_blob = p->ctm_blob;
         }
         if (state->committed & SCREEN_BUFFER) {
             buffer_unlock(c->queued);
@@ -571,6 +607,12 @@ static size_t connector_gamma_size(struct screen *screen) {
     return crtc ? crtc->gamma_size : 0;
 }
 
+static size_t connector_degamma_size(struct screen *screen) {
+    struct connector *c = wl_container_of(screen, c, screen);
+    struct crtc *crtc = pick_crtc(c);
+    return crtc ? crtc->degamma_size : 0;
+}
+
 static bool cursor_upload(struct connector *c, struct buffer *buffer) {
     struct kms *kms = c->kms;
     void *data;
@@ -656,6 +698,7 @@ static const struct screen_impl connector_impl = {
     .commit = connector_commit,
     .formats = connector_formats,
     .gamma_size = connector_gamma_size,
+    .degamma_size = connector_degamma_size,
     .cursor = connector_cursor,
     .move_cursor = connector_move_cursor,
     .destroy = connector_destroy,

@@ -16,6 +16,8 @@ struct output_facts {
     bool adaptive_sync;
     uint64_t request_id;
     bool request_pending;
+    const struct profile *profile;
+    const char *profile_error;
 };
 
 static int scale_120(double scale) {
@@ -68,6 +70,8 @@ static void output_state_facts(struct output *o, bool pending,
         .adaptive_sync = adaptive_sync,
         .request_id = o->request_id,
         .request_pending = !pending && o->request_pending,
+        .profile = pending ? o->pending_profile : o->profile,
+        .profile_error = pending ? o->pending_profile_error : o->profile_error,
     };
 }
 
@@ -213,12 +217,18 @@ static bool write_output_facts(FILE *out, struct output *o,
     if (fprintf(out, " :x %d :y %d :width %d :height %d"
             " :physical-width %d :physical-height %d :refresh-mhz %d"
             " :scale-120 %d :transform %d :adaptive-sync-supported %s"
-            " :adaptive-sync %s :modes (",
+            " :adaptive-sync %s :icc ",
             facts->x, facts->y, facts->width, facts->height,
             facts->physical_width, facts->physical_height, facts->refresh,
             facts->scale_120, facts->transform,
             facts->adaptive_sync_supported ? "t" : "nil",
             facts->adaptive_sync ? "t" : "nil") < 0) return false;
+    if (facts->profile) quote(out, facts->profile->path);
+    else if (fputs("nil", out) < 0) return false;
+    if (fputs(" :icc-error ", out) < 0) return false;
+    if (facts->profile_error) quote(out, facts->profile_error);
+    else if (fputs("nil", out) < 0) return false;
+    if (fputs(" :modes (", out) < 0) return false;
     struct screen_mode *mode;
     wl_list_for_each(mode, &o->screen->modes, link) {
         if (fprintf(out, "(:width %d :height %d :refresh-mhz %d :preferred %s)",
@@ -620,7 +630,7 @@ static void promote_output_request_snapshot(struct output *o,
 static void strip_disabled_state(struct screen_state *state) {
     if (!(state->committed & SCREEN_ENABLED) || state->enabled) return;
     state->committed &= ~(SCREEN_BUFFER |
-        SCREEN_MODE | SCREEN_VRR | SCREEN_WAIT | SCREEN_GAMMA);
+        SCREEN_MODE | SCREEN_VRR | SCREEN_WAIT | SCREEN_GAMMA | SCREEN_PROFILE);
 }
 
 static bool output_state_enabled(const struct screen_update *state) {
@@ -679,6 +689,9 @@ int tomoe_outputs_begin(struct tomoe *s) {
         o->pending_hold = false;
         o->pending_positioned = false;
         o->pending_mirror[0] = '\0';
+        profile_unref(o->pending_profile);
+        o->pending_profile = NULL;
+        o->pending_profile_error = NULL;
     }
     return 1;
 }
@@ -767,6 +780,20 @@ int tomoe_output_options(struct tomoe *s, const char *name, int enabled,
     return 1;
 }
 
+int tomoe_output_icc(struct tomoe *s, const char *name, const char *path) {
+    if (!s || !name || !path) return 0;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (strcmp(o->screen->name, name) != 0) continue;
+        profile_unref(o->pending_profile);
+        o->pending_profile = NULL;
+        o->pending_profile_error = path[0] ? profile_load(path, screen_degamma_size(o->screen),
+            screen_gamma_size(o->screen), &o->pending_profile) : NULL;
+        return 1;
+    }
+    return 1;
+}
+
 int tomoe_output_hold(struct tomoe *s, const char *name) {
     if (!s || !name || !name[0] || strnlen(name, 129) > 128) return 0;
     struct output *o;
@@ -785,6 +812,9 @@ int tomoe_output_hold(struct tomoe *s, const char *name) {
         o->pending_positioned = o->positioned;
         o->pending_x = o->x; o->pending_y = o->y;
         memcpy(o->pending_mirror, o->mirror, sizeof(o->pending_mirror));
+        profile_unref(o->pending_profile);
+        o->pending_profile = profile_ref(o->profile);
+        o->pending_profile_error = o->profile_error;
         return 1;
     }
     return 1;
@@ -917,6 +947,18 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
                 memcpy(o->mirror, o->pending_mirror, sizeof(o->mirror));
             else
                 o->mirror[0] = '\0';
+            struct profile *profile = o->profile;
+            o->profile = o->pending_profile;
+            o->pending_profile = NULL;
+            if (o->pending_profile_error && o->pending_profile_error != o->profile_error)
+                tomoe_log(LOG_ERROR, "tomoe: output %s cannot use its ICC profile: %s",
+                    o->screen->name, o->pending_profile_error);
+            o->profile_error = o->pending_profile_error;
+            if (profile != o->profile) {
+                o->gamma_dirty = true;
+                screen_schedule_frame(o->screen);
+            }
+            profile_unref(profile);
         }
         if (!place_outputs(s)) error = "Output layout allocation failed.";
     }
@@ -1084,6 +1126,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
+    profile_unref(o->profile);
+    profile_unref(o->pending_profile);
     power_output_gone(o);
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->request); detach(&o->destroy);

@@ -526,11 +526,11 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                          (getf window :visible) visible)))))
             (:output
              (destructuring-bind (name mode width height refresh scale x y positioned
-                                      &optional disabled mirror vrr) args
+                                      &optional disabled mirror vrr icc) args
                (setf outputs (delete name outputs :test #'equal :key (lambda (o) (getf o :name))))
                (push (list :name name :mode mode :width width :height height
                            :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
-                           :disabled disabled :mirror mirror :vrr vrr)
+                           :disabled disabled :mirror mirror :vrr vrr :icc icc)
                      outputs)))
             (:view
              (destructuring-bind (x y zoom) args
@@ -663,7 +663,7 @@ when it is not 1."
                    unless (find name outputs :test #'equal :key (lambda (o) (getf o :name)))
                      collect (list :name name :mode :preferred :width 0 :height 0 :refresh-mhz 0
                                    :scale-120 scale-120 :x 0 :y 0 :positioned nil
-                                   :disabled nil :mirror nil :vrr nil))))
+                                   :disabled nil :mirror nil :vrr nil :icc nil))))
           #'string< :key (lambda (o) (getf o :name)))))
 
 (defun changed-keys (before after)

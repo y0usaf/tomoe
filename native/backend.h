@@ -43,6 +43,7 @@ int tomoe_output(struct tomoe *server, const char *name, int mode,
 int tomoe_output_options(struct tomoe *server, const char *name, int enabled,
     const char *mirror, int adaptive_sync);
 int tomoe_output_hold(struct tomoe *server, const char *name);
+int tomoe_output_icc(struct tomoe *server, const char *name, const char *path);
 int tomoe_output_power(struct tomoe *server, const char *name, int mode);
 const char *tomoe_outputs_apply(struct tomoe *server);
 const char *tomoe_outputs_preview(struct tomoe *server);

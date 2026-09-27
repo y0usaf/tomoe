@@ -135,6 +135,8 @@
 (define-native ("tomoe_output_options" %output-options) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (enabled sb-alien:int)
   (mirror sb-alien:c-string) (adaptive-sync sb-alien:int))
+(define-native ("tomoe_output_icc" %output-icc) sb-alien:int
+  (server (* t)) (name sb-alien:c-string) (path sb-alien:c-string))
 (define-native ("tomoe_outputs_apply" %outputs-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_preview" %outputs-preview) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_revision" %outputs-revision) sb-alien:unsigned-long-long
@@ -229,7 +231,9 @@
           (unless (= 1 (%output-options backend (getf output :name)
                                        (if (getf output :disabled) 0 1)
                                        (or (getf output :mirror) "") (if (getf output :vrr) 1 0)))
-            (error "Cannot stage output options for ~A." (getf output :name)))))))
+            (error "Cannot stage output options for ~A." (getf output :name)))
+          (unless (= 1 (%output-icc backend (getf output :name) (or (getf output :icc) "")))
+            (error "Cannot stage the ICC profile for ~A." (getf output :name)))))))
 
 (defun pending-native-outputs-p (backend)
   (and backend (= 1 (%outputs-pending backend))))
