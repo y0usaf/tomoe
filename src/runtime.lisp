@@ -16,9 +16,6 @@
 (defun default-audio-state ()
   (list :volume 1.0d0 :muted nil))
 
-(defun default-sysinfo-state ()
-  (list :cpu-percent 0 :memory-percent 0))
-
 (defvar *materialized* nil
   "Within a transaction: the mounts, invocation count and context of its last materialization.")
 (defvar *invocations* 0
@@ -30,8 +27,8 @@
   (services (list :notifications (list :available nil :notifications nil)
                   :mpris (default-mpris-state) :battery (default-battery-state)
                   :network (default-network-state) :tray (default-tray-state)
-                  :audio (default-audio-state) :sysinfo (default-sysinfo-state)))
-  notification-producer mpris-producer battery-producer network-producer tray-producer
+                  :audio (default-audio-state)))
+  system (system-due 0) notification-producer mpris-producer battery-producer network-producer tray-producer
   (running t) last-error (generation 0) (watch t) source-stamps pending-context output-recovery-failures
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
   watches (watch-turn 0)
@@ -629,6 +626,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
               :window-geometry (resolved-window-geometry runtime layout view output-facts)
               :rules (resolved-rule-properties runtime mounts) :data data
               :services (copy-data (runtime-services runtime))
+              :system (copy-data (runtime-system runtime))
               :outputs output-facts :connectors connector-facts
               :output-config output-config :native-output-config native-output-config
               :output-failures output-failures
@@ -1017,6 +1015,9 @@ accepted registry. Never enter this helper inside a candidate transaction."
 (defun dispatch-event (runtime event)
   (let ((changed nil) (force nil))
     (ecase (getf event :type)
+      (:system
+       (setf (runtime-system runtime) (getf event :system))
+       (push :system changed))
       (:services
        (let ((services (copy-data (getf event :services))))
          (unless (equal services (runtime-services runtime))
@@ -1152,7 +1153,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
       (:screencast (push :screencast changed))
       (:grab (push :grab changed)))
     (setf (runtime-pending-context runtime)
-          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services))
+          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
                  (runtime-pending-context runtime)))
     (when (or changed (runtime-pending-context runtime))
       (handler-case (transact runtime (runtime-mounts runtime) event changed force)

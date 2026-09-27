@@ -136,7 +136,7 @@
           buildPhase = ''
             runHook preBuild
             mkdir build
-            for module in executions watches notifications mpris backlight battery network tray; do
+            for module in executions watches notifications mpris backlight battery network tray system; do
               $CC -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) \
                 -c support/$module.c -o build/$module.o
             done

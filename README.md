@@ -420,9 +420,19 @@ reads. Available keys:
 - `:services`: session producer facts, independent of mounted effects.
   `service-state` returns a copied named service snapshot; notifications,
   MPRIS, battery, network and tray expose the records described below.
-  As in Rust, `:audio` supplies static `(:volume 1.0d0 :muted nil)` defaults and
-  `:sysinfo` supplies static `(:cpu-percent 0 :memory-percent 0)` defaults;
-  these records have no live hardware producer or control actions.
+  As in Rust, `:audio` supplies static `(:volume 1.0d0 :muted nil)` defaults;
+  that record has no live producer or control actions.
+- `:system`: CPU, memory and GPU readings, sampled once a second only while a
+  mounted extension reads this key: `(:cpu-total J :cpu-idle J
+  :cpu-temperature C :memory-total KB :memory-available KB :gpus (...))`.
+  CPU counters are /proc/stat's cumulative jiffies (idle includes iowait), so
+  usage comes from the difference of two samples. The CPU temperature is the
+  first k10temp, coretemp or zenpower hwmon's Tctl, Package id 0 or Tdie
+  label, else its temp1. Each GPU is `(:name S :busy % :vram-used MiB
+  :vram-total MiB :temperature C)`: NVIDIA's first GPU through NVML, loaded
+  from the driver's `libnvidia-ml.so.1` at first use, then every DRM card
+  with `gpu_busy_percent` in sysfs. Temperatures are whole degrees Celsius
+  or `nil`.
 - `:outputs`: active displays with `:name`, physical screen `:x`, `:y`, `:width`, `:height`, plus
   `:physical-width`, `:physical-height`, `:refresh-mhz`, `:scale-120`, and the
   Wayland `:transform` enum. Divide `:scale-120` by 120 for the scale.

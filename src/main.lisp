@@ -212,12 +212,12 @@ only after it changes again."
                (configure runtime sources))
            (loop while (and (runtime-running runtime) (not *stop-requested*)) do
              (let ((status (%step native (if (plusp (%event-count native)) 0
-                                            (tray-wait-milliseconds
+                                            (system-wait-milliseconds runtime (tray-wait-milliseconds
                                              runtime (network-wait-milliseconds
                                                       runtime (battery-wait-milliseconds
                                                                runtime (mpris-wait-milliseconds
                                                                         runtime (notification-wait-milliseconds
-                                                                                 runtime (timer-wait-milliseconds runtime 8))))))))))
+                                                                                 runtime (timer-wait-milliseconds runtime 8)))))))))))
                (when (< status 0) (error "Native event loop failed."))
                (when (> status 0) (return)))
              (drain-backend-events runtime)
@@ -227,6 +227,7 @@ only after it changes again."
              (service-battery runtime)
              (service-network runtime)
              (service-tray runtime)
+             (service-system runtime)
              (serve-control runtime control)
              (serve-json-control runtime json-server)
              (service-timers runtime)
