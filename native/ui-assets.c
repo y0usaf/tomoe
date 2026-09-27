@@ -7,8 +7,8 @@
 #include <fcntl.h>
 #include <jpeglib.h>
 #include <jerror.h>
-#include <librsvg/rsvg.h>
 #include <pthread.h>
+#include <resvg.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <sys/eventfd.h>
@@ -52,7 +52,7 @@ struct ui_asset {
     uint32_t width, height;
     unsigned char *pixels;
     cairo_surface_t *raster;
-    RsvgHandle *svg;
+    resvg_render_tree *svg;
     double svg_width, svg_height;
     struct backdrop_job *job;
     struct texture *texture;
@@ -278,18 +278,13 @@ done:
 static enum asset_status decode_svg(struct ui_asset *asset,
         const struct asset_data *data, uint64_t available) {
     if (data->length > available) return ASSET_HARD;
-    GError *error = NULL;
-    asset->svg = rsvg_handle_new_from_data(data->bytes, data->length, &error);
-    if (error) g_error_free(error);
-    if (!asset->svg) return ASSET_MISSING;
-    rsvg_handle_set_dpi(asset->svg, 96.0);
-    if (!rsvg_handle_get_intrinsic_size_in_pixels(asset->svg, &asset->svg_width, &asset->svg_height)) {
-        gboolean has_viewbox;
-        RsvgRectangle viewbox;
-        rsvg_handle_get_intrinsic_dimensions(asset->svg, NULL, NULL, NULL, NULL, &has_viewbox, &viewbox);
-        asset->svg_width = has_viewbox ? viewbox.width : 300.0;
-        asset->svg_height = has_viewbox ? viewbox.height : 150.0;
-    }
+    resvg_options *options = resvg_options_create();
+    int32_t error = resvg_parse_tree_from_data((const char *)data->bytes, data->length, options, &asset->svg);
+    resvg_options_destroy(options);
+    if (error != RESVG_OK) return ASSET_MISSING;
+    resvg_size size = resvg_get_image_size(asset->svg);
+    asset->svg_width = size.width;
+    asset->svg_height = size.height;
     if (!isfinite(asset->svg_width) || !isfinite(asset->svg_height) ||
             asset->svg_width <= 0 || asset->svg_height <= 0) return ASSET_MISSING;
     if (asset->svg_width > UINT32_MAX || asset->svg_height > UINT32_MAX) return ASSET_HARD;
@@ -324,7 +319,7 @@ static void free_content(struct ui_asset *asset) {
     if (asset->texture) texture_destroy(asset->texture);
     render_shader_destroy(asset->shader);
     if (asset->raster) cairo_surface_destroy(asset->raster);
-    if (asset->svg) g_object_unref(asset->svg);
+    if (asset->svg) resvg_tree_destroy(asset->svg);
     free(asset->pixels);
     asset->texture = NULL; asset->shader = NULL;
     asset->raster = NULL; asset->svg = NULL; asset->pixels = NULL;
@@ -677,15 +672,23 @@ void tomoe_ui_assets_discard(struct tomoe *s) {
     }
 }
 
-static bool render_svg(struct ui_asset *asset, cairo_t *cairo, double width, double height) {
-    cairo_save(cairo);
-    cairo_scale(cairo, width / asset->svg_width, height / asset->svg_height);
-    RsvgRectangle viewport = {0, 0, asset->svg_width, asset->svg_height};
-    GError *error = NULL;
-    bool result = rsvg_handle_render_document(asset->svg, cairo, &viewport, &error);
-    if (error) g_error_free(error);
-    cairo_restore(cairo);
-    return result && cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+static cairo_surface_t *render_svg(const struct ui_asset *asset, int width, int height) {
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS ||
+            cairo_image_surface_get_stride(surface) != width * 4) {
+        cairo_surface_destroy(surface);
+        return NULL;
+    }
+    unsigned char *pixels = cairo_image_surface_get_data(surface);
+    resvg_render(asset->svg, (resvg_transform){ width / asset->svg_width, 0, 0,
+        height / asset->svg_height, 0, 0 }, width, height, (char *)pixels);
+    for (int i = 0; i < width * height * 4; i += 4) {
+        uint32_t pixel = (uint32_t)pixels[i + 3] << 24 | (uint32_t)pixels[i] << 16 |
+            (uint32_t)pixels[i + 1] << 8 | pixels[i + 2];
+        memcpy(pixels + i, &pixel, sizeof(pixel));
+    }
+    cairo_surface_mark_dirty(surface);
+    return surface;
 }
 
 bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
@@ -697,27 +700,25 @@ bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
     uint64_t bytes;
     if (!raster_bytes((uint32_t)ceil(width), (uint32_t)ceil(height), ASSET_DIMENSION_LIMIT,
             ASSET_RASTER_LIMIT, &bytes)) return false;
-    cairo_surface_t *source = asset->raster;
-    cairo_surface_t *temporary = NULL;
+    int w = (int)ceil(width), h = (int)ceil(height);
+    cairo_surface_t *temporary = asset->svg ? render_svg(asset, w, h) : NULL;
+    if (asset->svg && !temporary) return false;
     if (tint) {
-        int w = (int)ceil(width), h = (int)ceil(height);
-        temporary = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-        if (!temporary || cairo_surface_status(temporary) != CAIRO_STATUS_SUCCESS) {
-            if (temporary) cairo_surface_destroy(temporary);
-            return false;
-        }
-        cairo_t *scratch = cairo_create(temporary);
-        bool ok;
-        if (asset->svg) ok = render_svg(asset, scratch, w, h);
-        else {
+        if (!temporary) {
+            temporary = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+            if (cairo_surface_status(temporary) != CAIRO_STATUS_SUCCESS) {
+                cairo_surface_destroy(temporary);
+                return false;
+            }
+            cairo_t *scratch = cairo_create(temporary);
             cairo_scale(scratch, (double)w / asset->width, (double)h / asset->height);
             cairo_set_source_surface(scratch, asset->raster, 0, 0);
             cairo_pattern_set_filter(cairo_get_source(scratch), CAIRO_FILTER_BILINEAR);
             cairo_paint(scratch);
-            ok = cairo_status(scratch) == CAIRO_STATUS_SUCCESS;
+            bool ok = cairo_status(scratch) == CAIRO_STATUS_SUCCESS;
+            cairo_destroy(scratch);
+            if (!ok) { cairo_surface_destroy(temporary); return false; }
         }
-        cairo_destroy(scratch);
-        if (!ok) { cairo_surface_destroy(temporary); return false; }
         cairo_surface_flush(temporary);
         unsigned char *pixels = cairo_image_surface_get_data(temporary);
         int stride = cairo_image_surface_get_stride(temporary);
@@ -732,24 +733,21 @@ bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
             memcpy(position, &pixel, sizeof(pixel));
         }
         cairo_surface_mark_dirty(temporary);
-        source = temporary;
     }
+    cairo_surface_t *source = temporary ? temporary : asset->raster;
     cairo_save(cairo);
     cairo_translate(cairo, x, y);
     cairo_rectangle(cairo, 0, 0, width, height);
     cairo_clip(cairo);
-    bool result = true;
-    if (source) {
-        cairo_scale(cairo, width / cairo_image_surface_get_width(source),
-            height / cairo_image_surface_get_height(source));
-        cairo_set_source_surface(cairo, source, 0, 0);
-        cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_BILINEAR);
-        cairo_pattern_set_extend(cairo_get_source(cairo), CAIRO_EXTEND_PAD);
-        cairo_paint(cairo);
-    } else result = render_svg(asset, cairo, width, height);
+    cairo_scale(cairo, width / cairo_image_surface_get_width(source),
+        height / cairo_image_surface_get_height(source));
+    cairo_set_source_surface(cairo, source, 0, 0);
+    cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_BILINEAR);
+    cairo_pattern_set_extend(cairo_get_source(cairo), CAIRO_EXTEND_PAD);
+    cairo_paint(cairo);
     cairo_restore(cairo);
     if (temporary) cairo_surface_destroy(temporary);
-    return result && cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
 }
 
 uint64_t ui_assets_count(struct tomoe *s) { return s && s->ui_assets ? s->ui_assets->count : 0; }
