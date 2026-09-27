@@ -1,7 +1,8 @@
 (in-package #:tomoe)
 
+(sb-alien:define-alien-routine ("tomoe_nvml_count" %nvml-count) sb-alien:unsigned)
 (sb-alien:define-alien-routine ("tomoe_nvml_sample" %nvml-sample) sb-alien:int
-  (busy sb-alien:unsigned :out) (used sb-alien:unsigned :out)
+  (index sb-alien:unsigned) (busy sb-alien:unsigned :out) (used sb-alien:unsigned :out)
   (total sb-alien:unsigned :out) (celsius sb-alien:unsigned :out))
 
 (defun %system-lines (path)
@@ -30,12 +31,14 @@
           (when milli (return (floor milli 1000))))))))
 
 (defun %gpu-samples ()
-  "NVIDIA's GPU through NVML when its driver is loaded, then each DRM card reporting busy time."
+  "Each NVIDIA GPU through NVML when its driver is loaded, then each DRM card reporting busy time."
   (append
    (when (probe-file "/proc/driver/nvidia/version")
-     (multiple-value-bind (ok busy used total celsius) (%nvml-sample)
-       (when (= ok 1)
-         (list (list :name "nvidia" :busy busy :vram-used used :vram-total total :temperature celsius)))))
+     (loop for index below (%nvml-count)
+           for (ok busy used total celsius) = (multiple-value-list (%nvml-sample index))
+           when (= ok 1)
+             collect (list :name (format nil "nvidia~D" index) :busy busy :vram-used used
+                           :vram-total total :temperature celsius)))
    (loop for card in (%system-paths "/sys/class/drm/card*/")
          for name = (car (last (pathname-directory card)))
          for device = (concatenate 'string card "device/")

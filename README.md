@@ -429,9 +429,9 @@ reads. Available keys:
   usage comes from the difference of two samples. The CPU temperature is the
   first k10temp, coretemp or zenpower hwmon's Tctl, Package id 0 or Tdie
   label, else its temp1. Each GPU is `(:name S :busy % :vram-used MiB
-  :vram-total MiB :temperature C)`: NVIDIA's first GPU through NVML, loaded
-  from the driver's `libnvidia-ml.so.1` at first use, then every DRM card
-  with `gpu_busy_percent` in sysfs. Temperatures are whole degrees Celsius
+  :vram-total MiB :temperature C)`: every NVIDIA GPU through NVML, named
+  `nvidia0` onwards and loaded from the driver's `libnvidia-ml.so.1` at first
+  use, then every DRM card with `gpu_busy_percent` in sysfs. Temperatures are whole degrees Celsius
   or `nil`.
 - `:outputs`: active displays with `:name`, physical screen `:x`, `:y`, `:width`, `:height`, plus
   `:physical-width`, `:physical-height`, `:refresh-mhz`, `:scale-120`, and the
