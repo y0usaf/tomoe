@@ -1,6 +1,6 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer #:media-control #:adjust-brightness
+  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer #:media-control #:adjust-brightness #:clipboard-copy
            #:window-rule #:rules-for #:raise-window #:show-window #:hide-window
            #:publish-state #:state-value #:service-state #:window-geometry
            #:ui #:shell-surface
@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 34)
+(defconstant +native-abi-version+ 35)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity))
 (defvar *definitions* :not-loading)
@@ -638,6 +638,14 @@ The session owns the child, and native launches receive an activation token."
 (defun screenshot (&optional mode)
   (check-type mode (member nil :screen))
   (%command :screenshot (list (eq mode :screen))))
+(defun clipboard-copy (path type &key delete)
+  "Own the clipboard with the bytes of the absolute PATH offered as the MIME TYPE.
+:DELETE removes PATH once it has been read."
+  (check-type path (and string (satisfies %absolute-path-p)))
+  (check-type type string)
+  (%command :clipboard (list path type (and delete t))))
+(defun %absolute-path-p (path)
+  (and (plusp (length path)) (char= (char path 0) #\/)))
 (defun media-control (action)
   "Ask the selected MPRIS player to :PLAY-PAUSE, go to the :NEXT or :PREVIOUS track."
   (check-type action (member :play-pause :next :previous))

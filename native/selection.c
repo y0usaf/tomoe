@@ -1,5 +1,7 @@
 #include "internal.h"
+#include <fcntl.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "ext-data-control-v1-protocol.h"
 #include "primary-selection-unstable-v1-protocol.h"
@@ -18,6 +20,15 @@ struct source {
     int32_t actions;
     uint32_t action;
     bool accepted, finished, used;
+    struct tomoe *server;
+    unsigned char *data;
+    size_t length;
+};
+
+struct transfer {
+    struct wl_event_source *event;
+    unsigned char *data;
+    size_t length, offset;
 };
 
 struct offer {
@@ -80,12 +91,45 @@ static void source_free(struct source *src, bool cancel) {
     char **mime;
     wl_array_for_each(mime, &src->mime_types) free(*mime);
     wl_array_release(&src->mime_types);
+    free(src->data);
     free(src);
 }
 
+static int transfer_write(int fd, uint32_t mask, void *data) {
+    struct transfer *t = data;
+    while (t->offset < t->length && !(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) {
+        ssize_t written = write(fd, t->data + t->offset, t->length - t->offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written < 0 && errno == EAGAIN) return 0;
+        if (written <= 0) break;
+        t->offset += (size_t)written;
+    }
+    wl_event_source_remove(t->event);
+    close(fd);
+    free(t->data);
+    free(t);
+    return 0;
+}
+
 static void source_send(struct source *src, const char *mime, int fd) {
-    if (src->kind == SOURCE_DATA) wl_data_source_send_send(src->resource, mime, fd);
-    else zwp_primary_selection_source_v1_send_send(src->resource, mime, fd);
+    if (src->resource) {
+        if (src->kind == SOURCE_DATA) wl_data_source_send_send(src->resource, mime, fd);
+        else zwp_primary_selection_source_v1_send_send(src->resource, mime, fd);
+        close(fd);
+        return;
+    }
+    char **offered = src->mime_types.data;
+    struct transfer *t = src->data && !strcmp(mime, *offered) ? calloc(1, sizeof(*t)) : NULL;
+    if (t) t->data = malloc(src->length);
+    if (t && t->data && fcntl(fd, F_SETFL, O_NONBLOCK) == 0) {
+        memcpy(t->data, src->data, src->length);
+        t->length = src->length;
+        t->event = wl_event_loop_add_fd(wl_display_get_event_loop(src->server->display), fd,
+            WL_EVENT_WRITABLE, transfer_write, t);
+        if (t->event) return;
+    }
+    if (t) free(t->data);
+    free(t);
     close(fd);
 }
 
@@ -196,7 +240,7 @@ static void offer_source_destroyed(struct wl_listener *listener, void *data) {
 static void offer_receive(struct wl_client *client, struct wl_resource *resource, const char *mime,
         int32_t fd) {
     struct offer *o = wl_resource_get_user_data(resource);
-    if (o && o->source && o->source->resource) source_send(o->source, mime, fd);
+    if (o && o->source) source_send(o->source, mime, fd);
     else close(fd);
 }
 
@@ -841,6 +885,44 @@ static void bind_wlr_control(struct wl_client *client, void *data, uint32_t vers
 
 static void bind_ext_control(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
     bind_control(client, &ext_family, data, version, id);
+}
+
+int tomoe_clipboard_copy(struct tomoe *s, const char *path, const char *mime, int remove) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    struct stat info;
+    if (fd < 0) return 0;
+    struct source *src = NULL;
+    unsigned char *data = NULL;
+    size_t length = 0;
+    if (fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0 &&
+            info.st_size <= 64 * 1024 * 1024 && (data = malloc((size_t)info.st_size)))
+        while (length < (size_t)info.st_size) {
+            ssize_t count = read(fd, data + length, (size_t)info.st_size - length);
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) break;
+            length += (size_t)count;
+        }
+    close(fd);
+    char **offered = NULL;
+    if (data && length == (size_t)info.st_size && (src = calloc(1, sizeof(*src)))) {
+        wl_array_init(&src->mime_types);
+        wl_signal_init(&src->destroy);
+        offered = wl_array_add(&src->mime_types, sizeof(*offered));
+    }
+    if (!offered || !(*offered = strdup(mime))) {
+        if (offered) src->mime_types.size = 0;
+        if (src) source_free(src, false);
+        free(data);
+        return 0;
+    }
+    src->kind = SOURCE_DATA;
+    src->actions = -1;
+    src->server = s;
+    src->data = data;
+    src->length = length;
+    if (remove) unlink(path);
+    set_selection(s->seat, src, false);
+    return 1;
 }
 
 bool selection_listen(struct tomoe *s) {

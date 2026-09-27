@@ -361,6 +361,9 @@ The public API is in `src/api.lisp`:
 (spawn '("./worker" "--foreground") :cwd "bin" :env '(("MODE" . "desktop")))
 (close-window id)
 (output-power :toggle)             ; :on, :off or :toggle; optional connector name
+(clipboard-copy path "image/png" :delete t) ; own the clipboard with a file's bytes
+(media-control :play-pause)        ; :next, :previous
+(adjust-brightness -5)             ; percent of the backlight's range
 (quit)
 (reload)
 ```
@@ -826,9 +829,10 @@ inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
 remain in that group. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
-process-group pidfd signals; the native backend is ABI 33.
+process-group pidfd signals; the native backend is ABI 35.
 
-`spawn`, `launch`, `close-window`, `output-power`, `quit`, and `reload` are one-shot commands. Only key,
+`spawn`, `launch`, `close-window`, `output-power`, `clipboard-copy`,
+`media-control`, `adjust-brightness`, `quit`, and `reload` are one-shot commands. Only key,
 button, UI click, timer, watch, exec, request, IPC, and explicit control command dispatch may return them.
 They execute after effect validation and commit. They are not undoable. User-launched
 applications belong to the session, survive extension unmount, and use the same

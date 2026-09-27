@@ -22,6 +22,7 @@ void tomoe_focus(struct tomoe *server, uint32_t id);
 uint32_t tomoe_keyboard_focus(struct tomoe *server);
 void tomoe_close(struct tomoe *server, uint32_t id);
 void tomoe_screenshot(struct tomoe *server, int interactive);
+int tomoe_clipboard_copy(struct tomoe *server, const char *path, const char *mime, int remove);
 const char *tomoe_window_identifier(struct tomoe *server, uint32_t id);
 int tomoe_grab(struct tomoe *server, uint32_t id, int mode);
 uint32_t tomoe_grab_id(struct tomoe *server);

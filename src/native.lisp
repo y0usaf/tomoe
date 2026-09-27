@@ -45,6 +45,8 @@
   (server (* t)) (id sb-alien:unsigned-int))
 (define-native ("tomoe_window_identifier" %window-identifier) sb-alien:c-string
   (server (* t)) (id sb-alien:unsigned-int))
+(define-native ("tomoe_clipboard_copy" %clipboard-copy) sb-alien:int
+  (server (* t)) (path sb-alien:c-string) (mime sb-alien:c-string) (remove sb-alien:int))
 (define-native ("tomoe_screenshot" %screenshot) sb-alien:void
   (server (* t)) (interactive sb-alien:int))
 (define-native ("tomoe_keysym" %keysym) sb-alien:unsigned-int (name sb-alien:c-string))

@@ -462,8 +462,7 @@
   (declare (ignore snapshot))
   (values state nil
           (when (eq (getf event :type) :screenshot)
-            (list (spawn (list "sh" "-c" "wl-copy -t image/png < \"$1\"; rm -f \"$1\""
-                               "sh" (getf event :path)))))))
+            (list (clipboard-copy (getf event :path) "image/png" :delete t)))))
 
 (define-extension "notification-popups" (:reads (:services :outputs) :state nil)
     (snapshot state event)

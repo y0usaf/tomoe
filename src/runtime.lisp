@@ -138,6 +138,7 @@
       (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
       (:screencast (destructuring-bind (token answer value) args (screencast-answer token answer value)))
       (:media (destructuring-bind (action) args (media-control action)))
+      (:clipboard (destructuring-bind (path type delete) args (clipboard-copy path type :delete delete)))
       (:brightness (destructuring-bind (percent) args (adjust-brightness percent)))
       (:power (destructuring-bind (mode name) args (output-power mode name)))
       (:quit (unless (null args) (error "QUIT takes no arguments.")) (quit))
@@ -973,6 +974,9 @@ into one reused buffer, so watching allocates nothing per file."
     (:screencast (apply #'answer-screencast runtime (command-arguments command)))
     (:screenshot (%screenshot (runtime-backend runtime) (if (first (command-arguments command)) 0 1)))
     (:media (control-mpris runtime (first (command-arguments command))))
+    (:clipboard (destructuring-bind (path type delete) (command-arguments command)
+                  (unless (= 1 (%clipboard-copy (runtime-backend runtime) path type (if delete 1 0)))
+                    (error "Cannot copy ~A to the clipboard." path))))
     (:brightness (adjust-backlight (first (command-arguments command))))
     (:power (destructuring-bind (mode name) (command-arguments command)
               (%output-power (runtime-backend runtime) name
