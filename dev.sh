@@ -7,7 +7,7 @@ export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"
 SBCL_HOME="$(dirname "$(readlink -f "$(command -v sbcl)")")/../lib/sbcl"
 export SBCL_HOME
 
-for module in executions watches notifications mpris battery network tray; do
+for module in executions watches notifications mpris backlight battery network tray; do
   if [ ! -f "build/$module.o" ] || [ "support/$module.c" -nt "build/$module.o" ] || [ "support/$module.h" -nt "build/$module.o" ]; then
     cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
   fi

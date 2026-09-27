@@ -1106,6 +1106,16 @@ lists allow 32 entries. Sysfs attributes are limited to 256 bytes and scans
 to 256 directory entries per attempt, with one retry if the selected directory
 changes during a sample. Malformed and nonfinite UPower values leave facts intact.
 
+## Backlight
+
+`(adjust-brightness PERCENT)` is a command that steps the first backlight under
+`/sys/class/backlight`, in name order, by PERCENT of its maximum (negative
+steps down), clamped to the device's range. It asks logind's
+`Session.SetBrightness` on the system bus to write the value, so the
+compositor needs no write access to sysfs. A missing backlight or a refused
+call is reported as the last error. `TOMOE_BACKLIGHT_ROOT` selects an alternate
+backlight class directory.
+
 ## Network
 
 Declare `:reads (:services)` and call `(service-state snapshot :network)` for
