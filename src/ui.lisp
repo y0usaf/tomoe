@@ -190,6 +190,15 @@
   "Own a retained shell surface and its click commands in this extension."
   (%effect :surface (canonical-shell-surface (list* :name name :tree tree options))))
 
+(define-effect :surface
+  :canonical (%effect :surface (canonical-shell-surface args))
+  :key (list :surface (getf args :name))
+  :reduce (push (append (list :owner (spec-name (mounted-spec mounted))
+                              :source-id (spec-id (mounted-spec mounted))
+                              :directory (spec-directory (mounted-spec mounted)))
+                        (copy-data args))
+                (materialization-surfaces m)))
+
 (defun %ui-round (number)
   (if (minusp number) (- (floor (+ (- number) 0.5d0))) (floor (+ number 0.5d0))))
 

@@ -119,6 +119,36 @@ unlike CONTEXT, this value is stable while candidate dependencies settle."
 (defstruct (command (:constructor %command (kind arguments)))
   (kind nil :read-only t) (arguments nil :read-only t))
 
+(defvar *effect-definitions* (make-hash-table :test #'eq))
+
+(defstruct (effect-definition (:constructor %make-effect-definition (canonical key reduce phase)))
+  canonical key reduce phase)
+
+(defmacro define-effect (kind &key canonical key reduce (phase 1))
+  "Define effect KIND once. CANONICAL rebuilds the effect from its copied ARGS,
+and EFFECT, through the public constructor; KEY names the slot it owns,
+by default KIND and the first argument; REDUCE folds ARGS from MOUNTED into
+the materialization M. Reducers run in PHASE order, then mount order."
+  `(setf (gethash ,kind *effect-definitions*)
+         (%make-effect-definition
+          (lambda (args effect) (declare (ignorable args effect)) ,canonical)
+          ,(when key `(lambda (args) (declare (ignorable args)) ,key))
+          ,(when reduce `(lambda (m args mounted) (declare (ignorable m args mounted)) ,reduce))
+          ,phase)))
+
+(defun %effect-definition (kind)
+  (or (gethash kind *effect-definitions*) (error "Unknown effect kind: ~S" kind)))
+
+(defstruct materialization
+  layout stacking layers focused data surfaces keyboard-grab outputs bindings
+  (binding-order 0) keyboard settings view mod-bit)
+
+(defun %materialized-window (m id)
+  (find id (materialization-layout m) :key (lambda (window) (getf window :id))))
+
+(defun %materialized-raise (m id)
+  (setf (materialization-stacking m) (append (remove id (materialization-stacking m)) (list id))))
+
 (defun ipc-name (name)
   (check-type name string)
   (unless (<= 1 (length name) 256) (error "IPC name must contain 1 through 256 characters."))
@@ -144,11 +174,23 @@ Return IPC-REPLY among commands to answer; the default result is JSON null."
   (check-type command keyword)
   (%effect :method (list (ipc-name method) :command (string-downcase command))))
 
+(define-effect :method
+  :canonical (destructuring-bind (name mode value) args
+               (ecase mode
+                 (:state (serve-state name value))
+                 (:command
+                  (check-type value string)
+                  (unless (<= 1 (length value) 256) (error "Invalid IPC command."))
+                  (%effect :method (list (ipc-name name) :command value))))))
+
 (defun announce (event value)
   "Own an event snapshot. Publish changes only after successful commit.
 Replacing the winning source announces again; withdrawal restores the preceding
 owner or announces JSON null when no owner remains."
   (%effect :announce (list (ipc-name event) (ipc-value value))))
+
+(define-effect :announce
+  :canonical (destructuring-bind (name value) args (announce name value)))
 
 (defun broadcast (event value)
   "Send one JSON event after successful publication. Subscription filters apply."
@@ -164,6 +206,14 @@ NIL. Omission or unmount exposes the preceding owner. Values are bounded data."
   (check-type name keyword)
   (unless (<= 1 (length (symbol-name name)) 80) (error "Invalid state name."))
   (%effect :data (list name (copy-data value))))
+
+(define-effect :data
+  :canonical (destructuring-bind (name value) args (publish-state name value))
+  :reduce (destructuring-bind (name value) args
+            (let ((entry (assoc name (materialization-data m))))
+              (if entry (setf (cdr entry) (copy-data value))
+                  (setf (materialization-data m)
+                        (nconc (materialization-data m) (list (cons name (copy-data value)))))))))
 
 (defun state-value (snapshot name &optional default)
   "Read a named published value. Declare :DATA as a context dependency."
@@ -208,6 +258,11 @@ reloads invoke APPLY with :MOUNT; losing the match removes the instance."
                          (remove-duplicates reads) (copy-data state))
              match apply)))
 
+(define-effect :rule
+  :canonical (destructuring-bind (name app-id title properties reads state) args
+               (window-rule name :app-id app-id :title title :properties properties :reads reads :state state
+                            :match (effect-predicate effect) :apply (effect-application effect))))
+
 (defun rules-for (snapshot window)
   "Return the copied property alist for WINDOW (an id or window snapshot).
 Declare :RULES in the calling extension's context dependencies."
@@ -243,6 +298,11 @@ An unchanged effect retains its schedule. Omit it to cancel."
   (check-type milliseconds (integer 0 2147483647))
   (%effect :timer (list name milliseconds t)))
 
+(define-effect :timer
+  :canonical (destructuring-bind (name milliseconds repeat) args
+               (check-type repeat boolean)
+               (funcall (if repeat #'interval #'once) name milliseconds)))
+
 (defun watch-file (name path &key (content-limit 65536))
   "Own file-change notifications delivered privately as :WATCH events.
 PATH is relative to the declaring source. CONTENT-LIMIT bounds UTF-8 bytes.
@@ -253,6 +313,10 @@ An unchanged declaration retains its watch. Omit it to cancel."
     (error "Invalid file watch path."))
   (check-type content-limit (integer 1 65536))
   (%effect :watch (list name (copy-seq path) content-limit)))
+
+(define-effect :watch
+  :canonical (destructuring-bind (name path limit) args
+               (watch-file name path :content-limit limit)))
 
 (defun exec-async (name command &key (timeout 30000) (output-limit 65536))
   "Own one shell command and receive a private :EXEC completion event.
@@ -265,6 +329,10 @@ TIMEOUT is milliseconds; OUTPUT-LIMIT bounds combined stdout/stderr bytes."
   (check-type timeout (integer 1 2147483647))
   (check-type output-limit (integer 1 65536))
   (%effect :exec (list name (copy-seq command) timeout output-limit)))
+
+(define-effect :exec
+  :canonical (destructuring-bind (name command timeout limit) args
+               (exec-async name command :timeout timeout :output-limit limit)))
 
 (defun process-options (command cwd env)
   "Validate and canonicalize a shell string or argv, directory and environment."
@@ -320,6 +388,15 @@ RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART."
       (multiple-value-bind (launch directory environment) (process-options command cwd env)
         (%effect :process (list :service name launch directory environment nil restart reload))))))
 
+(define-effect :process
+  :canonical (destructuring-bind (kind name command cwd env run restart reload) args
+               (ecase kind
+                 (:once (unless (and (null restart) (null reload)) (error "Invalid once process policies."))
+                        (run-once name command :cwd cwd :env env :run run))
+                 (:service (unless (null run) (error "Invalid service run policy."))
+                           (service name command :cwd cwd :env env :restart restart :reload reload))))
+  :key (list :process (second args)))
+
 (defun place (id x y width height &optional (visible t))
   (check-type id (integer 1 4294967295))
   (check-type x (integer -1048576 1048576))
@@ -328,6 +405,18 @@ RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART."
   (check-type height (integer 1 16384))
   (check-type visible boolean)
   (%effect :place (list id x y width height visible)))
+
+(define-effect :place
+  :canonical (destructuring-bind (id x y width height visible) args
+               (place id x y width height visible))
+  :reduce (destructuring-bind (id x y width height visible) args
+            (let ((window (%materialized-window m id)))
+              (when window
+                (when (and visible (not (getf window :visible)))
+                  (%materialized-raise m id))
+                (setf (getf window :x) x (getf window :y) y
+                      (getf window :width) width (getf window :height) height
+                      (getf window :visible) visible)))))
 
 (defun set-view (x y &optional (zoom 1))
   "Own the camera over the physical window canvas.
@@ -338,6 +427,12 @@ and clamped to the native camera's range."
   (let* ((zoom (%double-float zoom))
          (zoom (max (/ 1d0 16d0) (min 16d0 zoom))))
     (%effect :view (list x y zoom))))
+
+(define-effect :view
+  :canonical (destructuring-bind (x y zoom) args (set-view x y zoom))
+  :key '(:view)
+  :reduce (destructuring-bind (x y zoom) args
+            (setf (materialization-view m) (list :x x :y y :zoom zoom))))
 
 (defun %output-effect (name mode width height refresh scale x y positioned
                        &optional disabled mirror vrr icc)
@@ -387,11 +482,30 @@ Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS.
               (%output-effect name :exact width height (millihertz (or hz refresh)) scale-120
                               x y (not (null position)) disabled mirror vrr icc)))))))
 
+(define-effect :output
+  :canonical (apply #'%output-effect args)
+  :reduce (destructuring-bind (name mode width height refresh scale x y positioned
+                                    &optional disabled mirror vrr icc) args
+            (setf (materialization-outputs m)
+                  (delete name (materialization-outputs m) :test #'equal :key (lambda (o) (getf o :name))))
+            (push (list :name name :mode mode :width width :height height
+                        :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
+                        :disabled disabled :mirror mirror :vrr vrr :icc icc)
+                  (materialization-outputs m))))
+
 (defun focus (id &key (raise t))
   "Own keyboard focus. RAISE also contributes this window's stacking order."
   (check-type id (or null (integer 1 4294967295)))
   (check-type raise boolean)
   (%effect :focus (list id raise)))
+
+(define-effect :focus
+  :canonical (destructuring-bind (id &optional (raise t)) args (focus id :raise raise))
+  :key '(:focus)
+  :reduce (progn
+            (setf (materialization-focused m) (first args))
+            (when (and (second args) (member (materialization-focused m) (materialization-stacking m)))
+              (%materialized-raise m (materialization-focused m)))))
 
 (defun window-properties (id &rest properties &key radius tearing blur border)
   "Own rendering overrides for one window. Omitted keys fall back to the
@@ -404,10 +518,26 @@ BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
                                      '((:radius (:integer 0 4096)) (:tearing :boolean) (:blur :boolean)
                                        (:border (:group (:focused :color) (:unfocused :color))))))))
 
+(define-effect :window-properties
+  :canonical (destructuring-bind (id properties) args
+               (apply #'window-properties id properties))
+  :reduce (destructuring-bind (id properties) args
+            (let ((window (%materialized-window m id)))
+              (when window
+                (setf (getf window :properties)
+                      (%settings-merge (copy-list (getf window :properties)) properties
+                                       '((:border (:group)))))))))
+
 (defun raise-window (id)
   "Own a raise in the managed window stack without changing focus or geometry."
   (check-type id (integer 1 4294967295))
   (%effect :raise (list id)))
+
+(define-effect :raise
+  :canonical (destructuring-bind (id) args (raise-window id))
+  :reduce (let ((window (%materialized-window m (first args))))
+            (when (and window (getf window :visible))
+              (%materialized-raise m (first args)))))
 
 (defun show-window (id)
   "Own visibility without replacing another owner's geometry."
@@ -418,6 +548,17 @@ BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
   "Own invisibility while retaining the window and its geometry contributions."
   (check-type id (integer 1 4294967295))
   (%effect :visible (list id nil)))
+
+(define-effect :visible
+  :canonical (destructuring-bind (id visible) args
+               (check-type visible boolean)
+               (funcall (if visible #'show-window #'hide-window) id))
+  :reduce (destructuring-bind (id visible) args
+            (let ((window (%materialized-window m id)))
+              (when window
+                (when (and visible (not (getf window :visible)))
+                  (%materialized-raise m id))
+                (setf (getf window :visible) visible)))))
 
 (defun configure-keyboard (&key (rules "") (model "") (layout "") (variant "") options
                                 (repeat-rate 25) (repeat-delay 600))
@@ -436,6 +577,16 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
         (error "Keyboard names must contain at most 1024 characters and no NUL.")))
     (%effect :keyboard (list (copy-seq rules) (copy-seq model) (copy-seq layout) (copy-seq variant)
                              (when options (copy-seq options)) repeat-rate repeat-delay))))
+
+(define-effect :keyboard
+  :canonical (destructuring-bind (rules model layout variant options rate delay) args
+               (configure-keyboard :rules rules :model model :layout layout :variant variant :options options
+                                   :repeat-rate rate :repeat-delay delay))
+  :key '(:keyboard)
+  :reduce (destructuring-bind (rules model layout variant options rate delay) args
+            (setf (materialization-keyboard m)
+                  (list :rules rules :model model :layout layout :variant variant :options options
+                        :repeat-rate rate :repeat-delay delay))))
 
 (defparameter +settings+
   '((:scale (:real 1/4 8) 1)
@@ -539,6 +690,12 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 merge field by field. Omission restores the preceding owner or the default."
   (%effect :settings (%settings-plist plist +settings+)))
 
+(define-effect :settings
+  :canonical (apply #'settings args)
+  :key '(:settings)
+  :reduce (setf (materialization-settings m) (%settings-merge (materialization-settings m) args +settings+))
+  :phase 0)
+
 (defun %settings-defaults (table)
   (loop for (key type default) in table
         append (list key (cond ((and (consp type) (eq (first type) :group)) (%settings-defaults (rest type)))
@@ -570,14 +727,38 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (check-type keyboard (member nil :none :exclusive :on-demand))
   (check-type visible boolean)
   (%effect :layer (list id layer exclusive-zone keyboard visible)))
+
+(define-effect :layer
+  :canonical (destructuring-bind (id layer exclusive-zone keyboard visible) args
+               (layer id :layer layer :exclusive-zone exclusive-zone
+                      :keyboard keyboard :visible visible))
+  :reduce (destructuring-bind (id layer exclusive-zone keyboard visible) args
+            (let ((record (find id (materialization-layers m) :key (lambda (l) (getf l :id)))))
+              (when record
+                (when layer (setf (getf record :layer) layer))
+                (when exclusive-zone (setf (getf record :exclusive-zone) exclusive-zone))
+                (when keyboard (setf (getf record :keyboard) keyboard))
+                (setf (getf record :visible) (and visible t))))))
 (defun fullscreen (id flag)
   (check-type id (integer 1 4294967295))
   (check-type flag boolean)
   (%effect :fullscreen (list id flag)))
+
+(define-effect :fullscreen
+  :canonical (destructuring-bind (id flag) args (fullscreen id flag))
+  :reduce (destructuring-bind (id flag) args
+            (let ((window (%materialized-window m id)))
+              (when window (setf (getf window :fullscreen) (and flag t))))))
 (defun maximize (id flag)
   (check-type id (integer 1 4294967295))
   (check-type flag boolean)
   (%effect :maximize (list id flag)))
+
+(define-effect :maximize
+  :canonical (destructuring-bind (id flag) args (maximize id flag))
+  :reduce (destructuring-bind (id flag) args
+            (let ((window (%materialized-window m id)))
+              (when window (setf (getf window :maximize) (and flag t))))))
 (defun grab (id mode &key buffer-generation)
   "Own a pointer grab, optionally restricted to one window buffer lifetime.
 :POINTER takes a NIL id and routes world-space motion as :GRAB events."
@@ -586,6 +767,11 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (check-type id (integer 0 4294967295))
   (check-type buffer-generation (or null (integer 1 *)))
   (%effect :grab (if buffer-generation (list id mode buffer-generation) (list id mode))))
+
+(define-effect :grab
+  :canonical (destructuring-bind (id mode &optional buffer-generation) args
+               (grab id mode :buffer-generation buffer-generation))
+  :key '(:grab))
 (defun bind-key (modifiers keysym command &key release description)
   "Own a shortcut, optionally with a command for its physical key release.
 Modifiers are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the :MOD setting.
@@ -604,6 +790,36 @@ or replacing the binding/source cancels that callback and still swallows key-up.
     (%effect :bind (list mask (copy-seq keysym) (string-downcase command)
                          (when release (string-downcase release))
                          (when description (copy-seq description))))))
+
+(define-effect :bind
+  :canonical (destructuring-bind (mask keysym command &optional release description) args
+               (check-type mask (integer 0 205))
+               (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
+               (check-type keysym string)
+               (check-type command string)
+               (check-type release (or null string))
+               (when (or (find #\Null keysym) (find #\Null command)
+                         (zerop (length command)) (zerop (%keysym keysym))
+                         (and release (or (zerop (length release)) (find #\Null release))))
+                 (error "Invalid key binding: ~S" args))
+               (check-type description (or null string))
+               (%effect :bind (list mask keysym command release description)))
+  :key (list :bind (first args) (%keysym (second args)))
+  :reduce (destructuring-bind (mask keysym command release &optional description) args
+            (let ((code (%keysym keysym)) (declared mask)
+                  (mask (if (logtest 128 mask)
+                            (logior (logandc2 mask 128) (materialization-mod-bit m))
+                            mask)))
+              (setf (materialization-bindings m)
+                    (delete-if (lambda (b) (and (= mask (getf b :modifiers))
+                                                (= code (getf b :code))))
+                               (materialization-bindings m)))
+              (push (list :modifiers mask :code code :keysym keysym
+                          :owner (spec-name (mounted-spec mounted)) :command command :release release
+                          :source-id (spec-id (mounted-spec mounted))
+                          :description description :declared declared
+                          :order (incf (materialization-binding-order m)))
+                    (materialization-bindings m)))))
 (defun bind-button (modifiers button command &key release)
   "Own a pointer button shortcut. BUTTON is :LEFT, :RIGHT, :MIDDLE, :SIDE, :EXTRA,
 :FORWARD, :BACK or a kernel code. The press never reaches clients; the event
@@ -621,6 +837,16 @@ modifiers, and no key reaches a client. OTHERWISE, a keyword, fires for other
 non-modifier keys with :KEYSYM. The latest owner wins."
   (check-type otherwise (or null keyword))
   (%effect :keyboard-grab (list (when otherwise (string-downcase otherwise)))))
+
+(define-effect :keyboard-grab
+  :canonical (destructuring-bind (otherwise) args
+               (check-type otherwise (or null string))
+               (%effect :keyboard-grab (list otherwise)))
+  :key '(:keyboard-grab)
+  :reduce (setf (materialization-keyboard-grab m)
+                (list :owner (spec-name (mounted-spec mounted))
+                      :source-id (spec-id (mounted-spec mounted))
+                      :otherwise (first args))))
 (defun launch (&rest argv)
   "Launch literal argv once after acceptance; the session owns the child."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)

@@ -45,77 +45,8 @@
 
 (defun canonical-effect (effect)
   (check-type effect effect)
-  (let ((args (copy-data (effect-arguments effect))))
-    (ecase (effect-kind effect)
-      (:method
-       (destructuring-bind (name mode value) args
-         (ecase mode
-           (:state (serve-state name value))
-           (:command
-            (check-type value string)
-            (unless (<= 1 (length value) 256) (error "Invalid IPC command."))
-            (%effect :method (list (ipc-name name) :command value))))))
-      (:announce (destructuring-bind (name value) args (announce name value)))
-      (:data (destructuring-bind (name value) args (publish-state name value)))
-      (:settings (apply #'settings args))
-      (:keyboard-grab (destructuring-bind (otherwise) args
-                        (check-type otherwise (or null string))
-                        (%effect :keyboard-grab (list otherwise))))
-      (:window-properties (destructuring-bind (id properties) args
-                            (apply #'window-properties id properties)))
-      (:surface (%effect :surface (canonical-shell-surface args)))
-      (:rule
-       (destructuring-bind (name app-id title properties reads state) args
-         (window-rule name :app-id app-id :title title :properties properties :reads reads :state state
-                      :match (effect-predicate effect) :apply (effect-application effect))))
-      (:process (destructuring-bind (kind name command cwd env run restart reload) args
-                  (ecase kind
-                    (:once (unless (and (null restart) (null reload)) (error "Invalid once process policies."))
-                           (run-once name command :cwd cwd :env env :run run))
-                    (:service (unless (null run) (error "Invalid service run policy."))
-                              (service name command :cwd cwd :env env :restart restart :reload reload)))))
-      (:exec (destructuring-bind (name command timeout limit) args
-               (exec-async name command :timeout timeout :output-limit limit)))
-      (:timer (destructuring-bind (name milliseconds repeat) args
-                (check-type repeat boolean)
-                (funcall (if repeat #'interval #'once) name milliseconds)))
-      (:watch (destructuring-bind (name path limit) args
-                (watch-file name path :content-limit limit)))
-      (:place (destructuring-bind (id x y width height visible) args
-                (place id x y width height visible)))
-      (:output (apply #'%output-effect args))
-      (:keyboard
-       (destructuring-bind (rules model layout variant options rate delay) args
-         (configure-keyboard :rules rules :model model :layout layout :variant variant :options options
-                             :repeat-rate rate :repeat-delay delay)))
-      (:view (destructuring-bind (x y zoom) args
-               (set-view x y zoom)))
-      (:focus (destructuring-bind (id &optional (raise t)) args (focus id :raise raise)))
-      (:raise (destructuring-bind (id) args (raise-window id)))
-      (:visible (destructuring-bind (id visible) args
-                  (check-type visible boolean)
-                  (funcall (if visible #'show-window #'hide-window) id)))
-      (:layer
-       (destructuring-bind (id layer exclusive-zone keyboard visible) args
-         (layer id :layer layer :exclusive-zone exclusive-zone
-                :keyboard keyboard :visible visible)))
-      (:fullscreen (destructuring-bind (id flag) args (fullscreen id flag)))
-      (:maximize (destructuring-bind (id flag) args (maximize id flag)))
-      (:grab (destructuring-bind (id mode &optional buffer-generation) args
-               (grab id mode :buffer-generation buffer-generation)))
-      (:bind
-       (destructuring-bind (mask keysym command &optional release description) args
-         (check-type mask (integer 0 205))
-         (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
-         (check-type keysym string)
-         (check-type command string)
-         (check-type release (or null string))
-         (when (or (find #\Null keysym) (find #\Null command)
-                   (zerop (length command)) (zerop (%keysym keysym))
-                   (and release (or (zerop (length release)) (find #\Null release))))
-           (error "Invalid key binding: ~S" args))
-         (check-type description (or null string))
-         (%effect :bind (list mask keysym command release description)))))))
+  (funcall (effect-definition-canonical (%effect-definition (effect-kind effect)))
+           (copy-data (effect-arguments effect)) effect))
 
 (defun canonical-command (command &optional directory)
   (check-type command command)
@@ -142,32 +73,10 @@
       (:reload (unless (null args) (error "RELOAD takes no arguments.")) (reload)))))
 
 (defun effect-key (effect)
-  (ecase (effect-kind effect)
-    (:method (list :method (first (effect-arguments effect))))
-    (:announce (list :announce (first (effect-arguments effect))))
-    (:data (list :data (first (effect-arguments effect))))
-    (:rule (list :rule (first (effect-arguments effect))))
-    (:process (list :process (second (effect-arguments effect))))
-    (:exec (list :exec (first (effect-arguments effect))))
-    (:timer (list :timer (first (effect-arguments effect))))
-    (:watch (list :watch (first (effect-arguments effect))))
-    (:place (list :place (first (effect-arguments effect))))
-    (:output (list :output (first (effect-arguments effect))))
-    (:keyboard '(:keyboard))
-    (:settings '(:settings))
-    (:keyboard-grab '(:keyboard-grab))
-    (:window-properties (list :window-properties (first (effect-arguments effect))))
-    (:view '(:view))
-    (:focus '(:focus))
-    (:raise (list :raise (first (effect-arguments effect))))
-    (:visible (list :visible (first (effect-arguments effect))))
-    (:layer (list :layer (first (effect-arguments effect))))
-    (:fullscreen (list :fullscreen (first (effect-arguments effect))))
-    (:maximize (list :maximize (first (effect-arguments effect))))
-    (:grab '(:grab))
-    (:surface (list :surface (getf (effect-arguments effect) :name)))
-    (:bind (list :bind (first (effect-arguments effect))
-                 (%keysym (second (effect-arguments effect)))))))
+  (let ((key (effect-definition-key (%effect-definition (effect-kind effect)))))
+    (if key
+        (funcall key (effect-arguments effect))
+        (list (effect-kind effect) (first (effect-arguments effect))))))
 
 (defun invoke-extension (runtime mounted context event)
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted)))
@@ -479,175 +388,84 @@ Unmount removes a contribution, exposing the preceding owner or these defaults.
 The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
   (setf mounts (prune-rule-mounts runtime mounts))
   (refresh-output-facts runtime)
-  (let ((layout (loop for window in (runtime-windows runtime)
-                      collect (list :id (getf window :id) :x 0 :y 0
-                                    :width (max 1 (getf window :width))
-                                    :height (max 1 (getf window :height)) :visible t
-                                    :fullscreen nil :maximize nil :properties nil)))
-        (stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime)))
-        (layers (copy-data (runtime-layers runtime)))
-        (focused nil)
-        (data nil)
-        (surfaces nil)
-        (keyboard-grab nil)
-        (outputs nil)
-        (bindings nil)
-        (binding-order 0)
-        (keyboard (default-keyboard-config))
-        (settings (%settings-defaults +settings+)))
-    (dolist (mounted mounts)
-      (dolist (effect (mounted-effects mounted))
-        (when (eq (effect-kind effect) :settings)
-          (setf settings (%settings-merge settings (effect-arguments effect) +settings+)))))
-    (let ((mod-bit (ecase (getf settings :mod) (:shift 1) (:control 4) (:alt 8) (:super 64)))
-        (view (list :x 0 :y 0 :zoom 1d0)))
-    (dolist (mounted mounts)
-      (dolist (effect (mounted-effects mounted))
-        (let ((args (effect-arguments effect)))
-          (ecase (effect-kind effect)
-            (:surface
-             (push (append (list :owner (spec-name (mounted-spec mounted))
-                                 :source-id (spec-id (mounted-spec mounted))
-                                 :directory (spec-directory (mounted-spec mounted)))
-                           (copy-data args)) surfaces))
-            (:data
-             (destructuring-bind (name value) args
-               (let ((entry (assoc name data)))
-                 (if entry (setf (cdr entry) (copy-data value))
-                     (setf data (nconc data (list (cons name (copy-data value)))))))))
-            (:place
-             (destructuring-bind (id x y width height visible) args
-               (let ((window (find id layout :key (lambda (w) (getf w :id)))))
-                 (when window
-                   (when (and visible (not (getf window :visible)))
-                     (setf stacking (append (remove id stacking) (list id))))
-                   (setf (getf window :x) x (getf window :y) y
-                         (getf window :width) width (getf window :height) height
-                         (getf window :visible) visible)))))
-            (:output
-             (destructuring-bind (name mode width height refresh scale x y positioned
-                                      &optional disabled mirror vrr icc) args
-               (setf outputs (delete name outputs :test #'equal :key (lambda (o) (getf o :name))))
-               (push (list :name name :mode mode :width width :height height
-                           :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
-                           :disabled disabled :mirror mirror :vrr vrr :icc icc)
-                     outputs)))
-            (:view
-             (destructuring-bind (x y zoom) args
-               (setf view (list :x x :y y :zoom zoom))))
-            (:settings nil)
-            (:keyboard-grab
-             (setf keyboard-grab (list :owner (spec-name (mounted-spec mounted))
-                                       :source-id (spec-id (mounted-spec mounted))
-                                       :otherwise (first args))))
-            (:window-properties
-             (destructuring-bind (id properties) args
-               (let ((window (find id layout :key (lambda (w) (getf w :id)))))
-                 (when window
-                   (setf (getf window :properties)
-                         (%settings-merge (copy-list (getf window :properties)) properties
-                                          '((:border (:group)))))))))
-            (:keyboard
-             (destructuring-bind (rules model layout variant options rate delay) args
-               (setf keyboard (list :rules rules :model model :layout layout :variant variant :options options
-                                    :repeat-rate rate :repeat-delay delay))))
-            (:focus
-             (setf focused (first args))
-             (when (and (second args) (member focused stacking))
-               (setf stacking (append (remove focused stacking) (list focused)))))
-            (:raise
-             (let* ((id (first args))
-                    (window (find id layout :key (lambda (window) (getf window :id)))))
-               (when (and window (getf window :visible))
-                 (setf stacking (append (remove id stacking) (list id))))))
-            (:visible
-             (destructuring-bind (id visible) args
-               (let ((window (find id layout :key (lambda (window) (getf window :id)))))
-                 (when window
-                   (when (and visible (not (getf window :visible)))
-                     (setf stacking (append (remove id stacking) (list id))))
-                   (setf (getf window :visible) visible)))))
-            (:layer
-             (destructuring-bind (id layer exclusive-zone keyboard visible) args
-               (let ((record (find id layers :key (lambda (l) (getf l :id)))))
-                 (when record
-                   (when layer (setf (getf record :layer) layer))
-                   (when exclusive-zone (setf (getf record :exclusive-zone) exclusive-zone))
-                   (when keyboard (setf (getf record :keyboard) keyboard))
-                   (setf (getf record :visible) (and visible t))))))
-            (:fullscreen
-             (destructuring-bind (id flag) args
-               (let ((window (find id layout :key (lambda (w) (getf w :id)))))
-                 (when window (setf (getf window :fullscreen) (and flag t))))))
-            (:maximize
-             (destructuring-bind (id flag) args
-               (let ((window (find id layout :key (lambda (w) (getf w :id)))))
-                 (when window (setf (getf window :maximize) (and flag t))))))
-            ((:grab :timer :watch :exec :process :rule :method :announce) nil)
-            (:bind
-             (destructuring-bind (mask keysym command release &optional description) args
-               (let ((code (%keysym keysym)) (declared mask)
-                     (mask (if (logtest 128 mask) (logior (logandc2 mask 128) mod-bit) mask)))
-                 (setf bindings
-                       (delete-if (lambda (b) (and (= mask (getf b :modifiers))
-                                                   (= code (getf b :code)))) bindings))
-                 (push (list :modifiers mask :code code :keysym keysym
-                             :owner (spec-name (mounted-spec mounted)) :command command :release release
-                             :source-id (spec-id (mounted-spec mounted))
-                             :description description :declared declared
-                             :order (incf binding-order))
-                       bindings))))))))
-    (let* ((live-connectors (or (runtime-connectors runtime)
-                                (output-connectors (list :outputs (runtime-outputs runtime)))))
-           (output-config (default-output-config outputs live-connectors (getf settings :scale)))
-           (connected
-             (connected-output-config
-              (list :connectors live-connectors :output-config output-config)))
-           (output-resolution
-             (multiple-value-list (resolve-output-preview runtime connected live-connectors)))
-           (output-preview (first output-resolution))
-           (native-output-config (second output-resolution))
-           (output-failures (third output-resolution))
-           (output-facts (getf output-preview :outputs))
-           (connector-facts (output-connectors output-preview)))
-      (%quantize-layout runtime layout view output-facts)
-      (multiple-value-bind (resolved-layers workareas)
-          (if (runtime-backend runtime)
-              (preview-native-layers (runtime-backend runtime) output-facts layers
-                                     (resolved-layer-overrides mounts))
-              (values layers (full-workareas output-facts)))
-        (unless (find focused layout :key (lambda (w) (getf w :id)))
-          (setf focused nil))
-        (multiple-value-bind (surface-plans shell-workareas)
-            (resolve-shell-surfaces (nreverse surfaces) output-facts workareas
-                                    (when (runtime-backend runtime)
-                                      (native-ui-asset-loader (runtime-backend runtime))))
-        (list :windows (runtime-windows runtime)
-              :window-geometry (resolved-window-geometry runtime layout view output-facts)
-              :rules (resolved-rule-properties runtime mounts) :data data
-              :services (copy-data (runtime-services runtime))
-              :system (copy-data (runtime-system runtime))
-              :outputs output-facts :connectors connector-facts
-              :output-config output-config :native-output-config native-output-config
-              :output-failures output-failures
-              :output-errors (loop for failure in output-failures collect
-                               (list :name (getf failure :name) :message (getf failure :message)))
-              :workareas shell-workareas
-              :surface-plans (copy-data surface-plans)
-              :surfaces (loop for plan in surface-plans
-                              collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer)
-                                            append (list key (copy-data (getf plan key)))))
-              :view view :layout layout
-              :stacking (remove-if-not
-                         (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
-                         stacking)
-              :layers resolved-layers :focus focused :keyboard keyboard :settings settings
-              :config-error (copy-data (runtime-config-error runtime))
-              :keyboard-grab keyboard-grab
-              :bindings (sort bindings
-                              (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
-                                                (and (= (getf a :modifiers) (getf b :modifiers))
-                                                     (< (getf a :code) (getf b :code)))))))))))))
+  (let ((m (make-materialization
+            :layout (loop for window in (runtime-windows runtime)
+                          collect (list :id (getf window :id) :x 0 :y 0
+                                        :width (max 1 (getf window :width))
+                                        :height (max 1 (getf window :height)) :visible t
+                                        :fullscreen nil :maximize nil :properties nil))
+            :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime))
+            :layers (copy-data (runtime-layers runtime))
+            :keyboard (default-keyboard-config)
+            :settings (%settings-defaults +settings+)
+            :view (list :x 0 :y 0 :zoom 1d0))))
+    (dolist (phase '(0 1))
+      (when (= phase 1)
+        (setf (materialization-mod-bit m)
+              (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64))))
+      (dolist (mounted mounts)
+        (dolist (effect (mounted-effects mounted))
+          (let ((definition (%effect-definition (effect-kind effect))))
+            (when (and (effect-definition-reduce definition) (= phase (effect-definition-phase definition)))
+              (funcall (effect-definition-reduce definition) m (effect-arguments effect) mounted))))))
+    (with-accessors ((layout materialization-layout) (stacking materialization-stacking)
+                     (layers materialization-layers) (focused materialization-focused)
+                     (data materialization-data) (surfaces materialization-surfaces)
+                     (keyboard-grab materialization-keyboard-grab) (outputs materialization-outputs)
+                     (bindings materialization-bindings) (keyboard materialization-keyboard)
+                     (settings materialization-settings) (view materialization-view))
+        m
+      (let* ((live-connectors (or (runtime-connectors runtime)
+                                  (output-connectors (list :outputs (runtime-outputs runtime)))))
+             (output-config (default-output-config outputs live-connectors (getf settings :scale)))
+             (connected
+               (connected-output-config
+                (list :connectors live-connectors :output-config output-config)))
+             (output-resolution
+               (multiple-value-list (resolve-output-preview runtime connected live-connectors)))
+             (output-preview (first output-resolution))
+             (native-output-config (second output-resolution))
+             (output-failures (third output-resolution))
+             (output-facts (getf output-preview :outputs))
+             (connector-facts (output-connectors output-preview)))
+        (%quantize-layout runtime layout view output-facts)
+        (multiple-value-bind (resolved-layers workareas)
+            (if (runtime-backend runtime)
+                (preview-native-layers (runtime-backend runtime) output-facts layers
+                                       (resolved-layer-overrides mounts))
+                (values layers (full-workareas output-facts)))
+          (unless (find focused layout :key (lambda (w) (getf w :id)))
+            (setf focused nil))
+          (multiple-value-bind (surface-plans shell-workareas)
+              (resolve-shell-surfaces (nreverse surfaces) output-facts workareas
+                                      (when (runtime-backend runtime)
+                                        (native-ui-asset-loader (runtime-backend runtime))))
+          (list :windows (runtime-windows runtime)
+                :window-geometry (resolved-window-geometry runtime layout view output-facts)
+                :rules (resolved-rule-properties runtime mounts) :data data
+                :services (copy-data (runtime-services runtime))
+                :system (copy-data (runtime-system runtime))
+                :outputs output-facts :connectors connector-facts
+                :output-config output-config :native-output-config native-output-config
+                :output-failures output-failures
+                :output-errors (loop for failure in output-failures collect
+                                 (list :name (getf failure :name) :message (getf failure :message)))
+                :workareas shell-workareas
+                :surface-plans (copy-data surface-plans)
+                :surfaces (loop for plan in surface-plans
+                                collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer)
+                                              append (list key (copy-data (getf plan key)))))
+                :view view :layout layout
+                :stacking (remove-if-not
+                           (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
+                           stacking)
+                :layers resolved-layers :focus focused :keyboard keyboard :settings settings
+                :config-error (copy-data (runtime-config-error runtime))
+                :keyboard-grab keyboard-grab
+                :bindings (sort bindings
+                                (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
+                                                  (and (= (getf a :modifiers) (getf b :modifiers))
+                                                       (< (getf a :code) (getf b :code)))))))))))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE
