@@ -37,7 +37,7 @@
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
-  config-error)
+  config-error source-packages)
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
@@ -879,54 +879,81 @@ into one reused buffer, so watching allocates nothing per file."
     (unless (probe-file pathname) (error "No extension source at ~A." path))
     (namestring pathname)))
 
-(defun load-specs (path)
+(defun undefined-references ()
+  (loop for entry in sb-c::*undefined-warnings*
+        for name = (sb-c::undefined-warning-name entry)
+        when (case (sb-c::undefined-warning-kind entry)
+               (:function (not (fboundp name)))
+               (:variable (not (boundp name))))
+          collect name))
+
+(defun load-specs (runtime path)
   (let* ((*source* path)
          (directory (directory-namestring (truename path)))
-         (*definitions* nil) (*package* (find-package :tomoe-user)) (*read-eval* nil)
+         (package (make-package (string (gensym "TOMOE-USER/")) :use '(:cl :tomoe)))
+         (*definitions* nil) (*package* package) (*read-eval* nil)
          (*read-default-float-format* 'double-float))
+    (push package (runtime-source-packages runtime))
+    (sb-ext:add-package-local-nickname "TOMOE-USER" package package)
     (sb-ext:with-timeout 1
       (with-open-file (stream path)
         (when (> (file-length stream) 1048576) (error "Extension file exceeds 1 MiB."))
-        (load stream :verbose nil :print nil)))
+        (with-compilation-unit (:override t)
+          (load stream :verbose nil :print nil)
+          (let ((undefined (undefined-references)))
+            (when undefined
+              (error "~A refers to undefined ~{~(~A~)~^, ~}." path undefined))))))
     (loop for spec in (nreverse *definitions*)
-          do (setf (spec-directory spec) directory)
+          do (setf (spec-directory spec) directory (spec-package spec) package)
           collect spec)))
 
+(defun sweep-source-packages (runtime)
+  (let ((live (mapcar (lambda (mounted) (spec-package (mounted-spec mounted)))
+                      (runtime-mounts runtime))))
+    (setf (runtime-source-packages runtime)
+          (loop for package in (runtime-source-packages runtime)
+                if (member package live) collect package
+                  else do (delete-package package)))))
+
 (defun configure (runtime sources &optional changed-source)
-  (let* ((specs (loop for path in sources
-                      when (or (null changed-source) (equal path changed-source)) append (load-specs path)))
-         (retained (when changed-source
-                     (remove changed-source (root-mounts (runtime-mounts runtime)) :test #'equal
-                             :key (lambda (m) (spec-source (mounted-spec m))))))
-         (names (make-hash-table :test #'equal)))
-    (dolist (spec (append (mapcar #'mounted-spec retained) specs))
-      (when (gethash (spec-name spec) names) (error "Duplicate extension: ~A" (spec-name spec)))
-      (setf (gethash (spec-name spec) names) t))
-    (let ((mounts
-            (loop for spec in specs
-                  for previous = (find (spec-name spec) (runtime-mounts runtime)
-                                       :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))
-                  collect (if (and previous (equal (spec-source spec) (spec-source (mounted-spec previous))))
-                              (let ((copy (copy-mounted previous))) (setf (mounted-spec copy) spec) copy)
-                              (make-mounted :spec spec :state (copy-data (spec-initial spec)))))))
-      (transact runtime
-                (loop for source in sources append
-                  (remove source (append retained mounts) :test-not #'equal
-                          :key (lambda (m) (spec-source (mounted-spec m)))))
-                '(:type :mount) nil (mapcar #'spec-name specs)))
-    (setf (runtime-sources runtime) (copy-list sources) (runtime-last-error runtime) nil
-          (runtime-source-stamps runtime)
-          (loop for path in sources collect (cons path (source-stamp path))))
-    (incf (runtime-generation runtime))))
+  (unwind-protect
+      (let* ((specs (loop for path in sources
+                          when (or (null changed-source) (equal path changed-source)) append (load-specs runtime path)))
+             (retained (when changed-source
+                         (remove changed-source (root-mounts (runtime-mounts runtime)) :test #'equal
+                                 :key (lambda (m) (spec-source (mounted-spec m))))))
+             (names (make-hash-table :test #'equal)))
+        (dolist (spec (append (mapcar #'mounted-spec retained) specs))
+          (when (gethash (spec-name spec) names) (error "Duplicate extension: ~A" (spec-name spec)))
+          (setf (gethash (spec-name spec) names) t))
+        (let ((mounts
+                (loop for spec in specs
+                      for previous = (find (spec-name spec) (runtime-mounts runtime)
+                                           :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))
+                      collect (if (and previous (equal (spec-source spec) (spec-source (mounted-spec previous))))
+                                  (let ((copy (copy-mounted previous))) (setf (mounted-spec copy) spec) copy)
+                                  (make-mounted :spec spec :state (copy-data (spec-initial spec)))))))
+          (transact runtime
+                    (loop for source in sources append
+                      (remove source (append retained mounts) :test-not #'equal
+                              :key (lambda (m) (spec-source (mounted-spec m)))))
+                    '(:type :mount) nil (mapcar #'spec-name specs)))
+        (setf (runtime-sources runtime) (copy-list sources) (runtime-last-error runtime) nil
+              (runtime-source-stamps runtime)
+              (loop for path in sources collect (cons path (source-stamp path))))
+        (incf (runtime-generation runtime)))
+    (sweep-source-packages runtime)))
 
 (defun unmount (runtime name)
   (unless (find name (root-mounts (runtime-mounts runtime)) :test #'equal
                 :key (lambda (m) (spec-name (mounted-spec m))))
     (error "No mounted extension named ~A." name))
-  (transact runtime
-            (remove name (runtime-mounts runtime) :test #'equal
-                    :key (lambda (m) (spec-name (mounted-spec m))))
-            (list :type :unmount :name name) nil)
+  (unwind-protect
+      (transact runtime
+                (remove name (runtime-mounts runtime) :test #'equal
+                        :key (lambda (m) (spec-name (mounted-spec m))))
+                (list :type :unmount :name name) nil)
+    (sweep-source-packages runtime))
   (incf (runtime-generation runtime)))
 
 (defun execute-command (runtime command &optional spawn)

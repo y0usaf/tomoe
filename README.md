@@ -287,10 +287,17 @@ not the first thing the watcher sees, so an edit made while a mount is still
 settling is still caught. A source is known by the path it was given and read
 through symlinks, so re-pointing a symlink, as a Nix switch does, reloads it
 like an edit; relative paths in it still resolve beside the file the link
-points to. Success prints nothing: the new policy is visible in `inspect` as a
-higher `:generation`. A source that fails to load keeps the previous policy
-mounted and reports through the last error. `--no-watch` turns source
-auto-reload off for one instance; owned `watch-file` effects still run.
+points to. Success prints nothing: the new policy is visible in `inspect` as
+a higher `:generation`. `--no-watch` turns source auto-reload off for one
+instance; owned `watch-file` effects still run.
+
+Every load evaluates its source in a fresh package, which the file's
+`(in-package #:tomoe-user)` names, so its functions and variables never replace
+the ones a running policy calls. A source that fails to load, including one
+that refers to a function or variable nothing defines, even behind an
+`fboundp` check, keeps the previous policy mounted and running and reports
+through the last error. Packages that no mounted extension came from are
+deleted.
 
 `examples/monocle.lisp` is an alternative layout that shows only the focused
 window. Mount it after the default policy to override tiling. Removing it
