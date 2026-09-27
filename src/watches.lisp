@@ -56,8 +56,7 @@
   (if (and (plusp (length declared-path))
            (char= (char declared-path 0) #\/))
       (copy-seq declared-path)
-      (concatenate 'string (directory-namestring (spec-source owner))
-                   declared-path)))
+      (concatenate 'string (spec-directory owner) declared-path)))
 
 (defun %watch-open-path (path)
   (open-watch-support)

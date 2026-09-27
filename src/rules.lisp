@@ -94,7 +94,8 @@ Return complete mounts, new instance names, and changed callback definitions."
                                (or old
                                    (make-mounted
                                     :spec (make-spec :name (rule-instance-identity owner name id)
-                                                     :source (spec-source owner))
+                                                     :source (spec-source owner)
+                                                     :directory (spec-directory owner))
                                     :state (copy-data (sixth (effect-arguments definition)))
                                     :rule-parent owner :rule-name name :rule-window id :rule-pending t))))
                         (cond ((null old) (push (spec-name (mounted-spec instance)) new))

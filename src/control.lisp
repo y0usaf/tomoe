@@ -161,7 +161,7 @@
       (:mount
        (destructuring-bind (path) args
          (check-type path string)
-         (let ((path (namestring (truename path))))
+         (let ((path (source-path path)))
            (configure runtime
                       (if (member path (runtime-sources runtime) :test #'equal)
                           (runtime-sources runtime)

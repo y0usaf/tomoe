@@ -120,7 +120,7 @@
          (check-type description (or null string))
          (%effect :bind (list mask keysym command release description)))))))
 
-(defun canonical-command (command &optional source)
+(defun canonical-command (command &optional directory)
   (check-type command command)
   (let ((args (copy-data (command-arguments command))))
     (ecase (command-kind command)
@@ -130,9 +130,9 @@
       (:spawn (destructuring-bind (launch cwd env) args
                 (let ((result (spawn launch :cwd cwd :env env)))
                   (when (and cwd (not (char= (char cwd 0) #\/)))
-                    (unless source (error "Relative spawn cwd requires a declaring source."))
+                    (unless directory (error "Relative spawn cwd requires a declaring source."))
                     (setf (second (command-arguments result))
-                          (concatenate 'string (directory-namestring source) cwd)))
+                          (concatenate 'string directory cwd)))
                   result)))
       (:close (destructuring-bind (id) args (close-window id)))
       (:screenshot (destructuring-bind (screen) args (screenshot (and screen :screen))))
@@ -187,7 +187,7 @@
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
               (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI command event."))
             (let ((effects (mapcar #'canonical-effect effects))
-                  (commands (mapcar (lambda (command) (canonical-command command (spec-source spec))) commands))
+                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands))
                   (keys (make-hash-table :test #'equal :size (length effects))))
               (let ((replies (count :reply commands :key #'command-kind)))
                 (when (plusp replies)
@@ -508,7 +508,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
             (:surface
              (push (append (list :owner (spec-name (mounted-spec mounted))
                                  :source-id (spec-id (mounted-spec mounted))
-                                 :source (spec-source (mounted-spec mounted)))
+                                 :directory (spec-directory (mounted-spec mounted)))
                            (copy-data args)) surfaces))
             (:data
              (destructuring-bind (name value) args
@@ -874,15 +874,23 @@ into one reused buffer, so watching allocates nothing per file."
               (list (file-write-date stream) (file-length stream) count hash)))))
     (serious-condition () nil)))
 
+(defun source-path (path)
+  (let ((pathname (merge-pathnames path)))
+    (unless (probe-file pathname) (error "No extension source at ~A." path))
+    (namestring pathname)))
+
 (defun load-specs (path)
-  (let* ((*source* (namestring (truename path)))
+  (let* ((*source* path)
+         (directory (directory-namestring (truename path)))
          (*definitions* nil) (*package* (find-package :tomoe-user)) (*read-eval* nil)
          (*read-default-float-format* 'double-float))
     (sb-ext:with-timeout 1
-      (with-open-file (stream *source*)
+      (with-open-file (stream path)
         (when (> (file-length stream) 1048576) (error "Extension file exceeds 1 MiB."))
         (load stream :verbose nil :print nil)))
-    (nreverse *definitions*)))
+    (loop for spec in (nreverse *definitions*)
+          do (setf (spec-directory spec) directory)
+          collect spec)))
 
 (defun configure (runtime sources &optional changed-source)
   (let* ((specs (loop for path in sources

@@ -657,12 +657,13 @@ turns them all off while any is lit."
   (when (>= *next-source-id* (1- (expt 2 64))) (error "Source identity space exhausted."))
   (incf *next-source-id*))
 
-(defstruct (spec (:copier nil)) name reads initial update source admission (token (gensym "SOURCE-"))
+(defstruct (spec (:copier nil)) name reads initial update source directory admission (token (gensym "SOURCE-"))
   (id (allocate-source-id) :read-only t))
 (defun copy-spec (spec)
   "Copy a declaration into a fresh source generation; COPY-MOUNTED retains one."
   (make-spec :name (spec-name spec) :reads (spec-reads spec) :initial (spec-initial spec)
-             :update (spec-update spec) :source (spec-source spec) :admission (spec-admission spec)))
+             :update (spec-update spec) :source (spec-source spec) :directory (spec-directory spec)
+             :admission (spec-admission spec)))
 (defun register-spec (name reads initial update &optional admission)
   (when (eq *definitions* :not-loading) (error "Load declarations with MOUNT or RELOAD."))
   (check-type name string)

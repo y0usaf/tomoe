@@ -284,10 +284,13 @@ Configured sources are watched and reloaded when they change, four times a
 second. A reload waits until a source has looked the same twice in a row, so a
 half-written file is not loaded. The baseline is the content the runtime loaded,
 not the first thing the watcher sees, so an edit made while a mount is still
-settling is still caught. Success prints nothing: the new policy is visible in
-`inspect` as a higher `:generation`. A source that fails to load keeps the
-previous policy mounted and reports through the last error. `--no-watch` turns
-source auto-reload off for one instance; owned `watch-file` effects still run.
+settling is still caught. A source is known by the path it was given and read
+through symlinks, so re-pointing a symlink, as a Nix switch does, reloads it
+like an edit; relative paths in it still resolve beside the file the link
+points to. Success prints nothing: the new policy is visible in `inspect` as a
+higher `:generation`. A source that fails to load keeps the previous policy
+mounted and reports through the last error. `--no-watch` turns source
+auto-reload off for one instance; owned `watch-file` effects still run.
 
 `examples/monocle.lisp` is an alternative layout that shows only the focused
 window. Mount it after the default policy to override tiling. Removing it

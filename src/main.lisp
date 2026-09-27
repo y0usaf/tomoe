@@ -255,7 +255,7 @@ only after it changes again."
                         (format nil "~A/" (string-right-trim "/" root))
                         (merge-pathnames ".config/" (user-homedir-pathname))))
          (path (merge-pathnames "tomoe/init.lisp" directory)))
-    (when (probe-file path) (namestring (truename path)))))
+    (when (probe-file path) (namestring path))))
 
 (defun run-cli (arguments)
   (let ((name "tomoe-0") (explicit-name nil) (backend "auto") (bare nil) (config nil) (watch t)
@@ -275,7 +275,7 @@ only after it changes again."
                            (cond ((equal value "winit") "nested")
                                  ((equal value "tty") "drm")
                                  (t value)))))
-          ((equal option "--config") (setf config (namestring (truename (argument option)))))
+          ((equal option "--config") (setf config (source-path (argument option))))
           ((equal option "--drm_device") (setf drm-device (argument option)))
           ((equal option "--bare") (setf bare t))
           ((equal option "--watch") (setf watch t))

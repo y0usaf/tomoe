@@ -144,7 +144,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                    command))
          (cwd (fourth args)) (lease (managed-process-lease job)) (token nil))
     (when (and cwd (not (char= (char cwd 0) #\/)))
-      (setf cwd (concatenate 'string (directory-namestring (spec-source (managed-process-owner job))) cwd)))
+      (setf cwd (concatenate 'string (spec-directory (managed-process-owner job)) cwd)))
     (incf (managed-process-attempts job))
     (handler-case
         (progn

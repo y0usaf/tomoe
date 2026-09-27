@@ -105,11 +105,11 @@
              (path (cond ((or (null raw) (zerop (length raw))) "")
                          ((char= (char raw 0) #\/) raw)
                          (t
-                          (let ((source (getf declaration :source)))
-                            (unless (and (stringp source) (plusp (length source))
-                                         (char= (char source 0) #\/))
+                          (let ((directory (getf declaration :directory)))
+                            (unless (and (stringp directory) (plusp (length directory))
+                                         (char= (char directory 0) #\/))
                               (error "Relative shell asset paths require a declaring source."))
-                            (concatenate 'string (directory-namestring source) raw)))))
+                            (concatenate 'string directory raw)))))
              (id (%ui-asset-load backend (getf declaration :owner) (getf declaration :source-id)
                                  (ecase kind (:image 1) (:icon 2) (:backdrop 3) (:shader 4)) path
                                  (case kind
