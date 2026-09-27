@@ -136,11 +136,10 @@
           buildPhase = ''
             runHook preBuild
             mkdir build
-            for module in executions watches notifications mpris backlight battery network tray system; do
+            for module in executions watches notifications mpris backlight battery network tray system xwayland; do
               $CC -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) \
                 -c support/$module.c -o build/$module.o
             done
-            $CC -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
             wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
             wp=${pkgs.wayland-protocols}/share/wayland-protocols
             for xml in \
@@ -190,7 +189,7 @@
             TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
             TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
             TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
-            TOMOE_PATH=$out/libexec/tomoe-bin:${
+            TOMOE_PATH=$out/bin:${
               pkgs.lib.makeBinPath [
                 pkgs.foot
                 (pkgs.fuzzel.override { resvg = resvg pkgs; })
@@ -204,7 +203,6 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
-            install -Dm755 build/tomoe-xwayland $out/libexec/tomoe-bin/tomoe-xwayland
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf

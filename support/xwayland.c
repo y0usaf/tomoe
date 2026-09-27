@@ -49,31 +49,31 @@ static int listen_on(const char *path, int abstract) {
     return fd;
 }
 
-int main(int argc, char **argv) {
+int tomoe_xwayland(int argc, char **argv) {
     if (argc < 3 || argv[1][0] != ':') {
-        fprintf(stderr, "usage: %s :DISPLAY SATELLITE [ARGS...]\n", argv[0]);
+        fprintf(stderr, "usage: tomoe xwayland :DISPLAY SATELLITE [ARGS...]\n");
         return 2;
     }
     int display = atoi(argv[1] + 1);
     char path[64];
     snprintf(path, sizeof(path), "/tmp/.X11-unix/X%d", display);
     if (mkdir("/tmp/.X11-unix", 01777) < 0 && errno != EEXIST) {
-        perror("tomoe-xwayland: /tmp/.X11-unix");
+        perror("tomoe xwayland: /tmp/.X11-unix");
         return 1;
     }
     if (take_lock(display) < 0) {
-        fprintf(stderr, "tomoe-xwayland: display %s is locked by a live process\n", argv[1]);
+        fprintf(stderr, "tomoe xwayland: display %s is locked by a live process\n", argv[1]);
         return 1;
     }
     int fds[2] = { listen_on(path, 0), listen_on(path, 1) };
     if (fds[0] < 0 || fds[1] < 0) {
-        perror("tomoe-xwayland: listen");
+        perror("tomoe xwayland: listen");
         return 1;
     }
     struct pollfd polls[2] = { { .fd = fds[0], .events = POLLIN }, { .fd = fds[1], .events = POLLIN } };
     while (poll(polls, 2, -1) < 0)
         if (errno != EINTR) {
-            perror("tomoe-xwayland: poll");
+            perror("tomoe xwayland: poll");
             return 1;
         }
     char unix_fd[16], abstract_fd[16];
@@ -91,7 +91,11 @@ int main(int argc, char **argv) {
     args[n++] = unix_fd;
     args[n++] = "-listenfd";
     args[n++] = abstract_fd;
+    sigset_t none;
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
+    signal(SIGPIPE, SIG_DFL);
     execvp(args[0], args);
-    perror("tomoe-xwayland: exec");
+    perror("tomoe xwayland: exec");
     return 1;
 }

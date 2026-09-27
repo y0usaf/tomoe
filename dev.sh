@@ -7,16 +7,16 @@ export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"
 SBCL_HOME="$(dirname "$(readlink -f "$(command -v sbcl)")")/../lib/sbcl"
 export SBCL_HOME
 
-for module in executions watches notifications mpris backlight battery network tray system; do
+for module in executions watches notifications mpris backlight battery network tray system xwayland; do
   if [ ! -f "build/$module.o" ] || [ "support/$module.c" -nt "build/$module.o" ] || [ "support/$module.h" -nt "build/$module.o" ]; then
     cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
   fi
 done
 
-if [ ! -f build/tomoe-xwayland ] || [ support/xwayland.c -nt build/tomoe-xwayland ]; then
-  cc -std=c11 -Wall -Wextra -Werror support/xwayland.c -o build/tomoe-xwayland
-fi
-export PATH="$PWD/build:$PATH"
+mkdir -p build/bin
+printf '#!/bin/sh\ncd %s && exec build/tomoe-runtime --core "%s/sbcl.core" --noinform --load dev.lisp -- "$@"\n' "$PWD" "$SBCL_HOME" > build/bin/tomoe
+chmod +x build/bin/tomoe
+export PATH="$PWD/build/bin:$PATH"
 
 if ! command -v wayland-scanner >/dev/null 2>&1; then
   echo "dev.sh: wayland-scanner is required to build the backend" >&2

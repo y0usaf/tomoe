@@ -233,7 +233,7 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 34; the additive inspect fields keep control wire version 1.
+The native ABI is 35; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -241,13 +241,13 @@ X11 clients run through xwayland-satellite, which presents each X11 window to
 Tomoe as an ordinary xdg toplevel. At startup the host picks the first display
 whose `/tmp/.X<n>-lock` file is absent or names a dead process and exports it
 as `DISPLAY` to this process and its children, never to systemd, D-Bus or the
-surrounding session. The shipped `xwayland` extension runs `tomoe-xwayland` on
+surrounding session. The shipped `xwayland` extension runs `tomoe xwayland` on
 that display as a `service`, restarting it when it exits: it takes the lock,
 listens on the display's sockets, and on the first X11 connection becomes
 `xwayland-satellite -listenfd`, so Xwayland only starts once an X11 client
 connects. `--bare` has no X11 until a policy declares that service. The
-compositor puts `tomoe-xwayland` and `xwayland-satellite` from its package
-first on the `PATH` it hands its children.
+compositor puts its own `bin` and `xwayland-satellite` from its package first
+on the `PATH` it hands its children.
 
 To policy, an X11 window is an xdg window: its title and app id come from
 satellite, `place` sends a configure, and fullscreen and maximize go through

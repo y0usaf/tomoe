@@ -30,6 +30,7 @@ turn; materialization already refreshes their authoritative native snapshot."
        [--config FILE] [--watch|--no-watch] [--drm_device PATH]
        tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|frames|memory|quit
        tomoe [--socket NAME] msg METHOD [JSON]
+       tomoe xwayland :DISPLAY SATELLITE [ARGS...]
 
 Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
@@ -127,6 +128,18 @@ only after it changes again."
         unless (and (probe-file lock) (or (null pid) (probe-file (format nil "/proc/~D" pid))))
           return (format nil ":~D" n)
         finally (error "No free X display below :64.")))
+
+(sb-alien:define-alien-routine ("tomoe_xwayland" %xwayland) sb-alien:int
+  (argc sb-alien:int) (argv (* sb-alien:c-string)))
+
+(defun run-xwayland (arguments)
+  "Take an X display's lock and sockets, then become the X server named in ARGUMENTS
+on its first client."
+  (let ((argv (sb-alien:make-alien sb-alien:c-string (+ 2 (length arguments)))))
+    (loop for argument in (cons "tomoe" arguments) for index from 0
+          do (setf (sb-alien:deref argv index) argument))
+    (setf (sb-alien:deref argv (1+ (length arguments))) nil)
+    (%xwayland (1+ (length arguments)) argv)))
 
 (defun primary-drm-devices (path)
   "TOMOE_DRM_DEVICES naming PATH's card first, then every other card."
@@ -289,6 +302,8 @@ only after it changes again."
           ((equal option "--bare") (setf bare t))
           ((equal option "--watch") (setf watch t))
           ((equal option "--no-watch") (setf watch nil))
+          ((equal option "xwayland")
+           (return-from run-cli (run-xwayland arguments)))
           ((equal option "msg")
            (when (or config bare (not (equal backend "auto")))
              (error "Server options cannot be combined with msg."))
