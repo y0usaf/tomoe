@@ -454,6 +454,32 @@
                                                 (getf request :app-id))))))
             commands)))
 
+(defun wallpaper--pick (directory current)
+  "A random PNG or JPEG under DIRECTORY other than CURRENT, or CURRENT when there is no other."
+  (let ((files (remove current
+                       (loop for path in (directory (format nil "~A/**/*.*" (string-right-trim "/" directory)))
+                             when (member (pathname-type path) '("png" "jpg" "jpeg") :test #'string-equal)
+                               collect (sb-ext:native-namestring path))
+                       :test #'equal)))
+    (if files (nth (random (length files) (make-random-state t)) files) current)))
+
+(define-extension "wallpaper" (:reads (:data :key) :state nil) (snapshot state event)
+  (let* ((settings (state-value snapshot :wallpaper-settings))
+         (directory (getf settings :directory))
+         (bind (getf settings :bind))
+         (path (and directory
+                    (if (or (not (equal directory (getf state :directory)))
+                            (and (eq (getf event :type) :key) (equal (getf event :owner) "wallpaper")))
+                        (wallpaper--pick directory (getf state :path))
+                        (getf state :path)))))
+    (values (list :directory directory :path path)
+            (append (when bind (list (apply #'bind-key bind)))
+                    (when path
+                      (list (shell-surface :wallpaper (ui :stack)
+                                           :anchors '(:top :right :bottom :left) :layer :background
+                                           :background (list :image path :fit (getf settings :fit :cover))))))
+            nil)))
+
 (define-extension "xwayland" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot event))
   (values state (list (service :xwayland-satellite "exec tomoe-xwayland \"$DISPLAY\" xwayland-satellite")) nil))

@@ -925,8 +925,13 @@ missing or malformed, the surface keeps showing its previous background and the
 failure is logged. Files may reach 128 MiB and decode to 32767 pixels per axis
 and 512 MiB; the scaled result counts toward the asset pool. A surface whose
 tree draws nothing keeps no canvas texture.
-[examples/wallpaper.lisp](examples/wallpaper.lisp) picks a random PNG or JPEG under a
-directory, in Lisp, when mounted and again on Mod+w:
+The shipped `wallpaper` extension does this for a directory: publish
+`(publish-state :wallpaper-settings '(:directory "/home/me/Pictures/walls"
+:bind ((:super) "w" :next :description "Next wallpaper")))` from any owner and
+it shows a random PNG or JPEG from anywhere under the directory, and another on
+the optional binding, given as `bind-key`'s arguments; `:fit` defaults to
+`:cover`. Without a directory it
+draws nothing. By hand, a background is one surface:
 
 ```lisp
 (shell-surface :wallpaper (ui :stack)
