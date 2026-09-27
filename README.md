@@ -894,7 +894,8 @@ and SVG paint targets are limited to 16384 pixels per axis and 64 MiB each.
 The pool permits 256 assets and 128 MiB across live and candidate generations,
 counting decoded raster bytes and encoded SVG bytes, not SVG library overhead.
 Limit or allocation failures reject the proposal. Missing or malformed files
-are cached fallbacks. SVGs cannot load external file or URL references.
+are cached fallbacks. An SVG draws images it embeds as data URLs or names by
+absolute path, never by relative path or URL.
 
 A surface `:background` is a color, `(:image PATH :fit FIT)`, or
 `(:shader PATH :fps FPS)`. An image paints a PNG or JPEG beneath the tree. FIT

@@ -103,7 +103,7 @@ if [ ! -f "$TOMOE_BACKEND_LIB" ] || [ -n "$(find native -name '*.c' -newer "$TOM
     -fPIC -shared -Ibuild \
     $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
     native/*.c build/*-protocol.c -o "$TOMOE_BACKEND_LIB" \
-    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -l:libresvg.a -lgcc_s -lm
+    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -lresvg -lm
 fi
 
 export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"

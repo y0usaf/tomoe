@@ -46,6 +46,13 @@
           doCheck = false;
           doInstallCheck = false;
         };
+      resvg =
+        pkgs:
+        pkgs.runCommand "resvg-${pkgs.resvg.version}-lib" { } ''
+          mkdir -p $out/lib
+          cp -r ${pkgs.resvg}/include $out
+          cp ${pkgs.resvg}/lib/libresvg.so $out/lib
+        '';
       portal =
         pkgs:
         pkgs.rustPlatform.buildRustPackage {
@@ -101,7 +108,7 @@
             pkgs.cairo
             pkgs.pango
             pkgs.libjpeg
-            pkgs.resvg
+            (resvg pkgs)
             pkgs.systemdLibs
             pkgs.lcms2
           ];
@@ -173,7 +180,7 @@
               -Wno-unused-parameter -fPIC -shared -Ibuild \
               $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
               native/*.c build/*-protocol.c -o build/libtomoe-backend.so \
-              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -l:libresvg.a -lgcc_s -lm
+              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) -lresvg -lm
             sbcl --noinform --non-interactive --load build.lisp
             runHook postBuild
           '';
@@ -214,7 +221,7 @@
               --prefix PATH : $out/libexec/tomoe-bin:${
                 pkgs.lib.makeBinPath [
                   pkgs.foot
-                  (pkgs.fuzzel.override { svgBackend = "librsvg"; })
+                  (pkgs.fuzzel.override { resvg = resvg pkgs; })
                   (pkgs.xwayland-satellite.override {
                     xwayland =
                       (pkgs.xwayland.override {
