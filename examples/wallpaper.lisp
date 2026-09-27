@@ -1,31 +1,28 @@
 (in-package #:tomoe-user)
 
 (defparameter +wallpaper-directory+ "/usr/share/backgrounds"
-  "Directory whose PNG and JPEG files Mod+w shuffles through.")
+  "Directory whose PNG and JPEG files, at any depth, Mod+w shuffles through.")
 
-(defun wallpaper--quote (text)
-  (with-output-to-string (out)
-    (write-char #\' out)
-    (loop for c across text do (if (char= c #\') (write-string "'\\''" out) (write-char c out)))
-    (write-char #\' out)))
+(defun wallpaper--pick (current)
+  "A random wallpaper other than CURRENT, or CURRENT when there is no other."
+  (let ((files (remove current
+                       (loop for path in (directory (format nil "~A/**/*.*" +wallpaper-directory+))
+                             when (member (pathname-type path) '("png" "jpg" "jpeg") :test #'string-equal)
+                               collect (sb-ext:native-namestring path))
+                       :test #'equal)))
+    (if files (nth (random (length files) (make-random-state t)) files) current)))
 
-(define-extension "wallpaper" (:reads (:key) :state '(:path nil :run 0)) (snapshot state event)
+(define-extension "wallpaper" (:reads (:key) :state nil) (snapshot path event)
   (declare (ignore snapshot))
-  (let ((path (getf state :path)) (run (getf state :run)))
-    (cond ((and (eq (getf event :type) :key) (equal (getf event :owner) "wallpaper")
-                (equal (getf event :command) "shuffle"))
-           (incf run))
-          ((and (eq (getf event :type) :exec) (eql (getf event :code) 0))
-           (let ((line (string-trim '(#\Newline) (getf event :stdout))))
-             (when (plusp (length line)) (setf path line)))))
-    (values (list :path path :run run)
-            (append
-             (list (bind-key '(:mod) "w" :shuffle :description "Next wallpaper")
-                   (exec-async (intern (format nil "SHUFFLE-~D" run) :keyword)
-                               (format nil "find ~A -type f \\( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \\) | shuf -n 1"
-                                       (wallpaper--quote +wallpaper-directory+))))
-             (when path
-               (list (shell-surface :wallpaper (ui :stack)
-                                    :anchors '(:top :right :bottom :left) :layer :background
-                                    :background (list :image path :fit :cover)))))
+  (let ((path (if (or (null path)
+                      (and (eq (getf event :type) :key) (equal (getf event :owner) "wallpaper")
+                           (equal (getf event :command) "shuffle")))
+                  (wallpaper--pick path)
+                  path)))
+    (values path
+            (cons (bind-key '(:mod) "w" :shuffle :description "Next wallpaper")
+                  (when path
+                    (list (shell-surface :wallpaper (ui :stack)
+                                         :anchors '(:top :right :bottom :left) :layer :background
+                                         :background (list :image path :fit :cover)))))
             nil)))

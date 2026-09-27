@@ -915,7 +915,8 @@ missing or malformed, the surface keeps showing its previous background and the
 failure is logged. Files may reach 128 MiB and decode to 32767 pixels per axis
 and 512 MiB; the scaled result counts toward the asset pool. A surface whose
 tree draws nothing keeps no canvas texture.
-[examples/wallpaper.lisp](examples/wallpaper.lisp) shuffles a directory with Mod+w:
+[examples/wallpaper.lisp](examples/wallpaper.lisp) picks a random PNG or JPEG under a
+directory, in Lisp, when mounted and again on Mod+w:
 
 ```lisp
 (shell-surface :wallpaper (ui :stack)
