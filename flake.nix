@@ -96,7 +96,7 @@
           ];
           buildInputs = [
             pkgs.libdrm
-            pkgs.libinput
+            (pkgs.libinput.override { luaSupport = false; })
             (pkgs.seatd.override { systemd = pkgs.systemdLibs; })
             pkgs.libGL
             pkgs.libgbm
