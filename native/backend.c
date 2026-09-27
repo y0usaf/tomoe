@@ -2,6 +2,7 @@
 #include "ui.h"
 
 #include <malloc.h>
+#include <signal.h>
 #include <unistd.h>
 
 static int backend_open(struct tomoe *s) {
@@ -43,6 +44,7 @@ static bool create_scene_trees(struct tomoe *s) {
 struct tomoe *tomoe_create(const char *socket_name) {
     log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_ERROR;
     mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+    signal(SIGPIPE, SIG_IGN);
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     wl_list_init(&s->windows); wl_list_init(&s->layers); wl_list_init(&s->outputs);

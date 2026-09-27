@@ -848,6 +848,12 @@ They execute after effect validation and commit. They are not undoable. User-lau
 applications belong to the session, survive extension unmount, and use the same
 private process-group cleanup as `run-once`.
 
+`clipboard-copy` reads its regular file, at most 64 MiB, on the compositor
+thread when it runs, so it suits small local files such as a screenshot; the
+read blocks the compositor for its duration. Each paste is then written from
+memory as the receiver drains its pipe, and a receiver that closes early only
+ends its own transfer.
+
 `(spawn COMMAND &key cwd env)` accepts a shell string or literal argv, with the
 same source-relative cwd and environment options as `run-once`. Existing
 `(launch EXECUTABLE &rest ARGUMENTS)` preserves its literal argv interface.
