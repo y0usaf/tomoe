@@ -217,7 +217,7 @@
               --set TOMOE_TRAY_LIB $out/lib/libtomoe-tray.so \
               --set TOMOE_SHELL ${pkgs.bashNonInteractive}/bin/sh \
               --set TOMOE_BUILTINS $out/share/tomoe/desktop.lisp \
-              --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }} \
+              --set-default FONTCONFIG_FILE ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               --prefix PATH : $out/libexec/tomoe-bin:${
                 pkgs.lib.makeBinPath [
                   pkgs.foot
