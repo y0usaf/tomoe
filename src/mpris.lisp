@@ -10,6 +10,8 @@
   (producer (* t)) (maximum sb-alien:int))
 (sb-alien:define-alien-routine ("tomoe_mpris_close" %mpris-close) sb-alien:void
   (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_mpris_control" %mpris-control) sb-alien:int
+  (producer (* t)) (method sb-alien:c-string))
 
 (defun stop-mpris (runtime)
   (let ((native (runtime-mpris-producer runtime)))
@@ -50,6 +52,14 @@
       (stop-mpris runtime)
       (format *error-output* "tomoe: MPRIS producer stopped: ~A~%" condition)
       (values (default-mpris-state) t))))
+
+(defun control-mpris (runtime action)
+  (let ((native (runtime-mpris-producer runtime)))
+    (when (and native (minusp (%mpris-control native (ecase action
+                                                       (:play-pause "PlayPause")
+                                                       (:next "Next")
+                                                       (:previous "Previous")))))
+      (error "Cannot send ~(~A~) to the media player." action))))
 
 (defun service-mpris (runtime)
   (reconcile-backend-observations runtime)

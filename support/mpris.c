@@ -1446,6 +1446,14 @@ int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms) {
     return (int)milliseconds;
 }
 
+int tomoe_mpris_control(struct tomoe_mpris *mpris, const char *method) {
+    struct mpris_player *player = mpris && mpris->bus ? selected_player(mpris) : NULL;
+    if (!player) return 0;
+    if (sd_bus_call_method_async(mpris->bus, NULL, player->owner, MPRIS_PATH, MPRIS_PLAYER,
+            method, NULL, NULL, "") < 0) return -1;
+    return sd_bus_flush(mpris->bus) < 0 ? -1 : 1;
+}
+
 void tomoe_mpris_close(struct tomoe_mpris *mpris) {
     if (!mpris) return;
     close_bus(mpris);

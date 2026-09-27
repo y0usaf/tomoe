@@ -1,6 +1,6 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer
+  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer #:media-control
            #:window-rule #:rules-for #:raise-window #:show-window #:hide-window
            #:publish-state #:state-value #:service-state #:window-geometry
            #:ui #:shell-surface
@@ -638,6 +638,10 @@ The session owns the child, and native launches receive an activation token."
 (defun screenshot (&optional mode)
   (check-type mode (member nil :screen))
   (%command :screenshot (list (eq mode :screen))))
+(defun media-control (action)
+  "Ask the selected MPRIS player to :PLAY-PAUSE, go to the :NEXT or :PREVIOUS track."
+  (check-type action (member :play-pause :next :previous))
+  (%command :media (list action)))
 (defun screencast-answer (token answer &optional value)
   "Answer a :SCREENCAST request TOKEN with :OUTPUT and an output name, :WINDOW and
 a window id, or :DENY."

@@ -1042,7 +1042,9 @@ omits the MPRIS bus prefix.
 Artist arrays are joined with `", "`; metadata replacement clears omitted
 fields. Length and position are integer seconds. Position is sampled after
 status or metadata transitions and updated by `Seeked`; it stays fixed between
-events. This service observes players and does not provide playback commands.
+events. The `(media-control ACTION)` command, with `:play-pause`, `:next` or
+`:previous`, sends that MPRIS call to the selected player and does nothing
+when there is none.
 
 Mount `examples/media.lisp` for an ordinary owned media label. Unmounting the
 label releases its surfaces while the observer retains current player facts.
