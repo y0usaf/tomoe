@@ -249,9 +249,14 @@ whose `/tmp/.X<n>-lock` file is absent or names a dead process and exports it
 as `DISPLAY` to this process and its children, never to systemd, D-Bus or the
 surrounding session. The shipped `xwayland` extension runs `tomoe xwayland` on
 that display as a `service`, restarting it when it exits: it takes the lock,
-listens on the display's sockets, and on the first X11 connection becomes
-`xwayland-satellite -listenfd`, so Xwayland only starts once an X11 client
-connects. `--bare` has no X11 until a policy declares that service. The
+listens on the display's sockets, and on the first X11 connection starts
+`xwayland-satellite -listenfd` as its child, so Xwayland only starts once an
+X11 client connects. Satellite gets a private `XDG_RUNTIME_DIR` inside the
+session's, holding the Wayland socket it opens for Xwayland. `tomoe xwayland`
+passes SIGTERM, SIGINT and SIGHUP on to satellite, kills it if it is still
+running half a second later, and once it exits removes that directory, the lock
+and the socket; stopped before any client, it removes the lock and the socket.
+`--bare` has no X11 until a policy declares that service. The
 compositor puts its own `bin` and `xwayland-satellite` from its package first
 on the `PATH` it hands its children.
 
@@ -843,7 +848,9 @@ On Linux, `support/executions.c` provides helpers for captured
 process groups and pidfds; the managed process API supplies `/dev/null` stdin,
 inherits stdout/stderr, and reaps only its direct child. Group liveness remains
 observable after a shell leader exits, and cancellation covers members that
-remain in that group. Descendants that detach, create another process group, or
+remain in that group. Cancellation sends the group SIGTERM, then SIGKILL once
+the leader has exited or a second has passed, so a stopped process can remove
+what it created; a group whose leader has already exited gets SIGKILL at once. Descendants that detach, create another process group, or
 daemonize are outside this lease. The helper needs Linux 6.9 or newer for
 process-group pidfd signals; the native backend is ABI 35.
 

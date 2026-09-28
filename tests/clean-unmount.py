@@ -1,11 +1,5 @@
 SKIP = {("commands", "terminal"), ("commands", "launcher"), ("commands", "close"), ("commands", "exit-confirm")}
 COUNTERS = {":GENERATION", ":RASTERIZATIONS", ":ASSET-LOADS"}
-XLOCK = ("support/xwayland.c takes the X lock and socket and has no SIGTERM handler, so killing it "
-         "before the first X client leaves both; the commit fixing that removes this entry")
-KNOWN = {
-    ("xwayland", "file left behind: /tmp/.X0-lock"): XLOCK,
-    ("xwayland", "file left behind: /tmp/.X11-unix/X0"): XLOCK,
-}
 
 
 def files():
@@ -48,6 +42,8 @@ def exercise(names):
                 if owner in names and command != "NIL" and (owner, command) not in SKIP:
                     status, output = press(owner, command, pointer, state)
                     print(f"{'event' if pointer else 'command'} {owner} {command}: {status} {output.strip()}")
+    if "xwayland" in names:
+        machine.succeed("DISPLAY=:0 timeout 60 xdpyinfo > /dev/null")
     machine.succeed(ENV + "notify-send check-summary check-body")
     client("transient", "--mode xdg --app-id check-transient --size 200x150")
     machine.sleep(3)
@@ -64,17 +60,11 @@ def cycle(path):
     errors = [(text(e[":NAME"]), e[":LAST-ERROR"]) for e in map(plist, items(inspect()[":EXTENSIONS"])) if e[":LAST-ERROR"] != "NIL"]
     for name in reversed(names):
         cli(f"unmount {name}")
-    known = {line: reason for (name, line), reason in KNOWN.items() if name in names}
     deadline = time.monotonic() + 15
-    while True:
-        found = differences(before, snapshot())
-        if not [line for line in found if line not in known] or time.monotonic() > deadline:
-            break
+    found = differences(before, snapshot())
+    while found and time.monotonic() < deadline:
         time.sleep(0.5)
-    for line in found:
-        if line in known:
-            print(f"known residue, tolerated: {path}: {line}: {known[line]}")
-    found = [line for line in found if line not in known]
+        found = differences(before, snapshot())
     return [f"{path}: {line}" for line in found] + [f"{path}: {name} failed: {error}" for name, error in errors]
 
 

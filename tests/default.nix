@@ -46,6 +46,7 @@ let
           tomoe
           client
           pkgs.libnotify
+          pkgs.xdpyinfo
         ];
         virtualisation.memorySize = 2048;
         virtualisation.cores = 4;

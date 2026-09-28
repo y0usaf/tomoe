@@ -172,6 +172,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                            (setf (car (managed-process-history job)) (spec-token (managed-process-owner job)))))
                        (setf (process-lease-stopped lease) nil
                              (process-lease-stop-error lease) nil
+                             (process-lease-kill-at lease) nil
                              (managed-process-status job) :running
                              (managed-process-error job) nil (managed-process-code job) nil
                              (managed-process-deadline job) (+ (get-internal-real-time) internal-time-units-per-second))
@@ -257,7 +258,7 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                                                                 (null (process-lease-process (managed-process-lease job)))))
                                                           (runtime-managed-processes runtime)))))
   (dolist (lease (runtime-once-processes runtime)) (kill-execution runtime lease))
-  (loop repeat 100 while (or (runtime-retired-processes runtime) (runtime-once-processes runtime)) do
+  (loop repeat 200 while (or (runtime-retired-processes runtime) (runtime-once-processes runtime)) do
     (dolist (lease (runtime-once-processes runtime)) (kill-execution runtime lease))
     (reap-managed-processes runtime)
     (when (or (runtime-retired-processes runtime) (runtime-once-processes runtime)) (sleep 0.01)))

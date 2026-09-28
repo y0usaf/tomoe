@@ -335,8 +335,8 @@ int tomoe_process_group_alive(struct execution *job) {
     return errno == ESRCH ? 0 : -errno;
 }
 
-int tomoe_exec_stop(struct execution *job) {
-    int result = pidfd_send_signal(job->pidfd, SIGKILL, NULL, PIDFD_SIGNAL_PROCESS_GROUP);
+int tomoe_exec_stop(struct execution *job, int sig) {
+    int result = pidfd_send_signal(job->pidfd, sig, NULL, PIDFD_SIGNAL_PROCESS_GROUP);
     int error = errno;
     close_fd(&job->out); close_fd(&job->err);
     return result == 0 || error == ESRCH ? 1 : -error;

@@ -133,8 +133,8 @@ only after it changes again."
   (argc sb-alien:int) (argv (* sb-alien:c-string)))
 
 (defun run-xwayland (arguments)
-  "Take an X display's lock and sockets, then become the X server named in ARGUMENTS
-on its first client."
+  "Take an X display's lock and sockets, run the X server named in ARGUMENTS as a
+child from its first client, and remove both once it exits or a stop signal arrives."
   (let ((argv (sb-alien:make-alien sb-alien:c-string (+ 2 (length arguments)))))
     (loop for argument in (cons "tomoe" arguments) for index from 0
           do (setf (sb-alien:deref argv index) argument))

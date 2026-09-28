@@ -7,7 +7,7 @@
   (job (* t)) (which sb-alien:int) (buffer (* sb-alien:unsigned-char)) (size sb-alien:unsigned-long))
 (sb-alien:define-alien-routine ("tomoe_exec_poll" %exec-poll) sb-alien:int (job (* t)))
 (sb-alien:define-alien-routine ("tomoe_exec_code" %exec-code) sb-alien:int (job (* t)))
-(sb-alien:define-alien-routine ("tomoe_exec_stop" %exec-stop) sb-alien:int (job (* t)))
+(sb-alien:define-alien-routine ("tomoe_exec_stop" %exec-stop) sb-alien:int (job (* t)) (sig sb-alien:int))
 (sb-alien:define-alien-routine ("tomoe_exec_release" %exec-release) sb-alien:int (job (* t)))
 
 (defvar *execution-supported* nil)
@@ -17,7 +17,7 @@
       (error "Owned execution requires Linux 6.9 process-group pidfd signals."))
     (setf *execution-supported* t)))
 
-(defstruct process-lease process stopped stop-error)
+(defstruct process-lease process stopped stop-error kill-at)
 (defstruct (owned-execution (:include process-lease))
   owner identity arguments stdout stderr (out-count 0) (err-count 0)
   out-eof err-eof deadline (status :pending) reason code error delivered (turn 0))
@@ -57,20 +57,27 @@
   (let ((text (princ-to-string condition))) (subseq text 0 (min 1024 (length text)))))
 
 (defun kill-execution (runtime job)
-  (when (process-lease-process job)
-    (when (process-lease-stopped job) (return-from kill-execution t))
-    (let ((result (%exec-stop (process-lease-process job))))
-      (cond
-        ((= result 1)
-         (setf (process-lease-stopped job) t (process-lease-stop-error job) nil)
-         t)
-        (t
-         (unless (eql result (process-lease-stop-error job))
-           (setf (process-lease-stop-error job) result)
-           (record-error runtime
-                         (make-condition 'simple-error :format-control "Execution cancellation failed: errno ~D."
-                                         :format-arguments (list (- result)))))
-         nil)))))
+  (let ((process (process-lease-process job)) (now (get-internal-real-time)))
+    (when process
+      (when (process-lease-stopped job) (return-from kill-execution t))
+      (let ((kill (or (plusp (%exec-poll process))
+                      (and (process-lease-kill-at job) (>= now (process-lease-kill-at job))))))
+        (unless (or kill (null (process-lease-kill-at job))) (return-from kill-execution nil))
+        (let ((result (%exec-stop process (if kill sb-posix:sigkill sb-posix:sigterm))))
+          (cond
+            ((= result 1)
+             (if kill
+                 (setf (process-lease-stopped job) t)
+                 (setf (process-lease-kill-at job) (+ now internal-time-units-per-second)))
+             (setf (process-lease-stop-error job) nil)
+             kill)
+            (t
+             (unless (eql result (process-lease-stop-error job))
+               (setf (process-lease-stop-error job) result)
+               (record-error runtime
+                             (make-condition 'simple-error :format-control "Execution cancellation failed: errno ~D."
+                                             :format-arguments (list (- result)))))
+             nil)))))))
 
 (defun install-executions (runtime plan)
   "Publish prepared ownership. Starting a command is deferred until service."
@@ -218,7 +225,7 @@
                                            :retired (append (runtime-retired-executions runtime)
                                                             (remove-if-not #'owned-execution-process
                                                                            (runtime-executions runtime)))))
-  (loop repeat 100 while (runtime-retired-executions runtime) do
+  (loop repeat 200 while (runtime-retired-executions runtime) do
     (reap-executions runtime)
     (when (runtime-retired-executions runtime) (sleep 0.01)))
   (when (runtime-retired-executions runtime)
