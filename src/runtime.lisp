@@ -453,7 +453,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                 :workareas shell-workareas
                 :surface-plans (copy-data surface-plans)
                 :surfaces (loop for plan in surface-plans
-                                collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer)
+                                collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer :click-through)
                                               append (list key (copy-data (getf plan key)))))
                 :view view :layout layout
                 :stacking (remove-if-not

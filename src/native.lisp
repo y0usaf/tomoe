@@ -65,7 +65,8 @@
 (define-native ("tomoe_present_ui_surface" %present-ui-surface) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (name sb-alien:c-string) (output sb-alien:c-string) (signature sb-alien:c-string)
-  (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int) (layer sb-alien:int))
+  (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int) (layer sb-alien:int)
+  (click-through sb-alien:int))
 (define-native ("tomoe_present_ui_clip" %present-ui-clip) sb-alien:int
   (server (* t)) (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int))
 (define-native ("tomoe_present_ui_rect" %present-ui-rect) sb-alien:int
@@ -272,7 +273,8 @@
              (status (%present-ui-surface backend (getf plan :owner) (getf plan :source-id)
                                           (string-downcase (getf plan :name)) (getf plan :output) signature
                                           (getf plan :x) (getf plan :y) (getf plan :width) (getf plan :height)
-                                          (ecase (getf plan :layer) (:background 0) (:bottom 1) (:top 2) (:overlay 3)))))
+                                          (ecase (getf plan :layer) (:background 0) (:bottom 1) (:top 2) (:overlay 3))
+                                          (if (getf plan :click-through) 1 0))))
         (unless (member status '(1 2)) (error "Cannot prepare shell surface ~S." (getf plan :name)))
         (when (= status 1)
           (dolist (id (getf plan :assets))

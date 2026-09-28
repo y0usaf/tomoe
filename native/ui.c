@@ -37,6 +37,7 @@ struct ui_surface {
     char *signature;
     uint64_t source_id;
     int x, y, width, height, layer;
+    bool click_through;
     size_t stride;
     uint64_t bytes;
     unsigned char *pixels;
@@ -203,13 +204,14 @@ static bool same_declaration(const struct ui_surface *surface,
 static bool same_cached_surface(const struct ui_surface *surface,
         const char *owner, uint64_t source_id, const char *name,
         const char *output, const char *signature, int x, int y,
-        int width, int height, int layer) {
+        int width, int height, int layer, bool click_through) {
     return surface->source_id == source_id &&
         string_equal(surface->owner, owner) && string_equal(surface->name, name) &&
         string_equal(surface->output, output) &&
         string_equal(surface->signature, signature) && surface->x == x &&
         surface->y == y && surface->width == width && surface->height == height &&
-        surface->layer == layer && surface->complete;
+        surface->layer == layer && surface->click_through == click_through &&
+        surface->complete;
 }
 
 static uint64_t reusable_callback_id(struct tomoe *s,
@@ -247,13 +249,14 @@ static bool surface_is_current(struct tomoe *s, struct ui_surface **out) {
 static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         const char *signature, int x, int y, int width, int height, int layer,
-        uint64_t bytes, size_t stride) {
+        bool click_through, uint64_t bytes, size_t stride) {
     struct ui_surface *surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
     surface->references = 1;
     surface->source_id = source_id;
     surface->x = x; surface->y = y;
     surface->width = width; surface->height = height; surface->layer = layer;
+    surface->click_through = click_through;
     surface->bytes = bytes; surface->stride = stride;
     surface->building = true;
     surface->clip_set = true;
@@ -287,9 +290,11 @@ failed:
 
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
-        const char *signature, int x, int y, int width, int height, int layer) {
+        const char *signature, int x, int y, int width, int height, int layer,
+        int click_through) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
-            height > UI_MAX_DIMENSION || layer < 0 || layer > 3) return 0;
+            height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
+            click_through < 0 || click_through > 1) return 0;
     struct ui_set *set = s->presentation->ui;
     if (!set) {
         set = calloc(1, sizeof(*set));
@@ -315,7 +320,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         for (size_t i = 0; i < s->ui->count; i++) {
             struct ui_surface *surface = s->ui->surfaces[i];
             if (same_cached_surface(surface, owner, source_id, name, output,
-                    signature, x, y, width, height, layer)) {
+                    signature, x, y, width, height, layer, click_through)) {
                 cached = surface;
                 break;
             }
@@ -333,7 +338,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     if (existing == UINT64_MAX || existing > UI_MAX_TOTAL_BYTES ||
             bytes > UI_MAX_TOTAL_BYTES - existing) return 0;
     struct ui_surface *surface = new_surface(s, owner, source_id, name, output,
-        signature, x, y, width, height, layer, bytes, stride);
+        signature, x, y, width, height, layer, click_through, bytes, stride);
     if (!surface) return 0;
     if (!set_append(set, surface)) {
         surface_unref(surface);
@@ -853,7 +858,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
                 .callback_id = hit->callback_id, .x = local_x, .y = local_y };
             return true;
         }
-        if (below) continue;
+        if (below || surface->click_through) continue;
         *out = (struct ui_hit){
             .owner = surface->owner, .name = surface->name,
             .output = surface->output, .source_id = surface->source_id,

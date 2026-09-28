@@ -485,7 +485,8 @@ reads. Available keys:
   resolved values, which are the client's request unless a unit overrides them.
 - `:focus`: a window ID or `nil`.
 - `:surfaces`: compositor shell rectangles with `:owner`, `:source-id`, `:name`,
-  `:output`, `:x`, `:y`, `:width`, `:height`, and `:layer`. Geometry is physical.
+  `:output`, `:x`, `:y`, `:width`, `:height`, `:layer`, and `:click-through`.
+  Geometry is physical.
 - `:bindings`: resolved modifiers, keysyms, owner names, and command names.
 - `:keyboard`: the resolved whole-seat XKB policy, with `:rules`, `:model`,
   `:layout`, `:variant`, `:options`, `:repeat-rate`, and `:repeat-delay`.
@@ -894,7 +895,7 @@ failure.
 
 `(ui KIND &rest PROPERTIES)` constructs copied declarative UI data. Return
 `(shell-surface NAME TREE &key width height anchors margin layer exclusive-zone
-visible output background color font-size)` as an owned effect. Names are keywords
+visible output background color font-size click-through)` as an owned effect. Names are keywords
 scoped to the declaring extension. [examples/shell.lisp](examples/shell.lisp)
 is a working bar with a private click counter; its state survives reload.
 
@@ -1002,8 +1003,11 @@ physical `:x`/`:y`, `:button`, and `:modifiers`. The deepest eligible element
 handles the click; a parent handles uncovered descendants. On `:top` and
 `:overlay` surfaces, blank regions and other buttons consume both edges without a
 callback. On `:background` and `:bottom` surfaces, input outside elements with
-`:on-click` or `:on-hover` passes through to bindings and the layers below. A
-held press retains only its consumed edge after unmount; stale callbacks cannot
+`:on-click` or `:on-hover` passes through to bindings and the layers below.
+`:click-through t` gives a surface on any layer that rule: a `:top` or
+`:overlay` surface then takes the pointer only over its `:on-click` and
+`:on-hover` elements, and motion, buttons, and scroll elsewhere reach whatever
+lies beneath it. A held press retains only its consumed edge after unmount; stale callbacks cannot
 enter a replacement source. Other reducers observe resulting context changes, without receiving the
 private click. Command effects returned by this event run after publication.
 
