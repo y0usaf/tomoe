@@ -1,7 +1,8 @@
-#define COLOR_DEEP (vec3(17, 17, 27) / 255.0)
-#define COLOR_LOW (vec3(30, 30, 46) / 255.0)
-#define COLOR_MID (vec3(62, 52, 96) / 255.0)
-#define COLOR_HIGH (vec3(137, 180, 250) / 255.0)
+#define HEX(c) (vec3(((c) >> 16) & 0xff, ((c) >> 8) & 0xff, (c) & 0xff) / 255.0)
+#define COLOR_DEEP HEX(0x11111b)
+#define COLOR_LOW HEX(0x1e1e2e)
+#define COLOR_MID HEX(0x3e3460)
+#define COLOR_HIGH HEX(0x89b4fa)
 #define HIGHLIGHT 0.3
 #define SPEED 0.02
 

@@ -1,8 +1,9 @@
-#define BACKGROUND_TOP (vec3(8, 7, 16) / 255.0)
-#define BACKGROUND_BOTTOM (vec3(20, 17, 38) / 255.0)
-#define GLOW_COLOR (vec3(52, 42, 104) / 255.0)
-#define CUBE_COLOR (vec3(112, 96, 214) / 255.0)
-#define EDGE_COLOR (vec3(30, 24, 66) / 255.0)
+#define HEX(c) (vec3(((c) >> 16) & 0xff, ((c) >> 8) & 0xff, (c) & 0xff) / 255.0)
+#define BACKGROUND_TOP HEX(0x080710)
+#define BACKGROUND_BOTTOM HEX(0x141126)
+#define GLOW_COLOR HEX(0x342a68)
+#define CUBE_COLOR HEX(0x7060d6)
+#define EDGE_COLOR HEX(0x1e1842)
 #define CYCLE 48.0
 #define SPIN 0.05
 #define CENTER_X 0.5

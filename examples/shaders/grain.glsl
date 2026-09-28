@@ -1,5 +1,6 @@
-#define BASE_COLOR (vec3(30, 30, 46) / 255.0)
-#define EDGE_COLOR (vec3(17, 17, 27) / 255.0)
+#define HEX(c) (vec3(((c) >> 16) & 0xff, ((c) >> 8) & 0xff, (c) & 0xff) / 255.0)
+#define BASE_COLOR HEX(0x1e1e2e)
+#define EDGE_COLOR HEX(0x11111b)
 #define GRAIN 0.08
 #define GRAIN_SIZE 1.0
 

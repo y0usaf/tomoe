@@ -1,8 +1,9 @@
-#define SKY_TOP (vec3(4, 5, 12) / 255.0)
-#define SKY_BOTTOM (vec3(17, 17, 32) / 255.0)
-#define BAND_COLOR (vec3(40, 36, 72) / 255.0)
-#define STAR_COLD (vec3(205, 214, 244) / 255.0)
-#define STAR_WARM (vec3(249, 226, 175) / 255.0)
+#define HEX(c) (vec3(((c) >> 16) & 0xff, ((c) >> 8) & 0xff, (c) & 0xff) / 255.0)
+#define SKY_TOP HEX(0x04050c)
+#define SKY_BOTTOM HEX(0x111120)
+#define BAND_COLOR HEX(0x282448)
+#define STAR_COLD HEX(0xcdd6f4)
+#define STAR_WARM HEX(0xf9e2af)
 #define DRIFT 0.004
 #define TWINKLE 0.4
 
