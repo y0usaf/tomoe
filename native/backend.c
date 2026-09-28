@@ -27,7 +27,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 35; }
+int tomoe_abi_version(void) { return 36; }
 static bool create_scene_trees(struct tomoe *s) {
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = node_create(s->scene);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = node_create(s->scene);
@@ -124,6 +124,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
 void tomoe_destroy(struct tomoe *s) {
     if (!s) return;
     s->stopping = true;
+    sound_finish(s);
     finish_captures(s);
     presentation_finish(s);
     lock_finish(s);

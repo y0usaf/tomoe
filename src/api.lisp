@@ -7,7 +7,7 @@
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
-           #:bind-button #:bind-scroll #:window-properties #:keyboard-grab
+           #:bind-button #:bind-scroll #:window-properties #:keyboard-grab #:sound
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 35)
+(defconstant +native-abi-version+ 36)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -141,7 +141,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
 
 (defstruct materialization
   layout stacking layers focused data surfaces keyboard-grab outputs bindings
-  (binding-order 0) keyboard settings view mod-bit)
+  (binding-order 0) keyboard settings view mod-bit sounds)
 
 (defun %materialized-window (m id)
   (find id (materialization-layout m) :key (lambda (window) (getf window :id))))
@@ -847,6 +847,38 @@ non-modifier keys with :KEYSYM. The latest owner wins."
                 (list :owner (spec-name (mounted-spec mounted))
                       :source-id (spec-id (mounted-spec mounted))
                       :otherwise (first args))))
+(defparameter +sound-events+ '(:key :close))
+(defun sound (event files &key (gain 0) (spread 0))
+  "Own the sound for EVENT: :KEY plays on every key press, :CLOSE when a window
+closes. FILES is a WAV path, or a list of up to 16 played in turn: 16-bit PCM or
+32-bit float, mono or stereo, at 48000 Hz. Relative paths resolve beside the
+declaring source. GAIN is in decibels, from -60 to 12. SPREAD, from 0 to 1, pans
+:KEY sounds toward the typing hand. Later owners replace an event's sound;
+omission restores the preceding owner."
+  (unless (member event +sound-events+) (error "Unknown sound event ~S." event))
+  (let ((files (if (listp files) files (list files))))
+    (unless (and (<= 1 (length files) 16)
+                 (every (lambda (file) (and (stringp file) (<= 1 (length file) 4096)
+                                            (not (find #\Null file))))
+                        files))
+      (error "A sound needs 1 through 16 file paths."))
+    (unless (and (%finite-real-p gain) (<= -60 gain 12)) (error "Sound gain must lie within -60 and 12 dB."))
+    (unless (and (%finite-real-p spread) (<= 0 spread 1)) (error "Sound spread must lie within 0 and 1."))
+    (%effect :sound (list event (mapcar #'copy-seq files) (%double-float gain) (%double-float spread)))))
+
+(define-effect :sound
+  :canonical (destructuring-bind (event files gain spread) args
+               (sound event files :gain gain :spread spread))
+  :reduce (destructuring-bind (event files gain spread) args
+            (let ((directory (spec-directory (mounted-spec mounted))))
+              (setf (getf (materialization-sounds m) event)
+                    (list :files (loop for file in files collect
+                                   (cond ((char= (char file 0) #\/) file)
+                                         ((and (stringp directory) (plusp (length directory))
+                                               (char= (char directory 0) #\/))
+                                          (concatenate 'string directory file))
+                                         (t (error "Relative sound paths require a declaring source."))))
+                          :gain gain :spread spread)))))
 (defun launch (&rest argv)
   "Launch literal argv once after acceptance; the session owns the child."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)

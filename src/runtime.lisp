@@ -460,6 +460,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                            (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
                            stacking)
                 :layers resolved-layers :focus focused :keyboard keyboard :settings settings
+                :sounds (materialization-sounds m)
                 :config-error (copy-data (runtime-config-error runtime))
                 :keyboard-grab keyboard-grab
                 :bindings (sort bindings
@@ -512,6 +513,7 @@ when it is not 1."
          (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
          (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
          (settings-changed (not (equal (getf old :settings) (getf context :settings))))
+         (sounds-changed (not (equal (getf old :sounds) (getf context :sounds))))
          (grab-changed (not (equal (getf old :keyboard-grab) (getf context :keyboard-grab))))
          (overrides (resolved-layer-overrides mounts))
          (grab (resolved-grab runtime mounts))
@@ -521,7 +523,7 @@ when it is not 1."
          (spawns (prepare-session-spawns runtime commands processes))
          (pending-spawns (append (remove nil spawns) (runtime-pending-spawns runtime))))
     (when (or (member :outputs (runtime-pending-context runtime))
-              outputs-changed bindings-changed keyboard-changed settings-changed grab-changed
+              outputs-changed bindings-changed keyboard-changed settings-changed sounds-changed grab-changed
               restack layout-changed focus-changed
               (not (equal (getf old :outputs) (getf context :outputs)))
               (not (equal (getf old :view) (getf context :view)))
@@ -531,7 +533,7 @@ when it is not 1."
               (not (equal grab (applied-grab backend))))
       (configure-native-presentation backend outputs context overrides restack
                                      outputs-changed bindings-changed grab keyboard-changed
-                                     settings-changed))
+                                     settings-changed sounds-changed))
     (when outputs-changed
       (setf (runtime-outputs runtime) (getf context :outputs)
             (runtime-connectors runtime) (getf context :connectors))
@@ -1008,6 +1010,8 @@ accepted registry. Never enter this helper inside a candidate transaction."
                   :native-grab (describe-grab (applied-grab (runtime-backend runtime)))
                   :native-ui (when (runtime-backend runtime)
                                (read-data (%ui-stats (runtime-backend runtime))))
+                  :native-sound (when (runtime-backend runtime)
+                                  (read-data (%sound-stats (runtime-backend runtime))))
                   :watch (runtime-watch runtime)
                   :timers (describe-timers runtime)
                   :watches (describe-watches runtime)

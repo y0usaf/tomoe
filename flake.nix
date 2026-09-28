@@ -130,6 +130,7 @@
             pkgs.systemdLibs
             pkgs.lcms2
             pkgs.zstd
+            (pipewire pkgs)
           ];
           strictDeps = true;
           dontStrip = true;
@@ -181,9 +182,9 @@
             done
             $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
               -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
-              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
+              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3) \
               ${sbcl}/lib/sbcl/sbcl.o native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
-              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libsystemd) \
+              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
               -lresvg -ldl -lpthread -lzstd -lm
             SBCL_HOME=${sbcl}/lib/sbcl \
             TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \

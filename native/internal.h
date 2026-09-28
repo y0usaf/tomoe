@@ -587,8 +587,14 @@ struct presentation {
     char *grab_owner, *grab_otherwise;
     uint64_t grab_source;
     bool grab_staged;
+    struct sound_bank *sounds;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
+enum sound_event { SOUND_KEY, SOUND_CLOSE, SOUND_EVENTS };
+void sound_play(struct tomoe *s, enum sound_event event, int side);
+void sound_publish(struct tomoe *s, struct presentation *plan);
+void sound_bank_free(struct sound_bank *bank);
+void sound_finish(struct tomoe *s);
 struct surface;
 struct subsurface;
 struct release;
@@ -754,6 +760,7 @@ struct tomoe {
     struct settings settings;
     struct effects *effects;
     struct screenshot *screenshot;
+    struct sound *sound;
     struct session *session;
     struct kms *kms;
     enum screen_kind backend;

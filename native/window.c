@@ -644,7 +644,10 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     foreign_forget(s, w->target.id);
     wl_list_remove(&w->link);
     w->tree->data = NULL;
-    if (admitted) unmap_event(s, w->target.id);
+    if (admitted) {
+        sound_play(s, SOUND_CLOSE, 0);
+        unmap_event(s, w->target.id);
+    }
     schedule_scene(s);
     free(w->xdg_title);
     free(w->xdg_app_id);

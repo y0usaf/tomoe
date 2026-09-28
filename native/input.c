@@ -1549,14 +1549,14 @@ static void logical_key_event_done(struct tomoe *s, uint32_t keycode,
         logical_key_transition(s, keycode, state);
 }
 
-static const char *keyboard_hand(uint32_t keycode) {
+static bool keyboard_left_hand(uint32_t keycode) {
     static const uint32_t left_keys[] = {
         1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 29, 30, 31, 32, 33,
         34, 41, 42, 44, 45, 46, 47, 48, 56, 58, 125,
     };
     for (size_t i = 0; i < sizeof(left_keys) / sizeof(left_keys[0]); i++)
-        if (left_keys[i] == keycode) return "left";
-    return "right";
+        if (left_keys[i] == keycode) return true;
+    return false;
 }
 
 static void keyboard_activity(struct tomoe *s, uint32_t keycode) {
@@ -1564,7 +1564,7 @@ static void keyboard_activity(struct tomoe *s, uint32_t keycode) {
     FILE *out = begin_event(s, &event, &size);
     if (!out) return;
     fputs("(:type :activity :hand ", out);
-    quote(out, keyboard_hand(keycode));
+    quote(out, keyboard_left_hand(keycode) ? "left" : "right");
     fputc(')', out);
     end_event(s, event, out);
 }
@@ -1581,8 +1581,10 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         k->xkb.modifiers = keyboard_modifiers_from_state(k->xkb.xkb_state);
     }
     idle_notify_activity(s);
-    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+        sound_play(s, SOUND_KEY, keyboard_left_hand(input->keycode) ? -1 : 1);
         keyboard_activity(s, input->keycode);
+    }
     bool tracked = input->keycode < TOMOE_KEYCODE_COUNT;
 
     bool was_pressed = tracked && k->pressed[input->keycode];

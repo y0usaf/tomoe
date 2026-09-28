@@ -100,6 +100,10 @@ const char *tomoe_ui_stats(struct tomoe *server);
 int tomoe_present_settings(struct tomoe *server);
 int tomoe_present_setting(struct tomoe *server, const char *key, double value);
 int tomoe_present_setting_text(struct tomoe *server, const char *key, const char *text);
+int tomoe_present_sounds(struct tomoe *server);
+const char *tomoe_present_sound(struct tomoe *server, int event, const char *path,
+    double gain, double spread);
+const char *tomoe_sound_stats(struct tomoe *server);
 const char *tomoe_present_apply(struct tomoe *server);
 void tomoe_present_abort(struct tomoe *server);
 #endif

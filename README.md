@@ -239,7 +239,7 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 35; the additive inspect fields keep control wire version 1.
+The native ABI is 36; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -366,6 +366,7 @@ The public API is in `src/api.lisp`:
 (hide-window id)
 (bind-key '(:super :shift) "r" :reload)
 (configure-keyboard :layout "us" :options nil :repeat-rate 25 :repeat-delay 600)
+(sound :key '("tick-1.wav" "tick-2.wav") :gain -18 :spread 0.35) ; or :close
 (layer id &key layer exclusive-zone keyboard visible)
 (fullscreen id flag)
 (maximize id flag)
@@ -532,7 +533,7 @@ do not replay the request on a later transaction.
 Owned effects are `publish-state`, `place`, `focus`, `raise-window`, `show-window`, `hide-window`,
 `bind-key`, `configure-output`, `layer`,
 `fullscreen`, `maximize`, `grab`, `set-view`, `once`, `interval`, and
-`exec-async`, `run-once`, `service`, and `window-rule`.
+`exec-async`, `run-once`, `service`, `sound`, and `window-rule`.
 Return the complete desired set each time.
 Later-mounted units win conflicts. Omitting an effect removes that unit's
 contribution. `place` uses integer physical world coordinates and positive requested sizes up to
@@ -1162,6 +1163,39 @@ compositor needs no write access to sysfs. A missing backlight or a refused
 call is reported as the last error. `TOMOE_BACKLIGHT_ROOT` selects an alternate
 backlight class directory.
 
+## Sounds
+
+`(sound EVENT FILES &key gain spread)` owns the sound for one event. `:key`
+plays on every key press the seat receives, bound or not, including while the
+session is locked; `:close` plays when a window's lifetime ends, the same
+moment as `window_close`. FILES is a WAV path or a list of up to 16, played in
+turn. Each must be 16-bit PCM or 32-bit float, mono or stereo, at 48000 Hz;
+relative paths resolve beside the declaring source. GAIN is in decibels, from
+-60 to 12. SPREAD, from 0 to 1, pans `:key` sounds toward the hand that typed,
+as `keyboard_activity` reports it. The key never reaches policy.
+
+```lisp
+(define-extension "sounds" () (snapshot state event)
+  (declare (ignore snapshot event))
+  (values state
+          (list (sound :key '("click-1.wav" "click-2.wav" "click-3.wav") :gain -18 :spread 0.35)
+                (sound :close "close.wav" :gain -6))
+          nil))
+```
+
+Files load when the declaration changes; an unreadable or unsupported file
+fails the transaction with its reason and keeps the previous sounds. The
+latest owner of an event wins, and omission restores the preceding owner.
+While any sound is declared, the compositor holds one PipeWire playback stream
+open at a 256-frame quantum, so the audio device stays awake; decoded samples
+stay in memory and the input path only queues them, lock-free, for the stream's
+realtime thread. The stream is set up and connected on its own thread, which
+retries once a second while PipeWire is away; events while the stream is not
+running play nothing and are not queued. Withdrawing the last sound disconnects
+and joins that thread. `inspect` reports `:sounds` and `:native-sound`, whose
+`:state` is `:off`, `:connecting`, `:streaming`, `:retrying` or `:failed`, with
+the last `:error` and counts of `:played` and `:dropped` sounds.
+
 ## Network
 
 Declare `:reads (:services)` and call `(service-state snapshot :network)` for
@@ -1518,6 +1552,7 @@ protocol, not an unauthenticated REPL.
 - `native/ui.c`, `src/ui.lisp`: retained shell textures, text/vector rasterization,
   declarative layout, and clipped hit targets.
 - `native/ui-assets.c`: source-owned PNG/JPEG/SVG decoding and retained asset lifetimes.
+- `native/sound.c`: WAV decoding and PipeWire playback for owned sounds.
 - `native/input.c`: pointer routing, keyboards, key bindings, pointer grabs.
 - `native/buffer.c`: wl_shm and linux-dmabuf client buffers.
 - `native/base.c`: buffers, boxes, regions, transforms, format sets, syncobj

@@ -7,6 +7,7 @@ void presentation_finish(struct tomoe *s) {
     presentation_bindings_finish(s->presentation);
     keyboard_profile_finish(s->presentation->keyboard);
     if (s->presentation->settings) settings_finish(s->presentation->settings);
+    sound_bank_free(s->presentation->sounds);
     free(s->presentation->grab_owner);
     free(s->presentation->grab_otherwise);
     free(s->presentation->settings);
@@ -185,6 +186,7 @@ void presentation_publish(struct tomoe *s) {
     }
     presentation_input_publish(s, plan);
     settings_publish(s, plan);
+    sound_publish(s, plan);
     uint32_t previous_focus = s->focused;
     if (plan->restack || s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);

@@ -65,9 +65,9 @@ for xml in \
 done
 if [ ! -f build/tomoe-runtime ] || [ -n "$(find native build -newer build/tomoe-runtime \( -name '*.[ch]' -o -name '*.o' \) -print -quit)" ]; then
   cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
-    $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2) \
+    $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3) \
     "$SBCL_HOME/sbcl.o" native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
-    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libsystemd) \
+    $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
     -lresvg -ldl -lpthread -lzstd -lm
 fi
 
