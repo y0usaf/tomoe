@@ -19,4 +19,11 @@ assert usable["y"] <= box["y"] and box["y"] + box["h"] <= usable["y"] + usable["
 assert (box["w"], box["h"]) != (320, 200), f"the window kept its own size: {box}"
 machine.succeed(f"journalctl -u window -o cat | grep -qx 'configured {box['w']}x{box['h']}'")
 
+cli(f"mount {ZOOMER}")
+status, output = machine.execute(ENV + "tomoe --socket check command zoomer zoom-scroll-in")
+assert status == 1 and "tomoe event" in output, (status, output)
+zoomer = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)[":NAME"]) == "zoomer")
+assert zoomer[":LAST-ERROR"] == "NIL", zoomer[":LAST-ERROR"]
+cli("unmount zoomer")
+
 quit()

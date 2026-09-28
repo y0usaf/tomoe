@@ -288,6 +288,8 @@ extension failures, and the last error. Its `:x-display` field is the `DISPLAY` 
 instance exported for X11 clients. Mutating commands print nothing on
 success and return a nonzero exit status on failure. `command OWNER NAME`
 invokes an active binding through the same extension dispatch as keyboard input.
+It refuses a name bound only by `bind-button` or `bind-scroll`, whose events
+carry pointer data it cannot supply; send those with `event`.
 
 `event` sends one data property list to a live instance as an injected input
 event: its `:type` must be `:key`, `:button`, or `:grab`. It exists so a policy
@@ -593,9 +595,10 @@ lease across unrelated transactions. Removing and re-adding it, changing
 either command, or replacing the source cancels an existing release callback,
 even if the new declaration is textually identical. A failed reload keeps the
 previous binding and its leases. The `command OWNER NAME` control operation
-first invokes a matching press command, or invokes a matching release command
-when no press has that name; the synthetic release event has `:state :released`
-but no `:device` or `:keycode`.
+considers only the owner's key bindings: it first invokes a matching press
+command, or invokes a matching release command when no press has that name; the
+synthetic release event has `:state :released` but no `:device` or `:keycode`.
+A name that only pointer bindings carry is an error.
 
 Reducers that track held keys should read `:bindings` and clear transient state
 when another owner supersedes their shortcut. Clear it on `:mount` too, because

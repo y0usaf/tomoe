@@ -55,7 +55,12 @@ let
     };
 in
 {
-  integration = check "integration" (builtins.readFile ./integration.py);
+  integration = check "integration" (
+    ''
+      ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
+    ''
+    + builtins.readFile ./integration.py
+  );
   bare = check "bare" (builtins.readFile ./bare.py);
   clean-unmount = check "clean-unmount" (
     ''
