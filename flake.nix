@@ -255,6 +255,16 @@
           };
         }
       );
+      checks = eachSystem (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        import ./tests {
+          inherit pkgs;
+          tomoe = package pkgs;
+        }
+      );
       formatter = eachSystem (system: (pkgsFor system).nixfmt);
     };
 }

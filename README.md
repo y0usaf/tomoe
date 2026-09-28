@@ -32,6 +32,12 @@ nix build
 nix run .
 ```
 
+`nix flake check` boots NixOS VMs (it needs the `kvm` system feature) and
+drives the built compositor headless through its CLI and sockets:
+`integration` maps a window under the shipped builtins, `clean-unmount` mounts,
+exercises and unmounts every builtin and example and fails on any state,
+process or file left behind, and `bare` starts and quits with no builtins.
+
 The default backend is `auto`. It opens a nested window when a parent Wayland
 display is available; otherwise it uses DRM for a direct session from a TTY.
 An explicit `WAYLAND_DISPLAY` takes priority. When it is unset or empty, startup
