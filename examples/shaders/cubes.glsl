@@ -10,12 +10,11 @@
 #define AA 2
 
 const float HALF = 0.46;
-
-float hash(uint n) {
-    n = (n << 13u) ^ n;
-    n = n * (n * n * 15731u + 789221u) + 1376312589u;
-    return float(n >> 8u) / 16777216.0;
-}
+const float ARRIVE = 0.34;
+const float FLIGHT = 0.1;
+const float LEAVE = 0.84;
+const float SETTLED = 0.02 + ARRIVE * 26.6 / 27.0 + FLIGHT;
+const float REACH = 1.7321 + HALF * 1.7321;
 
 mat3 rotation(vec3 axis, float angle) {
     float s = sin(angle), c = cos(angle), o = 1.0 - c;
@@ -24,35 +23,31 @@ mat3 rotation(vec3 axis, float angle) {
                 o * axis.z * axis.x + axis.y * s, o * axis.y * axis.z - axis.x * s, o * axis.z * axis.z + c);
 }
 
-float away(int n, float u) {
-    float order = float(n) + 0.6 * hash(uint(n) * 7u);
-    float arrive = 0.02 + 0.34 * order / 27.0;
-    float leave = 0.84 + 0.1 * (26.0 - float(n)) / 26.0;
-    return clamp(1.0 - smoothstep(arrive, arrive + 0.1, u) + smoothstep(leave, leave + 0.05, u), 0.0, 1.0);
-}
-
-vec3 place(int n, float w) {
-    vec3 slot = vec3(float(n % 3), float(n / 9), float((n / 3) % 3)) - 1.0;
-    float theta = 6.2831853 * hash(uint(n) * 7u + 1u);
-    float phi = mix(-0.25, 0.8, hash(uint(n) * 7u + 2u));
-    vec3 from = mix(7.0, 11.0, hash(uint(n) * 7u + 3u)) * vec3(cos(theta) * cos(phi), sin(phi), sin(theta) * cos(phi));
-    return slot + from * w + vec3(0.0, 1.5 * sin(3.1415927 * w), 0.0);
-}
-
 vec3 trace(vec3 ro, vec3 rd, vec3 light, float u, vec3 background, out float near) {
+    near = length(cross(ro, rd)) - REACH;
+    if (u >= SETTLED && u < LEAVE && near > 0.0) return background;
     float best = 1e9;
     vec3 normal = vec3(0.0);
     float edge = 0.0;
-    near = 1e9;
-    for (int n = 0; n < 27; n++) {
-        float w = away(n, u);
-        vec3 v = place(n, w) - ro;
+    float closest = 1e9;
+    for (int y = 0; y < 3; y++)
+    for (int z = 0; z < 3; z++)
+    for (int x = 0; x < 3; x++) {
+        float f = float(x + 3 * z + 9 * y);
+        vec4 r = fract(f * vec4(0.7548777, 0.5698403, 0.4142136, 0.3183099) + vec4(0.13, 0.71, 0.37, 0.89));
+        float arrive = 0.02 + ARRIVE * (f + 0.6 * r.w) / 27.0;
+        float leave = LEAVE + 0.1 * (26.0 - f) / 26.0;
+        float w = clamp(1.0 - smoothstep(arrive, arrive + FLIGHT, u) + smoothstep(leave, leave + 0.05, u), 0.0, 1.0);
+        vec3 center = vec3(x, y, z) - 1.0;
+        if (w > 0.0)
+            center += normalize(vec3(r.x * 2.0 - 1.0, r.y * 1.1 - 0.3, r.z * 2.0 - 1.0)) * mix(7.0, 11.0, r.w) * w
+                + vec3(0.0, 6.0 * w * (1.0 - w), 0.0);
+        vec3 v = center - ro;
         float along = dot(v, rd);
-        float miss = sqrt(max(dot(v, v) - along * along, 0.0)) - HALF * 1.7321;
-        near = min(near, miss);
-        if (miss > 0.0) continue;
-        vec3 axis = normalize(vec3(hash(uint(n) * 7u + 4u), hash(uint(n) * 7u + 5u), hash(uint(n) * 7u + 6u)) - 0.5);
-        mat3 turn = rotation(axis, w * 3.1415927 * (1.5 + 2.0 * hash(uint(n) * 7u + 1u)));
+        float lateral = dot(v, v) - along * along;
+        closest = min(closest, lateral);
+        if (lateral > 3.0 * HALF * HALF) continue;
+        mat3 turn = w > 0.0 ? rotation(normalize(r.yzw - 0.5), w * (4.71 + 6.28 * r.x)) : mat3(1.0);
         vec3 o = -v * turn;
         vec3 d = rd * turn;
         vec3 m = 1.0 / d;
@@ -68,6 +63,7 @@ vec3 trace(vec3 ro, vec3 rd, vec3 light, float u, vec3 background, out float nea
         vec3 face = abs(o + d * tn) * (1.0 - abs(local));
         edge = max(max(face.x, face.y), face.z);
     }
+    near = sqrt(max(closest, 0.0)) - HALF * 1.7321;
     if (best > 1e8) return background;
     vec3 color = CUBE_COLOR * (0.3 + 0.85 * max(dot(normal, light), 0.0));
     return mix(color, EDGE_COLOR, smoothstep(HALF - 0.04, HALF - 0.015, edge));
