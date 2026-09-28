@@ -26,4 +26,28 @@ zoomer = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)
 assert zoomer[":LAST-ERROR"] == "NIL", zoomer[":LAST-ERROR"]
 cli("unmount zoomer")
 
+
+def pixel(px, py):
+    return [int(v) for v in machine.succeed(
+        ENV + f"WAYLAND_DISPLAY=check grim -c -g '{px},{py} 1x1' -t ppm - | tail -c 3 | od -An -tu1"
+    ).split()]
+
+
+def shaded(color, factor):
+    return all(abs(a - b * factor) <= 2 for a, b in zip(color, (0x33, 0x66, 0x99)))
+
+
+screen = json.loads(cli("msg outputs"))[0]["geometry"]
+x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+middle, corner = (x + w // 2, y + h // 2), (x + w // 8, y + h // 8)
+cli(f"mount {SCREENSHOT_PROBE}")
+cli("command screenshot-probe select")
+assert all(shaded(pixel(*middle), 0.6) for _ in range(4)), "the screenshot overlay does not dim the output"
+machine.succeed(
+    ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --mode drag --size {screen['w']}x{screen['h']} "
+    f"--drag {x + w // 4},{y + h // 4},{x + 3 * w // 4},{y + 3 * h // 4}"
+)
+assert all(shaded(pixel(*middle), 1) for _ in range(4)), "the screenshot selection is still dimmed"
+assert shaded(pixel(*corner), 0.6), "outside the screenshot selection is not dimmed"
+
 quit()

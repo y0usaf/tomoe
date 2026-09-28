@@ -684,8 +684,8 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
         pixman_box32_t *e = options->clip ? pixman_region32_extents(options->clip) : NULL;
         if (e && !box_intersection(&shown, &box,
                 &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
-        double params[] = { 1, c->r, c->g, c->b, c->a, options->blend_mode,
-            e ? e->x1 : 0, e ? e->y1 : 0, e ? e->x2 : 0, e ? e->y2 : 0 };
+        double params[] = { 1, box.x, box.y, box.width, box.height, c->r, c->g, c->b, c->a,
+            options->blend_mode, e ? e->x1 : 0, e ? e->y1 : 0, e ? e->x2 : 0, e ? e->y2 : 0 };
         pass_record(pass, NULL, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
         return;
     }

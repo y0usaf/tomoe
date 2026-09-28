@@ -12,7 +12,8 @@ let
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       for xml in ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
-        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml; do
+        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
+        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml; do
         name=$(basename "$xml" .xml)
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
@@ -32,6 +33,15 @@ let
                                      :bind ((:mod :shift) "w" :next))))
               nil))
   '';
+  screenshotProbe = pkgs.writeText "screenshot-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "screenshot-probe" (:reads (:key) :state nil) (snapshot state event)
+      (declare (ignore snapshot))
+      (values state
+              (list (bind-key '(:super) "F12" :select))
+              (when (and (eq (getf event :type) :key) (equal (getf event :owner) "screenshot-probe"))
+                (list (screenshot)))))
+  '';
   check =
     name: script:
     pkgs.testers.runNixOSTest {
@@ -45,6 +55,7 @@ let
         environment.systemPackages = [
           tomoe
           client
+          pkgs.grim
           pkgs.libnotify
           pkgs.xdpyinfo
         ];
@@ -58,6 +69,7 @@ in
   integration = check "integration" (
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
+      SCREENSHOT_PROBE = "${screenshotProbe}"
     ''
     + builtins.readFile ./integration.py
   );

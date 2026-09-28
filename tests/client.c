@@ -13,9 +13,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <linux/input-event-codes.h>
 #include <wayland-client.h>
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
@@ -26,6 +28,7 @@ static struct wl_shm *shm;
 static struct xdg_wm_base *wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static uint32_t layer_shell_version;
+static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 
 static volatile sig_atomic_t running = 1;
 
@@ -34,6 +37,7 @@ struct client {
     int width, height, seconds;
     uint32_t layer, anchor, exclusive_zone, keyboard;
     int preferred_width, preferred_height;
+    int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
     struct wl_surface *surface;
@@ -88,6 +92,7 @@ static void finish(int code) {
     if (client->pixels) munmap(client->pixels, client->pixels_size);
     if (wm_base) xdg_wm_base_destroy(wm_base);
     if (layer_shell) zwlr_layer_shell_v1_destroy(layer_shell);
+    if (pointer_manager) zwlr_virtual_pointer_manager_v1_destroy(pointer_manager);
     if (shm) wl_shm_destroy(shm);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
@@ -138,6 +143,13 @@ static void parse_size(const char *text, int *width, int *height) {
     *height = h;
 }
 
+static void parse_drag(const char *text, int drag[4]) {
+    int consumed = 0;
+    if (sscanf(text, "%d,%d,%d,%d%n", &drag[0], &drag[1], &drag[2], &drag[3], &consumed) != 4 ||
+        consumed != (int)strlen(text) || drag[0] < 0 || drag[1] < 0 || drag[2] < 0 || drag[3] < 0)
+        fail("--drag needs X,Y,X,Y with no negative numbers, got \"%s\"", text);
+}
+
 static uint32_t parse_color(const char *text) {
     char *end = NULL;
     unsigned long value = strtoul(text, &end, 16);
@@ -178,8 +190,8 @@ static uint32_t parse_anchor(const char *text) {
 }
 
 static void usage(void) {
-    printf("Usage: %s --mode xdg|layer [options]\n"
-           "  --mode xdg|layer     surface kind (default xdg)\n"
+    printf("Usage: %s --mode xdg|layer|drag [options]\n"
+           "  --mode xdg|layer|drag  surface kind, or a left-button drag (default xdg)\n"
            "  --app-id NAME        xdg only (default tomoe-test-client)\n"
            "  --title TEXT         xdg only\n"
            "  --namespace NAME     layer only (default tomoe-test)\n"
@@ -187,7 +199,8 @@ static void usage(void) {
            "  --anchor LIST        layer only, comma list of top,bottom,left,right\n"
            "  --exclusive-zone N   layer only, 0..4096\n"
            "  --keyboard MODE      layer only: none, exclusive, on-demand\n"
-           "  --size WxH           buffer size (default 320x240)\n"
+           "  --size WxH           buffer size, or the drag's pointer extent (default 320x240)\n"
+           "  --drag X,Y,X,Y       drag only: press at the first point, release at the second\n"
            "  --color RRGGBB       buffer fill (default 336699)\n"
            "  --seconds N          run time (default 30)\n",
            program);
@@ -209,13 +222,15 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--size") == 0)
         { parse_size(option_value(option, value), &state->width, &state->height); i++; }
         else if (strcmp(option, "--color") == 0) { state->color = option_value(option, value); i++; }
+        else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
     }
-    if (strcmp(state->mode, "xdg") != 0 && strcmp(state->mode, "layer") != 0)
-        fail("--mode needs xdg or layer, got \"%s\"", state->mode);
+    if (strcmp(state->mode, "xdg") != 0 && strcmp(state->mode, "layer") != 0 &&
+        strcmp(state->mode, "drag") != 0)
+        fail("--mode needs xdg, layer or drag, got \"%s\"", state->mode);
     if (!*state->app_id) fail("--app-id needs a name");
     if (!*state->layer_namespace) fail("--namespace needs a name");
     parse_color(state->color);
@@ -233,6 +248,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
     } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         layer_shell_version = version < 4 ? version : 4;
         layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, layer_shell_version);
+    } else if (strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0) {
+        pointer_manager = wl_registry_bind(registry, name, &zwlr_virtual_pointer_manager_v1_interface, 1);
     }
 }
 
@@ -388,6 +405,24 @@ static void setup_layer(struct client *state) {
     wl_surface_commit(state->surface);
 }
 
+static void drag(struct client *state) {
+    struct zwlr_virtual_pointer_v1 *pointer =
+        zwlr_virtual_pointer_manager_v1_create_virtual_pointer(pointer_manager, NULL);
+    for (int i = 0; i < 2; i++) {
+        zwlr_virtual_pointer_v1_motion_absolute(pointer, 0, (uint32_t)state->drag[2 * i],
+                                                (uint32_t)state->drag[2 * i + 1],
+                                                (uint32_t)state->width, (uint32_t)state->height);
+        zwlr_virtual_pointer_v1_frame(pointer);
+        zwlr_virtual_pointer_v1_button(pointer, 0, BTN_LEFT,
+                                       i ? WL_POINTER_BUTTON_STATE_RELEASED : WL_POINTER_BUTTON_STATE_PRESSED);
+        zwlr_virtual_pointer_v1_frame(pointer);
+    }
+    zwlr_virtual_pointer_v1_destroy(pointer);
+    roundtrip("the drag");
+    printf("dragged\n");
+    finish(0);
+}
+
 static double elapsed(struct timespec *start) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -457,7 +492,10 @@ int main(int count, char **arguments) {
     roundtrip("the registry");
     if (!compositor) fail("the compositor does not advertise wl_compositor");
     if (!shm) fail("the compositor does not advertise wl_shm");
-    if (strcmp(state.mode, "xdg") == 0) {
+    if (strcmp(state.mode, "drag") == 0) {
+        if (!pointer_manager) fail("the compositor does not advertise zwlr_virtual_pointer_manager_v1");
+        drag(&state);
+    } else if (strcmp(state.mode, "xdg") == 0) {
         if (!wm_base) fail("the compositor does not advertise xdg_wm_base");
         setup_xdg(&state);
     } else {

@@ -662,7 +662,7 @@ struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
-    if (s->view_zoom != 1 || lock_active(s) || ui_on_output(o, 2)) return NULL;
+    if (s->view_zoom != 1 || lock_active(s) || s->screenshot || ui_on_output(o, 2)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
     struct dmabuf_attributes dmabuf;
