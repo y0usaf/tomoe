@@ -66,7 +66,7 @@ in
     ''
       WALLPAPER_SETTINGS = "${wallpaperSettings}"
       SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
-          "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.attrNames (builtins.readDir ../examples))}
+          "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
       )
     ''
     + builtins.readFile ./clean-unmount.py

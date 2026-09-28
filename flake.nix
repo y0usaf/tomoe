@@ -213,6 +213,7 @@
               "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
+            install -Dm644 -t $out/share/tomoe/examples/shaders examples/shaders/*.glsl
             runHook postInstall
           '';
           meta = {
