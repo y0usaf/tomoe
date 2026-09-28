@@ -239,7 +239,7 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 36; the additive inspect fields keep control wire version 1.
+The native ABI is 37; the additive inspect fields keep control wire version 1.
 
 ## X11 clients
 
@@ -366,7 +366,7 @@ The public API is in `src/api.lisp`:
 (hide-window id)
 (bind-key '(:super :shift) "r" :reload)
 (configure-keyboard :layout "us" :options nil :repeat-rate 25 :repeat-delay 600)
-(sound :key '("tick-1.wav" "tick-2.wav") :gain -18 :spread 0.35) ; or :close
+(sound :key '("tick-1.wav" "tick-2.wav") :gain -18) ; or :button, :open, :close
 (layer id &key layer exclusive-zone keyboard visible)
 (fullscreen id flag)
 (maximize id flag)
@@ -1165,20 +1165,23 @@ backlight class directory.
 
 ## Sounds
 
-`(sound EVENT FILES &key gain spread)` owns the sound for one event. `:key`
-plays on every key press the seat receives, bound or not, including while the
-session is locked; `:close` plays when a window's lifetime ends, the same
-moment as `window_close`. FILES is a WAV path or a list of up to 16, played in
-turn. Each must be 16-bit PCM or 32-bit float, mono or stereo, at 48000 Hz;
-relative paths resolve beside the declaring source. GAIN is in decibels, from
--60 to 12. SPREAD, from 0 to 1, pans `:key` sounds toward the hand that typed,
-as `keyboard_activity` reports it. The key never reaches policy.
+`(sound EVENT FILES &key gain)` owns the sound for one event. `:key` plays on
+every key press the seat receives and `:button` on every pointer button press,
+bound or not, including while the session is locked or a screenshot is being
+taken. `:open` plays when a window is first admitted and `:close` when its
+lifetime ends, the same moments as `window_open` and `window_close`. FILES is a
+WAV path or a list of up to 16, played in turn. Each must be 16-bit PCM or
+32-bit float, mono or stereo, at 48000 Hz; relative paths resolve beside the
+declaring source. GAIN is in decibels, from -60 to 12. Neither the key nor the
+button reaches policy.
 
 ```lisp
 (define-extension "sounds" () (snapshot state event)
   (declare (ignore snapshot event))
   (values state
-          (list (sound :key '("click-1.wav" "click-2.wav" "click-3.wav") :gain -18 :spread 0.35)
+          (list (sound :key '("click-1.wav" "click-2.wav" "click-3.wav") :gain -18)
+                (sound :button "select.wav" :gain -15)
+                (sound :open "open.wav" :gain -6)
                 (sound :close "close.wav" :gain -6))
           nil))
 ```

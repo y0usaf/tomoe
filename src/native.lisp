@@ -183,8 +183,7 @@
   (otherwise sb-alien:c-string))
 (define-native ("tomoe_present_sounds" %present-sounds) sb-alien:int (server (* t)))
 (define-native ("tomoe_present_sound" %present-sound) sb-alien:c-string
-  (server (* t)) (event sb-alien:int) (path sb-alien:c-string) (gain sb-alien:double)
-  (spread sb-alien:double))
+  (server (* t)) (event sb-alien:int) (path sb-alien:c-string) (gain sb-alien:double))
 (define-native ("tomoe_sound_stats" %sound-stats) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_apply" %present-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_stack" %present-stack) sb-alien:int
@@ -391,7 +390,7 @@
            (loop for event in +sound-events+ for code from 0
                  for entry = (getf (getf context :sounds) event) do
              (dolist (file (getf entry :files))
-               (let ((message (%present-sound backend code file (getf entry :gain) (getf entry :spread))))
+               (let ((message (%present-sound backend code file (getf entry :gain))))
                  (when message (error "Cannot load sound ~A: ~A" file message))))))
          (let ((grab (getf context :keyboard-grab)))
            (unless (= 1 (%present-keyboard-grab backend (or (getf grab :owner) "") (or (getf grab :source-id) 0)

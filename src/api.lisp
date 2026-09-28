@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 36)
+(defconstant +native-abi-version+ 37)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -847,14 +847,14 @@ non-modifier keys with :KEYSYM. The latest owner wins."
                 (list :owner (spec-name (mounted-spec mounted))
                       :source-id (spec-id (mounted-spec mounted))
                       :otherwise (first args))))
-(defparameter +sound-events+ '(:key :close))
-(defun sound (event files &key (gain 0) (spread 0))
-  "Own the sound for EVENT: :KEY plays on every key press, :CLOSE when a window
-closes. FILES is a WAV path, or a list of up to 16 played in turn: 16-bit PCM or
-32-bit float, mono or stereo, at 48000 Hz. Relative paths resolve beside the
-declaring source. GAIN is in decibels, from -60 to 12. SPREAD, from 0 to 1, pans
-:KEY sounds toward the typing hand. Later owners replace an event's sound;
-omission restores the preceding owner."
+(defparameter +sound-events+ '(:key :button :open :close))
+(defun sound (event files &key (gain 0))
+  "Own the sound for EVENT: :KEY plays on every key press, :BUTTON on every
+pointer button press, :OPEN when a window first maps, :CLOSE when it closes.
+FILES is a WAV path, or a list of up to 16 played in turn: 16-bit PCM or 32-bit
+float, mono or stereo, at 48000 Hz. Relative paths resolve beside the declaring
+source. GAIN is in decibels, from -60 to 12. Later owners replace an event's
+sound; omission restores the preceding owner."
   (unless (member event +sound-events+) (error "Unknown sound event ~S." event))
   (let ((files (if (listp files) files (list files))))
     (unless (and (<= 1 (length files) 16)
@@ -863,13 +863,12 @@ omission restores the preceding owner."
                         files))
       (error "A sound needs 1 through 16 file paths."))
     (unless (and (%finite-real-p gain) (<= -60 gain 12)) (error "Sound gain must lie within -60 and 12 dB."))
-    (unless (and (%finite-real-p spread) (<= 0 spread 1)) (error "Sound spread must lie within 0 and 1."))
-    (%effect :sound (list event (mapcar #'copy-seq files) (%double-float gain) (%double-float spread)))))
+    (%effect :sound (list event (mapcar #'copy-seq files) (%double-float gain)))))
 
 (define-effect :sound
-  :canonical (destructuring-bind (event files gain spread) args
-               (sound event files :gain gain :spread spread))
-  :reduce (destructuring-bind (event files gain spread) args
+  :canonical (destructuring-bind (event files gain) args
+               (sound event files :gain gain))
+  :reduce (destructuring-bind (event files gain) args
             (let ((directory (spec-directory (mounted-spec mounted))))
               (setf (getf (materialization-sounds m) event)
                     (list :files (loop for file in files collect
@@ -878,7 +877,7 @@ omission restores the preceding owner."
                                                (char= (char directory 0) #\/))
                                           (concatenate 'string directory file))
                                          (t (error "Relative sound paths require a declaring source."))))
-                          :gain gain :spread spread)))))
+                          :gain gain)))))
 (defun launch (&rest argv)
   "Launch literal argv once after acceptance; the session owns the child."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)

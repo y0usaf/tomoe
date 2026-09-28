@@ -21,7 +21,7 @@ struct sound_sample {
 };
 struct sound_cue {
     uint32_t first, count;
-    float gain, spread;
+    float gain;
 };
 struct sound_bank {
     uint64_t generation;
@@ -33,12 +33,12 @@ struct sound_bank {
 struct sound_trigger {
     uint64_t generation;
     uint32_t sample;
-    float left, right;
+    float gain;
 };
 struct sound_voice {
     const struct sound_sample *sample;
     uint32_t position;
-    float left, right;
+    float gain;
 };
 struct sound {
     struct pw_thread_loop *loop;
@@ -154,11 +154,9 @@ int tomoe_present_sounds(struct tomoe *s) {
     return plan->sounds != NULL;
 }
 
-const char *tomoe_present_sound(struct tomoe *s, int event, const char *path,
-        double gain, double spread) {
+const char *tomoe_present_sound(struct tomoe *s, int event, const char *path, double gain) {
     struct sound_bank *bank = s->presentation ? s->presentation->sounds : NULL;
-    if (!bank || event < 0 || event >= SOUND_EVENTS || !path || !isfinite(gain) ||
-            !(spread >= 0 && spread <= 1)) return "invalid sound";
+    if (!bank || event < 0 || event >= SOUND_EVENTS || !path || !isfinite(gain)) return "invalid sound";
     struct sound_cue *cue = &bank->cues[event];
     if (cue->count && cue->first + cue->count != bank->sample_count)
         return "sounds must be staged event by event";
@@ -175,7 +173,6 @@ const char *tomoe_present_sound(struct tomoe *s, int event, const char *path,
     samples[bank->sample_count++] = sample;
     cue->count++;
     cue->gain = (float)pow(10.0, gain / 20.0);
-    cue->spread = (float)spread;
     return NULL;
 }
 
@@ -240,7 +237,7 @@ static void sound_process(void *data) {
             }
             if (sound->voices[i].position > voice->position) voice = &sound->voices[i];
         }
-        *voice = (struct sound_voice){ &bank->samples[trigger->sample], 0, trigger->left, trigger->right };
+        *voice = (struct sound_voice){ &bank->samples[trigger->sample], 0, trigger->gain };
     }
     atomic_store_explicit(&sound->tail, tail, memory_order_release);
     struct spa_data *out = &buffer->buffer->datas[0];
@@ -256,8 +253,8 @@ static void sound_process(void *data) {
             if (n > count) n = count;
             const float *source = voice->sample->frames + (size_t)voice->position * 2;
             for (uint32_t f = 0; f < n; f++) {
-                frames[f * 2] += source[f * 2] * voice->left;
-                frames[f * 2 + 1] += source[f * 2 + 1] * voice->right;
+                frames[f * 2] += source[f * 2] * voice->gain;
+                frames[f * 2 + 1] += source[f * 2 + 1] * voice->gain;
             }
             voice->position += n;
             if (voice->position == voice->sample->count) voice->sample = NULL;
@@ -413,7 +410,7 @@ void sound_publish(struct tomoe *s, struct presentation *plan) {
     memset(sound->cursor, 0, sizeof(sound->cursor));
 }
 
-void sound_play(struct tomoe *s, enum sound_event event, int side) {
+void sound_play(struct tomoe *s, enum sound_event event) {
     struct sound *sound = s->sound;
     if (!sound || s->stopping || !sound->bank || atomic_load(&sound->state) != SOUND_STREAMING) return;
     const struct sound_cue *cue = &sound->bank->cues[event];
@@ -423,10 +420,8 @@ void sound_play(struct tomoe *s, enum sound_event event, int side) {
         atomic_fetch_add(&sound->dropped, 1);
         return;
     }
-    double angle = (1.0 + cue->spread * side) * M_PI / 4.0;
     sound->triggers[head % SOUND_TRIGGERS] = (struct sound_trigger){
-        sound->bank->generation, cue->first + sound->cursor[event]++ % cue->count,
-        (float)(cue->gain * M_SQRT2 * cos(angle)), (float)(cue->gain * M_SQRT2 * sin(angle)) };
+        sound->bank->generation, cue->first + sound->cursor[event]++ % cue->count, cue->gain };
     atomic_store_explicit(&sound->head, head + 1, memory_order_release);
     atomic_fetch_add(&sound->played, 1);
 }
