@@ -42,6 +42,16 @@ let
               (when (and (eq (getf event :type) :key) (equal (getf event :owner) "screenshot-probe"))
                 (list (screenshot)))))
   '';
+  offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "offscreen-probe" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (loop for window in (context snapshot :windows)
+                    when (equal (getf window :app-id) "check-flood")
+                      collect (place (getf window :id) 20000 20000 320 240))
+              nil))
+  '';
   check =
     name: script:
     pkgs.testers.runNixOSTest {
@@ -70,6 +80,7 @@ in
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
       SCREENSHOT_PROBE = "${screenshotProbe}"
+      OFFSCREEN_PROBE = "${offscreenProbe}"
     ''
     + builtins.readFile ./integration.py
   );

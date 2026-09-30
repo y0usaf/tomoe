@@ -34,7 +34,7 @@ static volatile sig_atomic_t running = 1;
 
 struct client {
     const char *mode, *app_id, *title, *layer_namespace, *color;
-    int width, height, seconds;
+    int width, height, seconds, commit_rate;
     uint32_t layer, anchor, exclusive_zone, keyboard;
     int preferred_width, preferred_height;
     int drag[4];
@@ -202,7 +202,9 @@ static void usage(void) {
            "  --size WxH           buffer size, or the drag's pointer extent (default 320x240)\n"
            "  --drag X,Y,X,Y       drag only: press at the first point, release at the second\n"
            "  --color RRGGBB       buffer fill (default 336699)\n"
-           "  --seconds N          run time (default 30)\n",
+           "  --seconds N          run time (default 30)\n"
+           "  --commit-rate HZ     after mapping, commit HZ times a second with a frame callback\n"
+           "                       it never waits for, and read events once a second\n",
            program);
 }
 
@@ -225,12 +227,15 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
+        else if (strcmp(option, "--commit-rate") == 0)
+        { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
     }
     if (strcmp(state->mode, "xdg") != 0 && strcmp(state->mode, "layer") != 0 &&
         strcmp(state->mode, "drag") != 0)
         fail("--mode needs xdg, layer or drag, got \"%s\"", state->mode);
+    if (state->commit_rate && strcmp(state->mode, "drag") == 0) fail("--commit-rate needs a surface, not --mode drag");
     if (!*state->app_id) fail("--app-id needs a name");
     if (!*state->layer_namespace) fail("--namespace needs a name");
     parse_color(state->color);
@@ -458,6 +463,25 @@ static void run(struct client *state) {
     finish(0);
 }
 
+static void flood(struct client *state) {
+    while (!state->mapped)
+        if (wl_display_dispatch(display) < 0) fail_display("map the surface");
+    struct timespec start, drained;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    drained = start;
+    while (running && elapsed(&start) < (double)state->seconds) {
+        wl_callback_destroy(wl_surface_frame(state->surface));
+        wl_surface_commit(state->surface);
+        if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
+        if (elapsed(&drained) >= 1.0) {
+            roundtrip("read events");
+            clock_gettime(CLOCK_MONOTONIC, &drained);
+        }
+        poll(NULL, 0, 1000 / state->commit_rate);
+    }
+    finish(0);
+}
+
 int main(int count, char **arguments) {
     static struct client state = {
         .mode = "xdg",
@@ -504,6 +528,7 @@ int main(int count, char **arguments) {
             fail("on-demand keyboard interactivity needs zwlr_layer_shell_v1 version 4");
         setup_layer(&state);
     }
+    if (state.commit_rate) flood(&state);
     run(&state);
     return 0;
 }

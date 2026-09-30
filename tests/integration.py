@@ -50,4 +50,21 @@ machine.succeed(
 assert all(shaded(pixel(*middle), 1) for _ in range(4)), "the screenshot selection is still dimmed"
 assert shaded(pixel(*corner), 0.6), "outside the screenshot selection is not dimmed"
 
+client("flood", "--mode xdg --app-id check-flood --commit-rate 1000")
+cli(f"mount {OFFSCREEN_PROBE}")
+flood = next(w for w in json.loads(cli("msg windows")) if w["app_id"] == "check-flood")
+assert flood["geometry"]["x"] == 20000, f"the probe did not move the window off screen: {flood}"
+time.sleep(20)
+cli("unmount offscreen-probe")
+time.sleep(3)
+windows = {w["app_id"]: w for w in json.loads(cli("msg windows"))}
+assert "check-flood" in windows and machine.execute("systemctl is-active flood")[0] == 0, (
+    "tomoe dropped a client that drew off screen without waiting for frame callbacks:\n"
+    + machine.succeed("journalctl -u flood -o cat | tail -3")
+    + show(inspect()[":NATIVE-ERRORS"])
+)
+back = windows["check-flood"]["geometry"]
+assert usable["x"] <= back["x"] < usable["x"] + usable["w"], f"the window did not come back on screen: {back}"
+machine.succeed("systemctl stop flood")
+
 quit()

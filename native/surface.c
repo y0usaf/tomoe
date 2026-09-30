@@ -412,6 +412,14 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     bool buffer = next->committed & STATE_BUFFER;
     if (buffer && !next->buffer) surface_unmap(surface);
     feedbacks_discard(&surface->current.feedbacks);
+    if (!surface->primary) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec != surface->frames_answered) {
+            surface->frames_answered = now.tv_sec;
+            surface_frame_done(surface, &now);
+        }
+    }
     state_move(&surface->current, next);
     struct surface_synced *synced;
     if (next == &surface->pending) {

@@ -639,6 +639,7 @@ struct surface {
     struct wl_listener role_resource_destroy;
     struct subsurface *subsurface;
     struct screen *primary;
+    time_t frames_answered;
     uint64_t commit_seq;
     struct { uint64_t seq, prev; struct box box; } commits[4];
     int preferred_scale;

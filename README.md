@@ -659,6 +659,13 @@ client commit, a policy, shell or cursor change, an animation, a capture or
 gamma request, or a shader background's next step. With nothing to show it
 stays idle and commits nothing.
 
+Frame callbacks fire with the output frame that shows their surface. A surface
+on no output, such as a window placed outside the view, gets its waiting
+callbacks answered in one batch when it commits, at most once a second. Without
+that, a client that draws without waiting for callbacks, like OBS's preview at
+swap interval 0, would get all of them at once on its return, overflow its
+connection, and be dropped by libwayland.
+
 Each output frame redraws only what changed since the output buffer it reuses
 last held. The frame is first walked without drawing, recording every draw
 with a hash of its parameters. Draws that appear, disappear, move, change
