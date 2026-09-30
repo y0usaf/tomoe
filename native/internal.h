@@ -1144,6 +1144,7 @@ void power_output_gone(struct output *o);
 void outputs_event(struct tomoe *s);
 void drag_icons_refresh(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy);
+void constraint_refresh(struct tomoe *s);
 bool constraint_allows(struct tomoe *s, double x, double y);
 
 bool lock_listen(struct tomoe *s);

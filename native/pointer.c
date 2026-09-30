@@ -71,12 +71,19 @@ static struct constraint *constraint_for(struct tomoe *s, struct surface *surfac
 }
 
 void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy) {
+    struct surface *keyboard = s->seat->keyboard_state.focused_surface;
+    if (surface && (!keyboard || surface_root(surface) != surface_root(keyboard))) surface = NULL;
     struct constraint *c = s->active_constraint;
     if (c && c->surface == surface) return;
     c = surface ? constraint_for(s, surface) : NULL;
     if (c && !pixman_region32_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL))
         c = NULL;
     constraint_set(s, c);
+}
+
+void constraint_refresh(struct tomoe *s) {
+    struct seat_pointer_state *state = &s->seat->pointer_state;
+    constraint_focus(s, state->focused_surface, state->sx, state->sy);
 }
 
 bool constraint_allows(struct tomoe *s, double x, double y) {

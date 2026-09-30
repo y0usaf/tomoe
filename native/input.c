@@ -725,7 +725,11 @@ static void clamp_pointer(struct tomoe *s, struct screen *mapped, double *x, dou
 }
 
 static void keyboard_enter(struct tomoe *s, struct surface *surface) {
-    if (!surface) { seat_keyboard_notify_clear_focus(s->seat); return; }
+    if (!surface) {
+        seat_keyboard_notify_clear_focus(s->seat);
+        constraint_refresh(s);
+        return;
+    }
     struct keymap_slot *keyboard = s->logical_keyboard ?
         &s->logical_keyboard->xkb : seat_get_keyboard(s->seat);
     uint32_t keys[TOMOE_KEYCODE_COUNT];
@@ -738,6 +742,7 @@ static void keyboard_enter(struct tomoe *s, struct surface *surface) {
         s->latest_keyboard_enter_serial = wl_display_get_serial(s->display);
         s->have_keyboard_enter_serial = true;
     }
+    constraint_refresh(s);
 }
 void update_keyboard_focus(struct tomoe *s) {
     if (lock_active(s)) { keyboard_enter(s, lock_keyboard_surface(s)); return; }

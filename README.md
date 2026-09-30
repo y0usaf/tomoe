@@ -522,6 +522,11 @@ receive only the resulting context changes. Every physical key press delivers
 the key. While nothing reads it, a key press runs no transaction. Activity
 events cannot return one-shot commands.
 
+A pointer lock or confinement, which games request for mouse look, is active
+only while its surface has both pointer and keyboard focus. Focusing another
+window releases the pointer, and a persistent constraint takes it again once
+its surface has both.
+
 Native xdg activation delivers `(:type :request :id ID :request :activate)` or
 `:urgent`. These requests leave window facts unchanged and are delivered once.
 The shipped WM accepts `:activate` by revealing the target's workspace and owning focus;
