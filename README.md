@@ -527,7 +527,8 @@ events cannot return one-shot commands.
 
 `(settings :focus-follows-mouse t)` makes the shipped WM focus the window the
 pointer moves into. A window that a layout change slides under a still pointer
-does not take focus.
+does not take focus. `(settings :pointer-follows-focus t)` moves the pointer to
+the middle of a newly focused window unless the pointer is already over it.
 
 A pointer lock or confinement, which games request for mouse look, is active
 only while its surface has both pointer and keyboard focus. Focusing another

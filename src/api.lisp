@@ -592,6 +592,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
   '((:scale (:real 1/4 8) 1)
     (:mod (:member :super :alt :control :shift) :super)
     (:focus-follows-mouse :boolean nil)
+    (:pointer-follows-focus :boolean nil)
     (:tearing :boolean nil)
     (:wait-for-frame-completion :boolean nil)
     (:nested-size (:group (:width (:integer 1 16384) 1280) (:height (:integer 1 16384) 800)))

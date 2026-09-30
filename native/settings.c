@@ -39,6 +39,7 @@ static const struct setting_field {
     { "wait-for-frame-completion", offsetof(struct settings, wait_frame), SETTING_BOOL },
     { "honor-xdg-activation-with-invalid-serial",
         offsetof(struct settings, honor_invalid_serial), SETTING_BOOL },
+    { "pointer-follows-focus", offsetof(struct settings, pointer_follows_focus), SETTING_BOOL },
 };
 
 void settings_default(struct settings *settings) {

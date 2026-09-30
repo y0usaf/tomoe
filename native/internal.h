@@ -534,7 +534,7 @@ struct settings {
     struct input_config touchpad, mouse;
     struct named_input_config devices[64];
     size_t device_count;
-    bool force_ssd, honor_invalid_serial, tearing, wait_frame;
+    bool force_ssd, honor_invalid_serial, tearing, wait_frame, pointer_follows_focus;
     int nested_width, nested_height;
     int border_width, border_radius;
     uint32_t border_focused, border_unfocused;

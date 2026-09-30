@@ -294,6 +294,24 @@ void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
     if (w->mapped) configure_xdg(w);
     schedule_scene(s);
 }
+static void pointer_follow(struct window *w) {
+    struct tomoe *s = w->server;
+    if (!s->settings.pointer_follows_focus || !w->tree->enabled || s->grab_mode != 0 ||
+            s->seat->drag || lock_active(s)) return;
+    struct surface *surface = NULL;
+    double sx, sy;
+    if (physical_hit_test(s, s->pointer_x, s->pointer_y, &surface, &sx, &sy) == w->target.id)
+        return;
+    double x = w->target.x + fmin(w->desired_width,
+        physical_size(w->client_width, w->target.scale)) / 2;
+    double y = w->target.y + fmin(w->desired_height,
+        physical_size(w->client_height, w->target.scale)) / 2;
+    world_to_screen(s, &x, &y);
+    if (!output_at_physical(s, x, y)) return;
+    s->pointer_x = x;
+    s->pointer_y = y;
+    pointer_sync_cursors(s);
+}
 void tomoe_focus(struct tomoe *s, uint32_t id) {
     struct window *previous = s->focused ? find_window_registered(s, s->focused) : NULL;
     struct window *next = id ? find_window_registered(s, id) : NULL;
@@ -309,6 +327,7 @@ void tomoe_focus(struct tomoe *s, uint32_t id) {
     s->focused = target;
     if (next) window_activate(next, true);
     update_keyboard_focus(s);
+    if (mapped_next) pointer_follow(mapped_next);
     schedule_scene(s);
 }
 void tomoe_close(struct tomoe *s, uint32_t id) {
