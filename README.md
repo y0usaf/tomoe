@@ -504,12 +504,15 @@ keyboard interactivity takes the keyboard while it is mapped, which is what a
 launcher needs; hiding it gives the keyboard back to the focused window.
 
 Events include `:map`, `:buffer`, `:unmap`, `:metadata`, `:geometry`, `:outputs`, `:layer`, `:key`,
-`:button`, `:grab`, and `:request` in their `:type` field. Key events carry `:owner` and a
+`:button`, `:pointer`, `:grab`, and `:request` in their `:type` field. Key events carry `:owner` and a
 lowercase `:command` string. Button events carry `:id` (zero for empty space, a
 layer surface id when a panel was hit), an evdev `:button` code, `:state`
 (`:pressed` or `:released`), pointer `:x` and `:y` in physical world coordinates
 for windows or physical screen coordinates for layers and empty space, and
-the keyboard `:modifiers` mask. `:metadata` events carry the same fields as
+the keyboard `:modifiers` mask. Pointer events carry `:state` (`:enter` or
+`:leave`), the window `:id`, and `:moved`, which is `t` when device motion
+crossed the window's edge and `nil` when the window moved under a still pointer
+or the compositor moved the pointer. `:metadata` events carry the same fields as
 `:map`, plus `:request` (`:fullscreen` or `:maximize`) when a client asked for a
 state, which is the policy's chance to accept or ignore it. While a unit owns a
 grab, pointer motion arrives as `:grab` events with `:id`, `:mode`, `:x`, `:y`,
@@ -521,6 +524,10 @@ receive only the resulting context changes. Every physical key press delivers
 `:activity`: the same coarse hand as the `keyboard_activity` IPC event, never
 the key. While nothing reads it, a key press runs no transaction. Activity
 events cannot return one-shot commands.
+
+`(settings :focus-follows-mouse t)` makes the shipped WM focus the window the
+pointer moves into. A window that a layout change slides under a still pointer
+does not take focus.
 
 A pointer lock or confinement, which games request for mouse look, is active
 only while its surface has both pointer and keyboard focus. Focusing another

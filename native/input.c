@@ -1067,20 +1067,20 @@ static void ui_hover(struct tomoe *s, const struct ui_hit *hit) {
     fprintf(out, " :x %.17fd0 :y %.17fd0 :button 0 :modifiers 0)", hit->x, hit->y);
     end_event(s, event, out);
 }
-static void hover_event(struct tomoe *s, const char *state, uint32_t id) {
+static void hover_event(struct tomoe *s, const char *state, uint32_t id, bool moved) {
     struct event *event; size_t size;
     FILE *out = begin_event(s, &event, &size);
     if (!out) return;
-    fprintf(out, "(:type :pointer :state :%s :id %u)", state, id);
+    fprintf(out, "(:type :pointer :state :%s :id %u :moved %s)", state, id, moved ? "t" : "nil");
     end_event(s, event, out);
 }
-static void pointer_motion(struct tomoe *s, uint32_t time) {
+static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
     struct surface *surface = NULL; double sx = 0, sy = 0;
     uint32_t id = pointer_target(s, &surface, &sx, &sy);
     uint32_t hovered = find_window(s, id) ? id : 0;
     if (hovered != s->hovered && !lock_active(s)) {
-        if (s->hovered) hover_event(s, "leave", s->hovered);
-        if (hovered) hover_event(s, "enter", hovered);
+        if (s->hovered) hover_event(s, "leave", s->hovered, moved);
+        if (hovered) hover_event(s, "enter", hovered, moved);
         s->hovered = hovered;
     }
     if (surface) {
@@ -1118,7 +1118,7 @@ void pointer_refresh(struct tomoe *s) {
     if (s->grab_mode != 0) return;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    pointer_motion(s, (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000));
+    pointer_motion(s, (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000), false);
     seat_pointer_notify_frame(s->seat);
 }
 static void grab_motion(struct tomoe *s) {
@@ -1143,7 +1143,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     drag_icons_refresh(s);
     if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }
     if (s->grab_mode != 0) { grab_motion(s); return; }
-    pointer_motion(s, time);
+    pointer_motion(s, time, true);
 }
 void input_pointer_motion(struct pointer_motion *event) {
     struct tomoe *s = event->device->server;
@@ -1379,7 +1379,7 @@ void input_pointer_button(struct pointer_button *input) {
         screenshot_button(s, input->button, input->state == WL_POINTER_BUTTON_STATE_PRESSED);
         return;
     }
-    if (s->grab_mode == 0) pointer_motion(s, input->time_msec);
+    if (s->grab_mode == 0) pointer_motion(s, input->time_msec, false);
     if (lock_active(s)) {
         seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
         return;
@@ -1411,7 +1411,7 @@ void input_pointer_axis(struct pointer_axis *event) {
     struct tomoe *s = event->device->server;
     idle_notify_activity(s);
     if (s->grab_mode != 0) return;
-    pointer_motion(s, event->time_msec);
+    pointer_motion(s, event->time_msec, false);
     if (!lock_active(s) && pointer_binding_axis(s, event)) return;
     seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source, event->relative_direction);

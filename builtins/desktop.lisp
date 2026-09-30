@@ -244,8 +244,8 @@
                       (unless (and present (null value)) (focus-id id)))))))))
       (case type
         (:pointer
-         (when (and (eq (getf event :state) :enter) (setting snapshot :focus-follows-mouse)
-                    (member (getf event :id) visible))
+         (when (and (eq (getf event :state) :enter) (getf event :moved)
+                    (setting snapshot :focus-follows-mouse) (member (getf event :id) visible))
            (setf focused (getf event :id))))
         (:button
          (when (eq :pressed (getf event :state))
