@@ -1390,7 +1390,9 @@ timeout. Invalid results, undeclared reads, callback errors, and dependency
 cycles retain the previous managed policy. A failure is attributed to the unit
 that caused it: `inspect` reports that unit's `:failures` count and last error
 next to the runtime-wide one, and the whole transaction is still discarded.
-Errors appear on stderr and through `inspect`. Native preparation and binding
+Errors appear on stderr and through `inspect`, which also keeps the last 16
+native error lines, libwayland's included, in `:native-errors` as
+`(:count N :recent (LINE ...))`. Native preparation and binding
 allocation failures preserve accepted policy. Detected failures after native
 publication stop the compositor. One-shot command failures cannot undo earlier
 commands.

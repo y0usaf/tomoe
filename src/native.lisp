@@ -185,6 +185,7 @@
 (define-native ("tomoe_present_sound" %present-sound) sb-alien:c-string
   (server (* t)) (event sb-alien:int) (path sb-alien:c-string) (gain sb-alien:double))
 (define-native ("tomoe_sound_stats" %sound-stats) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_native_errors" %native-errors) sb-alien:c-string)
 (define-native ("tomoe_present_apply" %present-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_present_stack" %present-stack) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int))

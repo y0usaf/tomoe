@@ -1012,6 +1012,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
                                (read-data (%ui-stats (runtime-backend runtime))))
                   :native-sound (when (runtime-backend runtime)
                                   (read-data (%sound-stats (runtime-backend runtime))))
+                  :native-errors (read-data (%native-errors))
                   :watch (runtime-watch runtime)
                   :timers (describe-timers runtime)
                   :watches (describe-watches runtime)

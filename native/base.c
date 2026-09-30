@@ -4,15 +4,56 @@
 #include <unistd.h>
 #include <xf86drm.h>
 
+#define ERRORS_KEPT 16
+#define ERROR_LINE 512
+
 int log_verbosity = LOG_ERROR;
+static char error_lines[ERRORS_KEPT][ERROR_LINE];
+static unsigned long error_count;
+static char *errors_text;
+
+static void keep_error(const char *fmt, va_list args) {
+    char *line = error_lines[error_count++ % ERRORS_KEPT];
+    if (vsnprintf(line, ERROR_LINE, fmt, args) < ERROR_LINE) return;
+    size_t end = ERROR_LINE - 1;
+    while (end && ((unsigned char)line[end - 1] & 0xC0) == 0x80) end--;
+    if (end && (unsigned char)line[end - 1] >= 0xC0) end--;
+    line[end] = '\0';
+}
 
 void tomoe_log(int level, const char *fmt, ...) {
     if (level > log_verbosity) return;
     va_list args;
     va_start(args, fmt);
+    if (level == LOG_ERROR) {
+        va_list kept;
+        va_copy(kept, args);
+        keep_error(fmt, kept);
+        va_end(kept);
+    }
     vfprintf(stderr, fmt, args);
     va_end(args);
     fputc('\n', stderr);
+}
+
+const char *tomoe_native_errors(void) {
+    free(errors_text);
+    errors_text = NULL;
+    size_t size = 0;
+    FILE *out = open_memstream(&errors_text, &size);
+    if (!out) return NULL;
+    unsigned long first = error_count > ERRORS_KEPT ? error_count - ERRORS_KEPT : 0;
+    fprintf(out, "(:count %lu :recent (", error_count);
+    for (unsigned long i = first; i < error_count; i++) {
+        if (i > first) fputc(' ', out);
+        quote(out, error_lines[i % ERRORS_KEPT]);
+    }
+    fputs("))", out);
+    if (fclose(out) != 0) {
+        free(errors_text);
+        errors_text = NULL;
+    }
+    return errors_text;
 }
 
 bool box_empty(const struct box *box) {

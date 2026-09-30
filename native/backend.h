@@ -103,6 +103,7 @@ int tomoe_present_setting_text(struct tomoe *server, const char *key, const char
 int tomoe_present_sounds(struct tomoe *server);
 const char *tomoe_present_sound(struct tomoe *server, int event, const char *path, double gain);
 const char *tomoe_sound_stats(struct tomoe *server);
+const char *tomoe_native_errors(void);
 const char *tomoe_present_apply(struct tomoe *server);
 void tomoe_present_abort(struct tomoe *server);
 #endif

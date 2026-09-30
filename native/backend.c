@@ -28,6 +28,12 @@ static bool backend_start(struct tomoe *s) {
     return true;
 }
 int tomoe_abi_version(void) { return 37; }
+static void wayland_log(const char *fmt, va_list args) {
+    char line[512];
+    vsnprintf(line, sizeof(line), fmt, args);
+    line[strcspn(line, "\n")] = '\0';
+    tomoe_log(LOG_ERROR, "wayland: %s", line);
+}
 static bool create_scene_trees(struct tomoe *s) {
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND] = node_create(s->scene);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM] = node_create(s->scene);
@@ -43,6 +49,7 @@ static bool create_scene_trees(struct tomoe *s) {
 }
 struct tomoe *tomoe_create(const char *socket_name) {
     log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_ERROR;
+    wl_log_set_handler_server(wayland_log);
     mallopt(M_MMAP_THRESHOLD, 128 * 1024);
     signal(SIGPIPE, SIG_IGN);
     struct tomoe *s = calloc(1, sizeof(*s));
