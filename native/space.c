@@ -606,6 +606,22 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer) {
     return pass_submit(pass);
 }
 
+static bool unpaced_frame_done(struct tomoe *s, struct leaf *leaf, void *data) {
+    if (!leaf->surface->primary) surface_frame_done(leaf->surface, data);
+    return false;
+}
+
+void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when) {
+    struct presentation_target root = {0};
+    root.node = window_capture_node(s, id, &root.target);
+    if (!root.node) return;
+    root.target.offset_x = root.target.offset_y = 0;
+    struct timespec now = *when;
+    struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
+        .view_zoom = 1 };
+    walk_presentation_root(s, &plan, &root, root.node, 0, 0, unpaced_frame_done, &now);
+}
+
 struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
