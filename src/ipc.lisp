@@ -1,6 +1,7 @@
 (in-package #:tomoe)
 
 (defconstant +json-wire-version+ 2)
+(defvar *version* (or (sb-ext:posix-getenv "TOMOE_VERSION") "dev"))
 
 (defun json-object-p (value)
   (and (consp value) (eq (first value) :json-object)))
@@ -176,7 +177,7 @@ subscriber's events start from the present state."
         (let ((result
                 (cond
                   ((equal method "version")
-                   (json-object (cons "wire" +json-wire-version+) (cons "version" "0.1.0")))
+                   (json-object (cons "wire" +json-wire-version+) (cons "version" *version*)))
                   ((equal method "windows") (ipc-windows runtime (runtime-effective runtime)))
                   ((equal method "outputs") (ipc-outputs (runtime-effective runtime)))
                   ((equal method "view") (ipc-view (runtime-effective runtime)))

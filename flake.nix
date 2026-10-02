@@ -12,6 +12,7 @@
       ];
       eachSystem = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      version = "0.1.0";
       dbus =
         pkgs:
         pkgs.dbus.override {
@@ -58,7 +59,7 @@
         pkgs:
         pkgs.rustPlatform.buildRustPackage {
           pname = "xdg-desktop-portal-tomoe";
-          version = "0.1.0";
+          inherit version;
           src = ./portal;
           cargoLock.lockFile = ./portal/Cargo.lock;
           nativeBuildInputs = [
@@ -95,7 +96,7 @@
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
-          version = "0.1.0";
+          inherit version;
           src = pkgs.lib.fileset.toSource {
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
@@ -139,8 +140,8 @@
             runHook preBuild
             mkdir build
             for module in executions watches notifications mpris backlight battery network tray system xwayland; do
-              $CC -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) \
-                -c support/$module.c -o build/$module.o
+              $CC -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"${version}"' \
+                $(pkg-config --cflags libsystemd) -c support/$module.c -o build/$module.o
             done
             wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
             wp=${pkgs.wayland-protocols}/share/wayland-protocols
@@ -188,6 +189,7 @@
               $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
               -lresvg -ldl -lpthread -lzstd -lm
             SBCL_HOME=${sbcl}/lib/sbcl \
+            TOMOE_VERSION=${version} \
             TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
             TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
             TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \

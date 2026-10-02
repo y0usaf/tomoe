@@ -379,8 +379,8 @@ child from its first client, and remove both once it exits or a stop signal arri
         (cond
           ((member option '("-h" "--help") :test #'equal) (usage) (return-from run-cli 0))
           ((member option '("-V" "--version") :test #'equal)
-           (format t "tomoe 0.1.0, JSON wire 2, control wire ~D, native ABI ~D~%"
-                   +wire-version+ +native-abi-version+)
+           (format t "tomoe ~A, JSON wire ~D, control wire ~D, native ABI ~D~%"
+                   *version* +json-wire-version+ +wire-version+ +native-abi-version+)
            (return-from run-cli 0))
           ((equal option "--socket") (setf name (argument option) explicit-name name))
           ((equal option "--backend")

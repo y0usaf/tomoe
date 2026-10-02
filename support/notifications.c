@@ -428,7 +428,7 @@ static int method_get_server_information(sd_bus_message *message,
     struct tomoe_notifications *notifications = userdata;
     (void)ret_error;
     int result = sd_bus_reply_method_return(message, "ssss", "tomoe", "tomoe",
-                                            "0.1.0", "1.2");
+                                            TOMOE_VERSION, "1.2");
     if (result < 0) {
         mark_bus_failed(notifications, result);
         return result;

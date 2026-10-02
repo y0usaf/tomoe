@@ -9,7 +9,7 @@ export SBCL_HOME
 
 for module in executions watches notifications mpris backlight battery network tray system xwayland; do
   if [ ! -f "build/$module.o" ] || [ "support/$module.c" -nt "build/$module.o" ] || [ "support/$module.h" -nt "build/$module.o" ]; then
-    cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
+    cc -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"dev"' $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
   fi
 done
 
