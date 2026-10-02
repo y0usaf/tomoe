@@ -271,6 +271,29 @@
           tomoe = package pkgs;
         }
       );
+      apps = eachSystem (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          release = {
+            type = "app";
+            program = pkgs.lib.getExe (
+              pkgs.writeShellApplication {
+                name = "tomoe-release";
+                runtimeInputs = [
+                  pkgs.git
+                  pkgs.gh
+                  pkgs.gnused
+                  pkgs.gawk
+                ];
+                text = builtins.readFile ./release.sh;
+              }
+            );
+          };
+        }
+      );
       formatter = eachSystem (system: (pkgsFor system).nixfmt);
     };
 }
