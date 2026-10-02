@@ -52,15 +52,19 @@ static void shm_buffer_destroy(struct buffer *base) {
     detach(&b->release);
     detach(&b->resource_destroy);
     buffer_finish(base);
-    wl_shm_pool_unref(b->pool);
+    if (b->pool) wl_shm_pool_unref(b->pool);
     free(b);
 }
 
 static bool shm_buffer_begin(struct buffer *base, uint32_t flags, void **data,
         uint32_t *format, size_t *stride) {
     struct shm_buffer *b = wl_container_of(base, b, base);
-    if (b->shm) wl_shm_buffer_begin_access(b->shm);
-    *data = b->data;
+    if (b->shm) {
+        wl_shm_buffer_begin_access(b->shm);
+        *data = wl_shm_buffer_get_data(b->shm);
+    } else {
+        *data = b->data;
+    }
     *format = b->format;
     *stride = b->stride;
     return true;
@@ -80,6 +84,8 @@ static const struct buffer_impl shm_buffer_impl = {
 static void shm_resource_destroyed(struct wl_listener *listener, void *data) {
     struct shm_buffer *b = wl_container_of(listener, b, resource_destroy);
     detach(&b->resource_destroy);
+    b->pool = wl_shm_buffer_ref_pool(b->shm);
+    b->data = wl_shm_buffer_get_data(b->shm);
     b->resource = NULL;
     b->shm = NULL;
     buffer_drop(&b->base);
@@ -108,8 +114,6 @@ static struct buffer *shm_from_resource(struct wl_resource *resource) {
         wl_shm_buffer_get_height(shm));
     b->resource = resource;
     b->shm = shm;
-    b->pool = wl_shm_buffer_ref_pool(shm);
-    b->data = wl_shm_buffer_get_data(shm);
     b->format = shm_to_drm(wl_shm_buffer_get_format(shm));
     b->stride = (size_t)wl_shm_buffer_get_stride(shm);
     b->resource_destroy.notify = shm_resource_destroyed;
