@@ -257,14 +257,33 @@ passes SIGTERM, SIGINT and SIGHUP on to satellite, kills it if it is still
 running half a second later, and once it exits removes that directory, the lock
 and the socket; stopped before any client, it removes the lock and the socket.
 `--bare` has no X11 until a policy declares that service. The
-compositor puts its own `bin` and `xwayland-satellite` from its package first
-on the `PATH` it hands its children.
+compositor puts its own `bin`, `xwayland-satellite` and the D-Bus tools from
+its package first on the `PATH` it hands its children.
 
 To policy, an X11 window is an xdg window: its title and app id come from
 satellite, `place` sends a configure, and fullscreen and maximize go through
 xdg state. Menus, tooltips and other override-redirect windows are satellite's
 popups and subsurfaces. Satellite's own stderr passes through to this
 compositor's stderr.
+
+## Session bus
+
+Before its notification, tray and media services start, the host settles the
+session bus its children share and exports it as `DBUS_SESSION_BUS_ADDRESS`.
+An inherited address is kept unless it is `disabled:`, which Chromium-based
+programs export when none is set, or this instance's own socket. Otherwise a
+bus answering at `$XDG_RUNTIME_DIR/bus` is exported. With neither, the host
+runs `dbus-daemon --session` from its package on `tomoe.NAME.bus` under
+`XDG_RUNTIME_DIR` and waits up to two seconds for it to listen, so a session
+started from a TTY needs no `dbus-run-session` wrapper and its clients never
+fall back to X11 autolaunch. That daemon inherits the exported
+`WAYLAND_DISPLAY`, `DISPLAY`, `XDG_CURRENT_DESKTOP` and `TOMOE_SOCKET`, so
+services it activates, such as portals, join this session. The bus belongs to
+the session, including under `--bare`; reload and unmount leave it running. On
+exit the host stops the daemon and removes its socket and the transient service
+directory it created; a daemon that a killed run left on that socket is killed
+on the next start. A daemon that cannot start is reported on stderr, and the
+host runs on with `DBUS_SESSION_BUS_ADDRESS` unset.
 
 ## Live control
 
@@ -284,10 +303,11 @@ nix run . -- quit
 
 `inspect` prints versioned Lisp data containing live windows, outputs, resolved
 geometry, focus, bindings, layer surfaces, extension state, dispatch counts, per
-extension failures, and the last error. Its `:x-display` field is the `DISPLAY` this
-instance exported for X11 clients. Mutating commands print nothing on
-success and return a nonzero exit status on failure. `command OWNER NAME`
-invokes an active binding through the same extension dispatch as keyboard input.
+extension failures, and the last error. Its `:x-display` and `:session-bus` fields
+are the `DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` this instance exported. Mutating
+commands print nothing on success and return a nonzero exit status on failure.
+`command OWNER NAME` invokes an active binding through the same extension
+dispatch as keyboard input.
 It refuses a name bound only by `bind-button` or `bind-scroll`, whose events
 carry pointer data it cannot supply; send those with `event`.
 

@@ -12,6 +12,12 @@
       ];
       eachSystem = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      dbus =
+        pkgs:
+        pkgs.dbus.override {
+          enableSystemd = false;
+          x11Support = false;
+        };
       pipewire =
         pkgs:
         pkgs.pipewire.overrideAttrs {
@@ -25,12 +31,7 @@
             pkgs.pkg-config
             pkgs.python3
           ];
-          buildInputs = [
-            (pkgs.dbus.override {
-              enableSystemd = false;
-              x11Support = false;
-            })
-          ];
+          buildInputs = [ (dbus pkgs) ];
           mesonFlags = [
             "-Dauto_features=disabled"
             "-Dexamples=disabled"
@@ -195,6 +196,7 @@
                 pkgs.foot
                 (pkgs.fuzzel.override { resvg = resvg pkgs; })
                 xwayland-satellite
+                (dbus pkgs)
               ]
             } \
               build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \

@@ -46,18 +46,20 @@ def inspect():
     return plist(reply[2])
 
 
-def start(*options):
+def start(*options, bus=True):
     machine.wait_for_unit("multi-user.target")
-    machine.succeed(
-        "systemd-run --unit=check-bus --property=Type=exec "
-        f"dbus-daemon --session --nofork --address={BUS}"
-    )
-    machine.wait_for_file("/run/check-bus")
+    if bus:
+        machine.succeed(
+            "systemd-run --unit=check-bus --property=Type=exec "
+            f"dbus-daemon --session --nofork --address={BUS}"
+        )
+        machine.wait_for_file("/run/check-bus")
     machine.succeed(
         "systemd-run --unit=tomoe --property=Type=exec --remain-after-exit "
         "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
-        f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={BUS} "
-        "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin --setenv=MESA_LOADER_DRIVER_OVERRIDE=zink "
+        f"--setenv=XDG_RUNTIME_DIR={RUNTIME} "
+        + (f"--setenv=DBUS_SESSION_BUS_ADDRESS={BUS} " if bus else "")
+        + "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin --setenv=MESA_LOADER_DRIVER_OVERRIDE=zink "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
         "tomoe --socket check --backend headless --no-watch " + " ".join(options)
     )

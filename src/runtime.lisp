@@ -1004,6 +1004,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
                               append (list key value)))
             (list :socket (runtime-socket runtime) :generation (runtime-generation runtime)
                   :x-display (sb-ext:posix-getenv "DISPLAY")
+                  :session-bus (sb-ext:posix-getenv "DBUS_SESSION_BUS_ADDRESS")
                   :last-error (runtime-last-error runtime)
                   :pending-context (copy-list (runtime-pending-context runtime))
                   :grab (describe-grab grab)

@@ -168,6 +168,95 @@ child from its first client, and remove both once it exits or a stop signal arri
 (defun stop-session ()
   (session-shell (format nil "hash systemctl 2>/dev/null || exit 0; systemctl --user stop tomoe-session.target; systemctl --user unset-environment ~{~A~^ ~}" +session-variables+)))
 
+(defun bus-socket-path (name)
+  (format nil "~A/tomoe.~A.bus" (runtime-directory) name))
+
+(defun inherited-bus (own)
+  (let ((address (sb-ext:posix-getenv "DBUS_SESSION_BUS_ADDRESS"))
+        (user (format nil "~A/bus" (runtime-directory))))
+    (cond ((and address (plusp (length address)) (not (eql 0 (search "disabled:" address)))
+                (not (string= address own)))
+           address)
+          ((socket-answering-p user) (format nil "unix:path=~A" user)))))
+
+(defun kill-bus-daemons (path)
+  (let ((pattern (sb-ext:string-to-octets (format nil "~C--address=unix:path=~A~C" #\Nul path #\Nul)
+                                          :external-format :utf-8))
+        (directory (sb-posix:opendir "/proc")))
+    (unwind-protect
+         (loop for entry = (sb-posix:readdir directory)
+               until (sb-alien:null-alien entry)
+               do (let ((pid (parse-integer (sb-posix:dirent-name entry) :junk-allowed t)))
+                    (when (and pid
+                               (ignore-errors
+                                (with-open-file (in (format nil "/proc/~D/cmdline" pid)
+                                                    :element-type '(unsigned-byte 8))
+                                  (let ((bytes (make-array 65536 :element-type '(unsigned-byte 8))))
+                                    (search pattern bytes :end2 (read-sequence bytes in))))))
+                      (ignore-errors (sb-posix:kill pid sb-posix:sigkill)))))
+      (sb-posix:closedir directory))))
+
+(defun kill-orphaned-bus (path)
+  (prog1 (when (socket-answering-p path)
+           (kill-bus-daemons path)
+           (loop repeat 200 while (socket-answering-p path) do (sleep 0.005))
+           t)
+    (ignore-errors (sb-posix:unlink path))))
+
+(defun start-bus-daemon (path own)
+  (require-execution-support)
+  (call-with-process-strings
+   (list "dbus-daemon" "--session" "--nofork" (format nil "--address=unix:path=~A" path))
+   (lambda (argv)
+     (call-with-process-strings
+      (process-environment (list (cons "DBUS_SESSION_BUS_ADDRESS" own)))
+      (lambda (environment)
+        (sb-alien:with-alien ((error-code sb-alien:int))
+          (let ((job (%process-start argv nil environment (sb-alien:addr error-code))))
+            (when (sb-alien:null-alien job) (error "Cannot start dbus-daemon: errno ~D." error-code))
+            job)))))))
+
+(defun stop-session-bus (bus name)
+  (let ((job (car bus)) (transient (cdr bus)))
+    (when job
+      (%exec-stop job sb-posix:sigterm)
+      (loop repeat 100 until (plusp (%exec-poll job)) do (sleep 0.01))
+      (unless (plusp (%exec-poll job))
+        (%exec-stop job sb-posix:sigkill)
+        (loop repeat 100 until (plusp (%exec-poll job)) do (sleep 0.01)))
+      (when (plusp (%exec-poll job)) (%exec-release job))
+      (ignore-errors (sb-posix:unlink (bus-socket-path name)))
+      (when transient
+        (ignore-errors (sb-posix:rmdir (format nil "~A/services" transient)))
+        (ignore-errors (sb-posix:rmdir transient))))))
+
+(defun start-session-bus (name)
+  (let* ((path (bus-socket-path name))
+         (own (format nil "unix:path=~A" path))
+         (inherited (inherited-bus own))
+         (transient (format nil "~A/dbus-1" (runtime-directory)))
+         (bus nil))
+    (when inherited
+      (sb-posix:setenv "DBUS_SESSION_BUS_ADDRESS" inherited 1)
+      (return-from start-session-bus nil))
+    (handler-case
+        (let* ((fresh (not (probe-file transient)))
+               (orphan (kill-orphaned-bus path)))
+          (setf bus (cons (start-bus-daemon path own) (when (or fresh orphan) transient)))
+          (loop repeat 400
+                do (cond ((socket-answering-p path) (return))
+                         ((plusp (%exec-poll (car bus)))
+                          (error "dbus-daemon exited with code ~D." (%exec-code (car bus)))))
+                   (sleep 0.005)
+                finally (error "dbus-daemon is not listening after 2 s."))
+          (sb-posix:setenv "DBUS_SESSION_BUS_ADDRESS" own 1)
+          bus)
+      (serious-condition (condition)
+        (stop-session-bus bus name)
+        (sb-posix:unsetenv "DBUS_SESSION_BUS_ADDRESS")
+        (format *error-output* "tomoe: session bus unavailable: ~A~%" condition)
+        nil))))
+
 (defvar *builtins* (sb-ext:posix-getenv "TOMOE_BUILTINS"))
 (defvar *path* (sb-ext:posix-getenv "TOMOE_PATH"))
 (defvar *fontconfig-file* (sb-ext:posix-getenv "TOMOE_FONTCONFIG_FILE"))
@@ -198,7 +287,7 @@ child from its first client, and remove both once it exits or a stop signal arri
            (declare (ignore signal info context)) (setf *stop-requested* t)))
     (sb-sys:enable-interrupt sb-posix:sigterm #'stop)
     (sb-sys:enable-interrupt sb-posix:sigint #'stop))
-  (let ((control (open-control (socket-path name))) (json-server nil) (native nil) (runtime nil)
+  (let ((control (open-control (socket-path name))) (json-server nil) (native nil) (runtime nil) (bus nil)
         (stamps (make-hash-table :test #'equal)) (next-watch 0))
     (unwind-protect
          (progn
@@ -211,6 +300,7 @@ child from its first client, and remove both once it exits or a stop signal arri
            (sb-posix:setenv "TOMOE_SOCKET" (json-server-path json-server) 1)
            (sb-posix:setenv "DISPLAY" (free-x-display) 1)
            (sb-posix:setenv "XDG_CURRENT_DESKTOP" "tomoe" 1)
+           (setf bus (start-session-bus name))
            (when (equal backend "drm") (start-session))
            (start-notifications runtime)
            (start-mpris runtime)
@@ -268,8 +358,9 @@ child from its first client, and remove both once it exits or a stop signal arri
                                     (unwind-protect (stop-executions runtime)
                                       (stop-managed-processes runtime)))))))))
         (unwind-protect (when (and runtime (equal backend "drm")) (stop-session))
-          (unwind-protect (when native (%destroy native))
-            (unwind-protect (close-json-control json-server) (close-control control))))))))
+          (unwind-protect (stop-session-bus bus name)
+            (unwind-protect (when native (%destroy native))
+              (unwind-protect (close-json-control json-server) (close-control control)))))))))
 
 (defun default-config-file ()
   (let* ((root (sb-ext:posix-getenv "XDG_CONFIG_HOME"))

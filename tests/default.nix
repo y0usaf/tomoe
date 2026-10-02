@@ -52,6 +52,14 @@ let
                       collect (place (getf window :id) 20000 20000 320 240))
               nil))
   '';
+  busProbe = pkgs.writeText "bus-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (run-once :probe "printf %s \"$DBUS_SESSION_BUS_ADDRESS\" > /run/bus-probe"))
+              nil))
+  '';
   check =
     name: script:
     pkgs.testers.runNixOSTest {
@@ -85,6 +93,12 @@ in
     + builtins.readFile ./integration.py
   );
   bare = check "bare" (builtins.readFile ./bare.py);
+  session-bus = check "session-bus" (
+    ''
+      BUS_PROBE = "${busProbe}"
+    ''
+    + builtins.readFile ./session-bus.py
+  );
   clean-unmount = check "clean-unmount" (
     ''
       WALLPAPER_SETTINGS = "${wallpaperSettings}"
