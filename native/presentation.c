@@ -109,6 +109,8 @@ int tomoe_present_window(struct tomoe *s, uint32_t id, int x, int y,
     if (!entry || !find_window_registered(s, id)) return 1;
     entry->target.x = x;
     entry->target.y = y;
+    entry->target.width = width;
+    entry->target.height = height;
     entry->width = width;
     entry->height = height;
     entry->desired_visible = visible != 0;

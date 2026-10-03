@@ -458,7 +458,7 @@ struct window_style {
 struct target {
     uint32_t id;
     enum target_kind kind;
-    int x, y, geometry_x, geometry_y;
+    int x, y, width, height, geometry_x, geometry_y;
     double scale;
     struct screen *output;
     int client_width, client_height;

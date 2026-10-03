@@ -84,8 +84,21 @@ struct leaf {
     const struct target *target;
     int width, height;
     double x, y, scale, zoom;
-    struct box screen;
+    struct box screen, shown;
 };
+static bool toplevel_surface(struct surface *surface) {
+    struct surface *root = surface_root(surface);
+    return xdg_toplevel_from_surface(root);
+}
+static void leaf_to_screen(struct tomoe *s, const struct presentation *plan,
+        double *x, double *y) {
+    if (!plan) {
+        world_to_screen(s, x, y);
+        return;
+    }
+    *x = (*x - plan->view_x) * plan->view_zoom;
+    *y = (*y - plan->view_y) * plan->view_zoom;
+}
 static bool make_leaf(struct tomoe *s, struct surface *surface,
         const struct target *target, double lx, double ly, struct leaf *leaf,
         const struct presentation *plan, const struct presentation_target *root) {
@@ -112,18 +125,11 @@ static bool make_leaf(struct tomoe *s, struct surface *surface,
         bottom = base_y + physical_offset(oy + ly + height, scale);
     }
     double sx = x, sy = y, zoom = 1.0;
-    if (target && target->kind == TARGET_WINDOW) {
-        if (plan) {
-            sx = (sx - plan->view_x) * plan->view_zoom;
-            sy = (sy - plan->view_y) * plan->view_zoom;
-            right = (right - plan->view_x) * plan->view_zoom;
-            bottom = (bottom - plan->view_y) * plan->view_zoom;
-            zoom = plan->view_zoom;
-        } else {
-            world_to_screen(s, &sx, &sy);
-            world_to_screen(s, &right, &bottom);
-            zoom = s->view_zoom;
-        }
+    bool window = target && target->kind == TARGET_WINDOW;
+    if (window) {
+        leaf_to_screen(s, plan, &sx, &sy);
+        leaf_to_screen(s, plan, &right, &bottom);
+        zoom = plan ? plan->view_zoom : s->view_zoom;
     }
     *leaf = (struct leaf){ .surface = surface, .target = target,
         .width = width, .height = height, .x = x, .y = y, .scale = scale, .zoom = zoom,
@@ -132,6 +138,16 @@ static bool make_leaf(struct tomoe *s, struct surface *surface,
     int64_t ph = (int64_t)pixel_round(bottom) - leaf->screen.y;
     if (pw <= 0 || ph <= 0 || pw > INT_MAX || ph > INT_MAX) return false;
     leaf->screen.width = (int)pw; leaf->screen.height = (int)ph;
+    leaf->shown = leaf->screen;
+    if (window && target->width > 0 && target->height > 0 && toplevel_surface(surface)) {
+        double left = target->x, top = target->y;
+        double far_x = left + target->width, far_y = top + target->height;
+        leaf_to_screen(s, plan, &left, &top);
+        leaf_to_screen(s, plan, &far_x, &far_y);
+        struct box placed = { pixel_round(left), pixel_round(top),
+            pixel_round(far_x) - pixel_round(left), pixel_round(far_y) - pixel_round(top) };
+        box_intersection(&leaf->shown, &leaf->screen, &placed);
+    }
     return true;
 }
 typedef bool (*leaf_iterator)(struct tomoe *s, struct leaf *leaf, void *data);
@@ -194,7 +210,7 @@ static void walk_presentation_root(struct tomoe *s, const struct presentation *p
 static bool overlaps_output(struct leaf *leaf, struct output *o, struct box *overlap) {
     struct box box;
     physical_output_box(o, &box);
-    return output_is_active(o) && box_intersection(overlap, &leaf->screen, &box);
+    return output_is_active(o) && box_intersection(overlap, &leaf->shown, &box);
 }
 static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
     struct surface *surface = leaf->surface;
@@ -247,20 +263,19 @@ void frame_done(struct output *o, const struct timespec *when) {
 }
 
 static struct fbox window_box(const struct target *t, const struct frame *f) {
+    double width = physical_size(t->client_width, t->scale);
+    double height = physical_size(t->client_height, t->scale);
+    if (t->width > 0) width = fmin(width, t->width);
+    if (t->height > 0) height = fmin(height, t->height);
     return (struct fbox){ (t->x + t->offset_x - f->view_x) * f->zoom,
-        (t->y + t->offset_y - f->view_y) * f->zoom,
-        physical_size(t->client_width, t->scale) * f->zoom,
-        physical_size(t->client_height, t->scale) * f->zoom };
+        (t->y + t->offset_y - f->view_y) * f->zoom, width * f->zoom, height * f->zoom };
 }
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }
-static bool toplevel_surface(struct surface *surface) {
-    struct surface *root = surface_root(surface);
-    return xdg_toplevel_from_surface(root);
-}
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
+    if (box_empty(&leaf->shown)) return false;
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
@@ -284,10 +299,11 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
         .surface = surface,
     };
-    if (window && !t->fullscreen && t->client_width > 0 &&
-            window_radius(s, t, data) > 0 && toplevel_surface(surface) &&
+    double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
+    bool clipped = !box_equal(&leaf->shown, &leaf->screen);
+    if (window && t->client_width > 0 && (radius > 0 || clipped) && toplevel_surface(surface) &&
             effect_texture(data, &options, (struct fbox){ local.x, local.y, local.width,
-                local.height }, window_box(t, data), window_radius(s, t, data)))
+                local.height }, window_box(t, data), radius))
         return false;
     pass_add_texture(data->pass, &options);
     return false;
@@ -591,6 +607,7 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer) {
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
     root.target.offset_x = root.target.offset_y = 0;
+    root.target.width = root.target.height = 0;
     root.target.alpha = 1;
     struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
         .view_zoom = 1 };
@@ -626,9 +643,9 @@ struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t 
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
-    if (hit->x < leaf->screen.x || hit->y < leaf->screen.y ||
-            hit->x >= (double)leaf->screen.x + leaf->screen.width ||
-            hit->y >= (double)leaf->screen.y + leaf->screen.height) return false;
+    if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
+            hit->x >= (double)leaf->shown.x + leaf->shown.width ||
+            hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
     double sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
     double sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
     if (!surface_accepts_input(leaf->surface, sx, sy)) return false;
@@ -664,9 +681,10 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct scanout_data *data = opaque;
     struct box overlap;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
-    if (!box_intersection(&overlap, &leaf->screen, &data->output)) return false;
+    if (!box_intersection(&overlap, &leaf->shown, &data->output)) return false;
     data->done = true;
-    if (!box_equal(&leaf->screen, &data->output)) return true;
+    if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
+        return true;
     const struct target *t = leaf->target;
     if (leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;

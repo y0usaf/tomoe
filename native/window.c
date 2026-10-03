@@ -284,6 +284,8 @@ void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
     if (!w || !w->tree) return;
     w->target.x = x;
     w->target.y = y;
+    w->target.width = width;
+    w->target.height = height;
     w->desired_width = width;
     w->desired_height = height;
     w->desired_visible = visible != 0;

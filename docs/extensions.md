@@ -24,7 +24,7 @@ The public API is in `src/api.lisp`:
 (previous-context snapshot :focus) ; context before this transaction; requires :FOCUS
 (publish-state :status '(:ready t))
 (state-value snapshot :status)     ; requires :DATA; optional default for absent names
-(place id x y width height visible)
+(place id x y width height visible) ; the window draws and takes input only inside this box
 (focus id &key (raise t))           ; NIL clears focus; :RAISE NIL leaves ordering to other effects
 (raise-window id)
 (show-window id)
