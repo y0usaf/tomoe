@@ -433,6 +433,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     buffer_unlock(frame->buffer);
     frame->buffer = NULL;
     frame->capturing = false;
+    if (session->source.kind == SOURCE_WINDOW) window_frame_done(s, (uint32_t)session->source.id, now);
 }
 
 static void session_resource_destroy(struct wl_resource *resource) {

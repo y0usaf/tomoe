@@ -561,6 +561,12 @@ static PangoLayout *make_layout(cairo_t *cairo, const char *text,
     if (!valid_text_args(text, font, size, line_height)) return NULL;
     PangoLayout *layout = pango_cairo_create_layout(cairo);
     if (!layout) return NULL;
+    cairo_font_options_t *options = cairo_font_options_create();
+    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
+    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
+    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
+    pango_cairo_context_set_font_options(pango_layout_get_context(layout), options);
+    cairo_font_options_destroy(options);
     PangoFontDescription *description = pango_font_description_from_string(
         string_or_empty(font)[0] ? string_or_empty(font) : "sans");
     if (!description) {

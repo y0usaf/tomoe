@@ -1053,7 +1053,9 @@ enter a replacement source. Other reducers observe resulting context changes, wi
 private click. Command effects returned by this event run after publication.
 
 Pango shapes text, and Cairo rasterizes text, vectors, images, and icons before
-publication. Unchanged plans reuse their native textures, and frame rendering
+publication. Text is antialiased in grayscale without hinting, whatever fontconfig
+asks for: a shell surface is translucent over content it cannot see, where
+subpixel color fringes show, and hinting distorts pixel fonts off their grid. Unchanged plans reuse their native textures, and frame rendering
 runs no extension code.
 Handler tokens survive text, style, and geometry changes while the source,
 surface, output, click key, and command remain the same. Already queued clicks
