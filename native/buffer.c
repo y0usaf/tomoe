@@ -414,7 +414,9 @@ bool buffers_listen(struct tomoe *s) {
     int fd = render_drm_fd(s->renderer);
     struct stat st;
     if (!formats || !formats->len || fd < 0 || fstat(fd, &st) != 0) return true;
-    dmabuf.drm_fd = fd;
+    char *node = drmGetDeviceNameFromFd2(fd);
+    dmabuf.drm_fd = node ? open(node, O_RDWR | O_CLOEXEC) : -1;
+    free(node);
     dmabuf.device = st.st_rdev;
     if (!dmabuf_table(formats)) return false;
     return wl_global_create(s->display, &zwp_linux_dmabuf_v1_interface, 4, s, bind_dmabuf);
@@ -422,6 +424,7 @@ bool buffers_listen(struct tomoe *s) {
 
 void buffers_finish(void) {
     if (dmabuf.table_fd >= 0) close(dmabuf.table_fd);
+    if (dmabuf.drm_fd >= 0) close(dmabuf.drm_fd);
     dmabuf.table_fd = dmabuf.drm_fd = -1;
 }
 

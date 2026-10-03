@@ -1,10 +1,10 @@
 #include "internal.h"
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <drm_fourcc.h>
-#include <gbm.h>
 #include <libudev.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -44,6 +44,12 @@ struct crtc {
     size_t gamma_size, degamma_size;
 };
 
+struct dumb {
+    uint32_t handle, pitch;
+    uint64_t size;
+    uint8_t *map;
+};
+
 struct connector {
     struct screen screen;
     struct kms *kms;
@@ -54,7 +60,7 @@ struct connector {
     struct buffer *queued, *current;
     bool flip_pending, present_pending;
     size_t flip_seq;
-    struct gbm_bo *cursor_bo[2];
+    struct dumb cursor_bo[2];
     uint32_t cursor_fb[2];
     int cursor_front, cursor_x, cursor_y;
     bool cursor_on, cursor_committed;
@@ -67,7 +73,6 @@ struct kms {
     dev_t devnum;
     bool atomic, async_atomic, modifiers;
     uint64_t cursor_width, cursor_height;
-    struct gbm_device *gbm;
     struct wl_event_source *source, *monitor_source;
     struct udev *udev;
     struct udev_monitor *monitor;
@@ -613,6 +618,15 @@ static size_t connector_degamma_size(struct screen *screen) {
     return crtc ? crtc->degamma_size : 0;
 }
 
+static void cursor_free(struct connector *c, int i) {
+    struct dumb *bo = &c->cursor_bo[i];
+    if (c->cursor_fb[i]) drmModeRmFB(c->kms->fd, c->cursor_fb[i]);
+    if (bo->map) munmap(bo->map, bo->size);
+    if (bo->handle) drmModeDestroyDumbBuffer(c->kms->fd, bo->handle);
+    c->cursor_fb[i] = 0;
+    *bo = (struct dumb){0};
+}
+
 static bool cursor_upload(struct connector *c, struct buffer *buffer) {
     struct kms *kms = c->kms;
     void *data;
@@ -623,24 +637,26 @@ static bool cursor_upload(struct connector *c, struct buffer *buffer) {
                 &format, &stride)) return false;
     bool ok = format == DRM_FORMAT_ARGB8888;
     int back = c->cursor_front ^ 1;
-    if (ok && !c->cursor_bo[back]) {
-        c->cursor_bo[back] = gbm_bo_create(kms->gbm, (uint32_t)kms->cursor_width,
-            (uint32_t)kms->cursor_height, GBM_FORMAT_ARGB8888, GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE);
-        uint32_t handle = c->cursor_bo[back] ? gbm_bo_get_handle(c->cursor_bo[back]).u32 : 0;
-        uint32_t pitch = c->cursor_bo[back] ? gbm_bo_get_stride(c->cursor_bo[back]) : 0;
-        ok = handle && !drmModeAddFB2(kms->fd, (uint32_t)kms->cursor_width,
-            (uint32_t)kms->cursor_height, DRM_FORMAT_ARGB8888, (uint32_t[4]){ handle },
-            (uint32_t[4]){ pitch }, (uint32_t[4]){ 0 }, &c->cursor_fb[back], 0);
+    struct dumb *bo = &c->cursor_bo[back];
+    if (ok && !bo->map) {
+        uint64_t offset = 0;
+        void *map = MAP_FAILED;
+        ok = !drmModeCreateDumbBuffer(kms->fd, (uint32_t)kms->cursor_width,
+                (uint32_t)kms->cursor_height, 32, 0, &bo->handle, &bo->pitch, &bo->size) &&
+            !drmModeMapDumbBuffer(kms->fd, bo->handle, &offset) &&
+            (map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, kms->fd,
+                (off_t)offset)) != MAP_FAILED &&
+            !drmModeAddFB2(kms->fd, (uint32_t)kms->cursor_width, (uint32_t)kms->cursor_height,
+                DRM_FORMAT_ARGB8888, (uint32_t[4]){ bo->handle }, (uint32_t[4]){ bo->pitch },
+                (uint32_t[4]){ 0 }, &c->cursor_fb[back], 0);
+        bo->map = map == MAP_FAILED ? NULL : map;
+        if (!ok) cursor_free(c, back);
     }
     if (ok) {
-        size_t size = kms->cursor_width * kms->cursor_height * 4;
-        uint8_t *pixels = calloc(1, size);
-        ok = pixels != NULL;
-        for (int y = 0; ok && y < buffer->height; y++)
-            memcpy(pixels + (size_t)y * kms->cursor_width * 4, (uint8_t *)data + (size_t)y * stride,
+        memset(bo->map, 0, bo->size);
+        for (int y = 0; y < buffer->height; y++)
+            memcpy(bo->map + (size_t)y * bo->pitch, (uint8_t *)data + (size_t)y * stride,
                 (size_t)buffer->width * 4);
-        ok = ok && gbm_bo_write(c->cursor_bo[back], pixels, size) == 0;
-        free(pixels);
     }
     buffer_end_access(buffer);
     if (ok) c->cursor_front = back;
@@ -661,7 +677,7 @@ static bool connector_cursor(struct screen *screen, struct buffer *buffer, int h
     c->cursor_on = true;
     if (!c->kms->atomic)
         return !drmModeSetCursor2(c->kms->fd, c->crtc->id,
-            gbm_bo_get_handle(c->cursor_bo[c->cursor_front]).u32, (uint32_t)c->kms->cursor_width,
+            c->cursor_bo[c->cursor_front].handle, (uint32_t)c->kms->cursor_width,
             (uint32_t)c->kms->cursor_height, hotspot_x, hotspot_y);
     screen_schedule_frame(screen);
     return true;
@@ -685,10 +701,7 @@ static void connector_destroy(struct screen *screen) {
     }
     buffer_unlock(c->queued);
     buffer_unlock(c->current);
-    for (int i = 0; i < 2; i++) {
-        if (c->cursor_fb[i]) drmModeRmFB(c->kms->fd, c->cursor_fb[i]);
-        if (c->cursor_bo[i]) gbm_bo_destroy(c->cursor_bo[i]);
-    }
+    for (int i = 0; i < 2; i++) cursor_free(c, i);
     wl_list_remove(&c->link);
     free(c);
 }
@@ -877,8 +890,7 @@ int kms_create(struct tomoe *s) {
     kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
     kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;
     kms->cursor_height = drmGetCap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) == 0 && cap ? cap : 64;
-    kms->gbm = gbm_create_device(kms->fd);
-    if (!kms->gbm || !read_resources(kms)) {
+    if (!read_resources(kms)) {
         tomoe_log(LOG_ERROR, "tomoe: DRM resources unavailable");
         return -1;
     }
@@ -942,7 +954,6 @@ void kms_destroy(struct tomoe *s) {
     }
     free(kms->crtcs);
     free(kms->planes);
-    if (kms->gbm) gbm_device_destroy(kms->gbm);
     if (kms->fd >= 0) session_close(s, kms->device, kms->fd);
     free(kms);
     s->kms = NULL;
