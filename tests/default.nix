@@ -60,11 +60,12 @@ let
               (list (run-once :probe "printf %s \"$DBUS_SESSION_BUS_ADDRESS\" > /run/bus-probe"))
               nil))
   '';
-  check =
-    name: script:
+  checkWith =
+    extra: name: script:
     pkgs.testers.runNixOSTest {
       name = "tomoe-${name}";
       nodes.machine = {
+        imports = [ extra ];
         boot.kernelModules = [
           "vgem"
           "udmabuf"
@@ -82,6 +83,7 @@ let
       };
       testScript = builtins.readFile ./tomoe.py + script;
     };
+  check = checkWith { };
 in
 {
   integration = check "integration" (
@@ -93,6 +95,32 @@ in
     + builtins.readFile ./integration.py
   );
   bare = check "bare" (builtins.readFile ./bare.py);
+  portal =
+    checkWith
+      {
+        environment.systemPackages = [
+          pkgs.pipewire
+          pkgs.xdg-desktop-portal
+        ];
+        environment.pathsToLink = [
+          "/share/dbus-1"
+          "/share/xdg-desktop-portal"
+        ];
+      }
+      "portal"
+      (
+        ''
+          CAST = "${./cast.py}"
+          CAST_PYTHON = "${
+            pkgs.python3.withPackages (p: [
+              p.dbus-python
+              p.pygobject3
+            ])
+          }/bin/python3"
+          PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
+        ''
+        + builtins.readFile ./portal.py
+      );
   session-bus = check "session-bus" (
     ''
       BUS_PROBE = "${busProbe}"
