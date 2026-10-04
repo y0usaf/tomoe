@@ -32,6 +32,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use pipewire as pw;
 use pw::spa;
@@ -144,7 +145,8 @@ struct AppState {
 
     frames_completed: u64,
     last_log_at: std::time::Instant,
-    capture_kicked: bool,
+    streaming: bool,
+    retry_at: Option<Instant>,
 
     dying: bool,
     stop_flag: Option<Arc<AtomicBool>>,
@@ -230,7 +232,8 @@ fn run(
         node_id_tx: Some(node_id_tx),
         frames_completed: 0,
         last_log_at: std::time::Instant::now(),
-        capture_kicked: false,
+        streaming: false,
+        retry_at: None,
         dying: false,
         stop_flag: Some(stop.clone()),
         needs_renegotiate: false,
@@ -402,15 +405,15 @@ fn run(
 
     let mainloop_for_stop = mainloop.clone();
     let stop_for_event = stop.clone();
-    let event_check = mainloop.loop_().add_timer(move |_| {
+    let s_for_tick = state_rc.clone();
+    let tick = mainloop.loop_().add_timer(move |_| {
         if stop_for_event.load(Ordering::SeqCst) {
             mainloop_for_stop.quit();
+            return;
         }
+        s_for_tick.borrow_mut().on_tick();
     });
-    let _ = event_check.update_timer(
-        Some(std::time::Duration::from_millis(200)),
-        Some(std::time::Duration::from_millis(200)),
-    );
+    let _ = tick.update_timer(Some(TICK), Some(TICK));
 
     mainloop.run();
 
@@ -619,8 +622,8 @@ impl AppState {
                 }));
             }
         }
-        if matches!(new, pw::stream::StreamState::Streaming) && !self.capture_kicked {
-            self.capture_kicked = true;
+        self.streaming = matches!(new, pw::stream::StreamState::Streaming);
+        if self.streaming && self.pending_frame.is_none() {
             self.kick_capture();
         }
         if matches!(
@@ -666,8 +669,6 @@ impl AppState {
                     let mut params = [fpod, bpod];
                     if let Err(e) = stream.update_params(&mut params) {
                         tracing::warn!("update_params failed: {e:?}");
-                    } else {
-                        self.capture_kicked = false;
                     }
                 }
             }
@@ -782,7 +783,7 @@ impl AppState {
     /// wl_buffer wrapping the same memfd, and capture. The compositor
     /// renders straight into PipeWire-owned memory and answers with Ready.
     fn kick_capture(&mut self) {
-        if self.dying {
+        if self.dying || !self.streaming {
             return;
         }
         let Some(session) = self.session.clone() else {
@@ -794,13 +795,12 @@ impl AppState {
         let pw_buf = unsafe { stream.dequeue_raw_buffer() };
         if pw_buf.is_null() {
             tracing::debug!("kick_capture: dequeue_raw_buffer returned null");
-            thread::sleep(std::time::Duration::from_millis(2));
             return;
         }
         let key = PwBuf(pw_buf);
         let Some(slot) = self.pw_buffer_slots.get(&key) else {
             tracing::error!("kick_capture: no slot for dequeued pw_buffer");
-            unsafe { stream.queue_raw_buffer(pw_buf) };
+            unsafe { return_buffer(&stream, pw_buf) };
             return;
         };
         let frame = session.create_frame(&self.qh, ());
@@ -873,15 +873,27 @@ impl AppState {
         tracing::warn!("toplevel screencast frame failed");
         if let Some(pending) = self.pending_frame.take() {
             pending.frame.destroy();
-            if let Some(pw_buf) = pending.pw_buffer {
-                if let Some(stream) = self.stream.clone() {
-                    unsafe { stream.queue_raw_buffer(pw_buf.0) };
-                }
+            if let (Some(pw_buf), Some(stream)) = (pending.pw_buffer, self.stream.as_ref()) {
+                unsafe { return_buffer(stream, pw_buf.0) };
             }
         }
-        thread::sleep(std::time::Duration::from_millis(50));
+        self.retry_at = Some(Instant::now() + RETRY_DELAY);
+    }
+
+    fn on_tick(&mut self) {
+        if self.pending_frame.is_some() || self.retry_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
+        self.retry_at = None;
         self.kick_capture();
     }
+}
+
+const TICK: Duration = Duration::from_millis(10);
+const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+unsafe fn return_buffer(stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
+    pw::sys::pw_stream_return_buffer(stream.as_raw_ptr(), buffer);
 }
 
 /// XRGB8888 stride for a width, in checked arithmetic. Widths come from the
