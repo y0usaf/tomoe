@@ -67,6 +67,8 @@ execute without a reply. IDs are unsigned 64-bit integers. Events are
 from a later key or UI event, with `(screencast-answer N :output NAME)`,
 `(screencast-answer N :window ID)` or `(screencast-answer N :deny)`. With no
 extension reading `:screencast` the reply is `{"action":"fallback"}`. The
+portal waits up to 120 s for the answer; a timeout, a broken connection, an
+error reply or a source it cannot find denies the request. The
 builtin `screencast` picker honours a window rule property `:screencast`
 (`nil` denies, an output name casts it) for the requesting app, answers a single
 candidate directly, and otherwise opens a menu.

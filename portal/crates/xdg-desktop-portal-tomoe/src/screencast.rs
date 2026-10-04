@@ -72,9 +72,7 @@ enum IpcPick {
     Output(String),
     /// Foreign-toplevel identifier.
     Window(String),
-    /// The config denied (or the user cancelled) the request.
     Deny,
-    /// No hook registered / error / timeout: use the env-var heuristics.
     Fallback,
 }
 
@@ -85,8 +83,7 @@ const IPC_SELECT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Ask the compositor which source to cast (`tomoe.on_screencast_request`):
 /// source policy is config policy, and the portal is a thin IPC client of
-/// it. Every non-answer degrades to [`IpcPick::Fallback`] so screencasting
-/// keeps working on a bare core (no config hook, no compositor socket).
+/// it.
 fn ipc_select(app_id: &str, monitor: bool, window: bool) -> IpcPick {
     let Some(path) = tomoe_ipc::find_socket() else {
         return IpcPick::Fallback;
@@ -112,12 +109,12 @@ fn ipc_select(app_id: &str, monitor: bool, window: bool) -> IpcPick {
     let reply = match client.request("screencast_select", Some(params)) {
         Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
-            tracing::warn!("screencast_select: compositor error: {e}");
-            return IpcPick::Fallback;
+            tracing::warn!("screencast_select: compositor error: {e}; denying");
+            return IpcPick::Deny;
         }
         Err(e) => {
-            tracing::warn!("screencast_select: {e}");
-            return IpcPick::Fallback;
+            tracing::warn!("screencast_select: no answer ({e}); denying");
+            return IpcPick::Deny;
         }
     };
     match reply.get("action").and_then(|v| v.as_str()) {
@@ -128,14 +125,14 @@ fn ipc_select(app_id: &str, monitor: bool, window: bool) -> IpcPick {
             if let Some(ident) = reply.get("identifier").and_then(|v| v.as_str()) {
                 return IpcPick::Window(ident.to_string());
             }
-            tracing::warn!("screencast_select: resolve without output/identifier");
-            IpcPick::Fallback
+            tracing::warn!("screencast_select: resolve without output/identifier; denying");
+            IpcPick::Deny
         }
         Some("deny") => IpcPick::Deny,
         Some("fallback") => IpcPick::Fallback,
         other => {
-            tracing::warn!("screencast_select: unknown action {other:?}");
-            IpcPick::Fallback
+            tracing::warn!("screencast_select: unknown action {other:?}; denying");
+            IpcPick::Deny
         }
     }
 }
@@ -328,15 +325,15 @@ impl ScreenCast {
                 IpcPick::Output(name) => match outputs.iter().find(|o| o.name == name) {
                     Some(o) => Some(Selection::Monitor(o.clone())),
                     None => {
-                        tracing::warn!(name, "compositor picked an unknown output; falling back");
-                        choose_source(&outputs, &windows)
+                        tracing::warn!(name, "compositor picked an unknown output; denying");
+                        None
                     }
                 },
                 IpcPick::Window(ident) => match windows.iter().find(|t| t.identifier == ident) {
                     Some(t) => Some(Selection::Window(t.clone())),
                     None => {
-                        tracing::warn!(ident, "compositor picked an unknown window; falling back");
-                        choose_source(&outputs, &windows)
+                        tracing::warn!(ident, "compositor picked an unknown window; denying");
+                        None
                     }
                 },
                 IpcPick::Deny => None,
