@@ -157,7 +157,6 @@ pub fn start(
     ))
 }
 
-
 struct AppState {
     spec: StreamSpec,
 
@@ -245,7 +244,6 @@ impl AsRawFd for FdHolder {
         self.0.as_raw_fd()
     }
 }
-
 
 fn run(
     spec: StreamSpec,
@@ -392,8 +390,7 @@ fn run(
         .remove_buffer(move |stream, _ud, buffer| {
             s_remove.borrow_mut().on_remove_buffer(stream, buffer);
         })
-        .process(|_, _| {
-        })
+        .process(|_, _| {})
         .register()?;
 
     let format_bytes = build_video_format_param(&spec)?;
@@ -450,7 +447,6 @@ fn run(
     tracing::info!("screencast thread exiting cleanly");
     Ok(())
 }
-
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
@@ -585,7 +581,6 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppState {
         }
     }
 }
-
 
 impl AppState {
     fn on_state_changed(
@@ -862,9 +857,7 @@ impl AppState {
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe {
-            stream.dequeue_raw_buffer()
-        };
+        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
         if pw_buf.is_null() {
             tracing::debug!("buffer_done: dequeue_raw_buffer returned null");
             if let Some(p) = self.pending_frame.take() {
@@ -1018,7 +1011,6 @@ fn init_gbm_device() -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Erro
 
     Ok(None)
 }
-
 
 fn build_video_format_param(
     spec: &StreamSpec,

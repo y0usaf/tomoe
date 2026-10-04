@@ -116,7 +116,6 @@ pub fn start(
     ))
 }
 
-
 struct AppState {
     spec: StreamSpec,
 
@@ -197,7 +196,6 @@ impl AsRawFd for FdHolder {
         self.0.as_raw_fd()
     }
 }
-
 
 fn run(
     spec: StreamSpec,
@@ -365,8 +363,7 @@ fn run(
         .remove_buffer(move |stream, _ud, buffer| {
             s_remove.borrow_mut().on_remove_buffer(stream, buffer);
         })
-        .process(|_, _| {
-        })
+        .process(|_, _| {})
         .register()?;
 
     let (adv_width, adv_height) = {
@@ -434,7 +431,6 @@ fn run(
     tracing::info!("toplevel screencast thread exiting cleanly");
     Ok(())
 }
-
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
@@ -607,7 +603,6 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for AppState {
         }
     }
 }
-
 
 impl AppState {
     fn on_state_changed(
@@ -801,9 +796,7 @@ impl AppState {
         let Some(stream) = self.stream.clone() else {
             return;
         };
-        let pw_buf = unsafe {
-            stream.dequeue_raw_buffer()
-        };
+        let pw_buf = unsafe { stream.dequeue_raw_buffer() };
         if pw_buf.is_null() {
             tracing::debug!("kick_capture: dequeue_raw_buffer returned null");
             thread::sleep(std::time::Duration::from_millis(2));
@@ -895,7 +888,6 @@ impl AppState {
         self.kick_capture();
     }
 }
-
 
 /// XRGB8888 stride for a width, in checked arithmetic. Widths come from the
 /// compositor's advertised session constraints (untrusted); reject any that
