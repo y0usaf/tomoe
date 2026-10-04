@@ -104,6 +104,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
+const FAILURE_BUDGET: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct StreamSpec {
@@ -159,6 +160,7 @@ struct AppState {
     qh: QueueHandle<AppState>,
     manager: Option<ZwlrScreencopyManagerV1>,
     target_output: Option<wl_output::WlOutput>,
+    target_global: Option<u32>,
     shm: Option<wl_shm::WlShm>,
     dmabuf: Option<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
     gbm: Option<GbmDevice<File>>,
@@ -184,6 +186,7 @@ struct AppState {
     /// Monotonic instant of the last frame actually delivered; `None` until
     /// the first frame is submitted.
     last_frame_time: Option<Instant>,
+    failing_since: Option<Instant>,
 }
 
 struct PendingFrame {
@@ -261,6 +264,7 @@ fn run(
         qh: qh.clone(),
         manager: None,
         target_output: None,
+        target_global: None,
         shm: None,
         dmabuf: None,
         gbm: None,
@@ -276,6 +280,7 @@ fn run(
         stop_flag: Some(stop.clone()),
         min_time_between_frames: Duration::ZERO,
         last_frame_time: None,
+        failing_since: None,
     };
 
     event_queue.roundtrip(&mut state)?;
@@ -452,18 +457,24 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        else {
-            return;
+        let (name, interface, version) = match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => (name, interface, version),
+            wl_registry::Event::GlobalRemove { name } => {
+                if state.target_global == Some(name) {
+                    state.end("its output was removed");
+                }
+                return;
+            }
+            _ => return,
         };
         match interface.as_str() {
             "wl_output" => {
                 let _output =
-                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, name);
             }
             "wl_shm" => {
                 state.shm =
@@ -492,18 +503,19 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     }
 }
 
-impl Dispatch<wl_output::WlOutput, ()> for AppState {
+impl Dispatch<wl_output::WlOutput, u32> for AppState {
     fn event(
         state: &mut Self,
         output: &wl_output::WlOutput,
         event: wl_output::Event,
-        _: &(),
+        global: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let wl_output::Event::Name { name } = event {
             if name == state.spec.output_name && state.target_output.is_none() {
                 state.target_output = Some(output.clone());
+                state.target_global = Some(*global);
             }
         }
     }
@@ -881,6 +893,7 @@ impl AppState {
         if self.dying {
             return;
         }
+        self.failing_since = None;
 
         let now = Instant::now();
         if let Some(last) = self.last_frame_time {
@@ -936,11 +949,34 @@ impl AppState {
         self.kick_capture();
     }
 
+    fn end(&mut self, why: &str) {
+        if self.dying {
+            return;
+        }
+        tracing::info!(
+            output = self.spec.output_name,
+            why,
+            "screencast: ending the stream"
+        );
+        self.dying = true;
+        if let Some(pending) = self.pending_frame.take() {
+            pending.frame.destroy();
+        }
+        if let Some(stop) = self.stop_flag.as_ref() {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn on_frame_failed(&mut self) {
         if self.dying {
             return;
         }
         tracing::warn!("screencast frame failed");
+        let failing_since = *self.failing_since.get_or_insert_with(Instant::now);
+        if failing_since.elapsed() > FAILURE_BUDGET {
+            self.end("its captures kept failing");
+            return;
+        }
         if let Some(pending) = self.pending_frame.take() {
             pending.frame.destroy();
             if let Some(pw_buf) = pending.pw_buffer {
