@@ -27,7 +27,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 37; }
+int tomoe_abi_version(void) { return 38; }
 static void wayland_log(const char *fmt, va_list args) {
     char line[512];
     vsnprintf(line, sizeof(line), fmt, args);

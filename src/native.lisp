@@ -129,6 +129,9 @@
 (define-native ("tomoe_outputs_pending" %outputs-pending) sb-alien:int (server (* t)))
 (define-native ("tomoe_output_power" %output-power) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (mode sb-alien:int))
+(define-native ("tomoe_virtual_output" %virtual-output) sb-alien:void
+  (server (* t)) (name sb-alien:c-string) (width sb-alien:int) (height sb-alien:int)
+  (refresh sb-alien:int))
 (define-native ("tomoe_output_hold" %output-hold) sb-alien:int
   (server (* t)) (name sb-alien:c-string))
 (define-native ("tomoe_output" %output) sb-alien:int
@@ -269,6 +272,16 @@
   (stage-native-outputs backend outputs)
   (let ((message (%outputs-apply backend)))
     (when message (error "~A" message))))
+
+(defun configure-virtual-outputs (backend old new)
+  (when backend
+    (dolist (output old)
+      (unless (find (getf output :name) new :test #'equal :key (lambda (o) (getf o :name)))
+        (%virtual-output backend (getf output :name) 0 0 0)))
+    (dolist (output new)
+      (unless (member output old :test #'equal)
+        (%virtual-output backend (getf output :name) (getf output :width) (getf output :height)
+                         (getf output :refresh-mhz))))))
 
 (defun stage-native-ui (backend plans)
   (flet ((require-ui (status)

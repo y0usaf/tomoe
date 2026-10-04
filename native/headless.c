@@ -10,6 +10,7 @@ struct headless {
     int64_t vblank, next;
     size_t seq;
     unsigned frames;
+    bool declared;
 };
 
 static void clock_arm(struct headless *h, int32_t refresh) {
@@ -65,11 +66,11 @@ static const struct screen_impl headless_impl = {
     .destroy = headless_destroy,
 };
 
-static struct headless *headless_screen;
-
-bool headless_start(struct tomoe *s) {
+static bool headless_create(struct tomoe *s, const char *name, int32_t width, int32_t height,
+        int32_t refresh, bool declared) {
     struct headless *h = calloc(1, sizeof(*h));
     if (!h) return false;
+    h->declared = declared;
     h->fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     h->clock = h->fd < 0 ? NULL : wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
         h->fd, WL_EVENT_READABLE, clock_tick, h);
@@ -78,17 +79,43 @@ bool headless_start(struct tomoe *s) {
         free(h);
         return false;
     }
-    screen_init(&h->screen, s, &headless_impl, SCREEN_HEADLESS, "HEADLESS-1");
-    h->screen.width = 1280;
-    h->screen.height = 720;
-    h->screen.refresh = 60000;
+    screen_init(&h->screen, s, &headless_impl, SCREEN_HEADLESS, name);
+    h->screen.width = width;
+    h->screen.height = height;
+    h->screen.refresh = refresh;
     screen_describe(&h->screen);
-    headless_screen = h;
     output_added(s, &h->screen);
     return true;
 }
 
+bool headless_start(struct tomoe *s) {
+    return headless_create(s, "HEADLESS-1", 1280, 720, 60000, false);
+}
+
+void tomoe_virtual_output(struct tomoe *s, const char *name, int width, int height, int refresh) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (strcmp(o->screen->name, name)) continue;
+        struct headless *h = wl_container_of(o->screen, h, screen);
+        if (o->screen->impl != &headless_impl || !h->declared) {
+            if (width) tomoe_log(LOG_ERROR, "tomoe: virtual output %s not created: the name is taken", name);
+        } else if (!width) {
+            screen_destroy(o->screen);
+        } else {
+            struct screen_state state;
+            screen_state_init(&state);
+            screen_state_set_custom_mode(&state, width, height, refresh);
+            screen_request_state(o->screen, &state);
+            screen_state_finish(&state);
+        }
+        return;
+    }
+    if (width && !headless_create(s, name, width, height, refresh, true))
+        tomoe_log(LOG_ERROR, "tomoe: virtual output %s cannot be created", name);
+}
+
 void headless_finish(struct tomoe *s) {
-    if (headless_screen) screen_destroy(&headless_screen->screen);
-    headless_screen = NULL;
+    struct output *o, *next;
+    wl_list_for_each_safe(o, next, &s->outputs, link)
+        if (o->screen->impl == &headless_impl) screen_destroy(o->screen);
 }

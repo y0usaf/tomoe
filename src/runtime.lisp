@@ -461,6 +461,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                            stacking)
                 :layers resolved-layers :focus focused :keyboard keyboard :settings settings
                 :sounds (materialization-sounds m)
+                :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
+                                       :key (lambda (o) (getf o :name)))
                 :config-error (copy-data (runtime-config-error runtime))
                 :keyboard-grab keyboard-grab
                 :bindings (sort bindings
@@ -545,6 +547,7 @@ when it is not 1."
     (install-timers runtime timers)
     (install-executions runtime executions)
     (install-managed-processes runtime processes)
+    (configure-virtual-outputs backend (getf old :virtual-outputs) (getf context :virtual-outputs))
     (setf (runtime-pending-spawns runtime) pending-spawns)
     (when (runtime-json-server runtime) (publish-json-context runtime context mounts))
     spawns))

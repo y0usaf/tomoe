@@ -1,6 +1,6 @@
 (defpackage #:tomoe
   (:use #:cl)
-  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:configure-keyboard #:screenshot #:screencast-answer #:media-control #:adjust-brightness #:clipboard-copy
+  (:export #:define-extension #:context #:previous-context #:place #:focus #:bind-key #:configure-output #:virtual-output #:configure-keyboard #:screenshot #:screencast-answer #:media-control #:adjust-brightness #:clipboard-copy
            #:window-rule #:rules-for #:raise-window #:show-window #:hide-window
            #:publish-state #:state-value #:service-state #:window-geometry
            #:ui #:shell-surface
@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 37)
+(defconstant +native-abi-version+ 38)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -141,7 +141,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
 
 (defstruct materialization
   layout stacking layers focused data surfaces keyboard-grab outputs bindings
-  (binding-order 0) keyboard settings view mod-bit sounds)
+  (binding-order 0) keyboard settings view mod-bit sounds virtual-outputs)
 
 (defun %materialized-window (m id)
   (find id (materialization-layout m) :key (lambda (window) (getf window :id))))
@@ -492,6 +492,28 @@ Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS.
                         :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
                         :disabled disabled :mirror mirror :vrr vrr :icc icc)
                   (materialization-outputs m))))
+
+(defun virtual-output (name &key (mode '(1920 1080 60)))
+  "Own an offscreen output NAME showing MODE, (WIDTH HEIGHT [HZ]) at 60 Hz by
+default. It joins :CONNECTORS and :OUTPUTS like a plugged-in monitor, and
+CONFIGURE-OUTPUT sets its scale, position or mode. Removal unplugs it."
+  (check-type name string)
+  (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
+    (error "Invalid output name: ~S" name))
+  (destructuring-bind (width height &optional (hz 60)) mode
+    (check-type width (integer 1 16384))
+    (check-type height (integer 1 16384))
+    (check-type hz (real 1 1000))
+    (%effect :virtual-output (list (copy-seq name) width height (round (* hz 1000))))))
+
+(define-effect :virtual-output
+  :canonical (destructuring-bind (name width height refresh) args
+               (virtual-output name :mode (list width height (/ refresh 1000))))
+  :reduce (destructuring-bind (name width height refresh) args
+            (setf (materialization-virtual-outputs m)
+                  (cons (list :name name :width width :height height :refresh-mhz refresh)
+                        (remove name (materialization-virtual-outputs m)
+                                :test #'equal :key (lambda (o) (getf o :name)))))))
 
 (defun focus (id &key (raise t))
   "Own keyboard focus. RAISE also contributes this window's stacking order."
