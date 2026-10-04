@@ -118,15 +118,11 @@ pub struct StreamSpec {
 
 pub struct StreamHandle {
     stop: Arc<AtomicBool>,
-    join: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for StreamHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
     }
 }
 
@@ -136,7 +132,7 @@ pub fn start(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
     let (tx, rx) = mpsc::sync_channel::<Result<u32, String>>(1);
-    let join = thread::Builder::new()
+    thread::Builder::new()
         .name("portal-screencast".into())
         .spawn(move || {
             if let Err(e) = run(spec, tx, stop_for_thread) {
@@ -148,13 +144,7 @@ pub fn start(
         .map_err(|_| "screencast thread died before reporting node id".to_string())?
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
     tracing::info!(node_id, "screencast stream live");
-    Ok((
-        node_id,
-        StreamHandle {
-            stop,
-            join: Some(join),
-        },
-    ))
+    Ok((node_id, StreamHandle { stop }))
 }
 
 struct AppState {

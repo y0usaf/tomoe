@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -44,20 +44,50 @@ enum LiveStream {
     Window(#[allow(dead_code)] toplevel_stream::StreamHandle),
 }
 
+struct SessionState {
+    selection: Option<Selection>,
+    cursor_visible: bool,
+    stream: Option<LiveStream>,
+}
+
+#[derive(Clone, Default)]
+struct Sessions(Arc<Mutex<HashMap<String, SessionState>>>);
+
+impl Sessions {
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, SessionState>> {
+        self.0.lock().unwrap()
+    }
+}
+
 #[derive(Default)]
 pub struct ScreenCast {
-    /// What SelectSources picked, consumed by Start.
-    sessions: Mutex<HashMap<String, Selection>>,
-    /// Live streaming pipelines; dropping a handle stops its thread.
-    streams: Mutex<HashMap<String, LiveStream>>,
-    /// Per-session `cursor_mode & EMBEDDED != 0`. Filled by SelectSources,
-    /// consumed by Start to configure the streaming pipeline.
-    cursor_visibility: Mutex<HashMap<String, bool>>,
+    sessions: Sessions,
 }
 
 impl ScreenCast {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+pub struct Session {
+    key: String,
+    sessions: Sessions,
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
+impl Session {
+    async fn close(&self, #[zbus(object_server)] server: &zbus::ObjectServer) {
+        self.sessions.lock().remove(&self.key);
+        tracing::info!(session = %self.key, "Close");
+        if let Err(e) = server.remove::<Session, _>(self.key.as_str()).await {
+            tracing::warn!(session = %self.key, "unexporting session: {e}");
+        }
+    }
+
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
     }
 }
 
@@ -262,11 +292,29 @@ impl ScreenCast {
         session_handle: ObjectPath<'_>,
         app_id: String,
         options: HashMap<String, OwnedValue>,
+        #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         tracing::info!(
             %handle, %session_handle, %app_id, option_keys = ?options.keys().collect::<Vec<_>>(),
             "CreateSession"
         );
+        let key = session_handle.to_string();
+        self.sessions.lock().insert(
+            key.clone(),
+            SessionState {
+                selection: None,
+                cursor_visible: true,
+                stream: None,
+            },
+        );
+        let session = Session {
+            key: key.clone(),
+            sessions: self.sessions.clone(),
+        };
+        if let Err(e) = server.at(session_handle.clone(), session).await {
+            self.sessions.lock().remove(&key);
+            return Err(zbus::fdo::Error::Failed(format!("exporting session: {e}")));
+        }
         Ok((0, HashMap::new()))
     }
 
@@ -282,10 +330,11 @@ impl ScreenCast {
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(cursor_modes::EMBEDDED);
         let cursor_visible = cursor_mode & cursor_modes::EMBEDDED != 0;
-        self.cursor_visibility
-            .lock()
-            .unwrap()
-            .insert(session_handle.to_string(), cursor_visible);
+        let key = session_handle.to_string();
+        if !self.sessions.lock().contains_key(&key) {
+            tracing::warn!(%session_handle, "SelectSources for an unknown session");
+            return Ok((2, HashMap::new()));
+        }
         let types = options
             .get("types")
             .and_then(|v| u32::try_from(v).ok())
@@ -342,13 +391,16 @@ impl ScreenCast {
         })
         .await
         .map_err(|e| zbus::fdo::Error::Failed(format!("chooser join: {e}")))?;
+        let mut sessions = self.sessions.lock();
+        let Some(state) = sessions.get_mut(&key) else {
+            tracing::info!(%session_handle, "session closed while choosing a source");
+            return Ok((2, HashMap::new()));
+        };
+        state.cursor_visible = cursor_visible;
         match pick {
             Some(selection) => {
                 tracing::info!(?selection, %session_handle, "selected source");
-                self.sessions
-                    .lock()
-                    .unwrap()
-                    .insert(session_handle.to_string(), selection);
+                state.selection = Some(selection);
                 Ok((0, HashMap::new()))
             }
             None => {
@@ -367,20 +419,21 @@ impl ScreenCast {
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         let session_key = session_handle.to_string();
-        let selection = self.sessions.lock().unwrap().get(&session_key).cloned();
-        tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?selection, "Start");
+        let current = self
+            .sessions
+            .lock()
+            .get(&session_key)
+            .map(|state| (state.selection.clone(), state.cursor_visible));
+        tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?current, "Start");
 
+        let Some((selection, cursor_visible)) = current else {
+            tracing::warn!(%session_handle, "Start for an unknown session");
+            return Ok((2, HashMap::new()));
+        };
         let Some(selection) = selection else {
             tracing::warn!(%session_handle, "Start with no selection — cancelling");
             return Ok((1, HashMap::new()));
         };
-        let cursor_visible = self
-            .cursor_visibility
-            .lock()
-            .unwrap()
-            .get(&session_key)
-            .copied()
-            .unwrap_or(true);
 
         let (node_id, width, height, source_type, stream) = match selection {
             Selection::Monitor(out) => {
@@ -445,7 +498,13 @@ impl ScreenCast {
                 )
             }
         };
-        self.streams.lock().unwrap().insert(session_key, stream);
+        match self.sessions.lock().get_mut(&session_key) {
+            Some(state) => state.stream = Some(stream),
+            None => {
+                tracing::info!(%session_handle, "session closed while starting its stream");
+                return Ok((2, HashMap::new()));
+            }
+        }
 
         let mut stream_props: HashMap<String, Value> = HashMap::new();
         stream_props.insert(

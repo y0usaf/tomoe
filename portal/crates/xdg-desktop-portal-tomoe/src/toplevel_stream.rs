@@ -77,15 +77,11 @@ pub struct StreamInfo {
 
 pub struct StreamHandle {
     stop: Arc<AtomicBool>,
-    join: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for StreamHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
     }
 }
 
@@ -95,7 +91,7 @@ pub fn start(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
     let (tx, rx) = mpsc::sync_channel::<Result<StreamInfo, String>>(1);
-    let join = thread::Builder::new()
+    thread::Builder::new()
         .name("portal-toplevel-cast".into())
         .spawn(move || {
             if let Err(e) = run(spec, tx, stop_for_thread) {
@@ -107,13 +103,7 @@ pub fn start(
         .map_err(|_| "toplevel stream thread died before reporting node id".to_string())?
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
     tracing::info!(node_id = info.node_id, "toplevel stream live");
-    Ok((
-        info,
-        StreamHandle {
-            stop,
-            join: Some(join),
-        },
-    ))
+    Ok((info, StreamHandle { stop }))
 }
 
 struct AppState {
