@@ -52,6 +52,19 @@ let
                       collect (place (getf window :id) 20000 20000 320 240))
               nil))
   '';
+  virtualProbe = pkgs.writeText "virtual-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "virtual-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (virtual-output "VIRTUAL-1" :mode '(1280 720))
+                    (virtual-output "VIRTUAL-2" :mode '(1280 720))
+                    (shell-surface :rows
+                                   (ui :column :children (loop for i below 500
+                                                               collect (ui :text :text (format nil "~D" i))))
+                                   :anchors '(:top :left) :layer :overlay))
+              nil))
+  '';
   busProbe = pkgs.writeText "bus-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
@@ -94,7 +107,12 @@ in
     ''
     + builtins.readFile ./integration.py
   );
-  bare = check "bare" (builtins.readFile ./bare.py);
+  bare = check "bare" (
+    ''
+      VIRTUAL_PROBE = "${virtualProbe}"
+    ''
+    + builtins.readFile ./bare.py
+  );
   portal =
     checkWith
       {
