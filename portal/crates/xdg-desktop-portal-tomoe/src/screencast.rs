@@ -6,7 +6,7 @@
 //!
 //! See: https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.impl.portal.ScreenCast.html
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,7 @@ enum LiveStream {
 }
 
 struct SessionState {
+    owner: Option<String>,
     selection: Option<Selection>,
     cursor_visible: bool,
     stream: Option<LiveStream>,
@@ -67,6 +68,56 @@ impl Sessions {
 pub struct ScreenCast {
     sessions: Sessions,
     generations: AtomicU64,
+    owners: Arc<Mutex<HashSet<String>>>,
+}
+
+async fn owner_left(conn: &zbus::Connection, owner: &str) -> zbus::Result<()> {
+    use zbus::export::futures_core::Stream;
+    let dbus = zbus::fdo::DBusProxy::new(conn).await?;
+    let mut lost = dbus
+        .receive_name_owner_changed_with_args(&[(0, owner), (2, "")])
+        .await?;
+    if !dbus.name_has_owner(owner.try_into()?).await? {
+        return Ok(());
+    }
+    std::future::poll_fn(|cx| std::pin::Pin::new(&mut lost).poll_next(cx)).await;
+    Ok(())
+}
+
+async fn close_when_owner_leaves(
+    conn: zbus::Connection,
+    sessions: Sessions,
+    owners: Arc<Mutex<HashSet<String>>>,
+    owner: String,
+) {
+    let left = owner_left(&conn, &owner).await;
+    owners.lock().unwrap().remove(&owner);
+    if let Err(e) = left {
+        tracing::warn!(owner, "watching the session owner: {e}");
+        return;
+    }
+    let keys: Vec<String> = {
+        let mut sessions = sessions.lock();
+        let keys: Vec<String> = sessions
+            .iter()
+            .filter(|(_, state)| state.owner.as_deref() == Some(owner.as_str()))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &keys {
+            sessions.remove(key);
+        }
+        keys
+    };
+    for key in keys {
+        tracing::info!(owner, session = %key, "session owner left the bus; closing the session");
+        if let Err(e) = conn
+            .object_server()
+            .remove::<Session, _>(key.as_str())
+            .await
+        {
+            tracing::warn!(session = %key, "unexporting session: {e}");
+        }
+    }
 }
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -350,16 +401,19 @@ impl ScreenCast {
         session_handle: ObjectPath<'_>,
         app_id: String,
         options: HashMap<String, OwnedValue>,
-        #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         tracing::info!(
             %handle, %session_handle, %app_id, option_keys = ?options.keys().collect::<Vec<_>>(),
             "CreateSession"
         );
         let key = session_handle.to_string();
+        let owner = header.sender().map(|sender| sender.to_string());
         self.sessions.lock().insert(
             key.clone(),
             SessionState {
+                owner: owner.clone(),
                 selection: None,
                 cursor_visible: true,
                 stream: None,
@@ -370,9 +424,23 @@ impl ScreenCast {
             key: key.clone(),
             sessions: self.sessions.clone(),
         };
-        if let Err(e) = server.at(session_handle.clone(), session).await {
+        if let Err(e) = conn
+            .object_server()
+            .at(session_handle.clone(), session)
+            .await
+        {
             self.sessions.lock().remove(&key);
             return Err(zbus::fdo::Error::Failed(format!("exporting session: {e}")));
+        }
+        if let Some(owner) = owner {
+            if self.owners.lock().unwrap().insert(owner.clone()) {
+                tokio::spawn(close_when_owner_leaves(
+                    conn.clone(),
+                    self.sessions.clone(),
+                    self.owners.clone(),
+                    owner,
+                ));
+            }
         }
         Ok((0, HashMap::new()))
     }
