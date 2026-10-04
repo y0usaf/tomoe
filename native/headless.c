@@ -1,11 +1,39 @@
 #include "internal.h"
 
+#include <sys/timerfd.h>
+#include <unistd.h>
+
 struct headless {
     struct screen screen;
-    struct wl_event_source *timer;
+    struct wl_event_source *clock;
+    int fd;
+    int64_t vblank, next;
     size_t seq;
     unsigned frames;
 };
+
+static void clock_arm(struct headless *h, int32_t refresh) {
+    int64_t period = 1000000000000LL / (refresh > 0 ? refresh : 60000);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t t = now.tv_sec * 1000000000LL + now.tv_nsec;
+    h->next = h->vblank + period > t ? h->vblank + period : t + period - (t - h->vblank) % period;
+    struct itimerspec spec = { .it_value = { h->next / 1000000000, h->next % 1000000000 } };
+    timerfd_settime(h->fd, TFD_TIMER_ABSTIME, &spec, NULL);
+}
+
+static int clock_tick(int fd, uint32_t mask, void *data) {
+    struct headless *h = data;
+    uint64_t expirations;
+    if (read(fd, &expirations, sizeof(expirations)) != sizeof(expirations)) return 0;
+    h->vblank = h->next;
+    struct screen_present present = { .commit_seq = h->seq, .presented = true, .seq = ++h->frames,
+        .when = { h->vblank / 1000000000, h->vblank % 1000000000 },
+        .refresh = h->screen.refresh ? (int)(1000000000000LL / h->screen.refresh) : 0 };
+    screen_send_present(&h->screen, &present);
+    screen_send_frame(&h->screen);
+    return 0;
+}
 
 static bool headless_test(struct screen_update *updates, size_t count) {
     return true;
@@ -19,24 +47,15 @@ static bool headless_commit(struct screen_update *updates, size_t count) {
         int32_t refresh = (state->committed & SCREEN_MODE) && state->mode_type == SCREEN_MODE_CUSTOM ?
             state->custom_mode.refresh : h->screen.refresh;
         h->seq = h->screen.commit_seq + 1;
-        wl_event_source_timer_update(h->timer, refresh > 0 ? (int)(1000000 / refresh) : 16);
+        clock_arm(h, refresh);
     }
     return true;
 }
 
-static int headless_frame(void *data) {
-    struct headless *h = data;
-    struct screen_present present = { .commit_seq = h->seq, .presented = true, .seq = ++h->frames,
-        .refresh = h->screen.refresh ? (int)(1000000000000LL / h->screen.refresh) : 0 };
-    clock_gettime(CLOCK_MONOTONIC, &present.when);
-    screen_send_present(&h->screen, &present);
-    screen_send_frame(&h->screen);
-    return 0;
-}
-
 static void headless_destroy(struct screen *screen) {
     struct headless *h = wl_container_of(screen, h, screen);
-    wl_event_source_remove(h->timer);
+    wl_event_source_remove(h->clock);
+    close(h->fd);
     free(h);
 }
 
@@ -51,16 +70,19 @@ static struct headless *headless_screen;
 bool headless_start(struct tomoe *s) {
     struct headless *h = calloc(1, sizeof(*h));
     if (!h) return false;
+    h->fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    h->clock = h->fd < 0 ? NULL : wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
+        h->fd, WL_EVENT_READABLE, clock_tick, h);
+    if (!h->clock) {
+        if (h->fd >= 0) close(h->fd);
+        free(h);
+        return false;
+    }
     screen_init(&h->screen, s, &headless_impl, SCREEN_HEADLESS, "HEADLESS-1");
     h->screen.width = 1280;
     h->screen.height = 720;
     h->screen.refresh = 60000;
     screen_describe(&h->screen);
-    h->timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display), headless_frame, h);
-    if (!h->timer) {
-        free(h);
-        return false;
-    }
     headless_screen = h;
     output_added(s, &h->screen);
     return true;
