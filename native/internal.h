@@ -1081,7 +1081,7 @@ const char *foreign_identifier(struct tomoe *s, uint32_t id);
 uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
     struct screen *output);
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer);
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor);
 void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);

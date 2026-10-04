@@ -308,16 +308,13 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     pass_add_texture(data->pass, &options);
     return false;
 }
-static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {
-    const struct cursor_image *image = &o->server->cursor_image;
-    const struct presentation_output *planned = plan ? presentation_output_for(plan, o->screen) :
-        NULL;
-    if (!image->texture || o->screen->hardware_cursor || (plan && !planned)) return;
-    double ratio = (planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale)) /
-        image->scale;
+static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
+        double scale) {
+    const struct cursor_image *image = &s->cursor_image;
+    double ratio = scale / image->scale;
     struct box box = {
-        .x = pixel_round(o->server->pointer_x - data->x - image->hotspot_x * ratio),
-        .y = pixel_round(o->server->pointer_y - data->y - image->hotspot_y * ratio),
+        .x = pixel_round(x - image->hotspot_x * ratio),
+        .y = pixel_round(y - image->hotspot_y * ratio),
         .width = pixel_round(image->texture->width * ratio),
         .height = pixel_round(image->texture->height * ratio),
     };
@@ -328,6 +325,14 @@ static void render_cursor(struct output *o, struct frame *data, const struct pre
     pass_add_texture(data->pass, &(struct texture_options){
         .texture = image->texture, .dst_box = box, .transform = data->transform,
     });
+}
+static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {
+    const struct presentation_output *planned = plan ? presentation_output_for(plan, o->screen) :
+        NULL;
+    if (!o->server->cursor_image.texture || o->screen->hardware_cursor || (plan && !planned))
+        return;
+    draw_cursor(o->server, data, o->server->pointer_x - data->x, o->server->pointer_y - data->y,
+        planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale));
 }
 
 void finish_output_capture(struct output *o) {
@@ -602,7 +607,7 @@ bool render_output(struct output *o, struct screen_state *state) {
     return render_presentation(o, state, NULL, NULL);
 }
 
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer) {
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor) {
     struct presentation_target root = {0};
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
@@ -620,6 +625,14 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer) {
         .box = { .width = buffer->width, .height = buffer->height },
         .blend_mode = BLEND_NONE });
     walk_presentation_root(s, &plan, &root, root.node, 0, 0, render_leaf, &f);
+    if (cursor && s->cursor_image.texture && root.node->enabled) {
+        double x = s->pointer_x, y = s->pointer_y;
+        screen_to_world(s, &x, &y);
+        x -= root.target.x;
+        y -= root.target.y;
+        if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
+            draw_cursor(s, &f, x, y, root.target.scale);
+    }
     return pass_submit(pass);
 }
 

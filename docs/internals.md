@@ -83,7 +83,8 @@ presentation time,
 tearing control, linux-drm-syncobj, relative pointer, pointer constraints,
 virtual pointer and keyboard, xdg-activation, wlr and ext foreign toplevels,
 wlr-screencopy-v1 and ext-image-copy-capture for outputs and toplevels (Tomoe's
-own, in `native/capture.c`; pointer cursor sessions report stopped),
+own, in `native/capture.c`; a toplevel session that asks for cursors gets the cursor
+while the pointer is over the window; pointer cursor sessions report stopped),
 ext-background-effect-v1, and X11 clients through
 xwayland-satellite. The ScreenCast portal is the Rust `xdg-desktop-portal-tomoe` in
 `portal/`, carried over from the previous tomoe and installed with its

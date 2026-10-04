@@ -60,7 +60,7 @@ Partial, Missing, Improved (with why), or Dropped (with why).
 | 52 | ext-foreign-toplevel-list | crates/tomoe/src/handlers.rs | native/foreign.c, native/window.c `foreign_toplevels_refresh` | Done |
 | 53 | wlr-foreign-toplevel-management requests | crates/tomoe/src/protocols/wlr_foreign_toplevel.rs | native/foreign.c, native/window.c `window_foreign_request`, builtins/desktop.lisp `wm` | Done |
 | 54 | wlr-screencopy with cursor overlay | crates/tomoe/src/protocols/screencopy.rs, capture.rs | native/capture.c on libwayland-server | Done |
-| 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/capture.c on libwayland-server, native/space.c `render_window_buffer` | Done |
+| 55 | ext-image-copy-capture for outputs and toplevels | crates/tomoe/src/capture.rs | native/capture.c on libwayland-server, native/space.c `render_window_buffer`, `draw_cursor` | Done: a toplevel session that asks for cursors embeds the cursor while the pointer is over the window |
 | 56 | Screenshot UI, `screenshot`/`screenshot-screen`, `screenshot_freeze` | crates/tomoe/src/ui/screenshot_ui.rs, screenshot.rs | native/screenshot.c, `(screenshot)`/`(screenshot :screen)`, `:screenshot-freeze`, builtins/desktop.lisp "screenshot-clipboard" | Done |
 | 57 | ext-session-lock | crates/tomoe/src/lock.rs | native/lock.c | Done |
 | 58 | Gamma control | crates/tomoe/src/protocols/gamma_control.rs | native/gamma.c on libwayland-server, native/output.c | Done |

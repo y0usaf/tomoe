@@ -410,14 +410,15 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     } else {
         struct dmabuf_attributes dmabuf;
         if (buffer_get_dmabuf(frame->buffer, &dmabuf)) {
-            ok = render_window_buffer(s, (uint32_t)session->source.id, frame->buffer);
+            ok = render_window_buffer(s, (uint32_t)session->source.id, frame->buffer,
+                session->cursors);
         } else {
             const struct format *render = format_set_get(
                 render_formats(s->renderer), format);
             struct buffer *scratch = render ?
                 render_allocate(s->renderer, width, height, render) : NULL;
-            ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch) &&
-                blit(s, frame->buffer, scratch, box);
+            ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch,
+                session->cursors) && blit(s, frame->buffer, scratch, box);
             if (scratch) buffer_drop(scratch);
         }
     }
