@@ -96,7 +96,7 @@ use tokio::sync::oneshot;
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
-    zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
+    zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -163,6 +163,7 @@ struct AppState {
     target_global: Option<u32>,
     shm: Option<wl_shm::WlShm>,
     dmabuf: Option<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>,
+    main_device: Option<u64>,
     gbm: Option<GbmDevice<File>>,
 
     stream: Option<pw::stream::StreamRc>,
@@ -267,6 +268,7 @@ fn run(
         target_global: None,
         shm: None,
         dmabuf: None,
+        main_device: None,
         gbm: None,
         stream: None,
         pw_buffer_slots: HashMap::new(),
@@ -300,7 +302,12 @@ fn run(
         }
         return Err("no wl_shm".into());
     }
-    state.gbm = match init_gbm_device() {
+    if let Some(dmabuf) = state.dmabuf.clone().filter(|d| d.version() >= 4) {
+        let feedback = dmabuf.get_default_feedback(&qh, ());
+        event_queue.roundtrip(&mut state)?;
+        feedback.destroy();
+    }
+    state.gbm = match init_gbm_device(state.main_device) {
         Ok(Some(device)) if state.dmabuf.is_some() => {
             tracing::info!(
                 backend = device.backend_name(),
@@ -484,7 +491,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 state.dmabuf = Some(
                     registry.bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, _, _>(
                         name,
-                        version.min(3),
+                        version.min(4),
                         qh,
                         (),
                     ),
@@ -541,6 +548,21 @@ empty_dispatch!(wl_shm_pool::WlShmPool);
 empty_dispatch!(wl_buffer::WlBuffer);
 empty_dispatch!(zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 empty_dispatch!(ZwlrScreencopyManagerV1);
+
+impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+        event: zwp_linux_dmabuf_feedback_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_linux_dmabuf_feedback_v1::Event::MainDevice { device } = event {
+            state.main_device = device.try_into().ok().map(u64::from_ne_bytes);
+        }
+    }
+}
 
 impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, ()> for AppState {
     fn event(
@@ -1017,10 +1039,32 @@ fn payload_size(stride: i32, height: u32) -> Result<usize, String> {
     Ok(size)
 }
 
-fn init_gbm_device() -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Error + Send + Sync>> {
+fn render_nodes_of(device: u64) -> Vec<PathBuf> {
+    let dir = format!(
+        "/sys/dev/char/{}:{}/device/drm",
+        rustix::fs::major(device),
+        rustix::fs::minor(device)
+    );
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with("renderD"))
+        .map(|name| PathBuf::from("/dev/dri").join(name))
+        .collect()
+}
+
+fn init_gbm_device(
+    main_device: Option<u64>,
+) -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Error + Send + Sync>> {
     let mut candidates = Vec::new();
     if let Ok(path) = std::env::var("TOMOE_SCREENCAST_RENDER_NODE") {
         candidates.push(PathBuf::from(path));
+    }
+    if let Some(device) = main_device {
+        candidates.extend(render_nodes_of(device));
     }
     candidates.extend((128..200).map(|idx| PathBuf::from(format!("/dev/dri/renderD{idx}"))));
 
