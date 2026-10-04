@@ -451,7 +451,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                 :output-errors (loop for failure in output-failures collect
                                  (list :name (getf failure :name) :message (getf failure :message)))
                 :workareas shell-workareas
-                :surface-plans (copy-data surface-plans)
+                :surface-plans (mapcar #'copy-data surface-plans)
                 :surfaces (loop for plan in surface-plans
                                 collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer :click-through)
                                               append (list key (copy-data (getf plan key)))))
