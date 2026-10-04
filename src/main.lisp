@@ -16,7 +16,7 @@ turn; materialization already refreshes their authoritative native snapshot."
         (return))
       (let ((text (%event backend)))
         (unless text (return))
-        (dispatch-event runtime (read-data text))
+        (dispatch-observation runtime text)
         (incf delivered)))
     delivered))
 

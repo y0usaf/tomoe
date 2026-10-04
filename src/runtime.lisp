@@ -832,8 +832,12 @@ accepted registry. Never enter this helper inside a candidate transaction."
                        (plusp (%event-barrier backend))) do
         (let ((text (%event backend)))
           (unless text (error "Backend observation fence outlived its event queue."))
-          (dispatch-event runtime (read-data text))))))
+          (dispatch-observation runtime text)))))
   runtime)
+
+(defun dispatch-observation (runtime text)
+  (handler-case (dispatch-event runtime (read-data text))
+    (serious-condition (condition) (record-error runtime condition))))
 
 (defun dispatch-event (runtime event)
   (let ((changed nil) (force nil))
@@ -982,23 +986,26 @@ accepted registry. Never enter this helper inside a candidate transaction."
       (handler-case (transact runtime (runtime-mounts runtime) event changed force)
         (serious-condition (condition)
           (record-error runtime condition)
-          (setf (runtime-output-recovery-failures runtime)
-                (matching-output-failures
-                 (append (pending-output-failures runtime condition)
-                         (runtime-output-recovery-failures runtime))
-                 (getf (runtime-effective runtime) :output-config)
-                 (runtime-connectors runtime)))
-          (when (newer-native-output-request-p runtime)
-            (return-from dispatch-event))
-          (when (runtime-running runtime)
-            (unwind-protect
-                (let ((context (materialize runtime (runtime-mounts runtime))))
-                  (dolist (key '(:workareas :window-geometry :surfaces :output-errors))
-                    (unless (equal (getf context key)
-                                   (getf (runtime-effective runtime) key))
-                      (pushnew key (runtime-pending-context runtime))))
-                  (commit-context runtime (runtime-mounts runtime) context))
-              (discard-ui-asset-scratch runtime))))))))
+          (handler-case
+              (progn
+                (setf (runtime-output-recovery-failures runtime)
+                      (matching-output-failures
+                       (append (pending-output-failures runtime condition)
+                               (runtime-output-recovery-failures runtime))
+                       (getf (runtime-effective runtime) :output-config)
+                       (runtime-connectors runtime)))
+                (when (newer-native-output-request-p runtime)
+                  (return-from dispatch-event))
+                (when (runtime-running runtime)
+                  (unwind-protect
+                      (let ((context (materialize runtime (runtime-mounts runtime))))
+                        (dolist (key '(:workareas :window-geometry :surfaces :output-errors))
+                          (unless (equal (getf context key)
+                                         (getf (runtime-effective runtime) key))
+                            (pushnew key (runtime-pending-context runtime))))
+                        (commit-context runtime (runtime-mounts runtime) context))
+                    (discard-ui-asset-scratch runtime))))
+            (serious-condition (failure) (record-error runtime failure))))))))
 
 (defun describe-runtime (runtime)
   (let ((grab (resolved-grab runtime (runtime-mounts runtime))))
