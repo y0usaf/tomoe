@@ -9,7 +9,7 @@ Tomoe is a Common Lisp Wayland compositor. SBCL runs the compositor loop, extens
 runtime, window-management policy, and control server. C code linked into
 SBCL's runtime serves the Wayland protocols on libwayland-server and drives
 rendering (EGL/GLES2 on GBM), outputs (DRM/KMS on libseat, nested Wayland,
-headless), and input (libinput). The package's `bin/tomoe` is that runtime
+headless, and virtual outputs beside any of them), and input (libinput). The package's `bin/tomoe` is that runtime
 with the saved Lisp image appended: one executable, no wrapper. The shell,
 shipped policy, fallback font configuration and helper programs it uses are
 store paths fixed when the image is built.
@@ -55,7 +55,9 @@ reachable in the repository history (commit `6de3ba6` and earlier).
 - `native/screen.c`: outputs, their state and commits, frame scheduling,
   wl_output, xdg-output, and the cursor image.
 - `native/kms.c`, `native/session.c`: DRM/KMS on libseat, with udev hotplug.
-- `native/nested.c`, `native/headless.c`: the nested Wayland and headless backends.
+- `native/nested.c`: the nested Wayland backend.
+- `native/headless.c`: offscreen outputs, the headless backend's and declared virtual
+  ones, each paced by its own frame clock.
 - `native/seat.c`: wl_seat, pointer and keyboard focus, grabs, cursor role.
 - `native/selection.c`: clipboard, primary selection, data control, drag and drop.
 - `native/virtual.c`: virtual keyboard and pointer devices, output mapping lifetime.

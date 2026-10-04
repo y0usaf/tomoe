@@ -128,6 +128,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`workspaces.lisp`](examples/workspaces.lisp) | Nine tag-style workspaces |
 | [`special.lisp`](examples/special.lisp) | Scratchpads that pop up over the tiling |
 | [`layer-inset.lisp`](examples/layer-inset.lisp) | Tiling that makes room for panels |
+| [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Five animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
@@ -147,7 +148,7 @@ takes its effects with it.
 ## Documentation
 
 - [Running Tomoe](docs/running.md): backends, flags, the default desktop, X11 and D-Bus
-- [Outputs](docs/outputs.md): modes, scale, placement, mirroring, VRR and colour profiles
+- [Outputs](docs/outputs.md): modes, scale, placement, mirroring, VRR, colour profiles and virtual outputs
 - [Writing extensions](docs/extensions.md): the API, settings, lifecycle and live reload
 - [Shell surfaces](docs/shell.md): bars, panels, menus and wallpapers drawn by Tomoe
 - [Session services](docs/services.md): notifications, media, battery, backlight, sounds, network and tray

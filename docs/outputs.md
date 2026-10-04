@@ -1,8 +1,8 @@
 # Outputs
 
 Displays are configured by an ordinary extension, so a monitor layout is code
-you can reload. This page covers modes, scale, placement, colour profiles and
-the pixel model underneath.
+you can reload. This page covers modes, scale, placement, colour profiles,
+virtual outputs and the pixel model underneath.
 
 ## Output resolution and pixel mapping
 
@@ -31,7 +31,7 @@ behavior as window policy:
 - `:mode '(WIDTH HEIGHT HZ)`, the closest advertised refresh within 1 Hz.
   For example, 60 also matches 59.94 Hz. Unavailable advertised modes fall back
   to the preferred mode, or the first advertised mode when none is preferred.
-  Headless/nested outputs can accept custom dimensions.
+  Headless, nested and virtual outputs accept custom dimensions.
 - `:scale`, from 1/4 through 8, rounded to 1/120 increments. The default is 1.
 - `:position '(X Y)`, in physical screen pixels. Omit it for automatic
   horizontal placement. Disconnected output names remain configured for hotplug.
@@ -125,4 +125,48 @@ callbacks, and windows keep their places. Power on renders a fresh frame through
 a full modeset. Connectors report `:power`, and wlr-output-power-management
 clients such as `wlopm` drive the same state. A session lock does not wait on a
 dark output.
-The native ABI is 37; the additive inspect fields keep control wire version 1.
+The native ABI is 38; the additive inspect fields keep control wire version 1.
+
+## Virtual outputs
+
+`virtual-output` declares a display that exists only inside the compositor. It
+renders offscreen on the session's GPU and renderer, and capture is the only
+way to see it, which suits a headset streamer or a remote viewer:
+
+```lisp
+(define-extension "headset" () (snapshot state event)
+  (declare (ignore snapshot event))
+  (values state
+          (list (virtual-output "VIRTUAL-1" :mode '(2560 1440 144))
+                (virtual-output "VIRTUAL-2" :mode '(3840 2160 60))
+                (configure-output "VIRTUAL-2" :scale 2 :position '(2560 0))
+                (configure-output "DP-4" :disabled t))
+          nil))
+```
+
+`:mode` is `'(WIDTH HEIGHT)` or `'(WIDTH HEIGHT HZ)`: any size up to 16384 and
+any refresh from 1 to 1000 Hz, 60 Hz when omitted. Without `:mode` the output
+is 1920x1080 at 60 Hz. The name is any string no other output uses; a taken
+name is refused with an error in `inspect`'s `:native-errors`.
+
+A declared output arrives like a monitor being plugged in. Once the
+transaction that declares it commits, it joins `:connectors`, settles through
+the same admission as a hotplugged connector, then appears in `:outputs` with
+wl_output and xdg-output globals under its name. `configure-output` on that
+name sets its position, scale and mode or disables it, as for any connector,
+and the declared mode is the baseline that removing such an owner restores.
+Changing the declared mode resizes the same output in place. When several
+owners declare one name, the latest mounted wins and removal restores the
+earlier declaration. Removing the declaration, or unmounting its extension,
+unplugs the output the way a hot-unplug does: it leaves `:outputs`, and
+policies place their windows on what remains.
+
+Each virtual output has its own frame clock, which ticks on a fixed grid at
+its refresh rate like a vblank. A frame is drawn only when something changed,
+and presentation feedback reports the tick it was shown on. The cursor is
+drawn in software, so wlr-screencopy and ext-image-copy-capture with cursors
+include it. Virtual outputs sit beside DRM, nested and headless ones, and with
+every connector disabled they can be a session's only outputs.
+`HEADLESS-1` is the same kind of output, created by the headless backend
+instead of a declaration. `examples/headset.lisp` declares two and turns
+every other connector off while it is mounted.

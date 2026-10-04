@@ -209,7 +209,7 @@ Failed reducers and rejected native publication retain the accepted focus and
 do not replay the request on a later transaction.
 
 Owned effects are `publish-state`, `place`, `focus`, `raise-window`, `show-window`, `hide-window`,
-`bind-key`, `configure-output`, `layer`,
+`bind-key`, `configure-output`, `virtual-output`, `layer`,
 `fullscreen`, `maximize`, `grab`, `set-view`, `once`, `interval`, and
 `exec-async`, `run-once`, `service`, `sound`, and `window-rule`.
 Return the complete desired set each time.
@@ -708,7 +708,8 @@ and resized by a Super drag), `layer-inset.lisp` (tiling that insets by
 layer exclusive zones), and `zoomer.lisp` (a floating canvas with planes, where
 Mod+drag moves, resizes or pans, Mod+scroll zooms around the cursor, Mod+Tab and
 Mod+1..9 switch planes, and Mod+f fits a window to the view; publish
-`:zoomer-settings` to change its step sizes). `special.lisp` adds scratchpad
+`:zoomer-settings` to change its step sizes). `headset.lisp` declares two
+virtual outputs and turns every other connector off. `special.lisp` adds scratchpad
 workspaces over the default tiling: Mod+Shift+grave parks the focused window,
 Mod+grave shows or hides it centered at three quarters of the work area, and a
 window rule property `:special "name"` parks a window on open. Parked windows
