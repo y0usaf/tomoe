@@ -84,8 +84,11 @@ wlr-screencopy-v1 and ext-image-copy-capture for outputs and toplevels (Tomoe's
 own, in `native/capture.c`; pointer cursor sessions report stopped),
 ext-background-effect-v1, and X11 clients through
 xwayland-satellite. The ScreenCast portal is the Rust `xdg-desktop-portal-tomoe` in
-`portal/`, carried over unchanged from the previous tomoe and installed with
-its `.portal`, `portals.conf` and D-Bus service files. Input methods, touch and
+`portal/`, carried over from the previous tomoe and installed with its
+`.portal`, `portals.conf` and D-Bus service files. Each share is a portal
+session object: the app closing it or leaving the bus, xdg-desktop-portal
+leaving the bus, the cast window closing or the cast output going away ends
+its stream and removes its PipeWire node. Input methods, touch and
 tablets are missing. A policy that never releases a grab keeps the pointer until
 the grabbed surface disappears. A layer surface's anchors, margins, and size
 stay the client's request.
