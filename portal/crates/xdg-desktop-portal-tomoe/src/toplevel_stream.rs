@@ -30,7 +30,6 @@ use std::io::Cursor;
 use std::os::fd::{AsFd, AsRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
@@ -41,6 +40,7 @@ use pw::spa::pod::{ChoiceValue, Object, Pod, Property, Value};
 use pw::spa::support::system::IoFlags;
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 use spa::sys as spa_sys;
+use tokio::sync::oneshot;
 use wayland_client::protocol::{wl_buffer, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
@@ -85,25 +85,30 @@ impl Drop for StreamHandle {
     }
 }
 
-pub fn start(
-    spec: StreamSpec,
-) -> Result<(StreamInfo, StreamHandle), Box<dyn std::error::Error + Send + Sync>> {
+pub struct Started {
+    pub handle: StreamHandle,
+    pub ready: oneshot::Receiver<Result<StreamInfo, String>>,
+    pub ended: oneshot::Receiver<()>,
+}
+
+pub fn start(spec: StreamSpec) -> std::io::Result<Started> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = stop.clone();
-    let (tx, rx) = mpsc::sync_channel::<Result<StreamInfo, String>>(1);
+    let (ready_tx, ready) = oneshot::channel();
+    let (ended_tx, ended) = oneshot::channel();
     thread::Builder::new()
         .name("portal-toplevel-cast".into())
         .spawn(move || {
-            if let Err(e) = run(spec, tx, stop_for_thread) {
+            let _ended = ended_tx;
+            if let Err(e) = run(spec, ready_tx, stop_for_thread) {
                 tracing::error!("toplevel stream thread exited: {e}");
             }
         })?;
-    let info = rx
-        .recv()
-        .map_err(|_| "toplevel stream thread died before reporting node id".to_string())?
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-    tracing::info!(node_id = info.node_id, "toplevel stream live");
-    Ok((info, StreamHandle { stop }))
+    Ok(Started {
+        handle: StreamHandle { stop },
+        ready,
+        ended,
+    })
 }
 
 struct AppState {
@@ -135,7 +140,7 @@ struct AppState {
 
     pending_frame: Option<PendingFrame>,
 
-    node_id_tx: Option<mpsc::SyncSender<Result<StreamInfo, String>>>,
+    node_id_tx: Option<oneshot::Sender<Result<StreamInfo, String>>>,
 
     frames_completed: u64,
     last_log_at: std::time::Instant,
@@ -189,7 +194,7 @@ impl AsRawFd for FdHolder {
 
 fn run(
     spec: StreamSpec,
-    node_id_tx: mpsc::SyncSender<Result<StreamInfo, String>>,
+    node_id_tx: oneshot::Sender<Result<StreamInfo, String>>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     pw::init();

@@ -9,9 +9,12 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use tokio::sync::oneshot;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::outputs::{self, OutputInfo};
@@ -48,6 +51,7 @@ struct SessionState {
     selection: Option<Selection>,
     cursor_visible: bool,
     stream: Option<LiveStream>,
+    generation: u64,
 }
 
 #[derive(Clone, Default)]
@@ -62,6 +66,57 @@ impl Sessions {
 #[derive(Default)]
 pub struct ScreenCast {
     sessions: Sessions,
+    generations: AtomicU64,
+}
+
+const START_TIMEOUT: Duration = Duration::from_secs(10);
+const ENUMERATE_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn wait_ready<T>(ready: oneshot::Receiver<Result<T, String>>) -> Result<T, String> {
+    match tokio::time::timeout(START_TIMEOUT, ready).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("stream thread exited before its node was ready".into()),
+        Err(_) => Err(format!(
+            "stream not ready within {} s",
+            START_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+async fn close_when_ended(
+    conn: zbus::Connection,
+    sessions: Sessions,
+    key: String,
+    generation: u64,
+    ended: oneshot::Receiver<()>,
+) {
+    let _ = ended.await;
+    let closed = {
+        let mut sessions = sessions.lock();
+        let current = sessions
+            .get(&key)
+            .is_some_and(|state| state.generation == generation);
+        current && sessions.remove(&key).is_some()
+    };
+    if !closed {
+        return;
+    }
+    tracing::info!(session = %key, "stream ended; closing its session");
+    match SignalEmitter::new(&conn, key.as_str()) {
+        Ok(emitter) => {
+            if let Err(e) = Session::closed(&emitter).await {
+                tracing::warn!(session = %key, "emitting Closed: {e}");
+            }
+        }
+        Err(e) => tracing::warn!(session = %key, "emitting Closed: {e}"),
+    }
+    if let Err(e) = conn
+        .object_server()
+        .remove::<Session, _>(key.as_str())
+        .await
+    {
+        tracing::warn!(session = %key, "unexporting session: {e}");
+    }
 }
 
 impl ScreenCast {
@@ -84,6 +139,9 @@ impl Session {
             tracing::warn!(session = %self.key, "unexporting session: {e}");
         }
     }
+
+    #[zbus(signal)]
+    async fn closed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
@@ -305,6 +363,7 @@ impl ScreenCast {
                 selection: None,
                 cursor_visible: true,
                 stream: None,
+                generation: 0,
             },
         );
         let session = Session {
@@ -342,21 +401,29 @@ impl ScreenCast {
         tracing::info!(%handle, %session_handle, %app_id, cursor_mode, types, "SelectSources");
 
         let outputs = if types & source_types::MONITOR != 0 {
-            tokio::task::spawn_blocking(outputs::enumerate)
-                .await
-                .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration join: {e}")))?
-                .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration: {e}")))?
+            tokio::time::timeout(
+                ENUMERATE_TIMEOUT,
+                tokio::task::spawn_blocking(outputs::enumerate),
+            )
+            .await
+            .map_err(|_| zbus::fdo::Error::Failed("output enumeration timed out".into()))?
+            .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration join: {e}")))?
+            .map_err(|e| zbus::fdo::Error::Failed(format!("output enumeration: {e}")))?
         } else {
             Vec::new()
         };
         let windows = if types & source_types::WINDOW != 0 {
-            tokio::task::spawn_blocking(toplevels::enumerate)
-                .await
-                .map_err(|e| zbus::fdo::Error::Failed(format!("toplevel enumeration join: {e}")))?
-                .unwrap_or_else(|e| {
-                    tracing::warn!("toplevel enumeration failed: {e}");
-                    Vec::new()
-                })
+            tokio::time::timeout(
+                ENUMERATE_TIMEOUT,
+                tokio::task::spawn_blocking(toplevels::enumerate),
+            )
+            .await
+            .unwrap_or_else(|_| Ok(Err("timed out".into())))
+            .map_err(|e| zbus::fdo::Error::Failed(format!("toplevel enumeration join: {e}")))?
+            .unwrap_or_else(|e| {
+                tracing::warn!("toplevel enumeration failed: {e}");
+                Vec::new()
+            })
         } else {
             Vec::new()
         };
@@ -417,6 +484,7 @@ impl ScreenCast {
         app_id: String,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         let session_key = session_handle.to_string();
         let current = self
@@ -435,7 +503,7 @@ impl ScreenCast {
             return Ok((1, HashMap::new()));
         };
 
-        let (node_id, width, height, source_type, stream) = match selection {
+        let (node_id, width, height, source_type, stream, ended) = match selection {
             Selection::Monitor(out) => {
                 let framerate = {
                     let hz = if out.refresh_mhz > 0 {
@@ -452,13 +520,11 @@ impl ScreenCast {
                     framerate,
                     cursor_visible,
                 };
-                let spec_for_task = spec.clone();
-                let stream_result =
-                    tokio::task::spawn_blocking(move || pipewire_stream::start(spec_for_task))
-                        .await
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
-                let (node_id, stream_handle) = match stream_result {
-                    Ok(v) => v,
+                let started = pipewire_stream::start(spec.clone()).map_err(|e| {
+                    zbus::fdo::Error::Failed(format!("spawning the stream thread: {e}"))
+                })?;
+                let node_id = match wait_ready(started.ready).await {
+                    Ok(node_id) => node_id,
                     Err(e) => {
                         tracing::error!("pipewire stream failed: {e}");
                         return Ok((2, HashMap::new()));
@@ -469,7 +535,8 @@ impl ScreenCast {
                     spec.width,
                     spec.height,
                     source_types::MONITOR,
-                    LiveStream::Monitor(stream_handle),
+                    LiveStream::Monitor(started.handle),
+                    started.ended,
                 )
             }
             Selection::Window(win) => {
@@ -478,12 +545,11 @@ impl ScreenCast {
                     framerate: 60,
                     cursor_visible,
                 };
-                let stream_result =
-                    tokio::task::spawn_blocking(move || toplevel_stream::start(spec))
-                        .await
-                        .map_err(|e| zbus::fdo::Error::Failed(format!("stream task panic: {e}")))?;
-                let (info, stream_handle) = match stream_result {
-                    Ok(v) => v,
+                let started = toplevel_stream::start(spec).map_err(|e| {
+                    zbus::fdo::Error::Failed(format!("spawning the stream thread: {e}"))
+                })?;
+                let info = match wait_ready(started.ready).await {
+                    Ok(info) => info,
                     Err(e) => {
                         tracing::error!("toplevel pipewire stream failed: {e}");
                         return Ok((2, HashMap::new()));
@@ -494,17 +560,30 @@ impl ScreenCast {
                     info.width,
                     info.height,
                     source_types::WINDOW,
-                    LiveStream::Window(stream_handle),
+                    LiveStream::Window(started.handle),
+                    started.ended,
                 )
             }
         };
+        tracing::info!(node_id, %session_handle, "stream live");
+        let generation = self.generations.fetch_add(1, Ordering::Relaxed) + 1;
         match self.sessions.lock().get_mut(&session_key) {
-            Some(state) => state.stream = Some(stream),
+            Some(state) => {
+                state.stream = Some(stream);
+                state.generation = generation;
+            }
             None => {
                 tracing::info!(%session_handle, "session closed while starting its stream");
                 return Ok((2, HashMap::new()));
             }
         }
+        tokio::spawn(close_when_ended(
+            conn.clone(),
+            self.sessions.clone(),
+            session_key,
+            generation,
+            ended,
+        ));
 
         let mut stream_props: HashMap<String, Value> = HashMap::new();
         stream_props.insert(
