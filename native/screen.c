@@ -247,12 +247,29 @@ static void apply(struct screen *screen, const struct screen_state *state) {
     wl_signal_emit_mutable(&screen->events.commit, screen);
 }
 
+static bool each_backend(struct screen_update *updates, size_t count, bool commit) {
+    struct screen_update *group = calloc(count ? count : 1, sizeof(*group));
+    bool ok = group != NULL;
+    for (size_t i = 0; ok && i < count; i++) {
+        const struct screen_impl *impl = updates[i].output->impl;
+        bool first = true;
+        for (size_t j = 0; j < i; j++) first = first && updates[j].output->impl != impl;
+        if (!first) continue;
+        size_t n = 0;
+        for (size_t j = i; j < count; j++)
+            if (updates[j].output->impl == impl) group[n++] = updates[j];
+        ok = commit ? impl->commit(group, n) : impl->test(group, n);
+    }
+    free(group);
+    return ok;
+}
+
 bool screens_test(struct screen_update *updates, size_t count) {
-    return !count || updates[0].output->impl->test(updates, count);
+    return each_backend(updates, count, false);
 }
 
 bool screens_commit(struct screen_update *updates, size_t count) {
-    if (count && !updates[0].output->impl->commit(updates, count)) return false;
+    if (!each_backend(updates, count, true)) return false;
     for (size_t i = 0; i < count; i++) apply(updates[i].output, &updates[i].base);
     return true;
 }
