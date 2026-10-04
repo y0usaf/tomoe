@@ -73,14 +73,18 @@ still reject the candidate after sixteen rounds.
 Declare every context key read with `:reads`. `context` rejects undeclared
 reads. Available keys:
 
-- `:windows`: property lists with `:id`, `:title`, `:app-id`, `:width`, `:height`,
-  `:fullscreen`, and `:maximize`. Width and height are the client's initial
+- `:windows`: property lists with `:id`, `:identifier`, `:title`, `:app-id`, `:width`,
+  `:height`, `:fullscreen`, and `:maximize`. Width and height are the client's initial
   mapped physical dimensions; these two flags are acknowledged state.
   `:buffered` says whether the admitted window currently has client content.
   An xdg window retains its row and initial dimensions through buffer detach.
   `:buffer-generation` identifies the current buffer lifetime; it advances on
   admission or remap, including when policy rejects the accompanying event.
   Resizes and metadata updates keep the same generation.
+  `:identifier` is the 32-hex-digit string ext-foreign-toplevel-list sends for
+  the window, which is what `grim -T` and `lswt` show and what a capture client
+  names a window by. It lives as long as the buffer: `nil` while the window has
+  none, and a new string after a remap.
   `:fullscreen-requested` and `:maximize-requested` preserve client intent,
   including requests before the first map. `:output` names a requested xdg
   fullscreen output when one was supplied. Fullscreen/maximize metadata requests

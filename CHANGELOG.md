@@ -34,6 +34,9 @@ its Lua configs.
   tray, and CPU, memory and GPU readings.
 - **Control.** `tomoe inspect`, `mount`, `unmount`, `reload`, `command`,
   `event` and `quit`, plus JSON IPC (wire version 2) for bars and scripts.
+- **Capture for streamers.** Each window's ext-foreign-toplevel identifier is in the
+  `:windows` context and the IPC `windows` reply, and a window capture that asks for
+  cursors includes the cursor while the pointer is over the window.
 - **One executable.** SBCL's runtime with the C core linked in and the Lisp
   image appended, shipping foot, fuzzel, xwayland-satellite and D-Bus.
 

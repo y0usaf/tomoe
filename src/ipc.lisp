@@ -28,7 +28,8 @@
                  for box = (find id (getf context :window-geometry) :key (lambda (box) (getf box :id)))
                  for visible = (not (null box))
                  collect (json-object
-                          (cons "id" id) (cons "app_id" (or (getf window :app-id) ""))
+                          (cons "id" id) (cons "identifier" (getf window :identifier))
+                          (cons "app_id" (or (getf window :app-id) ""))
                           (cons "title" (or (getf window :title) ""))
                           (cons "geometry" (when visible (ipc-rectangle box)))
                           (cons "mapped" (json-boolean visible))

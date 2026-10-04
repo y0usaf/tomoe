@@ -74,7 +74,9 @@ builtin `screencast` picker honours a window rule property `:screencast`
 candidate directly, and otherwise opens a menu.
 Built-ins take precedence over extension methods.
 
-`windows` returns ascending IDs, metadata, visible committed physical geometry,
+`windows` returns ascending IDs, each window's `identifier` (the 32 hex digits
+ext-foreign-toplevel-list sends, which `lswt -j` shows and `grim -T` takes),
+metadata, visible committed physical geometry,
 actual seat focus, and acknowledged fullscreen/maximized flags. A pending client
 configure changes neither the reported logical size nor these flags. Hidden geometry is null
 and `mapped` is false. An exclusive layer surface can hold
@@ -82,7 +84,9 @@ the keyboard while policy retains a window focus target. `outputs` includes
 physical geometry, usable areas, and scales. Core events are `window_open`,
 `window_close`, `focus_change`, `outputs_changed`, and coarse `keyboard_activity`
 with a `hand` of `left` or `right`. An xdg buffer detach emits neither
-`window_close` nor another `window_open` on reattachment. A policy-visible
+`window_close` nor another `window_open` on reattachment, but it makes
+`identifier` null and reattachment gives a new one, so read `windows` again
+for it. A policy-visible
 detached window remains `mapped:true` with its old world position and 0×0 size;
 policy-hidden geometry remains null. X11 windows follow the same xdg lifetime
 through xwayland-satellite.
