@@ -739,7 +739,7 @@ static struct screen_mode *pick_output_mode(struct screen *wlr,
 }
 
 int tomoe_output(struct tomoe *s, const char *name, int kind,
-        int width, int height, int refresh, int scale, int x, int y, int positioned) {
+        int width, int height, int refresh, int scale, int x, int y, int positioned, int transform) {
     if (!s || !name) return 0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {
@@ -748,6 +748,7 @@ int tomoe_output(struct tomoe *s, const char *name, int kind,
         if (mode) screen_state_set_mode(&o->pending, mode);
         else if (kind == 2) screen_state_set_custom_mode(&o->pending, width, height, refresh);
         screen_state_set_scale(&o->pending, scale / 120.0f);
+        if (transform >= 0) screen_state_set_transform(&o->pending, transform);
         o->pending_configured = true;
         o->pending_hold = false;
         o->pending_positioned = positioned != 0;

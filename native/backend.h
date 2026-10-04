@@ -40,7 +40,7 @@ int tomoe_binding_current(struct tomoe *server, uint64_t binding_id);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);
 int tomoe_output(struct tomoe *server, const char *name, int mode,
-    int width, int height, int refresh, int scale, int x, int y, int positioned);
+    int width, int height, int refresh, int scale, int x, int y, int positioned, int transform);
 int tomoe_output_options(struct tomoe *server, const char *name, int enabled,
     const char *mirror, int adaptive_sync);
 int tomoe_output_hold(struct tomoe *server, const char *name);

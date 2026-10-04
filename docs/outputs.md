@@ -35,6 +35,11 @@ behavior as window policy:
 - `:scale`, from 1/4 through 8, rounded to 1/120 increments. The default is 1.
 - `:position '(X Y)`, in physical screen pixels. Omit it for automatic
   horizontal placement. Disconnected output names remain configured for hotplug.
+- `:transform`, one of `:normal`, `:90`, `:180`, `:270`, `:flipped`,
+  `:flipped-90`, `:flipped-180` and `:flipped-270`, the Wayland output
+  transforms, which `:outputs` reports as the protocol's enum. The rotation is
+  rendered, so it costs no hardware support. Omitted, the output keeps its
+  baseline, normally `:normal`.
 - `:disabled t`, to turn off a connected output and withdraw its Wayland global.
   It stays in `:connectors` so a policy can discover and re-enable it.
 - `:mirror "OUTPUT"`, to use an active, non-mirroring output's physical origin.
@@ -153,11 +158,11 @@ A declared output arrives like a monitor being plugged in. Once the
 transaction that declares it commits, it joins `:connectors`, settles through
 the same admission as a hotplugged connector, then appears in `:outputs` with
 wl_output and xdg-output globals under its name. `configure-output` on that
-name sets its position, scale and mode or disables it, as for any connector,
-and the declared mode is the baseline that removing such an owner restores.
-Changing the declared mode resizes the same output in place. When several
-owners declare one name, the latest mounted wins and removal restores the
-earlier declaration. Removing the declaration, or unmounting its extension,
+name sets its position, scale, transform and mode or disables it, as for any
+connector, and the declared mode is the baseline that removing such an owner
+restores. Changing the declared mode resizes the same output in place. When
+several owners declare one name, the latest mounted wins and removal restores
+the earlier declaration. Removing the declaration, or unmounting its extension,
 unplugs the output the way a hot-unplug does: it leaves `:outputs`, and
 policies place their windows on what remains.
 

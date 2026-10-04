@@ -485,7 +485,7 @@ when it is not 1."
                    unless (find name outputs :test #'equal :key (lambda (o) (getf o :name)))
                      collect (list :name name :mode :preferred :width 0 :height 0 :refresh-mhz 0
                                    :scale-120 scale-120 :x 0 :y 0 :positioned nil
-                                   :disabled nil :mirror nil :vrr nil :icc nil))))
+                                   :disabled nil :mirror nil :vrr nil :icc nil :transform nil))))
           #'string< :key (lambda (o) (getf o :name)))))
 
 (defun changed-keys (before after)

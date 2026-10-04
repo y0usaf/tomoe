@@ -434,8 +434,11 @@ and clamped to the native camera's range."
   :reduce (destructuring-bind (x y zoom) args
             (setf (materialization-view m) (list :x x :y y :zoom zoom))))
 
+(defparameter +output-transforms+
+  '(:normal :90 :180 :270 :flipped :flipped-90 :flipped-180 :flipped-270))
+
 (defun %output-effect (name mode width height refresh scale x y positioned
-                       &optional disabled mirror vrr icc)
+                       &optional disabled mirror vrr icc transform)
   (check-type name string)
   (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
     (error "Invalid output name: ~S" name))
@@ -450,6 +453,7 @@ and clamped to the native camera's range."
   (check-type positioned boolean)
   (check-type disabled boolean)
   (check-type vrr boolean)
+  (check-type transform (or null (integer 0 7)))
   (when mirror
     (check-type mirror string)
     (unless (and (<= 1 (length mirror) 128) (not (find #\Null mirror)))
@@ -459,44 +463,46 @@ and clamped to the native camera's range."
     (unless (and (<= 1 (length icc) 4096) (not (find #\Null icc)))
       (error "Invalid ICC profile path: ~S" icc)))
   (%effect :output (list (copy-seq name) mode width height refresh scale x y positioned
-                        disabled (and mirror (copy-seq mirror)) vrr (and icc (copy-seq icc)))))
+                        disabled (and mirror (copy-seq mirror)) vrr (and icc (copy-seq icc)) transform)))
 
-(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr icc)
-  "Own an output's mode, scale, position, enablement, mirror target, VRR request and ICC profile.
+(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr icc transform)
+  "Own an output's mode, scale, position, transform, enablement, mirror target, VRR request and ICC profile.
 MODE is :PREFERRED, :MAX (largest progressive), or (WIDTH HEIGHT [HZ]). REFRESH
 is :MAX or Hz, matched within 1 Hz. Without it :PREFERRED keeps the preferred
 mode and other sizes take their highest rate. MIRROR names an active non-mirroring output.
 Omitted SCALE inherits the :SCALE setting. ICC names an RGB display profile that
-maps sRGB content to the panel's colors.
+maps sRGB content to the panel's colors. TRANSFORM is one of +OUTPUT-TRANSFORMS+.
 Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS."
   (check-type scale (or null (real 1/4 8)))
   (flet ((millihertz (refresh)
            (cond ((null refresh) 0) ((eq refresh :max) -1)
                  (t (check-type refresh (real 1 1000)) (round (* refresh 1000))))))
-    (let ((scale-120 (and scale (%round-away-positive (* scale 120)))))
+    (let ((scale-120 (and scale (%round-away-positive (* scale 120))))
+          (transform (and transform (or (position transform +output-transforms+)
+                                        (error "Unknown output transform: ~S" transform)))))
       (destructuring-bind (x y) (or position '(0 0))
         (if (member mode '(:preferred :max))
             (%output-effect name mode 0 0 (millihertz refresh) scale-120
-                            x y (not (null position)) disabled mirror vrr icc)
+                            x y (not (null position)) disabled mirror vrr icc transform)
             (destructuring-bind (width height &optional hz) mode
               (%output-effect name :exact width height (millihertz (or hz refresh)) scale-120
-                              x y (not (null position)) disabled mirror vrr icc)))))))
+                              x y (not (null position)) disabled mirror vrr icc transform)))))))
 
 (define-effect :output
   :canonical (apply #'%output-effect args)
   :reduce (destructuring-bind (name mode width height refresh scale x y positioned
-                                    &optional disabled mirror vrr icc) args
+                                    &optional disabled mirror vrr icc transform) args
             (setf (materialization-outputs m)
                   (delete name (materialization-outputs m) :test #'equal :key (lambda (o) (getf o :name))))
             (push (list :name name :mode mode :width width :height height
                         :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
-                        :disabled disabled :mirror mirror :vrr vrr :icc icc)
+                        :disabled disabled :mirror mirror :vrr vrr :icc icc :transform transform)
                   (materialization-outputs m))))
 
 (defun virtual-output (name &key (mode '(1920 1080 60)))
   "Own an offscreen output NAME showing MODE, (WIDTH HEIGHT [HZ]) at 60 Hz by
 default. It joins :CONNECTORS and :OUTPUTS like a plugged-in monitor, and
-CONFIGURE-OUTPUT sets its scale, position or mode. Removal unplugs it."
+CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it."
   (check-type name string)
   (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
     (error "Invalid output name: ~S" name))

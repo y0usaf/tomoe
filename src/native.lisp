@@ -137,7 +137,7 @@
 (define-native ("tomoe_output" %output) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (mode sb-alien:int)
   (width sb-alien:int) (height sb-alien:int) (refresh sb-alien:int) (scale sb-alien:int)
-  (x sb-alien:int) (y sb-alien:int) (positioned sb-alien:int))
+  (x sb-alien:int) (y sb-alien:int) (positioned sb-alien:int) (transform sb-alien:int))
 (define-native ("tomoe_output_options" %output-options) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (enabled sb-alien:int)
   (mirror sb-alien:c-string) (adaptive-sync sb-alien:int))
@@ -235,7 +235,7 @@
                                (ecase (getf output :mode) (:preferred 0) (:max 1) (:exact 2))
                                (getf output :width) (getf output :height) (getf output :refresh-mhz)
                                (getf output :scale-120) (getf output :x) (getf output :y)
-                               (if (getf output :positioned) 1 0)))
+                               (if (getf output :positioned) 1 0) (or (getf output :transform) -1)))
             (error 'output-configuration-error :output (getf output :name)
                    :format-control "Cannot stage output mode for ~A."
                    :format-arguments (list (getf output :name))))
