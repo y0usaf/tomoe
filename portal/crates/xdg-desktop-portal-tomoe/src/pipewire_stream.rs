@@ -1067,7 +1067,7 @@ fn render_nodes_of(device: u64) -> Vec<PathBuf> {
         .collect()
 }
 
-fn init_gbm_device(
+pub(crate) fn init_gbm_device(
     main_device: Option<u64>,
 ) -> Result<Option<GbmDevice<File>>, Box<dyn std::error::Error + Send + Sync>> {
     let mut candidates = Vec::new();
