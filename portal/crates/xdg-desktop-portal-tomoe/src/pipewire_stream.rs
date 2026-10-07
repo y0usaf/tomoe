@@ -93,6 +93,7 @@ use pw::spa::support::system::IoFlags;
 use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 use spa::sys as spa_sys;
 use tokio::sync::oneshot;
+use wayland_client::backend::WaylandError;
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
@@ -423,15 +424,24 @@ fn run(
 
     let s_for_io = state_rc.clone();
     let conn_for_io = conn.clone();
+    let mainloop_for_io = mainloop.clone();
     let event_queue_cell = RefCell::new(event_queue);
     let _io = mainloop.loop_().add_io(fd_holder, IoFlags::IN, move |_| {
-        if let Some(guard) = conn_for_io.prepare_read() {
-            let _ = guard.read();
-        }
+        let read = read_events(&conn_for_io);
         let mut eq = event_queue_cell.borrow_mut();
         let mut state = s_for_io.borrow_mut();
-        if let Err(e) = eq.dispatch_pending(&mut *state) {
-            tracing::error!("wayland dispatch: {e}");
+        let dispatch = eq.dispatch_pending(&mut *state);
+        let failure = match (read, dispatch) {
+            (Err(e), _) => Some(e.to_string()),
+            (_, Err(e)) => Some(e.to_string()),
+            _ => None,
+        };
+        if let Some(e) = failure {
+            // A dead connection stays readable, so returning here would spin.
+            tracing::error!("wayland connection: {e}");
+            state.end("its Wayland connection failed");
+            mainloop_for_io.quit();
+            return;
         }
         let _ = conn_for_io.flush();
     });
@@ -1065,6 +1075,19 @@ fn render_nodes_of(device: u64) -> Vec<PathBuf> {
         .filter(|name| name.starts_with("renderD"))
         .map(|name| PathBuf::from("/dev/dri").join(name))
         .collect()
+}
+
+/// Read what the compositor sent. An empty socket is fine; an error means the
+/// connection is dead (EOF or a protocol error), and its fd stays readable.
+pub(crate) fn read_events(conn: &Connection) -> Result<(), WaylandError> {
+    let Some(guard) = conn.prepare_read() else {
+        return Ok(());
+    };
+    match guard.read() {
+        Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(e),
+        Ok(_) => Ok(()),
+    }
 }
 
 pub(crate) fn init_gbm_device(

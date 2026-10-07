@@ -78,7 +78,7 @@ use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
 };
 
-use crate::pipewire_stream::init_gbm_device;
+use crate::pipewire_stream::{init_gbm_device, read_events};
 
 #[derive(Debug, Clone)]
 pub struct StreamSpec {
@@ -479,15 +479,24 @@ fn run(
 
     let s_for_io = state_rc.clone();
     let conn_for_io = conn.clone();
+    let mainloop_for_io = mainloop.clone();
     let event_queue_cell = RefCell::new(event_queue);
     let _io = mainloop.loop_().add_io(fd_holder, IoFlags::IN, move |_| {
-        if let Some(guard) = conn_for_io.prepare_read() {
-            let _ = guard.read();
-        }
+        let read = read_events(&conn_for_io);
         let mut eq = event_queue_cell.borrow_mut();
         let mut state = s_for_io.borrow_mut();
-        if let Err(e) = eq.dispatch_pending(&mut *state) {
-            tracing::error!("wayland dispatch: {e}");
+        let dispatch = eq.dispatch_pending(&mut *state);
+        let failure = match (read, dispatch) {
+            (Err(e), _) => Some(e.to_string()),
+            (_, Err(e)) => Some(e.to_string()),
+            _ => None,
+        };
+        if let Some(e) = failure {
+            // A dead connection stays readable, so returning here would spin.
+            tracing::error!("wayland connection: {e}");
+            state.end("its Wayland connection failed");
+            mainloop_for_io.quit();
+            return;
         }
         state.maybe_renegotiate();
         let _ = conn_for_io.flush();
