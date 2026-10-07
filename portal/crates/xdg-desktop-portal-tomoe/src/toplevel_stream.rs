@@ -176,6 +176,9 @@ struct AppState {
     last_log_at: std::time::Instant,
     streaming: bool,
     retry_at: Option<Instant>,
+    /// When the current run of failed frames began, and its length.
+    failing_since: Option<Instant>,
+    failed_frames: u32,
 
     dying: bool,
     stop_flag: Option<Arc<AtomicBool>>,
@@ -314,6 +317,8 @@ fn run(
         last_log_at: std::time::Instant::now(),
         streaming: false,
         retry_at: None,
+        failing_since: None,
+        failed_frames: 0,
         dying: false,
         stop_flag: Some(stop.clone()),
         needs_renegotiate: false,
@@ -400,7 +405,7 @@ fn run(
         return Err(err.into());
     }
     if !matches!(state.adv_format, Some(wl_shm::Format::Xrgb8888)) {
-        tracing::warn!(
+        tracing::debug!(
             advertised = ?state.adv_format,
             "toplevel session didn't advertise Xrgb8888; forcing it anyway"
         );
@@ -703,9 +708,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for AppState {
             ext_image_copy_capture_session_v1::Event::Stopped => {
                 state.session_stopped = true;
                 state.dying = true;
-                if let Some(pending) = state.pending_frame.take() {
-                    pending.frame.destroy();
-                }
+                state.drop_pending_frame();
                 if let Some(stop) = state.stop_flag.as_ref() {
                     stop.store(true, Ordering::SeqCst);
                 }
@@ -780,9 +783,7 @@ impl AppState {
         self.needs_renegotiate = false;
         self.negotiated_width = self.adv_width;
         self.negotiated_height = self.adv_height;
-        if let Some(pending) = self.pending_frame.take() {
-            pending.frame.destroy();
-        }
+        self.drop_pending_frame();
         let Some(stream) = self.stream.clone() else {
             return;
         };
@@ -1212,6 +1213,8 @@ impl AppState {
             return;
         };
         pending.frame.destroy();
+        self.failing_since = None;
+        self.failed_frames = 0;
 
         if let Some(key) = pending.pw_buffer {
             if let (Some(slot), Some(stream)) =
@@ -1257,16 +1260,55 @@ impl AppState {
         Some(next.saturating_duration_since(Instant::now())).filter(|d| !d.is_zero())
     }
 
+    /// Destroy the in-flight frame and hand its buffer back to PipeWire.
+    fn drop_pending_frame(&mut self) {
+        let Some(pending) = self.pending_frame.take() else {
+            return;
+        };
+        pending.frame.destroy();
+        if let (Some(pw_buf), Some(stream)) = (pending.pw_buffer, self.stream.as_ref()) {
+            unsafe { return_buffer(stream, pw_buf.0) };
+        }
+    }
+
+    fn end(&mut self, why: &str) {
+        if self.dying {
+            return;
+        }
+        tracing::info!(why, "toplevel screencast: ending the stream");
+        self.dying = true;
+        self.drop_pending_frame();
+        if let Some(stop) = self.stop_flag.as_ref() {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A failed DMA-BUF frame may be the compositor refusing the buffer, so a
+    /// short run of them drops to SHM; failures that outlast FAILURE_BUDGET
+    /// end the stream instead of retrying forever.
     fn on_frame_failed(&mut self) {
         if self.dying {
             return;
         }
         tracing::warn!("toplevel screencast frame failed");
-        if let Some(pending) = self.pending_frame.take() {
-            pending.frame.destroy();
-            if let (Some(pw_buf), Some(stream)) = (pending.pw_buffer, self.stream.as_ref()) {
-                unsafe { return_buffer(stream, pw_buf.0) };
+        self.drop_pending_frame();
+        self.failed_frames += 1;
+        let on_dmabuf =
+            self.dmabuf_caps.is_some() && matches!(self.buffer_kind, BufferKind::Dmabuf { .. });
+        if on_dmabuf && self.failed_frames >= DMABUF_FAILURE_LIMIT {
+            self.failing_since = None;
+            self.failed_frames = 0;
+            if let Some(stream) = self.stream.clone() {
+                self.abandon_dmabuf(&stream, "DMA-BUF frames kept failing");
             }
+        } else if self
+            .failing_since
+            .get_or_insert_with(Instant::now)
+            .elapsed()
+            > FAILURE_BUDGET
+        {
+            self.end("its captures kept failing");
+            return;
         }
         self.retry_at = Some(Instant::now() + RETRY_DELAY);
     }
@@ -1285,6 +1327,9 @@ impl AppState {
 
 const TICK: Duration = Duration::from_millis(10);
 const RETRY_DELAY: Duration = Duration::from_millis(50);
+const FAILURE_BUDGET: Duration = Duration::from_secs(2);
+/// Consecutive failed DMA-BUF frames before falling back to SHM.
+const DMABUF_FAILURE_LIMIT: u32 = 3;
 const CAST_DELAY_ALLOWANCE: Duration = Duration::from_micros(100);
 
 unsafe fn return_buffer(stream: &pw::stream::Stream, buffer: *mut pw::sys::pw_buffer) {
