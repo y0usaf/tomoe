@@ -1,13 +1,13 @@
 #define HEX(c) (vec3(((c) >> 16) & 0xff, ((c) >> 8) & 0xff, (c) & 0xff) / 255.0)
 #define BACKGROUND HEX(0x000000)
-#define GRID_ROWS 48.0
+#define GRID_ROWS 34.0
 #define SEED_SPACING 5.0
 #define CLUSTER_RADIUS 2.4
 #define EDGE_RAGGED 0.22
 #define GLYPH_RADIUS 0.34
 #define STROKE 0.028
-#define GLOW_REACH 0.18
-#define GLOW_GAIN 0.25
+#define GLOW_REACH 0.12
+#define GLOW_GAIN 0.70
 #define DIM_CHANCE 0.12
 #define DIM_LEVEL 0.25
 #define LOOP 240.0
@@ -41,11 +41,14 @@ float glyphDistance(vec2 q, int shape) {
     return max(diagonal, max(abs(q.x), abs(q.y)) - GLYPH_RADIUS);
 }
 
-vec3 glyphLight(vec2 q, int shape, float pix) {
+vec2 glyphLight(vec2 q, int shape, float pix) {
     float d = glyphDistance(q, shape) - STROKE;
     float core = 1.0 - smoothstep(-pix, pix, d);
-    float glow = exp(-max(d, 0.0) / GLOW_REACH);
-    return vec3(core, glow, core);
+    float outside = max(d, 0.0);
+    float glow = GLOW_GAIN * exp(-outside / (GLOW_REACH * 0.4))
+               + 0.24 * exp(-outside / GLOW_REACH);
+    glow *= 1.0 - smoothstep(0.43, 0.5, max(abs(q.x), abs(q.y)));
+    return vec2(core, glow);
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
@@ -80,7 +83,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     }
 
     vec3 color = BACKGROUND;
-    float alpha = 1.0 - smoothstep(0.6, 1.0, bestNe);
+    float alpha = 1.0 - smoothstep(0.75, 1.0, bestNe);
     int shape = bestShape;
     int colour = bestColour;
     if (bestNe >= 1.0 && rnd(cell, 8u) < DIM_CHANCE) {
@@ -90,9 +93,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         shape = int(rnd(cell, 11u) * 3.0);
     }
     if (alpha > 0.0) {
-        vec3 light = glyphLight(f, shape, pix);
-        color += PALETTE[colour] * (light.x + GLOW_GAIN * light.y) * alpha;
-
+        vec2 light = glyphLight(f, shape, pix);
+        color += (PALETTE[colour] * (1.15 * light.x + light.y)
+                  + vec3(0.08) * light.x) * alpha;
     }
     fragColor = vec4(color, 1.0);
 }
