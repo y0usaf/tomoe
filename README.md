@@ -129,7 +129,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`special.lisp`](examples/special.lisp) | Scratchpads that pop up over the tiling |
 | [`layer-inset.lisp`](examples/layer-inset.lisp) | Tiling that makes room for panels |
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
-| [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Five animated GLSL wallpapers; Super+Shift+b cycles them |
+| [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |

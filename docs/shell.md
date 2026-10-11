@@ -87,6 +87,10 @@ client on direct scanout stops it entirely. The file compiles when the
 declaration is prepared, on the compositor thread; a compile error logs the GLSL
 message and keeps the previous background. Shader files may reach 256 KiB.
 
+The rotation in `examples/shader-wallpaper.lisp` includes two procedural
+wallpapers, `examples/shaders/okazz-spheres.glsl` (split contour spheres) and
+`examples/shaders/okazz-glyphs.glsl` (neon glyph clusters), both at 30 FPS.
+
 ```glsl
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     vec2 uv = fragCoord / iResolution.xy;
