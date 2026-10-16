@@ -289,7 +289,7 @@ struct program {
     GLuint id;
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame;
+    GLint resolution, time, frame, mouse, channel;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);

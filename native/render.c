@@ -199,6 +199,7 @@ static const char shader_prelude[] =
     "uniform float iTime;\n"
     "uniform int iFrame;\n"
     "uniform vec4 iMouse;\n"
+    "uniform sampler2D iChannel0;\n"
     "in vec2 v_local;\n"
     "out vec4 tomoe_color;\n"
     "#line 1\n";
@@ -206,7 +207,6 @@ static const char shader_prelude[] =
 static const char shader_main[] =
     "\nvoid main() {\n"
     "    mainImage(tomoe_color, vec2(v_local.x, iResolution.y - v_local.y));\n"
-    "    tomoe_color.a = 1.0;\n"
     "}\n";
 
 struct shader { struct program program; struct render *r; };
@@ -300,10 +300,10 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     p->local = glGetAttribLocation(p->id, "local");
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
-        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame" };
+        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
-        &p->time, &p->frame };
+        &p->time, &p->frame, &p->mouse, &p->channel };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;

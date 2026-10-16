@@ -1,11 +1,13 @@
 #include "internal.h"
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <GLES3/gl3.h>
 
 struct level { GLuint texture, framebuffer; int width, height; };
 
 struct effects {
     struct level levels[32];
+    struct level backdrop;
 };
 
 static struct program *program(struct frame *f, int kind) {
@@ -249,15 +251,49 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+static bool backdrop(struct frame *f, struct fbox box) {
+    if (!f->server->effects) f->server->effects = calloc(1, sizeof(*f->server->effects));
+    struct effects *e = f->server->effects;
+    struct box region = { pixel_round(box.x), pixel_round(box.y),
+        pixel_round(box.x + box.width) - pixel_round(box.x),
+        pixel_round(box.y + box.height) - pixel_round(box.y) };
+    if (!e || region.width < 1 || region.height < 1 ||
+            !level_ensure(&e->backdrop, region.width, region.height)) return false;
+    GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, shown;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (f->transform == WL_OUTPUT_TRANSFORM_NORMAL && box_intersection(&shown, &region, &bounds)) {
+        int x = shown.x - region.x, y = region.height - (shown.y - region.y);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
+        glBlitFramebuffer(shown.x, shown.y, shown.x + shown.width, shown.y + shown.height,
+            x, y, x + shown.width, y - shown.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, f->buffer->width, f->buffer->height);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, e->backdrop.texture);
+    return true;
+}
+
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame) {
     struct fbox box = local_box(f, area);
-    double params[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time };
-    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
+    double mouse_x = p->mouse < 0 ? 0 : f->server->pointer_x - f->x - box.x;
+    double mouse_y = p->mouse < 0 ? 0 : f->y + box.y + box.height - f->server->pointer_y;
+    double params[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
+        mouse_x, mouse_y };
+    struct box covered = covering(f, box);
+    if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
+            sizeof(params) / sizeof(params[0])) || (p->channel >= 0 && !backdrop(f, box))) return;
     glUseProgram(p->id);
     glUniform3f(p->resolution, box.width, box.height, 1);
     glUniform1f(p->time, time);
     glUniform1i(p->frame, frame);
+    glUniform4f(p->mouse, mouse_x, mouse_y, 0, 0);
+    glUniform1i(p->channel, 0);
     quad(f, p, box, NULL, box.x, box.y);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void effects_finish(struct tomoe *s) {

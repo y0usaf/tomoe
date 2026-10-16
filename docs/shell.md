@@ -79,13 +79,24 @@ A shader paints a GLSL ES 3.00 fragment shader beneath the tree, in Shadertoy's
 convention: the file defines `void mainImage(out vec4 fragColor, in vec2 fragCoord)`,
 with `fragCoord` in physical pixels from the surface's bottom-left corner. Tomoe
 declares `iResolution` (the surface size), `iTime` (seconds since the shader
-compiled), `iFrame`, and an always-zero `iMouse`; shaders that read channels or
-other inputs fail to compile. Output alpha is ignored. `iTime` advances in steps
+compiled), `iFrame`, `iMouse` and `iChannel0`; shaders that read other
+channels or inputs fail to compile. `iMouse.xy` is the pointer in
+`fragCoord`'s coordinates as of the last repaint, and `zw` are zero.
+`iChannel0` holds what was drawn beneath the surface this frame, sampled at
+`fragCoord / iResolution.xy`; it is black on outputs with a transform. A shader
+that reads it also repaints whenever anything beneath it changes. Output is
+premultiplied alpha blended over what lies below; alpha 1 is opaque. `iTime`
+advances in steps
 of 1/FPS (default 30, from 0 to 1000; 0 draws one still frame), and the shader
 runs only to repaint its area after a step, not on every frame. A fullscreen
 client on direct scanout stops it entirely. The file compiles when the
 declaration is prepared, on the compositor thread; a compile error logs the GLSL
 message and keeps the previous background. Shader files may reach 256 KiB.
+
+`examples/zonte.lisp` draws `examples/shaders/zonte.glsl`, after marioecg's
+"Zonte", as a wallpaper, and an overlay strip of frosted glass,
+`examples/shaders/glass.glsl`, that refracts whatever lies beneath it through a
+dispersive bevel.
 
 The rotation in `examples/shader-wallpaper.lisp` includes two procedural
 wallpapers, `examples/shaders/okazz-spheres.glsl` (split contour spheres) and
