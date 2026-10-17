@@ -25,7 +25,6 @@ modules by concern.
 
 The earlier Rust/Smithay and Lua implementation is not in this tree; it stays
 reachable in the repository history (commit `6de3ba6` and earlier).
-[parity.md](parity.md) maps each of its features to this one.
 
 ## Source and limits
 
