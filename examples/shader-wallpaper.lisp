@@ -1,7 +1,7 @@
 (in-package #:tomoe-user)
 
 (defparameter +shader-wallpapers+
-  '(("shaders/xmb.glsl" 30) ("shaders/aurora.glsl" 30) ("shaders/stars.glsl" 24) ("shaders/towers.glsl" 24) ("shaders/cubes.glsl" 30) ("shaders/okazz-spheres.glsl" 30) ("shaders/okazz-glyphs.glsl" 30) ("shaders/hex-tunnel.glsl" 30)))
+  '(("shaders/xmb.glsl" 30) ("shaders/aurora.glsl" 30) ("shaders/stars.glsl" 24) ("shaders/towers.glsl" 24) ("shaders/cubes.glsl" 30) ("shaders/okazz-spheres.glsl" 30) ("shaders/okazz-glyphs.glsl" 30) ("shaders/hex-tunnel.glsl" 30) ("shaders/liquify.glsl" 30)))
 
 (define-extension "shader-wallpaper" (:reads (:key) :state 0) (snapshot index event)
   (declare (ignore snapshot))
