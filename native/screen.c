@@ -444,6 +444,7 @@ void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hots
         float scale) {
     struct cursor_image *image = &s->cursor_image;
     if (buffer != image->buffer) {
+        s->cursor_generation++;
         texture_destroy(image->texture);
         image->texture = buffer ? texture_from_buffer(s->renderer, buffer) : NULL;
         buffer_unlock(image->buffer);
@@ -460,6 +461,88 @@ void cursor_finish(struct tomoe *s) {
     texture_destroy(s->cursor_image.texture);
     buffer_unlock(s->cursor_image.buffer);
     s->cursor_image = (struct cursor_image){0};
+}
+
+static const char base64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static bool base64_encode(FILE *out, const unsigned char *data, size_t length) {
+    size_t i = 0;
+    for (; i + 2 < length; i += 3) {
+        unsigned value = (unsigned)data[i] << 16 | (unsigned)data[i + 1] << 8 | data[i + 2];
+        if (fputc(base64_table[(value >> 18) & 63], out) == EOF ||
+                fputc(base64_table[(value >> 12) & 63], out) == EOF ||
+                fputc(base64_table[(value >> 6) & 63], out) == EOF ||
+                fputc(base64_table[value & 63], out) == EOF) return false;
+    }
+    if (i < length) {
+        unsigned value = (unsigned)data[i] << 16;
+        if (i + 1 < length) value |= (unsigned)data[i + 1] << 8;
+        if (fputc(base64_table[(value >> 18) & 63], out) == EOF ||
+                fputc(base64_table[(value >> 12) & 63], out) == EOF ||
+                fputc(i + 1 < length ? base64_table[(value >> 6) & 63] : '=', out) == EOF ||
+                fputc('=', out) == EOF) return false;
+    }
+    return true;
+}
+
+const char *tomoe_cursor_state(struct tomoe *s, uint64_t have_generation) {
+    free(s->cursor_result);
+    s->cursor_result = NULL;
+
+    struct cursor_image *image = &s->cursor_image;
+    int width = image->buffer ? image->buffer->width : 0;
+    int height = image->buffer ? image->buffer->height : 0;
+    size_t stride = 0;
+    uint32_t format = 0;
+    void *pixels = NULL;
+    bool readable = image->buffer && width > 0 && height > 0 &&
+        buffer_begin_access(image->buffer, BUFFER_READ, &pixels, &format, &stride);
+    bool include = readable && pixels && stride >= (size_t)width * 4 &&
+        s->cursor_generation != have_generation;
+    unsigned char *packed = NULL;
+    size_t row = (size_t)width * 4;
+    if (include) {
+        packed = row && (size_t)height <= SIZE_MAX / row ? malloc(row * (size_t)height) : NULL;
+        if (packed) {
+            for (int y = 0; y < height; y++)
+                memcpy(packed + row * (size_t)y,
+                    (const unsigned char *)pixels + stride * (size_t)y, row);
+        } else {
+            include = false;
+        }
+    }
+
+    char *text = NULL;
+    size_t size = 0;
+    FILE *out = open_memstream(&text, &size);
+    if (!out) {
+        free(packed);
+        if (readable) buffer_end_access(image->buffer);
+        return NULL;
+    }
+    bool ok = fprintf(out,
+        "(:x %.17g :y %.17g :hidden %s :hotspot-x %d :hotspot-y %d"
+        " :width %d :height %d :stride %zu :scale-120 %d :generation %llu",
+        s->pointer_x, s->pointer_y, s->cursor_hidden ? "t" : "nil",
+        image->hotspot_x, image->hotspot_y, width, height, row,
+        (int)lroundf((image->scale > 0 ? image->scale : 1) * 120.0f),
+        (unsigned long long)s->cursor_generation) >= 0;
+    if (ok && include) {
+        ok = fprintf(out, " :format %u :image \"", format) >= 0 &&
+            base64_encode(out, packed, row * (size_t)height) && fputc('"', out) != EOF;
+    }
+    if (ok) ok = fputc(')', out) != EOF;
+    if (ferror(out)) ok = false;
+    if (fclose(out) != 0) ok = false;
+    if (readable) buffer_end_access(image->buffer);
+    free(packed);
+    if (!ok) {
+        free(text);
+        return NULL;
+    }
+    s->cursor_result = text;
+    return s->cursor_result;
 }
 
 void screen_cursor_move(struct screen *screen, double x, double y) {

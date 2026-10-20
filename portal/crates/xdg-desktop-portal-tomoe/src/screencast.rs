@@ -32,6 +32,7 @@ mod source_types {
 mod cursor_modes {
     pub const HIDDEN: u32 = 1 << 0;
     pub const EMBEDDED: u32 = 1 << 1;
+    pub const METADATA: u32 = 1 << 2;
 }
 
 /// What SelectSources picked for a session.
@@ -51,6 +52,7 @@ struct SessionState {
     owner: Option<String>,
     selection: Option<Selection>,
     cursor_visible: bool,
+    cursor_metadata: bool,
     stream: Option<LiveStream>,
     generation: u64,
 }
@@ -387,12 +389,12 @@ impl ScreenCast {
         source_types::MONITOR | source_types::WINDOW
     }
 
-    /// Both HIDDEN and EMBEDDED — the OBS "Show cursor" checkbox toggles
-    /// between these; wlr-screencopy's overlay_cursor (monitors) and
-    /// ext-image-copy-capture's paint_cursors (windows) honor it per session.
+    /// HIDDEN, EMBEDDED and METADATA. wlr-screencopy's overlay_cursor and
+    /// ext-image-copy-capture's paint_cursors handle the first two; METADATA
+    /// keeps the pointer out of the pixels and attaches `SPA_META_Cursor`.
     #[zbus(property, name = "AvailableCursorModes")]
     fn available_cursor_modes(&self) -> u32 {
-        cursor_modes::HIDDEN | cursor_modes::EMBEDDED
+        cursor_modes::HIDDEN | cursor_modes::EMBEDDED | cursor_modes::METADATA
     }
 
     async fn create_session(
@@ -416,6 +418,7 @@ impl ScreenCast {
                 owner: owner.clone(),
                 selection: None,
                 cursor_visible: true,
+                cursor_metadata: false,
                 stream: None,
                 generation: 0,
             },
@@ -456,7 +459,9 @@ impl ScreenCast {
             .get("cursor_mode")
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(cursor_modes::EMBEDDED);
-        let cursor_visible = cursor_mode & cursor_modes::EMBEDDED != 0;
+        let cursor_metadata = cursor_mode & cursor_modes::METADATA != 0;
+        let cursor_visible =
+            cursor_mode & cursor_modes::EMBEDDED != 0 && !cursor_metadata;
         let key = session_handle.to_string();
         if !self.sessions.lock().contains_key(&key) {
             tracing::warn!(%session_handle, "SelectSources for an unknown session");
@@ -532,6 +537,7 @@ impl ScreenCast {
             return Ok((2, HashMap::new()));
         };
         state.cursor_visible = cursor_visible;
+        state.cursor_metadata = cursor_metadata;
         match pick {
             Some(selection) => {
                 tracing::info!(?selection, %session_handle, "selected source");
@@ -559,10 +565,16 @@ impl ScreenCast {
             .sessions
             .lock()
             .get(&session_key)
-            .map(|state| (state.selection.clone(), state.cursor_visible));
+            .map(|state| {
+                (
+                    state.selection.clone(),
+                    state.cursor_visible,
+                    state.cursor_metadata,
+                )
+            });
         tracing::info!(%handle, %session_handle, %app_id, %parent_window, ?current, "Start");
 
-        let Some((selection, cursor_visible)) = current else {
+        let Some((selection, cursor_visible, cursor_metadata)) = current else {
             tracing::warn!(%session_handle, "Start for an unknown session");
             return Ok((2, HashMap::new()));
         };
@@ -587,6 +599,7 @@ impl ScreenCast {
                     height: out.height.max(1) as u32,
                     framerate,
                     cursor_visible,
+                    cursor_metadata,
                 };
                 let started = pipewire_stream::start(spec.clone()).map_err(|e| {
                     zbus::fdo::Error::Failed(format!("spawning the stream thread: {e}"))
@@ -612,6 +625,7 @@ impl ScreenCast {
                     toplevel_identifier: win.identifier.clone(),
                     framerate: 60,
                     cursor_visible,
+                    cursor_metadata,
                 };
                 let started = toplevel_stream::start(spec).map_err(|e| {
                     zbus::fdo::Error::Failed(format!("spawning the stream thread: {e}"))

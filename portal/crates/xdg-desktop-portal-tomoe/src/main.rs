@@ -6,6 +6,7 @@
 //! off the compositor's wlr-screencopy `ready` events, i.e. at output
 //! refresh.
 
+mod cursor;
 mod outputs;
 mod pipewire_stream;
 mod screencast;

@@ -799,6 +799,8 @@ struct tomoe {
     struct surface *cursor_surface;
     int32_t cursor_hotspot_x, cursor_hotspot_y;
     bool cursor_hidden;
+    uint64_t cursor_generation;
+    char *cursor_result;
     uint32_t hovered;
     char *ui_hovered;
     struct pointer_latch pointer_latches[32];

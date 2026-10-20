@@ -61,7 +61,7 @@ Each UTF-8 line is a request such as `{"id":1,"method":"windows"}`. Replies are
 `{"id":1,"result":VALUE}` or `{"id":1,"error":"message"}`; omitted or null IDs
 execute without a reply. IDs are unsigned 64-bit integers. Events are
 `{"event":"NAME","payload":VALUE}`. Built-ins are `version`, `windows`, `outputs`,
-`view`, `subscribe`, `quit`, and `screencast_select`. The portal's
+`cursor`, `view`, `subscribe`, `quit`, and `screencast_select`. The portal's
 `screencast_select` (params `app_id`, `types`) becomes a `(:type :screencast
 :token N :app-id S :monitor B :window B)` event; an extension answers it, now or
 from a later key or UI event, with `(screencast-answer N :output NAME)`,
@@ -73,6 +73,13 @@ builtin `screencast` picker honours a window rule property `:screencast`
 (`nil` denies, an output name casts it) for the requesting app, answers a single
 candidate directly, and otherwise opens a menu.
 Built-ins take precedence over extension methods.
+
+`cursor` takes `{"output":"NAME"}` or `{"window":"IDENTIFIER"}` plus the
+`generation` the caller already has. It returns the pointer position relative to
+that source, visibility, hotspot and scale, and — only when `generation`
+changes — the cursor bitmap as base64 chunks with its DRM format. The chunks
+keep each JSON string under the codec's limit. The Screencast portal uses this
+to attach `SPA_META_Cursor` to `METADATA` streams.
 
 `windows` returns ascending IDs, each window's `identifier` (the 32 hex digits
 ext-foreign-toplevel-list sends, which `lswt -j` shows and `grim -T` takes),

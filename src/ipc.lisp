@@ -45,12 +45,74 @@
                collect (json-object (cons "name" (getf output :name))
                                     (cons "geometry" (ipc-rectangle output))
                                     (cons "usable" (ipc-rectangle area))
-                                    (cons "scale" (/ (getf output :scale-120 120) 120d0))))))
+                                    (cons "scale" (/ (getf output :scale-120 120) 120d0))
+                                    (cons "transform" (getf output :transform 0))))))
 
 (defun ipc-view (context)
   (let ((view (getf context :view)))
     (json-object (cons "x" (getf view :x 0)) (cons "y" (getf view :y 0))
                  (cons "zoom" (getf view :zoom 1d0)))))
+
+(defun ipc-cursor-geometry (runtime params)
+  "The source rectangle a recorder asked about, in global physical pixels.
+PARAMS carries either \"output\" (an output name) or \"window\" (a window
+identifier)."
+  (let ((output-name (and params (json-get params "output")))
+        (identifier (and params (json-get params "window"))))
+    (cond
+      ((stringp output-name)
+       (let ((output (find output-name (runtime-outputs runtime)
+                           :test #'equal :key (lambda (output) (getf output :name)))))
+         (and output
+              (list :x (getf output :x) :y (getf output :y)
+                    :width (getf output :width) :height (getf output :height)
+                    :transform (getf output :transform 0)))))
+      ((stringp identifier)
+       (let ((window (find identifier (runtime-windows runtime)
+                           :test #'equal :key (lambda (window) (getf window :identifier)))))
+         (and window
+              (find (getf window :id) (getf (runtime-effective runtime) :window-geometry)
+                    :key (lambda (box) (getf box :id)))))))))
+
+(defun ipc-cursor (runtime params)
+  "Cursor position and image for ScreenCast METADATA mode. Coordinates are
+relative to the requested output or window so the portal need not know the
+compositor's layout. The image is sent only when GENERATION changes."
+  (let* ((backend (runtime-backend runtime))
+         (have (or (and params (json-get params "generation")) 0))
+         (state (read-data (or (%cursor-state backend have)
+                               (error "Cannot serialize cursor state."))))
+         (geometry (ipc-cursor-geometry runtime params))
+         (hidden (getf state :hidden))
+         (x (getf state :x 0))
+         (y (getf state :y 0))
+         (local-x (if geometry (round (- x (getf geometry :x))) (round x)))
+         (local-y (if geometry (round (- y (getf geometry :y))) (round y)))
+         (visible (and geometry (not hidden)
+                       (zerop (getf geometry :transform 0))
+                       (<= (getf geometry :x) x) (< x (+ (getf geometry :x) (getf geometry :width)))
+                       (<= (getf geometry :y) y) (< y (+ (getf geometry :y) (getf geometry :height))))))
+    (apply #'json-object
+           (append
+            (list (cons "visible" (json-boolean visible))
+                  (cons "hidden" (json-boolean hidden))
+                  (cons "generation" (getf state :generation 0))
+                  (cons "x" local-x) (cons "y" local-y)
+                  (cons "hotspot_x" (getf state :hotspot-x 0))
+                  (cons "hotspot_y" (getf state :hotspot-y 0))
+                  (cons "width" (getf state :width 0))
+                  (cons "height" (getf state :height 0))
+                  (cons "stride" (getf state :stride 0))
+                  (cons "scale" (/ (getf state :scale-120 120) 120d0)))
+            (when (getf state :image)
+              (let ((image (getf state :image)))
+                (list (cons "image"
+                            (apply #'json-array
+                                   (loop for start from 0 below (length image) by 60000
+                                         collect (subseq image start
+                                                         (min (length image)
+                                                              (+ start 60000))))))
+                      (cons "format" (getf state :format 0)))))))))
 
 (defun resolved-ipc-effects (mounts kind)
   "Records retain their winning source identity as well as their copied value."
@@ -181,6 +243,7 @@ subscriber's events start from the present state."
                    (json-object (cons "wire" +json-wire-version+) (cons "version" *version*)))
                   ((equal method "windows") (ipc-windows runtime (runtime-effective runtime)))
                   ((equal method "outputs") (ipc-outputs (runtime-effective runtime)))
+                  ((equal method "cursor") (ipc-cursor runtime params))
                   ((equal method "view") (ipc-view (runtime-effective runtime)))
                   ((equal method "subscribe") (ipc-subscribe runtime client params))
                   ((equal method "quit") (setf (runtime-running runtime) nil) t)

@@ -118,6 +118,8 @@ pub struct StreamSpec {
     /// Whether to render the cursor into the captured output. Translates to
     /// `overlay_cursor=1` on wlr-screencopy's `capture_output`.
     pub cursor_visible: bool,
+    /// Whether to attach `SPA_META_Cursor` instead of embedding the pointer.
+    pub cursor_metadata: bool,
 }
 
 pub struct StreamHandle {
@@ -192,6 +194,12 @@ struct AppState {
     /// the first frame is submitted.
     last_frame_time: Option<Instant>,
     failing_since: Option<Instant>,
+    cursor: Option<CursorState>,
+}
+
+struct CursorState {
+    poller: crate::cursor::Poller,
+    written: u64,
 }
 
 struct PendingFrame {
@@ -288,6 +296,7 @@ fn run(
         min_time_between_frames: Duration::ZERO,
         last_frame_time: None,
         failing_since: None,
+        cursor: None,
     };
 
     event_queue.roundtrip(&mut state)?;
@@ -340,6 +349,22 @@ fn run(
         return Err("target output not found".into());
     }
     tracing::info!(output = spec.output_name, "screencast: globals bound");
+
+    if spec.cursor_metadata {
+        match crate::cursor::Poller::start(
+            crate::cursor::Source::Output(spec.output_name.clone()),
+            stop.clone(),
+        ) {
+            Some(poller) => {
+                tracing::info!(output = spec.output_name, "screencast: cursor metadata enabled");
+                state.cursor = Some(CursorState {
+                    poller,
+                    written: 0,
+                });
+            }
+            None => tracing::warn!("screencast: cannot start the cursor poller"),
+        }
+    }
 
     let stream = pw::stream::StreamRc::new(
         core,
@@ -407,10 +432,15 @@ fn run(
 
     let format_bytes = build_video_format_param(&spec)?;
     let buffers_bytes = build_buffers_param(&spec, state_rc.borrow().gbm.is_some())?;
+    let meta_bytes = build_meta_param()?;
     let format_pod = Pod::from_bytes(&format_bytes).ok_or("format POD parse failed".to_string())?;
     let buffers_pod =
         Pod::from_bytes(&buffers_bytes).ok_or("buffers POD parse failed".to_string())?;
-    let mut params = [format_pod, buffers_pod];
+    let meta_pod = Pod::from_bytes(&meta_bytes).ok_or("meta POD parse failed".to_string())?;
+    let mut params = vec![format_pod, buffers_pod];
+    if spec.cursor_metadata {
+        params.push(meta_pod);
+    }
     stream.connect(
         spa::utils::Direction::Output,
         None,
@@ -967,6 +997,10 @@ impl AppState {
                             chunk.size = (stride as usize)
                                 .checked_mul(self.spec.height as usize)
                                 .unwrap_or(0) as u32;
+                            if let Some(cursor) = self.cursor.as_mut() {
+                                let sample = cursor.poller.sample();
+                                crate::cursor::write(pw_buf, &sample, &mut cursor.written);
+                            }
                         }
                         stream.queue_raw_buffer(pw_buf);
                     }
@@ -1165,6 +1199,26 @@ fn build_video_format_param(
                         max: max_framerate,
                     },
                 ))),
+            ),
+        ],
+    });
+    Ok(PodSerializer::serialize(Cursor::new(Vec::new()), &obj)?
+        .0
+        .into_inner())
+}
+
+pub(crate) fn build_meta_param() -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let obj = Value::Object(Object {
+        type_: spa_sys::SPA_TYPE_OBJECT_ParamMeta,
+        id: spa_sys::SPA_PARAM_Meta,
+        properties: vec![
+            Property::new(
+                spa_sys::SPA_PARAM_META_type,
+                Value::Id(Id(spa_sys::SPA_META_Cursor)),
+            ),
+            Property::new(
+                spa_sys::SPA_PARAM_META_size,
+                Value::Int(crate::cursor::meta_size() as i32),
             ),
         ],
     });

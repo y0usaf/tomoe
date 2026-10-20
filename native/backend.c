@@ -167,6 +167,7 @@ void tomoe_destroy(struct tomoe *s) {
     free(s->hit_result);
     free(s->frames_result);
     free(s->memory_result);
+    free(s->cursor_result);
     free(s->output_preview);
     free(s->output_current);
     layers_preview_finish(s);

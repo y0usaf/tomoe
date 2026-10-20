@@ -1440,6 +1440,7 @@ void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32
 }
 void cursor_committed(struct tomoe *s, struct surface *surface) {
     if (surface != s->cursor_surface) return;
+    s->cursor_generation++;
     s->cursor_hotspot_x -= surface->current.dx;
     s->cursor_hotspot_y -= surface->current.dy;
     cursor_apply(s);

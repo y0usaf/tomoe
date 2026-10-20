@@ -87,6 +87,8 @@ pub struct StreamSpec {
     /// Whether to advertise `paint_cursors` on the session; the compositor
     /// embeds the cursor while it hovers the captured window.
     pub cursor_visible: bool,
+    /// Whether to attach `SPA_META_Cursor` instead of embedding the pointer.
+    pub cursor_metadata: bool,
 }
 
 /// What `start` hands back: the PW node plus the compositor-advertised
@@ -190,6 +192,12 @@ struct AppState {
     /// Consumer-negotiated frame interval; zero leaves capture unpaced.
     min_time_between_frames: Duration,
     last_capture_at: Option<Instant>,
+    cursor: Option<CursorState>,
+}
+
+struct CursorState {
+    poller: crate::cursor::Poller,
+    written: u64,
 }
 
 struct DmabufCaps {
@@ -326,7 +334,19 @@ fn run(
         negotiated_height: 0,
         min_time_between_frames: Duration::ZERO,
         last_capture_at: None,
+        cursor: None,
     };
+
+    if spec.cursor_metadata {
+        state.cursor = crate::cursor::Poller::start(
+            crate::cursor::Source::Window(spec.toplevel_identifier.clone()),
+            stop.clone(),
+        )
+        .map(|poller| CursorState {
+            poller,
+            written: 0,
+        });
+    }
 
     for _ in 0..3 {
         event_queue.roundtrip(&mut state)?;
@@ -466,6 +486,14 @@ fn run(
         .iter()
         .map(|bytes| Pod::from_bytes(bytes).ok_or("format POD parse failed".to_string()))
         .collect::<Result<Vec<_>, _>>()?;
+    let meta_bytes = if state_rc.borrow().spec.cursor_metadata {
+        Some(crate::pipewire_stream::build_meta_param()?)
+    } else {
+        None
+    };
+    if let Some(meta) = meta_bytes.as_deref() {
+        params.push(Pod::from_bytes(meta).ok_or("meta POD parse failed".to_string())?);
+    }
     stream.connect(
         spa::utils::Direction::Output,
         None,
@@ -1238,6 +1266,10 @@ impl AppState {
                         );
                         for (data, plane) in datas.iter_mut().zip(&slot.planes) {
                             write_chunk(data, plane);
+                        }
+                        if let Some(cursor) = self.cursor.as_mut() {
+                            let sample = cursor.poller.sample();
+                            crate::cursor::write(pw_buf, &sample, &mut cursor.written);
                         }
                     }
                     stream.queue_raw_buffer(pw_buf);

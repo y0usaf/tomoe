@@ -36,7 +36,11 @@ its Lua configs.
   `event` and `quit`, plus JSON IPC (wire version 2) for bars and scripts.
 - **Capture for streamers.** Each window's ext-foreign-toplevel identifier is in the
   `:windows` context and the IPC `windows` reply, and a window capture that asks for
-  cursors includes the cursor while the pointer is over the window.
+  cursors includes the cursor while the pointer is over the window. The ScreenCast
+  portal also offers `METADATA` cursor mode: the pointer stays out of the pixels
+  and travels as `SPA_META_Cursor` position, hotspot and bitmap, so recorders can
+  draw a smooth cursor and place zooms on clicks. The `cursor` IPC method exposes
+  the same telemetry to scripts.
 - **One executable.** SBCL's runtime with the C core linked in and the Lisp
   image appended, shipping foot, fuzzel, xwayland-satellite and D-Bus.
 
