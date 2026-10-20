@@ -394,7 +394,12 @@ impl ScreenCast {
     /// keeps the pointer out of the pixels and attaches `SPA_META_Cursor`.
     #[zbus(property, name = "AvailableCursorModes")]
     fn available_cursor_modes(&self) -> u32 {
-        cursor_modes::HIDDEN | cursor_modes::EMBEDDED | cursor_modes::METADATA
+        let modes = cursor_modes::HIDDEN | cursor_modes::EMBEDDED;
+        if crate::cursor::available() {
+            modes | cursor_modes::METADATA
+        } else {
+            modes
+        }
     }
 
     async fn create_session(
@@ -459,7 +464,8 @@ impl ScreenCast {
             .get("cursor_mode")
             .and_then(|v| u32::try_from(v).ok())
             .unwrap_or(cursor_modes::EMBEDDED);
-        let cursor_metadata = cursor_mode & cursor_modes::METADATA != 0;
+        let cursor_metadata =
+            cursor_mode & cursor_modes::METADATA != 0 && crate::cursor::available();
         let cursor_visible =
             cursor_mode & cursor_modes::EMBEDDED != 0 && !cursor_metadata;
         let key = session_handle.to_string();

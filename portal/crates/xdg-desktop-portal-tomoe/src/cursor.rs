@@ -55,6 +55,23 @@ pub struct Sample {
     pub bitmap: Option<Arc<Vec<u8>>>,
 }
 
+/// Whether the running compositor answers the `cursor` method. The portal is
+/// often activated before a newly installed compositor is restarted; asking
+/// this keeps `AvailableCursorModes` honest across that window.
+pub fn available() -> bool {
+    let Some(path) = tomoe_ipc::find_socket() else {
+        return false;
+    };
+    let Ok(mut client) = tomoe_ipc::Client::connect(&path) else {
+        return false;
+    };
+    let _ = client.set_timeout(Some(Duration::from_millis(300)));
+    matches!(
+        client.request("cursor", Some(serde_json::json!({ "generation": 0 }))),
+        Ok(Ok(_))
+    )
+}
+
 pub struct Poller {
     state: Arc<Mutex<Sample>>,
 }
