@@ -1085,7 +1085,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
         return;
     }
     lock_frame_rendered(o->server, o->screen);
-    if (windows_animate(o->server)) screen_schedule_frame(o->screen);
+    bool moving = windows_animate(o->server);
+    if (ui_animate(o->server) || moving) screen_schedule_frame(o->screen);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     frame_done(o, &now);

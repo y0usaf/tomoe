@@ -28,8 +28,8 @@ its Lua configs.
   hardware.
 - **Shell surfaces.** Bars, panels and wallpapers from a declarative UI tree,
   drawn with Pango and Cairo or a GLSL shader, with rounded corners, shadows,
-  blur, text turned in quarter turns for vertical bars, and spring or eased
-  animations.
+  blur, text turned in quarter turns for vertical bars, surfaces that slide
+  with the windows, and spring or eased animations.
 - **Session services.** A notification server, MPRIS, battery, backlight
   through logind, sounds through PipeWire, NetworkManager, a StatusNotifier
   tray, and CPU, memory and GPU readings.

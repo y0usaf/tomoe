@@ -8,7 +8,7 @@ process.
 
 `(ui KIND &rest PROPERTIES)` constructs copied declarative UI data. Return
 `(shell-surface NAME TREE &key width height anchors margin layer exclusive-zone
-visible output background color font-size click-through)` as an owned effect. Names are keywords
+visible output background color font-size click-through slide)` as an owned effect. Names are keywords
 scoped to the declaring extension. [examples/shell.lisp](../examples/shell.lisp)
 is a working bar with a private click counter; its state survives reload.
 
@@ -118,7 +118,10 @@ layer `:top`, background `#1e1e2e`, text `#cdd6f4`, and font size 13.
 Opposing anchors stretch across the output; other zero surface dimensions use
 the tree's intrinsic size. Positive exclusive zones reduce `:workareas` after
 external layer reservations, without adding margins. Surfaces remain fixed to
-the screen as the camera moves. `:background` and `:bottom` surfaces render just
+the screen as the camera moves. `:slide t` moves a surface to a new position on
+the `:window-move` animation instead of jumping. It starts in the frame that
+moves the transaction's windows, so a surface placed from `:layout` or a
+layout's published state travels with them. `:background` and `:bottom` surfaces render just
 above external layer surfaces of the same layer, so windows cover them; `:top`
 and `:overlay` surfaces render above every client, below the cursor. Hit testing
 follows that same order and the drawing clips.

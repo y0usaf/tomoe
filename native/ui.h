@@ -27,7 +27,7 @@ struct ui_hit {
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     uint64_t source_id, const char *name, const char *output,
     const char *signature, int x, int y, int width, int height, int layer,
-    int click_through);
+    int click_through, int slide);
 int tomoe_present_ui_clip(struct tomoe *s, int x, int y, int width, int height);
 int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id);
 int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps);
@@ -55,6 +55,7 @@ void ui_output_finish(struct tomoe *s, const char *output);
 bool ui_on_output(struct output *o, int layer);
 bool ui_prepare(struct tomoe *s);
 void ui_publish(struct tomoe *s);
+bool ui_animate(struct tomoe *s);
 void ui_backdrops_ready(struct tomoe *s);
 void ui_set_finish(struct ui_set *set);
 void ui_finish(struct tomoe *s);

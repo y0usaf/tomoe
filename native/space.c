@@ -518,6 +518,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
     windows_animate(o->server);
+    ui_animate(o->server);
     pixman_region32_t changed, clip;
     pixman_region32_init(&changed);
     pixman_region32_init(&clip);

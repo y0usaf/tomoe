@@ -163,16 +163,18 @@
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
                              :exclusive-zone :visible :output :background :color :font-size :stack
-                             :click-through))
+                             :click-through :slide))
   (let ((anchors (getf arguments :anchors '(:top :left :right)))
         (visible (getf arguments :visible t))
-        (click-through (getf arguments :click-through)))
+        (click-through (getf arguments :click-through))
+        (slide (getf arguments :slide)))
     (%ui-list anchors 4 "Shell anchors")
     (dolist (anchor anchors) (%ui-choice anchor '(:top :right :bottom :left)))
     (unless (= (length anchors) (length (remove-duplicates anchors)))
       (error "Duplicate shell anchor."))
     (unless (member visible '(t nil)) (error "Shell visibility must be T or NIL."))
     (unless (member click-through '(t nil)) (error "Shell click-through must be T or NIL."))
+    (unless (member slide '(t nil)) (error "Shell slide must be T or NIL."))
     (list :name (%ui-key (getf arguments :name))
           :tree (canonical-ui (getf arguments :tree))
           :width (%ui-length (getf arguments :width 0))
@@ -190,7 +192,8 @@
           :color (%ui-color (getf arguments :color #xcdd6f4ff))
           :font-size (%ui-length (getf arguments :font-size 13))
           :stack (%ui-key (getf arguments :stack) t)
-          :click-through click-through)))
+          :click-through click-through
+          :slide slide)))
 
 (defun shell-surface (name tree &rest options)
   "Own a retained shell surface and its click commands in this extension."
@@ -519,7 +522,8 @@
                     (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
                                       :output (copy-seq (getf output :name)) :x x :y y
                                       :width width :height height :layer (getf declaration :layer)
-                                      :click-through (getf declaration :click-through)))
+                                      :click-through (getf declaration :click-through)
+                                      :slide (getf declaration :slide)))
                           (asset-ids (append (%ui-asset-ids measured) (when backdrop (list (first backdrop))))))
                       (when asset-ids
                         (setf plan (nconc plan (list :assets asset-ids))))
