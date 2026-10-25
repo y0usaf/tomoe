@@ -994,7 +994,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         const struct settings *st = &o->server->settings;
         if (surface->blur >= 0 && st->blur_enabled)
             effect_blur(f, (struct fbox){ left, top, surface->width, surface->height },
-                surface->blur, st->blur_passes, st->blur_offset, st->blur_margin);
+                surface->blur, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         if (image) draw_texture(f, image, left + x, top + y);
         if (shader) {
             double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;

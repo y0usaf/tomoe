@@ -182,10 +182,10 @@ static void sample_pass(struct program *p, struct level *from, struct level *to,
 }
 
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
-        double offset, int margin) {
+        double offset, int margin, double alpha) {
     if (!f->server->effects) f->server->effects = calloc(1, sizeof(*f->server->effects));
     struct effects *e = f->server->effects;
-    if (!e || passes < 1) return;
+    if (!e || passes < 1 || alpha <= 0) return;
     struct fbox box = local_box(f, area);
     struct box region = { pixel_round(box.x), pixel_round(box.y),
         pixel_round(box.x + box.width) - pixel_round(box.x),
@@ -196,7 +196,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     struct box grown = { region.x - margin, region.y - margin,
         region.width + 2 * margin, region.height + 2 * margin };
     if (!box_intersection(&grown, &grown, &bounds)) return;
-    double params[] = { 6, box.x, box.y, box.width, box.height, radius, passes, offset, margin };
+    double params[] = { 6, box.x, box.y, box.width, box.height, radius, passes, offset, margin, alpha };
     struct box covered = covering(f, box), reach = grown;
     int x2 = fmax(grown.x + grown.width, covered.x + covered.width);
     int y2 = fmax(grown.y + grown.height, covered.y + covered.height);
@@ -242,7 +242,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     glUseProgram(p->id);
     glBindTexture(GL_TEXTURE_2D, e->levels[0].texture);
     glUniform1i(p->tex, 0);
-    glUniform1f(p->alpha, 1);
+    glUniform1f(p->alpha, alpha < 1 ? alpha : 1);
     glUniform1f(p->opaque, 1);
     glUniform1f(p->clip, 1);
     glUniform2f(p->size, box.width, box.height);

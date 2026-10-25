@@ -483,7 +483,7 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
 bool effect_texture(struct frame *f, const struct texture_options *options,
     struct fbox dst, struct fbox clip, double radius);
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
-    double offset, int margin);
+    double offset, int margin, double alpha);
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);

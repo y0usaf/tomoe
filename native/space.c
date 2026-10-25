@@ -364,7 +364,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
                 t->y + physical_offset(y1, t->scale),
                 physical_offset(x2, t->scale) - physical_offset(x1, t->scale),
                 physical_offset(y2, t->scale) - physical_offset(y1, t->scale) };
-            effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin);
+            effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         }
         return;
     }
@@ -373,7 +373,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
         if (strcmp(st->blur_namespaces[i], l->wlr->namespace) != 0) continue;
         struct fbox box = { t->x, t->y, physical_size(l->wlr->current.actual_width, t->scale),
             physical_size(l->wlr->current.actual_height, t->scale) };
-        effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin);
+        effect_blur(f, box, 0, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         return;
     }
 }
@@ -390,7 +390,7 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     effect_border(f, box, st->border_width * zoom, radius,
         color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused, t->alpha);
     if (st->blur_enabled && t->style.blur == 1 && zoom == 1)
-        effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin);
+        effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin, t->alpha);
 }
 static void render_walk(struct tomoe *s, struct node *node, struct target *target,
         double x, double y, struct frame *f) {
