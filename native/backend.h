@@ -90,7 +90,8 @@ int tomoe_present_ui_asset(struct tomoe *server, uint64_t id,
 int tomoe_present_ui_rect(struct tomoe *server, double x, double y, double width,
     double height, uint32_t rgba, double radius, double stroke);
 int tomoe_present_ui_text(struct tomoe *server, double x, double y,
-    const char *text, const char *font, double size, double line_height, uint32_t rgba);
+    const char *text, const char *font, double size, double line_height, uint32_t rgba,
+    int rotate);
 int tomoe_present_ui_arc(struct tomoe *server, double cx, double cy, double radius,
     double thickness, double start, double end, uint32_t rgba);
 int tomoe_present_ui_hit(struct tomoe *server, const char *key, const char *command,

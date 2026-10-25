@@ -621,9 +621,10 @@ uint64_t tomoe_ui_text_size(const char *text, const char *font,
 
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
         const char *text, const char *font, double size, double line_height,
-        uint32_t rgba) {
+        uint32_t rgba, int rotate) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface)) return 0;
+    if (rotate != 0 && rotate != 90 && rotate != 180 && rotate != 270) return 0;
     if (!finite_number(x) || !finite_number(y) ||
             !valid_text_args(text, font, size, line_height) ||
             strnlen(text, UI_MAX_STRING + 1) > UI_MAX_STRING) return 0;
@@ -636,7 +637,15 @@ int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     double red, green, blue, alpha;
     color_components(rgba, &red, &green, &blue, &alpha);
     cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
-    cairo_move_to(surface->cairo, x, y);
+    int width = 0;
+    pango_layout_get_pixel_size(layout, &width, NULL);
+    double height = ceil(line_height);
+    cairo_translate(surface->cairo,
+        x + (rotate == 90 ? height : rotate == 180 ? width : 0),
+        y + (rotate == 180 ? height : rotate == 270 ? width : 0));
+    cairo_rotate(surface->cairo, rotate * G_PI / 180.0);
+    pango_cairo_update_layout(surface->cairo, layout);
+    cairo_move_to(surface->cairo, 0, 0);
     pango_cairo_show_layout(surface->cairo, layout);
     g_object_unref(layout);
     cairo_end_clip(surface);

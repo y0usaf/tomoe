@@ -17,7 +17,9 @@ The supported kinds are `:row`, `:column`, `:stack`, `:button`, `:text`, `:rect`
 Containers take `:children`; rows, columns, and buttons also take `:gap`, `:padding`, `:align`,
 and `:justify`. Common properties include `:width`, `:height`, `:grow`,
 `:background`, `:border-color`, `:border`, `:radius`, `:key`, and `:on-click`.
-Text takes `:text`, `:font`, `:size`, `:line-height`, and `:color`.
+Text takes `:text`, `:font`, `:size`, `:line-height`, `:color`, and `:rotate`:
+0, 90, 180 or 270 degrees clockwise. A quarter turn swaps the text's width and
+height, so 90 reads top to bottom down a vertical bar and 270 bottom to top.
 Progress values range from zero to one, with `:color` and `:track`; circular
 progress also takes `:size` and `:thickness`. Separators take `:orientation`,
 `:thickness`, and `:color`. Colors accept `#rgb`, `#rrggbb`, `#rrggbbaa`, or an

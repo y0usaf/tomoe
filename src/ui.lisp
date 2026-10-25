@@ -78,6 +78,7 @@
     (:justify :start)
     (:text "")
     (:font "sans")
+    (:rotate 0)
     (:size (cond ((member kind '(:icon :circular-progress)) 16d0)))
     (:orientation :horizontal)
     (:thickness (if (eq kind :circular-progress) 2d0 1d0))
@@ -102,7 +103,7 @@
                         (case kind
                           ((:row :column :button) '(:children :gap :padding :align :justify))
                           (:stack '(:children))
-                          (:text '(:text :size :line-height :color :font))
+                          (:text '(:text :size :line-height :color :font :rotate))
                           (:image '(:src))
                           (:icon '(:name :path :size :color))
                           ((:rect :spacer) nil)
@@ -127,6 +128,7 @@
                               (:align (%ui-choice value '(:start :center :end :stretch)))
                               (:justify (%ui-choice value '(:start :center :end)))
                               (:orientation (%ui-choice value '(:horizontal :vertical)))
+                              (:rotate (%ui-choice value '(0 90 180 270)))
                               (:text (%ui-string value 65536))
                               (:font (%ui-string value 128 nil))
                               (:src (%ui-string value 65536 nil))
@@ -273,7 +275,9 @@
              (error "Cannot measure UI text."))
            (setf width (coerce (ldb (byte 32 32) packed) 'double-float)
                  height (if (zerop line-height) 0d0
-                            (coerce (ldb (byte 32 0) packed) 'double-float))))))
+                            (coerce (ldb (byte 32 0) packed) 'double-float)))
+           (when (member (%ui-property tree :rotate) '(90 270))
+             (rotatef width height)))))
       (:separator
        (if (eq (%ui-property tree :orientation) :horizontal)
            (setf height (* scale (%ui-property tree :thickness)))
@@ -351,7 +355,8 @@
                       (multiple-value-bind (physical-size line-height rgba) (%ui-text-style tree scale color size)
                         (when (and (plusp physical-size) (plusp line-height))
                           (push (list :text (first box) (second box) (copy-seq (%ui-property tree :text))
-                                      (copy-seq (%ui-property tree :font)) physical-size line-height rgba (copy-list clip)) draw))))
+                                      (copy-seq (%ui-property tree :font)) physical-size line-height rgba
+                                      (%ui-property tree :rotate) (copy-list clip)) draw))))
                      (:image
                       (when (and (getf node :asset-available)
                                  (plusp (third box)) (plusp (fourth box)))
@@ -372,7 +377,7 @@
                                           (* 0.75d0 (fourth box))
                                           (coerce (fourth box) 'double-float)
                                           (or (%ui-property tree :color) #xffffffff)
-                                          (copy-list clip)) draw)))))
+                                          0 (copy-list clip)) draw)))))
                      (:separator (fill-rect box (%ui-property tree :color) 0d0 0d0 clip))
                      (:progress
                       (fill-rect box (%ui-property tree :track) radius 0d0 clip)

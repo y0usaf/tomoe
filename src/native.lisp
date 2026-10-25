@@ -76,7 +76,7 @@
   (rgba sb-alien:unsigned-int) (radius sb-alien:double) (stroke sb-alien:double))
 (define-native ("tomoe_present_ui_text" %present-ui-text) sb-alien:int
   (server (* t)) (x sb-alien:double) (y sb-alien:double) (text sb-alien:c-string) (font sb-alien:c-string)
-  (size sb-alien:double) (line-height sb-alien:double) (rgba sb-alien:unsigned-int))
+  (size sb-alien:double) (line-height sb-alien:double) (rgba sb-alien:unsigned-int) (rotate sb-alien:int))
 (define-native ("tomoe_present_ui_arc" %present-ui-arc) sb-alien:int
   (server (* t)) (cx sb-alien:double) (cy sb-alien:double) (radius sb-alien:double)
   (thickness sb-alien:double) (start sb-alien:double) (end sb-alien:double) (rgba sb-alien:unsigned-int))
@@ -318,10 +318,10 @@
                                     (%double-float width) (%double-float height) rgba
                                     (%double-float radius) (%double-float stroke))))
                (:text
-                (destructuring-bind (kind x y text font size line-height rgba clip) operation
+                (destructuring-bind (kind x y text font size line-height rgba rotate clip) operation
                   (declare (ignore kind clip))
                   (%present-ui-text backend (%double-float x) (%double-float y) text font
-                                    (%double-float size) (%double-float line-height) rgba)))
+                                    (%double-float size) (%double-float line-height) rgba rotate)))
                (:arc
                 (destructuring-bind (kind cx cy radius thickness start end rgba clip) operation
                   (declare (ignore kind clip))

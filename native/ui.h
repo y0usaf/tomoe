@@ -37,7 +37,7 @@ int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
     double height, uint32_t rgba, double radius, double stroke);
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     const char *text, const char *font, double size, double line_height,
-    uint32_t rgba);
+    uint32_t rgba, int rotate);
 int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     double thickness, double start, double end, uint32_t rgba);
 int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
