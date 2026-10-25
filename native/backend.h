@@ -78,7 +78,7 @@ int tomoe_present_window_style(struct tomoe *server, uint32_t id, int radius, in
 int tomoe_present_ui_surface(struct tomoe *server, const char *owner,
     uint64_t source_id, const char *name, const char *output,
     const char *signature, int x, int y, int width, int height, int layer,
-    int click_through, int slide);
+    int click_through, int slide, int blur);
 int tomoe_present_ui_clip(struct tomoe *server, int x, int y, int width, int height);
 uint64_t tomoe_ui_asset_load(struct tomoe *server, const char *owner,
     uint64_t source_id, int kind, const char *path, const char *name);

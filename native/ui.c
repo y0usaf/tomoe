@@ -36,7 +36,7 @@ struct ui_surface {
     char *output;
     char *signature;
     uint64_t source_id;
-    int x, y, width, height, layer;
+    int x, y, width, height, layer, blur;
     bool click_through, slide;
     struct animation move;
     double from_x, from_y;
@@ -207,14 +207,14 @@ static bool same_declaration(const struct ui_surface *surface,
 static bool same_cached_surface(const struct ui_surface *surface,
         const char *owner, uint64_t source_id, const char *name,
         const char *output, const char *signature, int x, int y,
-        int width, int height, int layer, bool click_through, bool slide) {
+        int width, int height, int layer, bool click_through, bool slide, int blur) {
     return surface->source_id == source_id &&
         string_equal(surface->owner, owner) && string_equal(surface->name, name) &&
         string_equal(surface->output, output) &&
         string_equal(surface->signature, signature) && surface->x == x &&
         surface->y == y && surface->width == width && surface->height == height &&
         surface->layer == layer && surface->click_through == click_through &&
-        surface->slide == slide && surface->complete;
+        surface->slide == slide && surface->blur == blur && surface->complete;
 }
 
 static uint64_t reusable_callback_id(struct tomoe *s,
@@ -252,7 +252,7 @@ static bool surface_is_current(struct tomoe *s, struct ui_surface **out) {
 static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         const char *signature, int x, int y, int width, int height, int layer,
-        bool click_through, bool slide, uint64_t bytes, size_t stride) {
+        bool click_through, bool slide, int blur, uint64_t bytes, size_t stride) {
     struct ui_surface *surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
     surface->references = 1;
@@ -261,6 +261,7 @@ static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
     surface->width = width; surface->height = height; surface->layer = layer;
     surface->click_through = click_through;
     surface->slide = slide;
+    surface->blur = blur;
     surface->bytes = bytes; surface->stride = stride;
     surface->building = true;
     surface->clip_set = true;
@@ -295,10 +296,11 @@ failed:
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         const char *signature, int x, int y, int width, int height, int layer,
-        int click_through, int slide) {
+        int click_through, int slide, int blur) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
             height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
-            click_through < 0 || click_through > 1 || slide < 0 || slide > 1) return 0;
+            click_through < 0 || click_through > 1 || slide < 0 || slide > 1 ||
+            blur < -1 || blur > UI_MAX_DIMENSION) return 0;
     struct ui_set *set = s->presentation->ui;
     if (!set) {
         set = calloc(1, sizeof(*set));
@@ -324,7 +326,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         for (size_t i = 0; i < s->ui->count; i++) {
             struct ui_surface *surface = s->ui->surfaces[i];
             if (same_cached_surface(surface, owner, source_id, name, output,
-                    signature, x, y, width, height, layer, click_through, slide)) {
+                    signature, x, y, width, height, layer, click_through, slide, blur)) {
                 cached = surface;
                 break;
             }
@@ -342,7 +344,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     if (existing == UINT64_MAX || existing > UI_MAX_TOTAL_BYTES ||
             bytes > UI_MAX_TOTAL_BYTES - existing) return 0;
     struct ui_surface *surface = new_surface(s, owner, source_id, name, output,
-        signature, x, y, width, height, layer, click_through, slide, bytes, stride);
+        signature, x, y, width, height, layer, click_through, slide, blur, bytes, stride);
     if (!surface) return 0;
     if (!set_append(set, surface)) {
         surface_unref(surface);
@@ -989,6 +991,10 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         struct texture *image = ui_asset_backdrop(shown, &x, &y);
         struct program *shader = ui_asset_shader(shown, &epoch);
         int left = surface->x + surface->offset_x, top = surface->y + surface->offset_y;
+        const struct settings *st = &o->server->settings;
+        if (surface->blur >= 0 && st->blur_enabled)
+            effect_blur(f, (struct fbox){ left, top, surface->width, surface->height },
+                surface->blur, st->blur_passes, st->blur_offset, st->blur_margin);
         if (image) draw_texture(f, image, left + x, top + y);
         if (shader) {
             double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;

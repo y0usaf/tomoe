@@ -37,6 +37,14 @@ def shaded(color, factor):
     return all(abs(a - b * factor) <= 2 for a, b in zip(color, (0x33, 0x66, 0x99)))
 
 
+cli(f"mount {BLUR_PROBE}")
+time.sleep(1)
+frosted = [pixel(x, 250)[0] for x in range(150, 158)]
+sharp = [pixel(x, 250)[0] for x in range(350, 358)]
+assert max(frosted) - min(frosted) < 40 and 80 < sum(frosted) / 8 < 175, f"a shell surface with :blur t does not blur the stripes behind it: {frosted}"
+assert min(sharp) < 20 and max(sharp) > 235, f"the stripes beside the blurred surface are not sharp: {sharp}"
+cli("unmount blur-probe")
+
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
 x, y, w, h = box["x"], box["y"], box["w"], box["h"]
 middle, corner = (x + w // 2, y + h // 2), (x + w // 8, y + h // 8)

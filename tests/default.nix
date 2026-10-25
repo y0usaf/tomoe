@@ -42,6 +42,21 @@ let
               (when (and (eq (getf event :type) :key) (equal (getf event :owner) "screenshot-probe"))
                 (list (screenshot)))))
   '';
+  blurProbe = pkgs.writeText "blur-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "blur-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (settings :blur (list :enabled t :passes 3 :offset 2))
+                    (shell-surface :stripes
+                                   (ui :row :children (loop for i below 100
+                                                            collect (ui :rect :width 4 :height 300
+                                                                        :background (if (evenp i) "#000000ff" "#ffffffff"))))
+                                   :anchors '(:top :left) :margin '(100 0 0 100) :layer :top :background "#00000000")
+                    (shell-surface :frost (ui :row) :anchors '(:top :left) :margin '(100 0 0 100)
+                                   :width 200 :height 300 :layer :overlay :background "#00000000" :blur t))
+              nil))
+  '';
   offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "offscreen-probe" (:reads (:windows) :state nil) (snapshot state event)
@@ -104,6 +119,7 @@ in
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
       SCREENSHOT_PROBE = "${screenshotProbe}"
       OFFSCREEN_PROBE = "${offscreenProbe}"
+      BLUR_PROBE = "${blurProbe}"
     ''
     + builtins.readFile ./integration.py
   );

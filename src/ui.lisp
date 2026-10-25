@@ -163,11 +163,12 @@
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
                              :exclusive-zone :visible :output :background :color :font-size :stack
-                             :click-through :slide))
+                             :click-through :slide :blur))
   (let ((anchors (getf arguments :anchors '(:top :left :right)))
         (visible (getf arguments :visible t))
         (click-through (getf arguments :click-through))
-        (slide (getf arguments :slide)))
+        (slide (getf arguments :slide))
+        (blur (getf arguments :blur)))
     (%ui-list anchors 4 "Shell anchors")
     (dolist (anchor anchors) (%ui-choice anchor '(:top :right :bottom :left)))
     (unless (= (length anchors) (length (remove-duplicates anchors)))
@@ -175,6 +176,7 @@
     (unless (member visible '(t nil)) (error "Shell visibility must be T or NIL."))
     (unless (member click-through '(t nil)) (error "Shell click-through must be T or NIL."))
     (unless (member slide '(t nil)) (error "Shell slide must be T or NIL."))
+    (unless (or (member blur '(t nil)) (realp blur)) (error "Shell blur must be T, NIL or a corner radius."))
     (list :name (%ui-key (getf arguments :name))
           :tree (canonical-ui (getf arguments :tree))
           :width (%ui-length (getf arguments :width 0))
@@ -193,7 +195,8 @@
           :font-size (%ui-length (getf arguments :font-size 13))
           :stack (%ui-key (getf arguments :stack) t)
           :click-through click-through
-          :slide slide)))
+          :slide slide
+          :blur (if (eq blur t) 0d0 (%ui-length blur t)))))
 
 (defun shell-surface (name tree &rest options)
   "Own a retained shell surface and its click commands in this extension."
@@ -523,7 +526,9 @@
                                       :output (copy-seq (getf output :name)) :x x :y y
                                       :width width :height height :layer (getf declaration :layer)
                                       :click-through (getf declaration :click-through)
-                                      :slide (getf declaration :slide)))
+                                      :slide (getf declaration :slide)
+                                      :blur (let ((blur (getf declaration :blur)))
+                                              (when blur (%ui-round (* scale blur))))))
                           (asset-ids (append (%ui-asset-ids measured) (when backdrop (list (first backdrop))))))
                       (when asset-ids
                         (setf plan (nconc plan (list :assets asset-ids))))

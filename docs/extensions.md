@@ -605,7 +605,7 @@ are the `+settings+` table in `src/api.lisp`.
 | `:scale` | 1 | Scale for outputs that set none, from 1/4 to 8. |
 | `:border` | 2 px, square | `:width`, `:radius`, and the `:focused` and `:unfocused` colours, `#7aa2f7` and `#3b4261`. |
 | `:shadow` | 12 px | `:range` in pixels, `:color` (`#00000099`), and `:power`, the falloff from 1 to 4. |
-| `:blur` | off | `:enabled` blurs behind windows given `:blur t`, layer surfaces that ask for it through ext-background-effect, and layers whose namespace is in `:layer-namespaces`. `:passes`, `:offset` and `:anti-artifact-margin` shape it. |
+| `:blur` | off | `:enabled` blurs behind windows given `:blur t`, shell surfaces declared with `:blur`, layer surfaces that ask for it through ext-background-effect, and layers whose namespace is in `:layer-namespaces`. `:passes`, `:offset` and `:anti-artifact-margin` shape it. |
 | `:animations` | on | `t`, `nil`, or `(:window-move SPEC :window-open SPEC)`. A spec is `nil`, `t`, `(:spring (:damping-ratio 1 :stiffness 800))` or `(:ease (:duration-ms 150 :curve :ease-out-expo))`; a curve is `:linear`, `:ease-out-quad`, `:ease-out-cubic`, `:ease-out-expo` or four cubic Bézier values. By default windows move on a critically damped spring and open with a 150 ms ease. |
 | `:focus-follows-mouse` | off | The shipped WM focuses the window the pointer moves into. |
 | `:pointer-follows-focus` | off | Moves the pointer into a window that gains focus. |
