@@ -15,7 +15,7 @@ struct window {
     int configured_width, configured_height;
     double configured_scale;
     bool configured;
-    bool mapped, admitted, desired_visible, fullscreen_state, maximize_state;
+    bool mapped, admitted, presented, desired_visible, fullscreen_state, maximize_state;
     char *xdg_title, *xdg_app_id, *xdg_fullscreen_output;
     bool xdg_fullscreen_requested, xdg_maximize_requested;
     bool desired_fullscreen, desired_maximize;
@@ -517,10 +517,11 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
         int old_x = w->target.x, old_y = w->target.y;
         bool shown = w->tree->enabled;
         w->target = entry->target;
-        if (w->mapped && shown && entry->visible &&
+        if (w->mapped && shown && entry->visible && w->presented &&
                 (old_x != w->target.x || old_y != w->target.y))
             window_animate_move(w, old_x, old_y);
         if (w->mapped && !shown && entry->visible) window_animate_open(w);
+        if (w->mapped && entry->visible) w->presented = true;
         if (scale_changed && surface_of(w)) surface_set_scale(surface_of(w), w->target.scale);
         if (entry->staged) {
             w->desired_visible = entry->desired_visible;
