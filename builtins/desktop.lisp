@@ -554,7 +554,7 @@
                       (summary (getf notification :summary))
                       (body (getf notification :body))
                       (urgent (getf notification :urgent)))
-                 (ui :column :width 320 :padding 10 :gap 4 :radius 8
+                 (ui :column :width 320 :padding 10 :gap 4
                      :background (if urgent "#45222c" "#1e1e2e")
                      :children
                      (append
