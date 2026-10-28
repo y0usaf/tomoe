@@ -1,3 +1,4 @@
+import collections
 import json
 
 start()
@@ -25,6 +26,42 @@ assert status == 1 and "tomoe event" in output, (status, output)
 zoomer = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)[":NAME"]) == "zoomer")
 assert zoomer[":LAST-ERROR"] == "NIL", zoomer[":LAST-ERROR"]
 cli("unmount zoomer")
+screen = json.loads(cli("msg outputs"))[0]["geometry"]
+
+
+def row(y):
+    values = [int(v) for v in machine.succeed(
+        ENV + f"WAYLAND_DISPLAY=check grim -g '0,{y} {screen['w']}x1' -t ppm - | od -An -v -tu1"
+    ).split()][-3 * screen["w"]:]
+    return collections.Counter(zip(values[0::3], values[1::3], values[2::3]))
+
+
+def drawn(color, seen):
+    want = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+    return any(all(abs(a - b) <= 2 for a, b in zip(want, pixel)) for pixel in seen)
+
+
+def dialog(opener, closer, want, absent=()):
+    cli(f"command commands {opener}")
+    deadline = time.monotonic() + 15
+    while True:
+        seen = row(screen["y"] + screen["h"] // 2)
+        wrong = [c for c in want if not drawn(c, seen)] + [c for c in absent if drawn(c, seen)]
+        if not wrong or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    cli(f"event '(:type :key :owner \"commands\" :command \"{closer}\" :state :pressed)'")
+    return wrong and (wrong, ["#%02x%02x%02x %d" % (*c, n) for c, n in seen.most_common(6)])
+
+
+today = ["#1c1c21", "#7aa1f7"]
+assert not (m := dialog("hotkeys", "hotkeys-dismiss", today)), f"the hotkey sheet lost its own colours: {m}"
+assert not (m := dialog("quit", "exit-cancel", ["#1c1c21", "#bf2e38"])), f"the exit confirmation lost its own colours: {m}"
+cli(f"mount {THEME_PROBE}")
+assert not (m := dialog("hotkeys", "hotkeys-dismiss", ["#203040", "#c06030"], ["#1c1c21"])), f"the hotkey sheet ignores a published :theme: {m}"
+assert not (m := dialog("quit", "exit-cancel", ["#203040", "#30a050"], ["#bf2e38"])), f"the exit confirmation ignores a published :theme: {m}"
+cli("unmount theme-probe")
+assert not (m := dialog("hotkeys", "hotkeys-dismiss", today, ["#203040", "#c06030"])), f"unmounting the :theme publisher left the hotkey sheet recoloured: {m}"
 
 
 def pixel(px, py):

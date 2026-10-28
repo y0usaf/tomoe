@@ -80,6 +80,15 @@ let
                                    :anchors '(:top :left) :layer :overlay))
               nil))
   '';
+  themeProbe = pkgs.writeText "theme-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "theme-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (publish-state :theme '(:base "#203040" :text "#f0e0d0" :accent "#c06030"
+                                            :error "#30a050" :surface1 "#504030")))
+              nil))
+  '';
   busProbe = pkgs.writeText "bus-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
@@ -120,6 +129,7 @@ in
       SCREENSHOT_PROBE = "${screenshotProbe}"
       OFFSCREEN_PROBE = "${offscreenProbe}"
       BLUR_PROBE = "${blurProbe}"
+      THEME_PROBE = "${themeProbe}"
     ''
     + builtins.readFile ./integration.py
   );

@@ -19,7 +19,7 @@
     "Switch to Workspace 1-9" "Move Window to Workspace 1-9")
   "The old init.lua declaration order of the shipped bindings, for the hotkey sheet.")
 
-(define-extension "commands" (:reads (:key :ui :focus :bindings :settings)
+(define-extension "commands" (:reads (:key :ui :focus :bindings :settings :data)
                                :state '(:exit nil :overlay nil))
     (snapshot state event)
   (let* ((focused (context snapshot :focus))
@@ -47,9 +47,11 @@
                           (bind-key '(:mod :shift) "slash" :hotkeys :description "Show Important Hotkeys"))
                     (when exit
                       (confirm-dialog :exit "Are you sure you want to exit tomoe?"
-                                      :confirm :exit-confirm :cancel :exit-cancel))
+                                      :confirm :exit-confirm :cancel :exit-cancel
+                                      :theme (state-value snapshot :theme)))
                     (when (and overlay (not exit))
-                      (sheet-dialog :hotkeys rows :title "Important Hotkeys" :dismiss :hotkeys-dismiss)))
+                      (sheet-dialog :hotkeys rows :title "Important Hotkeys" :dismiss :hotkeys-dismiss
+                                    :theme (state-value snapshot :theme))))
             (cond ((equal command "terminal") (list (launch "foot")))
                   ((equal command "launcher") (list (launch "fuzzel")))
                   ((and (equal command "close") focused) (list (close-window focused)))
@@ -389,14 +391,15 @@
                nil))
       (t (values nil nil nil))))))
 
-(define-extension "config-error" (:reads (:config-error) :state nil) (snapshot hidden event)
+(define-extension "config-error" (:reads (:config-error :data) :state nil) (snapshot hidden event)
   (let* ((failure (context snapshot :config-error))
          (serial (getf failure :serial))
          (timer (and serial (intern (format nil "HIDE-~D" serial) :keyword)))
          (hidden (if (and timer (eq (getf event :type) :timer) (eq (getf event :name) timer)) serial hidden)))
     (values hidden
             (when (and serial (not (eql serial hidden)))
-              (cons (once timer 5000) (toast :config-error (getf failure :message) :urgent t)))
+              (cons (once timer 5000) (toast :config-error (getf failure :message) :urgent t
+                                               :theme (state-value snapshot :theme))))
             nil)))
 
 (defun screencast-request (snapshot event)
@@ -424,7 +427,7 @@
       (1 (first picks))
       (t (list :menu (nreverse items) (nreverse picks))))))
 
-(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :key :ui) :state nil)
+(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :key :ui :data) :state nil)
     (snapshot state event)
   (let ((queue (getf state :queue)) (selected (getf state :selected 0)) (commands nil))
     (flet ((answer (token pick) (push (screencast-answer token (first pick) (second pick)) commands)))
@@ -451,7 +454,8 @@
                 (menu-dialog :screencast (getf request :items) selected
                              :title (format nil "Share screen with ~A"
                                             (if (equal (getf request :app-id) "") "an application"
-                                                (getf request :app-id))))))
+                                                (getf request :app-id)))
+                             :theme (state-value snapshot :theme))))
             commands)))
 
 (defun wallpaper--pick (directory current)

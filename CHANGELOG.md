@@ -15,8 +15,8 @@ its Lua configs.
   Super-drag to move and resize, a hotkey sheet, exit confirmation,
   notification popups, screenshots to the clipboard, a wallpaper picker, a
   screencast portal, and X11 through xwayland-satellite started on the first
-  X11 connection. All of it uses the public API and can be replaced with
-  `--bare`.
+  X11 connection. Its dialogs and toasts take their colours from a published
+  `:theme`. All of it uses the public API and can be replaced with `--bare`.
 - **Examples.** Monocle, floating, deck columns, the zoomer canvas, tag
   workspaces, scratchpads, layer insets, a bar, service indicators, and five
   shader wallpapers (xmb, aurora, stars, towers, cubes).

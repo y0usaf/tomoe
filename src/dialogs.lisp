@@ -1,15 +1,16 @@
 (in-package #:tomoe)
 
-(defparameter +dialog-background+ "#1c1c21")
-(defparameter +dialog-text+ "#ffffff")
-(defparameter +dialog-accent+ "#7aa1f7")
-(defparameter +dialog-urgent+ "#bf2e38")
-(defparameter +dialog-chip+ "#45454f")
+(defparameter +dialog-theme+
+  '(:base "#1c1c21" :text "#ffffff" :accent "#7aa1f7" :error "#bf2e38" :surface1 "#45454f")
+  "The dialog colours when no theme is given.")
 
-(defun %dialog-box (padding gap children &key (align :center))
-  (ui :column :padding 4 :background +dialog-accent+
+(defun %dialog-color (key theme)
+  (theme key (or theme +dialog-theme+)))
+
+(defun %dialog-box (padding gap children &key (align :center) theme)
+  (ui :column :padding 4 :background (%dialog-color :accent theme)
       :children (list (ui :column :padding padding :gap gap :align align
-                          :background +dialog-background+ :children children))))
+                          :background (%dialog-color :base theme) :children children))))
 
 (defun %dialog-surface (name tree &key backdrop dismiss)
   "A full-output overlay centering TREE; clicks outside run DISMISS."
@@ -20,23 +21,23 @@
                  :anchors '(:top :right :bottom :left) :layer :overlay
                  :background "#00000000"))
 
-(defun confirm-dialog (name text &key (confirm :confirm) (cancel :cancel))
+(defun confirm-dialog (name text &key (confirm :confirm) (cancel :cancel) theme)
   "Effects for a modal confirm dialog: Enter runs CONFIRM, any other key or a
-click runs CANCEL."
+click runs CANCEL. THEME is a token plist or preset name, as the THEME function takes."
   (list (%dialog-surface
          name
-         (ui :column :padding 8 :background +dialog-urgent+
+         (ui :column :padding 8 :background (%dialog-color :error theme)
              :children
-             (list (ui :column :padding 32 :gap 12 :align :center :background +dialog-background+
+             (list (ui :column :padding 32 :gap 12 :align :center :background (%dialog-color :base theme)
                        :on-click cancel
                        :children
-                       (list (ui :text :text text :size 20 :color +dialog-text+)
+                       (list (ui :text :text text :size 20 :color (%dialog-color :text theme))
                              (ui :row :children
-                                 (list (ui :text :text "Press " :size 20 :color +dialog-text+)
-                                       (ui :text :text " Enter " :size 20 :color +dialog-text+
-                                           :background +dialog-chip+)
+                                 (list (ui :text :text "Press " :size 20 :color (%dialog-color :text theme))
+                                       (ui :text :text " Enter " :size 20 :color (%dialog-color :text theme)
+                                           :background (%dialog-color :surface1 theme))
                                        (ui :text :text " to confirm." :size 20
-                                           :color +dialog-text+)))))))
+                                           :color (%dialog-color :text theme))))))))
          :backdrop t :dismiss cancel)
         (keyboard-grab :otherwise cancel)
         (bind-key nil "Return" confirm)))
@@ -45,29 +46,29 @@ click runs CANCEL."
   (intern (format nil "~A-~D" (symbol-name select) index) :keyword))
 
 (defun menu-dialog (name items selected &key title (select :select) (cancel :cancel)
-                                            (up :up) (down :down) (hover :hover))
+                                            (up :up) (down :down) (hover :hover) theme)
   "Effects for a modal menu with SELECTED highlighted. Up/Down or k/j run UP and
 DOWN, hovering a row runs HOVER-<index>, Enter runs SELECT, a row click runs
-SELECT-<index>, Esc or a click outside runs CANCEL. MENU-CHOICE decodes them."
+SELECT-<index>, Esc or a click outside runs CANCEL. MENU-CHOICE decodes them.
+THEME is as for CONFIRM-DIALOG."
   (let ((rows (loop for item in items for index from 0
                     for chosen = (= index selected)
                     collect (ui :row :padding '(5 28 5 28)
-                                :background (when chosen +dialog-accent+)
+                                :background (when chosen (%dialog-color :accent theme))
                                 :on-click (%menu-command select index)
                                 :on-hover (%menu-command hover index)
                                 :children (list (ui :text :text item :size 18
-                                                    :color (if chosen +dialog-background+
-                                                               +dialog-text+)))))))
+                                                    :color (%dialog-color (if chosen :base :text) theme)))))))
     (list (%dialog-surface
            name
            (%dialog-box 0 8
                         (append (when title
                                   (list (ui :row :justify :center :padding '(28 28 11 28)
                                             :children (list (ui :text :text title :size 24
-                                                                :color +dialog-text+)))))
+                                                                :color (%dialog-color :text theme))))))
                                 rows
                                 (list (ui :rect :height 20)))
-                        :align :stretch)
+                        :align :stretch :theme theme)
            :backdrop t :dismiss cancel)
           (keyboard-grab)
           (bind-key nil "Up" up) (bind-key nil "k" up)
@@ -94,30 +95,36 @@ SELECT-<index>, Esc or a click outside runs CANCEL. MENU-CHOICE decodes them."
            (let ((index (parse-integer command :start (length prefix) :junk-allowed t)))
              (when (and index (< -1 index count)) (values :select index)))))))
 
-(defun sheet-dialog (name rows &key title (dismiss :dismiss))
-  "Effects for a key-chip sheet of (KEY LABEL) rows; any key or click runs DISMISS."
+(defun sheet-dialog (name rows &key title (dismiss :dismiss) theme)
+  "Effects for a key-chip sheet of (KEY LABEL) rows; any key or click runs DISMISS.
+THEME is as for CONFIRM-DIALOG."
   (let ((keys (ui :column :gap 8 :align :end
                   :children (loop for (key) in rows
                                   collect (ui :text :text (format nil " ~A " key) :size 17
-                                              :color +dialog-text+ :background +dialog-chip+))))
+                                              :color (%dialog-color :text theme)
+                                              :background (%dialog-color :surface1 theme)))))
         (names (ui :column :gap 8
                     :children (loop for (nil label) in rows
-                                    collect (ui :text :text label :size 17 :color +dialog-text+)))))
+                                    collect (ui :text :text label :size 17
+                                                :color (%dialog-color :text theme))))))
     (list (%dialog-surface
            name
            (%dialog-box 28 19
-                        (append (when title (list (ui :text :text title :size 24 :color +dialog-text+)))
-                                (list (ui :row :gap 20 :align :start :children (list keys names)))))
+                        (append (when title (list (ui :text :text title :size 24
+                                                      :color (%dialog-color :text theme))))
+                                (list (ui :row :gap 20 :align :start :children (list keys names))))
+                        :theme theme)
            :dismiss dismiss)
           (keyboard-grab :otherwise dismiss))))
 
-(defun toast (name text &key urgent)
-  "Effects for a toast stacked at the top center of every output."
+(defun toast (name text &key urgent theme)
+  "Effects for a toast stacked at the top center of every output. THEME is as for
+CONFIRM-DIALOG."
   (list (shell-surface name
-                       (ui :column :padding 4 :background (if urgent +dialog-urgent+ +dialog-accent+)
-                           :children (list (ui :column :padding 16 :background +dialog-background+
+                       (ui :column :padding 4 :background (%dialog-color (if urgent :error :accent) theme)
+                           :children (list (ui :column :padding 16 :background (%dialog-color :base theme)
                                                :children (list (ui :text :text text :size 17
-                                                                   :color +dialog-text+)))))
+                                                                   :color (%dialog-color :text theme))))))
                        :anchors '(:top) :margin '(24 0 0 0) :layer :overlay :stack :toast
                        :background "#00000000")))
 
