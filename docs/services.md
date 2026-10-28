@@ -21,9 +21,11 @@ against the latest facts on subsequent settlement.
 The shipped `notification-popups` extension renders ordinary shell surfaces
 on every output, at the top right with an eight-pixel margin. Cards use a
 summary (falling back to the app name), optional body, and an urgent background.
-It reserves no workarea and has no click handlers. Unmounting it releases its
-surfaces; remounting reads the retained notifications. An empty list creates
-no surfaces.
+Under a published `:theme` a card fills with `:base`, writes its summary in
+`:text` and its body in `:subtext0`, and an urgent card gets an `:error` frame
+instead; unmounting the publisher restores the cards' own colours. It reserves
+no workarea and has no click handlers. Unmounting it releases its surfaces;
+remounting reads the retained notifications. An empty list creates no surfaces.
 The preview shows at most two summary lines (256 characters) and eight body
 lines (512 characters). Its card limit accounts for output scale, total canvas
 space, and duplicated UI data. Full notification text remains in the service

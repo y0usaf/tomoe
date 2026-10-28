@@ -82,7 +82,8 @@ token plist or preset name read as the `theme` function reads it, so missing
 tokens come from `+theme+`; without one they keep their own colours. `:base`
 fills them, `:text` writes in them, `:accent` frames and highlights, `:error`
 frames urgent ones and `:surface1` backs key chips. The shipped exit confirmation, hotkey sheet, screencast picker and
-config-error toast pass whatever is published as `:theme`, so
+config-error toast pass whatever is published as `:theme`, as do the
+notification popups (see [services](services.md)), so
 `(publish-state :theme '(:base "#201f26" :text "#fffaf1" :accent "#6b50ff"))`
 from any owner recolours them, and unmounting it restores them.
 

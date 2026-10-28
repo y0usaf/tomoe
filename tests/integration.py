@@ -29,10 +29,10 @@ cli("unmount zoomer")
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
 
 
-def row(y):
+def row(y, x=0, width=screen["w"]):
     values = [int(v) for v in machine.succeed(
-        ENV + f"WAYLAND_DISPLAY=check grim -g '0,{y} {screen['w']}x1' -t ppm - | od -An -v -tu1"
-    ).split()][-3 * screen["w"]:]
+        ENV + f"WAYLAND_DISPLAY=check grim -g '{x},{y} {width}x1' -t ppm - | od -An -v -tu1"
+    ).split()][-3 * width:]
     return collections.Counter(zip(values[0::3], values[1::3], values[2::3]))
 
 
@@ -62,6 +62,30 @@ assert not (m := dialog("hotkeys", "hotkeys-dismiss", ["#203040", "#c06030"], ["
 assert not (m := dialog("quit", "exit-cancel", ["#203040", "#30a050"], ["#bf2e38"])), f"the exit confirmation ignores a published :theme: {m}"
 cli("unmount theme-probe")
 assert not (m := dialog("hotkeys", "hotkeys-dismiss", today, ["#203040", "#c06030"])), f"unmounting the :theme publisher left the hotkey sheet recoloured: {m}"
+
+
+def card(urgent, want, absent=()):
+    machine.succeed(ENV + f"notify-send -t 6000 {'-u critical ' if urgent else ''}check-summary check-body")
+    strip = lambda: row(screen["y"] + 13, screen["x"] + screen["w"] - 328, 320)
+    deadline = time.monotonic() + 5
+    while True:
+        seen = strip()
+        wrong = [c for c in want if not drawn(c, seen)] + [c for c in absent if drawn(c, seen)]
+        if not wrong or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    while drawn(want[0], strip()) and time.monotonic() < deadline + 15:
+        time.sleep(0.5)
+    return wrong and (wrong, ["#%02x%02x%02x %d" % (*c, n) for c, n in seen.most_common(6)])
+
+
+assert not (m := card(False, ["#1e1e2e"], ["#203040"])), f"a notification popup lost its own colours: {m}"
+assert not (m := card(True, ["#45222c"], ["#1e1e2e", "#203040"])), f"an urgent notification popup lost its own colours: {m}"
+cli(f"mount {THEME_PROBE}")
+assert not (m := card(False, ["#203040"], ["#1e1e2e", "#30a050"])), f"a notification popup ignores a published :theme: {m}"
+assert not (m := card(True, ["#203040", "#30a050"], ["#45222c"])), f"an urgent notification popup ignores a published :theme: {m}"
+cli("unmount theme-probe")
+assert not (m := card(False, ["#1e1e2e"], ["#203040"])), f"unmounting the :theme publisher left notification popups recoloured: {m}"
 
 
 def pixel(px, py):

@@ -494,10 +494,14 @@
           (when (eq (getf event :type) :screenshot)
             (list (clipboard-copy (getf event :path) "image/png" :delete t)))))
 
-(define-extension "notification-popups" (:reads (:services :outputs) :state nil)
+(defparameter +notification-theme+ '(:base "#1e1e2e" :text "#cdd6f4" :subtext0 "#a6adc8")
+  "The notification card colours when no :theme is published.")
+
+(define-extension "notification-popups" (:reads (:services :outputs :data) :state nil)
     (snapshot state event)
   (declare (ignore state event))
-  (let* ((service (service-state snapshot :notifications))
+  (let* ((published (state-value snapshot :theme))
+         (service (service-state snapshot :notifications))
          (notifications (and (getf service :available)
                              (getf service :notifications)))
          (outputs (context snapshot :outputs))
@@ -557,15 +561,20 @@
                (let* ((app (getf notification :app))
                       (summary (getf notification :summary))
                       (body (getf notification :body))
-                      (urgent (getf notification :urgent)))
+                      (urgent (getf notification :urgent))
+                      (palette (or published
+                                   (if urgent
+                                       (list* :base "#45222c" +notification-theme+)
+                                       +notification-theme+))))
                  (ui :column :width 320 :padding 10 :gap 4
-                     :background (if urgent "#45222c" "#1e1e2e")
+                     :background (theme :base palette)
+                     :border (if (and urgent published) 2 0) :border-color (theme :error palette)
                      :children
                      (append
                       (text-block (if (plusp (length summary)) summary app)
-                                  summary-lines 256 14 "#cdd6f4")
+                                  summary-lines 256 14 (theme :text palette))
                       (when (plusp (length body))
-                        (text-block body body-lines 512 12 "#a6adc8")))))))
+                        (text-block body body-lines 512 12 (theme :subtext0 palette))))))))
       (values nil
               (when (and (listp notifications) notifications (plusp card-limit))
                 (list
