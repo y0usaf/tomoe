@@ -77,22 +77,38 @@
         pkgs:
         let
           sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
-          xwayland-satellite = pkgs.xwayland-satellite.override {
-            xwayland =
-              (pkgs.xwayland.override {
-                bash = pkgs.bashNonInteractive;
-                openssl = pkgs.libmd;
-                libdecor = null;
-                libtirpc = null;
-                libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
-              }).overrideAttrs
-                (old: {
-                  mesonFlags = old.mesonFlags ++ [
-                    "-Dsha1=libmd"
-                    "-Dsecure-rpc=false"
-                  ];
-                });
-          };
+          xwayland-satellite =
+            (pkgs.xwayland-satellite.override {
+              xwayland =
+                (pkgs.xwayland.override {
+                  bash = pkgs.bashNonInteractive;
+                  openssl = pkgs.libmd;
+                  libdecor = null;
+                  libtirpc = null;
+                  libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
+                }).overrideAttrs
+                  (old: {
+                    mesonFlags = old.mesonFlags ++ [
+                      "-Dsha1=libmd"
+                      "-Dsecure-rpc=false"
+                    ];
+                  });
+            }).overrideAttrs
+              (
+                finalAttrs: _: {
+                  version = "0.8.3";
+                  src = pkgs.fetchFromGitHub {
+                    owner = "Supreeeme";
+                    repo = "xwayland-satellite";
+                    tag = "v${finalAttrs.version}";
+                    hash = "sha256-eFEjCCniMCKeWU0PcZNv+tDYe08SLFPjRplyPY8OFt4=";
+                  };
+                  cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                    inherit (finalAttrs) pname version src;
+                    hash = "sha256-gMGFvnbxM3hD5fmkSimaFd87GEf6BXFe/MGjoS6VNVU=";
+                  };
+                }
+              );
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
