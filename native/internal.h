@@ -530,6 +530,9 @@ struct named_input_config {
     char *name;
     struct input_config config;
 };
+struct screenshot_colors {
+    uint32_t accent, background, text, chip;
+};
 struct settings {
     struct input_config touchpad, mouse;
     struct named_input_config devices[64];
@@ -545,6 +548,7 @@ struct settings {
     int blur_passes, blur_margin;
     double blur_offset;
     bool screenshot_freeze;
+    struct screenshot_colors screenshot_colors;
     struct animation_config window_move, window_open;
     char *blur_namespaces[64];
     size_t blur_namespace_count;

@@ -494,6 +494,16 @@
           (when (eq (getf event :type) :screenshot)
             (list (clipboard-copy (getf event :path) "image/png" :delete t)))))
 
+(define-extension "screenshot-theme" (:reads (:data) :state nil) (snapshot state event)
+  (declare (ignore event))
+  (let ((published (state-value snapshot :theme)))
+    (values state
+            (when published
+              (list (settings :screenshot-colors
+                              (list :accent (theme :accent published) :background (theme :base published)
+                                    :text (theme :text published) :chip (theme :surface1 published)))))
+            nil)))
+
 (defparameter +notification-theme+ '(:base "#1e1e2e" :text "#cdd6f4" :subtext0 "#a6adc8")
   "The notification card colours when no :theme is published.")
 

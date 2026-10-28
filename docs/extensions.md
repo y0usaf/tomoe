@@ -614,6 +614,7 @@ are the `+settings+` table in `src/api.lisp`.
 | `:tearing` | off | Lets a window that asks for asynchronous presentation tear. |
 | `:nested-size` | 1280×800 | The window's size when Tomoe runs nested. |
 | `:screenshot-freeze` | on | Freezes the picture while you select a screenshot region. |
+| `:screenshot-colors` | the dialogs' | The region picker's `:accent` frames the selection and the hint (`#7aa1f7`); the hint's `:background` (`#1c1c21`), `:text` (`#ffffff`) and key `:chip` (`#45454f`, alpha ignored). The shipped `screenshot-theme` extension sets them from a published `:theme`. |
 | `:watchdog-ms` | 1000 | How long one extension may run on one event before it is stopped and its failure reported. |
 | `:wait-for-frame-completion` | off | Waits for each frame's GPU work before going on, for measuring frame cost. |
 | `:force-server-side-decorations` | off | Answers clients that ask to draw their own decorations with server-side mode. |

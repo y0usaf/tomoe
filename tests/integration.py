@@ -29,9 +29,9 @@ cli("unmount zoomer")
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
 
 
-def row(y, x=0, width=screen["w"]):
+def row(y, x=0, width=screen["w"], overlays=False):
     values = [int(v) for v in machine.succeed(
-        ENV + f"WAYLAND_DISPLAY=check grim -g '{x},{y} {width}x1' -t ppm - | od -An -v -tu1"
+        ENV + f"WAYLAND_DISPLAY=check grim {'-c ' if overlays else ''}-g '{x},{y} {width}x1' -t ppm - | od -An -v -tu1"
     ).split()][-3 * width:]
     return collections.Counter(zip(values[0::3], values[1::3], values[2::3]))
 
@@ -41,17 +41,21 @@ def drawn(color, seen):
     return any(all(abs(a - b) <= 2 for a, b in zip(want, pixel)) for pixel in seen)
 
 
-def dialog(opener, closer, want, absent=()):
-    cli(f"command commands {opener}")
-    deadline = time.monotonic() + 15
+def colours(sample, want, absent=(), seconds=15):
+    deadline = time.monotonic() + seconds
     while True:
-        seen = row(screen["y"] + screen["h"] // 2)
+        seen = sample()
         wrong = [c for c in want if not drawn(c, seen)] + [c for c in absent if drawn(c, seen)]
         if not wrong or time.monotonic() > deadline:
-            break
+            return wrong and (wrong, ["#%02x%02x%02x %d" % (*c, n) for c, n in seen.most_common(6)])
         time.sleep(0.5)
+
+
+def dialog(opener, closer, want, absent=()):
+    cli(f"command commands {opener}")
+    wrong = colours(lambda: row(screen["y"] + screen["h"] // 2), want, absent)
     cli(f"event '(:type :key :owner \"commands\" :command \"{closer}\" :state :pressed)'")
-    return wrong and (wrong, ["#%02x%02x%02x %d" % (*c, n) for c, n in seen.most_common(6)])
+    return wrong
 
 
 today = ["#1c1c21", "#7aa1f7"]
@@ -67,16 +71,11 @@ assert not (m := dialog("hotkeys", "hotkeys-dismiss", today, ["#203040", "#c0603
 def card(urgent, want, absent=()):
     machine.succeed(ENV + f"notify-send -t 6000 {'-u critical ' if urgent else ''}check-summary check-body")
     strip = lambda: row(screen["y"] + 13, screen["x"] + screen["w"] - 328, 320)
-    deadline = time.monotonic() + 5
-    while True:
-        seen = strip()
-        wrong = [c for c in want if not drawn(c, seen)] + [c for c in absent if drawn(c, seen)]
-        if not wrong or time.monotonic() > deadline:
-            break
+    wrong = colours(strip, want, absent, 5)
+    deadline = time.monotonic() + 15
+    while drawn(want[0], strip()) and time.monotonic() < deadline:
         time.sleep(0.5)
-    while drawn(want[0], strip()) and time.monotonic() < deadline + 15:
-        time.sleep(0.5)
-    return wrong and (wrong, ["#%02x%02x%02x %d" % (*c, n) for c, n in seen.most_common(6)])
+    return wrong
 
 
 assert not (m := card(False, ["#1e1e2e"], ["#203040"])), f"a notification popup lost its own colours: {m}"
@@ -109,15 +108,27 @@ cli("unmount blur-probe")
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
 x, y, w, h = box["x"], box["y"], box["w"], box["h"]
 middle, corner = (x + w // 2, y + h // 2), (x + w // 8, y + h // 8)
+hint = lambda: row(screen["y"] + screen["h"] - 40, overlays=True)
+themed = ["#203040", "#c06030"]
 cli(f"mount {SCREENSHOT_PROBE}")
+cli(f"mount {THEME_PROBE}")
 cli("command screenshot-probe select")
 assert all(shaded(pixel(*middle), 0.6) for _ in range(4)), "the screenshot overlay does not dim the output"
+assert not (m := colours(hint, themed, today)), f"the screenshot hint ignores a published :theme: {m}"
+cli("unmount theme-probe")
+assert not (m := colours(hint, today, themed)), f"unmounting the :theme publisher left the open screenshot hint recoloured: {m}"
+cli(f"mount {THEME_PROBE}")
+assert not (m := colours(hint, themed, today)), f"the open screenshot hint kept its colours when a :theme was published: {m}"
 machine.succeed(
     ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --mode drag --size {screen['w']}x{screen['h']} "
     f"--drag {x + w // 4},{y + h // 4},{x + 3 * w // 4},{y + 3 * h // 4}"
 )
 assert all(shaded(pixel(*middle), 1) for _ in range(4)), "the screenshot selection is still dimmed"
 assert shaded(pixel(*corner), 0.6), "outside the screenshot selection is not dimmed"
+edge = lambda: row(y + h // 2, x + w // 4 - 3, 5, True)
+assert not (m := colours(edge, ["#c06030"], ["#7aa1f7"])), f"the screenshot selection frame ignores a published :theme: {m}"
+cli("unmount theme-probe")
+assert not (m := colours(edge, ["#7aa1f7"], ["#c06030"])), f"unmounting the :theme publisher left the selection frame recoloured: {m}"
 
 client("flood", "--mode xdg --app-id check-flood --commit-rate 1000")
 cli(f"mount {OFFSCREEN_PROBE}")

@@ -14,6 +14,10 @@ static const struct setting_field {
     { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
     { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
     { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
+    { "screenshot-colors-accent", offsetof(struct settings, screenshot_colors.accent), SETTING_COLOR },
+    { "screenshot-colors-background", offsetof(struct settings, screenshot_colors.background), SETTING_COLOR },
+    { "screenshot-colors-text", offsetof(struct settings, screenshot_colors.text), SETTING_COLOR },
+    { "screenshot-colors-chip", offsetof(struct settings, screenshot_colors.chip), SETTING_COLOR },
 #define ANIMATION_FIELDS(prefix, member) \
     { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
@@ -47,6 +51,8 @@ void settings_default(struct settings *settings) {
         .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
         .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3,
         .blur_passes = 3, .blur_offset = 1, .blur_margin = 96, .screenshot_freeze = true,
+        .screenshot_colors = { .accent = 0x7aa1f7ff, .background = 0x1c1c21ff, .text = 0xffffffff,
+            .chip = 0x45454fff },
         .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 800,
             .epsilon = 0.0001 },
         .window_open = { .kind = ANIMATION_EASE, .duration_ms = 150, .curve = 3 } };

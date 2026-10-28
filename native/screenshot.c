@@ -10,10 +10,14 @@ struct screenshot {
     struct buffer *frozen;
     struct texture *frozen_texture, *hint;
     bool hint_selected;
+    struct screenshot_colors hint_colors;
 };
 
-static const float accent[4] = { 0.48f, 0.63f, 0.97f, 1 };
 static const float backdrop[4] = { 0, 0, 0, 0.4f };
+
+static void unpack(uint32_t rgba, float color[4]) {
+    for (int i = 0; i < 4; i++) color[i] = (rgba >> (24 - 8 * i) & 0xff) / 255.0f;
+}
 
 static void screenshot_close(struct tomoe *s) {
     struct screenshot *shot = s->screenshot;
@@ -159,11 +163,20 @@ void screenshot_motion(struct tomoe *s) {
 }
 
 static struct texture *hint_texture(struct tomoe *s, bool selected) {
-    const char *markup = selected ?
-        "<span background='#45454f'> Enter </span> / <span background='#45454f'> Space </span>"
-        " capture    Drag to reselect    <span background='#45454f'> Esc </span> cancel" :
-        "Drag to select    <span background='#45454f'> Space </span> whole screen    "
-        "<span background='#45454f'> Esc </span> cancel";
+    const struct screenshot_colors *colors = &s->settings.screenshot_colors;
+    char chip[8], markup[320];
+    snprintf(chip, sizeof chip, "#%06x", colors->chip >> 8);
+    if (selected)
+        snprintf(markup, sizeof markup, "<span background='%s'> Enter </span> / <span background='%s'>"
+            " Space </span> capture    Drag to reselect    <span background='%s'> Esc </span> cancel",
+            chip, chip, chip);
+    else
+        snprintf(markup, sizeof markup, "Drag to select    <span background='%s'> Space </span>"
+            " whole screen    <span background='%s'> Esc </span> cancel", chip, chip);
+    float frame[4], fill[4], ink[4];
+    unpack(colors->accent, frame);
+    unpack(colors->background, fill);
+    unpack(colors->text, ink);
     cairo_surface_t *probe = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
     cairo_t *cairo = cairo_create(probe);
     PangoLayout *layout = pango_cairo_create_layout(cairo);
@@ -179,12 +192,12 @@ static struct texture *hint_texture(struct tomoe *s, bool selected) {
     int width = text_width + 2 * (border + padding), height = text_height + 2 * (border + padding);
     cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
     cairo_t *draw = cairo_create(surface);
-    cairo_set_source_rgba(draw, accent[0], accent[1], accent[2], 1);
+    cairo_set_source_rgba(draw, frame[0], frame[1], frame[2], frame[3]);
     cairo_paint(draw);
-    cairo_set_source_rgba(draw, 0.11, 0.11, 0.13, 1);
+    cairo_set_source_rgba(draw, fill[0], fill[1], fill[2], fill[3]);
     cairo_rectangle(draw, border, border, width - 2 * border, height - 2 * border);
     cairo_fill(draw);
-    cairo_set_source_rgba(draw, 1, 1, 1, 1);
+    cairo_set_source_rgba(draw, ink[0], ink[1], ink[2], ink[3]);
     cairo_move_to(draw, border + padding, border + padding);
     pango_cairo_update_layout(draw, layout);
     pango_cairo_show_layout(draw, layout);
@@ -220,6 +233,8 @@ void screenshot_render(struct output *o, struct frame *f) {
     struct screenshot *shot = s->screenshot;
     if (!shot || shot->output != o) return;
     int w = f->width, h = f->height;
+    float accent[4];
+    unpack(s->settings.screenshot_colors.accent, accent);
     if (shot->selected) {
         struct box sel = selection(shot);
         int x1 = sel.x + sel.width, y1 = sel.y + sel.height;
@@ -237,10 +252,12 @@ void screenshot_render(struct output *o, struct frame *f) {
     } else {
         rect(f, (struct box){ 0, 0, w, h }, backdrop);
     }
-    if (!shot->hint || shot->hint_selected != shot->selected) {
+    if (!shot->hint || shot->hint_selected != shot->selected ||
+        memcmp(&shot->hint_colors, &s->settings.screenshot_colors, sizeof shot->hint_colors)) {
         if (shot->hint) texture_destroy(shot->hint);
         shot->hint = hint_texture(s, shot->selected);
         shot->hint_selected = shot->selected;
+        shot->hint_colors = s->settings.screenshot_colors;
     }
     if (!shot->hint) return;
     struct box box = { (w - (int)shot->hint->width) / 2,
