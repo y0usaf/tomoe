@@ -425,27 +425,32 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
     } else if (frozen) {
     } else if (plan) {
+        /* Shell layer L draws beneath presentation band ui_band[L]: background
+         * and bottom under the next layer band, top under client overlays. */
+        static const int ui_band[] = { 1, 2, 5 };
         int layer = 0;
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
-            for (; layer < 2 && root->band > layer; layer++) ui_render(o, data, plan, layer);
+            for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
             if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
             decorate(o->server, &target, data);
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
         }
-        for (; layer < 2; layer++) ui_render(o, data, plan, layer);
+        for (; layer < 3; layer++) ui_render(o, data, plan, layer);
         render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
     } else {
         struct node *child;
         wl_list_for_each(child, &o->server->scene->children, link) {
+            if (child == o->server->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
+                ui_render(o, data, NULL, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
             render_walk(o->server, child, NULL, 0, 0, data);
             for (int layer = 0; layer < 2; layer++)
                 if (child == o->server->layer_tree[layer]) ui_render(o, data, NULL, layer);
         }
     }
-    for (int layer = 2; !locked && !frozen && layer < 4; layer++) ui_render(o, data, plan, layer);
+    if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
     if (!locked && cursors) screenshot_render(o, data);
     if (cursors) render_cursor(o, data, plan);
 }
@@ -684,8 +689,10 @@ uint32_t physical_hit_test(struct tomoe *s, double x, double y,
 bool scene_covers(struct tomoe *s, double x, double y, int layer) {
     struct hit_data hit = { .x = x, .y = y };
     struct node *child;
+    struct node *floor = layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP
+        ? s->fullscreen_tree : s->layer_tree[layer];
     wl_list_for_each_reverse(child, &s->scene->children, link) {
-        if (child == s->layer_tree[layer]) return false;
+        if (child == floor) return false;
         if (walk_scene(s, child, NULL, 0, 0, true, hit_leaf, &hit)) return true;
     }
     return false;

@@ -905,7 +905,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
         double left = surface->x + surface->offset_x, top = surface->y + surface->offset_y;
         if (x < left || y < top || x >= left + surface->width ||
                 y >= top + surface->height) continue;
-        bool below = surface->layer < 2;
+        bool below = surface->layer < ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
         if (below && scene_covers(s, x, y, surface->layer)) return false;
         double local_x = x - left, local_y = y - top;
         for (size_t hit_index = surface->hit_count; hit_index > 0; hit_index--) {
