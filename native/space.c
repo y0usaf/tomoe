@@ -425,8 +425,6 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         walk_scene(o->server, o->server->lock_tree, NULL, 0, 0, false, render_leaf, data);
     } else if (frozen) {
     } else if (plan) {
-        /* Shell layer L draws beneath presentation band ui_band[L]: background
-         * and bottom under the next layer band, top under client overlays. */
         static const int ui_band[] = { 1, 2, 5 };
         int layer = 0;
         for (size_t i = 0; i < plan->target_count; i++) {
