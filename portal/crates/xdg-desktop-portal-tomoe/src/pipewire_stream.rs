@@ -467,7 +467,6 @@ fn run(
             _ => None,
         };
         if let Some(e) = failure {
-            // A dead connection stays readable, so returning here would spin.
             tracing::error!("wayland connection: {e}");
             state.end("its Wayland connection failed");
             mainloop_for_io.quit();
