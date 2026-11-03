@@ -831,7 +831,7 @@ struct tomoe {
     struct ui_asset_pool *ui_assets;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
-    struct wl_list copy_frames, capture_sessions;
+    struct wl_list copy_frames, capture_sessions, cursor_sessions;
     struct wl_list relative_pointers;
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;
@@ -1056,6 +1056,7 @@ bool capture_wants_cursorless(struct output *o);
 void capture_serve(struct output *o, struct buffer *committed, bool scanout);
 void capture_output_gone(struct tomoe *s, struct output *o);
 void capture_window_gone(struct tomoe *s, uint32_t id);
+void capture_cursor_update(struct tomoe *s);
 void finish_output_capture(struct output *o);
 void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);

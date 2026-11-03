@@ -229,6 +229,21 @@ struct session {
     int width, height;
     uint32_t format;
     struct image_frame *frame;
+    struct cursor_session *cursor;
+};
+
+struct cursor_session {
+    struct wl_resource *resource;
+    struct wl_list link;
+    struct tomoe *server;
+    struct source source;
+    struct session *capture;
+    bool requested, entered, served;
+    int x, y, hotspot_x, hotspot_y, width, height;
+    enum wl_output_transform transform;
+    uint64_t served_generation;
+    int served_hotspot_x, served_hotspot_y, served_width, served_height;
+    enum wl_output_transform served_transform;
 };
 
 struct image_frame {
@@ -345,6 +360,76 @@ static bool buffer_fits(struct tomoe *s, struct session *session, struct buffer 
     return stride == (size_t)buffer->width * 4;
 }
 
+static bool render_cursor_image(struct tomoe *s, struct buffer *target,
+        enum wl_output_transform transform) {
+    struct texture *texture = s->cursor_image.texture;
+    if (!texture) return false;
+    struct dmabuf_attributes dmabuf;
+    struct buffer *canvas = target, *scratch = NULL;
+    if (!buffer_get_dmabuf(target, &dmabuf)) {
+        const struct format *format = format_set_get(render_formats(s->renderer),
+            DRM_FORMAT_ARGB8888);
+        scratch = format ? render_allocate(s->renderer, target->width, target->height, format) :
+            NULL;
+        if (!scratch) return false;
+        canvas = scratch;
+    }
+    struct box box = { 0, 0, canvas->width, canvas->height };
+    struct pass *pass = render_begin(s->renderer, canvas, NULL, 0);
+    bool ok = false;
+    if (pass) {
+        pass_add_rect(pass, &(struct rect_options){ .box = box, .blend_mode = BLEND_NONE });
+        pass_add_texture(pass, &(struct texture_options){ .texture = texture, .dst_box = box,
+            .transform = transform, .blend_mode = BLEND_NONE });
+        ok = pass_submit(pass);
+    }
+    if (ok && scratch) ok = blit(s, target, scratch, box);
+    if (scratch) buffer_drop(scratch);
+    return ok;
+}
+
+static void frame_ready(struct image_frame *frame, enum wl_output_transform transform,
+        int width, int height, const struct timespec *now) {
+    ext_image_copy_capture_frame_v1_send_transform(frame->resource, transform);
+    ext_image_copy_capture_frame_v1_send_damage(frame->resource, 0, 0, width, height);
+    ext_image_copy_capture_frame_v1_send_presentation_time(frame->resource,
+        (uint32_t)((uint64_t)now->tv_sec >> 32), (uint32_t)now->tv_sec, (uint32_t)now->tv_nsec);
+    ext_image_copy_capture_frame_v1_send_ready(frame->resource);
+    buffer_unlock(frame->buffer);
+    frame->buffer = NULL;
+    frame->capturing = false;
+}
+
+static void serve_cursor(struct session *session) {
+    struct image_frame *frame = session->frame;
+    struct cursor_session *cursor = session->cursor;
+    struct tomoe *s = session->server;
+    if (!frame || !frame->capturing || !cursor || !cursor->entered) return;
+    if (cursor->served && cursor->served_generation == s->cursor_generation &&
+            cursor->served_hotspot_x == cursor->hotspot_x &&
+            cursor->served_hotspot_y == cursor->hotspot_y &&
+            cursor->served_width == session->width && cursor->served_height == session->height &&
+            cursor->served_transform == cursor->transform) return;
+    if (!buffer_fits(s, session, frame->buffer)) {
+        image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
+        return;
+    }
+    if (!render_cursor_image(s, frame->buffer, cursor->transform)) {
+        image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+        return;
+    }
+    cursor->served = true;
+    cursor->served_generation = s->cursor_generation;
+    cursor->served_hotspot_x = cursor->hotspot_x;
+    cursor->served_hotspot_y = cursor->hotspot_y;
+    cursor->served_width = session->width;
+    cursor->served_height = session->height;
+    cursor->served_transform = cursor->transform;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    frame_ready(frame, cursor->transform, session->width, session->height, &now);
+}
+
 static void image_frame_capture(struct wl_client *client, struct wl_resource *resource) {
     struct image_frame *frame = wl_resource_get_user_data(resource);
     if (frame->capturing) {
@@ -361,6 +446,10 @@ static void image_frame_capture(struct wl_client *client, struct wl_resource *re
     struct session *session = frame->session;
     if (!session || wl_list_empty(&session->link)) {
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
+        return;
+    }
+    if (session->cursor) {
+        serve_cursor(session);
         return;
     }
     struct output *o = source_output(session->server, &session->source);
@@ -426,14 +515,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
         return;
     }
-    ext_image_copy_capture_frame_v1_send_transform(frame->resource, transform);
-    ext_image_copy_capture_frame_v1_send_damage(frame->resource, 0, 0, width, height);
-    ext_image_copy_capture_frame_v1_send_presentation_time(frame->resource,
-        (uint32_t)((uint64_t)now->tv_sec >> 32), (uint32_t)now->tv_sec, (uint32_t)now->tv_nsec);
-    ext_image_copy_capture_frame_v1_send_ready(frame->resource);
-    buffer_unlock(frame->buffer);
-    frame->buffer = NULL;
-    frame->capturing = false;
+    frame_ready(frame, transform, width, height, now);
     if (session->source.kind == SOURCE_WINDOW) window_frame_done(s, (uint32_t)session->source.id, now);
 }
 
@@ -441,6 +523,7 @@ static void session_resource_destroy(struct wl_resource *resource) {
     struct session *session = wl_resource_get_user_data(resource);
     if (!session) return;
     if (session->frame) session->frame->session = NULL;
+    if (session->cursor) session->cursor->capture = NULL;
     wl_list_remove(&session->link);
     free(session);
 }
@@ -515,10 +598,107 @@ static void create_session(struct wl_client *client, struct wl_resource *manager
     session_constraints(s, session);
 }
 
+static void cursor_update(struct cursor_session *cursor) {
+    struct tomoe *s = cursor->server;
+    struct output *o = source_output(s, &cursor->source);
+    const struct cursor_image *image = &s->cursor_image;
+    bool entered = false;
+    int x = 0, y = 0, hotspot_x = 0, hotspot_y = 0, width = 0, height = 0;
+    enum wl_output_transform transform = WL_OUTPUT_TRANSFORM_NORMAL;
+    if (o && image->texture && !s->cursor_hidden) {
+        double ratio = snapped_scale(o->screen->scale) / image->scale;
+        int display_width = pixel_round(image->texture->width * ratio);
+        int display_height = pixel_round(image->texture->height * ratio);
+        int display_hotspot_x = pixel_round(image->hotspot_x * ratio);
+        int display_hotspot_y = pixel_round(image->hotspot_y * ratio);
+        x = pixel_round(s->pointer_x - o->x);
+        y = pixel_round(s->pointer_y - o->y);
+        struct box area, overlap, shown = { x - display_hotspot_x, y - display_hotspot_y,
+            display_width, display_height };
+        physical_output_box(o, &area);
+        area.x = area.y = 0;
+        entered = display_width > 0 && display_height > 0 &&
+            box_intersection(&overlap, &shown, &area);
+        transform = o->screen->transform;
+        struct box hotspot;
+        box_transform(&hotspot, &(struct box){ display_hotspot_x, display_hotspot_y, 0, 0 },
+            transform_invert(transform), display_width, display_height);
+        hotspot_x = hotspot.x;
+        hotspot_y = hotspot.y;
+        width = display_width;
+        height = display_height;
+        transform_coords(transform, &width, &height);
+    }
+    struct wl_resource *resource = cursor->resource;
+    if (!entered) {
+        if (cursor->entered) ext_image_copy_capture_cursor_session_v1_send_leave(resource);
+        cursor->entered = false;
+        return;
+    }
+    bool enter = !cursor->entered;
+    if (enter) ext_image_copy_capture_cursor_session_v1_send_enter(resource);
+    if (enter || x != cursor->x || y != cursor->y)
+        ext_image_copy_capture_cursor_session_v1_send_position(resource, x, y);
+    if (enter || hotspot_x != cursor->hotspot_x || hotspot_y != cursor->hotspot_y)
+        ext_image_copy_capture_cursor_session_v1_send_hotspot(resource, hotspot_x, hotspot_y);
+    cursor->entered = true;
+    cursor->x = x;
+    cursor->y = y;
+    cursor->hotspot_x = hotspot_x;
+    cursor->hotspot_y = hotspot_y;
+    cursor->width = width;
+    cursor->height = height;
+    cursor->transform = transform;
+    struct session *session = cursor->capture;
+    if (!session || wl_list_empty(&session->link)) return;
+    if (session->width != width || session->height != height) {
+        session->width = width;
+        session->height = height;
+        session_constraints(s, session);
+    }
+    serve_cursor(session);
+}
+
 static void cursor_session_capture(struct wl_client *client, struct wl_resource *resource,
         uint32_t id) {
-    struct wl_resource *session = session_resource(client, id);
-    if (session) ext_image_copy_capture_session_v1_send_stopped(session);
+    struct cursor_session *cursor = wl_resource_get_user_data(resource);
+    if (cursor && cursor->requested) {
+        wl_resource_post_error(resource,
+            EXT_IMAGE_COPY_CAPTURE_CURSOR_SESSION_V1_ERROR_DUPLICATE_SESSION,
+            "capture session already requested");
+        return;
+    }
+    struct wl_resource *capture_resource = session_resource(client, id);
+    if (!capture_resource) return;
+    struct session *session = cursor && source_output(cursor->server, &cursor->source) ?
+        calloc(1, sizeof(*session)) : NULL;
+    if (!session) {
+        ext_image_copy_capture_session_v1_send_stopped(capture_resource);
+        return;
+    }
+    cursor->requested = true;
+    cursor->capture = session;
+    session->resource = capture_resource;
+    session->server = cursor->server;
+    session->source = cursor->source;
+    session->cursor = cursor;
+    session->width = cursor->width > 0 ? cursor->width : 1;
+    session->height = cursor->height > 0 ? cursor->height : 1;
+    session->format = DRM_FORMAT_ARGB8888;
+    wl_resource_set_user_data(capture_resource, session);
+    wl_list_insert(&cursor->server->capture_sessions, &session->link);
+    session_constraints(cursor->server, session);
+}
+
+static void cursor_session_resource_destroy(struct wl_resource *resource) {
+    struct cursor_session *cursor = wl_resource_get_user_data(resource);
+    if (!cursor) return;
+    if (cursor->capture) {
+        cursor->capture->cursor = NULL;
+        if (!wl_list_empty(&cursor->capture->link)) session_stop(cursor->capture);
+    }
+    wl_list_remove(&cursor->link);
+    free(cursor);
 }
 
 static void cursor_session_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -531,14 +711,24 @@ static const struct ext_image_copy_capture_cursor_session_v1_interface cursor_se
 };
 
 static void create_cursor_session(struct wl_client *client, struct wl_resource *manager,
-        uint32_t id, struct wl_resource *source, struct wl_resource *pointer) {
+        uint32_t id, struct wl_resource *source_resource, struct wl_resource *pointer) {
+    struct tomoe *s = wl_resource_get_user_data(manager);
     struct wl_resource *resource = wl_resource_create(client,
         &ext_image_copy_capture_cursor_session_v1_interface, 1, id);
-    if (!resource) {
+    struct cursor_session *cursor = resource ? calloc(1, sizeof(*cursor)) : NULL;
+    if (!cursor) {
+        if (resource) wl_resource_destroy(resource);
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &cursor_session_impl, NULL, NULL);
+    struct source *source = wl_resource_get_user_data(source_resource);
+    cursor->resource = resource;
+    cursor->server = s;
+    if (source) cursor->source = *source;
+    wl_resource_set_implementation(resource, &cursor_session_impl, cursor,
+        cursor_session_resource_destroy);
+    wl_list_insert(&s->cursor_sessions, &cursor->link);
+    cursor_update(cursor);
 }
 
 static void resource_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -642,7 +832,8 @@ bool capture_wants_cursorless(struct output *o) {
     struct session *session;
     wl_list_for_each(session, &o->server->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id &&
-                session->frame && session->frame->capturing && !session->cursors) return true;
+                !session->cursor && session->frame && session->frame->capturing &&
+                !session->cursors) return true;
     return false;
 }
 
@@ -652,8 +843,8 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     struct session *session, *next_session;
     wl_list_for_each_safe(session, next_session, &s->capture_sessions, link)
-        if (session->source.kind == SOURCE_WINDOW ||
-                (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id))
+        if (!session->cursor && (session->source.kind == SOURCE_WINDOW ||
+                (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)))
             serve_session(s, session, o, committed, scanout, &now);
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link) {
@@ -685,6 +876,18 @@ void capture_output_gone(struct tomoe *s, struct output *o) {
     wl_list_for_each_safe(session, next_session, &s->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)
             session_stop(session);
+    struct cursor_session *cursor;
+    wl_list_for_each(cursor, &s->cursor_sessions, link)
+        if (cursor->source.kind == SOURCE_OUTPUT && cursor->source.id == o->id &&
+                cursor->entered) {
+            ext_image_copy_capture_cursor_session_v1_send_leave(cursor->resource);
+            cursor->entered = false;
+        }
+}
+
+void capture_cursor_update(struct tomoe *s) {
+    struct cursor_session *cursor;
+    wl_list_for_each(cursor, &s->cursor_sessions, link) cursor_update(cursor);
 }
 
 void capture_window_gone(struct tomoe *s, uint32_t id) {

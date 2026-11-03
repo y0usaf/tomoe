@@ -706,6 +706,7 @@ void pointer_sync_cursors(struct tomoe *s) {
         }
     }
     if (s->cursor_surface) surface_set_scale(s->cursor_surface, scale);
+    capture_cursor_update(s);
 }
 
 static void clamp_pointer(struct tomoe *s, struct screen *mapped, double *x, double *y) {

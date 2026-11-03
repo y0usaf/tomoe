@@ -455,6 +455,7 @@ void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hots
     image->scale = scale > 0 ? scale : 1;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) cursor_update(o->screen);
+    capture_cursor_update(s);
 }
 
 void cursor_finish(struct tomoe *s) {
