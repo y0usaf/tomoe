@@ -414,7 +414,7 @@ bool fenced(struct screen *output) {
     return render_has_timeline(output->server->renderer) && output->kind == SCREEN_DRM;
 }
 static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
-        bool locked, bool cursors) {
+        bool locked, bool cursors, bool chrome) {
     struct pass *pass = data->pass;
     pass_add_rect(pass, &(struct rect_options){
         .box = { .width = data->buffer->width, .height = data->buffer->height },
@@ -449,7 +449,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         }
     }
     if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
-    if (!locked && cursors) screenshot_render(o, data);
+    if (!locked && chrome) screenshot_render(o, data);
     if (cursors) render_cursor(o, data, plan);
 }
 static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
@@ -463,7 +463,7 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     struct frame record = *data;
     record.pass = render_record(o->server->renderer, data->buffer, &now);
     if (!record.pass) return false;
-    draw_scene(o, &record, NULL, locked, true);
+    draw_scene(o, &record, NULL, locked, true, true);
     bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
     oplist_finish(&o->ops);
     o->ops = now;
@@ -505,7 +505,7 @@ static int64_t region_area(const pixman_region32_t *region) {
 }
 static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
-        bool cursors, bool track) {
+        bool cursors, bool chrome, bool track) {
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct timeline *signal = NULL;
@@ -545,7 +545,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     if (partial) pass_clip(pass, &clip);
     if (track) o->drawn.pixels = partial ? region_area(&clip) :
         (int64_t)buffer->width * buffer->height;
-    draw_scene(o, &data, plan, locked, cursors);
+    draw_scene(o, &data, plan, locked, cursors, chrome);
     if (highlight) pass_add_rect(pass, &(struct rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
@@ -566,7 +566,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
 
 bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
-    return render_scene_buffer(o, buffer, &state, NULL, false, false);
+    return render_scene_buffer(o, buffer, &state, NULL, false, false, false);
 }
 
 bool render_presentation(struct output *o, struct screen_state *state,
@@ -589,12 +589,12 @@ bool render_presentation(struct output *o, struct screen_state *state,
             pointer_sync_cursors(o->server);
         }
     }
-    bool success = render_scene_buffer(o, buffer, state, plan, true, track);
+    bool success = render_scene_buffer(o, buffer, state, plan, true, true, track);
     uint64_t render_point = o->server->render_point;
     if (success) {
         if (capture_wants_cursorless(o)) {
             struct buffer *capture = ring_create(o->server, ring);
-            if (capture && render_scene_buffer(o, capture, state, plan, false, false)) {
+            if (capture && render_scene_buffer(o, capture, state, plan, false, true, false)) {
                 o->capture_buffer = buffer_lock(capture);
             }
             buffer_drop(capture);
