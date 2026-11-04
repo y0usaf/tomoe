@@ -64,6 +64,10 @@ struct connector {
     uint32_t cursor_fb[2];
     int cursor_front, cursor_x, cursor_y;
     bool cursor_on, cursor_committed;
+    drmModeModeInfo wake_target, wake_light;
+    bool waking, wake_due, dark, relight;
+    uint64_t edid_sum;
+    struct wl_event_source *wake_timer;
     struct wl_list link;
 };
 
@@ -73,6 +77,7 @@ struct kms {
     dev_t devnum;
     bool atomic, async_atomic, modifiers;
     uint64_t cursor_width, cursor_height;
+    unsigned wake_ms;
     struct wl_event_source *source, *monitor_source;
     struct udev *udev;
     struct udev_monitor *monitor;
@@ -163,6 +168,15 @@ static int32_t refresh_mhz(const drmModeModeInfo *mode) {
     if (mode->flags & DRM_MODE_FLAG_DBLSCAN) refresh /= 2;
     if (mode->vscan > 1) refresh /= mode->vscan;
     return (int32_t)refresh;
+}
+
+static void mode_text(char *out, size_t size, const drmModeModeInfo *mode) {
+    int32_t refresh = refresh_mhz(mode);
+    snprintf(out, size, "%ux%u@%d.%03d Hz (%u kHz, h %u %u %u %u, v %u %u %u %u, flags 0x%x, "
+        "type 0x%x%s)", mode->hdisplay, mode->vdisplay, refresh / 1000, refresh % 1000, mode->clock,
+        mode->hdisplay, mode->hsync_start, mode->hsync_end, mode->htotal, mode->vdisplay,
+        mode->vsync_start, mode->vsync_end, mode->vtotal, mode->flags, mode->type,
+        (mode->type & DRM_MODE_TYPE_PREFERRED) ? ", preferred" : "");
 }
 
 static char *edid_string(const uint8_t *text) {
@@ -274,7 +288,7 @@ static struct crtc *pick_crtc(struct connector *c) {
 static bool mode_for(struct connector *c, const struct screen_state *state, drmModeModeInfo *out) {
     if (!(state->committed & SCREEN_MODE)) {
         if (c->crtc && c->crtc->active) {
-            *out = c->crtc->mode;
+            *out = c->waking ? c->wake_target : c->crtc->mode;
             return true;
         }
         if (!c->screen.current_mode) return false;
@@ -332,9 +346,13 @@ static uint32_t ctm_blob(struct kms *kms, const struct profile *profile) {
     return blob;
 }
 
+static FILE *trace;
+
 static void add(drmModeAtomicReq *req, uint32_t object, const struct props *props, int prop,
         uint64_t value) {
-    if (props->id[prop]) drmModeAtomicAddProperty(req, object, props->id[prop], value);
+    if (!props->id[prop]) return;
+    drmModeAtomicAddProperty(req, object, props->id[prop], value);
+    if (trace) fprintf(trace, " %u.%s=%llu", object, prop_names[prop], (unsigned long long)value);
 }
 
 static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc, uint32_t fb,
@@ -353,10 +371,10 @@ static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc,
 
 struct plan {
     struct crtc *crtc;
-    drmModeModeInfo mode;
+    drmModeModeInfo mode, target;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob, fb;
     int fence;
-    bool enable, modeset, gamma, profile;
+    bool enable, modeset, gamma, profile, wake;
 };
 
 static int drm_event(int fd, uint32_t mask, void *data);
@@ -371,10 +389,105 @@ static void drain_flips(struct kms *kms, struct screen_update *updates, size_t c
     }
 }
 
-static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t count, bool test) {
-    if (!test) drain_flips(kms, updates, count);
+static bool sink_lit(struct connector *c) {
+    struct props connector = {0}, crtc = {0};
+    props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &connector);
+    if (!connector.value[PROP_CRTC_ID]) return false;
+    props_read(c->kms->fd, (uint32_t)connector.value[PROP_CRTC_ID], DRM_MODE_OBJECT_CRTC, &crtc);
+    return crtc.value[PROP_ACTIVE] != 0;
+}
+
+static void wake_arm(struct connector *c, unsigned ms) {
+    if (c->wake_timer) wl_event_source_timer_update(c->wake_timer, (int)ms);
+}
+
+static int wake_fire(void *data) {
+    struct connector *c = data;
+    if (!c->waking) return 0;
+    c->wake_due = true;
+    screen_schedule_frame(&c->screen);
+    return 0;
+}
+
+static uint64_t edid_sum(int fd, const struct props *props) {
+    drmModePropertyBlobRes *blob = props->value[PROP_EDID] ?
+        drmModeGetPropertyBlob(fd, (uint32_t)props->value[PROP_EDID]) : NULL;
+    if (!blob) return 0;
+    uint64_t sum = 14695981039346656037ULL ^ blob->length;
+    for (uint32_t i = 0; i < blob->length; i++)
+        sum = (sum ^ ((const uint8_t *)blob->data)[i]) * 1099511628211ULL;
+    drmModeFreePropertyBlob(blob);
+    return sum;
+}
+
+static const char *link_status(const struct props *props) {
+    if (!props->id[PROP_LINK_STATUS]) return "absent";
+    return props->value[PROP_LINK_STATUS] == DRM_MODE_LINK_STATUS_GOOD ? "good" : "bad";
+}
+
+static bool probe_sink(struct connector *c) {
+    drmModeConnector *info = drmModeGetConnector(c->kms->fd, c->id);
+    props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
+    const drmModeModeInfo *light = info && info->count_modes ? &info->modes[0] : NULL;
+    for (int i = 0; info && i < info->count_modes; i++) {
+        if (!(info->modes[i].type & DRM_MODE_TYPE_PREFERRED)) continue;
+        light = &info->modes[i];
+        break;
+    }
+    char mode[192] = "none";
+    if (light) {
+        c->wake_light = *light;
+        mode_text(mode, sizeof(mode), light);
+    }
+    tomoe_log(LOG_INFO, "tomoe: kms %s probed before lighting: %s, %d modes, preferred %s, "
+        "link-status %s", c->screen.name, !info ? "unreadable" :
+        info->connection == DRM_MODE_CONNECTED ? "connected" : "not connected",
+        info ? info->count_modes : 0, mode, link_status(&c->props));
+    drmModeFreeConnector(info);
+    return light != NULL;
+}
+
+static void probe_dark(struct screen_update *updates, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        struct connector *c = wl_container_of(updates[i].output, c, screen);
+        c->dark = enabled_after(c, &updates[i].base) && !c->waking &&
+            (c->relight || (!c->crtc && !sink_lit(c))) && probe_sink(c);
+    }
+}
+
+static void log_kernel_state(struct connector *c, const char *label) {
+    struct props connector = {0}, crtc = {0};
+    props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &connector);
+    drmModeConnector *info = drmModeGetConnectorCurrent(c->kms->fd, c->id);
+    const char *connection = !info ? "unreadable" : info->connection == DRM_MODE_CONNECTED ?
+        "connected" : info->connection == DRM_MODE_DISCONNECTED ? "disconnected" : "unknown";
+    drmModeFreeConnector(info);
+    uint32_t crtc_id = (uint32_t)connector.value[PROP_CRTC_ID];
+    char mode[192] = "none";
+    if (crtc_id) {
+        props_read(c->kms->fd, crtc_id, DRM_MODE_OBJECT_CRTC, &crtc);
+        drmModePropertyBlobRes *blob = crtc.value[PROP_MODE_ID] ?
+            drmModeGetPropertyBlob(c->kms->fd, (uint32_t)crtc.value[PROP_MODE_ID]) : NULL;
+        if (blob && blob->length >= sizeof(drmModeModeInfo)) mode_text(mode, sizeof(mode), blob->data);
+        drmModeFreePropertyBlob(blob);
+    }
+    tomoe_log(LOG_INFO, "tomoe: kms %s %s: %s, EDID blob %llu, link-status %s, CRTC_ID %u, "
+        "ACTIVE %llu, VRR_ENABLED %llu, GAMMA_LUT %llu, DEGAMMA_LUT %llu, CTM %llu, mode %s",
+        c->screen.name, label, connection, (unsigned long long)connector.value[PROP_EDID],
+        link_status(&connector), crtc_id, (unsigned long long)crtc.value[PROP_ACTIVE],
+        (unsigned long long)crtc.value[PROP_VRR_ENABLED],
+        (unsigned long long)crtc.value[PROP_GAMMA_LUT],
+        (unsigned long long)crtc.value[PROP_DEGAMMA_LUT], (unsigned long long)crtc.value[PROP_CTM],
+        mode);
+}
+
+static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t count, bool test,
+        bool wake, bool *woke) {
     struct plan *plans = calloc(count, sizeof(*plans));
     drmModeAtomicReq *req = drmModeAtomicAlloc();
+    char *text = NULL;
+    size_t text_size = 0;
+    trace = log_verbosity >= LOG_INFO ? open_memstream(&text, &text_size) : NULL;
     bool ok = plans && req, modeset = false, flip = false, tearing = false;
     for (size_t i = 0; i < count; i++) plans[i].fence = -1;
     for (size_t i = 0; ok && i < count; i++) {
@@ -386,6 +499,7 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
             if (!c->crtc) continue;
             p->crtc = c->crtc;
             modeset = true;
+            if (trace) fprintf(trace, "\n  %s off, crtc %u:", c->screen.name, c->crtc->id);
             add(req, c->id, &c->props, PROP_CRTC_ID, 0);
             add(req, c->crtc->id, &c->crtc->props, PROP_ACTIVE, 0);
             add(req, c->crtc->id, &c->crtc->props, PROP_MODE_ID, 0);
@@ -396,24 +510,54 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         p->crtc = pick_crtc(c);
         ok = p->crtc && mode_for(c, state, &p->mode);
         if (!ok) break;
-        p->modeset = !p->crtc->active || p->crtc->owner != c ||
-            memcmp(&p->mode, &p->crtc->mode, sizeof(p->mode));
-        modeset |= p->modeset;
         struct buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->queued ?
             c->queued : c->current;
         p->fb = buffer ? fb_for(kms, buffer) : 0;
         ok = p->fb != 0;
         if (!ok) break;
+        if (wake) {
+            const drmModeModeInfo *light = NULL;
+            if (c->waking && !c->wake_due && p->crtc->active &&
+                    p->crtc->mode.hdisplay <= buffer->width && p->crtc->mode.vdisplay <= buffer->height)
+                light = &p->crtc->mode;
+            else if (!c->waking && c->dark && kms->wake_ms && c->wake_timer &&
+                    memcmp(&c->wake_light, &p->mode, sizeof(p->mode)) &&
+                    c->wake_light.hdisplay <= buffer->width &&
+                    c->wake_light.vdisplay <= buffer->height)
+                light = &c->wake_light;
+            if (light) {
+                p->wake = *woke = true;
+                p->target = p->mode;
+                p->mode = *light;
+            }
+        }
+        p->modeset = c->relight || !p->crtc->active || p->crtc->owner != c ||
+            memcmp(&p->mode, &p->crtc->mode, sizeof(p->mode));
+        modeset |= p->modeset;
         flip |= (state->committed & SCREEN_BUFFER) != 0;
         tearing |= state->tearing_page_flip;
+        if (trace) {
+            char mode[192];
+            mode_text(mode, sizeof(mode), &p->mode);
+            fprintf(trace, "\n  %s %s, crtc %u, mode %s, fb %u from a %dx%d buffer", c->screen.name,
+                p->modeset ? "modeset" : "flip", p->crtc->id, mode, p->fb, buffer->width,
+                buffer->height);
+            if (p->wake) {
+                mode_text(mode, sizeof(mode), &p->target);
+                fprintf(trace, " cropped, lighting the sink before %s", mode);
+            }
+            fputc(':', trace);
+        }
         if (p->modeset) {
             ok = !drmModeCreatePropertyBlob(kms->fd, &p->mode, sizeof(p->mode), &p->mode_blob);
             add(req, c->id, &c->props, PROP_CRTC_ID, p->crtc->id);
             add(req, p->crtc->id, &p->crtc->props, PROP_MODE_ID, p->mode_blob);
             add(req, p->crtc->id, &p->crtc->props, PROP_ACTIVE, 1);
+            add(req, c->id, &c->props, PROP_LINK_STATUS, DRM_MODE_LINK_STATUS_GOOD);
         }
         plane_set(req, p->crtc->primary, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
-            p->mode.vdisplay, buffer->width, buffer->height);
+            p->mode.vdisplay, p->wake ? p->mode.hdisplay : buffer->width,
+            p->wake ? p->mode.vdisplay : buffer->height);
         p->fence = sync_file(state);
         if (p->fence >= 0)
             add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
@@ -456,7 +600,16 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         flags |= DRM_MODE_PAGE_FLIP_ASYNC;
     }
     if (modeset && !test) flags &= ~DRM_MODE_ATOMIC_NONBLOCK;
-    ok = ok && drmModeAtomicCommit(kms->fd, req, flags, kms) == 0;
+    int ret = ok ? drmModeAtomicCommit(kms->fd, req, flags, kms) : 0;
+    ok = ok && ret == 0;
+    if (trace) {
+        fclose(trace);
+        trace = NULL;
+        if (text && modeset && (!test || !ok))
+            tomoe_log(LOG_INFO, "tomoe: kms %s commit, flags 0x%x:%s\n  %s", test ? "test" : "real",
+                flags, text, ok ? "accepted" : ret ? strerror(-ret) : "not submitted");
+        free(text);
+    }
     for (size_t i = 0; plans && i < count; i++) {
         struct plan *p = &plans[i];
         if (p->fence >= 0) close(p->fence);
@@ -481,16 +634,33 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
             buffer_unlock(c->current);
             c->queued = c->current = NULL;
             c->flip_pending = false;
+            c->waking = c->wake_due = c->relight = false;
+            wake_arm(c, 0);
             continue;
         }
         c->crtc = p->crtc;
         p->crtc->owner = c;
         p->crtc->active = true;
+        c->relight = c->dark = false;
         if (p->modeset) {
             if (p->crtc->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->mode_blob);
             p->crtc->mode_blob = p->mode_blob;
             p->crtc->mode = p->mode;
         }
+        if (p->wake && !c->waking) {
+            char lit[192], target[192];
+            mode_text(lit, sizeof(lit), &p->mode);
+            mode_text(target, sizeof(target), &p->target);
+            tomoe_log(LOG_INFO, "tomoe: kms %s was dark; lit at its preferred %s, %s in %u ms",
+                c->screen.name, lit, target, kms->wake_ms);
+            c->wake_due = false;
+            wake_arm(c, kms->wake_ms);
+        } else if (!p->wake && c->waking) {
+            c->wake_due = false;
+            wake_arm(c, 0);
+        }
+        c->waking = p->wake;
+        if (p->wake) c->wake_target = p->target;
         if (p->gamma) {
             if (p->crtc->gamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->gamma_blob);
             p->crtc->gamma_blob = p->gamma_blob;
@@ -509,9 +679,26 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         }
         c->cursor_committed = c->cursor_on;
     }
+    for (size_t i = 0; ok && !test && modeset && log_verbosity >= LOG_INFO && i < count; i++) {
+        struct connector *c = wl_container_of(updates[i].output, c, screen);
+        if (plans[i].modeset || (!plans[i].enable && plans[i].crtc)) log_kernel_state(c, "kernel state");
+    }
     if (req) drmModeAtomicFree(req);
     free(plans);
     return ok;
+}
+
+static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t count, bool test) {
+    if (!test) {
+        drain_flips(kms, updates, count);
+        probe_dark(updates, count);
+    }
+    bool woke = false;
+    bool ok = atomic_try(kms, updates, count, test, !test, &woke);
+    if (ok || !woke) return ok;
+    tomoe_log(LOG_INFO, "tomoe: kms lighting a dark sink at its preferred mode failed; "
+        "setting the requested mode directly");
+    return atomic_try(kms, updates, count, test, false, &woke);
 }
 
 static void wait_fence(int fd) {
@@ -695,6 +882,7 @@ static void connector_move_cursor(struct screen *screen, int x, int y) {
 static void connector_destroy(struct screen *screen) {
     struct connector *c = wl_container_of(screen, c, screen);
     c->present_pending = false;
+    if (c->wake_timer) wl_event_source_remove(c->wake_timer);
     if (c->crtc) {
         c->crtc->owner = NULL;
         c->crtc->active = false;
@@ -782,6 +970,8 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
         free(c);
         return;
     }
+    c->wake_timer = wl_event_loop_add_timer(wl_display_get_event_loop(kms->server->display),
+        wake_fire, c);
     char name[64];
     const char *type = drmModeGetConnectorTypeName(info->connector_type);
     snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
@@ -800,6 +990,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
         drmModeGetPropertyBlob(kms->fd, (uint32_t)c->props.value[PROP_EDID]) : NULL;
     if (edid) parse_edid(&c->screen, edid->data, edid->length);
     drmModeFreePropertyBlob(edid);
+    c->edid_sum = edid_sum(kms->fd, &c->props);
     screen_describe(&c->screen);
     add_modes(c, info);
     struct screen_mode *preferred = screen_preferred_mode(&c->screen);
@@ -810,6 +1001,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     }
     wl_list_insert(kms->connectors.prev, &c->link);
     tomoe_log(LOG_INFO, "tomoe: connector %s (%s)", c->screen.name, c->screen.description);
+    if (log_verbosity >= LOG_INFO) log_kernel_state(c, "state before Tomoe");
     output_added(kms->server, &c->screen);
 }
 
@@ -821,7 +1013,21 @@ static void scan_connectors(struct kms *kms) {
         drmModeConnector *info = drmModeGetConnector(kms->fd, c->id);
         bool gone = !info || info->connection != DRM_MODE_CONNECTED;
         drmModeFreeConnector(info);
-        if (gone) screen_destroy(&c->screen);
+        if (!gone) props_read(kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
+        uint64_t sum = gone ? 0 : edid_sum(kms->fd, &c->props);
+        if (sum && sum != c->edid_sum)
+            tomoe_log(LOG_INFO, "tomoe: kms %s reports a different EDID; adding it again",
+                c->screen.name);
+        if (gone || (sum && sum != c->edid_sum)) {
+            screen_destroy(&c->screen);
+            continue;
+        }
+        if (!c->crtc || !c->props.id[PROP_LINK_STATUS] ||
+                c->props.value[PROP_LINK_STATUS] != DRM_MODE_LINK_STATUS_BAD) continue;
+        tomoe_log(LOG_INFO, "tomoe: kms %s link-status bad; lighting it again", c->screen.name);
+        c->relight = true;
+        c->screen.frame_pending = false;
+        screen_schedule_frame(&c->screen);
     }
     for (int i = 0; i < res->count_connectors; i++) {
         if (connector_find(kms, res->connectors[i])) continue;
@@ -890,6 +1096,8 @@ int kms_create(struct tomoe *s) {
     kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
     kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;
     kms->cursor_height = drmGetCap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) == 0 && cap ? cap : 64;
+    const char *wake = getenv("TOMOE_DRM_WAKE_MS");
+    kms->wake_ms = wake && *wake ? (unsigned)strtoul(wake, NULL, 10) : 5000;
     if (!read_resources(kms)) {
         tomoe_log(LOG_ERROR, "tomoe: DRM resources unavailable");
         return -1;
@@ -904,9 +1112,9 @@ int kms_create(struct tomoe *s) {
         kms->monitor_source = wl_event_loop_add_fd(loop, udev_monitor_get_fd(kms->monitor),
             WL_EVENT_READABLE, udev_event, kms);
     }
-    tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s",
-        kms->atomic ? "atomic" : "legacy", kms->modifiers ? "yes" : "no",
-        kms->async_atomic ? "yes" : "no");
+    tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s, dark sinks lit at their "
+        "preferred mode for %u ms", kms->atomic ? "atomic" : "legacy",
+        kms->modifiers ? "yes" : "no", kms->async_atomic ? "yes" : "no", kms->wake_ms);
     return kms->fd;
 }
 

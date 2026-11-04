@@ -97,6 +97,20 @@ let
               (list (run-once :probe "printf %s \"$DBUS_SESSION_BUS_ADDRESS\" > /run/bus-probe"))
               nil))
   '';
+  wakeProbe = pkgs.writeText "wake-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "wake-probe" (:reads (:key) :state '(:dark nil)) (snapshot state event)
+      (declare (ignore snapshot))
+      (let* ((command (and (eq (getf event :type) :key) (equal (getf event :owner) "wake-probe")
+                           (getf event :command)))
+             (dark (cond ((equal command "dark") t)
+                         ((equal command "light") nil)
+                         (t (getf state :dark)))))
+        (values (list :dark dark)
+                (list (configure-output "Virtual-1" :mode '(1920 1080 60) :disabled dark))
+                (cond ((equal command "off") (list (output-power :off "Virtual-1")))
+                      ((equal command "on") (list (output-power :on "Virtual-1")))))))
+  '';
   checkWith =
     extra: name: script:
     pkgs.testers.runNixOSTest {
@@ -179,5 +193,11 @@ in
       )
     ''
     + builtins.readFile ./clean-unmount.py
+  );
+  kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
+    ''
+      WAKE_PROBE = "${wakeProbe}"
+    ''
+    + builtins.readFile ./kms-wake.py
   );
 }
