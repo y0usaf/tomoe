@@ -1109,7 +1109,7 @@ uint32_t render_read_format(struct render *renderer) {
 
 static int open_render_node(int backend_fd) {
     char *name = backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
-    if (backend_fd < 0) {
+    if (!name) {
         drmDevicePtr devices[64];
         int count = drmGetDevices2(0, devices, 64);
         for (int i = 0; i < count; i++)
