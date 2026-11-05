@@ -69,6 +69,8 @@ struct bo {
     struct dmabuf_attributes dmabuf;
 };
 
+static const struct buffer_impl bo_impl;
+
 static const char vertex_source[] =
     "attribute vec2 pos;\n"
     "attribute vec2 local;\n"
@@ -623,7 +625,7 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
     current(r);
     bool fresh = !image->tex;
     if (fresh) glGenTextures(1, &image->tex);
-    if (fresh || !image->external) {
+    if (fresh || (!image->external && buffer->impl != &bo_impl)) {
         glBindTexture(t->target, image->tex);
         glTexParameteri(t->target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(t->target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
