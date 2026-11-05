@@ -3,10 +3,15 @@
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
 
+#define BLUR_CHAINS 8
+#define BLUR_IDLE_NS 1000000000LL
+
 struct level { GLuint texture, framebuffer; int width, height; };
 
+struct chain { struct level levels[32]; int width, height; int64_t used; };
+
 struct effects {
-    struct level levels[32];
+    struct chain chains[BLUR_CHAINS];
     struct level backdrop;
 };
 
@@ -162,6 +167,38 @@ static bool level_ensure(struct level *level, int width, int height) {
     return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 }
 
+static void level_release(struct level *level) {
+    glDeleteFramebuffers(1, &level->framebuffer);
+    glDeleteTextures(1, &level->texture);
+    *level = (struct level){0};
+}
+
+static void chain_release(struct chain *chain) {
+    for (size_t i = 0; i < sizeof(chain->levels) / sizeof(chain->levels[0]); i++)
+        if (chain->levels[i].texture) level_release(&chain->levels[i]);
+    *chain = (struct chain){0};
+}
+
+static struct chain *chain_for(struct effects *e, int width, int height) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+    struct chain *found = NULL, *oldest = NULL;
+    for (size_t i = 0; i < BLUR_CHAINS; i++) {
+        struct chain *chain = &e->chains[i];
+        if (chain->used && chain->width == width && chain->height == height) found = chain;
+        else if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
+        if (!oldest || chain->used < oldest->used) oldest = chain;
+    }
+    if (!found) {
+        found = oldest;
+        found->width = width;
+        found->height = height;
+    }
+    found->used = now;
+    return found;
+}
+
 static void sample_pass(struct program *p, struct level *from, struct level *to, double offset) {
     static const float full[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
     static const float coords[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
@@ -208,21 +245,22 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
             !pass_touches(f->pass, reach))
         return;
     if (passes > 31) passes = 31;
-    bool ok = level_ensure(&e->levels[0], grown.width, grown.height);
+    struct level *levels = chain_for(e, grown.width, grown.height)->levels;
+    bool ok = level_ensure(&levels[0], grown.width, grown.height);
     for (int i = 1; ok && i <= passes; i++)
-        ok = level_ensure(&e->levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
+        ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
             grown.height >> i > 0 ? grown.height >> i : 1);
     GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
     if (ok) {
         glBindFramebuffer(GL_FRAMEBUFFER, target);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, e->levels[0].texture);
+        glBindTexture(GL_TEXTURE_2D, levels[0].texture);
         glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, grown.x, grown.y, grown.width, grown.height);
         glDisable(GL_BLEND);
         for (int i = 1; i <= passes; i++)
-            sample_pass(program(f, PROGRAM_DOWN), &e->levels[i - 1], &e->levels[i], offset);
+            sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
         for (int i = passes - 1; i >= 0; i--)
-            sample_pass(program(f, PROGRAM_UP), &e->levels[i + 1], &e->levels[i], offset);
+            sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     glViewport(0, 0, f->buffer->width, f->buffer->height);
@@ -240,7 +278,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         texcoords[2 * i + 1] = (by - grown.y) / grown.height;
     }
     glUseProgram(p->id);
-    glBindTexture(GL_TEXTURE_2D, e->levels[0].texture);
+    glBindTexture(GL_TEXTURE_2D, levels[0].texture);
     glUniform1i(p->tex, 0);
     glUniform1f(p->alpha, alpha < 1 ? alpha : 1);
     glUniform1f(p->opaque, 1);
