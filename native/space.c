@@ -463,9 +463,13 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     struct oplist now = {0};
     struct frame record = *data;
     record.pass = render_record(o->server->renderer, data->buffer, &now);
-    if (!record.pass) return false;
+    if (!record.pass) {
+        o->damaged = true;
+        return false;
+    }
     draw_scene(o, &record, NULL, locked, true, true);
     bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
+    if (!complete || pixman_region32_not_empty(changed)) o->damaged = true;
     oplist_finish(&o->ops);
     o->ops = now;
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);

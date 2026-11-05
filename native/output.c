@@ -1051,6 +1051,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
             scanout = NULL;
         }
     }
+    if (scanout || o->scanout) o->damaged = true;
     if (scanout != o->scanout)
         tomoe_log(LOG_DEBUG, "tomoe: output %s direct scanout %s", o->screen->name,
             scanout ? "engaged" : "disengaged");

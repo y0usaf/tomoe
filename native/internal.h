@@ -438,6 +438,7 @@ struct output {
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
+    bool damaged;
     struct wl_event_source *tick;
     double tick_at;
     struct oplist ops;
@@ -832,7 +833,7 @@ struct tomoe {
     struct ui_asset_pool *ui_assets;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
-    struct wl_list copy_frames, capture_sessions, cursor_sessions;
+    struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;
     struct wl_list relative_pointers;
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;

@@ -69,6 +69,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wl_list_init(&s->virtual_pointers);
     wl_list_init(&s->background_effects);
     wl_list_init(&s->copy_frames);
+    wl_list_init(&s->copy_damage);
     wl_list_init(&s->capture_sessions);
     wl_list_init(&s->cursor_sessions);
     wl_list_init(&s->idle_notifications);

@@ -7,6 +7,13 @@
 #include "ext-image-copy-capture-v1-protocol.h"
 #include "wlr-screencopy-unstable-v1-protocol.h"
 
+struct copy_damage {
+    struct wl_list link;
+    struct wl_resource *manager;
+    uint64_t output;
+    bool damaged;
+};
+
 struct copy_frame {
     struct wl_resource *resource;
     struct wl_list link;
@@ -15,6 +22,7 @@ struct copy_frame {
     uint32_t shm_format, dmabuf_format;
     bool cursor, damage, cursor_locked;
     struct buffer *buffer;
+    struct copy_damage *since;
 };
 
 static const struct zwlr_screencopy_frame_v1_interface frame_impl;
@@ -87,7 +95,7 @@ static void frame_request(struct wl_resource *resource, struct wl_resource *buff
         screen_lock_software_cursors(frame->output, true);
         frame->cursor_locked = true;
     }
-    if (!damage) screen_schedule_frame(frame->output);
+    if (!damage || !frame->since || frame->since->damaged) screen_schedule_frame(frame->output);
 }
 
 static void frame_copy(struct wl_client *client, struct wl_resource *resource,
@@ -144,6 +152,14 @@ static void capture(struct wl_client *client, struct wl_resource *manager, uint3
     frame->shm_format = render_read_format(s->renderer);
     frame->dmabuf_format = o->ring.format.len ? o->ring.format.formats[0].format :
         DRM_FORMAT_XRGB8888;
+    struct copy_damage *since;
+    wl_list_for_each(since, &s->copy_damage, link)
+        if (since->manager == manager && since->output == o->id) frame->since = since;
+    if (!frame->since && (frame->since = calloc(1, sizeof(*frame->since)))) {
+        *frame->since = (struct copy_damage){ .manager = manager, .output = o->id,
+            .damaged = true };
+        wl_list_insert(&s->copy_damage, &frame->since->link);
+    }
     wl_resource_set_user_data(resource, frame);
     wl_list_insert(&s->copy_frames, &frame->link);
     zwlr_screencopy_frame_v1_send_buffer(resource,
@@ -177,6 +193,19 @@ static const struct zwlr_screencopy_manager_v1_interface manager_impl = {
     .destroy = manager_destroy,
 };
 
+static void manager_resource_destroy(struct wl_resource *resource) {
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    struct copy_damage *since, *next;
+    wl_list_for_each_safe(since, next, &s->copy_damage, link) {
+        if (since->manager != resource) continue;
+        struct copy_frame *frame;
+        wl_list_for_each(frame, &s->copy_frames, link)
+            if (frame->since == since) frame->since = NULL;
+        wl_list_remove(&since->link);
+        free(since);
+    }
+}
+
 static void bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
     struct wl_resource *resource = wl_resource_create(client,
         &zwlr_screencopy_manager_v1_interface, version, id);
@@ -184,7 +213,7 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &manager_impl, data, NULL);
+    wl_resource_set_implementation(resource, &manager_impl, data, manager_resource_destroy);
 }
 
 static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
@@ -233,7 +262,7 @@ struct session {
     struct wl_list link;
     struct tomoe *server;
     struct source source;
-    bool cursors;
+    bool cursors, damaged;
     int width, height;
     uint32_t format;
     struct image_frame *frame;
@@ -467,6 +496,9 @@ static void serve_cursor(struct session *session) {
     frame_ready(frame, cursor->transform, session->width, session->height, &now);
 }
 
+static void serve_session(struct tomoe *s, struct session *session, struct output *o,
+        struct buffer *committed, bool scanout, const struct timespec *now);
+
 static void image_frame_capture(struct wl_client *client, struct wl_resource *resource) {
     struct image_frame *frame = wl_resource_get_user_data(resource);
     if (frame->capturing) {
@@ -490,8 +522,15 @@ static void image_frame_capture(struct wl_client *client, struct wl_resource *re
         return;
     }
     struct output *o = source_output(session->server, &session->source);
-    if (o) screen_schedule_frame(o->screen);
-    else schedule_scene(session->server);
+    if (!o) {
+        schedule_scene(session->server);
+    } else if (session->damaged && session->cursors && !o->scanout && o->presented[0]) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        serve_session(session->server, session, o, o->presented[0], false, &now);
+    } else if (session->damaged || o->damaged) {
+        screen_schedule_frame(o->screen);
+    }
 }
 
 static void image_frame_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -516,8 +555,10 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         session->width = width;
         session->height = height;
         session->format = format;
+        session->damaged = true;
         session_constraints(s, session);
     }
+    if (session->source.kind == SOURCE_OUTPUT && !session->damaged) return;
     if (!buffer_fits(s, session, frame->buffer)) {
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
         return;
@@ -534,6 +575,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         transform = o->screen->transform;
         int fence;
         ok = blit(s, frame->buffer, source, box, &fence);
+        if (ok) session->damaged = false;
         if (ok && fence >= 0 && copy_later(s, frame, fence, transform, now)) return;
     } else {
         struct dmabuf_attributes dmabuf;
@@ -634,6 +676,7 @@ static void create_session(struct wl_client *client, struct wl_resource *manager
     session->server = s;
     session->source = *source;
     session->cursors = options & EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS;
+    session->damaged = true;
     wl_resource_set_user_data(resource, session);
     wl_list_insert(&s->capture_sessions, &session->link);
     session_constraints(s, session);
@@ -866,15 +909,20 @@ bool capture_listen(struct tomoe *s) {
             1, s, bind_window_sources);
 }
 
+static bool copy_due(const struct copy_frame *frame, const struct output *o) {
+    return !frame->damage || !frame->since || frame->since->damaged || o->damaged;
+}
+
 bool capture_wants_cursorless(struct output *o) {
     struct copy_frame *frame;
     wl_list_for_each(frame, &o->server->copy_frames, link)
-        if (frame->output == o->screen && frame->buffer && !frame->cursor) return true;
+        if (frame->output == o->screen && frame->buffer && !frame->cursor &&
+                copy_due(frame, o)) return true;
     struct session *session;
     wl_list_for_each(session, &o->server->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id &&
                 !session->cursor && session->frame && session->frame->capturing &&
-                !session->frame->copying &&
+                !session->frame->copying && (session->damaged || o->damaged) &&
                 !session->cursors) return true;
     return false;
 }
@@ -884,13 +932,22 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     struct session *session, *next_session;
+    if (o->damaged) {
+        wl_list_for_each(session, &s->capture_sessions, link)
+            if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)
+                session->damaged = true;
+        struct copy_damage *since;
+        wl_list_for_each(since, &s->copy_damage, link)
+            if (since->output == o->id) since->damaged = true;
+        o->damaged = false;
+    }
     wl_list_for_each_safe(session, next_session, &s->capture_sessions, link)
         if (!session->cursor && (session->source.kind == SOURCE_WINDOW ||
                 (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)))
             serve_session(s, session, o, committed, scanout, &now);
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link) {
-        if (frame->output != o->screen || !frame->buffer) continue;
+        if (frame->output != o->screen || !frame->buffer || !copy_due(frame, o)) continue;
         struct buffer *source = frame->cursor || scanout ? committed : o->capture_buffer;
         if (!source) {
             screen_schedule_frame(o->screen);
@@ -906,6 +963,7 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
                 frame->box.width, frame->box.height);
         zwlr_screencopy_frame_v1_send_ready(frame->resource, (uint32_t)((uint64_t)now.tv_sec >> 32),
             (uint32_t)now.tv_sec, (uint32_t)now.tv_nsec);
+        if (frame->since) frame->since->damaged = false;
         frame_finish(frame);
     }
 }
@@ -914,6 +972,14 @@ void capture_output_gone(struct tomoe *s, struct output *o) {
     struct copy_frame *frame, *next;
     wl_list_for_each_safe(frame, next, &s->copy_frames, link)
         if (frame->output == o->screen) frame_fail(frame);
+    struct copy_damage *since, *next_since;
+    wl_list_for_each_safe(since, next_since, &s->copy_damage, link) {
+        if (since->output != o->id) continue;
+        wl_list_for_each(frame, &s->copy_frames, link)
+            if (frame->since == since) frame->since = NULL;
+        wl_list_remove(&since->link);
+        free(since);
+    }
     struct session *session, *next_session;
     wl_list_for_each_safe(session, next_session, &s->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id)
