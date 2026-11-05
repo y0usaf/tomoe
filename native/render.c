@@ -5,6 +5,7 @@
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
+#include <poll.h>
 #include <unistd.h>
 #include <xf86drm.h>
 
@@ -753,6 +754,15 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     glBindTexture(t->target, 0);
 }
 
+static int flush_fence(struct render *r) {
+    EGLint attribs[] = { EGL_NONE };
+    EGLSyncKHR sync = r->create_sync(r->display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+    glFlush();
+    int fd = sync != EGL_NO_SYNC_KHR ? r->dup_fence(r->display, sync) : -1;
+    if (sync != EGL_NO_SYNC_KHR) r->destroy_sync(r->display, sync);
+    return fd;
+}
+
 bool pass_submit(struct pass *pass) {
     struct render *r = pass->r;
     if (pass->record) {
@@ -764,17 +774,19 @@ bool pass_submit(struct pass *pass) {
     current(r);
     bool ok = true;
     if (pass->signal) {
-        EGLint attribs[] = { EGL_NONE };
-        EGLSyncKHR sync = r->create_sync(r->display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
-        glFlush();
-        int fd = sync != EGL_NO_SYNC_KHR ? r->dup_fence(r->display, sync) : -1;
-        if (sync != EGL_NO_SYNC_KHR) r->destroy_sync(r->display, sync);
+        int fd = flush_fence(r);
         ok = fd >= 0 && timeline_import_sync_file(pass->signal, pass->point, fd);
         if (fd >= 0) close(fd);
         if (!ok) tomoe_log(LOG_ERROR, "tomoe: render fence export failed");
         timeline_unref(pass->signal);
     } else {
-        glFinish();
+        int fd = r->dup_fence ? flush_fence(r) : -1;
+        if (fd >= 0) {
+            poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
+            close(fd);
+        } else {
+            glFinish();
+        }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
