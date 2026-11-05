@@ -203,6 +203,7 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
 void pass_add_texture(struct pass *pass, const struct texture_options *options);
 void pass_add_rect(struct pass *pass, const struct rect_options *options);
 bool pass_submit(struct pass *pass);
+int pass_submit_fence(struct pass *pass);
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list);
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
     struct box reach, const double *params, size_t count);

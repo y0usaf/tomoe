@@ -1,6 +1,8 @@
 #include "internal.h"
 #include <drm_fourcc.h>
+#include <poll.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "ext-image-capture-source-v1-protocol.h"
 #include "ext-image-copy-capture-v1-protocol.h"
 #include "wlr-screencopy-unstable-v1-protocol.h"
@@ -186,7 +188,8 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
-        struct box box) {
+        struct box box, int *fence) {
+    if (fence) *fence = -1;
     struct texture *texture = texture_from_buffer(s->renderer, source);
     if (!texture) return false;
     struct dmabuf_attributes dmabuf;
@@ -201,7 +204,12 @@ static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
                 .texture = texture, .src_box = { box.x, box.y, box.width, box.height },
                 .dst_box = { 0, 0, box.width, box.height },
                 .blend_mode = BLEND_NONE });
-            ok = pass_submit(pass);
+            if (fence) {
+                *fence = pass_submit_fence(pass);
+                ok = true;
+            } else {
+                ok = pass_submit(pass);
+            }
         }
     } else if (buffer_begin_access(target, BUFFER_WRITE,
             &data, &format, &stride)) {
@@ -251,6 +259,9 @@ struct image_frame {
     struct session *session;
     struct buffer *buffer;
     bool capturing;
+    struct wl_event_source *copying;
+    enum wl_output_transform transform;
+    struct timespec when;
 };
 
 static struct output *source_output(struct tomoe *s, const struct source *source) {
@@ -274,7 +285,13 @@ static bool source_size(struct tomoe *s, const struct source *source, int *width
         width, height);
 }
 
+static void image_frame_settle(struct image_frame *frame) {
+    if (frame->copying) wl_event_source_remove(frame->copying);
+    frame->copying = NULL;
+}
+
 static void image_frame_fail(struct image_frame *frame, uint32_t reason) {
+    image_frame_settle(frame);
     ext_image_copy_capture_frame_v1_send_failed(frame->resource, reason);
     buffer_unlock(frame->buffer);
     frame->buffer = NULL;
@@ -323,6 +340,7 @@ static void session_stop(struct session *session) {
 
 static void image_frame_resource_destroy(struct wl_resource *resource) {
     struct image_frame *frame = wl_resource_get_user_data(resource);
+    image_frame_settle(frame);
     if (frame->session) frame->session->frame = NULL;
     buffer_unlock(frame->buffer);
     free(frame);
@@ -383,7 +401,7 @@ static bool render_cursor_image(struct tomoe *s, struct buffer *target,
             .transform = transform, .blend_mode = BLEND_NONE });
         ok = pass_submit(pass);
     }
-    if (ok && scratch) ok = blit(s, target, scratch, box);
+    if (ok && scratch) ok = blit(s, target, scratch, box, NULL);
     if (scratch) buffer_drop(scratch);
     return ok;
 }
@@ -398,6 +416,25 @@ static void frame_ready(struct image_frame *frame, enum wl_output_transform tran
     buffer_unlock(frame->buffer);
     frame->buffer = NULL;
     frame->capturing = false;
+}
+
+static int frame_copied(int fd, uint32_t mask, void *data) {
+    struct image_frame *frame = data;
+    image_frame_settle(frame);
+    frame_ready(frame, frame->transform, frame->buffer->width, frame->buffer->height,
+        &frame->when);
+    return 0;
+}
+
+static bool copy_later(struct tomoe *s, struct image_frame *frame, int fence,
+        enum wl_output_transform transform, const struct timespec *now) {
+    frame->copying = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fence,
+        WL_EVENT_READABLE, frame_copied, frame);
+    if (!frame->copying) poll(&(struct pollfd){ .fd = fence, .events = POLLIN }, 1, -1);
+    close(fence);
+    frame->transform = transform;
+    frame->when = *now;
+    return frame->copying != NULL;
 }
 
 static void serve_cursor(struct session *session) {
@@ -471,7 +508,7 @@ static const struct ext_image_copy_capture_frame_v1_interface image_frame_impl =
 static void serve_session(struct tomoe *s, struct session *session, struct output *o,
         struct buffer *committed, bool scanout, const struct timespec *now) {
     struct image_frame *frame = session->frame;
-    if (!frame || !frame->capturing) return;
+    if (!frame || !frame->capturing || frame->copying) return;
     int width, height;
     uint32_t format;
     if (!source_size(s, &session->source, &width, &height, &format)) return;
@@ -495,7 +532,9 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
             return;
         }
         transform = o->screen->transform;
-        ok = blit(s, frame->buffer, source, box);
+        int fence;
+        ok = blit(s, frame->buffer, source, box, &fence);
+        if (ok && fence >= 0 && copy_later(s, frame, fence, transform, now)) return;
     } else {
         struct dmabuf_attributes dmabuf;
         if (buffer_get_dmabuf(frame->buffer, &dmabuf)) {
@@ -507,7 +546,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
             struct buffer *scratch = render ?
                 render_allocate(s->renderer, width, height, render) : NULL;
             ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch,
-                session->cursors) && blit(s, frame->buffer, scratch, box);
+                session->cursors) && blit(s, frame->buffer, scratch, box, NULL);
             if (scratch) buffer_drop(scratch);
         }
     }
@@ -522,6 +561,8 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
 static void session_resource_destroy(struct wl_resource *resource) {
     struct session *session = wl_resource_get_user_data(resource);
     if (!session) return;
+    if (session->frame && session->frame->copying)
+        image_frame_fail(session->frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
     if (session->frame) session->frame->session = NULL;
     if (session->cursor) session->cursor->capture = NULL;
     wl_list_remove(&session->link);
@@ -833,6 +874,7 @@ bool capture_wants_cursorless(struct output *o) {
     wl_list_for_each(session, &o->server->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id &&
                 !session->cursor && session->frame && session->frame->capturing &&
+                !session->frame->copying &&
                 !session->cursors) return true;
     return false;
 }
@@ -854,7 +896,7 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
             screen_schedule_frame(o->screen);
             continue;
         }
-        if (!blit(s, frame->buffer, source, frame->box)) {
+        if (!blit(s, frame->buffer, source, frame->box, NULL)) {
             frame_fail(frame);
             continue;
         }

@@ -765,6 +765,17 @@ static int flush_fence(struct render *r) {
     return fd;
 }
 
+int pass_submit_fence(struct pass *pass) {
+    struct render *r = pass->r;
+    current(r);
+    int fd = r->dup_fence ? flush_fence(r) : -1;
+    if (fd < 0) glFinish();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    buffer_unlock(pass->buffer);
+    free(pass);
+    return fd;
+}
+
 bool pass_submit(struct pass *pass) {
     struct render *r = pass->r;
     if (pass->record) {
@@ -773,23 +784,20 @@ bool pass_submit(struct pass *pass) {
         free(pass);
         return complete;
     }
-    current(r);
-    bool ok = true;
-    if (pass->signal) {
-        int fd = flush_fence(r);
-        ok = fd >= 0 && timeline_import_sync_file(pass->signal, pass->point, fd);
-        if (fd >= 0) close(fd);
-        if (!ok) tomoe_log(LOG_ERROR, "tomoe: render fence export failed");
-        timeline_unref(pass->signal);
-    } else {
-        int fd = r->dup_fence ? flush_fence(r) : -1;
+    if (!pass->signal) {
+        int fd = pass_submit_fence(pass);
         if (fd >= 0) {
             poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
             close(fd);
-        } else {
-            glFinish();
         }
+        return true;
     }
+    current(r);
+    int fd = flush_fence(r);
+    bool ok = fd >= 0 && timeline_import_sync_file(pass->signal, pass->point, fd);
+    if (fd >= 0) close(fd);
+    if (!ok) tomoe_log(LOG_ERROR, "tomoe: render fence export failed");
+    timeline_unref(pass->signal);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
     free(pass);
