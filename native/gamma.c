@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <drm_fourcc.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "wlr-gamma-control-unstable-v1-protocol.h"
@@ -129,6 +130,28 @@ bool gamma_listen(struct tomoe *s) {
     return wl_global_create(s->display, &zwlr_gamma_control_manager_v1_interface, 1, s, bind);
 }
 
+static void gamma_capture(struct output *o, const struct gamma *gamma) {
+    uint8_t lut[256 * 4];
+    bool neutral = true;
+    size_t n = gamma ? gamma->size : 0;
+    for (size_t v = 0; gamma && v < 256; v++) {
+        double at = (double)v * (double)(n - 1) / 255;
+        size_t i = (size_t)at, j = i + 1 < n ? i + 1 : i;
+        double t = at - (double)i;
+        for (size_t c = 0; c < 3; c++) {
+            const uint16_t *ramp = gamma->table + c * n;
+            lut[v * 4 + c] = (uint8_t)((ramp[i] * (1 - t) + ramp[j] * t) / 256);
+            neutral = neutral && lut[v * 4 + c] == v;
+        }
+        lut[v * 4 + 3] = 255;
+    }
+    if (!o->gamma_lut && neutral) return;
+    texture_destroy(o->gamma_lut);
+    o->gamma_lut = neutral ? NULL :
+        texture_from_pixels(o->server->renderer, DRM_FORMAT_XBGR8888, sizeof(lut), 256, 1, lut);
+    o->damaged = true;
+}
+
 void gamma_apply(struct output *o, struct screen_state *state) {
     o->gamma_dirty = false;
     struct gamma *gamma = gamma_for(o);
@@ -141,7 +164,10 @@ void gamma_apply(struct output *o, struct screen_state *state) {
         profile ? profile->gamma_size : table ? gamma->size : 0);
     free(ramps);
     screen_state_set_profile(state, profile);
-    if (set && screen_test(o->screen, state)) return;
+    if (set && screen_test(o->screen, state)) {
+        gamma_capture(o, table ? gamma : NULL);
+        return;
+    }
     if (profile) {
         tomoe_log(LOG_ERROR, "tomoe: output %s rejected ICC profile %s", o->screen->name,
             profile->path);
@@ -154,10 +180,13 @@ void gamma_apply(struct output *o, struct screen_state *state) {
     }
     screen_state_set_gamma(state, NULL, 0);
     state->committed &= ~(SCREEN_GAMMA | SCREEN_PROFILE);
+    gamma_capture(o, NULL);
     if (gamma) gamma_fail(gamma);
 }
 
 void gamma_output_gone(struct output *o) {
+    texture_destroy(o->gamma_lut);
+    o->gamma_lut = NULL;
     struct gamma *gamma = gamma_for(o);
     if (!gamma) return;
     free(gamma->table);

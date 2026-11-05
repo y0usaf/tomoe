@@ -217,11 +217,21 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
-        struct box box, int *fence) {
+        struct box box, struct texture *lut, int *fence) {
     if (fence) *fence = -1;
+    struct dmabuf_attributes dmabuf;
+    if (lut && !buffer_get_dmabuf(target, &dmabuf)) {
+        const struct format *format = format_set_get(render_formats(s->renderer),
+            DRM_FORMAT_ARGB8888);
+        struct buffer *scratch = format ?
+            render_allocate(s->renderer, box.width, box.height, format) : NULL;
+        bool ok = scratch && blit(s, scratch, source, box, lut, NULL) &&
+            blit(s, target, scratch, (struct box){ 0, 0, box.width, box.height }, NULL, NULL);
+        if (scratch) buffer_drop(scratch);
+        return ok;
+    }
     struct texture *texture = texture_from_buffer(s->renderer, source);
     if (!texture) return false;
-    struct dmabuf_attributes dmabuf;
     void *data;
     uint32_t format;
     size_t stride;
@@ -232,7 +242,7 @@ static bool blit(struct tomoe *s, struct buffer *target, struct buffer *source,
             pass_add_texture(pass, &(struct texture_options){
                 .texture = texture, .src_box = { box.x, box.y, box.width, box.height },
                 .dst_box = { 0, 0, box.width, box.height },
-                .blend_mode = BLEND_NONE });
+                .blend_mode = BLEND_NONE, .lut = lut });
             if (fence) {
                 *fence = pass_submit_fence(pass);
                 ok = true;
@@ -430,7 +440,7 @@ static bool render_cursor_image(struct tomoe *s, struct buffer *target,
             .transform = transform, .blend_mode = BLEND_NONE });
         ok = pass_submit(pass);
     }
-    if (ok && scratch) ok = blit(s, target, scratch, box, NULL);
+    if (ok && scratch) ok = blit(s, target, scratch, box, NULL, NULL);
     if (scratch) buffer_drop(scratch);
     return ok;
 }
@@ -574,7 +584,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         }
         transform = o->screen->transform;
         int fence;
-        ok = blit(s, frame->buffer, source, box, &fence);
+        ok = blit(s, frame->buffer, source, box, o->gamma_lut, &fence);
         if (ok) session->damaged = false;
         if (ok && fence >= 0 && copy_later(s, frame, fence, transform, now)) return;
     } else {
@@ -588,7 +598,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
             struct buffer *scratch = render ?
                 render_allocate(s->renderer, width, height, render) : NULL;
             ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch,
-                session->cursors) && blit(s, frame->buffer, scratch, box, NULL);
+                session->cursors) && blit(s, frame->buffer, scratch, box, NULL, NULL);
             if (scratch) buffer_drop(scratch);
         }
     }
@@ -953,7 +963,7 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
             screen_schedule_frame(o->screen);
             continue;
         }
-        if (!blit(s, frame->buffer, source, frame->box, NULL)) {
+        if (!blit(s, frame->buffer, source, frame->box, o->gamma_lut, NULL)) {
             frame_fail(frame);
             continue;
         }

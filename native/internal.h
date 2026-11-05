@@ -159,6 +159,7 @@ struct texture_options {
     struct timeline *wait_timeline;
     uint64_t wait_point;
     const struct surface *surface;
+    struct texture *lut;
 };
 struct rect_options {
     struct box box;
@@ -284,13 +285,13 @@ struct ui_asset_pool;
 struct ui_pointer;
 
 struct timeline;
-enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_DOWN, PROGRAM_UP,
-    PROGRAM_COUNT };
+enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT,
+    PROGRAM_EXTERNAL_LUT, PROGRAM_DOWN, PROGRAM_UP, PROGRAM_COUNT };
 struct program {
     GLuint id;
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame, mouse, channel;
+    GLint resolution, time, frame, mouse, channel, lut;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
@@ -434,6 +435,7 @@ struct output {
     struct profile *profile, *pending_profile;
     const char *profile_error, *pending_profile_error;
     struct buffer *capture_buffer;
+    struct texture *gamma_lut;
     struct buffer *presented[2];
     struct ring ring;
     bool lock_rendered, gamma_dirty;

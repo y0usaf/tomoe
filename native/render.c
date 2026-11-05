@@ -136,6 +136,9 @@ static const char sdf_source[] =
 
 static const char texture_source[] =
     "uniform SAMPLER tex;\n"
+    "#ifdef LUT\n"
+    "uniform sampler2D lut;\n"
+    "#endif\n"
     "uniform float alpha;\n"
     "uniform float opaque;\n"
     "uniform float clip;\n"
@@ -146,6 +149,11 @@ static const char texture_source[] =
     "void main() {\n"
     "    vec4 c = texture2D(tex, v_tex);\n"
     "    if (opaque > 0.5) c.a = 1.0;\n"
+    "#ifdef LUT\n"
+    "    vec3 at = c.rgb * (255.0 / 256.0) + 0.5 / 256.0;\n"
+    "    c.rgb = vec3(texture2D(lut, vec2(at.r, 0.5)).r, texture2D(lut, vec2(at.g, 0.5)).g,\n"
+    "        texture2D(lut, vec2(at.b, 0.5)).b);\n"
+    "#endif\n"
     "    if (clip > 0.5) {\n"
     "        if (v_local.x < 0.0 || v_local.y < 0.0 || v_local.x > size.x || v_local.y > size.y) discard;\n"
     "        c *= rounding_alpha(v_local, size, radius);\n"
@@ -303,10 +311,11 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     p->local = glGetAttribLocation(p->id, "local");
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
-        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0" };
+        "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0",
+        "lut" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
-        &p->time, &p->frame, &p->mouse, &p->channel };
+        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;
@@ -739,8 +748,10 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
         texcoords[2 * i] = (src.x + px * src.width) / options->texture->width;
         texcoords[2 * i + 1] = (src.y + py * src.height) / options->texture->height;
     }
-    struct program *p = &r->programs[t->target == GL_TEXTURE_EXTERNAL_OES ?
-        PROGRAM_EXTERNAL : PROGRAM_TEXTURE];
+    bool external = t->target == GL_TEXTURE_EXTERNAL_OES;
+    struct program *p = &r->programs[options->lut ?
+        (external ? PROGRAM_EXTERNAL_LUT : PROGRAM_TEXTURE_LUT) :
+        (external ? PROGRAM_EXTERNAL : PROGRAM_TEXTURE)];
     blend((t->alpha || alpha < 1) && options->blend_mode == BLEND_PREMULTIPLIED);
     glUseProgram(p->id);
     glActiveTexture(GL_TEXTURE0);
@@ -752,7 +763,18 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     glUniform1f(p->alpha, alpha);
     glUniform1f(p->opaque, t->alpha ? 0 : 1);
     glUniform1f(p->clip, 0);
+    if (options->lut) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, texture_of(options->lut)->tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glUniform1i(p->lut, 1);
+    }
     draw(pass, p, dst, options->clip, texcoords);
+    if (options->lut) {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+    }
     glBindTexture(t->target, 0);
 }
 
@@ -1205,9 +1227,13 @@ static bool programs_init(struct render *r) {
     return link_program(&p[PROGRAM_RECT], "", rect_source) &&
         link_program(&p[PROGRAM_SDF], "", sdf_source) &&
         link_program(&p[PROGRAM_TEXTURE], "#define SAMPLER sampler2D\n", texture_source) &&
-        (!has(gl, "GL_OES_EGL_image_external") || link_program(&p[PROGRAM_EXTERNAL],
+        link_program(&p[PROGRAM_TEXTURE_LUT], "#define SAMPLER sampler2D\n#define LUT\n",
+            texture_source) &&
+        (!has(gl, "GL_OES_EGL_image_external") || (link_program(&p[PROGRAM_EXTERNAL],
             "#extension GL_OES_EGL_image_external : require\n#define SAMPLER samplerExternalOES\n",
-            texture_source)) &&
+            texture_source) && link_program(&p[PROGRAM_EXTERNAL_LUT],
+            "#extension GL_OES_EGL_image_external : require\n#define SAMPLER samplerExternalOES\n"
+            "#define LUT\n", texture_source))) &&
         link_program(&p[PROGRAM_DOWN], "", down_source) &&
         link_program(&p[PROGRAM_UP], "", up_source);
 }

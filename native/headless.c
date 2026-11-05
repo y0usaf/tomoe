@@ -81,9 +81,14 @@ static void headless_destroy(struct screen *screen) {
     free(h);
 }
 
+static size_t headless_gamma_size(struct screen *screen) {
+    return 256;
+}
+
 static const struct screen_impl headless_impl = {
     .test = headless_test,
     .commit = headless_commit,
+    .gamma_size = headless_gamma_size,
     .destroy = headless_destroy,
 };
 
