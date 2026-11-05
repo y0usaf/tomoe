@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <poll.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -11,6 +12,8 @@ struct headless {
     size_t seq;
     unsigned frames;
     bool declared;
+    struct timeline *wait;
+    uint64_t wait_point;
 };
 
 static void clock_arm(struct headless *h, int32_t refresh) {
@@ -23,10 +26,22 @@ static void clock_arm(struct headless *h, int32_t refresh) {
     timerfd_settime(h->fd, TFD_TIMER_ABSTIME, &spec, NULL);
 }
 
+static void await_render(struct headless *h) {
+    if (!h->wait) return;
+    int fd = timeline_export_sync_file(h->wait, h->wait_point);
+    if (fd >= 0) {
+        poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
+        close(fd);
+    }
+    timeline_unref(h->wait);
+    h->wait = NULL;
+}
+
 static int clock_tick(int fd, uint32_t mask, void *data) {
     struct headless *h = data;
     uint64_t expirations;
     if (read(fd, &expirations, sizeof(expirations)) != sizeof(expirations)) return 0;
+    await_render(h);
     h->vblank = h->next;
     struct screen_present present = { .commit_seq = h->seq, .presented = true, .seq = ++h->frames,
         .when = { h->vblank / 1000000000, h->vblank % 1000000000 },
@@ -48,6 +63,11 @@ static bool headless_commit(struct screen_update *updates, size_t count) {
         int32_t refresh = (state->committed & SCREEN_MODE) && state->mode_type == SCREEN_MODE_CUSTOM ?
             state->custom_mode.refresh : h->screen.refresh;
         h->seq = h->screen.commit_seq + 1;
+        await_render(h);
+        if (state->committed & SCREEN_WAIT) {
+            h->wait = timeline_ref(state->wait_timeline);
+            h->wait_point = state->wait_point;
+        }
         clock_arm(h, refresh);
     }
     return true;
@@ -55,6 +75,7 @@ static bool headless_commit(struct screen_update *updates, size_t count) {
 
 static void headless_destroy(struct screen *screen) {
     struct headless *h = wl_container_of(screen, h, screen);
+    timeline_unref(h->wait);
     wl_event_source_remove(h->clock);
     close(h->fd);
     free(h);

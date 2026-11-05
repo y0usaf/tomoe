@@ -411,7 +411,8 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
     wl_list_for_each(child, &node->children, link) render_walk(s, child, target, x, y, f);
 }
 bool fenced(struct screen *output) {
-    return render_has_timeline(output->server->renderer) && output->kind == SCREEN_DRM;
+    return render_has_timeline(output->server->renderer) &&
+        (output->kind == SCREEN_DRM || output->kind == SCREEN_HEADLESS);
 }
 static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
         bool locked, bool cursors, bool chrome) {
