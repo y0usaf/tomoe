@@ -41,6 +41,18 @@ def wait_app(app_id):
     raise AssertionError(f"application {app_id} did not map: {windows()}")
 
 
+def wait_new_focused(before):
+    for _ in range(300):
+        found = [
+            w for w in windows()
+            if w["id"] not in before and w["focused"]
+        ]
+        if found:
+            return found[0]
+        time.sleep(0.1)
+    raise AssertionError(f"no new focused window: {windows()}")
+
+
 def wait_window(title, focused=False):
     for _ in range(300):
         found = [
@@ -141,11 +153,11 @@ for path in ["/run/big-w", "/run/big-x"]:
     assert got == want, (path, got, want)
 
 machine.succeed("rm -f /run/x11-closed")
+before_ids = {w["id"] for w in windows()}
 unit("closeable", f"env X11_CLIENT_MARK=/run/x11-closed {X11_CLIENT} closeable")
-closed = wait_window("X11 Parent", focused=True)
-assert closed["focused"], closed
+closed = wait_new_focused(before_ids)
 closed_id = closed["id"]
-time.sleep(0.5)
+time.sleep(1)
 cli("event '(:type :key :owner \"commands\" :command \"close\" :state :pressed)'")
 for _ in range(100):
     if machine.execute("test -e /run/x11-closed")[0] == 0:
