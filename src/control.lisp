@@ -220,7 +220,9 @@
                                 (serious-condition (condition)
                                   (record-error runtime condition)
                                   (list +wire-version+ :error (princ-to-string condition))))))
-                   (sb-ext:with-timeout 0.1 (write-frame stream reply)))
+                   (handler-case
+                       (sb-ext:with-timeout 0.1 (write-frame stream reply))
+                     (serious-condition () nil)))
                (serious-condition (condition) (record-error runtime condition))))
         (sb-bsd-sockets:socket-close client :abort t)))))
 
