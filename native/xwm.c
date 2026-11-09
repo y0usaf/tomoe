@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #define listen tomoe_listen
 #include "internal.h"
@@ -74,6 +75,17 @@ enum {
 #define X11_CURRENT_TIME 0u
 #define MAX_CLIPBOARD (256 * 1024)
 #define INCR_CHUNK (64 * 1024)
+#define XWM_WAIT_MS 5000
+
+static uint64_t xwm_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static uint64_t xwm_deadline(void) {
+    return xwm_now() + XWM_WAIT_MS;
+}
 
 struct xwm_window;
 struct xwm;
@@ -230,7 +242,7 @@ static bool x_ensure(struct xwm *x, size_t need) {
     return true;
 }
 
-static ssize_t x_recv(struct xwm *x, int wait) {
+static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
     for (;;) {
         if (!x_ensure(x, 4096)) return -1;
         ssize_t n = recv(x->fd, x->in + x->in_len, x->in_cap - x->in_len,
@@ -239,9 +251,17 @@ static ssize_t x_recv(struct xwm *x, int wait) {
         if (errno == EINTR) continue;
         if (errno == EAGAIN && !wait) return -2;
         if (errno == EAGAIN) {
+            int timeout = XWM_WAIT_MS;
+            if (deadline) {
+                uint64_t now = xwm_now();
+                if (now >= deadline) return -3;
+                uint64_t remaining = deadline - now;
+                timeout = remaining > (uint64_t)XWM_WAIT_MS ? XWM_WAIT_MS : (int)remaining;
+            }
             struct pollfd pollfd = { .fd = x->fd, .events = POLLIN };
-            int ready = poll(&pollfd, 1, 5000);
+            int ready = poll(&pollfd, 1, timeout);
             if (ready == 0) {
+                if (deadline && xwm_now() < deadline) continue;
                 tomoe_log(LOG_DEBUG, "tomoe: xwm recv stalled on %d", x->fd);
                 return -3;
             }
@@ -266,8 +286,9 @@ static size_t packet_length(struct xwm *x, const unsigned char *p, size_t availa
     return 32;
 }
 
-static unsigned char *x_packet(struct xwm *x, size_t *length) {
+static unsigned char *x_packet(struct xwm *x, size_t *length, uint64_t deadline) {
     for (;;) {
+        if (deadline && xwm_now() >= deadline) return NULL;
         size_t need = x->in_len >= 4 ? packet_length(x, x->in, x->in_len) : 0;
         if (need && x->in_len >= need) {
             unsigned char *packet = malloc(need);
@@ -278,7 +299,7 @@ static unsigned char *x_packet(struct xwm *x, size_t *length) {
             *length = need;
             return packet;
         }
-        ssize_t n = x_recv(x, 1);
+        ssize_t n = x_recv(x, 1, deadline);
         if (n == -3) return NULL;
         if (n <= 0) {
             tomoe_log(LOG_DEBUG, "tomoe: xwm connection lost on %d", x->fd);
@@ -301,10 +322,11 @@ static void defer(struct xwm *x, unsigned char *packet, size_t len) {
     free(packet);
 }
 
-static unsigned char *x_wait(struct xwm *x, uint16_t seq, size_t *length, int *error) {
+static unsigned char *x_wait(struct xwm *x, uint16_t seq, size_t *length, int *error,
+        uint64_t deadline) {
     for (;;) {
         size_t len = 0;
-        unsigned char *packet = x_packet(x, &len);
+        unsigned char *packet = x_packet(x, &len, deadline);
         if (!packet) return NULL;
         uint16_t packet_seq = (uint16_t)(packet[2] | packet[3] << 8);
         if (packet_seq == seq && (packet[0] == 0 || packet[0] == 1)) {
@@ -331,7 +353,7 @@ static uint32_t atom_intern(struct xwm *x, const char *name, bool only_if_exists
     uint16_t seq = r_send(x, &r);
     size_t reply_len = 0;
     int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error);
+    unsigned char *reply = x_wait(x, seq, &reply_len, &error, xwm_deadline());
     if (!reply || reply_len < 12) {
         free(reply);
         return 0;
@@ -381,7 +403,7 @@ static void property_from_reply(const unsigned char *reply, size_t reply_len,
 }
 
 static bool get_property(struct xwm *x, uint32_t window, uint32_t property, uint32_t type,
-        uint32_t offset, uint32_t length, struct property *out) {
+        uint32_t offset, uint32_t length, struct property *out, uint64_t deadline) {
     struct req r = {0};
     r_begin(&r, 20);
     r_u32(&r, window);
@@ -392,7 +414,7 @@ static bool get_property(struct xwm *x, uint32_t window, uint32_t property, uint
     uint16_t seq = r_send(x, &r);
     size_t reply_len = 0;
     int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error);
+    unsigned char *reply = x_wait(x, seq, &reply_len, &error, deadline);
     if (!reply) return false;
     property_from_reply(reply, reply_len, out);
     free(reply);
@@ -405,12 +427,13 @@ static void property_finish(struct property *property) {
 }
 
 static bool read_property_all(struct xwm *x, uint32_t window, uint32_t property,
-        struct property *out) {
+        struct property *out, uint64_t deadline) {
     memset(out, 0, sizeof(*out));
     uint32_t offset = 0;
     for (;;) {
         struct property part;
-        if (!get_property(x, window, property, 0, offset, x->max_request / 4, &part)) {
+        if (!get_property(x, window, property, 0, offset, x->max_request / 4, &part,
+                deadline)) {
             property_finish(out);
             return false;
         }
@@ -595,7 +618,7 @@ static bool query_extension(struct xwm *x, const char *name, int *opcode, int *e
     uint16_t seq = r_send(x, &r);
     size_t reply_len = 0;
     int error = 0;
-    unsigned char *reply = x_wait(x, seq, &reply_len, &error);
+    unsigned char *reply = x_wait(x, seq, &reply_len, &error, xwm_deadline());
     if (!reply || reply_len < 32) {
         free(reply);
         return false;
@@ -1537,7 +1560,7 @@ static void x_handle(struct xwm *x, unsigned char *packet, size_t length);
 static int xwm_event(int fd, uint32_t mask, void *data) {
     struct xwm *x = data;
     for (;;) {
-        ssize_t n = x_recv(x, 0);
+        ssize_t n = x_recv(x, 0, 0);
         if (n == -2) break;
         if (n <= 0) {
             xwm_stop(x->server);
@@ -1744,7 +1767,7 @@ static char *atom_mime(struct xwm *x, uint32_t atom) {
     uint16_t seq = r_send(x, &r);
     size_t len = 0;
     int error = 0;
-    unsigned char *reply = x_wait(x, seq, &len, &error);
+    unsigned char *reply = x_wait(x, seq, &len, &error, xwm_deadline());
     if (!reply || len < 32) {
         free(reply);
         return NULL;
@@ -1768,10 +1791,11 @@ static char *atom_mime(struct xwm *x, uint32_t atom) {
 
 static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t selection,
         uint32_t target, size_t *length, uint32_t *type) {
+    uint64_t deadline = xwm_deadline();
     convert_selection(x, window, selection, target, x->convert_property, X11_CURRENT_TIME);
     for (;;) {
         size_t len = 0;
-        unsigned char *packet = x_packet(x, &len);
+        unsigned char *packet = x_packet(x, &len, deadline);
         if (!packet) return NULL;
         if ((packet[0] & 0x7f) == 31) {
             uint32_t requestor = (uint32_t)packet[8] | (uint32_t)packet[9] << 8 |
@@ -1790,7 +1814,7 @@ static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t se
         defer(x, packet, len);
     }
     struct property property;
-    if (!read_property_all(x, window, x->convert_property, &property) ||
+    if (!read_property_all(x, window, x->convert_property, &property, deadline) ||
             property.type == X11_NONE) {
         property_finish(&property);
         return NULL;
@@ -1806,7 +1830,7 @@ static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t se
             unsigned char *notify = NULL;
             for (;;) {
                 size_t len = 0;
-                unsigned char *packet = x_packet(x, &len);
+                unsigned char *packet = x_packet(x, &len, deadline);
                 if (!packet) {
                     free(data);
                     return NULL;
@@ -1833,7 +1857,7 @@ static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t se
                 return NULL;
             }
             struct property part;
-            if (!read_property_all(x, window, x->convert_property, &part) ||
+            if (!read_property_all(x, window, x->convert_property, &part, deadline) ||
                     part.type == X11_NONE) {
                 property_finish(&part);
                 free(data);
@@ -1883,9 +1907,12 @@ void xwm_source_send(struct tomoe *s, bool primary, const char *mime, int fd) {
     size_t length = 0;
     uint32_t type = 0;
     unsigned char *data = convert_from_x(x, window, selection, target, &length, &type);
-    if (!data && length) return;
+    if (!data) {
+        close(fd);
+        return;
+    }
     (void)type;
-    write_async(x, fd, data ? data : (unsigned char *)strdup(""), data ? length : 0);
+    write_async(x, fd, data, length);
 }
 
 static void serve_targets(struct xwm *x, bool primary, const unsigned char *pkt) {

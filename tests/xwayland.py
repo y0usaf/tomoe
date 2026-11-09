@@ -152,11 +152,7 @@ for path in ["/run/big-w", "/run/big-x"]:
     got = machine.succeed(f"sha256sum {path} | cut -d' ' -f1").strip()
     assert got == want, (path, got, want)
 
-unit("silent", f"{X11_CLIENT} silent")
-time.sleep(6)
-windows()
-machine.succeed("systemctl stop silent")
-time.sleep(1)
+
 machine.succeed("rm -f /run/x11-closed")
 before_ids = {w["id"] for w in windows()}
 unit("closeable", f"env X11_CLIENT_MARK=/run/x11-closed {X11_CLIENT} closeable")
@@ -174,4 +170,18 @@ for _ in range(100):
         break
     time.sleep(0.1)
 assert not any(w["id"] == closed_id for w in windows()), windows()
+unit("silent", f"{X11_CLIENT} silent")
+time.sleep(1)
+unit("traffic", f"sh -c 'while :; do xdotool windowsize {xterm_id} 400 300; xdotool windowsize {xterm_id} 500 350; done'")
+machine.succeed("rm -f /run/silent-status /run/silent-paste")
+unit("paste", "env WAYLAND_DISPLAY=check sh -c 'timeout 12 wl-paste --no-newline >/run/silent-paste 2>/dev/null; echo $? >/run/silent-status'")
+time.sleep(0.5)
+started = time.monotonic()
+windows()
+assert time.monotonic() - started < 8, "silent selection owner blocked the control socket"
+machine.wait_until_succeeds("test -s /run/silent-status")
+status = int(machine.succeed("cat /run/silent-status").strip())
+assert status != 124, status
+machine.succeed("systemctl stop traffic")
+machine.succeed("systemctl stop silent")
 quit()
