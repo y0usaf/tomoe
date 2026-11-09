@@ -601,11 +601,12 @@ struct presentation {
     struct sound_bank *sounds;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
-enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_EVENTS };
+enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_BELL, SOUND_EVENTS };
 void sound_play(struct tomoe *s, enum sound_event event);
 void sound_publish(struct tomoe *s, struct presentation *plan);
 void sound_bank_free(struct sound_bank *bank);
 void sound_finish(struct tomoe *s);
+bool system_bell_listen(struct tomoe *s);
 struct surface;
 struct subsurface;
 struct release;

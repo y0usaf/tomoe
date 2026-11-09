@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "xdg-system-bell-v1-protocol.h"
 
 #include <errno.h>
 #include <math.h>
@@ -436,4 +437,27 @@ const char *tomoe_sound_stats(struct tomoe *s) {
         error ? "\"" : "", (unsigned long long)atomic_load(&sound->played),
         (unsigned long long)atomic_load(&sound->dropped));
     return sound_text;
+}
+
+static void bell_destroy(struct wl_client *client, struct wl_resource *resource) {
+    wl_resource_destroy(resource);
+}
+
+static void bell_ring(struct wl_client *client, struct wl_resource *resource,
+        struct wl_resource *surface) {
+    sound_play(wl_resource_get_user_data(resource), SOUND_BELL);
+}
+
+static const struct xdg_system_bell_v1_interface bell_impl = {
+    .destroy = bell_destroy, .ring = bell_ring,
+};
+
+static void bell_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &xdg_system_bell_v1_interface, version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &bell_impl, data, NULL);
+}
+
+bool system_bell_listen(struct tomoe *s) {
+    return wl_global_create(s->display, &xdg_system_bell_v1_interface, 1, s, bell_bind);
 }

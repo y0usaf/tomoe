@@ -878,10 +878,11 @@ non-modifier keys with :KEYSYM. The latest owner wins."
                 (list :owner (spec-name (mounted-spec mounted))
                       :source-id (spec-id (mounted-spec mounted))
                       :otherwise (first args))))
-(defparameter +sound-events+ '(:key :button :open :close))
+(defparameter +sound-events+ '(:key :button :open :close :bell))
 (defun sound (event files &key (gain 0))
   "Own the sound for EVENT: :KEY plays on every key press, :BUTTON on every
-pointer button press, :OPEN when a window first maps, :CLOSE when it closes.
+pointer button press, :OPEN when a window first maps, :CLOSE when it closes,
+and :BELL when a Wayland client requests the system bell.
 FILES is a WAV path, or a list of up to 16 played in turn: 16-bit PCM or 32-bit
 float, mono or stereo, at 48000 Hz. Relative paths resolve beside the declaring
 source. GAIN is in decibels, from -60 to 12. Later owners replace an event's

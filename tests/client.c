@@ -25,6 +25,7 @@
 #include "content-type-v1-client-protocol.h"
 #include "xdg-toplevel-tag-v1-client-protocol.h"
 #include "xdg-dialog-v1-client-protocol.h"
+#include "xdg-system-bell-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -41,6 +42,7 @@ static struct wp_alpha_modifier_v1 *alpha_manager;
 static struct wp_content_type_manager_v1 *content_manager;
 static struct xdg_toplevel_tag_manager_v1 *tag_manager;
 static struct xdg_wm_dialog_v1 *dialog_manager;
+static struct xdg_system_bell_v1 *bell_manager;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -66,6 +68,8 @@ struct client {
     bool dialog_probe;
     unsigned dialog_step;
     struct xdg_dialog_v1 *dialog;
+    bool bell_probe;
+    unsigned bell_step;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -137,6 +141,7 @@ static void finish(int code) {
     if (content_manager) wp_content_type_manager_v1_destroy(content_manager);
     if (tag_manager) xdg_toplevel_tag_manager_v1_destroy(tag_manager);
     if (dialog_manager) xdg_wm_dialog_v1_destroy(dialog_manager);
+    if (bell_manager) xdg_system_bell_v1_destroy(bell_manager);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -273,6 +278,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--content-probe") == 0) state->content_probe = true;
         else if (strcmp(option, "--tag-probe") == 0) state->tag_probe = true;
         else if (strcmp(option, "--dialog-probe") == 0) state->dialog_probe = true;
+        else if (strcmp(option, "--bell-probe") == 0) state->bell_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -316,6 +322,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         tag_manager = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
     } else if (strcmp(interface, xdg_wm_dialog_v1_interface.name) == 0) {
         dialog_manager = wl_registry_bind(registry, name, &xdg_wm_dialog_v1_interface, 1);
+    } else if (strcmp(interface, xdg_system_bell_v1_interface.name) == 0) {
+        bell_manager = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
     }
 }
 
@@ -587,6 +595,24 @@ static void dialog_step(struct client *state) {
     printf("dialog-step %u\n", state->dialog_step);
     fflush(stdout);
 }
+static void bell_step(struct client *state) {
+    if (!advance || !state->bell_probe) return;
+    if (!bell_manager) fail("system bell required");
+    advance = 0;
+    switch (++state->bell_step) {
+    case 1: xdg_system_bell_v1_ring(bell_manager, state->surface); break;
+    case 2: xdg_system_bell_v1_ring(bell_manager, NULL); break;
+    case 3:
+        xdg_system_bell_v1_destroy(bell_manager);
+        bell_manager = NULL;
+        break;
+    default: fail("bell probe exhausted");
+    }
+    roundtrip("bell transition");
+    printf("bell-step %u\n", state->bell_step);
+    fflush(stdout);
+}
+
 
 
 
@@ -600,6 +626,7 @@ static void run(struct client *state) {
         content_step(state);
         tag_step(state);
         dialog_step(state);
+        bell_step(state);
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }

@@ -59,6 +59,7 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/content-type/content-type-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-dialog/xdg-dialog-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-system-bell/xdg-system-bell-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
@@ -275,7 +276,8 @@ in
     machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
     quit()
   '';
-  surface-protocols = check "surface-protocols" (builtins.readFile ./surface-protocols.py);
+  surface-protocols = checkWith { environment.systemPackages = [ pkgs.pipewire ]; }
+    "surface-protocols" (builtins.readFile ./surface-protocols.py);
   integration = check "integration" (
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"

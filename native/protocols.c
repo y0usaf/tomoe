@@ -13,7 +13,8 @@ bool protocols_listen(struct tomoe *s) {
             !pointer_protocols_listen(s) || !cursor_shape_listen(s) || !gestures_listen(s) ||
             !security_listen(s) || !ime_listen(s) || !input_method_listen(s) ||
             !shortcuts_listen(s) || !output_management_listen(s) ||
-            !alpha_modifier_listen(s) || !content_type_listen(s)) return false;
+            !alpha_modifier_listen(s) || !content_type_listen(s) ||
+            !system_bell_listen(s)) return false;
     s->drag_icon.kind = TARGET_ICON;
     return true;
 }

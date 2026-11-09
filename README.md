@@ -214,6 +214,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Dialog and modal hints are exposed as `:dialog`, `:modal`, and `:parent`.
   Parent unmap/destruction reparents children; parentless dialogs have no effect.
   Clients retain responsibility for filtering input to modal parents.
+- System bell requests play the owned `:bell` sound through the existing sound
+  service, for example `(sound :bell "/path/to/bell.wav")`. Without an owner,
+  bells are silent, just like the other configurable sound events.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).
