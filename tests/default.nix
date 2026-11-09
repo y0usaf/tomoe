@@ -88,6 +88,19 @@ let
       install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
     '';
   };
+  x11Client = pkgs.stdenv.mkDerivation {
+    name = "tomoe-x11-client";
+    src = ./x11-client.c;
+    dontUnpack = true;
+    strictDeps = true;
+    buildInputs = [ pkgs.libx11 pkgs.xorgproto ];
+    buildPhase = ''
+      $CC -std=c11 -O2 -Wall -Wextra -Werror \
+        -I${pkgs.lib.getDev pkgs.libx11}/include -I${pkgs.xorgproto}/include \
+        $src -L${pkgs.libx11}/lib -lX11 -o tomoe-x11-client
+    '';
+    installPhase = "install -Dm755 tomoe-x11-client $out/bin/tomoe-x11-client";
+  };
   securityClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-security-client";
     src = ./security-client.c;
@@ -298,6 +311,33 @@ in
     + builtins.readFile ./bare.py
   );
   fifo = check "fifo" (builtins.readFile ./fifo.py);
+  xwayland =
+    checkWith
+      {
+        environment.systemPackages = [
+          pkgs.xterm
+          pkgs.zenity
+          pkgs.xeyes
+          pkgs.xlogo
+          pkgs.xprop
+          pkgs.xwininfo
+          pkgs.xclip
+          pkgs.wl-clipboard
+          pkgs.xdotool
+          pkgs.wmctrl
+          pkgs.fontmiscmisc
+          pkgs.xset
+          x11Client
+        ];
+      }
+      "xwayland"
+      (
+        ''
+          X11_CLIENT = "${x11Client}/bin/tomoe-x11-client"
+          X11_FONTS = "${pkgs.fontmiscmisc}/share/fonts/X11/misc"
+        ''
+        + builtins.readFile ./xwayland.py
+      );
   output-management =
     checkWith
       {

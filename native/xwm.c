@@ -1045,29 +1045,36 @@ static void window_free(struct xwm_window *w) {
         free(request);
     }
     detach(&w->surface_destroy);
+    uint32_t xid = w->xid;
+    char *title = w->title;
+    char *appid = w->appid;
+    struct xdg_toplevel *toplevel = w->toplevel;
+    struct xdg_surface *base = w->base;
+    struct surface *surface = w->surface;
+    struct node *node = w->node;
     if (w->override) {
-        if (w->node) node_destroy(w->node);
+        if (node) node_destroy(node);
+        wl_list_remove(&w->link);
+        free(w);
     } else {
-        if (w->surface) w->surface->external_toplevel = NULL;
-        if (w->toplevel) {
-            wl_signal_emit_mutable(&w->toplevel->events.destroy, NULL);
-            free(w->toplevel->title);
-            free(w->toplevel->app_id);
-            free(w->toplevel->tag);
-            free(w->toplevel->description);
-            free(w->toplevel);
+        if (surface && surface->external_toplevel == toplevel) surface->external_toplevel = NULL;
+        if (toplevel) {
+            wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
+            free(toplevel->title);
+            free(toplevel->app_id);
+            free(toplevel->tag);
+            free(toplevel->description);
+            free(toplevel);
         }
-        if (w->base && w->base->scene) node_destroy(w->base->scene);
-        free(w->base);
+        if (base && base->scene) node_destroy(base->scene);
+        free(base);
     }
-    if (x->active == w->xid) {
+    if (x->active == xid) {
         x->active = 0;
         refresh_active(x);
     }
-    wl_list_remove(&w->link);
-    free(w->title);
-    free(w->appid);
-    free(w);
+    free(title);
+    free(appid);
 }
 
 static struct xwm_window *window_new(struct xwm *x, uint32_t xid, bool override,
