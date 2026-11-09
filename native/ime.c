@@ -53,6 +53,10 @@ static void state_clear(struct text_state *state) {
     *state = (struct text_state){0};
 }
 static bool text_set(struct wl_resource *resource, char **dst, const char *src) {
+    if (strlen(src) > 4000) {
+        wl_client_post_implementation_error(wl_resource_get_client(resource), "input-method text exceeds 4000 bytes");
+        return false;
+    }
     char *text = strdup(src);
     if (!text) { wl_resource_post_no_memory(resource); return false; }
     free(*dst);
@@ -67,6 +71,7 @@ static void method_clear(struct input_method *m) {
     m->before = m->after = 0;
     m->preedit_set = m->delete_set = false;
 }
+static void popup_tree_destroyed(struct wl_listener *listener, void *data);
 static struct node *surface_node(struct node *node, struct surface *surface) {
     if (node->surface == surface) return node;
     struct node *child;
@@ -81,7 +86,11 @@ static void popups_update(struct input_method *m) {
     struct node *parent = t && t->surface ? surface_node(m->ime->server->scene, t->surface) : NULL;
     struct input_popup *p;
     wl_list_for_each(p, &m->popups, link) {
-        if (!p->tree) continue;
+        if (!p->tree) {
+            p->tree = node_surface_create(m->ime->server->scene, p->surface);
+            if (!p->tree) { wl_resource_post_no_memory(p->resource); continue; }
+            listen(&p->tree_destroy, &p->tree->events.destroy, popup_tree_destroyed);
+        }
         node_set_enabled(p->tree, m->active && parent && surface_has_buffer(p->surface));
         if (!parent) {
             node_reparent(p->tree, m->ime->server->scene);
@@ -210,11 +219,15 @@ static void text_commit(struct wl_client *client, struct wl_resource *resource) 
     bool enable = t->enable > 0;
     t->enable = 0;
     if (enable && t->ime->enabled && t->ime->enabled != t) return;
-    char *copy = t->pending.text ? strdup(t->pending.text) : NULL;
-    if (t->pending.text && !copy) { wl_resource_post_no_memory(resource); return; }
-    state_clear(&t->current);
+    char *text = t->pending.text;
+    if (enable || text) {
+        free(t->current.text);
+    } else {
+        text = t->current.text;
+    }
     t->current = t->pending;
-    t->current.text = copy;
+    t->current.text = text;
+    t->pending.text = NULL;
     t->pending.cause = 0;
     struct input_method *m = t->ime->method;
     if (enable) {
@@ -325,6 +338,12 @@ static void popup_destroy(struct wl_resource *resource) {
     wl_list_remove(&p->link);
     free(p);
 }
+static void popup_role_destroy(struct surface *surface) {
+    struct wl_resource *resource = surface->role_resource;
+    if (!resource) return;
+    popup_destroy(resource);
+    wl_resource_set_user_data(resource, NULL);
+}
 static void popup_commit(struct surface *surface) {
     struct input_popup *p = surface->role_resource ?
         wl_resource_get_user_data(surface->role_resource) : NULL;
@@ -333,7 +352,7 @@ static void popup_commit(struct surface *surface) {
     popups_update(p->method);
 }
 static const struct surface_role popup_role = {
-    .name = "input_popup", .commit = popup_commit,
+    .name = "input_popup", .commit = popup_commit, .destroy = popup_role_destroy,
 };
 static const struct zwp_input_popup_surface_v2_interface popup_impl = {
     .destroy = destroy_resource,
@@ -393,6 +412,11 @@ static void grab_keyboard(struct wl_client *client, struct wl_resource *resource
 }
 static void method_destroy(struct wl_resource *resource) {
     struct input_method *m = wl_resource_get_user_data(resource);
+    if (m->available && m->ime->enabled) {
+        struct text_input *t = m->ime->enabled;
+        zwp_text_input_v3_send_preedit_string(t->resource, "", 0, 0);
+        zwp_text_input_v3_send_done(t->resource, t->serial);
+    }
     if (m->ime->method == m) m->ime->method = NULL;
     if (m->grab) wl_resource_destroy(m->grab);
     struct input_popup *p, *next;
@@ -440,7 +464,7 @@ bool input_method_listen(struct tomoe *s) {
 bool ime_key(struct input_device *device, uint32_t time, uint32_t key, uint32_t state) {
     struct tomoe *s = device->server;
     struct input_method *m = s->ime ? s->ime->method : NULL;
-    if (!m || !m->grab || !m->active || lock_active(s)) return false;
+    if (!m || !m->grab || lock_active(s)) return false;
     if (device->client == wl_resource_get_client(m->resource)) {
         seat_keyboard_send_key(s->seat, time, key, state);
     } else {
@@ -451,8 +475,14 @@ bool ime_key(struct input_device *device, uint32_t time, uint32_t key, uint32_t 
 }
 bool ime_modifiers(struct tomoe *s, const struct keyboard_modifiers *mods) {
     struct input_method *m = s->ime ? s->ime->method : NULL;
-    if (!m || !m->grab || !m->active || lock_active(s)) return false;
+    if (!m || !m->grab || lock_active(s)) return false;
     zwp_input_method_keyboard_grab_v2_send_modifiers(m->grab,
         wl_display_next_serial(s->display), mods->depressed, mods->latched, mods->locked, mods->group);
+    return true;
+}
+bool ime_virtual_modifiers(struct input_device *device, const struct keyboard_modifiers *mods) {
+    struct ime *ime = device->server->ime;
+    if (!ime || !ime->method || device->client != wl_resource_get_client(ime->method->resource)) return false;
+    seat_keyboard_send_modifiers(device->server->seat, mods);
     return true;
 }

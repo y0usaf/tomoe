@@ -220,6 +220,12 @@ in
     machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
     quit()
   '';
+  input-method = check "input-method" ''
+    start("--bare")
+    cli("mount ${imePolicy}")
+    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
+    quit()
+  '';
   integration = check "integration" (
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"

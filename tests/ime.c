@@ -230,6 +230,7 @@ int main(int argc, char **argv) {
         zwp_virtual_keyboard_v1_key(forward, 4, 30, 0);
         sync_all(); assert(grab_keys == 2 && app_keys == 2);
         zwp_input_method_keyboard_grab_v2_release(grab);
+        sync_all();
         zwp_virtual_keyboard_v1_key(physical, 5, 30, 1);
         zwp_virtual_keyboard_v1_key(physical, 6, 30, 0);
         sync_all(); assert(app_keys == 4);

@@ -11,7 +11,7 @@ bool protocols_listen(struct tomoe *s) {
     if (!idle_listen(s) || !gamma_listen(s) || !power_listen(s) ||
             !decoration_listen(s) || !foreign_listen(s) || !tearing_listen(s) ||
             !pointer_protocols_listen(s) || !cursor_shape_listen(s) || !gestures_listen(s) ||
-            !security_listen(s) || !ime_listen(s)) return false;
+            !security_listen(s) || !ime_listen(s) || !input_method_listen(s)) return false;
     s->drag_icon.kind = TARGET_ICON;
     return true;
 }

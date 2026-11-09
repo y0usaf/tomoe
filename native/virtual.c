@@ -202,8 +202,9 @@ static void keyboard_key(struct wl_client *client, struct wl_resource *resource,
 static void keyboard_modifiers(struct wl_client *client, struct wl_resource *resource,
         uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
     struct virtual_keyboard *k = keyboard_ready(resource);
-    if (k) input_modifiers(k->device,
-        &(struct keyboard_modifiers){ depressed, latched, locked, group });
+    if (!k) return;
+    struct keyboard_modifiers mods = { depressed, latched, locked, group };
+    if (!ime_virtual_modifiers(k->device, &mods)) input_modifiers(k->device, &mods);
 }
 
 static const struct zwp_virtual_keyboard_v1_interface keyboard_requests = {
