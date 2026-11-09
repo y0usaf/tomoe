@@ -70,7 +70,7 @@ assert not (m := dialog("hotkeys", "hotkeys-dismiss", today, ["#203040", "#c0603
 
 def card(urgent, want, absent=()):
     machine.succeed(ENV + f"notify-send -t 6000 {'-u critical ' if urgent else ''}check-summary check-body")
-    strip = lambda: row(screen["y"] + 13, screen["x"] + screen["w"] - 328, 320)
+    strip = lambda: row(screen["y"] + 13, screen["x"] + (screen["w"] - 320) // 2, 320)
     wrong = colours(strip, want, absent, 5)
     deadline = time.monotonic() + 15
     while drawn(want[0], strip()) and time.monotonic() < deadline:
