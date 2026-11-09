@@ -21,6 +21,7 @@
 #include "xdg-shell-client-protocol.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "alpha-modifier-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -33,11 +34,14 @@ static uint32_t layer_shell_version;
 static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 static struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
 static struct wp_viewporter *viewporter;
+static struct wp_alpha_modifier_v1 *alpha_manager;
+static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
 
 struct client {
     const char *mode, *app_id, *title, *layer_namespace, *color;
+    const char *protocol_error;
     int width, height, seconds, commit_rate;
     uint32_t layer, anchor, exclusive_zone, keyboard;
     int preferred_width, preferred_height;
@@ -46,6 +50,9 @@ struct client {
     bool mapped;
     bool single_pixel;
     struct wp_viewport *viewport;
+    bool alpha_probe;
+    unsigned alpha_step;
+    struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
     void *pixels;
@@ -94,6 +101,7 @@ static void finish(int code) {
     if (client->toplevel) xdg_toplevel_destroy(client->toplevel);
     if (client->xdg_surface) xdg_surface_destroy(client->xdg_surface);
     if (client->buffer) wl_buffer_destroy(client->buffer);
+    if (client->alpha) wp_alpha_modifier_surface_v1_destroy(client->alpha);
     if (client->viewport) wp_viewport_destroy(client->viewport);
     if (client->surface) wl_surface_destroy(client->surface);
     if (client->pixels) munmap(client->pixels, client->pixels_size);
@@ -103,6 +111,7 @@ static void finish(int code) {
     if (shm) wl_shm_destroy(shm);
     if (single_pixel_manager) wp_single_pixel_buffer_manager_v1_destroy(single_pixel_manager);
     if (viewporter) wp_viewporter_destroy(viewporter);
+    if (alpha_manager) wp_alpha_modifier_v1_destroy(alpha_manager);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -234,6 +243,8 @@ static void parse_options(int count, char **arguments, struct client *state) {
         { parse_size(option_value(option, value), &state->width, &state->height); i++; }
         else if (strcmp(option, "--color") == 0) { state->color = option_value(option, value); i++; }
         else if (strcmp(option, "--single-pixel") == 0) state->single_pixel = true;
+        else if (strcmp(option, "--alpha-probe") == 0) state->alpha_probe = true;
+        else if (strcmp(option, "--protocol-error") == 0) { state->protocol_error = option_value(option, value); i++; }
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -269,6 +280,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         single_pixel_manager = wl_registry_bind(registry, name, &wp_single_pixel_buffer_manager_v1_interface, 1);
     } else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
         viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
+    } else if (strcmp(interface, wp_alpha_modifier_v1_interface.name) == 0) {
+        alpha_manager = wl_registry_bind(registry, name, &wp_alpha_modifier_v1_interface, 1);
     }
 }
 
@@ -459,11 +472,34 @@ static double elapsed(struct timespec *start) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)(now.tv_sec - start->tv_sec) + (double)(now.tv_nsec - start->tv_nsec) / 1e9;
 }
+static void next_step(int number) {
+    advance = 1;
+}
+
+static void alpha_step(struct client *state) {
+    if (!advance || !state->alpha_probe) return;
+    advance = 0;
+    switch (++state->alpha_step) {
+    case 1: wp_alpha_modifier_surface_v1_set_multiplier(state->alpha, 0); break;
+    case 2: wl_surface_commit(state->surface); break;
+    case 3:
+        wp_alpha_modifier_surface_v1_destroy(state->alpha);
+        state->alpha = NULL;
+        break;
+    case 4: wl_surface_commit(state->surface); break;
+    default: fail("alpha probe exhausted");
+    }
+    roundtrip("alpha transition");
+    printf("alpha-step %u\n", state->alpha_step);
+    fflush(stdout);
+}
+
 
 static void run(struct client *state) {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (running && elapsed(&start) < (double)state->seconds) {
+        alpha_step(state);
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }
@@ -507,6 +543,20 @@ static void flood(struct client *state) {
     }
     finish(0);
 }
+static void protocol_error(const char *mode) {
+    struct wl_surface *surface = wl_compositor_create_surface(compositor);
+    if (!alpha_manager) fail("alpha modifier required");
+    struct wp_alpha_modifier_surface_v1 *alpha = wp_alpha_modifier_v1_get_surface(alpha_manager, surface);
+    if (strcmp(mode, "alpha-duplicate") == 0)
+        wp_alpha_modifier_v1_get_surface(alpha_manager, surface);
+    else if (strcmp(mode, "alpha-orphan") == 0) {
+        wl_surface_destroy(surface);
+        wp_alpha_modifier_surface_v1_set_multiplier(alpha, 0);
+    } else fail("unknown protocol error probe");
+    roundtrip("expected protocol error");
+    fail("expected protocol error was not raised");
+}
+
 
 int main(int count, char **arguments) {
     static struct client state = {
@@ -532,6 +582,7 @@ int main(int count, char **arguments) {
     action.sa_flags = 0;
     sigaction(SIGTERM, &action, NULL);
     sigaction(SIGINT, &action, NULL);
+    sigaction(SIGUSR1, &(struct sigaction){ .sa_handler = next_step }, NULL);
     parse_options(count, arguments, &state);
 
     display = wl_display_connect(NULL);
@@ -542,6 +593,7 @@ int main(int count, char **arguments) {
     roundtrip("the registry");
     if (!compositor) fail("the compositor does not advertise wl_compositor");
     if (!shm) fail("the compositor does not advertise wl_shm");
+    if (state.protocol_error) protocol_error(state.protocol_error);
     if (strcmp(state.mode, "drag") == 0) {
         if (!pointer_manager) fail("the compositor does not advertise zwlr_virtual_pointer_manager_v1");
         drag(&state);
@@ -553,6 +605,12 @@ int main(int count, char **arguments) {
         if (state.keyboard == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND && layer_shell_version < 4)
             fail("on-demand keyboard interactivity needs zwlr_layer_shell_v1 version 4");
         setup_layer(&state);
+    }
+    if (state.alpha_probe) {
+        if (!alpha_manager) fail("alpha modifier required");
+        state.alpha = wp_alpha_modifier_v1_get_surface(alpha_manager, state.surface);
+        wp_alpha_modifier_surface_v1_set_multiplier(state.alpha, UINT32_MAX / 2);
+        wl_surface_commit(state.surface);
     }
     if (state.commit_rate) flood(&state);
     run(&state);

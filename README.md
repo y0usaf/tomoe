@@ -205,6 +205,8 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Extensions are trusted code. They run inside the compositor with your
   permissions.
 - Clients can use single-pixel buffers with viewporter for solid-colour surfaces.
+- Per-surface alpha multipliers are committed atomically with surface state and
+  affect both normal rendering and captures.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).

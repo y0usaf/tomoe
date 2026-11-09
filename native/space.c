@@ -293,7 +293,7 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         surface_release_after(surface, data->buffer);
     struct fbox src;
     surface_source_box(surface, &src);
-    float alpha = window ? t->alpha : 1;
+    float alpha = (window ? t->alpha : 1) * ((double)surface->current.alpha / UINT32_MAX);
     struct texture_options options = {
         .texture = surface->texture, .src_box = src, .dst_box = dst,
         .transform = transform_compose(
@@ -713,7 +713,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
-    if (leaf->surface->current.viewport.has_src ||
+    if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
     data->surface = leaf->surface;
     data->window = t && t->kind == TARGET_WINDOW;

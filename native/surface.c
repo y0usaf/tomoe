@@ -6,6 +6,7 @@
 #include "presentation-time-protocol.h"
 #include "viewporter-protocol.h"
 #include "fifo-v1-protocol.h"
+#include "alpha-modifier-v1-protocol.h"
 
 #define COMPOSITOR_VERSION 6
 
@@ -13,6 +14,7 @@ enum {
     STATE_BUFFER = 1 << 0, STATE_SURFACE_DAMAGE = 1 << 1, STATE_BUFFER_DAMAGE = 1 << 2,
     STATE_INPUT = 1 << 4, STATE_TRANSFORM = 1 << 5, STATE_SCALE = 1 << 6,
     STATE_FRAME = 1 << 7, STATE_VIEWPORT = 1 << 8, STATE_OFFSET = 1 << 9,
+    STATE_ALPHA = 1 << 10,
 };
 
 struct release {
@@ -136,7 +138,8 @@ static void region_free(struct wl_resource *resource) {
 }
 
 static void state_init(struct surface_state *state) {
-    *state = (struct surface_state){ .scale = 1, .transform = WL_OUTPUT_TRANSFORM_NORMAL };
+    *state = (struct surface_state){ .scale = 1, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
+        .alpha = UINT32_MAX };
     pixman_region32_init(&state->surface_damage);
     pixman_region32_init(&state->buffer_damage);
     pixman_region32_init_rect(&state->input, INT32_MIN, INT32_MIN, UINT32_MAX, UINT32_MAX);
@@ -269,6 +272,7 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
     }
     if (src->committed & STATE_INPUT) pixman_region32_copy(&dst->input, &src->input);
     if (src->committed & STATE_VIEWPORT) dst->viewport = src->viewport;
+    if (src->committed & STATE_ALPHA) dst->alpha = src->alpha;
     wl_list_insert_list(dst->frames.prev, &src->frames);
     wl_list_init(&src->frames);
     wl_list_insert_list(dst->feedbacks.prev, &src->feedbacks);
@@ -811,6 +815,7 @@ static void surface_free(struct wl_resource *resource) {
     buffer_unlock(surface->buffer);
     pixman_region32_fini(&surface->input_region);
     if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
+    if (surface->alpha_modifier) wl_resource_set_user_data(surface->alpha_modifier, NULL);
     if (surface->fractional) wl_resource_set_user_data(surface->fractional, NULL);
     if (surface->fifo) wl_resource_set_user_data(surface->fifo, NULL);
     if (surface->syncobj) {
@@ -1371,6 +1376,59 @@ static void get_viewport(struct wl_client *client, struct wl_resource *manager, 
 static const struct wp_viewporter_interface viewporter_impl = {
     .destroy = destroy_resource, .get_viewport = get_viewport,
 };
+
+static void alpha_free(struct wl_resource *resource) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (!surface) return;
+    surface->alpha_modifier = NULL;
+    surface->pending.alpha = UINT32_MAX;
+    surface->pending.committed |= STATE_ALPHA;
+}
+
+static void alpha_set(struct wl_client *client, struct wl_resource *resource, uint32_t factor) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (!surface) {
+        wl_resource_post_error(resource, WP_ALPHA_MODIFIER_SURFACE_V1_ERROR_NO_SURFACE,
+            "surface destroyed");
+        return;
+    }
+    surface->pending.alpha = factor;
+    surface->pending.committed |= STATE_ALPHA;
+}
+
+static const struct wp_alpha_modifier_surface_v1_interface alpha_impl = {
+    .destroy = destroy_resource, .set_multiplier = alpha_set,
+};
+
+static void alpha_get(struct wl_client *client, struct wl_resource *manager, uint32_t id,
+        struct wl_resource *surface_resource) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (surface->alpha_modifier) {
+        wl_resource_post_error(manager, WP_ALPHA_MODIFIER_V1_ERROR_ALREADY_CONSTRUCTED,
+            "surface already has an alpha modifier");
+        return;
+    }
+    struct wl_resource *resource = wl_resource_create(client,
+        &wp_alpha_modifier_surface_v1_interface, 1, id);
+    if (!resource) { wl_client_post_no_memory(client); return; }
+    surface->alpha_modifier = resource;
+    wl_resource_set_implementation(resource, &alpha_impl, surface, alpha_free);
+}
+
+static const struct wp_alpha_modifier_v1_interface alpha_manager_impl = {
+    .destroy = destroy_resource, .get_surface = alpha_get,
+};
+
+static void alpha_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &wp_alpha_modifier_v1_interface,
+        version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &alpha_manager_impl, data, NULL);
+}
+
+bool alpha_modifier_listen(struct tomoe *s) {
+    return wl_global_create(s->display, &wp_alpha_modifier_v1_interface, 1, s, alpha_bind);
+}
 
 static void fractional_free(struct wl_resource *resource) {
     struct surface *surface = wl_resource_get_user_data(resource);
