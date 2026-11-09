@@ -7,6 +7,7 @@
 #include "viewporter-protocol.h"
 #include "fifo-v1-protocol.h"
 #include "alpha-modifier-v1-protocol.h"
+#include "content-type-v1-protocol.h"
 
 #define COMPOSITOR_VERSION 6
 
@@ -15,6 +16,7 @@ enum {
     STATE_INPUT = 1 << 4, STATE_TRANSFORM = 1 << 5, STATE_SCALE = 1 << 6,
     STATE_FRAME = 1 << 7, STATE_VIEWPORT = 1 << 8, STATE_OFFSET = 1 << 9,
     STATE_ALPHA = 1 << 10,
+    STATE_CONTENT_TYPE = 1 << 11,
 };
 
 struct release {
@@ -273,6 +275,7 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
     if (src->committed & STATE_INPUT) pixman_region32_copy(&dst->input, &src->input);
     if (src->committed & STATE_VIEWPORT) dst->viewport = src->viewport;
     if (src->committed & STATE_ALPHA) dst->alpha = src->alpha;
+    if (src->committed & STATE_CONTENT_TYPE) dst->content_type = src->content_type;
     wl_list_insert_list(dst->frames.prev, &src->frames);
     wl_list_init(&src->frames);
     wl_list_insert_list(dst->feedbacks.prev, &src->feedbacks);
@@ -816,6 +819,7 @@ static void surface_free(struct wl_resource *resource) {
     pixman_region32_fini(&surface->input_region);
     if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
     if (surface->alpha_modifier) wl_resource_set_user_data(surface->alpha_modifier, NULL);
+    if (surface->content_type) wl_resource_set_user_data(surface->content_type, NULL);
     if (surface->fractional) wl_resource_set_user_data(surface->fractional, NULL);
     if (surface->fifo) wl_resource_set_user_data(surface->fifo, NULL);
     if (surface->syncobj) {
@@ -1429,6 +1433,58 @@ static void alpha_bind(struct wl_client *client, void *data, uint32_t version, u
 bool alpha_modifier_listen(struct tomoe *s) {
     return wl_global_create(s->display, &wp_alpha_modifier_v1_interface, 1, s, alpha_bind);
 }
+static void content_type_free(struct wl_resource *resource) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (!surface) return;
+    surface->content_type = NULL;
+    surface->pending.content_type = WP_CONTENT_TYPE_V1_TYPE_NONE;
+    surface->pending.committed |= STATE_CONTENT_TYPE;
+}
+
+static void content_type_set(struct wl_client *client, struct wl_resource *resource, uint32_t type) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (!surface) return;
+    if (!wp_content_type_v1_type_is_valid(type, wl_resource_get_version(resource))) {
+        wl_resource_post_error(resource, (uint32_t)-1, "invalid content type");
+        return;
+    }
+    surface->pending.content_type = type;
+    surface->pending.committed |= STATE_CONTENT_TYPE;
+}
+
+static const struct wp_content_type_v1_interface content_type_impl = {
+    .destroy = destroy_resource, .set_content_type = content_type_set,
+};
+
+static void content_type_get(struct wl_client *client, struct wl_resource *manager, uint32_t id,
+        struct wl_resource *surface_resource) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (surface->content_type) {
+        wl_resource_post_error(manager, WP_CONTENT_TYPE_MANAGER_V1_ERROR_ALREADY_CONSTRUCTED,
+            "surface already has a content type");
+        return;
+    }
+    struct wl_resource *resource = wl_resource_create(client, &wp_content_type_v1_interface, 1, id);
+    if (!resource) { wl_client_post_no_memory(client); return; }
+    surface->content_type = resource;
+    wl_resource_set_implementation(resource, &content_type_impl, surface, content_type_free);
+}
+
+static const struct wp_content_type_manager_v1_interface content_type_manager_impl = {
+    .destroy = destroy_resource, .get_surface_content_type = content_type_get,
+};
+
+static void content_type_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &wp_content_type_manager_v1_interface,
+        version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &content_type_manager_impl, data, NULL);
+}
+
+bool content_type_listen(struct tomoe *s) {
+    return wl_global_create(s->display, &wp_content_type_manager_v1_interface, 1, s, content_type_bind);
+}
+
 
 static void fractional_free(struct wl_resource *resource) {
     struct surface *surface = wl_resource_get_user_data(resource);

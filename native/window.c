@@ -17,6 +17,7 @@ struct window {
     bool configured;
     bool mapped, admitted, presented, desired_visible, fullscreen_state, maximize_state;
     char *xdg_title, *xdg_app_id, *xdg_fullscreen_output;
+    uint32_t content_type;
     bool xdg_fullscreen_requested, xdg_maximize_requested;
     bool desired_fullscreen, desired_maximize;
     struct animation move, fade;
@@ -192,6 +193,8 @@ static void window_event(struct window *w, const char *type, const char *request
         w->client_width, w->client_height, w->mapped ? "t" : "nil");
     quote(out, title_of(w));
     fputs(" :app-id ", out); quote(out, app_id_of(w));
+    static const char *const types[] = { "none", "photo", "video", "game" };
+    fprintf(out, " :content-type :%s", types[surface_of(w)->current.content_type]);
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
     bool fullscreen_requested = w->xdg_fullscreen_requested;
@@ -619,12 +622,16 @@ static void window_commit(struct wl_listener *listener, void *data) {
     bool fullscreen = w->xdg->current.fullscreen;
     bool maximize = w->xdg->current.maximized;
     bool changed = fullscreen != w->fullscreen_state || maximize != w->maximize_state;
+    uint32_t content_type = surface->current.content_type;
+    bool content_changed = content_type != w->content_type;
+    w->content_type = content_type;
     if (changed) {
         w->fullscreen_state = fullscreen;
         w->maximize_state = maximize;
         window_park(w);
         if (buffer_active || (w->admitted && !w->mapped)) window_event(w, "metadata", NULL);
     }
+    if (content_changed && !changed && w->admitted) window_event(w, "metadata", NULL);
     if (geometry_changed && !changed) window_geometry_event(w);
     target_sync(w);
     schedule_scene(w->server);

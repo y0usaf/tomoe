@@ -31,4 +31,24 @@ for mode, interface in [("alpha-duplicate", "wp_alpha_modifier_v1"), ("alpha-orp
     error = machine.fail(ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --protocol-error {mode} 2>&1")
     assert f"protocol error on {interface}@" in error and ": 0" in error, error
 
+def content_type():
+    return plist(items(inspect()[":WINDOWS"])[0])[":CONTENT-TYPE"]
+
+client("content", "--content-probe")
+for _ in range(100):
+    if content_type() == ":GAME":
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError(inspect())
+for step, want in enumerate([":GAME", ":PHOTO", ":PHOTO", ":NONE"], 1):
+    machine.succeed("systemctl kill --kill-whom=main --signal=USR1 content")
+    machine.wait_until_succeeds(f"journalctl -u content -o cat | grep -qx 'content-step {step}'")
+    assert content_type() == want, inspect()
+machine.succeed("systemctl stop content")
+for mode in ["content-duplicate", "content-invalid"]:
+    error = machine.fail(ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --protocol-error {mode} 2>&1")
+    assert "protocol error on wp_content_type" in error, error
+machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-test-client --protocol-error content-orphan")
+
 quit()

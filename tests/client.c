@@ -22,6 +22,7 @@
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "alpha-modifier-v1-client-protocol.h"
+#include "content-type-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -35,6 +36,7 @@ static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
 static struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
 static struct wp_viewporter *viewporter;
 static struct wp_alpha_modifier_v1 *alpha_manager;
+static struct wp_content_type_manager_v1 *content_manager;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -52,6 +54,9 @@ struct client {
     struct wp_viewport *viewport;
     bool alpha_probe;
     unsigned alpha_step;
+    bool content_probe;
+    unsigned content_step;
+    struct wp_content_type_v1 *content_type;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -102,6 +107,7 @@ static void finish(int code) {
     if (client->xdg_surface) xdg_surface_destroy(client->xdg_surface);
     if (client->buffer) wl_buffer_destroy(client->buffer);
     if (client->alpha) wp_alpha_modifier_surface_v1_destroy(client->alpha);
+    if (client->content_type) wp_content_type_v1_destroy(client->content_type);
     if (client->viewport) wp_viewport_destroy(client->viewport);
     if (client->surface) wl_surface_destroy(client->surface);
     if (client->pixels) munmap(client->pixels, client->pixels_size);
@@ -112,6 +118,7 @@ static void finish(int code) {
     if (single_pixel_manager) wp_single_pixel_buffer_manager_v1_destroy(single_pixel_manager);
     if (viewporter) wp_viewporter_destroy(viewporter);
     if (alpha_manager) wp_alpha_modifier_v1_destroy(alpha_manager);
+    if (content_manager) wp_content_type_manager_v1_destroy(content_manager);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -245,6 +252,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--single-pixel") == 0) state->single_pixel = true;
         else if (strcmp(option, "--alpha-probe") == 0) state->alpha_probe = true;
         else if (strcmp(option, "--protocol-error") == 0) { state->protocol_error = option_value(option, value); i++; }
+        else if (strcmp(option, "--content-probe") == 0) state->content_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -282,6 +290,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
     } else if (strcmp(interface, wp_alpha_modifier_v1_interface.name) == 0) {
         alpha_manager = wl_registry_bind(registry, name, &wp_alpha_modifier_v1_interface, 1);
+    } else if (strcmp(interface, wp_content_type_manager_v1_interface.name) == 0) {
+        content_manager = wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, 1);
     }
 }
 
@@ -493,6 +503,24 @@ static void alpha_step(struct client *state) {
     printf("alpha-step %u\n", state->alpha_step);
     fflush(stdout);
 }
+static void content_step(struct client *state) {
+    if (!advance || !state->content_probe) return;
+    advance = 0;
+    switch (++state->content_step) {
+    case 1: wp_content_type_v1_set_content_type(state->content_type, WP_CONTENT_TYPE_V1_TYPE_PHOTO); break;
+    case 2: wl_surface_commit(state->surface); break;
+    case 3:
+        wp_content_type_v1_destroy(state->content_type);
+        state->content_type = NULL;
+        break;
+    case 4: wl_surface_commit(state->surface); break;
+    default: fail("content probe exhausted");
+    }
+    roundtrip("content transition");
+    printf("content-step %u\n", state->content_step);
+    fflush(stdout);
+}
+
 
 
 static void run(struct client *state) {
@@ -500,6 +528,7 @@ static void run(struct client *state) {
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (running && elapsed(&start) < (double)state->seconds) {
         alpha_step(state);
+        content_step(state);
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }
@@ -545,6 +574,23 @@ static void flood(struct client *state) {
 }
 static void protocol_error(const char *mode) {
     struct wl_surface *surface = wl_compositor_create_surface(compositor);
+    if (strncmp(mode, "content-", 8) == 0) {
+        if (!content_manager) fail("content type required");
+        struct wp_content_type_v1 *type = wp_content_type_manager_v1_get_surface_content_type(content_manager, surface);
+        if (strcmp(mode, "content-duplicate") == 0)
+            wp_content_type_manager_v1_get_surface_content_type(content_manager, surface);
+        else if (strcmp(mode, "content-invalid") == 0)
+            wp_content_type_v1_set_content_type(type, UINT32_MAX);
+        else if (strcmp(mode, "content-orphan") == 0) {
+            wl_surface_destroy(surface);
+            wp_content_type_v1_set_content_type(type, WP_CONTENT_TYPE_V1_TYPE_GAME);
+            wp_content_type_v1_destroy(type);
+            roundtrip("inert content object");
+            finish(0);
+        } else fail("unknown content probe");
+        roundtrip("expected content protocol error");
+        fail("expected content protocol error was not raised");
+    }
     if (!alpha_manager) fail("alpha modifier required");
     struct wp_alpha_modifier_surface_v1 *alpha = wp_alpha_modifier_v1_get_surface(alpha_manager, surface);
     if (strcmp(mode, "alpha-duplicate") == 0)
@@ -610,6 +656,12 @@ int main(int count, char **arguments) {
         if (!alpha_manager) fail("alpha modifier required");
         state.alpha = wp_alpha_modifier_v1_get_surface(alpha_manager, state.surface);
         wp_alpha_modifier_surface_v1_set_multiplier(state.alpha, UINT32_MAX / 2);
+        wl_surface_commit(state.surface);
+    }
+    if (state.content_probe) {
+        if (!content_manager) fail("content type required");
+        state.content_type = wp_content_type_manager_v1_get_surface_content_type(content_manager, state.surface);
+        wp_content_type_v1_set_content_type(state.content_type, WP_CONTENT_TYPE_V1_TYPE_GAME);
         wl_surface_commit(state.surface);
     }
     if (state.commit_rate) flood(&state);
