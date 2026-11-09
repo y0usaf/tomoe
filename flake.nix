@@ -213,10 +213,12 @@
               wayland-scanner private-code "$xml" "build/$name-protocol.c"
               wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
             done
-            $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
-              -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
-              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3) \
-              ${sbcl}/lib/sbcl/sbcl.o native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
+            cflags="-std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3)"
+            mkdir build/obj
+            export cflags
+            printf '%s\n' native/*.c build/*-protocol.c \
+              | xargs -P "$NIX_BUILD_CORES" -I{} sh -c '$CC $cflags -c "$1" -o "build/obj/$(basename "$1" .c).o"' _ {}
+            $CC -Wl,--export-dynamic ${sbcl}/lib/sbcl/sbcl.o build/obj/*.o build/*.o -o build/tomoe-runtime \
               $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
               -lresvg -ldl -lpthread -lzstd -lm
             SBCL_HOME=${sbcl}/lib/sbcl \
