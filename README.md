@@ -134,6 +134,12 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
 
+Output tools such as `wlr-randr` can query and configure every connected head,
+including disabled outputs, through `zwlr_output_manager_v1` version 4. Mode,
+position, scale, transform and adaptive-sync changes are tested as one transaction;
+`wlr-randr --dryrun` validates without applying. Accepted settings become the
+output baseline, while later explicit `configure-output` effects can override it.
+
 ## How it fits together
 
 SBCL runs the policy. A C core linked into the same executable speaks Wayland

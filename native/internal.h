@@ -431,6 +431,8 @@ struct output {
     int pending_x, pending_y;
     int x, y;
     bool positioned;
+    bool baseline_positioned;
+    int baseline_x, baseline_y;
     char mirror[129];
     char pending_mirror[129];
     struct profile *profile, *pending_profile;
@@ -770,6 +772,7 @@ struct seat {
 
 struct tomoe {
     struct wl_display *display;
+    struct output_manager *output_manager;
     struct settings settings;
     struct effects *effects;
     struct screenshot *screenshot;
@@ -1031,6 +1034,15 @@ void unmap_event(struct tomoe *s, uint32_t id);
 struct screen *any_output(struct tomoe *s);
 void output_added(struct tomoe *s, struct screen *screen);
 void outputs_request_nested_size(struct tomoe *s);
+struct output_configuration_entry {
+    uint64_t id;
+    struct screen_state state;
+    int x, y;
+};
+bool output_management_listen(struct tomoe *s);
+void output_management_refresh(struct tomoe *s);
+bool output_management_configure(struct tomoe *s,
+    struct output_configuration_entry *entries, size_t count, bool test);
 int tomoe_outputs_pending(struct tomoe *s);
 bool presentation_outputs(struct tomoe *s, struct presentation *plan);
 bool output_locations(struct tomoe *s, bool pending,

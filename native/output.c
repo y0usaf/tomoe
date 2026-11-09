@@ -317,6 +317,7 @@ static bool write_outputs_payload(FILE *out, struct tomoe *s, bool pending) {
 
 void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
+    output_management_refresh(s);
     uint64_t revision = s->outputs_revision + 1;
     char *text = NULL;
     size_t text_size = 0;
@@ -687,7 +688,9 @@ int tomoe_outputs_begin(struct tomoe *s) {
         }
         o->pending_configured = false;
         o->pending_hold = false;
-        o->pending_positioned = false;
+        o->pending_positioned = o->baseline_positioned;
+        o->pending_x = o->baseline_x;
+        o->pending_y = o->baseline_y;
         o->pending_mirror[0] = '\0';
         profile_unref(o->pending_profile);
         o->pending_profile = NULL;
@@ -942,8 +945,7 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
             o->x = o->pending_x;
             o->y = o->pending_y;
             o->configured = o->pending_configured;
-            o->positioned = o->pending_configured &&
-                !o->pending_mirror[0] && o->pending_positioned;
+            o->positioned = !o->pending_mirror[0] && o->pending_positioned;
             if (o->pending_configured)
                 memcpy(o->mirror, o->pending_mirror, sizeof(o->mirror));
             else
@@ -1009,6 +1011,91 @@ done:
     free(states); free(previous); free(request_ids); free(request_holds);
     free(request_states);
     return error;
+}
+
+bool output_management_configure(struct tomoe *s,
+        struct output_configuration_entry *entries, size_t count, bool test) {
+    if (s->presentation || count != (size_t)wl_list_length(&s->outputs)) return false;
+    struct screen_update *updates = calloc(count ? count : 1, sizeof(*updates));
+    struct ring *rings = calloc(count ? count : 1, sizeof(*rings));
+    if (!updates || !rings) { free(updates); free(rings); return false; }
+    bool ok = true;
+    double scale = 1.0;
+    struct output *first;
+    wl_list_for_each(first, &s->outputs, link) {
+        bool found = false;
+        for (size_t i = 0; i < count; i++) {
+            if (entries[i].id != first->id || !entries[i].state.enabled) continue;
+            scale = snapped_scale(entries[i].state.scale);
+            found = true;
+            break;
+        }
+        if (found) break;
+    }
+    for (size_t i = 0; i < count; i++) {
+        struct output *o;
+        wl_list_for_each(o, &s->outputs, link) {
+            if (o->id != entries[i].id) continue;
+            updates[i].output = o->screen;
+            break;
+        }
+        if (!updates[i].output || entries[i].x * scale > INT_MAX ||
+                entries[i].x * scale < INT_MIN || entries[i].y * scale > INT_MAX ||
+                entries[i].y * scale < INT_MIN) { ok = false; break; }
+        if (entries[i].state.enabled && entries[i].state.adaptive_sync_enabled &&
+                !updates[i].output->adaptive_sync_supported) { ok = false; break; }
+        ok = screen_state_copy(&updates[i].base, &entries[i].state);
+        if (!ok) break;
+        if (entries[i].state.enabled) {
+            int width, height;
+            state_size(&updates[i], &width, &height);
+            int transformed_width = entries[i].state.transform % 2 ? height : width;
+            if (transformed_width <= 0 ||
+                    (int64_t)pixel_round(entries[i].x * scale) + transformed_width > INT_MAX) {
+                ok = false;
+                break;
+            }
+        }
+        strip_disabled_state(&updates[i].base);
+    }
+    if (ok) ok = test_rings(s, updates, count, rings, false) ||
+        test_rings(s, updates, count, rings, true);
+    for (size_t i = 0; i < count; i++) {
+        screen_state_finish(&updates[i].base);
+        ring_finish(&rings[i]);
+    }
+    free(updates); free(rings);
+    if (!ok || test) return ok;
+    for (size_t i = 0; i < count; i++) {
+        struct output *o;
+        wl_list_for_each(o, &s->outputs, link) {
+            if (o->id != entries[i].id) continue;
+            screen_state_finish(&o->pending);
+            snapshot_output_state(o->screen, &o->pending);
+            if (!set_output_state_fields(&o->pending, &entries[i].state,
+                    entries[i].state.committed)) return false;
+            o->pending_configured = true;
+            o->pending_hold = false;
+            o->pending_positioned = true;
+            o->pending_x = pixel_round(entries[i].x * scale);
+            o->pending_y = pixel_round(entries[i].y * scale);
+            o->pending_mirror[0] = '\0';
+            profile_unref(o->pending_profile);
+            o->pending_profile = profile_ref(o->profile);
+            o->pending_profile_error = o->profile_error;
+        }
+    }
+    if (tomoe_outputs_apply(s)) return false;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        screen_state_finish(&o->initial);
+        snapshot_output_state(o->screen, &o->initial);
+        o->configured = false;
+        o->baseline_positioned = true;
+        o->baseline_x = o->x;
+        o->baseline_y = o->y;
+    }
+    return true;
 }
 
 struct screen *any_output(struct tomoe *s) {

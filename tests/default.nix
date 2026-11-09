@@ -94,6 +94,25 @@ let
     '';
     installPhase = "install -Dm755 tomoe-security-client $out/bin/tomoe-security-client";
   };
+  outputClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-output-management-client";
+    src = ./output-management-client.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      xml=${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-management-unstable-v1.xml
+      wayland-scanner client-header "$xml" wlr-output-management-unstable-v1-client-protocol.h
+      wayland-scanner private-code "$xml" protocol.c
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-output-management-client
+    '';
+    installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
+  };
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
@@ -182,6 +201,13 @@ let
                 (cond ((equal command "off") (list (output-power :off "Virtual-1")))
                       ((equal command "on") (list (output-power :on "Virtual-1")))))))
   '';
+  outputOverrideProbe = pkgs.writeText "output-override-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "output-override-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state (list (configure-output "HEADLESS-1" :mode '(800 600 60)
+                                            :scale 1 :position '(0 0))) nil))
+  '';
   checkWith =
     extra: name: script:
     pkgs.testers.runNixOSTest {
@@ -260,6 +286,23 @@ in
     + builtins.readFile ./bare.py
   );
   fifo = check "fifo" (builtins.readFile ./fifo.py);
+  output-management =
+    checkWith
+      {
+        environment.systemPackages = [
+          pkgs.wlr-randr
+          pkgs.wayland-utils
+          outputClient
+        ];
+      }
+      "output-management"
+      (
+        ''
+          VIRTUAL_PROBE = "${virtualProbe}"
+          OUTPUT_OVERRIDE_PROBE = "${outputOverrideProbe}"
+        ''
+        + builtins.readFile ./output-management.py
+      );
   portal =
     checkWith
       {
