@@ -162,6 +162,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 
 - It is my daily desktop on an NVIDIA RTX 4090, running on DRM from a TTY,
   and it runs on an AMD Framework laptop too. Other GPUs get less testing.
+- Clients can pace queued commits with `wp_fifo_v1`: barriers retain each update
+  through the next output frame boundary, including direct scanout. Synchronized
+  subsurfaces ignore FIFO waits as required by the protocol.
 - Input methods, touch and tablets are not supported yet, and shell surfaces
   cannot take keyboard focus.
 - Extensions are trusted code. They run inside the compositor with your

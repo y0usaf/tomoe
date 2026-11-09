@@ -1065,11 +1065,12 @@ static void output_frame(struct wl_listener *listener, void *data) {
         surface_presented(scanout, o->screen, true);
     else if (success) surfaces_textured(o);
     if (success && o->gamma_dirty) gamma_apply(o, &state);
-    if (success && scanout && windows_want_tearing(o->server, o)) {
+    if (success && scanout && !scanout->fifo_barrier && windows_want_tearing(o->server, o)) {
         state.tearing_page_flip = true;
         if (!screen_test(o->screen, &state)) state.tearing_page_flip = false;
     }
     success = success && screen_commit(o->screen, &state);
+    if (success) surfaces_fifo_commit(o->screen);
     if (success && scanout) surface_release_after(scanout, state.buffer);
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
         buffer_unlock(o->presented[1]);

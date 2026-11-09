@@ -298,7 +298,10 @@ size_t screen_degamma_size(struct screen *screen) {
 
 void screen_send_frame(struct screen *screen) {
     screen->frame_pending = false;
-    if (screen->enabled && !screen->power_off) wl_signal_emit_mutable(&screen->events.frame, screen);
+    if (screen->enabled && !screen->power_off) {
+        surfaces_fifo_frame(screen);
+        wl_signal_emit_mutable(&screen->events.frame, screen);
+    }
 }
 
 static void idle_frame(void *data) {

@@ -236,8 +236,10 @@ void refresh_scene(struct tomoe *s) {
     struct surface *surface;
     wl_list_for_each(surface, &s->surfaces, link) { surface->seen = false; surface->primary = NULL; }
     walk_scene(s, s->scene, NULL, 0, 0, false, refresh_leaf, NULL);
-    wl_list_for_each(surface, &s->surfaces, link)
+    wl_list_for_each(surface, &s->surfaces, link) {
         if (!surface->seen && surface->scene_owned) surface_leave_all(surface);
+        surface_fifo_unpaced(surface);
+    }
     pointer_refresh(s);
 }
 void forget_output(struct tomoe *s, struct screen *output) {
@@ -245,6 +247,7 @@ void forget_output(struct tomoe *s, struct screen *output) {
     wl_list_for_each(surface, &s->surfaces, link) {
         if (surface->primary == output) surface->primary = NULL;
         if (surface->scene_owned) surface_send_leave(surface, output);
+        surface_fifo_unpaced(surface);
     }
 }
 bool surface_visible(struct tomoe *s, struct surface *surface) {

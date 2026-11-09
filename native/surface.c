@@ -5,6 +5,7 @@
 #include "linux-drm-syncobj-v1-protocol.h"
 #include "presentation-time-protocol.h"
 #include "viewporter-protocol.h"
+#include "fifo-v1-protocol.h"
 
 #define COMPOSITOR_VERSION 6
 
@@ -228,6 +229,9 @@ static void state_finish(struct surface_state *state) {
 }
 
 static void state_move(struct surface_state *dst, struct surface_state *src) {
+    dst->fifo_set = src->fifo_set;
+    dst->fifo_wait = src->fifo_wait;
+    src->fifo_set = src->fifo_wait = false;
     dst->width = src->width;
     dst->height = src->height;
     dst->buffer_width = src->buffer_width;
@@ -421,6 +425,10 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
         }
     }
     state_move(&surface->current, next);
+    if (surface->current.fifo_set) {
+        surface->fifo_barrier = true;
+        surface->fifo_latched = false;
+    }
     struct surface_synced *synced;
     if (next == &surface->pending) {
         wl_list_for_each(synced, &surface->synced, link)
@@ -467,14 +475,49 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     surface->current.buffer = NULL;
 }
 
+static bool subsurface_synchronized(struct subsurface *sub);
+
+static bool fifo_blocked(struct surface *surface, struct surface_state *state) {
+    return state->fifo_wait && surface->fifo_barrier && surface->primary &&
+        surface->primary->enabled && !surface->primary->power_off &&
+        !(surface->subsurface && subsurface_synchronized(surface->subsurface));
+}
+
 static void flush_cached(struct surface *surface) {
     while (!wl_list_empty(&surface->cached)) {
         struct surface_state *state = wl_container_of(surface->cached.next, state, link);
-        if (state->locks) return;
+        if (state->locks || fifo_blocked(surface, state)) return;
         wl_list_remove(&state->link);
         apply_state(surface, state);
         state_finish(state);
         free(state);
+    }
+}
+
+void surface_fifo_unpaced(struct surface *surface) {
+    if (!surface->fifo_barrier || (surface->primary && surface->primary->enabled &&
+            !surface->primary->power_off)) return;
+    surface->fifo_barrier = surface->fifo_latched = false;
+    flush_cached(surface);
+}
+
+void surfaces_fifo_frame(struct screen *screen) {
+    struct surface *surface;
+    wl_list_for_each(surface, &screen->server->surfaces, link) {
+        if (surface->primary != screen && surface->primary) continue;
+        if (surface->fifo_latched || !surface->primary || !screen->enabled || screen->power_off) {
+            surface->fifo_barrier = surface->fifo_latched = false;
+            flush_cached(surface);
+        }
+    }
+}
+
+void surfaces_fifo_commit(struct screen *screen) {
+    struct surface *surface;
+    wl_list_for_each(surface, &screen->server->surfaces, link) {
+        if (surface->primary != screen || !surface->fifo_barrier) continue;
+        surface->fifo_latched = true;
+        screen_schedule_frame(screen);
     }
 }
 
@@ -584,7 +627,8 @@ static void surface_commit(struct wl_client *client, struct wl_resource *resourc
         sub->has_cache = false;
         surface_unlock(surface, sub->cache);
     }
-    if (!wait && !lock_parent && !synced && wl_list_empty(&surface->cached)) {
+    if (!wait && !lock_parent && !synced && !fifo_blocked(surface, p) &&
+            wl_list_empty(&surface->cached)) {
         apply_state(surface, p);
         return;
     }
@@ -768,6 +812,7 @@ static void surface_free(struct wl_resource *resource) {
     pixman_region32_fini(&surface->input_region);
     if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
     if (surface->fractional) wl_resource_set_user_data(surface->fractional, NULL);
+    if (surface->fifo) wl_resource_set_user_data(surface->fifo, NULL);
     if (surface->syncobj) {
         struct syncobj_surface *sync = wl_resource_get_user_data(surface->syncobj);
         if (sync) sync->surface = NULL;
@@ -1472,6 +1517,53 @@ static const struct wp_linux_drm_syncobj_manager_v1_interface syncobj_impl = {
     .import_timeline = import_timeline,
 };
 
+static void fifo_free(struct wl_resource *resource) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (surface) surface->fifo = NULL;
+}
+
+static struct surface *fifo_surface(struct wl_resource *resource) {
+    struct surface *surface = wl_resource_get_user_data(resource);
+    if (!surface) wl_resource_post_error(resource, WP_FIFO_V1_ERROR_SURFACE_DESTROYED,
+        "FIFO surface has been destroyed");
+    return surface;
+}
+
+static void fifo_set(struct wl_client *client, struct wl_resource *resource) {
+    struct surface *surface = fifo_surface(resource);
+    if (surface) surface->pending.fifo_set = true;
+}
+
+static void fifo_wait(struct wl_client *client, struct wl_resource *resource) {
+    struct surface *surface = fifo_surface(resource);
+    if (surface) surface->pending.fifo_wait = true;
+}
+
+static const struct wp_fifo_v1_interface fifo_impl = {
+    .destroy = destroy_resource, .set_barrier = fifo_set, .wait_barrier = fifo_wait,
+};
+
+static void fifo_get(struct wl_client *client, struct wl_resource *manager, uint32_t id,
+        struct wl_resource *surface_resource) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    if (surface->fifo) {
+        wl_resource_post_error(manager, WP_FIFO_MANAGER_V1_ERROR_ALREADY_EXISTS,
+            "surface already has a FIFO object");
+        return;
+    }
+    struct wl_resource *resource = wl_resource_create(client, &wp_fifo_v1_interface, 1, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    surface->fifo = resource;
+    wl_resource_set_implementation(resource, &fifo_impl, surface, fifo_free);
+}
+
+static const struct wp_fifo_manager_v1_interface fifo_manager_impl = {
+    .destroy = destroy_resource, .get_fifo = fifo_get,
+};
+
 #define BIND(name, interface, impl, extra) \
     static void name(struct wl_client *client, void *data, uint32_t version, uint32_t id) { \
         struct wl_resource *resource = wl_resource_create(client, interface, version, id); \
@@ -1490,6 +1582,7 @@ BIND(bind_fractional, &wp_fractional_scale_manager_v1_interface, &fractional_man
 BIND(bind_presentation, &wp_presentation_interface, &presentation_impl,
     wp_presentation_send_clock_id(resource, CLOCK_MONOTONIC))
 BIND(bind_syncobj, &wp_linux_drm_syncobj_manager_v1_interface, &syncobj_impl, )
+BIND(bind_fifo, &wp_fifo_manager_v1_interface, &fifo_manager_impl, )
 
 bool surfaces_listen(struct tomoe *s) {
     bool ok = wl_global_create(s->display, &wl_compositor_interface, COMPOSITOR_VERSION, s,
@@ -1498,7 +1591,8 @@ bool surfaces_listen(struct tomoe *s) {
         wl_global_create(s->display, &wp_viewporter_interface, 1, s, bind_viewporter) &&
         wl_global_create(s->display, &wp_fractional_scale_manager_v1_interface, 1, s,
             bind_fractional) &&
-        wl_global_create(s->display, &wp_presentation_interface, 2, s, bind_presentation);
+        wl_global_create(s->display, &wp_presentation_interface, 2, s, bind_presentation) &&
+        wl_global_create(s->display, &wp_fifo_manager_v1_interface, 1, s, bind_fifo);
     if (!ok) return false;
     drm_fd = render_drm_fd(s->renderer);
     if (!render_has_timeline(s->renderer) || !s->kms || drm_fd < 0) return true;

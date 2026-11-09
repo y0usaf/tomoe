@@ -623,6 +623,7 @@ struct surface_viewport {
 };
 struct surface_state {
     uint32_t committed, locks;
+    bool fifo_set, fifo_wait;
     struct buffer *buffer;
     int dx, dy, width, height, buffer_width, buffer_height, scale;
     enum wl_output_transform transform;
@@ -644,6 +645,8 @@ struct surface {
     pixman_region32_t input_region;
     const struct surface_role *role;
     struct wl_resource *role_resource, *viewport, *fractional, *syncobj;
+    struct wl_resource *fifo;
+    bool fifo_barrier, fifo_latched;
     struct wl_listener role_resource_destroy;
     struct subsurface *subsurface;
     struct screen *primary;
@@ -1291,6 +1294,9 @@ void libinput_active(struct tomoe *s, bool active);
 bool buffers_listen(struct tomoe *s);
 bool surfaces_listen(struct tomoe *s);
 void surfaces_finish(struct tomoe *s);
+void surfaces_fifo_frame(struct screen *screen);
+void surfaces_fifo_commit(struct screen *screen);
+void surface_fifo_unpaced(struct surface *surface);
 struct surface *surface_from_resource(struct wl_resource *resource);
 pixman_region32_t *region_from_resource(struct wl_resource *resource);
 bool surface_has_buffer(struct surface *surface);

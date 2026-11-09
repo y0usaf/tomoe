@@ -42,6 +42,7 @@ bool output_power(struct output *o, bool on) {
             tomoe_log(LOG_ERROR, "tomoe: output %s could not power off", screen->name);
             return false;
         }
+        surfaces_fifo_frame(screen);
     }
     tomoe_log(LOG_DEBUG, "tomoe: output %s power %s", screen->name, on ? "on" : "off");
     send_mode(o);

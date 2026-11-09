@@ -2,7 +2,7 @@
 let
   client = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-client";
-    src = ./client.c;
+    src = ./.;
     dontUnpack = true;
     strictDeps = true;
     nativeBuildInputs = [
@@ -13,15 +13,23 @@ let
     buildPhase = ''
       for xml in ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
-        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml; do
+        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
+        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/presentation-time/presentation-time.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml; do
         name=$(basename "$xml" .xml)
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
       done
-      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src *-protocol.c \
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/client.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-test-client
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/pacing.c *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-pacing-client
     '';
-    installPhase = "install -Dm755 tomoe-test-client $out/bin/tomoe-test-client";
+    installPhase = ''
+      install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
+      install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
+    '';
   };
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
@@ -128,6 +136,7 @@ let
           pkgs.grim
           pkgs.libnotify
           pkgs.xdpyinfo
+          pkgs.wayland-utils
         ];
         virtualisation.memorySize = 2048;
         virtualisation.cores = 4;
@@ -153,6 +162,7 @@ in
     ''
     + builtins.readFile ./bare.py
   );
+  fifo = check "fifo" (builtins.readFile ./fifo.py);
   portal =
     checkWith
       {
