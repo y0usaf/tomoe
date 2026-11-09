@@ -232,6 +232,7 @@ static void create_keyboard(struct wl_client *client, struct wl_resource *manage
         return;
     }
     k->resource = resource;
+    k->device->client = client;
     wl_resource_set_implementation(resource, &keyboard_requests, k, keyboard_resource_destroy);
     input_add(s, k->device);
 }

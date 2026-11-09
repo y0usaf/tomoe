@@ -22,6 +22,7 @@ static void seat_client_free(struct seat_client *c) {
         detach(&seat->pointer_state.surface_destroy);
     }
     if (seat->keyboard_state.focused_client == c) {
+        ime_focus(seat->server, NULL);
         seat->keyboard_state.focused_client = NULL;
         seat->keyboard_state.focused_surface = NULL;
         detach(&seat->keyboard_state.surface_destroy);
@@ -488,6 +489,7 @@ bool seat_validate_pointer_grab_serial(struct seat *seat, struct surface *origin
 static void keyboard_surface_destroyed(struct wl_listener *listener, void *data) {
     struct seat *seat = wl_container_of(listener, seat, keyboard_state.surface_destroy);
     detach(listener);
+    ime_focus(seat->server, NULL);
     seat->keyboard_state.focused_surface = NULL;
     seat->keyboard_state.focused_client = NULL;
 }
@@ -496,6 +498,7 @@ void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint3
         size_t count, const struct keyboard_modifiers *modifiers) {
     struct seat_keyboard_state *state = &seat->keyboard_state;
     if (state->focused_surface == surface) return;
+    ime_focus(seat->server, surface);
     struct seat_client *c = surface ?
         seat_client_for(seat, wl_resource_get_client(surface->resource)) : NULL;
     struct wl_resource *resource;
@@ -589,11 +592,13 @@ void seat_keyboard_notify_key(struct seat *seat, uint32_t time, uint32_t key, ui
 
 void seat_keyboard_notify_modifiers(struct seat *seat,
         const struct keyboard_modifiers *modifiers) {
+    if (ime_modifiers(seat->server, modifiers)) return;
     seat->keyboard_state.grab->interface->modifiers(seat->keyboard_state.grab, modifiers);
 }
 
 static void keyboard_changed(struct seat *seat) {
     struct seat_client *c;
+    ime_keymap(seat->server);
     wl_list_for_each(c, &seat->clients, link) {
         struct wl_resource *resource;
         wl_resource_for_each(resource, &c->keyboards) send_keymap(seat, resource);

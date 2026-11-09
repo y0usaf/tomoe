@@ -171,6 +171,8 @@
               $wlr/wlr-virtual-pointer-unstable-v1.xml \
               native/virtual-keyboard-unstable-v1.xml \
               native/server-decoration.xml \
+              native/input-method-unstable-v2.xml \
+              $wp/unstable/text-input/text-input-unstable-v3.xml \
               $wp/stable/xdg-shell/xdg-shell.xml \
               $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
               $wp/stable/viewporter/viewporter.xml \

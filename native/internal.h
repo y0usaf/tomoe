@@ -250,6 +250,7 @@ struct input_device {
     uint32_t caps;
     struct libinput_device *libinput;
     struct keyboard *keyboard;
+    struct wl_client *client;
     void *data;
     struct {
         struct wl_signal destroy;
@@ -787,6 +788,7 @@ struct tomoe {
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
+    struct ime *ime;
     struct wl_list input_devices, background_effects;
     struct wl_list surfaces, feedbacks;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, virtual_pointers;
@@ -1164,6 +1166,11 @@ bool output_power(struct output *o, bool on);
 void power_output_gone(struct output *o);
 void outputs_event(struct tomoe *s);
 void drag_icons_refresh(struct tomoe *s);
+bool ime_listen(struct tomoe *s);
+void ime_focus(struct tomoe *s, struct surface *surface);
+bool ime_key(struct input_device *device, uint32_t time, uint32_t key, uint32_t state);
+void ime_keymap(struct tomoe *s);
+bool ime_modifiers(struct tomoe *s, const struct keyboard_modifiers *modifiers);
 void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy);
 void constraint_refresh(struct tomoe *s);
 bool constraint_allows(struct tomoe *s, double x, double y);

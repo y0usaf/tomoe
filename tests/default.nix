@@ -1,5 +1,36 @@
 { pkgs, tomoe }:
 let
+  imeClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-ime-client";
+    src = ./ime.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      wp=${pkgs.wayland-protocols}/share/wayland-protocols
+      for xml in $wp/stable/xdg-shell/xdg-shell.xml \
+        $wp/unstable/text-input/text-input-unstable-v3.xml \
+        ${../native/input-method-unstable-v2.xml} \
+        ${../native/virtual-keyboard-unstable-v1.xml}; do
+        name=$(basename "$xml" .xml)
+        case "$name" in *input-method-unstable-v2) name=input-method-unstable-v2;; *virtual-keyboard-unstable-v1) name=virtual-keyboard-unstable-v1;; esac
+        wayland-scanner client-header "$xml" "$name-client-protocol.h"
+        wayland-scanner private-code "$xml" "$name-protocol.c"
+      done
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-ime-client
+    '';
+    installPhase = "install -Dm755 tomoe-ime-client $out/bin/tomoe-ime-client";
+  };
+  imePolicy = pkgs.writeText "ime-policy.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "ime-check" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let ((windows (context snapshot :windows)))
+        (values nil (append (loop for w in windows collect (place (getf w :id) 0 0 320 240))
+                            (list (focus (getf (car (last windows)) :id)))) nil)))
+  '';
   client = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-client";
     src = ./.;
@@ -155,6 +186,7 @@ let
         environment.systemPackages = [
           tomoe
           client
+          imeClient
           pkgs.grim
           pkgs.libnotify
           pkgs.xdpyinfo
@@ -180,6 +212,12 @@ in
     start("--bare", bus=False)
     machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
     machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
+    quit()
+  '';
+  text-input = check "text-input" ''
+    start("--bare")
+    cli("mount ${imePolicy}")
+    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
     quit()
   '';
   integration = check "integration" (

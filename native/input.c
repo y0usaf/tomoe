@@ -1648,6 +1648,10 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
             first_global, last_global);
         return;
     }
+    if (ime_key(device, input->time_msec, input->keycode, input->state)) {
+        logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
+        return;
+    }
 
     struct logical_keyboard *logical = s->logical_keyboard;
     const xkb_keysym_t *syms = NULL;
