@@ -1599,6 +1599,9 @@ bool xwm_start(struct tomoe *s, int fd) {
     return true;
 }
 
+static void writers_free_all(struct xwm *x);
+static void transfers_free_all(struct xwm *x);
+
 void xwm_stop(struct tomoe *s) {
     struct xwm *x = s ? s->xwm : NULL;
     if (!x) return;
@@ -1606,6 +1609,13 @@ void xwm_stop(struct tomoe *s) {
     if (x->source) wl_event_source_remove(x->source);
     struct xwm_window *w, *next;
     wl_list_for_each_safe(w, next, &x->windows, link) window_free(w);
+    writers_free_all(x);
+    transfers_free_all(x);
+    struct prop_request *request, *next_request;
+    wl_list_for_each_safe(request, next_request, &x->props, link) {
+        wl_list_remove(&request->link);
+        free(request);
+    }
     struct deferred *entry, *next_entry;
     wl_list_for_each_safe(entry, next_entry, &x->deferred, link) {
         wl_list_remove(&entry->link);
@@ -1643,6 +1653,14 @@ struct writer {
     size_t len, offset;
 };
 
+static void writer_free(struct writer *writer) {
+    if (writer->source) wl_event_source_remove(writer->source);
+    if (writer->fd >= 0) close(writer->fd);
+    wl_list_remove(&writer->link);
+    free(writer->data);
+    free(writer);
+}
+
 static int writer_ready(int fd, uint32_t mask, void *data) {
     struct writer *writer = data;
     while (writer->offset < writer->len) {
@@ -1653,12 +1671,13 @@ static int writer_ready(int fd, uint32_t mask, void *data) {
         if (n <= 0) break;
         writer->offset += (size_t)n;
     }
-    wl_event_source_remove(writer->source);
-    close(writer->fd);
-    wl_list_remove(&writer->link);
-    free(writer->data);
-    free(writer);
+    writer_free(writer);
     return 0;
+}
+
+static void writers_free_all(struct xwm *x) {
+    struct writer *writer, *next;
+    wl_list_for_each_safe(writer, next, &x->writers, link) writer_free(writer);
 }
 
 static void write_async(struct xwm *x, int fd, unsigned char *data, size_t len) {
@@ -1920,6 +1939,11 @@ static void transfer_free(struct transfer *transfer) {
     wl_list_remove(&transfer->link);
     free(transfer->data);
     free(transfer);
+}
+
+static void transfers_free_all(struct xwm *x) {
+    struct transfer *transfer, *next;
+    wl_list_for_each_safe(transfer, next, &x->transfers, link) transfer_free(transfer);
 }
 
 static int transfer_read(int fd, uint32_t mask, void *data) {
