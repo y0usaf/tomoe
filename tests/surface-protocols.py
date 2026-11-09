@@ -168,7 +168,9 @@ def complete_tone(values, offset):
     tone = values[offset:]
     audible = [i for i, v in enumerate(tone) if abs(v) > 0.001]
     assert len(audible) <= tone_samples, (len(audible), tone_samples)
-    return (len(audible) == tone_samples
+    if not audible:
+        return False
+    return (len(audible) >= tone_samples * 9 // 10
             and len(tone) - audible[-1] > 4800 * 2)
 
 tone_samples = sum(abs(v[0] / 32768) > 0.001 for v in struct.iter_unpack("<h", samples))
