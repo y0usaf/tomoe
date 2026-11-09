@@ -152,6 +152,11 @@ for path in ["/run/big-w", "/run/big-x"]:
     got = machine.succeed(f"sha256sum {path} | cut -d' ' -f1").strip()
     assert got == want, (path, got, want)
 
+unit("silent", f"{X11_CLIENT} silent")
+time.sleep(6)
+windows()
+machine.succeed("systemctl stop silent")
+time.sleep(1)
 machine.succeed("rm -f /run/x11-closed")
 before_ids = {w["id"] for w in windows()}
 unit("closeable", f"env X11_CLIENT_MARK=/run/x11-closed {X11_CLIENT} closeable")

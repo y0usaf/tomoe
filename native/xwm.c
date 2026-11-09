@@ -241,10 +241,12 @@ static ssize_t x_recv(struct xwm *x, int wait) {
         if (errno == EAGAIN) {
             struct pollfd pollfd = { .fd = x->fd, .events = POLLIN };
             int ready = poll(&pollfd, 1, 5000);
-            if (ready <= 0) {
+            if (ready == 0) {
                 tomoe_log(LOG_DEBUG, "tomoe: xwm recv stalled on %d", x->fd);
-                return -1;
+                return -3;
             }
+            if (ready < 0 && errno == EINTR) continue;
+            if (ready < 0) return -1;
             continue;
         }
         tomoe_log(LOG_DEBUG, "tomoe: xwm recv failed on %d: %s", x->fd, strerror(errno));
@@ -277,6 +279,7 @@ static unsigned char *x_packet(struct xwm *x, size_t *length) {
             return packet;
         }
         ssize_t n = x_recv(x, 1);
+        if (n == -3) return NULL;
         if (n <= 0) {
             tomoe_log(LOG_DEBUG, "tomoe: xwm connection lost on %d", x->fd);
             x->failed = true;
@@ -1769,6 +1772,7 @@ static unsigned char *convert_from_x(struct xwm *x, uint32_t window, uint32_t se
     for (;;) {
         size_t len = 0;
         unsigned char *packet = x_packet(x, &len);
+        if (!packet) return NULL;
         if ((packet[0] & 0x7f) == 31) {
             uint32_t requestor = (uint32_t)packet[8] | (uint32_t)packet[9] << 8 |
                 (uint32_t)packet[10] << 16 | (uint32_t)packet[11] << 24;

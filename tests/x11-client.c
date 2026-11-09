@@ -42,12 +42,17 @@ int main(int argc, char **argv) {
         style(display, dialog, "X11 Transient", "x11-transient", "X11Test", 0xff0000);
         XSetTransientForHint(display, dialog, parent);
         XMapWindow(display, dialog);
-    } else if (strcmp(argv[1], "normal") != 0 && strcmp(argv[1], "closeable") != 0) {
+    } else if (strcmp(argv[1], "normal") != 0 && strcmp(argv[1], "closeable") != 0 &&
+            strcmp(argv[1], "silent") != 0) {
         fprintf(stderr, "unknown mode %s\n", argv[1]);
         return 2;
     }
     Atom delete_window = XInternAtom(display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(display, parent, &delete_window, 1);
+    if (strcmp(argv[1], "silent") == 0) {
+        Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
+        XSetSelectionOwner(display, clipboard, parent, CurrentTime);
+    }
     XFlush(display);
     for (;;) {
         XEvent event;
@@ -61,7 +66,7 @@ int main(int argc, char **argv) {
             XCloseDisplay(display);
             return 0;
         }
-        if (event.type == SelectionRequest) {
+        if (event.type == SelectionRequest && strcmp(argv[1], "silent") != 0) {
             XSelectionRequestEvent *request = &event.xselectionrequest;
             XSelectionEvent notify = { .type = SelectionNotify, .display = display,
                 .requestor = request->requestor, .selection = request->selection,
