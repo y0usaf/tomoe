@@ -657,17 +657,34 @@ static void cursor_surface_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->cursor_surface_destroy.link);
     s->cursor_surface = NULL;
 }
-void cursor_default(struct tomoe *s) {
+void cursor_shape_set(struct tomoe *s, uint32_t shape) {
+    static const char *const names[] = { NULL, "default", "context-menu", "help", "pointer",
+        "progress", "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy",
+        "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize", "n-resize",
+        "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize", "w-resize",
+        "ew-resize", "ns-resize", "nesw-resize", "nwse-resize", "col-resize", "row-resize",
+        "all-scroll", "zoom-in", "zoom-out", "dnd-ask", "all-resize" };
+    static const char *const fallback[] = { NULL, "left_ptr", "context-menu", "question_arrow",
+        "hand2", "left_ptr_watch", "watch", "plus", "crosshair", "xterm", "vertical-text",
+        "dnd-link", "dnd-copy", "dnd-move", "dnd-none", "crossed_circle", "openhand",
+        "closedhand", "right_side", "top_side", "top_right_corner", "top_left_corner",
+        "bottom_side", "bottom_right_corner", "bottom_left_corner", "left_side",
+        "sb_h_double_arrow", "sb_v_double_arrow", "fd_double_arrow", "bd_double_arrow",
+        "sb_h_double_arrow", "sb_v_double_arrow", "fleur", "zoom-in", "zoom-out",
+        "dnd-ask", "fleur" };
+    if (!shape || shape >= sizeof(names) / sizeof(names[0])) return;
     s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     float scale = 1;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
         if (o->screen->enabled && o->screen->scale > scale) scale = o->screen->scale;
-    if (!s->default_cursor || s->default_cursor_scale != scale) {
+    if (!s->default_cursor || s->default_cursor_scale != scale ||
+            s->default_cursor_shape != shape) {
         int x, y;
-        struct buffer *image = xcursor_load("default", scale, &x, &y);
-        if (!image) image = xcursor_load("left_ptr", scale, &x, &y);
+        struct buffer *image = xcursor_load(names[shape], scale, &x, &y);
+        if (!image) image = xcursor_load(fallback[shape], scale, &x, &y);
+        if (!image && shape != 1) image = xcursor_load("left_ptr", scale, &x, &y);
         if (!image) {
             tomoe_log(LOG_ERROR, "tomoe: no cursor theme loaded, drawing a block cursor");
             int w = (int)ceil(8 * scale), h = (int)ceil(16 * scale);
@@ -681,10 +698,15 @@ void cursor_default(struct tomoe *s) {
         buffer_drop(s->default_cursor);
         s->default_cursor = image;
         s->default_cursor_scale = scale;
+        s->default_cursor_shape = shape;
         s->default_hotspot_x = x;
         s->default_hotspot_y = y;
     }
     cursor_show(s, s->default_cursor, s->default_hotspot_x, s->default_hotspot_y, scale);
+}
+
+void cursor_default(struct tomoe *s) {
+    cursor_shape_set(s, 1);
 }
 
 void pointer_sync_cursors(struct tomoe *s) {

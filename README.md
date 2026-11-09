@@ -168,6 +168,8 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Commit timestamps (`wp_commit_timing_v1`) are not advertised. Honoring them
   atomically needs shared readiness for synchronized parent/child transactions;
   the current queue applies parent state before releasing child caches.
+- Applications can select themed cursor shapes, including text, resize and drag
+  cursors, through `wp_cursor_shape_manager_v1`.
 - Input methods, touch and tablets are not supported yet, and shell surfaces
   cannot take keyboard focus.
 - Extensions are trusted code. They run inside the compositor with your

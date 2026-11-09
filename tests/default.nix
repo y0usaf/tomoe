@@ -16,18 +16,23 @@ let
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/presentation-time/presentation-time.xml \
-        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml; do
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/tablet/tablet-v2.xml; do
         name=$(basename "$xml" .xml)
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
       done
-      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/client.c *-protocol.c \
-        $(pkg-config --cflags --libs wayland-client) -o tomoe-test-client
+      for name in client pointer-client; do
+        $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/$name.c *-protocol.c \
+          $(pkg-config --cflags --libs wayland-client) -o tomoe-test-$name
+      done
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/pacing.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-pacing-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
+      install -Dm755 tomoe-test-pointer-client $out/bin/tomoe-test-pointer-client
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
     '';
   };
@@ -146,6 +151,12 @@ let
   check = checkWith { };
 in
 {
+  pointer-protocols = checkWith {
+    environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
+  } "pointer-protocols" ''
+    machine.wait_for_unit("multi-user.target")
+    machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client")
+  '';
   integration = check "integration" (
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"

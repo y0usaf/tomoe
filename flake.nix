@@ -188,6 +188,8 @@
               $wp/staging/ext-background-effect/ext-background-effect-v1.xml \
               $wp/staging/ext-data-control/ext-data-control-v1.xml \
               $wp/staging/pointer-warp/pointer-warp-v1.xml \
+              $wp/staging/cursor-shape/cursor-shape-v1.xml \
+              $wp/stable/tablet/tablet-v2.xml \
               $wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml \
               $wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
               $wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \

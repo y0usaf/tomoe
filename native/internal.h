@@ -782,6 +782,7 @@ struct tomoe {
     struct cursor_image cursor_image;
     struct buffer *default_cursor;
     float default_cursor_scale;
+    uint32_t default_cursor_shape;
     int default_hotspot_x, default_hotspot_y;
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
@@ -1225,6 +1226,8 @@ size_t keyboard_pressed(struct tomoe *s, uint32_t *keys);
 void cursor_requested(struct tomoe *s, struct surface *surface, int32_t x, int32_t y);
 void cursor_committed(struct tomoe *s, struct surface *surface);
 void cursor_default(struct tomoe *s);
+void cursor_shape_set(struct tomoe *s, uint32_t shape);
+bool cursor_shape_listen(struct tomoe *s);
 bool selection_listen(struct tomoe *s);
 void screen_state_init(struct screen_state *state);
 void screen_state_finish(struct screen_state *state);
