@@ -190,13 +190,12 @@ for step in range(1, 4):
         values = wait_capture(lambda values: len(values) >= offset + 14400 * 2)
         assert not any(abs(v) > 0.001 for v in values[offset:]), "bell after manager destroy"
     offset = len(values)
-machine.succeed("systemctl stop bell-record")
-raw = base64.b64decode(machine.succeed("base64 -w0 /run/bell.raw"))
-values = struct.unpack(f"<{len(raw) // 4}f", raw)
 audible = sum(abs(v) > 0.001 for v in values)
 peak = max(abs(v) for v in values)
-assert 0 < audible <= 2 * tone_samples and 0.35 < peak < 0.38, (audible, peak)
+assert 2 * tone_samples * 9 // 10 <= audible <= 2 * tone_samples, (audible, tone_samples)
+assert 0.35 < peak < 0.38, peak
 print(f"bell capture: {tone_samples} audible samples per cue, {audible} total, peak {peak}; no tone after destroy")
+machine.succeed("systemctl stop bell-record")
 cli("unmount bell-test")
 assert plist(inspect()[":NATIVE-SOUND"])[":STATE"] == ":OFF", inspect()
 machine.succeed("systemctl stop bell check-pipewire")
