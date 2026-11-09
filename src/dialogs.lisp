@@ -126,7 +126,7 @@ CONFIRM-DIALOG."
                                                :children (list (ui :text :text text :size 17
                                                                    :color (%dialog-color :text theme))))))
                        :anchors '(:top) :margin '(24 0 0 0) :layer :overlay :stack :toast
-                       :background "#00000000")))
+                       :background "#00000000" :placement :view)))
 
 (defparameter +theme+
   '(:base "#1e1e2e" :mantle "#181825" :crust "#11111b"
