@@ -713,7 +713,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
 static void surface_gone(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, surface_destroy);
     detach(&w->surface_destroy);
-    if (surface_of(w)) surface_of(w)->external_toplevel = NULL;
+    if (w->xdg->xwm && surface_of(w)) surface_of(w)->external_toplevel = NULL;
     w->xdg->base->surface = NULL;
     w->xdg->base->data = NULL;
     w->tree = NULL;
@@ -730,13 +730,13 @@ bool window_attach_surface(struct window *w, struct surface *surface) {
     detach(&w->unmap);
     detach(&w->commit);
     detach(&w->surface_destroy);
-    if (surface_of(w)) surface_of(w)->external_toplevel = NULL;
+    if (w->xdg->xwm && surface_of(w)) surface_of(w)->external_toplevel = NULL;
     if (w->tree) {
         node_destroy(w->tree);
         w->tree = NULL;
     }
     w->xdg->base->surface = surface;
-    surface->external_toplevel = w->xdg;
+    if (w->xdg->xwm) surface->external_toplevel = w->xdg;
     surface_set_scale(surface, w->target.scale);
     w->tree = xdg_surface_scene(s->window_tree, w->xdg->base);
     if (!w->tree) return false;
