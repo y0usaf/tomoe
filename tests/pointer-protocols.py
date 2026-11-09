@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="tomoe-pointer-", dir=os.environ.get("TM
             if compositor.poll() is not None:
                 log.seek(0)
                 raise AssertionError(log.read())
-            if (runtime / "pointer-check").exists():
+            if (runtime / "pointer-check").exists() and (runtime / "tomoe.pointer-check.sock").exists():
                 break
             time.sleep(0.1)
         else:
