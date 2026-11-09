@@ -126,6 +126,8 @@ struct xwm_window {
     uint32_t xid;
     int x, y, width, height;
     bool override, mapped, x_mapped, delete_window, take_focus, input_hint, has_input_hint;
+    bool placed;
+    int placed_x, placed_y;
     bool fullscreen, maximized, minimized, dialog;
     char *title, *appid;
     uint32_t transient;
@@ -932,6 +934,28 @@ static void logical_to_world(struct tomoe *s, int lx, int ly, int *ox, int *oy,
     *scale = sc;
 }
 
+static void world_to_logical(struct tomoe *s, int wx, int wy, int *lx, int *ly) {
+    struct output *best = NULL;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (!output_is_active(o)) continue;
+        if (!best) best = o;
+        if (wx >= o->x && wy >= o->y && wx < o->x + o->screen->width &&
+                wy < o->y + o->screen->height) {
+            best = o;
+            break;
+        }
+    }
+    if (!best) {
+        *lx = wx;
+        *ly = wy;
+        return;
+    }
+    double sc = snapped_scale(best->screen->scale);
+    *lx = best->screen->lx + pixel_round((wx - best->x) / sc);
+    *ly = best->screen->ly + pixel_round((wy - best->y) / sc);
+}
+
 static void override_place(struct xwm_window *w) {
     if (!w->node) return;
     int x = 0, y = 0;
@@ -1326,6 +1350,21 @@ static void handle_client_message(struct xwm *x, const unsigned char *pkt) {
             wl_signal_emit_mutable(&w->toplevel->events.request_minimize, NULL);
         }
     }
+}
+
+void xwm_place(struct xdg_toplevel *toplevel, int x, int y) {
+    struct xwm_window *w = toplevel->xwm;
+    if (!w || !w->xid || w->override) return;
+    int lx, ly;
+    world_to_logical(w->xwm->server, x, y, &lx, &ly);
+    if (w->placed && w->placed_x == lx && w->placed_y == ly) return;
+    uint32_t values[7] = {0};
+    values[0] = (uint32_t)lx;
+    values[1] = (uint32_t)ly;
+    configure_window(w->xwm, w->xid, CFG_X | CFG_Y, values);
+    w->placed = true;
+    w->placed_x = lx;
+    w->placed_y = ly;
 }
 
 void xwm_configure(struct xdg_toplevel *toplevel, int width, int height) {

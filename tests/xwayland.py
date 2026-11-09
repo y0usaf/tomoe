@@ -132,6 +132,62 @@ for _ in range(100):
     time.sleep(0.1)
 assert fresh[":FULLSCREEN-REQUESTED"] == "T", fresh
 
+unit("offscreen", f"{X11_CLIENT} offscreen")
+offscreen = wait_window("X11 Offscreen")
+for _ in range(100):
+    if offscreen.get("geometry"):
+        break
+    time.sleep(0.1)
+    offscreen = find("X11 Offscreen") or offscreen
+assert offscreen.get("geometry"), offscreen
+offscreen_id = machine.succeed(
+    f"DISPLAY={display} xdotool search --name 'X11 Offscreen'"
+).split()[0]
+
+
+def x_geometry():
+    fields = dict(
+        line.split("=", 1)
+        for line in machine.succeed(
+            f"DISPLAY={display} xdotool getwindowgeometry --shell {offscreen_id}"
+        ).splitlines()
+        if "=" in line
+    )
+    return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+
+
+offscreen_box = offscreen["geometry"]
+want_geometry = (
+    offscreen_box["x"],
+    offscreen_box["y"],
+    offscreen_box["w"],
+    offscreen_box["h"],
+)
+for _ in range(100):
+    if x_geometry() == want_geometry:
+        break
+    time.sleep(0.1)
+assert x_geometry() == want_geometry, (x_geometry(), want_geometry)
+
+offscreen_color = (0x33, 0x66, 0xCC)
+sample = (offscreen_box["x"] + offscreen_box["w"] - 12,
+          offscreen_box["y"] + offscreen_box["h"] // 2)
+for _ in range(100):
+    if pixel(*sample) == offscreen_color:
+        break
+    time.sleep(0.1)
+assert pixel(*sample) == offscreen_color, (pixel(*sample), offscreen_color)
+
+machine.succeed(f"DISPLAY={display} xdotool windowunmap {offscreen_id}")
+time.sleep(0.5)
+machine.succeed(f"DISPLAY={display} xdotool windowmap {offscreen_id}")
+for _ in range(100):
+    if pixel(*sample) == offscreen_color:
+        break
+    time.sleep(0.1)
+assert pixel(*sample) == offscreen_color, (pixel(*sample), offscreen_color)
+assert x_geometry() == want_geometry, (x_geometry(), want_geometry)
+
 machine.succeed(env(True) + "sh -c 'printf wayland-data | timeout 10 wl-copy' >/dev/null 2>&1")
 time.sleep(0.5)
 assert machine.succeed(f"DISPLAY={display} timeout 10 xclip -selection clipboard -o") == "wayland-data"

@@ -1408,6 +1408,7 @@ void xwayland_pair_surface(struct tomoe *s, uint64_t serial, struct surface *sur
 void xwm_associate(struct tomoe *s, uint32_t xid, struct surface *surface);
 void xwm_client_gone(struct tomoe *s);
 void xwm_configure(struct xdg_toplevel *toplevel, int width, int height);
+void xwm_place(struct xdg_toplevel *toplevel, int x, int y);
 void xwm_activate(struct xdg_toplevel *toplevel, bool activated);
 void xwm_state(struct xdg_toplevel *toplevel, int fullscreen, int maximized);
 void xwm_close(struct xdg_toplevel *toplevel);

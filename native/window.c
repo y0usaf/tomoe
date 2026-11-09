@@ -117,6 +117,7 @@ static void configure_xdg(struct window *w) {
     if (!w->xdg->base->surface || !w->xdg->base->initialized) return;
     int width = positive_logical_size(w->desired_width, w->target.scale);
     int height = positive_logical_size(w->desired_height, w->target.scale);
+    if (w->xdg->xwm) xwm_place(w->xdg, w->target.x, w->target.y);
     if (w->configured && w->configured_scale == w->target.scale &&
             w->configured_width == width && w->configured_height == height) return;
     surface_set_scale(w->xdg->base->surface, w->target.scale);
@@ -714,6 +715,7 @@ static void surface_gone(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, surface_destroy);
     detach(&w->surface_destroy);
     if (w->xdg->xwm && surface_of(w)) surface_of(w)->external_toplevel = NULL;
+    if (w->tree) node_destroy(w->tree);
     w->xdg->base->surface = NULL;
     w->xdg->base->data = NULL;
     w->tree = NULL;

@@ -17,7 +17,7 @@ static void style(Display *display, Window window, const char *name, const char 
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: x11-client normal|override|transient\n");
+        fprintf(stderr, "usage: x11-client normal|override|transient|offscreen\n");
         return 2;
     }
     Display *display = XOpenDisplay(NULL);
@@ -26,8 +26,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     Window root = DefaultRootWindow(display);
-    Window parent = XCreateSimpleWindow(display, root, 50, 50, 320, 200, 0, 0, 0xffffff);
-    style(display, parent, "X11 Parent", "x11-parent", "X11Test", 0xffffff);
+    int x = strcmp(argv[1], "offscreen") == 0 ? 3000 : 50;
+    int y = strcmp(argv[1], "offscreen") == 0 ? 3000 : 50;
+    Window parent = XCreateSimpleWindow(display, root, x, y, 320, 200, 0, 0, 0xffffff);
+    style(display, parent, strcmp(argv[1], "offscreen") == 0 ? "X11 Offscreen" : "X11 Parent",
+        "x11-parent", "X11Test", strcmp(argv[1], "offscreen") == 0 ? 0x3366cc : 0xffffff);
     XMapWindow(display, parent);
     if (strcmp(argv[1], "override") == 0) {
         XSetWindowAttributes attributes = { .override_redirect = True,
@@ -43,7 +46,7 @@ int main(int argc, char **argv) {
         XSetTransientForHint(display, dialog, parent);
         XMapWindow(display, dialog);
     } else if (strcmp(argv[1], "normal") != 0 && strcmp(argv[1], "closeable") != 0 &&
-            strcmp(argv[1], "silent") != 0) {
+            strcmp(argv[1], "silent") != 0 && strcmp(argv[1], "offscreen") != 0) {
         fprintf(stderr, "unknown mode %s\n", argv[1]);
         return 2;
     }
@@ -65,6 +68,9 @@ int main(int argc, char **argv) {
             }
             XCloseDisplay(display);
             return 0;
+        }
+        if (event.type == Expose) {
+            XClearWindow(display, event.xexpose.window);
         }
         if (event.type == SelectionRequest && strcmp(argv[1], "silent") != 0) {
             XSelectionRequestEvent *request = &event.xselectionrequest;
