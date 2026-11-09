@@ -841,6 +841,10 @@ struct tomoe {
     char *ui_stats_result;
     struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;
     struct wl_list relative_pointers;
+    struct wl_list gestures;
+    struct input_device *gesture_device;
+    uint32_t gesture_kind;
+    double gesture_scale;
     struct wl_list idle_notifications, idle_inhibitors;
     bool idle_inhibited;
     struct wl_list tearings;
@@ -1228,6 +1232,15 @@ void cursor_committed(struct tomoe *s, struct surface *surface);
 void cursor_default(struct tomoe *s);
 void cursor_shape_set(struct tomoe *s, uint32_t shape);
 bool cursor_shape_listen(struct tomoe *s);
+enum { GESTURE_SWIPE = 1, GESTURE_PINCH, GESTURE_HOLD };
+bool gestures_listen(struct tomoe *s);
+void pointer_gesture_begin(struct tomoe *s, struct input_device *device, uint32_t kind,
+    uint32_t time, uint32_t fingers);
+void pointer_gesture_update(struct tomoe *s, struct input_device *device, uint32_t kind,
+    uint32_t time, double dx, double dy, double scale, double rotation);
+void pointer_gesture_end(struct tomoe *s, struct input_device *device, uint32_t kind,
+    uint32_t time, int cancelled);
+void pointer_gesture_cancel(struct tomoe *s);
 bool selection_listen(struct tomoe *s);
 void screen_state_init(struct screen_state *state);
 void screen_state_finish(struct screen_state *state);

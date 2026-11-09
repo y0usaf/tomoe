@@ -175,6 +175,7 @@ struct input_device *input_device_create(struct tomoe *s, const char *name, uint
 
 void input_device_destroy(struct input_device *device) {
     if (!device) return;
+    if (device->server->gesture_device == device) pointer_gesture_cancel(device->server);
     wl_signal_emit_mutable(&device->events.destroy, device);
     wl_list_remove(&device->link);
     if (device->libinput) {
@@ -248,6 +249,8 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
     struct libinput_event_pointer *pointer = type >= LIBINPUT_EVENT_POINTER_MOTION &&
         type <= LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS ? libinput_event_get_pointer_event(event) :
         NULL;
+    struct libinput_event_gesture *gesture = type >= LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN &&
+        type <= LIBINPUT_EVENT_GESTURE_HOLD_END ? libinput_event_get_gesture_event(event) : NULL;
     switch (type) {
     case LIBINPUT_EVENT_DEVICE_REMOVED:
         input_device_destroy(device);
@@ -293,6 +296,31 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
         break;
     case LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS:
         scroll(device, event, WL_POINTER_AXIS_SOURCE_CONTINUOUS);
+        break;
+    case LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN:
+    case LIBINPUT_EVENT_GESTURE_PINCH_BEGIN:
+    case LIBINPUT_EVENT_GESTURE_HOLD_BEGIN:
+        pointer_gesture_begin(s, device, type == LIBINPUT_EVENT_GESTURE_SWIPE_BEGIN ?
+            GESTURE_SWIPE : type == LIBINPUT_EVENT_GESTURE_PINCH_BEGIN ? GESTURE_PINCH : GESTURE_HOLD,
+            msec(libinput_event_gesture_get_time_usec(gesture)),
+            libinput_event_gesture_get_finger_count(gesture));
+        break;
+    case LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE:
+    case LIBINPUT_EVENT_GESTURE_PINCH_UPDATE:
+        pointer_gesture_update(s, device, type == LIBINPUT_EVENT_GESTURE_SWIPE_UPDATE ?
+            GESTURE_SWIPE : GESTURE_PINCH, msec(libinput_event_gesture_get_time_usec(gesture)),
+            libinput_event_gesture_get_dx(gesture), libinput_event_gesture_get_dy(gesture),
+            type == LIBINPUT_EVENT_GESTURE_PINCH_UPDATE ? libinput_event_gesture_get_scale(gesture) : 1,
+            type == LIBINPUT_EVENT_GESTURE_PINCH_UPDATE ?
+                libinput_event_gesture_get_angle_delta(gesture) : 0);
+        break;
+    case LIBINPUT_EVENT_GESTURE_SWIPE_END:
+    case LIBINPUT_EVENT_GESTURE_PINCH_END:
+    case LIBINPUT_EVENT_GESTURE_HOLD_END:
+        pointer_gesture_end(s, device, type == LIBINPUT_EVENT_GESTURE_SWIPE_END ? GESTURE_SWIPE :
+            type == LIBINPUT_EVENT_GESTURE_PINCH_END ? GESTURE_PINCH : GESTURE_HOLD,
+            msec(libinput_event_gesture_get_time_usec(gesture)),
+            libinput_event_gesture_get_cancelled(gesture));
         break;
     default:
         break;

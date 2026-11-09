@@ -18,7 +18,8 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/presentation-time/presentation-time.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml \
-        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/tablet/tablet-v2.xml; do
+        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/tablet/tablet-v2.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml; do
         name=$(basename "$xml" .xml)
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
@@ -155,7 +156,7 @@ in
     environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
   } "pointer-protocols" ''
     machine.wait_for_unit("multi-user.target")
-    machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client")
+    machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
   '';
   integration = check "integration" (
     ''

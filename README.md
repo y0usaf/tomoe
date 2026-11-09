@@ -170,6 +170,8 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   the current queue applies parent state before releasing child caches.
 - Applications can select themed cursor shapes, including text, resize and drag
   cursors, through `wp_cursor_shape_manager_v1`.
+- Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
+  application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods, touch and tablets are not supported yet, and shell surfaces
   cannot take keyboard focus.
 - Extensions are trusted code. They run inside the compositor with your

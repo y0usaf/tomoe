@@ -245,6 +245,7 @@ void seat_set_capabilities(struct seat *seat, uint32_t capabilities) {
 
 static void pointer_surface_destroyed(struct wl_listener *listener, void *data) {
     struct seat *seat = wl_container_of(listener, seat, pointer_state.surface_destroy);
+    pointer_gesture_cancel(seat->server);
     detach(listener);
     seat->pointer_state.focused_surface = NULL;
     seat->pointer_state.focused_client = NULL;
@@ -254,6 +255,7 @@ static void pointer_surface_destroyed(struct wl_listener *listener, void *data) 
 void seat_pointer_enter(struct seat *seat, struct surface *surface, double sx, double sy) {
     struct seat_pointer_state *state = &seat->pointer_state;
     if (state->focused_surface == surface) return;
+    pointer_gesture_cancel(seat->server);
     struct seat_client *c = surface ?
         seat_client_for(seat, wl_resource_get_client(surface->resource)) : NULL;
     struct surface *old = state->focused_surface;
@@ -412,6 +414,7 @@ static const struct seat_pointer_grab_interface default_pointer_grab = {
 };
 
 void seat_pointer_start_grab(struct seat *seat, struct seat_pointer_grab *grab) {
+    pointer_gesture_cancel(seat->server);
     grab->seat = seat;
     seat->pointer_state.grab = grab;
 }
