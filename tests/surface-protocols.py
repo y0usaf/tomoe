@@ -149,19 +149,52 @@ for _ in range(100):
     time.sleep(0.05)
 else:
     raise AssertionError(inspect())
+
+def captured_audio():
+    raw = base64.b64decode(machine.succeed("base64 -w0 /run/bell.raw"))
+    return struct.unpack(f"<{len(raw) // 8 * 2}f", raw[:len(raw) // 8 * 8])
+
+def wait_capture(predicate):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        values = captured_audio()
+        if predicate(values):
+            return values
+        time.sleep(0.05)
+    audible = sum(abs(v) > 0.001 for v in values)
+    raise AssertionError(("capture progress timed out", len(values) // 2, audible))
+
+def complete_tone(values, offset):
+    tone = values[offset:]
+    audible = [i for i, v in enumerate(tone) if abs(v) > 0.001]
+    assert len(audible) <= tone_samples, (len(audible), tone_samples)
+    return (len(audible) == tone_samples
+            and len(tone) - audible[-1] > 4800 * 2)
+
+tone_samples = sum(abs(v[0] / 32768) > 0.001 for v in struct.iter_unpack("<h", samples))
+values = wait_capture(lambda values: len(values) >= 4800 * 2)
+assert not any(abs(v) > 0.001 for v in values), "audio before the first bell"
 client("bell", "--bell-probe")
+offset = len(values)
 for step in range(1, 4):
     machine.succeed("systemctl kill --kill-whom=main --signal=USR1 bell")
     machine.wait_until_succeeds(f"journalctl -u bell -o cat | grep -qx 'bell-step {step}'")
-    time.sleep(0.35)
     sound = plist(inspect()[":NATIVE-SOUND"])
     assert sound[":PLAYED"] == str(min(step, 2)) and sound[":DROPPED"] == "0", sound
+    if step < 3:
+        values = wait_capture(lambda values: complete_tone(values, offset))
+        assert 0.35 < max(abs(v) for v in values[offset:]) < 0.38
+    else:
+        values = wait_capture(lambda values: len(values) >= offset + 14400 * 2)
+        assert not any(abs(v) > 0.001 for v in values[offset:]), "bell after manager destroy"
+    offset = len(values)
 machine.succeed("systemctl stop bell-record")
 raw = base64.b64decode(machine.succeed("base64 -w0 /run/bell.raw"))
 values = struct.unpack(f"<{len(raw) // 4}f", raw)
 audible = sum(abs(v) > 0.001 for v in values)
 peak = max(abs(v) for v in values)
-assert 30000 < audible < 42000 and 0.35 < peak < 0.38, (audible, peak)
+assert audible == 2 * tone_samples and 30000 < audible < 42000 and 0.35 < peak < 0.38, (audible, peak)
+print(f"bell capture: {tone_samples} audible samples per cue, {audible} total, peak {peak}; no tone after destroy")
 cli("unmount bell-test")
 assert plist(inspect()[":NATIVE-SOUND"])[":STATE"] == ":OFF", inspect()
 machine.succeed("systemctl stop bell check-pipewire")
