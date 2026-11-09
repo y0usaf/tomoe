@@ -19,7 +19,7 @@
                      :background (if backdrop "#00000066" "#00000000")
                      :children (list tree))
                  :anchors '(:top :right :bottom :left) :layer :overlay
-                 :background "#00000000"))
+                 :background "#00000000" :placement :view))
 
 (defun confirm-dialog (name text &key (confirm :confirm) (cancel :cancel) theme)
   "Effects for a modal confirm dialog: Enter runs CONFIRM, any other key or a
