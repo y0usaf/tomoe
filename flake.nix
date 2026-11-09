@@ -123,6 +123,7 @@
               ./examples
               ./share
               ./build.lisp
+              ./Makefile
             ];
           };
           nativeBuildInputs = [
@@ -154,73 +155,9 @@
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
-            mkdir build
-            for module in executions watches notifications mpris backlight battery network tray system xwayland; do
-              $CC -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"${version}"' \
-                $(pkg-config --cflags libsystemd) -c support/$module.c -o build/$module.o
-            done
-            wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
-            wp=${pkgs.wayland-protocols}/share/wayland-protocols
-            for xml in \
-              $wlr/wlr-layer-shell-unstable-v1.xml \
-              $wlr/wlr-screencopy-unstable-v1.xml \
-              $wlr/wlr-gamma-control-unstable-v1.xml \
-              $wlr/wlr-output-power-management-unstable-v1.xml \
-              $wlr/wlr-output-management-unstable-v1.xml \
-              $wlr/wlr-foreign-toplevel-management-unstable-v1.xml \
-              $wlr/wlr-data-control-unstable-v1.xml \
-              $wlr/wlr-virtual-pointer-unstable-v1.xml \
-              native/virtual-keyboard-unstable-v1.xml \
-              native/server-decoration.xml \
-              native/input-method-unstable-v2.xml \
-              $wp/unstable/text-input/text-input-unstable-v3.xml \
-              $wp/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml \
-              $wp/stable/xdg-shell/xdg-shell.xml \
-              $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
-              $wp/stable/viewporter/viewporter.xml \
-              $wp/stable/presentation-time/presentation-time.xml \
-              $wp/staging/fractional-scale/fractional-scale-v1.xml \
-              $wp/staging/fifo/fifo-v1.xml \
-              $wp/staging/single-pixel-buffer/single-pixel-buffer-v1.xml \
-              $wp/staging/alpha-modifier/alpha-modifier-v1.xml \
-              $wp/staging/content-type/content-type-v1.xml \
-              $wp/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml \
-              $wp/staging/xdg-dialog/xdg-dialog-v1.xml \
-              $wp/staging/xdg-system-bell/xdg-system-bell-v1.xml \
-              $wp/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml \
-              $wp/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
-              $wp/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
-              $wp/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
-              $wp/staging/ext-idle-notify/ext-idle-notify-v1.xml \
-              $wp/staging/ext-session-lock/ext-session-lock-v1.xml \
-              $wp/staging/xdg-activation/xdg-activation-v1.xml \
-              $wp/staging/tearing-control/tearing-control-v1.xml \
-              $wp/staging/ext-background-effect/ext-background-effect-v1.xml \
-              $wp/staging/ext-data-control/ext-data-control-v1.xml \
-              $wp/staging/pointer-warp/pointer-warp-v1.xml \
-              $wp/staging/cursor-shape/cursor-shape-v1.xml \
-              $wp/stable/tablet/tablet-v2.xml \
-              $wp/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml \
-              $wp/staging/security-context/security-context-v1.xml \
-              $wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml \
-              $wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml \
-              $wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
-              $wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
-              $wp/unstable/xdg-output/xdg-output-unstable-v1.xml \
-              $wp/unstable/primary-selection/primary-selection-unstable-v1.xml; do
-              name=$(basename "$xml" .xml)
-              wayland-scanner server-header "$xml" "build/$name-protocol.h"
-              wayland-scanner private-code "$xml" "build/$name-protocol.c"
-              wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
-            done
-            cflags="-std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3)"
-            mkdir build/obj
-            export cflags
-            printf '%s\n' native/*.c build/*-protocol.c \
-              | xargs -P "$NIX_BUILD_CORES" -I{} sh -c '$CC $cflags -c "$1" -o "build/obj/$(basename "$1" .c).o"' _ {}
-            $CC -Wl,--export-dynamic ${sbcl}/lib/sbcl/sbcl.o build/obj/*.o build/*.o -o build/tomoe-runtime \
-              $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
-              -lresvg -ldl -lpthread -lzstd -lm
+            make -j"$NIX_BUILD_CORES" VERSION=${version} SBCL_HOME=${sbcl}/lib/sbcl \
+              WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
+              WP=${pkgs.wayland-protocols}/share/wayland-protocols
             SBCL_HOME=${sbcl}/lib/sbcl \
             TOMOE_VERSION=${version} \
             TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
