@@ -790,6 +790,7 @@ struct tomoe {
     struct keyboard_profile *keyboard_profile;
     struct ime *ime;
     struct wl_list input_devices, background_effects;
+    struct wl_list shortcut_inhibitors;
     struct wl_list surfaces, feedbacks;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, virtual_pointers;
     struct wl_list activation_tokens;
@@ -1173,6 +1174,9 @@ bool ime_key(struct input_device *device, uint32_t time, uint32_t key, uint32_t 
 void ime_keymap(struct tomoe *s);
 bool ime_modifiers(struct tomoe *s, const struct keyboard_modifiers *modifiers);
 bool ime_virtual_modifiers(struct input_device *device, const struct keyboard_modifiers *mods);
+bool shortcuts_listen(struct tomoe *s);
+void shortcuts_focus(struct tomoe *s, struct surface *surface);
+bool shortcuts_inhibited(struct tomoe *s);
 void constraint_focus(struct tomoe *s, struct surface *surface, double sx, double sy);
 void constraint_refresh(struct tomoe *s);
 bool constraint_allows(struct tomoe *s, double x, double y);

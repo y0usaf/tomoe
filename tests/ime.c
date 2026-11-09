@@ -12,6 +12,7 @@
 #include "text-input-unstable-v3-client-protocol.h"
 #include "input-method-unstable-v2-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
+#include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
 
 struct connection {
     struct wl_display *display;
@@ -21,6 +22,7 @@ struct connection {
     struct xdg_wm_base *wm;
     struct zwp_text_input_manager_v3 *text_manager;
     struct zwp_input_method_manager_v2 *method_manager;
+    struct zwp_keyboard_shortcuts_inhibit_manager_v1 *shortcuts;
     struct zwp_virtual_keyboard_manager_v1 *keyboard_manager;
 };
 struct window {
@@ -44,6 +46,7 @@ static void global(void *data, struct wl_registry *registry, uint32_t name, cons
 #define BIND(field, iface) if (!strcmp(interface, #iface)) c->field = wl_registry_bind(registry, name, &iface##_interface, 1)
     BIND(compositor, wl_compositor);
     BIND(shm, wl_shm);
+    BIND(shortcuts, zwp_keyboard_shortcuts_inhibit_manager_v1);
     BIND(seat, wl_seat);
     BIND(wm, xdg_wm_base);
     BIND(text_manager, zwp_text_input_manager_v3);
@@ -164,9 +167,68 @@ static struct zwp_virtual_keyboard_v1 *virtual_keyboard(struct connection *c) {
 }
 static void popup_rectangle(void *data, struct zwp_input_popup_surface_v2 *popup, int32_t x, int32_t y, int32_t w, int32_t h) { rect[0] = x; rect[1] = y; rect[2] = w; rect[3] = h; rects++; }
 static const struct zwp_input_popup_surface_v2_listener popup_listener = { popup_rectangle };
+static unsigned inhibited, restored;
+static void inhibitor_active(void *data, struct zwp_keyboard_shortcuts_inhibitor_v1 *i) { inhibited++; }
+static void inhibitor_inactive(void *data, struct zwp_keyboard_shortcuts_inhibitor_v1 *i) { restored++; }
+static const struct zwp_keyboard_shortcuts_inhibitor_v1_listener inhibitor_listener = {
+    .active = inhibitor_active, .inactive = inhibitor_inactive,
+};
+static void send_a(struct zwp_virtual_keyboard_v1 *physical, unsigned expected) {
+    zwp_virtual_keyboard_v1_key(physical, 1, 30, 1);
+    zwp_virtual_keyboard_v1_key(physical, 2, 30, 0);
+    sync_all();
+    assert(app_keys == expected);
+}
+static void shortcut_check(struct window *one, struct zwp_virtual_keyboard_v1 *physical) {
+    assert(app.shortcuts);
+    send_a(physical, 0);
+    struct zwp_keyboard_shortcuts_inhibitor_v1 *i =
+        zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(app.shortcuts, one->surface, app.seat);
+    zwp_keyboard_shortcuts_inhibitor_v1_add_listener(i, &inhibitor_listener, NULL);
+    sync_all(); assert(inhibited == 1);
+    send_a(physical, 2);
+    struct window two = {0};
+    create_window(&two);
+    wait_counter(&enters, 2);
+    assert(entered == two.surface && !restored);
+    send_a(physical, 2);
+    close_window(&two);
+    wait_counter(&enters, 3);
+    assert(entered == one->surface && inhibited == 2 && !restored);
+    send_a(physical, 4);
+    zwp_keyboard_shortcuts_inhibitor_v1_destroy(i);
+    sync_all();
+    send_a(physical, 4);
+    i = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(app.shortcuts, one->surface, app.seat);
+    zwp_keyboard_shortcuts_inhibitor_v1_add_listener(i, &inhibitor_listener, NULL);
+    sync_all(); assert(inhibited == 3);
+    close_window(one);
+    sync_all();
+    create_window(&two);
+    wait_counter(&enters, 4);
+    send_a(physical, 4);
+    zwp_keyboard_shortcuts_inhibitor_v1_destroy(i);
+    close_window(&two);
+    struct connection duplicate = {0};
+    connect_to(&duplicate);
+    struct wl_surface *s = wl_compositor_create_surface(duplicate.compositor);
+    zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(duplicate.shortcuts, s, duplicate.seat);
+    assert(wl_display_roundtrip(duplicate.display) >= 0);
+    zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(duplicate.shortcuts, s, duplicate.seat);
+    assert(wl_display_roundtrip(duplicate.display) < 0);
+    const struct wl_interface *interface = NULL;
+    uint32_t id;
+    assert(wl_display_get_protocol_error(duplicate.display, &interface, &id) ==
+        ZWP_KEYBOARD_SHORTCUTS_INHIBIT_MANAGER_V1_ERROR_ALREADY_INHIBITED);
+    assert(interface == &zwp_keyboard_shortcuts_inhibit_manager_v1_interface);
+    wl_display_disconnect(duplicate.display);
+    sync_all();
+    puts("shortcuts: bound key suppressed normally, delivered under inhibition, focus/destruction restored bindings, duplicate rejected");
+}
 int main(int argc, char **argv) {
-    bool text_only = argc > 1 && !strcmp(argv[1], "text-only");
     connect_to(&hardware);
+    bool shortcuts = argc > 1 && !strcmp(argv[1], "shortcuts");
+    bool text_only = shortcuts || (argc > 1 && !strcmp(argv[1], "text-only"));
     struct zwp_virtual_keyboard_v1 *physical = virtual_keyboard(&hardware);
     assert(wl_display_roundtrip(hardware.display) >= 0);
     connect_to(&app);
@@ -188,6 +250,15 @@ int main(int argc, char **argv) {
     zwp_text_input_v3_enable(text);
     zwp_text_input_v3_set_surrounding_text(text, "hello", 5, 2);
     zwp_text_input_v3_set_content_type(text, 0x201, 13);
+    if (shortcuts) {
+        shortcut_check(&one, physical);
+        zwp_text_input_v3_destroy(text);
+        zwp_virtual_keyboard_v1_destroy(physical);
+        sync_all();
+        wl_display_disconnect(app.display);
+        wl_display_disconnect(hardware.display);
+        return 0;
+    }
     zwp_text_input_v3_set_text_change_cause(text, 1);
     zwp_text_input_v3_set_cursor_rectangle(text, 12, 20, 2, 16);
     zwp_text_input_v3_commit(text);
@@ -243,7 +314,7 @@ int main(int argc, char **argv) {
     wait_counter(&enters, 2);
     assert(leaves == 1 && entered == two.surface);
     if (!text_only) {
-        assert(deactivates == 1);
+        wait_counter(&deactivates, 1);
         zwp_input_method_v2_commit_string(method, "wrong field");
         zwp_input_method_v2_commit(method, method_serial);
         sync_all(); assert(commit_count == 1);

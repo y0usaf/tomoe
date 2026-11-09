@@ -5,12 +5,16 @@ let
     src = ./ime.c;
     dontUnpack = true;
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       wp=${pkgs.wayland-protocols}/share/wayland-protocols
       for xml in $wp/stable/xdg-shell/xdg-shell.xml \
         $wp/unstable/text-input/text-input-unstable-v3.xml \
+        $wp/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml \
         ${../native/input-method-unstable-v2.xml} \
         ${../native/virtual-keyboard-unstable-v1.xml}; do
         name=$(basename "$xml" .xml)
@@ -30,6 +34,12 @@ let
       (let ((windows (context snapshot :windows)))
         (values nil (append (loop for w in windows collect (place (getf w :id) 0 0 320 240))
                             (list (focus (getf (car (last windows)) :id)))) nil)))
+  '';
+  shortcutBindings = pkgs.writeText "shortcut-bindings.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "shortcut-binding" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot state event))
+      (values nil (list (bind-key nil "a" :hit)) nil))
   '';
   client = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-client";
@@ -224,6 +234,13 @@ in
     start("--bare")
     cli("mount ${imePolicy}")
     machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
+    quit()
+  '';
+  shortcuts-inhibit = check "shortcuts-inhibit" ''
+    start("--bare")
+    cli("mount ${imePolicy}")
+    cli("mount ${shortcutBindings}")
+    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
     quit()
   '';
   integration = check "integration" (

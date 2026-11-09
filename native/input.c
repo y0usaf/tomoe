@@ -1677,7 +1677,7 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
     }
-    if (s->grab_owner && tracked && !lock_active(s)) {
+    if (s->grab_owner && tracked && !lock_active(s) && !shortcuts_inhibited(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             struct binding_latch *latch = &k->latches[input->keycode];
             latch->consumed = true;
@@ -1698,7 +1698,7 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
     }
-    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s)) {
+    if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s) && !shortcuts_inhibited(s)) {
         struct binding *b;
         wl_list_for_each(b, &s->bindings, link) for (int i = 0; i < count; i++) {
             if (b->modifiers != mods ||

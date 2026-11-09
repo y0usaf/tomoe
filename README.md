@@ -188,6 +188,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   surrounding text, preedit/commit/delete, candidate popups and keyboard grabs.
   A private headless end-to-end check exercises a minimal Wayland IME; toolkit
   support still depends on the application's text-input protocol support.
+- Focused clients can inhibit compositor shortcuts with
+  keyboard-shortcuts-inhibit-v1; focus loss or destruction restores bindings.
+  VT switching remains compositor-controlled.
 - Touch and tablets are not supported yet, and shell surfaces cannot take
   keyboard focus.
   Tablet support needs a separate device/tool lifecycle, proximity focus and
