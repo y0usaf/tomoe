@@ -198,6 +198,14 @@ static void window_event(struct window *w, const char *type, const char *request
     fprintf(out, " :content-type :%s", types[surface_of(w)->current.content_type]);
     fputs(" :tag ", out); quote(out, w->xdg->tag ? w->xdg->tag : "");
     fputs(" :description ", out); quote(out, w->xdg->description ? w->xdg->description : "");
+    uint32_t parent = 0;
+    struct window *other;
+    wl_list_for_each(other, &w->server->windows, link)
+        if (other->xdg == w->xdg->parent) { parent = other->target.id; break; }
+    if (parent) fprintf(out, " :parent %u", parent);
+    else fputs(" :parent nil", out);
+    fprintf(out, " :dialog %s :modal %s", parent && w->xdg->dialog ? "t" : "nil",
+        parent && w->xdg->dialog && w->xdg->modal ? "t" : "nil");
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
     bool fullscreen_requested = w->xdg_fullscreen_requested;

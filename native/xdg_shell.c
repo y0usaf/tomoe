@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "xdg-shell-protocol.h"
 #include "xdg-toplevel-tag-v1-protocol.h"
+#include "xdg-dialog-v1-protocol.h"
 
 enum { ROLE_NONE, ROLE_TOPLEVEL, ROLE_POPUP };
 
@@ -275,6 +276,8 @@ static void surface_reset(struct xdg_surface *xdg) {
     xdg->configure_idle = NULL;
 }
 
+static void toplevel_parent(struct xdg_toplevel *toplevel, struct xdg_toplevel *parent);
+
 static void toplevel_reset(struct xdg_toplevel *toplevel) {
     free(toplevel->title);
     free(toplevel->app_id);
@@ -282,6 +285,7 @@ static void toplevel_reset(struct xdg_toplevel *toplevel) {
     free(toplevel->tag);
     free(toplevel->description);
     toplevel->tag = toplevel->description = NULL;
+    toplevel_parent(toplevel, NULL);
     detach(&toplevel->requested.fullscreen_output_destroy);
     toplevel->requested.fullscreen_output = NULL;
     toplevel->requested.fullscreen = toplevel->requested.maximized =
@@ -305,6 +309,7 @@ static void role_object_destroy(struct xdg_surface *xdg) {
         struct xdg_toplevel *toplevel = xdg->toplevel;
         toplevel_reset(toplevel);
         wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
+        if (toplevel->dialog) wl_resource_set_user_data(toplevel->dialog, NULL);
         surface_synced_finish(&toplevel->synced);
         wl_resource_set_user_data(toplevel->resource, NULL);
         xdg->toplevel = NULL;
@@ -457,13 +462,39 @@ static void destroy_resource(struct wl_client *client, struct wl_resource *resou
     wl_resource_destroy(resource);
 }
 
+static void parent_gone(struct wl_listener *listener, void *data) {
+    struct xdg_toplevel *toplevel = wl_container_of(listener, toplevel, parent_destroy);
+    toplevel_parent(toplevel, toplevel->parent->parent);
+}
+
+static void parent_unmapped(struct wl_listener *listener, void *data) {
+    struct xdg_toplevel *toplevel = wl_container_of(listener, toplevel, parent_unmap);
+    toplevel_parent(toplevel, toplevel->parent->parent);
+}
+
+static void toplevel_parent(struct xdg_toplevel *toplevel, struct xdg_toplevel *parent) {
+    detach(&toplevel->parent_destroy);
+    detach(&toplevel->parent_unmap);
+    toplevel->parent = parent;
+    if (parent) {
+        listen(&toplevel->parent_destroy, &parent->events.destroy, parent_gone);
+        listen(&toplevel->parent_unmap, &parent->base->surface->events.unmap, parent_unmapped);
+    }
+    wl_signal_emit_mutable(&toplevel->events.metadata, NULL);
+}
+
 static void toplevel_set_parent(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *parent) {
     struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(resource);
     struct xdg_toplevel *other = parent ? xdg_toplevel_from_resource(parent) : NULL;
-    if (toplevel && other == toplevel)
+    if (!toplevel) return;
+    for (struct xdg_toplevel *ancestor = other; ancestor; ancestor = ancestor->parent) {
+        if (ancestor != toplevel) continue;
         wl_resource_post_error(resource, XDG_TOPLEVEL_ERROR_INVALID_PARENT,
-            "a toplevel cannot be its own parent");
+            "a toplevel cannot parent itself or an ancestor");
+        return;
+    }
+    toplevel_parent(toplevel, other && other->base->surface->mapped ? other : NULL);
 }
 
 static void replace_string(struct wl_resource *resource, char **slot, const char *text,
@@ -528,6 +559,58 @@ static void tag_bind(struct wl_client *client, void *data, uint32_t version, uin
     if (!resource) wl_client_post_no_memory(client);
     else wl_resource_set_implementation(resource, &tag_manager_impl, data, NULL);
 }
+static void dialog_free(struct wl_resource *resource) {
+    struct xdg_toplevel *toplevel = wl_resource_get_user_data(resource);
+    if (!toplevel) return;
+    toplevel->dialog = NULL;
+    toplevel->modal = false;
+    wl_signal_emit_mutable(&toplevel->events.metadata, NULL);
+}
+
+static void dialog_modal(struct wl_client *client, struct wl_resource *resource) {
+    struct xdg_toplevel *toplevel = wl_resource_get_user_data(resource);
+    if (!toplevel) return;
+    toplevel->modal = true;
+    wl_signal_emit_mutable(&toplevel->events.metadata, NULL);
+}
+
+static void dialog_nonmodal(struct wl_client *client, struct wl_resource *resource) {
+    struct xdg_toplevel *toplevel = wl_resource_get_user_data(resource);
+    if (!toplevel) return;
+    toplevel->modal = false;
+    wl_signal_emit_mutable(&toplevel->events.metadata, NULL);
+}
+
+static const struct xdg_dialog_v1_interface dialog_impl = {
+    .destroy = destroy_resource, .set_modal = dialog_modal, .unset_modal = dialog_nonmodal,
+};
+
+static void dialog_get(struct wl_client *client, struct wl_resource *manager, uint32_t id,
+        struct wl_resource *toplevel_resource) {
+    struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(toplevel_resource);
+    if (toplevel && toplevel->dialog) {
+        wl_resource_post_error(manager, XDG_WM_DIALOG_V1_ERROR_ALREADY_USED,
+            "toplevel already has a dialog");
+        return;
+    }
+    struct wl_resource *resource = wl_resource_create(client, &xdg_dialog_v1_interface, 1, id);
+    if (!resource) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(resource, &dialog_impl, toplevel, dialog_free);
+    if (!toplevel) return;
+    toplevel->dialog = resource;
+    wl_signal_emit_mutable(&toplevel->events.metadata, NULL);
+}
+
+static const struct xdg_wm_dialog_v1_interface dialog_manager_impl = {
+    .destroy = destroy_resource, .get_xdg_dialog = dialog_get,
+};
+
+static void dialog_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &xdg_wm_dialog_v1_interface, version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &dialog_manager_impl, data, NULL);
+}
+
 
 static void toplevel_show_window_menu(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *seat, uint32_t serial, int32_t x, int32_t y) {
@@ -666,6 +749,8 @@ static void get_toplevel(struct wl_client *client, struct wl_resource *resource,
     }
     toplevel->base = xdg;
     wl_list_init(&toplevel->requested.fullscreen_output_destroy.link);
+    wl_list_init(&toplevel->parent_unmap.link);
+    wl_list_init(&toplevel->parent_destroy.link);
     struct wl_signal *signals[] = { &toplevel->events.destroy, &toplevel->events.set_title,
         &toplevel->events.set_app_id, &toplevel->events.request_maximize,
         &toplevel->events.request_fullscreen, &toplevel->events.request_minimize,
@@ -1073,6 +1158,7 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 
 bool xdg_shell_listen(struct tomoe *s) {
     if (!wl_global_create(s->display, &xdg_toplevel_tag_manager_v1_interface, 1, s, tag_bind)) return false;
+    if (!wl_global_create(s->display, &xdg_wm_dialog_v1_interface, 1, s, dialog_bind)) return false;
     return wl_global_create(s->display, &xdg_wm_base_interface, 3, s, bind);
 }
 

@@ -890,6 +890,10 @@ struct xdg_toplevel {
     struct wl_resource *resource;
     struct xdg_surface *base;
     char *title, *app_id, *tag, *description;
+    struct xdg_toplevel *parent;
+    struct wl_listener parent_unmap, parent_destroy;
+    struct wl_resource *dialog;
+    bool modal;
     struct toplevel_state pending, current, scheduled;
     struct {
         bool maximized, fullscreen, minimized;

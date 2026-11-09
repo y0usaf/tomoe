@@ -67,4 +67,33 @@ for step in range(1, 3):
     assert window[":TAG"] == '"composer"' and window[":DESCRIPTION"] == '"Compose a message"', window
 machine.succeed("systemctl stop tag")
 
+client("dialog", "--dialog-probe")
+def dialog_window():
+    return next(plist(w) for w in items(inspect()[":WINDOWS"]) if plist(w)[":TITLE"] == '"Tomoe test client"')
+
+for _ in range(100):
+    window = dialog_window()
+    if window[":DIALOG"] == "T" and window[":MODAL"] == "T":
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError(window)
+parent = window[":PARENT"]
+assert parent != "NIL", window
+for step, (dialog, modal, parented) in enumerate([
+    ("T", "NIL", True), ("T", "T", True), ("NIL", "NIL", False), ("T", "T", True),
+    ("NIL", "NIL", True), ("T", "NIL", True), ("NIL", "NIL", False),
+], 1):
+    machine.succeed("systemctl kill --kill-whom=main --signal=USR1 dialog")
+    machine.wait_until_succeeds(f"journalctl -u dialog -o cat | grep -qx 'dialog-step {step}'")
+    window = dialog_window()
+    assert window[":DIALOG"] == dialog and window[":MODAL"] == modal, window
+    assert window[":PARENT"] == (parent if parented else "NIL"), window
+machine.succeed("systemctl kill --kill-whom=main --signal=USR1 dialog")
+machine.wait_until_succeeds("journalctl -u dialog -o cat | grep -qx 'dialog-step 8'")
+machine.succeed("systemctl stop dialog")
+for mode, interface, code in [("dialog-duplicate", "xdg_wm_dialog_v1", 0), ("parent-self", "xdg_toplevel", 1)]:
+    error = machine.fail(ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --protocol-error {mode} 2>&1")
+    assert f"protocol error on {interface}@" in error and f": {code}" in error, error
+
 quit()

@@ -879,6 +879,8 @@ accepted registry. Never enter this helper inside a candidate transaction."
                          :title (getf event :title) :app-id (getf event :app-id)
                          :content-type (getf event :content-type :none)
                          :tag (getf event :tag "") :description (getf event :description "")
+                         :parent (getf event :parent) :dialog (and (getf event :dialog) t)
+                         :modal (and (getf event :modal) t)
                          :width (getf event :width) :height (getf event :height)
                          :buffered (and (getf event :buffered (getf old :buffered t)) t)
                          :buffer-generation (or (getf old :buffer-generation)

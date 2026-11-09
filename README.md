@@ -211,6 +211,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
 - Toplevel tags and translated descriptions are available as `:tag` and
   `:description` in window snapshots and rule predicates.
+- Dialog and modal hints are exposed as `:dialog`, `:modal`, and `:parent`.
+  Parent unmap/destruction reparents children; parentless dialogs have no effect.
+  Clients retain responsibility for filtering input to modal parents.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).

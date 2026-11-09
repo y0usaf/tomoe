@@ -24,6 +24,7 @@
 #include "alpha-modifier-v1-client-protocol.h"
 #include "content-type-v1-client-protocol.h"
 #include "xdg-toplevel-tag-v1-client-protocol.h"
+#include "xdg-dialog-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -39,6 +40,7 @@ static struct wp_viewporter *viewporter;
 static struct wp_alpha_modifier_v1 *alpha_manager;
 static struct wp_content_type_manager_v1 *content_manager;
 static struct xdg_toplevel_tag_manager_v1 *tag_manager;
+static struct xdg_wm_dialog_v1 *dialog_manager;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -61,6 +63,9 @@ struct client {
     struct wp_content_type_v1 *content_type;
     bool tag_probe;
     unsigned tag_step;
+    bool dialog_probe;
+    unsigned dialog_step;
+    struct xdg_dialog_v1 *dialog;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -70,6 +75,7 @@ struct client {
     struct xdg_toplevel *toplevel;
     struct zwlr_layer_surface_v1 *layer_surface;
 };
+static struct client dialog_parent;
 
 static struct client *client;
 
@@ -106,6 +112,12 @@ static void roundtrip(const char *what) {
 }
 
 static void finish(int code) {
+    if (client->dialog) xdg_dialog_v1_destroy(client->dialog);
+    if (dialog_parent.toplevel) xdg_toplevel_destroy(dialog_parent.toplevel);
+    if (dialog_parent.xdg_surface) xdg_surface_destroy(dialog_parent.xdg_surface);
+    if (dialog_parent.buffer) wl_buffer_destroy(dialog_parent.buffer);
+    if (dialog_parent.surface) wl_surface_destroy(dialog_parent.surface);
+    if (dialog_parent.pixels) munmap(dialog_parent.pixels, dialog_parent.pixels_size);
     if (client->layer_surface) zwlr_layer_surface_v1_destroy(client->layer_surface);
     if (client->toplevel) xdg_toplevel_destroy(client->toplevel);
     if (client->xdg_surface) xdg_surface_destroy(client->xdg_surface);
@@ -124,6 +136,7 @@ static void finish(int code) {
     if (alpha_manager) wp_alpha_modifier_v1_destroy(alpha_manager);
     if (content_manager) wp_content_type_manager_v1_destroy(content_manager);
     if (tag_manager) xdg_toplevel_tag_manager_v1_destroy(tag_manager);
+    if (dialog_manager) xdg_wm_dialog_v1_destroy(dialog_manager);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -259,6 +272,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--protocol-error") == 0) { state->protocol_error = option_value(option, value); i++; }
         else if (strcmp(option, "--content-probe") == 0) state->content_probe = true;
         else if (strcmp(option, "--tag-probe") == 0) state->tag_probe = true;
+        else if (strcmp(option, "--dialog-probe") == 0) state->dialog_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -300,6 +314,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         content_manager = wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, 1);
     } else if (strcmp(interface, xdg_toplevel_tag_manager_v1_interface.name) == 0) {
         tag_manager = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
+    } else if (strcmp(interface, xdg_wm_dialog_v1_interface.name) == 0) {
+        dialog_manager = wl_registry_bind(registry, name, &xdg_wm_dialog_v1_interface, 1);
     }
 }
 
@@ -444,7 +460,6 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 };
 
 static void setup_xdg(struct client *state) {
-    xdg_wm_base_add_listener(wm_base, &xdg_wm_base_listener, state);
     state->surface = wl_compositor_create_surface(compositor);
     state->xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, state->surface);
     xdg_surface_add_listener(state->xdg_surface, &xdg_surface_listener, state);
@@ -546,6 +561,33 @@ static void tag_step(struct client *state) {
     printf("tag-step %u\n", state->tag_step);
     fflush(stdout);
 }
+static void dialog_step(struct client *state) {
+    if (!advance || !state->dialog_probe) return;
+    advance = 0;
+    switch (++state->dialog_step) {
+    case 1: xdg_dialog_v1_unset_modal(state->dialog); break;
+    case 2: xdg_dialog_v1_set_modal(state->dialog); break;
+    case 3: xdg_toplevel_set_parent(state->toplevel, NULL); break;
+    case 4: xdg_toplevel_set_parent(state->toplevel, dialog_parent.toplevel); break;
+    case 5: xdg_dialog_v1_destroy(state->dialog); state->dialog = NULL; break;
+    case 6: state->dialog = xdg_wm_dialog_v1_get_xdg_dialog(dialog_manager, state->toplevel); break;
+    case 7:
+        xdg_toplevel_destroy(dialog_parent.toplevel);
+        dialog_parent.toplevel = NULL;
+        break;
+    case 8:
+        xdg_toplevel_destroy(state->toplevel);
+        state->toplevel = NULL;
+        xdg_dialog_v1_set_modal(state->dialog);
+        xdg_dialog_v1_unset_modal(state->dialog);
+        break;
+    default: fail("dialog probe exhausted");
+    }
+    roundtrip("dialog transition");
+    printf("dialog-step %u\n", state->dialog_step);
+    fflush(stdout);
+}
+
 
 
 
@@ -557,6 +599,7 @@ static void run(struct client *state) {
         alpha_step(state);
         content_step(state);
         tag_step(state);
+        dialog_step(state);
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }
@@ -602,6 +645,18 @@ static void flood(struct client *state) {
 }
 static void protocol_error(const char *mode) {
     struct wl_surface *surface = wl_compositor_create_surface(compositor);
+    if (strcmp(mode, "dialog-duplicate") == 0 || strcmp(mode, "parent-self") == 0) {
+        if (!dialog_manager) fail("dialog manager required");
+        struct xdg_surface *xdg = xdg_wm_base_get_xdg_surface(wm_base, surface);
+        struct xdg_toplevel *toplevel = xdg_surface_get_toplevel(xdg);
+        if (strcmp(mode, "parent-self") == 0) xdg_toplevel_set_parent(toplevel, toplevel);
+        else {
+            xdg_wm_dialog_v1_get_xdg_dialog(dialog_manager, toplevel);
+            xdg_wm_dialog_v1_get_xdg_dialog(dialog_manager, toplevel);
+        }
+        roundtrip("expected dialog protocol error");
+        fail("expected dialog protocol error was not raised");
+    }
     if (strncmp(mode, "content-", 8) == 0) {
         if (!content_manager) fail("content type required");
         struct wp_content_type_v1 *type = wp_content_type_manager_v1_get_surface_content_type(content_manager, surface);
@@ -667,6 +722,7 @@ int main(int count, char **arguments) {
     roundtrip("the registry");
     if (!compositor) fail("the compositor does not advertise wl_compositor");
     if (!shm) fail("the compositor does not advertise wl_shm");
+    if (wm_base) xdg_wm_base_add_listener(wm_base, &xdg_wm_base_listener, &state);
     if (state.protocol_error) protocol_error(state.protocol_error);
     if (strcmp(state.mode, "drag") == 0) {
         if (!pointer_manager) fail("the compositor does not advertise zwlr_virtual_pointer_manager_v1");
@@ -696,6 +752,22 @@ int main(int count, char **arguments) {
         if (!tag_manager || !state.toplevel) fail("toplevel tag manager required");
         xdg_toplevel_tag_manager_v1_set_toplevel_tag(tag_manager, state.toplevel, "settings");
         xdg_toplevel_tag_manager_v1_set_toplevel_description(tag_manager, state.toplevel, "Settings window");
+    }
+    if (state.dialog_probe) {
+        if (!dialog_manager || !state.toplevel) fail("dialog manager required");
+        dialog_parent = state;
+        dialog_parent.dialog_probe = false;
+        dialog_parent.surface = NULL;
+        dialog_parent.buffer = NULL;
+        dialog_parent.pixels = NULL;
+        dialog_parent.mapped = false;
+        dialog_parent.title = "Dialog parent";
+        setup_xdg(&dialog_parent);
+        while (!dialog_parent.mapped)
+            if (wl_display_dispatch(display) < 0) fail_display("map dialog parent");
+        xdg_toplevel_set_parent(state.toplevel, dialog_parent.toplevel);
+        state.dialog = xdg_wm_dialog_v1_get_xdg_dialog(dialog_manager, state.toplevel);
+        xdg_dialog_v1_set_modal(state.dialog);
     }
     if (state.commit_rate) flood(&state);
     run(&state);
