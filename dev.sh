@@ -54,6 +54,7 @@ for xml in \
   "$wp/staging/cursor-shape/cursor-shape-v1.xml" \
   "$wp/stable/tablet/tablet-v2.xml" \
   "$wp/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml" \
+  "$wp/staging/security-context/security-context-v1.xml" \
   "$wp/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" \
   "$wp/unstable/relative-pointer/relative-pointer-unstable-v1.xml" \
   "$wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" \

@@ -145,6 +145,18 @@ native side apply it. A broken extension therefore can't leave the screen
 half-updated, and because every effect has an owner, unmounting an extension
 takes its effects with it.
 
+Sandbox launchers can register private Wayland listening sockets with
+`wp_security_context_manager_v1`, attaching sandbox engine, application and
+instance identities before committing. Connections through these sockets can
+create normal application surfaces, but cannot bind capture, desktop control,
+input injection, global shortcut, output management or nested security-context
+globals, even using global names learned outside the sandbox. Closing the
+launcher’s lifetime FD stops new connections without disconnecting existing
+clients; destroying the protocol object or launcher connection does not stop a
+committed listener. This only restricts Wayland connections routed through the
+registered socket; the launcher must isolate the main Wayland and Tomoe control
+sockets and other host access itself.
+
 ## Documentation
 
 - [Running Tomoe](docs/running.md): backends, flags, the default desktop, X11 and D-Bus

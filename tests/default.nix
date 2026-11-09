@@ -37,6 +37,22 @@ let
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
     '';
   };
+  securityClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-security-client";
+    src = ./security-client.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      xml=${pkgs.wayland-protocols}/share/wayland-protocols/staging/security-context/security-context-v1.xml
+      wayland-scanner client-header "$xml" security-context-v1-client-protocol.h
+      wayland-scanner private-code "$xml" security-context-v1-protocol.c
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src security-context-v1-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-security-client
+    '';
+    installPhase = "install -Dm755 tomoe-security-client $out/bin/tomoe-security-client";
+  };
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
@@ -157,6 +173,14 @@ in
   } "pointer-protocols" ''
     machine.wait_for_unit("multi-user.target")
     machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
+  '';
+  security = checkWith {
+    environment.systemPackages = [ securityClient pkgs.wayland-utils ];
+  } "security" ''
+    start("--bare", bus=False)
+    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
+    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
+    quit()
   '';
   integration = check "integration" (
     ''

@@ -1141,6 +1141,7 @@ void activation_surface_mapped(struct tomoe *s, struct surface *surface);
 void activation_finish(struct tomoe *s);
 
 bool protocols_listen(struct tomoe *s);
+bool security_listen(struct tomoe *s);
 void relative_motion_forward(struct tomoe *s, uint32_t time_msec,
     double dx, double dy, double dx_unaccel, double dy_unaccel);
 void idle_notify_activity(struct tomoe *s);
