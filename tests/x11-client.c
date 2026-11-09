@@ -17,7 +17,7 @@ static void style(Display *display, Window window, const char *name, const char 
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: x11-client normal|override|transient|offscreen\n");
+        fprintf(stderr, "usage: x11-client normal|override|transient|offscreen [title]\n");
         return 2;
     }
     Display *display = XOpenDisplay(NULL);
@@ -29,7 +29,9 @@ int main(int argc, char **argv) {
     int x = strcmp(argv[1], "offscreen") == 0 ? 3000 : 50;
     int y = strcmp(argv[1], "offscreen") == 0 ? 3000 : 50;
     Window parent = XCreateSimpleWindow(display, root, x, y, 320, 200, 0, 0, 0xffffff);
-    style(display, parent, strcmp(argv[1], "offscreen") == 0 ? "X11 Offscreen" : "X11 Parent",
+    const char *title = argc > 2 ? argv[2] :
+        strcmp(argv[1], "offscreen") == 0 ? "X11 Offscreen" : "X11 Parent";
+    style(display, parent, title,
         "x11-parent", "X11Test", strcmp(argv[1], "offscreen") == 0 ? 0x3366cc : 0xffffff);
     XMapWindow(display, parent);
     if (strcmp(argv[1], "override") == 0) {

@@ -188,6 +188,40 @@ for _ in range(100):
 assert pixel(*sample) == offscreen_color, (pixel(*sample), offscreen_color)
 assert x_geometry() == want_geometry, (x_geometry(), want_geometry)
 
+remap_titles = ["X11 Remap A", "X11 Remap B"]
+remap_ids = {}
+for index, title in enumerate(remap_titles):
+    unit(f"remap-{index}", f"{X11_CLIENT} normal '{title}'")
+    wait_window(title)
+    remap_ids[title] = machine.succeed(
+        f"DISPLAY={display} xdotool search --name '^{title}$'"
+    ).split()[0]
+
+
+def buffered(title):
+    return next(
+        plist(entry)[":BUFFERED"] == "T" for entry in items(inspect()[":WINDOWS"])
+        if text(plist(entry)[":TITLE"]) == title
+    )
+
+
+def wait_buffered(title, want):
+    for _ in range(100):
+        if buffered(title) == want:
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"{title} buffered is not {want}: {inspect()[':WINDOWS']}")
+
+
+for remap_order in [remap_titles, remap_titles[::-1]] * 2:
+    for title in remap_titles:
+        machine.succeed(f"DISPLAY={display} xdotool windowunmap {remap_ids[title]}")
+        wait_buffered(title, False)
+    for title in remap_order:
+        machine.succeed(f"DISPLAY={display} xdotool windowmap {remap_ids[title]}")
+        wait_buffered(title, True)
+machine.succeed("systemctl stop remap-0 remap-1")
+
 machine.succeed(env(True) + "sh -c 'printf wayland-data | timeout 10 wl-copy' >/dev/null 2>&1")
 time.sleep(0.5)
 assert machine.succeed(f"DISPLAY={display} timeout 10 xclip -selection clipboard -o") == "wayland-data"

@@ -713,6 +713,9 @@ static void window_destroy(struct wl_listener *listener, void *data) {
 }
 static void surface_gone(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, surface_destroy);
+    detach(&w->map);
+    detach(&w->unmap);
+    detach(&w->commit);
     detach(&w->surface_destroy);
     if (w->xdg->xwm && surface_of(w)) surface_of(w)->external_toplevel = NULL;
     if (w->tree) node_destroy(w->tree);
