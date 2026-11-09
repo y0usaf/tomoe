@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix="tomoe-pointer-", dir=os.environ.get("TM
             if compositor.poll() is not None:
                 log.seek(0)
                 raise AssertionError(log.read())
-            if (runtime / "pointer-check").exists() and (runtime / "tomoe.pointer-check.sock").exists():
+            if (runtime / "pointer-check").exists():
                 break
             time.sleep(0.1)
         else:
@@ -79,7 +79,9 @@ with tempfile.TemporaryDirectory(prefix="tomoe-pointer-", dir=os.environ.get("TM
             cli("mount", sys.argv[3])
             def inject(request):
                 path = root / "gesture-command"
-                path.write_text(request)
+                temporary = root / "gesture-command.tmp"
+                temporary.write_text(request)
+                os.replace(temporary, path)
                 cli("msg", "cursor")
                 cli("msg", "cursor")
                 assert not path.exists(), "gesture injection was not consumed"
