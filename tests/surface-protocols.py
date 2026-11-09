@@ -51,4 +51,20 @@ for mode in ["content-duplicate", "content-invalid"]:
     assert "protocol error on wp_content_type" in error, error
 machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-test-client --protocol-error content-orphan")
 
+client("tag", "--tag-probe")
+for _ in range(100):
+    windows = items(inspect()[":WINDOWS"])
+    if windows and plist(windows[0]).get(":TAG") == '"settings"':
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError(inspect())
+assert plist(windows[0])[":DESCRIPTION"] == '"Settings window"', windows
+for step in range(1, 3):
+    machine.succeed("systemctl kill --kill-whom=main --signal=USR1 tag")
+    machine.wait_until_succeeds(f"journalctl -u tag -o cat | grep -qx 'tag-step {step}'")
+    window = plist(items(inspect()[":WINDOWS"])[0])
+    assert window[":TAG"] == '"composer"' and window[":DESCRIPTION"] == '"Compose a message"', window
+machine.succeed("systemctl stop tag")
+
 quit()

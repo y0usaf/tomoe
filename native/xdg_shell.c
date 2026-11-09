@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "xdg-shell-protocol.h"
+#include "xdg-toplevel-tag-v1-protocol.h"
 
 enum { ROLE_NONE, ROLE_TOPLEVEL, ROLE_POPUP };
 
@@ -278,6 +279,9 @@ static void toplevel_reset(struct xdg_toplevel *toplevel) {
     free(toplevel->title);
     free(toplevel->app_id);
     toplevel->title = toplevel->app_id = NULL;
+    free(toplevel->tag);
+    free(toplevel->description);
+    toplevel->tag = toplevel->description = NULL;
     detach(&toplevel->requested.fullscreen_output_destroy);
     toplevel->requested.fullscreen_output = NULL;
     toplevel->requested.fullscreen = toplevel->requested.maximized =
@@ -491,6 +495,40 @@ static void toplevel_set_app_id(struct wl_client *client, struct wl_resource *re
     if (toplevel) replace_string(resource, &toplevel->app_id, app_id, &toplevel->events.set_app_id);
 }
 
+static void toplevel_tag(struct wl_client *client, struct wl_resource *manager,
+        struct wl_resource *resource, const char *text) {
+    struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(resource);
+    if (!toplevel) return;
+    if (!utf8(text)) {
+        wl_resource_post_error(manager, (uint32_t)-1, "toplevel tag is not valid UTF-8");
+        return;
+    }
+    replace_string(manager, &toplevel->tag, text, &toplevel->events.metadata);
+}
+
+static void toplevel_description(struct wl_client *client, struct wl_resource *manager,
+        struct wl_resource *resource, const char *text) {
+    struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(resource);
+    if (!toplevel) return;
+    if (!utf8(text)) {
+        wl_resource_post_error(manager, (uint32_t)-1, "toplevel description is not valid UTF-8");
+        return;
+    }
+    replace_string(manager, &toplevel->description, text, &toplevel->events.metadata);
+}
+
+static const struct xdg_toplevel_tag_manager_v1_interface tag_manager_impl = {
+    .destroy = destroy_resource, .set_toplevel_tag = toplevel_tag,
+    .set_toplevel_description = toplevel_description,
+};
+
+static void tag_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client, &xdg_toplevel_tag_manager_v1_interface,
+        version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &tag_manager_impl, data, NULL);
+}
+
 static void toplevel_show_window_menu(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *seat, uint32_t serial, int32_t x, int32_t y) {
 }
@@ -631,7 +669,7 @@ static void get_toplevel(struct wl_client *client, struct wl_resource *resource,
     struct wl_signal *signals[] = { &toplevel->events.destroy, &toplevel->events.set_title,
         &toplevel->events.set_app_id, &toplevel->events.request_maximize,
         &toplevel->events.request_fullscreen, &toplevel->events.request_minimize,
-        &toplevel->events.request_move, &toplevel->events.request_resize };
+        &toplevel->events.request_move, &toplevel->events.request_resize, &toplevel->events.metadata };
     for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) wl_signal_init(signals[i]);
     wl_resource_set_implementation(toplevel->resource, &toplevel_impl, toplevel, NULL);
     xdg->toplevel = toplevel;
@@ -1034,6 +1072,7 @@ static void bind(struct wl_client *client, void *data, uint32_t version, uint32_
 }
 
 bool xdg_shell_listen(struct tomoe *s) {
+    if (!wl_global_create(s->display, &xdg_toplevel_tag_manager_v1_interface, 1, s, tag_bind)) return false;
     return wl_global_create(s->display, &xdg_wm_base_interface, 3, s, bind);
 }
 

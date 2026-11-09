@@ -878,6 +878,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
               (new (list :id id :identifier (window-identifier runtime id)
                          :title (getf event :title) :app-id (getf event :app-id)
                          :content-type (getf event :content-type :none)
+                         :tag (getf event :tag "") :description (getf event :description "")
                          :width (getf event :width) :height (getf event :height)
                          :buffered (and (getf event :buffered (getf old :buffered t)) t)
                          :buffer-generation (or (getf old :buffer-generation)

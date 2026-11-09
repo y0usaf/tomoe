@@ -889,7 +889,7 @@ struct xdg_toplevel_request {
 struct xdg_toplevel {
     struct wl_resource *resource;
     struct xdg_surface *base;
-    char *title, *app_id;
+    char *title, *app_id, *tag, *description;
     struct toplevel_state pending, current, scheduled;
     struct {
         bool maximized, fullscreen, minimized;
@@ -899,7 +899,7 @@ struct xdg_toplevel {
     struct surface_synced synced;
     struct {
         struct wl_signal destroy, set_title, set_app_id, request_maximize, request_fullscreen,
-            request_minimize, request_move, request_resize;
+            request_minimize, request_move, request_resize, metadata;
     } events;
 };
 struct xdg_popup_state {

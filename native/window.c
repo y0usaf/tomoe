@@ -8,6 +8,7 @@ struct window {
     struct xdg_toplevel *xdg;
     struct node *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
+    struct wl_listener metadata;
     struct wl_listener request_move, request_resize, request_minimize;
     int width, height;
     int client_width, client_height;
@@ -195,6 +196,8 @@ static void window_event(struct window *w, const char *type, const char *request
     fputs(" :app-id ", out); quote(out, app_id_of(w));
     static const char *const types[] = { "none", "photo", "video", "game" };
     fprintf(out, " :content-type :%s", types[surface_of(w)->current.content_type]);
+    fputs(" :tag ", out); quote(out, w->xdg->tag ? w->xdg->tag : "");
+    fputs(" :description ", out); quote(out, w->xdg->description ? w->xdg->description : "");
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
     bool fullscreen_requested = w->xdg_fullscreen_requested;
@@ -648,6 +651,11 @@ static void window_app_id(struct wl_listener *listener, void *data) {
                 "window app-id allocation failed")) return;
     if (w->mapped || w->admitted) window_event(w, "metadata", NULL);
 }
+static void window_metadata(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, metadata);
+    if (w->mapped || w->admitted) window_event(w, "metadata", NULL);
+}
+
 static void window_request(struct window *w, const char *request) {
     if (!cache_xdg_requested(w, request)) return;
     if (w->xdg->base->initialized) xdg_surface_schedule_configure(w->xdg->base);
@@ -666,6 +674,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = w->server;
     detach(&w->map); detach(&w->unmap); detach(&w->commit); detach(&w->destroy);
     detach(&w->title); detach(&w->app_id); detach(&w->maximize); detach(&w->fullscreen);
+    detach(&w->metadata);
     detach(&w->request_move); detach(&w->request_resize); detach(&w->request_minimize);
     if (s->grab_id == w->target.id) grab_clear(s);
     if (s->focused == w->target.id) tomoe_focus(s, 0);
@@ -705,6 +714,7 @@ void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *xdg) {
     listen(&w->destroy, &xdg->events.destroy, window_destroy);
     listen(&w->title, &xdg->events.set_title, window_title);
     listen(&w->app_id, &xdg->events.set_app_id, window_app_id);
+    listen(&w->metadata, &xdg->events.metadata, window_metadata);
     listen(&w->maximize, &xdg->events.request_maximize, window_maximize);
     listen(&w->fullscreen, &xdg->events.request_fullscreen, window_fullscreen);
     listen(&w->request_move, &xdg->events.request_move, window_move);

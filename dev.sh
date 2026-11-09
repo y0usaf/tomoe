@@ -47,6 +47,7 @@ for xml in \
   "$wp/staging/single-pixel-buffer/single-pixel-buffer-v1.xml" \
   "$wp/staging/alpha-modifier/alpha-modifier-v1.xml" \
   "$wp/staging/content-type/content-type-v1.xml" \
+  "$wp/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml" \
   "$wp/staging/linux-drm-syncobj/linux-drm-syncobj-v1.xml" \
   "$wp/staging/ext-image-capture-source/ext-image-capture-source-v1.xml" \
   "$wp/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml" \

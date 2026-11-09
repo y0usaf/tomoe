@@ -209,6 +209,8 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   affect both normal rendering and captures.
 - Committed content-type hints are available to window policy as `:content-type`
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
+- Toplevel tags and translated descriptions are available as `:tag` and
+  `:description` in window snapshots and rule predicates.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).

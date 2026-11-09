@@ -23,6 +23,7 @@
 #include "viewporter-client-protocol.h"
 #include "alpha-modifier-v1-client-protocol.h"
 #include "content-type-v1-client-protocol.h"
+#include "xdg-toplevel-tag-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -37,6 +38,7 @@ static struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
 static struct wp_viewporter *viewporter;
 static struct wp_alpha_modifier_v1 *alpha_manager;
 static struct wp_content_type_manager_v1 *content_manager;
+static struct xdg_toplevel_tag_manager_v1 *tag_manager;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -57,6 +59,8 @@ struct client {
     bool content_probe;
     unsigned content_step;
     struct wp_content_type_v1 *content_type;
+    bool tag_probe;
+    unsigned tag_step;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -119,6 +123,7 @@ static void finish(int code) {
     if (viewporter) wp_viewporter_destroy(viewporter);
     if (alpha_manager) wp_alpha_modifier_v1_destroy(alpha_manager);
     if (content_manager) wp_content_type_manager_v1_destroy(content_manager);
+    if (tag_manager) xdg_toplevel_tag_manager_v1_destroy(tag_manager);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -253,6 +258,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--alpha-probe") == 0) state->alpha_probe = true;
         else if (strcmp(option, "--protocol-error") == 0) { state->protocol_error = option_value(option, value); i++; }
         else if (strcmp(option, "--content-probe") == 0) state->content_probe = true;
+        else if (strcmp(option, "--tag-probe") == 0) state->tag_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -292,6 +298,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         alpha_manager = wl_registry_bind(registry, name, &wp_alpha_modifier_v1_interface, 1);
     } else if (strcmp(interface, wp_content_type_manager_v1_interface.name) == 0) {
         content_manager = wl_registry_bind(registry, name, &wp_content_type_manager_v1_interface, 1);
+    } else if (strcmp(interface, xdg_toplevel_tag_manager_v1_interface.name) == 0) {
+        tag_manager = wl_registry_bind(registry, name, &xdg_toplevel_tag_manager_v1_interface, 1);
     }
 }
 
@@ -520,6 +528,25 @@ static void content_step(struct client *state) {
     printf("content-step %u\n", state->content_step);
     fflush(stdout);
 }
+static void tag_step(struct client *state) {
+    if (!advance || !state->tag_probe) return;
+    advance = 0;
+    switch (++state->tag_step) {
+    case 1:
+        xdg_toplevel_tag_manager_v1_set_toplevel_tag(tag_manager, state->toplevel, "composer");
+        xdg_toplevel_tag_manager_v1_set_toplevel_description(tag_manager, state->toplevel, "Compose a message");
+        break;
+    case 2:
+        xdg_toplevel_tag_manager_v1_destroy(tag_manager);
+        tag_manager = NULL;
+        break;
+    default: fail("tag probe exhausted");
+    }
+    roundtrip("tag transition");
+    printf("tag-step %u\n", state->tag_step);
+    fflush(stdout);
+}
+
 
 
 
@@ -529,6 +556,7 @@ static void run(struct client *state) {
     while (running && elapsed(&start) < (double)state->seconds) {
         alpha_step(state);
         content_step(state);
+        tag_step(state);
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }
@@ -663,6 +691,11 @@ int main(int count, char **arguments) {
         state.content_type = wp_content_type_manager_v1_get_surface_content_type(content_manager, state.surface);
         wp_content_type_v1_set_content_type(state.content_type, WP_CONTENT_TYPE_V1_TYPE_GAME);
         wl_surface_commit(state.surface);
+    }
+    if (state.tag_probe) {
+        if (!tag_manager || !state.toplevel) fail("toplevel tag manager required");
+        xdg_toplevel_tag_manager_v1_set_toplevel_tag(tag_manager, state.toplevel, "settings");
+        xdg_toplevel_tag_manager_v1_set_toplevel_description(tag_manager, state.toplevel, "Settings window");
     }
     if (state.commit_rate) flood(&state);
     run(&state);
