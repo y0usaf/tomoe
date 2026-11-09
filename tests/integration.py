@@ -86,6 +86,35 @@ assert not (m := card(True, ["#203040", "#30a050"], ["#45222c"])), f"an urgent n
 cli("unmount theme-probe")
 assert not (m := card(False, ["#1e1e2e"], ["#203040"])), f"unmounting the :theme publisher left notification popups recoloured: {m}"
 
+out = json.loads(cli("msg outputs"))[0]
+geometry, scale = out["geometry"], out["scale"]
+cli(f"mount {VIEWPORT_PROBE}")
+time.sleep(1)
+machine.succeed(ENV + "notify-send -t 6000 check-summary check-body")
+note = None
+for _ in range(80):
+    note = next((plist(surface) for surface in items(inspect()[":SURFACES"])
+                 if text(plist(surface)[":OWNER"]) == "notification-popups"), None)
+    if note:
+        break
+    time.sleep(0.25)
+assert note, "the notification popup never appeared"
+viewport_left = geometry["x"] + (geometry["w"] // 4) * scale
+viewport_width = (geometry["w"] // 2) * scale
+viewport_top = geometry["y"] + (geometry["h"] // 8) * scale
+note_width, note_x = int(text(note[":WIDTH"])), int(text(note[":X"]))
+assert abs(note_x - round(viewport_left + (viewport_width - note_width) / 2)) <= 1, (
+    f"a :view notification is not centred in the published viewport: {note}")
+assert abs(int(text(note[":Y"])) - round(viewport_top + 8 * scale)) <= 1, (
+    f"a :view notification is not at the viewport top: {note}")
+cli("unmount viewport-probe")
+deadline = time.monotonic() + 8
+while time.monotonic() < deadline:
+    if not any(text(plist(surface)[":OWNER"]) == "notification-popups"
+               for surface in items(inspect()[":SURFACES"])):
+        break
+    time.sleep(0.25)
+
 
 def pixel(px, py):
     return [int(v) for v in machine.succeed(
