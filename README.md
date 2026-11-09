@@ -204,6 +204,7 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   and owns one pointer focus and cursor. No tablet global is advertised.
 - Extensions are trusted code. They run inside the compositor with your
   permissions.
+- Clients can use single-pixel buffers with viewporter for solid-colour surfaces.
 
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).

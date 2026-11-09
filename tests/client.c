@@ -19,6 +19,8 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+#include "single-pixel-buffer-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -29,6 +31,8 @@ static struct xdg_wm_base *wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
 static uint32_t layer_shell_version;
 static struct zwlr_virtual_pointer_manager_v1 *pointer_manager;
+static struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
+static struct wp_viewporter *viewporter;
 
 static volatile sig_atomic_t running = 1;
 
@@ -40,6 +44,8 @@ struct client {
     int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
+    bool single_pixel;
+    struct wp_viewport *viewport;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
     void *pixels;
@@ -88,12 +94,15 @@ static void finish(int code) {
     if (client->toplevel) xdg_toplevel_destroy(client->toplevel);
     if (client->xdg_surface) xdg_surface_destroy(client->xdg_surface);
     if (client->buffer) wl_buffer_destroy(client->buffer);
+    if (client->viewport) wp_viewport_destroy(client->viewport);
     if (client->surface) wl_surface_destroy(client->surface);
     if (client->pixels) munmap(client->pixels, client->pixels_size);
     if (wm_base) xdg_wm_base_destroy(wm_base);
     if (layer_shell) zwlr_layer_shell_v1_destroy(layer_shell);
     if (pointer_manager) zwlr_virtual_pointer_manager_v1_destroy(pointer_manager);
     if (shm) wl_shm_destroy(shm);
+    if (single_pixel_manager) wp_single_pixel_buffer_manager_v1_destroy(single_pixel_manager);
+    if (viewporter) wp_viewporter_destroy(viewporter);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -224,6 +233,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--size") == 0)
         { parse_size(option_value(option, value), &state->width, &state->height); i++; }
         else if (strcmp(option, "--color") == 0) { state->color = option_value(option, value); i++; }
+        else if (strcmp(option, "--single-pixel") == 0) state->single_pixel = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -255,6 +265,10 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, layer_shell_version);
     } else if (strcmp(interface, zwlr_virtual_pointer_manager_v1_interface.name) == 0) {
         pointer_manager = wl_registry_bind(registry, name, &zwlr_virtual_pointer_manager_v1_interface, 1);
+    } else if (strcmp(interface, wp_single_pixel_buffer_manager_v1_interface.name) == 0) {
+        single_pixel_manager = wl_registry_bind(registry, name, &wp_single_pixel_buffer_manager_v1_interface, 1);
+    } else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
+        viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
     }
 }
 
@@ -279,6 +293,18 @@ static const struct wl_buffer_listener buffer_listener = {
 };
 
 static void create_buffer(struct client *state, int width, int height) {
+    if (state->single_pixel) {
+        if (!single_pixel_manager || !viewporter) fail("single-pixel-buffer and viewporter required");
+        uint32_t color = parse_color(state->color);
+        state->buffer = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(single_pixel_manager,
+            ((color >> 16) & 255) * 0x01010101u, ((color >> 8) & 255) * 0x01010101u,
+            (color & 255) * 0x01010101u, UINT32_MAX);
+        if (!state->viewport) state->viewport = wp_viewporter_get_viewport(viewporter, state->surface);
+        wp_viewport_set_destination(state->viewport, width, height);
+        state->buffer_width = width;
+        state->buffer_height = height;
+        return;
+    }
     int stride = width * 4;
     size_t size = (size_t)stride * (size_t)height;
     int fd = memfd_create(program, MFD_CLOEXEC);

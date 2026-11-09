@@ -53,6 +53,8 @@ let
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       for xml in ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/single-pixel-buffer/single-pixel-buffer-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/viewporter/viewporter.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
@@ -269,6 +271,7 @@ in
     machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
     quit()
   '';
+  surface-protocols = check "surface-protocols" (builtins.readFile ./surface-protocols.py);
   integration = check "integration" (
     ''
       ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"

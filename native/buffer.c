@@ -6,6 +6,9 @@
 #include <drm_fourcc.h>
 #include <xf86drm.h>
 #include "linux-dmabuf-v1-protocol.h"
+#include "single-pixel-buffer-v1-protocol.h"
+
+static bool single_pixel_listen(struct tomoe *s);
 
 struct shm_buffer {
     struct buffer base;
@@ -401,6 +404,7 @@ static bool dmabuf_table(const struct format_set *formats) {
 }
 
 bool buffers_listen(struct tomoe *s) {
+    if (!single_pixel_listen(s)) return false;
     if (wl_display_init_shm(s->display) != 0) return false;
     const struct format_set *shm =
         render_shm_formats(s->renderer);
@@ -435,9 +439,88 @@ struct pixel_buffer {
     uint8_t data[];
 };
 
+struct single_pixel_buffer {
+    struct buffer base;
+    struct wl_resource *resource;
+    struct wl_listener release;
+    uint8_t rgba[4];
+};
+
+static void single_pixel_destroy(struct buffer *base) {
+    struct single_pixel_buffer *b = wl_container_of(base, b, base);
+    detach(&b->release);
+    buffer_finish(base);
+    free(b);
+}
+
+static bool single_pixel_begin(struct buffer *base, uint32_t flags, void **data,
+        uint32_t *format, size_t *stride) {
+    struct single_pixel_buffer *b = wl_container_of(base, b, base);
+    *data = b->rgba;
+    *format = DRM_FORMAT_ABGR8888;
+    *stride = sizeof(b->rgba);
+    return true;
+}
+
+static const struct buffer_impl single_pixel_impl = {
+    .destroy = single_pixel_destroy, .begin_access = single_pixel_begin,
+};
+
+static const struct wl_buffer_interface single_pixel_resource_impl = {
+    .destroy = destroy_resource,
+};
+
+static void single_pixel_resource_destroy(struct wl_resource *resource) {
+    struct single_pixel_buffer *b = wl_resource_get_user_data(resource);
+    b->resource = NULL;
+    buffer_drop(&b->base);
+}
+
+static void single_pixel_release(struct wl_listener *listener, void *data) {
+    struct single_pixel_buffer *b = wl_container_of(listener, b, release);
+    if (b->resource) wl_buffer_send_release(b->resource);
+}
+
+static void single_pixel_create(struct wl_client *client, struct wl_resource *manager,
+        uint32_t id, uint32_t r, uint32_t g, uint32_t blue, uint32_t a) {
+    struct single_pixel_buffer *b = calloc(1, sizeof(*b));
+    struct wl_resource *resource = b ? wl_resource_create(client, &wl_buffer_interface, 1, id) : NULL;
+    if (!resource) {
+        free(b);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    buffer_init(&b->base, &single_pixel_impl, 1, 1);
+    b->resource = resource;
+    uint32_t channels[] = { r, g, blue, a };
+    for (size_t i = 0; i < 4; i++)
+        b->rgba[i] = ((uint64_t)channels[i] * 255 + UINT32_MAX / 2) / UINT32_MAX;
+    listen(&b->release, &b->base.events.release, single_pixel_release);
+    wl_resource_set_implementation(resource, &single_pixel_resource_impl, b,
+        single_pixel_resource_destroy);
+}
+
+static const struct wp_single_pixel_buffer_manager_v1_interface single_pixel_manager_impl = {
+    .destroy = destroy_resource, .create_u32_rgba_buffer = single_pixel_create,
+};
+
+static void single_pixel_bind(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+    struct wl_resource *resource = wl_resource_create(client,
+        &wp_single_pixel_buffer_manager_v1_interface, version, id);
+    if (!resource) wl_client_post_no_memory(client);
+    else wl_resource_set_implementation(resource, &single_pixel_manager_impl, data, NULL);
+}
+
+static bool single_pixel_listen(struct tomoe *s) {
+    return wl_global_create(s->display, &wp_single_pixel_buffer_manager_v1_interface, 1, s,
+        single_pixel_bind);
+}
+
 struct buffer *buffer_from_resource(struct wl_resource *resource) {
     struct buffer *buffer = shm_is_instance(resource) ? shm_from_resource(resource) :
-        dmabuf_is_instance(resource) ? dmabuf_from_resource(resource) : NULL;
+        dmabuf_is_instance(resource) ? dmabuf_from_resource(resource) :
+        wl_resource_instance_of(resource, &wl_buffer_interface, &single_pixel_resource_impl) ?
+        &((struct single_pixel_buffer *)wl_resource_get_user_data(resource))->base : NULL;
     if (!buffer) tomoe_log(LOG_ERROR, "tomoe: unknown buffer type");
     return buffer ? buffer_lock(buffer) : NULL;
 }
