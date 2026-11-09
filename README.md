@@ -165,6 +165,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Clients can pace queued commits with `wp_fifo_v1`: barriers retain each update
   through the next output frame boundary, including direct scanout. Synchronized
   subsurfaces ignore FIFO waits as required by the protocol.
+- Commit timestamps (`wp_commit_timing_v1`) are not advertised. Honoring them
+  atomically needs shared readiness for synchronized parent/child transactions;
+  the current queue applies parent state before releasing child caches.
 - Input methods, touch and tablets are not supported yet, and shell surfaces
   cannot take keyboard focus.
 - Extensions are trusted code. They run inside the compositor with your
