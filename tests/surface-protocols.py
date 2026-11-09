@@ -9,12 +9,12 @@ else:
     raise AssertionError(data)
 machine.succeed("systemctl stop pixel")
 
-def pixel():
-    return [int(v) for v in machine.succeed(ENV + "WAYLAND_DISPLAY=check grim -g '40,40 1x1' -t ppm - | od -An -v -tu1").split()][-3:]
+def pixel(overlays=False):
+    return [int(v) for v in machine.succeed(ENV + f"WAYLAND_DISPLAY=check grim {'-c ' if overlays else ''}-g '45,45 1x1' -t ppm - | od -An -v -tu1").split()][-3:]
 
-def expect_pixel(want):
+def expect_pixel(want, overlays=False):
     for _ in range(100):
-        got = pixel()
+        got = pixel(overlays)
         if all(abs(a - b) <= 2 for a, b in zip(got, want)):
             return
         time.sleep(0.05)
@@ -30,6 +30,20 @@ machine.succeed("systemctl stop alpha")
 for mode, interface in [("alpha-duplicate", "wp_alpha_modifier_v1"), ("alpha-orphan", "wp_alpha_modifier_surface_v1")]:
     error = machine.fail(ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --protocol-error {mode} 2>&1")
     assert f"protocol error on {interface}@" in error and ": 0" in error, error
+
+machine.succeed("systemd-run --unit=cursor-alpha --property=Type=exec --setenv=XDG_RUNTIME_DIR=/run/tomoe --setenv=WAYLAND_DISPLAY=check tomoe-cursor-client")
+machine.wait_until_succeeds("journalctl -u cursor-alpha -o cat | grep -qx cursor-ready")
+expect_pixel([128, 64, 64], True)
+import base64
+import json
+cursor = json.loads(cli("msg cursor '{}'"))
+image = base64.b64decode("".join(cursor["image"]))
+assert image[:4] == bytes([16, 32, 112, 127]), image[:4]
+for step, want in enumerate([[128, 64, 64], [32, 64, 96], [32, 64, 96], [224, 64, 32]], 1):
+    machine.succeed("systemctl kill --kill-whom=main --signal=USR1 cursor-alpha")
+    machine.wait_until_succeeds(f"journalctl -u cursor-alpha -o cat | grep -qx 'alpha-step {step}'")
+    expect_pixel(want, True)
+machine.succeed("systemctl stop cursor-alpha")
 
 def content_type():
     return plist(items(inspect()[":WINDOWS"])[0])[":CONTENT-TYPE"]

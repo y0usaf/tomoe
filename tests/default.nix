@@ -78,11 +78,14 @@ let
       done
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/pacing.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-pacing-client
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/cursor-alpha.c *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-cursor-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
       install -Dm755 tomoe-test-pointer-client $out/bin/tomoe-test-pointer-client
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
+      install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
     '';
   };
   securityClient = pkgs.stdenv.mkDerivation {

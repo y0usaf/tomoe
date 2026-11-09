@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "xdg-output-unstable-v1-protocol.h"
+#include <drm_fourcc.h>
 
 #define OUTPUT_VERSION 4
 #define XDG_OUTPUT_VERSION 3
@@ -430,6 +431,7 @@ static bool hardware_allowed(struct screen *screen) {
     const char *off = getenv("WLR_NO_HARDWARE_CURSORS");
     struct cursor_image *image = &screen->server->cursor_image;
     return screen->impl->cursor && !screen->software_cursor_locks && !(off && !strcmp(off, "1")) &&
+        (!screen->server->cursor_surface || screen->server->cursor_surface->current.alpha == UINT32_MAX) &&
         (!image->buffer || image->scale == screen->scale);
 }
 
@@ -512,6 +514,18 @@ const char *tomoe_cursor_state(struct tomoe *s, uint64_t have_generation) {
             for (int y = 0; y < height; y++)
                 memcpy(packed + row * (size_t)y,
                     (const unsigned char *)pixels + stride * (size_t)y, row);
+            uint32_t alpha = s->cursor_surface ? s->cursor_surface->current.alpha : UINT32_MAX;
+            if (alpha != UINT32_MAX && (format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_ABGR8888 ||
+                    format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_XBGR8888)) {
+                bool opaque = format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_XBGR8888;
+                for (size_t i = 0; i < row * (size_t)height; i += 4) {
+                    if (opaque) packed[i + 3] = 255;
+                    for (size_t channel = 0; channel < 4; channel++)
+                        packed[i + channel] = ((uint64_t)packed[i + channel] * alpha + UINT32_MAX / 2) / UINT32_MAX;
+                }
+                if (format == DRM_FORMAT_XRGB8888) format = DRM_FORMAT_ARGB8888;
+                if (format == DRM_FORMAT_XBGR8888) format = DRM_FORMAT_ABGR8888;
+            }
         } else {
             include = false;
         }

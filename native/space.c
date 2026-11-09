@@ -325,8 +325,9 @@ static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
     if (!box_intersection(&overlap, &box, &bounds)) return;
     box_transform(&box, &box, transform_invert(data->transform),
         data->width, data->height);
+    float alpha = s->cursor_surface ? (double)s->cursor_surface->current.alpha / UINT32_MAX : 1;
     pass_add_texture(data->pass, &(struct texture_options){
-        .texture = image->texture, .dst_box = box, .transform = data->transform,
+        .texture = image->texture, .dst_box = box, .transform = data->transform, .alpha = &alpha,
     });
 }
 static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {

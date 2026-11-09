@@ -434,10 +434,11 @@ static bool render_cursor_image(struct tomoe *s, struct buffer *target,
     struct box box = { 0, 0, canvas->width, canvas->height };
     struct pass *pass = render_begin(s->renderer, canvas, NULL, 0);
     bool ok = false;
+    float alpha = s->cursor_surface ? (double)s->cursor_surface->current.alpha / UINT32_MAX : 1;
     if (pass) {
         pass_add_rect(pass, &(struct rect_options){ .box = box, .blend_mode = BLEND_NONE });
         pass_add_texture(pass, &(struct texture_options){ .texture = texture, .dst_box = box,
-            .transform = transform, .blend_mode = BLEND_NONE });
+            .transform = transform, .blend_mode = BLEND_NONE, .alpha = &alpha });
         ok = pass_submit(pass);
     }
     if (ok && scratch) ok = blit(s, target, scratch, box, NULL, NULL);
