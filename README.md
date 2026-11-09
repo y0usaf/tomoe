@@ -28,9 +28,9 @@ can read, replace or delete.
   bindings, panels, processes, watched files. Unmount it and all of that goes
   with it.
 - **One executable.** SBCL with Tomoe's own C core for Wayland, rendering and
-  input; no wlroots. It ships a terminal (foot), a launcher (fuzzel), X11
-  support through xwayland-satellite, a notification server and a screencast
-  portal, so a bare TTY gets you a usable desktop.
+  input; no wlroots. It ships a terminal (foot), a launcher (fuzzel), a built-in
+  X11 bridge over Xwayland, a notification server and a screencast portal, so a
+  bare TTY gets you a usable desktop.
 
 ## Try it
 

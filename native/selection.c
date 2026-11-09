@@ -23,6 +23,7 @@ struct source {
     struct tomoe *server;
     unsigned char *data;
     size_t length;
+    bool x11;
 };
 
 struct transfer {
@@ -112,6 +113,10 @@ static int transfer_write(int fd, uint32_t mask, void *data) {
 }
 
 static void source_send(struct source *src, const char *mime, int fd) {
+    if (src->x11) {
+        xwm_source_send(src->server, src->kind == SOURCE_PRIMARY, mime, fd);
+        return;
+    }
     if (src->resource) {
         if (src->kind == SOURCE_DATA) wl_data_source_send_send(src->resource, mime, fd);
         else zwp_primary_selection_source_v1_send_send(src->resource, mime, fd);
@@ -416,6 +421,45 @@ static void set_selection(struct seat *seat, struct source *src, bool primary) {
     if (slot->source == src) return;
     slot_set(slot, src, primary ? primary_destroyed : selection_destroyed);
     selection_changed(seat, primary);
+    if (seat->server && seat->server->xwayland) xwm_wayland_selection(seat->server, primary, src != NULL);
+}
+bool selection_source_info(struct tomoe *s, bool primary, bool *x11,
+        const char *const **mimes, size_t *count) {
+    struct source *src = primary ? s->seat->primary.source : s->seat->selection.source;
+    if (!src) return false;
+    if (x11) *x11 = src->x11;
+    if (mimes) *mimes = src->mime_types.data;
+    if (count) *count = src->mime_types.size / sizeof(char *);
+    return true;
+}
+bool selection_source_send(struct tomoe *s, bool primary, const char *mime, int fd) {
+    struct source *src = primary ? s->seat->primary.source : s->seat->selection.source;
+    if (!src || src->x11) return false;
+    source_send(src, mime, fd);
+    return true;
+}
+bool selection_x11_offer(struct tomoe *s, bool primary, const char *const *mimes, size_t count) {
+    struct source *src = calloc(1, sizeof(*src));
+    if (!src) return false;
+    src->kind = primary ? SOURCE_PRIMARY : SOURCE_DATA;
+    src->actions = -1;
+    src->server = s;
+    src->x11 = true;
+    wl_array_init(&src->mime_types);
+    wl_signal_init(&src->destroy);
+    for (size_t i = 0; i < count; i++) {
+        char **slot = wl_array_add(&src->mime_types, sizeof(*slot));
+        if (!slot || !(*slot = strdup(mimes[i]))) {
+            if (slot) src->mime_types.size -= sizeof(*slot);
+            source_free(src, false);
+            return false;
+        }
+    }
+    set_selection(s->seat, src, primary);
+    return true;
+}
+void selection_x11_clear(struct tomoe *s, bool primary) {
+    set_selection(s->seat, NULL, primary);
 }
 
 static bool claim(struct wl_resource *device, struct source *src, uint32_t error) {

@@ -46,7 +46,7 @@ static bool global_filter(const struct wl_client *client, const struct wl_global
     const char *name = wl_global_get_interface(global)->name;
     if (strstr(name, "global_shortcut")) return false;
     static const char *denied[] = {
-        "wp_security_context_manager_v1",
+        "wp_security_context_manager_v1", "xwayland_shell_v1",
         "zwlr_screencopy_manager_v1", "ext_image_copy_capture_manager_v1",
         "ext_output_image_capture_source_manager_v1",
         "ext_foreign_toplevel_image_capture_source_manager_v1",

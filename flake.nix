@@ -77,38 +77,6 @@
         pkgs:
         let
           sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
-          xwayland-satellite =
-            (pkgs.xwayland-satellite.override {
-              xwayland =
-                (pkgs.xwayland.override {
-                  bash = pkgs.bashNonInteractive;
-                  openssl = pkgs.libmd;
-                  libdecor = null;
-                  libtirpc = null;
-                  libei = pkgs.libei.override { systemd = pkgs.systemdLibs; };
-                }).overrideAttrs
-                  (old: {
-                    mesonFlags = old.mesonFlags ++ [
-                      "-Dsha1=libmd"
-                      "-Dsecure-rpc=false"
-                    ];
-                  });
-            }).overrideAttrs
-              (
-                finalAttrs: _: {
-                  version = "0.8.3";
-                  src = pkgs.fetchFromGitHub {
-                    owner = "Supreeeme";
-                    repo = "xwayland-satellite";
-                    tag = "v${finalAttrs.version}";
-                    hash = "sha256-eFEjCCniMCKeWU0PcZNv+tDYe08SLFPjRplyPY8OFt4=";
-                  };
-                  cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-                    inherit (finalAttrs) pname version src;
-                    hash = "sha256-gMGFvnbxM3hD5fmkSimaFd87GEf6BXFe/MGjoS6VNVU=";
-                  };
-                }
-              );
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
@@ -155,7 +123,7 @@
           buildPhase = ''
             runHook preBuild
             mkdir build
-            for module in executions watches notifications mpris backlight battery network tray system xwayland; do
+            for module in executions watches notifications mpris backlight battery network tray system; do
               $CC -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"${version}"' \
                 $(pkg-config --cflags libsystemd) -c support/$module.c -o build/$module.o
             done
@@ -207,16 +175,19 @@
               $wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
               $wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
               $wp/unstable/xdg-output/xdg-output-unstable-v1.xml \
-              $wp/unstable/primary-selection/primary-selection-unstable-v1.xml; do
+              $wp/unstable/primary-selection/primary-selection-unstable-v1.xml \
+              $wp/staging/xwayland-shell/xwayland-shell-v1.xml; do
               name=$(basename "$xml" .xml)
               wayland-scanner server-header "$xml" "build/$name-protocol.h"
               wayland-scanner private-code "$xml" "build/$name-protocol.c"
               wayland-scanner client-header "$xml" "build/$name-client-protocol.h"
             done
-            $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
-              -Wno-unused-parameter -Ibuild -Wl,--export-dynamic \
-              $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3) \
-              ${sbcl}/lib/sbcl/sbcl.o native/*.c build/*-protocol.c build/*.o -o build/tomoe-runtime \
+            cflags="-std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(pkg-config --cflags wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3)"
+            mkdir build/obj
+            export cflags
+            printf '%s\n' native/*.c build/*-protocol.c \
+              | xargs -P "$NIX_BUILD_CORES" -I{} sh -c '$CC $cflags -c "$1" -o "build/obj/$(basename "$1" .c).o"' _ {}
+            $CC -Wl,--export-dynamic ${sbcl}/lib/sbcl/sbcl.o build/obj/*.o build/*.o -o build/tomoe-runtime \
               $(pkg-config --libs wayland-server xkbcommon pixman-1 pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3 libsystemd) \
               -lresvg -ldl -lpthread -lzstd -lm
             SBCL_HOME=${sbcl}/lib/sbcl \
@@ -228,7 +199,7 @@
               pkgs.lib.makeBinPath [
                 pkgs.foot
                 (pkgs.fuzzel.override { resvg = resvg pkgs; })
-                xwayland-satellite
+                pkgs.xwayland
                 (dbus pkgs)
               ]
             } \

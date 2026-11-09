@@ -65,7 +65,9 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
         presentation_finish(s);
         return 0;
     }
-    size_t capacity = (size_t)wl_list_length(&s->windows) + wl_list_length(&s->layers);
+    size_t capacity = (size_t)wl_list_length(&s->windows) + wl_list_length(&s->layers) +
+        wl_list_length(&s->window_tree->children) + wl_list_length(&s->fullscreen_tree->children) +
+        wl_list_length(&s->popup_tree->children);
     plan->outputs = calloc(plan->output_count ? plan->output_count : 1, sizeof(*plan->outputs));
     plan->targets = calloc(capacity ? capacity : 1, sizeof(*plan->targets));
     if (!plan->outputs || !plan->targets || !presentation_outputs(s, plan)) {
@@ -78,7 +80,7 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     plan->focused = focus;
     plan->restack = restack != 0;
     struct node *bands[] = { s->layer_tree[0], s->layer_tree[1],
-        s->window_tree, s->layer_tree[2], s->fullscreen_tree, s->layer_tree[3] };
+        s->window_tree, s->layer_tree[2], s->fullscreen_tree, s->popup_tree, s->layer_tree[3] };
     for (size_t band = 0; band < sizeof(bands) / sizeof(bands[0]); band++) {
         struct node *node;
         wl_list_for_each(node, &bands[band]->children, link) {

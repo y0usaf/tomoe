@@ -59,6 +59,7 @@ struct xdg_surface *xdg_surface_from_surface(struct surface *surface) {
 }
 
 struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface) {
+    if (surface && surface->external_toplevel) return surface->external_toplevel;
     struct xdg_surface *xdg = xdg_surface_from_surface(surface);
     return xdg && xdg->role == ROLE_TOPLEVEL ? xdg->toplevel : NULL;
 }
@@ -178,6 +179,10 @@ static const struct seat_keyboard_grab_interface keyboard_grab_impl = {
 static void configure_idle(void *data);
 
 uint32_t xdg_surface_schedule_configure(struct xdg_surface *xdg) {
+    if (!xdg->resource) {
+        if (xdg->toplevel && xdg->toplevel->xwm) xwm_schedule(xdg->toplevel);
+        return 0;
+    }
     if (!xdg->configure_idle) {
         xdg->scheduled_serial = wl_display_next_serial(xdg->server->display);
         xdg->configure_idle = wl_event_loop_add_idle(wl_display_get_event_loop(xdg->server->display),
@@ -924,27 +929,32 @@ static const struct xdg_surface_interface surface_impl = {
 };
 
 uint32_t xdg_toplevel_configure_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height) {
+    if (toplevel->xwm) { xwm_configure(toplevel, width, height); return 0; }
     toplevel->scheduled.width = width;
     toplevel->scheduled.height = height;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
 uint32_t xdg_toplevel_configure_activated(struct xdg_toplevel *toplevel, bool activated) {
+    if (toplevel->xwm) { xwm_activate(toplevel, activated); return 0; }
     toplevel->scheduled.activated = activated;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
 uint32_t xdg_toplevel_configure_maximized(struct xdg_toplevel *toplevel, bool maximized) {
+    if (toplevel->xwm) { xwm_state(toplevel, toplevel->scheduled.fullscreen, maximized); return 0; }
     toplevel->scheduled.maximized = maximized;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
 uint32_t xdg_toplevel_configure_fullscreen(struct xdg_toplevel *toplevel, bool fullscreen) {
+    if (toplevel->xwm) { xwm_state(toplevel, fullscreen, toplevel->scheduled.maximized); return 0; }
     toplevel->scheduled.fullscreen = fullscreen;
     return xdg_surface_schedule_configure(toplevel->base);
 }
 
 void xdg_toplevel_close(struct xdg_toplevel *toplevel) {
+    if (toplevel->xwm) { xwm_close(toplevel); return; }
     xdg_toplevel_send_close(toplevel->resource);
 }
 

@@ -7,7 +7,7 @@ export TOMOE_BUILTINS="${TOMOE_BUILTINS:-$PWD/builtins/desktop.lisp}"
 SBCL_HOME="$(dirname "$(readlink -f "$(command -v sbcl)")")/../lib/sbcl"
 export SBCL_HOME
 
-for module in executions watches notifications mpris backlight battery network tray system xwayland; do
+for module in executions watches notifications mpris backlight battery network tray system; do
   if [ ! -f "build/$module.o" ] || [ "support/$module.c" -nt "build/$module.o" ] || [ "support/$module.h" -nt "build/$module.o" ]; then
     cc -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"dev"' $(pkg-config --cflags libsystemd) -c "support/$module.c" -o "build/$module.o"
   fi
@@ -70,7 +70,8 @@ for xml in \
   "$wp/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" \
   "$wp/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml" \
   "$wp/unstable/xdg-output/xdg-output-unstable-v1.xml" \
-  "$wp/unstable/primary-selection/primary-selection-unstable-v1.xml"; do
+  "$wp/unstable/primary-selection/primary-selection-unstable-v1.xml" \
+  "$wp/staging/xwayland-shell/xwayland-shell-v1.xml"; do
   name=$(basename "$xml" .xml)
   if [ ! -f "build/$name-protocol.c" ] || [ "$xml" -nt "build/$name-protocol.c" ]; then
     wayland-scanner server-header "$xml" "build/$name-protocol.h"

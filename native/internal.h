@@ -662,6 +662,7 @@ struct surface {
     int preferred_scale;
     uint32_t fractional_scale;
     bool mapped, pending_rejected, sent_transform, seen, scene_owned;
+    struct xdg_toplevel *external_toplevel;
     struct {
         struct wl_signal client_commit, commit, map, unmap, destroy;
     } events;
@@ -785,7 +786,7 @@ struct tomoe {
     enum screen_kind backend;
     struct render *renderer;
     struct node *scene;
-    struct node *window_tree, *layer_tree[4], *fullscreen_tree;
+    struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
     struct buffer *default_cursor;
     float default_cursor_scale;
@@ -868,6 +869,8 @@ struct tomoe {
     struct wl_list constraints, lock_surfaces;
     struct wl_event_source *lock_deadline_source;
     struct target drag_icon;
+    struct xwayland *xwayland;
+    struct xwm *xwm;
 };
 struct layer_state {
     uint32_t anchor, width, height;
@@ -895,6 +898,8 @@ struct xdg_toplevel {
     struct wl_listener parent_unmap, parent_destroy;
     struct wl_resource *dialog;
     bool modal;
+    struct xwm_window *xwm;
+    bool external_dialog;
     struct toplevel_state pending, current, scheduled;
     struct {
         bool maximized, fullscreen, minimized;
@@ -975,7 +980,10 @@ uint32_t xdg_toplevel_configure_fullscreen(struct xdg_toplevel *toplevel, bool f
 void xdg_toplevel_close(struct xdg_toplevel *toplevel);
 void xdg_popup_dismiss(struct xdg_popup *popup);
 void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct box *box);
-void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
+struct window *xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
+bool window_attach_surface(struct window *w, struct surface *surface);
+void window_external_mapped(struct window *w);
+void window_external_activate(struct window *w);
 void xdg_popup_created(struct tomoe *s, struct xdg_popup *popup);
 enum { LAYER_STATE_SIZE = 1, LAYER_STATE_ANCHOR = 2, LAYER_STATE_ZONE = 4, LAYER_STATE_MARGIN = 8,
     LAYER_STATE_KEYBOARD = 16, LAYER_STATE_LAYER = 32 };
@@ -1389,5 +1397,27 @@ void seat_selection_finish(struct seat *seat);
 void seat_drag_client_gone(struct seat *seat, struct seat_client *client);
 void input_add(struct tomoe *s, struct input_device *device);
 void input_remove(struct tomoe *s, struct input_device *device);
+
+bool xwayland_listen(struct tomoe *s);
+int xwayland_start(struct tomoe *s);
+void xwayland_pair_window(struct tomoe *s, uint32_t xid, uint64_t serial);
+bool xwm_start(struct tomoe *s, int fd);
+void xwm_stop(struct tomoe *s);
+void xwayland_finish(struct tomoe *s);
+void xwayland_pair_surface(struct tomoe *s, uint64_t serial, struct surface *surface);
+void xwm_associate(struct tomoe *s, uint32_t xid, struct surface *surface);
+void xwm_client_gone(struct tomoe *s);
+void xwm_configure(struct xdg_toplevel *toplevel, int width, int height);
+void xwm_activate(struct xdg_toplevel *toplevel, bool activated);
+void xwm_state(struct xdg_toplevel *toplevel, int fullscreen, int maximized);
+void xwm_close(struct xdg_toplevel *toplevel);
+void xwm_schedule(struct xdg_toplevel *toplevel);
+void xwm_wayland_selection(struct tomoe *s, bool primary, bool present);
+void xwm_source_send(struct tomoe *s, bool primary, const char *mime, int fd);
+bool selection_source_info(struct tomoe *s, bool primary, bool *x11,
+    const char *const **mimes, size_t *count);
+bool selection_source_send(struct tomoe *s, bool primary, const char *mime, int fd);
+bool selection_x11_offer(struct tomoe *s, bool primary, const char *const *mimes, size_t count);
+void selection_x11_clear(struct tomoe *s, bool primary);
 
 #endif

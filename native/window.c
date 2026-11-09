@@ -9,7 +9,7 @@ struct window {
     struct node *tree;
     struct wl_listener map, unmap, commit, destroy, title, app_id, maximize, fullscreen;
     struct wl_listener metadata;
-    struct wl_listener request_move, request_resize, request_minimize;
+    struct wl_listener request_move, request_resize, request_minimize, surface_destroy;
     int width, height;
     int client_width, client_height;
     int desired_width, desired_height;
@@ -195,7 +195,8 @@ static void window_event(struct window *w, const char *type, const char *request
     quote(out, title_of(w));
     fputs(" :app-id ", out); quote(out, app_id_of(w));
     static const char *const types[] = { "none", "photo", "video", "game" };
-    fprintf(out, " :content-type :%s", types[surface_of(w)->current.content_type]);
+    struct surface *event_surface = surface_of(w);
+    fprintf(out, " :content-type :%s", types[event_surface ? event_surface->current.content_type : 0]);
     fputs(" :tag ", out); quote(out, w->xdg->tag ? w->xdg->tag : "");
     fputs(" :description ", out); quote(out, w->xdg->description ? w->xdg->description : "");
     uint32_t parent = 0;
@@ -204,8 +205,9 @@ static void window_event(struct window *w, const char *type, const char *request
         if (other->xdg == w->xdg->parent) { parent = other->target.id; break; }
     if (parent) fprintf(out, " :parent %u", parent);
     else fputs(" :parent nil", out);
-    fprintf(out, " :dialog %s :modal %s", parent && w->xdg->dialog ? "t" : "nil",
-        parent && w->xdg->dialog && w->xdg->modal ? "t" : "nil");
+    bool dialog = w->xdg->dialog || w->xdg->external_dialog;
+    fprintf(out, " :dialog %s :modal %s", parent && dialog ? "t" : "nil",
+        parent && dialog && w->xdg->modal ? "t" : "nil");
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
     bool fullscreen_requested = w->xdg_fullscreen_requested;
@@ -440,7 +442,7 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
         struct box box = { pixel_round(x), pixel_round(y),
             pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) }, overlap;
         if (!box_intersection(&overlap, &box, &output_box)) continue;
-        bool hinted = tearing_async(s, surface_of(w));
+        bool hinted = surface_of(w) && tearing_async(s, surface_of(w));
         bool allowed = w->target.style.tearing >= 0 ? w->target.style.tearing : s->settings.tearing;
         if (force || (allowed && (w->target.style.tearing == 1 || hinted))) return true;
     }
@@ -549,8 +551,7 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
     }
 }
 
-static void mapped(struct wl_listener *listener, void *data) {
-    struct window *w = wl_container_of(listener, w, map);
+static void window_mapped(struct window *w) {
     bool first_admission = !w->admitted;
     w->mapped = true;
     w->configured = false;
@@ -581,6 +582,13 @@ static void mapped(struct wl_listener *listener, void *data) {
     if (w->server->focused == w->target.id)
         update_keyboard_focus(w->server);
     schedule_scene(w->server);
+}
+static void mapped(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, map);
+    window_mapped(w);
+}
+void window_external_mapped(struct window *w) {
+    if (!w->mapped && surface_of(w) && surface_of(w)->mapped) window_mapped(w);
 }
 static void unmapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, unmap);
@@ -633,7 +641,7 @@ static void window_commit(struct wl_listener *listener, void *data) {
     bool fullscreen = w->xdg->current.fullscreen;
     bool maximize = w->xdg->current.maximized;
     bool changed = fullscreen != w->fullscreen_state || maximize != w->maximize_state;
-    uint32_t content_type = surface->current.content_type;
+    uint32_t content_type = surface ? surface->current.content_type : 0;
     bool content_changed = content_type != w->content_type;
     w->content_type = content_type;
     if (changed) {
@@ -683,6 +691,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     detach(&w->map); detach(&w->unmap); detach(&w->commit); detach(&w->destroy);
     detach(&w->title); detach(&w->app_id); detach(&w->maximize); detach(&w->fullscreen);
     detach(&w->metadata);
+    detach(&w->surface_destroy);
     detach(&w->request_move); detach(&w->request_resize); detach(&w->request_minimize);
     if (s->grab_id == w->target.id) grab_clear(s);
     if (s->focused == w->target.id) tomoe_focus(s, 0);
@@ -690,7 +699,7 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     capture_window_gone(s, w->target.id);
     foreign_forget(s, w->target.id);
     wl_list_remove(&w->link);
-    w->tree->data = NULL;
+    if (w->tree) w->tree->data = NULL;
     if (admitted) {
         sound_play(s, SOUND_CLOSE);
         unmap_event(s, w->target.id);
@@ -701,24 +710,61 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     free(w->xdg_fullscreen_output);
     free(w);
 }
-void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *xdg) {
-    if (s->next_id == UINT32_MAX) { fail(s, "window IDs exhausted"); return; }
+static void surface_gone(struct wl_listener *listener, void *data) {
+    struct window *w = wl_container_of(listener, w, surface_destroy);
+    detach(&w->surface_destroy);
+    if (surface_of(w)) surface_of(w)->external_toplevel = NULL;
+    w->xdg->base->surface = NULL;
+    w->xdg->base->data = NULL;
+    w->tree = NULL;
+    w->mapped = false;
+}
+bool window_attach_surface(struct window *w, struct surface *surface) {
+    struct tomoe *s = w->server;
+    if (!surface) return false;
+    if (surface_of(w) == surface && w->tree && w->map.link.next) {
+        window_external_mapped(w);
+        return true;
+    }
+    detach(&w->map);
+    detach(&w->unmap);
+    detach(&w->commit);
+    detach(&w->surface_destroy);
+    if (surface_of(w)) surface_of(w)->external_toplevel = NULL;
+    if (w->tree) {
+        node_destroy(w->tree);
+        w->tree = NULL;
+    }
+    w->xdg->base->surface = surface;
+    surface->external_toplevel = w->xdg;
+    surface_set_scale(surface, w->target.scale);
+    w->tree = xdg_surface_scene(s->window_tree, w->xdg->base);
+    if (!w->tree) return false;
+    w->tree->data = &w->target;
+    w->xdg->base->data = w->tree;
+    listen(&w->map, &surface->events.map, mapped);
+    listen(&w->unmap, &surface->events.unmap, unmapped);
+    listen(&w->commit, &surface->events.commit, window_commit);
+    listen(&w->surface_destroy, &surface->events.destroy, surface_gone);
+    window_external_mapped(w);
+    return true;
+}
+struct window *xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *xdg) {
+    if (s->next_id == UINT32_MAX) { fail(s, "window IDs exhausted"); return NULL; }
     struct window *w = calloc(1, sizeof(*w));
-    if (!w) { wl_resource_post_no_memory(xdg->resource); return; }
+    if (!w) { wl_resource_post_no_memory(xdg->resource); return NULL; }
     w->server = s; w->xdg = xdg; w->target.id = ++s->next_id;
     w->target.kind = TARGET_WINDOW;
     w->target.style = (struct window_style){ -1, -1, -1, -1, -1 };
     w->target.alpha = 1;
     w->target.scale = reference_scale(s);
-    surface_set_scale(xdg->base->surface, w->target.scale);
-    w->tree = xdg_surface_scene(s->window_tree, xdg->base);
-    if (!w->tree) { free(w); wl_resource_post_no_memory(xdg->resource); return; }
-    w->tree->data = &w->target;
-    xdg->base->data = w->tree;
     wl_list_insert(s->windows.prev, &w->link);
-    listen(&w->map, &xdg->base->surface->events.map, mapped);
-    listen(&w->unmap, &xdg->base->surface->events.unmap, unmapped);
-    listen(&w->commit, &xdg->base->surface->events.commit, window_commit);
+    if (!window_attach_surface(w, xdg->base->surface)) {
+        wl_list_remove(&w->link);
+        free(w);
+        wl_resource_post_no_memory(xdg->resource);
+        return NULL;
+    }
     listen(&w->destroy, &xdg->events.destroy, window_destroy);
     listen(&w->title, &xdg->events.set_title, window_title);
     listen(&w->app_id, &xdg->events.set_app_id, window_app_id);
@@ -728,6 +774,10 @@ void xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *xdg) {
     listen(&w->request_move, &xdg->events.request_move, window_move);
     listen(&w->request_resize, &xdg->events.request_resize, window_resize);
     listen(&w->request_minimize, &xdg->events.request_minimize, window_minimize);
+    return w;
+}
+void window_external_activate(struct window *w) {
+    if (w->mapped) request_event(w, "activate", -1, NULL, 0);
 }
 static void popup_unconstrain(struct popup *p) {
     struct target *target = target_for_tree(p->tree->parent);

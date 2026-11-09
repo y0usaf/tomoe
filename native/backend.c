@@ -40,12 +40,13 @@ static bool create_scene_trees(struct tomoe *s) {
     s->window_tree = node_create(s->scene);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_TOP] = node_create(s->scene);
     s->fullscreen_tree = node_create(s->scene);
+    s->popup_tree = node_create(s->scene);
     s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY] = node_create(s->scene);
     s->drag_icon_tree = node_create(s->scene);
     for (int i = 0; i < 4; i++) {
         if (!s->layer_tree[i]) return false;
     }
-    return s->window_tree && s->fullscreen_tree && s->drag_icon_tree;
+    return s->window_tree && s->fullscreen_tree && s->popup_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
     log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_ERROR;
@@ -105,7 +106,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     input_listen(s);
     if (!libinput_listen(s)) goto failed;
     if (!virtual_input_listen(s) || !protocols_listen(s) || !lock_listen(s) ||
-            !background_effects_listen(s)) goto failed;
+            !background_effects_listen(s) || !xwayland_listen(s)) goto failed;
     if (wl_display_add_socket(s->display, socket_name) < 0) goto failed;
     s->running = true;
     if (!backend_start(s) || s->failed) goto failed;
@@ -133,6 +134,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
 void tomoe_destroy(struct tomoe *s) {
     if (!s) return;
     s->stopping = true;
+    xwayland_finish(s);
     sound_finish(s);
     finish_captures(s);
     presentation_finish(s);

@@ -30,7 +30,6 @@ turn; materialization already refreshes their authoritative native snapshot."
        [--config FILE] [--watch|--no-watch] [--drm_device PATH]
        tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|frames|memory|quit
        tomoe [--socket NAME] msg METHOD [JSON]
-       tomoe xwayland :DISPLAY SATELLITE [ARGS...]
 
 Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
 Auto nests in an existing Wayland display, or uses DRM when none is found.
@@ -43,7 +42,7 @@ event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
 memory reads the Lisp heap and collector, the native heap, textures and output buffers.
-X11 clients connect through DISPLAY; the xwayland extension starts xwayland-satellite on the first connection.
+X11 clients connect through DISPLAY; Xwayland starts on the first connection and runs with Tomoe's own window manager.
 Control replies are versioned Lisp data. Mutating commands are silent on success."))
 
 (defun json-socket-path (name)
@@ -129,17 +128,8 @@ only after it changes again."
           return (format nil ":~D" n)
         finally (error "No free X display below :64.")))
 
-(sb-alien:define-alien-routine ("tomoe_xwayland" %xwayland) sb-alien:int
-  (argc sb-alien:int) (argv (* sb-alien:c-string)))
-
-(defun run-xwayland (arguments)
-  "Take an X display's lock and sockets, run the X server named in ARGUMENTS as a
-child from its first client, and remove both once it exits or a stop signal arrives."
-  (let ((argv (sb-alien:make-alien sb-alien:c-string (+ 2 (length arguments)))))
-    (loop for argument in (cons "tomoe" arguments) for index from 0
-          do (setf (sb-alien:deref argv index) argument))
-    (setf (sb-alien:deref argv (1+ (length arguments))) nil)
-    (%xwayland (1+ (length arguments)) argv)))
+(sb-alien:define-alien-routine ("xwayland_start" %xwayland-start) sb-alien:int
+  (server (* t)))
 
 (defun primary-drm-devices (path)
   "TOMOE_DRM_DEVICES naming PATH's card first, then every other card."
@@ -300,6 +290,8 @@ child from its first client, and remove both once it exits or a stop signal arri
            (sb-posix:setenv "TOMOE_SOCKET" (json-server-path json-server) 1)
            (sb-posix:setenv "DISPLAY" (free-x-display) 1)
            (sb-posix:setenv "XDG_CURRENT_DESKTOP" "tomoe" 1)
+           (unless (zerop (%xwayland-start native))
+             (error "Cannot start the Xwayland bridge on ~A." (sb-ext:posix-getenv "DISPLAY")))
            (setf bus (start-session-bus name))
            (when (equal backend "drm") (start-session))
            (start-notifications runtime)
@@ -393,8 +385,6 @@ child from its first client, and remove both once it exits or a stop signal arri
           ((equal option "--bare") (setf bare t))
           ((equal option "--watch") (setf watch t))
           ((equal option "--no-watch") (setf watch nil))
-          ((equal option "xwayland")
-           (return-from run-cli (run-xwayland arguments)))
           ((equal option "msg")
            (when (or config bare (not (equal backend "auto")))
              (error "Server options cannot be combined with msg."))
