@@ -118,7 +118,7 @@ struct xwm_window {
     char *title, *appid;
     uint32_t transient;
     int min_width, min_height;
-    bool net_title;
+    bool net_title, close_pending;
     struct surface *surface;
     struct window *window;
     struct xdg_toplevel *toplevel;
@@ -808,6 +808,15 @@ static void apply_prop(struct prop_request *request, const struct property *prop
     case PROP_PROTOCOLS:
         w->delete_window = atom_list_has(property, lookup_atom(x, A_WM_DELETE_WINDOW));
         w->take_focus = atom_list_has(property, lookup_atom(x, A_WM_TAKE_FOCUS));
+        if (w->close_pending) {
+            w->close_pending = false;
+            if (w->delete_window) {
+                uint32_t data[5] = { lookup_atom(x, A_WM_DELETE_WINDOW), X11_CURRENT_TIME,
+                    0, 0, 0 };
+                client_message(x, w->xid, lookup_atom(x, A_WM_PROTOCOLS), 0, data);
+            } else
+                kill_client(x, w->xid);
+        }
         break;
     case PROP_STATE:
         w->fullscreen = atom_list_has(property, lookup_atom(x, A_NET_WM_STATE_FULLSCREEN));
@@ -1045,6 +1054,8 @@ static void window_free(struct xwm_window *w) {
         free(request);
     }
     detach(&w->surface_destroy);
+    detach(&w->surface_map);
+    detach(&w->surface_unmap);
     uint32_t xid = w->xid;
     char *title = w->title;
     char *appid = w->appid;
@@ -1054,24 +1065,22 @@ static void window_free(struct xwm_window *w) {
     struct node *node = w->node;
     if (w->override) {
         if (node) node_destroy(node);
-        wl_list_remove(&w->link);
-        free(w);
-    } else {
+    } else if (toplevel) {
         if (surface && surface->external_toplevel == toplevel) surface->external_toplevel = NULL;
-        if (toplevel) {
-            wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
-            free(toplevel->title);
-            free(toplevel->app_id);
-            free(toplevel->tag);
-            free(toplevel->description);
-            free(toplevel);
-        }
+        wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
+        free(toplevel->title);
+        free(toplevel->app_id);
+        free(toplevel->tag);
+        free(toplevel->description);
+        free(toplevel);
         if (base && base->scene) node_destroy(base->scene);
         free(base);
     }
+    wl_list_remove(&w->link);
+    free(w);
     if (x->active == xid) {
         x->active = 0;
-        refresh_active(x);
+        if (!x->stopping) refresh_active(x);
     }
     free(title);
     free(appid);
@@ -1142,6 +1151,7 @@ static void handle_map_notify(struct xwm *x, const unsigned char *pkt) {
     struct xwm_window *w = window_for(x, xid);
     if (!w) return;
     w->x_mapped = true;
+    request_window_props(w);
     if (!w->override) {
         set_wm_state(w, 1);
         refresh_client_list(x);
@@ -1352,8 +1362,10 @@ void xwm_close(struct xdg_toplevel *toplevel) {
     if (w->delete_window) {
         uint32_t data[5] = { lookup_atom(w->xwm, A_WM_DELETE_WINDOW), X11_CURRENT_TIME, 0, 0, 0 };
         client_message(w->xwm, w->xid, lookup_atom(w->xwm, A_WM_PROTOCOLS), 0, data);
-    } else
-        kill_client(w->xwm, w->xid);
+    } else {
+        w->close_pending = true;
+        request_prop(w, PROP_PROTOCOLS, lookup_atom(w->xwm, A_WM_PROTOCOLS));
+    }
 }
 
 void xwm_wayland_selection(struct tomoe *s, bool primary, bool present) {
