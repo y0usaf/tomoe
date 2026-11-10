@@ -437,9 +437,11 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
           (multiple-value-bind (surface-plans shell-workareas)
-              (resolve-shell-surfaces (nreverse surfaces) output-facts workareas
-                                      (when (runtime-backend runtime)
-                                        (native-ui-asset-loader (runtime-backend runtime))))
+              (resolve-shell-surfaces
+               (nreverse surfaces) output-facts workareas
+               :asset-loader (when (runtime-backend runtime)
+                               (native-ui-asset-loader (runtime-backend runtime)))
+               :viewport (shell-viewport output-facts (materialization-data m)))
           (list :windows (runtime-windows runtime)
                 :window-geometry (resolved-window-geometry runtime layout view output-facts)
                 :rules (resolved-rule-properties runtime mounts) :data data

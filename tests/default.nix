@@ -202,6 +202,21 @@ let
                                             :error "#30a050" :surface1 "#504030")))
               nil))
   '';
+  viewportProbe = pkgs.writeText "viewport-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "viewport-probe" (:reads (:outputs) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let ((output (first (context snapshot :outputs))))
+        (values state
+                (when output
+                  (list (publish-state :focal-frame
+                                       (list :output (getf output :name)
+                                             :left (floor (getf output :width) 4)
+                                             :top (floor (getf output :height) 8)
+                                             :width (floor (getf output :width) 2)
+                                             :height (floor (getf output :height) 3)))))
+                nil)))
+  '';
   busProbe = pkgs.writeText "bus-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
@@ -301,6 +316,7 @@ in
       OFFSCREEN_PROBE = "${offscreenProbe}"
       BLUR_PROBE = "${blurProbe}"
       THEME_PROBE = "${themeProbe}"
+      VIEWPORT_PROBE = "${viewportProbe}"
     ''
     + builtins.readFile ./integration.py
   );

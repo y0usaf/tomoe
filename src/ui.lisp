@@ -163,7 +163,7 @@
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
                              :exclusive-zone :visible :output :background :color :font-size :stack
-                             :click-through :slide :blur))
+                             :click-through :slide :blur :placement))
   (let ((anchors (getf arguments :anchors '(:top :left :right)))
         (visible (getf arguments :visible t))
         (click-through (getf arguments :click-through))
@@ -184,6 +184,7 @@
           :anchors (loop for edge in '(:top :right :bottom :left)
                          when (member edge anchors) collect edge)
           :margin (%ui-edges (getf arguments :margin 0) t)
+          :placement (%ui-choice (getf arguments :placement :world) '(:world :view :follow))
           :layer (%ui-choice (getf arguments :layer :top) '(:background :bottom :top :overlay))
           :exclusive-zone (%ui-length (getf arguments :exclusive-zone 0) nil t)
           :visible visible
@@ -199,7 +200,10 @@
           :blur (if (eq blur t) 0d0 (%ui-length blur t)))))
 
 (defun shell-surface (name tree &rest options)
-  "Own a retained shell surface and its click commands in this extension."
+  "Own a retained shell surface and its click commands in this extension.
+:PLACEMENT :WORLD anchors to the output canvas, :VIEW anchors to the visible
+viewport (a published :focal-frame, otherwise the output), and :FOLLOW keeps
+its canvas position until the viewport leaves it, then glides in."
   (%effect :surface (canonical-shell-surface (list* :name name :tree tree options))))
 
 (define-effect :surface
@@ -454,8 +458,33 @@
           ((and right (not left) (eq top bottom))
            (decf (getf area :width) (min amount (getf area :width)))))))
 
-(defun resolve-shell-surfaces (declarations outputs workareas &optional asset-loader)
-  "Return complete draw/hit plans and sequential reservations, without mutation."
+(defun shell-viewport (outputs data)
+  "The visible rectangle a policy publishes as :focal-frame, in output pixels."
+  (let ((focal (cdr (assoc :focal-frame data))))
+    (when (and (listp focal) (stringp (getf focal :output))
+               (every (lambda (key) (typep (getf focal key) '(signed-byte 32)))
+                      '(:left :top :width :height)))
+      (let ((output (find (getf focal :output) outputs :test #'equal
+                          :key (lambda (output) (getf output :name)))))
+        (when output
+          (let* ((scale (/ (%double-float (getf output :scale-120 120)) 120d0))
+                 (x (+ (getf output :x) (%ui-round (* scale (getf focal :left)))))
+                 (y (+ (getf output :y) (%ui-round (* scale (getf focal :top)))))
+                 (width (%ui-round (* scale (getf focal :width))))
+                 (height (%ui-round (* scale (getf focal :height)))))
+            (list :output (getf output :name)
+                  :x x :y y :width (max 1 width) :height (max 1 height))))))))
+
+(defun %ui-follow (position size view-start view-size)
+  "POSITION moved to the nearest edge of a view that no longer contains it."
+  (let ((start view-start) (end (+ view-start view-size)))
+    (cond ((>= position end) (- end (min size view-size)))
+          ((<= (+ position size) start) start)
+          (t position))))
+
+(defun resolve-shell-surfaces (declarations outputs workareas &key asset-loader viewport)
+  "Return complete draw/hit plans and sequential reservations, without mutation.
+VIEWPORT is the visible rectangle published for one output, if any."
   (%ui-list declarations 64 "Shell declarations")
   (%ui-list outputs 64 "Shell outputs")
   (let ((plans nil) (areas (copy-data workareas)) (seen nil) (pixels 0) (stacks nil))
@@ -472,9 +501,13 @@
             (when (or (null (getf declaration :output))
                       (equal (getf declaration :output) (getf output :name)))
               (let* ((scale (/ (%double-float (getf output :scale-120 120)) 120d0))
+                     (placement (getf declaration :placement :world))
+                     (view (and viewport (equal (getf viewport :output) (getf output :name))
+                                viewport))
+                     (base (if (and (eq placement :view) view) view output))
                      (anchors (getf declaration :anchors))
                      (margin (mapcar (lambda (n) (%ui-round (* n scale))) (getf declaration :margin)))
-                     (ow (getf output :width)) (oh (getf output :height))
+                     (ow (getf base :width)) (oh (getf base :height))
                      (measured (progn
                                  (unless (plusp scale) (error "Shell output scale must be positive."))
                                  (%ui-measure-tree (getf declaration :tree) scale
@@ -490,17 +523,21 @@
                                         (if (plusp (getf declaration :height))
                                             (%ui-round (* scale (getf declaration :height)))
                                             (ceiling (getf measured :height))))))
-                     (x (+ (getf output :x)
+                     (x (+ (getf base :x)
                            (cond ((member :left anchors) (fourth margin))
                                  ((member :right anchors) (- ow width (second margin)))
                                  (t (truncate (- ow width) 2)))))
                      (stack (and (getf declaration :stack)
                                  (list (getf declaration :stack) (getf output :name))))
                      (stacked (or (cdr (assoc stack stacks :test #'equal)) 0))
-                     (y (+ (getf output :y) stacked
+                     (y (+ (getf base :y) stacked
                            (cond ((member :top anchors) (first margin))
                                  ((member :bottom anchors) (- oh height (third margin)))
                                  (t (truncate (- oh height) 2)))))
+                     (x (if (and (eq placement :follow) view)
+                            (%ui-follow x width (getf view :x) (getf view :width)) x))
+                     (y (if (and (eq placement :follow) view)
+                            (%ui-follow y height (getf view :y) (getf view :height)) y))
                      (area (find (getf output :name) areas :key (lambda (a) (getf a :name)) :test #'equal)))
                 (unless (and (every (lambda (n) (typep n '(signed-byte 32))) (list x y width height))
                              (<= (* width height) (* 16 1024 1024)))
@@ -526,7 +563,7 @@
                                       :output (copy-seq (getf output :name)) :x x :y y
                                       :width width :height height :layer (getf declaration :layer)
                                       :click-through (getf declaration :click-through)
-                                      :slide (getf declaration :slide)
+                                      :slide (or (getf declaration :slide) (eq placement :follow))
                                       :blur (let ((blur (getf declaration :blur)))
                                               (when blur (%ui-round (* scale blur))))))
                           (asset-ids (append (%ui-asset-ids measured) (when backdrop (list (first backdrop))))))

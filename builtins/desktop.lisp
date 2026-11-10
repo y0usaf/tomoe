@@ -589,6 +589,6 @@
                        :children (loop for notification in notifications
                                         for count from 1 to card-limit
                                         collect (card notification)))
-                   :anchors '(:top :right) :margin 8 :layer :top
-                   :exclusive-zone 0 :background "#00000000")))
+                   :anchors '(:top) :margin 8 :layer :top
+                   :exclusive-zone 0 :background "#00000000" :placement :view)))
               nil))))
