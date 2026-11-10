@@ -53,7 +53,7 @@ PROTOCOLS = \
 	$(WP)/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml \
 	$(WP)/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
 	$(WP)/unstable/xdg-output/xdg-output-unstable-v1.xml \
-	$(WP)/unstable/primary-selection/primary-selection-unstable-v1.xml\
+	$(WP)/unstable/primary-selection/primary-selection-unstable-v1.xml \
 	$(WP)/staging/xwayland-shell/xwayland-shell-v1.xml
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
