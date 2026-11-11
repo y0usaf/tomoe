@@ -686,12 +686,24 @@ void cursor_shape_set(struct tomoe *s, uint32_t shape) {
         if (!image) image = xcursor_load(fallback[shape], scale, &x, &y);
         if (!image && shape != 1) image = xcursor_load("left_ptr", scale, &x, &y);
         if (!image) {
-            tomoe_log(LOG_ERROR, "tomoe: no cursor theme loaded, drawing a block cursor");
-            int w = (int)ceil(8 * scale), h = (int)ceil(16 * scale);
-            uint32_t *white = malloc((size_t)w * h * 4);
-            if (white) memset(white, 0xff, (size_t)w * h * 4);
-            image = white ? pixel_buffer_create(w, h, (size_t)w * 4, DRM_FORMAT_ARGB8888, white) : NULL;
-            free(white);
+            static const char *const arrow[] = {
+                "B...........", "BB..........", "BWB.........", "BWWB........",
+                "BWWWB.......", "BWWWWB......", "BWWWWWB.....", "BWWWWWWB....",
+                "BWWWWWWWB...", "BWWWWWWWWB..", "BWWWWWWWWWB.", "BWWWWWWBBBBB",
+                "BWWWBWWB....", "BWWBBWWB....", "BWB..BWWB...", "BB...BWWB...",
+                "B.....BWWB..", "......BWWB..", ".......BB..." };
+            tomoe_log(LOG_ERROR, "tomoe: no cursor theme loaded, drawing the built-in arrow");
+            int w = (int)ceil(12 * scale), h = (int)ceil(19 * scale);
+            uint32_t *pixels = malloc((size_t)w * h * 4);
+            if (pixels)
+                for (int py = 0; py < h; py++)
+                    for (int px = 0; px < w; px++) {
+                        char c = arrow[(int)(py / scale) < 19 ? (int)(py / scale) : 18]
+                                      [(int)(px / scale) < 12 ? (int)(px / scale) : 11];
+                        pixels[py * w + px] = c == 'B' ? 0xff000000 : c == 'W' ? 0xffffffff : 0;
+                    }
+            image = pixels ? pixel_buffer_create(w, h, (size_t)w * 4, DRM_FORMAT_ARGB8888, pixels) : NULL;
+            free(pixels);
             x = y = 0;
         }
         if (!image) return;
