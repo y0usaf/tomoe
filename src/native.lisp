@@ -100,7 +100,7 @@
   (x sb-alien:double) (y sb-alien:double) (width sb-alien:double) (height sb-alien:double)
   (tint sb-alien:int) (rgba sb-alien:unsigned-int))
 (define-native ("tomoe_present_ui_backdrop" %present-ui-backdrop) sb-alien:int
-  (server (* t)) (id sb-alien:unsigned-long-long) (fps sb-alien:double))
+  (server (* t)) (id sb-alien:unsigned-long-long) (fps sb-alien:double) (idle sb-alien:double))
 
 (defun native-ui-asset-loader (backend)
   (when backend
@@ -301,8 +301,9 @@
         (when (= status 1)
           (dolist (id (getf plan :assets))
             (require-ui (%present-ui-asset-ref backend id)))
-          (destructuring-bind (&optional id fps) (getf plan :backdrop)
-            (when id (require-ui (%present-ui-backdrop backend id (%double-float fps)))))
+          (destructuring-bind (&optional id fps idle) (getf plan :backdrop)
+            (when id (require-ui (%present-ui-backdrop backend id (%double-float fps)
+                                                        (%double-float (or idle 0d0))))))
           (dolist (operation (getf plan :draw))
             (require-ui (apply #'%present-ui-clip backend (car (last operation))))
             (require-ui

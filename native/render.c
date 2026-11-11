@@ -210,6 +210,8 @@ static const char shader_prelude[] =
     "uniform float iTime;\n"
     "uniform int iFrame;\n"
     "uniform vec4 iMouse;\n"
+    "uniform int iTrailCount;\n"
+    "uniform vec4 iTrail[64];\n"
     "uniform sampler2D iChannel0;\n"
     "in vec2 v_local;\n"
     "out vec4 tomoe_color;\n"
@@ -312,10 +314,10 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
         "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0",
-        "lut" };
+        "lut", "iTrail", "iTrailCount" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
-        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut };
+        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;

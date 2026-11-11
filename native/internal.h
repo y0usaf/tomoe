@@ -292,7 +292,7 @@ struct program {
     GLuint id;
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame, mouse, channel, lut;
+    GLint resolution, time, frame, mouse, channel, lut, trail, trail_count;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
@@ -774,6 +774,9 @@ struct seat {
     struct drag *drag;
 };
 
+enum { POINTER_TRAIL = 64 };
+struct pointer_sample { double x, y, t; };
+
 struct tomoe {
     struct wl_display *display;
     struct output_manager *output_manager;
@@ -818,6 +821,8 @@ struct tomoe {
     int grab_mode;
     double grab_x, grab_y;
     double pointer_x, pointer_y;
+    struct pointer_sample pointer_trail[POINTER_TRAIL];
+    int pointer_trail_count, pointer_trail_head;
     struct surface *cursor_surface;
     int32_t cursor_hotspot_x, cursor_hotspot_y;
     bool cursor_hidden;
@@ -1161,6 +1166,7 @@ void input_listen(struct tomoe *s);
 void presentation_bindings_finish(struct presentation *plan);
 void presentation_input_publish(struct tomoe *s, struct presentation *plan);
 void pointer_refresh(struct tomoe *s);
+void pointer_trail_record(struct tomoe *s);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);

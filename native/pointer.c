@@ -86,6 +86,28 @@ void constraint_refresh(struct tomoe *s) {
     constraint_focus(s, state->focused_surface, state->sx, state->sy);
 }
 
+void pointer_trail_record(struct tomoe *s) {
+    struct timespec clock;
+    clock_gettime(CLOCK_MONOTONIC, &clock);
+    double t = clock.tv_sec + clock.tv_nsec / 1e9;
+    if (s->pointer_trail_count) {
+        struct pointer_sample *last = &s->pointer_trail[
+            (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL];
+        double dx = s->pointer_x - last->x, dy = s->pointer_y - last->y;
+        if (dx * dx + dy * dy < 1.0) return;
+        if (t - last->t < 0.008) {
+            last->x = s->pointer_x;
+            last->y = s->pointer_y;
+            last->t = t;
+            return;
+        }
+    }
+    s->pointer_trail[s->pointer_trail_head] =
+        (struct pointer_sample){ s->pointer_x, s->pointer_y, t };
+    s->pointer_trail_head = (s->pointer_trail_head + 1) % POINTER_TRAIL;
+    if (s->pointer_trail_count < POINTER_TRAIL) s->pointer_trail_count++;
+}
+
 bool constraint_allows(struct tomoe *s, double x, double y) {
     struct constraint *c = s->active_constraint;
     if (!c) return true;

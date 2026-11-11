@@ -1150,6 +1150,8 @@ void pointer_refresh(struct tomoe *s) {
         s->grab_x = s->pointer_x; s->grab_y = s->pointer_y;
     }
     pointer_sync_cursors(s);
+    pointer_trail_record(s);
+    ui_pointer_moved(s);
     if (s->grab_mode != 0) return;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1175,6 +1177,8 @@ static void grab_motion(struct tomoe *s) {
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);
+    pointer_trail_record(s);
+    ui_pointer_moved(s);
     drag_icons_refresh(s);
     if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }
     if (s->grab_mode != 0) { grab_motion(s); return; }

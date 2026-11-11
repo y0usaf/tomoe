@@ -319,17 +319,43 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     struct fbox box = local_box(f, area);
     double mouse_x = p->mouse < 0 ? 0 : f->server->pointer_x - f->x - box.x;
     double mouse_y = p->mouse < 0 ? 0 : f->y + box.y + box.height - f->server->pointer_y;
-    double params[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
-        mouse_x, mouse_y };
+    int count = p->trail >= 0 || p->trail_count >= 0 ? f->server->pointer_trail_count : 0;
+    double params[10 + 4 * POINTER_TRAIL];
+    float trail[4 * POINTER_TRAIL];
+    double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
+        mouse_x, mouse_y, count };
+    memcpy(params, fields, sizeof(fields));
+    if (count) {
+        struct timespec clock;
+        clock_gettime(CLOCK_MONOTONIC, &clock);
+        double now = clock.tv_sec + clock.tv_nsec / 1e9;
+        for (int i = 0; i < count; i++) {
+            const struct pointer_sample *sample = &f->server->pointer_trail[
+                (f->server->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
+            float x = sample->x - f->x - box.x;
+            float y = f->y + box.y + box.height - sample->y;
+            float age = now - sample->t;
+            params[10 + 4 * i] = x;
+            params[11 + 4 * i] = y;
+            params[12 + 4 * i] = age;
+            params[13 + 4 * i] = 1;
+            trail[4 * i] = x;
+            trail[4 * i + 1] = y;
+            trail[4 * i + 2] = age;
+            trail[4 * i + 3] = 1;
+        }
+    }
     struct box covered = covering(f, box);
     if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
-            sizeof(params) / sizeof(params[0])) || (p->channel >= 0 && !backdrop(f, box))) return;
+            10 + 4 * (size_t)count) || (p->channel >= 0 && !backdrop(f, box))) return;
     glUseProgram(p->id);
     glUniform3f(p->resolution, box.width, box.height, 1);
     glUniform1f(p->time, time);
     glUniform1i(p->frame, frame);
     glUniform4f(p->mouse, mouse_x, mouse_y, 0, 0);
     glUniform1i(p->channel, 0);
+    glUniform1i(p->trail_count, count);
+    if (count) glUniform4fv(p->trail, count, trail);
     quad(f, p, box, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
 }

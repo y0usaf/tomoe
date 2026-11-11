@@ -130,9 +130,16 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`layer-inset.lisp`](examples/layer-inset.lisp) | Tiling that makes room for panels |
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
+| [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail, drawn by a shader overlay |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
+
+Animated shader backgrounds see the pointer's last 64 samples as `iTrail` (x, y,
+age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
+`(:shader PATH :fps FPS :idle SECONDS)` stops drawing and ticking once the
+pointer has been still for `SECONDS`, and pointer motion starts it again; the
+trail example uses that so an idle overlay costs no frames.
 
 Output tools such as `wlr-randr` can query and configure every connected head,
 including disabled outputs, through `zwlr_output_manager_v1` version 4. Mode,

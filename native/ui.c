@@ -52,7 +52,7 @@ struct ui_surface {
     struct ui_surface_asset *assets;
     size_t asset_count, asset_capacity;
     struct ui_asset *backdrop, *fallback;
-    double fps;
+    double fps, idle;
     bool building;
     bool complete;
     bool drawn;
@@ -480,14 +480,15 @@ static struct ui_asset *shown_backdrop(const struct ui_surface *surface) {
     return backdrop_ready(surface->backdrop) ? surface->backdrop : surface->fallback;
 }
 
-int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps) {
+int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double idle) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface) || surface->backdrop || !isfinite(fps) ||
-            fps < 0 || fps > 1000) return 0;
+            fps < 0 || fps > 1000 || !isfinite(idle) || idle < 0 || idle > 4) return 0;
     for (size_t i = 0; i < surface->asset_count; i++)
         if (surface->assets[i].id == id) surface->backdrop = surface->assets[i].asset;
     if (!surface->backdrop) return 0;
     surface->fps = fps;
+    surface->idle = idle;
     if (backdrop_ready(surface->backdrop) || !s->ui) return 1;
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *live = s->ui->surfaces[i];
@@ -939,6 +940,21 @@ bool ui_on_output(struct output *o, int layer) {
     return false;
 }
 
+void ui_pointer_moved(struct tomoe *s) {
+    if (!s) return;
+    const struct ui_set *sets[] = { s->ui, candidate_set(s) };
+    for (size_t k = 0; k < 2; k++) {
+        for (size_t i = 0; sets[k] && i < sets[k]->count; i++) {
+            const struct ui_surface *surface = sets[k]->surfaces[i];
+            if (surface->idle <= 0 || !surface->backdrop) continue;
+            struct output *o;
+            wl_list_for_each(o, &s->outputs, link)
+                if (o->tick_at == 0 && surface_matches_output(surface, o, NULL))
+                    screen_schedule_frame(o->screen);
+        }
+    }
+}
+
 static int shader_step(void *data) {
     struct output *o = data;
     o->tick_at = 0;
@@ -997,10 +1013,16 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                 surface->blur, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         if (image) draw_texture(f, image, left + x, top + y);
         if (shader) {
-            double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
-            effect_shader(f, shader, (struct fbox){ left, top, surface->width,
-                surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
-            if (surface->fps > 0) schedule_step(o, epoch + (tick + 1) / surface->fps, now);
+            const struct pointer_sample *last = o->server->pointer_trail_count ?
+                &o->server->pointer_trail[(o->server->pointer_trail_head + POINTER_TRAIL - 1) %
+                    POINTER_TRAIL] : NULL;
+            bool still = surface->idle > 0 && (!last || now - last->t > surface->idle);
+            if (!still) {
+                double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
+                effect_shader(f, shader, (struct fbox){ left, top, surface->width,
+                    surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
+                if (surface->fps > 0) schedule_step(o, epoch + (tick + 1) / surface->fps, now);
+            }
         }
         if (surface->texture) draw_texture(f, surface->texture, left, top);
     }
