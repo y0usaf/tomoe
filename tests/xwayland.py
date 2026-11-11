@@ -178,11 +178,34 @@ for _ in range(100):
     time.sleep(0.1)
 assert pixel(*sample) == offscreen_color, (pixel(*sample), offscreen_color)
 
+
+def wait_gone(title):
+    for _ in range(100):
+        if find(title) is None:
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"withdrawn {title} kept a window: {windows()}")
+
+
+def wait_drawn(title):
+    for _ in range(100):
+        found = find(title)
+        box = found and found.get("geometry")
+        if box and box["w"] > 1 and box["h"] > 1:
+            return found
+        time.sleep(0.1)
+    raise AssertionError(f"{title} did not come back with a size: {windows()}")
+
+
 machine.succeed(f"DISPLAY={display} xdotool windowunmap {offscreen_id}")
-time.sleep(0.5)
+wait_gone("X11 Offscreen")
 machine.succeed(f"DISPLAY={display} xdotool windowmap {offscreen_id}")
+offscreen_box = wait_drawn("X11 Offscreen")["geometry"]
+want_geometry = (offscreen_box["x"], offscreen_box["y"], offscreen_box["w"], offscreen_box["h"])
+sample = (offscreen_box["x"] + offscreen_box["w"] - 12,
+          offscreen_box["y"] + offscreen_box["h"] // 2)
 for _ in range(100):
-    if pixel(*sample) == offscreen_color:
+    if pixel(*sample) == offscreen_color and x_geometry() == want_geometry:
         break
     time.sleep(0.1)
 assert pixel(*sample) == offscreen_color, (pixel(*sample), offscreen_color)
@@ -198,28 +221,13 @@ for index, title in enumerate(remap_titles):
     ).split()[0]
 
 
-def buffered(title):
-    return next(
-        plist(entry)[":BUFFERED"] == "T" for entry in items(inspect()[":WINDOWS"])
-        if text(plist(entry)[":TITLE"]) == title
-    )
-
-
-def wait_buffered(title, want):
-    for _ in range(100):
-        if buffered(title) == want:
-            return
-        time.sleep(0.1)
-    raise AssertionError(f"{title} buffered is not {want}: {inspect()[':WINDOWS']}")
-
-
 for remap_order in [remap_titles, remap_titles[::-1]] * 2:
     for title in remap_titles:
         machine.succeed(f"DISPLAY={display} xdotool windowunmap {remap_ids[title]}")
-        wait_buffered(title, False)
+        wait_gone(title)
     for title in remap_order:
         machine.succeed(f"DISPLAY={display} xdotool windowmap {remap_ids[title]}")
-        wait_buffered(title, True)
+        wait_drawn(title)
 machine.succeed("systemctl stop remap-0 remap-1")
 
 machine.succeed(env(True) + "sh -c 'printf wayland-data | timeout 10 wl-copy' >/dev/null 2>&1")

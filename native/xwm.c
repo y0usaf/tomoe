@@ -1075,6 +1075,9 @@ static bool attach_managed(struct xwm_window *w, struct surface *surface) {
         w->surface = surface;
         listen(&w->surface_destroy, &surface->events.destroy, surface_gone);
         sync_parent(w);
+        struct xwm_window *child;
+        wl_list_for_each(child, &w->xwm->windows, link)
+            if (child->transient == w->xid && child != w) sync_parent(child);
         return true;
     }
     w->surface = surface;
@@ -1095,6 +1098,32 @@ void xwm_associate(struct tomoe *s, uint32_t xid, struct surface *surface) {
     else attach_managed(w, surface);
 }
 
+static void release_managed(struct xwm_window *w) {
+    struct xdg_toplevel *toplevel = w->toplevel;
+    struct xdg_surface *base = w->base;
+    if (!toplevel) return;
+    detach(&w->surface_destroy);
+    if (w->surface && w->surface->external_toplevel == toplevel)
+        w->surface->external_toplevel = NULL;
+    struct xwm_window *other;
+    wl_list_for_each(other, &w->xwm->windows, link)
+        if (other->toplevel && other->toplevel->parent == toplevel) other->toplevel->parent = NULL;
+    w->toplevel = NULL;
+    w->base = NULL;
+    w->window = NULL;
+    w->surface = NULL;
+    w->placed = false;
+    w->minimized = false;
+    wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
+    free(toplevel->title);
+    free(toplevel->app_id);
+    free(toplevel->tag);
+    free(toplevel->description);
+    free(toplevel);
+    if (base && base->scene) node_destroy(base->scene);
+    free(base);
+}
+
 static void window_free(struct xwm_window *w) {
     struct xwm *x = w->xwm;
     struct prop_request *request, *next_request;
@@ -1109,22 +1138,11 @@ static void window_free(struct xwm_window *w) {
     uint32_t xid = w->xid;
     char *title = w->title;
     char *appid = w->appid;
-    struct xdg_toplevel *toplevel = w->toplevel;
-    struct xdg_surface *base = w->base;
-    struct surface *surface = w->surface;
     struct node *node = w->node;
     if (w->override) {
         if (node) node_destroy(node);
-    } else if (toplevel) {
-        if (surface && surface->external_toplevel == toplevel) surface->external_toplevel = NULL;
-        wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
-        free(toplevel->title);
-        free(toplevel->app_id);
-        free(toplevel->tag);
-        free(toplevel->description);
-        free(toplevel);
-        if (base && base->scene) node_destroy(base->scene);
-        free(base);
+    } else {
+        release_managed(w);
     }
     wl_list_remove(&w->link);
     free(w);
@@ -1219,8 +1237,9 @@ static void handle_unmap_notify(struct xwm *x, const unsigned char *pkt) {
     if (!w) return;
     w->x_mapped = false;
     if (!w->override) {
-        set_wm_state(w, 3);
+        set_wm_state(w, 0);
         refresh_client_list(x);
+        release_managed(w);
     } else if (w->node) {
         node_set_enabled(w->node, false);
     }
