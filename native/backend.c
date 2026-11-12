@@ -119,6 +119,12 @@ failed:
 int tomoe_step(struct tomoe *s, int timeout_ms) {
     if (s->failed) return -1;
     if (!s->running) return 1;
+    if (s->renderer) render_retire_fences(s->renderer);
+    if (s->outputs_deferred && !render_frames_held(s->renderer)) {
+        s->outputs_deferred = false;
+        const char *error = tomoe_outputs_apply(s);
+        if (error) tomoe_log(LOG_ERROR, "tomoe: %s", error);
+    }
     refresh_scene(s);
     wl_display_flush_clients(s->display);
     int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);

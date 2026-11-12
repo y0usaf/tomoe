@@ -6,12 +6,29 @@
 #include <fcntl.h>
 #include <gbm.h>
 #include <poll.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <xf86drm.h>
+
+enum {
+    FENCE_WAIT_MS = 1000,
+    HELD_FRAME_LIMIT = 4,
+};
+
+struct held_frame {
+    int fd;
+    struct pass *pass;
+    struct held_frame *next;
+};
 
 struct render {
     int fd;
     bool timeline;
+    struct held_frame *held;
+    int held_count;
+    bool held_reported, held_refused;
+    bool stall_test;
+    int stall_write, stall_delay_ms;
     size_t textures;
     uint64_t texture_bytes;
     struct gbm_device *gbm;
@@ -780,6 +797,41 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     glBindTexture(t->target, 0);
 }
 
+static void *stall_release(void *data) {
+    int *delay_and_fd = data;
+    ssize_t written;
+    usleep((useconds_t)*delay_and_fd * 1000);
+    written = write(delay_and_fd[1], "x", 1);
+    (void)written;
+    close(delay_and_fd[1]);
+    free(delay_and_fd);
+    return NULL;
+}
+
+static int stall_fence(struct render *r) {
+    int fds[2];
+    glFlush();
+    if (pipe2(fds, O_CLOEXEC) < 0) return -1;
+    if (r->stall_write >= 0) close(r->stall_write);
+    r->stall_write = fds[1];
+    if (r->stall_delay_ms > 0) {
+        int *delay_and_fd = calloc(2, sizeof(*delay_and_fd));
+        pthread_t thread;
+        if (delay_and_fd) {
+            delay_and_fd[0] = r->stall_delay_ms;
+            delay_and_fd[1] = fcntl(fds[1], F_DUPFD_CLOEXEC, 0);
+        }
+        if (delay_and_fd && delay_and_fd[1] >= 0 &&
+                pthread_create(&thread, NULL, stall_release, delay_and_fd) == 0)
+            pthread_detach(thread);
+        else if (delay_and_fd) {
+            if (delay_and_fd[1] >= 0) close(delay_and_fd[1]);
+            free(delay_and_fd);
+        }
+    }
+    return fds[0];
+}
+
 static int flush_fence(struct render *r) {
     EGLint attribs[] = { EGL_NONE };
     EGLSyncKHR sync = r->create_sync(r->display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
@@ -789,14 +841,87 @@ static int flush_fence(struct render *r) {
     return fd;
 }
 
-int pass_submit_fence(struct pass *pass) {
+static int pass_export_fence(struct pass *pass) {
     struct render *r = pass->r;
     current(r);
-    int fd = r->dup_fence ? flush_fence(r) : -1;
+    int fd = r->stall_test ? stall_fence(r) : r->dup_fence ? flush_fence(r) : -1;
     if (fd < 0) glFinish();
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fd;
+}
+
+static void pass_finish(struct pass *pass) {
+    struct render *r = pass->r;
+    if (r->context) glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
     free(pass);
+}
+
+static bool fence_ready(int fd, int timeout_ms) {
+    if (fd < 0) return true;
+    struct pollfd fence = { .fd = fd, .events = POLLIN };
+    for (;;) {
+        int ready = poll(&fence, 1, timeout_ms);
+        if (ready > 0) return true;
+        if (ready == 0) return false;
+        if (errno != EINTR) {
+            tomoe_log(LOG_ERROR, "tomoe: cannot poll a render fence: %s", strerror(errno));
+            return true;
+        }
+    }
+}
+
+static void hold_frame(struct render *r, struct pass *pass, int fd) {
+    struct held_frame *held = calloc(1, sizeof(*held));
+    if (!held) {
+        fence_ready(fd, -1);
+        close(fd);
+        pass_finish(pass);
+        return;
+    }
+    held->fd = fd;
+    held->pass = pass;
+    held->next = r->held;
+    r->held = held;
+    r->held_count++;
+    if (!r->held_reported) {
+        r->held_reported = true;
+        tomoe_log(LOG_ERROR, "tomoe: no render fence after %d ms; holding %d frame(s) "
+            "until the GPU finishes", FENCE_WAIT_MS, r->held_count);
+    }
+}
+
+bool render_frames_held(struct render *r) {
+    return r && r->held_count > 0;
+}
+
+void render_retire_fences(struct render *r) {
+    if (!r || !r->held) return;
+    struct held_frame **link = &r->held;
+    bool released = false;
+    while (*link) {
+        struct held_frame *held = *link;
+        if (!fence_ready(held->fd, 0)) {
+            link = &held->next;
+            continue;
+        }
+        *link = held->next;
+        close(held->fd);
+        current(r);
+        pass_finish(held->pass);
+        free(held);
+        r->held_count--;
+        released = true;
+    }
+    if (released && !r->held_count) {
+        r->held_reported = false;
+        r->held_refused = false;
+        tomoe_log(LOG_ERROR, "tomoe: the GPU caught up; drawing resumed");
+    }
+}
+
+int pass_submit_fence(struct pass *pass) {
+    int fd = pass_export_fence(pass);
+    pass_finish(pass);
     return fd;
 }
 
@@ -809,12 +934,14 @@ bool pass_submit(struct pass *pass) {
         return complete;
     }
     if (!pass->signal) {
-        int fd = pass_submit_fence(pass);
-        if (fd >= 0) {
-            poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
-            close(fd);
+        int fd = pass_export_fence(pass);
+        if (fd < 0 || fence_ready(fd, FENCE_WAIT_MS)) {
+            if (fd >= 0) close(fd);
+            pass_finish(pass);
+            return true;
         }
-        return true;
+        hold_frame(r, pass, fd);
+        return false;
     }
     current(r);
     int fd = flush_fence(r);
@@ -830,6 +957,14 @@ bool pass_submit(struct pass *pass) {
 
 struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeline *signal,
         uint64_t point) {
+    if (r->held_count >= HELD_FRAME_LIMIT) {
+        if (!r->held_refused) {
+            r->held_refused = true;
+            tomoe_log(LOG_ERROR, "tomoe: %d frames are waiting on the GPU; skipping new frames",
+                r->held_count);
+        }
+        return NULL;
+    }
     GLuint fbo = render_buffer_fbo(r, buffer);
     struct pass *pass = fbo ? calloc(1, sizeof(*pass)) : NULL;
     if (!pass) return NULL;
@@ -1018,6 +1153,21 @@ void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, s
 }
 
 static void render_free(struct render *r) {
+    if (r->held_count)
+        tomoe_log(LOG_ERROR, "tomoe: the renderer is closing with %d frame(s) still on the GPU",
+            r->held_count);
+    while (r->held) {
+        struct held_frame *held = r->held;
+        r->held = held->next;
+        close(held->fd);
+        if (held->pass) {
+            buffer_unlock(held->pass->buffer);
+            free(held->pass);
+        }
+        free(held);
+    }
+    r->held_count = 0;
+    if (r->stall_write >= 0) close(r->stall_write);
     struct image *image, *next_image;
     wl_list_for_each_safe(image, next_image, &r->images, link) image_destroy(image);
     struct bo *b, *next_bo;
@@ -1243,6 +1393,12 @@ static bool programs_init(struct render *r) {
 struct render *render_create(int drm_fd) {
     struct render *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
+    r->stall_write = -1;
+    r->stall_test = getenv("TOMOE_TEST_STALL_FENCE") != NULL;
+    if (r->stall_test) {
+        const char *delay = getenv("TOMOE_TEST_STALL_FENCE_MS");
+        r->stall_delay_ms = delay ? atoi(delay) : 0;
+    }
     wl_list_init(&r->images);
     wl_list_init(&r->bos);
     r->fd = open_render_node(drm_fd);
@@ -1262,7 +1418,7 @@ struct render *render_create(int drm_fd) {
         goto failed;
     }
     uint64_t timeline = 0;
-    r->timeline = r->dup_fence && r->wait_sync &&
+    r->timeline = !r->stall_test && r->dup_fence && r->wait_sync &&
         drmGetCap(r->fd, DRM_CAP_SYNCOBJ_TIMELINE, &timeline) == 0 && timeline;
     return r;
 failed:

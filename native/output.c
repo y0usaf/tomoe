@@ -859,6 +859,7 @@ static bool test_rings(struct tomoe *s, struct screen_update *states, size_t cou
 static const char *commit_outputs(struct tomoe *s,
         struct screen_update *states, size_t count, bool *attempted,
         const struct presentation *plan) {
+    bool deferred = false;
     struct ring *rings = calloc(count ? count : 1, sizeof(*rings));
     const char *error = "Output renderer initialization failed; previous settings retained.";
     size_t enabled_count = 0;
@@ -875,7 +876,13 @@ static const char *commit_outputs(struct tomoe *s,
         struct output *o;
         wl_list_for_each(o, &s->outputs, link) {
             if (o->screen != states[i].output) continue;
-            if (!render_presentation(o, &states[i].base, &rings[i], plan)) goto done;
+            if (!render_presentation(o, &states[i].base, &rings[i], plan)) {
+                if (render_frames_held(s->renderer)) {
+                    deferred = true;
+                    error = NULL;
+                }
+                goto done;
+            }
             break;
         }
     }
@@ -896,10 +903,12 @@ done:
     finish_captures(s);
     for (size_t i = 0; rings && i < count; i++) ring_finish(&rings[i]);
     free(rings);
+    if (deferred) s->outputs_deferred = true;
     return error;
 }
 
 const char *tomoe_outputs_apply(struct tomoe *s) {
+    s->outputs_deferred = false;
     size_t count = wl_list_length(&s->outputs), initialized = 0;
     if (count == 0) {
         if (s->presentation) presentation_publish(s);
@@ -938,6 +947,10 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
             error = "Output commit failed; previous settings restored.";
             rollback_completed = true;
         }
+    }
+    if (!error && s->outputs_deferred) {
+        s->configuring_outputs = false;
+        return NULL;
     }
     if (!error) {
         wl_list_for_each(o, &s->outputs, link) {
@@ -1169,7 +1182,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
     finish_output_capture(o);
     screen_state_finish(&state);
     if (!success) {
-        tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
+        if (!render_frames_held(o->server->renderer))
+            tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
         frame_timed(o, &start);
         return;
     }

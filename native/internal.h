@@ -210,6 +210,8 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
     struct box reach, const double *params, size_t count);
 void pass_clip(struct pass *pass, const pixman_region32_t *clip);
 bool pass_touches(struct pass *pass, struct box box);
+void render_retire_fences(struct render *r);
+bool render_frames_held(struct render *r);
 
 struct screen;
 
@@ -848,7 +850,7 @@ struct tomoe {
     struct presentation *presentation;
     size_t event_count;
     size_t observation_barrier;
-    bool running, stopping, failed, configuring_outputs, scene_dirty;
+    bool running, stopping, failed, configuring_outputs, scene_dirty, outputs_deferred;
     struct ui_set *ui;
     struct ui_pointer *ui_pointers;
     struct ui_asset_pool *ui_assets;
