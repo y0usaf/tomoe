@@ -360,11 +360,42 @@ static void frame_request(struct screen *screen) {
         wl_display_get_event_loop(screen->server->display), idle_frame, screen);
 }
 
+static bool frame_due(struct screen *screen) {
+    return screen->needs_frame && may_draw(screen) && screen->enabled && !screen->power_off;
+}
+
 static void frame_fire(void *data) {
     struct screen *screen = data;
-    if (!screen->needs_frame || !may_draw(screen) || !screen->enabled || screen->power_off) return;
+    bool grab = grab_waiting(screen->server), due = frame_due(screen);
+    if (grab) grab_frame_drawn(screen->server);
+    if ((!grab && !due) || !may_draw(screen)) return;
     screen->frame_start_ns = screen->frame_armed_ns;
-    wl_signal_emit_mutable(&screen->events.frame, screen);
+    if (grab) screen->frame_after_events = true;
+    else wl_signal_emit_mutable(&screen->events.frame, screen);
+}
+
+bool screen_frames_late(struct screen *screen) {
+    return late_frames(screen) && !screen->tearing && screen_next_vblank(screen, monotonic_ns()) &&
+        frame_margin(screen, 1000000000000LL / screen->refresh);
+}
+
+void screens_grab_waiting(struct tomoe *s) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        struct screen *screen = o->screen;
+        if (output_is_active(o) && !screen->frame_timer.at && !screen->idle_frame &&
+                !screen->frame_after_events && screen->enabled && !screen->power_off)
+            frame_defer(screen);
+    }
+}
+
+void screens_frame_after_events(struct tomoe *s) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (!o->screen->frame_after_events) continue;
+        o->screen->frame_after_events = false;
+        if (frame_due(o->screen)) wl_signal_emit_mutable(&o->screen->events.frame, o->screen);
+    }
 }
 
 static int64_t fence_signaled_ns(int fd) {

@@ -416,6 +416,7 @@ struct screen {
     float scale;
     enum wl_output_transform transform;
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor, tearing;
+    bool frame_after_events;
     bool frame_pending, needs_frame, power_off, frame_replaced, deferred;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
@@ -1074,6 +1075,7 @@ void end_event(struct tomoe *s, struct event *event, FILE *out);
 void unmap_event(struct tomoe *s, uint32_t id);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy);
 void grab_frame_drawn(struct tomoe *s);
+bool grab_waiting(struct tomoe *s);
 
 struct screen *any_output(struct tomoe *s);
 void output_added(struct tomoe *s, struct screen *screen);
@@ -1348,6 +1350,9 @@ size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_send_frame(struct screen *screen);
 void screen_frame_committed(struct screen *screen, const struct screen_state *state);
+void screens_frame_after_events(struct tomoe *s);
+void screens_grab_waiting(struct tomoe *s);
+bool screen_frames_late(struct screen *screen);
 void screen_send_present(struct screen *screen, struct screen_present *present);
 void screen_request_state(struct screen *screen, struct screen_state *state);
 void screen_set_position(struct screen *screen, int lx, int ly);

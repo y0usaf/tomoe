@@ -63,6 +63,7 @@ static bool grab_text(struct event *event) {
     event->text = text;
     return true;
 }
+static bool grab_held(struct tomoe *s);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy) {
     if (s->stopping || s->failed || mode < 1 || mode > 3) return;
     struct event *last = wl_list_empty(&s->events) ? NULL :
@@ -71,6 +72,7 @@ void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int
         last->grab_x = x; last->grab_y = y;
         last->grab_dx += dx; last->grab_dy += dy;
         if (!grab_text(last)) fail(s, "event serialization failed");
+        else if (grab_held(s)) screens_grab_waiting(s);
         return;
     }
     if (s->event_count >= 4096) { fail(s, "event queue exhausted"); return; }
@@ -85,6 +87,7 @@ void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int
     }
     wl_list_insert(s->events.prev, &event->link);
     s->event_count++;
+    if (grab_held(s)) screens_grab_waiting(s);
 }
 void unmap_event(struct tomoe *s, uint32_t id) {
     struct event *event; size_t size;
@@ -106,6 +109,9 @@ static bool grab_held(struct tomoe *s) {
 }
 void grab_frame_drawn(struct tomoe *s) {
     s->grab_held = false;
+}
+bool grab_waiting(struct tomoe *s) {
+    return grab_held(s);
 }
 const char *tomoe_next_event(struct tomoe *s) {
     free(s->last_event); s->last_event = NULL;

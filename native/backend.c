@@ -126,6 +126,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
         if (error) tomoe_log(LOG_ERROR, "tomoe: %s", error);
     }
     refresh_scene(s);
+    screens_frame_after_events(s);
     wl_display_flush_clients(s->display);
     int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);
     if (status < 0 && errno != EINTR) return -1;
