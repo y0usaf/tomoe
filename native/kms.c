@@ -1219,6 +1219,17 @@ void kms_resume(struct tomoe *s) {
     wl_list_for_each(c, &kms->connectors, link) {
         if (!c->screen.enabled) continue;
         c->screen.frame_pending = false;
+        if (c->screen.power_off) {
+            struct screen_state state;
+            screen_state_init(&state);
+            if (screen_commit(&c->screen, &state)) {
+                surfaces_fifo_frame(&c->screen);
+                continue;
+            }
+            tomoe_log(LOG_ERROR,
+                "tomoe: output %s could not be blanked again after resume", c->screen.name);
+            c->screen.power_off = false;
+        }
         screen_schedule_frame(&c->screen);
     }
 }
