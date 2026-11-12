@@ -1166,14 +1166,8 @@ static void grab_motion(struct tomoe *s) {
         screen_to_world(s, &x, &y);
         screen_to_world(s, &old_x, &old_y);
     }
-    int dx = pixel_round(x) - pixel_round(old_x), dy = pixel_round(y) - pixel_round(old_y);
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :grab :id %u :mode :%s :x %d :y %d :dx %d :dy %d)",
-        s->grab_id, (const char *[]){ "", "move", "resize", "pointer" }[s->grab_mode],
-        pixel_round(x), pixel_round(y), dx, dy);
-    end_event(s, event, out);
+    queue_grab_motion(s, s->grab_id, s->grab_mode, pixel_round(x), pixel_round(y),
+        pixel_round(x) - pixel_round(old_x), pixel_round(y) - pixel_round(old_y));
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);

@@ -855,6 +855,8 @@ struct tomoe {
     struct presentation *presentation;
     size_t event_count;
     size_t observation_barrier;
+    bool grab_held;
+    struct wl_event_source *grab_release;
     bool running, stopping, failed, configuring_outputs, scene_dirty, outputs_deferred;
     struct ui_set *ui;
     struct ui_pointer *ui_pointers;
@@ -1057,6 +1059,8 @@ void quote(FILE *out, const char *text);
 FILE *begin_event(struct tomoe *s, struct event **event, size_t *size);
 void end_event(struct tomoe *s, struct event *event, FILE *out);
 void unmap_event(struct tomoe *s, uint32_t id);
+void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy);
+void grab_frame_drawn(struct tomoe *s);
 
 struct screen *any_output(struct tomoe *s);
 void output_added(struct tomoe *s, struct screen *screen);
