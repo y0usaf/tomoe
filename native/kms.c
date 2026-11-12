@@ -63,7 +63,8 @@ struct connector {
     struct dumb cursor_bo[2];
     uint32_t cursor_fb[2];
     int cursor_front, cursor_x, cursor_y;
-    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, redraw;
+    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, redraw, flip_async;
+    bool async_refused;
     struct ns_timer cursor_timer;
     drmModeModeInfo wake_target, wake_light;
     bool waking, wake_due, dark, relight;
@@ -77,6 +78,7 @@ struct kms {
     int fd, device;
     dev_t devnum;
     bool atomic, async_atomic, modifiers;
+    int last_ret;
     uint64_t cursor_width, cursor_height;
     unsigned wake_ms;
     struct wl_event_source *source, *monitor_source;
@@ -392,7 +394,7 @@ struct plan {
     drmModeModeInfo mode, target;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob, fb;
     int fence;
-    bool enable, modeset, gamma, profile, wake;
+    bool enable, modeset, gamma, profile, wake, async;
 };
 
 static int drm_event(int fd, uint32_t mask, void *data);
@@ -500,7 +502,7 @@ static void log_kernel_state(struct connector *c, const char *label) {
 }
 
 static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t count, bool test,
-        bool wake, bool *woke) {
+        bool wake, bool async, bool *woke) {
     struct plan *plans = calloc(count, sizeof(*plans));
     drmModeAtomicReq *req = drmModeAtomicAlloc();
     char *text = NULL;
@@ -553,7 +555,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             memcmp(&p->mode, &p->crtc->mode, sizeof(p->mode));
         modeset |= p->modeset;
         flip |= (state->committed & SCREEN_BUFFER) != 0;
-        tearing |= state->tearing_page_flip;
+        p->async = async && state->tearing_page_flip;
+        tearing |= p->async;
         if (trace) {
             char mode[192];
             mode_text(mode, sizeof(mode), &p->mode);
@@ -601,7 +604,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             add(req, p->crtc->id, &p->crtc->props, PROP_DEGAMMA_LUT, p->degamma_blob);
             add(req, p->crtc->id, &p->crtc->props, PROP_CTM, p->ctm_blob);
         }
-        if (p->crtc->cursor) cursor_plane_set(req, c, p->crtc);
+        if (p->crtc->cursor && !p->async) cursor_plane_set(req, c, p->crtc);
     }
     uint32_t flags = test ? DRM_MODE_ATOMIC_TEST_ONLY : DRM_MODE_ATOMIC_NONBLOCK;
     if (modeset) flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
@@ -612,6 +615,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     }
     if (modeset && !test) flags &= ~DRM_MODE_ATOMIC_NONBLOCK;
     int ret = ok ? drmModeAtomicCommit(kms->fd, req, flags, kms) : 0;
+    kms->last_ret = ok ? ret : -EINVAL;
     ok = ok && ret == 0;
     if (ret == -EBUSY && !test) {
         for (size_t i = 0; i < count; i++) {
@@ -713,6 +717,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             c->flip_seq = c->screen.commit_seq + 1;
             flip_armed(c);
         }
+        c->flip_async = p->async;
+        if (p->async) continue;
         c->cursor_committed = c->cursor_on;
         c->cursor_dirty = c->cursor_inflight = false;
         ns_timer_arm(&c->cursor_timer, 0);
@@ -738,11 +744,22 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         probe_dark(updates, count);
     }
     bool woke = false;
-    bool ok = atomic_try(kms, updates, count, test, !test, &woke);
+    bool ok = atomic_try(kms, updates, count, test, !test, true, &woke);
+    for (size_t i = 0; !ok && !test && kms->last_ret != -EBUSY && i < count; i++) {
+        struct connector *c = wl_container_of(updates[i].output, c, screen);
+        if (!updates[i].base.tearing_page_flip) continue;
+        if (!c->async_refused)
+            tomoe_log(LOG_ERROR, "tomoe: kms %s refused an async page flip (%s); presenting at the "
+                "vblank instead", c->screen.name, strerror(-kms->last_ret));
+        c->async_refused = true;
+        if (!(updates[i].base.committed & ~(SCREEN_BUFFER | SCREEN_WAIT))) c->screen.tearing = false;
+        ok = atomic_try(kms, updates, count, test, !test, false, &woke);
+        break;
+    }
     if (ok || !woke) return ok;
     tomoe_log(LOG_INFO, "tomoe: kms lighting a dark sink at its preferred mode failed; "
         "setting the requested mode directly");
-    return atomic_try(kms, updates, count, test, false, &woke);
+    return atomic_try(kms, updates, count, test, false, false, &woke);
 }
 
 static void wait_fence(int fd) {
@@ -991,8 +1008,8 @@ static void present(struct connector *c, unsigned seq, unsigned sec, unsigned us
         .commit_seq = c->flip_seq, .presented = true, .seq = seq,
         .when = { .tv_sec = sec, .tv_nsec = (long)usec * 1000 },
         .refresh = c->screen.refresh ? (int)(1000000000000LL / c->screen.refresh) : 0,
-        .flags = WP_PRESENTATION_FEEDBACK_KIND_VSYNC | WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK |
-            WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION,
+        .flags = (c->flip_async ? 0 : WP_PRESENTATION_FEEDBACK_KIND_VSYNC) |
+            WP_PRESENTATION_FEEDBACK_KIND_HW_CLOCK | WP_PRESENTATION_FEEDBACK_KIND_HW_COMPLETION,
     };
     screen_send_present(&c->screen, &event);
 }

@@ -18,7 +18,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 1)
-(defconstant +native-abi-version+ 38)
+(defconstant +native-abi-version+ 39)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -438,7 +438,7 @@ and clamped to the native camera's range."
   '(:normal :90 :180 :270 :flipped :flipped-90 :flipped-180 :flipped-270))
 
 (defun %output-effect (name mode width height refresh scale x y positioned
-                       &optional disabled mirror vrr icc transform)
+                       &optional disabled mirror vrr icc transform tearing)
   (check-type name string)
   (unless (and (<= 1 (length name) 128) (not (find #\Null name)))
     (error "Invalid output name: ~S" name))
@@ -453,6 +453,7 @@ and clamped to the native camera's range."
   (check-type positioned boolean)
   (check-type disabled boolean)
   (check-type vrr boolean)
+  (check-type tearing boolean)
   (check-type transform (or null (integer 0 7)))
   (when mirror
     (check-type mirror string)
@@ -463,15 +464,20 @@ and clamped to the native camera's range."
     (unless (and (<= 1 (length icc) 4096) (not (find #\Null icc)))
       (error "Invalid ICC profile path: ~S" icc)))
   (%effect :output (list (copy-seq name) mode width height refresh scale x y positioned
-                        disabled (and mirror (copy-seq mirror)) vrr (and icc (copy-seq icc)) transform)))
+                        disabled (and mirror (copy-seq mirror)) vrr (and icc (copy-seq icc)) transform
+                        tearing)))
 
-(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr icc transform)
-  "Own an output's mode, scale, position, transform, enablement, mirror target, VRR request and ICC profile.
+(defun configure-output (name &key (mode :preferred) refresh scale position disabled mirror vrr icc transform
+                                tearing)
+  "Own an output's mode, scale, position, transform, enablement, mirror target, VRR request, ICC profile
+and tearing.
 MODE is :PREFERRED, :MAX (largest progressive), or (WIDTH HEIGHT [HZ]). REFRESH
 is :MAX or Hz, matched within 1 Hz. Without it :PREFERRED keeps the preferred
 mode and other sizes take their highest rate. MIRROR names an active non-mirroring output.
 Omitted SCALE inherits the :SCALE setting. ICC names an RGB display profile that
 maps sRGB content to the panel's colors. TRANSFORM is one of +OUTPUT-TRANSFORMS+.
+TEARING shows each composited frame as soon as it is drawn, with an async page flip
+instead of waiting for the vblank, where the driver accepts one; frames may tear.
 Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS."
   (check-type scale (or null (real 1/4 8)))
   (flet ((millihertz (refresh)
@@ -483,20 +489,21 @@ Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS.
       (destructuring-bind (x y) (or position '(0 0))
         (if (member mode '(:preferred :max))
             (%output-effect name mode 0 0 (millihertz refresh) scale-120
-                            x y (not (null position)) disabled mirror vrr icc transform)
+                            x y (not (null position)) disabled mirror vrr icc transform tearing)
             (destructuring-bind (width height &optional hz) mode
               (%output-effect name :exact width height (millihertz (or hz refresh)) scale-120
-                              x y (not (null position)) disabled mirror vrr icc transform)))))))
+                              x y (not (null position)) disabled mirror vrr icc transform tearing)))))))
 
 (define-effect :output
   :canonical (apply #'%output-effect args)
   :reduce (destructuring-bind (name mode width height refresh scale x y positioned
-                                    &optional disabled mirror vrr icc transform) args
+                                    &optional disabled mirror vrr icc transform tearing) args
             (setf (materialization-outputs m)
                   (delete name (materialization-outputs m) :test #'equal :key (lambda (o) (getf o :name))))
             (push (list :name name :mode mode :width width :height height
                         :refresh-mhz refresh :scale-120 scale :x x :y y :positioned positioned
-                        :disabled disabled :mirror mirror :vrr vrr :icc icc :transform transform)
+                        :disabled disabled :mirror mirror :vrr vrr :icc icc :transform transform
+                        :tearing tearing)
                   (materialization-outputs m))))
 
 (defun virtual-output (name &key (mode '(1920 1080 60)))

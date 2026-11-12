@@ -696,6 +696,7 @@ int tomoe_outputs_begin(struct tomoe *s) {
         o->pending_x = o->baseline_x;
         o->pending_y = o->baseline_y;
         o->pending_mirror[0] = '\0';
+        o->pending_tearing = false;
         profile_unref(o->pending_profile);
         o->pending_profile = NULL;
         o->pending_profile_error = NULL;
@@ -767,10 +768,10 @@ int tomoe_output(struct tomoe *s, const char *name, int kind,
 }
 
 int tomoe_output_options(struct tomoe *s, const char *name, int enabled,
-        const char *mirror, int adaptive_sync) {
+        const char *mirror, int adaptive_sync, int tearing) {
     if (!s || !name || !name[0] || strnlen(name, 129) > 128 ||
             (enabled != 0 && enabled != 1) ||
-            (adaptive_sync != 0 && adaptive_sync != 1)) return 0;
+            (adaptive_sync != 0 && adaptive_sync != 1) || (tearing != 0 && tearing != 1)) return 0;
     const char *requested_mirror = mirror ?: "";
     if (strnlen(requested_mirror, 129) > 128) return 0;
     struct output *o;
@@ -782,6 +783,7 @@ int tomoe_output_options(struct tomoe *s, const char *name, int enabled,
                 adaptive_sync != 0);
         memcpy(o->pending_mirror, requested_mirror,
             strlen(requested_mirror) + 1);
+        o->pending_tearing = tearing != 0;
         o->pending_hold = false;
         return 1;
     }
@@ -820,6 +822,7 @@ int tomoe_output_hold(struct tomoe *s, const char *name) {
         o->pending_positioned = o->positioned;
         o->pending_x = o->x; o->pending_y = o->y;
         memcpy(o->pending_mirror, o->mirror, sizeof(o->pending_mirror));
+        o->pending_tearing = o->tearing;
         profile_unref(o->pending_profile);
         o->pending_profile = profile_ref(o->profile);
         o->pending_profile_error = o->profile_error;
@@ -967,6 +970,8 @@ const char *tomoe_outputs_apply(struct tomoe *s) {
                 memcpy(o->mirror, o->pending_mirror, sizeof(o->mirror));
             else
                 o->mirror[0] = '\0';
+            o->tearing = o->pending_configured && o->pending_tearing;
+            o->screen->tearing = o->tearing;
             struct profile *profile = o->profile;
             o->profile = o->pending_profile;
             o->pending_profile = NULL;
@@ -1097,6 +1102,7 @@ bool output_management_configure(struct tomoe *s,
             o->pending_x = pixel_round(entries[i].x * scale);
             o->pending_y = pixel_round(entries[i].y * scale);
             o->pending_mirror[0] = '\0';
+            o->pending_tearing = o->tearing;
             profile_unref(o->pending_profile);
             o->pending_profile = profile_ref(o->profile);
             o->pending_profile_error = o->profile_error;
@@ -1173,6 +1179,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
         state.tearing_page_flip = true;
         if (!screen_test(o->screen, &state)) state.tearing_page_flip = false;
     }
+    if (success && !scanout && o->screen->tearing && o->screen->kind == SCREEN_DRM)
+        state.tearing_page_flip = true;
     success = success && screen_commit(o->screen, &state);
     if (success) surfaces_fifo_commit(o->screen);
     if (success && (state.committed & SCREEN_BUFFER))

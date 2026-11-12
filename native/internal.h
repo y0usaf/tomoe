@@ -415,7 +415,7 @@ struct screen {
     int32_t width, height, refresh;
     float scale;
     enum wl_output_transform transform;
-    bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
+    bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor, tearing;
     bool frame_pending, needs_frame, power_off, frame_replaced, deferred;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
@@ -453,6 +453,7 @@ struct output {
     int baseline_x, baseline_y;
     char mirror[129];
     char pending_mirror[129];
+    bool tearing, pending_tearing;
     struct profile *profile, *pending_profile;
     const char *profile_error, *pending_profile_error;
     struct buffer *capture_buffer;

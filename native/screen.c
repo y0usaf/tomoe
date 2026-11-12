@@ -325,7 +325,7 @@ static int64_t frame_margin(const struct screen *screen, int64_t period) {
 }
 
 static bool frame_defer(struct screen *screen) {
-    if (!late_frames(screen)) return false;
+    if (!late_frames(screen) || screen->tearing) return false;
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(screen, now);
     if (!vblank) return false;
     int64_t period = 1000000000000LL / screen->refresh;
