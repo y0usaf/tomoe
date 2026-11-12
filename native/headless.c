@@ -86,6 +86,7 @@ static size_t headless_gamma_size(struct screen *screen) {
 }
 
 static const struct screen_impl headless_impl = {
+    .replace_flip = true,
     .test = headless_test,
     .commit = headless_commit,
     .gamma_size = headless_gamma_size,

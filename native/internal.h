@@ -380,6 +380,7 @@ struct screen_impl {
     bool (*cursor)(struct screen *screen, struct buffer *buffer, int hotspot_x, int hotspot_y);
     void (*move_cursor)(struct screen *screen, int x, int y);
     void (*destroy)(struct screen *screen);
+    bool replace_flip;
 };
 struct screen_present {
     struct screen *output;
@@ -406,7 +407,7 @@ struct screen {
     float scale;
     enum wl_output_transform transform;
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
-    bool frame_pending, needs_frame, power_off;
+    bool frame_pending, needs_frame, power_off, frame_replaced;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
     size_t commit_seq;
@@ -423,7 +424,7 @@ struct output {
     struct wl_list link;
     struct tomoe *server;
     struct screen *screen;
-    struct wl_listener frame, request, destroy;
+    struct wl_listener frame, present, request, destroy;
     struct screen_state initial, pending;
     struct screen_state deferred;
     bool configured, admitted, pending_configured, pending_positioned;
@@ -659,7 +660,7 @@ struct surface {
     struct subsurface *subsurface;
     struct screen *primary;
     time_t frames_answered;
-    uint64_t commit_seq;
+    uint64_t commit_seq, buffer_serial;
     struct { uint64_t seq, prev; struct box box; } commits[4];
     int preferred_scale;
     uint32_t fractional_scale;
@@ -1390,6 +1391,8 @@ void surface_send_leave(struct surface *surface, struct screen *output);
 void surface_leave_all(struct surface *surface);
 bool surface_on_output(struct surface *surface, struct screen *output);
 void surface_frame_done(struct surface *surface, const struct timespec *when);
+void feedback_rebase(struct screen *screen, size_t from, size_t to);
+bool surfaces_fifo_waiting(struct screen *screen);
 void surface_set_scale(struct surface *surface, double scale);
 void surface_presented(struct surface *surface, struct screen *output, bool zero_copy);
 void surface_release_after(struct surface *surface, struct buffer *consumer);

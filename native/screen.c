@@ -240,7 +240,11 @@ static void apply(struct screen *screen, const struct screen_state *state) {
     if (state->committed & SCREEN_VRR)
         screen->adaptive_sync = screen->adaptive_sync_supported && state->adaptive_sync_enabled;
     if (!screen->enabled) screen->adaptive_sync = false;
-    if (state->committed & SCREEN_BUFFER) screen->frame_pending = true;
+    if (state->committed & SCREEN_BUFFER) {
+        if (screen->frame_pending && screen->impl->replace_flip)
+            feedback_rebase(screen, screen->commit_seq, screen->commit_seq + 1);
+        screen->frame_pending = true;
+    }
     screen->commit_seq++;
     global_update(screen);
     if (state->committed & (SCREEN_MODE | SCREEN_SCALE | SCREEN_TRANSFORM))
@@ -297,23 +301,35 @@ size_t screen_degamma_size(struct screen *screen) {
     return screen->impl->degamma_size ? screen->impl->degamma_size(screen) : 0;
 }
 
-void screen_send_frame(struct screen *screen) {
-    screen->frame_pending = false;
+static void dispatch_frame(struct screen *screen) {
     if (screen->enabled && !screen->power_off) {
         surfaces_fifo_frame(screen);
         wl_signal_emit_mutable(&screen->events.frame, screen);
     }
 }
 
+void screen_send_frame(struct screen *screen) {
+    screen->frame_pending = false;
+    screen->frame_replaced = false;
+    dispatch_frame(screen);
+}
+
+static bool may_draw(struct screen *screen) {
+    return !screen->frame_pending || (screen->impl->replace_flip && !screen->frame_replaced &&
+        !surfaces_fifo_waiting(screen));
+}
+
 static void idle_frame(void *data) {
     struct screen *screen = data;
     screen->idle_frame = NULL;
-    if (!screen->frame_pending) screen_send_frame(screen);
+    if (!may_draw(screen)) return;
+    if (screen->frame_pending) screen->frame_replaced = true;
+    dispatch_frame(screen);
 }
 
 void screen_schedule_frame(struct screen *screen) {
     screen->needs_frame = true;
-    if (screen->frame_pending || screen->idle_frame) return;
+    if (screen->idle_frame || !may_draw(screen)) return;
     screen->idle_frame = wl_event_loop_add_idle(
         wl_display_get_event_loop(screen->server->display), idle_frame, screen);
 }

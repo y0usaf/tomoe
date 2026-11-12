@@ -1194,10 +1194,13 @@ static void output_frame(struct wl_listener *listener, void *data) {
     lock_frame_rendered(o->server, o->screen);
     bool moving = windows_animate(o->server);
     if (ui_animate(o->server) || moving) screen_schedule_frame(o->screen);
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    frame_done(o, &now);
     frame_timed(o, &start);
+}
+
+static void output_presented(struct wl_listener *listener, void *data) {
+    struct output *o = wl_container_of(listener, o, present);
+    struct screen_present *event = data;
+    if (event->presented) frame_done(o, &event->when);
 }
 void outputs_request_nested_size(struct tomoe *s) {
     struct output *o;
@@ -1239,7 +1242,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     profile_unref(o->pending_profile);
     power_output_gone(o);
     ui_output_finish(s, wlr->name);
-    detach(&o->frame); detach(&o->request); detach(&o->destroy);
+    detach(&o->frame); detach(&o->present); detach(&o->request); detach(&o->destroy);
     if (o->tick) wl_event_source_remove(o->tick);
     forget_output(s, wlr);
     screen_state_finish(&o->initial);
@@ -1276,6 +1279,7 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     }
     wl_list_insert(s->outputs.prev, &o->link);
     listen(&o->frame, &wlr->events.frame, output_frame);
+    listen(&o->present, &wlr->events.present, output_presented);
     listen(&o->request, &wlr->events.request_state, output_request);
     listen(&o->destroy, &wlr->events.destroy, output_destroy);
     outputs_event(s);
