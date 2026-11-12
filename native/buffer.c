@@ -15,11 +15,22 @@ struct shm_buffer {
     struct wl_resource *resource;
     struct wl_shm_buffer *shm;
     struct wl_shm_pool *pool;
-    void *data;
+    void *data, *cache;
+    size_t cache_bytes;
+    bool trim;
     uint32_t format;
     size_t stride;
     struct wl_listener resource_destroy, release;
 };
+
+static void shm_release_pages(void *data, size_t bytes) {
+    if (!data || !bytes) return;
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return;
+    uintptr_t start = ((uintptr_t)data + (uintptr_t)page - 1) & ~((uintptr_t)page - 1);
+    uintptr_t end = ((uintptr_t)data + bytes) & ~((uintptr_t)page - 1);
+    if (end > start) madvise((void *)start, end - start, MADV_DONTNEED);
+}
 
 struct dmabuf_buffer {
     struct buffer base;
@@ -62,12 +73,16 @@ static void shm_buffer_destroy(struct buffer *base) {
 static bool shm_buffer_begin(struct buffer *base, uint32_t flags, void **data,
         uint32_t *format, size_t *stride) {
     struct shm_buffer *b = wl_container_of(base, b, base);
+    b->trim = (flags & BUFFER_READ) != 0;
     if (b->shm) {
         wl_shm_buffer_begin_access(b->shm);
-        *data = wl_shm_buffer_get_data(b->shm);
+        b->cache = wl_shm_buffer_get_data(b->shm);
+        *data = b->cache;
     } else {
+        b->cache = b->data;
         *data = b->data;
     }
+    b->cache_bytes = b->stride * (size_t)base->height;
     *format = b->format;
     *stride = b->stride;
     return true;
@@ -76,6 +91,9 @@ static bool shm_buffer_begin(struct buffer *base, uint32_t flags, void **data,
 static void shm_buffer_end(struct buffer *base) {
     struct shm_buffer *b = wl_container_of(base, b, base);
     if (b->shm) wl_shm_buffer_end_access(b->shm);
+    if (b->trim) shm_release_pages(b->cache, b->cache_bytes);
+    b->trim = false;
+    b->cache_bytes = 0;
 }
 
 static const struct buffer_impl shm_buffer_impl = {
