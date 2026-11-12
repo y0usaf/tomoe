@@ -1210,6 +1210,26 @@ void kms_pause(struct tomoe *s) {
     }
 }
 
+static struct crtc *kernel_crtc_for(struct connector *c) {
+    struct crtc *found = NULL;
+    drmModeConnector *info = drmModeGetConnector(c->kms->fd, c->id);
+    if (info) {
+        if (info->encoder_id) {
+            drmModeEncoder *encoder = drmModeGetEncoder(c->kms->fd, info->encoder_id);
+            if (encoder) {
+                for (size_t i = 0; i < c->kms->crtc_count; i++)
+                    if (c->kms->crtcs[i].id == encoder->crtc_id) {
+                        found = &c->kms->crtcs[i];
+                        break;
+                    }
+                drmModeFreeEncoder(encoder);
+            }
+        }
+        drmModeFreeConnector(info);
+    }
+    return found ? found : c->kernel_crtc;
+}
+
 void kms_resume(struct tomoe *s) {
     struct kms *kms = s->kms;
     if (!kms) return;
@@ -1220,6 +1240,7 @@ void kms_resume(struct tomoe *s) {
         if (!c->screen.enabled) continue;
         c->screen.frame_pending = false;
         if (c->screen.power_off) {
+            if (!c->crtc) c->crtc = kernel_crtc_for(c);
             struct screen_state state;
             screen_state_init(&state);
             if (screen_commit(&c->screen, &state)) {
