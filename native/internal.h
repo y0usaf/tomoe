@@ -464,7 +464,7 @@ struct output {
     const char *profile_error, *pending_profile_error;
     struct buffer *capture_buffer;
     struct texture *gamma_lut;
-    struct buffer *presented[2];
+    struct buffer *presented;
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;

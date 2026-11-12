@@ -1187,9 +1187,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
         screen_frame_committed(o->screen, scanout ? &(struct screen_state){0} : &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
-        buffer_unlock(o->presented[1]);
-        o->presented[1] = o->presented[0];
-        o->presented[0] = buffer_lock(state.buffer);
+        buffer_unlock(o->presented);
+        o->presented = buffer_lock(state.buffer);
     }
     if (success && (state.committed & SCREEN_BUFFER))
         capture_serve(o, state.buffer, scanout != NULL);
@@ -1242,8 +1241,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     struct tomoe *s = o->server;
     struct screen *wlr = o->screen;
     finish_output_capture(o);
-    buffer_unlock(o->presented[0]);
-    buffer_unlock(o->presented[1]);
+    buffer_unlock(o->presented);
     ring_finish(&o->ring);
     oplist_finish(&o->ops);
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
