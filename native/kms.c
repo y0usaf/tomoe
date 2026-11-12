@@ -50,6 +50,8 @@ struct dumb {
     uint8_t *map;
 };
 
+enum { CURSOR_SLOTS = 4, CURSOR_PENDING = 8 };
+
 struct connector {
     struct screen screen;
     struct kms *kms;
@@ -60,10 +62,14 @@ struct connector {
     struct buffer *queued, *current;
     bool flip_pending, present_pending;
     size_t flip_seq;
-    struct dumb cursor_bo[2];
-    uint32_t cursor_fb[2];
-    int cursor_front, cursor_x, cursor_y;
-    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, redraw, flip_async;
+    struct dumb cursor_bo[CURSOR_SLOTS];
+    uint32_t cursor_fb[CURSOR_SLOTS];
+    int64_t cursor_retire_at[CURSOR_SLOTS];
+    struct cursor_commit { uint64_t seq; int slot; bool flip; } cursor_pending[CURSOR_PENDING];
+    int cursor_pending_count, cursor_front, cursor_shown, cursor_x, cursor_y, cursor_hot_x, cursor_hot_y;
+    uint64_t cursor_seq, cursor_shown_seq;
+    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, cursor_upload_pending;
+    bool redraw, flip_async;
     bool async_refused;
     struct ns_timer cursor_timer;
     drmModeModeInfo wake_target, wake_light;
@@ -103,6 +109,9 @@ static void flip_armed(struct connector *c);
 static void flip_disarmed(struct connector *c);
 static int flip_watchdog(void *data);
 static void cursor_queue(struct connector *c);
+static void cursor_submitted(struct connector *c, bool flip);
+static void cursor_completed(struct connector *c, bool flip);
+static void cursor_settle(struct connector *c, bool off);
 
 #define CURSOR_EVENT(kms) ((void *)((uintptr_t)(kms) | 1))
 enum { CURSOR_LEAD_NS = 1000000 };
@@ -380,9 +389,13 @@ static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc,
     add(req, plane->id, &plane->props, PROP_CRTC_H, (uint64_t)height);
 }
 
+static bool cursor_visible(const struct connector *c) {
+    return c->cursor_on && c->cursor_fb[c->cursor_front];
+}
+
 static void cursor_plane_set(drmModeAtomicReq *req, struct connector *c, struct crtc *crtc) {
     int width = (int)c->kms->cursor_width, height = (int)c->kms->cursor_height;
-    if (c->cursor_on)
+    if (cursor_visible(c))
         plane_set(req, crtc->cursor, crtc->id, c->cursor_fb[c->cursor_front], c->cursor_x,
             c->cursor_y, width, height, width, height);
     else
@@ -664,6 +677,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             wake_arm(c, 0);
             c->cursor_dirty = c->cursor_inflight = c->redraw = false;
             ns_timer_arm(&c->cursor_timer, 0);
+            cursor_settle(c, true);
             continue;
         }
         c->crtc = p->crtc;
@@ -711,6 +725,9 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         c->cursor_committed = c->cursor_on;
         c->cursor_dirty = c->cursor_inflight = false;
         ns_timer_arm(&c->cursor_timer, 0);
+        if (!p->crtc->cursor) continue;
+        cursor_submitted(c, true);
+        if (!(state->committed & SCREEN_BUFFER)) cursor_completed(c, true);
     }
     for (size_t i = 0; ok && !test && modeset && log_verbosity >= LOG_INFO && i < count; i++) {
         struct connector *c = wl_container_of(updates[i].output, c, screen);
@@ -858,17 +875,87 @@ static void cursor_free(struct connector *c, int i) {
     *bo = (struct dumb){0};
 }
 
+static bool cursor_slot_busy(const struct connector *c, int slot) {
+    if (slot == c->cursor_shown) return true;
+    for (int i = 0; i < c->cursor_pending_count; i++)
+        if (c->cursor_pending[i].slot == slot) return true;
+    return false;
+}
+
+static void cursor_retire(struct connector *c, int slot, int64_t now) {
+    if (slot < 0 || cursor_slot_busy(c, slot)) return;
+    int64_t hold = c->screen.refresh > 0 ? 1250000000000LL / c->screen.refresh : 25000000;
+    c->cursor_retire_at[slot] = now + hold;
+}
+
+static void cursor_submitted(struct connector *c, bool flip) {
+    if (c->cursor_pending_count == CURSOR_PENDING) cursor_settle(c, false);
+    c->cursor_pending[c->cursor_pending_count++] = (struct cursor_commit){ ++c->cursor_seq,
+        cursor_visible(c) ? c->cursor_front : -1, flip };
+}
+
+static void cursor_reupload(struct connector *c);
+
+static void cursor_completed(struct connector *c, bool flip) {
+    int i = 0;
+    while (i < c->cursor_pending_count && c->cursor_pending[i].flip != flip) i++;
+    if (i == c->cursor_pending_count) return;
+    struct cursor_commit done = c->cursor_pending[i];
+    memmove(&c->cursor_pending[i], &c->cursor_pending[i + 1],
+        (size_t)(c->cursor_pending_count - i - 1) * sizeof(done));
+    c->cursor_pending_count--;
+    int64_t now = monotonic_ns();
+    if (done.seq > c->cursor_shown_seq) {
+        int replaced = c->cursor_shown;
+        c->cursor_shown = done.slot;
+        c->cursor_shown_seq = done.seq;
+        if (replaced != done.slot) cursor_retire(c, replaced, now);
+    } else {
+        cursor_retire(c, done.slot, now);
+    }
+    if (c->cursor_upload_pending) cursor_reupload(c);
+}
+
+static void cursor_settle(struct connector *c, bool off) {
+    while (c->cursor_pending_count) cursor_completed(c, c->cursor_pending[0].flip);
+    if (!off) return;
+    int shown = c->cursor_shown;
+    c->cursor_shown = -1;
+    cursor_retire(c, shown, monotonic_ns());
+}
+
+static int cursor_slot(struct connector *c, int64_t now, int64_t *ready) {
+    int best = -1;
+    *ready = 0;
+    for (int s = 0; s < CURSOR_SLOTS; s++) {
+        if (cursor_slot_busy(c, s)) continue;
+        if (now < c->cursor_retire_at[s]) {
+            if (!*ready || c->cursor_retire_at[s] < *ready) *ready = c->cursor_retire_at[s];
+            continue;
+        }
+        if (s == c->cursor_front) return s;
+        if (best < 0 || c->cursor_retire_at[s] < c->cursor_retire_at[best]) best = s;
+    }
+    return best;
+}
+
 static bool cursor_upload(struct connector *c, struct buffer *buffer) {
     struct kms *kms = c->kms;
     void *data;
     uint32_t format;
     size_t stride;
-    if (buffer->width > (int)kms->cursor_width || buffer->height > (int)kms->cursor_height ||
-            !buffer_begin_access(buffer, BUFFER_READ, &data,
-                &format, &stride)) return false;
+    if (buffer->width > (int)kms->cursor_width || buffer->height > (int)kms->cursor_height) return false;
+    int64_t now = monotonic_ns(), ready;
+    int slot = cursor_slot(c, now, &ready);
+    if (slot < 0) {
+        c->cursor_upload_pending = true;
+        if (ready && (!c->cursor_timer.at || ready < c->cursor_timer.at))
+            ns_timer_arm(&c->cursor_timer, ready);
+        return true;
+    }
+    if (!buffer_begin_access(buffer, BUFFER_READ, &data, &format, &stride)) return false;
     bool ok = format == DRM_FORMAT_ARGB8888;
-    int back = c->cursor_front ^ 1;
-    struct dumb *bo = &c->cursor_bo[back];
+    struct dumb *bo = &c->cursor_bo[slot];
     if (ok && !bo->map) {
         uint64_t offset = 0;
         void *map = MAP_FAILED;
@@ -879,9 +966,9 @@ static bool cursor_upload(struct connector *c, struct buffer *buffer) {
                 (off_t)offset)) != MAP_FAILED &&
             !drmModeAddFB2(kms->fd, (uint32_t)kms->cursor_width, (uint32_t)kms->cursor_height,
                 DRM_FORMAT_ARGB8888, (uint32_t[4]){ bo->handle }, (uint32_t[4]){ bo->pitch },
-                (uint32_t[4]){ 0 }, &c->cursor_fb[back], 0);
+                (uint32_t[4]){ 0 }, &c->cursor_fb[slot], 0);
         bo->map = map == MAP_FAILED ? NULL : map;
-        if (!ok) cursor_free(c, back);
+        if (!ok) cursor_free(c, slot);
     }
     if (ok) {
         memset(bo->map, 0, bo->size);
@@ -890,28 +977,52 @@ static bool cursor_upload(struct connector *c, struct buffer *buffer) {
                 (size_t)buffer->width * 4);
     }
     buffer_end_access(buffer);
-    if (ok) c->cursor_front = back;
+    if (ok) {
+        c->cursor_front = slot;
+        c->cursor_upload_pending = false;
+    }
     return ok;
+}
+
+static bool cursor_put(struct connector *c) {
+    if (c->kms->atomic) {
+        cursor_queue(c);
+        return true;
+    }
+    bool ok = c->cursor_on ? !drmModeSetCursor2(c->kms->fd, c->crtc->id,
+            c->cursor_bo[c->cursor_front].handle, (uint32_t)c->kms->cursor_width,
+            (uint32_t)c->kms->cursor_height, c->cursor_hot_x, c->cursor_hot_y) :
+        !drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
+    if (ok) {
+        cursor_submitted(c, false);
+        cursor_completed(c, false);
+    }
+    return ok;
+}
+
+static void cursor_reupload(struct connector *c) {
+    struct buffer *buffer = c->kms->server->cursor_image.buffer;
+    if (!c->cursor_on || !buffer || !c->crtc || !cursor_upload(c, buffer)) {
+        c->cursor_upload_pending = false;
+        return;
+    }
+    if (!c->cursor_upload_pending) cursor_put(c);
 }
 
 static bool connector_cursor(struct screen *screen, struct buffer *buffer, int hotspot_x,
         int hotspot_y) {
     struct connector *c = wl_container_of(screen, c, screen);
     if (!c->crtc || (c->kms->atomic && !c->crtc->cursor)) return false;
+    c->cursor_hot_x = hotspot_x;
+    c->cursor_hot_y = hotspot_y;
     if (!buffer) {
-        c->cursor_on = false;
-        if (c->kms->atomic) cursor_queue(c);
-        else drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
+        c->cursor_on = c->cursor_upload_pending = false;
+        cursor_put(c);
         return true;
     }
     if (!cursor_upload(c, buffer)) return false;
     c->cursor_on = true;
-    if (!c->kms->atomic)
-        return !drmModeSetCursor2(c->kms->fd, c->crtc->id,
-            c->cursor_bo[c->cursor_front].handle, (uint32_t)c->kms->cursor_width,
-            (uint32_t)c->kms->cursor_height, hotspot_x, hotspot_y);
-    cursor_queue(c);
-    return true;
+    return c->cursor_upload_pending || cursor_put(c);
 }
 
 static bool compose_carries_cursor(const struct connector *c) {
@@ -932,13 +1043,16 @@ static void cursor_commit(struct connector *c) {
         c->cursor_inflight = true;
         c->cursor_dirty = false;
         c->cursor_committed = c->cursor_on;
+        cursor_submitted(c, false);
     } else if (ret != -EBUSY) {
         screen_schedule_frame(&c->screen);
     }
 }
 
 static void cursor_fire(void *data) {
-    cursor_commit(data);
+    struct connector *c = data;
+    if (c->cursor_upload_pending) cursor_reupload(c);
+    cursor_commit(c);
 }
 
 static void cursor_queue(struct connector *c) {
@@ -973,7 +1087,7 @@ static void connector_destroy(struct screen *screen) {
     }
     buffer_unlock(c->queued);
     buffer_unlock(c->current);
-    for (int i = 0; i < 2; i++) cursor_free(c, i);
+    for (int i = 0; i < CURSOR_SLOTS; i++) cursor_free(c, i);
     wl_list_remove(&c->link);
     free(c);
 }
@@ -1013,6 +1127,7 @@ static int flip_watchdog(void *data) {
     if (!c->flip_pending) return 0;
     tomoe_log(LOG_ERROR, "tomoe: kms %s flip event missing", c->screen.name);
     c->flip_pending = false;
+    if (!c->flip_async) cursor_completed(c, true);
     buffer_unlock(c->current);
     c->current = c->queued;
     c->queued = NULL;
@@ -1035,6 +1150,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
             c->screen.vblank_ns = when;
         if (cursor) {
             c->cursor_inflight = false;
+            cursor_completed(c, false);
             if (c->redraw && !c->flip_pending) {
                 c->redraw = false;
                 screen_schedule_frame(&c->screen);
@@ -1045,6 +1161,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
         if (!c->flip_pending) continue;
         flip_disarmed(c);
         c->flip_pending = false;
+        if (!c->flip_async) cursor_completed(c, true);
         buffer_unlock(c->current);
         c->current = c->queued;
         c->queued = NULL;
@@ -1102,6 +1219,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     c->flip_timer = wl_event_loop_add_timer(wl_display_get_event_loop(kms->server->display),
         flip_watchdog, c);
     ns_timer_init(&c->cursor_timer, wl_display_get_event_loop(kms->server->display), cursor_fire, c);
+    c->cursor_shown = -1;
     char name[64];
     const char *type = drmModeGetConnectorTypeName(info->connector_type);
     snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
@@ -1267,6 +1385,7 @@ void kms_pause(struct tomoe *s) {
         c->flip_pending = false;
         c->cursor_inflight = c->redraw = false;
         ns_timer_arm(&c->cursor_timer, 0);
+        cursor_settle(c, false);
     }
 }
 
