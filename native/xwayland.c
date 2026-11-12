@@ -42,7 +42,9 @@ struct xwayland {
     int display_read;
     pid_t pid;
     int pidfd;
-    struct wl_event_source *exit;
+    struct wl_event_source *exit, *retry;
+    struct timespec started;
+    int failures;
     struct wl_global *global;
     struct wl_list pairs;
     struct wl_client *client;
@@ -331,6 +333,7 @@ static int display_ready(int fd, uint32_t mask, void *data) {
     }
     x->display_read = ready_pipe[0];
     x->pid = pid;
+    clock_gettime(CLOCK_MONOTONIC, &x->started);
     x->pidfd = (int)pidfd_open(pid, 0);
     if (x->pidfd >= 0)
         x->exit = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), x->pidfd,
@@ -378,6 +381,18 @@ int xwayland_start(struct tomoe *s) {
     return x->listen[0] && x->listen[1] ? 0 : -1;
 }
 
+static void listen_again(struct xwayland *x) {
+    for (int i = 0; i < 2; i++)
+        if (!x->listen[i] && x->listen_fd[i] >= 0)
+            x->listen[i] = wl_event_loop_add_fd(wl_display_get_event_loop(x->server->display),
+                x->listen_fd[i], WL_EVENT_READABLE, display_ready, x);
+}
+
+static int retry_ready(void *data) {
+    listen_again(data);
+    return 0;
+}
+
 static int xwayland_exited(int fd, uint32_t mask, void *data) {
     struct xwayland *x = data;
     struct tomoe *s = x->server;
@@ -398,10 +413,22 @@ static int xwayland_exited(int fd, uint32_t mask, void *data) {
         close(x->display_read);
         x->display_read = -1;
     }
-    for (int i = 0; i < 2; i++)
-        if (!x->listen[i] && x->listen_fd[i] >= 0)
-            x->listen[i] = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
-                x->listen_fd[i], WL_EVENT_READABLE, display_ready, x);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    bool early = (now.tv_sec - x->started.tv_sec) * 1000 +
+        (now.tv_nsec - x->started.tv_nsec) / 1000000 < 1000;
+    x->failures = early ? x->failures + 1 : 0;
+    if (!x->failures) {
+        listen_again(x);
+        return 0;
+    }
+    int delay = x->failures > 7 ? 10000 : 100 << (x->failures - 1);
+    if (delay > 10000) delay = 10000;
+    if (!x->retry)
+        x->retry = wl_event_loop_add_timer(wl_display_get_event_loop(s->display), retry_ready, x);
+    if (!x->retry || wl_event_source_timer_update(x->retry, delay) != 0) listen_again(x);
+    else tomoe_log(LOG_ERROR, "tomoe: Xwayland exited %d time(s) right after starting; "
+        "retrying in %d ms", x->failures, delay);
     return 0;
 }
 
@@ -411,6 +438,7 @@ void xwayland_finish(struct tomoe *s) {
     for (int i = 0; i < 2; i++)
         if (x->listen[i]) wl_event_source_remove(x->listen[i]);
     if (x->exit) wl_event_source_remove(x->exit);
+    if (x->retry) wl_event_source_remove(x->retry);
     if (x->pid > 0) {
         kill(x->pid, SIGTERM);
         for (int tries = 0; tries < 50; tries++) {
