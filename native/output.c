@@ -1257,6 +1257,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     ui_output_finish(s, wlr->name);
     detach(&o->frame); detach(&o->present); detach(&o->request); detach(&o->destroy);
     if (o->tick) wl_event_source_remove(o->tick);
+    if (o->trim) wl_event_source_remove(o->trim);
     forget_output(s, wlr);
     screen_state_finish(&o->initial);
     screen_state_finish(&o->pending);

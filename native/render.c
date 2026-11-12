@@ -1820,6 +1820,24 @@ struct buffer *ring_create(struct tomoe *s, struct ring *ring) {
         &ring->format.formats[0]);
 }
 
+size_t ring_trim(struct ring *ring) {
+    size_t held = 0, total = 0;
+    for (size_t i = 0; i < RING_SLOTS; i++) {
+        if (!ring->slots[i]) continue;
+        total++;
+        if (ring->slots[i]->n_locks > 0) held++;
+    }
+    size_t keep = held > RING_IDLE_SLOTS ? held : RING_IDLE_SLOTS;
+    for (size_t i = 0; i < RING_SLOTS && total > keep; i++) {
+        if (!ring->slots[i] || ring->slots[i]->n_locks > 0) continue;
+        buffer_drop(ring->slots[i]);
+        ring->slots[i] = NULL;
+        ring->frames[i] = 0;
+        total--;
+    }
+    return total;
+}
+
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring) {
     struct buffer **empty = NULL;
     for (size_t i = 0; i < RING_SLOTS; i++) {
