@@ -340,7 +340,6 @@ static bool frame_defer(struct screen *screen) {
 }
 
 static bool may_draw(struct screen *screen) {
-    if (late_frames(screen)) return !screen->frame_pending;
     return !screen->frame_pending || (screen->impl->replace_flip && !screen->frame_replaced &&
         !surfaces_fifo_waiting(screen));
 }
