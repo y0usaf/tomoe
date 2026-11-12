@@ -590,12 +590,13 @@ static void cursor_update(struct screen *screen) {
         image->hotspot_y != screen->cursor_seen_hotspot_y ||
         image->scale != screen->cursor_seen_scale ||
         screen->server->cursor_generation != screen->cursor_seen_generation;
+    bool was_hardware = screen->hardware_cursor;
     screen->hardware_cursor = hardware;
     screen->cursor_seen_generation = screen->server->cursor_generation;
     screen->cursor_seen_hotspot_x = image->hotspot_x;
     screen->cursor_seen_hotspot_y = image->hotspot_y;
     screen->cursor_seen_scale = image->scale;
-    if (!hardware && changed) screen_schedule_frame(screen);
+    if (changed && (!hardware || !was_hardware)) screen_schedule_frame(screen);
 }
 
 void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,

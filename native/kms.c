@@ -900,8 +900,8 @@ static bool connector_cursor(struct screen *screen, struct buffer *buffer, int h
     if (!c->crtc || (c->kms->atomic && !c->crtc->cursor)) return false;
     if (!buffer) {
         c->cursor_on = false;
-        if (!c->kms->atomic) drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
-        screen_schedule_frame(screen);
+        if (c->kms->atomic) cursor_queue(c);
+        else drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
         return true;
     }
     if (!cursor_upload(c, buffer)) return false;
@@ -910,14 +910,18 @@ static bool connector_cursor(struct screen *screen, struct buffer *buffer, int h
         return !drmModeSetCursor2(c->kms->fd, c->crtc->id,
             c->cursor_bo[c->cursor_front].handle, (uint32_t)c->kms->cursor_width,
             (uint32_t)c->kms->cursor_height, hotspot_x, hotspot_y);
-    screen_schedule_frame(screen);
+    cursor_queue(c);
     return true;
+}
+
+static bool compose_carries_cursor(const struct connector *c) {
+    return c->screen.needs_frame && !c->screen.tearing && !c->flip_async;
 }
 
 static void cursor_commit(struct connector *c) {
     struct kms *kms = c->kms;
     if (!c->cursor_dirty || !c->crtc || !c->crtc->active || !c->crtc->cursor || c->flip_pending ||
-            c->cursor_inflight || c->screen.needs_frame || !session_active(kms->server)) return;
+            c->cursor_inflight || compose_carries_cursor(c) || !session_active(kms->server)) return;
     drmModeAtomicReq *req = drmModeAtomicAlloc();
     if (!req) return;
     cursor_plane_set(req, c, c->crtc);
@@ -940,7 +944,7 @@ static void cursor_fire(void *data) {
 static void cursor_queue(struct connector *c) {
     c->cursor_dirty = true;
     if (!c->crtc || !c->crtc->cursor || c->flip_pending || c->cursor_inflight ||
-            c->screen.needs_frame) return;
+            compose_carries_cursor(c)) return;
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
     int64_t lead = c->screen.refresh > 0 ? 250000000000LL / c->screen.refresh : 0;
     if (lead > CURSOR_LEAD_NS) lead = CURSOR_LEAD_NS;
