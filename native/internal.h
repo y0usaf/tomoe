@@ -1359,7 +1359,6 @@ void kms_start(struct tomoe *s);
 void kms_pause(struct tomoe *s);
 void kms_resume(struct tomoe *s);
 void kms_destroy(struct tomoe *s);
-struct udev *kms_udev(struct tomoe *s);
 int nested_create(struct tomoe *s);
 bool nested_start(struct tomoe *s);
 void nested_finish(struct tomoe *s);
