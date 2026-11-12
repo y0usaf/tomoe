@@ -1186,11 +1186,13 @@ static void output_frame(struct wl_listener *listener, void *data) {
     finish_output_capture(o);
     screen_state_finish(&state);
     if (!success) {
-        if (!render_frames_held(o->server->renderer))
+        if (!o->screen->deferred && !render_frames_held(o->server->renderer))
             tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
+        o->screen->deferred = false;
         frame_timed(o, &start);
         return;
     }
+    o->screen->deferred = false;
     lock_frame_rendered(o->server, o->screen);
     bool moving = windows_animate(o->server);
     if (ui_animate(o->server) || moving) screen_schedule_frame(o->screen);

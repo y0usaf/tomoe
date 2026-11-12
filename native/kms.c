@@ -57,8 +57,8 @@ struct connector {
     struct props props;
     uint32_t possible_crtcs;
     struct crtc *crtc, *kernel_crtc;
-    struct buffer *queued, *current;
-    bool flip_pending, present_pending;
+    struct buffer *queued, *current, *superseded;
+    bool flip_pending, present_pending, replace_pending;
     size_t flip_seq;
     struct dumb cursor_bo[2];
     uint32_t cursor_fb[2];
@@ -67,7 +67,7 @@ struct connector {
     drmModeModeInfo wake_target, wake_light;
     bool waking, wake_due, dark, relight;
     uint64_t edid_sum;
-    struct wl_event_source *wake_timer;
+    struct wl_event_source *wake_timer, *flip_timer;
     struct wl_list link;
 };
 
@@ -86,6 +86,7 @@ struct kms {
     struct plane *planes;
     size_t plane_count;
     struct wl_list connectors;
+    struct screen_impl impl;
 };
 
 struct fb {
@@ -95,6 +96,9 @@ struct fb {
 };
 
 static const struct screen_impl connector_impl;
+static void flip_armed(struct connector *c);
+static void flip_disarmed(struct connector *c);
+static int flip_watchdog(void *data);
 
 static void props_read(int fd, uint32_t object, uint32_t type, struct props *props) {
     drmModeObjectProperties *list = drmModeObjectGetProperties(fd, object, type);
@@ -602,6 +606,13 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     if (modeset && !test) flags &= ~DRM_MODE_ATOMIC_NONBLOCK;
     int ret = ok ? drmModeAtomicCommit(kms->fd, req, flags, kms) : 0;
     ok = ok && ret == 0;
+    if (ret == -EBUSY && !test) {
+        for (size_t i = 0; i < count; i++) {
+            struct connector *c = wl_container_of(updates[i].output, c, screen);
+            if ((updates[i].base.committed & SCREEN_BUFFER) && c->flip_pending && !c->replace_pending)
+                c->screen.deferred = true;
+        }
+    }
     if (trace) {
         fclose(trace);
         trace = NULL;
@@ -634,6 +645,10 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             buffer_unlock(c->current);
             c->queued = c->current = NULL;
             c->flip_pending = false;
+            c->replace_pending = false;
+            flip_disarmed(c);
+            buffer_unlock(c->superseded);
+            c->superseded = NULL;
             c->waking = c->wake_due = c->relight = false;
             wake_arm(c, 0);
             continue;
@@ -672,10 +687,19 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             p->crtc->ctm_blob = p->ctm_blob;
         }
         if (state->committed & SCREEN_BUFFER) {
-            buffer_unlock(c->queued);
-            c->queued = buffer_lock(state->buffer);
-            c->flip_pending = true;
+            if (c->flip_pending) {
+                buffer_unlock(c->superseded);
+                c->superseded = c->queued;
+                c->queued = buffer_lock(state->buffer);
+                c->replace_pending = true;
+            } else {
+                buffer_unlock(c->queued);
+                c->queued = buffer_lock(state->buffer);
+                c->flip_pending = true;
+                c->replace_pending = false;
+            }
             c->flip_seq = c->screen.commit_seq + 1;
+            flip_armed(c);
         }
         c->cursor_committed = c->cursor_on;
     }
@@ -690,7 +714,13 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
 
 static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t count, bool test) {
     if (!test) {
-        drain_flips(kms, updates, count);
+        bool replacing = false;
+        for (size_t i = 0; i < count; i++) {
+            struct connector *c = wl_container_of(updates[i].output, c, screen);
+            if ((updates[i].base.committed & SCREEN_BUFFER) && c->flip_pending && !c->replace_pending)
+                replacing = true;
+        }
+        if (!replacing) drain_flips(kms, updates, count);
         probe_dark(updates, count);
     }
     bool woke = false;
@@ -883,6 +913,8 @@ static void connector_destroy(struct screen *screen) {
     struct connector *c = wl_container_of(screen, c, screen);
     c->present_pending = false;
     if (c->wake_timer) wl_event_source_remove(c->wake_timer);
+    if (c->flip_timer) wl_event_source_remove(c->flip_timer);
+    buffer_unlock(c->superseded);
     if (c->crtc) {
         c->crtc->owner = NULL;
         c->crtc->active = false;
@@ -916,12 +948,47 @@ static void present(struct connector *c, unsigned seq, unsigned sec, unsigned us
     screen_send_present(&c->screen, &event);
 }
 
+static void flip_armed(struct connector *c) {
+    if (c->flip_timer) wl_event_source_timer_update(c->flip_timer, 250);
+}
+
+static void flip_disarmed(struct connector *c) {
+    if (c->flip_timer) wl_event_source_timer_update(c->flip_timer, 0);
+}
+
+static int flip_watchdog(void *data) {
+    struct connector *c = data;
+    if (!c->flip_pending) return 0;
+    tomoe_log(LOG_ERROR, "tomoe: kms %s flip event missing", c->screen.name);
+    if (c->replace_pending) {
+        buffer_unlock(c->superseded);
+        c->superseded = NULL;
+        c->replace_pending = false;
+    }
+    c->flip_pending = false;
+    buffer_unlock(c->current);
+    c->current = c->queued;
+    c->queued = NULL;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    present(c, 0, (unsigned)now.tv_sec, (unsigned)(now.tv_nsec / 1000));
+    if (session_active(c->kms->server)) screen_send_frame(&c->screen);
+    return 0;
+}
+
 static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigned crtc_id,
         void *data) {
     struct kms *kms = data;
     struct connector *c;
     wl_list_for_each(c, &kms->connectors, link) {
         if (!c->crtc || c->crtc->id != crtc_id || !c->flip_pending) continue;
+        if (c->replace_pending) {
+            buffer_unlock(c->superseded);
+            c->superseded = NULL;
+            c->replace_pending = false;
+            return;
+        }
+        flip_disarmed(c);
         c->flip_pending = false;
         buffer_unlock(c->current);
         c->current = c->queued;
@@ -972,10 +1039,12 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     }
     c->wake_timer = wl_event_loop_add_timer(wl_display_get_event_loop(kms->server->display),
         wake_fire, c);
+    c->flip_timer = wl_event_loop_add_timer(wl_display_get_event_loop(kms->server->display),
+        flip_watchdog, c);
     char name[64];
     const char *type = drmModeGetConnectorTypeName(info->connector_type);
     snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
-    screen_init(&c->screen, kms->server, &connector_impl, SCREEN_DRM, name);
+    screen_init(&c->screen, kms->server, &kms->impl, SCREEN_DRM, name);
     c->screen.phys_width = (int32_t)info->mmWidth;
     c->screen.phys_height = (int32_t)info->mmHeight;
     c->screen.adaptive_sync_supported = c->props.value[PROP_VRR_CAPABLE] != 0;
@@ -1092,6 +1161,8 @@ int kms_create(struct tomoe *s) {
     uint64_t cap = 0;
     drmSetClientCap(kms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
     kms->atomic = !getenv("TOMOE_DRM_LEGACY") && drmSetClientCap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1) == 0;
+    kms->impl = connector_impl;
+    kms->impl.replace_flip = kms->atomic;
     kms->modifiers = drmGetCap(kms->fd, DRM_CAP_ADDFB2_MODIFIERS, &cap) == 0 && cap;
     kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
     kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;
@@ -1130,7 +1201,13 @@ void kms_pause(struct tomoe *s) {
     struct kms *kms = s->kms;
     if (!kms) return;
     struct connector *c;
-    wl_list_for_each(c, &kms->connectors, link) c->flip_pending = false;
+    wl_list_for_each(c, &kms->connectors, link) {
+        flip_disarmed(c);
+        c->flip_pending = false;
+        c->replace_pending = false;
+        buffer_unlock(c->superseded);
+        c->superseded = NULL;
+    }
 }
 
 void kms_resume(struct tomoe *s) {

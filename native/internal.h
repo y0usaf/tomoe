@@ -407,7 +407,7 @@ struct screen {
     float scale;
     enum wl_output_transform transform;
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor;
-    bool frame_pending, needs_frame, power_off, frame_replaced;
+    bool frame_pending, needs_frame, power_off, frame_replaced, deferred;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
     uint64_t cursor_seen_generation;
