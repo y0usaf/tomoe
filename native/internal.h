@@ -410,6 +410,9 @@ struct screen {
     bool frame_pending, needs_frame, power_off, frame_replaced;
     int lx, ly, software_cursor_locks;
     double cursor_x, cursor_y;
+    uint64_t cursor_seen_generation;
+    int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
+    float cursor_seen_scale;
     size_t commit_seq;
     struct wl_event_source *idle_frame;
     struct wl_global *global;

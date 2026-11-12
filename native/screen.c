@@ -457,8 +457,17 @@ static void cursor_update(struct screen *screen) {
         screen->impl->cursor(screen, image->buffer, image->hotspot_x, image->hotspot_y);
     if (!hardware && screen->hardware_cursor && screen->impl->cursor)
         screen->impl->cursor(screen, NULL, 0, 0);
+    bool changed = hardware != screen->hardware_cursor ||
+        image->hotspot_x != screen->cursor_seen_hotspot_x ||
+        image->hotspot_y != screen->cursor_seen_hotspot_y ||
+        image->scale != screen->cursor_seen_scale ||
+        screen->server->cursor_generation != screen->cursor_seen_generation;
     screen->hardware_cursor = hardware;
-    if (!hardware) screen_schedule_frame(screen);
+    screen->cursor_seen_generation = screen->server->cursor_generation;
+    screen->cursor_seen_hotspot_x = image->hotspot_x;
+    screen->cursor_seen_hotspot_y = image->hotspot_y;
+    screen->cursor_seen_scale = image->scale;
+    if (!hardware && changed) screen_schedule_frame(screen);
 }
 
 void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,
