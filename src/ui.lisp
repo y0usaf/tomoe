@@ -484,6 +484,20 @@ its canvas position until the viewport leaves it, then glides in."
           ((<= (+ position size) start) start)
           (t position))))
 
+(defvar *ui-draw-plans* (make-hash-table :test #'equal))
+
+(defun %ui-draw-plan-for (identity &rest arguments)
+  "The draw plan for ARGUMENTS, reusing the surface's previous plan when they are
+EQUAL to last time. Plans are pure in their arguments and only read afterwards,
+and most transactions leave every shell surface unchanged."
+  (let ((last (gethash identity *ui-draw-plans*)))
+    (if (and last (equal (car last) arguments))
+        (values-list (cdr last))
+        (let ((result (multiple-value-list (apply #'%ui-draw-plan arguments))))
+          (when (>= (hash-table-count *ui-draw-plans*) 256) (clrhash *ui-draw-plans*))
+          (setf (gethash (copy-tree identity) *ui-draw-plans*) (cons (copy-tree arguments) result))
+          (values-list result)))))
+
 (defun resolve-shell-surfaces (declarations outputs workareas &key asset-loader viewport)
   "Return complete draw/hit plans and sequential reservations, without mutation.
 VIEWPORT is the visible rectangle published for one output, if any."
@@ -560,8 +574,9 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                          (getf (cddr background) :fps 0d0)
                                          (getf (cddr background) :idle 0d0)))))
                   (multiple-value-bind (draw hits)
-                      (%ui-draw-plan measured width height scale (unless backdrop background)
-                                     (getf declaration :color) (getf declaration :font-size))
+                      (%ui-draw-plan-for (list owner name (getf output :name))
+                                         measured width height scale (unless backdrop background)
+                                         (getf declaration :color) (getf declaration :font-size))
                     (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
                                       :output (copy-seq (getf output :name)) :x x :y y
                                       :width width :height height :layer (getf declaration :layer)
