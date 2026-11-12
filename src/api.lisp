@@ -822,6 +822,15 @@ or replacing the binding/source cancels that callback and still swallows key-up.
                          (when release (string-downcase release))
                          (when description (copy-seq description))))))
 
+(defvar *keysym-codes* (make-hash-table :test #'equal))
+
+(defun keysym-code (name)
+  "The native keysym for NAME. Resolution is pure and every transaction resolves
+every declared binding three times, so each name crosses into C once."
+  (or (gethash name *keysym-codes*)
+      (progn (when (>= (hash-table-count *keysym-codes*) 4096) (clrhash *keysym-codes*))
+             (setf (gethash (copy-seq name) *keysym-codes*) (%keysym name)))))
+
 (define-effect :bind
   :canonical (destructuring-bind (mask keysym command &optional release description) args
                (check-type mask (integer 0 205))
@@ -830,14 +839,14 @@ or replacing the binding/source cancels that callback and still swallows key-up.
                (check-type command string)
                (check-type release (or null string))
                (when (or (find #\Null keysym) (find #\Null command)
-                         (zerop (length command)) (zerop (%keysym keysym))
+                         (zerop (length command)) (zerop (keysym-code keysym))
                          (and release (or (zerop (length release)) (find #\Null release))))
                  (error "Invalid key binding: ~S" args))
                (check-type description (or null string))
                (%effect :bind (list mask keysym command release description)))
-  :key (list :bind (first args) (%keysym (second args)))
+  :key (list :bind (first args) (keysym-code (second args)))
   :reduce (destructuring-bind (mask keysym command release &optional description) args
-            (let ((code (%keysym keysym)) (declared mask)
+            (let ((code (keysym-code keysym)) (declared mask)
                   (mask (if (logtest 128 mask)
                             (logior (logandc2 mask 128) (materialization-mod-bit m))
                             mask)))
