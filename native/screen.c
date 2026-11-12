@@ -352,8 +352,21 @@ static void idle_frame(void *data) {
     dispatch_frame(screen);
 }
 
+static bool frame_paced(struct screen *screen) {
+    if (!screen->tearing || !screen->animation_only || !late_frames(screen) || screen->refresh <= 0)
+        return false;
+    int64_t at = screen->frame_start_ns + 1000000000000LL / screen->refresh;
+    if (at <= monotonic_ns()) return false;
+    ns_timer_arm(&screen->frame_timer, at);
+    screen->frame_armed_ns = at;
+    return true;
+}
+
 static void frame_request(struct screen *screen) {
-    if (screen->idle_frame || screen->frame_timer.at || !may_draw(screen) || frame_defer(screen))
+    if (screen->frame_timer.at && screen->tearing && !screen->animation_only)
+        ns_timer_arm(&screen->frame_timer, 0);
+    if (screen->idle_frame || screen->frame_timer.at || !may_draw(screen) || frame_paced(screen) ||
+            frame_defer(screen))
         return;
     screen->idle_frame = wl_event_loop_add_idle(
         wl_display_get_event_loop(screen->server->display), idle_frame, screen);
@@ -446,6 +459,13 @@ void screen_send_frame(struct screen *screen) {
 }
 
 void screen_schedule_frame(struct screen *screen) {
+    screen->needs_frame = true;
+    screen->animation_only = false;
+    frame_request(screen);
+}
+
+void screen_schedule_animation(struct screen *screen) {
+    if (!screen->needs_frame) screen->animation_only = true;
     screen->needs_frame = true;
     frame_request(screen);
 }

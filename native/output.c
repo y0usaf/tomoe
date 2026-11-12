@@ -1206,7 +1206,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     lock_frame_rendered(o->server, o->screen);
     if (!screen_frames_late(o->screen)) grab_frame_drawn(o->server);
     bool moving = windows_animate(o->server);
-    if (ui_animate(o->server) || moving) screen_schedule_frame(o->screen);
+    if (ui_animate(o->server) || moving) screen_schedule_animation(o->screen);
     frame_timed(o, &start);
 }
 

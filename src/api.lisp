@@ -478,6 +478,7 @@ Omitted SCALE inherits the :SCALE setting. ICC names an RGB display profile that
 maps sRGB content to the panel's colors. TRANSFORM is one of +OUTPUT-TRANSFORMS+.
 TEARING shows each composited frame as soon as it is drawn, with an async page flip
 instead of waiting for the vblank, where the driver accepts one; frames may tear.
+Tomoe's own animations still draw at most once a refresh.
 Disabled connectors remain discoverable in :CONNECTORS, outside active :OUTPUTS."
   (check-type scale (or null (real 1/4 8)))
   (flet ((millihertz (refresh)
