@@ -132,12 +132,7 @@
             TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
             TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
             TOMOE_PATH=$out/bin:${
-              pkgs.lib.makeBinPath [
-                pkgs.foot
-                (pkgs.fuzzel.override { resvg = resvg pkgs; })
-                pkgs.xwayland
-                (dbus pkgs)
-              ]
+              pkgs.lib.makeBinPath [ (dbus pkgs) ]
             } \
               build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \
               --non-interactive --no-userinit --load build.lisp

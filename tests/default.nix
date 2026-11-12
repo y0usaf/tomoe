@@ -331,6 +331,7 @@ in
     checkWith
       {
         environment.systemPackages = [
+          pkgs.xwayland
           pkgs.xterm
           pkgs.zenity
           pkgs.xeyes
