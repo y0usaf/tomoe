@@ -6,6 +6,7 @@
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
+#include <malloc.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -378,6 +379,23 @@ static const struct builtin {
 
 static void warm_remember(struct render *r, const char *source);
 
+static EGLContext compile_begin(struct render *r) {
+    EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    EGLContext scratch = eglCreateContext(r->display, EGL_NO_CONFIG_KHR, r->context, attribs);
+    if (scratch == EGL_NO_CONTEXT) return EGL_NO_CONTEXT;
+    if (eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, scratch)) return scratch;
+    eglDestroyContext(r->display, scratch);
+    return EGL_NO_CONTEXT;
+}
+
+static void compile_end(struct render *r, EGLContext scratch) {
+    if (scratch == EGL_NO_CONTEXT) return;
+    glFinish();
+    eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, r->context);
+    eglDestroyContext(r->display, scratch);
+    malloc_trim(0);
+}
+
 struct program *render_shader_create(struct render *r, const char *source) {
     struct shader *shader = calloc(1, sizeof(*shader));
     if (!shader) return NULL;
@@ -385,7 +403,10 @@ struct program *render_shader_create(struct render *r, const char *source) {
     const char *fragment[] = { shader_prelude, source, shader_main };
     warm_remember(r, source);
     current(r);
-    if (link_sources(&shader->program, vertex, 1, fragment, 3)) {
+    EGLContext scratch = compile_begin(r);
+    bool linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    compile_end(r, scratch);
+    if (linked) {
         shader->r = r;
         return &shader->program;
     }
@@ -1552,7 +1573,10 @@ failed:
 }
 
 static bool programs_ready(struct render *r) {
-    if (!programs_init(r)) {
+    EGLContext scratch = compile_begin(r);
+    bool linked = programs_init(r);
+    compile_end(r, scratch);
+    if (!linked) {
         tomoe_log(LOG_ERROR, "tomoe: shader setup failed");
         return false;
     }
