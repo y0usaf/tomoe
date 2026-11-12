@@ -66,8 +66,22 @@
 
 (define-native ("tomoe_ui_text_size" %ui-text-size-raw) sb-alien:unsigned-long-long
   (text sb-alien:c-string) (font sb-alien:c-string) (size sb-alien:double) (line-height sb-alien:double))
+(defvar *ui-text-sizes* (make-hash-table :test #'equal))
+
 (defun %ui-text-size (text font size line-height)
-  (%ui-text-size-raw text font (%double-float size) (%double-float line-height)))
+  "Measured text extent. Shaping is pure for a font, size and line height, and
+every transaction re-measures every UI label, so each distinct label is shaped
+once."
+  (let* ((size (%double-float size)) (line-height (%double-float line-height))
+         (key (list text font size line-height)))
+    (multiple-value-bind (extent found) (gethash key *ui-text-sizes*)
+      (if found
+          extent
+          (let ((extent (%ui-text-size-raw text font size line-height)))
+            (when (>= (hash-table-count *ui-text-sizes*) 4096) (clrhash *ui-text-sizes*))
+            (setf (gethash (list (copy-seq text) (and font (copy-seq font)) size line-height)
+                           *ui-text-sizes*)
+                  extent))))))
 (define-native ("tomoe_present_ui_surface" %present-ui-surface) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (name sb-alien:c-string) (output sb-alien:c-string) (signature sb-alien:c-string)
