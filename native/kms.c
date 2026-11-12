@@ -63,7 +63,8 @@ struct connector {
     struct dumb cursor_bo[2];
     uint32_t cursor_fb[2];
     int cursor_front, cursor_x, cursor_y;
-    bool cursor_on, cursor_committed;
+    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, redraw;
+    struct ns_timer cursor_timer;
     drmModeModeInfo wake_target, wake_light;
     bool waking, wake_due, dark, relight;
     uint64_t edid_sum;
@@ -99,6 +100,10 @@ static const struct screen_impl connector_impl;
 static void flip_armed(struct connector *c);
 static void flip_disarmed(struct connector *c);
 static int flip_watchdog(void *data);
+static void cursor_queue(struct connector *c);
+
+#define CURSOR_EVENT(kms) ((void *)((uintptr_t)(kms) | 1))
+enum { CURSOR_LEAD_NS = 1000000 };
 
 static void props_read(int fd, uint32_t object, uint32_t type, struct props *props) {
     drmModeObjectProperties *list = drmModeObjectGetProperties(fd, object, type);
@@ -373,6 +378,15 @@ static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc,
     add(req, plane->id, &plane->props, PROP_CRTC_H, (uint64_t)height);
 }
 
+static void cursor_plane_set(drmModeAtomicReq *req, struct connector *c, struct crtc *crtc) {
+    int width = (int)c->kms->cursor_width, height = (int)c->kms->cursor_height;
+    if (c->cursor_on)
+        plane_set(req, crtc->cursor, crtc->id, c->cursor_fb[c->cursor_front], c->cursor_x,
+            c->cursor_y, width, height, width, height);
+    else
+        plane_set(req, crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
 struct plan {
     struct crtc *crtc;
     drmModeModeInfo mode, target;
@@ -587,14 +601,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             add(req, p->crtc->id, &p->crtc->props, PROP_DEGAMMA_LUT, p->degamma_blob);
             add(req, p->crtc->id, &p->crtc->props, PROP_CTM, p->ctm_blob);
         }
-        if (p->crtc->cursor) {
-            if (c->cursor_on)
-                plane_set(req, p->crtc->cursor, p->crtc->id, c->cursor_fb[c->cursor_front],
-                    c->cursor_x, c->cursor_y, (int)kms->cursor_width, (int)kms->cursor_height,
-                    (int)kms->cursor_width, (int)kms->cursor_height);
-            else
-                plane_set(req, p->crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0);
-        }
+        if (p->crtc->cursor) cursor_plane_set(req, c, p->crtc);
     }
     uint32_t flags = test ? DRM_MODE_ATOMIC_TEST_ONLY : DRM_MODE_ATOMIC_NONBLOCK;
     if (modeset) flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
@@ -609,8 +616,11 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     if (ret == -EBUSY && !test) {
         for (size_t i = 0; i < count; i++) {
             struct connector *c = wl_container_of(updates[i].output, c, screen);
-            if ((updates[i].base.committed & SCREEN_BUFFER) && c->flip_pending && !c->replace_pending)
+            if ((updates[i].base.committed & SCREEN_BUFFER) &&
+                    ((c->flip_pending && !c->replace_pending) || c->cursor_inflight)) {
                 c->screen.deferred = true;
+                c->redraw = true;
+            }
         }
     }
     if (trace) {
@@ -651,6 +661,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             c->superseded = NULL;
             c->waking = c->wake_due = c->relight = false;
             wake_arm(c, 0);
+            c->cursor_dirty = c->cursor_inflight = c->redraw = false;
+            ns_timer_arm(&c->cursor_timer, 0);
             continue;
         }
         c->crtc = p->crtc;
@@ -702,6 +714,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             flip_armed(c);
         }
         c->cursor_committed = c->cursor_on;
+        c->cursor_dirty = c->cursor_inflight = false;
+        ns_timer_arm(&c->cursor_timer, 0);
     }
     for (size_t i = 0; ok && !test && modeset && log_verbosity >= LOG_INFO && i < count; i++) {
         struct connector *c = wl_container_of(updates[i].output, c, screen);
@@ -900,12 +914,46 @@ static bool connector_cursor(struct screen *screen, struct buffer *buffer, int h
     return true;
 }
 
+static void cursor_commit(struct connector *c) {
+    struct kms *kms = c->kms;
+    if (!c->cursor_dirty || !c->crtc || !c->crtc->active || !c->crtc->cursor || c->flip_pending ||
+            c->cursor_inflight || c->screen.needs_frame || !session_active(kms->server)) return;
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    if (!req) return;
+    cursor_plane_set(req, c, c->crtc);
+    int ret = drmModeAtomicCommit(kms->fd, req, DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
+        CURSOR_EVENT(kms));
+    drmModeAtomicFree(req);
+    if (ret == 0) {
+        c->cursor_inflight = true;
+        c->cursor_dirty = false;
+        c->cursor_committed = c->cursor_on;
+    } else if (ret != -EBUSY) {
+        screen_schedule_frame(&c->screen);
+    }
+}
+
+static void cursor_fire(void *data) {
+    cursor_commit(data);
+}
+
+static void cursor_queue(struct connector *c) {
+    c->cursor_dirty = true;
+    if (!c->crtc || !c->crtc->cursor || c->flip_pending || c->cursor_inflight ||
+            c->screen.needs_frame) return;
+    int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
+    int64_t lead = c->screen.refresh > 0 ? 250000000000LL / c->screen.refresh : 0;
+    if (lead > CURSOR_LEAD_NS) lead = CURSOR_LEAD_NS;
+    if (!vblank || vblank - lead <= now) cursor_commit(c);
+    else ns_timer_arm(&c->cursor_timer, vblank - lead);
+}
+
 static void connector_move_cursor(struct screen *screen, int x, int y) {
     struct connector *c = wl_container_of(screen, c, screen);
     c->cursor_x = x;
     c->cursor_y = y;
     if (!c->crtc) return;
-    if (c->kms->atomic) screen_schedule_frame(screen);
+    if (c->kms->atomic) cursor_queue(c);
     else drmModeMoveCursor(c->kms->fd, c->crtc->id, x, y);
 }
 
@@ -914,6 +962,7 @@ static void connector_destroy(struct screen *screen) {
     c->present_pending = false;
     if (c->wake_timer) wl_event_source_remove(c->wake_timer);
     if (c->flip_timer) wl_event_source_remove(c->flip_timer);
+    ns_timer_finish(&c->cursor_timer);
     buffer_unlock(c->superseded);
     if (c->crtc) {
         c->crtc->owner = NULL;
@@ -978,10 +1027,22 @@ static int flip_watchdog(void *data) {
 
 static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigned crtc_id,
         void *data) {
-    struct kms *kms = data;
+    bool cursor = (uintptr_t)data & 1;
+    struct kms *kms = (void *)((uintptr_t)data & ~(uintptr_t)1);
     struct connector *c;
     wl_list_for_each(c, &kms->connectors, link) {
-        if (!c->crtc || c->crtc->id != crtc_id || !c->flip_pending) continue;
+        if (!c->crtc || c->crtc->id != crtc_id) continue;
+        c->screen.vblank_ns = (int64_t)sec * 1000000000 + (int64_t)usec * 1000;
+        if (cursor) {
+            c->cursor_inflight = false;
+            if (c->redraw && !c->flip_pending) {
+                c->redraw = false;
+                screen_schedule_frame(&c->screen);
+            }
+            if (c->cursor_dirty) cursor_queue(c);
+            return;
+        }
+        if (!c->flip_pending) continue;
         if (c->replace_pending) {
             buffer_unlock(c->superseded);
             c->superseded = NULL;
@@ -994,7 +1055,12 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
         c->current = c->queued;
         c->queued = NULL;
         present(c, seq, sec, usec);
-        if (session_active(kms->server)) screen_send_frame(&c->screen);
+        if (!session_active(kms->server)) return;
+        bool redraw = c->redraw;
+        c->redraw = false;
+        screen_send_frame(&c->screen);
+        if (redraw && !c->flip_pending) screen_schedule_frame(&c->screen);
+        if (c->cursor_dirty) cursor_queue(c);
         return;
     }
 }
@@ -1041,6 +1107,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
         wake_fire, c);
     c->flip_timer = wl_event_loop_add_timer(wl_display_get_event_loop(kms->server->display),
         flip_watchdog, c);
+    ns_timer_init(&c->cursor_timer, wl_display_get_event_loop(kms->server->display), cursor_fire, c);
     char name[64];
     const char *type = drmModeGetConnectorTypeName(info->connector_type);
     snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
@@ -1207,6 +1274,8 @@ void kms_pause(struct tomoe *s) {
         c->replace_pending = false;
         buffer_unlock(c->superseded);
         c->superseded = NULL;
+        c->cursor_inflight = c->redraw = false;
+        ns_timer_arm(&c->cursor_timer, 0);
     }
 }
 

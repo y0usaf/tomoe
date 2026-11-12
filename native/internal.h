@@ -416,6 +416,7 @@ struct screen {
     int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
     float cursor_seen_scale;
     size_t commit_seq;
+    int64_t vblank_ns;
     struct wl_event_source *idle_frame;
     struct wl_global *global;
     struct wl_list resources, xdg_resources;
@@ -1340,6 +1341,19 @@ void screen_send_present(struct screen *screen, struct screen_present *present);
 void screen_request_state(struct screen *screen, struct screen_state *state);
 void screen_set_position(struct screen *screen, int lx, int ly);
 void screen_cursor_move(struct screen *screen, double x, double y);
+int64_t screen_next_vblank(const struct screen *screen, int64_t after);
+int64_t monotonic_ns(void);
+struct ns_timer {
+    int fd;
+    int64_t at;
+    struct wl_event_source *source;
+    void (*fire)(void *data);
+    void *data;
+};
+bool ns_timer_init(struct ns_timer *timer, struct wl_event_loop *loop, void (*fire)(void *data),
+    void *data);
+void ns_timer_arm(struct ns_timer *timer, int64_t at);
+void ns_timer_finish(struct ns_timer *timer);
 void screen_lock_software_cursors(struct screen *screen, bool lock);
 bool screens_listen(struct tomoe *s);
 void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,

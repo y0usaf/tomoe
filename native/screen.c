@@ -1,6 +1,8 @@
 #include "internal.h"
 #include "xdg-output-unstable-v1-protocol.h"
 #include <drm_fourcc.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
 
 #define OUTPUT_VERSION 4
 #define XDG_OUTPUT_VERSION 3
@@ -453,7 +455,13 @@ static bool hardware_allowed(struct screen *screen) {
 
 static void cursor_update(struct screen *screen) {
     struct cursor_image *image = &screen->server->cursor_image;
-    bool hardware = screen->enabled && hardware_allowed(screen) &&
+    bool allowed = screen->enabled && hardware_allowed(screen);
+    if (allowed && screen->hardware_cursor &&
+            image->hotspot_x == screen->cursor_seen_hotspot_x &&
+            image->hotspot_y == screen->cursor_seen_hotspot_y &&
+            image->scale == screen->cursor_seen_scale &&
+            screen->server->cursor_generation == screen->cursor_seen_generation) return;
+    bool hardware = allowed &&
         screen->impl->cursor(screen, image->buffer, image->hotspot_x, image->hotspot_y);
     if (!hardware && screen->hardware_cursor && screen->impl->cursor)
         screen->impl->cursor(screen, NULL, 0, 0);
@@ -603,4 +611,55 @@ void screen_cursor_move(struct screen *screen, double x, double y) {
 void screen_lock_software_cursors(struct screen *screen, bool lock) {
     screen->software_cursor_locks += lock ? 1 : -1;
     cursor_update(screen);
+}
+
+int64_t monotonic_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+}
+
+int64_t screen_next_vblank(const struct screen *screen, int64_t after) {
+    if (!screen->vblank_ns || screen->refresh <= 0 || screen->adaptive_sync ||
+            after - screen->vblank_ns > 1000000000) return 0;
+    int64_t period = 1000000000000LL / screen->refresh;
+    if (after < screen->vblank_ns) return screen->vblank_ns;
+    return screen->vblank_ns + ((after - screen->vblank_ns) / period + 1) * period;
+}
+
+static int ns_timer_ready(int fd, uint32_t mask, void *data) {
+    struct ns_timer *timer = data;
+    uint64_t expirations;
+    if (read(fd, &expirations, sizeof(expirations)) != sizeof(expirations)) return 0;
+    timer->at = 0;
+    timer->fire(timer->data);
+    return 0;
+}
+
+bool ns_timer_init(struct ns_timer *timer, struct wl_event_loop *loop, void (*fire)(void *data),
+        void *data) {
+    *timer = (struct ns_timer){ .fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC),
+        .fire = fire, .data = data };
+    if (timer->fd < 0) return false;
+    timer->source = wl_event_loop_add_fd(loop, timer->fd, WL_EVENT_READABLE, ns_timer_ready, timer);
+    if (timer->source) return true;
+    close(timer->fd);
+    timer->fd = -1;
+    return false;
+}
+
+void ns_timer_arm(struct ns_timer *timer, int64_t at) {
+    if (at < 0) at = 0;
+    if (timer->fd < 0 || at == timer->at) return;
+    timer->at = at;
+    struct itimerspec spec = { .it_value = { at / 1000000000, at % 1000000000 } };
+    if (at && !spec.it_value.tv_sec && !spec.it_value.tv_nsec) spec.it_value.tv_nsec = 1;
+    timerfd_settime(timer->fd, TFD_TIMER_ABSTIME, &spec, NULL);
+}
+
+void ns_timer_finish(struct ns_timer *timer) {
+    if (timer->source) wl_event_source_remove(timer->source);
+    if (timer->fd >= 0) close(timer->fd);
+    timer->source = NULL;
+    timer->fd = -1;
 }
