@@ -1026,7 +1026,9 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
     struct connector *c;
     wl_list_for_each(c, &kms->connectors, link) {
         if (!c->crtc || c->crtc->id != crtc_id) continue;
-        c->screen.vblank_ns = (int64_t)sec * 1000000000 + (int64_t)usec * 1000;
+        int64_t when = (int64_t)sec * 1000000000 + (int64_t)usec * 1000;
+        if ((cursor ? seq != 0 : !c->flip_async) && when > c->screen.vblank_ns)
+            c->screen.vblank_ns = when;
         if (cursor) {
             c->cursor_inflight = false;
             if (c->redraw && !c->flip_pending) {
