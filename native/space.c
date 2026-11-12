@@ -66,6 +66,7 @@ void screen_to_protocol(struct tomoe *s, double *x, double *y) {
 void schedule_scene(struct tomoe *s) {
     if (s->stopping) return;
     s->scene_dirty = true;
+    s->activity_serial++;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
         if (output_is_active(o)) screen_schedule_frame(o->screen);

@@ -352,6 +352,10 @@ uint64_t tomoe_outputs_revision(struct tomoe *s) {
     return s->outputs_revision;
 }
 
+uint64_t tomoe_activity_serial(struct tomoe *s) {
+    return s->activity_serial;
+}
+
 const char *tomoe_frames(struct tomoe *s) {
     free(s->frames_result);
     s->frames_result = NULL;

@@ -28,6 +28,8 @@
   (server (* t)) (screen-x sb-alien:double) (screen-y sb-alien:double))
 (define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_memory" %memory) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_activity_serial" %activity-serial) sb-alien:unsigned-long-long
+  (server (* t)))
 (define-native ("tomoe_cursor_state" %cursor-state) sb-alien:c-string
   (server (* t)) (have-generation sb-alien:unsigned-long-long))
 (define-native ("tomoe_focus" %focus) sb-alien:void

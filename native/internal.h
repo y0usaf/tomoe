@@ -845,6 +845,7 @@ struct tomoe {
     char *output_preview;
     char *output_current;
     uint64_t outputs_revision;
+    uint64_t activity_serial;
     struct layer_plan *layer_preview;
     char *layer_preview_text;
     struct presentation *presentation;

@@ -34,7 +34,8 @@
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
-  config-error source-packages)
+  config-error source-packages
+  (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
@@ -840,6 +841,26 @@ accepted registry. Never enter this helper inside a candidate transaction."
 (defun dispatch-observation (runtime text)
   (handler-case (dispatch-event runtime (read-data text))
     (serious-condition (condition) (record-error runtime condition))))
+
+(defparameter *idle-seconds* 1)
+(defparameter *idle-consed* (* 8 1024 1024))
+
+(defun service-memory (runtime)
+  "Collect the whole heap while the scene has been quiet for a second, once 8 MB was
+consed since the last collection. The collector hands the dead generations back to the
+system, so an idle desktop keeps only what it is using."
+  (let* ((native (runtime-backend runtime))
+         (now (get-internal-real-time))
+         (serial (%activity-serial native)))
+    (cond
+      ((/= serial (runtime-activity-serial runtime))
+       (setf (runtime-activity-serial runtime) serial (runtime-idle-since runtime) now))
+      ((and (>= (- now (runtime-idle-since runtime))
+                (* *idle-seconds* internal-time-units-per-second))
+            (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
+       (sb-ext:gc :full t)
+       (setf (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
+             (runtime-idle-since runtime) (get-internal-real-time))))))
 
 (defun window-identifier (runtime id)
   (let ((backend (runtime-backend runtime)))

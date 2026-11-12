@@ -326,6 +326,7 @@ only after it changes again."
              (serve-control runtime control)
              (serve-json-control runtime json-server)
              (service-timers runtime)
+             (service-memory runtime)
              (service-watches runtime)
              (service-executions runtime)
              (service-managed-processes runtime)
