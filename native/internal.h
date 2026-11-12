@@ -176,13 +176,14 @@ struct pass;
 struct op {
     uint64_t hash, seq;
     const struct surface *surface;
-    struct box box, reach;
+    struct box box, reach, footprint;
     struct fbox src;
-    bool mapped;
+    pixman_region32_t opaque;
+    bool mapped, hidden;
 };
 struct oplist { struct op *ops; size_t len, cap; bool lost; };
 void oplist_finish(struct oplist *list);
-bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_region32_t *out);
+bool oplist_damage(struct oplist *old, struct oplist *now, pixman_region32_t *out);
 void oplist_expand(const struct oplist *list, pixman_region32_t *region);
 void render_destroy(struct render *r);
 int render_drm_fd(struct render *r);
@@ -208,6 +209,7 @@ int pass_submit_fence(struct pass *pass);
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list);
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
     struct box reach, const double *params, size_t count);
+void pass_record_footprint(struct pass *pass, struct box footprint);
 void pass_clip(struct pass *pass, const pixman_region32_t *clip);
 bool pass_touches(struct pass *pass, struct box box);
 void render_retire_fences(struct render *r);
@@ -638,7 +640,7 @@ struct surface_state {
     int dx, dy, width, height, buffer_width, buffer_height, scale;
     uint32_t alpha, content_type;
     enum wl_output_transform transform;
-    pixman_region32_t surface_damage, buffer_damage, input;
+    pixman_region32_t surface_damage, buffer_damage, input, opaque;
     struct surface_viewport viewport;
     struct wl_list frames, feedbacks, waits, synced, link;
     struct timeline *acquire, *release;

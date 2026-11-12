@@ -738,6 +738,48 @@ static void draw(struct pass *pass, struct program *p, struct box box,
     pixman_region32_fini(&region);
 }
 
+static struct op *recorded(struct pass *pass, size_t before) {
+    struct oplist *list = pass->record;
+    return !list->lost && list->len > before ? &list->ops[list->len - 1] : NULL;
+}
+
+static void cover(struct op *op, struct box box, const pixman_region32_t *clip) {
+    if (box_empty(&box)) return;
+    pixman_region32_union_rect(&op->opaque, &op->opaque, box.x, box.y, box.width, box.height);
+    if (clip) pixman_region32_intersect(&op->opaque, &op->opaque, clip);
+}
+
+static void texture_cover(struct op *op, const struct texture_options *options,
+        const struct gl_texture *t, struct box dst) {
+    float alpha = options->alpha ? *options->alpha : 1;
+    if (options->blend_mode == BLEND_NONE || (!t->alpha && alpha >= 1)) {
+        cover(op, dst, options->clip);
+        return;
+    }
+    const struct surface *surface = options->surface;
+    if (alpha < 1 || !surface || options->transform != WL_OUTPUT_TRANSFORM_NORMAL ||
+            surface->current.transform != WL_OUTPUT_TRANSFORM_NORMAL ||
+            surface->current.width <= 0 || surface->current.height <= 0 ||
+            !pixman_region32_not_empty(&surface->current.opaque)) return;
+    struct fbox src = options->src_box;
+    if (src.width > 0 && src.height > 0 && (src.x != 0 || src.y != 0 ||
+            src.width != options->texture->width || src.height != options->texture->height)) return;
+    double sx = (double)dst.width / surface->current.width;
+    double sy = (double)dst.height / surface->current.height;
+    int inset = sx == 1 && sy == 1 ? 0 : 1;
+    int count = 0;
+    const pixman_box32_t *rects = pixman_region32_rectangles(&surface->current.opaque, &count);
+    for (int i = 0; i < count; i++) {
+        int x1 = dst.x + (int)ceil(fmax(rects[i].x1, 0) * sx) + inset;
+        int y1 = dst.y + (int)ceil(fmax(rects[i].y1, 0) * sy) + inset;
+        int x2 = dst.x + (int)floor(fmin(rects[i].x2, surface->current.width) * sx) - inset;
+        int y2 = dst.y + (int)floor(fmin(rects[i].y2, surface->current.height) * sy) - inset;
+        if (x2 > x1 && y2 > y1)
+            pixman_region32_union_rect(&op->opaque, &op->opaque, x1, y1, x2 - x1, y2 - y1);
+    }
+    if (options->clip) pixman_region32_intersect(&op->opaque, &op->opaque, options->clip);
+}
+
 void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     struct program *p = &pass->r->programs[PROGRAM_RECT];
     const struct color *c = &options->color;
@@ -750,7 +792,11 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
                 &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
         double params[] = { 1, box.x, box.y, box.width, box.height, c->r, c->g, c->b, c->a,
             options->blend_mode, e ? e->x1 : 0, e ? e->y1 : 0, e ? e->x2 : 0, e ? e->y2 : 0 };
+        size_t before = pass->record->len;
         pass_record(pass, NULL, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
+        struct op *op = recorded(pass, before);
+        if (op && (c->a >= 1 || options->blend_mode == BLEND_NONE))
+            cover(op, box, options->clip);
         return;
     }
     blend(c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED);
@@ -773,7 +819,10 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
         if (e && !box_intersection(&shown, &dst,
                 &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
         double params[] = { 2, dst.x, dst.y, dst.width, dst.height };
+        size_t before = pass->record->len;
         pass_record(pass, options, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
+        struct op *op = recorded(pass, before);
+        if (op) texture_cover(op, options, t, dst);
         return;
     }
     if (options->wait_timeline &&
@@ -1056,6 +1105,7 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
         list->cap = cap;
     }
     struct op op = { .box = box, .reach = reach };
+    pixman_region32_init(&op.opaque);
     op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
     if (texture) {
         const struct surface *surface = texture->surface;
@@ -1078,7 +1128,13 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
     return true;
 }
 
+void pass_record_footprint(struct pass *pass, struct box footprint) {
+    struct oplist *list = pass->record;
+    if (list && !list->lost && list->len) list->ops[list->len - 1].footprint = footprint;
+}
+
 void oplist_finish(struct oplist *list) {
+    for (size_t i = 0; i < list->len; i++) pixman_region32_fini(&list->ops[i].opaque);
     free(list->ops);
     *list = (struct oplist){0};
 }
@@ -1103,15 +1159,54 @@ static void damage_content(pixman_region32_t *out, const struct op *was, const s
     if (box_intersection(&mapped, &mapped, &op->box)) damage_box(out, mapped);
 }
 
-bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_region32_t *out) {
+static pixman_region32_t *visibility(struct oplist *list) {
+    pixman_region32_t *visible = calloc(list->len + 1, sizeof(*visible)), covered;
+    if (!visible) return NULL;
+    pixman_region32_init(&covered);
+    for (size_t i = list->len; i-- > 0;) {
+        struct op *op = &list->ops[i];
+        pixman_region32_init_rect(&visible[i], op->box.x, op->box.y, op->box.width, op->box.height);
+        pixman_region32_subtract(&visible[i], &visible[i], &covered);
+        op->hidden = !pixman_region32_not_empty(&visible[i]);
+        if (!op->hidden && !box_empty(&op->footprint)) {
+            pixman_box32_t f = { op->footprint.x, op->footprint.y,
+                op->footprint.x + op->footprint.width, op->footprint.y + op->footprint.height };
+            op->hidden = pixman_region32_contains_rectangle(&covered, &f) == PIXMAN_REGION_IN;
+            if (op->hidden) pixman_region32_clear(&visible[i]);
+        }
+        if (!op->hidden && !box_empty(&op->reach)) {
+            pixman_region32_t reach;
+            pixman_region32_init_rect(&reach, op->reach.x, op->reach.y, op->reach.width,
+                op->reach.height);
+            pixman_region32_subtract(&covered, &covered, &reach);
+            pixman_region32_fini(&reach);
+        }
+        pixman_region32_union(&covered, &covered, &op->opaque);
+    }
+    pixman_region32_fini(&covered);
+    return visible;
+}
+
+static void visibility_finish(pixman_region32_t *visible, size_t len) {
+    if (!visible) return;
+    for (size_t i = 0; i < len; i++) pixman_region32_fini(&visible[i]);
+    free(visible);
+}
+
+bool oplist_damage(struct oplist *old, struct oplist *now, pixman_region32_t *out) {
     if (old->lost || now->lost) return false;
     size_t *match = malloc((now->len + 1) * sizeof(*match));
     bool *used = calloc(old->len + 1, sizeof(*used));
-    if (!match || !used) {
+    pixman_region32_t *was = visibility(old), *is = visibility(now);
+    if (!match || !used || !was || !is) {
         free(match);
         free(used);
+        visibility_finish(was, old->len);
+        visibility_finish(is, now->len);
         return false;
     }
+    pixman_region32_t changed;
+    pixman_region32_init(&changed);
     size_t start = 0;
     for (size_t i = 0; i < now->len; i++) {
         match[i] = SIZE_MAX;
@@ -1124,12 +1219,16 @@ bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_re
             break;
         }
         const struct op *op = &now->ops[i];
-        if (match[i] == SIZE_MAX) damage_box(out, op->box);
-        else if (op->surface && op->seq != old->ops[match[i]].seq)
-            damage_content(out, &old->ops[match[i]], op);
+        if (match[i] == SIZE_MAX) pixman_region32_union(out, out, &is[i]);
+        else if (op->surface && op->seq != old->ops[match[i]].seq) {
+            pixman_region32_clear(&changed);
+            damage_content(&changed, &old->ops[match[i]], op);
+            pixman_region32_intersect(&changed, &changed, &is[i]);
+            pixman_region32_union(out, out, &changed);
+        }
     }
     for (size_t j = 0; j < old->len; j++)
-        if (!used[j]) damage_box(out, old->ops[j].box);
+        if (!used[j]) pixman_region32_union(out, out, &was[j]);
     for (size_t i = 0; i < now->len; i++) {
         if (match[i] == SIZE_MAX) continue;
         for (size_t k = i + 1; k < now->len; k++) {
@@ -1139,6 +1238,9 @@ bool oplist_damage(const struct oplist *old, const struct oplist *now, pixman_re
                 damage_box(out, overlap);
         }
     }
+    pixman_region32_fini(&changed);
+    visibility_finish(was, old->len);
+    visibility_finish(is, now->len);
     free(match);
     free(used);
     return true;
@@ -1149,7 +1251,7 @@ void oplist_expand(const struct oplist *list, pixman_region32_t *region) {
         grew = false;
         for (size_t i = 0; i < list->len; i++) {
             const struct box *reach = &list->ops[i].reach;
-            if (box_empty(reach)) continue;
+            if (box_empty(reach) || list->ops[i].hidden) continue;
             pixman_box32_t r = { reach->x, reach->y, reach->x + reach->width,
                 reach->y + reach->height };
             if (pixman_region32_contains_rectangle(region, &r) != PIXMAN_REGION_PART) continue;

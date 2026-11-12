@@ -16,7 +16,7 @@ enum {
     STATE_INPUT = 1 << 4, STATE_TRANSFORM = 1 << 5, STATE_SCALE = 1 << 6,
     STATE_FRAME = 1 << 7, STATE_VIEWPORT = 1 << 8, STATE_OFFSET = 1 << 9,
     STATE_ALPHA = 1 << 10,
-    STATE_CONTENT_TYPE = 1 << 11,
+    STATE_CONTENT_TYPE = 1 << 11, STATE_OPAQUE = 1 << 12,
 };
 
 struct release {
@@ -147,6 +147,7 @@ static void state_init(struct surface_state *state) {
     pixman_region32_init(&state->surface_damage);
     pixman_region32_init(&state->buffer_damage);
     pixman_region32_init_rect(&state->input, INT32_MIN, INT32_MIN, UINT32_MAX, UINT32_MAX);
+    pixman_region32_init(&state->opaque);
     wl_list_init(&state->frames);
     wl_list_init(&state->feedbacks);
     wl_list_init(&state->waits);
@@ -228,6 +229,7 @@ static void state_finish(struct surface_state *state) {
     pixman_region32_fini(&state->surface_damage);
     pixman_region32_fini(&state->buffer_damage);
     pixman_region32_fini(&state->input);
+    pixman_region32_fini(&state->opaque);
     resources_destroy(&state->frames);
     feedbacks_discard(&state->feedbacks);
     timeline_unref(state->acquire);
@@ -275,6 +277,7 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
         pixman_region32_clear(&src->buffer_damage);
     }
     if (src->committed & STATE_INPUT) pixman_region32_copy(&dst->input, &src->input);
+    if (src->committed & STATE_OPAQUE) pixman_region32_copy(&dst->opaque, &src->opaque);
     if (src->committed & STATE_VIEWPORT) dst->viewport = src->viewport;
     if (src->committed & STATE_ALPHA) dst->alpha = src->alpha;
     if (src->committed & STATE_CONTENT_TYPE) dst->content_type = src->content_type;
@@ -729,6 +732,10 @@ static void surface_frame(struct wl_client *client, struct wl_resource *resource
 
 static void surface_set_opaque_region(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *region) {
+    struct surface *surface = surface_from_resource(resource);
+    surface->pending.committed |= STATE_OPAQUE;
+    if (region) pixman_region32_copy(&surface->pending.opaque, region_from_resource(region));
+    else pixman_region32_clear(&surface->pending.opaque);
 }
 
 static void surface_set_input_region(struct wl_client *client, struct wl_resource *resource,

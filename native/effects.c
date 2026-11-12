@@ -241,9 +241,17 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     reach.y = fmin(grown.y, covered.y);
     reach.width = x2 - reach.x;
     reach.height = y2 - reach.y;
-    if (pass_record(f->pass, NULL, covered, reach, params, sizeof(params) / sizeof(params[0])) ||
-            !pass_touches(f->pass, reach))
+    struct fbox drawn = box;
+    fbox_transform(&drawn, &drawn, transform_invert(f->transform), f->width, f->height);
+    int x0 = (int)ceil(drawn.x - 0.5), y0 = (int)ceil(drawn.y - 0.5);
+    int x1 = (int)floor(drawn.x + drawn.width - 0.5) + 1;
+    int y1 = (int)floor(drawn.y + drawn.height - 0.5) + 1;
+    struct box footprint = { x0, y0, x1 - x0, y1 - y0 };
+    if (pass_record(f->pass, NULL, covered, reach, params, sizeof(params) / sizeof(params[0]))) {
+        if (!box_empty(&footprint)) pass_record_footprint(f->pass, footprint);
         return;
+    }
+    if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) return;
     if (passes > 31) passes = 31;
     struct level *levels = chain_for(e, grown.width, grown.height)->levels;
     bool ok = level_ensure(&levels[0], grown.width, grown.height);
