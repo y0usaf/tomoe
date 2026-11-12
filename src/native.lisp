@@ -54,6 +54,8 @@
 (define-native ("tomoe_screenshot" %screenshot) sb-alien:void
   (server (* t)) (interactive sb-alien:int))
 (define-native ("tomoe_keysym" %keysym) sb-alien:unsigned-int (name sb-alien:c-string))
+(define-native ("tomoe_warm_shaders" %warm-shaders) sb-alien:int
+  (node sb-alien:c-string) (directory sb-alien:c-string))
 (define-native ("tomoe_clear_bindings" %clear-bindings) sb-alien:void (server (* t)))
 (define-native ("tomoe_bind" %bind) sb-alien:int
   (server (* t)) (modifiers sb-alien:unsigned-int) (keysym sb-alien:unsigned-int)

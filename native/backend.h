@@ -34,6 +34,7 @@ void tomoe_window_state(struct tomoe *server, uint32_t id, int fullscreen,
 void tomoe_layer(struct tomoe *server, uint32_t id, int layer,
     int exclusive_zone, int keyboard, int visible);
 uint32_t tomoe_keysym(const char *name);
+int tomoe_warm_shaders(const char *node, const char *directory);
 void tomoe_clear_bindings(struct tomoe *server);
 int tomoe_bind(struct tomoe *server, uint32_t modifiers, uint32_t keysym,
     const char *owner, const char *press, const char *release,

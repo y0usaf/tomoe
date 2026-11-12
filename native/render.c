@@ -2,17 +2,27 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
+#include <dirent.h>
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <xf86drm.h>
+
+extern char **environ;
 
 enum {
     FENCE_WAIT_MS = 1000,
     HELD_FRAME_LIMIT = 4,
+    WARM_SIZE = 16,
+    WARM_TIMEOUT_MS = 5000,
+    WARM_SOURCE_LIMIT = 1 << 20,
 };
 
 struct held_frame {
@@ -46,6 +56,7 @@ struct render {
     PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_fence;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
+    char *node, *exe, *warm_dir, *driver;
 };
 
 struct image {
@@ -340,17 +351,39 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     return true;
 }
 
+static const char fragment_precision[] = "precision highp float;\n";
+
 static bool link_program(struct program *p, const char *prelude, const char *body) {
-    const char *fragment[] = { prelude, "precision highp float;\n", rounding_source, body };
+    const char *fragment[] = { prelude, fragment_precision, rounding_source, body };
     const char *vertex[] = { vertex_source };
     return link_sources(p, vertex, 1, fragment, 4);
 }
+
+#define EXTERNAL_PRELUDE "#extension GL_OES_EGL_image_external : require\n" \
+    "#define SAMPLER samplerExternalOES\n"
+static const struct builtin {
+    int kind;
+    bool external;
+    const char *prelude, *body;
+} builtins[] = {
+    { PROGRAM_RECT, false, "", rect_source },
+    { PROGRAM_SDF, false, "", sdf_source },
+    { PROGRAM_TEXTURE, false, "#define SAMPLER sampler2D\n", texture_source },
+    { PROGRAM_TEXTURE_LUT, false, "#define SAMPLER sampler2D\n#define LUT\n", texture_source },
+    { PROGRAM_EXTERNAL, true, EXTERNAL_PRELUDE, texture_source },
+    { PROGRAM_EXTERNAL_LUT, true, EXTERNAL_PRELUDE "#define LUT\n", texture_source },
+    { PROGRAM_DOWN, false, "", down_source },
+    { PROGRAM_UP, false, "", up_source },
+};
+
+static void warm_remember(struct render *r, const char *source);
 
 struct program *render_shader_create(struct render *r, const char *source) {
     struct shader *shader = calloc(1, sizeof(*shader));
     if (!shader) return NULL;
     const char *vertex[] = { shader_vertex_source };
     const char *fragment[] = { shader_prelude, source, shader_main };
+    warm_remember(r, source);
     current(r);
     if (link_sources(&shader->program, vertex, 1, fragment, 3)) {
         shader->r = r;
@@ -1189,6 +1222,10 @@ static void render_free(struct render *r) {
     format_set_finish(&r->texture_formats);
     format_set_finish(&r->render_formats);
     format_set_finish(&r->shm_formats);
+    free(r->node);
+    free(r->exe);
+    free(r->warm_dir);
+    free(r->driver);
     free(r);
 }
 
@@ -1259,7 +1296,7 @@ uint32_t render_read_format(struct render *renderer) {
     return renderer->read_bgra ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_XBGR8888;
 }
 
-static int open_render_node(int backend_fd) {
+static char *render_node_name(int backend_fd) {
     char *name = backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
     if (!name) {
         drmDevicePtr devices[64];
@@ -1269,14 +1306,8 @@ static int open_render_node(int backend_fd) {
                 name = strdup(devices[i]->nodes[DRM_NODE_RENDER]);
         if (count > 0) drmFreeDevices(devices, count);
     }
-    if (!name) {
-        tomoe_log(LOG_ERROR, "tomoe: no DRM render node for the renderer");
-        return -1;
-    }
-    int fd = open(name, O_RDWR | O_CLOEXEC);
-    if (fd < 0) tomoe_log(LOG_ERROR, "tomoe: cannot open %s: %s", name, strerror(errno));
-    free(name);
-    return fd;
+    if (!name) tomoe_log(LOG_ERROR, "tomoe: no DRM render node for the renderer");
+    return name;
 }
 
 static bool egl_init(struct render *r) {
@@ -1374,25 +1405,20 @@ static bool formats_init(struct render *r) {
 }
 
 static bool programs_init(struct render *r) {
-    const char *gl = (const char *)glGetString(GL_EXTENSIONS);
-    struct program *p = r->programs;
-    return link_program(&p[PROGRAM_RECT], "", rect_source) &&
-        link_program(&p[PROGRAM_SDF], "", sdf_source) &&
-        link_program(&p[PROGRAM_TEXTURE], "#define SAMPLER sampler2D\n", texture_source) &&
-        link_program(&p[PROGRAM_TEXTURE_LUT], "#define SAMPLER sampler2D\n#define LUT\n",
-            texture_source) &&
-        (!has(gl, "GL_OES_EGL_image_external") || (link_program(&p[PROGRAM_EXTERNAL],
-            "#extension GL_OES_EGL_image_external : require\n#define SAMPLER samplerExternalOES\n",
-            texture_source) && link_program(&p[PROGRAM_EXTERNAL_LUT],
-            "#extension GL_OES_EGL_image_external : require\n#define SAMPLER samplerExternalOES\n"
-            "#define LUT\n", texture_source))) &&
-        link_program(&p[PROGRAM_DOWN], "", down_source) &&
-        link_program(&p[PROGRAM_UP], "", up_source);
+    bool external = has((const char *)glGetString(GL_EXTENSIONS), "GL_OES_EGL_image_external");
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
+        if ((external || !builtins[i].external) &&
+                !link_program(&r->programs[builtins[i].kind], builtins[i].prelude, builtins[i].body))
+            return false;
+    return true;
 }
 
-struct render *render_create(int drm_fd) {
+static struct render *render_open(char *node) {
     struct render *r = calloc(1, sizeof(*r));
-    if (!r) return NULL;
+    if (!r) {
+        free(node);
+        return NULL;
+    }
     r->stall_write = -1;
     r->stall_test = getenv("TOMOE_TEST_STALL_FENCE") != NULL;
     if (r->stall_test) {
@@ -1401,8 +1427,12 @@ struct render *render_create(int drm_fd) {
     }
     wl_list_init(&r->images);
     wl_list_init(&r->bos);
-    r->fd = open_render_node(drm_fd);
-    if (r->fd < 0) goto failed;
+    r->node = node;
+    r->fd = node ? open(node, O_RDWR | O_CLOEXEC) : -1;
+    if (r->fd < 0) {
+        if (node) tomoe_log(LOG_ERROR, "tomoe: cannot open %s: %s", node, strerror(errno));
+        goto failed;
+    }
     r->gbm = gbm_create_device(r->fd);
     if (!r->gbm) {
         tomoe_log(LOG_ERROR, "tomoe: cannot create a GBM device");
@@ -1413,15 +1443,208 @@ struct render *render_create(int drm_fd) {
         tomoe_log(LOG_ERROR, "tomoe: EGL reports no dmabuf formats");
         goto failed;
     }
+    return r;
+failed:
+    render_free(r);
+    return NULL;
+}
+
+static bool programs_ready(struct render *r) {
     if (!programs_init(r)) {
         tomoe_log(LOG_ERROR, "tomoe: shader setup failed");
-        goto failed;
+        return false;
     }
     uint64_t timeline = 0;
     r->timeline = !r->stall_test && r->dup_fence && r->wait_sync &&
         drmGetCap(r->fd, DRM_CAP_SYNCOBJ_TIMELINE, &timeline) == 0 && timeline;
-    return r;
-failed:
+    return true;
+}
+
+static uint64_t fnv(uint64_t hash, const char *text) {
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++)
+        hash = (hash ^ *p) * 0x100000001b3ull;
+    return (hash ^ 0xff) * 0x100000001b3ull;
+}
+
+static void warm_setup(struct render *r) {
+    char exe[PATH_MAX];
+    ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    const char *cache = getenv("XDG_CACHE_HOME"), *home = getenv("HOME");
+    char *base = NULL;
+    if (length <= 0 || !r->node) return;
+    exe[length] = '\0';
+    if (cache && *cache == '/') base = strdup(cache);
+    else if (home && *home == '/' && asprintf(&base, "%s/.cache", home) < 0) base = NULL;
+    if (!base) return;
+    char *tomoe = NULL, *dir = NULL;
+    if (asprintf(&tomoe, "%s/tomoe", base) >= 0 && asprintf(&dir, "%s/shaders", tomoe) >= 0 &&
+            (mkdir(base, 0700) == 0 || errno == EEXIST) &&
+            (mkdir(tomoe, 0700) == 0 || errno == EEXIST) &&
+            (mkdir(dir, 0700) == 0 || errno == EEXIST)) {
+        const char *slash = strrchr(exe, '/');
+        if (asprintf(&r->driver, "%s\n%s\n%s\n%s", (const char *)glGetString(GL_VENDOR),
+                (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION),
+                slash ? slash + 1 : exe) >= 0 && (r->exe = strdup(exe))) {
+            r->warm_dir = dir;
+            dir = NULL;
+        } else {
+            free(r->driver);
+            r->driver = NULL;
+        }
+    }
+    free(dir);
+    free(tomoe);
+    free(base);
+}
+
+static int shader_file(const struct dirent *entry) {
+    size_t length = strlen(entry->d_name);
+    return length > 5 && !strcmp(entry->d_name + length - 5, ".glsl");
+}
+
+static void warm_remember(struct render *r, const char *source) {
+    char *path = NULL, *temp = NULL;
+    if (!r->warm_dir || strlen(source) > WARM_SOURCE_LIMIT ||
+            asprintf(&path, "%s/%016llx.glsl", r->warm_dir,
+                (unsigned long long)fnv(0xcbf29ce484222325ull, source)) < 0) return;
+    if (access(path, F_OK) != 0 && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
+        FILE *out = fopen(temp, "we");
+        bool ok = out && fputs(source, out) >= 0;
+        if (out && fclose(out) != 0) ok = false;
+        if (!ok || rename(temp, path) != 0) unlink(temp);
+    }
+    free(temp);
+    free(path);
+}
+
+static bool warm_wait(pid_t child) {
+    int status = 0;
+    for (int waited = 0; waited < WARM_TIMEOUT_MS; waited += 2) {
+        pid_t done = waitpid(child, &status, WNOHANG);
+        if (done == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (done < 0 && errno != EINTR) return false;
+        usleep(2000);
+    }
+    kill(child, SIGKILL);
+    while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+    tomoe_log(LOG_ERROR, "tomoe: the shader warm-up helper timed out");
+    return false;
+}
+
+static void warm(struct render *r) {
+    if (!r->warm_dir) return;
+    uint64_t hash = fnv(0xcbf29ce484222325ull, r->driver);
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
+        hash = fnv(fnv(fnv(fnv(fnv(hash, builtins[i].prelude), fragment_precision),
+            rounding_source), builtins[i].body), vertex_source);
+    hash = fnv(fnv(fnv(hash, shader_vertex_source), shader_prelude), shader_main);
+    struct dirent **entries = NULL;
+    int count = scandir(r->warm_dir, &entries, shader_file, alphasort);
+    for (int i = 0; i < count; i++) {
+        hash = fnv(hash, entries[i]->d_name);
+        free(entries[i]);
+    }
+    free(entries);
+    char *marker = NULL;
+    if (asprintf(&marker, "%s/%016llx.warm", r->warm_dir, (unsigned long long)hash) < 0) return;
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, NULL };
+    posix_spawn_file_actions_t actions;
+    pid_t child;
+    if (access(marker, F_OK) != 0 && posix_spawn_file_actions_init(&actions) == 0) {
+        posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+        int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
+        if (spawned == 0 && warm_wait(child)) {
+            int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+            if (fd >= 0) close(fd);
+        }
+    }
+    free(marker);
+}
+
+static void warm_draws(struct render *r, struct program **shaders, int count) {
+    const struct format *format = format_set_get(&r->render_formats, DRM_FORMAT_XRGB8888);
+    struct buffer *target = format ? render_allocate(r, WARM_SIZE, WARM_SIZE, format) : NULL;
+    if (!target) return;
+    static const uint32_t pixels[WARM_SIZE * WARM_SIZE];
+    struct texture *textures[] = {
+        texture_from_pixels(r, DRM_FORMAT_ARGB8888, WARM_SIZE * 4, WARM_SIZE, WARM_SIZE, pixels),
+        texture_from_pixels(r, DRM_FORMAT_XRGB8888, WARM_SIZE * 4, WARM_SIZE, WARM_SIZE, pixels),
+    };
+    struct pass *pass = render_begin(r, target, NULL, 0);
+    if (pass) {
+        pass_add_rect(pass, &(struct rect_options){ .color = { 0, 0, 0, 1 } });
+        pass_add_rect(pass, &(struct rect_options){ .color = { 0, 0, 0, 0.5f } });
+        const float half = 0.5f;
+        for (int i = 0; i < 2; i++)
+            for (int lut = 0; lut < 2; lut++)
+                for (int blended = 0; blended < 2; blended++)
+                    if (textures[i]) pass_add_texture(pass, &(struct texture_options){
+                        .texture = textures[i], .lut = lut ? textures[0] : NULL,
+                        .alpha = blended ? &half : NULL });
+        static const float full[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+        glEnable(GL_BLEND);
+        for (int i = 0; i < count; i++) {
+            glUseProgram(shaders[i]->id);
+            glUniform3f(shaders[i]->resolution, WARM_SIZE, WARM_SIZE, 1);
+            render_quad(shaders[i], full, full, NULL);
+        }
+        pass_submit(pass);
+    }
+    glFinish();
+    for (int i = 0; i < 2; i++) texture_destroy(textures[i]);
+    buffer_drop(target);
+}
+
+static char *read_source(const char *dir, const char *name) {
+    char *path = NULL, *source = NULL;
+    size_t size = 0;
+    if (asprintf(&path, "%s/%s", dir, name) < 0) return NULL;
+    FILE *in = fopen(path, "re"), *out = in ? open_memstream(&source, &size) : NULL;
+    char chunk[16384];
+    size_t n;
+    while (out && size <= WARM_SOURCE_LIMIT && (n = fread(chunk, 1, sizeof(chunk), in)) > 0)
+        fwrite(chunk, 1, n, out);
+    if (out && fclose(out) != 0) {
+        free(source);
+        source = NULL;
+    }
+    if (in) fclose(in);
+    free(path);
+    return source;
+}
+
+int tomoe_warm_shaders(const char *node, const char *dir) {
+    struct render *r = render_open(strdup(node));
+    if (!r || !programs_init(r)) {
+        if (r) render_free(r);
+        return 1;
+    }
+    struct dirent **entries = NULL;
+    int count = scandir(dir, &entries, shader_file, alphasort), linked = 0;
+    struct program **shaders = calloc(count > 0 ? (size_t)count : 1, sizeof(*shaders));
+    for (int i = 0; i < count; i++) {
+        char *source = shaders ? read_source(dir, entries[i]->d_name) : NULL;
+        struct program *shader = source ? render_shader_create(r, source) : NULL;
+        if (shader) shaders[linked++] = shader;
+        free(source);
+        free(entries[i]);
+    }
+    free(entries);
+    warm_draws(r, shaders, linked);
+    for (int i = 0; i < linked; i++) render_shader_destroy(shaders[i]);
+    free(shaders);
+    render_free(r);
+    return 0;
+}
+
+struct render *render_create(int drm_fd) {
+    struct render *r = render_open(render_node_name(drm_fd));
+    if (!r) return NULL;
+    warm_setup(r);
+    warm(r);
+    if (programs_ready(r)) return r;
     render_free(r);
     return NULL;
 }

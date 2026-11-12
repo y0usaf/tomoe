@@ -187,6 +187,10 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 
 - It is my daily desktop on an NVIDIA RTX 4090, running on DRM from a TTY,
   and it runs on an AMD Framework laptop too. Other GPUs get less testing.
+- Shaders are compiled first by a short-lived copy of Tomoe, so the driver's GLSL
+  compiler never runs inside the compositor (NVIDIA keeps about 50 MB of compiler
+  heap for the life of a process that compiles once). User shaders are remembered
+  in `$XDG_CACHE_HOME/tomoe/shaders` and warmed before the next session starts.
 - Clients can pace queued commits with `wp_fifo_v1`: barriers retain each update
   through the next output frame boundary, including direct scanout. Synchronized
   subsurfaces ignore FIFO waits as required by the protocol.
