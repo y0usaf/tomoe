@@ -373,6 +373,13 @@ struct screen_update {
     struct screen *output;
     struct screen_state base;
 };
+struct ns_timer {
+    int fd;
+    int64_t at;
+    struct wl_event_source *source;
+    void (*fire)(void *data);
+    void *data;
+};
 struct screen_impl {
     bool (*test)(struct screen_update *updates, size_t count);
     bool (*commit)(struct screen_update *updates, size_t count);
@@ -382,7 +389,7 @@ struct screen_impl {
     bool (*cursor)(struct screen *screen, struct buffer *buffer, int hotspot_x, int hotspot_y);
     void (*move_cursor)(struct screen *screen, int x, int y);
     void (*destroy)(struct screen *screen);
-    bool replace_flip;
+    bool replace_flip, late_frames;
 };
 struct screen_present {
     struct screen *output;
@@ -416,7 +423,9 @@ struct screen {
     int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
     float cursor_seen_scale;
     size_t commit_seq;
-    int64_t vblank_ns;
+    int64_t vblank_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
+    int frame_fence;
+    struct ns_timer frame_timer;
     struct wl_event_source *idle_frame;
     struct wl_global *global;
     struct wl_list resources, xdg_resources;
@@ -1337,19 +1346,13 @@ size_t screen_gamma_size(struct screen *screen);
 size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_send_frame(struct screen *screen);
+void screen_frame_committed(struct screen *screen, const struct screen_state *state);
 void screen_send_present(struct screen *screen, struct screen_present *present);
 void screen_request_state(struct screen *screen, struct screen_state *state);
 void screen_set_position(struct screen *screen, int lx, int ly);
 void screen_cursor_move(struct screen *screen, double x, double y);
 int64_t screen_next_vblank(const struct screen *screen, int64_t after);
 int64_t monotonic_ns(void);
-struct ns_timer {
-    int fd;
-    int64_t at;
-    struct wl_event_source *source;
-    void (*fire)(void *data);
-    void *data;
-};
 bool ns_timer_init(struct ns_timer *timer, struct wl_event_loop *loop, void (*fire)(void *data),
     void *data);
 void ns_timer_arm(struct ns_timer *timer, int64_t at);

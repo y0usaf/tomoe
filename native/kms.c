@@ -1230,6 +1230,7 @@ int kms_create(struct tomoe *s) {
     kms->atomic = !getenv("TOMOE_DRM_LEGACY") && drmSetClientCap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1) == 0;
     kms->impl = connector_impl;
     kms->impl.replace_flip = kms->atomic;
+    kms->impl.late_frames = kms->atomic;
     kms->modifiers = drmGetCap(kms->fd, DRM_CAP_ADDFB2_MODIFIERS, &cap) == 0 && cap;
     kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
     kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;

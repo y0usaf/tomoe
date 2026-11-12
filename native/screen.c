@@ -1,8 +1,12 @@
 #include "internal.h"
 #include "xdg-output-unstable-v1-protocol.h"
 #include <drm_fourcc.h>
+#include <linux/sync_file.h>
+#include <sys/ioctl.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+
+enum { FRAME_GUARD_NS = 700000, FRAME_COST_START_NS = 2000000 };
 
 #define OUTPUT_VERSION 4
 #define XDG_OUTPUT_VERSION 3
@@ -306,17 +310,37 @@ size_t screen_degamma_size(struct screen *screen) {
 static void dispatch_frame(struct screen *screen) {
     if (screen->enabled && !screen->power_off) {
         surfaces_fifo_frame(screen);
+        screen->frame_start_ns = monotonic_ns();
         wl_signal_emit_mutable(&screen->events.frame, screen);
     }
 }
 
-void screen_send_frame(struct screen *screen) {
-    screen->frame_pending = false;
-    screen->frame_replaced = false;
-    dispatch_frame(screen);
+static bool late_frames(const struct screen *screen) {
+    return screen->impl->late_frames && screen->frame_timer.source;
+}
+
+static int64_t frame_margin(const struct screen *screen, int64_t period) {
+    int64_t margin = screen->frame_cost_ns + screen->frame_cost_ns / 4 + FRAME_GUARD_NS;
+    return margin < period * 3 / 4 ? margin : 0;
+}
+
+static bool frame_defer(struct screen *screen) {
+    if (!late_frames(screen)) return false;
+    int64_t now = monotonic_ns(), vblank = screen_next_vblank(screen, now);
+    if (!vblank) return false;
+    int64_t period = 1000000000000LL / screen->refresh;
+    int64_t margin = frame_margin(screen, period);
+    if (!margin) return false;
+    if (screen->frame_pending) vblank += period;
+    int64_t at = vblank - margin;
+    if (at <= now) return false;
+    ns_timer_arm(&screen->frame_timer, at);
+    screen->frame_armed_ns = at;
+    return true;
 }
 
 static bool may_draw(struct screen *screen) {
+    if (late_frames(screen)) return !screen->frame_pending;
     return !screen->frame_pending || (screen->impl->replace_flip && !screen->frame_replaced &&
         !surfaces_fifo_waiting(screen));
 }
@@ -329,11 +353,71 @@ static void idle_frame(void *data) {
     dispatch_frame(screen);
 }
 
-void screen_schedule_frame(struct screen *screen) {
-    screen->needs_frame = true;
-    if (screen->idle_frame || !may_draw(screen)) return;
+static void frame_request(struct screen *screen) {
+    if (screen->idle_frame || screen->frame_timer.at || !may_draw(screen) || frame_defer(screen))
+        return;
     screen->idle_frame = wl_event_loop_add_idle(
         wl_display_get_event_loop(screen->server->display), idle_frame, screen);
+}
+
+static void frame_fire(void *data) {
+    struct screen *screen = data;
+    if (!screen->needs_frame || !may_draw(screen) || !screen->enabled || screen->power_off) return;
+    screen->frame_start_ns = screen->frame_armed_ns;
+    wl_signal_emit_mutable(&screen->events.frame, screen);
+}
+
+static int64_t fence_signaled_ns(int fd) {
+    struct sync_fence_info fences[4] = {0};
+    struct sync_file_info info = { .num_fences = 4, .sync_fence_info = (uintptr_t)fences };
+    if (ioctl(fd, SYNC_IOC_FILE_INFO, &info) < 0 || info.status != 1) return -1;
+    int64_t latest = 0;
+    for (uint32_t i = 0; i < info.num_fences && i < 4; i++)
+        if ((int64_t)fences[i].timestamp_ns > latest) latest = (int64_t)fences[i].timestamp_ns;
+    return latest;
+}
+
+void screen_frame_committed(struct screen *screen, const struct screen_state *state) {
+    if (!late_frames(screen) || !screen->frame_start_ns) return;
+    if (screen->frame_fence >= 0) close(screen->frame_fence);
+    screen->frame_fence = (state->committed & SCREEN_WAIT) && state->wait_timeline ?
+        timeline_export_sync_file(state->wait_timeline, state->wait_point) : -1;
+    screen->frame_ready_ns = monotonic_ns();
+    screen->frame_target_ns = screen_next_vblank(screen, screen->frame_start_ns);
+}
+
+static void frame_account(struct screen *screen) {
+    if (!screen->frame_ready_ns || screen->refresh <= 0) return;
+    int64_t period = 1000000000000LL / screen->refresh, ready = screen->frame_ready_ns;
+    if (screen->frame_fence >= 0) {
+        int64_t signaled = fence_signaled_ns(screen->frame_fence);
+        ready = signaled < 0 ? INT64_MAX : signaled > ready ? signaled : ready;
+        close(screen->frame_fence);
+        screen->frame_fence = -1;
+    }
+    bool missed = ready == INT64_MAX || (screen->frame_target_ns &&
+        screen->vblank_ns > screen->frame_target_ns + period / 2);
+    int64_t cost = missed ? screen->frame_cost_ns + period / 4 : ready - screen->frame_start_ns;
+    screen->frame_cost_ns = cost > screen->frame_cost_ns ? cost :
+        screen->frame_cost_ns - (screen->frame_cost_ns - cost) / 64;
+    screen->frame_ready_ns = 0;
+}
+
+void screen_send_frame(struct screen *screen) {
+    screen->frame_pending = false;
+    screen->frame_replaced = false;
+    if (!late_frames(screen)) {
+        dispatch_frame(screen);
+        return;
+    }
+    frame_account(screen);
+    if (screen->enabled && !screen->power_off) surfaces_fifo_frame(screen);
+    if (screen->needs_frame) frame_request(screen);
+}
+
+void screen_schedule_frame(struct screen *screen) {
+    screen->needs_frame = true;
+    frame_request(screen);
 }
 
 void screen_send_present(struct screen *screen, struct screen_present *present) {
@@ -352,6 +436,10 @@ void screen_init(struct screen *screen, struct tomoe *s, const struct screen_imp
     screen->kind = kind;
     screen->name = strdup(name);
     screen->scale = 1;
+    screen->frame_fence = -1;
+    screen->frame_cost_ns = FRAME_COST_START_NS;
+    if (impl->late_frames)
+        ns_timer_init(&screen->frame_timer, wl_display_get_event_loop(s->display), frame_fire, screen);
     wl_list_init(&screen->modes);
     wl_list_init(&screen->resources);
     wl_list_init(&screen->xdg_resources);
@@ -387,6 +475,8 @@ void screen_destroy(struct screen *screen) {
     screen->enabled = false;
     global_update(screen);
     if (screen->idle_frame) wl_event_source_remove(screen->idle_frame);
+    if (screen->frame_timer.source) ns_timer_finish(&screen->frame_timer);
+    if (screen->frame_fence >= 0) close(screen->frame_fence);
     struct screen_mode *mode, *next;
     wl_list_for_each_safe(mode, next, &screen->modes, link) {
         wl_list_remove(&mode->link);

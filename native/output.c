@@ -1175,6 +1175,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
     }
     success = success && screen_commit(o->screen, &state);
     if (success) surfaces_fifo_commit(o->screen);
+    if (success && (state.committed & SCREEN_BUFFER))
+        screen_frame_committed(o->screen, scanout ? &(struct screen_state){0} : &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
         buffer_unlock(o->presented[1]);
