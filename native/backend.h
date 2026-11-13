@@ -12,14 +12,11 @@ const char *tomoe_next_event(struct tomoe *server);
 int tomoe_event_count(struct tomoe *server);
 int tomoe_event_barrier(struct tomoe *server);
 void tomoe_destroy(struct tomoe *server);
-void tomoe_set_view(struct tomoe *server, int x, int y, double zoom);
 const char *tomoe_hit_test(struct tomoe *server, double x, double y);
 const char *tomoe_frames(struct tomoe *server);
 const char *tomoe_memory(struct tomoe *server);
 uint64_t tomoe_activity_serial(struct tomoe *server);
 const char *tomoe_cursor_state(struct tomoe *server, uint64_t have_generation);
-void tomoe_place(struct tomoe *server, uint32_t id, int x, int y,
-    int width, int height, int visible);
 void tomoe_focus(struct tomoe *server, uint32_t id);
 uint32_t tomoe_keyboard_focus(struct tomoe *server);
 void tomoe_close(struct tomoe *server, uint32_t id);
@@ -31,14 +28,9 @@ uint32_t tomoe_grab_id(struct tomoe *server);
 int tomoe_grab_mode(struct tomoe *server);
 void tomoe_window_state(struct tomoe *server, uint32_t id, int fullscreen,
     int maximize);
-void tomoe_layer(struct tomoe *server, uint32_t id, int layer,
-    int exclusive_zone, int keyboard, int visible);
 uint32_t tomoe_keysym(const char *name);
 int tomoe_warm_shaders(const char *node, const char *directory);
 void tomoe_clear_bindings(struct tomoe *server);
-int tomoe_bind(struct tomoe *server, uint32_t modifiers, uint32_t keysym,
-    const char *owner, const char *press, const char *release,
-    uint64_t source_id);
 int tomoe_binding_current(struct tomoe *server, uint64_t binding_id);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);

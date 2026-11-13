@@ -8,7 +8,6 @@ struct tomoe_tray;
 struct tomoe_tray *tomoe_tray_open(int *error);
 
 int tomoe_tray_poll(struct tomoe_tray *tray);
-uint64_t tomoe_tray_revision(const struct tomoe_tray *tray);
 
 const char *tomoe_tray_snapshot(struct tomoe_tray *tray);
 int tomoe_tray_timeout(const struct tomoe_tray *tray, int max_ms);

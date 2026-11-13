@@ -1265,10 +1265,6 @@ const char *tomoe_tray_snapshot(struct tomoe_tray *tray) {
     return snapshot;
 }
 
-uint64_t tomoe_tray_revision(const struct tomoe_tray *tray) {
-    return tray ? tray->revision : 0;
-}
-
 int tomoe_tray_timeout(const struct tomoe_tray *tray, int max_ms) {
     if (!tray) return 0;
     if (max_ms < 0) max_ms = 0;

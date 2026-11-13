@@ -185,7 +185,7 @@ removing the final owner restores the native protocol's live defaults."
                     (<= oy y) (< y (+ oy height)))))
            outputs))
 
-(defun %output-scale-120 (runtime x y &optional (output-facts (runtime-outputs runtime)))
+(defun %output-scale-120 (x y output-facts)
   "Return the scale of the screen point, or the first output's scale."
   (let* ((outputs output-facts)
          (output (or (%output-containing-point outputs x y) (first outputs)))
@@ -195,11 +195,11 @@ removing the final owner restores the native protocol's live defaults."
           ((and (%finite-real-p fallback) (plusp fallback)) (coerce fallback 'double-float))
           (t 120d0))))
 
-(defun %quantize-layout (runtime layout view &optional (output-facts (runtime-outputs runtime)))
+(defun %quantize-layout (layout view output-facts)
   "Apply the physical/client-size round trip after every owner effect settles."
   (dolist (window layout)
     (multiple-value-bind (screen-x screen-y) (%view-screen-point window view)
-      (let* ((scale (%output-scale-120 runtime screen-x screen-y output-facts))
+      (let* ((scale (%output-scale-120 screen-x screen-y output-facts))
              (physical-width (coerce (getf window :width) 'double-float))
              (physical-height (coerce (getf window :height) 'double-float))
              (logical-width
@@ -352,7 +352,7 @@ while other owners can settle; a new request or declaration permits recovery."
            (client (find id (runtime-client-geometries runtime)
                          :key (lambda (record) (getf record :id)))))
       (multiple-value-bind (screen-x screen-y) (%view-screen-point box view)
-        (let ((scale (%output-scale-120 runtime screen-x screen-y outputs)))
+        (let ((scale (%output-scale-120 screen-x screen-y outputs)))
           (list :id id :x (getf box :x) :y (getf box :y)
                 :width (if client (%round-away-positive (/ (* (getf client :width) scale) 120d0))
                            (getf box :width))
@@ -429,7 +429,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              (output-failures (third output-resolution))
              (output-facts (getf output-preview :outputs))
              (connector-facts (output-connectors output-preview)))
-        (%quantize-layout runtime layout view output-facts)
+        (%quantize-layout layout view output-facts)
         (multiple-value-bind (resolved-layers workareas)
             (if (runtime-backend runtime)
                 (preview-native-layers (runtime-backend runtime) output-facts layers

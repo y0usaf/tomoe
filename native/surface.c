@@ -1093,11 +1093,6 @@ void surface_leave_all(struct surface *surface) {
     }
 }
 
-bool surface_on_output(struct surface *surface, struct screen *output) {
-    struct surface_output *so;
-    wl_list_for_each(so, &surface->outputs, link) if (so->output == output) return true;
-    return false;
-}
 
 void surface_frame_done(struct surface *surface, const struct timespec *when) {
     uint32_t ms = (uint32_t)(when->tv_sec * 1000 + when->tv_nsec / 1000000);

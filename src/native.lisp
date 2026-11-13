@@ -19,11 +19,6 @@
 (define-native ("tomoe_next_event" %event) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_event_count" %event-count) sb-alien:int (server (* t)))
 (define-native ("tomoe_event_barrier" %event-barrier) sb-alien:int (server (* t)))
-(define-native ("tomoe_place" %place) sb-alien:void
-  (server (* t)) (id sb-alien:unsigned-int) (x sb-alien:int) (y sb-alien:int)
-  (width sb-alien:int) (height sb-alien:int) (visible sb-alien:int))
-(define-native ("tomoe_set_view" %set-view) sb-alien:void
-  (server (* t)) (x sb-alien:int) (y sb-alien:int) (zoom sb-alien:double))
 (define-native ("tomoe_hit_test" %hit-test) sb-alien:c-string
   (server (* t)) (screen-x sb-alien:double) (screen-y sb-alien:double))
 (define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
@@ -32,17 +27,8 @@
   (server (* t)))
 (define-native ("tomoe_cursor_state" %cursor-state) sb-alien:c-string
   (server (* t)) (have-generation sb-alien:unsigned-long-long))
-(define-native ("tomoe_focus" %focus) sb-alien:void
-  (server (* t)) (id sb-alien:unsigned-int))
 (define-native ("tomoe_keyboard_focus" %keyboard-focus) sb-alien:unsigned-int
   (server (* t)))
-(define-native ("tomoe_window_state" %window-state) sb-alien:void
-  (server (* t)) (id sb-alien:unsigned-int) (fullscreen sb-alien:int) (maximize sb-alien:int))
-(define-native ("tomoe_layer" %layer) sb-alien:void
-  (server (* t)) (id sb-alien:unsigned-int) (layer sb-alien:int) (exclusive-zone sb-alien:int)
-  (keyboard sb-alien:int) (visible sb-alien:int))
-(define-native ("tomoe_grab" %grab) sb-alien:int
-  (server (* t)) (id sb-alien:unsigned-int) (mode sb-alien:int))
 (define-native ("tomoe_grab_id" %grab-id) sb-alien:unsigned-int (server (* t)))
 (define-native ("tomoe_grab_mode" %grab-mode) sb-alien:int (server (* t)))
 (define-native ("tomoe_close" %close) sb-alien:void
@@ -56,11 +42,6 @@
 (define-native ("tomoe_keysym" %keysym) sb-alien:unsigned-int (name sb-alien:c-string))
 (define-native ("tomoe_warm_shaders" %warm-shaders) sb-alien:int
   (node sb-alien:c-string) (directory sb-alien:c-string))
-(define-native ("tomoe_clear_bindings" %clear-bindings) sb-alien:void (server (* t)))
-(define-native ("tomoe_bind" %bind) sb-alien:int
-  (server (* t)) (modifiers sb-alien:unsigned-int) (keysym sb-alien:unsigned-int)
-  (owner sb-alien:c-string) (command sb-alien:c-string) (release sb-alien:c-string)
-  (source-id sb-alien:unsigned-long-long))
 (define-native ("tomoe_binding_current" %binding-current) sb-alien:int
   (server (* t)) (binding-id sb-alien:unsigned-long-long))
 
@@ -163,7 +144,6 @@ once."
   (mirror sb-alien:c-string) (adaptive-sync sb-alien:int) (tearing sb-alien:int))
 (define-native ("tomoe_output_icc" %output-icc) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (path sb-alien:c-string))
-(define-native ("tomoe_outputs_apply" %outputs-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_preview" %outputs-preview) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_revision" %outputs-revision) sb-alien:unsigned-long-long
   (server (* t)))
@@ -288,11 +268,6 @@ once."
                    (listp (getf snapshot :outputs)))
         (error "Native output snapshot is invalid: ~S" snapshot))
       snapshot)))
-
-(defun configure-native-outputs (backend outputs)
-  (stage-native-outputs backend outputs)
-  (let ((message (%outputs-apply backend)))
-    (when message (error "~A" message))))
 
 (defun configure-virtual-outputs (backend old new)
   (when backend

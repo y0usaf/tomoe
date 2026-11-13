@@ -1461,10 +1461,6 @@ int tomoe_network_poll(struct tomoe_network *network) {
     return network->changed ? 1 : 0;
 }
 
-uint64_t tomoe_network_revision(const struct tomoe_network *network) {
-    return network ? network->revision : 0;
-}
-
 int tomoe_network_timeout(const struct tomoe_network *network, int max_ms) {
     if (!network) return 0;
     if (max_ms < 0) max_ms = 0;

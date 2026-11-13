@@ -1002,10 +1002,6 @@ int tomoe_battery_poll(struct tomoe_battery *battery) {
     return battery->changed ? 1 : 0;
 }
 
-uint64_t tomoe_battery_revision(const struct tomoe_battery *battery) {
-    return battery ? battery->revision : 0;
-}
-
 int tomoe_battery_timeout(const struct tomoe_battery *battery, int max_ms) {
     if (!battery) return 0;
     if (max_ms < 0) max_ms = 0;

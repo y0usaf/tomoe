@@ -9,9 +9,6 @@ struct tomoe_notifications *tomoe_notifications_open(int *error);
 
 int tomoe_notifications_poll(struct tomoe_notifications *notifications);
 
-uint64_t tomoe_notifications_revision(
-    const struct tomoe_notifications *notifications);
-
 const char *tomoe_notifications_snapshot(
     struct tomoe_notifications *notifications);
 

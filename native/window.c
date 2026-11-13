@@ -295,24 +295,6 @@ bool window_surface_mapped(struct tomoe *s, struct surface *surface) {
     return false;
 }
 
-void tomoe_place(struct tomoe *s, uint32_t id, int x, int y,
-        int width, int height, int visible) {
-    struct window *w = find_window_registered(s, id);
-    if (!w || !w->tree) return;
-    w->target.x = x;
-    w->target.y = y;
-    w->target.width = width;
-    w->target.height = height;
-    w->desired_width = width;
-    w->desired_height = height;
-    w->desired_visible = visible != 0;
-    window_park(w);
-    node_set_enabled(w->tree, w->mapped && w->desired_visible);
-    window_update_scale(w);
-    node_raise_to_top(w->tree);
-    if (w->mapped) configure_xdg(w);
-    schedule_scene(s);
-}
 static void pointer_follow(struct window *w) {
     struct tomoe *s = w->server;
     if (!s->settings.pointer_follows_focus || !w->tree->enabled || s->grab_mode != 0 ||

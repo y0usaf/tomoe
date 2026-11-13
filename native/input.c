@@ -960,12 +960,6 @@ void tomoe_clear_bindings(struct tomoe *s) {
     }
 }
 
-int tomoe_bind(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
-        const char *owner, const char *press, const char *release,
-        uint64_t source_id) {
-    return add_binding(s, s ? &s->bindings : NULL, modifiers, keysym, owner,
-        press, release, source_id, true);
-}
 
 int tomoe_present_bind(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
         const char *owner, const char *press, const char *release,
