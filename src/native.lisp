@@ -1,5 +1,7 @@
 (in-package #:tomoe)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 (defmacro define-native ((foreign-name name) result &rest arguments)
   (let ((entry (gensym "NATIVE-")) (names (mapcar #'first arguments)))
     `(progn

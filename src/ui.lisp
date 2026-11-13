@@ -1,5 +1,7 @@
 (in-package #:tomoe)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 (defun %ui-list (value limit description)
   (let ((tail value) (count 0))
     (loop while (consp tail) do
