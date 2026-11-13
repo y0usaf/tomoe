@@ -1,4 +1,4 @@
-{ pkgs, tomoe }:
+{ pkgs, tomoe, baseline ? null }:
 let
   imeClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-ime-client";
@@ -291,6 +291,36 @@ let
                 (cond ((equal command "off") (list (output-power :off "Virtual-1")))
                       ((equal command "on") (list (output-power :on "Virtual-1")))))))
   '';
+  scenario = pkgs.stdenv.mkDerivation {
+    name = "tomoe-scenario";
+    src = ./pointer-script.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      for xml in ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
+        ${../native/virtual-keyboard-unstable-v1.xml}; do
+        name=$(basename "$xml" .xml)
+        case "$name" in *virtual-keyboard-unstable-v1) name=virtual-keyboard-unstable-v1;; esac
+        wayland-scanner client-header "$xml" "$name-client-protocol.h"
+        wayland-scanner private-code "$xml" "$name-protocol.c"
+      done
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-scenario
+    '';
+    installPhase = "install -Dm755 tomoe-scenario $out/bin/tomoe-scenario";
+  };
+  scenarioPolicy = ./scenario-policy.lisp;
+  counterPolicy = pkgs.writeText "scenario-counter.lisp" (
+    builtins.readFile ./scenario-policy.lisp + builtins.readFile ./scenario-counter.lisp
+  );
+  contractPolicy = pkgs.writeText "scenario-contract.lisp" (
+    builtins.readFile ./scenario-policy.lisp + builtins.readFile ./scenario-contract.lisp
+  );
   outputOverrideProbe = pkgs.writeText "output-override-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "output-override-probe" (:reads () :state nil) (snapshot state event)
@@ -778,7 +808,21 @@ let
     scanoutClient
     pathClient
   ];
-  compositorSuites = [
+  baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
+  compositorSuites =
+    pkgs.lib.optional (baseline != null) {
+      name = "input-equivalence";
+      script = ''
+        BASELINE = "${baselineBinary}"
+        FASTPATH = "${tomoe}/bin/tomoe"
+        INJECTOR = "${scenario}/bin/tomoe-scenario"
+        POLICY = "${scenarioPolicy}"
+        COUNTER_POLICY = "${counterPolicy}"
+        CONTRACT_POLICY = "${contractPolicy}"
+      ''
+      + builtins.readFile ./equivalence.py;
+    }
+    ++ [
     {
       name = "pointer-protocols";
       script = ''
@@ -938,8 +982,10 @@ let
       name = "timing";
       script = ''
         TIMING_POLICY = "${timingPolicy}"
+        TIMING_CONTRACT_POLICY = "${./timing-contract-policy.lisp}"
         STALL_POLICY = "${stallPolicy}"
         CHURN_POLICY = "${churnPolicy}"
+        BASELINE = "${baselineBinary}"
         RUNS = "3"
         COUNT = "200"
       ''
