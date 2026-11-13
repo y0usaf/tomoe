@@ -157,6 +157,10 @@
          (read-data (or (%frames (runtime-backend runtime))
                         (error "Cannot serialize native frame counters.")))))
       (:memory (destructuring-bind () args (memory-report runtime)))
+      (:timings
+       (destructuring-bind () args
+         (read-data (or (%timings)
+                        (error "Cannot serialize native latency samples.")))))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount
        (destructuring-bind (path) args

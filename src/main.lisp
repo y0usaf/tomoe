@@ -23,14 +23,15 @@ turn; materialization already refreshes their authoritative native snapshot."
 (defparameter +operations+
   '(("inspect" . :inspect) ("reload" . :reload) ("mount" . :mount)
     ("unmount" . :unmount) ("event" . :event)
-    ("hit-test" . :hit-test) ("frames" . :frames) ("memory" . :memory) ("quit" . :quit)))
+    ("hit-test" . :hit-test) ("frames" . :frames) ("memory" . :memory)
+    ("timings" . :timings) ("quit" . :quit)))
 
 (defun usage ()
   (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm] [--bare]
        [--config FILE] [--watch|--no-watch] [--drm_device PATH]
        tomoe [--socket NAME] commands
        tomoe [--socket NAME] command NAME [ARGUMENT=VALUE ...]
-       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|event PLIST|hit-test X Y|frames|memory|quit
+       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|event PLIST|hit-test X Y|frames|memory|timings|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
 Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
@@ -52,6 +53,7 @@ timers, processes, surfaces and bindings it owned:
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
+timings reads the latency samples each path keeps when TOMOE_TIMINGS is set.
 memory reads the Lisp heap and collector, the native heap, textures and output buffers.
 X11 clients connect through DISPLAY; Xwayland starts on the first connection and runs with Tomoe's own window manager.
 Control replies are versioned Lisp data. Mutating control commands are silent on success."))
@@ -394,7 +396,8 @@ an edit calls for; a source whose directory is still missing is retried."
     (unwind-protect
          (progn
            (setf native (open-backend name)
-                 runtime (make-runtime :backend native :socket name))
+                 runtime (make-runtime :backend native :socket name)
+                 *timing* (plusp (%timing-enabled)))
            (unless (zerop (%watch-signals native))
              (error "Cannot wake the event loop for SIGTERM and SIGINT."))
            (setf json-server (open-json-control (json-socket-path name))

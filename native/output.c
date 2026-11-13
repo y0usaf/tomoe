@@ -1147,6 +1147,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     o->screen->needs_frame = false;
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
+    timing_frame_start(o->server);
     struct screen_state state;
     screen_state_init(&state);
     struct surface *scanout = scanout_surface(o);
@@ -1181,8 +1182,10 @@ static void output_frame(struct wl_listener *listener, void *data) {
     }
     if (success && !scanout && o->screen->tearing && o->screen->kind == SCREEN_DRM)
         state.tearing_page_flip = true;
+    uint64_t phase = timing_enabled ? timing_now() : 0;
     success = success && screen_commit(o->screen, &state);
     if (success) surfaces_fifo_commit(o->screen);
+    if (phase) timing_frame_submit(o->server, timing_now() - phase);
     if (success && (state.committed & SCREEN_BUFFER))
         screen_frame_committed(o->screen, scanout ? &(struct screen_state){0} : &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
@@ -1199,6 +1202,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
         if (!o->screen->deferred && !render_frames_held(o->server->renderer))
             tomoe_log(LOG_ERROR, "tomoe: output %s commit failed", o->screen->name);
         o->screen->deferred = false;
+        timing_frame_end(o->server, false);
         frame_timed(o, &start);
         return;
     }
@@ -1207,6 +1211,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     if (!screen_frames_late(o->screen)) grab_frame_drawn(o->server);
     bool moving = windows_animate(o->server);
     if (ui_animate(o->server) || moving) screen_schedule_animation(o->screen);
+    timing_frame_end(o->server, true);
     frame_timed(o, &start);
 }
 

@@ -618,6 +618,7 @@ static bool syncobj_check(struct surface *surface) {
 
 static void surface_commit(struct wl_client *client, struct wl_resource *resource) {
     struct surface *surface = surface_from_resource(resource);
+    timing_commit(surface->server);
     surface->pending_rejected = false;
     finalize_pending(surface);
     if (!surface->pending_rejected && surface->role && surface->role->client_commit &&

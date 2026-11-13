@@ -1174,6 +1174,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
 }
 void input_pointer_motion(struct pointer_motion *event) {
     struct tomoe *s = event->device->server;
+    timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
     relative_motion_forward(s, event->time_msec, event->delta_x, event->delta_y,
         event->unaccel_dx, event->unaccel_dy);
@@ -1200,6 +1201,7 @@ static struct screen *named_pointer_output(struct tomoe *s, struct input_device 
 }
 void input_pointer_absolute(struct pointer_absolute *event) {
     struct tomoe *s = event->device->server;
+    timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
     struct screen *mapped = virtual_pointer_output(s, event->device);
     double x = event->x, y = event->y;
@@ -1400,6 +1402,7 @@ static bool pointer_binding_axis(struct tomoe *s, struct pointer_axis *event) {
 
 void input_pointer_button(struct pointer_button *input) {
     struct tomoe *s = input->device->server;
+    timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
     if (input->state == WL_POINTER_BUTTON_STATE_PRESSED) sound_play(s, SOUND_BUTTON);
     if (s->screenshot && !lock_active(s)) {
@@ -1609,6 +1612,7 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
     if (!k) return;
     const struct key_input *input = &(struct key_input){ time_msec, keycode, state };
     struct tomoe *s = k->server;
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED) timing_input(s, TIMING_KEY);
     if (device->libinput && keycode < TOMOE_KEYCODE_COUNT && k->xkb.xkb_state) {
         xkb_state_update_key(k->xkb.xkb_state, keycode + 8,
             state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
