@@ -458,6 +458,11 @@ struct screen_present {
     int refresh;
     uint32_t flags;
 };
+enum {
+    TOMOE_PENDING_INPUT = 64,
+    TOMOE_COST_BUCKETS = 512,
+    TOMOE_COST_GRAIN_NS = 40000,
+};
 struct screen_bind {
     struct screen *output;
     struct wl_resource *resource;
@@ -483,8 +488,14 @@ struct screen {
     float cursor_seen_scale;
     size_t commit_seq;
     int64_t vblank_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
-    int64_t latch_input_ns, latch_commit_ns;
-    uint64_t seen_input_ns, seen_commit_ns;
+    struct {
+        uint16_t buckets[TOMOE_COST_BUCKETS];
+        uint32_t samples, warmup;
+        int64_t predicted_ns, slack_ns;
+    } clock;
+    uint64_t input_seen, commit_seen;
+    uint64_t pending_input[TOMOE_PENDING_INPUT], pending_commit[TOMOE_PENDING_INPUT];
+    size_t pending_input_count, pending_commit_count;
     uint64_t missed_frames;
     int frame_fence;
     struct ns_timer frame_timer;
@@ -947,7 +958,8 @@ struct tomoe {
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
     struct {
         uint64_t input_at, pointer_at, drag_at, key_at, commit_at, event_at, frame_at;
-        uint64_t newest_input_at, newest_commit_at;
+        uint64_t input_ring[TOMOE_PENDING_INPUT], commit_ring[TOMOE_PENDING_INPUT];
+        uint64_t input_total, commit_total;
         uint64_t scene_ns, draw_ns, raster_ns, submit_ns;
         bool pointer, drag, key, commit;
     } timing;

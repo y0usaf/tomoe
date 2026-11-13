@@ -6,7 +6,12 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
-enum { FRAME_GUARD_NS = 700000, FRAME_COST_START_NS = 2000000 };
+enum {
+    FRAME_COST_START_NS = 2000000,
+    FRAME_SLACK_START_NS = 250000,
+    FRAME_SLACK_STEP_NS = 40000,
+    FRAME_COST_SAMPLES = 1024,
+};
 
 #define OUTPUT_VERSION 4
 #define XDG_OUTPUT_VERSION 3
@@ -319,19 +324,64 @@ static bool late_frames(const struct screen *screen) {
     return screen->impl->late_frames && screen->frame_timer.source;
 }
 
+static uint32_t cost_samples(const struct screen *screen) {
+    uint32_t total = 0;
+    for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) total += screen->clock.buckets[i];
+    return total;
+}
+
+static int64_t cost_quantile(const struct screen *screen) {
+    uint32_t total = cost_samples(screen);
+    if (total < 16) return FRAME_COST_START_NS;
+    uint32_t wanted = total - total / 100, seen = 0;
+    for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) {
+        seen += screen->clock.buckets[i];
+        if (seen >= wanted) return (int64_t)(i + 1) * TOMOE_COST_GRAIN_NS;
+    }
+    return (int64_t)TOMOE_COST_BUCKETS * TOMOE_COST_GRAIN_NS;
+}
+
+static void cost_record(struct screen *screen, int64_t cost) {
+    if (screen->clock.warmup) {
+        screen->clock.warmup--;
+        return;
+    }
+    if (cost < 0) cost = 0;
+    int64_t horizon = (int64_t)TOMOE_COST_BUCKETS * TOMOE_COST_GRAIN_NS;
+    size_t bucket = cost >= horizon ? TOMOE_COST_BUCKETS - 1 : (size_t)(cost / TOMOE_COST_GRAIN_NS);
+    if (screen->clock.samples >= FRAME_COST_SAMPLES) {
+        for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) screen->clock.buckets[i] /= 2;
+        screen->clock.samples = cost_samples(screen);
+    }
+    screen->clock.buckets[bucket]++;
+    screen->clock.samples++;
+}
+
 static int64_t frame_margin(const struct screen *screen, int64_t period) {
-    int64_t margin = screen->frame_cost_ns + screen->frame_cost_ns / 4 + FRAME_GUARD_NS;
-    return margin < period * 3 / 4 ? margin : 0;
+    int64_t margin = screen->clock.predicted_ns + screen->clock.slack_ns;
+    int64_t limit = period - period / 8;
+    return margin < limit ? margin : limit;
+}
+
+static bool frame_clock(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("TOMOE_FRAME_CLOCK");
+        enabled = !(value && !strcmp(value, "0"));
+    }
+    return enabled;
 }
 
 static bool frame_defer(struct screen *screen) {
-    if (!late_frames(screen) || screen->tearing) return false;
+    if (!frame_clock() || !late_frames(screen) || screen->tearing) return false;
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(screen, now);
-    if (!vblank) return false;
+    if (!vblank || screen->refresh <= 0) return false;
     int64_t period = 1000000000000LL / screen->refresh;
+    if (period <= 0) return false;
     int64_t margin = frame_margin(screen, period);
-    if (!margin) return false;
+    if (margin >= period - period / 8) return false;
     if (screen->frame_pending) vblank += period;
+    if (vblank - margin <= now) vblank += period;
     int64_t at = vblank - margin;
     if (at <= now) return false;
     ns_timer_arm(&screen->frame_timer, at);
@@ -381,14 +431,16 @@ static void frame_fire(void *data) {
     bool grab = grab_waiting(screen->server), due = frame_due(screen);
     if (grab) grab_frame_drawn(screen->server);
     if ((!grab && !due) || !may_draw(screen)) return;
-    screen->frame_start_ns = screen->frame_armed_ns;
+    screen->frame_start_ns = monotonic_ns();
     if (grab) screen->frame_after_events = true;
     else wl_signal_emit_mutable(&screen->events.frame, screen);
 }
 
 bool screen_frames_late(struct screen *screen) {
-    return late_frames(screen) && !screen->tearing && screen_next_vblank(screen, monotonic_ns()) &&
-        frame_margin(screen, 1000000000000LL / screen->refresh);
+    if (!late_frames(screen) || screen->tearing || screen->refresh <= 0) return false;
+    int64_t period = 1000000000000LL / screen->refresh;
+    return screen_next_vblank(screen, monotonic_ns()) &&
+        frame_margin(screen, period) < period - period / 8;
 }
 
 void screens_grab_waiting(struct tomoe *s) {
@@ -441,9 +493,18 @@ static void frame_account(struct screen *screen) {
     bool missed = ready == INT64_MAX || (screen->frame_target_ns &&
         screen->vblank_ns > screen->frame_target_ns + period / 2);
     if (missed) screen->missed_frames++;
-    int64_t cost = missed ? screen->frame_cost_ns + period / 4 : ready - screen->frame_start_ns;
-    screen->frame_cost_ns = cost > screen->frame_cost_ns ? cost :
-        screen->frame_cost_ns - (screen->frame_cost_ns - cost) / 64;
+    if (ready != INT64_MAX && ready > screen->frame_start_ns) {
+        int64_t cost = ready - screen->frame_start_ns;
+        if (cost > period) cost = period;
+        screen->frame_cost_ns = cost;
+        cost_record(screen, cost);
+    }
+    if (missed) {
+        int64_t cap = period / 2;
+        screen->clock.slack_ns += screen->clock.predicted_ns / 4 + FRAME_SLACK_STEP_NS;
+        if (screen->clock.slack_ns > cap) screen->clock.slack_ns = cap;
+    } else screen->clock.slack_ns -= screen->clock.slack_ns / 512;
+    screen->clock.predicted_ns = cost_quantile(screen);
     screen->frame_ready_ns = 0;
 }
 
@@ -492,6 +553,9 @@ void screen_init(struct screen *screen, struct tomoe *s, const struct screen_imp
     screen->scale = 1;
     screen->frame_fence = -1;
     screen->frame_cost_ns = FRAME_COST_START_NS;
+    screen->clock.predicted_ns = FRAME_COST_START_NS;
+    screen->clock.slack_ns = FRAME_SLACK_START_NS;
+    screen->clock.warmup = 16;
     if (impl->late_frames)
         ns_timer_init(&screen->frame_timer, wl_display_get_event_loop(s->display), frame_fire, screen);
     wl_list_init(&screen->modes);

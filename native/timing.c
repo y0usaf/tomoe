@@ -69,7 +69,7 @@ void timing_add(enum timing_channel channel, uint64_t ns) {
 void timing_input(struct tomoe *s, enum timing_channel channel) {
     if (!timing_enabled) return;
     uint64_t now = timing_now();
-    s->timing.newest_input_at = now;
+    s->timing.input_ring[s->timing.input_total++ % TOMOE_PENDING_INPUT] = now;
     if (!s->timing.input_at) s->timing.input_at = now;
     if (channel == TIMING_DRAG) { s->timing.drag_at = now; s->timing.drag = true; }
     else if (channel == TIMING_KEY) { s->timing.key_at = now; s->timing.key = true; }
@@ -94,7 +94,7 @@ void timing_event_done(struct tomoe *s) {
 void timing_commit(struct tomoe *s) {
     if (!timing_enabled) return;
     s->timing.commit_at = timing_now();
-    s->timing.newest_commit_at = s->timing.commit_at;
+    s->timing.commit_ring[s->timing.commit_total++ % TOMOE_PENDING_INPUT] = s->timing.commit_at;
     s->timing.commit = true;
 }
 
@@ -107,28 +107,42 @@ void timing_frame_start(struct tomoe *s) {
     s->timing.input_at = 0;
 }
 
+static void latch_ring(uint64_t *ring, uint64_t *seen, uint64_t total, uint64_t *pending,
+        size_t *count) {
+    *count = 0;
+    uint64_t from = *seen > total - TOMOE_PENDING_INPUT ? *seen : total - TOMOE_PENDING_INPUT;
+    for (uint64_t index = from; index < total && *count < TOMOE_PENDING_INPUT; index++)
+        pending[(*count)++] = ring[index % TOMOE_PENDING_INPUT];
+    *seen = total;
+}
+
 void timing_frame_latch(struct screen *screen) {
     if (!timing_enabled) return;
     struct tomoe *s = screen->server;
-    uint64_t input = s->timing.newest_input_at, commit = s->timing.newest_commit_at;
-    screen->latch_input_ns = input > screen->seen_input_ns ? (int64_t)input : 0;
-    screen->latch_commit_ns = commit > screen->seen_commit_ns ? (int64_t)commit : 0;
-    screen->seen_input_ns = input > screen->seen_input_ns ? input : screen->seen_input_ns;
-    screen->seen_commit_ns = commit > screen->seen_commit_ns ? commit : screen->seen_commit_ns;
     uint64_t now = timing_now();
-    if (screen->latch_input_ns && now > (uint64_t)screen->latch_input_ns)
-        timing_add(TIMING_LATCH_INPUT, now - (uint64_t)screen->latch_input_ns);
-    if (screen->latch_commit_ns && now > (uint64_t)screen->latch_commit_ns)
-        timing_add(TIMING_LATCH_COMMIT, now - (uint64_t)screen->latch_commit_ns);
+    latch_ring(s->timing.input_ring, &screen->input_seen, s->timing.input_total,
+        screen->pending_input, &screen->pending_input_count);
+    latch_ring(s->timing.commit_ring, &screen->commit_seen, s->timing.commit_total,
+        screen->pending_commit, &screen->pending_commit_count);
+    if (screen->pending_input_count) {
+        uint64_t newest = screen->pending_input[screen->pending_input_count - 1];
+        if (now > newest) timing_add(TIMING_LATCH_INPUT, now - newest);
+    }
+    if (screen->pending_commit_count) {
+        uint64_t newest = screen->pending_commit[screen->pending_commit_count - 1];
+        if (now > newest) timing_add(TIMING_LATCH_COMMIT, now - newest);
+    }
 }
 
 void timing_screen_present(struct screen *screen, int64_t when_ns) {
     if (!timing_enabled) return;
-    if (screen->latch_input_ns && when_ns > screen->latch_input_ns)
-        timing_add(TIMING_PRESENT_INPUT, (uint64_t)(when_ns - screen->latch_input_ns));
-    if (screen->latch_commit_ns && when_ns > screen->latch_commit_ns)
-        timing_add(TIMING_PRESENT_COMMIT, (uint64_t)(when_ns - screen->latch_commit_ns));
-    screen->latch_input_ns = screen->latch_commit_ns = 0;
+    for (size_t i = 0; i < screen->pending_input_count; i++)
+        if (when_ns > (int64_t)screen->pending_input[i])
+            timing_add(TIMING_PRESENT_INPUT, (uint64_t)when_ns - screen->pending_input[i]);
+    for (size_t i = 0; i < screen->pending_commit_count; i++)
+        if (when_ns > (int64_t)screen->pending_commit[i])
+            timing_add(TIMING_PRESENT_COMMIT, (uint64_t)when_ns - screen->pending_commit[i]);
+    screen->pending_input_count = screen->pending_commit_count = 0;
 }
 
 void timing_frame_scene(struct tomoe *s, uint64_t ns) {

@@ -15,8 +15,8 @@
   (declare (ignore state event))
   (values nil
           (append (loop for output in (context snapshot :outputs)
-                        collect (apply #'configure-output (getf output :name)
-                                       :mode (frameclock-mode (getf output :name))))
+                        collect (configure-output (getf output :name)
+                                                  :mode (frameclock-mode (getf output :name))))
                   (loop for window in (context snapshot :windows) for index from 0
                         collect (frameclock-place window index)))
           nil))
