@@ -114,6 +114,12 @@ int tomoe_present_sounds(struct tomoe *server);
 const char *tomoe_present_sound(struct tomoe *server, int event, const char *path, double gain);
 const char *tomoe_sound_stats(struct tomoe *server);
 const char *tomoe_native_errors(void);
+int tomoe_motion_begin(struct tomoe *server);
+int tomoe_motion(struct tomoe *server, int fast, int hover, int regions, int edges, int distance);
+int tomoe_motion_region(struct tomoe *server, const char *name, int x, int y, int width, int height);
+int tomoe_motion_edge(struct tomoe *server, int side, int thickness);
+int tomoe_motion_drag(struct tomoe *server, uint32_t id, int mode, int bound, int min_size,
+    int max_size);
 const char *tomoe_present_apply(struct tomoe *server);
 void tomoe_present_abort(struct tomoe *server);
 #endif

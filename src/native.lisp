@@ -227,6 +227,18 @@ once."
 (define-native ("tomoe_present_keyboard_grab" %present-keyboard-grab) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (otherwise sb-alien:c-string))
+(define-native ("tomoe_motion_begin" %motion-begin) sb-alien:int (server (* t)))
+(define-native ("tomoe_motion" %motion) sb-alien:int
+  (server (* t)) (fast sb-alien:int) (hover sb-alien:int) (regions sb-alien:int)
+  (edges sb-alien:int) (distance sb-alien:int))
+(define-native ("tomoe_motion_region" %motion-region) sb-alien:int
+  (server (* t)) (name sb-alien:c-string) (x sb-alien:int) (y sb-alien:int)
+  (width sb-alien:int) (height sb-alien:int))
+(define-native ("tomoe_motion_edge" %motion-edge) sb-alien:int
+  (server (* t)) (side sb-alien:int) (thickness sb-alien:int))
+(define-native ("tomoe_motion_drag" %motion-drag) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int) (mode sb-alien:int) (bound sb-alien:int)
+  (minimum sb-alien:int) (maximum sb-alien:int))
 (define-native ("tomoe_present_sounds" %present-sounds) sb-alien:int (server (* t)))
 (define-native ("tomoe_present_sound" %present-sound) sb-alien:c-string
   (server (* t)) (event sb-alien:int) (path sb-alien:c-string) (gain sb-alien:double))
@@ -425,8 +437,34 @@ once."
                  (:group (stage value (rest type) name))))))
     (stage settings +settings+ nil)))
 
+(defun stage-native-motion (backend motion)
+  "Stage the pointer gate: nothing on the fast path unless MOTION says so."
+  (unless (= 1 (%motion-begin backend)) (error "Cannot allocate candidate motion gate."))
+  (when motion
+    (unless (= 1 (%motion backend (if (getf motion :fast) 1 0)
+                          (if (getf motion :hover) 1 0)
+                          (if (getf motion :regions) 1 0)
+                          (if (getf motion :edges) 1 0)
+                          (getf motion :distance 0)))
+      (error "Cannot stage the motion gate."))
+    (dolist (region (getf motion :regions))
+      (destructuring-bind (name x y width height) region
+        (unless (= 1 (%motion-region backend name x y width height))
+          (error "Cannot stage motion region ~A." name))))
+    (dolist (edge (getf motion :edges))
+      (destructuring-bind (side thickness) edge
+        (unless (= 1 (%motion-edge backend (ecase side (:top 0) (:bottom 1) (:left 2) (:right 3))
+                                   thickness))
+          (error "Cannot stage motion edge ~(~A~)." side))))
+    (let ((drag (getf motion :drag)))
+      (when drag
+        (unless (= 1 (%motion-drag backend (getf drag :id)
+                                   (ecase (getf drag :mode) (:move 1) (:resize 2) (:pointer 3))
+                                   (getf drag :bound) (getf drag :min-size) (getf drag :max-size)))
+          (error "Cannot stage the native drag."))))))
+
 (defun configure-native-presentation (backend outputs context overrides restack
-                                      outputs-changed bindings-changed grab
+                                      outputs-changed bindings-changed grab motion
                                       &optional keyboard-changed settings-changed sounds-changed)
   "Prepare all owned native state, then publish the accepted presentation once."
   (unwind-protect
@@ -441,6 +479,7 @@ once."
                                        (if bindings-changed 1 0) (or (first grab) 0)
                                        (ecase (second grab) ((nil) 0) (:move 1) (:resize 2) (:pointer 3))))
              (error "Cannot allocate candidate presentation.")))
+         (stage-native-motion backend motion)
          (when keyboard-changed
            (let ((config (getf context :keyboard)))
              (unless (= 1 (%present-keyboard backend (getf config :rules) (getf config :model)

@@ -93,7 +93,8 @@ it consed, when samples are kept."
   (fd-watches (make-hash-table)) fd-specs watch-failure
   (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
-  (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed)
+  (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed
+  motion-plan)
 
 (defconstant +event-readable+ 1)
 (defconstant +event-writable+ 2)
@@ -405,10 +406,11 @@ handful of effects, so a scan beats a hash table until the list is long."
         (error 'extension-error :unit (spec-name spec) :cause condition)))))
 
 (defun resolved-grab (runtime mounts)
-  "The last owner's grab on a buffered target. A detached or destroyed target
-cannot mask another owner's available grab. Registry lifetime is independent."
-  (let ((grab nil))
-    (dolist (mounted mounts grab)
+  "The last owner's grab on a buffered target, and that owner. A detached or
+destroyed target cannot mask another owner's available grab. Registry lifetime
+is independent."
+  (let ((grab nil) (owner nil))
+    (dolist (mounted mounts (values grab owner))
       (dolist (effect (mounted-effects mounted))
         (when (eq (effect-kind effect) :grab)
           (let* ((args (effect-arguments effect))
@@ -420,7 +422,53 @@ cannot mask another owner's available grab. Registry lifetime is independent."
                            (or (null generation) (eql generation (getf window :buffer-generation))))
                       (and (null generation)
                            (find id (runtime-layers runtime) :key (lambda (l) (getf l :id)))))
-              (setf grab (list id (second args))))))))))
+              (setf grab (list id (second args))
+                    owner mounted))))))))
+
+(defparameter +motion-reads+ '(:pointer :grab)
+  "Context keys whose readers see pointer motion and therefore need a contract
+before native code may move the pointer without them.")
+
+(defun motion-contract-of (mounted)
+  "MOUNTED's published native motion contract, or NIL."
+  (let ((effect (find :motion (mounted-effects mounted) :key #'effect-kind)))
+    (and effect (effect-arguments effect))))
+
+(defun resolved-motion-plan (mounts grab grab-owner)
+  "The pointer gate native code may follow, or NIL when Lisp must see motion.
+Fast only when every extension that reads pointer motion publishes a contract,
+and only while no grab is active unless the grab's owner translates it natively."
+  (let ((fast t) (hover nil) (regions nil) (edges nil) (distance nil))
+    (dolist (mounted mounts)
+      (when (intersection +motion-reads+ (mount-context-reads mounted))
+        (let ((contract (motion-contract-of mounted)))
+          (if (null contract)
+              (setf fast nil)
+              (setf hover (or hover (getf contract :hover))
+                    regions (append regions (getf contract :regions))
+                    edges (append edges (getf contract :edges))
+                    distance (if distance (min distance (getf contract :distance))
+                                 (getf contract :distance)))))))
+    (let* ((drag (and grab-owner (second grab) (motion-contract-of grab-owner)))
+           (drag (and drag
+                      (member (second grab) '(:move :resize))
+                      (getf drag :drag)
+                      (list* :id (first grab) :mode (second grab) (getf drag :drag)))))
+      (when (and grab (not drag)) (setf fast nil))
+      (list :fast (and fast t) :hover (and hover t)
+            :regions (when fast (remove-duplicates regions :test #'equal))
+            :edges (when fast (remove-duplicates edges :test #'equal))
+            :distance (if fast (or distance 0) 0)
+            :drag (and fast drag)))))
+
+(defun motion-plan-changed-p (runtime motion)
+  "Whether the native core must be told about MOTION. An inert plan and none at
+all are the same thing, so a desktop that keeps the Lisp path never republishes
+just to say so."
+  (let ((applied (runtime-motion-plan runtime)))
+    (if (getf motion :fast)
+        (not (equal motion applied))
+        (and applied (getf applied :fast)))))
 
 (defun resolved-layer-overrides (mounts)
   "Resolve owned fields separately from client facts. NIL fields abstain, so
@@ -930,7 +978,9 @@ when it is not 1."
          (sounds-changed (not (equal (getf old :sounds) (getf context :sounds))))
          (grab-changed (not (equal (getf old :keyboard-grab) (getf context :keyboard-grab))))
          (overrides (resolved-layer-overrides mounts))
-         (grab (resolved-grab runtime mounts))
+         (grab-details (multiple-value-list (resolved-grab runtime mounts)))
+         (grab (first grab-details))
+         (motion (resolved-motion-plan mounts grab (second grab-details)))
          (timers (prepare-timers runtime mounts))
          (executions (prepare-executions runtime mounts))
          (processes (prepare-managed-processes runtime mounts))
@@ -944,10 +994,12 @@ when it is not 1."
               (not (equal (getf old :layers) (getf context :layers)))
               (not (equal (getf old :surface-plans) (getf context :surface-plans)))
               (not (equal (resolved-layer-overrides (runtime-mounts runtime)) overrides))
-              (not (equal grab (applied-grab backend))))
+              (not (equal grab (applied-grab backend)))
+              (motion-plan-changed-p runtime motion))
       (configure-native-presentation backend outputs context overrides restack
-                                     outputs-changed bindings-changed grab keyboard-changed
-                                     settings-changed sounds-changed))
+                                     outputs-changed bindings-changed grab motion keyboard-changed
+                                     settings-changed sounds-changed)
+      (setf (runtime-motion-plan runtime) motion))
     (when outputs-changed
       (setf (runtime-outputs runtime) (getf context :outputs)
             (runtime-connectors runtime) (getf context :connectors))
@@ -1574,6 +1626,8 @@ or decoded images grew without a collection running."
                   :last-error (runtime-last-error runtime)
                   :pending-context (copy-list (runtime-pending-context runtime))
                   :grab (describe-grab grab)
+                  :invocations *invocations*
+                  :motion-plan (copy-data (runtime-motion-plan runtime))
                   :native-grab (describe-grab (applied-grab (runtime-backend runtime)))
                   :native-ui (when (runtime-backend runtime)
                                (read-data (%ui-stats (runtime-backend runtime))))

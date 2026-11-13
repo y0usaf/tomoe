@@ -55,6 +55,7 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     struct presentation *plan = calloc(1, sizeof(*plan));
     if (!plan) return 0;
     wl_list_init(&plan->bindings);
+    motion_plan_init(&plan->motion);
     plan->outputs_changed = outputs_changed != 0;
     plan->replace_bindings = replace_bindings != 0;
     plan->grab_id = grab_mode ? grab_id : 0;
@@ -109,6 +110,13 @@ int tomoe_present_window(struct tomoe *s, uint32_t id, int x, int y,
     if (!plan || width < 1 || height < 1) return 0;
     struct presentation_target *entry = presentation_target_for(plan, id);
     if (!entry || !find_window_registered(s, id)) return 1;
+    struct motion_state *motion = &s->motion;
+    if (motion->drag_active && visible && id == motion->drag_id) {
+        x = motion->box_x;
+        y = motion->box_y;
+        width = motion->box_width;
+        height = motion->box_height;
+    }
     entry->target.x = x;
     entry->target.y = y;
     entry->target.width = width;
@@ -233,6 +241,7 @@ void presentation_publish(struct tomoe *s) {
         fail(s, "keyboard publication failed");
         return;
     }
+    motion_publish(s, &plan->motion);
     presentation_input_publish(s, plan);
     settings_publish(s, plan);
     sound_publish(s, plan);

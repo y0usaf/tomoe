@@ -6,7 +6,7 @@
            #:ui #:shell-surface
            #:json-object #:json-array #:json-get #:+json-false+
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
-           #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
+           #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting #:motion-contract
            #:bind-button #:bind-scroll #:window-properties #:keyboard-grab #:sound
            #:define-command #:invoke
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
@@ -952,6 +952,59 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   :canonical (destructuring-bind (id mode &optional buffer-generation) args
                (grab id mode :buffer-generation buffer-generation))
   :key '(:grab))
+(defun motion-contract (&key hover regions edges (distance 0) drag)
+  "Publish a native motion contract: this extension's result for pointer motion
+depends on nothing but these conditions, so the native core may move the
+pointer, the cursor and a drag without waking Lisp.
+
+HOVER wakes it when the window under the pointer changes, with the same
+:POINTER enter and leave events as always. REGIONS is a list of
+\(NAME X Y WIDTH HEIGHT) screen rectangles; entering or leaving one wakes it
+with a :STATE :MOTION pointer event naming the regions that changed. EDGES is a
+list of \(SIDE THICKNESS), SIDE one of :TOP :BOTTOM :LEFT :RIGHT: crossing the
+strip along that side of the output under the pointer wakes it the same way.
+DISTANCE wakes it once the pointer has travelled that many pixels since the last
+delivery. DRAG, a plist of :BOUND for a move and :MIN-SIZE and :MAX-SIZE for a
+resize, lets the compositor carry a grab it owns on its own: the window follows
+the pointer as \(PLACE ID ...) would place it, and Lisp hears about the drag
+once it ends or the moment another event needs policy.
+
+Without this effect an extension that reads :POINTER or :GRAB keeps every
+pointer event on the Lisp path, exactly as before."
+  (check-type hover boolean)
+  (check-type distance (integer 0 1048576))
+  (check-type regions list)
+  (check-type edges list)
+  (check-type drag (or null list))
+  (let ((regions
+          (loop for region in regions
+                collect (destructuring-bind (name x y width height) region
+                          (check-type name string)
+                          (check-type x integer) (check-type y integer)
+                          (check-type width (integer 1 1048576))
+                          (check-type height (integer 1 1048576))
+                          (list name x y width height))))
+        (edges
+          (loop for edge in edges
+                collect (destructuring-bind (side thickness) edge
+                          (check-type side (member :top :bottom :left :right))
+                          (check-type thickness (integer 1 1048576))
+                          (list side thickness))))
+        (drag
+          (when drag
+            (let ((bound (getf drag :bound)) (min-size (getf drag :min-size))
+                  (max-size (getf drag :max-size)))
+              (check-type bound (integer 0 1048576))
+              (check-type min-size (integer 1 1048576))
+              (check-type max-size (integer 1 1048576))
+              (unless (<= min-size max-size) (error "Drag sizes must not cross."))
+              (list :bound bound :min-size min-size :max-size max-size)))))
+    (%effect :motion (list :hover (and hover t) :regions regions :edges edges
+                           :distance distance :drag drag))))
+
+(define-effect :motion
+  :canonical (apply #'motion-contract args)
+  :key '(:motion))
 (defparameter +command-argument-types+
   '(:window :workspace :output :integer :string :argv :boolean :keyword)
   "Command argument types. A command line string coerces into every one of them.")
