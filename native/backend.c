@@ -242,6 +242,7 @@ void tomoe_destroy(struct tomoe *s) {
     seat_destroy(s->seat);
     settings_finish(&s->settings);
     if (s->render_timeline) timeline_unref(s->render_timeline);
+    window_shaders_finish(s);
     if (s->renderer) render_destroy(s->renderer);
     if (s->grab_release) wl_event_source_remove(s->grab_release);
     if (s->display) wl_display_destroy(s->display);

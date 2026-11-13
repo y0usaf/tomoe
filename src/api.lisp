@@ -24,6 +24,7 @@
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
 (defvar *source*)
+(defvar *source-directory*)
 (defvar *stop-requested* nil)
 
 (defun %finite-float-p (value)
@@ -228,6 +229,29 @@ Producer lifetimes belong to the session; removing a consumer releases only its
 own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
   (check-type name keyword)
   (copy-data (getf (context snapshot :services) name default)))
+
+(defun shader-path (path)
+  "Absolute window shader path, or one relative to the declaring source."
+  (check-type path string)
+  (when (or (zerop (length path)) (> (length path) 4096) (find #\Null path))
+    (error "Invalid window shader path."))
+  (cond ((char= (char path 0) #\/) path)
+        ((and (stringp *source-directory*) (plusp (length *source-directory*))
+              (char= (char *source-directory* 0) #\/))
+         (concatenate 'string *source-directory* path))
+        (t (error "Relative window shader paths require a declaring source."))))
+
+(defun shader-entry (entry)
+  "Validate a GLSL function name, since the native renderer splices it in."
+  (check-type entry string)
+  (unless (and (<= 1 (length entry) 63)
+               (alpha-char-p (char entry 0))
+               (every (lambda (character)
+                        (or (alpha-char-p character) (digit-char-p character)
+                            (char= character #\_)))
+                      entry))
+    (error "Invalid window shader entry ~S." entry))
+  entry)
 
 (defun rule-reserved-property-p (key)
   (or (member key '(:app-id :app_id :title :match :apply))
@@ -545,15 +569,21 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
               (%materialized-raise m (materialization-focused m)))))
 
 (defun window-properties (id &rest properties &key radius tearing blur border alpha tint scale
-                          rotation translate)
+                          rotation translate shader shader-grid shader-margin shader-settle
+                          shader-entry)
   "Own rendering and compositing overrides for one window. Omitted keys fall back
 to the settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
 BORDER is (:FOCUSED color :UNFOCUSED color). ALPHA multiplies the whole window,
 TINT mixes a color (its alpha is the strength) over its contents, SCALE and
 ROTATION (degrees) transform it about its centre, and TRANSLATE is (:X n :Y n)
 offset from where the layout puts it. Each of those animates towards its new
-value with the matching :ANIMATIONS setting. Later owners replace each key."
-  (declare (ignore radius tearing blur border alpha tint scale rotation translate))
+value with the matching :ANIMATIONS setting. SHADER is a GLSL file drawn over the
+window's own texture on a :SHADER-GRID mesh; :SHADER-MARGIN is the extra canvas
+around the window in pixels, :SHADER-SETTLE how long it keeps animating after the
+window moves, and :SHADER-ENTRY names the shader function to call (default
+mainImage). Later owners replace each key."
+  (declare (ignore radius tearing blur border alpha tint scale rotation translate
+                   shader shader-grid shader-margin shader-settle shader-entry))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
@@ -562,7 +592,11 @@ value with the matching :ANIMATIONS setting. Later owners replace each key."
                                        (:alpha (:real 0 1)) (:tint :color)
                                        (:scale (:real 1/100 16)) (:rotation (:real -360 360))
                                        (:translate (:group (:x (:integer -16384 16384) 0)
-                                                           (:y (:integer -16384 16384) 0))))))))
+                                                           (:y (:integer -16384 16384) 0)))
+                                       (:shader :path) (:shader-grid (:pair 1 32))
+                                       (:shader-margin (:integer 0 4096))
+                                       (:shader-settle (:real 0 10))
+                                       (:shader-entry :identifier))))))
 
 (define-effect :window-properties
   :canonical (destructuring-bind (id properties) args
@@ -676,6 +710,12 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
       (:real (unless (and (%finite-real-p value) (<= (second type) value (third type))) (bad))
        (%double-float value))
       (:member (unless (member value (rest type)) (bad)) value)
+      (:path (if (null value) "" (shader-path value)))
+      (:pair (unless (and (consp value) (typep (car value) `(integer ,(second type) ,(third type)))
+                          (typep (cdr value) `(integer ,(second type) ,(third type))))
+               (bad))
+       (cons (car value) (cdr value)))
+      (:identifier (shader-entry value))
       (:color (%ui-color value) (copy-seq value))
       (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
        (mapcar #'copy-seq value))

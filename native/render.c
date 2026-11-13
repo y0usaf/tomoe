@@ -57,6 +57,8 @@ struct render {
     PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_fence;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
+    float *mesh;
+    size_t mesh_cap;
     char *node, *exe, *warm_dir, *driver;
 };
 
@@ -302,31 +304,29 @@ static bool pixel_format(uint32_t format, GLenum *gl, bool *alpha) {
     return false;
 }
 
-static GLuint compile(GLenum type, const char *const *sources, int count) {
+static GLuint compile(GLenum type, const char *const *sources, int count, bool report) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, count, sources, NULL);
     glCompileShader(shader);
     GLint ok = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (ok) return shader;
-    char log[1024];
-    glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-    tomoe_log(LOG_ERROR, "tomoe: shader: %s", log);
+    if (report) {
+        char log[1024];
+        glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+        tomoe_log(LOG_ERROR, "tomoe: shader: %s", log);
+    }
     glDeleteShader(shader);
     return 0;
 }
 
-static bool link_sources(struct program *p, const char *const *vertex, int vertex_count,
-        const char *const *fragment, int fragment_count) {
-    GLuint vs = compile(GL_VERTEX_SHADER, vertex, vertex_count);
-    GLuint fs = vs ? compile(GL_FRAGMENT_SHADER, fragment, fragment_count) : 0;
-    if (!fs) {
-        glDeleteShader(vs);
-        return false;
-    }
+static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
     p->id = glCreateProgram();
     glAttachShader(p->id, vs);
     glAttachShader(p->id, fs);
+    glBindAttribLocation(p->id, 0, "grid");
+    glBindAttribLocation(p->id, 1, "uv");
+    glBindAttribLocation(p->id, 2, "texcoord");
     glLinkProgram(p->id);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -345,13 +345,31 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
         "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0",
-        "lut", "iTrail", "iTrailCount", "tint" };
+        "lut", "iTrail", "iTrailCount", "tint", "iBox", "iMin", "iMax", "iDrag", "tex_prev",
+        "tex_next", "geo_to_tex", "geo_to_tex_prev", "geo_to_tex_next", "curr_geo_to_prev_geo",
+        "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed", "iPath",
+        "iPathCount" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
-        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint };
+        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint,
+        &p->box, &p->min_ndc, &p->max_ndc, &p->drag, &p->tex_prev, &p->tex_next,
+        &p->geo_to_tex, &p->geo_to_tex_prev, &p->geo_to_tex_next, &p->curr_geo_to_prev_geo,
+        &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed,
+        &p->path, &p->path_count };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;
+}
+
+static bool link_sources(struct program *p, const char *const *vertex, int vertex_count,
+        const char *const *fragment, int fragment_count) {
+    GLuint vs = compile(GL_VERTEX_SHADER, vertex, vertex_count, true);
+    GLuint fs = vs ? compile(GL_FRAGMENT_SHADER, fragment, fragment_count, true) : 0;
+    if (!fs) {
+        glDeleteShader(vs);
+        return false;
+    }
+    return link_stages(p, vs, fs);
 }
 
 static const char fragment_precision[] = "precision highp float;\n";
@@ -422,6 +440,211 @@ void render_shader_destroy(struct program *program) {
     current(shader->r);
     glDeleteProgram(program->id);
     free(shader);
+}
+
+enum { WINDOW_SHADER_LIMIT = 65536, WINDOW_SHADER_ENTRY = 64 };
+static const char window_vertex_prelude[] =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform vec2 iResolution;\n"
+    "uniform vec4 iBox;\n"
+    "uniform vec2 iMin;\n"
+    "uniform vec2 iMax;\n"
+    "uniform float iTime;\n"
+    "uniform int iFrame;\n"
+    "uniform int iDrag;\n"
+    "uniform int iTrailCount;\n"
+    "uniform vec4 iTrail[64];\n"
+    "uniform int iPathCount;\n"
+    "uniform vec4 iPath[32];\n"
+    "in vec2 grid;\n"
+    "in vec2 uv;\n"
+    "in vec2 texcoord;\n"
+    "out vec2 v_uv;\n"
+    "out vec2 v_tex;\n"
+    "out vec2 v_local;\n"
+    "#line 1\n";
+static const char window_vertex_main[] =
+    "\nvoid main() {\n"
+    "    vec2 g = warp(grid);\n"
+    "    v_local = g * iResolution;\n"
+    "    v_uv = uv;\n"
+    "    v_tex = texcoord;\n"
+    "    gl_Position = vec4(mix(iMin, iMax, g), 0.0, 1.0);\n"
+    "}\n";
+static const char window_identity_warp[] =
+    "\nvec2 warp(vec2 grid) { return grid; }\n";
+static const char window_fragment_prelude[] =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform sampler2D tex;\n"
+    "uniform sampler2D tex_prev;\n"
+    "uniform sampler2D tex_next;\n"
+    "uniform mat3 geo_to_tex;\n"
+    "uniform mat3 geo_to_tex_prev;\n"
+    "uniform mat3 geo_to_tex_next;\n"
+    "uniform mat3 curr_geo_to_prev_geo;\n"
+    "uniform mat3 curr_geo_to_next_geo;\n"
+    "uniform float progress;\n"
+    "uniform float clamped_progress;\n"
+    "uniform float random_seed;\n"
+    "uniform float alpha;\n"
+    "uniform vec2 iResolution;\n"
+    "uniform vec4 iBox;\n"
+    "uniform float iTime;\n"
+    "uniform int iFrame;\n"
+    "uniform int iDrag;\n"
+    "uniform int iTrailCount;\n"
+    "uniform vec4 iTrail[64];\n"
+    "uniform int iPathCount;\n"
+    "uniform vec4 iPath[32];\n"
+    "in vec2 v_uv;\n"
+    "in vec2 v_tex;\n"
+    "in vec2 v_local;\n"
+    "out vec4 tomoe_color;\n"
+    "#define niri_tex tex\n"
+    "#define niri_tex_prev tex_prev\n"
+    "#define niri_tex_next tex_next\n"
+    "#define niri_geo_to_tex geo_to_tex\n"
+    "#define niri_geo_to_tex_prev geo_to_tex_prev\n"
+    "#define niri_geo_to_tex_next geo_to_tex_next\n"
+    "#define niri_curr_geo_to_prev_geo curr_geo_to_prev_geo\n"
+    "#define niri_curr_geo_to_next_geo curr_geo_to_next_geo\n"
+    "#define niri_progress progress\n"
+    "#define niri_clamped_progress clamped_progress\n"
+    "#define niri_random_seed random_seed\n"
+    "#line 1\n";
+static const char window_entry_main[] =
+    "\nvoid main() {\n"
+    "    vec4 c = %s(vec3(v_uv, 1.0), vec3(iBox.zw, 1.0));\n"
+    "    tomoe_color = c * alpha;\n"
+    "}\n";
+static const char window_image_main[] =
+    "\nvoid main() {\n"
+    "    vec4 c = vec4(0.0);\n"
+    "    mainImage(c, v_local);\n"
+    "    tomoe_color = c * alpha;\n"
+    "}\n";
+
+static struct program *render_window_shader_create(struct render *r, const char *source,
+        const char *entry) {
+    struct shader *shader = calloc(1, sizeof(*shader));
+    if (!shader) return NULL;
+    char wrapper[WINDOW_SHADER_ENTRY + 512];
+    if (entry && *entry && strcmp(entry, "mainImage"))
+        snprintf(wrapper, sizeof(wrapper), window_entry_main, entry);
+    else
+        snprintf(wrapper, sizeof(wrapper), "%s", window_image_main);
+    const char *fragment[] = { window_fragment_prelude, source, wrapper };
+    const char *vertex[] = { window_vertex_prelude, source, window_vertex_main };
+    const char *fallback[] = { window_vertex_prelude, window_identity_warp,
+        window_vertex_main };
+    bool warps = strstr(source, "warp") != NULL;
+    current(r);
+    EGLContext scratch = compile_begin(r);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fragment, 3, true);
+    GLuint vs = fs ? compile(GL_VERTEX_SHADER, warps ? vertex : fallback, 3, !warps) : 0;
+    if (fs && !vs && warps) vs = compile(GL_VERTEX_SHADER, fallback, 3, true);
+    bool linked = vs && link_stages(&shader->program, vs, fs);
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    compile_end(r, scratch);
+    if (linked) {
+        shader->r = r;
+        return &shader->program;
+    }
+    free(shader);
+    return NULL;
+}
+
+static char *window_shader_source(const char *path, long *mtime) {
+    struct stat info;
+    if (!path || !*path || stat(path, &info) != 0 || !S_ISREG(info.st_mode) ||
+            info.st_size <= 0 || info.st_size > WINDOW_SHADER_LIMIT) return NULL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    char *text = malloc((size_t)info.st_size + 1);
+    if (text) {
+        size_t read_bytes = 0;
+        while (read_bytes < (size_t)info.st_size) {
+            ssize_t step = read(fd, text + read_bytes, (size_t)info.st_size - read_bytes);
+            if (step <= 0) break;
+            read_bytes += (size_t)step;
+        }
+        if (read_bytes == (size_t)info.st_size) {
+            text[read_bytes] = '\0';
+            if ((long)strlen(text) == info.st_size) *mtime = (long)info.st_mtime;
+        } else {
+            free(text);
+            text = NULL;
+        }
+    }
+    close(fd);
+    return text;
+}
+
+static void window_shader_compile(struct tomoe *s, struct window_shader *shader) {
+    if (!s->renderer || !shader) return;
+    long mtime = 0;
+    char *source = window_shader_source(shader->path, &mtime);
+    if (!source) {
+        tomoe_log(LOG_ERROR, "tomoe: window shader unreadable: %s", shader->path);
+        return;
+    }
+    render_shader_destroy(shader->program);
+    shader->program = render_window_shader_create(s->renderer, source, shader->entry);
+    shader->mtime = mtime;
+    free(source);
+    if (!shader->program)
+        tomoe_log(LOG_ERROR, "tomoe: window shader did not link: %s", shader->path);
+}
+
+struct window_shader *window_shader_for(struct tomoe *s, const char *path,
+        int grid_x, int grid_y, int margin, double settle, const char *entry) {
+    if (!s || !path || !*path) return NULL;
+    struct window_shader *shader;
+    for (shader = s->shaders; shader; shader = shader->next)
+        if (!strcmp(shader->path, path) && shader->grid_x == grid_x &&
+                shader->grid_y == grid_y && shader->margin == margin &&
+                shader->settle == settle && !strcmp(shader->entry, entry))
+            break;
+    if (shader) {
+        struct stat info;
+        if (!shader->program || (stat(path, &info) == 0 && info.st_mtime != shader->mtime))
+            window_shader_compile(s, shader);
+        return shader;
+    }
+    shader = calloc(1, sizeof(*shader));
+    if (!shader) return NULL;
+    shader->path = strdup(path);
+    if (!shader->path) {
+        free(shader);
+        return NULL;
+    }
+    snprintf(shader->entry, sizeof(shader->entry), "%s", entry);
+    shader->grid_x = grid_x;
+    shader->grid_y = grid_y;
+    shader->margin = margin;
+    shader->settle = settle;
+    shader->next = s->shaders;
+    s->shaders = shader;
+    window_shader_compile(s, shader);
+    return shader;
+}
+
+void window_shaders_finish(struct tomoe *s) {
+    if (!s) return;
+    struct window_shader *shader = s->shaders;
+    while (shader) {
+        struct window_shader *next = shader->next;
+        render_shader_destroy(shader->program);
+        free(shader->path);
+        free(shader);
+        shader = next;
+    }
+    s->shaders = NULL;
 }
 
 static void render_quad(struct program *p, const float pos[8], const float local[8],
@@ -971,6 +1194,170 @@ static int stall_fence(struct render *r) {
     return fds[0];
 }
 
+static struct fbox mesh_source(const struct mesh_options *o) {
+    return o->src_box.width <= 0 || o->src_box.height <= 0 ?
+        (struct fbox){ 0, 0, o->texture->width, o->texture->height } : o->src_box;
+}
+
+static void mesh_texcoord(const struct mesh_options *o, double u, double v, float out[2]) {
+    struct fbox src = mesh_source(o);
+    const float *m = transforms[o->transform & WL_OUTPUT_TRANSFORM_90 ?
+        transform_invert(o->transform) : o->transform];
+    double cx = u - 0.5, cy = v - 0.5;
+    double px = m[0] * cx + m[1] * cy + 0.5, py = m[2] * cx + m[3] * cy + 0.5;
+    out[0] = (float)((src.x + px * src.width) / o->texture->width);
+    out[1] = (float)((src.y + py * src.height) / o->texture->height);
+}
+
+static void mesh_geometry_to_texture(const struct mesh_options *o, float matrix[9]) {
+    float origin[2], along_u[2], along_v[2];
+    mesh_texcoord(o, 0, 0, origin);
+    mesh_texcoord(o, 1, 0, along_u);
+    mesh_texcoord(o, 0, 1, along_v);
+    matrix[0] = along_u[0] - origin[0]; matrix[1] = along_u[1] - origin[1]; matrix[2] = 0;
+    matrix[3] = along_v[0] - origin[0]; matrix[4] = along_v[1] - origin[1]; matrix[5] = 0;
+    matrix[6] = origin[0]; matrix[7] = origin[1]; matrix[8] = 1;
+}
+
+static float *mesh_vertices(struct render *r, const struct mesh_options *o,
+        int grid_x, int grid_y) {
+    size_t cells = (size_t)grid_x * (size_t)grid_y;
+    size_t count = cells * 6 * 6;
+    if (r->mesh_cap < count) {
+        float *grown = realloc(r->mesh, count * sizeof(float));
+        if (!grown) return NULL;
+        r->mesh = grown;
+        r->mesh_cap = count;
+    }
+    float *mesh = r->mesh;
+    size_t at = 0;
+    for (int j = 0; j < grid_y; j++) {
+        for (int i = 0; i < grid_x; i++) {
+            for (int corner = 0; corner < 6; corner++) {
+                static const int order[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 },
+                    { 1, 0 }, { 1, 1 }, { 0, 1 } };
+                double gu = (double)(i + order[corner][0]) / grid_x;
+                double gv = (double)(j + order[corner][1]) / grid_y;
+                double x = gu * o->dst_box.width, y = gv * o->dst_box.height;
+                double u = (x - o->box[0]) / o->box[2];
+                double v = (o->box[1] + o->box[3] - y) / o->box[3];
+                float texcoord[2];
+                mesh_texcoord(o, u, v, texcoord);
+                mesh[at++] = (float)gu; mesh[at++] = (float)gv;
+                mesh[at++] = (float)u; mesh[at++] = (float)v;
+                mesh[at++] = texcoord[0]; mesh[at++] = texcoord[1];
+            }
+        }
+    }
+    return mesh;
+}
+
+void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
+    struct render *r = pass->r;
+    struct texture *texture = options->texture;
+    if (!texture || !options->shader || !options->shader->id) return;
+    struct gl_texture *t = texture_of(texture);
+    struct box dst = options->dst_box;
+    if (box_empty(&dst)) return;
+    int grid_x = options->grid_x < 1 ? 1 : options->grid_x > 32 ? 32 : options->grid_x;
+    int grid_y = options->grid_y < 1 ? 1 : options->grid_y > 32 ? 32 : options->grid_y;
+    float alpha = options->alpha ? *options->alpha : 1;
+    double params[12 + 4 * (POINTER_TRAIL + WINDOW_PATH)];
+    params[0] = 9;
+    params[1] = dst.x; params[2] = dst.y; params[3] = dst.width; params[4] = dst.height;
+    params[5] = grid_x; params[6] = grid_y; params[7] = options->drag;
+    params[8] = options->progress; params[9] = options->seed; params[10] = options->time;
+    params[11] = (double)(uintptr_t)options->shader;
+    int path_count = 0;
+    for (; path_count < options->path_count && path_count < WINDOW_PATH; path_count++)
+        for (int k = 0; k < 4; k++)
+            params[12 + 4 * path_count + k] = options->path[4 * path_count + k];
+    int count = 0;
+    for (; count < options->trail_count && count < POINTER_TRAIL; count++)
+        for (int k = 0; k < 4; k++)
+            params[12 + 4 * (path_count + count) + k] = options->trail[4 * count + k];
+    if (pass->record) {
+        struct texture_options record = { .texture = texture, .src_box = options->src_box,
+            .dst_box = dst, .transform = options->transform, .alpha = &alpha,
+            .filter_mode = FILTER_BILINEAR, .blend_mode = BLEND_PREMULTIPLIED };
+        pass_record(pass, &record, dst, (struct box){0}, params,
+            12 + 4 * (size_t)(path_count + count));
+        return;
+    }
+    if (!pass_touches(pass, dst)) return;
+    if (options->wait_timeline &&
+            !render_wait(r, options->wait_timeline, options->wait_point)) {
+        tomoe_log(LOG_ERROR, "tomoe: client acquire fence wait failed");
+        return;
+    }
+    struct program *p = options->shader;
+    blend(true);
+    glUseProgram(p->id);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(t->target, t->tex);
+    glTexParameteri(t->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(t->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (p->tex >= 0) glUniform1i(p->tex, 0);
+    if (p->tex_prev >= 0) glUniform1i(p->tex_prev, 0);
+    if (p->tex_next >= 0) glUniform1i(p->tex_next, 0);
+    float matrix[9], identity[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    mesh_geometry_to_texture(options, matrix);
+    if (p->geo_to_tex >= 0) glUniformMatrix3fv(p->geo_to_tex, 1, GL_FALSE, matrix);
+    if (p->geo_to_tex_prev >= 0) glUniformMatrix3fv(p->geo_to_tex_prev, 1, GL_FALSE, matrix);
+    if (p->geo_to_tex_next >= 0) glUniformMatrix3fv(p->geo_to_tex_next, 1, GL_FALSE, matrix);
+    if (p->curr_geo_to_prev_geo >= 0)
+        glUniformMatrix3fv(p->curr_geo_to_prev_geo, 1, GL_FALSE, identity);
+    if (p->curr_geo_to_next_geo >= 0)
+        glUniformMatrix3fv(p->curr_geo_to_next_geo, 1, GL_FALSE, identity);
+    if (p->progress >= 0) glUniform1f(p->progress, (float)options->progress);
+    if (p->clamped_progress >= 0)
+        glUniform1f(p->clamped_progress, (float)(options->progress < 1 ? options->progress : 1));
+    if (p->random_seed >= 0) glUniform1f(p->random_seed, (float)options->seed);
+    if (p->alpha >= 0) glUniform1f(p->alpha, alpha);
+    if (p->resolution >= 0) glUniform2f(p->resolution, dst.width, dst.height);
+    if (p->box >= 0) glUniform4f(p->box, (float)options->box[0], (float)options->box[1],
+        (float)options->box[2], (float)options->box[3]);
+    if (p->time >= 0) glUniform1f(p->time, (float)options->time);
+    if (p->frame >= 0) glUniform1i(p->frame, options->frame);
+    if (p->drag >= 0) glUniform1i(p->drag, options->drag);
+    if (p->trail_count >= 0) glUniform1i(p->trail_count, count);
+    if (count && p->trail >= 0) glUniform4fv(p->trail, count, options->trail);
+    if (p->path_count >= 0) glUniform1i(p->path_count, path_count);
+    if (path_count && p->path >= 0) glUniform4fv(p->path, path_count, options->path);
+    float w = pass->buffer->width, h = pass->buffer->height;
+    float x0 = dst.x / w * 2 - 1, x1 = (dst.x + dst.width) / w * 2 - 1;
+    float top = dst.y / h * 2 - 1, bottom = (dst.y + dst.height) / h * 2 - 1;
+    if (p->min_ndc >= 0) glUniform2f(p->min_ndc, x0, bottom);
+    if (p->max_ndc >= 0) glUniform2f(p->max_ndc, x1, top);
+    float *mesh = mesh_vertices(r, options, grid_x, grid_y);
+    if (!mesh) return;
+    size_t stride = 6 * sizeof(float);
+    GLsizei vertices = (GLsizei)((size_t)grid_x * (size_t)grid_y * 6);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, mesh);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, mesh + 2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, mesh + 4);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+    pixman_region32_t region;
+    pixman_region32_init_rect(&region, dst.x, dst.y, dst.width, dst.height);
+    if (pass->clip) pixman_region32_intersect(&region, &region, pass->clip);
+    int rects = 0;
+    const pixman_box32_t *clips = pixman_region32_rectangles(&region, &rects);
+    glEnable(GL_SCISSOR_TEST);
+    for (int i = 0; i < rects; i++) {
+        glScissor(clips[i].x1, clips[i].y1, clips[i].x2 - clips[i].x1,
+            clips[i].y2 - clips[i].y1);
+        glDrawArrays(GL_TRIANGLES, 0, vertices);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    pixman_region32_fini(&region);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glBindTexture(t->target, 0);
+}
+
 static int flush_fence(struct render *r) {
     EGLint attribs[] = { EGL_NONE };
     EGLSyncKHR sync = r->create_sync(r->display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
@@ -1381,6 +1768,7 @@ static void render_free(struct render *r) {
     format_set_finish(&r->texture_formats);
     format_set_finish(&r->render_formats);
     format_set_finish(&r->shm_formats);
+    free(r->mesh);
     free(r->node);
     free(r->exe);
     free(r->warm_dir);

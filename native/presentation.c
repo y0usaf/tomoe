@@ -144,6 +144,21 @@ int tomoe_present_window_visual(struct tomoe *s, uint32_t id, double opacity, ui
     return 1;
 }
 
+int tomoe_present_window_shader(struct tomoe *s, uint32_t id, const char *path,
+        int grid_x, int grid_y, int margin, double settle, const char *entry) {
+    struct presentation *plan = s->presentation;
+    if (!plan) return 0;
+    struct presentation_target *entry_target = presentation_target_for(plan, id);
+    if (!entry_target) return 1;
+    if (!path || !*path) {
+        entry_target->target.shader = NULL;
+        return 1;
+    }
+    entry_target->target.shader = window_shader_for(s, path, grid_x, grid_y, margin,
+        settle, entry && *entry ? entry : "mainImage");
+    return 1;
+}
+
 int tomoe_present_window_style(struct tomoe *s, uint32_t id, int radius, int blur,
         int tearing, int64_t focused, int64_t unfocused) {
     struct presentation *plan = s->presentation;

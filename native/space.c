@@ -274,6 +274,68 @@ static struct fbox window_box(const struct target *t, const struct frame *f) {
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }
+static float window_shader_seed(uint32_t id) {
+    uint32_t hash = id * 2654435761u;
+    hash ^= hash >> 15;
+    return (hash & 0xffffff) / 16777216.0f;
+}
+
+static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct target *t,
+        const struct texture_options *source, struct box local, float alpha) {
+    const struct window_shader *shader = t->shader;
+    int margin = shader->margin < 0 ? 0 : shader->margin > 4096 ? 4096 : shader->margin;
+    struct box area = { local.x - margin, local.y - margin,
+        local.width + 2 * margin, local.height + 2 * margin };
+    struct box shown;
+    box_transform(&shown, &area, transform_invert(f->transform), f->width, f->height);
+    struct timespec clock;
+    clock_gettime(CLOCK_MONOTONIC, &clock);
+    double now = clock.tv_sec + clock.tv_nsec / 1e9;
+    int drag = s->grab_mode == 1 && s->grab_id == t->id;
+    float trail[4 * POINTER_TRAIL];
+    float path[4 * WINDOW_PATH];
+    int count = 0, path_count = 0;
+    if (drag || t->shader_time < shader->settle) {
+        count = s->pointer_trail_count;
+        for (int i = 0; i < count; i++) {
+            const struct pointer_sample *sample = &s->pointer_trail[
+                (s->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
+            trail[4 * i] = (float)(sample->x - f->x - area.x);
+            trail[4 * i + 1] = (float)(f->y + area.y + area.height - sample->y);
+            trail[4 * i + 2] = (float)(now - sample->t);
+            trail[4 * i + 3] = 1;
+        }
+        struct window_path_sample history[WINDOW_PATH];
+        int samples = window_path_samples(s, t->id, history, WINDOW_PATH);
+        int limit = margin + (local.width > local.height ? local.width : local.height);
+        for (int i = 0; i < samples; i++) {
+            double dx = (t->x - history[i].x) * f->zoom;
+            double dy = (t->y - history[i].y) * f->zoom;
+            if (fabs(dx) > limit || fabs(dy) > limit) continue;
+            path[4 * path_count] = (float)dx;
+            path[4 * path_count + 1] = (float)-dy;
+            path[4 * path_count + 2] = (float)(now - history[i].t);
+            path[4 * path_count + 3] = 1;
+            path_count++;
+        }
+    }
+    struct mesh_options options = {
+        .texture = source->texture, .shader = shader->program, .dst_box = shown,
+        .src_box = source->src_box, .transform = source->transform,
+        .trail = count ? trail : NULL, .path = path_count ? path : NULL, .alpha = &alpha,
+        .wait_timeline = source->wait_timeline, .wait_point = source->wait_point,
+        .trail_count = count, .path_count = path_count,
+        .grid_x = shader->grid_x, .grid_y = shader->grid_y, .frame = 0, .drag = drag,
+        .time = t->shader_time, .progress = shader->settle > 0 ? t->shader_time / shader->settle : 1,
+        .seed = window_shader_seed(t->id),
+    };
+    options.box[0] = local.x - area.x;
+    options.box[1] = (area.y + area.height) - (local.y + local.height);
+    options.box[2] = local.width;
+    options.box[3] = local.height;
+    pass_add_mesh(f->pass, &options);
+    return true;
+}
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
     if (box_empty(&leaf->shown)) return false;
@@ -312,6 +374,9 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .rotation = window ? t->visual.rotation : 0,
         .tint = window ? t->visual.tint : NULL,
     };
+    if (window && t->shader && t->shader->program && local.width > 0 && local.height > 0) {
+        if (window_shader_mesh(s, data, t, &options, local, alpha)) return false;
+    }
     double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
     bool clipped = !box_equal(&leaf->shown, &leaf->screen) && options.rotation == 0;
     if (window && t->client_width > 0 && !transformed && options.rotation == 0 &&
@@ -729,6 +794,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
+    if (t && t->shader) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width ||
                 t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||

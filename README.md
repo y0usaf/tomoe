@@ -185,6 +185,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail, drawn by a shader overlay |
+| [`drag-smear.lisp`](examples/drag-smear.lisp) | A moving window leaves a quantized smear of its own pixels and collapses once it stops |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
@@ -194,6 +195,33 @@ age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
 `(:shader PATH :fps FPS :idle SECONDS)` stops drawing and ticking once the
 pointer has been still for `SECONDS`, and pointer motion starts it again; the
 trail example uses that so an idle overlay costs no frames.
+
+A window can also be drawn through a shader of its own, over a deformable mesh
+whose texture coordinates stay pinned to the window.
+`(window-properties ID :shader PATH :shader-grid '(COLUMNS . ROWS)
+:shader-margin PIXELS :shader-settle SECONDS)` renders that window's own
+texture through `PATH`; every other window is untouched, and the effect costs
+nothing while the window is still. The shader fills the area around the window
+by `:shader-margin` pixels and defines
+`vec4 mainImage(out vec4 color, in vec2 fragCoord)` or names another entry
+point with `:shader-entry`. It samples the window texture as `tex`, converts
+geometry coordinates to texture coordinates with `geo_to_tex` (a `mat3`), and
+can read `v_uv` (geometry, 0-1 over the window), `v_tex` (the same point in
+the texture), `v_local` (pixels in the mesh), `iBox` (the window's rectangle in
+the mesh), `iResolution`, `progress` and `clamped_progress` (time since the
+window last moved, over `:shader-settle`), `random_seed`, `iTime`, `iFrame`,
+`iDrag` (1 while this window is being dragged), the pointer trail above, and
+`iPath`, the window's own recent movement as `(x, y, age, 1)` displacements in
+mesh pixels with `iPathCount`; a shader can therefore react to any move, from a
+drag to a layout change or a workspace switch, not just pointer input.
+A vertex function `vec2 warp(vec2 grid)` bends the mesh, and `tex_prev`,
+`tex_next` and the `curr_geo_to_*_geo` matrices are reserved for resize
+effects. Shaders written for niri's open, close and resize animations run
+unchanged with `:shader-entry "open_color"` (or `"close_color"`,
+`"resize_color"`): the `niri_` uniforms are defined in terms of the ones above,
+though the previous and next textures are the current texture until Tomoe
+feeds a resize path. The compositor keeps drawing while a window with a shader
+settles after moving, then goes quiet again.
 
 Output tools such as `wlr-randr` can query and configure every connected head,
 including disabled outputs, through `zwlr_output_manager_v1` version 4. Mode,

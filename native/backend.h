@@ -76,6 +76,8 @@ int tomoe_present_window_style(struct tomoe *server, uint32_t id, int radius, in
     int tearing, int64_t focused, int64_t unfocused);
 int tomoe_present_window_visual(struct tomoe *server, uint32_t id, double opacity,
     uint32_t tint, double scale, double rotation, int translate_x, int translate_y);
+int tomoe_present_window_shader(struct tomoe *server, uint32_t id, const char *path,
+    int grid_x, int grid_y, int margin, double settle, const char *entry);
 int tomoe_present_ui_surface(struct tomoe *server, const char *owner,
     uint64_t source_id, const char *name, const char *output,
     const char *signature, int x, int y, int width, int height, int layer,
