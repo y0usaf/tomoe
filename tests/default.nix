@@ -443,6 +443,24 @@ in
     ''
     + builtins.readFile ./livepatch.py
   );
+  animations =
+    checkWith
+      {
+        environment.systemPackages = [
+          pkgs.grim
+          pkgs.python3
+          pkgs.wayland-utils
+        ];
+      }
+      "animations"
+      ''
+        machine.succeed(
+          "ANIMATIONS_REPORT=/run/animations-frames/report.txt"
+          " python3 ${./animations.py} --tomoe ${tomoe}/bin/tomoe"
+          " --client ${client}/bin/tomoe-test-client --frames /run/animations-frames"
+        )
+        print(machine.succeed("cat /run/animations-frames/report.txt"))
+      '';
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''
       WAKE_PROBE = "${wakeProbe}"

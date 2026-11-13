@@ -523,6 +523,8 @@ struct output {
     bool damaged;
     struct wl_event_source *tick;
     double tick_at;
+    double sample;
+    bool animating;
     struct oplist ops;
     uint64_t frames;
     pixman_region32_t damage[8];
@@ -569,6 +571,7 @@ struct frame {
     int x, y, width, height;
     enum wl_output_transform transform;
     double view_x, view_y, zoom;
+    double sample;
     uint32_t focused;
 };
 struct effects;
@@ -609,14 +612,33 @@ struct animation_config {
     double damping_ratio, stiffness, epsilon, bezier[4];
 };
 struct animation {
-    double from, to, start, duration;
+    double from, to, start, duration, v0, sample;
     struct animation_config config;
-    bool active;
+    bool active, advanced;
+};
+enum { ANIMATION_SETTLE_MOVE, ANIMATION_SETTLE_OPEN, ANIMATION_SETTLE_CLOSE,
+    ANIMATION_SETTLE_RESIZE, ANIMATION_SETTLE_VIEW, ANIMATION_SETTLE_SWITCH };
+struct animation_stats {
+    uint64_t frames, gaps, dead;
+    int64_t first_passed_ns, last_frame_ns, lead_min_ns, lead_max_ns;
+    int64_t first_frame_ns, max_interval_ns, steady_interval_ns, span_ns, intervals;
 };
 double animation_now(void);
 void animation_start(struct animation *a, const struct animation_config *config,
     double from, double to, double now);
+void animation_start_from(struct animation *a, const struct animation_config *config,
+    double from, double to, double now, double velocity);
+bool animation_retarget(struct animation *a, const struct animation_config *config, double to);
+double animation_velocity(const struct animation *a, double now);
+double animation_handoff(const struct animation *a);
+double animation_at(const struct animation *a, double now);
 double animation_value(struct animation *a, double now);
+double animation_advance(struct animation *a, double now, struct animation_stats *stats);
+double animation_reference(const struct screen *screen, int64_t start_ns);
+void animation_frame_record(struct tomoe *s, const struct screen *screen,
+    int64_t start_ns, double sample, bool moving);
+int animation_settle_ms(const struct tomoe *s, int which);
+const char *tomoe_animation(struct tomoe *s);
 struct ghost {
     struct wl_list link;
     uint32_t id;
@@ -941,7 +963,8 @@ struct tomoe {
     int view_x, view_y;
     double view_zoom;
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
-    char *hit_result, *frames_result, *memory_result;
+    struct animation_stats animation;
+    char *hit_result, *frames_result, *memory_result, *animation_result;
     char *output_preview;
     char *output_current;
     uint64_t outputs_revision;
@@ -1233,7 +1256,7 @@ bool window_surface_mapped(struct tomoe *s, struct surface *surface);
 void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
-bool windows_animate(struct tomoe *s);
+bool windows_animate(struct tomoe *s, double now);
 void view_publish(struct tomoe *s, const struct presentation *plan);
 bool view_animate(struct tomoe *s, const struct settings *settings, double now);
 bool ghosts_animate(struct tomoe *s, double now);

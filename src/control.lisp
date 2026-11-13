@@ -156,6 +156,10 @@
        (destructuring-bind () args
          (read-data (or (%frames (runtime-backend runtime))
                         (error "Cannot serialize native frame counters.")))))
+      (:animation
+       (destructuring-bind () args
+         (read-data (or (%animation (runtime-backend runtime))
+                        (error "Cannot serialize native animation counters.")))))
       (:memory (destructuring-bind () args (memory-report runtime)))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount

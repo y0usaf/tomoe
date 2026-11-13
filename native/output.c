@@ -386,6 +386,38 @@ const char *tomoe_frames(struct tomoe *s) {
     return s->frames_result;
 }
 
+const char *tomoe_animation(struct tomoe *s) {
+    free(s->animation_result);
+    s->animation_result = NULL;
+    struct animation_stats *st = &s->animation;
+    int refresh = 0;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (output_is_active(o)) { refresh = o->screen->refresh; break; }
+    if (!refresh)
+        wl_list_for_each(o, &s->outputs, link) { refresh = o->screen->refresh; break; }
+    if (asprintf(&s->animation_result,
+            "(:move-settle-ms %d :open-ms %d :close-ms %d :resize-ms %d"
+            " :view-settle-ms %d :switch-ms %d :frames %" PRIu64 " :gaps %" PRIu64
+            " :dead %" PRIu64 " :first-passed-ns %" PRId64 " :lead-min-ns %" PRId64
+            " :lead-max-ns %" PRId64 " :span-ns %" PRId64 " :max-interval-ns %" PRId64
+            " :steady-interval-ns %" PRId64 " :intervals %" PRId64
+            " :refresh-mhz %d :period-ns %" PRId64 ")", 
+            animation_settle_ms(s, ANIMATION_SETTLE_MOVE),
+            animation_settle_ms(s, ANIMATION_SETTLE_OPEN),
+            animation_settle_ms(s, ANIMATION_SETTLE_CLOSE),
+            animation_settle_ms(s, ANIMATION_SETTLE_RESIZE),
+            animation_settle_ms(s, ANIMATION_SETTLE_VIEW),
+            animation_settle_ms(s, ANIMATION_SETTLE_SWITCH),
+            st->frames, st->gaps, st->dead, st->first_passed_ns,
+            st->lead_min_ns, st->lead_max_ns,
+            st->span_ns,
+            st->max_interval_ns, st->steady_interval_ns, st->intervals, refresh,
+            refresh > 0 ? (int64_t)(1000000000000LL / refresh) : (int64_t)0) < 0)
+        return NULL;
+    return s->animation_result;
+}
+
 const char *tomoe_memory(struct tomoe *s) {
     free(s->memory_result);
     s->memory_result = NULL;
@@ -1170,6 +1202,9 @@ static void output_frame(struct wl_listener *listener, void *data) {
         refresh_scene(o->server);
         pointer_sync_cursors(o->server);
     }
+    int64_t start_ns = (int64_t)start.tv_sec * 1000000000 + start.tv_nsec;
+    o->sample = animation_reference(o->screen, start_ns);
+    o->animating = false;
     bool success = scanout || render_output(o, &state);
     if (success && scanout)
         surface_presented(scanout, o->screen, true);
@@ -1205,8 +1240,9 @@ static void output_frame(struct wl_listener *listener, void *data) {
     o->screen->deferred = false;
     lock_frame_rendered(o->server, o->screen);
     if (!screen_frames_late(o->screen)) grab_frame_drawn(o->server);
-    bool moving = windows_animate(o->server);
-    if (ui_animate(o->server) || moving) screen_schedule_animation(o->screen);
+    bool moving = o->animating;
+    if (moving) screen_schedule_animation(o->screen);
+    animation_frame_record(o->server, o->screen, start_ns, o->sample, moving);
     frame_timed(o, &start);
 }
 

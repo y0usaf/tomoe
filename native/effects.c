@@ -334,9 +334,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
         mouse_x, mouse_y, count };
     memcpy(params, fields, sizeof(fields));
     if (count) {
-        struct timespec clock;
-        clock_gettime(CLOCK_MONOTONIC, &clock);
-        double now = clock.tv_sec + clock.tv_nsec / 1e9;
+        double now = f->sample > 0 ? f->sample : animation_now();
         for (int i = 0; i < count; i++) {
             const struct pointer_sample *sample = &f->server->pointer_trail[
                 (f->server->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];

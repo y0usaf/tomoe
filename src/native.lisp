@@ -31,6 +31,7 @@
 (define-native ("tomoe_hit_test" %hit-test) sb-alien:c-string
   (server (* t)) (screen-x sb-alien:double) (screen-y sb-alien:double))
 (define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_animation" %animation) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_memory" %memory) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_activity_serial" %activity-serial) sb-alien:unsigned-long-long
   (server (* t)))

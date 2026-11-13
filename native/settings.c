@@ -62,9 +62,11 @@ void settings_default(struct settings *settings) {
         .blur_passes = 3, .blur_offset = 1, .blur_margin = 96, .screenshot_freeze = true,
         .screenshot_colors = { .accent = 0x7aa1f7ff, .background = 0x1c1c21ff, .text = 0xffffffff,
             .chip = 0x45454fff },
-        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 800,
-            .epsilon = 0.0001 },
-        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 150, .curve = 3 } };
+        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 16000,
+            .epsilon = 0.001 },
+        .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 16000,
+            .epsilon = 0.001 },
+        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 } };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }

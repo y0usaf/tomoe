@@ -148,6 +148,11 @@
   (canonical-ui (cons :kind (cons kind properties))))
 
 (defun %ui-backdrop (value)
+  "Normalize a shell background: a color, (:image PATH [:fit FIT]) or
+(:shader PATH [:fps FPS] [:idle SECONDS]). A shader advances with the display,
+once per refresh and timed at the instant its frame is shown; :FPS is only a
+cap on that rate, and :IDLE is how long it keeps drawing after the pointer
+stops, so a shader that names it costs nothing at rest."
   (%ui-list value 6 "Shell background")
   (let ((kind (first value)) (options (cddr value)))
     (unless (member kind '(:image :shader))
@@ -156,7 +161,7 @@
     (list* kind (%ui-string (second value) 65536 nil)
            (if (eq kind :image)
                (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
-               (let ((fps (%double-float (getf options :fps 30)))
+               (let ((fps (%double-float (getf options :fps 0)))
                      (idle (%double-float (getf options :idle 0))))
                  (unless (<= 0d0 fps 1000d0) (error "Shell shader :fps must be from 0 to 1000."))
                  (unless (<= 0d0 idle 4d0) (error "Shell shader :idle must be from 0 to 4 seconds."))
