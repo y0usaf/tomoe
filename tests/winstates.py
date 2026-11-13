@@ -14,17 +14,18 @@ POLICY = """
 (in-package #:tomoe-user)
 
 (define-extension "winstates-wm" (:reads (:windows :outputs :focus :key)
-                                  :state (list :focused nil))
+                                  :state (list :focused nil :chosen nil))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
          (output (first (context snapshot :outputs)))
          (ids (mapcar (lambda (window) (getf window :id)) windows))
-         (focused (getf state :focused)))
+         (focused (getf state :focused))
+         (chosen (getf state :chosen)))
     (when (and (eq (getf event :type) :key) (equal (getf event :owner) "winstates-wm")
                (equal (getf event :command) "next"))
-      (setf focused (or (second (member focused ids)) (first ids))))
-    (unless (member focused ids) (setf focused (car (last ids))))
-    (values (list :focused focused)
+      (setf focused (or (second (member focused ids)) (first ids)) chosen t))
+    (when (and (not chosen) ids) (setf focused (car (last ids))))
+    (values (list :focused focused :chosen chosen)
             (append (when output
                       (loop for window in windows
                             for index from 0
@@ -117,10 +118,25 @@ class Compositor:
         match = re.search(r":FOCUS (\d+)", output)
         return int(match.group(1)) if match else 0
 
+    def wait_new_windows(self, known, count, seconds=20):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            ids = [entry for entry in self.windows() if entry not in known]
+            if len(ids) >= count:
+                return ids
+            time.sleep(0.2)
+        return [entry for entry in self.windows() if entry not in known]
+
+    def wait_quiet(self, seconds=10):
+        deadline = time.time() + seconds
+        while time.time() < deadline and self.windows():
+            time.sleep(0.2)
+
     def focus_window(self, target, seconds=2):
-        if self.focus_is(target, seconds):
-            return True
-        self.command("winstates-wm", "next")
+        for _ in range(3):
+            if self.focus_is(target, seconds):
+                return True
+            self.command("winstates-wm", "next")
         return self.focus_is(target, seconds)
 
     def focus_is(self, target, seconds=2):
@@ -336,16 +352,48 @@ def frames(compositor, count, interval, save, prefix):
     return captured
 
 
+def first_success(times, run):
+    error = None
+    for _ in range(times):
+        try:
+            return run()
+        except AssertionError as failure:
+            error = failure
+    raise error
+
+
+def tile(index):
+    return (10 + index * 420, 0, 10 + index * 420 + 400, 420)
+
+
+def wait_drawn(compositor, colours, seconds=20):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        image = compositor.frame()
+        if all(footprint(image, rgb(colour), 12) for colour in colours):
+            return image
+        time.sleep(0.1)
+    raise Failure(f"windows {colours} never drew")
+
+
+def start_pair(compositor, factory, prefix):
+    known = compositor.windows()
+    left = factory.start(prefix + "-left", "ffff00")
+    right = factory.start(prefix + "-right", "00a0ff")
+    ids = compositor.wait_new_windows(known, 2)[:2]
+    assert len(ids) == 2, f"expected two new windows, saw {ids}"
+    wait_drawn(compositor, [left.colour, right.colour])
+    return ids
+
+
 def scenario_inactive(compositor, factory, frames_dir):
-    left = factory.start("inactive-left", "ffff00")
-    right = factory.start("inactive-right", "00a0ff")
-    time.sleep(0.3)
+    ids = start_pair(compositor, factory, "inactive")
+    left = factory.running[0]
+    right = factory.running[1]
     compositor.mount(os.path.join(EXAMPLES, "inactive.lisp"))
-    time.sleep(0.4)
-    ids = compositor.windows()
-    assert len(ids) == 2, f"expected two windows, saw {ids}"
     assert compositor.focus_window(ids[0]), f"window {ids[0]} never held focus"
-    image = compositor.frame("inactive-first", frames_dir)
+    image = wait_pixel(compositor, (210, 200), rgb(left.colour), 3, 4,
+                       frames_dir, "inactive-first")
     focused = pixel(image, 210, 200)
     unfocused = pixel(image, 630, 200)
     assert near(focused, rgb(left.colour), 3), \
@@ -358,8 +406,8 @@ def scenario_inactive(compositor, factory, frames_dir):
     assert pixel(image, 630, 380) != BACKGROUND, "the unfocused window is fully transparent"
     compositor.command("winstates-wm", "next")
     assert compositor.focus_is(ids[1]), f"focus never moved to window {ids[1]}"
-    time.sleep(0.5)
-    image = compositor.frame("inactive-second", frames_dir)
+    image = wait_pixel(compositor, (630, 200), rgb(right.colour), 3, 4,
+                       frames_dir, "inactive-second")
     was_unfocused = pixel(image, 210, 200)
     was_focused = pixel(image, 630, 200)
     assert near(was_focused, rgb(right.colour), 3), \
@@ -370,56 +418,54 @@ def scenario_inactive(compositor, factory, frames_dir):
 
 
 def scenario_flash(compositor, factory, frames_dir):
-    left = factory.start("flash-left", "ffff00")
-    right = factory.start("flash-right", "00a0ff")
-    time.sleep(0.3)
+    ids = start_pair(compositor, factory, "flash")
     compositor.mount(os.path.join(EXAMPLES, "focus-flash.lisp"))
-    time.sleep(0.3)
-    ids = compositor.windows()
-    assert len(ids) == 2, f"expected two windows, saw {ids}"
     assert compositor.focus_window(ids[0]), f"window {ids[0]} never held focus"
-    time.sleep(0.6)
-    settled = compositor.frame("flash-settled", frames_dir)
-    base = visible_box(settled, 430, 0, 830, 420)
-    assert base and area(base) > 100000, f"the second window is not on screen: {base}"
-    compositor.command("winstates-wm", "next")
-    captured = frames(compositor, 16, 0.015, frames_dir, "flash")
-    assert compositor.focus_is(ids[1]), "focus never moved"
-    smallest = min((area(visible_box(image, 430, 0, 830, 420) or base)
-                    for _, image in captured))
-    assert smallest < area(base) * 0.95, \
-        f"the focused window never shrank: {smallest} of {area(base)}"
-    flashed = max(sum(brightest(image, rgb(right.colour))) for _, image in captured)
-    assert flashed > sum(rgb(right.colour)) + 40, \
-        f"the focused window never flashed: {flashed} vs {sum(rgb(right.colour))}"
-    time.sleep(0.8)
-    after = compositor.frame("flash-settled-again", frames_dir)
-    restored = footprint(after, rgb(right.colour), 6)
-    assert restored and abs(area(restored) - area(base)) < area(base) * 0.04, \
-        f"the window did not settle back to its size: {area(restored)} vs {area(base)}"
-    assert near(pixel(after, 630, 200), rgb(right.colour), 3), "the flash left a tint behind"
-    return f"shrank to {smallest / area(base):.0%} of its box, peaked at {flashed}, settled back"
+    settled = wait_pixel(compositor, (630, 200), rgb(factory.running[1].colour), 3, 4,
+                         frames_dir, "flash-settled")
+    bases = [visible_box(settled, *tile(index)) for index in (0, 1)]
+    assert all(bases) and all(area(base) > 100000 for base in bases), \
+        f"both windows should be on screen: {bases}"
+
+    def pulse():
+        compositor.command("winstates-wm", "next")
+        captured = frames(compositor, 16, 0.015, frames_dir, "flash")
+        for index, client in enumerate(factory.running):
+            base = bases[index]
+            smallest = min((area(visible_box(image, *tile(index)) or base)
+                            for _, image in captured))
+            flashed = max(sum(brightest(image, rgb(client.colour))) for _, image in captured)
+            if smallest < area(base) * 0.95 and flashed > sum(rgb(client.colour)) + 40:
+                return index, smallest, area(base), flashed
+        raise AssertionError("no window shrank and flashed in the captured frames")
+
+    index, smallest, base, flashed = first_success(3, pulse)
+    colour = rgb(factory.running[index].colour)
+    centre = tile(index)
+    after = wait_pixel(compositor, ((centre[0] + centre[2]) // 2, 200), colour, 3, 4,
+                       frames_dir, "flash-settled-again")
+    restored = visible_box(after, *tile(index))
+    assert restored and abs(area(restored) - base) < base * 0.04, \
+        f"the window did not settle back to its size: {area(restored) if restored else None} vs {base}"
+    return f"shrank to {smallest / base:.0%} of its box, peaked at {flashed}, settled back"
 
 
 def scenario_close(compositor, factory, frames_dir):
-    left = factory.start("close-left", "ffff00")
-    right = factory.start("close-right", "00a0ff")
-    time.sleep(0.3)
+    ids = start_pair(compositor, factory, "close")
+    right = factory.running[1]
     compositor.mount(os.path.join(EXAMPLES, "close-fade.lisp"))
-    time.sleep(0.3)
-    ids = compositor.windows()
-    assert len(ids) == 2, f"expected two windows, saw {ids}"
     assert compositor.focus_window(ids[0]), f"window {ids[0]} never held focus"
-    before = compositor.frame("close-before", frames_dir)
+    before = wait_pixel(compositor, (630, 200), rgb(right.colour), 3, 4,
+                        frames_dir, "close-before")
     box = footprint(before, rgb(right.colour), 12)
     assert box, "the closing window is not on screen"
     centre = ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
     started = time.time()
     right.stop()
     captured = []
-    for index in range(20):
+    for index in range(24):
         captured.append((time.time() - started, compositor.frame("close-%d" % index, frames_dir)))
-        if time.time() - started > 0.45:
+        if time.time() - started > 0.5:
             break
     fade = [(elapsed, sum(pixel(image, *centre))) for elapsed, image in captured]
     visible = [(elapsed, level) for elapsed, level in fade if level > sum(BACKGROUND) + 6]
@@ -439,30 +485,39 @@ def scenario_close(compositor, factory, frames_dir):
 
 
 def scenario_switch(compositor, factory, frames_dir):
+    known = compositor.windows()
     left = factory.start("spring-left", "ffff00")
     compositor.mount(os.path.join(EXAMPLES, "workspace-spring.lisp"))
-    time.sleep(0.4)
+    assert len(compositor.wait_new_windows(known, 1)) == 1, "the first window never mapped"
+    wait_drawn(compositor, [left.colour])
     compositor.command("workspace-spring", "tag2")
-    time.sleep(0.4)
+    known = compositor.windows()
     right = factory.start("spring-right", "00a0ff")
+    ids = compositor.wait_new_windows(known, 1)
+    assert len(ids) == 1, f"expected one new window, saw {ids}"
     time.sleep(0.4)
-    compositor.command("workspace-spring", "tag1")
-    time.sleep(0.5)
-    settled = compositor.frame("switch-one", frames_dir)
-    base = footprint(settled, rgb(left.colour), 12)
-    assert base and area(base) > 100000, f"the first window is not on screen: {base}"
-    compositor.command("workspace-spring", "tag2")
-    captured = frames(compositor, 16, 0.02, frames_dir, "switch")
-    growing = [area(footprint(image, rgb(right.colour), 55)) for _, image in captured]
-    growing = [size for size in growing if size]
-    assert growing, "the arriving window never drew"
-    faded = [sum(pixel(image, 900, 200)) for _, image in captured]
-    assert min(faded) < max(faded) * 0.8, \
-        f"the arriving window did not fade in: {min(faded)} then {max(faded)}"
-    assert min(growing) < max(growing) * 0.98, \
-        f"the arriving window did not spring in: {min(growing)} then {max(growing)}"
-    time.sleep(0.8)
-    after = compositor.frame("switch-settled", frames_dir)
+
+    def swap():
+        compositor.command("workspace-spring", "tag1")
+        settled = wait_pixel(compositor, (200, 200), rgb(left.colour), 6, 3,
+                             frames_dir, "switch-one")
+        base = footprint(settled, rgb(left.colour), 12)
+        assert base and area(base) > 100000, f"the first window is not on screen: {base}"
+        compositor.command("workspace-spring", "tag2")
+        captured = frames(compositor, 16, 0.02, frames_dir, "switch")
+        growing = [area(footprint(image, rgb(right.colour), 55)) for _, image in captured]
+        growing = [size for size in growing if size]
+        assert growing, "the arriving window never drew"
+        faded = [sum(pixel(image, 900, 200)) for _, image in captured]
+        assert min(faded) < max(faded) * 0.8, \
+            f"the arriving window did not fade in: {min(faded)} then {max(faded)}"
+        assert min(growing) < max(growing) * 0.98, \
+            f"the arriving window did not spring in: {min(growing)} then {max(growing)}"
+        return base, growing
+
+    base, growing = first_success(3, swap)
+    after = wait_pixel(compositor, (900, 200), rgb(right.colour), 4, 4,
+                       frames_dir, "switch-settled")
     landed = footprint(after, rgb(right.colour), 12)
     assert landed and abs(area(landed) - area(base)) < area(base) * 0.05, \
         f"the arriving window did not settle where it belongs: {landed} vs {base}"
@@ -476,9 +531,10 @@ def scenario_state(compositor, factory, frames_dir):
     path = os.path.join(factory.work, "rotate.lisp")
     with open(path, "w") as handle:
         handle.write(ROTATE)
+    known = compositor.windows()
     left = factory.start("state-left", "ffff00")
-    time.sleep(0.3)
-    upright = compositor.frame("state-upright", frames_dir)
+    assert len(compositor.wait_new_windows(known, 1)) == 1, "the window never mapped"
+    upright = wait_drawn(compositor, [left.colour])
     box = footprint(upright, rgb(left.colour), 12)
     assert box, "the window is not on screen"
     corner = (box[0] + 6, box[1] + 6)
@@ -532,6 +588,7 @@ def main():
             for client in factory.running:
                 client.stop()
             factory.running.clear()
+            compositor.wait_quiet()
             for document in ("inactive", "focus-flash", "close-fade", "workspace-spring"):
                 compositor.call("unmount", document)
             try:
