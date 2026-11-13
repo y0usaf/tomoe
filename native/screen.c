@@ -10,7 +10,7 @@ enum {
     FRAME_COST_START_NS = 2000000,
     FRAME_SLACK_START_NS = 250000,
     FRAME_SLACK_STEP_NS = 40000,
-    FRAME_COST_SAMPLES = 1024,
+    FRAME_COST_SAMPLES = 256,
 };
 
 #define OUTPUT_VERSION 4
@@ -503,7 +503,7 @@ static void frame_account(struct screen *screen) {
         int64_t cap = period / 2;
         screen->clock.slack_ns += screen->clock.predicted_ns / 4 + FRAME_SLACK_STEP_NS;
         if (screen->clock.slack_ns > cap) screen->clock.slack_ns = cap;
-    } else screen->clock.slack_ns -= screen->clock.slack_ns / 512;
+    } else screen->clock.slack_ns -= screen->clock.slack_ns / 256;
     screen->clock.predicted_ns = cost_quantile(screen);
     screen->frame_ready_ns = 0;
 }

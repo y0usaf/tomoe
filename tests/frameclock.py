@@ -11,7 +11,7 @@ DRM = {
 PHASES = (
     ("motion", "--motion-stream 1000 3000", "present-input"),
     ("commit", "--commit-stream 500 3000", "present-commit"),
-    ("load", "--motion-stream 1000 3000", "present-input"),
+    ("load", "--motion-stream 1000 6000", "present-input"),
 )
 MODES = (("late-latch", {}), ("immediate", {"TOMOE_FRAME_CLOCK": "0"}))
 
