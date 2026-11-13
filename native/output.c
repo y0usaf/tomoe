@@ -122,8 +122,7 @@ bool output_locations(struct tomoe *s, bool pending,
             .output = output, .x = output_position_x(output, pending),
             .y = output_position_y(output, pending), .width = facts.width,
             .height = facts.height, .scale_120 = facts.scale_120,
-            .active = facts.enabled && (pending || output->admitted),
-            .mirrored = false };
+            .active = facts.enabled && (pending || output->admitted) };
     }
 
     int64_t right = 0;
@@ -172,7 +171,6 @@ bool output_locations(struct tomoe *s, bool pending,
         if (target) {
             location->x = target->x;
             location->y = target->y;
-            location->mirrored = true;
             continue;
         }
         if (right > INT_MAX || right < INT_MIN) {

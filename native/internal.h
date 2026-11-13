@@ -134,8 +134,7 @@ struct positioner_rules {
     enum xdg_positioner_anchor anchor;
     enum xdg_positioner_gravity gravity;
     enum xdg_positioner_constraint_adjustment constraint_adjustment;
-    bool reactive, has_parent_configure_serial;
-    uint32_t parent_configure_serial;
+    bool reactive;
     struct { int32_t width, height; } size, parent_size;
     struct { int32_t x, y; } offset;
 };
@@ -592,7 +591,7 @@ struct presentation_output {
 struct output_location {
     struct output *output;
     int x, y, width, height, scale_120;
-    bool active, mirrored;
+    bool active;
 };
 struct presentation_target {
     struct node *node;
@@ -1014,7 +1013,7 @@ struct xdg_toplevel {
     bool external_dialog;
     struct toplevel_state pending, current, scheduled;
     struct {
-        bool maximized, fullscreen, minimized;
+        bool maximized, fullscreen;
         struct screen *fullscreen_output;
         struct wl_listener fullscreen_output_destroy;
     } requested;
@@ -1046,7 +1045,7 @@ struct xdg_popup {
 };
 struct xdg_surface_state {
     struct box geometry;
-    uint32_t configure_serial, committed;
+    uint32_t committed;
 };
 struct xdg_configure {
     uint32_t serial;
@@ -1104,7 +1103,7 @@ struct layer_surface_state {
     int32_t exclusive_zone;
     struct { int32_t top, right, bottom, left; } margin;
     uint32_t keyboard_interactive, desired_width, desired_height, layer, exclusive_edge;
-    uint32_t actual_width, actual_height, configure_serial;
+    uint32_t actual_width, actual_height;
 };
 struct layer_surface {
     struct wl_resource *resource;
@@ -1527,7 +1526,6 @@ void seat_selection_focus(struct seat *seat, struct seat_client *client);
 void seat_selection_finish(struct seat *seat);
 void seat_drag_client_gone(struct seat *seat, struct seat_client *client);
 void input_add(struct tomoe *s, struct input_device *device);
-void input_remove(struct tomoe *s, struct input_device *device);
 
 bool xwayland_listen(struct tomoe *s);
 int xwayland_start(struct tomoe *s);

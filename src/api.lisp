@@ -776,13 +776,6 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
              (list :kind :ease :duration-ms duration-ms
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
-(defparameter +animation-events+
-  '(:window-move :window-open :window-close :window-resize :window-switch :window-view
-    :window-alpha :window-tint :window-scale :window-rotation :window-translate)
-  "Transitions the compositor can animate. :WINDOW-CLOSE, :WINDOW-RESIZE, :WINDOW-SWITCH,
-:WINDOW-VIEW, :WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
-:WINDOW-TRANSLATE default to off.")
-
 (defparameter +animation-defaults+
   '(:window-move (:spring nil)
     :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
@@ -792,7 +785,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
   "Each animation event's default, when a configuration does not name one.")
 
 (defun %animation-settings (value)
-  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs.
+  "Normalize :ANIMATIONS: T, NIL, or a plist of per-event specs.
 T and NIL speak for every event; a plist leaves the events it omits to the
 preceding owner or the default."
   (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))

@@ -73,7 +73,6 @@ enum {
 #define XA_WINDOW 33u
 #define X11_NONE 0u
 #define X11_CURRENT_TIME 0u
-#define MAX_CLIPBOARD (256 * 1024)
 #define INCR_CHUNK (64 * 1024)
 #define XWM_WAIT_MS 5000
 
@@ -105,7 +104,7 @@ struct xwm {
     struct wl_list deferred;
     uint16_t seq;
     uint32_t rid_base, rid_mask, rid_next;
-    uint32_t root, root_width, root_height, max_request;
+    uint32_t root, max_request;
     uint32_t wm_window, clipboard_window, primary_window, convert_property;
     uint32_t atoms[A_COUNT];
     int xfixes, xfixes_event;
@@ -128,7 +127,7 @@ struct xwm_window {
     bool override, mapped, x_mapped, delete_window, take_focus, input_hint, has_input_hint;
     bool placed;
     int placed_x, placed_y;
-    bool fullscreen, maximized, minimized, dialog;
+    bool fullscreen, maximized, dialog;
     char *title, *appid;
     uint32_t transient;
     int min_width, min_height;
@@ -1113,7 +1112,6 @@ static void release_managed(struct xwm_window *w) {
     w->window = NULL;
     w->surface = NULL;
     w->placed = false;
-    w->minimized = false;
     wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
     free(toplevel->title);
     free(toplevel->app_id);
@@ -1364,10 +1362,8 @@ static void handle_client_message(struct xwm *x, const unsigned char *pkt) {
     } else if (type == lookup_atom(x, A_NET_CLOSE_WINDOW)) {
         if (w->toplevel) xwm_close(w->toplevel);
     } else if (type == lookup_atom(x, A_WM_CHANGE_STATE)) {
-        if (data[0] == 3 && w->toplevel) {
-            w->minimized = true;
+        if (data[0] == 3 && w->toplevel)
             wl_signal_emit_mutable(&w->toplevel->events.request_minimize, NULL);
-        }
     }
 }
 
@@ -1585,8 +1581,6 @@ static void setup_reply(struct xwm *x, unsigned char *reply, size_t length) {
         const unsigned char *screen = reply + offset;
         x->root = (uint32_t)screen[0] | (uint32_t)screen[1] << 8 |
             (uint32_t)screen[2] << 16 | (uint32_t)screen[3] << 24;
-        x->root_width = (uint16_t)(screen[20] | screen[21] << 8);
-        x->root_height = (uint16_t)(screen[22] | screen[23] << 8);
     }
     if (!x->root) {
         x->failed = true;

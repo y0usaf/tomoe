@@ -640,8 +640,7 @@ static int read_metadata_value(sd_bus_message *message,
             if (result < 0) return result;
             const char *value = NULL;
             while ((result = sd_bus_message_read(message, "s", &value)) > 0) {
-                if (result < 0 ||
-                    artist_count >= MPRIS_MAX_ARTISTS ||
+                if (artist_count >= MPRIS_MAX_ARTISTS ||
                     append_artist(values->artist, sizeof(values->artist),
                                   &artist_length, &artist_count, value) < 0)
                     return -EBADMSG;

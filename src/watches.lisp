@@ -18,7 +18,7 @@
 (defconstant +watch-parent-restored+ 8)
 (defconstant +watch-retry-milliseconds+ 250)
 
-(defstruct owned-watch owner arguments path absolute-path content-limit native buffer
+(defstruct owned-watch owner arguments path content-limit native buffer
   (status :ready) error retry-deadline (active t) (turn 0))
 
 (defstruct watch-plan active retired created (adopted nil))
@@ -69,7 +69,6 @@
                    (make-owned-watch
                     :owner owner :arguments (copy-data arguments)
                     :path (copy-seq declared-path)
-                    :absolute-path (%watch-absolute-path owner declared-path)
                     :content-limit content-limit :native native :buffer buffer))
              (setf native nil)
              watch)

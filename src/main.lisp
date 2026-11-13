@@ -301,7 +301,7 @@ sleep until one of them, a timer, a command deadline or a held frame is due."
     (when (or (runtime-watch-failure runtime) (not (equal specs (runtime-fd-specs runtime))))
       (setf (runtime-fd-specs runtime) specs
             (runtime-watch-failure runtime) nil)
-      (sync-fd-watches runtime 'loop specs))))
+      (sync-fd-watches runtime specs))))
 
 (defun idle-wait-milliseconds (runtime)
   "The longest the native loop may block: the nearest command, timer or held frame."

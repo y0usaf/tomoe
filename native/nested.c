@@ -34,7 +34,6 @@ struct nested {
 
 struct nested_output {
     struct screen screen;
-    struct nested *nested;
     struct wl_surface *surface;
     struct xdg_surface *xdg;
     struct xdg_toplevel *toplevel;
@@ -552,7 +551,6 @@ int nested_create(struct tomoe *s) {
 bool nested_start(struct tomoe *s) {
     struct nested_output *o = calloc(1, sizeof(*o));
     if (!o) return false;
-    o->nested = nested;
     screen_init(&o->screen, s, &output_impl, SCREEN_NESTED, "WL-1");
     o->screen.width = 1280;
     o->screen.height = 720;
