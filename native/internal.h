@@ -923,6 +923,7 @@ struct tomoe {
     double grab_x, grab_y;
     double pointer_x, pointer_y;
     struct pointer_sample pointer_trail[POINTER_TRAIL];
+    double pointer_trail_next;
     int pointer_trail_count, pointer_trail_head;
     struct surface *cursor_surface;
     int32_t cursor_hotspot_x, cursor_hotspot_y;
@@ -1279,7 +1280,7 @@ void input_listen(struct tomoe *s);
 void presentation_bindings_finish(struct presentation *plan);
 void presentation_input_publish(struct tomoe *s, struct presentation *plan);
 void pointer_refresh(struct tomoe *s);
-void pointer_trail_record(struct tomoe *s);
+void pointer_trail_record(struct tomoe *s, uint32_t time_msec);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);

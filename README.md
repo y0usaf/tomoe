@@ -227,7 +227,10 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
 
 Animated shader backgrounds see the pointer's last 64 samples as `iTrail` (x, y,
-age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
+age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`. A
+sample is taken every 8 ms of the pointer's own event time, so a drag the loop
+drains as one queued batch still draws the path it travelled, corners and all,
+rather than the straight line between where it started and where it stopped.
 `(:shader PATH :fps FPS :idle SECONDS)` stops drawing and ticking once the
 pointer has been still for `SECONDS`, and pointer motion starts it again; the
 trail example uses that so an idle overlay costs no frames.
