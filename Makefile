@@ -77,6 +77,21 @@ build/pointer-path: tests/pointer-path.c build/wlr-virtual-pointer-unstable-v1-c
 		build/wlr-virtual-pointer-unstable-v1-protocol.c \
 		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
 
+build/pointer-script: tests/pointer-script.c build/wlr-virtual-pointer-unstable-v1-client-protocol.h
+	$(CC) $(CFLAGS_NATIVE) -Ibuild tests/pointer-script.c \
+		build/wlr-virtual-pointer-unstable-v1-protocol.c \
+		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
+
+build/dmabuf-client: tests/dmabuf-client.c build/linux-dmabuf-v1-client-protocol.h build/xdg-shell-client-protocol.h
+	$(CC) $(CFLAGS_NATIVE) -Ibuild tests/dmabuf-client.c \
+		build/linux-dmabuf-v1-protocol.c build/xdg-shell-protocol.c \
+		$(shell $(PKG_CONFIG) --cflags --libs wayland-client gbm libdrm) -o $@
+
+build/warp-client: tests/warp-client.c tests/client.c $(HEADERS)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Itests tests/warp-client.c \
+		$(NAMES:%=build/%-protocol.c) \
+		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
+
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 

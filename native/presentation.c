@@ -159,6 +159,18 @@ int tomoe_present_window_shader(struct tomoe *s, uint32_t id, const char *path,
     return 1;
 }
 
+int tomoe_present_window_mesh(struct tomoe *s, uint32_t id, int grid_x, int grid_y,
+        const double *positions, unsigned long count) {
+    struct presentation *plan = s->presentation;
+    if (!plan) return 0;
+    struct presentation_target *entry_target = presentation_target_for(plan, id);
+    if (!entry_target) return 1;
+    struct window_mesh *mesh = NULL;
+    if (count && !(mesh = window_mesh_for(s, id, grid_x, grid_y, positions, count))) return 0;
+    entry_target->target.mesh = mesh;
+    return 1;
+}
+
 int tomoe_present_window_style(struct tomoe *s, uint32_t id, int radius, int blur,
         int tearing, int64_t focused, int64_t unfocused) {
     struct presentation *plan = s->presentation;

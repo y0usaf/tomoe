@@ -186,6 +186,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail, drawn by a shader overlay |
 | [`drag-smear.lisp`](examples/drag-smear.lisp) | A moving window leaves a quantized smear of its own pixels and collapses once it stops |
+| [`horosphere.lisp`](examples/horosphere.lisp) | Windows tiled on the squares of a hyperbolic {4,5} tiling in a Poincare disk, warped onto their curved tiles; a middle-button drag pans the plane |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
@@ -222,6 +223,20 @@ unchanged with `:shader-entry "open_color"` (or `"close_color"`,
 though the previous and next textures are the current texture until Tomoe
 feeds a resize path. The compositor keeps drawing while a window with a shader
 settles after moving, then goes quiet again.
+
+A window does not have to be a rectangle. `(window-properties ID :mesh POSITIONS
+:mesh-grid '(COLUMNS . ROWS))` draws it on a deformed grid instead: POSITIONS is
+`(COLUMNS + 1) * (ROWS + 1)` pairs of X Y pixels relative to the corner the
+window was placed at, row 0 on its top edge, and grid vertex `(0, 0)` holding
+the pixel that shows the window's own top-left corner. The grid is stretched
+onto that surface like a net, so a layout can bend a window into any shape it
+likes, and the mesh costs nothing once the window stops moving. Pointer input
+follows the same grid: the compositor maps a screen point back through the
+triangle it falls in, so a click on a warped window lands on the pixel it is
+drawn under, and a window with a mesh gives up its box border, shadow and
+direct-scanout candidacy because its box is only the frame the grid was
+described in. [`horosphere.lisp`](examples/horosphere.lisp) uses that to lay
+windows on a hyperbolic tiling and pan the plane with a Mobius translation.
 
 Output tools such as `wlr-randr` can query and configure every connected head,
 including disabled outputs, through `zwlr_output_manager_v1` version 4. Mode,

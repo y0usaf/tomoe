@@ -28,7 +28,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 40; }
+int tomoe_abi_version(void) { return 41; }
 static int stop_pipe[2] = { -1, -1 };
 static struct sigaction stop_previous[2];
 
@@ -243,6 +243,7 @@ void tomoe_destroy(struct tomoe *s) {
     settings_finish(&s->settings);
     if (s->render_timeline) timeline_unref(s->render_timeline);
     window_shaders_finish(s);
+    window_meshes_finish(s);
     if (s->renderer) render_destroy(s->renderer);
     if (s->grab_release) wl_event_source_remove(s->grab_release);
     if (s->display) wl_display_destroy(s->display);

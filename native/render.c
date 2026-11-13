@@ -634,6 +634,31 @@ struct window_shader *window_shader_for(struct tomoe *s, const char *path,
     return shader;
 }
 
+static const char window_mesh_source[] =
+    "void mainImage(out vec4 color, in vec2 fragCoord) { color = texture(tex, v_tex); }\n";
+
+struct window_shader *window_mesh_shader(struct tomoe *s) {
+    if (!s) return NULL;
+    struct window_shader *shader;
+    for (shader = s->shaders; shader; shader = shader->next)
+        if (!shader->path) break;
+    if (shader) {
+        if (!shader->program && s->renderer)
+            shader->program = render_window_shader_create(s->renderer, window_mesh_source,
+                "mainImage");
+        return shader;
+    }
+    shader = calloc(1, sizeof(*shader));
+    if (!shader) return NULL;
+    snprintf(shader->entry, sizeof(shader->entry), "%s", "mainImage");
+    shader->grid_x = shader->grid_y = 1;
+    shader->next = s->shaders;
+    s->shaders = shader;
+    if (s->renderer)
+        shader->program = render_window_shader_create(s->renderer, window_mesh_source, "mainImage");
+    return shader;
+}
+
 void window_shaders_finish(struct tomoe *s) {
     if (!s) return;
     struct window_shader *shader = s->shaders;
@@ -645,6 +670,90 @@ void window_shaders_finish(struct tomoe *s) {
         shader = next;
     }
     s->shaders = NULL;
+}
+
+enum { WINDOW_MESH_LIMIT = 1 << 20 };
+
+static uint64_t window_mesh_digest(const float *positions, size_t count) {
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < count; i++) {
+        uint32_t bits;
+        memcpy(&bits, &positions[i], sizeof(bits));
+        hash = (hash ^ bits) * 0x100000001b3ull;
+    }
+    return hash;
+}
+
+static void window_mesh_measure(struct window_mesh *mesh, size_t count) {
+    int stride = mesh->grid_x + 1;
+    double low_x = 0, low_y = 0, high_x = 0, high_y = 0;
+    for (int j = 0; j <= mesh->grid_y; j++) {
+        for (int i = 0; i <= mesh->grid_x; i++) {
+            const float *point = &mesh->positions[2 * ((size_t)j * stride + i)];
+            if (i == 0 && j == 0) {
+                low_x = high_x = point[0];
+                low_y = high_y = point[1];
+                continue;
+            }
+            if (point[0] < low_x) low_x = point[0];
+            if (point[0] > high_x) high_x = point[0];
+            if (point[1] < low_y) low_y = point[1];
+            if (point[1] > high_y) high_y = point[1];
+        }
+    }
+    mesh->frame = (struct box){ (int)floor(low_x), (int)floor(low_y),
+        (int)ceil(high_x) - (int)floor(low_x), (int)ceil(high_y) - (int)floor(low_y) };
+    if (mesh->frame.width < 1) mesh->frame.width = 1;
+    if (mesh->frame.height < 1) mesh->frame.height = 1;
+    mesh->digest = window_mesh_digest(mesh->positions, count);
+}
+
+static struct window_mesh *window_mesh_find(struct tomoe *s, uint32_t id) {
+    struct window_mesh *mesh;
+    for (mesh = s->meshes; mesh; mesh = mesh->next)
+        if (mesh->id == id) return mesh;
+    mesh = calloc(1, sizeof(*mesh));
+    if (!mesh) return NULL;
+    mesh->id = id;
+    mesh->next = s->meshes;
+    s->meshes = mesh;
+    return mesh;
+}
+
+struct window_mesh *window_mesh_for(struct tomoe *s, uint32_t id, int grid_x, int grid_y,
+        const double *positions, size_t count) {
+    if (!s || !positions || !count) return NULL;
+    if (grid_x < 1 || grid_x > 32 || grid_y < 1 || grid_y > 32) return NULL;
+    size_t wanted = 2 * (size_t)(grid_x + 1) * (size_t)(grid_y + 1);
+    if (count != wanted) return NULL;
+    struct window_mesh *mesh = window_mesh_find(s, id);
+    if (!mesh) return NULL;
+    if (mesh->capacity < wanted) {
+        float *grown = realloc(mesh->positions, wanted * sizeof(*grown));
+        if (!grown) return NULL;
+        mesh->positions = grown;
+        mesh->capacity = wanted;
+    }
+    for (size_t i = 0; i < wanted; i++) {
+        if (!isfinite(positions[i]) || fabs(positions[i]) > WINDOW_MESH_LIMIT) return NULL;
+        mesh->positions[i] = (float)positions[i];
+    }
+    mesh->grid_x = grid_x;
+    mesh->grid_y = grid_y;
+    window_mesh_measure(mesh, wanted);
+    return mesh;
+}
+
+void window_meshes_finish(struct tomoe *s) {
+    if (!s) return;
+    struct window_mesh *mesh = s->meshes;
+    while (mesh) {
+        struct window_mesh *next = mesh->next;
+        free(mesh->positions);
+        free(mesh);
+        mesh = next;
+    }
+    s->meshes = NULL;
 }
 
 static void render_quad(struct program *p, const float pos[8], const float local[8],
@@ -1219,8 +1328,8 @@ static void mesh_geometry_to_texture(const struct mesh_options *o, float matrix[
     matrix[6] = origin[0]; matrix[7] = origin[1]; matrix[8] = 1;
 }
 
-static float *mesh_vertices(struct render *r, const struct mesh_options *o,
-        int grid_x, int grid_y) {
+static float *mesh_vertices(struct render *r, const struct pass *pass,
+        const struct mesh_options *o, int grid_x, int grid_y) {
     size_t cells = (size_t)grid_x * (size_t)grid_y;
     size_t count = cells * 6 * 6;
     if (r->mesh_cap < count) {
@@ -1236,14 +1345,30 @@ static float *mesh_vertices(struct render *r, const struct mesh_options *o,
             for (int corner = 0; corner < 6; corner++) {
                 static const int order[6][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 },
                     { 1, 0 }, { 1, 1 }, { 0, 1 } };
-                double gu = (double)(i + order[corner][0]) / grid_x;
-                double gv = (double)(j + order[corner][1]) / grid_y;
-                double x = gu * o->dst_box.width, y = gv * o->dst_box.height;
-                double u = (x - o->box[0]) / o->box[2];
-                double v = (o->box[1] + o->box[3] - y) / o->box[3];
+                int ci = i + order[corner][0], cj = j + order[corner][1];
+                double gu = (double)ci / grid_x, gv = (double)cj / grid_y;
+                double gx, gy, u, v;
+                if (o->mesh) {
+                    const float *point = &o->mesh->positions[
+                        2 * ((size_t)cj * (grid_x + 1) + ci)];
+                    double px = o->origin[0] + point[0] * o->scale;
+                    double py = o->origin[1] + point[1] * o->scale;
+                    transform_point(&px, &py, o->position_transform,
+                        pass->buffer->width, pass->buffer->height);
+                    gx = (px - o->dst_box.x) / o->dst_box.width;
+                    gy = 1.0 - (py - o->dst_box.y) / o->dst_box.height;
+                    u = gu;
+                    v = gv;
+                } else {
+                    double x = gu * o->dst_box.width, y = gv * o->dst_box.height;
+                    gx = gu;
+                    gy = gv;
+                    u = (x - o->box[0]) / o->box[2];
+                    v = (o->box[1] + o->box[3] - y) / o->box[3];
+                }
                 float texcoord[2];
                 mesh_texcoord(o, u, v, texcoord);
-                mesh[at++] = (float)gu; mesh[at++] = (float)gv;
+                mesh[at++] = (float)gx; mesh[at++] = (float)gy;
                 mesh[at++] = (float)u; mesh[at++] = (float)v;
                 mesh[at++] = texcoord[0]; mesh[at++] = texcoord[1];
             }
@@ -1262,7 +1387,7 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     int grid_x = options->grid_x < 1 ? 1 : options->grid_x > 32 ? 32 : options->grid_x;
     int grid_y = options->grid_y < 1 ? 1 : options->grid_y > 32 ? 32 : options->grid_y;
     float alpha = options->alpha ? *options->alpha : 1;
-    double params[12 + 4 * (POINTER_TRAIL + WINDOW_PATH)];
+    double params[13 + 4 * (POINTER_TRAIL + WINDOW_PATH)];
     params[0] = 9;
     params[1] = dst.x; params[2] = dst.y; params[3] = dst.width; params[4] = dst.height;
     params[5] = grid_x; params[6] = grid_y; params[7] = options->drag;
@@ -1276,12 +1401,13 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     for (; count < options->trail_count && count < POINTER_TRAIL; count++)
         for (int k = 0; k < 4; k++)
             params[12 + 4 * (path_count + count) + k] = options->trail[4 * count + k];
+    size_t used = 12 + 4 * (size_t)(path_count + count);
+    if (options->mesh) params[used++] = (double)(options->mesh->digest & 0x1fffffffffffffull);
     if (pass->record) {
         struct texture_options record = { .texture = texture, .src_box = options->src_box,
             .dst_box = dst, .transform = options->transform, .alpha = &alpha,
             .filter_mode = FILTER_BILINEAR, .blend_mode = BLEND_PREMULTIPLIED };
-        pass_record(pass, &record, dst, (struct box){0}, params,
-            12 + 4 * (size_t)(path_count + count));
+        pass_record(pass, &record, dst, (struct box){0}, params, used);
         return;
     }
     if (!pass_touches(pass, dst)) return;
@@ -1329,7 +1455,7 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     float top = dst.y / h * 2 - 1, bottom = (dst.y + dst.height) / h * 2 - 1;
     if (p->min_ndc >= 0) glUniform2f(p->min_ndc, x0, bottom);
     if (p->max_ndc >= 0) glUniform2f(p->max_ndc, x1, top);
-    float *mesh = mesh_vertices(r, options, grid_x, grid_y);
+    float *mesh = mesh_vertices(r, pass, options, grid_x, grid_y);
     if (!mesh) return;
     size_t stride = 6 * sizeof(float);
     GLsizei vertices = (GLsizei)((size_t)grid_x * (size_t)grid_y * 6);
