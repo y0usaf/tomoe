@@ -195,7 +195,7 @@ removing the final owner restores the native protocol's live defaults."
           ((and (%finite-real-p fallback) (plusp fallback)) (coerce fallback 'double-float))
           (t 120d0))))
 
-(defun %quantize-layout (runtime layout view &optional (output-facts (runtime-outputs runtime)))
+(defun %quantize-layout (layout view output-facts)
   "Apply the physical/client-size round trip after every owner effect settles."
   (dolist (window layout)
     (multiple-value-bind (screen-x screen-y) (%view-screen-point window view)
@@ -429,7 +429,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              (output-failures (third output-resolution))
              (output-facts (getf output-preview :outputs))
              (connector-facts (output-connectors output-preview)))
-        (%quantize-layout runtime layout view output-facts)
+        (%quantize-layout layout view output-facts)
         (multiple-value-bind (resolved-layers workareas)
             (if (runtime-backend runtime)
                 (preview-native-layers (runtime-backend runtime) output-facts layers
