@@ -139,16 +139,6 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
 
-A window's compositing state is its own: `window-properties` also takes `:alpha`,
-`:tint`, `:scale`, `:rotation` and `:translate`, and each one eases towards its
-new value with the matching `:animations` setting, so focus, dimming and
-transforms are config rather than shader work. The compositor notices the
-transitions it can see for itself - `:window-open`, `:window-close`,
-`:window-move`, `:window-resize`, `:window-switch` and `:window-view` - and each
-is a spring or an ease you set once. Nothing animates while nothing changes, and
-a fullscreen opaque window at its default state still goes straight to the
-display.
-
 Animated shader backgrounds see the pointer's last 64 samples as `iTrail` (x, y,
 age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
 `(:shader PATH :fps FPS :idle SECONDS)` stops drawing and ticking once the
@@ -229,6 +219,13 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Per-surface alpha multipliers are committed atomically with surface state and
   affect normal rendering, cursors, cursor metadata, and captures. Non-identity
   multipliers disable direct scanout and hardware cursor bypasses.
+- A window's own opacity, tint, scale, rotation and translation are window state:
+  `window-properties` sets them, and each eases towards its new value with the
+  matching `:animations` setting. The compositor animates the transitions it sees
+  for itself too, `:window-open`, `:window-close`, `:window-move`,
+  `:window-resize`, `:window-switch` and `:window-view`, each a spring or an ease
+  set once. Nothing animates while nothing changes, and a non-identity state
+  keeps that window out of direct scanout.
 - Committed content-type hints are available to window policy as `:content-type`
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
 - Toplevel tags and translated descriptions are available as `:tag` and
