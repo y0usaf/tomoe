@@ -8,6 +8,10 @@
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_battery_timeout" %battery-timeout) sb-alien:int
   (producer (* t)) (maximum sb-alien:int))
+(sb-alien:define-alien-routine ("tomoe_battery_fd" %battery-fd) sb-alien:int
+  (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_battery_mask" %battery-mask) sb-alien:unsigned-int
+  (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_battery_close" %battery-close) sb-alien:void
   (producer (* t)))
 
@@ -34,9 +38,9 @@
       (stop-battery runtime)
       (format *error-output* "tomoe: battery unavailable: ~A~%" condition))))
 
-(defun battery-wait-milliseconds (runtime maximum)
+(defun battery-wait-milliseconds (runtime)
   (let ((native (runtime-battery-producer runtime)))
-    (if native (%battery-timeout native maximum) maximum)))
+    (when native (let ((wait (%battery-timeout native -1))) (and (>= wait 0) wait)))))
 
 (defun poll-battery-snapshot (runtime)
   "Return changed facts and T, or NIL/NIL when the producer is unchanged."

@@ -213,6 +213,13 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                                (when (zerop group) (release-execution lease) t))))))
                    (runtime-once-processes runtime))))
 
+(defun process-wait-milliseconds (runtime)
+  "How long the backend may sleep before a managed process needs attention."
+  (let ((now (get-internal-real-time)) (wait nil))
+    (dolist (job (runtime-managed-processes runtime) wait)
+      (when (member (managed-process-status job) '(:pending :running :waiting :stopping))
+        (setf wait (least-wait wait (wait-until now (managed-process-deadline job))))))))
+
 (defun service-managed-processes (runtime)
   (reconcile-backend-observations runtime)
   (reap-managed-processes runtime)

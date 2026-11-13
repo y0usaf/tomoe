@@ -16,6 +16,14 @@
 (define-native ("tomoe_destroy" %destroy) sb-alien:void (server (* t)))
 (define-native ("tomoe_step" %step) sb-alien:int
   (server (* t)) (timeout sb-alien:int))
+(define-native ("tomoe_watch_fd" %watch-fd) sb-alien:unsigned-long
+  (server (* t)) (fd sb-alien:int) (mask sb-alien:unsigned-int))
+(define-native ("tomoe_update_fd" %update-fd) sb-alien:void
+  (server (* t)) (source sb-alien:unsigned-long) (mask sb-alien:unsigned-int))
+(define-native ("tomoe_unwatch_fd" %unwatch-fd) sb-alien:void
+  (server (* t)) (source sb-alien:unsigned-long))
+(define-native ("tomoe_frames_waiting" %frames-waiting) sb-alien:int (server (* t)))
+(define-native ("tomoe_watch_signals" %watch-signals) sb-alien:int (server (* t)))
 (define-native ("tomoe_next_event" %event) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_event_count" %event-count) sb-alien:int (server (* t)))
 (define-native ("tomoe_event_barrier" %event-barrier) sb-alien:int (server (* t)))

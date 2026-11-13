@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -692,10 +693,19 @@ int tomoe_notifications_poll(struct tomoe_notifications *notifications) {
     return notifications->changed ? 1 : 0;
 }
 
+int tomoe_notifications_fd(const struct tomoe_notifications *notifications) {
+    return notifications && notifications->bus ? sd_bus_get_fd(notifications->bus) : -1;
+}
+
+unsigned tomoe_notifications_mask(const struct tomoe_notifications *notifications) {
+    if (!notifications || !notifications->bus) return 1;
+    int events = sd_bus_get_events(notifications->bus);
+    return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
+}
+
 int tomoe_notifications_timeout(
     const struct tomoe_notifications *notifications, int max_ms) {
-    if (!notifications) return 0;
-    if (max_ms < 0) max_ms = 0;
+    if (!notifications) return max_ms;
     uint64_t now = monotonic_usec();
     uint64_t best = UINT64_MAX;
     for (size_t index = 0; index < notifications->count; index++) {
@@ -704,9 +714,8 @@ int tomoe_notifications_timeout(
     }
     if (best == UINT64_MAX) return max_ms;
     if (best <= now) return 0;
-    uint64_t milliseconds = (best - now + 999ULL) / 1000ULL;
-    if (milliseconds >= (uint64_t)max_ms) return max_ms;
-    return (int)milliseconds;
+    int milliseconds = (int)((best - now + 999ULL) / 1000ULL);
+    return max_ms >= 0 && milliseconds > max_ms ? max_ms : milliseconds;
 }
 
 void tomoe_notifications_close(struct tomoe_notifications *notifications) {

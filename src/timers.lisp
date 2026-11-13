@@ -35,14 +35,12 @@
         (setf (owned-timer-deadline timer) (+ now (owned-timer-ticks timer))))))
   (setf (runtime-timers runtime) timers))
 
-(defun timer-wait-milliseconds (runtime maximum)
-  "Bound the backend wait by the earliest unfired timer's monotonic deadline."
-  (let ((now (get-internal-real-time)) (wait maximum))
+(defun timer-wait-milliseconds (runtime)
+  "How long the backend may sleep before the earliest unfired timer is due."
+  (let ((now (get-internal-real-time)) (wait nil))
     (dolist (timer (runtime-timers runtime) wait)
       (unless (owned-timer-fired timer)
-        (setf wait (min wait
-                        (max 0 (ceiling (* 1000 (- (owned-timer-deadline timer) now))
-                                        internal-time-units-per-second))))))))
+        (setf wait (least-wait wait (wait-until now (owned-timer-deadline timer))))))))
 
 (defun service-timers (runtime)
   "Deliver at most 64 due events on the compositor thread, once per source/pass.

@@ -9,6 +9,8 @@
   (watch (* t)) (buffer (* sb-alien:unsigned-char)) (limit sb-alien:unsigned-long))
 (sb-alien:define-alien-routine ("tomoe_watch_close" %watch-close) sb-alien:void
   (watch (* t)))
+(sb-alien:define-alien-routine ("tomoe_watch_descriptor" %watch-descriptor) sb-alien:int
+  (watch (* t)))
 
 (defconstant +watch-changed+ 1)
 (defconstant +watch-overflow+ 2)
@@ -239,6 +241,19 @@
                              (if (plusp (logand bits +watch-overflow+)) :overflow :changed)
                              :read-error)
                          (if (eq status :ok) content "") error))))))
+
+(defun watch-wait-milliseconds (runtime)
+  "How long the backend may sleep before a lost parent is retried."
+  (let ((now (get-internal-real-time)) (wait nil))
+    (dolist (watch (runtime-watches runtime) wait)
+      (let ((deadline (owned-watch-retry-deadline watch)))
+        (when deadline (setf wait (least-wait wait (wait-until now deadline))))))))
+
+(defun watch-specs (runtime)
+  (loop for watch in (runtime-watches runtime)
+        for native = (owned-watch-native watch)
+        for fd = (and native (%watch-descriptor native))
+        when (and fd (>= fd 0)) collect (cons fd +event-readable+)))
 
 (defun service-watches (runtime)
   "Poll a fair bounded snapshot of accepted watches on the compositor thread."

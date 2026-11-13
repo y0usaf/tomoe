@@ -11,6 +11,10 @@ int tomoe_mpris_poll(struct tomoe_mpris *mpris);
 
 const char *tomoe_mpris_snapshot(struct tomoe_mpris *mpris);
 
+int tomoe_mpris_fd(const struct tomoe_mpris *mpris);
+
+unsigned tomoe_mpris_mask(const struct tomoe_mpris *mpris);
+
 int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms);
 
 int tomoe_mpris_control(struct tomoe_mpris *mpris, const char *method);

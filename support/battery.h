@@ -11,6 +11,10 @@ int tomoe_battery_poll(struct tomoe_battery *battery);
 
 const char *tomoe_battery_snapshot(struct tomoe_battery *battery);
 
+int tomoe_battery_fd(const struct tomoe_battery *battery);
+
+unsigned tomoe_battery_mask(const struct tomoe_battery *battery);
+
 int tomoe_battery_timeout(const struct tomoe_battery *battery, int max_ms);
 
 void tomoe_battery_close(struct tomoe_battery *battery);

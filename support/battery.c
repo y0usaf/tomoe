@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1002,9 +1003,18 @@ int tomoe_battery_poll(struct tomoe_battery *battery) {
     return battery->changed ? 1 : 0;
 }
 
+int tomoe_battery_fd(const struct tomoe_battery *battery) {
+    return battery && battery->bus ? sd_bus_get_fd(battery->bus) : -1;
+}
+
+unsigned tomoe_battery_mask(const struct tomoe_battery *battery) {
+    if (!battery || !battery->bus) return 1;
+    int events = sd_bus_get_events(battery->bus);
+    return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
+}
+
 int tomoe_battery_timeout(const struct tomoe_battery *battery, int max_ms) {
-    if (!battery) return 0;
-    if (max_ms < 0) max_ms = 0;
+    if (!battery) return max_ms;
     uint64_t best = UINT64_MAX;
     for (const struct battery_call *call = battery->calls; call;
          call = call->next)
@@ -1014,9 +1024,8 @@ int tomoe_battery_timeout(const struct tomoe_battery *battery, int max_ms) {
     if (best == UINT64_MAX) return max_ms;
     uint64_t now = monotonic_usec();
     if (best <= now) return 0;
-    uint64_t milliseconds = (best - now + 999ULL) / 1000ULL;
-    if (milliseconds >= (uint64_t)max_ms) return max_ms;
-    return (int)milliseconds;
+    int milliseconds = (int)((best - now + 999ULL) / 1000ULL);
+    return max_ms >= 0 && milliseconds > max_ms ? max_ms : milliseconds;
 }
 
 void tomoe_battery_close(struct tomoe_battery *battery) {

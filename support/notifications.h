@@ -12,6 +12,10 @@ int tomoe_notifications_poll(struct tomoe_notifications *notifications);
 const char *tomoe_notifications_snapshot(
     struct tomoe_notifications *notifications);
 
+int tomoe_notifications_fd(const struct tomoe_notifications *notifications);
+
+unsigned tomoe_notifications_mask(const struct tomoe_notifications *notifications);
+
 int tomoe_notifications_timeout(
     const struct tomoe_notifications *notifications, int max_ms);
 

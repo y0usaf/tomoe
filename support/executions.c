@@ -327,6 +327,11 @@ int tomoe_exec_poll(struct execution *job) {
 
 int tomoe_exec_code(struct execution *job) { return job->code; }
 
+int tomoe_exec_fd(struct execution *job, int which) {
+    if (!job) return -1;
+    return which == 0 ? job->pidfd : which == 1 ? job->out : job->err;
+}
+
 int tomoe_process_group_alive(struct execution *job) {
     if (!job || job->pidfd < 0) return -EINVAL;
     int result = pidfd_send_signal(job->pidfd, 0, NULL,

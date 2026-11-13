@@ -10,6 +10,10 @@ struct tomoe_tray *tomoe_tray_open(int *error);
 int tomoe_tray_poll(struct tomoe_tray *tray);
 
 const char *tomoe_tray_snapshot(struct tomoe_tray *tray);
+int tomoe_tray_fd(const struct tomoe_tray *tray);
+
+unsigned tomoe_tray_mask(const struct tomoe_tray *tray);
+
 int tomoe_tray_timeout(const struct tomoe_tray *tray, int max_ms);
 void tomoe_tray_close(struct tomoe_tray *tray);
 

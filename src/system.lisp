@@ -76,11 +76,9 @@
   (some (lambda (mounted) (member :system (spec-reads (mounted-spec mounted))))
         (runtime-mounts runtime)))
 
-(defun system-wait-milliseconds (runtime maximum)
-  (if (system-read-p runtime)
-      (min maximum (max 0 (ceiling (* 1000 (- (runtime-system-due runtime) (get-internal-real-time)))
-                                   internal-time-units-per-second)))
-      maximum))
+(defun system-wait-milliseconds (runtime)
+  (when (system-read-p runtime)
+    (wait-until (get-internal-real-time) (runtime-system-due runtime))))
 
 (defun service-system (runtime)
   "Sample once a second while a mounted extension reads :SYSTEM."

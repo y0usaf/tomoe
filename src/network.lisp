@@ -8,6 +8,10 @@
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_network_timeout" %network-timeout) sb-alien:int
   (producer (* t)) (maximum sb-alien:int))
+(sb-alien:define-alien-routine ("tomoe_network_fd" %network-fd) sb-alien:int
+  (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_network_mask" %network-mask) sb-alien:unsigned-int
+  (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_network_close" %network-close) sb-alien:void
   (producer (* t)))
 
@@ -49,9 +53,9 @@
       (stop-network runtime)
       (format *error-output* "tomoe: network unavailable: ~A~%" condition))))
 
-(defun network-wait-milliseconds (runtime maximum)
+(defun network-wait-milliseconds (runtime)
   (let ((native (runtime-network-producer runtime)))
-    (if native (%network-timeout native maximum) maximum)))
+    (when native (let ((wait (%network-timeout native -1))) (and (>= wait 0) wait)))))
 
 (defun poll-network-snapshot (runtime)
   "Return changed facts and T, or NIL/NIL when the producer is unchanged."
