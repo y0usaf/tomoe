@@ -535,16 +535,25 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
             (when (and (second args) (member (materialization-focused m) (materialization-stacking m)))
               (%materialized-raise m (materialization-focused m)))))
 
-(defun window-properties (id &rest properties &key radius tearing blur border)
-  "Own rendering overrides for one window. Omitted keys fall back to the
-settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
-BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
-  (declare (ignore radius tearing blur border))
+(defun window-properties (id &rest properties &key radius tearing blur border alpha tint scale
+                          rotation translate)
+  "Own rendering and compositing overrides for one window. Omitted keys fall back
+to the settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
+BORDER is (:FOCUSED color :UNFOCUSED color). ALPHA multiplies the whole window,
+TINT mixes a color (its alpha is the strength) over its contents, SCALE and
+ROTATION (degrees) transform it about its centre, and TRANSLATE is (:X n :Y n)
+offset from where the layout puts it. Each of those animates towards its new
+value with the matching :ANIMATIONS setting. Later owners replace each key."
+  (declare (ignore radius tearing blur border alpha tint scale rotation translate))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
                                      '((:radius (:integer 0 4096)) (:tearing :boolean) (:blur :boolean)
-                                       (:border (:group (:focused :color) (:unfocused :color))))))))
+                                       (:border (:group (:focused :color) (:unfocused :color)))
+                                       (:alpha (:real 0 1)) (:tint :color)
+                                       (:scale (:real 1/100 16)) (:rotation (:real -360 360))
+                                       (:translate (:group (:x (:integer -16384 16384) 0)
+                                                           (:y (:integer -16384 16384) 0))))))))
 
 (define-effect :window-properties
   :canonical (destructuring-bind (id properties) args
@@ -554,7 +563,7 @@ BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
               (when window
                 (setf (getf window :properties)
                       (%settings-merge (copy-list (getf window :properties)) properties
-                                       '((:border (:group)))))))))
+                                       '((:border (:group)) (:translate (:group)))))))))
 
 (defun raise-window (id)
   "Own a raise in the managed window stack without changing focus or geometry."
@@ -705,9 +714,20 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
              (list :kind :ease :duration-ms duration-ms
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
+(defparameter +animation-events+
+  '(:window-move :window-open :window-close :window-resize :window-switch :window-view
+    :window-alpha :window-tint :window-scale :window-rotation :window-translate)
+  "Transitions the compositor can animate. :WINDOW-CLOSE, :WINDOW-RESIZE, :WINDOW-SWITCH,
+:WINDOW-VIEW, :WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
+:WINDOW-TRANSLATE default to off.")
+
 (defun %animation-settings (value)
-  "Normalize :ANIMATIONS: T, NIL, or (:WINDOW-MOVE spec :WINDOW-OPEN spec)."
-  (let ((defaults '(:window-move (:spring nil) :window-open (:ease (:duration-ms 150 :curve :ease-out-expo)))))
+  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs."
+  (let ((defaults '(:window-move (:spring nil)
+                    :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
+                    :window-close nil :window-resize nil :window-switch nil :window-view nil
+                    :window-alpha nil :window-tint nil :window-scale nil
+                    :window-rotation nil :window-translate nil)))
     (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
       (error "Invalid animations: ~S" value))
     (loop for (key default) on defaults by #'cddr

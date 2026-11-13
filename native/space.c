@@ -270,8 +270,22 @@ static struct fbox window_box(const struct target *t, const struct frame *f) {
     double height = physical_size(t->client_height, t->scale);
     if (t->width > 0) width = fmin(width, t->width);
     if (t->height > 0) height = fmin(height, t->height);
-    return (struct fbox){ (t->x + t->offset_x - f->view_x) * f->zoom,
-        (t->y + t->offset_y - f->view_y) * f->zoom, width * f->zoom, height * f->zoom };
+    if (t->drawn_width > 0 && t->drawn_height > 0) {
+        width = t->drawn_width;
+        height = t->drawn_height;
+    }
+    double x = (t->x + t->offset_x - f->view_x) * f->zoom;
+    double y = (t->y + t->offset_y - f->view_y) * f->zoom;
+    width *= f->zoom;
+    height *= f->zoom;
+    if (t->visual.scale != 1 && t->kind == TARGET_WINDOW) {
+        double scaled_width = width * t->visual.scale, scaled_height = height * t->visual.scale;
+        x += (width - scaled_width) / 2;
+        y += (height - scaled_height) / 2;
+        width = scaled_width;
+        height = scaled_height;
+    }
+    return (struct fbox){ x, y, width, height };
 }
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
@@ -282,10 +296,19 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
-    int64_t x = (int64_t)local.x - data->x + (window ? pixel_round(t->offset_x * data->zoom) : 0);
-    int64_t y = (int64_t)local.y - data->y + (window ? pixel_round(t->offset_y * data->zoom) : 0);
+    bool transformed = window && (t->visual.scale != 1 || t->drawn_width > 0);
+    if (transformed) {
+        struct fbox box = window_box(t, data);
+        local = (struct box){ pixel_round(box.x) - data->x, pixel_round(box.y) - data->y,
+            (int)lround(box.width), (int)lround(box.height) };
+    } else {
+        local.x = (int)((int64_t)local.x - data->x +
+            (window ? pixel_round(t->offset_x * data->zoom) : 0));
+        local.y = (int)((int64_t)local.y - data->y +
+            (window ? pixel_round(t->offset_y * data->zoom) : 0));
+    }
+    int64_t x = local.x, y = local.y;
     if (x >= data->width || y >= data->height || x + local.width <= 0 || y + local.height <= 0) return false;
-    local.x = (int)x; local.y = (int)y;
     struct box dst;
     box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
     struct surface *surface = leaf->surface;
@@ -293,7 +316,8 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         surface_release_after(surface, data->buffer);
     struct fbox src;
     surface_source_box(surface, &src);
-    float alpha = (window ? t->alpha : 1) * ((double)surface->current.alpha / UINT32_MAX);
+    double opacity = window ? t->alpha * t->visual.opacity : 1;
+    float alpha = (float)(opacity * ((double)surface->current.alpha / UINT32_MAX));
     struct texture_options options = {
         .texture = surface->texture, .src_box = src, .dst_box = dst,
         .transform = transform_compose(
@@ -301,10 +325,13 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .alpha = &alpha,
         .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
         .surface = surface,
+        .rotation = window ? t->visual.rotation : 0,
+        .tint = window ? t->visual.tint : NULL,
     };
     double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
-    bool clipped = !box_equal(&leaf->shown, &leaf->screen);
-    if (window && t->client_width > 0 && (radius > 0 || clipped) && toplevel_surface(surface) &&
+    bool clipped = !box_equal(&leaf->shown, &leaf->screen) && options.rotation == 0;
+    if (window && t->client_width > 0 && !transformed && options.rotation == 0 &&
+            (radius > 0 || clipped) && toplevel_surface(surface) &&
             effect_texture(data, &options, (struct fbox){ local.x, local.y, local.width,
                 local.height }, window_box(t, data), radius))
         return false;
@@ -384,6 +411,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
 static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     if (t->kind == TARGET_LAYER) decorate_layer(s, t, f);
     if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
+    if (t->visual.rotation != 0) return;
     const struct settings *st = &s->settings;
     bool focused = t->id == f->focused;
     double zoom = f->zoom;
@@ -441,6 +469,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
             decorate(o->server, &target, data);
             walk_presentation_root(o->server, plan, root, root->node, 0, 0, render_leaf, data);
         }
+        ghosts_draw(o->server, data);
         for (; layer < 3; layer++) ui_render(o, data, plan, layer);
         render_walk(o->server, o->server->drag_icon_tree, NULL, 0, 0, data);
     } else {
@@ -453,6 +482,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
                 if (child == o->server->layer_tree[layer]) ui_render(o, data, NULL, layer);
         }
     }
+    if (!locked && !frozen && !plan) ghosts_draw(o->server, data);
     if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
     if (!locked && chrome) screenshot_render(o, data);
     if (cursors) render_cursor(o, data, plan);
@@ -669,6 +699,7 @@ struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t 
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
+    if (leaf->target && leaf->target->visual.closing) return false;
     if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
             hit->x >= (double)leaf->shown.x + leaf->shown.width ||
             hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
@@ -715,7 +746,10 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         return true;
     const struct target *t = leaf->target;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
-            (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
+            (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width ||
+                t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
+                t->visual.translate_x || t->visual.translate_y || t->visual.tint[3] != 0 ||
+                t->visual.closing))) return true;
     data->surface = leaf->surface;
     data->window = t && t->kind == TARGET_WINDOW;
     return true;
@@ -724,7 +758,8 @@ struct surface *scanout_surface(struct output *o) {
     struct tomoe *s = o->server;
     struct scanout_data data = {0};
     physical_output_box(o, &data.output);
-    if (s->view_zoom != 1 || lock_active(s) || s->screenshot || ui_on_output(o, 2)) return NULL;
+    if (s->view_zoom != 1 || lock_active(s) || s->screenshot || ghosts_visible(s) ||
+            ui_on_output(o, 2)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
     struct dmabuf_attributes dmabuf;
