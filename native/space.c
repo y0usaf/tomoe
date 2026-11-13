@@ -765,6 +765,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
+    if (t && t->shader) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
     data->surface = leaf->surface;

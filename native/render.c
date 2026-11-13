@@ -531,11 +531,12 @@ static struct program *render_window_shader_create(struct render *r, const char 
     const char *vertex[] = { window_vertex_prelude, source, window_vertex_main };
     const char *fallback[] = { window_vertex_prelude, window_identity_warp,
         window_vertex_main };
+    bool warps = strstr(source, "warp") != NULL;
     current(r);
     EGLContext scratch = compile_begin(r);
     GLuint fs = compile(GL_FRAGMENT_SHADER, fragment, 3);
-    GLuint vs = fs ? compile(GL_VERTEX_SHADER, vertex, 3) : 0;
-    if (fs && !vs) vs = compile(GL_VERTEX_SHADER, fallback, 3);
+    GLuint vs = fs ? compile(GL_VERTEX_SHADER, warps ? vertex : fallback, 3) : 0;
+    if (fs && !vs && warps) vs = compile(GL_VERTEX_SHADER, fallback, 3);
     bool linked = vs && link_stages(&shader->program, vs, fs);
     if (vs) glDeleteShader(vs);
     if (fs) glDeleteShader(fs);
