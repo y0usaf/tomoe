@@ -302,7 +302,10 @@ headless. Extensions never touch native state. They return effects, the runtime
 settles every extension's effects into one transaction, and only then does the
 native side apply it. A broken extension therefore can't leave the screen
 half-updated, and because every effect has an owner, unmounting an extension
-takes its effects with it.
+takes its effects with it. Settling a transaction rebuilds the context from the
+current effects rather than editing the last one, but it keeps the last rebuild
+while every accepted reducer result is the same as the one already folded into
+it, which is most of the work an input event would otherwise repeat.
 
 Sandbox launchers can register private Wayland listening sockets with
 `wp_security_context_manager_v1`, attaching sandbox engine, application and
