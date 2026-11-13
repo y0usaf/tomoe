@@ -34,7 +34,7 @@
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
-  config-error source-packages retired-commands
+  config-error source-packages retired-commands patches (patch-sequence 0)
   (fd-watches (make-hash-table)) fd-specs watch-failure
   (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
@@ -229,16 +229,19 @@ command names whose owner has gone away so their bindings retire with it."
 Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
   (let* ((context (runtime-effective runtime))
          (entry (or (registered-command (getf context :commands) name)
-                    (error "Unknown command: ~A." name)))
-         (owner (getf entry :owner))
-         (mounted (find owner (runtime-mounts runtime)
-                        :test #'equal :key (lambda (mounted) (spec-name (mounted-spec mounted)))))
-         (failures (and mounted (mounted-failures mounted)))
-         (event (command-event runtime entry name arguments (list :type :command :state :pressed))))
-    (dispatch-event runtime event)
-    (when (and mounted (> (mounted-failures mounted) (or failures 0)))
-      (error "~A: ~A" owner (mounted-last-error mounted)))
-    (list :name name :arguments (getf event :arguments))))
+                    (error "Unknown command: ~A." name))))
+    (if (getf entry :host)
+        (host-command-call runtime entry arguments)
+        (let* ((owner (getf entry :owner))
+               (mounted (find owner (runtime-mounts runtime)
+                              :test #'equal
+                              :key (lambda (mounted) (spec-name (mounted-spec mounted)))))
+               (failures (and mounted (mounted-failures mounted)))
+               (event (command-event runtime entry name arguments (list :type :command :state :pressed))))
+          (dispatch-event runtime event)
+          (when (and mounted (> (mounted-failures mounted) (or failures 0)))
+            (error "~A: ~A" owner (mounted-last-error mounted)))
+          (list :name name :arguments (getf event :arguments))))))
 
 (defun canonical-effect (effect)
   (check-type effect effect)
@@ -667,8 +670,9 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                        :key (lambda (o) (getf o :name)))
                 :config-error (copy-data (runtime-config-error runtime))
                 :keyboard-grab keyboard-grab
-                :commands (sort (copy-list (materialization-commands m)) #'string<
-                                :key (lambda (entry) (getf entry :name)))
+                :commands (sort (append (host-command-entries)
+                                        (copy-list (materialization-commands m)))
+                                #'string< :key (lambda (entry) (getf entry :name)))
                 :bindings (sort bindings
                                 (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                   (and (= (getf a :modifiers) (getf b :modifiers))
@@ -915,15 +919,21 @@ into one reused buffer, so watching allocates nothing per file."
                (:variable (not (boundp name))))
           collect name))
 
-(defun load-specs (runtime path)
+(defun fresh-source-package (&optional name)
+  "A package for one loaded source, with the TOMOE-USER local nickname."
+  (let ((package (make-package (or name (string (gensym "TOMOE-USER/"))) :use '(:cl :tomoe))))
+    (sb-ext:add-package-local-nickname "TOMOE-USER" package package)
+    package))
+
+(defun load-specs (runtime path &optional package)
   (let* ((*source* path)
          (directory (directory-namestring (truename path)))
          (*source-directory* directory)
-         (package (make-package (string (gensym "TOMOE-USER/")) :use '(:cl :tomoe)))
+         (package (or package (fresh-source-package)))
          (*definitions* nil) (*package* package) (*read-eval* nil)
          (*read-default-float-format* 'double-float))
-    (push package (runtime-source-packages runtime))
-    (sb-ext:add-package-local-nickname "TOMOE-USER" package package)
+    (unless (member package (runtime-source-packages runtime))
+      (push package (runtime-source-packages runtime)))
     (sb-ext:with-timeout 1
       (with-open-file (stream path)
         (when (> (file-length stream) 1048576) (error "Extension file exceeds 1 MiB."))
@@ -961,11 +971,14 @@ into one reused buffer, so watching allocates nothing per file."
                                            :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))
                       collect (if (and previous (equal (spec-source spec) (spec-source (mounted-spec previous))))
                                   (let ((copy (copy-mounted previous))) (setf (mounted-spec copy) spec) copy)
-                                  (make-mounted :spec spec :state (copy-data (spec-initial spec)))))))
+                                  (make-mounted :spec spec :state (copy-data (spec-initial spec))))))
+              (patched (remove-if-not (lambda (mounted) (spec-patch (mounted-spec mounted)))
+                                      (root-mounts (runtime-mounts runtime)))))
           (transact runtime
-                    (loop for source in sources append
-                      (remove source (append retained mounts) :test-not #'equal
-                              :key (lambda (m) (spec-source (mounted-spec m)))))
+                    (append (loop for source in sources append
+                              (remove source (append retained mounts) :test-not #'equal
+                                      :key (lambda (m) (spec-source (mounted-spec m)))))
+                            patched)
                     '(:type :mount) nil (mapcar #'spec-name specs)))
         (setf (runtime-sources runtime) (copy-list sources) (runtime-last-error runtime) nil
               (runtime-source-stamps runtime)
@@ -1227,6 +1240,10 @@ system, so an idle desktop keeps only what it is using."
            (t (let ((entry (registered-command (getf (runtime-effective runtime) :commands)
                                               (first call))))
                 (unless entry (return-from dispatch-event))
+                (when (getf entry :host)
+                  (handler-case (host-command-call runtime entry (rest call))
+                    (serious-condition (condition) (record-error runtime condition)))
+                  (return-from dispatch-event))
                 (setf event (command-event runtime entry (first call) (rest call) event))
                 (push (getf entry :owner) force)
                 (push :command changed))))))
@@ -1298,6 +1315,7 @@ system, so an idle desktop keeps only what it is using."
                   :process-history (if (runtime-process-history runtime)
                                        (hash-table-count (runtime-process-history runtime)) 0)
                   :rule-instances (describe-rule-instances runtime)
+                  :patches (describe-patches runtime)
                   :extensions
                   (loop for m in (root-mounts (runtime-mounts runtime)) for spec = (mounted-spec m)
                         collect (list :name (spec-name spec) :source (spec-source spec)

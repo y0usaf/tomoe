@@ -165,6 +165,41 @@ socket: `{"method": "commands"}` lists it, and
 `{"method": "command", "params": {"name": "focus-window", "arguments": {"window": 42}}}`
 runs it. A command a config never binds is still reachable from both.
 
+## Patch it while it runs
+
+Two session commands, `patch` and `undo-patch`, change the running compositor
+and put it back. A patch is an extension source: the same Lisp forms a config
+file holds, loaded into its own package, mounted like any other source, and
+remembered under a name so it can be withdrawn.
+
+```sh
+tomoe command patch file=/tmp/gap.lisp
+tomoe command patch forms='(in-package #:tomoe-user) (define-extension ...)' name=gap
+tomoe command undo-patch          # the most recent patch
+tomoe command undo-patch name=gap
+```
+
+Undo unmounts the extensions the patch mounted and, because they mount the
+ordinary way, the machinery that removes any source removes their effects too:
+timers stop, supervised processes are signalled, watches, executions, shell
+surfaces, bindings and commands go, and every effect it replaced exposes its
+previous owner again. Any top-level `defun`, `defmacro`, `defvar` or
+`defparameter` the patch made is restored to what it was before the patch, and
+a patch that fails to load or whose reducer fails on mount is rejected with its
+error, leaving the session exactly as it was.
+
+What a patch can change is everything the extension interface can express:
+window placement, drawing, settings, key and pointer bindings, commands,
+published state, timers, processes and layer surfaces, plus the definitions it
+replaces. What it cannot: the C core, the SBCL image, defstruct types,
+classes, defconstants and other global state; arrays, hashes and files it
+touches; symbols it interns into another package stay interned. Names are
+unique per patch, so apply a corrected patch after undoing the old one, and a
+patch that replaced definitions is undone before the patches applied after it,
+because each one recorded the definitions it found. Patches are not watched
+files — editing one does not reload it — and they survive a config reload
+rather than being dropped with it.
+
 ## Examples
 
 Each file in [`examples/`](examples) mounts on its own.

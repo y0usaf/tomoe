@@ -1335,7 +1335,7 @@ turns them all off while any is lit."
   (incf *next-source-id*))
 
 (defstruct (spec (:copier nil)) name reads initial update source directory admission package (token (gensym "SOURCE-"))
-  (id (allocate-source-id) :read-only t))
+  (id (allocate-source-id) :read-only t) patch)
 (defun register-spec (name reads initial update &optional admission)
   (when (eq *definitions* :not-loading) (error "Load declarations with MOUNT or RELOAD."))
   (check-type name string)
@@ -1358,3 +1358,45 @@ the transaction's starting private state and event on every dependency round.
 Only the final proposal's state, effects and commands are accepted."
   `(register-spec ,name ',reads ,state
                   (lambda (,snapshot ,state-name ,event) ,@body) ,admission))
+
+(defparameter *host-commands* nil
+  "Session commands the compositor owns. Keys, the command line and JSON all reach them.")
+
+(defvar *host-command-context* nil
+  "The host commands as copied context data, rebuilt when one is registered.")
+
+(defun define-host-command (name &key description arguments call)
+  "Register command NAME for the session itself, not for an extension.
+CALL receives (runtime arguments), a plist of the declared argument values, and
+returns a report plist, published as the command's JSON result."
+  (check-type call symbol)
+  (let ((entry (list :name (%command-name name) :owner "session" :host t
+                     :description (or description "")
+                     :arguments (mapcar #'%command-argument-spec arguments)
+                     :call call)))
+    (setf *host-commands*
+          (cons entry (remove (getf entry :name) *host-commands* :test #'equal
+                              :key (lambda (item) (getf item :name))))
+          *host-command-context* nil)
+    entry))
+
+(defun host-command-entries ()
+  "The host commands as context data, shared by every materialization."
+  (or *host-command-context*
+      (setf *host-command-context*
+            (loop for entry in *host-commands*
+                  collect (list :name (getf entry :name) :owner (getf entry :owner)
+                                :host t :description (getf entry :description)
+                                :arguments (copy-data (getf entry :arguments)))))))
+
+(defun host-command-implementation (name)
+  (or (getf (find name *host-commands* :test #'equal :key (lambda (item) (getf item :name)))
+            :call)
+      (error "No session command named ~A." name)))
+
+(defun host-command-call (runtime entry arguments)
+  "Run host command ENTRY for ARGUMENTS, filling declared defaults.
+The report it returns becomes the command's JSON result."
+  (let ((resolved (resolve-command-arguments runtime entry arguments)))
+    (list :name (getf entry :name) :arguments resolved
+          :result (funcall (host-command-implementation (getf entry :name)) runtime resolved))))

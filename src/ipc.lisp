@@ -242,14 +242,24 @@ subscriber's events start from the present state."
                                     collect (if (stringp item) item (princ-to-string item)))))
         (t value)))
 
+(defun ipc-command-report (report)
+  (when report
+    (apply #'json-object
+           (loop for (key value) on report by #'cddr
+                 collect (cons (string-downcase key) (ipc-command-value value))))))
+
 (defun ipc-command-result (result)
-  "The JSON form of a ran command: its name and the values it ran with."
-  (json-object
-   (cons "name" (getf result :name))
-   (cons "arguments"
-         (apply #'json-object
-                (loop for (key value) on (getf result :arguments) by #'cddr
-                      collect (cons (string-downcase key) (ipc-command-value value)))))))
+  "The JSON form of a ran command: its name and the values it ran with, plus the
+report a session command returned."
+  (apply #'json-object
+         (append (list (cons "name" (getf result :name))
+                       (cons "arguments"
+                             (apply #'json-object
+                                    (loop for (key value) on (getf result :arguments) by #'cddr
+                                          collect (cons (string-downcase key)
+                                                        (ipc-command-value value))))))
+                 (when (getf result :result)
+                   (list (cons "result" (ipc-command-report (getf result :result))))))))
 
 (defun ipc-command-argument-json (spec)
   (apply #'json-object

@@ -43,6 +43,12 @@ Extension sources are watched and reloaded when edited; --no-watch disables that
 commands lists every registered command with its arguments as JSON.
 command runs one by name, aiming it with ARGUMENT=VALUE pairs, and prints the
 values it ran with; every key binding runs the same command.
+patch applies a patch source file or forms to the running session, and
+undo-patch withdraws it, restoring the definitions it replaced and removing the
+timers, processes, surfaces and bindings it owned:
+  tomoe command patch file=/path/patch.lisp
+  tomoe command patch forms='(in-package #:tomoe-user) ...'
+  tomoe command undo-patch [name=patch-1|id=1]
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
