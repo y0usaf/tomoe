@@ -1427,10 +1427,6 @@ int tomoe_mpris_poll(struct tomoe_mpris *mpris) {
     return mpris->changed ? 1 : 0;
 }
 
-uint64_t tomoe_mpris_revision(const struct tomoe_mpris *mpris) {
-    return mpris ? mpris->revision : 0;
-}
-
 int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms) {
     if (!mpris) return 0;
     if (max_ms < 0) max_ms = 0;

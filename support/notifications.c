@@ -692,11 +692,6 @@ int tomoe_notifications_poll(struct tomoe_notifications *notifications) {
     return notifications->changed ? 1 : 0;
 }
 
-uint64_t tomoe_notifications_revision(
-    const struct tomoe_notifications *notifications) {
-    return notifications ? notifications->revision : 0;
-}
-
 int tomoe_notifications_timeout(
     const struct tomoe_notifications *notifications, int max_ms) {
     if (!notifications) return 0;
