@@ -452,6 +452,8 @@ in
   timing = check "timing" (
     ''
       TIMING_POLICY = "${timingPolicy}"
+      RUNS = "3"
+      COUNT = "200"
     ''
     + builtins.readFile ./timing.py
   );

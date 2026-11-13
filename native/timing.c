@@ -37,6 +37,10 @@ uint64_t tomoe_timing_now(void) {
     return timing_enabled ? timing_now() : 0;
 }
 
+void tomoe_timing_reset(void) {
+    memset(channels, 0, sizeof(channels));
+}
+
 int tomoe_timing_channel(const char *name) {
     for (int i = 0; i < TIMING_CHANNELS; i++)
         if (!strcmp(channel_names[i], name)) return i;

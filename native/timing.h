@@ -52,6 +52,7 @@ int tomoe_timing_enabled(void);
 void tomoe_timing_done(struct tomoe *s);
 uint64_t tomoe_timing_now(void);
 int tomoe_timing_channel(const char *name);
+void tomoe_timing_reset(void);
 void tomoe_timing_sample(int channel, uint64_t ns);
 
 #endif

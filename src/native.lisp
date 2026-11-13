@@ -37,6 +37,7 @@
 (define-native ("tomoe_timing_done" %timing-done) sb-alien:void (server (* t)))
 (define-native ("tomoe_timing_now" %timing-now) sb-alien:unsigned-long-long)
 (define-native ("tomoe_timing_channel" %timing-channel) sb-alien:int (name sb-alien:c-string))
+(define-native ("tomoe_timing_reset" %timing-reset) sb-alien:void)
 (define-native ("tomoe_timing_sample" %timing-sample) sb-alien:void
   (channel sb-alien:int) (ns sb-alien:unsigned-long-long))
 (define-native ("tomoe_activity_serial" %activity-serial) sb-alien:unsigned-long-long

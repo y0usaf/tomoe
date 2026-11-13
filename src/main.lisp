@@ -53,7 +53,7 @@ timers, processes, surfaces and bindings it owned:
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
-timings reads the latency samples each path keeps when TOMOE_TIMINGS is set.
+timings reads the latency samples each path keeps when TOMOE_TIMINGS is set; timings reset clears them.
 memory reads the Lisp heap and collector, the native heap, textures and output buffers.
 X11 clients connect through DISPLAY; Xwayland starts on the first connection and runs with Tomoe's own window manager.
 Control replies are versioned Lisp data. Mutating control commands are silent on success."))
