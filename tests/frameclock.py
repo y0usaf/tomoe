@@ -1,4 +1,4 @@
-FRAME = re.compile(r":FRAME (\d+)", re.IGNORECASE)
+FRAME = re.compile(r"(?<!-):FRAME (\d+)", re.IGNORECASE)
 MISSED = re.compile(r":MISSED (\d+)", re.IGNORECASE)
 COST = re.compile(r":COST-NS (-?\d+)", re.IGNORECASE)
 KEYS = ("count", "mean", "p50", "p90", "p99", "max")
@@ -11,6 +11,7 @@ DRM = {
 PHASES = (
     ("motion", "--motion-stream 1000 3000", "present-input"),
     ("commit", "--commit-stream 500 3000", "present-commit"),
+    ("load", "--motion-stream 1000 3000", "present-input"),
 )
 MODES = (("late-latch", {}), ("immediate", {"TOMOE_FRAME_CLOCK": "0"}))
 
@@ -78,16 +79,21 @@ def settle(limit=60):
     raise AssertionError("frames never settled")
 
 
-def measure(channel, arguments):
+def measure(name, channel, arguments):
+    if name == "load":
+        machine.succeed("systemd-run --unit=frameclock-load --property=Type=exec "
+                        "/bin/sh -c 'while :; do :; done'")
     cli("timings reset")
     before, before_missed = frames(), missed()
     time.sleep(0.4)
     machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-timing-client " + arguments)
     time.sleep(0.4)
+    if name == "load":
+        machine.succeed("systemctl stop frameclock-load")
     all_channels = channels()
     data = all_channels[channel]
     drawn, dropped = frames() - before, missed() - before_missed
-    print(f"{channel}: p50 {data['p50'] / 1000:.2f} ms p99 {data['p99'] / 1000:.2f} ms "
+    print(f"{name} {channel}: p50 {data['p50'] / 1000:.2f} ms p99 {data['p99'] / 1000:.2f} ms "
           f"max {data['max'] / 1000:.2f} ms count {data['count']} over {drawn} frames, "
           f"missed {dropped}, cost {max(costs() or [0])} ns")
     print("  clock: " + cli("frames").strip())
@@ -101,7 +107,7 @@ def measure(channel, arguments):
 
 
 def phases():
-    return {channel: measure(channel, arguments) for _, arguments, channel in PHASES}
+    return {name: measure(name, channel, arguments) for name, arguments, channel in PHASES}
 
 
 def idle():
@@ -135,12 +141,14 @@ for index, (mode, extra) in enumerate(MODES):
     quit()
     driven[mode] = result
 
-for _, _, channel in PHASES:
-    late, immediate = driven["late-latch"][channel], driven["immediate"][channel]
-    print(f"vkms {channel}: late-latch p50 {late['p50'] / 1000:.2f} ms versus "
+for name, _, channel in PHASES:
+    late, immediate = driven["late-latch"][name], driven["immediate"][name]
+    print(f"vkms {name}: late-latch p50 {late['p50'] / 1000:.2f} ms versus "
           f"immediate p50 {immediate['p50'] / 1000:.2f} ms, "
           f"p99 {late['p99'] / 1000:.2f} versus {immediate['p99'] / 1000:.2f} ms")
     assert late["p50"] * 100 < immediate["p50"] * 88, \
-        f"vkms {channel} latency did not drop: {late} versus {immediate}"
-    assert late["missed"] <= immediate["missed"] + late["frames"] // 20, \
-        f"vkms {channel} dropped more frames: {late['missed']} versus {immediate['missed']}"
+        f"vkms {name} latency did not drop: {late} versus {immediate}"
+    assert late["missed"] <= immediate["missed"] + late["frames"] // 50, \
+        f"vkms {name} dropped more frames: {late['missed']} versus {immediate['missed']}"
+    assert late["missed"] * 20 <= late["frames"], \
+        f"vkms {name} lost {late['missed']} of {late['frames']} frames"

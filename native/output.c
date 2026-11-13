@@ -370,14 +370,13 @@ const char *tomoe_frames(struct tomoe *s) {
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
             " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
-            " :refresh %d :armed %" PRId64 " :start %" PRId64 " :ready %" PRId64
-            " :vblank %" PRId64 " :predicted %" PRId64 " :slack %" PRId64 " :frame-times (",
+            " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
+            " :predicted %" PRId64 " :slack %" PRId64 " :frame-times (",
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
             o->timing.ns, o->screen->frame_cost_ns, o->screen->missed_frames,
             o->screen->refresh, o->screen->frame_armed_ns, o->screen->frame_start_ns,
-            o->screen->frame_ready_ns, o->screen->vblank_ns, o->screen->clock.predicted_ns,
-            o->screen->clock.slack_ns);
+            o->screen->vblank_ns, o->screen->clock.predicted_ns, o->screen->clock.slack_ns);
         for (size_t i = 0; i < sizeof(o->timing.counts) / sizeof(o->timing.counts[0]); i++)
             fprintf(out, i ? " %" PRIu64 : "%" PRIu64, o->timing.counts[i]);
         fputs("))", out);
