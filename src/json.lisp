@@ -34,13 +34,6 @@
           do (error "JSON strings must contain Unicode scalar values."))
   value)
 
-(defun %json-container-payload (value marker)
-  (and (consp value)
-       (eq (car value) marker)
-       (consp (cdr value))
-       (null (cddr value))
-       (second value)))
-
 (defun %json-circular-p (list)
   "True when the conses of LIST loop back on themselves."
   (loop for slow = list then (cdr slow)

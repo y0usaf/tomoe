@@ -163,7 +163,6 @@ once."
   (mirror sb-alien:c-string) (adaptive-sync sb-alien:int) (tearing sb-alien:int))
 (define-native ("tomoe_output_icc" %output-icc) sb-alien:int
   (server (* t)) (name sb-alien:c-string) (path sb-alien:c-string))
-(define-native ("tomoe_outputs_apply" %outputs-apply) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_preview" %outputs-preview) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_outputs_revision" %outputs-revision) sb-alien:unsigned-long-long
   (server (* t)))
@@ -288,11 +287,6 @@ once."
                    (listp (getf snapshot :outputs)))
         (error "Native output snapshot is invalid: ~S" snapshot))
       snapshot)))
-
-(defun configure-native-outputs (backend outputs)
-  (stage-native-outputs backend outputs)
-  (let ((message (%outputs-apply backend)))
-    (when message (error "~A" message))))
 
 (defun configure-virtual-outputs (backend old new)
   (when backend
