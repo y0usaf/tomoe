@@ -63,6 +63,8 @@ def parse_frames(text):
     for match in re.finditer(r':NAME "([^"]+)"([^\n]*)', text, re.IGNORECASE):
         fields = { key.lower(): value for key, value in
             re.findall(r':([A-Za-z-]+)\s+([-\w]+)', match.group(2)) }
+        times = re.search(r':FRAME-TIMES \(([^)]*)\)', match.group(2), re.IGNORECASE)
+        fields["frame-times"] = [int(value) for value in times.group(1).split()] if times else []
         entries[match.group(1)] = fields
     return entries
 
@@ -185,11 +187,14 @@ def frame_cost(before, after):
         if not old:
             continue
         frames = int(fields.get("frame", 0)) - int(old.get("frame", 0))
-        drawn = int(fields.get("drawn-pixels", 0)) - int(old.get("drawn-pixels", 0))
         cost = int(fields.get("frame-ns", 0)) - int(old.get("frame-ns", 0))
+        buckets = [int(new) - int(old) for new, old in
+            zip(fields.get("frame-times", []), old.get("frame-times", []))]
+        profile = ", ".join(f"{(0.25 * 2 ** index):.2f}ms:{count}"
+            for index, count in enumerate(buckets) if count)
         if frames:
-            rows.append(f"{name}: {frames} frames, {drawn / max(frames, 1) / 1e6:.2f} Mpx drawn, "
-                f"{cost / frames / 1e6:.2f} ms per frame")
+            rows.append(f"{name}: {frames} frames, {cost / frames / 1e6:.2f} ms per frame"
+                + (f" ({profile})" if profile else ""))
     return rows
 
 def read_ppm(path):
