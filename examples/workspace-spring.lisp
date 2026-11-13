@@ -3,13 +3,24 @@
 (defparameter +spring-gap+ 6 "Room around each tile.")
 (defparameter +spring-tags+ '("1" "2" "3") "The Super key that switches each.")
 
+(defparameter +spring-names+
+  (loop for number from 1 to (length +spring-tags+)
+        collect (format nil "spring-tag-~(~R~)" number))
+  "The command each tag's Super key runs. Command names end in letters, not digits.")
+
+(defparameter +spring-commands+
+  (loop for name in +spring-names+ for number from 1
+        collect (define-command name
+                  :description (format nil "Show desktop tag ~D." number))))
+
 (defun spring--tag (command)
-  (when (and (stringp command) (> (length command) 3) (string= "tag" command :end2 3))
-    (let ((number (parse-integer command :start 3 :junk-allowed t)))
-      (when (and number (<= 1 number (length +spring-tags+))) number))))
+  "The tag number COMMAND shows, or NIL for another command."
+  (and (stringp command)
+       (let ((index (position command +spring-names+ :test #'equal)))
+         (and index (1+ index)))))
 
 (define-extension "workspace-spring"
-    (:reads (:windows :outputs :focus :key)
+    (:reads (:windows :outputs :focus :command)
      :state (list :tag 1 :assigned nil))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
@@ -20,8 +31,8 @@
          (tag (getf state :tag)))
     (dolist (id (remove-if (lambda (id) (assoc id assigned)) ids))
       (push (cons id tag) assigned))
-    (when (and (eq (getf event :type) :key) (equal (getf event :owner) "workspace-spring"))
-      (let ((number (spring--tag (getf event :command))))
+    (when (eq (getf event :type) :command)
+      (let ((number (spring--tag (getf event :name))))
         (when number (setf tag number))))
     (let* ((visible (loop for window in windows
                           when (eql (cdr (assoc (getf window :id) assigned)) tag)
@@ -54,7 +65,8 @@
                                                                  :stiffness 160))
                                         :window-close (:ease (:duration-ms 90
                                                               :curve :ease-out-quad))))
-                            (bind-key '(:super) "1" :tag1)
-                            (bind-key '(:super) "2" :tag2)
-                            (bind-key '(:super) "3" :tag3)))
+                            (bind-key '(:super) "1" (first +spring-names+))
+                            (bind-key '(:super) "2" (second +spring-names+))
+                            (bind-key '(:super) "3" (third +spring-names+)))
+                      +spring-commands+)
               nil))))
