@@ -23,6 +23,7 @@ struct window {
     bool desired_fullscreen, desired_maximize;
     struct animation move, fade;
     double move_from_x, move_from_y;
+    double shader_moved;
 };
 struct popup {
     struct xdg_popup *xdg;
@@ -496,6 +497,12 @@ void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
             (plan->output_count ? plan->outputs[0].scale_120 / 120.0 : 1.0);
         entry->target.output = output ? output->output->screen : NULL;
         entry->visible = entry->visible && w->mapped && entry->staged;
+        if (entry->target.shader) {
+            const struct window_shader *shader = entry->target.shader;
+            double elapsed = animation_now() - w->shader_moved;
+            entry->target.shader_time = elapsed < 0 ? 0 : elapsed > shader->settle ?
+                shader->settle : elapsed;
+        }
     }
 }
 
@@ -522,6 +529,8 @@ bool windows_animate(struct tomoe *s) {
         w->target.offset_y = round(w->move_from_y * progress);
         w->target.alpha = w->fade.active || w->fade.to ? animation_value(&w->fade, now) : 1;
         active |= w->move.active || w->fade.active;
+        if (w->target.shader && w->target.shader->settle > 0 &&
+                now - w->shader_moved < w->target.shader->settle) active = true;
     }
     return active;
 }
@@ -532,8 +541,12 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
         if (!entry || !w->tree) continue;
         bool scale_changed = w->target.scale != entry->target.scale;
         int old_x = w->target.x, old_y = w->target.y;
+        int old_width = w->target.width, old_height = w->target.height;
         bool shown = w->tree->enabled;
         w->target = entry->target;
+        if (old_x != w->target.x || old_y != w->target.y ||
+                old_width != w->target.width || old_height != w->target.height)
+            w->shader_moved = animation_now();
         if (w->mapped && shown && entry->visible && w->presented &&
                 (old_x != w->target.x || old_y != w->target.y))
             window_animate_move(w, old_x, old_y);

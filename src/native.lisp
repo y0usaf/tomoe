@@ -201,6 +201,10 @@ once."
 (define-native ("tomoe_present_window_style" %present-window-style) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int) (radius sb-alien:int) (blur sb-alien:int)
   (tearing sb-alien:int) (focused sb-alien:long-long) (unfocused sb-alien:long-long))
+(define-native ("tomoe_present_window_shader" %present-window-shader) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int) (path sb-alien:c-string)
+  (grid-x sb-alien:int) (grid-y sb-alien:int) (margin sb-alien:int)
+  (settle sb-alien:double) (entry sb-alien:c-string))
 (define-native ("tomoe_present_keyboard_grab" %present-keyboard-grab) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (otherwise sb-alien:c-string))
@@ -455,7 +459,15 @@ once."
                (unless (= 1 (%present-window-style backend (getf window :id)
                                                    (getf properties :radius -1) (tri :blur) (tri :tearing)
                                                    (color :focused) (color :unfocused)))
-                 (error "Cannot stage window ~D properties." (getf window :id))))))
+                 (error "Cannot stage window ~D properties." (getf window :id)))
+               (let ((grid (getf properties :shader-grid)))
+                 (unless (= 1 (%present-window-shader
+                               backend (getf window :id) (or (getf properties :shader) "")
+                               (or (car grid) 1) (or (cdr grid) 1)
+                               (or (getf properties :shader-margin) 0)
+                               (%double-float (or (getf properties :shader-settle) 0))
+                               (or (getf properties :shader-entry) "mainImage")))
+                   (error "Cannot stage window ~D shader." (getf window :id)))))))
          (dolist (id (or (getf context :stacking) '(0)))
            (unless (= 1 (%present-stack backend id))
              (error "Cannot stage window stacking.")))

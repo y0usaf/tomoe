@@ -23,6 +23,7 @@
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
 (defvar *source*)
+(defvar *source-directory*)
 (defvar *stop-requested* nil)
 
 (defun %finite-float-p (value)
@@ -227,6 +228,29 @@ Producer lifetimes belong to the session; removing a consumer releases only its
 own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
   (check-type name keyword)
   (copy-data (getf (context snapshot :services) name default)))
+
+(defun shader-path (path)
+  "Absolute window shader path, or one relative to the declaring source."
+  (check-type path string)
+  (when (or (zerop (length path)) (> (length path) 4096) (find #\Null path))
+    (error "Invalid window shader path."))
+  (cond ((char= (char path 0) #\/) path)
+        ((and (stringp *source-directory*) (plusp (length *source-directory*))
+              (char= (char *source-directory* 0) #\/))
+         (concatenate 'string *source-directory* path))
+        (t (error "Relative window shader paths require a declaring source."))))
+
+(defun shader-entry (entry)
+  "Validate a GLSL function name, since the native renderer splices it in."
+  (check-type entry string)
+  (unless (and (<= 1 (length entry) 63)
+               (alpha-char-p (char entry 0))
+               (every (lambda (character)
+                        (or (alpha-char-p character) (digit-char-p character)
+                            (char= character #\_)))
+                      entry))
+    (error "Invalid window shader entry ~S." entry))
+  entry)
 
 (defun rule-reserved-property-p (key)
   (or (member key '(:app-id :app_id :title :match :apply))
@@ -543,16 +567,26 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
             (when (and (second args) (member (materialization-focused m) (materialization-stacking m)))
               (%materialized-raise m (materialization-focused m)))))
 
-(defun window-properties (id &rest properties &key radius tearing blur border)
+(defun window-properties (id &rest properties &key radius tearing blur border
+                            shader shader-grid shader-margin shader-settle shader-entry)
   "Own rendering overrides for one window. Omitted keys fall back to the
 settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
-BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
-  (declare (ignore radius tearing blur border))
+BORDER is (:FOCUSED color :UNFOCUSED color). SHADER is a GLSL file drawn over
+the window's own texture on a :SHADER-GRID mesh; :SHADER-MARGIN is the extra
+canvas around the window in pixels, :SHADER-SETTLE how long it keeps animating
+after the window moves, and :SHADER-ENTRY names the shader function to call
+(default mainImage). Later owners replace each key."
+  (declare (ignore radius tearing blur border shader shader-grid shader-margin
+                   shader-settle shader-entry))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
                                      '((:radius (:integer 0 4096)) (:tearing :boolean) (:blur :boolean)
-                                       (:border (:group (:focused :color) (:unfocused :color))))))))
+                                       (:border (:group (:focused :color) (:unfocused :color)))
+                                       (:shader :path) (:shader-grid (:pair 1 32))
+                                       (:shader-margin (:integer 0 4096))
+                                       (:shader-settle (:real 0 10))
+                                       (:shader-entry :identifier))))))
 
 (define-effect :window-properties
   :canonical (destructuring-bind (id properties) args
@@ -666,6 +700,12 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
       (:real (unless (and (%finite-real-p value) (<= (second type) value (third type))) (bad))
        (%double-float value))
       (:member (unless (member value (rest type)) (bad)) value)
+      (:path (if (null value) "" (shader-path value)))
+      (:pair (unless (and (consp value) (typep (car value) `(integer ,(second type) ,(third type)))
+                          (typep (cdr value) `(integer ,(second type) ,(third type))))
+               (bad))
+       (cons (car value) (cdr value)))
+      (:identifier (shader-entry value))
       (:color (%ui-color value) (copy-seq value))
       (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
        (mapcar #'copy-seq value))

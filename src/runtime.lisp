@@ -80,7 +80,8 @@
         (list (effect-kind effect) (first (effect-arguments effect))))))
 
 (defun invoke-extension (runtime mounted context event)
-  (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted)))
+  (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
+        (*source-directory* (spec-directory (mounted-spec mounted))))
     (handler-case
         (sb-ext:with-timeout (/ (getf (getf context :settings) :watchdog-ms 1000) 1000)
           (multiple-value-bind (state effects commands)
@@ -718,6 +719,7 @@ into one reused buffer, so watching allocates nothing per file."
 (defun load-specs (runtime path)
   (let* ((*source* path)
          (directory (directory-namestring (truename path)))
+         (*source-directory* directory)
          (package (make-package (string (gensym "TOMOE-USER/")) :use '(:cl :tomoe)))
          (*definitions* nil) (*package* package) (*read-eval* nil)
          (*read-default-float-format* 'double-float))

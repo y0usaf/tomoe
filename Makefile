@@ -68,6 +68,15 @@ build/tomoe-runtime: $(NATIVE) $(SUPPORT:%=build/%.o)
 	$(CC) -Wl,--export-dynamic $(SBCL_HOME)/sbcl.o $^ -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) -lresvg -ldl -lpthread -lzstd -lm
 
+build/test-client: tests/client.c $(HEADERS)
+	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild tests/client.c $(NAMES:%=build/%-protocol.c) \
+		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
+
+build/pointer-path: tests/pointer-path.c build/wlr-virtual-pointer-unstable-v1-client-protocol.h
+	$(CC) $(CFLAGS_NATIVE) -Ibuild tests/pointer-path.c \
+		build/wlr-virtual-pointer-unstable-v1-protocol.c \
+		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
+
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 

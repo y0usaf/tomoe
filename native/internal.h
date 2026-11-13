@@ -297,9 +297,39 @@ struct program {
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
     GLint resolution, time, frame, mouse, channel, lut, trail, trail_count;
+    GLint box, min_ndc, max_ndc, drag, tex_prev, tex_next;
+    GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
+    GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
+    GLint progress, clamped_progress, random_seed;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
+struct window_shader {
+    struct program *program;
+    char *path;
+    char entry[64];
+    long mtime;
+    int grid_x, grid_y, margin;
+    double settle;
+    struct window_shader *next;
+};
+struct window_shader *window_shader_for(struct tomoe *server, const char *path,
+    int grid_x, int grid_y, int margin, double settle, const char *entry);
+void window_shaders_finish(struct tomoe *server);
+struct mesh_options {
+    struct texture *texture;
+    struct program *shader;
+    struct box dst_box;
+    struct fbox src_box;
+    enum wl_output_transform transform;
+    const float *trail;
+    const float *alpha;
+    struct timeline *wait_timeline;
+    uint64_t wait_point;
+    int trail_count, grid_x, grid_y, frame, drag;
+    double box[4], time, progress, seed;
+};
+void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
 struct ring {
     struct buffer *slots[RING_SLOTS];
@@ -492,6 +522,8 @@ struct target {
     bool fullscreen;
     double offset_x, offset_y, alpha;
     struct window_style style;
+    struct window_shader *shader;
+    double shader_time;
 };
 struct frame {
     struct tomoe *server;
@@ -875,6 +907,7 @@ struct tomoe {
     struct ui_set *ui;
     struct ui_pointer *ui_pointers;
     struct ui_asset_pool *ui_assets;
+    struct window_shader *shaders;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
     struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;

@@ -48,7 +48,7 @@ static volatile sig_atomic_t advance;
 static volatile sig_atomic_t running = 1;
 
 struct client {
-    const char *mode, *app_id, *title, *layer_namespace, *color;
+    const char *mode, *app_id, *title, *layer_namespace, *color, *image;
     const char *protocol_error;
     int width, height, seconds, commit_rate;
     uint32_t layer, anchor, exclusive_zone, keyboard;
@@ -250,6 +250,7 @@ static void usage(void) {
            "  --size WxH           buffer size, or the drag's pointer extent (default 320x240)\n"
            "  --drag X,Y,X,Y       drag only: press at the first point, release at the second\n"
            "  --color RRGGBB       buffer fill (default 336699)\n"
+           "  --image PATH         binary P6 PPM to fill the buffer instead (exact size)\n"
            "  --seconds N          run time (default 30)\n"
            "  --commit-rate HZ     after mapping, commit HZ times a second with a frame callback\n"
            "                       it never waits for, and read events once a second\n",
@@ -272,6 +273,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--size") == 0)
         { parse_size(option_value(option, value), &state->width, &state->height); i++; }
         else if (strcmp(option, "--color") == 0) { state->color = option_value(option, value); i++; }
+        else if (strcmp(option, "--image") == 0) { state->image = option_value(option, value); i++; }
         else if (strcmp(option, "--single-pixel") == 0) state->single_pixel = true;
         else if (strcmp(option, "--alpha-probe") == 0) state->alpha_probe = true;
         else if (strcmp(option, "--protocol-error") == 0) { state->protocol_error = option_value(option, value); i++; }
@@ -347,6 +349,29 @@ static const struct wl_buffer_listener buffer_listener = {
     .release = buffer_release,
 };
 
+static void fill_from_ppm(const char *path, uint32_t *words, int width, int height) {
+    FILE *file = fopen(path, "rb");
+    if (!file) fail("cannot open %s: %s", path, strerror(errno));
+    int header[3] = { 0, 0, 0 }, maxval = 0, read = 0;
+    if (fscanf(file, "P6 %d %d %d", &header[0], &header[1], &maxval) != 3 || maxval != 255)
+        fail("%s is not a binary P6 PPM with maxval 255", path);
+    fgetc(file);
+    if (header[0] != width || header[1] != height)
+        fail("%s is %dx%d, not %dx%d", path, header[0], header[1], width, height);
+    unsigned char *row = malloc((size_t)width * 3);
+    if (!row) fail("cannot allocate a PPM row");
+    for (int y = 0; y < height; y++) {
+        if ((int)fread(row, 3, (size_t)width, file) != width) fail("%s is truncated", path);
+        for (int x = 0; x < width; x++)
+            words[y * width + x] = 0xff000000u | ((uint32_t)row[3 * x] << 16) |
+                ((uint32_t)row[3 * x + 1] << 8) | row[3 * x + 2];
+        read++;
+    }
+    free(row);
+    fclose(file);
+    if (!read) fail("%s is empty", path);
+}
+
 static void create_buffer(struct client *state, int width, int height) {
     if (state->single_pixel) {
         if (!single_pixel_manager || !viewporter) fail("single-pixel-buffer and viewporter required");
@@ -376,6 +401,7 @@ static void create_buffer(struct client *state, int width, int height) {
     uint32_t color = parse_color(state->color);
     uint32_t *words = pixels;
     for (size_t i = 0; i < size / sizeof(uint32_t); i++) words[i] = color;
+    if (state->image) fill_from_ppm(state->image, words, width, height);
     struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
     struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
                                                         WL_SHM_FORMAT_XRGB8888);
