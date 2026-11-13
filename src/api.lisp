@@ -568,16 +568,23 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
               (%materialized-raise m (materialization-focused m)))))
 
 (defun window-properties (id &rest properties &key radius tearing blur border
-                            shader shader-grid shader-margin shader-settle shader-entry)
+                            shader shader-grid shader-margin shader-settle shader-entry
+                            mesh mesh-grid)
   "Own rendering overrides for one window. Omitted keys fall back to the
 settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
 BORDER is (:FOCUSED color :UNFOCUSED color). SHADER is a GLSL file drawn over
 the window's own texture on a :SHADER-GRID mesh; :SHADER-MARGIN is the extra
 canvas around the window in pixels, :SHADER-SETTLE how long it keeps animating
 after the window moves, and :SHADER-ENTRY names the shader function to call
-(default mainImage). Later owners replace each key."
+(default mainImage). MESH deforms the window's draw grid instead of drawing it
+as a rectangle, and takes over the grid a SHADER would otherwise use:
+:MESH-GRID is (COLUMNS . ROWS), and MESH is COLUMNS+1 times ROWS+1 X Y pixel
+pairs relative to the window's placed corner with row 0 on its top edge, so
+column 0 and row 0 hold the corners that show the window's own top-left corner.
+Pointer input follows the same mesh, so a click lands on the pixel a warp moved.
+Later owners replace each key."
   (declare (ignore radius tearing blur border shader shader-grid shader-margin
-                   shader-settle shader-entry))
+                   shader-settle shader-entry mesh mesh-grid))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
@@ -586,7 +593,9 @@ after the window moves, and :SHADER-ENTRY names the shader function to call
                                        (:shader :path) (:shader-grid (:pair 1 32))
                                        (:shader-margin (:integer 0 4096))
                                        (:shader-settle (:real 0 10))
-                                       (:shader-entry :identifier))))))
+                                       (:shader-entry :identifier)
+                                       (:mesh-grid (:pair 1 32))
+                                       (:mesh (:floats 0 8192)))))))
 
 (define-effect :window-properties
   :canonical (destructuring-bind (id properties) args
@@ -706,6 +715,10 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                (bad))
        (cons (car value) (cdr value)))
       (:identifier (shader-entry value))
+      (:floats (unless (and (listp value) (<= (second type) (length value) (third type))
+                            (every #'%finite-real-p value))
+                 (bad))
+       (mapcar #'%double-float value))
       (:color (%ui-color value) (copy-seq value))
       (:strings (unless (and (listp value) (<= (length value) 64) (every #'stringp value)) (bad))
        (mapcar #'copy-seq value))

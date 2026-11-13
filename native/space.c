@@ -339,15 +339,56 @@ static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct ta
     pass_add_mesh(f->pass, &options);
     return true;
 }
+static bool window_mesh_frame(const struct window_mesh *mesh, const struct frame *f,
+        struct box screen, struct box *area) {
+    if (mesh->frame.width <= 0 || mesh->frame.height <= 0) return false;
+    double x = screen.x + mesh->frame.x * f->zoom;
+    double y = screen.y + mesh->frame.y * f->zoom;
+    double width = mesh->frame.width * f->zoom, height = mesh->frame.height * f->zoom;
+    if (width < 1 || height < 1) return false;
+    *area = (struct box){ (int)floor(x), (int)floor(y),
+        (int)ceil(x + width) - (int)floor(x), (int)ceil(y + height) - (int)floor(y) };
+    return true;
+}
+
+static bool window_mesh_draw(struct tomoe *s, struct frame *f, const struct target *t,
+        const struct texture_options *source, struct box screen, float alpha) {
+    const struct window_mesh *mesh = t->mesh;
+    const struct window_shader *shader = t->shader;
+    if (!shader || !shader->program) shader = window_mesh_shader(s);
+    if (!shader || !shader->program) return false;
+    struct box area;
+    if (!window_mesh_frame(mesh, f, screen, &area)) return false;
+    struct box shown;
+    box_transform(&shown, &area, transform_invert(f->transform), f->width, f->height);
+    struct mesh_options options = {
+        .texture = source->texture, .shader = shader->program, .mesh = mesh,
+        .dst_box = shown, .src_box = source->src_box, .transform = source->transform,
+        .alpha = &alpha, .wait_timeline = source->wait_timeline,
+        .wait_point = source->wait_point, .grid_x = mesh->grid_x, .grid_y = mesh->grid_y,
+        .position_transform = transform_invert(f->transform),
+        .time = t->shader_time, .progress = 1, .seed = window_shader_seed(t->id),
+    };
+    options.origin[0] = screen.x;
+    options.origin[1] = screen.y;
+    options.scale = f->zoom;
+    pass_add_mesh(f->pass, &options);
+    return true;
+}
+
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
-    if (box_empty(&leaf->shown)) return false;
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
+    struct box reach = local;
+    bool meshed = window && t->mesh && window_mesh_frame(t->mesh, data, leaf->screen, &reach);
+    if (!meshed && box_empty(&leaf->shown)) return false;
     int64_t x = (int64_t)local.x - data->x + (window ? pixel_round(t->offset_x * data->zoom) : 0);
     int64_t y = (int64_t)local.y - data->y + (window ? pixel_round(t->offset_y * data->zoom) : 0);
-    if (x >= data->width || y >= data->height || x + local.width <= 0 || y + local.height <= 0) return false;
+    int64_t left = (int64_t)reach.x - data->x, top = (int64_t)reach.y - data->y;
+    if (left >= data->width || top >= data->height ||
+            left + reach.width <= 0 || top + reach.height <= 0) return false;
     local.x = (int)x; local.y = (int)y;
     struct box dst;
     box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
@@ -365,7 +406,9 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
         .wait_timeline = surface->current.acquire, .wait_point = surface->current.acquire_point,
         .surface = surface,
     };
-    if (window && t->shader && t->shader->program && local.width > 0 && local.height > 0) {
+    if (meshed) {
+        if (window_mesh_draw(s, data, t, &options, leaf->screen, alpha)) return false;
+    } else if (window && t->shader && t->shader->program && local.width > 0 && local.height > 0) {
         if (window_shader_mesh(s, data, t, &options, local, alpha)) return false;
     }
     double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
@@ -450,6 +493,7 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
 static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     if (t->kind == TARGET_LAYER) decorate_layer(s, t, f);
     if (t->kind != TARGET_WINDOW || t->fullscreen || t->client_width <= 0) return;
+    if (t->mesh) return;
     const struct settings *st = &s->settings;
     bool focused = t->id == f->focused;
     double zoom = f->zoom;
@@ -731,15 +775,69 @@ void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when
     walk_presentation_root(s, &plan, &root, root.node, 0, 0, unpaced_frame_done, &now);
 }
 
+static bool mesh_barycentric(double x, double y, const float *a, const float *b,
+        const float *c, double *wa, double *wb, double *wc) {
+    double denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    if (denominator == 0) return false;
+    double first = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / denominator;
+    double second = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / denominator;
+    double third = 1 - first - second;
+    if (first < 0 || second < 0 || third < 0) return false;
+    *wa = first; *wb = second; *wc = third;
+    return true;
+}
+
+static bool window_mesh_inverse(const struct window_mesh *mesh, double x, double y,
+        double zoom, const struct box *screen, double *u, double *v) {
+    if (mesh->frame.width <= 0 || mesh->frame.height <= 0 || zoom <= 0) return false;
+    double mx = (x - screen->x) / zoom, my = (y - screen->y) / zoom;
+    if (mx < mesh->frame.x || my < mesh->frame.y ||
+            mx > mesh->frame.x + mesh->frame.width || my > mesh->frame.y + mesh->frame.height)
+        return false;
+    int stride = mesh->grid_x + 1;
+    for (int j = 0; j < mesh->grid_y; j++) {
+        for (int i = 0; i < mesh->grid_x; i++) {
+            const float *p00 = &mesh->positions[2 * ((size_t)j * stride + i)];
+            const float *p10 = p00 + 2;
+            const float *p01 = &mesh->positions[2 * ((size_t)(j + 1) * stride + i)];
+            const float *p11 = p01 + 2;
+            for (int triangle = 0; triangle < 2; triangle++) {
+                const float *a = triangle ? p10 : p00;
+                const float *b = triangle ? p11 : p10;
+                const float *c = p01;
+                double wa, wb, wc;
+                if (!mesh_barycentric(mx, my, a, b, c, &wa, &wb, &wc)) continue;
+                double along = triangle ? wa + wb : wb;
+                double down = triangle ? wb : wc;
+                *u = (i + along) / mesh->grid_x;
+                *v = (j + down) / mesh->grid_y;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 struct hit_data { double x, y, sx, sy, ratio; struct surface *surface; uint32_t id; };
 static bool hit_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct hit_data *hit = opaque;
     if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
-    if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
-            hit->x >= (double)leaf->shown.x + leaf->shown.width ||
-            hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
-    double sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
-    double sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
+    const struct window_mesh *mesh = leaf->target && leaf->target->kind == TARGET_WINDOW ?
+        leaf->target->mesh : NULL;
+    double sx, sy;
+    if (mesh) {
+        double u, v;
+        if (!window_mesh_inverse(mesh, hit->x, hit->y, leaf->zoom, &leaf->screen, &u, &v))
+            return false;
+        sx = u * leaf->width;
+        sy = v * leaf->height;
+    } else {
+        if (hit->x < leaf->shown.x || hit->y < leaf->shown.y ||
+                hit->x >= (double)leaf->shown.x + leaf->shown.width ||
+                hit->y >= (double)leaf->shown.y + leaf->shown.height) return false;
+        sx = (hit->x - leaf->screen.x) * leaf->width / leaf->screen.width;
+        sy = (hit->y - leaf->screen.y) * leaf->height / leaf->screen.height;
+    }
     if (!surface_accepts_input(leaf->surface, sx, sy)) return false;
     hit->surface = leaf->surface; hit->sx = sx; hit->sy = sy;
     hit->ratio = (double)leaf->screen.width / leaf->width;
@@ -780,7 +878,7 @@ static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
-    if (t && t->shader) return true;
+    if (t && (t->shader || t->mesh)) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y))) return true;
     data->surface = leaf->surface;

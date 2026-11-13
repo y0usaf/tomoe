@@ -34,6 +34,8 @@ void fbox_transform(struct fbox *dest, const struct fbox *box, enum wl_output_tr
 enum wl_output_transform transform_invert(enum wl_output_transform transform);
 enum wl_output_transform transform_compose(enum wl_output_transform a, enum wl_output_transform b);
 void transform_coords(enum wl_output_transform transform, int *x, int *y);
+void transform_point(double *x, double *y, enum wl_output_transform transform,
+    double width, double height);
 void region_scale(pixman_region32_t *dst, const pixman_region32_t *src, float scale);
 void region_scale_xy(pixman_region32_t *dst, const pixman_region32_t *src, float sx, float sy);
 void region_transform(pixman_region32_t *dst, const pixman_region32_t *src,
@@ -322,10 +324,24 @@ int window_path_samples(struct tomoe *server, uint32_t id,
     struct window_path_sample *out, int max);
 struct window_shader *window_shader_for(struct tomoe *server, const char *path,
     int grid_x, int grid_y, int margin, double settle, const char *entry);
+struct window_shader *window_mesh_shader(struct tomoe *server);
 void window_shaders_finish(struct tomoe *server);
+struct window_mesh {
+    uint32_t id;
+    int grid_x, grid_y;
+    struct box frame;
+    float *positions;
+    size_t capacity;
+    uint64_t digest;
+    struct window_mesh *next;
+};
+struct window_mesh *window_mesh_for(struct tomoe *server, uint32_t id, int grid_x, int grid_y,
+    const double *positions, size_t count);
+void window_meshes_finish(struct tomoe *server);
 struct mesh_options {
     struct texture *texture;
     struct program *shader;
+    const struct window_mesh *mesh;
     struct box dst_box;
     struct fbox src_box;
     enum wl_output_transform transform;
@@ -334,7 +350,9 @@ struct mesh_options {
     struct timeline *wait_timeline;
     uint64_t wait_point;
     int trail_count, path_count, grid_x, grid_y, frame, drag;
+    enum wl_output_transform position_transform;
     double box[4], time, progress, seed;
+    double origin[2], scale;
 };
 void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
@@ -530,6 +548,7 @@ struct target {
     double offset_x, offset_y, alpha;
     struct window_style style;
     struct window_shader *shader;
+    struct window_mesh *mesh;
     double shader_time;
 };
 struct frame {
@@ -915,6 +934,7 @@ struct tomoe {
     struct ui_pointer *ui_pointers;
     struct ui_asset_pool *ui_assets;
     struct window_shader *shaders;
+    struct window_mesh *meshes;
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
     struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;

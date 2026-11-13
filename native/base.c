@@ -123,6 +123,21 @@ enum wl_output_transform transform_compose(enum wl_output_transform a,
     return flipped | rotated;
 }
 
+void transform_point(double *x, double *y, enum wl_output_transform transform,
+        double width, double height) {
+    double px = *x, py = *y;
+    switch (transform) {
+    case WL_OUTPUT_TRANSFORM_NORMAL: break;
+    case WL_OUTPUT_TRANSFORM_90: *x = height - py; *y = px; break;
+    case WL_OUTPUT_TRANSFORM_180: *x = width - px; *y = height - py; break;
+    case WL_OUTPUT_TRANSFORM_270: *x = py; *y = width - px; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED: *x = width - px; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_90: *x = py; *y = px; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_180: *y = height - py; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_270: *x = height - py; *y = width - px; break;
+    }
+}
+
 void transform_coords(enum wl_output_transform transform, int *x, int *y) {
     if (!(transform & WL_OUTPUT_TRANSFORM_90)) return;
     int t = *x;
