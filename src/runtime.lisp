@@ -35,7 +35,7 @@
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error source-packages
-  (fd-watches (make-hash-table)) watch-failure (source-watches (make-hash-table :test #'equal))
+  (fd-watches (make-hash-table)) fd-specs watch-failure (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
 
@@ -45,6 +45,8 @@
 (defun socket-descriptor (socket)
   (sb-bsd-sockets:socket-file-descriptor socket))
 
+(declaim (inline least-wait wait-until socket-descriptor))
+
 (defun least-wait (first second)
   (cond ((null first) second) ((null second) first) (t (min first second))))
 
@@ -52,37 +54,32 @@
   (max 0 (ceiling (* 1000 (- deadline now)) internal-time-units-per-second)))
 
 (defun sync-fd-watches (runtime owner specs)
-  "Let the native loop wake on the descriptors OWNER currently wants, given SPECS
-as a (descriptor . mask) list. A descriptor already watched for OWNER with the
-same mask costs no syscall; descriptors OWNER stopped naming are dropped, and a
-descriptor that changed hands is re-watched under its new owner."
-  (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime))
-        (stale nil))
+  "Let the native loop wake on SPECS, a (descriptor . mask) list. A descriptor
+already watched with the same mask costs no syscall; descriptors no longer named
+are dropped. OWNER marks the caller in the registry."
+  (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime)))
     (dolist (spec specs)
       (let* ((fd (car spec)) (mask (cdr spec)) (entry (gethash fd table)))
         (cond
           ((null entry)
            (let ((source (%watch-fd backend fd mask)))
              (if (plusp source)
-                 (setf (gethash fd table) (list source mask owner))
+                 (setf (gethash fd table) (list source mask))
                  (setf (runtime-watch-failure runtime) t))))
-          ((not (eq owner (third entry)))
-           (%unwatch-fd backend (first entry))
-           (remhash fd table)
-           (let ((source (%watch-fd backend fd mask)))
-             (when (plusp source) (setf (gethash fd table) (list source mask owner)))))
           ((/= mask (second entry))
            (%update-fd backend (first entry) mask)
            (setf (second entry) mask)))))
-    (maphash (lambda (fd entry)
-               (when (and (eq owner (third entry)) (not (assoc fd specs)))
-                 (push fd stale)))
-             table)
-    (dolist (fd stale)
-      (let ((entry (gethash fd table)))
-        (when entry
-          (%unwatch-fd backend (first entry))
-          (remhash fd table))))))
+    (when (/= (hash-table-count table) (length specs))
+      (let ((stale nil))
+        (maphash (lambda (fd entry)
+                   (declare (ignore entry))
+                   (unless (assoc fd specs) (push fd stale)))
+                 table)
+        (dolist (fd stale)
+          (let ((entry (gethash fd table)))
+            (when entry
+              (%unwatch-fd backend (first entry))
+              (remhash fd table))))))))
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)

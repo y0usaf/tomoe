@@ -268,17 +268,28 @@ only after it changes again."
                 (producer-watch (runtime-network-producer runtime) #'%network-fd #'%network-mask)
                 (producer-watch (runtime-tray-producer runtime) #'%tray-fd #'%tray-mask))))
 
+(defun source-specs (runtime)
+  (loop for native being the hash-values of (runtime-source-watches runtime)
+        for fd = (%watch-descriptor native)
+        when (>= fd 0) collect (cons fd +event-readable+)))
+
+(defun wake-specs (runtime control server)
+  (append (list (cons (socket-descriptor (control-socket control)) +event-readable+))
+          (json-wake-specs server)
+          (service-wake-specs runtime)
+          (watch-specs runtime)
+          (execution-specs runtime)
+          (source-specs runtime)))
+
 (defun sync-wake-sources (runtime control server)
   "Register every descriptor whose readiness can start new work, so the loop can
 sleep until one of them, a timer, a command deadline or a held frame is due."
-  (setf (runtime-watch-failure runtime) nil)
-  (sync-fd-watches runtime 'control
-                   (list (cons (socket-descriptor (control-socket control)) +event-readable+)))
-  (sync-fd-watches runtime 'json (json-wake-specs server))
-  (sync-fd-watches runtime 'services (service-wake-specs runtime))
-  (sync-fd-watches runtime 'watches (watch-specs runtime))
-  (sync-fd-watches runtime 'executions (execution-specs runtime))
-  (when (runtime-watch runtime) (sync-source-watches runtime)))
+  (when (runtime-watch runtime) (sync-source-watches runtime))
+  (let ((specs (wake-specs runtime control server)))
+    (unless (equal specs (runtime-fd-specs runtime))
+      (setf (runtime-fd-specs runtime) specs
+            (runtime-watch-failure runtime) nil)
+      (sync-fd-watches runtime 'loop specs))))
 
 (defun idle-wait-milliseconds (runtime)
   "The longest the native loop may block: the nearest command, timer or held frame."
