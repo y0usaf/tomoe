@@ -168,6 +168,7 @@ static const char texture_source[] =
     "#ifdef LUT\n"
     "uniform sampler2D lut;\n"
     "#endif\n"
+    "uniform vec4 tint;\n"
     "uniform float alpha;\n"
     "uniform float opaque;\n"
     "uniform float clip;\n"
@@ -187,6 +188,7 @@ static const char texture_source[] =
     "        if (v_local.x < 0.0 || v_local.y < 0.0 || v_local.x > size.x || v_local.y > size.y) discard;\n"
     "        c *= rounding_alpha(v_local, size, radius);\n"
     "    }\n"
+    "    if (tint.a > 0.0) c = mix(c, vec4(tint.rgb * c.a, c.a), tint.a);\n"
     "    gl_FragColor = c * alpha;\n"
     "}\n";
 
@@ -343,10 +345,10 @@ static bool link_sources(struct program *p, const char *const *vertex, int verte
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
     const char *names[] = { "tex", "alpha", "opaque", "size", "radius", "clip", "width", "kind",
         "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0",
-        "lut", "iTrail", "iTrailCount" };
+        "lut", "iTrail", "iTrailCount", "tint" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
-        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count };
+        &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;
@@ -738,14 +740,38 @@ static void blend(bool enabled) {
     else glDisable(GL_BLEND);
 }
 
-static void draw(struct pass *pass, struct program *p, struct box box,
-        const pixman_region32_t *clip, const float texcoords[8]) {
+static void rotated_bounds(struct box *out, struct box box, double rotation) {
+    if (rotation == 0) {
+        *out = box;
+        return;
+    }
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        double x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
+        x0 = fmin(x0, x); y0 = fmin(y0, y); x1 = fmax(x1, x); y1 = fmax(y1, y);
+    }
+    int left = (int)floor(x0), top = (int)floor(y0);
+    *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
+}
+
+static void draw_rotated(struct pass *pass, struct program *p, struct box box,
+        const pixman_region32_t *clip, const float texcoords[8], double rotation) {
     float w = pass->buffer->width, h = pass->buffer->height;
-    float x0 = box.x / w * 2 - 1, x1 = (box.x + box.width) / w * 2 - 1;
-    float y0 = box.y / h * 2 - 1, y1 = (box.y + box.height) / h * 2 - 1;
-    const float pos[] = { x0, y0, x1, y0, x0, y1, x1, y1 };
+    float pos[8];
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
+        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
+    }
+    struct box bounds;
+    rotated_bounds(&bounds, box, rotation);
     pixman_region32_t region;
-    pixman_region32_init_rect(&region, box.x, box.y, box.width, box.height);
+    pixman_region32_init_rect(&region, bounds.x, bounds.y, bounds.width, bounds.height);
     if (clip) pixman_region32_intersect(&region, &region, clip);
     if (pass->clip) pixman_region32_intersect(&region, &region, pass->clip);
     int count = 0;
@@ -757,6 +783,10 @@ static void draw(struct pass *pass, struct program *p, struct box box,
     }
     glDisable(GL_SCISSOR_TEST);
     pixman_region32_fini(&region);
+}
+static void draw(struct pass *pass, struct program *p, struct box box,
+        const pixman_region32_t *clip, const float texcoords[8]) {
+    draw_rotated(pass, p, box, clip, texcoords, 0);
 }
 
 static struct op *recorded(struct pass *pass, size_t before) {
@@ -836,10 +866,13 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
             dst.height = options->texture->height;
         }
         shown = dst;
+        rotated_bounds(&shown, dst, options->rotation);
         pixman_box32_t *e = options->clip ? pixman_region32_extents(options->clip) : NULL;
-        if (e && !box_intersection(&shown, &dst,
+        if (e && !box_intersection(&shown, &shown,
                 &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
-        double params[] = { 2, dst.x, dst.y, dst.width, dst.height };
+        const float *tint = options->tint;
+        double params[] = { 2, dst.x, dst.y, dst.width, dst.height, options->rotation,
+            tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0, tint ? tint[3] : 0 };
         size_t before = pass->record->len;
         pass_record(pass, options, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
         struct op *op = recorded(pass, before);
@@ -885,6 +918,9 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     glUniform1f(p->alpha, alpha);
     glUniform1f(p->opaque, t->alpha ? 0 : 1);
     glUniform1f(p->clip, 0);
+    const float *tint = options->tint;
+    glUniform4f(p->tint, tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0,
+        tint ? tint[3] : 0);
     if (options->lut) {
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, texture_of(options->lut)->tex);
@@ -892,7 +928,7 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glUniform1i(p->lut, 1);
     }
-    draw(pass, p, dst, options->clip, texcoords);
+    draw_rotated(pass, p, dst, options->clip, texcoords, options->rotation);
     if (options->lut) {
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);

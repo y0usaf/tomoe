@@ -119,8 +119,28 @@ int tomoe_present_window(struct tomoe *s, uint32_t id, int x, int y,
     entry->visible = visible != 0;
     entry->fullscreen = fullscreen != 0;
     entry->maximize = maximize != 0;
+    entry->target.visual = (struct visual){ .opacity = 1, .scale = 1 };
     entry->staged = true;
     if (plan->restack) entry->order = plan->next_order++;
+    return 1;
+}
+
+int tomoe_present_window_visual(struct tomoe *s, uint32_t id, double opacity, uint32_t tint,
+        double scale, double rotation, int translate_x, int translate_y) {
+    struct presentation *plan = s->presentation;
+    if (!plan) return 0;
+    struct presentation_target *entry = presentation_target_for(plan, id);
+    if (entry) {
+        entry->target.visual = (struct visual){
+            .opacity = opacity < 0 ? 1 : opacity > 1 ? 1 : opacity,
+            .scale = scale > 0 ? scale : 1,
+            .rotation = rotation,
+            .translate_x = translate_x,
+            .translate_y = translate_y,
+            .tint = { ((tint >> 24) & 0xff) / 255.0f, ((tint >> 16) & 0xff) / 255.0f,
+                ((tint >> 8) & 0xff) / 255.0f, (tint & 0xff) / 255.0f },
+        };
+    }
     return 1;
 }
 
@@ -176,9 +196,7 @@ bool presentation_prepare(struct tomoe *s) {
 
 void presentation_publish(struct tomoe *s) {
     struct presentation *plan = s->presentation;
-    s->view_x = plan->view_x;
-    s->view_y = plan->view_y;
-    s->view_zoom = plan->view_zoom;
+    view_publish(s, plan);
     windows_publish_presentation(s, plan);
     if (s->failed) return;
     layers_publish_presentation(s);

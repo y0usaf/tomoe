@@ -160,6 +160,8 @@ struct texture_options {
     uint64_t wait_point;
     const struct surface *surface;
     struct texture *lut;
+    double rotation;
+    const float *tint;
 };
 struct rect_options {
     struct box box;
@@ -296,7 +298,7 @@ struct program {
     GLuint id;
     GLint pos, local, texcoord;
     GLint tex, alpha, opaque, size, radius, clip, width, kind, color, range, power, half_pixel, offset;
-    GLint resolution, time, frame, mouse, channel, lut, trail, trail_count;
+    GLint resolution, time, frame, mouse, channel, lut, trail, trail_count, tint;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
@@ -482,6 +484,13 @@ struct window_style {
     int radius, blur, tearing;
     int64_t focused, unfocused;
 };
+struct visual {
+    double opacity;
+    double scale, rotation;
+    int translate_x, translate_y;
+    float tint[4];
+    bool closing;
+};
 struct target {
     uint32_t id;
     enum target_kind kind;
@@ -491,7 +500,9 @@ struct target {
     int client_width, client_height;
     bool fullscreen;
     double offset_x, offset_y, alpha;
+    int drawn_width, drawn_height;
     struct window_style style;
+    struct visual visual;
 };
 struct frame {
     struct tomoe *server;
@@ -548,6 +559,14 @@ double animation_now(void);
 void animation_start(struct animation *a, const struct animation_config *config,
     double from, double to, double now);
 double animation_value(struct animation *a, double now);
+struct ghost {
+    struct wl_list link;
+    uint32_t id;
+    struct texture *texture;
+    struct box box;
+    struct animation fade, grow;
+    double alpha, scale;
+};
 struct input_config {
     double disabled, disabled_on_external_mouse, tap, tap_drag, tap_drag_lock, natural_scroll;
     double accel_speed, accel_profile, dwt, left_handed, middle_emulation;
@@ -576,7 +595,8 @@ struct settings {
     double blur_offset;
     bool screenshot_freeze;
     struct screenshot_colors screenshot_colors;
-    struct animation_config window_move, window_open;
+    struct animation_config window_move, window_open, window_close, window_resize, window_switch,
+        window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
     size_t blur_namespace_count;
 };
@@ -823,6 +843,7 @@ struct tomoe {
     struct wl_list shortcut_inhibitors;
     struct wl_list surfaces, feedbacks;
     struct wl_list windows, layers, outputs, keyboards, events, bindings, virtual_pointers;
+    struct wl_list ghosts;
     struct wl_list activation_tokens;
     size_t activation_tracked_count;
     size_t activation_token_count;
@@ -859,6 +880,7 @@ struct tomoe {
     struct wl_listener cursor_surface_destroy;
     int view_x, view_y;
     double view_zoom;
+    struct animation view_x_anim, view_y_anim, view_zoom_anim;
     char *hit_result, *frames_result, *memory_result;
     char *output_preview;
     char *output_current;
@@ -1150,6 +1172,11 @@ void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s);
+void view_publish(struct tomoe *s, const struct presentation *plan);
+bool view_animate(struct tomoe *s, const struct settings *settings, double now);
+bool ghosts_animate(struct tomoe *s, double now);
+bool ghosts_visible(struct tomoe *s);
+void ghosts_draw(struct tomoe *s, struct frame *frame);
 bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
 struct node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
 bool foreign_listen(struct tomoe *s);

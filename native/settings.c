@@ -31,6 +31,15 @@ static const struct setting_field {
     { prefix "-y2", offsetof(struct settings, member.bezier[3]), SETTING_REAL },
     ANIMATION_FIELDS("animations-window-move", window_move)
     ANIMATION_FIELDS("animations-window-open", window_open)
+    ANIMATION_FIELDS("animations-window-close", window_close)
+    ANIMATION_FIELDS("animations-window-resize", window_resize)
+    ANIMATION_FIELDS("animations-window-switch", window_switch)
+    ANIMATION_FIELDS("animations-window-view", window_view)
+    ANIMATION_FIELDS("animations-window-alpha", window_alpha)
+    ANIMATION_FIELDS("animations-window-tint", window_tint)
+    ANIMATION_FIELDS("animations-window-scale", window_scale)
+    ANIMATION_FIELDS("animations-window-rotation", window_rotation)
+    ANIMATION_FIELDS("animations-window-translate", window_translate)
     { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
     { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
     { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },

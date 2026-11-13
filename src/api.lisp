@@ -544,16 +544,25 @@ CONFIGURE-OUTPUT sets its scale, position, transform or mode. Removal unplugs it
             (when (and (second args) (member (materialization-focused m) (materialization-stacking m)))
               (%materialized-raise m (materialization-focused m)))))
 
-(defun window-properties (id &rest properties &key radius tearing blur border)
-  "Own rendering overrides for one window. Omitted keys fall back to the
-settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
-BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
-  (declare (ignore radius tearing blur border))
+(defun window-properties (id &rest properties &key radius tearing blur border alpha tint scale
+                          rotation translate)
+  "Own rendering and compositing overrides for one window. Omitted keys fall back
+to the settings; :TEARING and :BLUR take T or NIL, and a supplied NIL denies.
+BORDER is (:FOCUSED color :UNFOCUSED color). ALPHA multiplies the whole window,
+TINT mixes a color (its alpha is the strength) over its contents, SCALE and
+ROTATION (degrees) transform it about its centre, and TRANSLATE is (:X n :Y n)
+offset from where the layout puts it. Each of those animates towards its new
+value with the matching :ANIMATIONS setting. Later owners replace each key."
+  (declare (ignore radius tearing blur border alpha tint scale rotation translate))
   (check-type id (integer 1 4294967295))
   (%effect :window-properties
            (list id (%settings-plist properties
                                      '((:radius (:integer 0 4096)) (:tearing :boolean) (:blur :boolean)
-                                       (:border (:group (:focused :color) (:unfocused :color))))))))
+                                       (:border (:group (:focused :color) (:unfocused :color)))
+                                       (:alpha (:real 0 1)) (:tint :color)
+                                       (:scale (:real 1/100 16)) (:rotation (:real -360 360))
+                                       (:translate (:group (:x (:integer -16384 16384) 0)
+                                                           (:y (:integer -16384 16384) 0))))))))
 
 (define-effect :window-properties
   :canonical (destructuring-bind (id properties) args
@@ -563,7 +572,7 @@ BORDER is (:FOCUSED color :UNFOCUSED color). Later owners replace each key."
               (when window
                 (setf (getf window :properties)
                       (%settings-merge (copy-list (getf window :properties)) properties
-                                       '((:border (:group)))))))))
+                                       '((:border (:group)) (:translate (:group)))))))))
 
 (defun raise-window (id)
   "Own a raise in the managed window stack without changing focus or geometry."
@@ -714,16 +723,34 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
              (list :kind :ease :duration-ms duration-ms
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
+(defparameter +animation-events+
+  '(:window-move :window-open :window-close :window-resize :window-switch :window-view
+    :window-alpha :window-tint :window-scale :window-rotation :window-translate)
+  "Transitions the compositor can animate. :WINDOW-CLOSE, :WINDOW-RESIZE, :WINDOW-SWITCH,
+:WINDOW-VIEW, :WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
+:WINDOW-TRANSLATE default to off.")
+
+(defparameter +animation-defaults+
+  '(:window-move (:spring nil)
+    :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
+    :window-close nil :window-resize nil :window-switch nil :window-view nil
+    :window-alpha nil :window-tint nil :window-scale nil
+    :window-rotation nil :window-translate nil)
+  "Each animation event's default, when a configuration does not name one.")
+
 (defun %animation-settings (value)
-  "Normalize :ANIMATIONS: T, NIL, or (:WINDOW-MOVE spec :WINDOW-OPEN spec)."
-  (let ((defaults '(:window-move (:spring nil) :window-open (:ease (:duration-ms 150 :curve :ease-out-expo)))))
-    (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
-      (error "Invalid animations: ~S" value))
-    (loop for (key default) on defaults by #'cddr
-          append (list key (%animation-spec (cond ((member value '(t nil)) value)
-                                                   ((member key value) (getf value key))
-                                                   (t t))
-                                             default)))))
+  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs.
+T and NIL speak for every event; a plist leaves the events it omits to the
+preceding owner or the default."
+  (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
+    (error "Invalid animations: ~S" value))
+  (if (member value '(t nil))
+      (loop for (key default) on +animation-defaults+ by #'cddr
+            append (list key (%animation-spec value default)))
+      (loop for (key spec) on value by #'cddr
+            do (unless (member key +animation-defaults+)
+                 (error "Unknown animation: ~S" key))
+            append (list key (%animation-spec spec (getf +animation-defaults+ key))))))
 
 (defun settings (&rest plist)
   "Own compositor settings. Later owners replace individual keys; grouped keys
@@ -746,9 +773,14 @@ merge field by field. Omission restores the preceding owner or the default."
   (loop for (key value) on plist by #'cddr
         for type = (second (assoc key table))
         do (setf (getf settings key)
-                 (if (and (consp type) (eq (first type) :group))
-                     (%settings-merge (copy-list (getf settings key)) value (rest type))
-                     value)))
+                 (cond ((and (consp type) (eq (first type) :group))
+                        (%settings-merge (copy-list (getf settings key)) value (rest type)))
+                       ((eq type :animations)
+                        (let ((merged (copy-list (getf settings key))))
+                          (loop for (event spec) on value by #'cddr
+                                do (setf (getf merged event) spec))
+                          merged))
+                       (t value))))
   settings)
 
 (defun setting (snapshot &rest path)

@@ -189,6 +189,10 @@ once."
 (define-native ("tomoe_present_window_style" %present-window-style) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-int) (radius sb-alien:int) (blur sb-alien:int)
   (tearing sb-alien:int) (focused sb-alien:long-long) (unfocused sb-alien:long-long))
+(define-native ("tomoe_present_window_visual" %present-window-visual) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int) (opacity sb-alien:double) (tint sb-alien:unsigned-int)
+  (scale sb-alien:double) (rotation sb-alien:double) (translate-x sb-alien:int)
+  (translate-y sb-alien:int))
 (define-native ("tomoe_present_keyboard_grab" %present-keyboard-grab) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (otherwise sb-alien:c-string))
@@ -438,7 +442,15 @@ once."
                (unless (= 1 (%present-window-style backend (getf window :id)
                                                    (getf properties :radius -1) (tri :blur) (tri :tearing)
                                                    (color :focused) (color :unfocused)))
-                 (error "Cannot stage window ~D properties." (getf window :id))))))
+                 (error "Cannot stage window ~D properties." (getf window :id))))
+           (let ((translate (getf (getf window :properties) :translate)))
+             (unless (= 1 (%present-window-visual backend (getf window :id)
+                                                  (%double-float (getf properties :alpha 1))
+                                                  (if (getf properties :tint) (%ui-color (getf properties :tint)) 0)
+                                                  (%double-float (getf properties :scale 1))
+                                                  (%double-float (getf properties :rotation 0))
+                                                  (getf translate :x 0) (getf translate :y 0)))
+               (error "Cannot stage window ~D visuals." (getf window :id))))))
          (dolist (id (or (getf context :stacking) '(0)))
            (unless (= 1 (%present-stack backend id))
              (error "Cannot stage window stacking.")))
