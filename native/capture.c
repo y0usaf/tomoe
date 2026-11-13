@@ -535,10 +535,10 @@ static void image_frame_capture(struct wl_client *client, struct wl_resource *re
     struct output *o = source_output(session->server, &session->source);
     if (!o) {
         schedule_scene(session->server);
-    } else if (session->damaged && session->cursors && !o->scanout && o->presented) {
+    } else if (session->damaged && session->cursors && !o->scanout && o->presented[0]) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        serve_session(session->server, session, o, o->presented, false, &now);
+        serve_session(session->server, session, o, o->presented[0], false, &now);
     } else if (session->damaged || o->damaged) {
         screen_schedule_frame(o->screen);
     }
