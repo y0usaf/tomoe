@@ -5,7 +5,7 @@ SBCL_HOME ?= $(shell dirname "$$(readlink -f "$$(command -v sbcl)")")/../lib/sbc
 WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 
-LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client lcms2 libpipewire-0.3
+LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client libpipewire-0.3
 SUPPORT = executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \

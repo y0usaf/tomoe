@@ -114,7 +114,6 @@
             pkgs.libjpeg
             (resvg pkgs)
             pkgs.systemdLibs
-            pkgs.lcms2
             pkgs.zstd
             (pipewire pkgs)
           ];
