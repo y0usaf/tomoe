@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1265,18 +1266,26 @@ const char *tomoe_tray_snapshot(struct tomoe_tray *tray) {
     return snapshot;
 }
 
+int tomoe_tray_fd(const struct tomoe_tray *tray) {
+    return tray && tray->bus ? sd_bus_get_fd(tray->bus) : -1;
+}
+
+unsigned tomoe_tray_mask(const struct tomoe_tray *tray) {
+    if (!tray || !tray->bus) return 1;
+    int events = sd_bus_get_events(tray->bus);
+    return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
+}
+
 int tomoe_tray_timeout(const struct tomoe_tray *tray, int max_ms) {
-    if (!tray) return 0;
-    if (max_ms < 0) max_ms = 0;
+    if (!tray) return max_ms;
     uint64_t best = UINT64_MAX;
     for (const struct tray_call *call = tray->calls; call; call = call->next)
         if (call->deadline_usec < best) best = call->deadline_usec;
     if (best == UINT64_MAX) return max_ms;
     uint64_t now = monotonic_usec();
     if (best <= now) return 0;
-    uint64_t milliseconds = (best - now + 999ULL) / 1000ULL;
-    if (milliseconds >= (uint64_t)max_ms) return max_ms;
-    return (int)milliseconds;
+    int milliseconds = (int)((best - now + 999ULL) / 1000ULL);
+    return max_ms >= 0 && milliseconds > max_ms ? max_ms : milliseconds;
 }
 
 void tomoe_tray_close(struct tomoe_tray *tray) {

@@ -9,6 +9,8 @@
 (sb-alien:define-alien-routine ("tomoe_exec_code" %exec-code) sb-alien:int (job (* t)))
 (sb-alien:define-alien-routine ("tomoe_exec_stop" %exec-stop) sb-alien:int (job (* t)) (sig sb-alien:int))
 (sb-alien:define-alien-routine ("tomoe_exec_release" %exec-release) sb-alien:int (job (* t)))
+(sb-alien:define-alien-routine ("tomoe_exec_fd" %exec-descriptor) sb-alien:int
+  (job (* t)) (which sb-alien:int))
 
 (defvar *execution-supported* nil)
 (defun require-execution-support ()
@@ -200,6 +202,29 @@
           (owned-execution-stdout job) nil (owned-execution-stderr job) nil)
     (handler-case (transact runtime (runtime-mounts runtime) event nil (list owner))
       (serious-condition (condition) (record-error runtime condition)))))
+
+(defun execution-wait-milliseconds (runtime)
+  "How long the backend may sleep before a running execution is out of time."
+  (let ((now (get-internal-real-time)) (wait nil))
+    (dolist (job (runtime-executions runtime) wait)
+      (when (and (owned-execution-process job) (eq (owned-execution-status job) :running))
+        (setf wait (least-wait wait (wait-until now (owned-execution-deadline job))))))))
+
+(defun execution-specs (runtime)
+  "Watch each running command's pidfd and open output pipes, so its exit, its
+output and the closing of its pipes all wake the loop."
+  (let ((specs nil))
+    (dolist (job (runtime-executions runtime) (nreverse specs))
+      (let ((native (owned-execution-process job)))
+        (when native
+          (dolist (which '(0 1 2))
+            (let ((fd (%exec-descriptor native which)))
+              (when (and (>= fd 0)
+                         (or (zerop which)
+                             (not (if (= which 1)
+                                      (owned-execution-out-eof job)
+                                      (owned-execution-err-eof job)))))
+                (push (cons fd +event-readable+) specs)))))))))
 
 (defun service-executions (runtime)
   (reconcile-backend-observations runtime)

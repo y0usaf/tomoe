@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1427,9 +1428,18 @@ int tomoe_mpris_poll(struct tomoe_mpris *mpris) {
     return mpris->changed ? 1 : 0;
 }
 
+int tomoe_mpris_fd(const struct tomoe_mpris *mpris) {
+    return mpris && mpris->bus ? sd_bus_get_fd(mpris->bus) : -1;
+}
+
+unsigned tomoe_mpris_mask(const struct tomoe_mpris *mpris) {
+    if (!mpris || !mpris->bus) return 1;
+    int events = sd_bus_get_events(mpris->bus);
+    return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
+}
+
 int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms) {
-    if (!mpris) return 0;
-    if (max_ms < 0) max_ms = 0;
+    if (!mpris) return max_ms;
     uint64_t best = UINT64_MAX;
     for (const struct mpris_call *call = mpris->calls; call;
          call = call->next)
@@ -1437,9 +1447,8 @@ int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms) {
     if (best == UINT64_MAX) return max_ms;
     uint64_t now = monotonic_usec();
     if (best <= now) return 0;
-    uint64_t milliseconds = (best - now + 999ULL) / 1000ULL;
-    if (milliseconds >= (uint64_t)max_ms) return max_ms;
-    return (int)milliseconds;
+    int milliseconds = (int)((best - now + 999ULL) / 1000ULL);
+    return max_ms >= 0 && milliseconds > max_ms ? max_ms : milliseconds;
 }
 
 int tomoe_mpris_control(struct tomoe_mpris *mpris, const char *method) {

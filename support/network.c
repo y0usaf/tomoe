@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1461,9 +1462,18 @@ int tomoe_network_poll(struct tomoe_network *network) {
     return network->changed ? 1 : 0;
 }
 
+int tomoe_network_fd(const struct tomoe_network *network) {
+    return network && network->bus ? sd_bus_get_fd(network->bus) : -1;
+}
+
+unsigned tomoe_network_mask(const struct tomoe_network *network) {
+    if (!network || !network->bus) return 1;
+    int events = sd_bus_get_events(network->bus);
+    return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
+}
+
 int tomoe_network_timeout(const struct tomoe_network *network, int max_ms) {
-    if (!network) return 0;
-    if (max_ms < 0) max_ms = 0;
+    if (!network) return max_ms;
     uint64_t best = UINT64_MAX;
     for (const struct network_call *call = network->calls; call;
          call = call->next)
@@ -1473,9 +1483,8 @@ int tomoe_network_timeout(const struct tomoe_network *network, int max_ms) {
     if (best == UINT64_MAX) return max_ms;
     uint64_t now = monotonic_usec();
     if (best <= now) return 0;
-    uint64_t milliseconds = (best - now + 999ULL) / 1000ULL;
-    if (milliseconds >= (uint64_t)max_ms) return max_ms;
-    return (int)milliseconds;
+    int milliseconds = (int)((best - now + 999ULL) / 1000ULL);
+    return max_ms >= 0 && milliseconds > max_ms ? max_ms : milliseconds;
 }
 
 void tomoe_network_close(struct tomoe_network *network) {

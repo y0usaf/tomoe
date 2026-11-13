@@ -8,6 +8,10 @@
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_tray_timeout" %tray-timeout) sb-alien:int
   (producer (* t)) (maximum sb-alien:int))
+(sb-alien:define-alien-routine ("tomoe_tray_fd" %tray-fd) sb-alien:int
+  (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_tray_mask" %tray-mask) sb-alien:unsigned-int
+  (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_tray_close" %tray-close) sb-alien:void
   (producer (* t)))
 
@@ -31,9 +35,9 @@
       (stop-tray runtime)
       (format *error-output* "tomoe: tray unavailable: ~A~%" condition))))
 
-(defun tray-wait-milliseconds (runtime maximum)
+(defun tray-wait-milliseconds (runtime)
   (let ((native (runtime-tray-producer runtime)))
-    (if native (%tray-timeout native maximum) maximum)))
+    (when native (let ((wait (%tray-timeout native -1))) (and (>= wait 0) wait)))))
 
 (defun poll-tray-snapshot (runtime)
   "Return changed facts and T, or NIL/NIL when the producer is unchanged."

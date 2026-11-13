@@ -8,6 +8,10 @@
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_notifications_timeout" %notifications-timeout) sb-alien:int
   (producer (* t)) (maximum sb-alien:int))
+(sb-alien:define-alien-routine ("tomoe_notifications_fd" %notifications-fd) sb-alien:int
+  (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_notifications_mask" %notifications-mask) sb-alien:unsigned-int
+  (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_notifications_close" %notifications-close) sb-alien:void
   (producer (* t)))
 
@@ -30,9 +34,9 @@
       (stop-notifications runtime)
       (format *error-output* "tomoe: notifications unavailable: ~A~%" condition))))
 
-(defun notification-wait-milliseconds (runtime maximum)
+(defun notification-wait-milliseconds (runtime)
   (let ((native (runtime-notification-producer runtime)))
-    (if native (%notifications-timeout native maximum) maximum)))
+    (when native (let ((wait (%notifications-timeout native -1))) (and (>= wait 0) wait)))))
 
 (defun poll-notification-snapshot (runtime)
   "Return changed facts and T, or NIL/NIL when the producer is unchanged."

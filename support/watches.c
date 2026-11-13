@@ -103,6 +103,10 @@ failed:
     return NULL;
 }
 
+int tomoe_watch_descriptor(const struct file_watch *watch) {
+    return watch ? watch->fd : -1;
+}
+
 int tomoe_watch_poll(struct file_watch *watch) {
     if (!watch) return -EINVAL;
     if (watch->fd < 0) {

@@ -8,6 +8,10 @@
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_mpris_timeout" %mpris-timeout) sb-alien:int
   (producer (* t)) (maximum sb-alien:int))
+(sb-alien:define-alien-routine ("tomoe_mpris_fd" %mpris-fd) sb-alien:int
+  (producer (* t)))
+(sb-alien:define-alien-routine ("tomoe_mpris_mask" %mpris-mask) sb-alien:unsigned-int
+  (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_mpris_close" %mpris-close) sb-alien:void
   (producer (* t)))
 (sb-alien:define-alien-routine ("tomoe_mpris_control" %mpris-control) sb-alien:int
@@ -33,9 +37,9 @@
       (stop-mpris runtime)
       (format *error-output* "tomoe: MPRIS unavailable: ~A~%" condition))))
 
-(defun mpris-wait-milliseconds (runtime maximum)
+(defun mpris-wait-milliseconds (runtime)
   (let ((native (runtime-mpris-producer runtime)))
-    (if native (%mpris-timeout native maximum) maximum)))
+    (when native (let ((wait (%mpris-timeout native -1))) (and (>= wait 0) wait)))))
 
 (defun poll-mpris-snapshot (runtime)
   "Return changed facts and T, or NIL/NIL when the producer is unchanged."

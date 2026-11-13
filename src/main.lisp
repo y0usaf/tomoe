@@ -256,6 +256,106 @@ only after it changes again."
 (defvar *path* (sb-ext:posix-getenv "TOMOE_PATH"))
 (defvar *fontconfig-file* (sb-ext:posix-getenv "TOMOE_FONTCONFIG_FILE"))
 
+(defun json-wake-specs (server)
+  (cons (cons (socket-descriptor (json-server-socket server)) +event-readable+)
+        (loop for client in (json-server-clients server)
+              unless (json-client-dead client)
+                collect (cons (socket-descriptor (json-client-socket client))
+                              (if (plusp (json-client-output-bytes client))
+                                  (logior +event-readable+ +event-writable+)
+                                  +event-readable+)))))
+
+(defun service-wake-specs (runtime)
+  (remove nil
+          (list (producer-watch (runtime-notification-producer runtime) #'%notifications-fd #'%notifications-mask)
+                (producer-watch (runtime-mpris-producer runtime) #'%mpris-fd #'%mpris-mask)
+                (producer-watch (runtime-battery-producer runtime) #'%battery-fd #'%battery-mask)
+                (producer-watch (runtime-network-producer runtime) #'%network-fd #'%network-mask)
+                (producer-watch (runtime-tray-producer runtime) #'%tray-fd #'%tray-mask))))
+
+(defun source-specs (runtime)
+  (loop for native being the hash-values of (runtime-source-watches runtime)
+        for fd = (%watch-descriptor native)
+        when (>= fd 0) collect (cons fd +event-readable+)))
+
+(defun wake-specs (runtime control server)
+  (append (list (cons (socket-descriptor (control-socket control)) +event-readable+))
+          (json-wake-specs server)
+          (service-wake-specs runtime)
+          (watch-specs runtime)
+          (execution-specs runtime)
+          (source-specs runtime)))
+
+(defun sync-wake-sources (runtime control server)
+  "Register every descriptor whose readiness can start new work, so the loop can
+sleep until one of them, a timer, a command deadline or a held frame is due."
+  (when (runtime-watch runtime) (sync-source-watches runtime))
+  (let ((specs (wake-specs runtime control server)))
+    (when (or (runtime-watch-failure runtime) (not (equal specs (runtime-fd-specs runtime))))
+      (setf (runtime-fd-specs runtime) specs
+            (runtime-watch-failure runtime) nil)
+      (sync-fd-watches runtime 'loop specs))))
+
+(defun idle-wait-milliseconds (runtime)
+  "The longest the native loop may block: the nearest command, timer or held frame."
+  (let ((wait (reduce #'least-wait
+                      (list (timer-wait-milliseconds runtime)
+                            (system-wait-milliseconds runtime)
+                            (memory-wait-milliseconds runtime)
+                            (notification-wait-milliseconds runtime)
+                            (mpris-wait-milliseconds runtime)
+                            (battery-wait-milliseconds runtime)
+                            (network-wait-milliseconds runtime)
+                            (tray-wait-milliseconds runtime)
+                            (watch-wait-milliseconds runtime)
+                            (execution-wait-milliseconds runtime)
+                            (process-wait-milliseconds runtime)
+                            (source-wait-milliseconds runtime))
+                      :initial-value nil)))
+    (when (runtime-watch-failure runtime) (setf wait (min (or wait 8) 8)))
+    (if (plusp (%frames-waiting (runtime-backend runtime)))
+        (min (or wait 4) 4)
+        wait)))
+
+(defun source-watch (runtime path)
+  (or (gethash path (runtime-source-watches runtime))
+      (sb-alien:with-alien ((error-code sb-alien:int))
+        (let ((native (%watch-open path (sb-alien:addr error-code))))
+          (unless (sb-alien:null-alien native)
+            (setf (gethash path (runtime-source-watches runtime)) native))))))
+
+(defun sync-source-watches (runtime)
+  "Watch each extension source's directory and schedule the debounced rescan that
+an edit calls for; a source whose directory is still missing is retried."
+  (let ((deadline nil))
+    (dolist (path (runtime-sources runtime))
+      (let ((native (source-watch runtime path)))
+        (cond
+          ((null native) (setf deadline (least-wait deadline 1000)))
+          (t
+           (let ((bits (%watch-poll native)))
+             (when (plusp (logand bits 4))
+               (%watch-close native)
+               (remhash path (runtime-source-watches runtime)))
+             (when (plusp bits)
+               (setf (runtime-source-scans runtime) 2
+                     (runtime-source-deadline runtime)
+                     (+ (get-internal-real-time) (floor internal-time-units-per-second 4)))))))))
+    deadline))
+
+(defun stop-source-watches (runtime)
+  (maphash (lambda (path native) (declare (ignore path)) (%watch-close native))
+           (runtime-source-watches runtime))
+  (clrhash (runtime-source-watches runtime)))
+
+(defun source-wait-milliseconds (runtime)
+  (when (and (runtime-watch runtime) (runtime-sources runtime))
+    (least-wait (when (plusp (runtime-source-scans runtime))
+                  (wait-until (get-internal-real-time) (runtime-source-deadline runtime)))
+                (loop for path in (runtime-sources runtime)
+                      unless (gethash path (runtime-source-watches runtime))
+                        return 1000))))
+
 (defun run-compositor (name backend sources watch &optional drm-device)
   (when *path*
     (sb-posix:setenv "PATH" (format nil "~A~@[:~A~]" *path* (sb-ext:posix-getenv "PATH")) 1))
@@ -283,11 +383,13 @@ only after it changes again."
     (sb-sys:enable-interrupt sb-posix:sigterm #'stop)
     (sb-sys:enable-interrupt sb-posix:sigint #'stop))
   (let ((control (open-control (socket-path name))) (json-server nil) (native nil) (runtime nil) (bus nil)
-        (stamps (make-hash-table :test #'equal)) (next-watch 0))
+        (stamps (make-hash-table :test #'equal)))
     (unwind-protect
          (progn
            (setf native (open-backend name)
                  runtime (make-runtime :backend native :socket name))
+           (unless (zerop (%watch-signals native))
+             (error "Cannot wake the event loop for SIGTERM and SIGINT."))
            (setf json-server (open-json-control (json-socket-path name))
                  (runtime-json-server runtime) json-server)
            (setf (runtime-watch runtime) watch)
@@ -310,14 +412,15 @@ only after it changes again."
                    (configure runtime (butlast sources))
                    (report-config-error runtime condition t)))
                (configure runtime sources))
+           (when (runtime-watch runtime)
+             (watch-sources runtime stamps)
+             (setf (runtime-source-scans runtime) 2
+                   (runtime-source-deadline runtime)
+                   (+ (get-internal-real-time) (floor internal-time-units-per-second 4))))
            (loop while (and (runtime-running runtime) (not *stop-requested*)) do
+             (sync-wake-sources runtime control json-server)
              (let ((status (%step native (if (plusp (%event-count native)) 0
-                                            (system-wait-milliseconds runtime (tray-wait-milliseconds
-                                             runtime (network-wait-milliseconds
-                                                      runtime (battery-wait-milliseconds
-                                                               runtime (mpris-wait-milliseconds
-                                                                        runtime (notification-wait-milliseconds
-                                                                                 runtime (timer-wait-milliseconds runtime 8)))))))))))
+                                            (or (idle-wait-milliseconds runtime) -1)))))
                (when (< status 0) (error "Native event loop failed."))
                (when (> status 0) (return)))
              (drain-backend-events runtime)
@@ -336,10 +439,12 @@ only after it changes again."
              (service-executions runtime)
              (service-managed-processes runtime)
              (poll-json-focus runtime)
-             (when (and (runtime-watch runtime) (>= (get-internal-real-time) next-watch))
-               (setf next-watch (+ (get-internal-real-time)
-                                   (floor internal-time-units-per-second 4)))
-               (watch-sources runtime stamps)))
+             (when (and (runtime-watch runtime) (plusp (runtime-source-scans runtime))
+                        (>= (get-internal-real-time) (runtime-source-deadline runtime)))
+               (watch-sources runtime stamps)
+               (decf (runtime-source-scans runtime))
+               (setf (runtime-source-deadline runtime)
+                     (+ (get-internal-real-time) (floor internal-time-units-per-second 4)))))
            (loop with deadline = (+ (get-internal-real-time) (ceiling internal-time-units-per-second 10))
                  while (and (json-control-pending-p json-server)
                             (< (get-internal-real-time) deadline))
@@ -353,8 +458,9 @@ only after it changes again."
                               (unwind-protect (stop-mpris runtime)
                                 (unwind-protect (stop-notifications runtime)
                                   (unwind-protect (stop-watches runtime)
-                                    (unwind-protect (stop-executions runtime)
-                                      (stop-managed-processes runtime)))))))))
+                                    (unwind-protect (stop-source-watches runtime)
+                                      (unwind-protect (stop-executions runtime)
+                                        (stop-managed-processes runtime))))))))))
         (unwind-protect (when (and runtime (equal backend "drm")) (stop-session))
           (unwind-protect (stop-session-bus bus name)
             (unwind-protect (when native (%destroy native))

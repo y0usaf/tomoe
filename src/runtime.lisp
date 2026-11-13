@@ -35,7 +35,51 @@
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error source-packages retired-commands
+  (fd-watches (make-hash-table)) fd-specs watch-failure (source-watches (make-hash-table :test #'equal))
+  (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
+
+(defconstant +event-readable+ 1)
+(defconstant +event-writable+ 2)
+
+(defun socket-descriptor (socket)
+  (sb-bsd-sockets:socket-file-descriptor socket))
+
+(declaim (inline least-wait wait-until socket-descriptor))
+
+(defun least-wait (first second)
+  (cond ((null first) second) ((null second) first) (t (min first second))))
+
+(defun wait-until (now deadline)
+  (max 0 (ceiling (* 1000 (- deadline now)) internal-time-units-per-second)))
+
+(defun sync-fd-watches (runtime owner specs)
+  "Let the native loop wake on SPECS, a (descriptor . mask) list. A descriptor
+already watched with the same mask costs no syscall; descriptors no longer named
+are dropped. OWNER marks the caller in the registry."
+  (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime)))
+    (dolist (spec specs)
+      (let* ((fd (car spec)) (mask (cdr spec)) (entry (gethash fd table)))
+        (cond
+          ((null entry)
+           (let ((source (%watch-fd backend fd mask)))
+             (if (plusp source)
+                 (setf (gethash fd table) (list source mask))
+                 (setf (runtime-watch-failure runtime) t))))
+          ((/= mask (second entry))
+           (%update-fd backend (first entry) mask)
+           (setf (second entry) mask)))))
+    (when (/= (hash-table-count table) (length specs))
+      (let ((stale nil))
+        (maphash (lambda (fd entry)
+                   (declare (ignore entry))
+                   (unless (assoc fd specs) (push fd stale)))
+                 table)
+        (dolist (fd stale)
+          (let ((entry (gethash fd table)))
+            (when entry
+              (%unwatch-fd backend (first entry))
+              (remhash fd table))))))))
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
@@ -993,6 +1037,18 @@ system, so an idle desktop keeps only what it is using."
        (sb-ext:gc :full t)
        (setf (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
              (runtime-idle-since runtime) (get-internal-real-time))))))
+
+(defun memory-wait-milliseconds (runtime)
+  "How long the backend may sleep before the idle collection is due."
+  (let ((now (get-internal-real-time)))
+    (when (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*)
+      (wait-until now (+ (runtime-idle-since runtime)
+                         (* *idle-seconds* internal-time-units-per-second))))))
+
+(defun producer-watch (native descriptor mask)
+  (when native
+    (let ((fd (funcall descriptor native)))
+      (when (>= fd 0) (cons fd (funcall mask native))))))
 
 (defun window-identifier (runtime id)
   (let ((backend (runtime-backend runtime)))
