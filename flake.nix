@@ -72,8 +72,13 @@
           ];
           doCheck = false;
         };
-      package =
-        pkgs:
+      baselineSource = builtins.fetchGit {
+        url = "https://github.com/y0usaf/tomoe";
+        rev = "37dec43b3ef58fd3fce12fdfe51999c1445af22f";
+        narHash = "sha256-WbNuWCKzVD78JF8Av7XjuRgIh1B9P4aMJ409YAWOOYo=";
+      };
+      packageFrom =
+        root: pkgs:
         {
           cpu ? "",
           opt ? "-O2",
@@ -85,19 +90,23 @@
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
           inherit version;
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./native
-              ./support
-              ./src
-              ./builtins
-              ./examples
-              ./share
-              ./build.lisp
-              ./Makefile
-            ];
-          };
+          src =
+            if builtins.isPath root then
+              pkgs.lib.fileset.toSource {
+                root = root;
+                fileset = pkgs.lib.fileset.unions [
+                  ./native
+                  ./support
+                  ./src
+                  ./builtins
+                  ./examples
+                  ./share
+                  ./build.lisp
+                  ./Makefile
+                ];
+              }
+            else
+              root;
           nativeBuildInputs = [
             pkgs.pkg-config
             sbcl
@@ -161,6 +170,7 @@
             platforms = systems;
           };
         };
+      package = packageFrom ./.;
       devShell =
         pkgs:
         pkgs.mkShell {
@@ -211,6 +221,7 @@
         import ./tests {
           inherit pkgs;
           tomoe = package pkgs { };
+          baseline = packageFrom baselineSource pkgs { };
         }
       ) pkgsFor;
       apps = nixpkgs.lib.mapAttrs (_: appsFor) pkgsFor;
