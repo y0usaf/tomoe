@@ -122,7 +122,12 @@ the transaction applying it, the wait between an input and its frame, each phase
 of a policy transaction and of a frame, and a client commit to its frame. The
 samples are kept only when the compositor starts with `TOMOE_TIMINGS=1`, so the
 default pays a branch per sample point and nothing else; `tests/timing.py` drives
-one event per frame through it for a repeatable table.
+one event per frame through it for a repeatable table. `tests/trace.py` mounts a
+set of scripted policies and records the order every reducer was dispatched in,
+the one-shot commands they emitted and the context the transaction settled on,
+then compares that record with `tests/trace.golden`: dependency chains, rule
+replacement, deferred deliveries, mount and unmount ownership, a failing reducer
+and a dependency cycle all have to reproduce it exactly.
 
 ## One table of commands
 

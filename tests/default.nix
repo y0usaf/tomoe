@@ -457,6 +457,20 @@ in
     ''
     + builtins.readFile ./timing.py
   );
+  trace = check "trace" (
+    ''
+      TRACE_CHAIN = "${./trace-chain.lisp}"
+      TRACE_RULES = "${./trace-rules.lisp}"
+      TRACE_FAIL = "${./trace-fail.lisp}"
+      TRACE_CYCLE = "${./trace-cycle.lisp}"
+      TRACE_MOUNT_A = "${./trace-mount-a.lisp}"
+      TRACE_MOUNT_B = "${./trace-mount-b.lisp}"
+      TRACE_GOLDEN = ${
+        if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""
+      }
+    ''
+    + builtins.readFile ./trace.py
+  );
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''
       WAKE_PROBE = "${wakeProbe}"
