@@ -924,6 +924,16 @@ static bool copy_due(const struct copy_frame *frame, const struct output *o) {
     return !frame->damage || !frame->since || frame->since->damaged || o->damaged;
 }
 
+bool capture_wants_output(struct output *o) {
+    struct copy_frame *frame;
+    wl_list_for_each(frame, &o->server->copy_frames, link)
+        if (frame->output == o->screen && frame->buffer) return true;
+    struct session *session;
+    wl_list_for_each(session, &o->server->capture_sessions, link)
+        if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id) return true;
+    return false;
+}
+
 bool capture_wants_cursorless(struct output *o) {
     struct copy_frame *frame;
     wl_list_for_each(frame, &o->server->copy_frames, link)

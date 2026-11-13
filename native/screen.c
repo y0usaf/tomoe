@@ -23,6 +23,7 @@ void screen_state_finish(struct screen_state *state) {
     buffer_unlock(state->buffer);
     timeline_unref(state->wait_timeline);
     free(state->gamma);
+    screen_state_clear_overlays(state);
     screen_state_init(state);
 }
 
@@ -35,6 +36,10 @@ bool screen_state_copy(struct screen_state *dst, const struct screen_state *src)
     dst->gamma = gamma;
     if (dst->buffer) buffer_lock(dst->buffer);
     if (dst->wait_timeline) timeline_ref(dst->wait_timeline);
+    for (size_t i = 0; i < dst->overlay_count && i < SCREEN_OVERLAYS; i++) {
+        if (dst->overlays[i].buffer) buffer_lock(dst->overlays[i].buffer);
+        if (dst->overlays[i].wait) timeline_ref(dst->overlays[i].wait);
+    }
     return true;
 }
 
@@ -102,6 +107,38 @@ bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, s
 void screen_state_set_profile(struct screen_state *state, const struct profile *profile) {
     state->committed |= SCREEN_PROFILE;
     state->profile = profile;
+}
+
+bool screen_state_set_overlay(struct screen_state *state, size_t index, struct buffer *buffer,
+        int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height) {
+    if (index >= SCREEN_OVERLAYS || !buffer || width <= 0 || height <= 0 ||
+            src_width <= 0 || src_height <= 0) return false;
+    struct screen_overlay *overlay = &state->overlays[index];
+    buffer_unlock(overlay->buffer);
+    timeline_unref(overlay->wait);
+    *overlay = (struct screen_overlay){ .buffer = buffer_lock(buffer),
+        .x = x, .y = y, .width = width, .height = height,
+        .src_x = src_x, .src_y = src_y, .src_width = src_width, .src_height = src_height };
+    if (index >= state->overlay_count) state->overlay_count = index + 1;
+    return true;
+}
+
+void screen_state_set_overlay_wait(struct screen_state *state, size_t index,
+        struct timeline *timeline, uint64_t point) {
+    if (index >= state->overlay_count || index >= SCREEN_OVERLAYS) return;
+    struct screen_overlay *overlay = &state->overlays[index];
+    timeline_unref(overlay->wait);
+    overlay->wait = timeline_ref(timeline);
+    overlay->wait_point = point;
+}
+
+void screen_state_clear_overlays(struct screen_state *state) {
+    for (size_t i = 0; i < state->overlay_count && i < SCREEN_OVERLAYS; i++) {
+        buffer_unlock(state->overlays[i].buffer);
+        timeline_unref(state->overlays[i].wait);
+        state->overlays[i] = (struct screen_overlay){0};
+    }
+    state->overlay_count = 0;
 }
 
 void screen_transformed_resolution(struct screen *screen, int *width, int *height) {
