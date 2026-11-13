@@ -136,6 +136,25 @@ let
     '';
     installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
   };
+  livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
+    (in-package #:tomoe-user)
+
+    (define-extension "livepatch-gap" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (append (loop for window in (context snapshot :windows)
+                            collect (place (getf window :id) 100 60 320 200))
+                      (list (interval :livepatch-tick 60000)
+                            (define-command "livepatch-ping")
+                            (bind-key '(:mod) "F9" "livepatch-ping")
+                            (service :livepatch-sleeper "sleep 3600")))
+              nil))
+  '';
+  livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
+    (defun tomoe::default-keyboard-config ()
+      (list :rules "" :model "" :layout "de" :variant "" :options nil
+            :repeat-rate 25 :repeat-delay 600))
+  '';
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
@@ -416,6 +435,13 @@ in
       )
     ''
     + builtins.readFile ./clean-unmount.py
+  );
+  livepatch = check "livepatch" (
+    ''
+      GAP_PATCH = "${livePatchGap}"
+      KEYBOARD_PATCH = "${livePatchKeyboard}"
+    ''
+    + builtins.readFile ./livepatch.py
   );
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''
