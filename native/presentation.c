@@ -241,7 +241,7 @@ void presentation_publish(struct tomoe *s) {
     if (s->focused == previous_focus) update_keyboard_focus(s);
     for (size_t i = 0; i < plan->target_count; i++)
         node_raise_to_top(plan->targets[i].node);
-    schedule_scene(s);
+    schedule_repaint(s);
 }
 
 const char *tomoe_present_apply(struct tomoe *s) {

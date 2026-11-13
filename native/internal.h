@@ -1202,6 +1202,7 @@ void world_to_screen(struct tomoe *s, double *x, double *y);
 void screen_to_world(struct tomoe *s, double *x, double *y);
 void physical_output_box(struct output *o, struct box *box);
 void schedule_scene(struct tomoe *s);
+void schedule_repaint(struct tomoe *s);
 void refresh_scene(struct tomoe *s);
 void forget_output(struct tomoe *s, struct screen *output);
 bool render_output(struct output *o, struct screen_state *state);
