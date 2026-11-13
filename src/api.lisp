@@ -721,20 +721,27 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 :WINDOW-VIEW, :WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
 :WINDOW-TRANSLATE default to off.")
 
+(defparameter +animation-defaults+
+  '(:window-move (:spring nil)
+    :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
+    :window-close nil :window-resize nil :window-switch nil :window-view nil
+    :window-alpha nil :window-tint nil :window-scale nil
+    :window-rotation nil :window-translate nil)
+  "Each animation event's default, when a configuration does not name one.")
+
 (defun %animation-settings (value)
-  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs."
-  (let ((defaults '(:window-move (:spring nil)
-                    :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
-                    :window-close nil :window-resize nil :window-switch nil :window-view nil
-                    :window-alpha nil :window-tint nil :window-scale nil
-                    :window-rotation nil :window-translate nil)))
-    (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
-      (error "Invalid animations: ~S" value))
-    (loop for (key default) on defaults by #'cddr
-          append (list key (%animation-spec (cond ((member value '(t nil)) value)
-                                                   ((member key value) (getf value key))
-                                                   (t t))
-                                             default)))))
+  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs.
+T and NIL speak for every event; a plist leaves the events it omits to the
+preceding owner or the default."
+  (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))
+    (error "Invalid animations: ~S" value))
+  (if (member value '(t nil))
+      (loop for (key default) on +animation-defaults+ by #'cddr
+            append (list key (%animation-spec value default)))
+      (loop for (key spec) on value by #'cddr
+            do (unless (member key +animation-defaults+)
+                 (error "Unknown animation: ~S" key))
+            append (list key (%animation-spec spec (getf +animation-defaults+ key))))))
 
 (defun settings (&rest plist)
   "Own compositor settings. Later owners replace individual keys; grouped keys
@@ -757,9 +764,14 @@ merge field by field. Omission restores the preceding owner or the default."
   (loop for (key value) on plist by #'cddr
         for type = (second (assoc key table))
         do (setf (getf settings key)
-                 (if (and (consp type) (eq (first type) :group))
-                     (%settings-merge (copy-list (getf settings key)) value (rest type))
-                     value)))
+                 (cond ((and (consp type) (eq (first type) :group))
+                        (%settings-merge (copy-list (getf settings key)) value (rest type)))
+                       ((eq type :animations)
+                        (let ((merged (copy-list (getf settings key))))
+                          (loop for (event spec) on value by #'cddr
+                                do (setf (getf merged event) spec))
+                          merged))
+                       (t value))))
   settings)
 
 (defun setting (snapshot &rest path)
