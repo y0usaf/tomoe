@@ -7,7 +7,7 @@ enum { CONSTRAINT_REGION = 1, CONSTRAINT_HINT = 2 };
 
 struct constraint_state {
     uint32_t committed;
-    pixman_region32_t region;
+    struct region region;
     bool hint_enabled;
     double hint_x, hint_y;
 };
@@ -19,7 +19,7 @@ struct constraint {
     struct surface *surface;
     bool locked, oneshot;
     struct constraint_state pending, current;
-    pixman_region32_t region;
+    struct region region;
     struct surface_synced synced;
     struct wl_listener surface_destroy;
 };
@@ -45,7 +45,7 @@ static void constraint_free(struct constraint *c) {
     surface_synced_finish(&c->synced);
     detach(&c->surface_destroy);
     wl_list_remove(&c->link);
-    pixman_region32_fini(&c->region);
+    region_fini(&c->region);
     free(c);
 }
 
@@ -76,7 +76,7 @@ void constraint_focus(struct tomoe *s, struct surface *surface, double sx, doubl
     struct constraint *c = s->active_constraint;
     if (c && c->surface == surface) return;
     c = surface ? constraint_for(s, surface) : NULL;
-    if (c && !pixman_region32_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL))
+    if (c && !region_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL))
         c = NULL;
     constraint_set(s, c);
 }
@@ -116,27 +116,27 @@ bool constraint_allows(struct tomoe *s, double x, double y) {
     double sx, sy;
     physical_hit_test(s, x, y, &surface, &sx, &sy);
     return surface == c->surface &&
-        pixman_region32_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL);
+        region_contains_point(&c->region, (int)round(sx), (int)round(sy), NULL);
 }
 
 static void update_region(struct constraint *c) {
-    if (pixman_region32_empty(&c->current.region))
-        pixman_region32_copy(&c->region, &c->surface->input_region);
+    if (region_empty(&c->current.region))
+        region_copy(&c->region, &c->surface->input_region);
     else
-        pixman_region32_intersect(&c->region, &c->surface->input_region, &c->current.region);
+        region_intersect(&c->region, &c->surface->input_region, &c->current.region);
 }
 
 static void state_init(void *data) {
-    pixman_region32_init(&((struct constraint_state *)data)->region);
+    region_init(&((struct constraint_state *)data)->region);
 }
 
 static void state_finish(void *data) {
-    pixman_region32_fini(&((struct constraint_state *)data)->region);
+    region_fini(&((struct constraint_state *)data)->region);
 }
 
 static void state_move(void *dst_data, void *src_data) {
     struct constraint_state *dst = dst_data, *src = src_data;
-    if (src->committed & CONSTRAINT_REGION) pixman_region32_copy(&dst->region, &src->region);
+    if (src->committed & CONSTRAINT_REGION) region_copy(&dst->region, &src->region);
     if (src->committed & CONSTRAINT_HINT) {
         dst->hint_enabled = src->hint_enabled;
         dst->hint_x = src->hint_x;
@@ -174,8 +174,8 @@ static void set_region(struct wl_client *client, struct wl_resource *resource,
         struct wl_resource *region) {
     struct constraint *c = wl_resource_get_user_data(resource);
     if (!c) return;
-    pixman_region32_clear(&c->pending.region);
-    if (region) pixman_region32_copy(&c->pending.region, region_from_resource(region));
+    region_clear(&c->pending.region);
+    if (region) region_copy(&c->pending.region, region_from_resource(region));
     c->pending.committed |= CONSTRAINT_REGION;
 }
 
@@ -237,8 +237,8 @@ static void constraint_create(struct wl_client *client, struct wl_resource *mana
     c->surface = surface;
     c->locked = locked;
     c->oneshot = lifetime == ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_ONESHOT;
-    pixman_region32_init(&c->region);
-    if (region) pixman_region32_copy(&c->current.region, region_from_resource(region));
+    region_init(&c->region);
+    if (region) region_copy(&c->current.region, region_from_resource(region));
     update_region(c);
     listen(&c->surface_destroy, &surface->events.destroy, surface_destroyed);
     wl_resource_set_user_data(resource, c);

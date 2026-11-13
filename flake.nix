@@ -109,7 +109,6 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             pkgs.libxkbcommon
-            pkgs.pixman
             pkgs.cairo
             pkgs.pango
             pkgs.libjpeg
@@ -185,7 +184,6 @@
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.wayland
               pkgs.libxkbcommon
-              pkgs.pixman
             ];
             WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
           };

@@ -145,36 +145,36 @@ void transform_coords(enum wl_output_transform transform, int *x, int *y) {
     *y = t;
 }
 
-static void region_map(pixman_region32_t *dst, const pixman_region32_t *src, double sx, double sy,
+static void region_map(struct region *dst, const struct region *src, double sx, double sy,
         enum wl_output_transform transform, int width, int height) {
     int count = 0;
-    const pixman_box32_t *rects = pixman_region32_rectangles(src, &count);
-    pixman_box32_t *out = malloc((count ? count : 1) * sizeof(*out));
+    const struct rect *rects = region_rectangles(src, &count);
+    struct rect *out = malloc((count ? count : 1) * sizeof(*out));
     if (!out) return;
     for (int i = 0; i < count; i++) {
         struct fbox f = { floor(rects[i].x1 * sx), floor(rects[i].y1 * sy), 0, 0 };
         f.width = ceil(rects[i].x2 * sx) - f.x;
         f.height = ceil(rects[i].y2 * sy) - f.y;
         fbox_transform(&f, &f, transform, width, height);
-        out[i] = (pixman_box32_t){ f.x, f.y, f.x + f.width, f.y + f.height };
+        out[i] = (struct rect){ f.x, f.y, f.x + f.width, f.y + f.height };
     }
-    pixman_region32_fini(dst);
-    pixman_region32_init_rects(dst, out, count);
+    region_fini(dst);
+    region_init_rects(dst, out, count);
     free(out);
 }
 
-void region_scale_xy(pixman_region32_t *dst, const pixman_region32_t *src, float sx, float sy) {
-    if (sx == 1 && sy == 1) pixman_region32_copy(dst, src);
+void region_scale_xy(struct region *dst, const struct region *src, float sx, float sy) {
+    if (sx == 1 && sy == 1) region_copy(dst, src);
     else region_map(dst, src, sx, sy, WL_OUTPUT_TRANSFORM_NORMAL, 0, 0);
 }
 
-void region_scale(pixman_region32_t *dst, const pixman_region32_t *src, float scale) {
+void region_scale(struct region *dst, const struct region *src, float scale) {
     region_scale_xy(dst, src, scale, scale);
 }
 
-void region_transform(pixman_region32_t *dst, const pixman_region32_t *src,
+void region_transform(struct region *dst, const struct region *src,
         enum wl_output_transform transform, int width, int height) {
-    if (transform == WL_OUTPUT_TRANSFORM_NORMAL) pixman_region32_copy(dst, src);
+    if (transform == WL_OUTPUT_TRANSFORM_NORMAL) region_copy(dst, src);
     else region_map(dst, src, 1, 1, transform, width, height);
 }
 

@@ -475,10 +475,10 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
     const struct settings *st = &s->settings;
     struct layer *l = find_layer(s, t->id);
     if (!st->blur_enabled || !l) return;
-    const pixman_region32_t *region = background_blur_region(s, l->wlr->surface);
+    const struct region *region = background_blur_region(s, l->wlr->surface);
     if (region) {
         int count = 0;
-        const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+        const struct rect *rects = region_rectangles(region, &count);
         for (int i = 0; i < count; i++) {
             int x1 = rects[i].x1 > 0 ? rects[i].x1 : 0, y1 = rects[i].y1 > 0 ? rects[i].y1 : 0;
             int x2 = rects[i].x2 < (int)l->wlr->current.actual_width ?
@@ -588,7 +588,7 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     return slot;
 }
 static bool scene_damage(struct output *o, const struct frame *data, bool locked,
-        pixman_region32_t *changed, pixman_region32_t *clip) {
+        struct region *changed, struct region *clip) {
     struct oplist now = {0};
     struct frame record = *data;
     record.pass = render_record(o->server->renderer, data->buffer, &now);
@@ -598,16 +598,16 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     }
     draw_scene(o, &record, NULL, locked, true, true);
     bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
-    if (!complete || pixman_region32_not_empty(changed)) o->damaged = true;
+    if (!complete || region_not_empty(changed)) o->damaged = true;
     oplist_finish(&o->ops);
     o->ops = now;
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
     uint64_t frame = ++o->frames;
-    pixman_region32_t *slot_damage = &o->damage[frame % history];
-    if (complete) pixman_region32_copy(slot_damage, changed);
+    struct region *slot_damage = &o->damage[frame % history];
+    if (complete) region_copy(slot_damage, changed);
     else {
-        pixman_region32_fini(slot_damage);
-        pixman_region32_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
+        region_fini(slot_damage);
+        region_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
     }
     size_t slot = ring_slot(&o->ring, data->buffer);
     uint64_t rendered = slot < RING_SLOTS ? o->ring.frames[slot] : 0;
@@ -617,21 +617,21 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     o->drawn.ops = now.len;
     if (!complete || !rendered || frame - rendered > history) return false;
     for (uint64_t f = rendered + 1; f <= frame; f++)
-        pixman_region32_union(clip, clip, &o->damage[f % history]);
+        region_union(clip, clip, &o->damage[f % history]);
     oplist_expand(&o->ops, clip);
-    pixman_region32_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
+    region_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
     int count = 0;
-    pixman_region32_rectangles(clip, &count);
+    region_rectangles(clip, &count);
     if (count > 16) {
-        pixman_box32_t e = *pixman_region32_extents(clip);
-        pixman_region32_fini(clip);
-        pixman_region32_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+        struct rect e = *region_extents(clip);
+        region_fini(clip);
+        region_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
     }
     return true;
 }
-static int64_t region_area(const pixman_region32_t *region) {
+static int64_t region_area(const struct region *region) {
     int count = 0;
-    const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+    const struct rect *rects = region_rectangles(region, &count);
     int64_t area = 0;
     for (int i = 0; i < count; i++)
         area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
@@ -656,9 +656,9 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     bool locked = lock_active(o->server);
     windows_animate(o->server);
     ui_animate(o->server);
-    pixman_region32_t changed, clip;
-    pixman_region32_init(&changed);
-    pixman_region32_init(&clip);
+    struct region changed, clip;
+    region_init(&changed);
+    region_init(&clip);
     bool partial = track && scene_damage(o, &data, locked, &changed, &clip);
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
@@ -671,8 +671,8 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     if (!pass) {
         size_t slot = ring_slot(&o->ring, buffer);
         if (track && slot < RING_SLOTS) o->ring.frames[slot] = 0;
-        pixman_region32_fini(&changed);
-        pixman_region32_fini(&clip);
+        region_fini(&changed);
+        region_fini(&clip);
         return false;
     }
     data.pass = pass;
@@ -684,8 +684,8 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
-    pixman_region32_fini(&changed);
-    pixman_region32_fini(&clip);
+    region_fini(&changed);
+    region_fini(&clip);
     if (success && s->settings.wait_frame && signal) {
         int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {

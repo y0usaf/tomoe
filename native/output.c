@@ -1247,7 +1247,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     ring_finish(&o->ring);
     oplist_finish(&o->ops);
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
-        pixman_region32_fini(&o->damage[i]);
+        region_fini(&o->damage[i]);
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
@@ -1281,7 +1281,7 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     o->server = s; o->screen = wlr; o->id = id;
     o->admitted = false;
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
-        pixman_region32_init(&o->damage[i]);
+        region_init(&o->damage[i]);
     snapshot_output_baseline(wlr, &o->initial);
     screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {

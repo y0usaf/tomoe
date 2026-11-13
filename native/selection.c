@@ -653,7 +653,7 @@ static void drag_icon_committed(struct wl_listener *listener, void *data) {
 }
 
 static void icon_role_commit(struct surface *surface) {
-    pixman_region32_clear(&surface->input_region);
+    region_clear(&surface->input_region);
     if (surface_has_buffer(surface)) surface_map(surface);
 }
 
