@@ -83,22 +83,55 @@ int tomoe_watch_signals(struct tomoe *s) {
     if (sigaction(SIGINT, &action, &stop_previous[1]) < 0) return -errno;
     return 0;
 }
-static int watched_ready(int fd, uint32_t mask, void *data) {
-    (void)fd; (void)mask; (void)data;
+struct fd_watch {
+    struct tomoe *server;
+    struct wl_event_source *source;
+    int fd;
+};
+static int watch_died(int fd, uint32_t mask, void *data) {
+    struct fd_watch *watch = data;
+    (void)fd;
+    if (!(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) return 0;
+    if (watch->source) {
+        wl_event_source_remove(watch->source);
+        watch->source = NULL;
+    }
+    if (watch->server && watch->server->dead_fd_count <
+            sizeof(watch->server->dead_fds) / sizeof(watch->server->dead_fds[0]))
+        watch->server->dead_fds[watch->server->dead_fd_count++] = watch->fd;
     return 0;
 }
 uintptr_t tomoe_watch_fd(struct tomoe *s, int fd, uint32_t mask) {
     if (!s || !s->display || fd < 0) return 0;
-    return (uintptr_t)wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fd,
-        mask ? mask : WL_EVENT_READABLE, watched_ready, NULL);
+    struct fd_watch *watch = calloc(1, sizeof(*watch));
+    if (!watch) return 0;
+    watch->server = s;
+    watch->fd = fd;
+    watch->source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fd,
+        mask ? mask : WL_EVENT_READABLE, watch_died, watch);
+    if (!watch->source) {
+        free(watch);
+        return 0;
+    }
+    return (uintptr_t)watch;
 }
-void tomoe_update_fd(struct tomoe *s, uintptr_t source, uint32_t mask) {
-    if (!s || !source) return;
-    wl_event_source_fd_update((struct wl_event_source *)source, mask ? mask : WL_EVENT_READABLE);
+int tomoe_dead_fd(struct tomoe *s) {
+    if (!s || !s->dead_fd_count) return -1;
+    int fd = s->dead_fds[0];
+    memmove(s->dead_fds, s->dead_fds + 1, (s->dead_fd_count - 1) * sizeof(s->dead_fds[0]));
+    s->dead_fd_count--;
+    return fd;
 }
-void tomoe_unwatch_fd(struct tomoe *s, uintptr_t source) {
-    if (!s || !source) return;
-    wl_event_source_remove((struct wl_event_source *)source);
+void tomoe_update_fd(struct tomoe *s, uintptr_t handle, uint32_t mask) {
+    struct fd_watch *watch = (struct fd_watch *)handle;
+    if (!s || !watch || !watch->source) return;
+    wl_event_source_fd_update(watch->source, mask ? mask : WL_EVENT_READABLE);
+}
+void tomoe_unwatch_fd(struct tomoe *s, uintptr_t handle) {
+    struct fd_watch *watch = (struct fd_watch *)handle;
+    if (!s || !watch) return;
+    if (watch->source) wl_event_source_remove(watch->source);
+    free(watch);
 }
 int tomoe_frames_waiting(struct tomoe *s) {
     return s && s->renderer && render_frames_held(s->renderer);

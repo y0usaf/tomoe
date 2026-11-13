@@ -22,6 +22,7 @@
   (server (* t)) (source sb-alien:unsigned-long) (mask sb-alien:unsigned-int))
 (define-native ("tomoe_unwatch_fd" %unwatch-fd) sb-alien:void
   (server (* t)) (source sb-alien:unsigned-long))
+(define-native ("tomoe_dead_fd" %dead-fd) sb-alien:int (server (* t)))
 (define-native ("tomoe_frames_waiting" %frames-waiting) sb-alien:int (server (* t)))
 (define-native ("tomoe_watch_signals" %watch-signals) sb-alien:int (server (* t)))
 (define-native ("tomoe_next_event" %event) sb-alien:c-string (server (* t)))

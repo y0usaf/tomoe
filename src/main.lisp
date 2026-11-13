@@ -422,7 +422,9 @@ an edit calls for; a source whose directory is still missing is retried."
              (let ((status (%step native (if (plusp (%event-count native)) 0
                                             (or (idle-wait-milliseconds runtime) -1)))))
                (when (< status 0) (error "Native event loop failed."))
-               (when (> status 0) (return)))
+               (when (> status 0) (return))
+               (loop for dead = (%dead-fd native) while (>= dead 0)
+                     do (drop-dead-fd-watch runtime dead)))
              (drain-backend-events runtime)
              (unless (and (runtime-running runtime) (not *stop-requested*)) (return))
              (service-notifications runtime)

@@ -35,7 +35,8 @@
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error source-packages retired-commands
-  (fd-watches (make-hash-table)) fd-specs watch-failure (source-watches (make-hash-table :test #'equal))
+  (fd-watches (make-hash-table)) (dead-fds (make-hash-table)) fd-specs watch-failure
+  (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
 
@@ -56,9 +57,13 @@
 (defun sync-fd-watches (runtime owner specs)
   "Let the native loop wake on SPECS, a (descriptor . mask) list. A descriptor
 already watched with the same mask costs no syscall; descriptors no longer named
-are dropped. OWNER marks the caller in the registry."
-  (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime)))
-    (dolist (spec specs)
+are dropped, and so is one the loop gave up on: a descriptor whose peer is gone
+is ready for ever, so watching it again would only spin. OWNER marks the caller
+in the registry."
+  (let* ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime))
+         (dead (runtime-dead-fds runtime))
+         (live (remove-if (lambda (spec) (gethash (car spec) dead)) specs)))
+    (dolist (spec live)
       (let* ((fd (car spec)) (mask (cdr spec)) (entry (gethash fd table)))
         (cond
           ((null entry)
@@ -69,17 +74,32 @@ are dropped. OWNER marks the caller in the registry."
           ((/= mask (second entry))
            (%update-fd backend (first entry) mask)
            (setf (second entry) mask)))))
-    (when (/= (hash-table-count table) (length specs))
+    (when (/= (hash-table-count table) (length live))
       (let ((stale nil))
         (maphash (lambda (fd entry)
                    (declare (ignore entry))
-                   (unless (assoc fd specs) (push fd stale)))
+                   (unless (assoc fd live) (push fd stale)))
                  table)
         (dolist (fd stale)
           (let ((entry (gethash fd table)))
             (when entry
               (%unwatch-fd backend (first entry))
-              (remhash fd table))))))))
+              (remhash fd table))))))
+    (let ((gone nil))
+      (maphash (lambda (fd mark)
+                 (declare (ignore mark))
+                 (unless (assoc fd specs) (push fd gone)))
+               dead)
+      (dolist (fd gone) (remhash fd dead)))))
+
+(defun drop-dead-fd-watch (runtime fd)
+  "Retire one descriptor the native loop could not watch any more."
+  (let ((entry (gethash fd (runtime-fd-watches runtime))))
+    (when entry
+      (%unwatch-fd (runtime-backend runtime) (first entry))
+      (remhash fd (runtime-fd-watches runtime))))
+  (setf (gethash fd (runtime-dead-fds runtime)) t
+        (runtime-watch-failure runtime) t))
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
