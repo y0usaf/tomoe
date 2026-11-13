@@ -977,12 +977,6 @@ struct layer *find_layer(struct tomoe *s, uint32_t id) {
 int layer_of(struct layer *l) {
     return l->override_layer >= 0 ? l->override_layer : (int)l->wlr->current.layer;
 }
-int exclusive_zone_of(struct layer *l) {
-    return l->override_exclusive_zone >= 0 ?
-        resolved_zone_for_scale(l, l->override_exclusive_zone,
-            scale_120_from_double(l->target.scale)) :
-        l->wlr->current.exclusive_zone;
-}
 int keyboard_of(struct layer *l) {
     return l->override_keyboard >= 0 ?
         l->override_keyboard : (int)l->wlr->current.keyboard_interactive;
@@ -1093,10 +1087,6 @@ static void layer_reparent_to(struct layer *l, int layer) {
         node_reparent(l->tree, parent);
 }
 
-static void layer_reparent(struct layer *l) {
-    layer_reparent_to(l, layer_of(l));
-}
-
 static bool publish_layer_plan(struct tomoe *s, struct layer_plan *plan,
         bool candidate) {
     if (!s || !plan) return false;
@@ -1205,28 +1195,6 @@ void arrange_layers(struct tomoe *s) {
     schedule_scene(s);
 }
 
-static void layer_set_override(struct layer *l, int layer, int exclusive_zone,
-        int keyboard, int visible) {
-    if (layer == -1 || (layer >= ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
-            layer <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY)) l->override_layer = layer;
-    if (exclusive_zone >= -1) l->override_exclusive_zone = exclusive_zone;
-    if (keyboard >= -1 &&
-            keyboard <= ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND) {
-        l->override_keyboard = keyboard;
-    }
-    if (visible >= -1 && visible <= 1) l->override_visible = visible;
-}
-
-void tomoe_layer(struct tomoe *s, uint32_t id, int layer, int exclusive_zone,
-        int keyboard, int visible) {
-    struct layer *l = find_layer(s, id);
-    if (!l) return;
-    layer_set_override(l, layer, exclusive_zone, keyboard, visible);
-    layer_reparent(l);
-    node_set_enabled(l->tree,
-        l->mapped && visible_of(l));
-    arrange_layers(s);
-}
 
 static void layer_commit(struct wl_listener *listener, void *data) {
     struct layer *l = wl_container_of(listener, l, commit);

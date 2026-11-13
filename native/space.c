@@ -54,15 +54,6 @@ struct output *output_for_world(struct tomoe *s, double x, double y) {
     world_to_screen(s, &x, &y);
     return output_at_physical(s, x, y);
 }
-void screen_to_protocol(struct tomoe *s, double *x, double *y) {
-    struct output *o = output_at_physical(s, *x, *y);
-    if (o) {
-        *x = o->screen->lx + (*x - o->x) / snapped_scale(o->screen->scale);
-        *y = o->screen->ly + (*y - o->y) / snapped_scale(o->screen->scale);
-    } else {
-        *x /= reference_scale(s); *y /= reference_scale(s);
-    }
-}
 void schedule_scene(struct tomoe *s) {
     if (s->stopping) return;
     s->scene_dirty = true;
@@ -70,14 +61,6 @@ void schedule_scene(struct tomoe *s) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
         if (output_is_active(o)) screen_schedule_frame(o->screen);
-}
-void tomoe_set_view(struct tomoe *s, int x, int y, double zoom) {
-    if (!isfinite(zoom)) zoom = 1.0;
-    zoom = fmax(1.0 / 16.0, fmin(16.0, zoom));
-    if (s->view_x == x && s->view_y == y && s->view_zoom == zoom) return;
-    s->view_x = x; s->view_y = y; s->view_zoom = zoom;
-    windows_refresh(s);
-    schedule_scene(s);
 }
 
 struct leaf {
