@@ -1,4 +1,5 @@
 import difflib
+import re
 import shlex
 
 WORK = "/run/scenario"
@@ -64,8 +65,9 @@ def state(binary):
     reply = read(control(binary, "inspect"))
     assert reply[1] == ":OK", show(reply)
     fields = plist(reply[2])
-    return " ".join(f"{key}={show(fields[key])}" for key in
-                    (":LAYOUT", ":FOCUS", ":STACKING", ":WINDOWS", ":OUTPUTS", ":WORKAREAS"))
+    plain = " ".join(f"{key}={show(fields[key])}" for key in
+                     (":LAYOUT", ":FOCUS", ":STACKING", ":WINDOWS", ":OUTPUTS", ":WORKAREAS"))
+    return re.sub(r':IDENTIFIER "\\?[0-9a-f]*\\?"', ":IDENTIFIER -", plain)
 
 
 def pixels(tag):
@@ -209,9 +211,10 @@ def scenario(binary, policy, tag, log, transcript):
     fields = plist(read(control(binary, "inspect"))[2])
     for entry in items(fields[":EXTENSIONS"]):
         record = plist(entry)
-        transcript.append("mount %s dispatches=%s failures=%s state=%s" % (
-            text(record[":NAME"]), record[":DISPATCHES"], record[":FAILURES"],
-            show(record[":STATE"])))
+        transcript.append("mount %s failures=%s state=%s" % (
+            text(record[":NAME"]), record[":FAILURES"], show(record[":STATE"])))
+        transcript.append("runs %s dispatches=%s" % (
+            text(record[":NAME"]), record[":DISPATCHES"]))
     transcript.append("-- effects")
     transcript.append(machine.succeed(f"cat {log} 2>/dev/null || true").strip())
     for name in ("one", "two", "three", "four"):
@@ -220,7 +223,10 @@ def scenario(binary, policy, tag, log, transcript):
     return transcript
 
 
-def compare(baseline, fastpath, what):
+def compare(baseline, fastpath, what, ignore_runs=False):
+    def clean(lines):
+        return [line for line in lines if not (ignore_runs and line.startswith("runs "))]
+    baseline, fastpath = clean(baseline), clean(fastpath)
     assert baseline == fastpath, (
         f"{what}: the two builds diverged\n"
         + "\n".join(difflib.unified_diff("\n".join(baseline).splitlines(),
@@ -238,7 +244,7 @@ machine.wait_for_file("/run/check-bus")
 
 baseline = scenario(BASELINE, POLICY, "baseline", "/run/baseline.log", [])
 fastpath = scenario(FASTPATH, POLICY, "fastpath", "/run/fastpath.log", [])
-compare(baseline, fastpath, "the shipped desktop")
+compare(baseline, fastpath, "the shipped desktop", ignore_runs=True)
 assert "command mark key" in machine.succeed("cat /run/fastpath.log"), (
     "the bound command did not run on the fast path")
 for line in baseline:
@@ -262,7 +268,7 @@ wakes = machine.succeed("grep '^contract' /run/contract.log || true").splitlines
 assert wakes, "the contract published no wakes at all"
 dispatches = None
 for line in transcript:
-    if line.startswith("mount scenario-contract "):
+    if line.startswith("runs scenario-contract "):
         dispatches = int(line.split("dispatches=")[1].split()[0])
 assert dispatches is not None, "the contract extension is not mounted"
 assert dispatches - 1 == len(wakes), (

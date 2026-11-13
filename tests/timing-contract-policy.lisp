@@ -1,5 +1,8 @@
 (in-package #:tomoe-user)
 
+(defun timing-contract-slot (index)
+  (list (+ 100 (* 340 index)) 100 320 240))
+
 (defparameter +timing-contract+
   (motion-contract :drag '(:bound 1048576 :min-size 64 :max-size 16384)))
 
@@ -12,7 +15,7 @@
     (cond
       ((and (eq type :button) (eq (getf event :state) :pressed) target
             (eql (getf event :button) 272))
-       (let ((slot (timing-slot (position target windows))))
+       (let ((slot (timing-contract-slot (position target windows))))
          (values (list :id (getf event :id) :origin-x (getf event :x) :origin-y (getf event :y)
                        :base-x (first slot) :base-y (second slot)
                        :width (third slot) :height (fourth slot))
@@ -41,5 +44,5 @@
                  (append (list +timing-contract+
                                (configure-output "HEADLESS-1" :mode '(1280 720 240)))
                          (loop for window in windows for index from 0
-                               collect (apply #'place (getf window :id) (timing-slot index))))
+                               collect (apply #'place (getf window :id) (timing-contract-slot index))))
                  nil)))))
