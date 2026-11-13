@@ -96,9 +96,9 @@ static int watch_died(int fd, uint32_t mask, void *data) {
         wl_event_source_remove(watch->source);
         watch->source = NULL;
     }
-    if (watch->server && watch->server->dead_fd_count <
-            sizeof(watch->server->dead_fds) / sizeof(watch->server->dead_fds[0]))
-        watch->server->dead_fds[watch->server->dead_fd_count++] = watch->fd;
+    if (watch->server && watch->server->dead_watch_count <
+            sizeof(watch->server->dead_watches) / sizeof(watch->server->dead_watches[0]))
+        watch->server->dead_watches[watch->server->dead_watch_count++] = (uintptr_t)watch;
     return 0;
 }
 uintptr_t tomoe_watch_fd(struct tomoe *s, int fd, uint32_t mask) {
@@ -115,12 +115,13 @@ uintptr_t tomoe_watch_fd(struct tomoe *s, int fd, uint32_t mask) {
     }
     return (uintptr_t)watch;
 }
-int tomoe_dead_fd(struct tomoe *s) {
-    if (!s || !s->dead_fd_count) return -1;
-    int fd = s->dead_fds[0];
-    memmove(s->dead_fds, s->dead_fds + 1, (s->dead_fd_count - 1) * sizeof(s->dead_fds[0]));
-    s->dead_fd_count--;
-    return fd;
+uintptr_t tomoe_dead_watch(struct tomoe *s) {
+    if (!s || !s->dead_watch_count) return 0;
+    uintptr_t watch = s->dead_watches[0];
+    memmove(s->dead_watches, s->dead_watches + 1,
+        (s->dead_watch_count - 1) * sizeof(s->dead_watches[0]));
+    s->dead_watch_count--;
+    return watch;
 }
 void tomoe_update_fd(struct tomoe *s, uintptr_t handle, uint32_t mask) {
     struct fd_watch *watch = (struct fd_watch *)handle;

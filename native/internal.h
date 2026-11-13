@@ -911,8 +911,8 @@ struct tomoe {
     struct libinput *libinput;
     struct wl_event_source *libinput_source;
     struct wl_list libinput_fds;
-    int dead_fds[64];
-    size_t dead_fd_count;
+    uintptr_t dead_watches[64];
+    size_t dead_watch_count;
 
     char *last_event;
     uint32_t next_id, focused, grab_id;

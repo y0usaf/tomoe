@@ -253,7 +253,7 @@
   (loop for watch in (runtime-watches runtime)
         for native = (owned-watch-native watch)
         for fd = (and native (%watch-descriptor native))
-        when (and fd (>= fd 0)) collect (cons fd +event-readable+)))
+        when (and fd (>= fd 0)) collect (list fd +event-readable+ native)))
 
 (defun service-watches (runtime)
   "Poll a fair bounded snapshot of accepted watches on the compositor thread."

@@ -224,7 +224,7 @@ output and the closing of its pipes all wake the loop."
                              (not (if (= which 1)
                                       (owned-execution-out-eof job)
                                       (owned-execution-err-eof job)))))
-                (push (cons fd +event-readable+) specs)))))))))
+                (push (list fd +event-readable+ native) specs)))))))))
 
 (defun service-executions (runtime)
   (reconcile-backend-observations runtime)

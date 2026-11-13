@@ -9,7 +9,7 @@ const char *tomoe_activation_token(struct tomoe *server);
 void tomoe_activation_revoke(struct tomoe *server, const char *token);
 int tomoe_step(struct tomoe *server, int timeout_ms);
 uintptr_t tomoe_watch_fd(struct tomoe *server, int fd, uint32_t mask);
-int tomoe_dead_fd(struct tomoe *server);
+uintptr_t tomoe_dead_watch(struct tomoe *server);
 void tomoe_update_fd(struct tomoe *server, uintptr_t source, uint32_t mask);
 void tomoe_unwatch_fd(struct tomoe *server, uintptr_t source);
 int tomoe_frames_waiting(struct tomoe *server);

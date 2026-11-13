@@ -35,7 +35,7 @@
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error source-packages retired-commands
-  (fd-watches (make-hash-table)) (dead-fds (make-hash-table)) fd-specs watch-failure
+  (fd-watches (make-hash-table)) fd-specs watch-failure
   (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
@@ -55,51 +55,55 @@
   (max 0 (ceiling (* 1000 (- deadline now)) internal-time-units-per-second)))
 
 (defun sync-fd-watches (runtime owner specs)
-  "Let the native loop wake on SPECS, a (descriptor . mask) list. A descriptor
-already watched with the same mask costs no syscall; descriptors no longer named
-are dropped, and so is one the loop gave up on: a descriptor whose peer is gone
-is ready for ever, so watching it again would only spin. OWNER marks the caller
-in the registry."
-  (let* ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime))
-         (dead (runtime-dead-fds runtime))
-         (live (remove-if (lambda (spec) (gethash (car spec) dead)) specs)))
-    (dolist (spec live)
-      (let* ((fd (car spec)) (mask (cdr spec)) (entry (gethash fd table)))
-        (cond
-          ((null entry)
-           (let ((source (%watch-fd backend fd mask)))
-             (if (plusp source)
-                 (setf (gethash fd table) (list source mask))
-                 (setf (runtime-watch-failure runtime) t))))
-          ((/= mask (second entry))
-           (%update-fd backend (first entry) mask)
-           (setf (second entry) mask)))))
-    (when (/= (hash-table-count table) (length live))
+  "Let the native loop wake on SPECS, (DESCRIPTOR MASK IDENTITY) entries. A
+descriptor already watched for the same owner and mask costs no syscall; one
+whose owner changed is watched again, so a number the kernel has just handed to
+another pipe is not left unwatched; descriptors no longer named are dropped.
+OWNER marks the caller in the registry."
+  (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime)))
+    (dolist (spec specs)
+      (destructuring-bind (fd mask identity) spec
+        (let ((entry (gethash fd table)))
+          (cond
+            ((and entry (not (equal identity (third entry))))
+             (%unwatch-fd backend (first entry))
+             (remhash fd table)
+             (let ((source (%watch-fd backend fd mask)))
+               (if (plusp source)
+                   (setf (gethash fd table) (list source mask identity))
+                   (setf (runtime-watch-failure runtime) t))))
+            ((null entry)
+             (let ((source (%watch-fd backend fd mask)))
+               (if (plusp source)
+                   (setf (gethash fd table) (list source mask identity))
+                   (setf (runtime-watch-failure runtime) t))))
+            ((/= mask (second entry))
+             (%update-fd backend (first entry) mask)
+             (setf (second entry) mask))))))
+    (when (/= (hash-table-count table) (length specs))
       (let ((stale nil))
         (maphash (lambda (fd entry)
                    (declare (ignore entry))
-                   (unless (assoc fd live) (push fd stale)))
+                   (unless (assoc fd specs) (push fd stale)))
                  table)
         (dolist (fd stale)
           (let ((entry (gethash fd table)))
             (when entry
               (%unwatch-fd backend (first entry))
-              (remhash fd table))))))
-    (let ((gone nil))
-      (maphash (lambda (fd mark)
-                 (declare (ignore mark))
-                 (unless (assoc fd specs) (push fd gone)))
-               dead)
-      (dolist (fd gone) (remhash fd dead)))))
+              (remhash fd table))))))))
 
-(defun drop-dead-fd-watch (runtime fd)
-  "Retire one descriptor the native loop could not watch any more."
-  (let ((entry (gethash fd (runtime-fd-watches runtime))))
-    (when entry
-      (%unwatch-fd (runtime-backend runtime) (first entry))
-      (remhash fd (runtime-fd-watches runtime))))
-  (setf (gethash fd (runtime-dead-fds runtime)) t
-        (runtime-watch-failure runtime) t))
+(defun drop-dead-fd-watch (runtime handle)
+  "Retire the watch the native loop reported dead, by its own handle: the
+descriptor number alone cannot tell a live pipe from the one that has gone."
+  (let ((table (runtime-fd-watches runtime)) (backend (runtime-backend runtime)) (stale nil))
+    (maphash (lambda (fd entry)
+               (when (eql (first entry) handle) (push fd stale)))
+             table)
+    (dolist (fd stale)
+      (let ((entry (gethash fd table)))
+        (when entry
+          (%unwatch-fd backend (first entry))
+          (remhash fd table))))))
 
 (define-condition extension-error (error)
   ((unit :initarg :unit :reader extension-error-unit)
@@ -1070,7 +1074,7 @@ system, so an idle desktop keeps only what it is using."
 (defun producer-watch (native descriptor mask)
   (when native
     (let ((fd (funcall descriptor native)))
-      (when (>= fd 0) (cons fd (funcall mask native))))))
+      (when (>= fd 0) (list fd (funcall mask native) native)))))
 
 (defun window-identifier (runtime id)
   (let ((backend (runtime-backend runtime)))
