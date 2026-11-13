@@ -884,17 +884,15 @@ bool scene_covers(struct tomoe *s, double x, double y, int layer) {
     }
     return false;
 }
-struct scanout_data { struct box output; struct surface *surface; bool done, window; };
+struct scanout_data { struct box output; struct surface *surface; bool window; };
 static bool scanout_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct scanout_data *data = opaque;
     struct box overlap;
-    if (leaf->target && leaf->target->kind == TARGET_ICON) return false;
     if (!box_intersection(&overlap, &leaf->shown, &data->output)) return false;
-    data->done = true;
     if (!box_equal(&leaf->screen, &data->output) || !box_equal(&leaf->shown, &leaf->screen))
         return true;
     const struct target *t = leaf->target;
-    if (t && (t->shader || t->mesh)) return true;
+    if (t && (t->kind == TARGET_ICON || t->shader || t->mesh)) return true;
     if (leaf->surface->current.alpha != UINT32_MAX || leaf->surface->current.viewport.has_src ||
             (t && (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width ||
                 t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
