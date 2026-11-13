@@ -115,6 +115,54 @@ tomoe unmount monocle
 No window restarts. `tomoe inspect` prints everything the compositor knows,
 from windows and outputs to each extension's state and last error.
 
+## One table of commands
+
+Everything the desktop can do is a named command with typed arguments, and
+every way of asking for it goes through that one table: a key binding, the
+`tomoe` command line, and the JSON socket. An extension declares a command
+beside the bindings that use it:
+
+```lisp
+(in-package #:tomoe-user)
+
+(define-extension "quick-focus" (:reads (:windows :command) :state nil)
+    (snapshot state event)
+  (let ((ids (mapcar (lambda (window) (getf window :id)) (context snapshot :windows))))
+    (values nil
+            (list (define-command "first-window"
+                    :description "Focus the first window.")
+                  (bind-key '(:mod) "F1" "first-window"))
+            (when (and (eq (getf event :type) :command) ids)
+              (list (focus (first ids)))))))
+```
+
+`define-command` takes a name, one line of description and typed `:arguments`:
+`:window` and `:output` default to the focused window and its output, and are
+checked to still exist; `:workspace` is 1 through 128; the rest are `:integer`,
+`:string`, `:argv`, `:boolean` and `:keyword` (with `:values`). A binding names
+a command, or carries arguments with `(invoke ...)`:
+
+```lisp
+(bind-key '(:mod) "q" "close-window")
+(bind-key '(:mod) "1" (invoke "switch-workspace" :workspace 1))
+```
+
+`tomoe commands` prints every command with its arguments as JSON, so an agent
+can find its way around without reading Lisp:
+
+```sh
+tomoe commands
+tomoe command focus-window window=42
+tomoe command move-window-to-workspace window=42 workspace=3
+tomoe command close-window
+```
+
+`tomoe command` prints the values the command ran with, which is how you learn
+which window "the focused one" meant. The same table answers on the JSON
+socket: `{"method": "commands"}` lists it, and
+`{"method": "command", "params": {"name": "focus-window", "arguments": {"window": 42}}}`
+runs it. A command a config never binds is still reachable from both.
+
 ## Examples
 
 Each file in [`examples/`](examples) mounts on its own.

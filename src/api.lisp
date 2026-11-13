@@ -8,6 +8,7 @@
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting
            #:bind-button #:bind-scroll #:window-properties #:keyboard-grab #:sound
+           #:define-command #:invoke
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
            #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
@@ -17,10 +18,10 @@
 (define-condition output-configuration-error (simple-error)
   ((output :initarg :output :initform nil :reader output-error-name)))
 
-(defconstant +wire-version+ 1)
+(defconstant +wire-version+ 2)
 (defconstant +native-abi-version+ 39)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :keyboard :settings :layers :surfaces :key :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *stop-requested* nil)
@@ -140,7 +141,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
   (or (gethash kind *effect-definitions*) (error "Unknown effect kind: ~S" kind)))
 
 (defstruct materialization
-  layout stacking layers focused data surfaces keyboard-grab outputs bindings
+  layout stacking layers focused data surfaces keyboard-grab outputs bindings commands
   (binding-order 0) keyboard settings view mod-bit sounds virtual-outputs)
 
 (defun %materialized-window (m id)
@@ -811,24 +812,284 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   :canonical (destructuring-bind (id mode &optional buffer-generation) args
                (grab id mode :buffer-generation buffer-generation))
   :key '(:grab))
+(defparameter +command-argument-types+
+  '(:window :workspace :output :integer :string :argv :boolean :keyword)
+  "Command argument types. A command line string coerces into every one of them.")
+
+(defun %command-name (name)
+  (check-type name string)
+  (unless (and (<= 1 (length name) 64)
+               (alpha-char-p (char name 0))
+               (alpha-char-p (char name (1- (length name))))
+               (every (lambda (character)
+                        (or (and (alpha-char-p character) (lower-case-p character))
+                            (digit-char-p character) (char= character #\-)))
+                      name))
+    (error "Invalid command name ~S: use lowercase letters, digits and hyphens." name))
+  (copy-seq name))
+
+(defun %command-type-description (spec)
+  (ecase (getf spec :type)
+    (:window "a window id") (:workspace "a workspace number from 1 through 128")
+    (:output "an output name") (:integer "an integer from -1048576 through 1048576")
+    (:string "a string") (:argv "a program and its arguments")
+    (:boolean "true or false") (:keyword (format nil "one of ~{~(~A~)~^, ~}" (getf spec :values)))))
+
+(defun %check-command-value (spec value)
+  (let ((type (getf spec :type)))
+    (flet ((bad () (error "Command argument ~(~A~) takes ~A, not ~S."
+                          (getf spec :name) (%command-type-description spec) value)))
+      (ecase type
+        (:window (unless (typep value '(integer 1 4294967295)) (bad)))
+        (:workspace (unless (typep value '(integer 1 128)) (bad)))
+        (:output (unless (and (stringp value) (<= 1 (length value) 128) (not (find #\Null value)))
+                   (bad)))
+        (:integer (unless (typep value '(integer -1048576 1048576)) (bad)))
+        (:string (unless (and (stringp value) (<= (length value) 65536) (not (find #\Null value)))
+                   (bad)))
+        (:argv (unless (and (listp value) (<= 1 (length value) 128)
+                            (every (lambda (item)
+                                     (and (stringp item) (plusp (length item)) (not (find #\Null item))))
+                                   value))
+                 (bad)))
+        (:boolean (unless (typep value 'boolean) (bad)))
+        (:keyword (unless (member value (getf spec :values)) (bad))))
+      value)))
+
+(defun %command-argument-spec (spec)
+  (if (and (listp spec) (eq (first spec) :name) (eq (third spec) :type))
+      (copy-data spec)
+      (%command-argument spec)))
+
+(defun %command-argument (spec)
+  (unless (and (listp spec) (>= (length spec) 2) (keywordp (first spec)))
+    (error "A command argument needs (NAME TYPE &KEY ...): ~S" spec))
+  (destructuring-bind (name type &key required (default nil default-p) description values) spec
+    (unless (member type +command-argument-types+)
+      (error "Unknown type ~S for command argument ~S; use ~{~(~A~)~^, ~}."
+             type name +command-argument-types+))
+    (check-type required boolean)
+    (check-type description (or null string))
+    (when (and description (> (length description) 256))
+      (error "Command argument description exceeds 256 characters."))
+    (when (eq type :keyword)
+      (unless (and (listp values) (plusp (length values)) (every #'keywordp values))
+        (error "A :KEYWORD command argument needs :VALUES: ~S" spec)))
+    (when (and values (not (eq type :keyword)))
+      (error "Only :KEYWORD command arguments take :VALUES: ~S" spec))
+    (let ((spec (list :name name :type type :required required :default default
+                      :default-p (and default-p t) :description (or description "")
+                      :values (copy-list values))))
+      (when default-p
+        (ecase type
+          (:window (unless (or (eql default :focused) (typep default '(integer 1 4294967295)))
+                     (error "A :WINDOW default is :FOCUSED or a window id: ~S" spec)))
+          (:output (unless (or (eql default :focused) (stringp default))
+                     (error "An :OUTPUT default is :FOCUSED or an output name: ~S" spec)))
+          ((:workspace :integer :string :argv :boolean :keyword) (%check-command-value spec default))))
+      spec)))
+
+(defun %define-command (name description arguments)
+  (let ((name (%command-name name)) (seen nil) (specs nil))
+    (check-type description string)
+    (when (> (length description) 1024) (error "A command description exceeds 1024 characters."))
+    (unless (listp arguments) (error "Command arguments are a list of specs, not ~S." arguments))
+    (dolist (spec arguments)
+      (let ((spec (%command-argument-spec spec)))
+        (when (member (getf spec :name) seen)
+          (error "Duplicate argument ~(~A~) of command ~A." (getf spec :name) name))
+        (push (getf spec :name) seen)
+        (push spec specs)))
+    (%effect :command (list name (copy-seq description) (nreverse specs)))))
+
+(defun define-command (name &key description arguments)
+  "Own the command NAME: one name the command line, the JSON socket and key
+bindings all invoke, so nothing this extension does is reachable by a key alone.
+DESCRIPTION is one line. ARGUMENTS is a list of (NAME TYPE &KEY REQUIRED DEFAULT
+DESCRIPTION VALUES) in call order. Types are :WINDOW (a window id, the focused
+window by default), :WORKSPACE (1 through 128), :OUTPUT (an output name, the
+focused window's output by default), :INTEGER, :STRING, :ARGV (a program and its
+arguments), :BOOLEAN, and :KEYWORD (one of VALUES). The declaring extension
+receives a :COMMAND event whose :NAME is NAME and whose :ARGUMENTS carry every
+supplied or defaulted argument."
+  (%define-command name (or description "") arguments))
+
+(define-effect :command
+  :canonical (destructuring-bind (name description arguments) args
+               (%define-command name description arguments))
+  :key (list :command (first args))
+  :reduce (destructuring-bind (name description arguments) args
+            (setf (materialization-commands m)
+                  (cons (list :name name :description description :arguments arguments
+                              :owner (spec-name (mounted-spec mounted)))
+                        (remove name (materialization-commands m)
+                                :test #'equal :key (lambda (entry) (getf entry :name)))))))
+
+(defun registered-command (commands name)
+  (find name commands :test #'equal :key (lambda (entry) (getf entry :name))))
+
+(defun invoke (name &rest arguments)
+  "A command call for BIND-KEY, BIND-BUTTON, BIND-SCROLL and KEYBOARD-GRAB:
+NAME with keyword arguments, whose declared defaults fill the rest."
+  (unless (evenp (length arguments))
+    (error "Command arguments are keyword/value pairs: ~S" arguments))
+  (loop for (key) on arguments by #'cddr do (check-type key keyword))
+  (copy-data (list* (%command-name name) arguments)))
+
+(defun %callback-call (callback)
+  (check-type callback keyword)
+  (list :callback (string-downcase callback)))
+
+(defun %call (command)
+  "COMMAND as a call: a command name, an INVOKE list, or a session dialog callback."
+  (cond ((stringp command) (list (%command-name command)))
+        ((and (consp command) (stringp (first command))) (apply #'invoke command))
+        ((and (consp command) (eq (first command) :callback)) (copy-data command))
+        (t (error "A binding command is a command name or (INVOKE ...), not ~S." command))))
+
+(defun %call-wire-value (value)
+  "A binding argument as one quote-free token, so a wire string stays data."
+  (if (or (stringp value) (consp value)) (format nil "~A" value) (format nil "~S" value)))
+
+(defun %call-wire (call)
+  (cond ((eq (first call) :callback) (second call))
+        ((null (rest call)) (first call))
+        (t (with-output-to-string (out)
+             (format out "~A" (first call))
+             (loop for (key value) on (rest call) by #'cddr
+                   do (format out " ~(~A~)=~A" key (%call-wire-value value)))))))
+
+(defun %command-number (name value)
+  (if (stringp value)
+      (multiple-value-bind (parsed end) (ignore-errors (parse-integer value :junk-allowed t))
+        (unless (and parsed (= end (length value)))
+          (error "Command argument ~(~A~) takes a number, not ~S." name value))
+        parsed)
+      value))
+
+(defun %command-boolean (name value)
+  (cond ((member value '("true" "1" "yes" "on") :test #'string-equal) t)
+        ((member value '("false" "0" "no" "off") :test #'string-equal) nil)
+        (t (error "Command argument ~(~A~) takes true or false, not ~S." name value))))
+
+(defun %command-argv (text)
+  (if (and (plusp (length text)) (char= (char text 0) #\[))
+      (let ((value (parse-json text)))
+        (unless (and (consp value) (eq (first value) :json-array))
+          (error "The argv argument takes a JSON array or a space-separated command line, not ~S."
+                 text))
+        (second value))
+      (let ((items nil) (start 0))
+        (loop for space = (position #\Space text :start start)
+              do (let ((item (subseq text start space)))
+                   (unless (zerop (length item)) (push item items)))
+                 (if space (setf start (1+ space)) (return)))
+        (nreverse items))))
+
+(defun %coerce-command-value (spec value)
+  "VALUE as the argument SPEC declares it: a command line string, a JSON value,
+or a Lisp value."
+  (let ((type (getf spec :type)) (name (getf spec :name)))
+    (ecase type
+      ((:integer :workspace) (%command-number name value))
+      (:window (if (and (stringp value) (string-equal value "focused"))
+                   :focused
+                   (%command-number name value)))
+      (:output (if (and (stringp value) (string-equal value "focused")) :focused value))
+      (:string value)
+      (:boolean (if (stringp value) (%command-boolean name value) value))
+      (:keyword (if (stringp value) (intern (string-upcase value) :keyword) value))
+      (:argv (if (stringp value) (%command-argv value) value)))))
+
+(defun %resolve-call (commands call)
+  "CALL against COMMANDS: a known name, declared arguments, and values of their types."
+  (when call
+    (if (eq (first call) :callback)
+        call
+        (let ((entry (or (registered-command commands (first call))
+                         (error "No command named ~A." (first call))))
+              (arguments (rest call)))
+          (loop for (key value) on arguments by #'cddr
+                for spec = (find key (getf entry :arguments) :key (lambda (item) (getf item :name)))
+                do (unless spec (error "~A has no ~(~A~) argument." (first call) key))
+                   (%check-command-value spec (%coerce-command-value spec value)))
+          (dolist (spec (getf entry :arguments))
+            (when (and (getf spec :required) (not (member (getf spec :name) arguments)))
+              (error "~A needs a ~(~A~) argument." (first call) (getf spec :name))))
+          (copy-data call)))))
+
+(defun resolve-binding-call (commands retired call)
+  "CALL checked against COMMANDS: as is for a dialog callback, resolved for a
+registered command, :RETIRED for a command whose owner went away, and an error
+for a name that was never a command."
+  (cond ((or (null call) (eq (first call) :callback)) call)
+        ((registered-command commands (first call)) (%resolve-call commands call))
+        ((member (first call) retired :test #'equal) :retired)
+        (t (%resolve-call commands call))))
+
+(defun resolve-context-calls (context retired)
+  "Check every binding and the keyboard grab against CONTEXT's commands. A name
+that was a command and is not one now drops its bindings with the owner that went
+away; a name that was never a command is an error, so a typo in a config fails
+its load rather than leaving a key that does nothing."
+  (let ((commands (getf context :commands)) (bindings nil))
+    (dolist (binding (getf context :bindings))
+      (let ((call (resolve-binding-call commands retired (getf binding :call)))
+            (release (resolve-binding-call commands retired (getf binding :release-call))))
+        (unless (or (eq call :retired) (eq release :retired))
+          (setf (getf binding :call) call (getf binding :release-call) release)
+          (push binding bindings))))
+    (setf (getf context :bindings) (nreverse bindings))
+    (let ((grab (getf context :keyboard-grab)))
+      (when grab
+        (let ((call (resolve-binding-call commands retired (getf grab :call))))
+          (if (eq call :retired)
+              (setf (getf context :keyboard-grab) nil)
+              (setf (getf grab :call) call))))))
+  context)
+
 (defun bind-key (modifiers keysym command &key release description)
-  "Own a shortcut, optionally with a command for its physical key release.
-Modifiers are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the :MOD setting.
+  "Own a shortcut that runs a registered COMMAND, optionally with one for its
+physical key release. MODIFIERS are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the
+:MOD setting. COMMAND is a command name, or (INVOKE NAME :ARGUMENT VALUE ...).
 DESCRIPTION labels the binding in the hotkey overlay.
 Release follows the original device/key even after modifiers change. Removing
 or replacing the binding/source cancels that callback and still swallows key-up."
+  (%bind modifiers keysym (%call command) (and release (%call release)) description))
+
+(defun %bind-callback (modifiers keysym callback)
+  (%bind modifiers keysym (%callback-call callback) nil nil))
+
+(defun %bind (modifiers keysym call release description)
   (check-type keysym string)
-  (check-type command keyword)
-  (check-type release (or null keyword))
   (check-type description (or null string))
   (when (or (zerop (length keysym)) (find #\Null keysym)) (error "Invalid keysym name."))
-  (when (and description (> (length description) 256)) (error "Binding description exceeds 256 characters."))
+  (when (and description (> (length description) 256))
+    (error "Binding description exceeds 256 characters."))
   (let ((mask 0))
     (dolist (modifier modifiers)
       (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64) (:mod 128)))))
-    (%effect :bind (list mask (copy-seq keysym) (string-downcase command)
-                         (when release (string-downcase release))
-                         (when description (copy-seq description))))))
+    (%bind-effect mask keysym call release description)))
+
+(defun %bind-effect (mask keysym call release description)
+  (check-type mask (integer 0 205))
+  (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
+  (check-type keysym string)
+  (check-type call cons)
+  (check-type release (or null cons))
+  (check-type description (or null string))
+  (dolist (item (list call release))
+    (when item
+      (unless (if (eq (first item) :callback)
+                  (and (= 2 (length item)) (stringp (second item)))
+                  (and (stringp (first item)) (evenp (length (rest item)))
+                       (loop for (key) on (rest item) by #'cddr always (keywordp key))))
+        (error "Invalid binding call: ~S" item))))
+  (when (or (find #\Null keysym) (zerop (keysym-code keysym))) (error "Invalid keysym name."))
+  (when (and description (> (length description) 256))
+    (error "Binding description exceeds 256 characters."))
+  (%effect :bind (list mask (copy-seq keysym) (copy-data call) (copy-data release)
+                       (when description (copy-seq description)))))
 
 (defvar *keysym-codes* (make-hash-table :test #'equal))
 
@@ -840,20 +1101,9 @@ every declared binding three times, so each name crosses into C once."
              (setf (gethash (copy-seq name) *keysym-codes*) (%keysym name)))))
 
 (define-effect :bind
-  :canonical (destructuring-bind (mask keysym command &optional release description) args
-               (check-type mask (integer 0 205))
-               (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
-               (check-type keysym string)
-               (check-type command string)
-               (check-type release (or null string))
-               (when (or (find #\Null keysym) (find #\Null command)
-                         (zerop (length command)) (zerop (keysym-code keysym))
-                         (and release (or (zerop (length release)) (find #\Null release))))
-                 (error "Invalid key binding: ~S" args))
-               (check-type description (or null string))
-               (%effect :bind (list mask keysym command release description)))
+  :canonical (apply #'%bind-effect args)
   :key (list :bind (first args) (keysym-code (second args)))
-  :reduce (destructuring-bind (mask keysym command release &optional description) args
+  :reduce (destructuring-bind (mask keysym call release &optional description) args
             (let ((code (keysym-code keysym)) (declared mask)
                   (mask (if (logtest 128 mask)
                             (logior (logandc2 mask 128) (materialization-mod-bit m))
@@ -863,7 +1113,9 @@ every declared binding three times, so each name crosses into C once."
                                                 (= code (getf b :code))))
                                (materialization-bindings m)))
               (push (list :modifiers mask :code code :keysym keysym
-                          :owner (spec-name (mounted-spec mounted)) :command command :release release
+                          :owner (spec-name (mounted-spec mounted))
+                          :call call :release-call release
+                          :command (%call-wire call) :release (and release (%call-wire release))
                           :source-id (spec-id (mounted-spec mounted))
                           :description description :declared declared
                           :order (incf (materialization-binding-order m)))
@@ -881,20 +1133,24 @@ carries :BUTTON, :WINDOW under the pointer, world :X :Y and screen :SX :SY."
   (bind-key modifiers (format nil "scroll-~(~A~)" direction) command))
 (defun keyboard-grab (&key otherwise)
   "Own the keyboard: only this extension's bindings fire, whatever the held
-modifiers, and no key reaches a client. OTHERWISE, a keyword, fires for other
-non-modifier keys with :KEYSYM. The latest owner wins."
-  (check-type otherwise (or null keyword))
-  (%effect :keyboard-grab (list (when otherwise (string-downcase otherwise)))))
+modifiers, and no key reaches a client. OTHERWISE, a command name or (INVOKE ...),
+runs for other non-modifier keys with :KEYSYM. The latest owner wins."
+  (%keyboard-grab (when otherwise (%call otherwise))))
+
+(defun %keyboard-grab (call)
+  (%effect :keyboard-grab (list (copy-data call))))
+
+(defun %keyboard-grab-callback (callback)
+  (%keyboard-grab (%callback-call callback)))
 
 (define-effect :keyboard-grab
-  :canonical (destructuring-bind (otherwise) args
-               (check-type otherwise (or null string))
-               (%effect :keyboard-grab (list otherwise)))
+  :canonical (destructuring-bind (call) args (%keyboard-grab call))
   :key '(:keyboard-grab)
-  :reduce (setf (materialization-keyboard-grab m)
-                (list :owner (spec-name (mounted-spec mounted))
-                      :source-id (spec-id (mounted-spec mounted))
-                      :otherwise (first args))))
+  :reduce (let ((call (first args)))
+            (setf (materialization-keyboard-grab m)
+                  (list :owner (spec-name (mounted-spec mounted))
+                        :source-id (spec-id (mounted-spec mounted))
+                        :call call :otherwise (and call (%call-wire call))))))
 (defparameter +sound-events+ '(:key :button :open :close :bell))
 (defun sound (event files &key (gain 0))
   "Own the sound for EVENT: :KEY plays on every key press, :BUTTON on every

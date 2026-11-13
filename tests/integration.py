@@ -21,8 +21,10 @@ assert (box["w"], box["h"]) != (320, 200), f"the window kept its own size: {box}
 machine.succeed(f"journalctl -u window -o cat | grep -qx 'configured {box['w']}x{box['h']}'")
 
 cli(f"mount {ZOOMER}")
-status, output = machine.execute(ENV + "tomoe --socket check command zoomer zoom-scroll-in")
-assert status == 1 and "tomoe event" in output, (status, output)
+zoom = lambda: json.loads(cli("msg view"))["zoom"]
+before = zoom()
+cli("event '(:type :key :owner \"zoomer\" :command \"zoom-scroll-in\" :state :pressed :x 400 :y 300 :sx 400 :sy 300)'")
+assert zoom() > before, f"a pointer binding's command did not run: {zoom()}"
 zoomer = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)[":NAME"]) == "zoomer")
 assert zoomer[":LAST-ERROR"] == "NIL", zoomer[":LAST-ERROR"]
 cli("unmount zoomer")
@@ -52,20 +54,20 @@ def colours(sample, want, absent=(), seconds=15):
 
 
 def dialog(opener, closer, want, absent=()):
-    cli(f"command commands {opener}")
+    cli(f"command {opener}")
     wrong = colours(lambda: row(screen["y"] + screen["h"] // 2), want, absent)
     cli(f"event '(:type :key :owner \"commands\" :command \"{closer}\" :state :pressed)'")
     return wrong
 
 
 today = ["#1c1c21", "#7aa1f7"]
-assert not (m := dialog("hotkeys", "hotkeys-dismiss", today)), f"the hotkey sheet lost its own colours: {m}"
-assert not (m := dialog("quit", "exit-cancel", ["#1c1c21", "#bf2e38"])), f"the exit confirmation lost its own colours: {m}"
+assert not (m := dialog("toggle-hotkeys", "hotkeys-dismiss", today)), f"the hotkey sheet lost its own colours: {m}"
+assert not (m := dialog("quit confirm=true", "exit-cancel", ["#1c1c21", "#bf2e38"])), f"the exit confirmation lost its own colours: {m}"
 cli(f"mount {THEME_PROBE}")
-assert not (m := dialog("hotkeys", "hotkeys-dismiss", ["#203040", "#c06030"], ["#1c1c21"])), f"the hotkey sheet ignores a published :theme: {m}"
-assert not (m := dialog("quit", "exit-cancel", ["#203040", "#30a050"], ["#bf2e38"])), f"the exit confirmation ignores a published :theme: {m}"
+assert not (m := dialog("toggle-hotkeys", "hotkeys-dismiss", ["#203040", "#c06030"], ["#1c1c21"])), f"the hotkey sheet ignores a published :theme: {m}"
+assert not (m := dialog("quit confirm=true", "exit-cancel", ["#203040", "#30a050"], ["#bf2e38"])), f"the exit confirmation ignores a published :theme: {m}"
 cli("unmount theme-probe")
-assert not (m := dialog("hotkeys", "hotkeys-dismiss", today, ["#203040", "#c06030"])), f"unmounting the :theme publisher left the hotkey sheet recoloured: {m}"
+assert not (m := dialog("toggle-hotkeys", "hotkeys-dismiss", today, ["#203040", "#c06030"])), f"unmounting the :theme publisher left the hotkey sheet recoloured: {m}"
 
 
 def card(urgent, want, absent=()):
@@ -141,7 +143,7 @@ hint = lambda: row(screen["y"] + screen["h"] - 40, overlays=True)
 themed = ["#203040", "#c06030"]
 cli(f"mount {SCREENSHOT_PROBE}")
 cli(f"mount {THEME_PROBE}")
-cli("command screenshot-probe select")
+cli("command select")
 assert all(shaded(pixel(*middle), 0.6) for _ in range(4)), "the screenshot overlay does not dim the output"
 assert not (m := colours(hint, themed, today)), f"the screenshot hint ignores a published :theme: {m}"
 cli("unmount theme-probe")

@@ -64,7 +64,7 @@
                        (float--size (+ origin-height dy))))))))
 
 (define-extension "float"
-    (:reads (:windows :outputs :focus :key :button :grab)
+    (:reads (:windows :outputs :focus :command :button :grab)
      :state (list :geometry nil :released nil :drag nil :focus nil))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
@@ -97,13 +97,12 @@
        (when (and drag (eql (getf event :id) (getf drag :id)))
          (setf geometry (cons (cons (getf drag :id) (float--motion drag event))
                               (remove (getf drag :id) geometry :key #'first)))))
-      (:key
-       (when (and (equal (getf event :owner) "float")
-                  (equal (getf event :command) "release")
-                  (member focused ids))
-         (setf geometry (remove focused geometry :key #'first)
-               released (adjoin focused released))
-         (when (and drag (eql (getf drag :id) focused)) (setf drag nil)))))
+      (:command
+       (let ((target (or (getf (getf event :arguments) :window) focused)))
+         (when (and (equal (getf event :name) "clear-float") (member target ids))
+           (setf geometry (remove target geometry :key #'first)
+                 released (adjoin target released))
+           (when (and drag (eql (getf drag :id) target)) (setf drag nil))))))
     (let ((boxes nil) (places nil))
       (dolist (window windows)
         (let ((id (getf window :id)))
@@ -122,5 +121,8 @@
                 (append (nreverse places)
                         (when windows (list (focus focused)))
                         (when drag (list (grab (getf drag :id) (getf drag :mode))))
-                        (list (bind-key '(:control :super) "q" :release))))
+                        (list (define-command "clear-float"
+                                :description "Stop managing a window, leaving it where it is."
+                                :arguments '((:window :window :description "Window to release.")))
+                              (bind-key '(:control :super) "q" "clear-float"))))
               nil))))

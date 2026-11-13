@@ -26,7 +26,7 @@ def output(name="Virtual-1"):
 
 
 def probe(command):
-    cli(f"event '(:type :key :owner \"wake-probe\" :command \"{command}\")'")
+    cli(f"command {command}")
 
 
 def kernel_mode(mode):

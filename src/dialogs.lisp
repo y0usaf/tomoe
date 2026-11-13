@@ -39,8 +39,8 @@ click runs CANCEL. THEME is a token plist or preset name, as the THEME function 
                                        (ui :text :text " to confirm." :size 20
                                            :color (%dialog-color :text theme))))))))
          :backdrop t :dismiss cancel)
-        (keyboard-grab :otherwise cancel)
-        (bind-key nil "Return" confirm)))
+        (%keyboard-grab-callback cancel)
+        (%bind-callback nil "Return" confirm)))
 
 (defun %menu-command (select index)
   (intern (format nil "~A-~D" (symbol-name select) index) :keyword))
@@ -71,15 +71,15 @@ THEME is as for CONFIRM-DIALOG."
                         :align :stretch :theme theme)
            :backdrop t :dismiss cancel)
           (keyboard-grab)
-          (bind-key nil "Up" up) (bind-key nil "k" up)
-          (bind-key nil "Down" down) (bind-key nil "j" down)
-          (bind-key nil "Return" select) (bind-key nil "Escape" cancel))))
+          (%bind-callback nil "Up" up) (%bind-callback nil "k" up)
+          (%bind-callback nil "Down" down) (%bind-callback nil "j" down)
+          (%bind-callback nil "Return" select) (%bind-callback nil "Escape" cancel))))
 
 (defun menu-choice (event selected count &key (select :select) (cancel :cancel) (up :up) (down :down)
                                                (hover :hover))
-  "Interpret a menu event: (values :select index), (values :cancel), or
+  "Interpret a menu command: (values :select index), (values :cancel), or
 (values :move index)."
-  (let* ((command (getf event :command))
+  (let* ((command (or (getf event :name) (getf event :command)))
          (prefix (format nil "~(~A~)-" select))
          (hover-prefix (format nil "~(~A~)-" hover)))
     (cond ((not (stringp command)) nil)
@@ -115,7 +115,7 @@ THEME is as for CONFIRM-DIALOG."
                                 (list (ui :row :gap 20 :align :start :children (list keys names))))
                         :theme theme)
            :dismiss dismiss)
-          (keyboard-grab :otherwise dismiss))))
+          (%keyboard-grab-callback dismiss))))
 
 (defun toast (name text &key urgent theme)
   "Effects for a toast stacked at the top center of every output. THEME is as for

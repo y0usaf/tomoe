@@ -216,9 +216,9 @@ against the output the layout is drawing on."
       (setf (cdr (assoc :left fronts)) right (cdr (assoc :right fronts)) left)))
   state)
 
-(defun deck--to-column (state side)
-  "Send the current window to SIDE, where it becomes that deck's front."
-  (let* ((id (deck--current state))
+(defun deck--to-column (state side &optional id)
+  "Send WINDOW to SIDE, where it becomes that deck's front."
+  (let* ((id (or id (deck--current state)))
          (previous (deck--side-of state id)))
     (when (and id (deck--manageable-p state id))
       (when (and previous (not (eql previous side)) (eql id (deck--front state previous)))
@@ -230,8 +230,8 @@ against the output the layout is drawing on."
       (deck--adopt-front state side id))
     state))
 
-(defun deck--toggle-floating (state area)
-  (let ((id (deck--current state)))
+(defun deck--toggle-floating (state area &optional id)
+  (let ((id (or id (deck--current state))))
     (when id
       (cond
         ((member id (getf state :fullscreen))
@@ -254,8 +254,8 @@ against the output the layout is drawing on."
           (getf state :focus) (car (last (deck--workspace state)))))
   state)
 
-(defun deck--move-to-workspace (state number)
-  (let ((id (getf state :focus)))
+(defun deck--move-to-workspace (state number &optional id)
+  (let ((id (or id (getf state :focus))))
     (when (and id (<= 1 number +deck-workspace-count+) (/= number (getf state :active)))
       (setf (nth (1- (getf state :active)) (getf state :workspaces))
             (remove id (deck--workspace state)))
@@ -264,66 +264,117 @@ against the output the layout is drawing on."
       (deck--focus-window state (car (last (deck--workspace state))))))
   state)
 
-(defun deck--command (state area command)
-  (cond
-    ((equal command "focus-left")
-     (deck--focus-window state (or (deck--front state :left) (deck--current state))))
-    ((equal command "focus-right")
-     (deck--focus-window state (or (deck--front state :right) (deck--current state))))
-    ((equal command "scroll-down") (deck--rotate state 1))
-    ((equal command "scroll-up") (deck--rotate state -1))
-    ((equal command "next") (deck--cycle state 1))
-    ((equal command "previous") (deck--cycle state -1))
-    ((equal command "swap-columns") (deck--swap-columns state))
-    ((equal command "move-down") (deck--reorder state 1))
-    ((equal command "move-up") (deck--reorder state -1))
-    ((equal command "to-left") (deck--to-column state :left))
-    ((equal command "to-right") (deck--to-column state :right))
-    ((equal command "grid") (setf (getf state :grid) (not (getf state :grid))))
-    ((equal command "ratio")
-     (setf (getf state :ratio) (1+ (mod (getf state :ratio) (length +deck-ratios+)))))
-    ((equal command "floating") (deck--toggle-floating state area))
-    ((equal command "fullscreen")
-     (let ((id (deck--current state)))
+(defparameter +deck-commands+
+  (list (define-command "deck-focus-left"
+          :description "Focus the front window of the left column.")
+        (define-command "deck-focus-right"
+          :description "Focus the front window of the right column.")
+        (define-command "deck-scroll-down"
+          :description "Bring the next card of the front column forward.")
+        (define-command "deck-scroll-up"
+          :description "Bring the previous card of the front column forward.")
+        (define-command "deck-next"
+          :description "Focus the next window on the active workspace.")
+        (define-command "deck-previous"
+          :description "Focus the previous window on the active workspace.")
+        (define-command "deck-swap-columns"
+          :description "Swap the two columns.")
+        (define-command "deck-move-down"
+          :description "Move the focused window down its column's order.")
+        (define-command "deck-move-up"
+          :description "Move the focused window up its column's order.")
+        (define-command "deck-to-left"
+          :description "Send a window to the left column."
+          :arguments '((:window :window :description "Window to send.")))
+        (define-command "deck-to-right"
+          :description "Send a window to the right column."
+          :arguments '((:window :window :description "Window to send.")))
+        (define-command "deck-grid"
+          :description "Toggle tiling the columns as one grid.")
+        (define-command "deck-ratio"
+          :description "Cycle the column split ratio.")
+        (define-command "deck-float"
+          :description "Float a window, or tile it again."
+          :arguments '((:window :window :description "Window to toggle.")))
+        (define-command "focus-window"
+          :description "Focus a window in the deck."
+          :arguments '((:window :window :description "Window to focus.")))
+        (define-command "close-window"
+          :description "Ask a window to close."
+          :arguments '((:window :window :description "Window to close.")))
+        (define-command "toggle-fullscreen"
+          :description "Toggle a window between fullscreen and its card."
+          :arguments '((:window :window :description "Window to toggle.")))
+        (define-command "switch-workspace"
+          :description "Show another workspace."
+          :arguments '((:workspace :workspace :required t :description "Workspace to show.")))
+        (define-command "move-window-to-workspace"
+          :description "Send a window to another workspace."
+          :arguments '((:workspace :workspace :required t :description "Workspace to send it to.")
+                       (:window :window :description "Window to send.")))))
+
+(defun deck--command (state area name arguments)
+  (let ((id (or (getf arguments :window) (deck--current state))))
+    (cond
+      ((equal name "deck-focus-left")
+       (deck--focus-window state (or (deck--front state :left) (deck--current state))))
+      ((equal name "deck-focus-right")
+       (deck--focus-window state (or (deck--front state :right) (deck--current state))))
+      ((equal name "deck-scroll-down") (deck--rotate state 1))
+      ((equal name "deck-scroll-up") (deck--rotate state -1))
+      ((equal name "deck-next") (deck--cycle state 1))
+      ((equal name "deck-previous") (deck--cycle state -1))
+      ((equal name "deck-swap-columns") (deck--swap-columns state))
+      ((equal name "deck-move-down") (deck--reorder state 1))
+      ((equal name "deck-move-up") (deck--reorder state -1))
+      ((equal name "deck-to-left") (deck--to-column state :left id))
+      ((equal name "deck-to-right") (deck--to-column state :right id))
+      ((equal name "deck-grid") (setf (getf state :grid) (not (getf state :grid))))
+      ((equal name "deck-ratio")
+       (setf (getf state :ratio) (1+ (mod (getf state :ratio) (length +deck-ratios+)))))
+      ((equal name "deck-float") (deck--toggle-floating state area id))
+      ((equal name "focus-window")
+       (when id
+         (when (and (member id (deck--workspace state)) (deck--side-of state id))
+           (deck--adopt-front state (deck--side-of state id) id))
+         (deck--focus-window state id)))
+      ((equal name "toggle-fullscreen")
        (when id
          (if (member id (getf state :fullscreen))
              (setf (getf state :fullscreen) (remove id (getf state :fullscreen)))
              (progn (setf (getf state :floating) (remove id (getf state :floating)))
-                    (push id (getf state :fullscreen)))))))
-    ((and (stringp command) (eql 0 (search "workspace-" command)))
-     (deck--switch-workspace state (parse-integer command :start 10)))
-    ((and (stringp command) (eql 0 (search "move-to-" command)))
-     (deck--move-to-workspace state (parse-integer command :start 8)))
-    (t state)))
-
+                    (push id (getf state :fullscreen))))))
+      ((equal name "switch-workspace") (deck--switch-workspace state (getf arguments :workspace)))
+      ((equal name "move-window-to-workspace")
+       (deck--move-to-workspace state (getf arguments :workspace) id))
+      (t state))))
 
 (defun deck--bindings ()
   (append
-   (list (bind-key '(:alt) "h" :focus-left)
-         (bind-key '(:alt) "l" :focus-right)
-         (bind-key '(:alt) "j" :scroll-down)
-         (bind-key '(:alt) "k" :scroll-up)
-         (bind-key '(:alt :shift) "h" :swap-columns)
-         (bind-key '(:alt :shift) "l" :swap-columns)
-         (bind-key '(:alt :shift) "j" :move-down)
-         (bind-key '(:alt :shift) "k" :move-up)
-         (bind-key '(:alt) "bracketleft" :to-left)
-         (bind-key '(:alt) "bracketright" :to-right)
-         (bind-key '(:alt) "o" :grid)
-         (bind-key '(:alt) "r" :ratio)
-         (bind-key '(:alt) "f" :fullscreen)
-         (bind-key '(:super) "space" :floating)
-         (bind-key '(:super) "Tab" :next)
-         (bind-key '(:super :shift) "Tab" :previous))
+   (list (bind-key '(:alt) "h" "deck-focus-left")
+         (bind-key '(:alt) "l" "deck-focus-right")
+         (bind-key '(:alt) "j" "deck-scroll-down")
+         (bind-key '(:alt) "k" "deck-scroll-up")
+         (bind-key '(:alt :shift) "h" "deck-swap-columns")
+         (bind-key '(:alt :shift) "l" "deck-swap-columns")
+         (bind-key '(:alt :shift) "j" "deck-move-down")
+         (bind-key '(:alt :shift) "k" "deck-move-up")
+         (bind-key '(:alt) "bracketleft" "deck-to-left")
+         (bind-key '(:alt) "bracketright" "deck-to-right")
+         (bind-key '(:alt) "o" "deck-grid")
+         (bind-key '(:alt) "r" "deck-ratio")
+         (bind-key '(:alt) "f" "toggle-fullscreen")
+         (bind-key '(:super) "space" "deck-float")
+         (bind-key '(:super) "Tab" "deck-next")
+         (bind-key '(:super :shift) "Tab" "deck-previous"))
    (loop for number from 1 to +deck-workspace-count+
          append (list (bind-key '(:alt) (princ-to-string number)
-                                (intern (format nil "WORKSPACE-~D" number) :keyword))
+                                (invoke "switch-workspace" :workspace number))
                       (bind-key '(:alt :shift) (princ-to-string number)
-                                (intern (format nil "MOVE-TO-~D" number) :keyword))))))
-
+                                (invoke "move-window-to-workspace" :workspace number))))))
 
 (define-extension "deck"
-    (:reads (:windows :outputs :layers :layout :focus :key :button)
+    (:reads (:windows :outputs :layers :layout :focus :command :button)
      :state (deck--state))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
@@ -378,8 +429,8 @@ against the output the layout is drawing on."
                   (append (nth (1- (getf state :active)) (getf state :workspaces)) (list id)))
             (deck--adopt-front state side id)
             (setf (getf state :focus) id)))))
-    (when (and (eq type :key) (equal (getf event :owner) "deck"))
-      (deck--command state area (getf event :command)))
+    (when (eq type :command)
+      (deck--command state area (getf event :name) (getf event :arguments)))
     (when (and (eq type :metadata) (eql (getf event :request) :fullscreen)
                (member (getf event :id) ids))
       (pushnew (getf event :id) (getf state :fullscreen)))
@@ -389,12 +440,13 @@ against the output the layout is drawing on."
                    (deck--manageable-p state id) (deck--side-of state id))
           (deck--adopt-front state (deck--side-of state id) id)
           (deck--focus-window state id))))
-    (let* ((command (when (and (eq type :key) (equal (getf event :owner) "deck"))
-                      (getf event :command)))
-           (current (deck--current state)))
+    (let* ((name (and (eq type :command) (getf event :name)))
+           (target (and (eq type :command) (getf (getf event :arguments) :window)))
+           (closing (cond ((not (equal name "close-window")) nil)
+                          (target target)
+                          (t (deck--current state)))))
       (values state
-              (append (deck--bindings) (deck--places snapshot state area)
-                      (list (focus current)))
-              (cond ((and (equal command "close") current)
-                     (list (close-window current)))
-                    (t nil))))))
+              (append +deck-commands+ (deck--bindings)
+                      (deck--places snapshot state area)
+                      (list (focus (deck--current state))))
+              (when closing (list (close-window closing)))))))

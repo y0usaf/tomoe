@@ -1,6 +1,6 @@
 (in-package #:tomoe)
 
-(defconstant +json-wire-version+ 2)
+(defconstant +json-wire-version+ 3)
 (defvar *version* (or (sb-ext:posix-getenv "TOMOE_VERSION") "dev"))
 
 (defun json-object-p (value)
@@ -12,15 +12,8 @@
   (json-object (cons "x" (getf record :x)) (cons "y" (getf record :y))
                (cons "w" (getf record :width)) (cons "h" (getf record :height))))
 
-(defun ipc-focused-window (runtime context)
-  (if (runtime-backend runtime)
-      (let ((id (%keyboard-focus (runtime-backend runtime)))) (unless (zerop id) id))
-      (let* ((id (getf context :focus))
-             (window (find id (runtime-windows runtime) :key (lambda (window) (getf window :id)))))
-        (when (and window (getf window :buffered t)) id))))
-
 (defun ipc-windows (runtime context)
-  (let ((focus (ipc-focused-window runtime context)))
+  (let ((focus (focused-window runtime context)))
     (apply #'json-array
            (loop for window in (sort (copy-list (runtime-windows runtime)) #'<
                                     :key (lambda (window) (getf window :id)))
@@ -140,7 +133,7 @@ subscriber's events start from the present state."
   (handler-case
       (let* ((server (runtime-json-server runtime))
              (windows (second (ipc-windows runtime context)))
-             (outputs (ipc-outputs context)) (focus (ipc-focused-window runtime context))
+             (outputs (ipc-outputs context)) (focus (focused-window runtime context))
              (old (runtime-ipc-published-context runtime))
              (announcements (resolved-ipc-effects mounts :announce)))
         (flet ((emit (name value) (json-broadcast server name value)))
@@ -180,7 +173,7 @@ subscriber's events start from the present state."
 
 (defun poll-json-focus (runtime)
   (let ((context (runtime-effective runtime)))
-    (unless (eql (ipc-focused-window runtime context)
+    (unless (eql (focused-window runtime context)
                  (getf (runtime-ipc-published-context runtime) :focus))
       (publish-json-context runtime context (runtime-mounts runtime)))))
 
@@ -225,6 +218,76 @@ subscriber's events start from the present state."
                                    (json-object "action" "resolve" "type" "window" "identifier" identifier))
                                   (t (json-object "action" "deny")))))))))))
 
+(defun ipc-command-argument (value)
+  "A JSON argument value as the Lisp value the command takes."
+  (cond ((eq value +json-false+) nil)
+        ((and (consp value) (eq (first value) :json-array)) (second value))
+        (t value)))
+
+(defun ipc-command-arguments (json)
+  "A JSON object of command arguments as a plist of keyword/value pairs."
+  (if (null json)
+      nil
+      (progn
+        (unless (json-object-p json) (error "command arguments must be an object."))
+        (loop for (key . value) in (second json)
+              collect (intern (string-upcase key) :keyword)
+              collect (ipc-command-argument value)))))
+
+(defun ipc-command-value (value)
+  "A resolved command argument as JSON data."
+  (cond ((keywordp value) (string-downcase value))
+        ((consp value) (apply #'json-array
+                              (loop for item in value
+                                    collect (if (stringp item) item (princ-to-string item)))))
+        (t value)))
+
+(defun ipc-command-result (result)
+  "The JSON form of a ran command: its name and the values it ran with."
+  (json-object
+   (cons "name" (getf result :name))
+   (cons "arguments"
+         (apply #'json-object
+                (loop for (key value) on (getf result :arguments) by #'cddr
+                      collect (cons (string-downcase key) (ipc-command-value value)))))))
+
+(defun ipc-command-argument-json (spec)
+  (apply #'json-object
+         (append (list (cons "name" (string-downcase (getf spec :name)))
+                       (cons "type" (string-downcase (getf spec :type)))
+                       (cons "required" (json-boolean (and (getf spec :required) t)))
+                       (cons "description" (getf spec :description)))
+                 (when (getf spec :values)
+                   (list (cons "values"
+                               (apply #'json-array
+                                      (loop for value in (getf spec :values)
+                                            collect (string-downcase value))))))
+                 (when (getf spec :default-p)
+                   (list (cons "default"
+                               (if (keywordp (getf spec :default))
+                                   (string-downcase (getf spec :default))
+                                   (getf spec :default))))))))
+
+(defun ipc-commands (context)
+  "Every registered command, its owner, description and typed arguments."
+  (apply #'json-array
+         (loop for entry in (getf context :commands)
+               collect (json-object
+                        (cons "name" (getf entry :name))
+                        (cons "owner" (getf entry :owner))
+                        (cons "description" (getf entry :description))
+                        (cons "arguments"
+                              (apply #'json-array
+                                     (loop for spec in (getf entry :arguments)
+                                           collect (ipc-command-argument-json spec))))))))
+
+(defun ipc-command (runtime params)
+  (unless (json-object-p params) (error "command needs {~S: NAME, ~S: {...}}." "name" "arguments"))
+  (let ((name (json-get params "name")))
+    (unless (stringp name) (error "command needs a name string."))
+    (ipc-command-result
+     (run-command runtime name (ipc-command-arguments (json-get params "arguments"))))))
+
 (defun handle-json-request (runtime server client request)
   (reconcile-backend-observations runtime)
   (unless (and (runtime-running runtime) (not *stop-requested*))
@@ -245,6 +308,8 @@ subscriber's events start from the present state."
                   ((equal method "outputs") (ipc-outputs (runtime-effective runtime)))
                   ((equal method "cursor") (ipc-cursor runtime params))
                   ((equal method "view") (ipc-view (runtime-effective runtime)))
+                  ((equal method "commands") (ipc-commands (runtime-effective runtime)))
+                  ((equal method "command") (ipc-command runtime params))
                   ((equal method "subscribe") (ipc-subscribe runtime client params))
                   ((equal method "quit") (setf (runtime-running runtime) nil) t)
                   ((equal method "screencast_select")

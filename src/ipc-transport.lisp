@@ -286,17 +286,22 @@
                  (when sent
                    (when (zerop sent) (error "IPC server closed the connection."))
                    (incf offset sent)))))
-           (loop for frame = (json-cli-read-frame client) for kind = (json-cli-frame-kind frame)
-                 when (and (member kind '(:error :result)) (eql 1 (json-get frame "id"))) do
-                   (when (eq kind :error) (error "~A" (json-get frame "error")))
-                   (write-line (write-json (json-get frame "result") :pretty t))
-                   (finish-output)
-                   (return))
-           (when (equal method "subscribe")
-             (loop for frame = (json-cli-read-frame client) do
-               (when (eq :event (json-cli-frame-kind frame))
-                 (write-line (write-json (json-object (cons "event" (json-get frame "event"))
-                                                     (cons "payload" (json-get frame "payload")))))
-                 (finish-output))))
-           0)
+           (let ((status 0))
+             (loop for frame = (json-cli-read-frame client) for kind = (json-cli-frame-kind frame)
+                   when (and (member kind '(:error :result)) (eql 1 (json-get frame "id"))) do
+                     (if (eq kind :error)
+                         (progn (write-line (write-json (json-object
+                                                         (cons "error" (json-get frame "error")))))
+                                (setf status 1)
+                                (return))
+                         (progn (write-line (write-json (json-get frame "result") :pretty t))
+                                (return)))
+                     (finish-output))
+             (when (equal method "subscribe")
+               (loop for frame = (json-cli-read-frame client) do
+                 (when (eq :event (json-cli-frame-kind frame))
+                   (write-line (write-json (json-object (cons "event" (json-get frame "event"))
+                                                       (cons "payload" (json-get frame "payload")))))
+                   (finish-output))))
+             status))
       (json-drop-client client))))

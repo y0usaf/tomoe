@@ -3,7 +3,16 @@
 (defparameter +special-bindings+ '(("grave" :term))
   "(KEY NAME [:park nil]) entries: Mod+KEY toggles special NAME, Mod+Shift+KEY parks the focused window in it or returns a parked one to the tiling. With :park nil only window rules put windows in NAME.")
 
-(define-extension "special" (:reads (:windows :rules :outputs :workareas :focus :key :button) :state nil)
+(defparameter +special-commands+
+  (list (define-command "toggle-special"
+          :description "Show or hide a special workspace."
+          :arguments '((:name :string :required t :description "Special workspace name.")))
+        (define-command "park-special"
+          :description "Park a window in a special workspace, or return it to the tiling."
+          :arguments '((:name :string :required t :description "Special workspace name.")
+                       (:window :window :description "Window to park.")))))
+
+(define-extension "special" (:reads (:windows :rules :outputs :workareas :focus :command :button) :state nil)
     (snapshot state event)
   (let* ((ids (mapcar (lambda (window) (getf window :id)) (context snapshot :windows)))
          (spaces (loop for (name . space) in (getf state :spaces)
@@ -15,8 +24,8 @@
                          :test #'equal :key (lambda (entry) (getf entry :name)))
                    output))
          (focused (getf state :focused))
-         (command (and (eq (getf event :type) :key) (equal (getf event :owner) "special")
-                       (getf event :command))))
+         (name (and (eq (getf event :type) :command) (getf event :name)))
+         (arguments (and (eq (getf event :type) :command) (getf event :arguments))))
     (labels ((space (name)
                (or (assoc name spaces)
                    (car (push (list name :shown nil :windows nil) spaces))))
@@ -37,16 +46,18 @@
         (let* ((rules (rules-for snapshot id))
                (name (cdr (or (assoc :special rules) (assoc "special" rules :test #'equal)))))
           (when (stringp name) (park (intern (string-upcase name) :keyword) id))))
-      (loop for (key name) in +special-bindings+
-            for toggle = (format nil "toggle-~(~A~)" name)
-            for move = (format nil "move-~(~A~)" name)
-            do (cond ((equal command toggle)
-                      (let ((space (space name)))
-                        (setf (getf (rest space) :shown) (not (getf (rest space) :shown)))
-                        (if (getf (rest space) :shown) (present space) (setf focused nil))))
-                     ((and (equal command move) (member (context snapshot :focus) ids))
-                      (let ((id (context snapshot :focus)))
-                        (if (parked id) (unpark id) (park name id))))))
+      (let ((target (and (equal name "park-special")
+                         (or (getf arguments :window) (context snapshot :focus)))))
+        (dolist (entry +special-bindings+)
+          (let ((space-name (intern (string-upcase (second entry)) :keyword)))
+            (when (equal (getf arguments :name) (string-downcase (second entry)))
+              (cond
+                ((equal name "toggle-special")
+                 (let ((space (space space-name)))
+                   (setf (getf (rest space) :shown) (not (getf (rest space) :shown)))
+                   (if (getf (rest space) :shown) (present space) (setf focused nil))))
+                ((and (equal name "park-special") (member target ids))
+                 (if (parked target) (unpark target) (park space-name target))))))))
       (when (eq (getf event :type) :button)
         (when (eq (getf event :state) :pressed)
           (setf focused (find (getf event :id)
@@ -70,9 +81,12 @@
         (push (publish-state :wm-exclude
                              (loop for space in spaces append (getf (rest space) :windows)))
               effects)
+        (dolist (command +special-commands+) (push command effects))
         (loop for (key name . options) in +special-bindings+
-              do (push (bind-key '(:mod) key (intern (format nil "TOGGLE-~A" name) :keyword)) effects)
+              do (push (bind-key '(:mod) key (invoke "toggle-special" :name (string-downcase name)))
+                       effects)
                  (when (getf options :park t)
-                   (push (bind-key '(:mod :shift) key (intern (format nil "MOVE-~A" name) :keyword))
+                   (push (bind-key '(:mod :shift) key
+                                   (invoke "park-special" :name (string-downcase name)))
                          effects)))
         (values (list :spaces spaces :focused focused) (nreverse effects) nil)))))
