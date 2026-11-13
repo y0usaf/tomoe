@@ -128,12 +128,9 @@
               WP=${pkgs.wayland-protocols}/share/wayland-protocols
             SBCL_HOME=${sbcl}/lib/sbcl \
             TOMOE_VERSION=${version} \
-            TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
             TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
             TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
-            TOMOE_PATH=$out/bin:${
-              pkgs.lib.makeBinPath [ (dbus pkgs) ]
-            } \
+            TOMOE_PATH=$out/bin \
               build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \
               --non-interactive --no-userinit --load build.lisp
             runHook postBuild
