@@ -281,6 +281,82 @@ static void phase_commit(unsigned count) {
     }
 }
 
+static void sleep_ns(unsigned interval) {
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = (long)interval };
+    while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+}
+
+static void phase_motion_stream(unsigned hz, unsigned ms) {
+    if (!hz) hz = 1;
+    unsigned interval = 1000000000u / hz;
+    uint64_t end = now_ns() + (uint64_t)ms * 1000000ULL;
+    for (unsigned i = 0; now_ns() < end; i++) {
+        motion(100 + (int)((i * 13) % 900), 100 + (int)((i * 29) % 520));
+        sleep_ns(interval);
+    }
+}
+
+static struct wl_buffer *stream_buffers[4];
+static bool stream_released[4] = { true, true, true, true };
+
+static void buffer_release(void *data, struct wl_buffer *buffer) {
+    (void)buffer;
+    *(bool *)data = true;
+}
+
+static const struct wl_buffer_listener buffer_listener = { buffer_release };
+
+static void phase_commit_stream(unsigned hz, unsigned ms) {
+    if (!hz) hz = 1;
+    unsigned interval = 1000000000u / hz;
+    struct window *window = &windows[2];
+    int stride = window->width * 4;
+    size_t size = (size_t)stride * (size_t)window->height;
+    int fd = memfd_create("timing-stream", MFD_CLOEXEC);
+    if (fd < 0 || ftruncate(fd, (off_t)(size * 4)) < 0) fail("cannot size a stream buffer");
+    uint32_t *pixels = mmap(NULL, size * 4, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (pixels == MAP_FAILED) fail("cannot map a stream buffer");
+    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)(size * 4));
+    for (size_t i = 0; i < 4; i++) {
+        stream_buffers[i] = wl_shm_pool_create_buffer(pool, (int32_t)(i * size),
+            window->width, window->height, stride, WL_SHM_FORMAT_XRGB8888);
+        wl_buffer_add_listener(stream_buffers[i], &buffer_listener, &stream_released[i]);
+        for (size_t pixel = 0; pixel < size / sizeof(uint32_t); pixel++)
+            pixels[i * size / sizeof(uint32_t) + pixel] = 0xff102030u;
+    }
+    wl_shm_pool_destroy(pool);
+    uint64_t end = now_ns() + (uint64_t)ms * 1000000ULL;
+    for (unsigned i = 0; now_ns() < end; i++) {
+        size_t slot = i % 4;
+        while (!stream_released[slot] && now_ns() < end) {
+            roundtrip();
+            sleep_ns(interval / 4 + 1);
+        }
+        stream_released[slot] = false;
+        pixels[slot * size / sizeof(uint32_t)] = 0xff000000u | (i & 0xffu) |
+            ((i & 0xf00u) << 12);
+        wl_surface_attach(window->surface, stream_buffers[slot], 0, 0);
+        wl_surface_damage_buffer(window->surface, 0, 0, 16, 16);
+        wl_surface_commit(window->surface);
+        if (wl_display_flush(display) < 0 && errno != EAGAIN) fail("flush failed");
+        while (wl_display_prepare_read(display) != 0)
+            if (wl_display_dispatch_pending(display) < 0) fail("dispatch pending failed");
+        wl_display_flush(display);
+        struct pollfd fdset = { wl_display_get_fd(display), POLLIN, 0 };
+        if (poll(&fdset, 1, 0) > 0) {
+            if (wl_display_read_events(display) < 0) fail("read events failed");
+        } else {
+            wl_display_cancel_read(display);
+        }
+        if (wl_display_dispatch_pending(display) < 0) fail("dispatch pending failed");
+        sleep_ns(interval);
+    }
+    for (size_t i = 0; i < 4; i++) wl_buffer_destroy(stream_buffers[i]);
+    window->buffer = NULL;
+    munmap(pixels, size * 4);
+    close(fd);
+}
+
 static int compare_ints(const void *first, const void *second) {
     int64_t a = *(const int64_t *)first, b = *(const int64_t *)second;
     return a < b ? -1 : a > b;
@@ -297,7 +373,7 @@ static void report_external(void) {
 }
 
 int main(int argc, char **argv) {
-    unsigned count = 200;
+    unsigned count = 200, motion_stream = 0, motion_ms = 0, commit_stream = 0, stream_ms = 0;
     bool motion_phase = true, hover_phase = true, key_phase = true, drag_phase = true,
         commit_phase = true;
     for (int i = 1; i < argc; i++) {
@@ -307,7 +383,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--skip-key")) key_phase = false;
         else if (!strcmp(argv[i], "--skip-drag")) drag_phase = false;
         else if (!strcmp(argv[i], "--skip-commit")) commit_phase = false;
-        else fail("unknown argument \"%s\"", argv[i]);
+        else if (!strcmp(argv[i], "--motion-stream") && i + 2 < argc) {
+            motion_stream = (unsigned)atoi(argv[++i]);
+            motion_ms = (unsigned)atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--commit-stream") && i + 2 < argc) {
+            commit_stream = (unsigned)atoi(argv[++i]);
+            stream_ms = (unsigned)atoi(argv[++i]);
+        } else fail("unknown argument \"%s\"", argv[i]);
     }
     display = wl_display_connect(NULL);
     if (!display) fail("cannot connect to the display named by $WAYLAND_DISPLAY");
@@ -338,6 +420,8 @@ int main(int argc, char **argv) {
         wl_surface_commit(windows[i].surface);
     }
     for (int i = 0; i < WINDOWS; i++) next_frame();
+    if (motion_stream || commit_stream)
+        motion_phase = hover_phase = key_phase = drag_phase = commit_phase = false;
     if (motion_phase) phase_motion(count);
     if (hover_phase) phase_hover(count);
     if (key_phase) {
@@ -346,6 +430,8 @@ int main(int argc, char **argv) {
     }
     if (drag_phase) phase_drag(count);
     if (commit_phase) phase_commit(count);
+    if (motion_stream) phase_motion_stream(motion_stream, motion_ms);
+    if (commit_stream) phase_commit_stream(commit_stream, stream_ms);
     next_frame();
     report_external();
     wl_display_roundtrip(display);

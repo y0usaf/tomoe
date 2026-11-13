@@ -15,6 +15,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "commit-frame", "tx-mounts", "tx-material", "tx-invoke", "tx-diff", "tx-commit",
     "mat-init", "mat-quantize", "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
     "tx-dirty", "tx-baselines", "tx-reconcile", "parse", "transaction",
+    "latch-input", "latch-commit", "present-input", "present-commit",
 };
 
 static struct channel channels[TIMING_CHANNELS];
@@ -68,6 +69,7 @@ void timing_add(enum timing_channel channel, uint64_t ns) {
 void timing_input(struct tomoe *s, enum timing_channel channel) {
     if (!timing_enabled) return;
     uint64_t now = timing_now();
+    s->timing.newest_input_at = now;
     if (!s->timing.input_at) s->timing.input_at = now;
     if (channel == TIMING_DRAG) { s->timing.drag_at = now; s->timing.drag = true; }
     else if (channel == TIMING_KEY) { s->timing.key_at = now; s->timing.key = true; }
@@ -92,6 +94,7 @@ void timing_event_done(struct tomoe *s) {
 void timing_commit(struct tomoe *s) {
     if (!timing_enabled) return;
     s->timing.commit_at = timing_now();
+    s->timing.newest_commit_at = s->timing.commit_at;
     s->timing.commit = true;
 }
 
@@ -102,6 +105,30 @@ void timing_frame_start(struct tomoe *s) {
             s->timing.frame_at > s->timing.input_at)
         timing_add(TIMING_FRAME_WAIT, s->timing.frame_at - s->timing.input_at);
     s->timing.input_at = 0;
+}
+
+void timing_frame_latch(struct screen *screen) {
+    if (!timing_enabled) return;
+    struct tomoe *s = screen->server;
+    uint64_t input = s->timing.newest_input_at, commit = s->timing.newest_commit_at;
+    screen->latch_input_ns = input > screen->seen_input_ns ? (int64_t)input : 0;
+    screen->latch_commit_ns = commit > screen->seen_commit_ns ? (int64_t)commit : 0;
+    screen->seen_input_ns = input > screen->seen_input_ns ? input : screen->seen_input_ns;
+    screen->seen_commit_ns = commit > screen->seen_commit_ns ? commit : screen->seen_commit_ns;
+    uint64_t now = timing_now();
+    if (screen->latch_input_ns && now > (uint64_t)screen->latch_input_ns)
+        timing_add(TIMING_LATCH_INPUT, now - (uint64_t)screen->latch_input_ns);
+    if (screen->latch_commit_ns && now > (uint64_t)screen->latch_commit_ns)
+        timing_add(TIMING_LATCH_COMMIT, now - (uint64_t)screen->latch_commit_ns);
+}
+
+void timing_screen_present(struct screen *screen, int64_t when_ns) {
+    if (!timing_enabled) return;
+    if (screen->latch_input_ns && when_ns > screen->latch_input_ns)
+        timing_add(TIMING_PRESENT_INPUT, (uint64_t)(when_ns - screen->latch_input_ns));
+    if (screen->latch_commit_ns && when_ns > screen->latch_commit_ns)
+        timing_add(TIMING_PRESENT_COMMIT, (uint64_t)(when_ns - screen->latch_commit_ns));
+    screen->latch_input_ns = screen->latch_commit_ns = 0;
 }
 
 void timing_frame_scene(struct tomoe *s, uint64_t ns) {

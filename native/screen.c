@@ -440,6 +440,7 @@ static void frame_account(struct screen *screen) {
     }
     bool missed = ready == INT64_MAX || (screen->frame_target_ns &&
         screen->vblank_ns > screen->frame_target_ns + period / 2);
+    if (missed) screen->missed_frames++;
     int64_t cost = missed ? screen->frame_cost_ns + period / 4 : ready - screen->frame_start_ns;
     screen->frame_cost_ns = cost > screen->frame_cost_ns ? cost :
         screen->frame_cost_ns - (screen->frame_cost_ns - cost) / 64;
@@ -472,6 +473,9 @@ void screen_schedule_animation(struct screen *screen) {
 
 void screen_send_present(struct screen *screen, struct screen_present *present) {
     present->output = screen;
+    if (timing_enabled && present->presented)
+        timing_screen_present(screen,
+            (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec);
     wl_signal_emit_mutable(&screen->events.present, present);
 }
 

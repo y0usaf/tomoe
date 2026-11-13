@@ -142,6 +142,7 @@ let
     installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
   };
   timingPolicy = ./timing-policy.lisp;
+  frameclockPolicy = ./frameclock-policy.lisp;
   livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
     (in-package #:tomoe-user)
 
@@ -456,6 +457,12 @@ in
       COUNT = "200"
     ''
     + builtins.readFile ./timing.py
+  );
+  frameclock = checkWith { boot.kernelModules = [ "vkms" ]; } "frameclock" (
+    ''
+      FRAMECLOCK_POLICY = "${frameclockPolicy}"
+    ''
+    + builtins.readFile ./frameclock.py
   );
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''

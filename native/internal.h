@@ -483,6 +483,9 @@ struct screen {
     float cursor_seen_scale;
     size_t commit_seq;
     int64_t vblank_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
+    int64_t latch_input_ns, latch_commit_ns;
+    uint64_t seen_input_ns, seen_commit_ns;
+    uint64_t missed_frames;
     int frame_fence;
     struct ns_timer frame_timer;
     struct wl_event_source *idle_frame;
@@ -944,6 +947,7 @@ struct tomoe {
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
     struct {
         uint64_t input_at, pointer_at, drag_at, key_at, commit_at, event_at, frame_at;
+        uint64_t newest_input_at, newest_commit_at;
         uint64_t scene_ns, draw_ns, raster_ns, submit_ns;
         bool pointer, drag, key, commit;
     } timing;
