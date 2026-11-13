@@ -300,7 +300,7 @@ struct program {
     GLint box, min_ndc, max_ndc, drag, tex_prev, tex_next;
     GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
-    GLint progress, clamped_progress, random_seed;
+    GLint progress, clamped_progress, random_seed, path, path_count;
 };
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
@@ -313,6 +313,13 @@ struct window_shader {
     double settle;
     struct window_shader *next;
 };
+enum { WINDOW_PATH = 32 };
+struct window_path_sample {
+    int x, y;
+    double t;
+};
+int window_path_samples(struct tomoe *server, uint32_t id,
+    struct window_path_sample *out, int max);
 struct window_shader *window_shader_for(struct tomoe *server, const char *path,
     int grid_x, int grid_y, int margin, double settle, const char *entry);
 void window_shaders_finish(struct tomoe *server);
@@ -322,11 +329,11 @@ struct mesh_options {
     struct box dst_box;
     struct fbox src_box;
     enum wl_output_transform transform;
-    const float *trail;
+    const float *trail, *path;
     const float *alpha;
     struct timeline *wait_timeline;
     uint64_t wait_point;
-    int trail_count, grid_x, grid_y, frame, drag;
+    int trail_count, path_count, grid_x, grid_y, frame, drag;
     double box[4], time, progress, seed;
 };
 void pass_add_mesh(struct pass *pass, const struct mesh_options *options);

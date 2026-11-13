@@ -296,7 +296,8 @@ static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct ta
     double now = clock.tv_sec + clock.tv_nsec / 1e9;
     int drag = s->grab_mode == 1 && s->grab_id == t->id;
     float trail[4 * POINTER_TRAIL];
-    int count = 0;
+    float path[4 * WINDOW_PATH];
+    int count = 0, path_count = 0;
     if (drag || t->shader_time < shader->settle) {
         count = s->pointer_trail_count;
         for (int i = 0; i < count; i++) {
@@ -307,12 +308,26 @@ static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct ta
             trail[4 * i + 2] = (float)(now - sample->t);
             trail[4 * i + 3] = 1;
         }
+        struct window_path_sample history[WINDOW_PATH];
+        int samples = window_path_samples(s, t->id, history, WINDOW_PATH);
+        int limit = margin + (local.width > local.height ? local.width : local.height);
+        for (int i = 0; i < samples; i++) {
+            double dx = (t->x - history[i].x) * f->zoom;
+            double dy = (t->y - history[i].y) * f->zoom;
+            if (fabs(dx) > limit || fabs(dy) > limit) continue;
+            path[4 * path_count] = (float)dx;
+            path[4 * path_count + 1] = (float)-dy;
+            path[4 * path_count + 2] = (float)(now - history[i].t);
+            path[4 * path_count + 3] = 1;
+            path_count++;
+        }
     }
     struct mesh_options options = {
         .texture = source->texture, .shader = shader->program, .dst_box = shown,
         .src_box = source->src_box, .transform = source->transform,
-        .trail = count ? trail : NULL, .alpha = &alpha, .wait_timeline = source->wait_timeline,
-        .wait_point = source->wait_point, .trail_count = count,
+        .trail = count ? trail : NULL, .path = path_count ? path : NULL, .alpha = &alpha,
+        .wait_timeline = source->wait_timeline, .wait_point = source->wait_point,
+        .trail_count = count, .path_count = path_count,
         .grid_x = shader->grid_x, .grid_y = shader->grid_y, .frame = 0, .drag = drag,
         .time = t->shader_time, .progress = shader->settle > 0 ? t->shader_time / shader->settle : 1,
         .seed = window_shader_seed(t->id),

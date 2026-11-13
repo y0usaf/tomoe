@@ -302,16 +302,18 @@ static bool pixel_format(uint32_t format, GLenum *gl, bool *alpha) {
     return false;
 }
 
-static GLuint compile(GLenum type, const char *const *sources, int count) {
+static GLuint compile(GLenum type, const char *const *sources, int count, bool report) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, count, sources, NULL);
     glCompileShader(shader);
     GLint ok = 0;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (ok) return shader;
-    char log[1024];
-    glGetShaderInfoLog(shader, sizeof(log), NULL, log);
-    tomoe_log(LOG_ERROR, "tomoe: shader: %s", log);
+    if (report) {
+        char log[1024];
+        glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+        tomoe_log(LOG_ERROR, "tomoe: shader: %s", log);
+    }
     glDeleteShader(shader);
     return 0;
 }
@@ -343,13 +345,15 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
         "color", "range", "power", "half_pixel", "offset", "iResolution", "iTime", "iFrame", "iMouse", "iChannel0",
         "lut", "iTrail", "iTrailCount", "iBox", "iMin", "iMax", "iDrag", "tex_prev", "tex_next",
         "geo_to_tex", "geo_to_tex_prev", "geo_to_tex_next", "curr_geo_to_prev_geo",
-        "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed" };
+        "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed", "iPath",
+        "iPathCount" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
         &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count,
         &p->box, &p->min_ndc, &p->max_ndc, &p->drag, &p->tex_prev, &p->tex_next,
         &p->geo_to_tex, &p->geo_to_tex_prev, &p->geo_to_tex_next, &p->curr_geo_to_prev_geo,
-        &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed };
+        &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed,
+        &p->path, &p->path_count };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
     return true;
@@ -357,8 +361,8 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
 
 static bool link_sources(struct program *p, const char *const *vertex, int vertex_count,
         const char *const *fragment, int fragment_count) {
-    GLuint vs = compile(GL_VERTEX_SHADER, vertex, vertex_count);
-    GLuint fs = vs ? compile(GL_FRAGMENT_SHADER, fragment, fragment_count) : 0;
+    GLuint vs = compile(GL_VERTEX_SHADER, vertex, vertex_count, true);
+    GLuint fs = vs ? compile(GL_FRAGMENT_SHADER, fragment, fragment_count, true) : 0;
     if (!fs) {
         glDeleteShader(vs);
         return false;
@@ -450,6 +454,8 @@ static const char window_vertex_prelude[] =
     "uniform int iDrag;\n"
     "uniform int iTrailCount;\n"
     "uniform vec4 iTrail[64];\n"
+    "uniform int iPathCount;\n"
+    "uniform vec4 iPath[32];\n"
     "in vec2 grid;\n"
     "in vec2 uv;\n"
     "in vec2 texcoord;\n"
@@ -490,6 +496,8 @@ static const char window_fragment_prelude[] =
     "uniform int iDrag;\n"
     "uniform int iTrailCount;\n"
     "uniform vec4 iTrail[64];\n"
+    "uniform int iPathCount;\n"
+    "uniform vec4 iPath[32];\n"
     "in vec2 v_uv;\n"
     "in vec2 v_tex;\n"
     "in vec2 v_local;\n"
@@ -534,9 +542,9 @@ static struct program *render_window_shader_create(struct render *r, const char 
     bool warps = strstr(source, "warp") != NULL;
     current(r);
     EGLContext scratch = compile_begin(r);
-    GLuint fs = compile(GL_FRAGMENT_SHADER, fragment, 3);
-    GLuint vs = fs ? compile(GL_VERTEX_SHADER, warps ? vertex : fallback, 3) : 0;
-    if (fs && !vs && warps) vs = compile(GL_VERTEX_SHADER, fallback, 3);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fragment, 3, true);
+    GLuint vs = fs ? compile(GL_VERTEX_SHADER, warps ? vertex : fallback, 3, !warps) : 0;
+    if (fs && !vs && warps) vs = compile(GL_VERTEX_SHADER, fallback, 3, true);
     bool linked = vs && link_stages(&shader->program, vs, fs);
     if (vs) glDeleteShader(vs);
     if (fs) glDeleteShader(fs);
@@ -1218,21 +1226,26 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     int grid_x = options->grid_x < 1 ? 1 : options->grid_x > 32 ? 32 : options->grid_x;
     int grid_y = options->grid_y < 1 ? 1 : options->grid_y > 32 ? 32 : options->grid_y;
     float alpha = options->alpha ? *options->alpha : 1;
-    double params[12 + 4 * POINTER_TRAIL];
+    double params[12 + 4 * (POINTER_TRAIL + WINDOW_PATH)];
     params[0] = 9;
     params[1] = dst.x; params[2] = dst.y; params[3] = dst.width; params[4] = dst.height;
     params[5] = grid_x; params[6] = grid_y; params[7] = options->drag;
     params[8] = options->progress; params[9] = options->seed; params[10] = options->time;
     params[11] = (double)(uintptr_t)options->shader;
+    int path_count = 0;
+    for (; path_count < options->path_count && path_count < WINDOW_PATH; path_count++)
+        for (int k = 0; k < 4; k++)
+            params[12 + 4 * path_count + k] = options->path[4 * path_count + k];
     int count = 0;
     for (; count < options->trail_count && count < POINTER_TRAIL; count++)
         for (int k = 0; k < 4; k++)
-            params[12 + 4 * count + k] = options->trail[4 * count + k];
+            params[12 + 4 * (path_count + count) + k] = options->trail[4 * count + k];
     if (pass->record) {
         struct texture_options record = { .texture = texture, .src_box = options->src_box,
             .dst_box = dst, .transform = options->transform, .alpha = &alpha,
             .filter_mode = FILTER_BILINEAR, .blend_mode = BLEND_PREMULTIPLIED };
-        pass_record(pass, &record, dst, (struct box){0}, params, 12 + 4 * (size_t)count);
+        pass_record(pass, &record, dst, (struct box){0}, params,
+            12 + 4 * (size_t)(path_count + count));
         return;
     }
     if (!pass_touches(pass, dst)) return;
@@ -1273,6 +1286,8 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     if (p->drag >= 0) glUniform1i(p->drag, options->drag);
     if (p->trail_count >= 0) glUniform1i(p->trail_count, count);
     if (count && p->trail >= 0) glUniform4fv(p->trail, count, options->trail);
+    if (p->path_count >= 0) glUniform1i(p->path_count, path_count);
+    if (path_count && p->path >= 0) glUniform4fv(p->path, path_count, options->path);
     float w = pass->buffer->width, h = pass->buffer->height;
     float x0 = dst.x / w * 2 - 1, x1 = (dst.x + dst.width) / w * 2 - 1;
     float top = dst.y / h * 2 - 1, bottom = (dst.y + dst.height) / h * 2 - 1;

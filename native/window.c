@@ -24,6 +24,10 @@ struct window {
     struct animation move, fade;
     double move_from_x, move_from_y;
     double shader_moved;
+    struct {
+        struct window_path_sample samples[WINDOW_PATH];
+        int count, head;
+    } path;
 };
 struct popup {
     struct xdg_popup *xdg;
@@ -485,6 +489,16 @@ void windows_refresh(struct tomoe *s) {
     }
 }
 
+int window_path_samples(struct tomoe *s, uint32_t id,
+        struct window_path_sample *out, int max) {
+    struct window *w = find_window_registered(s, id);
+    if (!w) return 0;
+    int count = w->path.count < max ? w->path.count : max;
+    for (int i = 0; i < count; i++)
+        out[i] = w->path.samples[(w->path.head - count + i + WINDOW_PATH) % WINDOW_PATH];
+    return count;
+}
+
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
@@ -519,6 +533,20 @@ static void window_animate_move(struct window *w, int old_x, int old_y) {
 static void window_animate_open(struct window *w) {
     animation_start(&w->fade, &w->server->settings.window_open, 0, 1, animation_now());
 }
+static void window_path_record(struct window *w, int x, int y, double now) {
+    struct window_path_sample *last = w->path.count ?
+        &w->path.samples[(w->path.head + WINDOW_PATH - 1) % WINDOW_PATH] : NULL;
+    if (last && last->x == x && last->y == y) return;
+    if (last && now - last->t < 0.008) {
+        last->x = x;
+        last->y = y;
+        last->t = now;
+        return;
+    }
+    w->path.samples[w->path.head] = (struct window_path_sample){ x, y, now };
+    w->path.head = (w->path.head + 1) % WINDOW_PATH;
+    if (w->path.count < WINDOW_PATH) w->path.count++;
+}
 bool windows_animate(struct tomoe *s) {
     double now = animation_now();
     bool active = false;
@@ -529,8 +557,16 @@ bool windows_animate(struct tomoe *s) {
         w->target.offset_y = round(w->move_from_y * progress);
         w->target.alpha = w->fade.active || w->fade.to ? animation_value(&w->fade, now) : 1;
         active |= w->move.active || w->fade.active;
-        if (w->target.shader && w->target.shader->settle > 0 &&
-                now - w->shader_moved < w->target.shader->settle) active = true;
+        if (w->target.shader) {
+            int x = w->target.x + (int)w->target.offset_x;
+            int y = w->target.y + (int)w->target.offset_y;
+            struct window_path_sample *last = w->path.count ?
+                &w->path.samples[(w->path.head + WINDOW_PATH - 1) % WINDOW_PATH] : NULL;
+            if (!last || last->x != x || last->y != y) w->shader_moved = now;
+            window_path_record(w, x, y, now);
+            if (w->target.shader->settle > 0 &&
+                    now - w->shader_moved < w->target.shader->settle) active = true;
+        }
     }
     return active;
 }
@@ -541,12 +577,8 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
         if (!entry || !w->tree) continue;
         bool scale_changed = w->target.scale != entry->target.scale;
         int old_x = w->target.x, old_y = w->target.y;
-        int old_width = w->target.width, old_height = w->target.height;
         bool shown = w->tree->enabled;
         w->target = entry->target;
-        if (old_x != w->target.x || old_y != w->target.y ||
-                old_width != w->target.width || old_height != w->target.height)
-            w->shader_moved = animation_now();
         if (w->mapped && shown && entry->visible && w->presented &&
                 (old_x != w->target.x || old_y != w->target.y))
             window_animate_move(w, old_x, old_y);
