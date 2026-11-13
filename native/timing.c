@@ -2,11 +2,17 @@
 #include "timing.h"
 
 #define TIMING_SAMPLES 8192
+#define TIMING_STALLS 256
 
 struct channel {
     uint32_t samples[TIMING_SAMPLES];
     size_t recorded;
     size_t cursor;
+};
+
+struct stall {
+    uint64_t start;
+    uint64_t duration;
 };
 
 static const char *const channel_names[TIMING_CHANNELS] = {
@@ -15,14 +21,25 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "commit-frame", "tx-mounts", "tx-material", "tx-invoke", "tx-diff", "tx-commit",
     "mat-init", "mat-quantize", "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
     "tx-dirty", "tx-baselines", "tx-reconcile", "parse", "transaction",
+    "mat-total", "mat-config",
 };
 
 static struct channel channels[TIMING_CHANNELS];
+static struct stall stalls[TIMING_STALLS];
+static size_t stall_recorded;
+static size_t stall_cursor;
+static uint64_t stall_threshold = 4170000;
 bool timing_enabled;
 
 void timing_init(void) {
     const char *value = getenv("TOMOE_TIMINGS");
     timing_enabled = value && *value && strcmp(value, "0") != 0;
+    const char *threshold = getenv("TOMOE_STALL_NS");
+    if (threshold && *threshold) {
+        char *end = NULL;
+        unsigned long long parsed = strtoull(threshold, &end, 10);
+        if (end && !*end) stall_threshold = parsed;
+    }
 }
 
 int tomoe_timing_enabled(void) {
@@ -39,6 +56,9 @@ uint64_t tomoe_timing_now(void) {
 
 void tomoe_timing_reset(void) {
     memset(channels, 0, sizeof(channels));
+    memset(stalls, 0, sizeof(stalls));
+    stall_recorded = 0;
+    stall_cursor = 0;
 }
 
 int tomoe_timing_channel(const char *name) {
@@ -124,11 +144,17 @@ void timing_frame_end(struct tomoe *s, bool committed) {
     if (!timing_enabled) return;
     uint64_t now = timing_now();
     if (s->timing.frame_at) {
-        timing_add(TIMING_FRAME_TOTAL, now - s->timing.frame_at);
+        uint64_t total = now - s->timing.frame_at;
+        timing_add(TIMING_FRAME_TOTAL, total);
         timing_add(TIMING_FRAME_SCENE, s->timing.scene_ns);
         timing_add(TIMING_FRAME_DRAW, s->timing.draw_ns);
         timing_add(TIMING_FRAME_RASTER, s->timing.raster_ns);
         timing_add(TIMING_FRAME_SUBMIT, s->timing.submit_ns);
+        if (total >= stall_threshold) {
+            stalls[stall_cursor] = (struct stall){ s->timing.frame_at, total };
+            if (++stall_cursor == TIMING_STALLS) stall_cursor = 0;
+            stall_recorded++;
+        }
     }
     s->timing.frame_at = 0;
     s->timing.scene_ns = s->timing.draw_ns = s->timing.raster_ns = s->timing.submit_ns = 0;
@@ -179,10 +205,17 @@ static const char *timing_report(void) {
     size_t size = 0;
     FILE *out = open_memstream(&result, &size);
     if (!out) return NULL;
-    fprintf(out, "(:enabled %s :window %d :channels (\n",
-        timing_enabled ? "t" : "nil", TIMING_SAMPLES);
+    fprintf(out, "(:enabled %s :window %d :threshold %" PRIu64 " :channels (\n",
+        timing_enabled ? "t" : "nil", TIMING_SAMPLES, stall_threshold);
     for (enum timing_channel channel = 0; channel < TIMING_CHANNELS; channel++)
         write_channel(out, channel, sorted);
+    fputs(") :stalls (", out);
+    size_t count = stall_recorded < TIMING_STALLS ? stall_recorded : TIMING_STALLS;
+    size_t first = stall_recorded < TIMING_STALLS ? 0 : stall_cursor;
+    for (size_t i = 0; i < count; i++) {
+        struct stall *stall = &stalls[(first + i) % TIMING_STALLS];
+        fprintf(out, "%s(%" PRIu64 " %" PRIu64 ")", i ? " " : "", stall->start, stall->duration);
+    }
     fputs("))\n", out);
     bool success = !ferror(out);
     if (fclose(out) != 0 || !success) {

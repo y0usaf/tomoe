@@ -53,15 +53,36 @@
 (defvar *gc-count* 0)
 (defvar *gc-longest* 0)
 (defvar *gc-seen* 0)
+(defvar *gc-run-seen* 0
+  "The collector's run time after the previous collection, so the pause each
+collection took is the difference.")
+(defvar *gc-log* (make-array 256 :initial-element nil)
+  "The last collections as (START END), in native timing nanoseconds, so a frame
+stall can be tagged with the collection it overlapped.")
+(defvar *gc-log-count* 0)
 
 (defun note-gc ()
-  "Count collections and keep the longest pause for the memory report."
-  (let ((real sb-ext:*gc-real-time*))
+  "Count collections, keep the longest pause for the memory report and log the
+span of each collection for the frame-stall report."
+  (let* ((real sb-ext:*gc-real-time*)
+         (run sb-ext:*gc-run-time*)
+         (pause (max 0 (- run *gc-run-seen*)))
+         (end (and *timing* (%timing-now))))
     (setf *gc-count* (1+ *gc-count*)
           *gc-longest* (max *gc-longest* (- real *gc-seen*))
-          *gc-seen* real)))
+          *gc-seen* real
+          *gc-run-seen* run)
+    (when (and end (plusp pause))
+      (let ((start (max 0 (- end (round (* pause 1000000000) internal-time-units-per-second)))))
+        (setf (aref *gc-log* (mod *gc-log-count* (length *gc-log*))) (list start end))
+        (incf *gc-log-count*)))))
 
 (pushnew 'note-gc sb-ext:*after-gc-hooks*)
+
+(defun gc-interval-report ()
+  (let ((count (min *gc-log-count* (length *gc-log*))))
+    (loop for index from (- *gc-log-count* count) below *gc-log-count*
+          collect (aref *gc-log* (mod index (length *gc-log*))))))
 
 (defun memory-report (runtime)
   "The Lisp heap and collector, then the native heap, textures and output buffers."
@@ -159,9 +180,15 @@
       (:memory (destructuring-bind () args (memory-report runtime)))
       (:timings
        (destructuring-bind (&optional reset) args
-         (when reset (%timing-reset))
-         (read-data (or (%timings)
-                        (error "Cannot serialize native latency samples.")))))
+         (when reset
+           (%timing-reset)
+           (clrhash *timing-consed*)
+           (setf *gc-log-count* 0)
+           (fill *gc-log* nil))
+         (list* :consed (timing-consed-report)
+                :gc-intervals (gc-interval-report)
+                (read-data (or (%timings)
+                               (error "Cannot serialize native latency samples."))))))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)
       (:mount
        (destructuring-bind (path) args

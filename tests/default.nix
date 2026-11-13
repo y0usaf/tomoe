@@ -142,6 +142,39 @@ let
     installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
   };
   timingPolicy = ./timing-policy.lisp;
+  stallPolicy = pkgs.writeText "stall-policy.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "stall-clock" (:reads (:windows :button) :state '(:tick 0))
+        (snapshot state event)
+      (let* ((windows (context snapshot :windows))
+             (tick (if (eq (getf event :type) :timer) (1+ (getf state :tick)) (getf state :tick))))
+        (values (list :tick tick)
+                (append
+                 (list (interval :stall-clock 1000)
+                       (shell-surface :stall-bar
+                                      (bar-layout (list (ui :text :text (format nil "tick ~D" tick)))
+                                                  (list (ui :text :text (clock-text "%H:%M:%S")))
+                                                  (list (ui :text :text "stall")))
+                                      :anchors '(:top :left :right) :height 24 :exclusive-zone 24
+                                      :layer :overlay :background "#101010")
+                       (shell-surface :stall-wallpaper (ui :stack)
+                                      :anchors '(:top :right :bottom :left) :layer :background
+                                      :background (list :shader "${../examples/shaders/aurora.glsl}"
+                                                        :fps 30)))
+                 (loop for window in windows for index from 0
+                       collect (place (getf window :id) (* 180 index) 100
+                                      (getf window :width) (getf window :height)))))))
+  '';
+  churnPolicy = pkgs.writeText "churn-policy.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "stall-churn" (:reads (:button) :state '(:ticks 0))
+        (snapshot state event)
+      (declare (ignore snapshot event))
+      (let ((churn (make-list 60000 :initial-element (getf state :ticks))))
+        (values (list :ticks (mod (length churn) 7))
+                (list (interval :stall-churn 20))
+                nil)))
+  '';
   livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
     (in-package #:tomoe-user)
 
@@ -452,6 +485,8 @@ in
   timing = check "timing" (
     ''
       TIMING_POLICY = "${timingPolicy}"
+      STALL_POLICY = "${stallPolicy}"
+      CHURN_POLICY = "${churnPolicy}"
       RUNS = "3"
       COUNT = "200"
     ''
@@ -465,6 +500,9 @@ in
       TRACE_CYCLE = "${./trace-cycle.lisp}"
       TRACE_MOUNT_A = "${./trace-mount-a.lisp}"
       TRACE_MOUNT_B = "${./trace-mount-b.lisp}"
+      TRACE_GRID = "${./trace-grid.lisp}"
+      TRACE_DELAY = "${./trace-delay.lisp}"
+      TRACE_SWAP = "${./trace-swap.lisp}"
       TRACE_GOLDEN = ${
         if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""
       }

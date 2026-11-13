@@ -29,13 +29,37 @@ changes nothing, so it does not invalidate the last context.")
 transaction has returned without paying for a call it does not need.")
 
 
+(defvar *timing-channels* (make-hash-table :test #'equal)
+  "Native channel numbers, resolved once per sample name.")
+
+(defvar *timing-consed* (make-hash-table :test #'eql)
+  "Per native timing channel: a mutable (consed samples name) list.")
+
+(defun timing-channel (name)
+  (or (gethash name *timing-channels*)
+      (setf (gethash name *timing-channels*) (%timing-channel name))))
+
+(defun note-timing-consed (channel name bytes)
+  (let ((entry (gethash channel *timing-consed*)))
+    (if entry
+        (progn (incf (first entry) bytes) (incf (second entry)))
+        (setf (gethash channel *timing-consed*) (list bytes 1 name)))))
+
+(defun timing-consed-report ()
+  "Bytes WITH-SAMPLE recorded per channel, as (:NAME n :CONSED b :SAMPLES c) entries."
+  (loop for entry being the hash-values of *timing-consed*
+        collect (list :name (third entry) :consed (first entry) :samples (second entry))))
+
 (defmacro with-sample ((name) &body body)
-  "Record how long BODY takes on the named native timing path, when it is kept."
-  (let ((start (gensym "START-")))
+  "Record how long BODY takes on the named native timing path, and how many bytes
+it consed, when samples are kept."
+  (let ((start (gensym "START-")) (consed (gensym "CONSED-")) (channel (gensym "CHANNEL-")))
     `(if *timing*
-         (let ((,start (%timing-now)))
+         (let ((,channel (timing-channel ,name)) (,start (%timing-now))
+               (,consed (sb-ext:get-bytes-consed)))
            (prog1 (progn ,@body)
-             (%timing-sample (%timing-channel ,name) (- (%timing-now) ,start))))
+             (%timing-sample ,channel (- (%timing-now) ,start))
+             (note-timing-consed ,channel ,name (- (sb-ext:get-bytes-consed) ,consed))))
          (progn ,@body))))
 
 (defstruct mounted spec state effects (dispatches 0) (failures 0) last-error
@@ -604,6 +628,39 @@ while other owners can settle; a new request or declaration permits recovery."
                 (append (runtime-client-geometries runtime) (list new))))
       t)))
 
+(defvar *layout-trace-path* nil
+  "When the environment names a file, every materialization appends what it settled
+on to it, so a recorded trace can compare an incremental layout with a full one.")
+
+(defun layout-step-record (context)
+  "What a materialization settled on: the layout, its inputs and the commands its
+owners declared, in a form whose printed representation is stable across builds."
+  (list :layout (loop for window in (getf context :layout)
+                      collect (list (getf window :id) (getf window :x) (getf window :y)
+                                    (getf window :width) (getf window :height)
+                                    (and (getf window :visible) t)
+                                    (getf window :properties)))
+        :stacking (getf context :stacking)
+        :window-geometry (getf context :window-geometry)
+        :workareas (getf context :workareas)
+        :surfaces (getf context :surfaces)
+        :view (getf context :view) :focus (getf context :focus)
+        :rules (getf context :rules)
+        :commands (mapcar (lambda (entry) (getf entry :name)) (getf context :commands))
+        :bindings (loop for binding in (getf context :bindings)
+                        collect (list (getf binding :owner) (getf binding :modifiers)
+                                      (getf binding :code) (getf binding :command)
+                                      (getf binding :release)))))
+
+(defun trace-layout-step (context)
+  (when *layout-trace-path*
+    (let ((*print-pretty* nil) (*print-length* nil) (*print-level* nil)
+          (*print-circle* nil) (*print-readably* nil) (*package* *package*))
+      (with-open-file (stream *layout-trace-path* :direction :output
+                                                   :if-exists :append :if-does-not-exist :create)
+        (write (layout-step-record context) :stream stream)
+        (terpri stream)))))
+
 (defun materialize (runtime mounts)
   "Reconstruct owned context. Within a transaction, the same mounts with no
 contribution that changes it since the last materialization yield that context
@@ -612,14 +669,18 @@ never commits a context built from superseded output facts."
   (let ((memo *materialized*) (revision (runtime-outputs-revision runtime)))
     (if (and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
-        (third memo)
+        (prog1 (third memo) (trace-layout-step (third memo)))
         (let ((context (%materialize runtime mounts)))
           (when memo
             (setf (first memo) (copy-list mounts) (second memo) *invocations*
                   (third memo) context (fourth memo) revision))
+          (trace-layout-step context)
           context))))
 
 (defun %materialize (runtime mounts)
+  (with-sample ("mat-total") (%materialize-fold runtime mounts)))
+
+(defun %materialize-fold (runtime mounts)
   "Reconstruct owned context. Preserve live clients, output facts, and map order.
 Unmount removes a contribution, exposing the preceding owner or these defaults.
 The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
@@ -656,10 +717,13 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         m
       (let* ((live-connectors (or (runtime-connectors runtime)
                                   (output-connectors (list :outputs (runtime-outputs runtime)))))
-             (output-config (default-output-config outputs live-connectors (getf settings :scale)))
+             (output-config
+               (with-sample ("mat-config")
+                 (default-output-config outputs live-connectors (getf settings :scale))))
              (connected
-               (connected-output-config
-                (list :connectors live-connectors :output-config output-config)))
+               (with-sample ("mat-config")
+                 (connected-output-config
+                  (list :connectors live-connectors :output-config output-config))))
              (output-resolution
                (with-sample ("mat-output")
                  (multiple-value-list
