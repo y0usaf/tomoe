@@ -44,8 +44,8 @@ transaction has returned without paying for a call it does not need.")
                   :audio (default-audio-state)))
   system (system-due 0) notification-producer mpris-producer battery-producer network-producer tray-producer
   (running t) last-error (generation 0) (watch t) source-stamps pending-context output-recovery-failures
-
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
+  reads-cache layers-cache
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
@@ -589,10 +589,8 @@ while other owners can settle; a new request or declaration permits recovery."
       t)))
 
 (defun materialize (runtime mounts)
-  "Reconstruct owned context. Within a transaction, the same mounts whose effects
-have not been republished since the last materialization yield that context
-again: the context is a function of those effects and the runtime's own data, so
-an invocation that republished the effects it already owned changes nothing."
+  "Reconstruct owned context. Within a transaction, the same mounts with no
+invocation since the last materialization yield that context again."
   (let ((memo *materialized*))
     (if (and memo (eql (second memo) *invocations*)
              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
@@ -656,19 +654,28 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
           (%quantize-layout layout view output-facts))
         (multiple-value-bind (resolved-layers workareas)
             (with-sample ("mat-layers")
-              (if (runtime-backend runtime)
-                  (preview-native-layers (runtime-backend runtime) output-facts layers
-                                         (resolved-layer-overrides mounts))
-                  (values layers (full-workareas output-facts))))
+              (let* ((overrides (resolved-layer-overrides mounts))
+                     (cache (runtime-layers-cache runtime)))
+                (if (and cache (equal (first cache) output-facts)
+                         (equal (second cache) layers) (equal (third cache) overrides))
+                    (values (fourth cache) (fifth cache))
+                    (multiple-value-bind (resolved areas)
+                        (if (runtime-backend runtime)
+                            (preview-native-layers (runtime-backend runtime) output-facts layers
+                                                   overrides)
+                            (values layers (full-workareas output-facts)))
+                      (setf (runtime-layers-cache runtime)
+                            (list output-facts layers overrides resolved areas))
+                      (values resolved areas)))))
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
           (multiple-value-bind (surface-plans shell-workareas)
               (with-sample ("mat-surfaces")
                (resolve-shell-surfaces
-               (nreverse surfaces) output-facts workareas
-               :asset-loader (when (runtime-backend runtime)
-                               (native-ui-asset-loader (runtime-backend runtime)))
-               :viewport (shell-viewport output-facts (materialization-data m))))
+                (nreverse surfaces) output-facts workareas
+                :asset-loader (when (runtime-backend runtime)
+                                (native-ui-asset-loader (runtime-backend runtime)))
+                :viewport (shell-viewport output-facts (materialization-data m))))
           (with-sample ("mat-build")
            (list :windows (runtime-windows runtime)
                 :window-geometry (with-sample ("mat-quantize")
@@ -778,6 +785,7 @@ when it is not 1."
         (setf (runtime-outputs-revision runtime) (%outputs-revision backend))))
     (setf (runtime-mounts runtime) mounts (runtime-effective runtime) context
           (runtime-output-recovery-failures runtime) nil)
+    (setf (runtime-reads-cache runtime) nil)
     (install-watches runtime watches)
     (install-timers runtime timers)
     (install-executions runtime executions)
@@ -786,6 +794,26 @@ when it is not 1."
     (setf (runtime-pending-spawns runtime) pending-spawns)
     (when (runtime-json-server runtime) (publish-json-context runtime context mounts))
     spawns))
+
+(defun mounted-reads (runtime)
+  "The context keys the mounted policy reacts to, cached until a commit, which is
+the only thing that changes the mounts or the effects they own."
+  (or (runtime-reads-cache runtime)
+      (setf (runtime-reads-cache runtime)
+            (remove-duplicates
+             (loop for mounted in (append (root-mounts (runtime-mounts runtime))
+                                          (rule-instances (runtime-mounts runtime)))
+                   append (mount-context-reads mounted))))))
+
+(defun event-matters-p (runtime changed force)
+  "Whether a transaction could differ from the committed context. An event whose
+keys no mounted policy reads, with no forced owner and nothing pending, cannot
+change anything, so staging a candidate context would rebuild it for nothing."
+  (or force
+      (runtime-pending-context runtime)
+      (and changed (intersection changed (mounted-reads runtime)))
+      (loop for mounted in (rule-instances (runtime-mounts runtime))
+            thereis (mounted-rule-pending mounted))))
 
 (defun transact (runtime mounts event changed &optional force)
   (unwind-protect (with-sample ("transaction")
@@ -1303,7 +1331,8 @@ system, so an idle desktop keeps only what it is using."
     (setf (runtime-pending-context runtime)
           (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
                  (runtime-pending-context runtime)))
-    (when (or changed (runtime-pending-context runtime))
+    (when (and (or changed (runtime-pending-context runtime))
+               (event-matters-p runtime changed force))
       (handler-case (transact runtime (runtime-mounts runtime) event changed force)
         (serious-condition (condition)
           (record-error runtime condition)
