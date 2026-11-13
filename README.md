@@ -126,6 +126,10 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`deck.lisp`](examples/deck.lisp) | Two columns, each a deck of windows you flip through with Alt+j and Alt+k |
 | [`zoomer.lisp`](examples/zoomer.lisp) | An infinite canvas: zoom around the cursor, pan, and keep separate planes |
 | [`workspaces.lisp`](examples/workspaces.lisp) | Nine tag-style workspaces |
+| [`inactive.lisp`](examples/inactive.lisp) | Hyprland's `inactive_opacity` and `dim_inactive`: the unfocused window is dimmed and translucent |
+| [`focus-flash.lisp`](examples/focus-flash.lisp) | A hyprfocus-style pulse: the window that gains focus shrinks, flashes and springs back |
+| [`close-fade.lisp`](examples/close-fade.lisp) | A niri-style close: the window keeps its last frame, shrinking and fading out |
+| [`workspace-spring.lisp`](examples/workspace-spring.lisp) | Three workspaces where the arriving window springs in as the old one leaves |
 | [`special.lisp`](examples/special.lisp) | Scratchpads that pop up over the tiling |
 | [`layer-inset.lisp`](examples/layer-inset.lisp) | Tiling that makes room for panels |
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
@@ -134,6 +138,16 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
 | [`shell.lisp`](examples/shell.lisp) | The smallest bar: a title and a click counter |
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
+
+A window's compositing state is its own: `window-properties` also takes `:alpha`,
+`:tint`, `:scale`, `:rotation` and `:translate`, and each one eases towards its
+new value with the matching `:animations` setting, so focus, dimming and
+transforms are config rather than shader work. The compositor notices the
+transitions it can see for itself - `:window-open`, `:window-close`,
+`:window-move`, `:window-resize`, `:window-switch` and `:window-view` - and each
+is a spring or an ease you set once. Nothing animates while nothing changes, and
+a fullscreen opaque window at its default state still goes straight to the
+display.
 
 Animated shader backgrounds see the pointer's last 64 samples as `iTrail` (x, y,
 age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
