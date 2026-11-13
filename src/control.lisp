@@ -183,9 +183,12 @@ span of each collection for the frame-stall report."
          (when reset
            (%timing-reset)
            (clrhash *timing-consed*)
-           (setf *gc-log-count* 0)
+           (setf *gc-log-count* 0
+                 *layout-rebuilds* 0
+                 *layout-reuses* 0)
            (fill *gc-log* nil))
-         (list* :consed (timing-consed-report)
+         (list* :layout-rebuilds *layout-rebuilds* :layout-reuses *layout-reuses*
+                :consed (timing-consed-report)
                 :gc-intervals (gc-interval-report)
                 (read-data (or (%timings)
                                (error "Cannot serialize native latency samples."))))))

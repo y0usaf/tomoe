@@ -19,10 +19,18 @@
 (defvar *materialized* nil
   "Within a transaction: the mounts, invalidation count, output revision and
 context of its last materialization.")
+(defvar *layout-rebuilds* 0
+  "Counts the materializations that folded every effect again, and the ones that
+reused the context the last commit settled on.")
+(defvar *layout-reuses* 0)
 (defvar *invocations* 0
   "Counts the accepted reducer results and replaced rule declarations that change
 what a materialization folds. A reducer that returns the effects it already owned
 changes nothing, so it does not invalidate the last context.")
+(defvar *definitions-generation* 0
+  "Counts loaded sources and restored patch definitions. Both replace functions the
+fold calls directly, such as the keyboard default and the host command table, so
+they invalidate a context without any effect changing.")
 
 (defvar *timing* nil
   "Whether the native side keeps latency samples, so the loop can report when a
@@ -72,7 +80,7 @@ it consed, when samples are kept."
   system (system-due 0) notification-producer mpris-producer battery-producer network-producer tray-producer
   (running t) last-error (generation 0) (watch t) source-stamps pending-context output-recovery-failures
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
-  reads-cache layers-cache
+  reads-cache layers-cache layout-memo
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
@@ -353,8 +361,7 @@ declarations by identity where that matters."
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
               (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
             (let ((effects (mapcar #'canonical-effect effects))
-                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands))
-                  (keys (make-hash-table :test #'equal :size (length effects))))
+                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands)))
               (let ((replies (count :reply commands :key #'command-kind)))
                 (when (plusp replies)
                   (unless (and (= replies 1) (eq (getf event :type) :ipc)
@@ -362,10 +369,11 @@ declarations by identity where that matters."
                                (runtime-ipc-call runtime)
                                (eql (getf event :call) (getf (runtime-ipc-call runtime) :token)))
                     (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
-              (dolist (effect effects)
-                (let ((key (effect-key effect)))
-                  (when (gethash key keys) (error "Duplicate effect: ~S" key))
-                  (setf (gethash key keys) t)))
+              (let ((keys (make-hash-table :test #'equal :size (length effects))))
+                (dolist (effect effects)
+                  (let ((key (effect-key effect)))
+                    (when (gethash key keys) (error "Duplicate effect: ~S" key))
+                    (setf (gethash key keys) t))))
               (unless (equivalent-effects (mounted-effects mounted) effects)
                 (incf *invocations*))
               (setf (mounted-state mounted) (copy-data state)
@@ -661,21 +669,82 @@ owners declared, in a form whose printed representation is stable across builds.
         (write (layout-step-record context) :stream stream)
         (terpri stream)))))
 
+(defstruct layout-memo names invocations definitions revision windows layers client-geometries
+  services system config-error outputs connectors recovery-failures context)
+
+(defun mount-names (mounts)
+  (loop for mounted in mounts collect (spec-name (mounted-spec mounted))))
+
+(defun same-mounts-p (names mounts)
+  (and (= (length names) (length mounts))
+       (loop for name in names
+             for mounted in mounts
+             always (equal name (spec-name (mounted-spec mounted))))))
+
+(defun reusable-layout (runtime mounts)
+  "The context the last materialization produced, when nothing a materialization
+folds has changed since: no owner's effects, no window, layer, client geometry,
+service, system, config-error or output fact, and no output proposal in flight.
+The fold reads exactly those, so a full recompute would produce this again."
+  (let ((memo (runtime-layout-memo runtime)) (backend (runtime-backend runtime)))
+    (when (and memo
+               (eql (layout-memo-invocations memo) *invocations*)
+               (eql (layout-memo-definitions memo) *definitions-generation*)
+               (eql (layout-memo-revision memo) (runtime-outputs-revision runtime))
+               (eq (layout-memo-windows memo) (runtime-windows runtime))
+               (eq (layout-memo-layers memo) (runtime-layers runtime))
+               (eq (layout-memo-client-geometries memo) (runtime-client-geometries runtime))
+               (eq (layout-memo-services memo) (runtime-services runtime))
+               (eq (layout-memo-system memo) (runtime-system runtime))
+               (eq (layout-memo-config-error memo) (runtime-config-error runtime))
+               (eq (layout-memo-outputs memo) (runtime-outputs runtime))
+               (eq (layout-memo-connectors memo) (runtime-connectors runtime))
+               (eq (layout-memo-recovery-failures memo) (runtime-output-recovery-failures runtime))
+               (or (null backend) (not (pending-native-outputs-p backend)))
+               (same-mounts-p (layout-memo-names memo) mounts))
+      (layout-memo-context memo))))
+
+(defun remember-layout (runtime mounts context)
+  (let ((backend (runtime-backend runtime)))
+    (when (or (null backend) (not (pending-native-outputs-p backend)))
+      (setf (runtime-layout-memo runtime)
+            (make-layout-memo :names (mount-names mounts) :invocations *invocations*
+                              :definitions *definitions-generation*
+                              :revision (runtime-outputs-revision runtime)
+                              :windows (runtime-windows runtime)
+                              :layers (runtime-layers runtime)
+                              :client-geometries (runtime-client-geometries runtime)
+                              :services (runtime-services runtime)
+                              :system (runtime-system runtime)
+                              :config-error (runtime-config-error runtime)
+                              :outputs (runtime-outputs runtime)
+                              :connectors (runtime-connectors runtime)
+                              :recovery-failures (runtime-output-recovery-failures runtime)
+                              :context context)))))
+
 (defun materialize (runtime mounts)
   "Reconstruct owned context. Within a transaction, the same mounts with no
 contribution that changes it since the last materialization yield that context
-again. Adopted native output facts are a rebuild cause too, so a transaction
-never commits a context built from superseded output facts."
+again, and a transaction whose event cannot reach the layout reuses the context
+the last one settled on instead of folding every effect again. Adopted native
+output facts are a rebuild cause too, so a transaction never commits a context
+built from superseded output facts."
   (let ((memo *materialized*) (revision (runtime-outputs-revision runtime)))
-    (if (and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
-             (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
-        (prog1 (third memo) (trace-layout-step (third memo)))
-        (let ((context (%materialize runtime mounts)))
-          (when memo
-            (setf (first memo) (copy-list mounts) (second memo) *invocations*
-                  (third memo) context (fourth memo) revision))
-          (trace-layout-step context)
-          context))))
+    (flet ((republish (context)
+             (when memo
+               (setf (first memo) (copy-list mounts) (second memo) *invocations*
+                     (third memo) context (fourth memo) revision))
+             (trace-layout-step context)
+             context))
+      (cond
+        ((and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
+              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
+         (incf *layout-reuses*)
+         (republish (third memo)))
+        (t (let ((reused (reusable-layout runtime mounts)))
+             (cond (reused (incf *layout-reuses*) (republish reused))
+                   (t (incf *layout-rebuilds*)
+                      (republish (%materialize runtime mounts))))))))))
 
 (defun %materialize (runtime mounts)
   (with-sample ("mat-total") (%materialize-fold runtime mounts)))
@@ -876,6 +945,7 @@ when it is not 1."
     (configure-virtual-outputs backend (getf old :virtual-outputs) (getf context :virtual-outputs))
     (setf (runtime-pending-spawns runtime) pending-spawns)
     (when (runtime-json-server runtime) (publish-json-context runtime context mounts))
+    (remember-layout runtime mounts context)
     spawns))
 
 (defun mounted-reads (runtime)
@@ -1081,6 +1151,7 @@ into one reused buffer, so watching allocates nothing per file."
     package))
 
 (defun load-specs (runtime path &optional package)
+  (incf *definitions-generation*)
   (let* ((*source* path)
          (directory (directory-namestring (truename path)))
          (*source-directory* directory)
