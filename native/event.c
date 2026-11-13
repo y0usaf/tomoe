@@ -45,6 +45,7 @@ FILE *begin_event(struct tomoe *s, struct event **event, size_t *size) {
     return out;
 }
 void end_event(struct tomoe *s, struct event *event, FILE *out) {
+    motion_drag_flush(s);
     if (fclose(out) != 0) {
         free(event->text); free(event); fail(s, "event serialization failed"); return;
     }

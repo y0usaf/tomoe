@@ -799,6 +799,7 @@ uint32_t tomoe_keyboard_focus(struct tomoe *s) {
 
 void grab_clear(struct tomoe *s) {
     if (s->grab_mode == 0) return;
+    motion_drag_end(s);
     s->grab_mode = 0;
     s->grab_id = 0;
     cursor_default(s);
@@ -830,6 +831,7 @@ int tomoe_grab(struct tomoe *s, uint32_t id, int mode) {
         seat_pointer_notify_frame(s->seat);
     }
     seat_pointer_notify_clear_focus(s->seat);
+    motion_drag_begin(s);
     return 1;
 }
 uint32_t tomoe_grab_id(struct tomoe *s) {
@@ -1103,8 +1105,10 @@ static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
     uint32_t id = pointer_target(s, &surface, &sx, &sy);
     uint32_t hovered = find_window(s, id) ? id : 0;
     if (hovered != s->hovered && !lock_active(s)) {
-        if (s->hovered) hover_event(s, "leave", s->hovered, moved);
-        if (hovered) hover_event(s, "enter", hovered, moved);
+        if (!s->motion.plan.fast || s->motion.plan.hover) {
+            if (s->hovered) hover_event(s, "leave", s->hovered, moved);
+            if (hovered) hover_event(s, "enter", hovered, moved);
+        }
         s->hovered = hovered;
     }
     if (surface) {
@@ -1164,8 +1168,13 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     ui_pointer_moved(s);
     drag_icons_refresh(s);
     if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }
-    if (s->grab_mode != 0) { grab_motion(s); return; }
+    if (s->grab_mode != 0) {
+        if (motion_drag_motion(s)) return;
+        grab_motion(s);
+        return;
+    }
     pointer_motion(s, time, true);
+    motion_wake(s);
 }
 void input_pointer_motion(struct pointer_motion *event) {
     struct tomoe *s = event->device->server;
@@ -1405,6 +1414,14 @@ void input_pointer_button(struct pointer_button *input) {
         return;
     }
     if (s->grab_mode == 0) pointer_motion(s, input->time_msec, false);
+    if (input->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        double px = s->pointer_x, py = s->pointer_y;
+        screen_to_world(s, &px, &py);
+        s->press_world_x = pixel_round(px);
+        s->press_world_y = pixel_round(py);
+    } else {
+        motion_drag_end(s);
+    }
     if (lock_active(s)) {
         seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
         return;

@@ -791,6 +791,63 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
         if (w->mapped) configure_xdg(w);
     }
 }
+bool window_box_native(struct tomoe *s, uint32_t id, int *x, int *y, int *width, int *height) {
+    struct window *w = find_window(s, id);
+    if (!w) return false;
+    *x = w->target.x;
+    *y = w->target.y;
+    *width = w->target.width;
+    *height = w->target.height;
+    return true;
+}
+
+void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, int height) {
+    struct window *w = find_window(s, id);
+    if (!w || !w->tree || width < 1 || height < 1 || s->stopping) return;
+    const struct settings *st = &s->settings;
+    double now = animation_now();
+    int old_x = w->target.x, old_y = w->target.y;
+    bool shown = w->tree->enabled;
+    struct output *output = output_at_physical(s, (x - s->view_x) * s->view_zoom,
+        (y - s->view_y) * s->view_zoom);
+    double scale = output ? snapped_scale(output->screen->scale) :
+        (w->target.scale > 0 ? w->target.scale : 1.0);
+    bool scale_changed = scale != w->target.scale;
+    w->target.scale = scale;
+    w->target.output = output ? output->screen : NULL;
+    if (scale_changed && surface_of(w)) surface_set_scale(surface_of(w), scale);
+    if (w->mapped && shown && w->presented && (old_x != x || old_y != y))
+        window_animate_move(w, old_x, old_y);
+    if (w->mapped && w->presented && shown && (w->wanted_w > 0 &&
+            (w->wanted_w != width || w->wanted_h != height))) {
+        int from_w = w->target.drawn_width > 0 ? w->target.drawn_width : w->wanted_w;
+        int from_h = w->target.drawn_height > 0 ? w->target.drawn_height : w->wanted_h;
+        w->resize_from_w = from_w > 0 ? from_w : width;
+        w->resize_from_h = from_h > 0 ? from_h : height;
+        w->resize_to_w = width;
+        w->resize_to_h = height;
+        animation_start(&w->resize, &st->window_resize, 0, 1, now);
+        w->stale_until = now + 1.0;
+    }
+    w->target.x = x;
+    w->target.y = y;
+    w->target.width = width;
+    w->target.height = height;
+    w->target.visual = (struct visual){ .opacity = 1, .scale = 1 };
+    w->policy = w->target.visual;
+    w->wanted_w = width;
+    w->wanted_h = height;
+    w->desired_visible = true;
+    w->desired_width = width;
+    w->desired_height = height;
+    tomoe_window_state(s, id, 0, w->desired_maximize);
+    if (w->mapped) w->presented = true;
+    node_set_enabled(w->tree, w->mapped || w->closing);
+    window_park(w);
+    if (w->mapped) configure_xdg(w);
+    schedule_scene(s);
+}
+
 bool view_animate(struct tomoe *s, const struct settings *st, double now) {
     struct animation *channels[3] = { &s->view_x_anim, &s->view_y_anim, &s->view_zoom_anim };
     double values[3] = { s->view_x, s->view_y, s->view_zoom };

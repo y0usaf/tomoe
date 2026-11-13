@@ -2,6 +2,7 @@
 #define TOMOE_INTERNAL_H
 #include "backend.h"
 #include "timing.h"
+#include "motion.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -787,6 +788,8 @@ struct presentation {
     uint64_t grab_source;
     bool grab_staged;
     struct sound_bank *sounds;
+    struct motion_plan motion;
+    bool motion_staged;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
 enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_BELL, SOUND_EVENTS };
@@ -1052,6 +1055,8 @@ struct tomoe {
     struct presentation *presentation;
     size_t event_count;
     size_t observation_barrier;
+    struct motion_state motion;
+    int press_world_x, press_world_y;
     bool grab_held;
     struct wl_event_source *grab_release;
     bool running, stopping, failed, configuring_outputs, scene_dirty, outputs_deferred;
@@ -1385,6 +1390,8 @@ bool keyboard_logical_init(struct tomoe *s, struct xkb_keymap *keymap,
 void keyboard_logical_finish(struct tomoe *s);
 void keyboard_sync_leds(struct tomoe *s);
 void update_keyboard_focus(struct tomoe *s);
+void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, int height);
+bool window_box_native(struct tomoe *s, uint32_t id, int *x, int *y, int *width, int *height);
 void grab_clear(struct tomoe *s);
 void input_listen(struct tomoe *s);
 void presentation_bindings_finish(struct presentation *plan);
