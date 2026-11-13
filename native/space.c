@@ -574,21 +574,6 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     return success;
 }
 
-static int trim_idle(void *data) {
-    struct output *o = data;
-    if (ring_trim(&o->ring) > RING_IDLE_SLOTS && o->trim_retries++ < TRIM_RETRIES &&
-            wl_event_source_timer_update(o->trim, TRIM_RETRY_MS) >= 0) return 0;
-    o->trim_retries = 0;
-    return 0;
-}
-
-static void schedule_trim(struct output *o) {
-    o->trim_retries = 0;
-    if (!o->trim) o->trim = wl_event_loop_add_timer(
-        wl_display_get_event_loop(o->server->display), trim_idle, o);
-    if (o->trim) wl_event_source_timer_update(o->trim, RING_IDLE_MS);
-}
-
 bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
     return render_scene_buffer(o, buffer, &state, NULL, false, false, false);
@@ -616,7 +601,6 @@ bool render_presentation(struct output *o, struct screen_state *state,
     }
     bool success = render_scene_buffer(o, buffer, state, plan, true, true, track);
     uint64_t render_point = o->server->render_point;
-    if (!plan && ring == &o->ring) schedule_trim(o);
     if (success) {
         if (capture_wants_cursorless(o)) {
             struct buffer *capture = ring_create(o->server, ring);

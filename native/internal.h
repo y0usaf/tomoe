@@ -301,10 +301,6 @@ struct program {
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
 #define RING_SLOTS 4
-#define RING_IDLE_SLOTS 1
-#define RING_IDLE_MS 2000
-#define TRIM_RETRY_MS 250
-#define TRIM_RETRIES 8
 struct ring {
     struct buffer *slots[RING_SLOTS];
     uint64_t frames[RING_SLOTS];
@@ -326,7 +322,6 @@ bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
     int width, int height, bool implicit);
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct buffer *ring_create(struct tomoe *s, struct ring *ring);
-size_t ring_trim(struct ring *ring);
 void ring_finish(struct ring *ring);
 bool fenced(struct screen *output);
 
@@ -471,8 +466,6 @@ struct output {
     bool damaged;
     struct wl_event_source *tick;
     double tick_at;
-    struct wl_event_source *trim;
-    unsigned trim_retries;
     struct oplist ops;
     uint64_t frames;
     pixman_region32_t damage[8];
