@@ -1,6 +1,9 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
 VERSION ?= dev
+OPT ?= -O2
+LTO ?=
+CPU ?=
 SBCL_HOME ?= $(shell dirname "$$(readlink -f "$$(command -v sbcl)")")/../lib/sbcl
 WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
@@ -59,13 +62,14 @@ PROTOCOLS = \
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(NAMES:%=build/obj/%-protocol.o)
-CFLAGS_NATIVE = -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_SUPPORT = -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
+CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
 
 build/tomoe-runtime: $(NATIVE) $(SUPPORT:%=build/%.o)
-	$(CC) -Wl,--export-dynamic $(SBCL_HOME)/sbcl.o $^ -o $@ \
+	$(CC) $(LTO) -Wl,--export-dynamic $(SBCL_HOME)/sbcl.o $^ -o $@ \
 		$(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) -lresvg -ldl -lpthread -lzstd -lm
 
 build/test-client: tests/client.c $(HEADERS)
