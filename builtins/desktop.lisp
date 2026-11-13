@@ -347,7 +347,7 @@
                 (loop for wins in workspaces for number from 1
                       when (member id wins) do (switch-workspace number) (return))
                 (focus-id id)))))))
-      (let ((effects nil))
+      (let ((effects (list (motion-contract :hover t))))
         (dolist (id ids)
           (let ((box (or (full-box id) (window-box id)))
                 (shown (and area (member id visible) t)))
@@ -392,6 +392,11 @@
                       :visible visible :geometry-key geometry-key)
                 (nreverse effects) commands)))))
 
+(defparameter +drag-contract+
+  (motion-contract :drag '(:bound 1048576 :min-size 64 :max-size 16384))
+  "A Super+drag moves or resizes a window by pure arithmetic the native core can
+carry alone, so the pointer never waits for Lisp while a window follows it.")
+
 (define-extension "drag" (:reads (:windows :layout :button :grab :settings) :state nil) (snapshot state event)
   (labels ((drag-box (state dx dy)
              (flet ((bound (value) (min 1048576 (max -1048576 value)))
@@ -417,7 +422,7 @@
                       (not (eql generation
                                 (getf (find id windows :key (lambda (w) (getf w :id)))
                                       :buffer-generation)))))
-       (values nil nil nil))
+       (values nil (list +drag-contract+) nil))
       ((and (eq type :button) (eq (getf event :state) :pressed) target
             (member (getf event :id) ids) (member (getf event :button) '(272 273))
             (integerp modifiers)
@@ -434,11 +439,13 @@
                        :base-x (first box) :base-y (second box)
                        :base-width (third box) :base-height (fourth box)
                        :x (first box) :y (second box) :width (third box) :height (fourth box))
-                 (list (grab window-id mode :buffer-generation buffer-generation) (apply #'place window-id box)
+                 (list +drag-contract+
+                       (grab window-id mode :buffer-generation buffer-generation)
+                       (apply #'place window-id box)
                        (fullscreen window-id nil))
                  nil)))
       ((and (eq type :button) (eq (getf event :state) :released) state (eql (getf event :id) id))
-       (values nil nil nil))
+       (values nil (list +drag-contract+) nil))
       ((and (eq type :grab) state (eql (getf event :id) id))
        (let* ((dx (- (getf event :x) (getf state :origin-x)))
               (dy (- (getf event :y) (getf state :origin-y)))
@@ -448,17 +455,20 @@
                        :base-x (getf state :base-x) :base-y (getf state :base-y)
                        :base-width (getf state :base-width) :base-height (getf state :base-height)
                        :x (first box) :y (second box) :width (third box) :height (fourth box))
-                 (list (grab id (getf state :mode) :buffer-generation generation) (apply #'place id box)
+                 (list +drag-contract+
+                       (grab id (getf state :mode) :buffer-generation generation)
+                       (apply #'place id box)
                        (fullscreen id nil))
                  nil)))
       (state
        (values state
-               (list (grab id (getf state :mode) :buffer-generation generation)
+               (list +drag-contract+
+                     (grab id (getf state :mode) :buffer-generation generation)
                      (place id (getf state :x) (getf state :y)
                             (getf state :width) (getf state :height) t)
                      (fullscreen id nil))
                nil))
-      (t (values nil nil nil))))))
+      (t (values nil (list +drag-contract+) nil))))))
 
 (define-extension "config-error" (:reads (:config-error :data) :state nil) (snapshot hidden event)
   (let* ((failure (context snapshot :config-error))

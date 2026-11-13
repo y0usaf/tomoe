@@ -355,6 +355,18 @@ geometry starts from the context the last commit settled on instead of folding
 every effect again, which is most of the work a pointer or key event would
 otherwise repeat.
 
+Pointer motion, the cursor, a Super+drag and a key on its way to the focused
+window are the C core's work, and an extension only hears about them when it
+asks. Reading `:pointer` or `:grab` keeps every pointer event on the Lisp path.
+`(motion-contract :hover t :regions '(("corner" 0 0 80 80)) :edges '((:top 12))
+:distance 500 :drag '(:bound 1048576 :min-size 64 :max-size 16384))` declares
+that the extension's answer depends on nothing else: motion, the hot corner,
+the edge and a dragged or resized window are then carried natively, and it is
+woken with a `:state :motion` pointer event when a region, an edge or the
+distance fires, at the end of a drag, or the moment anything else needs policy.
+The shipped window manager and drag publish contracts; everything else keeps the
+old path.
+
 Sandbox launchers can register private Wayland listening sockets with
 `wp_security_context_manager_v1`, attaching sandbox engine, application and
 instance identities before committing. Connections through these sockets can
