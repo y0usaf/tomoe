@@ -13,8 +13,8 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "pointer", "drag", "key", "policy",
     "frame-wait", "frame-scene", "frame-draw", "frame-raster", "frame-submit", "frame-total",
     "commit-frame", "tx-mounts", "tx-material", "tx-invoke", "tx-diff", "tx-commit",
-    "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
-    "parse", "transaction",
+    "mat-init", "mat-quantize", "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
+    "tx-dirty", "tx-baselines", "tx-reconcile", "parse", "transaction",
 };
 
 static struct channel channels[TIMING_CHANNELS];
