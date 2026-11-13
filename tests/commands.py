@@ -10,7 +10,7 @@ for name in ("focus-window", "close-window", "switch-workspace", "move-window-to
     assert by_name[name]["description"], by_name[name]
 assert by_name["switch-workspace"]["arguments"] == [
     {"name": "workspace", "type": "workspace", "required": True,
-     "description": "Workspace to show."}
+     "description": "Workspace to show.", "maximum": 9}
 ], by_name["switch-workspace"]
 assert by_name["focus-window"]["arguments"][0]["type"] == "window", by_name["focus-window"]
 
@@ -56,6 +56,12 @@ status, output = machine.execute(ENV + "tomoe --socket check command finish-now"
 assert status == 1 and "Unknown command" in output, (status, output)
 status, output = machine.execute(ENV + "tomoe --socket check command move-window window=1 x=1")
 assert status == 1 and "needs a y argument" in output, (status, output)
+status, output = machine.execute(ENV + "tomoe --socket check command switch-workspace workspace=99")
+assert status == 1 and output.strip() == '{"error":"No workspace 99."}', (status, output)
+status, output = machine.execute(ENV + "tomoe --socket check command move-window-to-workspace workspace=99 window=%d" % first)
+assert status == 1 and output.strip() == '{"error":"No workspace 99."}', (status, output)
+cli("command switch-workspace workspace=1")
+assert windows()["check-second"]["focused"], windows()
 
 ran = json.loads(cli(f"""msg command '{{"name": "close-window", "arguments": {{"window": {first}}}}}'"""))
 assert ran == {"name": "close-window", "arguments": {"window": first}}, ran

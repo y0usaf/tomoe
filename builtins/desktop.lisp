@@ -76,7 +76,8 @@
                   ((and (equal command "quit") (not (getf arguments :confirm))) (list (quit)))
                   ((equal command "exit-confirm") (list (quit)))))))
 
-(defparameter +wm-commands+
+(defun wm-commands (count)
+  "The window manager's commands. COUNT is the live workspace count."
   (list (define-command "focus-window"
           :description "Focus a window, switching to its workspace."
           :arguments '((:window :window :description "Window to focus.")))
@@ -92,11 +93,13 @@
           :arguments '((:window :window :description "Window to toggle.")))
         (define-command "switch-workspace"
           :description "Show another workspace."
-          :arguments '((:workspace :workspace :required t :description "Workspace to show.")))
+          :arguments (list (list :workspace :workspace :required t :maximum count
+                                 :description "Workspace to show.")))
         (define-command "move-window-to-workspace"
           :description "Send a window to another workspace."
-          :arguments '((:workspace :workspace :required t :description "Workspace to send it to.")
-                       (:window :window :description "Window to send.")))
+          :arguments (list (list :workspace :workspace :required t :maximum count
+                                 :description "Workspace to send it to.")
+                           (list :window :window :description "Window to send.")))
         (define-command "move-window"
           :description "Move a window to a physical position."
           :arguments '((:window :window :description "Window to move.")
@@ -354,7 +357,7 @@
             (push (maximize id nil) effects)))
         (dolist (id stack) (when (member id visible) (push (raise-window id) effects)))
         (push (focus (when (member focused visible) focused) :raise nil) effects)
-        (dolist (effect +wm-commands+) (push effect effects))
+        (dolist (effect (wm-commands count)) (push effect effects))
         (dolist (binding '(("f" "toggle-fullscreen" "Toggle Fullscreen")
                            ("j" "focus-next-window" "Focus Next Window")
                            ("k" "focus-previous-window" "Focus Previous Window")))

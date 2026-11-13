@@ -830,7 +830,7 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
 
 (defun %command-type-description (spec)
   (ecase (getf spec :type)
-    (:window "a window id") (:workspace "a workspace number from 1 through 128")
+    (:window "a window id") (:workspace (format nil "a workspace number from 1 through ~D" (getf spec :maximum 128)))
     (:output "an output name") (:integer "an integer from -1048576 through 1048576")
     (:string "a string") (:argv "a program and its arguments")
     (:boolean "true or false") (:keyword (format nil "one of ~{~(~A~)~^, ~}" (getf spec :values)))))
@@ -841,7 +841,8 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
                           (getf spec :name) (%command-type-description spec) value)))
       (ecase type
         (:window (unless (typep value '(integer 1 4294967295)) (bad)))
-        (:workspace (unless (typep value '(integer 1 128)) (bad)))
+        (:workspace (unless (and (integerp value) (<= 1 value (getf spec :maximum 128)))
+                      (error "No workspace ~A." value)))
         (:output (unless (and (stringp value) (<= 1 (length value) 128) (not (find #\Null value)))
                    (bad)))
         (:integer (unless (typep value '(integer -1048576 1048576)) (bad)))
@@ -864,7 +865,7 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
 (defun %command-argument (spec)
   (unless (and (listp spec) (>= (length spec) 2) (keywordp (first spec)))
     (error "A command argument needs (NAME TYPE &KEY ...): ~S" spec))
-  (destructuring-bind (name type &key required (default nil default-p) description values) spec
+  (destructuring-bind (name type &key required (default nil default-p) description values maximum) spec
     (unless (member type +command-argument-types+)
       (error "Unknown type ~S for command argument ~S; use ~{~(~A~)~^, ~}."
              type name +command-argument-types+))
@@ -877,9 +878,15 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
         (error "A :KEYWORD command argument needs :VALUES: ~S" spec)))
     (when (and values (not (eq type :keyword)))
       (error "Only :KEYWORD command arguments take :VALUES: ~S" spec))
+    (when maximum
+      (unless (eq type :workspace)
+        (error "Only :WORKSPACE command arguments take :MAXIMUM: ~S" spec))
+      (unless (and (integerp maximum) (<= 1 maximum 128))
+        (error "A :WORKSPACE :MAXIMUM is a workspace number from 1 through 128: ~S" spec)))
     (let ((spec (list :name name :type type :required required :default default
                       :default-p (and default-p t) :description (or description "")
-                      :values (copy-list values))))
+                      :values (copy-list values)
+                      :maximum (and (eq type :workspace) (or maximum 128)))))
       (when default-p
         (ecase type
           (:window (unless (or (eql default :focused) (typep default '(integer 1 4294967295)))
@@ -906,10 +913,12 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   "Own the command NAME: one name the command line, the JSON socket and key
 bindings all invoke, so nothing this extension does is reachable by a key alone.
 DESCRIPTION is one line. ARGUMENTS is a list of (NAME TYPE &KEY REQUIRED DEFAULT
-DESCRIPTION VALUES) in call order. Types are :WINDOW (a window id, the focused
-window by default), :WORKSPACE (1 through 128), :OUTPUT (an output name, the
-focused window's output by default), :INTEGER, :STRING, :ARGV (a program and its
-arguments), :BOOLEAN, and :KEYWORD (one of VALUES). The declaring extension
+DESCRIPTION VALUES MAXIMUM) in call order. Types are :WINDOW (a window id, the
+focused window by default), :WORKSPACE (a workspace number from 1 through
+MAXIMUM, 128 by default, so a window manager declares its real workspace count),
+:OUTPUT (an output name, the focused window's output by default), :INTEGER,
+:STRING, :ARGV (a program and its arguments), :BOOLEAN, and :KEYWORD (one of
+VALUES). The declaring extension
 receives a :COMMAND event whose :NAME is NAME and whose :ARGUMENTS carry every
 supplied or defaulted argument."
   (%define-command name (or description "") arguments))

@@ -138,8 +138,9 @@ beside the bindings that use it:
 
 `define-command` takes a name, one line of description and typed `:arguments`:
 `:window` and `:output` default to the focused window and its output, and are
-checked to still exist; `:workspace` is 1 through 128; the rest are `:integer`,
-`:string`, `:argv`, `:boolean` and `:keyword` (with `:values`). A binding names
+checked to still exist; `:workspace` is 1 through the owner's `:maximum` (the
+shipped window manager passes its real workspace count, 9 by default); the rest
+are `:integer`, `:string`, `:argv`, `:boolean` and `:keyword` (with `:values`). A binding names
 a command, or carries arguments with `(invoke ...)`:
 
 ```lisp
@@ -155,6 +156,7 @@ tomoe commands
 tomoe command focus-window window=42
 tomoe command move-window-to-workspace window=42 workspace=3
 tomoe command close-window
+tomoe command switch-workspace workspace=99   # {"error":"No workspace 99."}, exit 1
 ```
 
 `tomoe command` prints the values the command ran with, which is how you learn

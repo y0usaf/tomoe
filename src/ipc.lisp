@@ -262,6 +262,8 @@ subscriber's events start from the present state."
                                (apply #'json-array
                                       (loop for value in (getf spec :values)
                                             collect (string-downcase value))))))
+                 (when (getf spec :maximum)
+                   (list (cons "maximum" (getf spec :maximum))))
                  (when (getf spec :default-p)
                    (list (cons "default"
                                (if (keywordp (getf spec :default))

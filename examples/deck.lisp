@@ -307,11 +307,13 @@ against the output the layout is drawing on."
           :arguments '((:window :window :description "Window to toggle.")))
         (define-command "switch-workspace"
           :description "Show another workspace."
-          :arguments '((:workspace :workspace :required t :description "Workspace to show.")))
+          :arguments (list (list :workspace :workspace :required t :maximum +deck-workspace-count+
+                                 :description "Workspace to show.")))
         (define-command "move-window-to-workspace"
           :description "Send a window to another workspace."
-          :arguments '((:workspace :workspace :required t :description "Workspace to send it to.")
-                       (:window :window :description "Window to send.")))))
+          :arguments (list (list :workspace :workspace :required t :maximum +deck-workspace-count+
+                                 :description "Workspace to send it to.")
+                           (list :window :window :description "Window to send.")))))
 
 (defun deck--command (state area name arguments)
   (let ((id (or (getf arguments :window) (deck--current state))))
