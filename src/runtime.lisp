@@ -34,7 +34,7 @@
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
-  config-error source-packages
+  config-error source-packages retired-commands
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
 
 (define-condition extension-error (error)
@@ -43,6 +43,134 @@
   (:report (lambda (condition stream)
              (format stream "Extension ~A: ~A"
                      (extension-error-unit condition) (extension-error-cause condition)))))
+
+(defun focused-window (runtime context)
+  "The window that accepts keys now, or NIL."
+  (if (runtime-backend runtime)
+      (let ((id (%keyboard-focus (runtime-backend runtime)))) (unless (zerop id) id))
+      (let* ((id (getf context :focus))
+             (window (find id (runtime-windows runtime) :key (lambda (window) (getf window :id)))))
+        (when (and window (getf window :buffered t)) id))))
+
+(defun window-output (runtime id)
+  "The output holding window ID's center, else the first output."
+  (let* ((context (runtime-effective runtime))
+         (box (and id (find id (getf context :window-geometry)
+                            :key (lambda (record) (getf record :id)))))
+         (x (and box (+ (getf box :x) (floor (getf box :width) 2))))
+         (y (and box (+ (getf box :y) (floor (getf box :height) 2)))))
+    (or (and box
+             (find-if (lambda (output)
+                        (and (<= (getf output :x) x) (< x (+ (getf output :x) (getf output :width)))
+                             (<= (getf output :y) y) (< y (+ (getf output :y) (getf output :height)))))
+                      (getf context :outputs)))
+        (first (getf context :outputs)))))
+
+(defun command-argument-value (runtime context spec value)
+  "VALUE as argument SPEC demands: the `:FOCUSED` window or output resolved, the
+window and output live, and every type checked."
+  (let ((value (if (and (eq value :focused) (member (getf spec :type) '(:window :output)))
+                   (ecase (getf spec :type)
+                     (:window (or (focused-window runtime context) (error "No focused window.")))
+                     (:output (or (window-output runtime (focused-window runtime context))
+                                  (error "No output."))))
+                   value)))
+    (%check-command-value spec value)
+    (case (getf spec :type)
+      (:window
+       (unless (find value (runtime-windows runtime) :key (lambda (window) (getf window :id)))
+         (error "No window ~D." value)))
+      (:output
+       (unless (find value (getf context :outputs)
+                     :test #'equal :key (lambda (output) (getf output :name)))
+         (error "No output named ~A." value))))
+    value))
+
+(defun resolve-command-arguments (runtime entry arguments)
+  "Every argument ENTRY declares, in order: given, defaulted, or (for windows and
+outputs) the focused one. Absent optional arguments are dropped."
+  (let ((context (runtime-effective runtime)) (resolved nil) (name (getf entry :name)))
+    (loop for (key) on arguments by #'cddr
+          unless (find key (getf entry :arguments) :key (lambda (spec) (getf spec :name)))
+            do (error "~A has no ~(~A~) argument." name key))
+    (dolist (spec (getf entry :arguments) (nreverse resolved))
+      (let* ((key (getf spec :name))
+             (value (if (member key arguments) (getf arguments key) nil))
+             (present (member key arguments)))
+        (cond
+          (present (setf value (%coerce-command-value spec value)))
+          ((and (not (getf spec :default-p)) (member (getf spec :type) '(:window :output)))
+           (setf value :focused))
+          ((getf spec :default-p) (setf value (getf spec :default)))
+          ((getf spec :required)
+           (error "~A needs a ~(~A~) argument." name key))
+          (t (setf present nil value nil)))
+        (when (or present (getf spec :default-p) (member (getf spec :type) '(:window :output)))
+          (push key resolved)
+          (push (command-argument-value runtime context spec value) resolved))))))
+
+(defun command-event (runtime entry name arguments event)
+  "EVENT as the :COMMAND event that runs NAME for its owning extension."
+  (let ((copy (copy-list event)))
+    (remf copy :command)
+    (setf (getf copy :type) :command
+          (getf copy :owner) (getf entry :owner)
+          (getf copy :name) name
+          (getf copy :arguments) (resolve-command-arguments runtime entry arguments))
+    copy))
+
+(defun callback-event (event name)
+  "EVENT as the :COMMAND event of a private dialog callback named NAME."
+  (let ((copy (copy-list event)))
+    (remf copy :command)
+    (setf (getf copy :type) :command (getf copy :name) name (getf copy :arguments) nil)
+    copy))
+
+(defun keyboard-call (runtime event)
+  "The call a :KEY event names: its binding's press or release call, the
+keyboard grab's otherwise call, or NIL for a private dialog callback."
+  (let ((command (getf event :command)) (owner (getf event :owner)))
+    (when (and command owner)
+      (let ((binding (find-if (lambda (binding)
+                                (and (equal (getf binding :owner) owner)
+                                     (or (equal (getf binding :command) command)
+                                         (equal (getf binding :release) command))))
+                              (getf (runtime-effective runtime) :bindings))))
+        (cond (binding (if (equal command (getf binding :command))
+                           (getf binding :call)
+                           (getf binding :release-call)))
+              (t (let ((grab (getf (runtime-effective runtime) :keyboard-grab)))
+                   (when (and grab (equal (getf grab :owner) owner)
+                              (equal (getf grab :otherwise) command))
+                     (getf grab :call)))))))))
+
+(defun commit-call-resolution (runtime context)
+  "Resolve every binding in CONTEXT against the commands it declares, remembering
+command names whose owner has gone away so their bindings retire with it."
+  (let* ((commands (getf context :commands))
+         (retired (remove-if (lambda (name) (registered-command commands name))
+                             (union (runtime-retired-commands runtime)
+                                    (loop for entry in (getf (runtime-effective runtime) :commands)
+                                          unless (registered-command commands (getf entry :name))
+                                            collect (getf entry :name))))))
+    (setf (runtime-retired-commands runtime) retired)
+    (resolve-context-calls context retired)))
+
+(defun run-command (runtime name arguments)
+  "Run the registered command NAME for the caller, filling declared defaults.
+Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
+  (let* ((context (runtime-effective runtime))
+         (entry (or (registered-command (getf context :commands) name)
+                    (error "Unknown command: ~A." name)))
+         (owner (getf entry :owner))
+         (mounted (find owner (runtime-mounts runtime)
+                        :test #'equal :key (lambda (mounted) (spec-name (mounted-spec mounted)))))
+         (failures (and mounted (mounted-failures mounted)))
+         (event (command-event runtime entry name arguments (list :type :command :state :pressed))))
+    (dispatch-event runtime event)
+    (when (and mounted (> (mounted-failures mounted) (or failures 0)))
+      (error "~A: ~A" owner (mounted-last-error mounted)))
+    (list :name name :arguments (getf event :arguments))))
 
 (defun canonical-effect (effect)
   (check-type effect effect)
@@ -93,9 +221,11 @@
             (when (> (length effects) 512) (error "More than 512 effects."))
             (when (> (length commands) 32) (error "More than 32 commands."))
             (when (and commands
-                       (not (or (member (getf event :type) '(:key :button :timer :watch :exec :request :screenshot :screencast :ipc :ui))
+                       (not (or (member (getf event :type)
+                                        '(:command :button :timer :watch :exec :request :screenshot
+                                          :screencast :ipc :ui))
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
-              (error "One-shot commands require a key, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI command event."))
+              (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
             (let ((effects (mapcar #'canonical-effect effects))
                   (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands))
                   (keys (make-hash-table :test #'equal :size (length effects))))
@@ -468,6 +598,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                        :key (lambda (o) (getf o :name)))
                 :config-error (copy-data (runtime-config-error runtime))
                 :keyboard-grab keyboard-grab
+                :commands (sort (copy-list (materialization-commands m)) #'string<
+                                :key (lambda (entry) (getf entry :name)))
                 :bindings (sort bindings
                                 (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                   (and (= (getf a :modifiers) (getf b :modifiers))
@@ -628,10 +760,8 @@ Pending external invalidations join the current event, never an event replay."
                            (delivery
                              (or (gethash spec deferred-deliveries)
                                  (cond ((mounted-rule-pending mounted) '(:type :mount))
-                                       ((or (and (member (getf event :type) '(:timer :watch :exec :ipc :ui))
+                                       ((or (and (member (getf event :type) '(:command :timer :watch :exec :ipc :ui))
                                                  (not (member name force :test #'equal)))
-                                            (and (eq (getf event :type) :key)
-                                                 (not (equal (getf event :owner) name)))
                                             (and (member (getf event :type) '(:button :pointer :request))
                                                  (not (eql (getf event :id) (mounted-rule-window mounted)))))
                                         (list :type :change :keys child-dirty))
@@ -665,6 +795,7 @@ Pending external invalidations join the current event, never an event replay."
           (let* ((next (materialize runtime candidate)) (changes (changed-keys before next)))
             (setf context next dirty changes event (list :type :change :keys changes))
             (unless (or changes force)
+              (commit-call-resolution runtime context)
               (let* ((commands (loop for (owner . command) in commands
                                      when (find owner candidate :key #'mounted-spec) collect command))
                      (spawns (commit-context runtime candidate context commands)))
@@ -1004,7 +1135,22 @@ system, so an idle desktop keeps only what it is using."
                         (typep (getf event :binding-id) '(integer 1 18446744073709551615))
                         (= 1 (%binding-current (runtime-backend runtime) (getf event :binding-id))))
              (return-from dispatch-event))))
-       (push :key changed))
+       (let ((call (keyboard-call runtime event)))
+         (cond
+           ((null call) (return-from dispatch-event))
+           ((eq (first call) :callback)
+            (setf event (callback-event event (second call)))
+            (push (getf event :owner) force)
+            (push :command changed))
+           (t (let ((entry (registered-command (getf (runtime-effective runtime) :commands)
+                                              (first call))))
+                (unless entry (return-from dispatch-event))
+                (setf event (command-event runtime entry (first call) (rest call) event))
+                (push (getf entry :owner) force)
+                (push :command changed))))))
+      (:command
+       (push (getf event :owner) force)
+       (push :command changed))
       (:request
        (when (find (getf event :id) (runtime-windows runtime) :key (lambda (w) (getf w :id)))
          (push :request changed)))

@@ -170,29 +170,6 @@
        nil)
       (:unmount
        (destructuring-bind (name) args (check-type name string) (unmount runtime name)) nil)
-      (:command
-       (destructuring-bind (owner name) args
-         (check-type owner string) (check-type name string)
-         (unless (find owner (runtime-mounts runtime) :test #'equal
-                       :key (lambda (m) (spec-name (mounted-spec m))))
-           (error "No mounted extension named ~A." owner))
-         (let* ((bindings (remove-if-not (lambda (b) (and (equal owner (getf b :owner))
-                                                         (member name (list (getf b :command) (getf b :release))
-                                                                 :test #'equal)))
-                                         (getf (runtime-effective runtime) :bindings)))
-                (keys (remove-if (lambda (b) (let ((keysym (getf b :keysym)))
-                                               (or (eql 0 (search "button-" keysym))
-                                                   (eql 0 (search "scroll-" keysym)))))
-                                 bindings)))
-           (unless bindings (error "No active command ~A/~A." owner name))
-           (unless keys
-             (error "~A/~A is bound only to pointer input; send it with tomoe event and its pointer fields."
-                    owner name))
-           (transact runtime (runtime-mounts runtime)
-                     (list :type :key :owner owner :command name
-                           :state (if (find name keys :key (lambda (b) (getf b :command)) :test #'equal)
-                                      :pressed :released))
-                     '(:key)))) nil)
       (:event
        (destructuring-bind (text) args
          (check-type text string)

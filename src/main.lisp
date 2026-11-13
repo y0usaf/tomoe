@@ -22,13 +22,15 @@ turn; materialization already refreshes their authoritative native snapshot."
 
 (defparameter +operations+
   '(("inspect" . :inspect) ("reload" . :reload) ("mount" . :mount)
-    ("unmount" . :unmount) ("command" . :command) ("event" . :event)
+    ("unmount" . :unmount) ("event" . :event)
     ("hit-test" . :hit-test) ("frames" . :frames) ("memory" . :memory) ("quit" . :quit)))
 
 (defun usage ()
   (write-line "Usage: tomoe [--socket NAME] [--backend auto|nested|headless|drm] [--bare]
        [--config FILE] [--watch|--no-watch] [--drm_device PATH]
-       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|command OWNER NAME|event PLIST|hit-test X Y|frames|memory|quit
+       tomoe [--socket NAME] commands
+       tomoe [--socket NAME] command NAME [ARGUMENT=VALUE ...]
+       tomoe [--socket NAME] inspect|reload|mount FILE|unmount NAME|event PLIST|hit-test X Y|frames|memory|quit
        tomoe [--socket NAME] msg METHOD [JSON]
 
 Default socket: tomoe-0. Default backend: auto. winit and tty mean nested and drm.
@@ -38,12 +40,15 @@ Extensions are trusted Common Lisp programs. --bare omits all shipped policy.
 Loads $XDG_CONFIG_HOME/tomoe/init.lisp or ~/.config/tomoe/init.lisp when present.
 --config overrides that file; --bare skips it.
 Extension sources are watched and reloaded when edited; --no-watch disables that.
+commands lists every registered command with its arguments as JSON.
+command runs one by name, aiming it with ARGUMENT=VALUE pairs, and prints the
+values it ran with; every key binding runs the same command.
 event sends one data plist to a live instance as an injected input event.
 hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
 memory reads the Lisp heap and collector, the native heap, textures and output buffers.
 X11 clients connect through DISPLAY; Xwayland starts on the first connection and runs with Tomoe's own window manager.
-Control replies are versioned Lisp data. Mutating commands are silent on success."))
+Control replies are versioned Lisp data. Mutating control commands are silent on success."))
 
 (defun json-socket-path (name)
   (socket-path name)
@@ -393,6 +398,26 @@ only after it changes again."
            (return-from run-cli
              (json-msg-client (json-client-path explicit-name) (first arguments)
                               (when (second arguments) (parse-json (second arguments))))))
+          ((equal option "commands")
+           (when (or config bare (not (equal backend "auto")))
+             (error "Server options cannot be combined with commands."))
+           (when arguments (error "commands takes no arguments."))
+           (return-from run-cli (json-msg-client (json-client-path explicit-name) "commands" nil)))
+          ((equal option "command")
+           (when (or config bare (not (equal backend "auto")))
+             (error "Server options cannot be combined with command."))
+           (let ((command (or (pop arguments) (error "command requires a NAME.")))
+                 (pairs nil))
+             (dolist (argument arguments)
+               (let ((split (position #\= argument)))
+                 (unless (and split (plusp split))
+                   (error "command arguments are NAME=VALUE, not ~A." argument))
+                 (push (cons (subseq argument 0 split) (subseq argument (1+ split))) pairs)))
+             (return-from run-cli
+               (json-msg-client (json-client-path explicit-name) "command"
+                                (json-object (cons "name" command)
+                                             (cons "arguments"
+                                                   (apply #'json-object (nreverse pairs))))))))
           ((assoc option +operations+ :test #'equal)
            (when (or config bare (not (equal backend "auto")))
              (error "Server options cannot be combined with a control command."))

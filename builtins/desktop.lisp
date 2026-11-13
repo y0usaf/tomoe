@@ -19,16 +19,30 @@
     "Switch to Workspace 1-9" "Move Window to Workspace 1-9")
   "The old init.lua declaration order of the shipped bindings, for the hotkey sheet.")
 
-(define-extension "commands" (:reads (:key :ui :focus :bindings :settings :data)
+(defparameter +session-commands+
+  (list (define-command "launch"
+          :description "Run a program and its arguments."
+          :arguments '((:argv :argv :required t :description "Program and arguments.")))
+        (define-command "reload"
+          :description "Reload every extension source.")
+        (define-command "quit"
+          :description "Stop the session."
+          :arguments '((:confirm :boolean :description "Ask before quitting.")))
+        (define-command "toggle-hotkeys"
+          :description "Show or hide the sheet of bound hotkeys.")))
+
+(define-extension "commands" (:reads (:command :ui :focus :bindings :settings :data)
                                :state '(:exit nil :overlay nil))
     (snapshot state event)
-  (let* ((focused (context snapshot :focus))
-         (command (when (and (member (getf event :type) '(:key :ui)) (equal (getf event :owner) "commands"))
-                    (getf event :command)))
+  (let* ((command (and (equal (getf event :owner) "commands")
+                       (if (eq (getf event :type) :command)
+                           (getf event :name)
+                           (getf event :command))))
+         (arguments (and (eq (getf event :type) :command) (getf event :arguments)))
          (exit (cond ((equal command "quit") t)
                      ((member command '("exit-confirm" "exit-cancel") :test #'equal) nil)
                      (t (getf state :exit))))
-         (overlay (cond ((equal command "hotkeys") (not (getf state :overlay)))
+         (overlay (cond ((equal command "toggle-hotkeys") (not (getf state :overlay)))
                         ((equal command "hotkeys-dismiss") nil)
                         (t (getf state :overlay))))
          (rows (loop for binding in (stable-sort (sort (copy-list (context snapshot :bindings)) #'<
@@ -40,11 +54,16 @@
                      when (getf binding :description)
                        collect (list (hotkey-label binding) (getf binding :description)))))
     (values (list :exit exit :overlay overlay)
-            (append (list (bind-key '(:mod) "Return" :terminal :description "Spawn foot")
-                          (bind-key '(:mod) "d" :launcher :description "Run an Application")
-                          (bind-key '(:mod) "q" :close :description "Close Window")
-                          (bind-key '(:mod :shift) "e" :quit :description "Exit")
-                          (bind-key '(:mod :shift) "slash" :hotkeys :description "Show Important Hotkeys"))
+            (append +session-commands+
+                    (list (bind-key '(:mod) "Return"
+                                    (invoke "launch" :argv '("foot")) :description "Spawn foot")
+                          (bind-key '(:mod) "d"
+                                    (invoke "launch" :argv '("fuzzel")) :description "Run an Application")
+                          (bind-key '(:mod) "q" "close-window" :description "Close Window")
+                          (bind-key '(:mod :shift) "e" (invoke "quit" :confirm t)
+                                    :description "Exit")
+                          (bind-key '(:mod :shift) "slash" "toggle-hotkeys"
+                                    :description "Show Important Hotkeys"))
                     (when exit
                       (confirm-dialog :exit "Are you sure you want to exit tomoe?"
                                       :confirm :exit-confirm :cancel :exit-cancel
@@ -52,14 +71,49 @@
                     (when (and overlay (not exit))
                       (sheet-dialog :hotkeys rows :title "Important Hotkeys" :dismiss :hotkeys-dismiss
                                     :theme (state-value snapshot :theme))))
-            (cond ((equal command "terminal") (list (launch "foot")))
-                  ((equal command "launcher") (list (launch "fuzzel")))
-                  ((and (equal command "close") focused) (list (close-window focused)))
+            (cond ((equal command "launch") (list (apply #'launch (getf arguments :argv))))
+                  ((equal command "reload") (list (reload)))
+                  ((and (equal command "quit") (not (getf arguments :confirm))) (list (quit)))
                   ((equal command "exit-confirm") (list (quit)))))))
 
+(defun wm-commands (count)
+  "The window manager's commands. COUNT is the live workspace count."
+  (list (define-command "focus-window"
+          :description "Focus a window, switching to its workspace."
+          :arguments '((:window :window :description "Window to focus.")))
+        (define-command "focus-next-window"
+          :description "Focus the next window on the active workspace.")
+        (define-command "focus-previous-window"
+          :description "Focus the previous window on the active workspace.")
+        (define-command "close-window"
+          :description "Ask a window to close."
+          :arguments '((:window :window :description "Window to close.")))
+        (define-command "toggle-fullscreen"
+          :description "Toggle a window between fullscreen and tiled."
+          :arguments '((:window :window :description "Window to toggle.")))
+        (define-command "switch-workspace"
+          :description "Show another workspace."
+          :arguments (list (list :workspace :workspace :required t :maximum count
+                                 :description "Workspace to show.")))
+        (define-command "move-window-to-workspace"
+          :description "Send a window to another workspace."
+          :arguments (list (list :workspace :workspace :required t :maximum count
+                                 :description "Workspace to send it to.")
+                           (list :window :window :description "Window to send.")))
+        (define-command "move-window"
+          :description "Move a window to a physical position."
+          :arguments '((:window :window :description "Window to move.")
+                       (:x :integer :required t :description "Left edge.")
+                       (:y :integer :required t :description "Top edge.")))
+        (define-command "resize-window"
+          :description "Resize a window."
+          :arguments '((:window :window :description "Window to resize.")
+                       (:width :integer :required t :description "New width.")
+                       (:height :integer :required t :description "New height.")))))
+
 (define-extension "wm"
-    (:reads (:windows :rules :data :outputs :workareas :layout :focus :button :pointer :key :request
-             :settings)
+    (:reads (:windows :rules :data :outputs :workareas :layout :focus :button :pointer :command
+             :request :settings)
      :state nil :admission t)
     (snapshot state event)
   (let* ((excluded (state-value snapshot :wm-exclude))
@@ -188,28 +242,34 @@
                (setf active number)
                (arrange)
                (focus-id (car (last (workspace active)))))
-             (move-focused (number)
-               (let ((id (current-focus)))
-                 (when (and id (<= 1 number count) (/= number active))
-                   (setf (nth (1- active) workspaces) (remove id (workspace active)))
-                   (hide-id id)
-                   (append-window number id)
-                   (arrange)
-                   (focus-id (car (last (workspace active)))))))
+             (move-window (number id)
+               (when (and id (member id ids) (<= 1 number count) (/= number active))
+                 (setf (nth (1- active) workspaces) (remove id (workspace active)))
+                 (hide-id id)
+                 (append-window number id)
+                 (arrange)
+                 (focus-id (car (last (workspace active))))))
+             (reveal (id)
+               (let ((number (loop for wins in workspaces for index from 1
+                                   when (member id wins) return index)))
+                 (when number
+                   (unless (= number active) (switch-workspace number))
+                   (focus-id id))))
+             (move-box (id x y width height)
+               (let ((box (and id (window-box id))))
+                 (when box
+                   (remember-box id (or x (getf box :x)) (or y (getf box :y))
+                                 (min 16384 (max 1 (or width (getf box :width))))
+                                 (min 16384 (max 1 (or height (getf box :height))))))))
              (cycle-focus (direction)
                (let* ((wins (workspace active))
                       (index (or (position (current-focus) wins) 0)))
-                 (when wins (focus-id (nth (mod (+ index direction) (length wins)) wins)))))
-             (workspace-command (command prefix)
-               (when (and (stringp command) (> (length command) (length prefix))
-                          (string= prefix command :end2 (length prefix)))
-                 (parse-integer command :start (length prefix) :junk-allowed t))))
+                 (when wins (focus-id (nth (mod (+ index direction) (length wins)) wins))))))
       (dolist (id ids)
         (unless (or (member id new-ids) (some (lambda (wins) (member id wins)) workspaces))
           (setf full (remove id full :key (lambda (entry) (getf entry :id))))
           (append-window active id)))
-      (unless (and (eq type :key) (equal "wm" (getf event :owner))
-                   (equal "fullscreen" (getf event :command)))
+      (unless (and (eq type :command) (equal "toggle-fullscreen" (getf event :name)))
         (setf full
               (remove-if (lambda (entry)
                            (let ((resolved (find (getf entry :id) layout
@@ -253,18 +313,24 @@
          (when (eq :pressed (getf event :state))
            (let ((id (getf event :id)))
              (focus-id (when (member id visible) id)))))
-        (:key
-         (when (equal "wm" (getf event :owner))
-           (let* ((command (getf event :command))
-                  (switch (workspace-command command "workspace-"))
-                  (move (workspace-command command "move-")))
-             (cond (switch (switch-workspace switch))
-                   (move (move-focused move))
-                   ((equal command "next") (cycle-focus 1))
-                   ((equal command "previous") (cycle-focus -1))
-                   ((equal command "fullscreen")
-                    (let ((id (current-focus)))
-                      (when id (set-fullscreen id (null (full-box id))))))))))
+        (:command
+         (let* ((arguments (getf event :arguments))
+                (name (getf event :name))
+                (id (getf arguments :window)))
+           (cond
+             ((equal name "focus-window") (reveal id))
+             ((equal name "focus-next-window") (cycle-focus 1))
+             ((equal name "focus-previous-window") (cycle-focus -1))
+             ((equal name "close-window") (push (close-window id) commands))
+             ((equal name "toggle-fullscreen")
+              (when id (set-fullscreen id (null (full-box id)))))
+             ((equal name "switch-workspace") (switch-workspace (getf arguments :workspace)))
+             ((equal name "move-window-to-workspace")
+              (move-window (getf arguments :workspace) id))
+             ((equal name "move-window")
+              (move-box id (getf arguments :x) (getf arguments :y) nil nil))
+             ((equal name "resize-window")
+              (move-box id nil nil (getf arguments :width) (getf arguments :height))))))
         ((:metadata :request)
          (let ((id (getf event :id)) (request (getf event :request)))
            (when (member id ids)
@@ -291,18 +357,19 @@
             (push (maximize id nil) effects)))
         (dolist (id stack) (when (member id visible) (push (raise-window id) effects)))
         (push (focus (when (member focused visible) focused) :raise nil) effects)
-        (dolist (binding '(("f" :fullscreen "Toggle Fullscreen") ("j" :next "Focus Next Window")
-                           ("k" :previous "Focus Previous Window")))
+        (dolist (effect (wm-commands count)) (push effect effects))
+        (dolist (binding '(("f" "toggle-fullscreen" "Toggle Fullscreen")
+                           ("j" "focus-next-window" "Focus Next Window")
+                           ("k" "focus-previous-window" "Focus Previous Window")))
           (destructuring-bind (key command description) binding
             (push (bind-key '(:mod) key command :description description) effects)))
         (loop for number from 1 to (min count 9)
-              for switch in '(:workspace-1 :workspace-2 :workspace-3 :workspace-4 :workspace-5
-                              :workspace-6 :workspace-7 :workspace-8 :workspace-9)
-              for move in '(:move-1 :move-2 :move-3 :move-4 :move-5 :move-6 :move-7 :move-8 :move-9)
               do
-          (push (bind-key '(:mod) (princ-to-string number) switch
+          (push (bind-key '(:mod) (princ-to-string number)
+                          (invoke "switch-workspace" :workspace number)
                           :description (when (= number 1) "Switch to Workspace 1-9")) effects)
-          (push (bind-key '(:mod :shift) (princ-to-string number) move
+          (push (bind-key '(:mod :shift) (princ-to-string number)
+                          (invoke "move-window-to-workspace" :workspace number)
                           :description (when (= number 1) "Move Window to Workspace 1-9")) effects))
         (push (publish-state :wm-state
                              (list :active active :workspaces
@@ -427,7 +494,7 @@
       (1 (first picks))
       (t (list :menu (nreverse items) (nreverse picks))))))
 
-(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :key :ui :data) :state nil)
+(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :command :ui :data) :state nil)
     (snapshot state event)
   (let ((queue (getf state :queue)) (selected (getf state :selected 0)) (commands nil))
     (flet ((answer (token pick) (push (screencast-answer token (first pick) (second pick)) commands)))
@@ -467,17 +534,20 @@
                        :test #'equal)))
     (if files (nth (random (length files) (make-random-state t)) files) current)))
 
-(define-extension "wallpaper" (:reads (:data :key) :state nil) (snapshot state event)
+(define-extension "wallpaper" (:reads (:data :command) :state nil) (snapshot state event)
   (let* ((settings (state-value snapshot :wallpaper-settings))
          (directory (getf settings :directory))
          (bind (getf settings :bind))
+         (command (and (eq (getf event :type) :command) (getf event :name)))
          (path (and directory
                     (if (or (not (equal directory (getf state :directory)))
-                            (and (eq (getf event :type) :key) (equal (getf event :owner) "wallpaper")))
+                            (equal command "next-wallpaper"))
                         (wallpaper--pick directory (getf state :path))
                         (getf state :path)))))
     (values (list :directory directory :path path)
-            (append (when bind (list (apply #'bind-key bind)))
+            (append (list (define-command "next-wallpaper"
+                            :description "Show another wallpaper from the configured directory."))
+                    (when bind (list (apply #'bind-key bind)))
                     (when path
                       (list (shell-surface :wallpaper (ui :stack)
                                            :anchors '(:top :right :bottom :left) :layer :background

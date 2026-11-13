@@ -257,7 +257,7 @@ unit("closeable", f"env X11_CLIENT_MARK=/run/x11-closed {X11_CLIENT} closeable")
 closed = wait_new_focused(before_ids)
 closed_id = closed["id"]
 time.sleep(1)
-cli("event '(:type :key :owner \"commands\" :command \"close\" :state :pressed)'")
+cli("command close-window")
 for _ in range(100):
     if machine.execute("test -e /run/x11-closed")[0] == 0:
         break

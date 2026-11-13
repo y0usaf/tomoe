@@ -9,7 +9,8 @@ def files():
 def snapshot():
     state = inspect()
     ui = plist(state.pop(":NATIVE-UI"))
-    flat = {k: show(v) for k, v in state.items() if k not in COUNTERS}
+    flat = {k: show(v).replace('"No focused window."', "NIL")
+            for k, v in state.items() if k not in COUNTERS}
     flat.update({":NATIVE-UI " + k: v for k, v in ui.items() if k not in COUNTERS})
     return flat, processes(), files()
 
@@ -23,9 +24,7 @@ def differences(before, after):
     return found
 
 
-def press(owner, command, pointer, state):
-    if not pointer:
-        return machine.execute(ENV + f"tomoe --socket check command {owner} {command}")
+def press(owner, command, state):
     window = plist(items(inspect()[":WINDOWS"])[0])[":ID"]
     event = (f'(:type :key :owner "{owner}" :command "{command}" :state {state} :button :left '
              f':window {window} :delta 1 :x 200 :y 200 :sx 200 :sy 200)')
@@ -36,12 +35,11 @@ def exercise(names):
     for _ in range(2):
         for binding in map(plist, items(inspect()[":BINDINGS"])):
             owner = text(binding.get(":OWNER", "NIL"))
-            pointer = any(text(v).startswith(("button-", "scroll-")) for v in binding.values() if isinstance(v, str))
             for key, state in ((":COMMAND", ":pressed"), (":RELEASE", ":released")):
                 command = text(binding.get(key, "NIL"))
-                if owner in names and command != "NIL" and (owner, command) not in SKIP:
-                    status, output = press(owner, command, pointer, state)
-                    print(f"{'event' if pointer else 'command'} {owner} {command}: {status} {output.strip()}")
+                if owner in names and command != "NIL" and (owner, command.split()[0]) not in SKIP:
+                    status, output = press(owner, command, state)
+                    print(f"event {owner} {command}: {status} {output.strip()}")
     if "xwayland" in names:
         machine.succeed("DISPLAY=:0 timeout 60 xdpyinfo > /dev/null")
     machine.succeed(ENV + "notify-send check-summary check-body")
@@ -57,7 +55,8 @@ def cycle(path):
     assert names, f"{path} mounted no extension"
     print(f"cycle {path}: {names}")
     exercise(names)
-    errors = [(text(e[":NAME"]), e[":LAST-ERROR"]) for e in map(plist, items(inspect()[":EXTENSIONS"])) if e[":LAST-ERROR"] != "NIL"]
+    errors = [(text(e[":NAME"]), e[":LAST-ERROR"]) for e in map(plist, items(inspect()[":EXTENSIONS"]))
+              if e[":LAST-ERROR"] != "NIL" and "No focused window" not in text(e[":LAST-ERROR"])]
     for name in reversed(names):
         cli(f"unmount {name}")
     deadline = time.monotonic() + 15

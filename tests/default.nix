@@ -39,7 +39,7 @@ let
     (in-package #:tomoe-user)
     (define-extension "shortcut-binding" (:reads () :state nil) (snapshot state event)
       (declare (ignore snapshot state event))
-      (values nil (list (bind-key nil "a" :hit)) nil))
+      (values nil (list (define-command "hit") (bind-key nil "a" "hit")) nil))
   '';
   client = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-client";
@@ -143,17 +143,17 @@ let
       (values state
               (list (publish-state :wallpaper-settings
                                    '(:directory "${pkgs.nixos-icons}/share/icons/hicolor"
-                                     :bind ((:mod :shift) "w" :next))))
+                                     :bind ((:mod :shift) "w" "next-wallpaper"))))
               nil))
   '';
   screenshotProbe = pkgs.writeText "screenshot-probe.lisp" ''
     (in-package #:tomoe-user)
-    (define-extension "screenshot-probe" (:reads (:key) :state nil) (snapshot state event)
+    (define-extension "screenshot-probe" (:reads (:command) :state nil) (snapshot state event)
       (declare (ignore snapshot))
       (values state
-              (list (bind-key '(:super) "F12" :select))
-              (when (and (eq (getf event :type) :key) (equal (getf event :owner) "screenshot-probe"))
-                (list (screenshot)))))
+              (list (define-command "select")
+                    (bind-key '(:super) "F12" "select"))
+              (when (eq (getf event :type) :command) (list (screenshot)))))
   '';
   blurProbe = pkgs.writeText "blur-probe.lisp" ''
     (in-package #:tomoe-user)
@@ -227,15 +227,18 @@ let
   '';
   wakeProbe = pkgs.writeText "wake-probe.lisp" ''
     (in-package #:tomoe-user)
-    (define-extension "wake-probe" (:reads (:key) :state '(:dark nil)) (snapshot state event)
+    (define-extension "wake-probe" (:reads (:command) :state '(:dark nil)) (snapshot state event)
       (declare (ignore snapshot))
-      (let* ((command (and (eq (getf event :type) :key) (equal (getf event :owner) "wake-probe")
-                           (getf event :command)))
+      (let* ((command (and (eq (getf event :type) :command) (getf event :name)))
              (dark (cond ((equal command "dark") t)
                          ((equal command "light") nil)
                          (t (getf state :dark)))))
         (values (list :dark dark)
-                (list (configure-output "Virtual-1" :mode '(1920 1080 60) :disabled dark))
+                (list (define-command "dark")
+                      (define-command "light")
+                      (define-command "off")
+                      (define-command "on")
+                      (configure-output "Virtual-1" :mode '(1920 1080 60) :disabled dark))
                 (cond ((equal command "off") (list (output-power :off "Virtual-1")))
                       ((equal command "on") (list (output-power :on "Virtual-1")))))))
   '';
@@ -320,6 +323,7 @@ in
     ''
     + builtins.readFile ./integration.py
   );
+  commands = check "commands" (builtins.readFile ./commands.py);
   bare = check "bare" (
     ''
       VIRTUAL_PROBE = "${virtualProbe}"

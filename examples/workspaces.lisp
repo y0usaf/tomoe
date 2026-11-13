@@ -2,16 +2,14 @@
 
 
 (defparameter +workspaces-gap+ 6)
-(defparameter +workspaces-tags+
-  '(("1" . :tag1) ("2" . :tag2) ("3" . :tag3)
-    ("4" . :tag4) ("5" . :tag5) ("6" . :tag6)
-    ("7" . :tag7) ("8" . :tag8) ("9" . :tag9)))
+(defparameter +workspaces-tags+ '("1" "2" "3" "4" "5" "6" "7" "8" "9"))
 
-(defun workspaces--tag (command)
-  "The tag number named by a TAGn binding command, or NIL."
-  (when (and (stringp command) (> (length command) 3) (string= "tag" command :end2 3))
-    (let ((number (parse-integer command :start 3 :junk-allowed t)))
-      (when (and number (<= 1 number (length +workspaces-tags+))) number))))
+(defparameter +workspaces-commands+
+  (list (define-command "switch-tag"
+          :description "Show another tag."
+          :arguments '((:tag :integer :required t :description "Tag number, from 1 through 9.")))
+        (define-command "previous-tag"
+          :description "Go back to the tag shown before this one.")))
 
 (defun workspaces--tile (output windows)
   "A row of equal-height slices, in map order, inside OUTPUT."
@@ -27,12 +25,12 @@
                          height))))
 
 (defun workspaces--bindings ()
-  (append (loop for entry in +workspaces-tags+
-                collect (bind-key '(:super) (car entry) (cdr entry)))
-          (list (bind-key '(:super :shift) "Tab" :previous))))
+  (append (loop for tag in +workspaces-tags+ for number from 1
+                collect (bind-key '(:super) tag (invoke "switch-tag" :tag number)))
+          (list (bind-key '(:super :shift) "Tab" "previous-tag"))))
 
 (define-extension "workspaces"
-    (:reads (:windows :outputs :focus :key)
+    (:reads (:windows :outputs :focus :command)
      :state (list :tag 1 :previous 1 :assigned nil :recent nil))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
@@ -50,11 +48,12 @@
     (when new-ids
       (let ((new-focused (car (last new-ids))))
         (setf recent (acons tag new-focused (remove tag recent :key #'car)))))
-    (when (and (eq (getf event :type) :key) (equal (getf event :owner) "workspaces"))
-      (if (equal (getf event :command) "previous")
+    (when (eq (getf event :type) :command)
+      (if (equal (getf event :name) "previous-tag")
           (rotatef tag previous)
-          (let ((number (workspaces--tag (getf event :command))))
-            (when number (setf previous tag tag number)))))
+          (let ((number (getf (getf event :arguments) :tag)))
+            (when (and number (<= 1 number (length +workspaces-tags+)))
+              (setf previous tag tag number)))))
     (let* ((visible (loop for window in windows
                           when (eql (cdr (assoc (getf window :id) assigned)) tag)
                             collect window))
@@ -74,5 +73,6 @@
                                                (max 1 (getf window :height)) nil))
                         (when (and output visible) (workspaces--tile output visible))
                         (when windows (list (focus focused)))
+                        +workspaces-commands+
                         (workspaces--bindings)))
               nil))))
