@@ -7,7 +7,7 @@
 #define ERRORS_KEPT 16
 #define ERROR_LINE 512
 
-int log_verbosity = LOG_ERROR;
+int log_verbosity = LOG_WARNING;
 static char error_lines[ERRORS_KEPT][ERROR_LINE];
 static unsigned long error_count;
 static char *errors_text;

@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <fcntl.h>
 #include <libseat.h>
 #include <unistd.h>
 
@@ -6,22 +7,45 @@ struct session {
     struct libseat *seat;
     struct wl_event_source *source;
     struct tomoe *server;
+    struct wl_event_source *test_timer;
+    char *test_path;
     bool active;
 };
 
+static void set_active(struct tomoe *s, bool active) {
+    struct session *session = s->session;
+    if (!session || session->active == active) return;
+    session->active = active;
+    tomoe_log(LOG_WARNING, "tomoe: the seat is %s; %s", active ? "active" : "inactive",
+        active ? "outputs draw" : "outputs stop drawing");
+    if (active) {
+        kms_resume(s);
+        libinput_active(s, true);
+    } else {
+        kms_pause(s);
+        libinput_active(s, false);
+    }
+}
+
 static void enable_seat(struct libseat *seat, void *data) {
-    struct tomoe *s = data;
-    s->session->active = true;
-    kms_resume(s);
-    libinput_active(s, true);
+    set_active(data, true);
 }
 
 static void disable_seat(struct libseat *seat, void *data) {
-    struct tomoe *s = data;
-    s->session->active = false;
-    kms_pause(s);
-    libinput_active(s, false);
+    set_active(data, false);
     libseat_disable_seat(seat);
+}
+
+static int test_session_poll(void *data) {
+    struct session *session = data;
+    char text[16] = {0};
+    wl_event_source_timer_update(session->test_timer, 50);
+    int fd = open(session->test_path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    ssize_t count = read(fd, text, sizeof(text) - 1);
+    close(fd);
+    if (count > 0) set_active(session->server, strncmp(text, "inactive", 8) != 0);
+    return 0;
 }
 
 static struct libseat_seat_listener listener = {
@@ -51,6 +75,12 @@ bool session_create(struct tomoe *s) {
     for (int tries = 0; !session->active && tries < 100; tries++)
         if (libseat_dispatch(session->seat, 100) < 0) break;
     if (!session->active) tomoe_log(LOG_ERROR, "tomoe: libseat never activated the seat");
+    const char *test = getenv("TOMOE_TEST_SESSION");
+    if (test && *test && (session->test_path = strdup(test))) {
+        session->test_timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display),
+            test_session_poll, session);
+        if (session->test_timer) wl_event_source_timer_update(session->test_timer, 50);
+    }
     return session->source && session->active;
 }
 
@@ -58,6 +88,8 @@ void session_finish(struct tomoe *s) {
     struct session *session = s->session;
     if (!session) return;
     if (session->source) wl_event_source_remove(session->source);
+    if (session->test_timer) wl_event_source_remove(session->test_timer);
+    free(session->test_path);
     if (session->seat) libseat_dispatch(session->seat, 0);
     if (session->seat) libseat_close_seat(session->seat);
     free(session);

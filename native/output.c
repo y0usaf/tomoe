@@ -367,11 +367,13 @@ const char *tomoe_frames(struct tomoe *s) {
         quote(out, o->screen->name);
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
+            " :suspended %s :pending %s"
             " :planes %zu :deferrals %" PRIu64 " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
             " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
             " :predicted %" PRId64 " :slack %" PRId64 " :frame-times (",
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
+            o->screen->suspended ? "t" : "nil", o->screen->frame_pending ? "t" : "nil",
             o->planes.count, o->screen->deferrals, o->timing.ns,
             o->screen->frame_cost_ns, o->screen->missed_frames,
             o->screen->refresh, o->screen->frame_armed_ns, o->screen->frame_start_ns,

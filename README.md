@@ -153,6 +153,21 @@ the repaint waits for the one after it and carries the input that arrived in
 between, rather than composing into a miss. An idle output arms nothing.
 `tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
 with and without `TOMOE_FRAME_CLOCK=0` for comparison, and asserts the drop.
+An output that cannot present draws nothing. When the seat goes away Tomoe stops
+submitting frames, stops telling clients their frames are on screen, and leaves
+the display on its last picture; the frame a repaint was waiting for is dropped
+instead of being counted against a flip that will never complete. When the seat
+comes back every output draws again and the pending scene is committed, so a
+switch away and back costs a frame instead of the desktop. `tests/session.py`
+drives vkms through an inactive seat while a client commits 120 times a second,
+and asserts that nothing is drawn, that the display keeps its picture, and that
+the first frame after the resume reaches the plane.
+
+The default log level keeps that history: a seat change, an output that appears
+or is removed (with the reason the scan gave), and every DRM change event are
+written without `TOMOE_DEBUG`, so a screen that stops presenting names its own
+state instead of leaving a frozen counter behind.
+
 
 The compositor thread asks for round-robin realtime priority once it is running,
 so a busy desktop cannot delay Tomoe's own frame. Without `CAP_SYS_NICE` (or an

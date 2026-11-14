@@ -1309,6 +1309,7 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     const char *type = drmModeGetConnectorTypeName(info->connector_type);
     snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
     screen_init(&c->screen, kms->server, &kms->impl, SCREEN_DRM, name);
+    c->screen.suspended = !session_active(kms->server);
     c->screen.phys_width = (int32_t)info->mmWidth;
     c->screen.phys_height = (int32_t)info->mmHeight;
     c->screen.adaptive_sync_supported = c->props.value[PROP_VRR_CAPABLE] != 0;
@@ -1336,6 +1337,9 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     tomoe_log(LOG_INFO, "tomoe: connector %s (%s)", c->screen.name, c->screen.description);
     if (log_verbosity >= LOG_INFO) log_kernel_state(c, "state before Tomoe");
     output_added(kms->server, &c->screen);
+    tomoe_log(LOG_WARNING, "tomoe: output %s added: %s, %d modes, link-status %s", c->screen.name,
+        info->connection == DRM_MODE_CONNECTED ? "connected" : "not connected", info->count_modes,
+        link_status(&c->props));
 }
 
 static void scan_connectors(struct kms *kms) {
@@ -1344,6 +1348,7 @@ static void scan_connectors(struct kms *kms) {
     struct connector *c, *next;
     wl_list_for_each_safe(c, next, &kms->connectors, link) {
         drmModeConnector *info = drmModeGetConnector(kms->fd, c->id);
+        bool unreadable = !info;
         bool gone = !info || info->connection != DRM_MODE_CONNECTED;
         drmModeFreeConnector(info);
         if (!gone) props_read(kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
@@ -1352,12 +1357,15 @@ static void scan_connectors(struct kms *kms) {
             tomoe_log(LOG_INFO, "tomoe: kms %s reports a different EDID; adding it again",
                 c->screen.name);
         if (gone || (sum && sum != c->edid_sum)) {
+            tomoe_log(LOG_WARNING, "tomoe: output %s removed: %s", c->screen.name,
+                gone ? (unreadable ? "the connector could not be read" :
+                    "the connector reports it is disconnected") : "the EDID changed");
             screen_destroy(&c->screen);
             continue;
         }
         if (!c->crtc || !c->props.id[PROP_LINK_STATUS] ||
                 c->props.value[PROP_LINK_STATUS] != DRM_MODE_LINK_STATUS_BAD) continue;
-        tomoe_log(LOG_INFO, "tomoe: kms %s link-status bad; lighting it again", c->screen.name);
+        tomoe_log(LOG_WARNING, "tomoe: kms %s link-status bad; lighting it again", c->screen.name);
         c->relight = true;
         c->screen.frame_pending = false;
         screen_schedule_frame(&c->screen);
@@ -1395,7 +1403,11 @@ static int drm_uevent(int fd, uint32_t mask, void *data) {
                 kms->devnum) continue;
         changed = true;
     }
-    if (changed && session_active(kms->server)) scan_connectors(kms);
+    if (!changed) return 0;
+    bool active = session_active(kms->server);
+    tomoe_log(LOG_WARNING, "tomoe: drm change event; the seat is %s, %s", active ? "active" : "inactive",
+        active ? "scanning connectors" : "leaving the scan until it returns");
+    if (active) scan_connectors(kms);
     return 0;
 }
 
@@ -1482,6 +1494,8 @@ void kms_pause(struct tomoe *s) {
     if (!kms) return;
     struct connector *c;
     wl_list_for_each(c, &kms->connectors, link) {
+        c->screen.suspended = true;
+        c->screen.frame_pending = false;
         flip_disarmed(c);
         c->flip_pending = false;
         c->cursor_inflight = c->redraw = false;
@@ -1517,6 +1531,7 @@ void kms_resume(struct tomoe *s) {
     for (size_t i = 0; i < kms->crtc_count; i++) kms->crtcs[i].active = false;
     scan_connectors(kms);
     struct connector *c;
+    wl_list_for_each(c, &kms->connectors, link) c->screen.suspended = false;
     wl_list_for_each(c, &kms->connectors, link) {
         if (!c->screen.enabled) continue;
         c->screen.frame_pending = false;

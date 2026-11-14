@@ -18,7 +18,7 @@
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg-shell-protocol.h"
 
-enum { LOG_ERROR = 1, LOG_INFO, LOG_DEBUG };
+enum { LOG_ERROR = 1, LOG_WARNING, LOG_INFO, LOG_DEBUG };
 enum { FRAME_TRACE = 128 };
 extern int log_verbosity;
 void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -511,6 +511,7 @@ struct screen {
     bool enabled, adaptive_sync_supported, adaptive_sync, hardware_cursor, tearing;
     bool frame_after_events;
     bool frame_pending, needs_frame, animation_only, power_off, frame_replaced, deferred;
+    bool suspended;
     int lx, ly, software_cursor_locks;
     uint64_t deferrals;
     double cursor_x, cursor_y;

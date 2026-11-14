@@ -163,7 +163,7 @@ static bool create_scene_trees(struct tomoe *s) {
     return s->window_tree && s->fullscreen_tree && s->popup_tree && s->drag_icon_tree;
 }
 struct tomoe *tomoe_create(const char *socket_name) {
-    log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_ERROR;
+    log_verbosity = getenv("TOMOE_DEBUG") ? LOG_DEBUG : LOG_WARNING;
     wl_log_set_handler_server(wayland_log);
     mallopt(M_MMAP_THRESHOLD, 128 * 1024);
     signal(SIGPIPE, SIG_IGN);

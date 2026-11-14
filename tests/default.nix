@@ -995,6 +995,13 @@ let
       ''
       + builtins.readFile ./planes.py;
     }
+    {
+      name = "session";
+      script = ''
+        FRAMECLOCK_POLICY = "${frameclockPolicy}"
+      ''
+      + builtins.readFile ./session.py;
+    }
   ];
   suiteTargets =
     settings: suites:

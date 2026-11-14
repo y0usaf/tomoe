@@ -288,7 +288,7 @@ static void apply(struct screen *screen, const struct screen_state *state) {
     if (state->committed & SCREEN_VRR)
         screen->adaptive_sync = screen->adaptive_sync_supported && state->adaptive_sync_enabled;
     if (!screen->enabled) screen->adaptive_sync = false;
-    if (state->committed & SCREEN_BUFFER) {
+    if ((state->committed & SCREEN_BUFFER) && !screen->suspended) {
         if (screen->frame_pending && screen->impl->replace_flip)
             feedback_rebase(screen, screen->commit_seq, screen->commit_seq + 1);
         screen->frame_pending = true;
@@ -350,7 +350,7 @@ size_t screen_degamma_size(struct screen *screen) {
 }
 
 static void dispatch_frame(struct screen *screen) {
-    if (screen->enabled && !screen->power_off) {
+    if (screen->enabled && !screen->power_off && !screen->suspended) {
         surfaces_fifo_frame(screen);
         screen->frame_start_ns = monotonic_ns();
         wl_signal_emit_mutable(&screen->events.frame, screen);
@@ -427,6 +427,7 @@ static bool frame_defer(struct screen *screen) {
 }
 
 static bool may_draw(struct screen *screen) {
+    if (screen->suspended) return false;
     return !screen->frame_pending || (screen->impl->replace_flip && !screen->frame_replaced &&
         !surfaces_fifo_waiting(screen));
 }
@@ -485,7 +486,8 @@ void screens_grab_waiting(struct tomoe *s) {
     wl_list_for_each(o, &s->outputs, link) {
         struct screen *screen = o->screen;
         if (output_is_active(o) && !screen->frame_timer.at && !screen->idle_frame &&
-                !screen->frame_after_events && screen->enabled && !screen->power_off)
+                !screen->frame_after_events && screen->enabled && !screen->power_off &&
+                !screen->suspended)
             frame_defer(screen);
     }
 }
@@ -553,7 +555,7 @@ void screen_send_frame(struct screen *screen) {
         return;
     }
     frame_account(screen);
-    if (screen->enabled && !screen->power_off) surfaces_fifo_frame(screen);
+    if (screen->enabled && !screen->power_off && !screen->suspended) surfaces_fifo_frame(screen);
     if (screen->needs_frame) frame_request(screen);
 }
 
