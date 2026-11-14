@@ -133,7 +133,7 @@ open_windows(2, width=320, height=240, prefix="p")
 time.sleep(4)
 policy_windows = measure("policy-2")
 cli("timings reset")
-time.sleep(6)
+time.sleep(20)
 longest, collection, handback = read_timings("policy-2-animated")
 settled = measure("policy-2-settled", attribute=True)
 close_windows(2, prefix="p")
@@ -147,6 +147,7 @@ for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty
     assert row["Pss_Anon"] <= ANON_LIMIT, f"{label} anon {row['Pss_Anon']} KB over {ANON_LIMIT}"
     assert row["Private_Dirty"] <= DIRTY_LIMIT, (
         f"{label} private dirty {row['Private_Dirty']} KB over {DIRTY_LIMIT}")
-assert collection <= COLLECTION_LIMIT, f"collection {collection} ns over {COLLECTION_LIMIT}"
+pause = max(collection, handback)
+assert pause <= COLLECTION_LIMIT, f"collection {pause} ns over {COLLECTION_LIMIT}"
 print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "collection", COLLECTION_LIMIT,
       "tiles", tiles, "longest_frame", longest, "idle_handback", handback, flush=True)

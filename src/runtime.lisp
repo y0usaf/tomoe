@@ -1308,13 +1308,14 @@ accepted registry. Never enter this helper inside a candidate transaction."
 (defparameter *idle-consed* (* 8 1024 1024))
 (defparameter *nursery-bytes* (* 4 1024 1024))
 (defvar *handback-pending* nil
-  "True while the idle handback collects the whole heap, so the timing report can
+  "True while the idle handback collects the oldest generation, so the timing report can
 count that collection apart from the ones the allocator starts on its own.")
 
 (defun service-memory (runtime)
-  "Collect the whole heap while the scene has been quiet for a second, once 8 MB was
-consed since the last collection. The collector hands the dead generations back to the
-system, so an idle desktop keeps only what it is using. The native heap is trimmed once
+  "Collect the oldest generation while the scene has been quiet for a second, once 8 MB was
+consed since the last collection. Collecting it alone rather than the whole heap leaves the
+younger generations to the allocator's own collections and still hands the aged garbage's
+pages back to the system, so an idle desktop keeps only what it is using. The native heap is trimmed once
 when the scene falls quiet, which returns the pages a burst of shader compiles, captures
 or decoded images grew without a collection running."
   (let* ((native (runtime-backend runtime))
@@ -1329,7 +1330,7 @@ or decoded images grew without a collection running."
              (runtime-idle-trimmed runtime) nil))
       ((and quiet (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
        (%trim-heap)
-       (let ((*handback-pending* t)) (sb-ext:gc :full t))
+       (let ((*handback-pending* t)) (sb-ext:gc :gen 2))
        (setf (runtime-idle-trimmed runtime) t
              (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
              (runtime-idle-since runtime) (get-internal-real-time)))
