@@ -862,6 +862,7 @@ static void window_mapped(struct window *w) {
         buffer_event(w, true);
     activation_surface_mapped(w->server, surface_of(w));
     target_sync(w);
+    if (w->xdg->xwm) configure_xdg(w);
     if (w->desired_visible) window_animate_open(w, &w->server->settings.window_open, false);
     if (w->server->focused == w->target.id)
         update_keyboard_focus(w->server);
