@@ -17,9 +17,12 @@
   (list :volume 1.0d0 :muted nil))
 
 (defvar *materialized* nil
-  "Within a transaction: the mounts, invocation count and context of its last materialization.")
+  "Within a transaction: the mounts, invalidation count, output revision and
+context of its last materialization.")
 (defvar *invocations* 0
-  "Counts accepted reducer results and rule definitions replaced in place.")
+  "Counts the accepted reducer results and replaced rule declarations that change
+what a materialization folds. A reducer that returns the effects it already owned
+changes nothing, so it does not invalidate the last context.")
 
 (defvar *timing* nil
   "Whether the native side keeps latency samples, so the loop can report when a
@@ -293,6 +296,18 @@ Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
         (funcall key (effect-arguments effect))
         (list (effect-kind effect) (first (effect-arguments effect))))))
 
+(defun equivalent-effects (before after)
+  "Whether AFTER contributes to a materialization exactly what BEFORE did.
+Reducers fold an effect's kind and arguments into M, and both lists belong to the
+same mounted owner, so identical contributions owe no rebuild. The predicate and
+application closures of a rule declaration are not folded; RECONCILE compares
+declarations by identity where that matters."
+  (and (= (length before) (length after))
+       (every (lambda (old new)
+                (and (eq (effect-kind old) (effect-kind new))
+                     (equal (effect-arguments old) (effect-arguments new))))
+              before after)))
+
 (defun invoke-extension (runtime mounted context event)
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
         (*source-directory* (spec-directory (mounted-spec mounted))))
@@ -327,9 +342,10 @@ Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
                 (let ((key (effect-key effect)))
                   (when (gethash key keys) (error "Duplicate effect: ~S" key))
                   (setf (gethash key keys) t)))
+              (unless (equivalent-effects (mounted-effects mounted) effects)
+                (incf *invocations*))
               (setf (mounted-state mounted) (copy-data state)
                     (mounted-effects mounted) effects)
-              (incf *invocations*)
               (when (mounted-rule-parent mounted) (setf (mounted-rule-pending mounted) nil))
               (incf (mounted-dispatches mounted))
               commands)))
@@ -590,14 +606,17 @@ while other owners can settle; a new request or declaration permits recovery."
 
 (defun materialize (runtime mounts)
   "Reconstruct owned context. Within a transaction, the same mounts with no
-invocation since the last materialization yield that context again."
-  (let ((memo *materialized*))
-    (if (and memo (eql (second memo) *invocations*)
+contribution that changes it since the last materialization yield that context
+again. Adopted native output facts are a rebuild cause too, so a transaction
+never commits a context built from superseded output facts."
+  (let ((memo *materialized*) (revision (runtime-outputs-revision runtime)))
+    (if (and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
         (third memo)
         (let ((context (%materialize runtime mounts)))
           (when memo
-            (setf (first memo) (copy-list mounts) (second memo) *invocations* (third memo) context))
+            (setf (first memo) (copy-list mounts) (second memo) *invocations*
+                  (third memo) context (fourth memo) revision))
           context))))
 
 (defun %materialize (runtime mounts)
@@ -828,7 +847,7 @@ change anything, so staging a candidate context would rebuild it for nothing."
   "Stage reducers and dependency propagation before touching the native scene.
 A bad callback or a dependency cycle discards the entire candidate transaction.
 Pending external invalidations join the current event, never an event replay."
-  (let* ((*materialized* (list nil -1 nil))
+  (let* ((*materialized* (list nil -1 nil nil))
          (candidate (with-sample ("tx-mounts")
                       (prune-rule-mounts
                        runtime (mapcar #'copy-mounted
@@ -840,23 +859,30 @@ Pending external invalidations join the current event, never an event replay."
                          (union changed (changed-keys (runtime-effective runtime) context)))))
          (commands nil)
          (deferred-deliveries (make-hash-table :test #'eq))
-         (proposal-baselines
+         (proposal-baselines (make-hash-table :test #'eq))
+         (proposal-start
            (with-sample ("tx-baselines")
-             (let ((states (make-hash-table :test #'eq)))
-               (dolist (mounted candidate states)
-                 (setf (gethash (mounted-spec mounted) states)
-                       (copy-data (mounted-state mounted)))))))
+             (let ((specs (make-hash-table :test #'eq)))
+               (dolist (mounted candidate specs) (setf (gethash (mounted-spec mounted) specs) t)))))
          (proposal-deliveries (make-hash-table :test #'eq))
          (initial-event event)
          (initial-force force))
-    (labels ((invoke (mounted delivered)
+    (labels ((baseline (mounted)
+               "The private state an admission re-run starts from: the state this
+mount had when the transaction began, or the declaration's state for a rule
+instance that reconciliation created inside it."
+               (let ((spec (mounted-spec mounted)))
+                 (multiple-value-bind (baseline captured) (gethash spec proposal-baselines)
+                   (if captured baseline
+                       (setf (gethash spec proposal-baselines)
+                             (if (gethash spec proposal-start)
+                                 (copy-data (mounted-state mounted))
+                                 (sixth (effect-arguments (mounted-rule-definition mounted)))))))))
+             (invoke (mounted delivered)
                (with-sample ("tx-invoke")
                 (when (admission-scope-p mounted candidate)
                  (let ((spec (mounted-spec mounted)))
-                   (multiple-value-bind (baseline existed) (gethash spec proposal-baselines)
-                     (setf (mounted-state mounted)
-                           (copy-data (if existed baseline
-                                          (sixth (effect-arguments (mounted-rule-definition mounted)))))))
+                   (setf (mounted-state mounted) (copy-data (baseline mounted)))
                    (multiple-value-bind (original delivered-p) (gethash spec proposal-deliveries)
                      (if delivered-p (setf delivered original)
                          (setf (gethash spec proposal-deliveries) (copy-data delivered))))
