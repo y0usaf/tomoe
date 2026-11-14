@@ -86,16 +86,37 @@ void constraint_refresh(struct tomoe *s) {
     constraint_focus(s, state->focused_surface, state->sx, state->sy);
 }
 
-void pointer_trail_record(struct tomoe *s) {
+static double pointer_sample_time(uint32_t time_msec) {
     struct timespec clock;
     clock_gettime(CLOCK_MONOTONIC, &clock);
-    double t = clock.tv_sec + clock.tv_nsec / 1e9;
+    double now = clock.tv_sec + clock.tv_nsec / 1e9;
+    if (!time_msec) return now;
+    double t = time_msec / 1000.0;
+    return t > now + 0.05 || now - t > 1.0 ? now : t;
+}
+
+static bool pointer_trail_corner(struct tomoe *s, const struct pointer_sample *last,
+        double dx, double dy, double step) {
+    static const double sharpest = 0.67;
+    if (s->pointer_trail_count < 2 || step < 9.0) return false;
+    const struct pointer_sample *was = &s->pointer_trail[
+        (s->pointer_trail_head + POINTER_TRAIL - 2) % POINTER_TRAIL];
+    double ax = last->x - was->x, ay = last->y - was->y;
+    double was_step = ax * ax + ay * ay, dot = ax * dx + ay * dy;
+    if (was_step < 9.0) return false;
+    return dot <= 0 || dot * dot < sharpest * was_step * step;
+}
+
+void pointer_trail_record(struct tomoe *s, uint32_t time_msec) {
+    double t = pointer_sample_time(time_msec);
     if (s->pointer_trail_count) {
         struct pointer_sample *last = &s->pointer_trail[
             (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL];
         double dx = s->pointer_x - last->x, dy = s->pointer_y - last->y;
-        if (dx * dx + dy * dy < 1.0) return;
-        if (t - last->t < 0.008) {
+        double step = dx * dx + dy * dy;
+        if (step < 1.0) return;
+        if (t < last->t) t = last->t;
+        if (t < s->pointer_trail_next && !pointer_trail_corner(s, last, dx, dy, step)) {
             last->x = s->pointer_x;
             last->y = s->pointer_y;
             last->t = t;
@@ -105,6 +126,7 @@ void pointer_trail_record(struct tomoe *s) {
     s->pointer_trail[s->pointer_trail_head] =
         (struct pointer_sample){ s->pointer_x, s->pointer_y, t };
     s->pointer_trail_head = (s->pointer_trail_head + 1) % POINTER_TRAIL;
+    s->pointer_trail_next = t + 0.008;
     if (s->pointer_trail_count < POINTER_TRAIL) s->pointer_trail_count++;
 }
 

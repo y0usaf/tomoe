@@ -891,6 +891,25 @@ static void render_quad(struct render *r, struct program *p, const float pos[8],
     if (p->texcoord >= 0 && texcoords) glDisableVertexAttribArray(p->texcoord);
 }
 
+void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices) {
+    if (!pass || !p || !p->id || vertices < 3 || p->pos < 0) return;
+    glVertexAttribPointer(p->pos, 2, GL_FLOAT, GL_FALSE, 0, pos);
+    glEnableVertexAttribArray(p->pos);
+    if (!pass->clip) {
+        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
+    } else {
+        int count = 0;
+        const pixman_box32_t *rects = pixman_region32_rectangles(pass->clip, &count);
+        glEnable(GL_SCISSOR_TEST);
+        for (int i = 0; i < count; i++) {
+            glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
+        }
+        glDisable(GL_SCISSOR_TEST);
+    }
+    glDisableVertexAttribArray(p->pos);
+}
+
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
         const float texcoords[8]) {
     struct render *r = pass->r;

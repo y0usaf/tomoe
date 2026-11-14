@@ -909,6 +909,9 @@ when it is not 1."
       (discard-watch-plan watches))))
 
 (defun %commit-context (runtime mounts context commands watches)
+  ;; Timers declared :REFRESH resolve against the display rate the context
+  ;; reports, so the bar and HUD step once per refresh of the monitor in use.
+  (setf *frame-ms* (frame-period-ms (getf context :outputs)))
   (let* ((old (runtime-effective runtime)) (backend (runtime-backend runtime))
          (restack (not (equal (getf old :stacking) (getf context :stacking))))
          (layout-changed (not (equal (getf old :layout) (getf context :layout))))

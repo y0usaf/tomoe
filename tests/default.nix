@@ -565,6 +565,21 @@ let
       (values state (list (configure-output "HEADLESS-1" :mode '(800 600 60)
                                             :scale 1 :position '(0 0))) nil))
   '';
+  pathClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-test-pointer-path";
+    source = ./pointer-path.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      wayland-scanner client-header ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml wlr-virtual-pointer-unstable-v1-client-protocol.h
+      wayland-scanner private-code ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml wlr-virtual-pointer-unstable-v1-protocol.c
+      gcc -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -I. "$source" *.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-test-pointer-path
+    '';
+    installPhase = "install -Dm755 tomoe-test-pointer-path $out/bin/tomoe-test-pointer-path";
+  };
   checkWith =
     extra: name: script:
     pkgs.testers.runNixOSTest {
@@ -781,6 +796,24 @@ in
     ''
     + builtins.readFile ./frameclock.py
   );
+  animations =
+    checkWith
+      {
+        environment.systemPackages = [
+          pkgs.grim
+          pkgs.python3
+          pkgs.wayland-utils
+        ];
+      }
+      "animations"
+      ''
+        machine.succeed(
+          "ANIMATIONS_REPORT=/run/animations-frames/report.txt"
+          " python3 ${./animations.py} --tomoe ${tomoe}/bin/tomoe"
+          " --client ${client}/bin/tomoe-test-client --frames /run/animations-frames"
+        )
+        print(machine.succeed("cat /run/animations-frames/report.txt"))
+      '';
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''
       WAKE_PROBE = "${wakeProbe}"
@@ -822,4 +855,10 @@ in
         ''
         + builtins.readFile ./planes.py
       );
+  trail = checkWith {
+    environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
+  } "trail" ''
+    machine.succeed("mkdir -p /run/trail")
+    print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
+  '';
 }

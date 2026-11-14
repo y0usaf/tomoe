@@ -297,9 +297,7 @@ static bool window_shader_mesh(struct tomoe *s, struct frame *f, const struct ta
         local.width + 2 * margin, local.height + 2 * margin };
     struct box shown;
     box_transform(&shown, &area, transform_invert(f->transform), f->width, f->height);
-    struct timespec clock;
-    clock_gettime(CLOCK_MONOTONIC, &clock);
-    double now = clock.tv_sec + clock.tv_nsec / 1e9;
+    double now = f->sample > 0 ? f->sample : animation_now();
     int drag = s->grab_mode == 1 && s->grab_id == t->id;
     float trail[4 * POINTER_TRAIL];
     float path[4 * WINDOW_PATH];
@@ -662,11 +660,13 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         .view_x = plan ? plan->view_x : o->server->view_x,
         .view_y = plan ? plan->view_y : o->server->view_y,
         .zoom = plan ? plan->view_zoom : o->server->view_zoom,
+        .sample = o->sample > 0 ? o->sample : animation_now(),
         .focused = plan ? plan->focused : o->server->focused };
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
-    windows_animate(o->server);
-    ui_animate(o->server);
+    bool moving = windows_animate(o->server, data.sample);
+    if (ui_animate(o->server, data.sample)) moving = true;
+    o->animating = moving;
     pixman_region32_t changed, clip;
     pixman_region32_init(&changed);
     pixman_region32_init(&clip);

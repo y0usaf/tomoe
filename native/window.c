@@ -30,6 +30,7 @@ struct window {
     int shift_to_x, shift_to_y;
     int resize_from_w, resize_from_h, resize_to_w, resize_to_h;
     int wanted_w, wanted_h;
+    double stale_until;
     bool hired, closing;
     double shader_moved;
     struct {
@@ -511,11 +512,12 @@ void windows_prepare_presentation(struct tomoe *s, struct presentation *plan) {
 }
 
 static void window_animate_move(struct window *w, int old_x, int old_y) {
-    double now = animation_now();
-    double progress = animation_value(&w->move, now);
+    double at = animation_handoff(&w->move);
+    double progress = animation_at(&w->move, at);
+    double speed = animation_velocity(&w->move, at);
     double from_x = w->move_from_x * progress + old_x - w->target.x;
     double from_y = w->move_from_y * progress + old_y - w->target.y;
-    animation_start(&w->move, &w->server->settings.window_move, 1, 0, now);
+    animation_start_from(&w->move, &w->server->settings.window_move, 1, 0, at, speed);
     w->move_from_x = from_x;
     w->move_from_y = from_y;
     if (from_x == 0 && from_y == 0) w->move.active = false;
@@ -535,71 +537,86 @@ static void window_path_record(struct window *w, int x, int y, double now) {
     if (w->path.count < WINDOW_PATH) w->path.count++;
 }
 static void channel_to(struct animation *a, const struct animation_config *config, double to) {
-    double now = animation_now();
-    double from = animation_value(a, now);
-    if (!a->active && from == to) return;
-    if (a->active && a->to == to) return;
-    animation_start(a, config, from, to, now);
+    animation_retarget(a, config, to);
 }
 static void window_animate_open(struct window *w, const struct animation_config *config,
         bool grow) {
-    double now = animation_now();
-    animation_start(&w->fade, config, animation_value(&w->fade, now), 1, now);
+    double at = animation_handoff(&w->fade);
+    animation_start_from(&w->fade, config, animation_at(&w->fade, at), 1, at,
+        animation_velocity(&w->fade, at));
     double scale = w->policy.scale > 0 ? w->policy.scale : 1;
-    if (grow) animation_start(&w->grow, config, scale * 0.92, scale, now);
+    if (grow) animation_start(&w->grow, config, scale * 0.92, scale, animation_handoff(&w->grow));
     w->closing = false;
 }
 static void window_animate_close(struct window *w, const struct animation_config *config) {
-    double now = animation_now();
-    animation_start(&w->fade, config, animation_value(&w->fade, now), 0, now);
-    double scale = animation_value(&w->grow, now);
-    animation_start(&w->grow, config, scale, scale * 0.9, now);
+    double at = animation_handoff(&w->fade);
+    animation_start_from(&w->fade, config, animation_at(&w->fade, at), 0, at,
+        animation_velocity(&w->fade, at));
+    double scale = animation_at(&w->grow, at);
+    animation_start(&w->grow, config, scale, scale * 0.9, animation_handoff(&w->grow));
     w->closing = true;
 }
 static bool same_tint(const float a[4], const float b[4]) {
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
-static struct visual window_live_visual(struct window *w, const struct settings *st,
-        double now) {
-    channel_to(&w->opacity, &st->window_alpha, w->policy.opacity > 0 ? w->policy.opacity : 1);
-    channel_to(&w->grow, &st->window_scale, w->policy.scale > 0 ? w->policy.scale : 1);
-    channel_to(&w->turn, &st->window_rotation, w->policy.rotation);
-    if (!same_tint(w->tint_to, w->policy.tint)) {
-        double mix = animation_value(&w->tint, now);
-        for (int i = 0; i < 4; i++) {
-            w->tint_from[i] += (w->tint_to[i] - w->tint_from[i]) * (float)mix;
-            w->tint_to[i] = w->policy.tint[i];
-        }
-        animation_start(&w->tint, &st->window_tint, 0, 1, now);
-    }
-    if (w->shift_to_x != w->policy.translate_x || w->shift_to_y != w->policy.translate_y) {
-        double mix = animation_value(&w->shift, now);
-        w->shift_from_x += (w->shift_to_x - w->shift_from_x) * mix;
-        w->shift_from_y += (w->shift_to_y - w->shift_from_y) * mix;
-        w->shift_to_x = w->policy.translate_x;
-        w->shift_to_y = w->policy.translate_y;
-        animation_start(&w->shift, &st->window_translate, 0, 1, now);
-    }
-    struct visual live = w->policy;
-    live.opacity = animation_value(&w->opacity, now);
-    live.scale = animation_value(&w->grow, now);
-    live.rotation = animation_value(&w->turn, now);
-    double tint = animation_value(&w->tint, now);
-    for (int i = 0; i < 4; i++)
-        live.tint[i] = (float)(w->tint_from[i] + (w->tint_to[i] - w->tint_from[i]) * tint);
-    double shift = animation_value(&w->shift, now);
-    live.translate_x = (int)lround(w->shift_from_x + (w->shift_to_x - w->shift_from_x) * shift);
-    live.translate_y = (int)lround(w->shift_from_y + (w->shift_to_y - w->shift_from_y) * shift);
-    live.closing = w->closing;
-    double resize = animation_value(&w->resize, now);
+static bool window_buffer_stale(const struct window *w, double now) {
+    if (!w->mapped || w->wanted_w <= 0 || w->wanted_h <= 0) return false;
+    if (now >= w->stale_until) return false;
+    int dw = physical_size(w->client_width, w->target.scale) - w->wanted_w;
+    int dh = physical_size(w->client_height, w->target.scale) - w->wanted_h;
+    return dw > 1 || dw < -1 || dh > 1 || dh < -1;
+}
+static void window_drawn_size(struct window *w, double resize, double now) {
     if (resize < 1) {
         w->target.drawn_width = (int)lround(w->resize_from_w +
             (w->resize_to_w - w->resize_from_w) * resize);
         w->target.drawn_height = (int)lround(w->resize_from_h +
             (w->resize_to_h - w->resize_from_h) * resize);
-    } else {
-        w->target.drawn_width = w->target.drawn_height = 0;
+        return;
     }
+    if (window_buffer_stale(w, now)) {
+        w->target.drawn_width = w->wanted_w;
+        w->target.drawn_height = w->wanted_h;
+        return;
+    }
+    w->target.drawn_width = w->target.drawn_height = 0;
+}
+static struct visual window_live_visual(struct window *w, const struct settings *st,
+        double now) {
+    struct animation_stats *stats = &w->server->animation;
+    channel_to(&w->opacity, &st->window_alpha, w->policy.opacity > 0 ? w->policy.opacity : 1);
+    channel_to(&w->grow, &st->window_scale, w->policy.scale > 0 ? w->policy.scale : 1);
+    channel_to(&w->turn, &st->window_rotation, w->policy.rotation);
+    if (!same_tint(w->tint_to, w->policy.tint)) {
+        double at = animation_handoff(&w->tint);
+        double mix = animation_at(&w->tint, at);
+        for (int i = 0; i < 4; i++) {
+            w->tint_from[i] += (w->tint_to[i] - w->tint_from[i]) * (float)mix;
+            w->tint_to[i] = w->policy.tint[i];
+        }
+        animation_start(&w->tint, &st->window_tint, 0, 1, at);
+    }
+    if (w->shift_to_x != w->policy.translate_x || w->shift_to_y != w->policy.translate_y) {
+        double at = animation_handoff(&w->shift);
+        double mix = animation_at(&w->shift, at);
+        w->shift_from_x += (w->shift_to_x - w->shift_from_x) * mix;
+        w->shift_from_y += (w->shift_to_y - w->shift_from_y) * mix;
+        w->shift_to_x = w->policy.translate_x;
+        w->shift_to_y = w->policy.translate_y;
+        animation_start(&w->shift, &st->window_translate, 0, 1, at);
+    }
+    struct visual live = w->policy;
+    live.opacity = animation_advance(&w->opacity, now, stats);
+    live.scale = animation_advance(&w->grow, now, stats);
+    live.rotation = animation_advance(&w->turn, now, stats);
+    double tint = animation_advance(&w->tint, now, stats);
+    for (int i = 0; i < 4; i++)
+        live.tint[i] = (float)(w->tint_from[i] + (w->tint_to[i] - w->tint_from[i]) * tint);
+    double shift = animation_advance(&w->shift, now, stats);
+    live.translate_x = (int)lround(w->shift_from_x + (w->shift_to_x - w->shift_from_x) * shift);
+    live.translate_y = (int)lround(w->shift_from_y + (w->shift_to_y - w->shift_from_y) * shift);
+    live.closing = w->closing;
+    window_drawn_size(w, animation_advance(&w->resize, now, stats), now);
     return live;
 }
 static void ghost_release(struct ghost *g) {
@@ -611,8 +628,8 @@ bool ghosts_animate(struct tomoe *s, double now) {
     bool active = false;
     struct ghost *g, *next;
     wl_list_for_each_safe(g, next, &s->ghosts, link) {
-        g->alpha = animation_value(&g->fade, now);
-        g->scale = animation_value(&g->grow, now);
+        g->alpha = animation_advance(&g->fade, now, &s->animation);
+        g->scale = animation_advance(&g->grow, now, &s->animation);
         active |= g->fade.active || g->grow.active;
         if (!g->fade.active && !g->grow.active) ghost_release(g);
     }
@@ -645,7 +662,7 @@ static void window_retire(struct window *w) {
     w->hired = true;
     struct surface *surface = w->tree ? surface_of(w) : NULL;
     if (!w->mapped || !w->presented || !w->tree || !surface || !surface->texture) return;
-    double alpha = animation_value(&w->fade, animation_now()) * w->policy.opacity;
+    double alpha = animation_at(&w->fade, animation_now()) * w->policy.opacity;
     if (alpha <= 0.01) return;
     int client_width = w->client_width > 0 ? w->client_width : w->target.client_width;
     int client_height = w->client_height > 0 ? w->client_height : w->target.client_height;
@@ -678,26 +695,25 @@ static void window_retire(struct window *w) {
     g->id = w->target.id;
     g->alpha = (float)alpha;
     g->scale = 1;
-    double scale = animation_value(&w->grow, now);
+    double scale = animation_at(&w->grow, now);
     animation_start(&g->fade, &st->window_close, alpha, 0, now);
     animation_start(&g->grow, &st->window_close, scale, scale * 0.9, now);
     wl_list_insert(&s->ghosts, &g->link);
     tomoe_log(LOG_DEBUG, "tomoe: window %u closes into a %dx%d ghost", w->target.id, width, height);
 }
-bool windows_animate(struct tomoe *s) {
-    double now = animation_now();
+bool windows_animate(struct tomoe *s, double now) {
     const struct settings *st = &s->settings;
     bool active = view_animate(s, st, now);
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
         if (!w->tree) continue;
-        double progress = animation_value(&w->move, now);
+        double progress = animation_advance(&w->move, now, &s->animation);
         struct visual live = window_live_visual(w, st, now);
         w->target.visual = live;
         w->target.offset_x = round(w->move_from_x * progress) + live.translate_x;
         w->target.offset_y = round(w->move_from_y * progress) + live.translate_y;
         w->target.alpha = w->fade.active || w->fade.to ?
-            animation_value(&w->fade, now) : 1;
+            animation_advance(&w->fade, now, &s->animation) : 1;
         active |= w->move.active || w->fade.active || w->opacity.active || w->grow.active ||
             w->turn.active || w->tint.active || w->shift.active || w->resize.active;
         if (w->target.shader) {
@@ -760,6 +776,7 @@ void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
                 w->resize_to_w = entry->width;
                 w->resize_to_h = entry->height;
                 animation_start(&w->resize, &st->window_resize, 0, 1, now);
+                w->stale_until = now + 1.0;
             }
             w->wanted_w = entry->width;
             w->wanted_h = entry->height;
@@ -778,7 +795,7 @@ bool view_animate(struct tomoe *s, const struct settings *st, double now) {
     double values[3] = { s->view_x, s->view_y, s->view_zoom };
     bool active = false;
     for (int i = 0; i < 3; i++) {
-        values[i] = animation_value(channels[i], now);
+        values[i] = animation_advance(channels[i], now, &s->animation);
         active |= channels[i]->active;
     }
     s->view_x = (int)lround(values[0]);
@@ -792,13 +809,14 @@ void view_publish(struct tomoe *s, const struct presentation *plan) {
     double now = animation_now();
     struct animation *channels[3] = { &s->view_x_anim, &s->view_y_anim, &s->view_zoom_anim };
     double wanted[3] = { plan->view_x, plan->view_y, plan->view_zoom };
+    double values[3];
     for (int i = 0; i < 3; i++) {
-        double from = animation_value(channels[i], now);
-        if (!channels[i]->active && from == wanted[i]) continue;
-        if (channels[i]->active && channels[i]->to == wanted[i]) continue;
-        animation_start(channels[i], &st->window_view, from, wanted[i], now);
+        animation_retarget(channels[i], &st->window_view, wanted[i]);
+        values[i] = animation_at(channels[i], now);
     }
-    view_animate(s, st, now);
+    s->view_x = (int)lround(values[0]);
+    s->view_y = (int)lround(values[1]);
+    s->view_zoom = values[2] > 0 ? values[2] : 1;
 }
 
 static void window_mapped(struct window *w) {

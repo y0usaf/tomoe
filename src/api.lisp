@@ -11,7 +11,7 @@
            #:define-command #:invoke
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
-           #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
+           #:frame-ms #:clock-boundary-ms #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
 
@@ -19,7 +19,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 2)
-(defconstant +native-abi-version+ 41)
+(defconstant +native-abi-version+ 42)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -309,18 +309,66 @@ contains the requested, quantized placement size. WINDOW is an ID or window reco
         (copy-data (loop for key in '(:x :y :width :height)
                          append (list key (getf record key))))))))
 
+(defvar *frame-ms* 16
+  "Milliseconds between display refreshes on the fastest active output.
+The runtime keeps it current; read it with FRAME-MS.")
+
+(defun frame-ms ()
+  "Milliseconds between display refreshes, following the monitor.
+240 Hz reads 4 and 60 Hz reads 16. Hand it to INTERVAL, or pass :REFRESH,
+and the animation that timer advances steps once per refresh instead of on a
+fixed clock."
+  *frame-ms*)
+
+(defun frame-period-ms (outputs)
+  "Milliseconds per refresh of the fastest enabled output in OUTPUTS."
+  (let ((fastest 0))
+    (dolist (output outputs)
+      (let ((refresh (getf output :refresh-mhz)))
+        (when (and (integerp refresh) (plusp refresh) (> refresh fastest))
+          (setf fastest refresh))))
+    (if (plusp fastest) (max 1 (floor 1000000 fastest)) 16)))
+
+(defun %timer-milliseconds (declared)
+  "Resolve a timer's declared period.
+:REFRESH follows the display, :SECOND and :MINUTE follow the wall clock."
+  (case declared
+    (:refresh (frame-ms))
+    (:second 1000)
+    (:minute 60000)
+    (t declared)))
+
+(defun %timer-clock-step (declared)
+  "The wall-clock step of a declared period, in seconds, or NIL."
+  (case declared (:second 1) (:minute 60) (t nil)))
+
+(defun clock-boundary-ms (step)
+  "Milliseconds from now to the next multiple of STEP seconds on the wall clock.
+A timer that ticks on it changes its output at the same instant the clock does."
+  (check-type step (integer 1 86400))
+  (let* ((units internal-time-units-per-second)
+         (fraction (mod (get-internal-real-time) units))
+         (elapsed (floor (* 1000 fraction) units))
+         (left (- step (mod (get-universal-time) step))))
+    (max 1 (- (* left 1000) elapsed))))
+
 (defun once (name milliseconds)
   "Own a one-shot timer. Deliver (:TYPE :TIMER :NAME NAME) to this reducer.
+MILLISECONDS may be :REFRESH (the next display refresh), :SECOND or :MINUTE
+(the next wall-clock boundary of that length).
 An unchanged effect fires once per mount/source reload; omit it to cancel."
   (check-type name keyword)
-  (check-type milliseconds (integer 0 2147483647))
+  (check-type milliseconds (or (integer 0 2147483647) (member :refresh :second :minute)))
   (%effect :timer (list name milliseconds nil)))
 
 (defun interval (name milliseconds)
   "Own a repeating timer. Zero starts immediately, then repeats every millisecond.
+MILLISECONDS may instead name a clock: :REFRESH repeats once per display refresh
+and follows the monitor's rate, while :SECOND and :MINUTE repeat on the
+wall-clock boundary, so a clock display updates when the time actually changes.
 An unchanged effect retains its schedule. Omit it to cancel."
   (check-type name keyword)
-  (check-type milliseconds (integer 0 2147483647))
+  (check-type milliseconds (or (integer 0 2147483647) (member :refresh :second :minute)))
   (%effect :timer (list name milliseconds t)))
 
 (define-effect :timer
@@ -753,7 +801,12 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
           append (list key (%setting-value (second entry) value key)))))
 
 (defun %animation-spec (value default)
-  "Normalize NIL (off), T (DEFAULT), (:SPRING plist) or (:EASE plist)."
+  "Normalize NIL (off), T (DEFAULT), (:SPRING plist) or (:EASE plist).
+A spring settles when it stays within EPSILON of its target; the old
+1/10000 epsilon made the 800 stiffness spring run for 326 ms. The shipped
+defaults are calibrated by settle time: 16000 stiffness at a 1/1000 epsilon
+settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
+90 ms."
   (flet ((bad () (error "Invalid animation: ~S" value)))
     (cond ((null value) (list :kind :off))
           ((eq value t) (%animation-spec default default))
@@ -762,13 +815,13 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
            (copy-list value))
           ((not (and (consp value) (member (first value) '(:spring :ease)) (= 2 (length value)))) (bad))
           ((eq (first value) :spring)
-           (destructuring-bind (&key (damping-ratio 1) (stiffness 800) (epsilon 1/10000))
+           (destructuring-bind (&key (damping-ratio 1) (stiffness 16000) (epsilon 1/1000))
                (%settings-plist (second value) '((:damping-ratio (:real 0 1000)) (:stiffness (:real 0 100000))
                                                  (:epsilon (:real 0 1))) :spring)
              (list :kind :spring :damping-ratio (%double-float damping-ratio)
                    :stiffness (%double-float stiffness) :epsilon (%double-float epsilon))))
           (t
-           (destructuring-bind (&key (duration-ms 150) (curve :ease-out-cubic)) (second value)
+           (destructuring-bind (&key (duration-ms 90) (curve :ease-out-expo)) (second value)
              (unless (typep duration-ms '(integer 1 600000)) (bad))
              (unless (or (member curve '(:linear :ease-out-quad :ease-out-cubic :ease-out-expo))
                          (and (listp curve) (= 4 (length curve)) (every #'%finite-real-p curve)))
@@ -780,16 +833,21 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
   '(:window-move :window-open :window-close :window-resize :window-switch :window-view
     :window-alpha :window-tint :window-scale :window-rotation :window-translate)
   "Transitions the compositor can animate. :WINDOW-CLOSE, :WINDOW-RESIZE, :WINDOW-SWITCH,
-:WINDOW-VIEW, :WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
+:WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
 :WINDOW-TRANSLATE default to off.")
 
 (defparameter +animation-defaults+
-  '(:window-move (:spring nil)
-    :window-open (:ease (:duration-ms 150 :curve :ease-out-expo))
-    :window-close nil :window-resize nil :window-switch nil :window-view nil
+  '(:window-move (:spring (:stiffness 16000 :epsilon 1/1000))
+    :window-open (:ease (:duration-ms 90 :curve :ease-out-expo))
+    :window-close nil :window-resize nil :window-switch nil
+    :window-view (:spring (:stiffness 16000 :epsilon 1/1000))
     :window-alpha nil :window-tint nil :window-scale nil
     :window-rotation nil :window-translate nil)
-  "Each animation event's default, when a configuration does not name one.")
+  "Each animation event's default, when a configuration does not name one.
+Every animation advances once per display refresh, at the instant the frame
+reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 73 ms
+and :WINDOW-VIEW (workspace and deck scrolling) does too; :WINDOW-OPEN lasts
+90 ms.")
 
 (defun %animation-settings (value)
   "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs.

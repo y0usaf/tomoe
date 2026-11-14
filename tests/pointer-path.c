@@ -91,8 +91,14 @@ static double now(void) {
     return (double)clock.tv_sec + (double)clock.tv_nsec / 1e9;
 }
 
-static void motion(struct zwlr_virtual_pointer_v1 *pointer, int x, int y) {
-    zwlr_virtual_pointer_v1_motion_absolute(pointer, 0, (uint32_t)x, (uint32_t)y,
+static uint32_t now_ms(void) {
+    struct timespec clock;
+    clock_gettime(CLOCK_MONOTONIC, &clock);
+    return (uint32_t)(clock.tv_sec * 1000 + clock.tv_nsec / 1000000);
+}
+
+static void motion(struct zwlr_virtual_pointer_v1 *pointer, uint32_t time, int x, int y) {
+    zwlr_virtual_pointer_v1_motion_absolute(pointer, time, (uint32_t)x, (uint32_t)y,
         (uint32_t)extent_width, (uint32_t)extent_height);
     zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_flush(display);
@@ -103,10 +109,12 @@ int main(int argc, char **arguments) {
     program = program ? program + 1 : arguments[0];
     int points[MAX_POINTS][2];
     int count = 0, steps = 8, interval = 16, hold = 400, delay = 600;
+    int burst = 0;
     const char *path = NULL;
     for (int i = 1; i < argc; i++) {
         const char *option = arguments[i];
         const char *value = i + 1 < argc ? arguments[i + 1] : NULL;
+        if (strcmp(option, "--burst") == 0) { burst = 1; continue; }
         if (!value) fail("%s needs a value", option);
         if (strcmp(option, "--path") == 0) { path = value; i++; }
         else if (strcmp(option, "--steps") == 0) { steps = parse_number(option, value, 1, 256); i++; }
@@ -135,7 +143,9 @@ int main(int argc, char **arguments) {
     struct zwlr_virtual_pointer_v1 *pointer =
         zwlr_virtual_pointer_manager_v1_create_virtual_pointer(manager, NULL);
     sleep_ms(delay);
-    motion(pointer, points[0][0], points[0][1]);
+    uint32_t span = (uint32_t)(interval * steps * (count - 1));
+    uint32_t stamp = burst ? now_ms() - span : now_ms();
+    motion(pointer, stamp, points[0][0], points[0][1]);
     roundtrip("the start motion");
     zwlr_virtual_pointer_v1_button(pointer, 0, 0x110, WL_POINTER_BUTTON_STATE_PRESSED);
     zwlr_virtual_pointer_v1_frame(pointer);
@@ -150,8 +160,10 @@ int main(int argc, char **arguments) {
                 (points[segment][0] - points[segment - 1][0]) * along);
             int y = (int)(points[segment - 1][1] +
                 (points[segment][1] - points[segment - 1][1]) * along);
-            motion(pointer, x, y);
-            sleep_ms(interval);
+            if (burst) stamp += (uint32_t)interval;
+            else stamp = now_ms();
+            motion(pointer, stamp, x, y);
+            if (!burst) sleep_ms(interval);
         }
     }
     printf("dragged %.3f\n", now() - start);

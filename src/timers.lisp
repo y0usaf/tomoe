@@ -1,6 +1,6 @@
 (in-package #:tomoe)
 
-(defstruct owned-timer owner arguments ticks period deadline fired)
+(defstruct owned-timer owner arguments milliseconds ticks period clock deadline fired)
 
 (defun prepare-timers (runtime mounts)
   "Build a candidate registry without arming, cancelling, or mutating live timers."
@@ -14,15 +14,25 @@
           (when (eq (effect-kind effect) :timer)
             (when (> (incf count) 4096) (error "More than 4096 owned timers."))
             (let* ((args (effect-arguments effect))
-                   (old (gethash (list owner (first args)) previous)))
-              (push (if (and old (equal args (owned-timer-arguments old)))
+                   (old (gethash (list owner (first args)) previous))
+                   ;; :REFRESH resolves to the display's own period, so a timer
+                   ;; that follows the monitor is rebuilt when the rate changes
+                   ;; even though its declaration did not.
+                   (milliseconds (%timer-milliseconds (second args)))
+                   ;; :SECOND and :MINUTE arm on the next wall-clock boundary
+                   ;; rather than on whenever the timer was installed.
+                   (clock (%timer-clock-step (second args)))
+                   (first-ticks (if clock (clock-boundary-ms clock) milliseconds)))
+              (push (if (and old (equal args (owned-timer-arguments old))
+                            (eql milliseconds (owned-timer-milliseconds old)))
                         old
                         (make-owned-timer
-                         :owner owner :arguments args
-                         :ticks (ceiling (* (second args) internal-time-units-per-second)
+                         :owner owner :arguments args :milliseconds milliseconds
+                         :clock clock
+                         :ticks (ceiling (* first-ticks internal-time-units-per-second)
                                          1000)
                          :period (when (third args)
-                                   (ceiling (* (max 1 (second args))
+                                   (ceiling (* (max 1 milliseconds)
                                                internal-time-units-per-second) 1000))))
                     timers))))))
     (nreverse timers)))
@@ -73,13 +83,21 @@ The retained fired record prevents an unchanged one-shot effect from rearming."
                (serious-condition (condition) (record-error runtime condition)))
           (when (and (owned-timer-period timer)
                      (member timer (runtime-timers runtime) :test #'eq))
-            (setf (owned-timer-deadline timer)
-                  (+ (get-internal-real-time) (owned-timer-period timer))
-                  (owned-timer-fired timer) nil)))))))
+            ;; A clock timer re-arms on the next boundary, so a display that
+            ;; reads the time changes exactly when the time changes instead of
+            ;; drifting by however late its last tick ran.
+            (let ((ticks (if (owned-timer-clock timer)
+                             (ceiling (* (clock-boundary-ms (owned-timer-clock timer))
+                                         internal-time-units-per-second)
+                                      1000)
+                             (owned-timer-period timer))))
+              (setf (owned-timer-deadline timer) (+ (get-internal-real-time) ticks)
+                    (owned-timer-fired timer) nil))))))))
 
 (defun describe-timers (runtime)
   (loop for timer in (runtime-timers runtime)
         for (name milliseconds repeat) = (owned-timer-arguments timer)
         collect (list :owner (spec-name (owned-timer-owner timer)) :name name
-                      :kind (if repeat :interval :once) :milliseconds milliseconds
+                      :kind (if repeat :interval :once)
+                      :milliseconds (or (owned-timer-milliseconds timer) milliseconds)
                       :status (if (owned-timer-fired timer) :fired :pending))))

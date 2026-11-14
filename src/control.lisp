@@ -177,6 +177,10 @@ span of each collection for the frame-stall report."
        (destructuring-bind () args
          (read-data (or (%frames (runtime-backend runtime))
                         (error "Cannot serialize native frame counters.")))))
+      (:animation
+       (destructuring-bind () args
+         (read-data (or (%animation (runtime-backend runtime))
+                        (error "Cannot serialize native animation counters.")))))
       (:memory (destructuring-bind () args (memory-report runtime)))
       (:timings
        (destructuring-bind (&optional reset) args
