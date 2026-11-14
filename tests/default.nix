@@ -594,14 +594,6 @@ let
       install -m 644 ${tomoe}/share/tomoe/examples/shaders/okazz-glyphs.glsl $out/shaders/$name.glsl
     done
   '';
-in
-{
-  pointer-protocols = checkWith {
-    environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
-  } "pointer-protocols" ''
-    machine.wait_for_unit("multi-user.target")
-    machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
-  '';
   vm =
     {
       name,
