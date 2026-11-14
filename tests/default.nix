@@ -1033,6 +1033,7 @@ let
         SCENE_POLICY = "${./timing-policy.lisp}"
         REFRESH_POLICY = "${./memory-refresh.lisp}"
         HANDBACK_POLICY = "${./memory-handback.lisp}"
+        HANDBACK_GATE = "${./memory-handback.py}"
       ''
       + builtins.readFile ./memory.py;
     }

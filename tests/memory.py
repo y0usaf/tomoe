@@ -6,9 +6,10 @@ ANON_LIMIT = 60000
 DIRTY_LIMIT = 74000
 BUDGET_REFRESH_MHZ = 240000
 ANIMATED_WINDOW = 6
-HANDBACK_WINDOW = 5
 CONTROL_WINDOW = 4
 CHURN_LIMIT = 6 * 1024 * 1024
+
+exec(compile(open(HANDBACK_GATE).read(), "memory-handback", "exec"), globals())
 
 
 def tomoe_process():
@@ -112,7 +113,7 @@ def read_timings(label):
         f" frame_p99={channels.get('frame-total', {}).get(':P99', 0)}",
         flush=True,
     )
-    return longest, intervals, handback
+    return longest, intervals, handbacks
 
 
 def collection_gate(label, intervals, period, window):
@@ -221,26 +222,9 @@ except AssertionError as error:
 else:
     raise AssertionError("a collection slower than one refresh was accepted")
 
-machine.succeed("systemctl stop tomoe check-bus")
-fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1"})
-cli(f"mount {SCENE_POLICY}")
-cli(f"mount {HANDBACK_POLICY}")
-open_windows(2, width=320, height=240, prefix="h")
-time.sleep(3)
-before = measure("handback-before")
-cli("timings reset")
-cli("command churn")
-churn = [plist(entry).get(":STATE") for entry in items(inspect()[":EXTENSIONS"])
-         if text(plist(entry).get(":NAME", '""')) == "memory-handback"]
-assert churn and plist(churn[0]).get(":CELLS") == "600000", churn
-time.sleep(HANDBACK_WINDOW)
-read_timings("idle-handback")
-after = measure("handback-after")
-close_windows(2, prefix="h")
-quit()
-assert after["dynamic-usage"] <= before["dynamic-usage"] + CHURN_LIMIT, (
-    f"the idle handback left {after['dynamic-usage'] - before['dynamic-usage']} bytes of"
-    f" the churn behind, over {CHURN_LIMIT}")
+handbacks, handback_period = handback_window("h")
+handback_gate("idle-handback", handbacks, handback_period)
+slow_handback_window("s", handback_period)
 
 assert len(state[":EXTENSIONS"]) > 1, state[":EXTENSIONS"]
 for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty, "tiles-50"),

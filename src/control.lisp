@@ -60,10 +60,6 @@ collection took is the difference.")
   "The last collections as (START END), in native timing nanoseconds, so a frame
 stall can be tagged with the collection it overlapped.")
 (defvar *gc-log-count* 0)
-(defvar *handback-log* (make-array 64 :initial-element nil)
-  "The idle handbacks as (START END), kept apart from the collections the allocator
-starts so a frame stall can name which one it overlapped.")
-(defvar *handback-log-count* 0)
 
 (defvar *test-gc-pause* nil
   "A test-only floor, in internal time units, for the pause logged for each
@@ -72,7 +68,8 @@ refresh.")
 
 (defun note-gc ()
   "Count collections, keep the longest pause for the memory report and log the
-span of each collection for the frame-stall report."
+span of each collection for the frame-stall report. The idle handback logs itself where
+it collects, because an after-gc hook runs on SBCL's finalizer thread."
   (let* ((real sb-ext:*gc-real-time*)
          (run sb-ext:*gc-run-time*)
          (pause (max 0 (- run *gc-run-seen*) (or *test-gc-pause* 0)))
@@ -83,26 +80,29 @@ span of each collection for the frame-stall report."
           *gc-run-seen* run)
     (when (and end (plusp pause))
       (let ((start (max 0 (- end (round (* pause 1000000000) internal-time-units-per-second)))))
-        (if *handback-pending*
-            (progn
-              (setf (aref *handback-log* (mod *handback-log-count* (length *handback-log*)))
-                    (list start end))
-              (incf *handback-log-count*))
-            (progn
-              (setf (aref *gc-log* (mod *gc-log-count* (length *gc-log*))) (list start end))
-              (incf *gc-log-count*)))))))
+        (setf (aref *gc-log* (mod *gc-log-count* (length *gc-log*))) (list start end))
+        (incf *gc-log-count*)))))
 
 (pushnew 'note-gc sb-ext:*after-gc-hooks*)
 
-(defun gc-interval-report ()
-  (let ((count (min *gc-log-count* (length *gc-log*))))
-    (loop for index from (- *gc-log-count* count) below *gc-log-count*
-          collect (aref *gc-log* (mod index (length *gc-log*))))))
+(defun logged-intervals (log count)
+  (let ((length (length log)))
+    (loop for index from (- count (min count length)) below count
+          collect (aref log (mod index length)))))
 
 (defun handback-interval-report ()
-  (let ((count (min *handback-log-count* (length *handback-log*))))
-    (loop for index from (- *handback-log-count* count) below *handback-log-count*
-          collect (aref *handback-log* (mod index (length *handback-log*))))))
+  (logged-intervals *handback-log* *handback-log-count*))
+
+(defun gc-interval-report ()
+  "The collections the allocator started, apart from the idle handbacks the timing report
+lists on their own."
+  (let ((handbacks (handback-interval-report)))
+    (remove-if (lambda (interval)
+                 (some (lambda (handback)
+                         (and (< (first handback) (second interval))
+                              (> (second handback) (first interval))))
+                       handbacks))
+               (logged-intervals *gc-log* *gc-log-count*))))
 
 (defun memory-report (runtime)
   "The Lisp heap and collector, then the native heap, textures and output buffers."

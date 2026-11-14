@@ -1374,9 +1374,26 @@ accepted registry. Never enter this helper inside a candidate transaction."
 (defparameter *idle-seconds* 1)
 (defparameter *idle-consed* (* 8 1024 1024))
 (defparameter *nursery-bytes* (* 4 1024 1024))
-(defvar *handback-pending* nil
-  "True while the idle handback collects the oldest generation, so the timing report can
-count that collection apart from the ones the allocator starts on its own.")
+(defvar *handback-log* (make-array 64 :initial-element nil)
+  "The idle handbacks as (START END), in native timing nanoseconds, measured around the
+collection itself. SBCL runs the after-gc hooks on its finalizer thread, which cannot see
+the bindings of the thread that collected, so the handback records itself here instead.")
+(defvar *handback-log-count* 0)
+(defvar *test-handback-pause* nil
+  "A test-only floor, in native timing nanoseconds, for the pause logged for each idle
+handback, so a check can prove that it rejects a handback outlasting a refresh.")
+
+(defun hand-back-heap ()
+  "Collect the oldest generation for the idle handback, logging the pause the compositor
+took for it apart from the collections the allocator starts on its own."
+  (if *timing*
+      (let ((start (%timing-now)))
+        (sb-ext:gc :gen 2)
+        (let ((end (max (%timing-now) (+ start (or *test-handback-pause* 0)))))
+          (setf (aref *handback-log* (mod *handback-log-count* (length *handback-log*)))
+                (list start end))
+          (incf *handback-log-count*)))
+      (sb-ext:gc :gen 2)))
 
 (defun service-memory (runtime)
   "Collect the oldest generation while the scene has been quiet for a second, once 8 MB was
@@ -1397,7 +1414,7 @@ of shader compiles, captures or decoded images grew without a collection running
              (runtime-idle-trimmed runtime) nil))
       ((and quiet (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
        (%trim-heap)
-       (let ((*handback-pending* t)) (sb-ext:gc :gen 2))
+       (hand-back-heap)
        (setf (runtime-idle-trimmed runtime) t
              (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
              (runtime-idle-since runtime) (get-internal-real-time)))
