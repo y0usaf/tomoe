@@ -600,7 +600,7 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     return slot;
 }
 static bool scene_damage(struct output *o, const struct frame *data, bool locked,
-        struct region *changed, struct region *clip) {
+        struct region *changed, struct region *clip, bool *recorded) {
     struct oplist now = {0};
     struct frame record = *data;
     record.pass = render_record(o->server->renderer, data->buffer, &now);
@@ -613,6 +613,8 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     if (!complete || region_not_empty(changed)) o->damaged = true;
     oplist_finish(&o->ops);
     o->ops = now;
+    if (complete) effects_plan(o->server, &o->ops);
+    *recorded = complete;
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
     uint64_t frame = ++o->frames;
     struct region *slot_damage = &o->damage[frame % history];
@@ -674,7 +676,9 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     struct region changed, clip;
     region_init(&changed);
     region_init(&clip);
-    bool partial = track && scene_damage(o, &data, locked, &changed, &clip);
+    bool recorded = false;
+    bool partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
+    if (recorded) data.ops = &o->ops;
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
     if (o->planes.changed) partial = false;

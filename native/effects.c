@@ -8,11 +8,12 @@
 
 struct level { GLuint texture, framebuffer; int width, height; };
 
-struct chain { struct level levels[32]; int width, height; int64_t used; };
+struct chain { struct level levels[32]; int width, height; int64_t used; uint64_t key, pinned; };
 
 struct effects {
     struct chain chains[BLUR_CHAINS];
     struct level backdrop;
+    uint64_t stamp, blurs, reused;
     struct { float *levels; size_t capacity; float *quads; size_t capacity_quads;
              bool refused; } trail;
 };
@@ -181,15 +182,21 @@ static void chain_release(struct chain *chain) {
     *chain = (struct chain){0};
 }
 
-static struct chain *chain_for(struct effects *e, int width, int height) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+static struct chain *chain_cached(struct effects *e, uint64_t key) {
+    if (!key) return NULL;
+    for (size_t i = 0; i < BLUR_CHAINS; i++)
+        if (e->chains[i].used && e->chains[i].key == key) return &e->chains[i];
+    return NULL;
+}
+
+static struct chain *chain_spare(struct effects *e, int width, int height, int64_t now) {
     struct chain *found = NULL, *oldest = NULL;
     for (size_t i = 0; i < BLUR_CHAINS; i++) {
         struct chain *chain = &e->chains[i];
-        if (chain->used && chain->width == width && chain->height == height) found = chain;
-        else if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
+        if (e->stamp && chain->used && chain->pinned == e->stamp) continue;
+        if (chain->used && chain->width == width && chain->height == height) {
+            if (!found || chain->used < found->used) found = chain;
+        } else if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
         if (!oldest || chain->used < oldest->used) oldest = chain;
     }
     if (!found) {
@@ -197,8 +204,61 @@ static struct chain *chain_for(struct effects *e, int width, int height) {
         found->width = width;
         found->height = height;
     }
-    found->used = now;
+    found->key = 0;
     return found;
+}
+
+void effects_plan(struct tomoe *s, struct oplist *list) {
+    struct effects *e = s->effects;
+    if (!e) return;
+    e->stamp++;
+    int pinned = 0;
+    for (size_t i = 0; i < list->len; i++) {
+        struct op *op = &list->ops[i];
+        if (!op->blur || op->hidden) continue;
+        struct chain *chain = chain_cached(e, op->key);
+        if (!chain) continue;
+        if (chain->pinned != e->stamp) {
+            if (pinned == BLUR_CHAINS - 1) continue;
+            chain->pinned = e->stamp;
+            pinned++;
+        }
+        op->cached = true;
+    }
+}
+
+void effects_forget(struct tomoe *s) {
+    if (!s->effects) return;
+    for (size_t i = 0; i < BLUR_CHAINS; i++) s->effects->chains[i].key = 0;
+}
+
+void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused) {
+    *blurs = s->effects ? s->effects->blurs : 0;
+    *reused = s->effects ? s->effects->reused : 0;
+}
+
+static const struct op *recorded_blur(struct frame *f, int blur, struct box box,
+        struct box reach) {
+    if (!f->ops) return NULL;
+    for (size_t i = f->op_next; i < f->ops->len; i++) {
+        const struct op *op = &f->ops->ops[i];
+        if (op->blur != blur) continue;
+        f->op_next = i + 1;
+        return memcmp(&op->box, &box, sizeof(box)) == 0 &&
+            memcmp(&op->reach, &reach, sizeof(reach)) == 0 ? op : NULL;
+    }
+    return NULL;
+}
+
+static bool planes_cross(const struct frame *f, struct box area) {
+    if (!f->planes) return false;
+    for (size_t i = 0; i < f->planes->count; i++) {
+        struct box dst = f->planes->item[i].dst, overlap;
+        dst.x -= f->x;
+        dst.y -= f->y;
+        if (box_intersection(&overlap, &dst, &area)) return true;
+    }
+    return false;
 }
 
 static void sample_pass(struct program *p, struct level *from, struct level *to, double offset) {
@@ -249,35 +309,53 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     int x1 = (int)floor(drawn.x + drawn.width - 0.5) + 1;
     int y1 = (int)floor(drawn.y + drawn.height - 0.5) + 1;
     struct box footprint = { x0, y0, x1 - x0, y1 - y0 };
-    if (pass_record(f->pass, NULL, covered, reach, params, sizeof(params) / sizeof(params[0]))) {
-        if (!box_empty(&footprint)) pass_record_footprint(f->pass, footprint);
-        return;
-    }
-    if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) return;
-    pass_flush(f->pass);
     if (passes > 31) passes = 31;
-    struct level *levels = chain_for(e, grown.width, grown.height)->levels;
-    bool ok = level_ensure(&levels[0], grown.width, grown.height);
-    for (int i = 1; ok && i <= passes; i++)
-        ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
-            grown.height >> i > 0 ? grown.height >> i : 1);
-    GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
-    if (ok) {
+    int blur = ++f->blurs;
+    double seed[] = { grown.x, grown.y, grown.width, grown.height, passes, offset, f->transform,
+        f->width, f->height, f->x, f->y };
+    if (pass_record_blur(f->pass, covered, reach, footprint, params,
+            sizeof(params) / sizeof(params[0]), blur, seed,
+            planes_cross(f, grown) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
+    const struct op *op = recorded_blur(f, blur, covered, reach);
+    if (op && op->hidden) return;
+    if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) return;
+    int64_t now = monotonic_ns();
+    uint64_t key = op ? op->key : 0;
+    struct chain *chain = chain_cached(e, key);
+    if (chain) {
+        chain->used = now;
+        e->reused++;
+    } else {
+        pass_flush(f->pass);
+        chain = chain_spare(e, grown.width, grown.height, now);
+        chain->used = now;
+        struct level *levels = chain->levels;
+        bool ok = level_ensure(&levels[0], grown.width, grown.height);
+        for (int i = 1; ok && i <= passes; i++)
+            ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
+                grown.height >> i > 0 ? grown.height >> i : 1);
+        GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+        if (ok) {
+            glBindFramebuffer(GL_FRAMEBUFFER, target);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, levels[0].texture);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, grown.x, grown.y, grown.width,
+                grown.height);
+            glDisable(GL_BLEND);
+            for (int i = 1; i <= passes; i++)
+                sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
+            for (int i = passes - 1; i >= 0; i--)
+                sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, levels[0].texture);
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, grown.x, grown.y, grown.width, grown.height);
-        glDisable(GL_BLEND);
-        for (int i = 1; i <= passes; i++)
-            sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
-        for (int i = passes - 1; i >= 0; i--)
-            sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
+        glViewport(0, 0, f->buffer->width, f->buffer->height);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        if (!ok) return;
+        chain->key = key;
+        e->blurs++;
+        pass_scene_attributes_dirty(f->pass);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, target);
-    glViewport(0, 0, f->buffer->width, f->buffer->height);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    if (!ok) return;
     float texcoords[8];
     double xs[] = { box.x, box.x + box.width, box.x, box.x + box.width };
     double ys[] = { box.y, box.y, box.y + box.height, box.y + box.height };
@@ -287,8 +365,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         texcoords[2 * i] = (float)((bx - grown.x) / grown.width);
         texcoords[2 * i + 1] = (float)((by - grown.y) / grown.height);
     }
-    pass_scene_attributes_dirty(f->pass);
-    struct scene_quad scene = { .kind = SCENE_TEXTURE, .raw = levels[0].texture,
+    struct scene_quad scene = { .kind = SCENE_TEXTURE, .raw = chain->levels[0].texture,
         .target = GL_TEXTURE_2D, .shader_clip = 1, .blend = 1, .opaque = 1,
         .alpha = alpha < 1 ? alpha : 1, .radius = radius,
         .size = { box.width, box.height } };

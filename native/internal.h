@@ -179,12 +179,13 @@ struct read_options {
 };
 struct pass;
 struct op {
-    uint64_t hash, seq;
+    uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
     struct box box, reach, footprint;
     struct fbox src;
     struct region opaque;
-    bool mapped, hidden;
+    int blur;
+    bool mapped, hidden, cached;
 };
 struct oplist { struct op *ops; size_t len, cap; bool lost; };
 void oplist_finish(struct oplist *list);
@@ -218,7 +219,8 @@ int pass_submit_fence(struct pass *pass);
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list);
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
     struct box reach, const double *params, size_t count);
-void pass_record_footprint(struct pass *pass, struct box footprint);
+bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struct box footprint,
+    const double *params, size_t count, int blur, const double *seed, size_t seeds);
 void pass_clip(struct pass *pass, const struct region *clip);
 bool pass_touches(struct pass *pass, struct box box);
 void render_retire_fences(struct render *r);
@@ -631,6 +633,9 @@ struct frame {
     struct pass *pass;
     struct buffer *buffer;
     const struct plane_assignment *planes;
+    const struct oplist *ops;
+    size_t op_next;
+    int blurs;
     int x, y, width, height;
     enum wl_output_transform transform;
     double view_x, view_y, zoom;
@@ -653,6 +658,9 @@ struct trail_style {
     uint32_t rgba;
 };
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
+void effects_plan(struct tomoe *s, struct oplist *list);
+void effects_forget(struct tomoe *s);
+void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const struct region *background_blur_region(struct tomoe *s, struct surface *surface);

@@ -2147,9 +2147,27 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
     return true;
 }
 
-void pass_record_footprint(struct pass *pass, struct box footprint) {
+bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struct box footprint,
+        const double *params, size_t count, int blur, const double *seed, size_t seeds) {
     struct oplist *list = pass->record;
-    if (list && !list->lost && list->len) list->ops[list->len - 1].footprint = footprint;
+    if (!list) return false;
+    size_t below = list->len;
+    pass_record(pass, NULL, box, reach, params, count);
+    if (list->lost || list->len == below) return true;
+    struct op *op = &list->ops[below];
+    op->footprint = footprint;
+    op->blur = blur;
+    if (!seeds) return true;
+    uint64_t layout = mix(0xcbf29ce484222325ull, seed, seeds * sizeof(*seed));
+    for (size_t i = 0; i < below; i++) {
+        const struct op *under = &list->ops[i];
+        struct box overlap;
+        if (!box_intersection(&overlap, &under->box, &reach)) continue;
+        layout = mix(layout, &under->hash, sizeof(under->hash));
+        layout = mix(layout, &under->box, sizeof(under->box));
+    }
+    op->backdrop = layout | 1;
+    return true;
 }
 
 void oplist_finish(struct oplist *list) {
@@ -2176,6 +2194,30 @@ static void damage_content(struct region *out, const struct op *was, const struc
     int y2 = (int)ceil(op->box.y + (changed.y + changed.height - op->src.y) * sy) + 1;
     struct box mapped = { x1, y1, x2 - x1, y2 - y1 };
     if (box_intersection(&mapped, &mapped, &op->box)) damage_box(out, mapped);
+}
+
+static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
+        const size_t *match, size_t i) {
+    const struct op *op = &now->ops[i], *was = &old->ops[match[i]];
+    if (!was->key || op->backdrop != was->backdrop) return true;
+    struct rect reach = { op->reach.x, op->reach.y, op->reach.x + op->reach.width,
+        op->reach.y + op->reach.height };
+    for (size_t j = 0; j < i; j++) {
+        const struct op *under = &now->ops[j];
+        struct box overlap;
+        if (!box_intersection(&overlap, &under->box, &op->reach)) continue;
+        if (match[j] == SIZE_MAX) return true;
+        const struct op *before = &old->ops[match[j]];
+        if (under->blur && under->key != before->key) return true;
+        if (!under->surface || under->seq == before->seq) continue;
+        struct region changed;
+        region_init(&changed);
+        damage_content(&changed, before, under);
+        bool moved = region_contains_rectangle(&changed, &reach) != REGION_OUT;
+        region_fini(&changed);
+        if (moved) return true;
+    }
+    return false;
 }
 
 static struct region *visibility(struct oplist *list) {
@@ -2237,8 +2279,15 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
             start = j + 1;
             break;
         }
-        const struct op *op = &now->ops[i];
+        struct op *op = &now->ops[i];
+        if (op->blur && op->backdrop) {
+            static uint64_t generation;
+            op->key = match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) ?
+                old->ops[match[i]].key : ++generation;
+        }
         if (match[i] == SIZE_MAX) region_union(out, out, &is[i]);
+        else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
+            region_union(out, out, &is[i]);
         else if (op->surface && op->seq != old->ops[match[i]].seq) {
             region_clear(&changed);
             damage_content(&changed, &old->ops[match[i]], op);
@@ -2270,7 +2319,7 @@ void oplist_expand(const struct oplist *list, struct region *region) {
         grew = false;
         for (size_t i = 0; i < list->len; i++) {
             const struct box *reach = &list->ops[i].reach;
-            if (box_empty(reach) || list->ops[i].hidden) continue;
+            if (box_empty(reach) || list->ops[i].hidden || list->ops[i].cached) continue;
             struct rect r = { reach->x, reach->y, reach->x + reach->width,
                 reach->y + reach->height };
             if (region_contains_rectangle(region, &r) != REGION_PART) continue;
@@ -2825,6 +2874,7 @@ void ring_finish(struct ring *ring) {
 bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
         int width, int height, bool implicit) {
     ring_finish(ring);
+    effects_forget(s);
     ring->width = width;
     ring->height = height;
     ring->implicit = implicit;
