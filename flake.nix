@@ -4,7 +4,7 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e52c192be9d7b2c4bd4aed326c8731b35f8bb75c";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -284,8 +284,51 @@
             tomoe = package pkgs { };
             baseline = packageFrom baselineSource pkgs { };
           }).suites;
+        bench = import ./bench {
+          inherit pkgs;
+          tomoe = package pkgs { };
+        };
       }) pkgsFor;
-      apps = nixpkgs.lib.mapAttrs (_: appsFor) pkgsFor;
+      apps = nixpkgs.lib.mapAttrs (
+        system: pkgs:
+        appsFor pkgs
+        // {
+          bench = {
+            type = "app";
+            program = pkgs.lib.getExe (
+              pkgs.writeShellApplication {
+                name = "tomoe-bench";
+                runtimeInputs = [
+                  pkgs.nix
+                  pkgs.coreutils
+                  pkgs.gnused
+                  pkgs.gnugrep
+                ];
+                text = ''
+                  drv=$(nix eval --raw "${self}#legacyPackages.${system}.bench.drvPath")
+                  dir=$(mktemp -d)
+                  trap 'rm -rf "$dir"' EXIT
+                  nix build --no-link --print-build-logs "$drv" >/dev/null 2>"$dir/build" || true
+                  log="$dir/build"
+                  if nix log "$drv" >"$dir/stored" 2>/dev/null \
+                    && grep -q '^BENCH-JSON-BEGIN$' "$dir/stored"; then
+                    log="$dir/stored"
+                  else
+                    sed -E -i 's/^[A-Za-z0-9._+-]+> //' "$log"
+                  fi
+                  if ! grep -q '^BENCH-JSON-BEGIN$' "$log"; then
+                    echo "tomoe-bench: the benchmark produced no scoreboard" >&2
+                    tail -80 "$log" >&2
+                    exit 1
+                  fi
+                  sed -n '/^bench: table$/,/^BENCH-JSON-BEGIN$/{/^bench: table$/d;/^BENCH-JSON-BEGIN$/d;p;}' "$log"
+                  sed -n '/^BENCH-JSON-BEGIN$/,/^BENCH-JSON-END$/{/^BENCH-JSON-/d;p;}' "$log"
+                '';
+              }
+            );
+          };
+        }
+      ) pkgsFor;
       formatter = nixpkgs.lib.mapAttrs (_: pkgs: pkgs.nixfmt) pkgsFor;
     };
 }

@@ -505,12 +505,24 @@ nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
 nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
+nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
 
 Every suite `nix flake check` runs is also a target of its own under
 `legacyPackages.<system>.suites`, named as in `tests/default.nix`, so one suite
 can be iterated on without the whole VM.
+
+`nix run .#bench` measures rather than asserts, so it is not part of
+`nix flake check`. It boots every compositor that runs in the VM on the same
+vkms output at the same mode, drives them all with the neutral
+`bench/bench-client.c` client over uinput evdev devices (so input takes the real
+libinput path), and prints a table plus one JSON document with latency (input to
+presented frame, to the client's frame callback, and to the compositor's input
+event), CPU per frame at 1, 10 and 50 windows, idle CPU and wakeups, and RSS/PSS.
+Every number carries the spread across its repeats. vkms is a software display,
+so these are compositor pipeline costs: nothing here measures input-to-photon
+latency or power draw.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
