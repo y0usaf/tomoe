@@ -280,7 +280,7 @@ assert counts[0] == counts[1] and int(counts[0]) > 0, f"the counter saw {counts}
 print(f"equivalence: a reducer without a contract saw all {counts[0]} pointer events, as before")
 
 transcript = scenario(FASTPATH, CONTRACT_POLICY, "contract", "/run/contract.log", [], bare=True)
-wakes = machine.succeed("grep '^contract' /run/contract.log || true").splitlines()
+wakes = [line for line in "\n".join(transcript).splitlines() if line.startswith("contract ")]
 assert wakes, "the contract published no wakes at all"
 dispatches = None
 for line in transcript:
