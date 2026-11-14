@@ -194,6 +194,10 @@ void render_destroy(struct render *r);
 int render_drm_fd(struct render *r);
 bool render_has_timeline(struct render *r);
 void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, size_t *images);
+struct render_counters {
+    uint64_t gl_calls, quads, runs, uploads, upload_bytes;
+};
+void render_counters(struct render *r, struct render_counters *out);
 const struct format_set *render_texture_formats(struct render *r);
 const struct format_set *render_shm_formats(struct render *r);
 struct buffer *render_allocate(struct render *r, int width, int height,
@@ -295,8 +299,8 @@ struct ui_asset_pool;
 struct ui_pointer;
 
 struct timeline;
-enum { PROGRAM_RECT, PROGRAM_SDF, PROGRAM_TEXTURE, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT,
-    PROGRAM_EXTERNAL_LUT, PROGRAM_DOWN, PROGRAM_UP, PROGRAM_COUNT };
+enum { PROGRAM_SCENE, PROGRAM_SDF, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT, PROGRAM_EXTERNAL_LUT,
+    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_COUNT };
 struct program {
     GLuint id;
     GLint pos, local, texcoord;
@@ -307,6 +311,20 @@ struct program {
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
 };
+enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
+struct scene_quad {
+    float pos[8], local[8], tex[8];
+    float color[4], tint[4];
+    float alpha, radius, width, range, power, size[2];
+    int kind, shader_clip, opaque, filter, blend;
+    uint32_t target;
+    GLuint raw;
+    struct texture *texture;
+    const pixman_region32_t *clip;
+};
+void pass_scene(struct pass *pass, const struct scene_quad *quad);
+void pass_flush(struct pass *pass);
+void pass_scene_attributes_dirty(struct pass *pass);
 struct program *render_shader_create(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
 struct window_shader {

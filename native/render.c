@@ -32,6 +32,19 @@ struct held_frame {
     struct held_frame *next;
 };
 
+struct scene_vertex;
+struct scene_instance;
+
+struct scene {
+    struct scene_instance *in, *prev;
+    size_t count, cap, prev_count, prev_cap;
+    struct scene_vertex *vertex;
+    struct pass *owner;
+    GLuint vbo, dummy;
+    size_t vbo_bytes;
+    bool attributes;
+};
+
 struct render {
     int fd;
     bool timeline;
@@ -57,10 +70,14 @@ struct render {
     PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_fence;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
+    struct scene scene;
+    uint64_t gl_calls, quads, runs, uploads, upload_bytes;
     float *mesh;
     size_t mesh_cap;
     char *node, *exe, *warm_dir, *driver;
 };
+
+#define GL(r, statement) ((r)->gl_calls++, (void)(statement))
 
 struct image {
     struct addon addon;
@@ -77,6 +94,7 @@ struct gl_texture {
     GLenum target, gl;
     GLuint tex, fbo;
     bool alpha;
+    GLint filter;
     uint32_t format;
     uint64_t bytes;
     struct buffer *buffer;
@@ -126,27 +144,49 @@ static const char rounding_source[] =
     "    return 1.0 - t * t * (3.0 - 2.0 * t);\n"
     "}\n";
 
-static const char rect_source[] =
-    "uniform vec4 color;\n"
+static const char sdf_vertex_source[] =
+    "attribute vec2 pos;\n"
+    "attribute vec2 local;\n"
+    "attribute vec4 color;\n"
+    "attribute vec4 params;\n"
+    "attribute vec4 extra;\n"
+    "attribute vec2 size;\n"
+    "varying vec4 v_sdf_color;\n"
+    "varying vec4 v_sdf_params;\n"
+    "varying vec4 v_sdf_extra;\n"
+    "varying vec2 v_sdf_size;\n"
+    "varying vec2 v_local;\n"
     "void main() {\n"
-    "    gl_FragColor = color;\n"
+    "    v_sdf_color = color;\n"
+    "    v_sdf_params = params;\n"
+    "    v_sdf_extra = extra;\n"
+    "    v_sdf_size = size;\n"
+    "    v_local = local;\n"
+    "    gl_Position = vec4(pos, 0.0, 1.0);\n"
     "}\n";
 
-static const char sdf_source[] =
-    "uniform vec2 size;\n"
-    "uniform float radius;\n"
-    "uniform float width;\n"
-    "uniform float range;\n"
-    "uniform float power;\n"
-    "uniform float kind;\n"
-    "uniform vec4 color;\n"
-    "uniform float alpha;\n"
+static const char sdf_prelude[] =
+    "precision highp float;\n"
+    "varying vec4 v_sdf_color;\n"
+    "varying vec4 v_sdf_params;\n"
+    "varying vec4 v_sdf_extra;\n"
+    "varying vec2 v_sdf_size;\n"
     "varying vec2 v_local;\n"
     "float box_distance(vec2 p, vec2 half_size, float r) {\n"
     "    vec2 q = abs(p) - (half_size - vec2(r));\n"
     "    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;\n"
-    "}\n"
+    "}\n";
+
+static const char sdf_source[] =
     "void main() {\n"
+    "    vec4 color = v_sdf_color;\n"
+    "    float alpha = v_sdf_params.x;\n"
+    "    float radius = v_sdf_params.z;\n"
+    "    float width = v_sdf_extra.x;\n"
+    "    float range = v_sdf_extra.y;\n"
+    "    float power = v_sdf_extra.z;\n"
+    "    float kind = v_sdf_extra.w;\n"
+    "    vec2 size = v_sdf_size;\n"
     "    vec4 premultiplied = vec4(color.rgb * color.a, color.a);\n"
     "    if (kind < 0.5) {\n"
     "        float a = rounding_alpha(v_local, size, radius + width);\n"
@@ -163,6 +203,65 @@ static const char sdf_source[] =
     "    if (d <= -0.5 || d >= range) discard;\n"
     "    float falloff = pow(clamp(1.0 - max(d, 0.0) / range, 0.0, 1.0), power);\n"
     "    gl_FragColor = premultiplied * falloff * smoothstep(-0.5, 0.5, d) * alpha;\n"
+    "}\n";
+
+static const char scene_vertex_source[] =
+    "attribute vec2 pos;\n"
+    "attribute vec2 local;\n"
+    "attribute vec2 texcoord;\n"
+    "attribute vec4 color;\n"
+    "attribute vec4 tint;\n"
+    "attribute vec4 params;\n"
+    "attribute vec4 extra;\n"
+    "attribute vec2 size;\n"
+    "varying vec4 v_color;\n"
+    "varying vec4 v_tint;\n"
+    "varying vec4 v_params;\n"
+    "varying vec4 v_extra;\n"
+    "varying vec2 v_size;\n"
+    "varying vec2 v_local;\n"
+    "varying vec2 v_tex;\n"
+    "void main() {\n"
+    "    v_color = color;\n"
+    "    v_tint = tint;\n"
+    "    v_params = params;\n"
+    "    v_extra = extra;\n"
+    "    v_size = size;\n"
+    "    v_local = local;\n"
+    "    v_tex = texcoord;\n"
+    "    gl_Position = vec4(pos, 0.0, 1.0);\n"
+    "}\n";
+
+static const char scene_prelude[] =
+    "precision highp float;\n"
+    "uniform sampler2D tex;\n"
+    "varying vec4 v_color;\n"
+    "varying vec4 v_tint;\n"
+    "varying vec4 v_params;\n"
+    "varying vec4 v_extra;\n"
+    "varying vec2 v_size;\n"
+    "varying vec2 v_local;\n"
+    "varying vec2 v_tex;\n";
+
+static const char scene_source[] =
+    "void main() {\n"
+    "    float alpha = v_params.x;\n"
+    "    float kind = v_extra.w;\n"
+    "    if (kind < 0.5) {\n"
+    "        gl_FragColor = v_color;\n"
+    "        return;\n"
+    "    }\n"
+    "    {\n"
+    "        vec4 c = texture2D(tex, v_tex);\n"
+    "        if (v_params.y > 0.5) c.a = 1.0;\n"
+    "        if (v_params.w > 0.5) {\n"
+    "            if (v_local.x < 0.0 || v_local.y < 0.0 || v_local.x > v_size.x ||\n"
+    "                    v_local.y > v_size.y) discard;\n"
+    "            c *= rounding_alpha(v_local, v_size, v_params.z);\n"
+    "        }\n"
+    "        if (v_tint.a > 0.0) c = mix(c, vec4(v_tint.rgb * c.a, c.a), v_tint.a);\n"
+    "        gl_FragColor = c * alpha;\n"
+    "    }\n"
     "}\n";
 
 static const char texture_source[] =
@@ -327,6 +426,14 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
     glBindAttribLocation(p->id, 0, "grid");
     glBindAttribLocation(p->id, 1, "uv");
     glBindAttribLocation(p->id, 2, "texcoord");
+    glBindAttribLocation(p->id, 3, "pos");
+    glBindAttribLocation(p->id, 4, "local");
+    glBindAttribLocation(p->id, 5, "color");
+    glBindAttribLocation(p->id, 6, "tint");
+    glBindAttribLocation(p->id, 7, "params");
+    glBindAttribLocation(p->id, 8, "extra");
+    glBindAttribLocation(p->id, 9, "size");
+    glBindAttribLocation(p->id, 10, "scissor");
     glLinkProgram(p->id);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -380,6 +487,18 @@ static bool link_program(struct program *p, const char *prelude, const char *bod
     return link_sources(p, vertex, 1, fragment, 4);
 }
 
+static bool link_scene(struct program *p) {
+    const char *fragment[] = { scene_prelude, rounding_source, scene_source };
+    const char *vertex[] = { scene_vertex_source };
+    return link_sources(p, vertex, 1, fragment, 3);
+}
+
+static bool link_sdf(struct program *p) {
+    const char *fragment[] = { sdf_prelude, rounding_source, sdf_source };
+    const char *vertex[] = { sdf_vertex_source };
+    return link_sources(p, vertex, 1, fragment, 3);
+}
+
 #define EXTERNAL_PRELUDE "#extension GL_OES_EGL_image_external : require\n" \
     "#define SAMPLER samplerExternalOES\n"
 static const struct builtin {
@@ -387,9 +506,6 @@ static const struct builtin {
     bool external;
     const char *prelude, *body;
 } builtins[] = {
-    { PROGRAM_RECT, false, "", rect_source },
-    { PROGRAM_SDF, false, "", sdf_source },
-    { PROGRAM_TEXTURE, false, "#define SAMPLER sampler2D\n", texture_source },
     { PROGRAM_TEXTURE_LUT, false, "#define SAMPLER sampler2D\n#define LUT\n", texture_source },
     { PROGRAM_EXTERNAL, true, EXTERNAL_PRELUDE, texture_source },
     { PROGRAM_EXTERNAL_LUT, true, EXTERNAL_PRELUDE "#define LUT\n", texture_source },
@@ -756,8 +872,9 @@ void window_meshes_finish(struct tomoe *s) {
     s->meshes = NULL;
 }
 
-static void render_quad(struct program *p, const float pos[8], const float local[8],
-        const float texcoords[8]) {
+static void render_quad(struct render *r, struct program *p, const float pos[8],
+        const float local[8], const float texcoords[8]) {
+    r->scene.attributes = false;
     glVertexAttribPointer(p->pos, 2, GL_FLOAT, GL_FALSE, 0, pos);
     glEnableVertexAttribArray(p->pos);
     if (p->local >= 0 && local) {
@@ -776,18 +893,21 @@ static void render_quad(struct program *p, const float pos[8], const float local
 
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
         const float texcoords[8]) {
+    struct render *r = pass->r;
+    pass_flush(pass);
     if (!pass->clip) {
-        render_quad(p, pos, local, texcoords);
+        render_quad(r, p, pos, local, texcoords);
         return;
     }
     int count = 0;
     const pixman_box32_t *rects = pixman_region32_rectangles(pass->clip, &count);
-    glEnable(GL_SCISSOR_TEST);
+    GL(r, glEnable(GL_SCISSOR_TEST));
     for (int i = 0; i < count; i++) {
-        glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
-        render_quad(p, pos, local, texcoords);
+        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
+            rects[i].y2 - rects[i].y1));
+        render_quad(r, p, pos, local, texcoords);
     }
-    glDisable(GL_SCISSOR_TEST);
+    GL(r, glDisable(GL_SCISSOR_TEST));
 }
 
 struct program *render_program(struct render *renderer, int kind) {
@@ -1067,9 +1187,61 @@ bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     return ok;
 }
 
-static void blend(bool enabled) {
-    if (enabled) glEnable(GL_BLEND);
-    else glDisable(GL_BLEND);
+static void draw_rotated(struct pass *pass, struct program *p, const float pos[8],
+        const pixman_region32_t *clip, const float texcoords[8]) {
+    struct render *r = pass->r;
+    if (!clip) {
+        render_quad(r, p, pos, NULL, texcoords);
+        return;
+    }
+    int count = 0;
+    const pixman_box32_t *rects = pixman_region32_rectangles((pixman_region32_t *)clip, &count);
+    GL(r, glEnable(GL_SCISSOR_TEST));
+    for (int i = 0; i < count; i++) {
+        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
+            rects[i].y2 - rects[i].y1));
+        render_quad(r, p, pos, NULL, texcoords);
+    }
+    GL(r, glDisable(GL_SCISSOR_TEST));
+}
+
+struct scene_vertex {
+    float pos[2], local[2], tex[2];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2];
+};
+
+struct scene_instance {
+    float pos[8], local[8], tex[8];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2], scissor[4];
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+};
+
+struct scene_run {
+    size_t first, count;
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+    float scissor[4];
+};
+
+enum { SCENE_VERTICES = 6 };
+
+static void quad_positions(const struct pass *pass, struct box box, double rotation,
+        float pos[8]) {
+    float w = pass->buffer->width, h = pass->buffer->height;
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
+        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
+    }
 }
 
 static void rotated_bounds(struct box *out, struct box box, double rotation) {
@@ -1089,36 +1261,259 @@ static void rotated_bounds(struct box *out, struct box box, double rotation) {
     *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
 }
 
-static void draw_rotated(struct pass *pass, struct program *p, struct box box,
-        const pixman_region32_t *clip, const float texcoords[8], double rotation) {
-    float w = pass->buffer->width, h = pass->buffer->height;
-    float pos[8];
-    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
-    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
-    for (int i = 0; i < 4; i++) {
-        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
-        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
-        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
+static void scene_emit(struct render *r, const struct scene_quad *quad,
+        const pixman_box32_t *scissor) {
+    struct scene *s = &r->scene;
+    if (s->count == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 64;
+        struct scene_instance *grown = realloc(s->in, cap * sizeof(*grown));
+        if (!grown) return;
+        s->in = grown;
+        s->cap = cap;
     }
-    struct box bounds;
-    rotated_bounds(&bounds, box, rotation);
-    pixman_region32_t region;
-    pixman_region32_init_rect(&region, bounds.x, bounds.y, bounds.width, bounds.height);
-    if (clip) pixman_region32_intersect(&region, &region, clip);
-    if (pass->clip) pixman_region32_intersect(&region, &region, pass->clip);
-    int count = 0;
-    const pixman_box32_t *rects = pixman_region32_rectangles(&region, &count);
-    glEnable(GL_SCISSOR_TEST);
-    for (int i = 0; i < count; i++) {
-        glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
-        render_quad(p, pos, NULL, texcoords);
+    struct scene_instance *in = &s->in[s->count];
+    memset(in, 0, sizeof(*in));
+    memcpy(in->pos, quad->pos, sizeof(in->pos));
+    memcpy(in->local, quad->local, sizeof(in->local));
+    memcpy(in->tex, quad->tex, sizeof(in->tex));
+    memcpy(in->color, quad->color, sizeof(in->color));
+    memcpy(in->tint, quad->tint, sizeof(in->tint));
+    in->params[0] = quad->alpha;
+    in->params[1] = quad->opaque ? 1 : 0;
+    in->params[2] = quad->radius;
+    in->params[3] = quad->shader_clip ? 1 : 0;
+    in->extra[0] = quad->width;
+    in->extra[1] = quad->range;
+    in->extra[2] = quad->power;
+    in->program = quad->kind == SCENE_RECT || quad->kind == SCENE_TEXTURE ?
+        PROGRAM_SCENE : PROGRAM_SDF;
+    in->extra[3] = in->program == PROGRAM_SDF ? (float)(quad->kind - SCENE_BORDER) :
+        (float)quad->kind;
+    in->size[0] = quad->size[0];
+    in->size[1] = quad->size[1];
+    if (scissor) {
+        in->scissor[0] = (float)scissor->x1;
+        in->scissor[1] = (float)scissor->y1;
+        in->scissor[2] = (float)scissor->x2;
+        in->scissor[3] = (float)scissor->y2;
     }
-    glDisable(GL_SCISSOR_TEST);
-    pixman_region32_fini(&region);
+    in->texture = quad->texture ? texture_of(quad->texture) : NULL;
+    in->id = in->texture ? in->texture->tex : quad->raw;
+    in->target = quad->target;
+    in->filter = quad->filter;
+    in->blend = quad->blend;
+    s->count++;
 }
-static void draw(struct pass *pass, struct program *p, struct box box,
-        const pixman_region32_t *clip, const float texcoords[8]) {
-    draw_rotated(pass, p, box, clip, texcoords, 0);
+
+void pass_scene(struct pass *pass, const struct scene_quad *quad) {
+    const pixman_region32_t *clip = quad->clip ? quad->clip : pass->clip;
+    if (!pass->r->scene.count) pass->r->scene.owner = pass;
+    pixman_region32_t both;
+    if (quad->clip && pass->clip) {
+        pixman_region32_init(&both);
+        pixman_region32_intersect(&both, quad->clip, pass->clip);
+        clip = &both;
+    }
+    if (!clip) scene_emit(pass->r, quad, NULL);
+    else {
+        int count = 0;
+        const pixman_box32_t *rects = pixman_region32_rectangles(
+            (pixman_region32_t *)clip, &count);
+        for (int i = 0; i < count; i++) scene_emit(pass->r, quad, &rects[i]);
+    }
+    if (clip == &both) pixman_region32_fini(&both);
+}
+
+static void scene_expand(struct scene_vertex *out, const struct scene_instance *in) {
+    static const int corners[SCENE_VERTICES] = { 0, 1, 2, 2, 1, 3 };
+    for (int k = 0; k < SCENE_VERTICES; k++) {
+        int corner = corners[k];
+        struct scene_vertex *v = &out[k];
+        v->pos[0] = in->pos[2 * corner];
+        v->pos[1] = in->pos[2 * corner + 1];
+        v->local[0] = in->local[2 * corner];
+        v->local[1] = in->local[2 * corner + 1];
+        v->tex[0] = in->tex[2 * corner];
+        v->tex[1] = in->tex[2 * corner + 1];
+        memcpy(v->color, in->color, sizeof(v->color));
+        memcpy(v->tint, in->tint, sizeof(v->tint));
+        memcpy(v->params, in->params, sizeof(v->params));
+        memcpy(v->extra, in->extra, sizeof(v->extra));
+        memcpy(v->size, in->size, sizeof(v->size));
+    }
+}
+
+static void scene_attributes(struct render *r) {
+    struct scene *s = &r->scene;
+    if (s->attributes) return;
+    s->attributes = true;
+    GL(r, glBindBuffer(GL_ARRAY_BUFFER, s->vbo));
+    GLsizei stride = sizeof(struct scene_vertex);
+    GL(r, glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, pos)));
+    GL(r, glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, local)));
+    GL(r, glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, tex)));
+    GL(r, glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, color)));
+    GL(r, glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, tint)));
+    GL(r, glVertexAttribPointer(7, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, params)));
+    GL(r, glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, extra)));
+    GL(r, glVertexAttribPointer(9, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct scene_vertex, size)));
+    for (GLuint index = 2; index <= 9; index++)
+        GL(r, glEnableVertexAttribArray(index));
+}
+
+void pass_scene_attributes_dirty(struct pass *pass) {
+    pass->r->scene.attributes = false;
+}
+
+static void scene_dummy_texture(struct render *r) {
+    struct scene *s = &r->scene;
+    static const uint32_t clear;
+    if (s->dummy) return;
+    GL(r, glGenTextures(1, &s->dummy));
+    GL(r, glBindTexture(GL_TEXTURE_2D, s->dummy));
+    GL(r, glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &clear));
+    GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+    GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+    GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+    GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+}
+
+static void scene_run_draw(struct render *r, struct scene_run *run, bool *blending,
+        bool *scissoring, int *program) {
+    if (*program != run->program) {
+        GL(r, glUseProgram(r->programs[run->program].id));
+        *program = run->program;
+    }
+    if (run->id) {
+        GL(r, glBindTexture(run->target, run->id));
+        if (run->filter && (!run->texture || run->texture->filter != run->filter)) {
+            GL(r, glTexParameteri(run->target, GL_TEXTURE_MIN_FILTER, run->filter));
+            GL(r, glTexParameteri(run->target, GL_TEXTURE_MAG_FILTER, run->filter));
+            if (run->texture) run->texture->filter = run->filter;
+        }
+    } else if (run->program == PROGRAM_SCENE) {
+        GL(r, glBindTexture(GL_TEXTURE_2D, r->scene.dummy));
+    }
+    if (*blending != (run->blend != 0)) {
+        if (run->blend) GL(r, glEnable(GL_BLEND));
+        else GL(r, glDisable(GL_BLEND));
+        *blending = run->blend != 0;
+    }
+    if (run->scissor[2] > run->scissor[0]) {
+        if (!*scissoring) {
+            GL(r, glEnable(GL_SCISSOR_TEST));
+            *scissoring = true;
+        }
+        GL(r, glScissor((GLint)run->scissor[0], (GLint)run->scissor[1],
+            (GLsizei)(run->scissor[2] - run->scissor[0]),
+            (GLsizei)(run->scissor[3] - run->scissor[1])));
+    } else if (*scissoring) {
+        GL(r, glDisable(GL_SCISSOR_TEST));
+        *scissoring = false;
+    }
+    GL(r, glDrawArrays(GL_TRIANGLES, (GLint)(run->first * SCENE_VERTICES),
+        (GLsizei)(run->count * SCENE_VERTICES)));
+    r->runs++;
+    r->quads += run->count;
+}
+
+static void scene_draw(struct render *r, size_t count) {
+    if (!count) return;
+    if (!r->programs[PROGRAM_SCENE].id || !r->programs[PROGRAM_SDF].id) {
+        tomoe_log(LOG_ERROR, "tomoe: a draw program is missing");
+        return;
+    }
+    scene_dummy_texture(r);
+    GL(r, glEnable(GL_BLEND));
+    bool blending = true, scissoring = false;
+    int program = PROGRAM_COUNT;
+    struct scene_run run = {0};
+    for (size_t i = 0; i < count; i++) {
+        const struct scene_instance *in = &r->scene.prev[i];
+        bool joins = run.count && run.blend == in->blend && run.program == in->program &&
+            (!in->id || !run.id || (run.id == in->id && run.target == in->target &&
+                run.filter == in->filter)) && !memcmp(run.scissor, in->scissor,
+                    sizeof(run.scissor));
+        if (joins) {
+            if (!run.id) {
+                run.texture = in->texture;
+                run.id = in->id;
+                run.target = in->target;
+                run.filter = in->filter;
+            }
+            run.count++;
+            continue;
+        }
+        if (run.count) scene_run_draw(r, &run, &blending, &scissoring, &program);
+        run = (struct scene_run){ .first = i, .count = 1, .texture = in->texture,
+            .id = in->id, .target = in->target, .filter = in->filter, .blend = in->blend,
+            .program = in->program };
+        memcpy(run.scissor, in->scissor, sizeof(run.scissor));
+    }
+    if (run.count) scene_run_draw(r, &run, &blending, &scissoring, &program);
+    if (scissoring) GL(r, glDisable(GL_SCISSOR_TEST));
+}
+
+void pass_flush(struct pass *pass) {
+    struct render *r = pass->r;
+    struct scene *s = &r->scene;
+    if (!s->count || s->owner != pass) return;
+    s->owner = NULL;
+    size_t vertices = s->count * SCENE_VERTICES;
+    struct scene_vertex *staging = realloc(s->vertex, vertices * sizeof(*staging));
+    if (!staging) {
+        tomoe_log(LOG_ERROR, "tomoe: cannot stage %zu scene instances", s->count);
+        s->count = 0;
+        return;
+    }
+    s->vertex = staging;
+    size_t bytes = vertices * sizeof(*staging);
+    bool full = bytes > s->vbo_bytes;
+    if (full) {
+        size_t want = s->vbo_bytes ? s->vbo_bytes : 4096;
+        while (want < bytes) want *= 2;
+        if (!s->vbo) GL(r, glGenBuffers(1, &s->vbo));
+        GL(r, glBindBuffer(GL_ARRAY_BUFFER, s->vbo));
+        GL(r, glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)want, NULL, GL_STREAM_DRAW));
+        s->vbo_bytes = want;
+    }
+    size_t first = 0, last = s->count;
+    if (!full) {
+        while (first < s->count && first < s->prev_count &&
+                !memcmp(&s->in[first], &s->prev[first], sizeof(*s->in))) first++;
+        while (last > first && last <= s->prev_count &&
+                !memcmp(&s->in[last - 1], &s->prev[last - 1], sizeof(*s->in))) last--;
+    }
+    if (last > first) {
+        for (size_t i = first; i < last; i++)
+            scene_expand(&s->vertex[i * SCENE_VERTICES], &s->in[i]);
+        size_t offset = first * SCENE_VERTICES * sizeof(*staging);
+        GL(r, glBindBuffer(GL_ARRAY_BUFFER, s->vbo));
+        GL(r, glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset,
+            (GLsizeiptr)((last - first) * SCENE_VERTICES * sizeof(*staging)),
+            &s->vertex[first * SCENE_VERTICES]));
+        r->uploads++;
+        r->upload_bytes += (last - first) * SCENE_VERTICES * sizeof(*staging);
+    }
+    struct scene_instance *previous = s->prev;
+    size_t previous_cap = s->prev_cap, drawn = s->count;
+    s->prev = s->in;
+    s->prev_cap = s->cap;
+    s->prev_count = drawn;
+    s->in = previous;
+    s->cap = previous_cap;
+    s->count = 0;
+    scene_attributes(r);
+    scene_draw(r, drawn);
+    GL(r, glBindBuffer(GL_ARRAY_BUFFER, 0));
 }
 
 static struct op *recorded(struct pass *pass, size_t before) {
@@ -1164,7 +1559,6 @@ static void texture_cover(struct op *op, const struct texture_options *options,
 }
 
 void pass_add_rect(struct pass *pass, const struct rect_options *options) {
-    struct program *p = &pass->r->programs[PROGRAM_RECT];
     const struct color *c = &options->color;
     struct box box = box_empty(&options->box) ?
         (struct box){ 0, 0, pass->buffer->width, pass->buffer->height } : options->box;
@@ -1182,10 +1576,57 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
             cover(op, box, options->clip);
         return;
     }
-    blend(c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED);
-    glUseProgram(p->id);
-    glUniform4f(p->color, c->r, c->g, c->b, c->a);
-    draw(pass, p, box, options->clip, NULL);
+    struct scene_quad quad = {
+        .kind = SCENE_RECT, .alpha = 1, .filter = GL_LINEAR, .clip = options->clip,
+        .blend = c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED };
+    quad.color[0] = c->r;
+    quad.color[1] = c->g;
+    quad.color[2] = c->b;
+    quad.color[3] = c->a;
+    quad_positions(pass, box, 0, quad.pos);
+    pass_scene(pass, &quad);
+}
+
+static void texture_draw(struct pass *pass, const struct texture_options *options,
+        struct gl_texture *t, struct box dst, const float texcoords[8], float alpha) {
+    struct render *r = pass->r;
+    pass_flush(pass);
+    bool external = t->target == GL_TEXTURE_EXTERNAL_OES;
+    int kind = external ? (options->lut ? PROGRAM_EXTERNAL_LUT : PROGRAM_EXTERNAL) :
+        PROGRAM_TEXTURE_LUT;
+    struct program *p = &r->programs[kind];
+    if (!p->id) return;
+    GL(r, glUseProgram(p->id));
+    GL(r, glActiveTexture(GL_TEXTURE0));
+    GL(r, glBindTexture(t->target, t->tex));
+    GLint filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
+    if (t->filter != filter) {
+        GL(r, glTexParameteri(t->target, GL_TEXTURE_MIN_FILTER, filter));
+        GL(r, glTexParameteri(t->target, GL_TEXTURE_MAG_FILTER, filter));
+        t->filter = filter;
+    }
+    GL(r, glUniform1i(p->tex, 0));
+    GL(r, glUniform1f(p->alpha, alpha));
+    GL(r, glUniform1f(p->opaque, t->alpha ? 0 : 1));
+    GL(r, glUniform1f(p->clip, 0));
+    const float *tint = options->tint;
+    GL(r, glUniform4f(p->tint, tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0,
+        tint ? tint[3] : 0));
+    if (options->lut) {
+        GL(r, glActiveTexture(GL_TEXTURE1));
+        GL(r, glBindTexture(GL_TEXTURE_2D, texture_of(options->lut)->tex));
+        GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+        GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+        GL(r, glUniform1i(p->lut, 1));
+    }
+    float pos[8];
+    quad_positions(pass, dst, options->rotation, pos);
+    draw_rotated(pass, p, pos, options->clip, texcoords);
+    if (options->lut) {
+        GL(r, glBindTexture(GL_TEXTURE_2D, 0));
+        GL(r, glActiveTexture(GL_TEXTURE0));
+    }
+    GL(r, glBindTexture(t->target, 0));
 }
 
 void pass_add_texture(struct pass *pass, const struct texture_options *options) {
@@ -1236,36 +1677,20 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
         texcoords[2 * i + 1] = (src.y + py * src.height) / options->texture->height;
     }
     bool external = t->target == GL_TEXTURE_EXTERNAL_OES;
-    struct program *p = &r->programs[options->lut ?
-        (external ? PROGRAM_EXTERNAL_LUT : PROGRAM_TEXTURE_LUT) :
-        (external ? PROGRAM_EXTERNAL : PROGRAM_TEXTURE)];
-    blend((t->alpha || alpha < 1) && options->blend_mode == BLEND_PREMULTIPLIED);
-    glUseProgram(p->id);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(t->target, t->tex);
-    GLint filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
-    glTexParameteri(t->target, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(t->target, GL_TEXTURE_MAG_FILTER, filter);
-    glUniform1i(p->tex, 0);
-    glUniform1f(p->alpha, alpha);
-    glUniform1f(p->opaque, t->alpha ? 0 : 1);
-    glUniform1f(p->clip, 0);
-    const float *tint = options->tint;
-    glUniform4f(p->tint, tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0,
-        tint ? tint[3] : 0);
-    if (options->lut) {
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, texture_of(options->lut)->tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glUniform1i(p->lut, 1);
+    if (external || options->lut) {
+        texture_draw(pass, options, t, dst, texcoords, alpha);
+        return;
     }
-    draw_rotated(pass, p, dst, options->clip, texcoords, options->rotation);
-    if (options->lut) {
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE0);
-    }
-    glBindTexture(t->target, 0);
+    int filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
+    struct scene_quad quad = {
+        .kind = SCENE_TEXTURE, .texture = options->texture, .target = t->target,
+        .filter = filter, .alpha = alpha, .opaque = t->alpha ? 0 : 1, .clip = options->clip,
+        .blend = (t->alpha || alpha < 1) && options->blend_mode == BLEND_PREMULTIPLIED };
+    if (options->tint)
+        for (int i = 0; i < 4; i++) quad.tint[i] = options->tint[i];
+    quad_positions(pass, dst, options->rotation, quad.pos);
+    memcpy(quad.tex, texcoords, sizeof(quad.tex));
+    pass_scene(pass, &quad);
 }
 
 static void *stall_release(void *data) {
@@ -1411,13 +1836,15 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
         return;
     }
     if (!pass_touches(pass, dst)) return;
+    pass_flush(pass);
+    pass_scene_attributes_dirty(pass);
     if (options->wait_timeline &&
             !render_wait(r, options->wait_timeline, options->wait_point)) {
         tomoe_log(LOG_ERROR, "tomoe: client acquire fence wait failed");
         return;
     }
     struct program *p = options->shader;
-    blend(true);
+    glEnable(GL_BLEND);
     glUseProgram(p->id);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(t->target, t->tex);
@@ -1496,6 +1923,7 @@ static int flush_fence(struct render *r) {
 static int pass_export_fence(struct pass *pass) {
     struct render *r = pass->r;
     current(r);
+    pass_flush(pass);
     int fd = r->stall_test ? stall_fence(r) : r->dup_fence ? flush_fence(r) : -1;
     if (fd < 0) glFinish();
     return fd;
@@ -1503,6 +1931,7 @@ static int pass_export_fence(struct pass *pass) {
 
 static void pass_finish(struct pass *pass) {
     struct render *r = pass->r;
+    pass_flush(pass);
     if (r->context) glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
     free(pass);
@@ -1596,6 +2025,7 @@ bool pass_submit(struct pass *pass) {
         return false;
     }
     current(r);
+    pass_flush(pass);
     int fd = flush_fence(r);
     bool ok = fd >= 0 && timeline_import_sync_file(pass->signal, pass->point, fd);
     if (fd >= 0) close(fd);
@@ -1857,6 +2287,11 @@ void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, s
     *images = (size_t)wl_list_length(&r->images);
 }
 
+void render_counters(struct render *r, struct render_counters *out) {
+    *out = (struct render_counters){ .gl_calls = r->gl_calls, .quads = r->quads,
+        .runs = r->runs, .uploads = r->uploads, .upload_bytes = r->upload_bytes };
+}
+
 static void render_free(struct render *r) {
     if (r->held_count)
         tomoe_log(LOG_ERROR, "tomoe: the renderer is closing with %d frame(s) still on the GPU",
@@ -1885,6 +2320,8 @@ static void render_free(struct render *r) {
     if (r->context) {
         current(r);
         for (int i = 0; i < PROGRAM_COUNT; i++) glDeleteProgram(r->programs[i].id);
+        if (r->scene.vbo) glDeleteBuffers(1, &r->scene.vbo);
+        if (r->scene.dummy) glDeleteTextures(1, &r->scene.dummy);
         eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(r->display, r->context);
     }
@@ -1894,6 +2331,9 @@ static void render_free(struct render *r) {
     format_set_finish(&r->texture_formats);
     format_set_finish(&r->render_formats);
     format_set_finish(&r->shm_formats);
+    free(r->scene.in);
+    free(r->scene.prev);
+    free(r->scene.vertex);
     free(r->mesh);
     free(r->node);
     free(r->exe);
@@ -2079,6 +2519,8 @@ static bool formats_init(struct render *r) {
 
 static bool programs_init(struct render *r) {
     bool external = has((const char *)glGetString(GL_EXTENSIONS), "GL_OES_EGL_image_external");
+    if (!link_scene(&r->programs[PROGRAM_SCENE])) return false;
+    if (!link_sdf(&r->programs[PROGRAM_SDF])) return false;
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
         if ((external || !builtins[i].external) &&
                 !link_program(&r->programs[builtins[i].kind], builtins[i].prelude, builtins[i].body))
@@ -2213,6 +2655,9 @@ static void warm(struct render *r) {
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
         hash = fnv(fnv(fnv(fnv(fnv(hash, builtins[i].prelude), fragment_precision),
             rounding_source), builtins[i].body), vertex_source);
+    hash = fnv(fnv(fnv(fnv(hash, scene_vertex_source), scene_prelude), rounding_source),
+        scene_source);
+    hash = fnv(fnv(fnv(fnv(hash, sdf_vertex_source), sdf_prelude), rounding_source), sdf_source);
     hash = fnv(fnv(fnv(hash, shader_vertex_source), shader_prelude), shader_main);
     struct dirent **entries = NULL;
     int count = scandir(r->warm_dir, &entries, shader_file, alphasort);
@@ -2260,11 +2705,12 @@ static void warm_draws(struct render *r, struct program **shaders, int count) {
                         .texture = textures[i], .lut = lut ? textures[0] : NULL,
                         .alpha = blended ? &half : NULL });
         static const float full[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+        pass_flush(pass);
         glEnable(GL_BLEND);
         for (int i = 0; i < count; i++) {
             glUseProgram(shaders[i]->id);
             glUniform3f(shaders[i]->resolution, WARM_SIZE, WARM_SIZE, 1);
-            render_quad(shaders[i], full, full, NULL);
+            render_quad(r, shaders[i], full, full, NULL);
         }
         pass_submit(pass);
     }
