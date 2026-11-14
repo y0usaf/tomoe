@@ -1032,6 +1032,7 @@ let
         ATTRIBUTE = "${./memory-attribute.py}"
         SCENE_POLICY = "${./timing-policy.lisp}"
         REFRESH_POLICY = "${./memory-refresh.lisp}"
+        HANDBACK_POLICY = "${./memory-handback.lisp}"
       ''
       + builtins.readFile ./memory.py;
     }

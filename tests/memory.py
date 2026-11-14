@@ -6,7 +6,9 @@ ANON_LIMIT = 60000
 DIRTY_LIMIT = 74000
 BUDGET_REFRESH_MHZ = 240000
 ANIMATED_WINDOW = 6
+HANDBACK_WINDOW = 5
 CONTROL_WINDOW = 4
+CHURN_LIMIT = 6 * 1024 * 1024
 
 
 def tomoe_process():
@@ -169,7 +171,7 @@ time.sleep(4)
 policy_windows = measure("policy-2")
 cli("timings reset")
 time.sleep(ANIMATED_WINDOW)
-longest, _, handback = read_timings("policy-2-animated")
+longest, _, _ = read_timings("policy-2-animated")
 settled = measure("policy-2-settled", attribute=True)
 close_windows(2, prefix="p")
 time.sleep(2)
@@ -219,6 +221,27 @@ except AssertionError as error:
 else:
     raise AssertionError("a collection slower than one refresh was accepted")
 
+machine.succeed("systemctl stop tomoe check-bus")
+fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1"})
+cli(f"mount {SCENE_POLICY}")
+cli(f"mount {HANDBACK_POLICY}")
+open_windows(2, width=320, height=240, prefix="h")
+time.sleep(3)
+before = measure("handback-before")
+cli("timings reset")
+cli("command churn")
+churn = [plist(entry).get(":STATE") for entry in items(inspect()[":EXTENSIONS"])
+         if text(plist(entry).get(":NAME", '""')) == "memory-handback"]
+assert churn and plist(churn[0]).get(":CELLS") == "600000", churn
+time.sleep(HANDBACK_WINDOW)
+read_timings("idle-handback")
+after = measure("handback-after")
+close_windows(2, prefix="h")
+quit()
+assert after["dynamic-usage"] <= before["dynamic-usage"] + CHURN_LIMIT, (
+    f"the idle handback left {after['dynamic-usage'] - before['dynamic-usage']} bytes of"
+    f" the churn behind, over {CHURN_LIMIT}")
+
 assert len(state[":EXTENSIONS"]) > 1, state[":EXTENSIONS"]
 for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty, "tiles-50"),
                    (policy_windows, "policy-2"), (settled, "policy-2-settled")):
@@ -227,4 +250,4 @@ for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty
         f"{label} private dirty {row['Private_Dirty']} KB over {DIRTY_LIMIT}")
 collection_gate("collections", collections, period, ANIMATED_WINDOW * 1000000000)
 print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "period", period,
-      "tiles", tiles, "longest_frame", longest, "idle_handback", handback, flush=True)
+      "tiles", tiles, "longest_frame", longest, flush=True)

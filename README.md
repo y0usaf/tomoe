@@ -121,7 +121,8 @@ from windows and outputs to each extension's state and last error.
 hands the dead generations and the free pages of the native heap back to the
 system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
 the shipping policy and a tiled scene at one, ten and fifty windows and fails if
-that footprint or the longest collection grows past the bound it states.
+that footprint or the longest collection grows past the bound it states, then
+provokes the idle handback and fails if its memory is still in use.
 `tomoe timings` prints the latency Tomoe spends on its own work, in
 nanoseconds: pointer and drag motion to the frame carrying it, a key press to the
 transaction applying it, the wait between an input and its frame, each phase of a
