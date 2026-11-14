@@ -20,6 +20,19 @@ def expect_pixel(want, overlays=False):
         time.sleep(0.05)
     raise AssertionError((got, want))
 
+def wait_applied(read, want, what):
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            got = read()
+        except (IndexError, KeyError, StopIteration):
+            got = None
+        if got == want:
+            return got
+        if time.monotonic() > deadline:
+            raise AssertionError((what, want, got, inspect()))
+        time.sleep(0.02)
+
 client("alpha", "--mode layer --anchor top,left --size 120x80 --color e04020 --alpha-probe")
 expect_pixel([119, 39, 23])
 for step, want in enumerate([[119, 39, 23], [13, 13, 13], [13, 13, 13], [224, 64, 32]], 1):
@@ -49,60 +62,47 @@ def content_type():
     return plist(items(inspect()[":WINDOWS"])[0])[":CONTENT-TYPE"]
 
 client("content", "--content-probe")
-for _ in range(100):
-    if content_type() == ":GAME":
-        break
-    time.sleep(0.05)
-else:
-    raise AssertionError(inspect())
+wait_applied(content_type, ":GAME", "the content probe's first frame")
 for step, want in enumerate([":GAME", ":PHOTO", ":PHOTO", ":NONE"], 1):
     machine.succeed("systemctl kill --kill-whom=main --signal=USR1 content")
     machine.wait_until_succeeds(f"journalctl -u content -o cat | grep -qx 'content-step {step}'")
-    assert content_type() == want, inspect()
+    wait_applied(content_type, want, f"the content type after step {step}")
 machine.succeed("systemctl stop content")
 for mode in ["content-duplicate", "content-invalid"]:
     error = machine.fail(ENV + f"WAYLAND_DISPLAY=check tomoe-test-client --protocol-error {mode} 2>&1")
     assert "protocol error on wp_content_type" in error, error
 machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-test-client --protocol-error content-orphan")
 
+def tag_window():
+    window = plist(items(inspect()[":WINDOWS"])[0])
+    return window[":TAG"], window[":DESCRIPTION"]
+
 client("tag", "--tag-probe")
-for _ in range(100):
-    windows = items(inspect()[":WINDOWS"])
-    if windows and plist(windows[0]).get(":TAG") == '"settings"':
-        break
-    time.sleep(0.05)
-else:
-    raise AssertionError(inspect())
-assert plist(windows[0])[":DESCRIPTION"] == '"Settings window"', windows
+wait_applied(tag_window, ('"settings"', '"Settings window"'), "the settings tag")
 for step in range(1, 3):
     machine.succeed("systemctl kill --kill-whom=main --signal=USR1 tag")
     machine.wait_until_succeeds(f"journalctl -u tag -o cat | grep -qx 'tag-step {step}'")
-    window = plist(items(inspect()[":WINDOWS"])[0])
-    assert window[":TAG"] == '"composer"' and window[":DESCRIPTION"] == '"Compose a message"', window
+    wait_applied(tag_window, ('"composer"', '"Compose a message"'),
+                 f"the tag after step {step}")
 machine.succeed("systemctl stop tag")
 
 client("dialog", "--dialog-probe")
-def dialog_window():
-    return next(plist(w) for w in items(inspect()[":WINDOWS"]) if plist(w)[":TITLE"] == '"Tomoe test client"')
+def dialog_state():
+    window = next(plist(w) for w in items(inspect()[":WINDOWS"])
+                  if plist(w)[":TITLE"] == '"Tomoe test client"')
+    return window[":DIALOG"], window[":MODAL"], window[":PARENT"]
 
-for _ in range(100):
-    window = dialog_window()
-    if window[":DIALOG"] == "T" and window[":MODAL"] == "T":
-        break
-    time.sleep(0.05)
-else:
-    raise AssertionError(window)
-parent = window[":PARENT"]
-assert parent != "NIL", window
+wait_applied(lambda: dialog_state()[:2], ("T", "T"), "the modal dialog")
+parent = dialog_state()[2]
+assert parent != "NIL", parent
 for step, (dialog, modal, parented) in enumerate([
     ("T", "NIL", True), ("T", "T", True), ("NIL", "NIL", False), ("T", "T", True),
     ("NIL", "NIL", True), ("T", "NIL", True), ("NIL", "NIL", False),
 ], 1):
     machine.succeed("systemctl kill --kill-whom=main --signal=USR1 dialog")
     machine.wait_until_succeeds(f"journalctl -u dialog -o cat | grep -qx 'dialog-step {step}'")
-    window = dialog_window()
-    assert window[":DIALOG"] == dialog and window[":MODAL"] == modal, window
-    assert window[":PARENT"] == (parent if parented else "NIL"), window
+    wait_applied(dialog_state, (dialog, modal, parent if parented else "NIL"),
+                 f"the dialog after step {step}")
 machine.succeed("systemctl kill --kill-whom=main --signal=USR1 dialog")
 machine.wait_until_succeeds("journalctl -u dialog -o cat | grep -qx 'dialog-step 8'")
 machine.succeed("systemctl stop dialog")
@@ -176,13 +176,16 @@ def complete_tone(values, offset):
 tone_samples = sum(abs(v[0] / 32768) > 0.001 for v in struct.iter_unpack("<h", samples))
 values = wait_capture(lambda values: len(values) >= 4800 * 2)
 assert not any(abs(v) > 0.001 for v in values), "audio before the first bell"
+def sound_state():
+    sound = plist(inspect()[":NATIVE-SOUND"])
+    return sound[":PLAYED"], sound[":DROPPED"]
+
 client("bell", "--bell-probe")
 offset = len(values)
 for step in range(1, 4):
     machine.succeed("systemctl kill --kill-whom=main --signal=USR1 bell")
     machine.wait_until_succeeds(f"journalctl -u bell -o cat | grep -qx 'bell-step {step}'")
-    sound = plist(inspect()[":NATIVE-SOUND"])
-    assert sound[":PLAYED"] == str(min(step, 2)) and sound[":DROPPED"] == "0", sound
+    wait_applied(sound_state, (str(min(step, 2)), "0"), f"the bell after step {step}")
     if step < 3:
         values = wait_capture(lambda values: complete_tone(values, offset))
         assert 0.35 < max(abs(v) for v in values[offset:]) < 0.38
@@ -197,7 +200,8 @@ assert 0.35 < peak < 0.38, peak
 print(f"bell capture: {tone_samples} audible samples per cue, {audible} total, peak {peak}; no tone after destroy")
 machine.succeed("systemctl stop bell-record")
 cli("unmount bell-test")
-assert plist(inspect()[":NATIVE-SOUND"])[":STATE"] == ":OFF", inspect()
+wait_applied(lambda: plist(inspect()[":NATIVE-SOUND"])[":STATE"], ":OFF",
+             "the sound state after unmount")
 machine.succeed("systemctl stop bell check-pipewire")
 
 cli("mount " + SIZE_PROBE)
