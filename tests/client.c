@@ -58,7 +58,7 @@ struct client {
     int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
-    bool single_pixel;
+    bool single_pixel, repaint;
     struct wp_viewport *viewport;
     bool alpha_probe;
     unsigned alpha_step;
@@ -273,7 +273,8 @@ static void usage(void) {
            "                       it never waits for, and read events once a second\n"
            "  --resize-probe       map at --size, then answer the first configure that\n"
            "                       differs by committing a twice-as-large buffer cropped to\n"
-           "                       that size with a viewport source, as Chromium does\n",
+           "                       that size with a viewport source, as Chromium does\n"
+           "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n",
            program);
 }
 
@@ -308,6 +309,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
         else if (strcmp(option, "--commit-rate") == 0)
         { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
+        else if (strcmp(option, "--repaint") == 0) state->repaint = true;
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
     }
@@ -745,6 +747,10 @@ static void flood(struct client *state) {
     drained = start;
     while (running && elapsed(&start) < (double)state->seconds) {
         wl_callback_destroy(wl_surface_frame(state->surface));
+        if (state->repaint) {
+            wl_surface_attach(state->surface, state->buffer, 0, 0);
+            wl_surface_damage(state->surface, 0, 0, state->buffer_width, state->buffer_height);
+        }
         wl_surface_commit(state->surface);
         if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
         if (elapsed(&drained) >= 1.0) {

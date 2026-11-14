@@ -299,45 +299,68 @@ let
                                             :scale 1 :position '(0 0))) nil))
   '';
   drawGolden = "5a73e2a585b6d249,cc57125203c563d0,1d550c0eef023248";
-  drawPolicy = pkgs.writeText "draw-policy.lisp" ''
+  gridPolicy =
+    name: blur:
+    pkgs.writeText name ''
+      (in-package #:tomoe-user)
+
+      (defun draw-cell (index count width height)
+        (let* ((columns (ceiling (sqrt count)))
+               (rows (ceiling (/ count columns)))
+               (cell-width (floor width columns))
+               (cell-height (floor height rows)))
+          (list (* (mod index columns) cell-width)
+                (* (floor index columns) cell-height)
+                cell-width cell-height)))
+
+      (define-extension "draw-grid" (:reads (:windows :outputs) :state nil) (snapshot state event)
+        (declare (ignore state event))
+        (let* ((output (first (context snapshot :outputs)))
+               (width (or (and output (getf output :width)) 1280))
+               (height (or (and output (getf output :height)) 720))
+               (windows (sort (copy-list (context snapshot :windows))
+                              (lambda (first second) (< (getf first :id) (getf second :id)))))
+               (count (length windows)))
+          (values nil
+                  (append
+                   (list (settings :animations nil
+                                   :border (list :width 3 :radius 14)
+                                   :shadow (list :range 10 :power 3)${
+                                     if blur then " :blur (list :enabled t)" else ""
+                                   })
+                         (shell-surface :draw-strip
+                                        (ui :row :children (list (ui :rect :width 256 :height 24
+                                                                    :background "#ffffff18")))
+                                        :anchors '(:top :left) :margin '(8 0 0 8)
+                                        :layer :overlay :background "#00000000")
+                         (shell-surface :draw-frost (ui :row) :anchors '(:top :right)
+                                        :margin '(0 96 96 0) :width 96 :height 96
+                                        :layer :overlay :background "#00000000" :blur t))
+                   (loop for window in windows
+                         for index from 0
+                         collect (apply #'place (getf window :id)
+                                        (draw-cell index count width height)))
+                   ${
+                     if blur then
+                       "(loop for window in windows collect (window-properties (getf window :id) :blur t))"
+                     else
+                       ""
+                   }
+                   (if windows (list (focus (getf (car windows) :id))) nil))
+                  nil)))
+    '';
+  drawPolicy = gridPolicy "draw-policy.lisp" false;
+  blurPolicy = gridPolicy "blur-policy.lisp" true;
+  blurGolden = "a6cbe2fdb1c5b325,a79cb1327e0373b7,18e1efa7ff253aa3,34e42ac601137034,bd0e11b051776992,198afdb7f6badf2f";
+  blurBackdrop = pkgs.writeText "blur-backdrop.lisp" ''
     (in-package #:tomoe-user)
-
-    (defun draw-cell (index count width height)
-      (let* ((columns (ceiling (sqrt count)))
-             (rows (ceiling (/ count columns)))
-             (cell-width (floor width columns))
-             (cell-height (floor height rows)))
-        (list (* (mod index columns) cell-width)
-              (* (floor index columns) cell-height)
-              cell-width cell-height)))
-
-    (define-extension "draw-grid" (:reads (:windows :outputs) :state nil) (snapshot state event)
-      (declare (ignore state event))
-      (let* ((output (first (context snapshot :outputs)))
-             (width (or (and output (getf output :width)) 1280))
-             (height (or (and output (getf output :height)) 720))
-             (windows (sort (copy-list (context snapshot :windows))
-                            (lambda (first second) (< (getf first :id) (getf second :id)))))
-             (count (length windows)))
-        (values nil
-                (append
-                 (list (settings :animations nil
-                                 :border (list :width 3 :radius 14)
-                                 :shadow (list :range 10 :power 3))
-                       (shell-surface :draw-strip
-                                      (ui :row :children (list (ui :rect :width 256 :height 24
-                                                                  :background "#ffffff18")))
-                                      :anchors '(:top :left) :margin '(8 0 0 8)
-                                      :layer :overlay :background "#00000000")
-                       (shell-surface :draw-frost (ui :row) :anchors '(:top :right)
-                                      :margin '(0 96 96 0) :width 96 :height 96
-                                      :layer :overlay :background "#00000000" :blur t))
-                 (loop for window in windows
-                       for index from 0
-                       collect (apply #'place (getf window :id)
-                                      (draw-cell index count width height)))
-                 (if windows (list (focus (getf (car windows) :id))) nil))
-                nil)))
+    (define-extension "draw-backdrop" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (shell-surface :draw-backdrop (ui :row) :anchors '(:top :left)
+                                   :margin '(24 0 0 24) :width 96 :height 48
+                                   :layer :overlay :background "#00000000" :blur t))
+              nil))
   '';
   timingPolicy = ./timing-policy.lisp;
   stallPolicy = pkgs.writeText "stall-policy.lisp" ''
@@ -886,6 +909,9 @@ let
         DRAW_POLICY = "${drawPolicy}"
         DRAW_COUNTS = "1,10,50"
         DRAW_GOLDEN = "${drawGolden}"
+        BLUR_POLICY = "${blurPolicy}"
+        BLUR_BACKDROP = "${blurBackdrop}"
+        BLUR_GOLDEN = "${blurGolden}"
       ''
       + builtins.readFile ./draw.py;
     }
