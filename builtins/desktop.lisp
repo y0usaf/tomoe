@@ -305,7 +305,9 @@
                                           (getf window :output)))
                         (arrange))
                     (multiple-value-bind (value present) (property props :focus)
-                      (unless (and present (null value)) (focus-id id)))))))))
+                      (unless (or (and present (null value))
+                                  (and focused (full-box focused)))
+                        (focus-id id)))))))))
       (case type
         (:pointer
          (when (and (eq (getf event :state) :enter) (getf event :moved)

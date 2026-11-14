@@ -21,7 +21,7 @@
 #define TOMOE_PROCESS_MAX_PATH_COMPONENTS 256U
 
 extern char **environ;
-struct execution { int pidfd, out, err, status, code; };
+struct execution { int pidfd, out, err, status, code; pid_t pid; };
 
 int tomoe_exec_supported(void) {
     int fd = pidfd_open(getpid(), 0);
@@ -35,6 +35,11 @@ int tomoe_exec_supported(void) {
 static void close_fd(int *fd) {
     if (*fd >= 0) close(*fd);
     *fd = -1;
+}
+
+static void record_pid(struct execution *job) {
+    pid_t pid = pidfd_getpid(job->pidfd);
+    job->pid = pid > 0 ? pid : 0;
 }
 
 struct spawn_context {
@@ -153,6 +158,7 @@ struct execution *tomoe_exec_start(const char *command, int *error) {
                           argv, environ);
     spawn_context_destroy(&context);
     if (result) goto failed;
+    record_pid(job);
     close(out[1]); close(err[1]);
     job->out = out[0]; job->err = err[0];
     *error = 0;
@@ -295,6 +301,7 @@ struct execution *tomoe_process_start(char *const argv[], const char *cwd,
                                  &context.attr, argv, effective_envp);
     spawn_context_destroy(&context);
     if (result) goto failed;
+    record_pid(job);
     *error = 0;
     return job;
 failed:
@@ -331,6 +338,8 @@ int tomoe_exec_fd(struct execution *job, int which) {
     if (!job) return -1;
     return which == 0 ? job->pidfd : which == 1 ? job->out : job->err;
 }
+
+int tomoe_process_pid(struct execution *job) { return job ? job->pid : 0; }
 
 int tomoe_process_group_alive(struct execution *job) {
     if (!job || job->pidfd < 0) return -EINVAL;

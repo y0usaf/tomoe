@@ -57,6 +57,7 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/viewporter/viewporter.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/alpha-modifier/alpha-modifier-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/content-type/content-type-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-activation/xdg-activation-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-dialog/xdg-dialog-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-system-bell/xdg-system-bell-v1.xml \
@@ -802,6 +803,14 @@ let
     {
       name = "commands";
       script = builtins.readFile ./commands.py;
+    }
+    {
+      name = "nofocus";
+      script = ''
+        DECK = "${tomoe}/share/tomoe/examples/deck.lisp"
+        PROBE = "${./nofocus-probe.lisp}"
+      ''
+      + builtins.readFile ./nofocus.py;
     }
     {
       name = "bare";

@@ -209,6 +209,14 @@ static void window_event(struct window *w, const char *type, const char *request
         w->client_width, w->client_height, w->mapped ? "t" : "nil");
     quote(out, title_of(w));
     fputs(" :app-id ", out); quote(out, app_id_of(w));
+    struct surface *client_surface = surface_of(w);
+    pid_t client_pid = 0;
+    uid_t client_uid;
+    gid_t client_gid;
+    if (client_surface && client_surface->resource)
+        wl_client_get_credentials(wl_resource_get_client(client_surface->resource),
+            &client_pid, &client_uid, &client_gid);
+    fprintf(out, " :pid %ld", (long)client_pid);
     static const char *const types[] = { "none", "photo", "video", "game" };
     struct surface *event_surface = surface_of(w);
     fprintf(out, " :content-type :%s", types[event_surface ? event_surface->current.content_type : 0]);

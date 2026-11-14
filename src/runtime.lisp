@@ -29,6 +29,8 @@ reused the context the last commit settled on.")
   "Counts the accepted reducer results and replaced rule declarations that change
 what a materialization folds. A reducer that returns the effects it already owned
 changes nothing, so it does not invalidate the last context.")
+(defvar *command-input* nil
+  "Within a transaction or a host command call: whether input asked for the command.")
 (defvar *definitions-generation* 0
   "Counts loaded sources and restored patch definitions. Both replace functions the
 fold calls directly, such as the keyboard default and the host command table, so
@@ -85,6 +87,7 @@ it consed, when samples are kept."
   reads-cache layers-cache layout-memo
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
+  background-leases
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
   config-error source-packages retired-commands patches (patch-sequence 0)
   (fd-watches (make-hash-table)) fd-specs watch-failure
@@ -233,6 +236,7 @@ outputs) the focused one. Absent optional arguments are dropped."
   (let ((copy (copy-list event)))
     (remf copy :command)
     (setf (getf copy :type) :command
+          (getf copy :input) (and (member (getf event :type) '(:key :button :grab)) t)
           (getf copy :owner) (getf entry :owner)
           (getf copy :name) name
           (getf copy :arguments) (resolve-command-arguments runtime entry arguments))
@@ -306,8 +310,8 @@ Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
       (:reply (destructuring-bind (value) args (ipc-reply value)))
       (:broadcast (destructuring-bind (name value) args (broadcast name value)))
       (:launch (apply #'launch args))
-      (:spawn (destructuring-bind (launch cwd env) args
-                (let ((result (spawn launch :cwd cwd :env env)))
+      (:spawn (destructuring-bind (launch cwd env focus) args
+                (let ((result (spawn launch :cwd cwd :env env :focus focus)))
                   (when (and cwd (not (char= (char cwd 0) #\/)))
                     (unless directory (error "Relative spawn cwd requires a declaring source."))
                     (setf (second (command-arguments result))
@@ -983,9 +987,10 @@ change anything, so staging a candidate context would rebuild it for nothing."
             thereis (mounted-rule-pending mounted))))
 
 (defun transact (runtime mounts event changed &optional force)
-  (unwind-protect (with-sample ("transaction")
-                    (%transact runtime mounts event changed force))
-    (discard-ui-asset-scratch runtime)))
+  (let ((*command-input* (and (getf event :input) t)))
+    (unwind-protect (with-sample ("transaction")
+                      (%transact runtime mounts event changed force))
+      (discard-ui-asset-scratch runtime))))
 
 (defun discard-ui-asset-scratch (runtime)
   (when (runtime-backend runtime)
@@ -1387,6 +1392,8 @@ or decoded images grew without a collection running."
               (old (find id (runtime-windows runtime) :key (lambda (w) (getf w :id))))
               (new (list :id id :identifier (window-identifier runtime id)
                          :title (getf event :title) :app-id (getf event :app-id)
+                         :focus (and (getf old :focus t)
+                                     (not (background-window-p runtime (getf event :pid 0))))
                          :content-type (getf event :content-type :none)
                          :tag (getf event :tag "") :description (getf event :description "")
                          :parent (getf event :parent) :dialog (and (getf event :dialog) t)
@@ -1509,8 +1516,9 @@ or decoded images grew without a collection running."
                                               (first call))))
                 (unless entry (return-from dispatch-event))
                 (when (getf entry :host)
-                  (handler-case (host-command-call runtime entry (rest call))
-                    (serious-condition (condition) (record-error runtime condition)))
+                  (let ((*command-input* t))
+                    (handler-case (host-command-call runtime entry (rest call))
+                      (serious-condition (condition) (record-error runtime condition))))
                   (return-from dispatch-event))
                 (setf event (command-event runtime entry (first call) (rest call) event))
                 (push (getf entry :owner) force)

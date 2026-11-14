@@ -26,6 +26,7 @@
 #include "xdg-toplevel-tag-v1-client-protocol.h"
 #include "xdg-dialog-v1-client-protocol.h"
 #include "xdg-system-bell-v1-client-protocol.h"
+#include "xdg-activation-v1-client-protocol.h"
 
 static const char *program = "tomoe-test-client";
 
@@ -43,6 +44,7 @@ static struct wp_content_type_manager_v1 *content_manager;
 static struct xdg_toplevel_tag_manager_v1 *tag_manager;
 static struct xdg_wm_dialog_v1 *dialog_manager;
 static struct xdg_system_bell_v1 *bell_manager;
+static struct xdg_activation_v1 *activation;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -73,6 +75,7 @@ struct client {
     bool resize_probe;
     unsigned resize_step;
     int crop_width, crop_height;
+    bool activate;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -145,6 +148,7 @@ static void finish(int code) {
     if (tag_manager) xdg_toplevel_tag_manager_v1_destroy(tag_manager);
     if (dialog_manager) xdg_wm_dialog_v1_destroy(dialog_manager);
     if (bell_manager) xdg_system_bell_v1_destroy(bell_manager);
+    if (activation) xdg_activation_v1_destroy(activation);
     if (compositor) wl_compositor_destroy(compositor);
     if (display) {
         wl_display_flush(display);
@@ -165,6 +169,15 @@ static void mapped(struct client *state) {
     state->mapped = true;
     printf("mapped\n");
     fflush(stdout);
+    if (state->activate && activation) {
+        const char *token = getenv("XDG_ACTIVATION_TOKEN");
+        printf("activation-token %s %s\n", token && *token ? token : "none", state->app_id);
+        fflush(stdout);
+        if (token && *token) {
+            xdg_activation_v1_activate(activation, token, state->surface);
+            wl_display_flush(display);
+        }
+    }
 }
 
 static void on_signal(int number) {
@@ -255,6 +268,7 @@ static void usage(void) {
            "  --color RRGGBB       buffer fill (default 336699)\n"
            "  --image PATH         binary P6 PPM to fill the buffer instead (exact size)\n"
            "  --seconds N          run time (default 30)\n"
+           "  --activate           ask for activation with $XDG_ACTIVATION_TOKEN once mapped\n"
            "  --commit-rate HZ     after mapping, commit HZ times a second with a frame callback\n"
            "                       it never waits for, and read events once a second\n"
            "  --resize-probe       map at --size, then answer the first configure that\n"
@@ -289,6 +303,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--bell-probe") == 0) state->bell_probe = true;
         else if (strcmp(option, "--resize-probe") == 0) state->resize_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
+        else if (strcmp(option, "--activate") == 0) state->activate = true;
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
         else if (strcmp(option, "--commit-rate") == 0)
@@ -333,6 +348,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         dialog_manager = wl_registry_bind(registry, name, &xdg_wm_dialog_v1_interface, 1);
     } else if (strcmp(interface, xdg_system_bell_v1_interface.name) == 0) {
         bell_manager = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
+    } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
+        activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
     }
 }
 

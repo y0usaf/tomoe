@@ -1337,12 +1337,15 @@ sound; omission restores the preceding owner."
   (multiple-value-bind (command cwd env) (process-options argv nil nil)
     (declare (ignore cwd env))
     (%command :launch command)))
-(defun spawn (command &key cwd env)
+(defun spawn (command &key cwd env (focus t))
   "Launch a shell string or literal argv once after the current transaction.
 CWD is relative to the declaring source. ENV overlays the child environment.
-The session owns the child, and native launches receive an activation token."
+The session owns the child. With FOCUS NIL the launch stays in the background:
+windows of the launched process tree open unfocused and unraised, and the
+launch carries no activation token."
+  (check-type focus boolean)
   (multiple-value-bind (launch directory environment) (process-options command cwd env)
-    (%command :spawn (list launch directory environment))))
+    (%command :spawn (list launch directory environment focus))))
 (defun close-window (id)
   (check-type id (integer 1 4294967295))
   (%command :close (list id)))

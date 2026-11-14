@@ -58,6 +58,19 @@ depend on an id a hidden or empty workspace left behind, or the keys go dead."
         (first workspace))))
 
 
+(defun deck--background-p (snapshot window)
+  "Whether WINDOW's launch asked to stay in the background."
+  (let ((entry (assoc :focus (rules-for snapshot window))))
+    (and entry (null (cdr entry)))))
+
+(defun deck--watched-fullscreen-p (snapshot state id)
+  "Whether ID is the window the user is watching fullscreen."
+  (and id
+       (or (member id (getf state :fullscreen))
+           (let ((window (deck--layout-entry (context snapshot :windows) id)))
+             (and window (or (getf window :fullscreen)
+                             (getf window :fullscreen-requested)))))))
+
 (defun deck--exclusive-edge (anchors)
   "The edge an exclusive zone applies to, by the layer-shell rule."
   (let ((set (sort (copy-list anchors) #'string< :key #'symbol-name)))
@@ -376,14 +389,15 @@ against the output the layout is drawing on."
                                 (invoke "move-window-to-workspace" :workspace number))))))
 
 (define-extension "deck"
-    (:reads (:windows :outputs :layers :layout :focus :command :button)
+    (:reads (:windows :outputs :layers :layout :rules :focus :request :command :button)
      :state (deck--state))
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
          (ids (mapcar (lambda (window) (getf window :id)) windows))
          (focused (context snapshot :focus))
          (area (deck--area snapshot))
-         (type (getf event :type)))
+         (type (getf event :type))
+         (quiet nil))
     (loop for index from 1
           for order in (getf state :workspaces)
           for fronts in (getf state :fronts)
@@ -429,13 +443,26 @@ against the output the layout is drawing on."
             (push (cons id side) (getf state :columns))
             (setf (nth (1- (getf state :active)) (getf state :workspaces))
                   (append (nth (1- (getf state :active)) (getf state :workspaces)) (list id)))
-            (deck--adopt-front state side id)
-            (setf (getf state :focus) id)))))
+            (if (or (deck--background-p snapshot window)
+                    (deck--watched-fullscreen-p snapshot state (or focused (getf state :focus))))
+                (pushnew id quiet)
+                (progn
+                  (deck--adopt-front state side id)
+                  (setf (getf state :focus) id)))))))
     (when (eq type :command)
       (deck--command state area (getf event :name) (getf event :arguments)))
     (when (and (eq type :metadata) (eql (getf event :request) :fullscreen)
                (member (getf event :id) ids))
       (pushnew (getf event :id) (getf state :fullscreen)))
+    (when (and (eq type :request) (eql (getf event :request) :activate)
+               (member (getf event :id) ids))
+      (let ((id (getf event :id)))
+        (loop for wins in (getf state :workspaces) for number from 1
+              when (member id wins) do (deck--switch-workspace state number) (return))
+        (let ((side (deck--side-of state id)))
+          (when side (deck--adopt-front state side id)))
+        (setf (getf state :focus) id
+              quiet (remove id quiet))))
     (when (and (eq type :button) (eql (getf event :state) :pressed))
       (let ((id (getf event :id)))
         (when (and (integerp id) (member id (deck--workspace state))
@@ -450,5 +477,6 @@ against the output the layout is drawing on."
       (values state
               (append +deck-commands+ (deck--bindings)
                       (deck--places snapshot state area)
-                      (list (focus (deck--current state))))
+                      (list (focus (let ((current (deck--current state)))
+                                     (unless (member current quiet) current)))))
               (when closing (list (close-window closing)))))))

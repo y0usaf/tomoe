@@ -110,17 +110,24 @@ Return complete mounts, new instance names, and changed callback definitions."
     (values result new changed)))
 
 (defun resolved-rule-properties (runtime mounts)
-  "Merge copied arbitrary properties in declaration order, including NIL."
+  "Merge copied arbitrary properties in declaration order, including NIL. A window
+of a launch that asked to stay in the background carries (:FOCUS . NIL) ahead of
+every declared property, so no rule can focus it back."
   (let ((result (loop for window in (runtime-windows runtime)
                       collect (list :id (getf window :id) :properties nil))))
-    (dolist (instance (rule-instances (prune-rule-mounts runtime mounts)) result)
+    (dolist (instance (rule-instances (prune-rule-mounts runtime mounts)))
       (let ((record (find (mounted-rule-window instance) result
                           :key (lambda (window) (getf window :id)))))
         (dolist (entry (fourth (effect-arguments (mounted-rule-definition instance))))
           (let ((old (assoc (car entry) (getf record :properties) :test #'equal)))
             (if old (setf (cdr old) (copy-data (cdr entry)))
                 (setf (getf record :properties)
-                      (nconc (getf record :properties) (list (copy-data entry)))))))))))
+                      (nconc (getf record :properties) (list (copy-data entry)))))))))
+    (dolist (window (runtime-windows runtime) result)
+      (when (null (getf window :focus t))
+        (let ((record (find (getf window :id) result
+                            :key (lambda (entry) (getf entry :id)))))
+          (setf (getf record :properties) (acons :focus nil (getf record :properties))))))))
 
 (defun invoke-rule-application (runtime instance snapshot state event)
   (let ((application (effect-application (mounted-rule-definition instance))))

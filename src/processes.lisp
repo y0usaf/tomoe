@@ -3,12 +3,13 @@
 (defvar *shell* (or (sb-ext:posix-getenv "TOMOE_SHELL") "/bin/sh"))
 
 (sb-alien:define-alien-routine ("tomoe_process_group_alive" %process-group-alive) sb-alien:int (job (* t)))
+(sb-alien:define-alien-routine ("tomoe_process_pid" %process-pid) sb-alien:int (job (* t)))
 (sb-alien:define-alien-routine ("tomoe_process_start" %process-start) (* t)
   (argv (* (* sb-alien:unsigned-char))) (cwd (sb-alien:c-string :external-format :utf-8))
   (environment (* (* sb-alien:unsigned-char))) (error (* sb-alien:int)))
 
 (defstruct managed-process owner identity arguments lease history session-link
-  (status :pending) (deadline 0) (attempts 0) code error (turn 0))
+  (status :pending) (deadline 0) (attempts 0) code error (turn 0) (focus t) input)
 (defstruct process-plan active retired history)
 
 (defun process-kind (job) (first (managed-process-arguments job)))
@@ -88,12 +89,13 @@ following a reload command. Launch buffers and tokens are acquired at execution.
     (when (plusp count) (require-execution-support))
     (loop for command in commands collect
       (when (member (command-kind command) '(:launch :spawn))
-        (destructuring-bind (launch cwd env)
+        (destructuring-bind (launch cwd env focus)
             (if (eq :launch (command-kind command))
-                (list (command-arguments command) nil nil) (command-arguments command))
+                (list (command-arguments command) nil nil t) (command-arguments command))
           (let ((lease (make-process-lease)))
             (make-managed-process :arguments (list :session nil launch cwd env nil nil nil)
-                                  :lease lease :session-link (list lease))))))))
+                                  :lease lease :session-link (list lease)
+                                  :focus focus :input *command-input*)))))))
 
 (defun install-managed-processes (runtime plan)
   (setf (runtime-managed-processes runtime) (process-plan-active plan)
@@ -134,6 +136,45 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                          (and end (assoc (subseq entry 0 end) overrides :test #'equal))))
                      (sb-ext:posix-environ))))
 
+(defun process-parent (pid)
+  "PID's parent from /proc, or NIL once the kernel forgot the process."
+  (handler-case
+      (let* ((text (with-open-file (stream (format nil "/proc/~D/stat" pid))
+                     (read-line stream)))
+             (end (position #\) text :from-end t)))
+        (when end
+          (let* ((fields (read-from-string
+                          (concatenate 'string "(" (subseq text (1+ end)) ")")))
+                 (parent (second fields)))
+            (and (integerp parent) parent))))
+    (error () nil)))
+
+(defun process-descends-p (pid ancestor)
+  "Whether PID is ANCESTOR or was started under it, followed through /proc."
+  (loop with current = pid
+        repeat 64
+        do (cond ((eql current ancestor) (return t))
+                 ((or (not (integerp current)) (<= current 1)) (return nil))
+                 (t (setf current (process-parent current))))
+        finally (return nil)))
+
+(defun background-window-p (runtime pid)
+  "Whether PID runs under a launch that asked to stay in the background."
+  (and (integerp pid) (plusp pid)
+       (some (lambda (lease)
+               (let ((job (process-lease-process lease)))
+                 (and job (not (process-lease-stopped lease))
+                      (let ((root (%process-pid job)))
+                        (and (plusp root) (process-descends-p pid root))))))
+             (runtime-background-leases runtime))))
+
+(defun forget-dead-background-leases (runtime)
+  (setf (runtime-background-leases runtime)
+        (remove-if (lambda (lease)
+                     (or (null (process-lease-process lease))
+                         (process-lease-stopped lease)))
+                   (runtime-background-leases runtime))))
+
 (defun start-managed-process (runtime job)
   (let* ((args (managed-process-arguments job)) (command (third args))
          (argv (if (stringp command)
@@ -145,7 +186,8 @@ following a reload command. Launch buffers and tokens are acquired at execution.
     (incf (managed-process-attempts job))
     (handler-case
         (progn
-          (when (eq :session (process-kind job))
+          (when (and (eq :session (process-kind job)) (managed-process-focus job)
+                     (managed-process-input job))
             (setf token (%activation-token (runtime-backend runtime)))
             (unless token (error "Cannot issue application activation token.")))
           (call-with-process-strings
@@ -164,6 +206,8 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                          (error "Cannot start process ~S: errno ~D."
                                 (subseq (first argv) 0 (min 512 (length (first argv)))) error-code))
                        (setf (process-lease-process lease) child)
+                       (unless (managed-process-focus job)
+                         (pushnew lease (runtime-background-leases runtime) :test #'eq))
                        (when (session-process-p job)
                          (setf (cdr (managed-process-session-link job)) (runtime-once-processes runtime)
                                (runtime-once-processes runtime) (managed-process-session-link job)
@@ -211,7 +255,8 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                              (let ((group (%process-group-alive (process-lease-process lease))))
                                (when (minusp group) (error "Cannot inspect session process group: errno ~D." (- group)))
                                (when (zerop group) (release-execution lease) t))))))
-                   (runtime-once-processes runtime))))
+                   (runtime-once-processes runtime)))
+  (forget-dead-background-leases runtime))
 
 (defun process-wait-milliseconds (runtime)
   "How long the backend may sleep before a managed process needs attention."
@@ -256,7 +301,8 @@ following a reload command. Launch buffers and tokens are acquired at execution.
             (start-managed-process runtime job)))))))
 
 (defun stop-managed-processes (runtime)
-  (setf (runtime-pending-spawns runtime) nil)
+  (setf (runtime-pending-spawns runtime) nil
+        (runtime-background-leases runtime) nil)
   (install-managed-processes
    runtime (make-process-plan :active nil :history (make-hash-table :test #'equal)
                               :retired (append (runtime-retired-processes runtime)
@@ -279,3 +325,26 @@ following a reload command. Launch buffers and tokens are acquired at execution.
                       :status (managed-process-status job) :attempts (managed-process-attempts job)
                       :running (not (null (process-lease-process (managed-process-lease job))))
                       :code (managed-process-code job) :error (managed-process-error job))))
+
+(defun spawn-command (runtime arguments)
+  "Run the SPAWN host command: reserve the launch, then start it."
+  (let* ((command (canonical-command (spawn (getf arguments :argv)
+                                            :focus (getf arguments :focus))))
+         (plan (prepare-managed-processes runtime (runtime-mounts runtime)))
+         (spawns (remove nil (prepare-session-spawns runtime (list command) plan))))
+    (unless spawns (error "Cannot reserve the launch."))
+    (unwind-protect
+         (progn
+           (setf (runtime-pending-spawns runtime)
+                 (append spawns (runtime-pending-spawns runtime)))
+           (execute-command runtime command (first spawns))
+           (list :argv (getf arguments :argv) :focus (getf arguments :focus)))
+      (setf (runtime-pending-spawns runtime)
+            (delete-if (lambda (job) (member job spawns :test #'eq))
+                       (runtime-pending-spawns runtime))))))
+
+(define-host-command "spawn"
+  :description "Run a program whose windows stay out of the way."
+  :arguments '((:argv :argv :required t :description "Program and arguments.")
+               (:focus :boolean :default t :description "Let its windows take focus."))
+  :call 'spawn-command)
