@@ -164,7 +164,7 @@
       devShell =
         pkgs:
         pkgs.mkShell {
-          inputsFrom = [ (package pkgs) ];
+          inputsFrom = [ (package pkgs { }) ];
           packages = [
             pkgs.wayland-utils
             pkgs.wayland-scanner
