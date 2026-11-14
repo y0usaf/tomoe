@@ -375,6 +375,12 @@ const char *tomoe_frames(struct tomoe *s) {
             o->timing.ns);
         for (size_t i = 0; i < sizeof(o->timing.counts) / sizeof(o->timing.counts[0]); i++)
             fprintf(out, i ? " %" PRIu64 : "%" PRIu64, o->timing.counts[i]);
+        fputs(") :frame-us (", out);
+        unsigned first = (o->traced.head + FRAME_TRACE - o->traced.count) % FRAME_TRACE;
+        for (unsigned i = 0; i < o->traced.count; i++)
+            fprintf(out, i ? " %u" : "%u", o->traced.us[(first + i) % FRAME_TRACE]);
+        o->traced.head = 0;
+        o->traced.count = 0;
         fputs("))", out);
     }
     fputc(')', out);
@@ -396,13 +402,22 @@ const char *tomoe_animation(struct tomoe *s) {
         if (output_is_active(o)) { refresh = o->screen->refresh; break; }
     if (!refresh)
         wl_list_for_each(o, &s->outputs, link) { refresh = o->screen->refresh; break; }
+    char trail_times[512 * 24] = "";
+    size_t used = 0;
+    unsigned first_trail = (s->trail_times.head + 512 - s->trail_times.count) % 512;
+    for (unsigned i = 0; i < s->trail_times.count && used < sizeof(trail_times); i++)
+        used += (size_t)snprintf(trail_times + used, sizeof(trail_times) - used,
+            i ? " %" PRId64 : "%" PRId64, s->trail_times.ns[(first_trail + i) % 512]);
+    s->trail_times.head = 0;
+    s->trail_times.count = 0;
     if (asprintf(&s->animation_result,
             "(:move-settle-ms %d :open-ms %d :close-ms %d :resize-ms %d"
             " :view-settle-ms %d :switch-ms %d :frames %" PRIu64 " :gaps %" PRIu64
             " :dead %" PRIu64 " :first-passed-ns %" PRId64 " :lead-min-ns %" PRId64
             " :lead-max-ns %" PRId64 " :span-ns %" PRId64 " :max-interval-ns %" PRId64
             " :steady-interval-ns %" PRId64 " :intervals %" PRId64
-            " :refresh-mhz %d :period-ns %" PRId64 ")", 
+            " :refresh-mhz %d :period-ns %" PRId64
+            " :trail-steps %" PRIu64 " :trail-times (%s))", 
             animation_settle_ms(s, ANIMATION_SETTLE_MOVE),
             animation_settle_ms(s, ANIMATION_SETTLE_OPEN),
             animation_settle_ms(s, ANIMATION_SETTLE_CLOSE),
@@ -413,7 +428,8 @@ const char *tomoe_animation(struct tomoe *s) {
             st->lead_min_ns, st->lead_max_ns,
             st->span_ns,
             st->max_interval_ns, st->steady_interval_ns, st->intervals, refresh,
-            refresh > 0 ? (int64_t)(1000000000000LL / refresh) : (int64_t)0) < 0)
+            refresh > 0 ? (int64_t)(1000000000000LL / refresh) : (int64_t)0,
+            s->trail_steps, trail_times) < 0)
         return NULL;
     return s->animation_result;
 }
@@ -1171,6 +1187,10 @@ static void frame_timed(struct output *o, const struct timespec *start) {
     for (int64_t bound = 250000; bucket < 7 && ns >= bound; bound *= 2) bucket++;
     o->timing.ns += (uint64_t)ns;
     o->timing.counts[bucket]++;
+    uint64_t us = (uint64_t)ns / 1000;
+    o->traced.us[o->traced.head] = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+    o->traced.head = (o->traced.head + 1) % FRAME_TRACE;
+    if (o->traced.count < FRAME_TRACE) o->traced.count++;
 }
 
 static void output_frame(struct wl_listener *listener, void *data) {

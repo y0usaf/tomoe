@@ -148,24 +148,45 @@
   (canonical-ui (cons :kind (cons kind properties))))
 
 (defun %ui-backdrop (value)
-  "Normalize a shell background: a color, (:image PATH [:fit FIT]) or
-(:shader PATH [:fps FPS] [:idle SECONDS]). A shader advances with the display,
-once per refresh and timed at the instant its frame is shown; :FPS is only a
-cap on that rate, and :IDLE is how long it keeps drawing after the pointer
-stops, so a shader that names it costs nothing at rest."
-  (%ui-list value 6 "Shell background")
-  (let ((kind (first value)) (options (cddr value)))
-    (unless (member kind '(:image :shader))
-      (error "Shell background must be a color, (:image PATH [:fit FIT]), or (:shader PATH [:fps FPS] [:idle SECONDS])."))
-    (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle)))
-    (list* kind (%ui-string (second value) 65536 nil)
-           (if (eq kind :image)
-               (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
-               (let ((fps (%double-float (getf options :fps 0)))
-                     (idle (%double-float (getf options :idle 0))))
-                 (unless (<= 0d0 fps 1000d0) (error "Shell shader :fps must be from 0 to 1000."))
-                 (unless (<= 0d0 idle 4d0) (error "Shell shader :idle must be from 0 to 4 seconds."))
-                 (list :fps fps :idle idle))))))
+  "Normalize a shell background: a color, (:image PATH [:fit FIT]),
+(:shader PATH [:fps FPS] [:idle SECONDS]) or (:trail [:cell PIXELS] [:life SECONDS]
+[:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS]). A shader or a trail advances
+with the display, once per refresh and timed at the instant its frame is shown;
+:FPS is only a cap on that rate, and :IDLE is how long it keeps drawing after the
+pointer stops, so a background that names it costs nothing at rest."
+  (%ui-list value 16 "Shell background")
+  (let ((kind (first value)))
+    (if (eq kind :trail)
+        (let ((options (rest value)))
+          (%ui-properties options '(:cell :life :steps :color :fps :idle))
+          (let ((cell (%ui-length (getf options :cell 9)))
+                (life (%ui-length (getf options :life 0.35d0)))
+                (steps (getf options :steps 4))
+                (fps (%double-float (getf options :fps 0)))
+                (idle (%double-float (getf options :idle 0.5))))
+            (unless (and (integerp steps) (<= 1 steps 8))
+              (error "Shell trail :steps must be an integer from 1 to 8."))
+            (unless (<= 1d0 cell 256d0) (error "Shell trail :cell must be from 1 to 256 pixels."))
+            (unless (<= 0d0 life 4d0) (error "Shell trail :life must be from 0 to 4 seconds."))
+            (unless (<= 0d0 fps 1000d0)
+              (error "Shell trail :fps must be from 0, following the display, to 1000."))
+            (unless (<= 0d0 idle 4d0) (error "Shell trail :idle must be from 0 to 4 seconds."))
+            (list :trail :cell cell :life life :steps steps
+                  :color (%ui-color (getf options :color #xb8e0ffff))
+                  :fps fps :idle idle)))
+        (let ((options (cddr value)))
+          (unless (member kind '(:image :shader))
+            (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
+          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle)))
+          (list* kind (%ui-string (second value) 65536 nil)
+                 (if (eq kind :image)
+                     (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
+                     (let ((fps (%double-float (getf options :fps 0)))
+                           (idle (%double-float (getf options :idle 0))))
+                       (unless (<= 0d0 fps 1000d0)
+                         (error "Shell shader :fps must be from 0, following the display, to 1000."))
+                       (unless (<= 0d0 idle 4d0) (error "Shell shader :idle must be from 0 to 4 seconds."))
+                       (list :fps fps :idle idle))))))))
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
@@ -569,7 +590,15 @@ VIEWPORT is the visible rectangle published for one output, if any."
                 (when (or (>= (length plans) 64) (> pixels (* 32 1024 1024)))
                   (error "Shell surface set exceeds its canvas budget."))
                 (let* ((background (getf declaration :background))
-                       (backdrop (when (consp background)
+                       (trail (when (and (consp background) (eq (first background) :trail))
+                                (let ((options (rest background)))
+                                  (list :cell (* scale (getf options :cell))
+                                        :life (getf options :life)
+                                        :steps (getf options :steps)
+                                        :color (getf options :color)
+                                        :fps (getf options :fps)
+                                        :idle (getf options :idle)))))
+                       (backdrop (when (and (consp background) (not trail))
                                    (list (%ui-load-asset asset-loader declaration
                                                          (list* :kind (if (eq (first background) :image)
                                                                           :backdrop :shader)
@@ -580,7 +609,8 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                          (getf (cddr background) :idle 0d0)))))
                   (multiple-value-bind (draw hits)
                       (%ui-draw-plan-for (list owner name (getf output :name))
-                                         measured width height scale (unless backdrop background)
+                                         measured width height scale
+                                         (unless (or backdrop trail) background)
                                          (getf declaration :color) (getf declaration :font-size))
                     (let ((plan (list :owner (copy-seq owner) :source-id source-id :name name
                                       :output (copy-seq (getf output :name)) :x x :y y
@@ -594,6 +624,8 @@ VIEWPORT is the visible rectangle published for one output, if any."
                         (setf plan (nconc plan (list :assets asset-ids))))
                       (when backdrop
                         (setf plan (nconc plan (list :backdrop backdrop))))
+                      (when trail
+                        (setf plan (nconc plan (list :trail trail))))
                       (setf plan (nconc plan (list :draw draw :hits hits)))
                       (push plan plans))))
                 (when (and area (plusp (getf declaration :exclusive-zone)))

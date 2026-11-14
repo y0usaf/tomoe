@@ -219,7 +219,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`layer-inset.lisp`](examples/layer-inset.lisp) | Tiling that makes room for panels |
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
-| [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail, drawn by a shader overlay |
+| [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail that costs only the cells it lights |
 | [`drag-smear.lisp`](examples/drag-smear.lisp) | A moving window leaves a quantized smear of its own pixels and collapses once it stops |
 | [`horosphere.lisp`](examples/horosphere.lisp) | Windows tiled on the squares of a hyperbolic {4,5} tiling in a Poincare disk, warped onto their curved tiles; a middle-button drag pans the plane |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
@@ -227,10 +227,24 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`battery.lisp`](examples/battery.lisp), [`network.lisp`](examples/network.lisp), [`media.lisp`](examples/media.lisp), [`tray.lisp`](examples/tray.lisp) | Indicators built on Tomoe's session services |
 
 Animated shader backgrounds see the pointer's last 64 samples as `iTrail` (x, y,
-age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`.
-`(:shader PATH :fps FPS :idle SECONDS)` stops drawing and ticking once the
-pointer has been still for `SECONDS`, and pointer motion starts it again; the
-trail example uses that so an idle overlay costs no frames.
+age in seconds, 1) and `iTrailCount`, in the same coordinates as `iMouse`. A
+sample is taken every 8 ms of the pointer's own event time, so a drag the loop
+drains as one queued batch still draws the path it travelled, corners and all,
+rather than the straight line between where it started and where it stopped.
+A shader or a trail advances once per display refresh, timed at the instant its
+frame is shown, so on a 240 Hz monitor it moves 240 times a second; `:fps`
+defaults to 0, which means "follow the monitor", and a nonzero `:fps` only caps
+that rate. `:idle SECONDS` stops drawing and ticking once the pointer has been
+still for `SECONDS`, and pointer motion starts it again, so an idle overlay
+costs no frames.
+
+A bare `(:trail ...)` background draws that path itself, as squares of `:cell`
+pixels lit for `:life` seconds and dimmed in `:steps` levels of `:color`,
+stopping `:idle` seconds after the pointer rests. The compositor walks the cells
+the samples crossed and lights only those, so following the pointer costs the
+cells the trail actually covers instead of a full-screen shader over the
+output, and the same samples drive it: the trail example is
+`(:trail :cell 9 :life 0.35 :steps 4 :color #xb8e0ffff :idle 0.5)`.
 
 A window can also be drawn through a shader of its own, over a deformable mesh
 whose texture coordinates stay pinned to the window.

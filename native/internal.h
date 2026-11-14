@@ -18,6 +18,7 @@
 #include "xdg-shell-protocol.h"
 
 enum { LOG_ERROR = 1, LOG_INFO, LOG_DEBUG };
+enum { FRAME_TRACE = 128 };
 extern int log_verbosity;
 void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
@@ -369,6 +370,7 @@ struct render *render_create(int drm_fd);
 struct program *render_program(struct render *renderer, int kind);
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
     const float texcoords[8]);
+void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices);
 bool render_texture_gl(struct texture *texture, GLenum *target, GLuint *tex, bool *alpha);
 GLuint render_buffer_fbo(struct render *renderer, struct buffer *buffer);
 uint32_t render_read_format(struct render *renderer);
@@ -530,6 +532,7 @@ struct output {
     pixman_region32_t damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
     struct { uint64_t ns, counts[8]; } timing;
+    struct { uint32_t us[FRAME_TRACE]; unsigned head, count; } traced;
 };
 
 static inline bool output_is_active(const struct output *output) {
@@ -584,6 +587,12 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin, double alpha);
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame);
+struct trail_style {
+    double cell, life;
+    int steps;
+    uint32_t rgba;
+};
+void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface);
@@ -945,6 +954,7 @@ struct tomoe {
     double grab_x, grab_y;
     double pointer_x, pointer_y;
     struct pointer_sample pointer_trail[POINTER_TRAIL];
+    double pointer_trail_next;
     int pointer_trail_count, pointer_trail_head;
     struct surface *cursor_surface;
     int32_t cursor_hotspot_x, cursor_hotspot_y;
@@ -964,6 +974,8 @@ struct tomoe {
     double view_zoom;
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
     struct animation_stats animation;
+    uint64_t trail_steps;
+    struct { int64_t ns[512]; unsigned head, count; } trail_times;
     char *hit_result, *frames_result, *memory_result, *animation_result;
     char *output_preview;
     char *output_current;
@@ -1302,7 +1314,7 @@ void input_listen(struct tomoe *s);
 void presentation_bindings_finish(struct presentation *plan);
 void presentation_input_publish(struct tomoe *s, struct presentation *plan);
 void pointer_refresh(struct tomoe *s);
-void pointer_trail_record(struct tomoe *s);
+void pointer_trail_record(struct tomoe *s, uint32_t time_msec);
 void ui_input_finish(struct tomoe *s);
 void pointer_sync_cursors(struct tomoe *s);
 bool virtual_input_listen(struct tomoe *s);

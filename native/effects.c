@@ -13,6 +13,8 @@ struct chain { struct level levels[32]; int width, height; int64_t used; };
 struct effects {
     struct chain chains[BLUR_CHAINS];
     struct level backdrop;
+    struct { float *levels; size_t capacity; float *quads; size_t capacity_quads;
+             bool refused; } trail;
 };
 
 static struct program *program(struct frame *f, int kind) {
@@ -366,7 +368,208 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+#define TRAIL_STEPS_MAX 8
+#define TRAIL_CELLS_MAX (1u << 20)
+
+static bool grow_floats(float **buffer, size_t *capacity, size_t needed) {
+    if (*capacity >= needed) return true;
+    size_t grown = *capacity ? *capacity : 4096;
+    while (grown < needed) grown *= 2;
+    float *moved = realloc(*buffer, grown * sizeof(float));
+    if (!moved) return false;
+    *buffer = moved;
+    *capacity = grown;
+    return true;
+}
+
+static bool near_segment(double px, double py, double ax, double ay, double bx, double by,
+        double radius) {
+    double dx = bx - ax, dy = by - ay;
+    double length = dx * dx + dy * dy;
+    double along = length > 1e-4 ?
+        ((px - ax) * dx + (py - ay) * dy) / length : 0.0;
+    along = along < 0 ? 0 : along > 1 ? 1 : along;
+    double ex = px - (ax + dx * along), ey = py - (ay + dy * along);
+    return ex * ex + ey * ey < radius * radius;
+}
+
+static int trail_step(float lit, int cx, int cy, int steps) {
+    float grain = sinf((float)cx * 12.9898f + (float)cy * 78.233f) * 43758.5453f;
+    grain -= floorf(grain);
+    int step = (int)floorf(lit * (float)steps + grain);
+    return step < 0 ? 0 : step > steps ? steps : step;
+}
+
+static uint64_t mix_cell(uint64_t hash, uint64_t value) {
+    for (int i = 0; i < 8; i++) {
+        hash = (hash ^ (value & 0xff)) * 0x100000001b3ull;
+        value >>= 8;
+    }
+    return hash;
+}
+
+void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style) {
+    struct tomoe *s = f->server;
+    int count = s ? s->pointer_trail_count : 0;
+    if (!f->pass || count <= 0) return;
+    if (!s->effects) s->effects = calloc(1, sizeof(*s->effects));
+    struct effects *e = s->effects;
+    if (!e) return;
+    double cell = style->cell < 1 ? 1 : style->cell > 256 ? 256 : style->cell;
+    double life = style->life > 0 ? style->life : 1;
+    int steps = style->steps < 1 ? 1 : style->steps > TRAIL_STEPS_MAX ? TRAIL_STEPS_MAX : style->steps;
+    double radius = cell * 0.75;
+    double now = f->sample > 0 ? f->sample : animation_now();
+    double xs[POINTER_TRAIL], ys[POINTER_TRAIL], ages[POINTER_TRAIL];
+    double reach_left = INFINITY, reach_top = INFINITY, reach_right = -INFINITY,
+        reach_bottom = -INFINITY;
+    for (int i = 0; i < count; i++) {
+        const struct pointer_sample *sample = &s->pointer_trail[
+            (s->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
+        to_buffer(f, sample->x, sample->y, &xs[i], &ys[i]);
+        ages[i] = now - sample->t;
+        reach_left = fmin(reach_left, xs[i] - radius);
+        reach_top = fmin(reach_top, ys[i] - radius);
+        reach_right = fmax(reach_right, xs[i] + radius);
+        reach_bottom = fmax(reach_bottom, ys[i] + radius);
+    }
+    struct fbox shown = area;
+    fbox_transform(&shown, &shown, transform_invert(f->transform), f->width, f->height);
+    double surface_left = floor(shown.x), surface_top = floor(shown.y);
+    double surface_right = ceil(shown.x + shown.width), surface_bottom = ceil(shown.y + shown.height);
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height };
+    double left = fmax(fmax(surface_left, reach_left), bounds.x);
+    double top = fmax(fmax(surface_top, reach_top), bounds.y);
+    double right = fmin(fmin(surface_right, reach_right), bounds.x + bounds.width);
+    double bottom = fmin(fmin(surface_bottom, reach_bottom), bounds.y + bounds.height);
+    if (right - left < 1 || bottom - top < 1) return;
+    int gx0 = (int)floor(left / cell), gy0 = (int)floor(top / cell);
+    int gx1 = (int)floor((right - 1e-6) / cell), gy1 = (int)floor((bottom - 1e-6) / cell);
+    size_t gw = (size_t)(gx1 - gx0 + 1), gh = (size_t)(gy1 - gy0 + 1);
+    if (!gw || !gh) return;
+    if (gw * gh > TRAIL_CELLS_MAX) {
+        if (!e->trail.refused) {
+            e->trail.refused = true;
+            tomoe_log(LOG_ERROR, "tomoe: the trail covers %zux%zu cells of %g pixels; "
+                "use a larger :cell", gw, gh, cell);
+        }
+        return;
+    }
+    if (!grow_floats(&e->trail.levels, &e->trail.capacity, gw * gh)) return;
+    float *levels = e->trail.levels;
+    memset(levels, 0, gw * gh * sizeof(float));
+    for (int i = 0; i < count; i++) {
+        if (count > 1 && i == 0) continue;
+        if (count > 1 && ages[i - 1] > life && ages[i] > life) continue;
+        double ax = xs[i > 0 ? i - 1 : 0], ay = ys[i > 0 ? i - 1 : 0];
+        double age = count > 1 ? 0.5 * (ages[i - 1] + ages[i]) : ages[0];
+        double lit = 1.0 - age / life;
+        if (lit <= 0) continue;
+        int cx0 = (int)floor((fmin(ax, xs[i]) - radius) / cell) - gx0;
+        int cx1 = (int)floor((fmax(ax, xs[i]) + radius) / cell) - gx0;
+        int cy0 = (int)floor((fmin(ay, ys[i]) - radius) / cell) - gy0;
+        int cy1 = (int)floor((fmax(ay, ys[i]) + radius) / cell) - gy0;
+        if (cx0 < 0) cx0 = 0;
+        if (cy0 < 0) cy0 = 0;
+        if (cx1 > gx1 - gx0) cx1 = (int)gw - 1;
+        if (cy1 > gy1 - gy0) cy1 = (int)gh - 1;
+        for (int cy = cy0; cy <= cy1; cy++) {
+            double centre_y = (gy0 + cy + 0.5) * cell;
+            for (int cx = cx0; cx <= cx1; cx++) {
+                double centre_x = (gx0 + cx + 0.5) * cell;
+                if (!near_segment(centre_x, centre_y, ax, ay, xs[i], ys[i], radius)) continue;
+                float *slot = &levels[(size_t)cy * gw + (size_t)cx];
+                if (*slot < (float)lit) *slot = (float)lit;
+            }
+        }
+    }
+    int steps_used[TRAIL_STEPS_MAX + 1] = {0};
+    uint64_t digest = 0xcbf29ce484222325ull;
+    int lit_left = INT_MAX, lit_top = INT_MAX, lit_right = INT_MIN, lit_bottom = INT_MIN;
+    for (size_t cy = 0; cy < gh; cy++) {
+        for (size_t cx = 0; cx < gw; cx++) {
+            float lit = levels[cy * gw + cx];
+            if (lit <= 0) continue;
+            int step = trail_step(lit, gx0 + (int)cx, gy0 + (int)cy, steps);
+            if (step < 1) continue;
+            steps_used[step]++;
+            digest = mix_cell(digest, ((uint64_t)cx << 32) | (uint32_t)cy);
+            digest = mix_cell(digest, (uint64_t)step);
+            int x0 = gx0 + (int)cx, y0 = gy0 + (int)cy;
+            if (x0 < lit_left) lit_left = x0;
+            if (y0 < lit_top) lit_top = y0;
+            if (x0 > lit_right) lit_right = x0;
+            if (y0 > lit_bottom) lit_bottom = y0;
+        }
+    }
+    if (lit_right < lit_left) return;
+    int left_px = (int)floor(lit_left * cell), top_px = (int)floor(lit_top * cell);
+    struct box covered = { left_px, top_px,
+        (int)ceil((lit_right + 1) * cell) - left_px,
+        (int)ceil((lit_bottom + 1) * cell) - top_px };
+    if (!box_intersection(&covered, &covered, &bounds)) return;
+    double params[] = { 13, covered.x, covered.y, covered.width, covered.height, cell, life,
+        steps, (double)style->rgba, (double)(digest & 0x1fffffffffffffull) };
+    if (pass_record(f->pass, NULL, covered, (struct box){0}, params,
+            sizeof(params) / sizeof(params[0]))) return;
+    if (!pass_touches(f->pass, covered)) return;
+    size_t total = 0;
+    for (int step = 1; step <= steps; step++) total += (size_t)steps_used[step];
+    if (!total || !grow_floats(&e->trail.quads, &e->trail.capacity_quads, total * 12)) return;
+    float *quads = e->trail.quads;
+    size_t offsets[TRAIL_STEPS_MAX + 1] = {0}, used[TRAIL_STEPS_MAX + 1] = {0};
+    for (int step = 1, next = 0; step <= steps; step++) {
+        offsets[step] = next;
+        next += steps_used[step] * 6;
+    }
+    for (size_t cy = 0; cy < gh; cy++) {
+        for (size_t cx = 0; cx < gw; cx++) {
+            float lit = levels[cy * gw + cx];
+            if (lit <= 0) continue;
+            int step = trail_step(lit, gx0 + (int)cx, gy0 + (int)cy, steps);
+            if (step < 1) continue;
+            double x0 = fmax((gx0 + (double)cx) * cell, surface_left);
+            double y0 = fmax((gy0 + (double)cy) * cell, surface_top);
+            double x1 = fmin((gx0 + (double)cx + 1) * cell, surface_right);
+            double y1 = fmin((gy0 + (double)cy + 1) * cell, surface_bottom);
+            if (x1 - x0 < 0.5 || y1 - y0 < 0.5) continue;
+            float px0 = (float)(x0 / f->buffer->width * 2.0 - 1.0);
+            float px1 = (float)(x1 / f->buffer->width * 2.0 - 1.0);
+            float py0 = (float)(y0 / f->buffer->height * 2.0 - 1.0);
+            float py1 = (float)(y1 / f->buffer->height * 2.0 - 1.0);
+            float *quad = &quads[(offsets[step] + used[step]) * 2];
+            used[step] += 6;
+            quad[0] = px0; quad[1] = py0;
+            quad[2] = px1; quad[3] = py0;
+            quad[4] = px0; quad[5] = py1;
+            quad[6] = px1; quad[7] = py0;
+            quad[8] = px1; quad[9] = py1;
+            quad[10] = px0; quad[11] = py1;
+        }
+    }
+    s->trail_times.ns[s->trail_times.head] = (int64_t)llround(now * 1e9);
+    s->trail_times.head = (s->trail_times.head + 1) % 512;
+    if (s->trail_times.count < 512) s->trail_times.count++;
+    s->trail_steps++;
+    struct program *p = program(f, PROGRAM_RECT);
+    if (!p) return;
+    glUseProgram(p->id);
+    for (int step = 1; step <= steps; step++) {
+        if (!used[step]) continue;
+        float alpha = (float)step / (float)steps;
+        float red = ((style->rgba >> 24) & 0xff) / 255.0f * alpha;
+        float green = ((style->rgba >> 16) & 0xff) / 255.0f * alpha;
+        float blue = ((style->rgba >> 8) & 0xff) / 255.0f * alpha;
+        glUniform4f(p->color, red, green, blue, alpha);
+        pass_triangles(f->pass, p, &quads[offsets[step] * 2], used[step]);
+    }
+}
+
 void effects_finish(struct tomoe *s) {
+    if (s->effects) {
+        free(s->effects->trail.levels);
+        free(s->effects->trail.quads);
+    }
     free(s->effects);
     s->effects = NULL;
 }

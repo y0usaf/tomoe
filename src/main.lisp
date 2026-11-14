@@ -55,8 +55,8 @@ hit-test reads one screen-space point from a live instance without changing it.
 frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.
 animation reads the configured settle times and how animation frames were paced:
 moving frames, refreshes skipped between them, samples with no elapsed time, how
-long the first frame advanced the animation, and how far ahead of the frame it
-sampled.
+long the first frame advanced the animation, how far ahead of the frame it
+sampled, and how the cursor trail's drawn steps were spaced.
 memory reads the Lisp heap and collector, the native heap, textures and output buffers.
 X11 clients connect through DISPLAY; Xwayland starts on the first connection and runs with Tomoe's own window manager.
 Control replies are versioned Lisp data. Mutating control commands are silent on success."))
