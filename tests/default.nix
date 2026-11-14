@@ -67,8 +67,10 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/tablet/tablet-v2.xml \
-        ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml; do
+        ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml \
+        ${../native/virtual-keyboard-unstable-v1.xml}; do
         name=$(basename "$xml" .xml)
+        case "$name" in *virtual-keyboard-unstable-v1) name=virtual-keyboard-unstable-v1;; esac
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
       done
@@ -80,12 +82,15 @@ let
         $(pkg-config --cflags --libs wayland-client) -o tomoe-pacing-client
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/cursor-alpha.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-cursor-client
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/timing.c *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-timing-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
       install -Dm755 tomoe-test-pointer-client $out/bin/tomoe-test-pointer-client
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
       install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
+      install -Dm755 tomoe-timing-client $out/bin/tomoe-timing-client
     '';
   };
   x11Client = pkgs.stdenv.mkDerivation {
