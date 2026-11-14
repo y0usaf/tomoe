@@ -434,33 +434,42 @@ before native code may move the pointer without them.")
   (let ((effect (find :motion (mounted-effects mounted) :key #'effect-kind)))
     (and effect (effect-arguments effect))))
 
+(defun motion-reader-p (mounted)
+  "Whether MOUNTED's answer depends on pointer motion."
+  (let ((reads (mount-context-reads mounted)))
+    (or (member :pointer reads) (member :grab reads))))
+
 (defun resolved-motion-plan (mounts grab grab-owner)
-  "The pointer gate native code may follow, or NIL when Lisp must see motion.
-Fast only when every extension that reads pointer motion publishes a contract,
-and only while no grab is active unless the grab's owner translates it natively."
-  (let ((fast t) (hover nil) (regions nil) (edges nil) (distance nil))
+  "The pointer gate native code may follow, or NIL when it must leave motion to
+Lisp. Fast only when every extension that reads pointer motion publishes a
+contract, and only while no grab is active unless the grab's owner translates it
+natively. A gate that cannot be fast stages nothing: a fresh presentation is
+already inert, and motion-plan-changed-p is what clears a gate that was fast."
+  (let ((fast t) (hover nil) (regions nil) (edges nil) (distance nil) (readers nil))
     (dolist (mounted mounts)
-      (let ((reads (mount-context-reads mounted)))
-        (when (or (member :pointer reads) (member :grab reads))
-          (let ((contract (motion-contract-of mounted)))
-            (if (null contract)
-                (setf fast nil)
-                (setf hover (or hover (getf contract :hover))
-                      regions (append regions (getf contract :regions))
-                      edges (append edges (getf contract :edges))
-                      distance (if distance (min distance (getf contract :distance))
-                                   (getf contract :distance))))))))
-    (let* ((drag (and grab-owner (second grab) (motion-contract-of grab-owner)))
-           (drag (and drag
-                      (member (second grab) '(:move :resize))
-                      (getf drag :drag)
-                      (list* :id (first grab) :mode (second grab) (getf drag :drag)))))
-      (when (and grab (not drag)) (setf fast nil))
-      (list :fast (and fast t) :hover (and hover t)
-            :regions (when fast (remove-duplicates regions :test #'equal))
-            :edges (when fast (remove-duplicates edges :test #'equal))
-            :distance (if fast (or distance 0) 0)
-            :drag (and fast drag)))))
+      (when (motion-reader-p mounted)
+        (setf readers t)
+        (let ((contract (motion-contract-of mounted)))
+          (if (null contract)
+              (setf fast nil)
+              (setf hover (or hover (getf contract :hover))
+                    regions (append regions (getf contract :regions))
+                    edges (append edges (getf contract :edges))
+                    distance (if distance (min distance (getf contract :distance))
+                                 (getf contract :distance)))))))
+    (when readers
+      (let* ((drag (and grab-owner (second grab) (motion-contract-of grab-owner)))
+             (drag (and drag
+                        (member (second grab) '(:move :resize))
+                        (getf drag :drag)
+                        (list* :id (first grab) :mode (second grab) (getf drag :drag)))))
+        (when (and grab (not drag)) (setf fast nil))
+        (when fast
+          (list :fast t :hover (and hover t)
+                :regions (remove-duplicates regions :test #'equal)
+                :edges (remove-duplicates edges :test #'equal)
+                :distance (or distance 0)
+                :drag drag))))))
 
 (defun motion-plan-changed-p (runtime motion)
   "Whether the native core must be told about MOTION. An inert plan and none at

@@ -227,7 +227,6 @@ once."
 (define-native ("tomoe_present_keyboard_grab" %present-keyboard-grab) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (otherwise sb-alien:c-string))
-(define-native ("tomoe_motion_begin" %motion-begin) sb-alien:int (server (* t)))
 (define-native ("tomoe_motion" %motion) sb-alien:int
   (server (* t)) (fast sb-alien:int) (hover sb-alien:int) (regions sb-alien:int)
   (edges sb-alien:int) (distance sb-alien:int))
@@ -439,7 +438,6 @@ once."
 
 (defun stage-native-motion (backend motion)
   "Stage the pointer gate: nothing on the fast path unless MOTION says so."
-  (unless (= 1 (%motion-begin backend)) (error "Cannot allocate candidate motion gate."))
   (when motion
     (unless (= 1 (%motion backend (if (getf motion :fast) 1 0)
                           (if (getf motion :hover) 1 0)

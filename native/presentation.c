@@ -55,7 +55,6 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     struct presentation *plan = calloc(1, sizeof(*plan));
     if (!plan) return 0;
     wl_list_init(&plan->bindings);
-    motion_plan_init(&plan->motion);
     plan->outputs_changed = outputs_changed != 0;
     plan->replace_bindings = replace_bindings != 0;
     plan->grab_id = grab_mode ? grab_id : 0;

@@ -49,8 +49,6 @@ struct motion_state {
 
 struct tomoe;
 
-void motion_plan_init(struct motion_plan *plan);
-void motion_plan_finish(struct motion_plan *plan);
 void motion_publish(struct tomoe *s, struct motion_plan *plan);
 bool motion_drag_begin(struct tomoe *s);
 void motion_drag_end(struct tomoe *s);

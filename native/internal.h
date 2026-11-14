@@ -798,7 +798,6 @@ struct presentation {
     bool grab_staged;
     struct sound_bank *sounds;
     struct motion_plan motion;
-    bool motion_staged;
 };
 void settings_publish(struct tomoe *s, struct presentation *plan);
 enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_BELL, SOUND_EVENTS };

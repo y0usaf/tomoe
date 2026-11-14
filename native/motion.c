@@ -1,12 +1,24 @@
 #include "internal.h"
 #include "motion.h"
 
-void motion_plan_init(struct motion_plan *plan) {
-    *plan = (struct motion_plan){0};
-}
-
-void motion_plan_finish(struct motion_plan *plan) {
-    motion_plan_init(plan);
+static void motion_plan_copy(struct motion_plan *into, const struct motion_plan *from) {
+    into->fast = from->fast;
+    into->hover = from->hover;
+    into->regions = from->regions;
+    into->edges = from->edges;
+    into->distance_wake = from->distance_wake;
+    into->distance = from->distance;
+    into->drag_id = from->drag_id;
+    into->drag_mode = from->drag_mode;
+    into->drag_bound = from->drag_bound;
+    into->drag_min = from->drag_min;
+    into->drag_max = from->drag_max;
+    into->region_count = from->region_count;
+    if (into->region_count)
+        memcpy(into->region, from->region, into->region_count * sizeof(*from->region));
+    into->edge_count = from->edge_count;
+    if (into->edge_count)
+        memcpy(into->edge, from->edge, into->edge_count * sizeof(*from->edge));
 }
 
 static uint64_t region_mask(struct tomoe *s, const struct motion_plan *plan) {
@@ -53,8 +65,7 @@ static int clamp_int(int value, int low, int high) {
 void motion_publish(struct tomoe *s, struct motion_plan *plan) {
     struct motion_state *m = &s->motion;
     bool drag = m->drag_active;
-    m->plan = *plan;
-    motion_plan_init(plan);
+    motion_plan_copy(&m->plan, plan);
     m->tracked = true;
     m->inside = region_mask(s, &m->plan);
     m->inside_edges = edge_mask(s, &m->plan);
@@ -211,15 +222,8 @@ int motion_wake(struct tomoe *s) {
     return 1;
 }
 
-int tomoe_motion_begin(struct tomoe *s) {
-    if (!s->presentation) return 0;
-    motion_plan_finish(&s->presentation->motion);
-    s->presentation->motion_staged = true;
-    return 1;
-}
-
 int tomoe_motion(struct tomoe *s, int fast, int hover, int regions, int edges, int distance) {
-    if (!s->presentation || !s->presentation->motion_staged) return 0;
+    if (!s->presentation) return 0;
     if (distance < 0 || distance > 1048576) return 0;
     struct motion_plan *plan = &s->presentation->motion;
     plan->fast = fast != 0;
@@ -232,7 +236,7 @@ int tomoe_motion(struct tomoe *s, int fast, int hover, int regions, int edges, i
 }
 
 int tomoe_motion_region(struct tomoe *s, const char *name, int x, int y, int width, int height) {
-    if (!s->presentation || !s->presentation->motion_staged || !name ||
+    if (!s->presentation || !name ||
             !*name || strlen(name) >= MOTION_NAME_MAX || width < 1 || height < 1) return 0;
     struct motion_plan *plan = &s->presentation->motion;
     if (plan->region_count >= MOTION_REGIONS) return 0;
@@ -246,7 +250,7 @@ int tomoe_motion_region(struct tomoe *s, const char *name, int x, int y, int wid
 }
 
 int tomoe_motion_edge(struct tomoe *s, int side, int thickness) {
-    if (!s->presentation || !s->presentation->motion_staged) return 0;
+    if (!s->presentation) return 0;
     if (side < 0 || side > 3 || thickness < 1 || thickness > 1048576) return 0;
     struct motion_plan *plan = &s->presentation->motion;
     if (plan->edge_count >= 4) return 0;
@@ -256,7 +260,7 @@ int tomoe_motion_edge(struct tomoe *s, int side, int thickness) {
 
 int tomoe_motion_drag(struct tomoe *s, uint32_t id, int mode, int bound, int min_size,
         int max_size) {
-    if (!s->presentation || !s->presentation->motion_staged) return 0;
+    if (!s->presentation) return 0;
     if (mode < 0 || mode > 3 || bound < 0 || bound > 1048576 || min_size < 1 ||
             max_size < min_size || max_size > 1048576) return 0;
     struct motion_plan *plan = &s->presentation->motion;
