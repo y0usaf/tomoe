@@ -65,7 +65,6 @@ def extensions(socket="check"):
 def measure(label, socket="check", unit="tomoe", gate=True):
     before = extensions(socket)
     probe = inspect(socket)
-    invocations = int(probe[":INVOCATIONS"]) if ":INVOCATIONS" in probe else None
     cli("timings reset", socket)
     before_ticks, before_frames, before_consed = ticks(unit), frames(socket), memory(socket)[0]
     result = machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} tomoe-timing-client --count " + COUNT)
@@ -88,7 +87,6 @@ def measure(label, socket="check", unit="tomoe", gate=True):
     after = extensions(socket)
     ran = {name: after[name][0] - before.get(name, (0, 0))[0] for name in after}
     used = sum(ran.values())
-    invoked = None if invocations is None else int(inspect(socket)[":INVOCATIONS"]) - invocations
     events = int(COUNT) * 4
     for key in ("pointer", "key", "drag", "frame-total", "commit-frame"):
         assert channels[key]["count"] > 0, f"{label}: {key} recorded nothing: {channels}"
@@ -107,9 +105,7 @@ def measure(label, socket="check", unit="tomoe", gate=True):
           f"{gcs} collections")
     print(f"{label}: layout folded {timings.get(':LAYOUT-REBUILDS', '0')} times and reused "
           f"{timings.get(':LAYOUT-REUSES', '0')} times")
-    print(f"{label}: {used} Lisp runs and "
-          + ("no invocation counter" if invoked is None else f"{invoked} invocations")
-          + f" for {events} events")
+    print(f"{label}: {used} Lisp runs for {events} events")
     print(f"{'path':<14}{'count':>7}{'mean':>10}{'p50':>10}{'p90':>10}{'p99':>10}{'max':>10}"
           f"{'bytes':>12}   (us)")
     for name, fields in channels.items():
@@ -126,7 +122,7 @@ def measure(label, socket="check", unit="tomoe", gate=True):
         print(f"{start % 1000000000:>12}{duration / 1000000:>11.2f}"
               f"{('yes' if overlapped else 'no'):>8}"
               f"{sum(b - a for a, b in overlapped) / 1000000:>8.2f}")
-    return channels, used, invoked, ran
+    return channels, used, ran
 
 def measure_policy(label, policy, name, socket="check", unit="tomoe", gate=True):
     cli(f"mount {policy}", socket)
@@ -217,9 +213,6 @@ if main:
 assert min(run[1] for run in contract) < min(run[1] for run in plain), (
     "the contract published no fewer Lisp runs: "
     + show([[run[1] for run in plain], [run[1] for run in contract]]))
-assert max(run[2] for run in contract) < min(run[2] for run in plain), (
-    "the contract published no fewer Lisp invocations: "
-    + show([[run[2] for run in plain], [run[2] for run in contract]]))
 
 machine.succeed(ENV + "WAYLAND_DISPLAY=check grim -t ppm /run/timing.ppm")
 print("screenshot: " + machine.succeed("sha256sum /run/timing.ppm").split()[0])

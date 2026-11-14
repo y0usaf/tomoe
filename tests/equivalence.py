@@ -263,11 +263,19 @@ for line in fastpath:
         raise AssertionError(f"an extension failed on the fast path: {line}")
 print("equivalence: the shipped desktop makes the same decisions and draws the same frames")
 
+control_run = scenario(BASELINE, COUNTER_POLICY, "count-control", "/run/count-control.log", [])
 baseline = scenario(BASELINE, COUNTER_POLICY, "count-baseline", "/run/count-baseline.log", [])
 fastpath = scenario(FASTPATH, COUNTER_POLICY, "count-fastpath", "/run/count-fastpath.log", [])
-compare(baseline, fastpath, "a reducer without a contract")
-counts = [machine.succeed(f"grep -c '^counter' {log}").strip()
-          for log in ("/run/count-baseline.log", "/run/count-fastpath.log")]
+compare(control_run, baseline, "two origin/main runs of the same scenario", ignore_runs=True)
+print("control: origin/main repeats itself checkpoint by checkpoint")
+print("control runs " + str([line for line in control_run if line.startswith("runs ")]))
+print("baseline runs " + str([line for line in baseline if line.startswith("runs ")]))
+print("fastpath runs " + str([line for line in fastpath if line.startswith("runs ")]))
+compare(baseline, fastpath, "a reducer without a contract", ignore_runs=True)
+def counter_events(transcript):
+    return sum(1 for line in "\n".join(transcript).splitlines() if line.startswith("counter "))
+
+counts = [str(counter_events(baseline)), str(counter_events(fastpath))]
 assert counts[0] == counts[1] and int(counts[0]) > 0, f"the counter saw {counts}"
 print(f"equivalence: a reducer without a contract saw all {counts[0]} pointer events, as before")
 
