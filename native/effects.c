@@ -551,17 +551,27 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     s->trail_times.head = (s->trail_times.head + 1) % 512;
     if (s->trail_times.count < 512) s->trail_times.count++;
     s->trail_steps++;
-    struct program *p = program(f, PROGRAM_RECT);
-    if (!p) return;
-    glUseProgram(p->id);
     for (int step = 1; step <= steps; step++) {
         if (!used[step]) continue;
         float alpha = (float)step / (float)steps;
-        float red = ((style->rgba >> 24) & 0xff) / 255.0f * alpha;
-        float green = ((style->rgba >> 16) & 0xff) / 255.0f * alpha;
-        float blue = ((style->rgba >> 8) & 0xff) / 255.0f * alpha;
-        glUniform4f(p->color, red, green, blue, alpha);
-        pass_triangles(f->pass, p, &quads[offsets[step] * 2], used[step]);
+        struct scene_quad scene = {
+            .kind = SCENE_RECT, .alpha = 1, .filter = GL_LINEAR, .blend = 1 };
+        scene.color[0] = ((style->rgba >> 24) & 0xff) / 255.0f * alpha;
+        scene.color[1] = ((style->rgba >> 16) & 0xff) / 255.0f * alpha;
+        scene.color[2] = ((style->rgba >> 8) & 0xff) / 255.0f * alpha;
+        scene.color[3] = alpha;
+        for (size_t vertex = 0; vertex < used[step]; vertex += 6) {
+            const float *quad = &quads[(offsets[step] + vertex) * 2];
+            scene.pos[0] = quad[0];
+            scene.pos[1] = quad[1];
+            scene.pos[2] = quad[2];
+            scene.pos[3] = quad[3];
+            scene.pos[4] = quad[4];
+            scene.pos[5] = quad[5];
+            scene.pos[6] = quad[8];
+            scene.pos[7] = quad[9];
+            pass_scene(f->pass, &scene);
+        }
     }
 }
 
