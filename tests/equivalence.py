@@ -303,12 +303,12 @@ if others:
           + ", ".join(others))
 assert any('entered=("corner")' in line for line in wakes), wakes
 assert any('left=("corner")' in line for line in wakes), wakes
-assert any("in=(:top)" in line for line in wakes), wakes
-assert any("out=(:top)" in line for line in wakes), wakes
-assert len([line for line in wakes
-            if "entered=()" in line and "left=()" in line and "in=()" in line
-            and "out=()" in line]) >= 2, wakes
-assert all(int(line.split("distance=")[1]) >= 500 for line in wakes
-           if "entered=()" in line and "in=()" in line), wakes
+assert any("in=(:TOP)" in line for line in wakes), wakes
+assert any("out=(:TOP)" in line for line in wakes), wakes
+distance_wakes = [line for line in wakes
+                  if all(key + "=NIL" in line for key in
+                         ("entered", "left", "in", "out"))]
+assert len(distance_wakes) >= 2, wakes
+assert all(int(line.split("distance=")[1]) >= 500 for line in distance_wakes), distance_wakes
 print(f"contract: {len(wakes)} wakes, {dispatches - 1} Lisp runs, "
       "the corner, the top edge and the distance threshold all reported")
