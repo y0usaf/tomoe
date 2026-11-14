@@ -13,7 +13,7 @@
 #include <GLES2/gl2.h>
 #include <wayland-server-core.h>
 #include <drm_fourcc.h>
-#include <pixman.h>
+#include "region.h"
 #include <xkbcommon/xkbcommon.h>
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg-shell-protocol.h"
@@ -38,9 +38,9 @@ enum wl_output_transform transform_compose(enum wl_output_transform a, enum wl_o
 void transform_coords(enum wl_output_transform transform, int *x, int *y);
 void transform_point(double *x, double *y, enum wl_output_transform transform,
     double width, double height);
-void region_scale(pixman_region32_t *dst, const pixman_region32_t *src, float scale);
-void region_scale_xy(pixman_region32_t *dst, const pixman_region32_t *src, float sx, float sy);
-void region_transform(pixman_region32_t *dst, const pixman_region32_t *src,
+void region_scale(struct region *dst, const struct region *src, float scale);
+void region_scale_xy(struct region *dst, const struct region *src, float sx, float sy);
+void region_transform(struct region *dst, const struct region *src,
     enum wl_output_transform transform, int width, int height);
 
 struct addon {
@@ -156,7 +156,7 @@ struct texture_options {
     struct fbox src_box;
     struct box dst_box;
     const float *alpha;
-    const pixman_region32_t *clip;
+    const struct region *clip;
     enum wl_output_transform transform;
     enum filter_mode filter_mode;
     enum blend_mode blend_mode;
@@ -170,7 +170,7 @@ struct texture_options {
 struct rect_options {
     struct box box;
     struct color color;
-    const pixman_region32_t *clip;
+    const struct region *clip;
     enum blend_mode blend_mode;
 };
 struct read_options {
@@ -184,13 +184,13 @@ struct op {
     const struct surface *surface;
     struct box box, reach, footprint;
     struct fbox src;
-    pixman_region32_t opaque;
+    struct region opaque;
     bool mapped, hidden;
 };
 struct oplist { struct op *ops; size_t len, cap; bool lost; };
 void oplist_finish(struct oplist *list);
-bool oplist_damage(struct oplist *old, struct oplist *now, pixman_region32_t *out);
-void oplist_expand(const struct oplist *list, pixman_region32_t *region);
+bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out);
+void oplist_expand(const struct oplist *list, struct region *region);
 void render_destroy(struct render *r);
 int render_drm_fd(struct render *r);
 bool render_has_timeline(struct render *r);
@@ -207,7 +207,7 @@ struct texture *texture_from_buffer(struct render *r, struct buffer *buffer);
 struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
     uint32_t width, uint32_t height, const void *data);
 bool texture_update(struct texture *texture, struct buffer *buffer,
-    const pixman_region32_t *damage);
+    const struct region *damage);
 bool texture_read_pixels(struct texture *texture, const struct read_options *options);
 void texture_destroy(struct texture *texture);
 struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeline *signal,
@@ -220,7 +220,7 @@ struct pass *render_record(struct render *r, struct buffer *buffer, struct oplis
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
     struct box reach, const double *params, size_t count);
 void pass_record_footprint(struct pass *pass, struct box footprint);
-void pass_clip(struct pass *pass, const pixman_region32_t *clip);
+void pass_clip(struct pass *pass, const struct region *clip);
 bool pass_touches(struct pass *pass, struct box box);
 void render_retire_fences(struct render *r);
 bool render_frames_held(struct render *r);
@@ -321,7 +321,7 @@ struct scene_quad {
     uint32_t target;
     GLuint raw;
     struct texture *texture;
-    const pixman_region32_t *clip;
+    const struct region *clip;
 };
 void pass_scene(struct pass *pass, const struct scene_quad *quad);
 void pass_flush(struct pass *pass);
@@ -548,7 +548,7 @@ struct plane_item {
 struct plane_assignment {
     size_t count;
     struct plane_item item[SCREEN_OVERLAYS];
-    pixman_region32_t excluded;
+    struct region excluded;
     bool changed, retest, tested;
     uint64_t signature, refused;
 };
@@ -588,7 +588,7 @@ struct output {
     bool animating;
     struct oplist ops;
     uint64_t frames;
-    pixman_region32_t damage[8];
+    struct region damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
     struct { uint64_t ns, counts[8]; } timing;
     struct { uint32_t us[FRAME_TRACE]; unsigned head, count; } traced;
@@ -655,7 +655,7 @@ struct trail_style {
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
-const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface);
+const struct region *background_blur_region(struct tomoe *s, struct surface *surface);
 struct presentation_output {
     struct output *output;
     struct box box;
@@ -821,7 +821,7 @@ struct surface_state {
     int dx, dy, width, height, buffer_width, buffer_height, scale;
     uint32_t alpha, content_type;
     enum wl_output_transform transform;
-    pixman_region32_t surface_damage, buffer_damage, input, opaque;
+    struct region surface_damage, buffer_damage, input, opaque;
     struct surface_viewport viewport;
     struct wl_list frames, feedbacks, waits, synced, link;
     struct timeline *acquire, *release;
@@ -836,7 +836,7 @@ struct surface {
     struct texture *texture;
     struct buffer *buffer;
     struct release *release;
-    pixman_region32_t input_region;
+    struct region input_region;
     const struct surface_role *role;
     struct wl_resource *role_resource, *viewport, *fractional, *syncobj;
     struct wl_resource *fifo;
@@ -1602,7 +1602,7 @@ void surfaces_fifo_frame(struct screen *screen);
 void surfaces_fifo_commit(struct screen *screen);
 void surface_fifo_unpaced(struct surface *surface);
 struct surface *surface_from_resource(struct wl_resource *resource);
-pixman_region32_t *region_from_resource(struct wl_resource *resource);
+struct region *region_from_resource(struct wl_resource *resource);
 bool surface_has_buffer(struct surface *surface);
 bool alpha_modifier_listen(struct tomoe *s);
 bool content_type_listen(struct tomoe *s);

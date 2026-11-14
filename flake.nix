@@ -10,8 +10,7 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      eachSystem = nixpkgs.lib.genAttrs systems;
-      pkgsFor = system: import nixpkgs { inherit system; };
+      pkgsFor = nixpkgs.lib.genAttrs systems (system: import nixpkgs { inherit system; });
       version = "0.1.0";
       dbus =
         pkgs:
@@ -109,13 +108,11 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             pkgs.libxkbcommon
-            pkgs.pixman
             pkgs.cairo
             pkgs.pango
             pkgs.libjpeg
             (resvg pkgs)
             pkgs.systemdLibs
-            pkgs.lcms2
             pkgs.zstd
             (pipewire pkgs)
           ];
@@ -128,12 +125,9 @@
               WP=${pkgs.wayland-protocols}/share/wayland-protocols
             SBCL_HOME=${sbcl}/lib/sbcl \
             TOMOE_VERSION=${version} \
-            TOMOE_SHELL=${pkgs.bashNonInteractive}/bin/sh \
             TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
             TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
-            TOMOE_PATH=$out/bin:${
-              pkgs.lib.makeBinPath [ (dbus pkgs) ]
-            } \
+            TOMOE_PATH=$out/bin \
               build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \
               --non-interactive --no-userinit --load build.lisp
             runHook postBuild
@@ -160,73 +154,54 @@
             platforms = systems;
           };
         };
+      devShell =
+        pkgs:
+        pkgs.mkShell {
+          inputsFrom = [ (package pkgs) ];
+          packages = [
+            pkgs.wayland-utils
+            pkgs.wayland-scanner
+            pkgs.wlr-protocols
+          ];
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+            pkgs.wayland
+            pkgs.libxkbcommon
+          ];
+          WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
+        };
+      appsFor = pkgs: {
+        release = {
+          type = "app";
+          program = pkgs.lib.getExe (
+            pkgs.writeShellApplication {
+              name = "tomoe-release";
+              runtimeInputs = [
+                pkgs.git
+                pkgs.gh
+                pkgs.gnused
+                pkgs.gawk
+              ];
+              text = builtins.readFile ./release.sh;
+            }
+          );
+        };
+      };
     in
     {
-      packages = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
-        {
-          default = package pkgs;
-        }
-      );
-      devShells = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
-        {
-          default = pkgs.mkShell {
-            inputsFrom = [ (package pkgs) ];
-            packages = [
-              pkgs.wayland-utils
-              pkgs.wayland-scanner
-              pkgs.wlr-protocols
-              pkgs.foot
-            ];
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              pkgs.wayland
-              pkgs.libxkbcommon
-              pkgs.pixman
-            ];
-            WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
-          };
-        }
-      );
-      checks = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
+      packages = nixpkgs.lib.mapAttrs (_: pkgs: {
+        default = package pkgs;
+      }) pkgsFor;
+      devShells = nixpkgs.lib.mapAttrs (_: pkgs: {
+        default = devShell pkgs;
+      }) pkgsFor;
+      checks = nixpkgs.lib.mapAttrs (
+        _: pkgs:
         import ./tests {
           inherit pkgs;
           tomoe = package pkgs;
         }
-      );
-      apps = eachSystem (
-        system:
-        let
-          pkgs = pkgsFor system;
-        in
-        {
-          release = {
-            type = "app";
-            program = pkgs.lib.getExe (
-              pkgs.writeShellApplication {
-                name = "tomoe-release";
-                runtimeInputs = [
-                  pkgs.git
-                  pkgs.gh
-                  pkgs.gnused
-                  pkgs.gawk
-                ];
-                text = builtins.readFile ./release.sh;
-              }
-            );
-          };
-        }
-      );
-      formatter = eachSystem (system: (pkgsFor system).nixfmt);
+      ) pkgsFor;
+      apps = nixpkgs.lib.mapAttrs (_: appsFor) pkgsFor;
+      formatter = nixpkgs.lib.mapAttrs (_: pkgs: pkgs.nixfmt) pkgsFor;
     };
 }

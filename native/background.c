@@ -5,7 +5,7 @@ struct background_effect {
     struct wl_list link;
     struct wl_resource *resource;
     struct surface *surface;
-    pixman_region32_t pending, current;
+    struct region pending, current;
     bool pending_active, current_active, dirty;
     struct wl_listener commit, surface_destroy;
 };
@@ -25,7 +25,7 @@ static void effect_commit(struct wl_listener *listener, void *data) {
     if (!effect->dirty) return;
     effect->dirty = false;
     effect->current_active = effect->pending_active;
-    pixman_region32_copy(&effect->current, &effect->pending);
+    region_copy(&effect->current, &effect->pending);
 }
 
 static void effect_surface_destroy(struct wl_listener *listener, void *data) {
@@ -37,8 +37,8 @@ static void effect_resource_destroy(struct wl_resource *resource) {
     struct background_effect *effect = effect_from_resource(resource);
     effect_detach(effect);
     wl_list_remove(&effect->link);
-    pixman_region32_fini(&effect->pending);
-    pixman_region32_fini(&effect->current);
+    region_fini(&effect->pending);
+    region_fini(&effect->current);
     free(effect);
 }
 
@@ -55,8 +55,8 @@ static void effect_set_blur_region(struct wl_client *client, struct wl_resource 
         return;
     }
     effect->pending_active = region != NULL;
-    if (region) pixman_region32_copy(&effect->pending, region_from_resource(region));
-    else pixman_region32_clear(&effect->pending);
+    if (region) region_copy(&effect->pending, region_from_resource(region));
+    else region_clear(&effect->pending);
     effect->dirty = true;
 }
 
@@ -86,8 +86,8 @@ static void manager_get(struct wl_client *client, struct wl_resource *resource,
         wl_resource_get_version(resource), id);
     if (!effect->resource) { free(effect); wl_client_post_no_memory(client); return; }
     effect->surface = surface;
-    pixman_region32_init(&effect->pending);
-    pixman_region32_init(&effect->current);
+    region_init(&effect->pending);
+    region_init(&effect->current);
     wl_resource_set_implementation(effect->resource, &effect_impl, effect, effect_resource_destroy);
     listen(&effect->commit, &surface->events.commit, effect_commit);
     listen(&effect->surface_destroy, &surface->events.destroy, effect_surface_destroy);
@@ -113,7 +113,7 @@ bool background_effects_listen(struct tomoe *s) {
         manager_bind) != NULL;
 }
 
-const pixman_region32_t *background_blur_region(struct tomoe *s, struct surface *surface) {
+const struct region *background_blur_region(struct tomoe *s, struct surface *surface) {
     struct background_effect *effect;
     wl_list_for_each(effect, &s->background_effects, link)
         if (effect->surface == surface && effect->current_active) return &effect->current;

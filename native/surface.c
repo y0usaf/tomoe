@@ -113,41 +113,41 @@ void surface_release_after(struct surface *surface, struct buffer *consumer) {
     listen(&hold->buffer_release, &consumer->events.release, hold_released);
 }
 
-pixman_region32_t *region_from_resource(struct wl_resource *resource) {
+struct region *region_from_resource(struct wl_resource *resource) {
     return wl_resource_get_user_data(resource);
 }
 
-static void region_add(struct wl_client *client, struct wl_resource *resource, int32_t x,
+static void wl_region_add(struct wl_client *client, struct wl_resource *resource, int32_t x,
         int32_t y, int32_t width, int32_t height) {
-    pixman_region32_union_rect(region_from_resource(resource), region_from_resource(resource),
+    region_union_rect(region_from_resource(resource), region_from_resource(resource),
         x, y, width, height);
 }
 
-static void region_subtract(struct wl_client *client, struct wl_resource *resource, int32_t x,
+static void wl_region_subtract(struct wl_client *client, struct wl_resource *resource, int32_t x,
         int32_t y, int32_t width, int32_t height) {
-    pixman_region32_t *region = region_from_resource(resource), rect;
-    pixman_region32_init_rect(&rect, x, y, width, height);
-    pixman_region32_subtract(region, region, &rect);
-    pixman_region32_fini(&rect);
+    struct region *region = region_from_resource(resource), rect;
+    region_init_rect(&rect, x, y, width, height);
+    region_subtract(region, region, &rect);
+    region_fini(&rect);
 }
 
 static const struct wl_region_interface region_impl = {
-    .destroy = destroy_resource, .add = region_add, .subtract = region_subtract,
+    .destroy = destroy_resource, .add = wl_region_add, .subtract = wl_region_subtract,
 };
 
 static void region_free(struct wl_resource *resource) {
-    pixman_region32_t *region = wl_resource_get_user_data(resource);
-    pixman_region32_fini(region);
+    struct region *region = wl_resource_get_user_data(resource);
+    region_fini(region);
     free(region);
 }
 
 static void state_init(struct surface_state *state) {
     *state = (struct surface_state){ .scale = 1, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
         .alpha = UINT32_MAX };
-    pixman_region32_init(&state->surface_damage);
-    pixman_region32_init(&state->buffer_damage);
-    pixman_region32_init_rect(&state->input, INT32_MIN, INT32_MIN, UINT32_MAX, UINT32_MAX);
-    pixman_region32_init(&state->opaque);
+    region_init(&state->surface_damage);
+    region_init(&state->buffer_damage);
+    region_init_rect(&state->input, INT32_MIN, INT32_MIN, UINT32_MAX, UINT32_MAX);
+    region_init(&state->opaque);
     wl_list_init(&state->frames);
     wl_list_init(&state->feedbacks);
     wl_list_init(&state->waits);
@@ -226,10 +226,10 @@ static void state_finish(struct surface_state *state) {
     wl_list_for_each_safe(entry, next, &state->synced, link) entry_free(entry);
     buffer_unlock(state->buffer);
     state->buffer = NULL;
-    pixman_region32_fini(&state->surface_damage);
-    pixman_region32_fini(&state->buffer_damage);
-    pixman_region32_fini(&state->input);
-    pixman_region32_fini(&state->opaque);
+    region_fini(&state->surface_damage);
+    region_fini(&state->buffer_damage);
+    region_fini(&state->input);
+    region_fini(&state->opaque);
     resources_destroy(&state->frames);
     feedbacks_discard(&state->feedbacks);
     timeline_unref(state->acquire);
@@ -266,18 +266,18 @@ static void state_move(struct surface_state *dst, struct surface_state *src) {
         dst->release_point = src->release_point;
         src->acquire = src->release = NULL;
     }
-    pixman_region32_clear(&dst->surface_damage);
-    pixman_region32_clear(&dst->buffer_damage);
+    region_clear(&dst->surface_damage);
+    region_clear(&dst->buffer_damage);
     if (src->committed & STATE_SURFACE_DAMAGE) {
-        pixman_region32_copy(&dst->surface_damage, &src->surface_damage);
-        pixman_region32_clear(&src->surface_damage);
+        region_copy(&dst->surface_damage, &src->surface_damage);
+        region_clear(&src->surface_damage);
     }
     if (src->committed & STATE_BUFFER_DAMAGE) {
-        pixman_region32_copy(&dst->buffer_damage, &src->buffer_damage);
-        pixman_region32_clear(&src->buffer_damage);
+        region_copy(&dst->buffer_damage, &src->buffer_damage);
+        region_clear(&src->buffer_damage);
     }
-    if (src->committed & STATE_INPUT) pixman_region32_copy(&dst->input, &src->input);
-    if (src->committed & STATE_OPAQUE) pixman_region32_copy(&dst->opaque, &src->opaque);
+    if (src->committed & STATE_INPUT) region_copy(&dst->input, &src->input);
+    if (src->committed & STATE_OPAQUE) region_copy(&dst->opaque, &src->opaque);
     if (src->committed & STATE_VIEWPORT) dst->viewport = src->viewport;
     if (src->committed & STATE_ALPHA) dst->alpha = src->alpha;
     if (src->committed & STATE_CONTENT_TYPE) dst->content_type = src->content_type;
@@ -349,9 +349,9 @@ static void finalize_pending(struct surface *surface) {
     }
 }
 
-static void buffer_damage(struct surface *surface, pixman_region32_t *out) {
+static void buffer_damage(struct surface *surface, struct region *out) {
     struct surface_state *s = &surface->current;
-    pixman_region32_copy(out, &s->surface_damage);
+    region_copy(out, &s->surface_damage);
     int width, height;
     state_buffer_size(s, &width, &height);
     if (s->viewport.has_dst && s->width && s->height) {
@@ -360,11 +360,11 @@ static void buffer_damage(struct surface *surface, pixman_region32_t *out) {
         region_scale_xy(out, out, src_w / s->width, src_h / s->height);
     }
     if (s->viewport.has_src)
-        pixman_region32_translate(out, (int)floor(s->viewport.src.x), (int)floor(s->viewport.src.y));
+        region_translate(out, (int)floor(s->viewport.src.x), (int)floor(s->viewport.src.y));
     region_scale(out, out, s->scale);
     region_transform(out, out, transform_invert(s->transform), width, height);
-    pixman_region32_union(out, out, &s->buffer_damage);
-    pixman_region32_intersect_rect(out, out, 0, 0, s->buffer_width, s->buffer_height);
+    region_union(out, out, &s->buffer_damage);
+    region_intersect_rect(out, out, 0, 0, s->buffer_width, s->buffer_height);
 }
 
 static void apply_buffer(struct surface *surface) {
@@ -380,19 +380,19 @@ static void apply_buffer(struct surface *surface) {
     }
     struct dmabuf_attributes dmabuf;
     bool gpu = buffer_get_dmabuf(next, &dmabuf);
-    pixman_region32_t damage;
-    pixman_region32_init(&damage);
+    struct region damage;
+    region_init(&damage);
     buffer_damage(surface, &damage);
     bool reused = !gpu && surface->texture &&
         texture_update(surface->texture, next, &damage);
     static uint64_t commits;
-    pixman_box32_t *e = pixman_region32_extents(&damage);
+    struct rect *e = region_extents(&damage);
     memmove(&surface->commits[1], &surface->commits[0],
         sizeof(surface->commits) - sizeof(surface->commits[0]));
     surface->commits[0].prev = surface->commit_seq;
     surface->commits[0].seq = surface->commit_seq = ++commits;
     surface->commits[0].box = (struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 };
-    pixman_region32_fini(&damage);
+    region_fini(&damage);
     if (!reused) {
         struct texture *texture = texture_from_buffer(surface->server->renderer, next);
         if (!texture) tomoe_log(LOG_ERROR, "tomoe: client buffer upload failed");
@@ -457,7 +457,7 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
         surface->buffer_serial++;
         apply_buffer(surface);
     }
-    pixman_region32_intersect_rect(&surface->input_region, &surface->current.input, 0, 0,
+    region_intersect_rect(&surface->input_region, &surface->current.input, 0, 0,
         surface->current.width, surface->current.height);
     struct subsurface *sub, *next_sub;
     wl_list_for_each(sub, &surface->pending_below, pending_link) {
@@ -702,7 +702,7 @@ static void surface_damage(struct wl_client *client, struct wl_resource *resourc
     struct surface *surface = surface_from_resource(resource);
     if (width < 0 || height < 0) return;
     surface->pending.committed |= STATE_SURFACE_DAMAGE;
-    pixman_region32_union_rect(&surface->pending.surface_damage, &surface->pending.surface_damage,
+    region_union_rect(&surface->pending.surface_damage, &surface->pending.surface_damage,
         x, y, width, height);
 }
 
@@ -711,7 +711,7 @@ static void surface_damage_buffer(struct wl_client *client, struct wl_resource *
     struct surface *surface = surface_from_resource(resource);
     if (width < 0 || height < 0) return;
     surface->pending.committed |= STATE_BUFFER_DAMAGE;
-    pixman_region32_union_rect(&surface->pending.buffer_damage, &surface->pending.buffer_damage,
+    region_union_rect(&surface->pending.buffer_damage, &surface->pending.buffer_damage,
         x, y, width, height);
 }
 
@@ -735,8 +735,8 @@ static void surface_set_opaque_region(struct wl_client *client, struct wl_resour
         struct wl_resource *region) {
     struct surface *surface = surface_from_resource(resource);
     surface->pending.committed |= STATE_OPAQUE;
-    if (region) pixman_region32_copy(&surface->pending.opaque, region_from_resource(region));
-    else pixman_region32_clear(&surface->pending.opaque);
+    if (region) region_copy(&surface->pending.opaque, region_from_resource(region));
+    else region_clear(&surface->pending.opaque);
 }
 
 static void surface_set_input_region(struct wl_client *client, struct wl_resource *resource,
@@ -744,10 +744,10 @@ static void surface_set_input_region(struct wl_client *client, struct wl_resourc
     struct surface *surface = surface_from_resource(resource);
     surface->pending.committed |= STATE_INPUT;
     if (region) {
-        pixman_region32_copy(&surface->pending.input, region_from_resource(region));
+        region_copy(&surface->pending.input, region_from_resource(region));
     } else {
-        pixman_region32_fini(&surface->pending.input);
-        pixman_region32_init_rect(&surface->pending.input, INT32_MIN, INT32_MIN, UINT32_MAX,
+        region_fini(&surface->pending.input);
+        region_init_rect(&surface->pending.input, INT32_MIN, INT32_MIN, UINT32_MAX,
             UINT32_MAX);
     }
 }
@@ -830,7 +830,7 @@ static void surface_free(struct wl_resource *resource) {
     release_unref(surface->release);
     texture_destroy(surface->texture);
     buffer_unlock(surface->buffer);
-    pixman_region32_fini(&surface->input_region);
+    region_fini(&surface->input_region);
     if (surface->viewport) wl_resource_set_user_data(surface->viewport, NULL);
     if (surface->alpha_modifier) wl_resource_set_user_data(surface->alpha_modifier, NULL);
     if (surface->content_type) wl_resource_set_user_data(surface->content_type, NULL);
@@ -867,7 +867,7 @@ static void create_surface(struct wl_client *client, struct wl_resource *composi
     wl_list_init(&surface->above);
     wl_list_init(&surface->pending_below);
     wl_list_init(&surface->pending_above);
-    pixman_region32_init(&surface->input_region);
+    region_init(&surface->input_region);
     wl_signal_init(&surface->events.client_commit);
     wl_signal_init(&surface->events.commit);
     wl_signal_init(&surface->events.map);
@@ -878,7 +878,7 @@ static void create_surface(struct wl_client *client, struct wl_resource *composi
 }
 
 static void create_region(struct wl_client *client, struct wl_resource *compositor, uint32_t id) {
-    pixman_region32_t *region = calloc(1, sizeof(*region));
+    struct region *region = calloc(1, sizeof(*region));
     struct wl_resource *resource = region ? wl_resource_create(client, &wl_region_interface, 1, id) :
         NULL;
     if (!resource) {
@@ -886,7 +886,7 @@ static void create_region(struct wl_client *client, struct wl_resource *composit
         wl_client_post_no_memory(client);
         return;
     }
-    pixman_region32_init(region);
+    region_init(region);
     wl_resource_set_implementation(resource, &region_impl, region, region_free);
 }
 
@@ -1009,20 +1009,20 @@ bool surface_walk(struct surface *surface, int x, int y, bool reverse, surface_i
 }
 
 bool surface_damage_since(const struct surface *surface, uint64_t seq, struct box *out) {
-    pixman_region32_t changed;
-    pixman_region32_init(&changed);
+    struct region changed;
+    region_init(&changed);
     size_t count = sizeof(surface->commits) / sizeof(surface->commits[0]), i = 0;
     for (uint64_t at = surface->commit_seq; at != seq; at = surface->commits[i++].prev) {
         if (i == count || surface->commits[i].seq != at) {
-            pixman_region32_fini(&changed);
+            region_fini(&changed);
             return false;
         }
         const struct box *b = &surface->commits[i].box;
-        pixman_region32_union_rect(&changed, &changed, b->x, b->y, b->width, b->height);
+        region_union_rect(&changed, &changed, b->x, b->y, b->width, b->height);
     }
-    pixman_box32_t *e = pixman_region32_extents(&changed);
+    struct rect *e = region_extents(&changed);
     *out = (struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 };
-    pixman_region32_fini(&changed);
+    region_fini(&changed);
     return true;
 }
 
@@ -1039,7 +1039,7 @@ void surface_source_box(struct surface *surface, struct fbox *box) {
 
 bool surface_accepts_input(struct surface *surface, double sx, double sy) {
     return sx >= 0 && sy >= 0 && sx < surface->current.width && sy < surface->current.height &&
-        pixman_region32_contains_point(&surface->input_region, (int)floor(sx), (int)floor(sy), NULL);
+        region_contains_point(&surface->input_region, (int)floor(sx), (int)floor(sy), NULL);
 }
 
 static void output_bound(struct wl_listener *listener, void *data) {

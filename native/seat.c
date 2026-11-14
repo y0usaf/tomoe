@@ -60,7 +60,7 @@ static void send_frame(struct wl_resource *pointer) {
 }
 
 static void cursor_role_commit(struct surface *surface) {
-    pixman_region32_clear(&surface->input_region);
+    region_clear(&surface->input_region);
     if (surface_has_buffer(surface)) surface_map(surface);
     cursor_committed(surface->server, surface);
 }
@@ -81,7 +81,7 @@ static void pointer_set_cursor(struct wl_client *client, struct wl_resource *res
         surface = surface_from_resource(surface_resource);
         if (!surface_set_role(surface, &cursor_role, surface_resource, WL_POINTER_ERROR_ROLE))
             return;
-        pixman_region32_clear(&surface->input_region);
+        region_clear(&surface->input_region);
         if (surface_has_buffer(surface)) surface_map(surface);
     }
     if (c == c->seat->pointer_state.focused_client)

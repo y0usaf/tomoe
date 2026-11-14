@@ -487,10 +487,10 @@ static void decorate_layer(struct tomoe *s, const struct target *t, struct frame
     const struct settings *st = &s->settings;
     struct layer *l = find_layer(s, t->id);
     if (!st->blur_enabled || !l) return;
-    const pixman_region32_t *region = background_blur_region(s, l->wlr->surface);
+    const struct region *region = background_blur_region(s, l->wlr->surface);
     if (region) {
         int count = 0;
-        const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+        const struct rect *rects = region_rectangles(region, &count);
         for (int i = 0; i < count; i++) {
             int x1 = rects[i].x1 > 0 ? rects[i].x1 : 0, y1 = rects[i].y1 > 0 ? rects[i].y1 : 0;
             int x2 = rects[i].x2 < (int)l->wlr->current.actual_width ?
@@ -600,7 +600,7 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     return slot;
 }
 static bool scene_damage(struct output *o, const struct frame *data, bool locked,
-        pixman_region32_t *changed, pixman_region32_t *clip) {
+        struct region *changed, struct region *clip) {
     struct oplist now = {0};
     struct frame record = *data;
     record.pass = render_record(o->server->renderer, data->buffer, &now);
@@ -610,16 +610,16 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     }
     draw_scene(o, &record, NULL, locked, true, true);
     bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
-    if (!complete || pixman_region32_not_empty(changed)) o->damaged = true;
+    if (!complete || region_not_empty(changed)) o->damaged = true;
     oplist_finish(&o->ops);
     o->ops = now;
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
     uint64_t frame = ++o->frames;
-    pixman_region32_t *slot_damage = &o->damage[frame % history];
-    if (complete) pixman_region32_copy(slot_damage, changed);
+    struct region *slot_damage = &o->damage[frame % history];
+    if (complete) region_copy(slot_damage, changed);
     else {
-        pixman_region32_fini(slot_damage);
-        pixman_region32_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
+        region_fini(slot_damage);
+        region_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
     }
     size_t slot = ring_slot(&o->ring, data->buffer);
     uint64_t rendered = slot < RING_SLOTS ? o->ring.frames[slot] : 0;
@@ -629,21 +629,21 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     o->drawn.ops = now.len;
     if (!complete || !rendered || frame - rendered > history) return false;
     for (uint64_t f = rendered + 1; f <= frame; f++)
-        pixman_region32_union(clip, clip, &o->damage[f % history]);
+        region_union(clip, clip, &o->damage[f % history]);
     oplist_expand(&o->ops, clip);
-    pixman_region32_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
+    region_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
     int count = 0;
-    pixman_region32_rectangles(clip, &count);
+    region_rectangles(clip, &count);
     if (count > 16) {
-        pixman_box32_t e = *pixman_region32_extents(clip);
-        pixman_region32_fini(clip);
-        pixman_region32_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+        struct rect e = *region_extents(clip);
+        region_fini(clip);
+        region_init_rect(clip, e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
     }
     return true;
 }
-static int64_t region_area(const pixman_region32_t *region) {
+static int64_t region_area(const struct region *region) {
     int count = 0;
-    const pixman_box32_t *rects = pixman_region32_rectangles(region, &count);
+    const struct rect *rects = region_rectangles(region, &count);
     int64_t area = 0;
     for (int i = 0; i < count; i++)
         area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
@@ -671,9 +671,9 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     bool moving = windows_animate(o->server, data.sample);
     if (ui_animate(o->server, data.sample)) moving = true;
     o->animating = moving;
-    pixman_region32_t changed, clip;
-    pixman_region32_init(&changed);
-    pixman_region32_init(&clip);
+    struct region changed, clip;
+    region_init(&changed);
+    region_init(&clip);
     bool partial = track && scene_damage(o, &data, locked, &changed, &clip);
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
@@ -687,26 +687,26 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     if (!pass) {
         size_t slot = ring_slot(&o->ring, buffer);
         if (track && slot < RING_SLOTS) o->ring.frames[slot] = 0;
-        pixman_region32_fini(&changed);
-        pixman_region32_fini(&clip);
+        region_fini(&changed);
+        region_fini(&clip);
         return false;
     }
     data.pass = pass;
     bool skipped = planes && planes->count;
     if (skipped) {
-        pixman_region32_t skip;
-        pixman_region32_init(&skip);
+        struct region skip;
+        region_init(&skip);
         for (size_t i = 0; i < planes->count; i++)
-            pixman_region32_union_rect(&skip, &skip,
+            region_union_rect(&skip, &skip,
                 planes->item[i].dst.x - data.x, planes->item[i].dst.y - data.y,
                 (unsigned)planes->item[i].dst.width, (unsigned)planes->item[i].dst.height);
         if (!partial) {
-            pixman_region32_union_rect(&clip, &clip, 0, 0, buffer->width, buffer->height);
-            pixman_region32_subtract(&clip, &clip, &skip);
+            region_union_rect(&clip, &clip, 0, 0, buffer->width, buffer->height);
+            region_subtract(&clip, &clip, &skip);
         } else {
-            pixman_region32_subtract(&clip, &clip, &skip);
+            region_subtract(&clip, &clip, &skip);
         }
-        pixman_region32_fini(&skip);
+        region_fini(&skip);
         pass_clip(pass, &clip);
     } else if (partial) pass_clip(pass, &clip);
     if (track) o->drawn.pixels = partial || skipped ? region_area(&clip) :
@@ -719,8 +719,8 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
     if (phase) timing_frame_raster(o->server, timing_now() - phase);
-    pixman_region32_fini(&changed);
-    pixman_region32_fini(&clip);
+    region_fini(&changed);
+    region_fini(&clip);
     if (success && s->settings.wait_frame && signal) {
         int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {
@@ -1074,15 +1074,15 @@ static bool plane_eligible(const struct plane_scan *scan, const struct plane_ent
 void planes_finish(struct plane_assignment *planes) {
     planes->count = 0;
     planes->signature = 0;
-    pixman_region32_fini(&planes->excluded);
-    pixman_region32_init(&planes->excluded);
+    region_fini(&planes->excluded);
+    region_init(&planes->excluded);
 }
 
 bool planes_geometry(const struct output *o, size_t index, struct box *dst) {
     if (index >= o->planes.count) return false;
     const struct box *live = &o->planes.item[index].dst;
-    pixman_box32_t area = { live->x, live->y, live->x + live->width, live->y + live->height };
-    if (pixman_region32_contains_rectangle(&o->planes.excluded, &area) != PIXMAN_REGION_IN)
+    struct rect area = { live->x, live->y, live->x + live->width, live->y + live->height };
+    if (region_contains_rectangle(&o->planes.excluded, &area) != REGION_IN)
         return false;
     *dst = *live;
     return true;
@@ -1129,25 +1129,25 @@ size_t planes_assign(struct output *o) {
             s->pointer_y < scan.output.y + scan.output.height;
         if (!box_empty(&scan.output) && (!cursor_here || o->screen->hardware_cursor)) {
             plane_collect(&scan);
-            pixman_region32_t claimed;
-            pixman_region32_init(&claimed);
+            struct region claimed;
+            region_init(&claimed);
             for (size_t i = scan.overflow ? 0 : scan.count; i > 0; i--) {
                 const struct plane_entry *entry = &scan.entry[i - 1];
                 struct box src;
-                pixman_region32_t area;
-                pixman_region32_init_rect(&area, entry->claim.x, entry->claim.y,
+                struct region area;
+                region_init_rect(&area, entry->claim.x, entry->claim.y,
                     (unsigned)entry->claim.width, (unsigned)entry->claim.height);
-                pixman_region32_intersect(&area, &area, &claimed);
-                bool clear = !pixman_region32_not_empty(&area);
-                pixman_region32_fini(&area);
+                region_intersect(&area, &area, &claimed);
+                bool clear = !region_not_empty(&area);
+                region_fini(&area);
                 if (clear && chosen_count < SCREEN_OVERLAYS &&
                         plane_eligible(&scan, entry, &src))
                     chosen[chosen_count++] = (struct plane_item){ .surface = entry->surface,
                         .buffer = entry->surface->buffer, .dst = entry->plane, .src = src };
-                pixman_region32_union_rect(&claimed, &claimed, entry->claim.x, entry->claim.y,
+                region_union_rect(&claimed, &claimed, entry->claim.x, entry->claim.y,
                     (unsigned)entry->claim.width, (unsigned)entry->claim.height);
             }
-            pixman_region32_fini(&claimed);
+            region_fini(&claimed);
         }
     }
     if (chosen_count > capacity) chosen_count = capacity;
@@ -1155,10 +1155,10 @@ size_t planes_assign(struct output *o) {
     bool moved = chosen_count != previous_count;
     for (size_t i = 0; !moved && i < chosen_count; i++)
         moved = !box_equal(&chosen[i].dst, &previous[i]);
-    pixman_region32_clear(&planes->excluded);
+    region_clear(&planes->excluded);
     for (size_t i = 0; i < chosen_count; i++) {
         planes->item[i] = chosen[i];
-        pixman_region32_union_rect(&planes->excluded, &planes->excluded, chosen[i].dst.x,
+        region_union_rect(&planes->excluded, &planes->excluded, chosen[i].dst.x,
             chosen[i].dst.y, (unsigned)chosen[i].dst.width, (unsigned)chosen[i].dst.height);
     }
     planes->count = chosen_count;
@@ -1183,7 +1183,7 @@ size_t planes_assign(struct output *o) {
         planes->count = 0;
         planes->tested = false;
         planes->changed = previous_count != 0;
-        pixman_region32_clear(&planes->excluded);
+        region_clear(&planes->excluded);
     }
     return planes->count;
 }
@@ -1232,7 +1232,7 @@ void planes_clear(struct output *o) {
     o->planes.changed = o->planes.count != 0;
     o->planes.count = 0;
     o->planes.tested = false;
-    pixman_region32_clear(&o->planes.excluded);
+    region_clear(&o->planes.excluded);
 }
 
 void planes_refuse(struct output *o) {
