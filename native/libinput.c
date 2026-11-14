@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <stddef.h>
 #include <libinput.h>
+#include <libudev.h>
 
 struct opened {
     struct wl_list link;
@@ -379,7 +380,13 @@ void libinput_active(struct tomoe *s, bool active) {
 
 bool libinput_listen(struct tomoe *s) {
     if (!s->session) return true;
-    s->libinput = libinput_udev_create_context(&libinput_impl, s, kms_udev(s));
+    struct udev *udev = udev_new();
+    if (!udev) {
+        fail(s, "udev context creation failed");
+        return false;
+    }
+    s->libinput = libinput_udev_create_context(&libinput_impl, s, udev);
+    udev_unref(udev);
     if (!s->libinput || libinput_udev_assign_seat(s->libinput, session_seat_name(s)) != 0) {
         fail(s, "libinput context creation failed");
         return false;

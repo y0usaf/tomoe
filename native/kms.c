@@ -1,11 +1,15 @@
 #include "internal.h"
 #include <fcntl.h>
+#include <linux/netlink.h>
 #include <poll.h>
 #include <sys/mman.h>
+#define listen socket_listen
+#include <sys/socket.h>
+#undef listen
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <drm_fourcc.h>
-#include <libudev.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "presentation-time-protocol.h"
@@ -90,8 +94,7 @@ struct kms {
     uint64_t cursor_width, cursor_height;
     unsigned wake_ms;
     struct wl_event_source *source, *monitor_source;
-    struct udev *udev;
-    struct udev_monitor *monitor;
+    int monitor_fd;
     struct crtc *crtcs;
     size_t crtc_count;
     struct plane *planes;
@@ -1369,15 +1372,30 @@ static void scan_connectors(struct kms *kms) {
     drmModeFreeResources(res);
 }
 
-static int udev_event(int fd, uint32_t mask, void *data) {
+static int drm_uevent(int fd, uint32_t mask, void *data) {
     struct kms *kms = data;
-    struct udev_device *device = udev_monitor_receive_device(kms->monitor);
-    if (!device) return 0;
-    const char *action = udev_device_get_action(device);
-    if (action && !strcmp(action, "change") && udev_device_get_devnum(device) == kms->devnum &&
-            session_active(kms->server))
-        scan_connectors(kms);
-    udev_device_unref(device);
+    char message[8192];
+    bool changed = false;
+    for (;;) {
+        ssize_t length = recv(fd, message, sizeof(message) - 1, MSG_DONTWAIT | MSG_TRUNC);
+        if (length <= 0) break;
+        if ((size_t)length > sizeof(message) - 1) continue;
+        message[length] = '\0';
+        const char *action = NULL, *subsystem = NULL, *major = NULL, *minor = NULL;
+        for (char *field = message; field < message + length; field += strlen(field) + 1) {
+            if (!strncmp(field, "ACTION=", 7)) action = field + 7;
+            else if (!strncmp(field, "SUBSYSTEM=", 10)) subsystem = field + 10;
+            else if (!strncmp(field, "MAJOR=", 6)) major = field + 6;
+            else if (!strncmp(field, "MINOR=", 6)) minor = field + 6;
+        }
+        if (!action || strcmp(action, "change")) continue;
+        if (!subsystem || strcmp(subsystem, "drm")) continue;
+        if (!major || !minor) continue;
+        if (makedev((unsigned)strtoul(major, NULL, 10), (unsigned)strtoul(minor, NULL, 10)) !=
+                kms->devnum) continue;
+        changed = true;
+    }
+    if (changed && session_active(kms->server)) scan_connectors(kms);
     return 0;
 }
 
@@ -1408,6 +1426,7 @@ int kms_create(struct tomoe *s) {
     }
     kms->server = s;
     kms->fd = -1;
+    kms->monitor_fd = -1;
     wl_list_init(&kms->connectors);
     s->kms = kms;
     kms->fd = session_open(s, path, &kms->device);
@@ -1436,13 +1455,17 @@ int kms_create(struct tomoe *s) {
     }
     struct wl_event_loop *loop = wl_display_get_event_loop(s->display);
     kms->source = wl_event_loop_add_fd(loop, kms->fd, WL_EVENT_READABLE, drm_event, kms);
-    kms->udev = udev_new();
-    kms->monitor = kms->udev ? udev_monitor_new_from_netlink(kms->udev, "udev") : NULL;
-    if (kms->monitor) {
-        udev_monitor_filter_add_match_subsystem_devtype(kms->monitor, "drm", NULL);
-        udev_monitor_enable_receiving(kms->monitor);
-        kms->monitor_source = wl_event_loop_add_fd(loop, udev_monitor_get_fd(kms->monitor),
-            WL_EVENT_READABLE, udev_event, kms);
+    kms->monitor_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK,
+        NETLINK_KOBJECT_UEVENT);
+    if (kms->monitor_fd >= 0) {
+        struct sockaddr_nl address = { .nl_family = AF_NETLINK, .nl_groups = 1 };
+        if (bind(kms->monitor_fd, (struct sockaddr *)&address, sizeof(address)) == 0)
+            kms->monitor_source = wl_event_loop_add_fd(loop, kms->monitor_fd,
+                WL_EVENT_READABLE, drm_uevent, kms);
+        else {
+            close(kms->monitor_fd);
+            kms->monitor_fd = -1;
+        }
     }
     tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s, dark sinks lit at their "
         "preferred mode for %u ms", kms->atomic ? "atomic" : "legacy",
@@ -1452,10 +1475,6 @@ int kms_create(struct tomoe *s) {
 
 void kms_start(struct tomoe *s) {
     if (s->kms) scan_connectors(s->kms);
-}
-
-struct udev *kms_udev(struct tomoe *s) {
-    return s->kms ? s->kms->udev : NULL;
 }
 
 void kms_pause(struct tomoe *s) {
@@ -1524,8 +1543,7 @@ void kms_destroy(struct tomoe *s) {
     wl_list_for_each_safe(c, next, &kms->connectors, link) screen_destroy(&c->screen);
     if (kms->source) wl_event_source_remove(kms->source);
     if (kms->monitor_source) wl_event_source_remove(kms->monitor_source);
-    if (kms->monitor) udev_monitor_unref(kms->monitor);
-    if (kms->udev) udev_unref(kms->udev);
+    if (kms->monitor_fd >= 0) close(kms->monitor_fd);
     for (size_t i = 0; i < kms->plane_count; i++) format_set_finish(&kms->planes[i].formats);
     for (size_t i = 0; i < kms->crtc_count; i++) {
         if (kms->crtcs[i].mode_blob) drmModeDestroyPropertyBlob(kms->fd, kms->crtcs[i].mode_blob);
