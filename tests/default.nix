@@ -766,20 +766,7 @@ let
     pathClient
   ];
   baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
-  compositorSuites =
-    pkgs.lib.optional (baseline != null) {
-      name = "input-equivalence";
-      script = ''
-        BASELINE = "${baselineBinary}"
-        FASTPATH = "${tomoe}/bin/tomoe"
-        INJECTOR = "${scenario}/bin/tomoe-scenario"
-        POLICY = "${scenarioPolicy}"
-        COUNTER_POLICY = "${counterPolicy}"
-        CONTRACT_POLICY = "${contractPolicy}"
-      ''
-      + builtins.readFile ./equivalence.py;
-    }
-    ++ [
+  compositorSuites = [
     {
       name = "pointer-protocols";
       script = ''
@@ -993,8 +980,27 @@ let
       + builtins.readFile ./memory.py;
     }
   ];
+  equivalenceSuites =
+    pkgs.lib.optional (baseline != null) {
+      name = "input-equivalence";
+      script = ''
+        BASELINE = "${baselineBinary}"
+        FASTPATH = "${tomoe}/bin/tomoe"
+        INJECTOR = "${scenario}/bin/tomoe-scenario"
+        POLICY = "${scenarioPolicy}"
+        COUNTER_POLICY = "${counterPolicy}"
+        CONTRACT_POLICY = "${contractPolicy}"
+      ''
+      + builtins.readFile ./equivalence.py;
+    };
 in
 {
+  equivalence = vm {
+    name = "tomoe-equivalence";
+    suites = equivalenceSuites;
+    packages = compositorPackages;
+    timeout = 1800;
+  };
   compositor = vm {
     name = "tomoe-compositor";
     suites = compositorSuites;
