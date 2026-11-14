@@ -209,6 +209,7 @@ lists on their own."
            (clrhash *timing-consed*)
            (setf *gc-log-count* 0
                  *handback-log-count* 0
+                 *test-handback-pause* *test-handback-pause-floor*
                  *layout-rebuilds* 0
                  *layout-reuses* 0)
            (fill *gc-log* nil)

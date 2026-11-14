@@ -122,7 +122,7 @@ hands the dead generations and the free pages of the native heap back to the
 system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
 the shipping policy and a tiled scene at one, ten and fifty windows and fails if
 that footprint or the longest collection grows past the bound it states, then
-provokes the idle handback, fails if its memory is still in use or if the pause it took
+provokes the idle handback, fails if its memory is still in use or if any pause it took
 grew past one refresh, and proves that bound rejects a deliberately slow handback.
 `tomoe timings` prints the latency Tomoe spends on its own work, in
 nanoseconds: pointer and drag motion to the frame carrying it, a key press to the

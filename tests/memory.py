@@ -7,7 +7,7 @@ DIRTY_LIMIT = 74000
 BUDGET_REFRESH_MHZ = 240000
 ANIMATED_WINDOW = 6
 CONTROL_WINDOW = 4
-CHURN_LIMIT = 6 * 1024 * 1024
+CHURN_LIMIT = 3 * 1024 * 1024
 
 exec(compile(open(HANDBACK_GATE).read(), "memory-handback", "exec"), globals())
 

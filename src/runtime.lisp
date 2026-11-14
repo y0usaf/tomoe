@@ -94,6 +94,7 @@ it consed, when samples are kept."
   (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed
+  idle-swept
   motion-plan)
 
 (defconstant +event-readable+ 1)
@@ -1372,7 +1373,7 @@ accepted registry. Never enter this helper inside a candidate transaction."
     (when (and *timing* (runtime-backend runtime)) (%timing-done (runtime-backend runtime)))))
 
 (defparameter *idle-seconds* 1)
-(defparameter *idle-consed* (* 8 1024 1024))
+(defparameter *idle-consed* (* 4 1024 1024))
 (defparameter *nursery-bytes* (* 4 1024 1024))
 (defvar *handback-log* (make-array 64 :initial-element nil)
   "The idle handbacks as (START END), in native timing nanoseconds, measured around the
@@ -1380,28 +1381,34 @@ collection itself. SBCL runs the after-gc hooks on its finalizer thread, which c
 the bindings of the thread that collected, so the handback records itself here instead.")
 (defvar *handback-log-count* 0)
 (defvar *test-handback-pause* nil
-  "A test-only floor, in native timing nanoseconds, for the pause logged for each idle
-handback, so a check can prove that it rejects a handback outlasting a refresh.")
+  "A test-only floor, in native timing nanoseconds, for the pause logged for the next idle
+handback, so a check can prove that it rejects a window holding one handback that outlasts
+a refresh.")
+(defvar *test-handback-pause-floor* nil
+  "The floor a check asked for, armed again for one handback by every timing reset.")
 
-(defun hand-back-heap ()
-  "Collect the oldest generation for the idle handback, logging the pause the compositor
-took for it apart from the collections the allocator starts on its own."
+(defun hand-back-heap (generations)
+  "Collect GENERATIONS for the idle handback, logging the pause the compositor took for it
+apart from the collections the allocator starts on its own."
   (if *timing*
-      (let ((start (%timing-now)))
-        (sb-ext:gc :gen 2)
-        (let ((end (max (%timing-now) (+ start (or *test-handback-pause* 0)))))
+      (let ((start (%timing-now))
+            (floor (prog1 *test-handback-pause* (setf *test-handback-pause* nil))))
+        (sb-ext:gc :gen generations)
+        (let ((end (max (%timing-now) (+ start (or floor 0)))))
           (setf (aref *handback-log* (mod *handback-log-count* (length *handback-log*)))
                 (list start end))
           (incf *handback-log-count*)))
-      (sb-ext:gc :gen 2)))
+      (sb-ext:gc :gen generations)))
 
 (defun service-memory (runtime)
-  "Collect the oldest generation while the scene has been quiet for a second, once 8 MB was
-consed since the last collection. Collecting it alone rather than the whole heap still
-hands the aged garbage's pages back to the system, so an idle desktop keeps only what it
-is using, and leaves the younger generations to the allocator's own collections. The
-native heap is trimmed once when the scene falls quiet, which returns the pages a burst
-of shader compiles, captures or decoded images grew without a collection running."
+  "Hand the heap back while the scene has been quiet for a second, once 4 MB was consed
+since the last collection. The younger generations are swept first and the oldest one is
+collected on the next pass, so neither pause outlasts a refresh and the loop can take
+input between them. Collecting the oldest generation alone rather than the whole heap
+still hands the aged garbage's pages back to the system, so an idle desktop keeps only
+what it is using, and leaves the younger generations to the allocator's own collections.
+The native heap is trimmed once when the scene falls quiet, which returns the pages a
+burst of shader compiles, captures or decoded images grew without a collection running."
   (let* ((native (runtime-backend runtime))
          (now (get-internal-real-time))
          (serial (%activity-serial native))
@@ -1411,13 +1418,20 @@ of shader compiles, captures or decoded images grew without a collection running
       ((/= serial (runtime-activity-serial runtime))
        (setf (runtime-activity-serial runtime) serial
              (runtime-idle-since runtime) now
-             (runtime-idle-trimmed runtime) nil))
-      ((and quiet (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
-       (%trim-heap)
-       (hand-back-heap)
-       (setf (runtime-idle-trimmed runtime) t
+             (runtime-idle-trimmed runtime) nil
+             (runtime-idle-swept runtime) nil))
+      ((and quiet (runtime-idle-swept runtime))
+       (hand-back-heap 2)
+       (setf (runtime-idle-swept runtime) nil
+             (runtime-idle-trimmed runtime) t
              (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
              (runtime-idle-since runtime) (get-internal-real-time)))
+      ((and quiet (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
+       (unless (runtime-idle-trimmed runtime)
+         (setf (runtime-idle-trimmed runtime) t)
+         (%trim-heap))
+       (hand-back-heap 1)
+       (setf (runtime-idle-swept runtime) t))
       ((and quiet (not (runtime-idle-trimmed runtime)))
        (setf (runtime-idle-trimmed runtime) t)
        (%trim-heap)))))

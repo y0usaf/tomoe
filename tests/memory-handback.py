@@ -8,12 +8,13 @@ def handback_gate(label, handbacks, period):
     print(
         f"HANDBACK {label} period_ns={period} count={len(handbacks)}"
         f" min_us={pauses[0] // 1000} median_us={pauses[len(pauses) // 2] // 1000}"
-        f" max_us={pauses[-1] // 1000} pauses_us={[pause // 1000 for pause in pauses]}",
+        f" max_us={pauses[-1] // 1000} pauses_us={[pause // 1000 for pause in pauses]}"
+        f" order_us={[(end - start) // 1000 for start, end in handbacks]}",
         flush=True,
     )
-    assert pauses[len(pauses) // 2] <= period, (
-        f"{label}: the median idle handback paused {pauses[len(pauses) // 2]} ns over one"
-        f" refresh ({period} ns)")
+    assert pauses[-1] <= period, (
+        f"{label}: the slowest idle handback paused {pauses[-1]} ns over one refresh"
+        f" ({period} ns)")
     return pauses
 
 
@@ -34,7 +35,7 @@ def handback_window(prefix):
     cli("command churn")
     churn = [plist(entry).get(":STATE") for entry in items(inspect()[":EXTENSIONS"])
              if text(plist(entry).get(":NAME", '""')) == "memory-handback"]
-    assert churn and plist(churn[0]).get(":CELLS") == "600000", churn
+    assert churn and plist(churn[0]).get(":CELLS") == "300000", churn
     for _ in range(HANDBACK_SAMPLES - 1):
         time.sleep(HANDBACK_WAIT)
         cli("command churn")
@@ -70,9 +71,13 @@ def slow_handback_window(prefix, period):
             break
     close_windows(2, prefix=prefix)
     quit()
-    assert slow and min(end - start for start, end in slow) > period, (
-        "the test handback pause floor did not reach the handback: "
-        + str(sorted(end - start for start, end in slow)))
+    pauses = sorted(end - start for start, end in slow)
+    floor = period * 3 // 2 // 1000 * 1000
+    assert len(pauses) >= 3, "the forced window logged too few handbacks: " + str(pauses)
+    assert len([pause for pause in pauses if pause >= floor]) == 1, (
+        "the forced window did not hold one padded handback: " + str(pauses))
+    assert all(pause <= period for pause in pauses if pause < floor), (
+        "a real handback in the forced window outlasted a refresh: " + str(pauses))
     try:
         handback_gate("forced-slow-handback", slow, period)
     except AssertionError as error:

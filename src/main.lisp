@@ -579,9 +579,10 @@ an edit calls for; a source whose directory is still missing is retried."
   (let ((pause (sb-ext:posix-getenv "TOMOE_TEST_GC_PAUSE_US")))
     (setf *test-gc-pause* (and pause (parse-integer pause :junk-allowed t))))
   (let ((pause (sb-ext:posix-getenv "TOMOE_TEST_HANDBACK_PAUSE_US")))
-    (setf *test-handback-pause*
+    (setf *test-handback-pause-floor*
           (and pause (let ((microseconds (parse-integer pause :junk-allowed t)))
-                       (and microseconds (* 1000 microseconds))))))
+                       (and microseconds (* 1000 microseconds))))
+          *test-handback-pause* *test-handback-pause-floor*))
   (sb-ext:exit
    :code (handler-case
              (handler-bind ((serious-condition
