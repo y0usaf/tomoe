@@ -86,7 +86,9 @@ def window(unit, name):
 
 
 def journal(unit):
-    return sorted(machine.succeed(f"journalctl -u {unit} -o cat").splitlines())
+    lines = machine.succeed(f"journalctl -u {unit} -o cat").splitlines()
+    return [line for line in lines
+            if re.match(r"^(configured|mapped|dragged|pressed|released)\b", line)]
 
 
 def scenario(binary, policy, tag, log, transcript):
