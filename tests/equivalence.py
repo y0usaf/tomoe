@@ -288,9 +288,16 @@ for line in transcript:
         dispatches = int(line.split("dispatches=")[1].split()[0])
 assert dispatches is not None, "the contract extension is not mounted"
 others = [line for line in "\n".join(transcript).splitlines() if line.startswith("other ")]
-assert dispatches - 1 == len(wakes) + len(others), (
-    f"the contract holder ran {dispatches - 1} times for {len(wakes)} published wakes "
-    f"and {len(others)} other pointer events: {others}")
+record = None
+for line in transcript:
+    if line.startswith("mount scenario-contract "):
+        record = line
+assert record is not None, [line for line in transcript if "scenario-contract" in line]
+published = int(re.search(r":WAKES (\d+)", record).group(1))
+others_seen = int(re.search(r":OTHERS (\d+)", record).group(1))
+assert dispatches - 1 == published + others_seen, (
+    f"the contract holder ran {dispatches - 1} times for {published} published wakes "
+    f"and {others_seen} other pointer events: {record}")
 if others:
     print("contract: " + str(len(others)) + " pointer events arrived before the gate: "
           + ", ".join(others))
