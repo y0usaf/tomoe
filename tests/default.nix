@@ -236,6 +236,31 @@ let
       (list :rules "" :model "" :layout "de" :variant "" :options nil
             :repeat-rate 25 :repeat-delay 600))
   '';
+  scanoutClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-scanout-client";
+    src = ./scanout.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    buildInputs = [ pkgs.wayland ];
+    buildPhase = ''
+      wp=${pkgs.wayland-protocols}/share/wayland-protocols
+      wlr=${pkgs.wlr-protocols}/share/wlr-protocols/unstable
+      for xml in $wp/stable/xdg-shell/xdg-shell.xml \
+        $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
+        $wlr/wlr-virtual-pointer-unstable-v1.xml; do
+        name=$(basename "$xml" .xml)
+        wayland-scanner client-header "$xml" "$name-client-protocol.h"
+        wayland-scanner private-code "$xml" "$name-protocol.c"
+      done
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-scanout-client
+    '';
+    installPhase = "install -Dm755 tomoe-scanout-client $out/bin/tomoe-scanout-client";
+  };
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
@@ -269,6 +294,126 @@ let
                     (shell-surface :frost (ui :row) :anchors '(:top :left) :margin '(100 0 0 100)
                                    :width 200 :height 300 :layer :overlay :background "#00000000" :blur t))
               nil))
+  '';
+  scanoutProbe = pkgs.writeText "scanout-probe.lisp" ''
+    (in-package #:tomoe-user)
+
+    (defparameter +scanout-trail-shader+
+      "${tomoe}/share/tomoe/examples/shaders/trail-pixels.glsl")
+
+    (defparameter +scanout-states+
+      (list :bar nil :bar-bottom nil :note nil :trail nil :empty nil :blank nil :away nil))
+
+    (defun scanout--toggle (state command)
+      (let ((next (copy-list state)))
+        (cond ((equal command "bar-on") (setf (getf next :bar) t))
+              ((equal command "bar-off") (setf (getf next :bar) nil))
+              ((equal command "bar-bottom-on") (setf (getf next :bar-bottom) t))
+              ((equal command "bar-bottom-off") (setf (getf next :bar-bottom) nil))
+              ((equal command "note-on") (setf (getf next :note) t))
+              ((equal command "note-off") (setf (getf next :note) nil))
+              ((equal command "trail-on") (setf (getf next :trail) t))
+              ((equal command "trail-off") (setf (getf next :trail) nil))
+              ((equal command "empty-on") (setf (getf next :empty) t))
+              ((equal command "empty-off") (setf (getf next :empty) nil))
+              ((equal command "blank-on") (setf (getf next :blank) t))
+              ((equal command "blank-off") (setf (getf next :blank) nil))
+              ((equal command "away-on") (setf (getf next :away) t))
+              ((equal command "away-off") (setf (getf next :away) nil)))
+        next))
+
+    (defun scanout--block (width height colour)
+      (ui :stack :children (list (ui :rect :width width :height height :background colour))))
+
+    (defun scanout--placements (windows output)
+      (loop for window in windows
+            for id = (getf window :id)
+            collect (if (equal (getf window :app-id) "scanout-client")
+                        (progn (fullscreen id t)
+                               (place id (getf output :x) (getf output :y)
+                                      (getf output :width) (getf output :height)))
+                        (place id 100 100 200 150))))
+
+    (defun scanout--surfaces (state output)
+      (let ((name (getf output :name)))
+        (append
+         (list (shell-surface :scanout-wallpaper (ui :stack)
+                              :output name :anchors '(:top :left :right :bottom)
+                              :layer :background :background "#101418ff"))
+         (when (getf state :empty)
+           (list (shell-surface :scanout-empty (ui :stack)
+                                :output name :anchors '(:top :left) :margin '(0 0 0 0)
+                                :width 64 :height 64 :layer :overlay
+                                :click-through t :background "#00000000")))
+         (when (getf state :bar)
+           (list (shell-surface :scanout-bar (scanout--block 40 200 "#ff8800ff")
+                                :output name :anchors '(:top :left) :margin '(100 0 0 100)
+                                :width 40 :height 200 :layer :top
+                                :click-through t :slide t :background "#00000000")))
+         (when (getf state :bar-bottom)
+           (list (shell-surface :scanout-bar-under (scanout--block 40 200 "#00ff88ff")
+                                :output name :anchors '(:top :left) :margin '(100 0 0 100)
+                                :width 40 :height 200 :layer :bottom
+                                :click-through t :slide t :background "#00000000")))
+         (when (getf state :note)
+           (list (shell-surface :scanout-note (scanout--block 200 60 "#ffffffff")
+                                :output name :anchors '(:top :right) :margin '(40 40 0 0)
+                                :width 200 :height 60 :layer :overlay
+                                :background "#00000000")))
+         (when (getf state :blank)
+           (list (shell-surface :scanout-blank
+                                (ui :stack :children
+                                    (list (ui :text :text "blank" :size 12 :color "#ffffff00")))
+                                :output name :anchors '(:top :left) :margin '(0 0 0 0)
+                                :width 40 :height 40 :layer :overlay
+                                :click-through t :background "#00000000")))
+         (when (getf state :away)
+           (list (shell-surface :scanout-away (scanout--block 40 200 "#ff8800ff")
+                                :output name :anchors '(:top :left) :margin '(0 0 0 1300)
+                                :width 40 :height 200 :layer :top
+                                :click-through t :background "#00000000")))
+         (when (getf state :trail)
+           (list (shell-surface :scanout-trail (ui :stack)
+                                :output name :anchors '(:top :left :right :bottom)
+                                :layer :overlay :click-through t
+                                :background (list :shader +scanout-trail-shader+
+                                                  :fps 60 :idle 0.5)))))))
+
+    (define-extension "scanout-probe" (:reads (:command :windows :outputs)
+                                               :state +scanout-states+)
+        (snapshot state event)
+      (let* ((command (and (eq (getf event :type) :command)
+                           (equal (getf event :owner) "scanout-probe")
+                           (getf event :name)))
+             (next (if command (scanout--toggle state command) state))
+             (output (find "HEADLESS-1" (context snapshot :outputs)
+                           :key (lambda (output) (getf output :name)) :test #'equal)))
+        (values next
+                (when output
+                  (append (list (settings :animations nil)
+                                (define-command "bar-on" :description "Paint a bar above the window.")
+                                (define-command "bar-off" :description "Remove the bar above the window.")
+                                (define-command "bar-bottom-on"
+                                                :description "Paint a bar below the window.")
+                                (define-command "bar-bottom-off"
+                                                :description "Remove the bar below the window.")
+                                (define-command "note-on" :description "Paint a notification.")
+                                (define-command "note-off" :description "Remove the notification.")
+                                (define-command "trail-on" :description "Show the cursor trail overlay.")
+                                (define-command "trail-off" :description "Hide the cursor trail overlay.")
+                                (define-command "empty-on" :description "Show an overlay that paints nothing.")
+                                (define-command "empty-off" :description "Hide the empty overlay.")
+                                (define-command "blank-on"
+                                                :description "Show an overlay that paints only nothing.")
+                                (define-command "blank-off"
+                                                :description "Hide the blank overlay.")
+                                (define-command "away-on"
+                                                :description "Show a bar past the output's edge.")
+                                (define-command "away-off"
+                                                :description "Hide the bar past the edge."))
+                          (scanout--placements (context snapshot :windows) output)
+                          (scanout--surfaces next output)))
+                nil)))
   '';
   offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
     (in-package #:tomoe-user)
@@ -571,4 +716,20 @@ in
     ''
     + builtins.readFile ./kms-wake.py
   );
+  scanout =
+    checkWith
+      {
+        environment.systemPackages = [
+          scanoutClient
+          pkgs.python3
+        ];
+      }
+      "scanout"
+      (
+        ''
+          SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+          SCANOUT_PROBE = "${scanoutProbe}"
+        ''
+        + builtins.readFile ./scanout.py
+      );
 }

@@ -391,6 +391,12 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 - Per-surface alpha multipliers are committed atomically with surface state and
   affect normal rendering, cursors, cursor metadata, and captures. Non-identity
   multipliers disable direct scanout and hardware cursor bypasses.
+- Direct scanout engages while one opaque window covers an output exactly and
+  nothing paints above it. A full screen window then goes straight to the
+  display; a bar, notification, menu, drag icon or a pointer whose cursor
+  composites instead. Shell surfaces that draw nothing, and shader overlays that
+  are idle, leave scanout alone. The `scanout` field of `tomoe frames` reports
+  which output currently scans out.
 - A window's own opacity, tint, scale, rotation and translation are window state:
   `window-properties` sets them, and each eases towards its new value with the
   matching `:animations` setting. The compositor animates the transitions it sees

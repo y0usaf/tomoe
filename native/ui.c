@@ -56,6 +56,7 @@ struct ui_surface {
     bool building;
     bool complete;
     bool drawn;
+    bool paints;
     bool clip_set;
     int clip_x, clip_y, clip_width, clip_height;
 };
@@ -447,6 +448,25 @@ static void cairo_end_clip(struct ui_surface *surface) {
     cairo_restore(surface->cairo);
 }
 
+static bool clip_paints(const struct ui_surface *surface) {
+    return !surface->clip_set || (surface->clip_width > 0 && surface->clip_height > 0);
+}
+
+static void note_paint(struct ui_surface *surface, bool paints) {
+    if (paints && clip_paints(surface)) surface->paints = true;
+}
+
+static const struct pointer_sample *trail_last(const struct tomoe *s) {
+    return s->pointer_trail_count ? &s->pointer_trail[
+        (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL] : NULL;
+}
+
+static bool shader_still(const struct tomoe *s, const struct ui_surface *surface, double now) {
+    if (surface->idle <= 0) return false;
+    const struct pointer_sample *last = trail_last(s);
+    return !last || now - last->t > surface->idle;
+}
+
 int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface) || id == 0) return 0;
@@ -519,6 +539,7 @@ int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
             !finite_nonnegative(width) || !finite_nonnegative(height) ||
             (tint != 0 && tint != 1) || !tomoe_present_ui_asset_ref(s, id)) return 0;
     if (width == 0.0 || height == 0.0) return 1;
+    note_paint(surface, !tint || (rgba & 0xff) != 0);
     struct ui_asset *asset = NULL;
     for (size_t i = 0; i < surface->asset_count; i++)
         if (surface->assets[i].id == id) asset = surface->assets[i].asset;
@@ -538,6 +559,8 @@ int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
     if (!cairo_begin_clip(surface)) return 0;
     double red, green, blue, alpha;
     color_components(rgba, &red, &green, &blue, &alpha);
+    note_paint(surface, alpha > 0.0 && (stroke > 0.0 ?
+        (width > stroke && height > stroke) : (width > 0.0 && height > 0.0)));
     cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
     if (stroke <= 0.0) {
         rounded_path(surface->cairo, x, y, width, height, radius);
@@ -643,6 +666,7 @@ int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     }
     double red, green, blue, alpha;
     color_components(rgba, &red, &green, &blue, &alpha);
+    note_paint(surface, alpha > 0.0 && text[0]);
     cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
     int width = 0;
     pango_layout_get_pixel_size(layout, &width, NULL);
@@ -670,6 +694,7 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     if (!cairo_begin_clip(surface)) return 0;
     double red, green, blue, alpha;
     color_components(rgba, &red, &green, &blue, &alpha);
+    note_paint(surface, alpha > 0.0);
     cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
     cairo_set_line_width(surface->cairo, thickness);
     cairo_set_line_cap(surface->cairo, CAIRO_LINE_CAP_BUTT);
@@ -931,12 +956,32 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
     return false;
 }
 
+static bool surface_paints(const struct tomoe *s, const struct ui_surface *surface,
+        double now) {
+    if (s->settings.blur_enabled && surface->blur >= 0) return true;
+    if (surface->texture && surface->paints) return true;
+    struct ui_asset *shown = shown_backdrop(surface);
+    if (ui_asset_backdrop(shown, NULL, NULL)) return true;
+    return ui_asset_shader(shown, NULL) && !shader_still(s, surface, now);
+}
+
 bool ui_on_output(struct output *o, int layer) {
+    if (!o || !o->server) return false;
     const struct ui_set *set = o->server->ui;
-    for (size_t i = 0; set && i < set->count; i++)
-        if (set->surfaces[i]->layer >= layer &&
-                (set->surfaces[i]->texture || set->surfaces[i]->backdrop) &&
-                surface_matches_output(set->surfaces[i], o, NULL)) return true;
+    if (!set) return false;
+    struct box output, overlap;
+    physical_output_box(o, &output);
+    if (box_empty(&output)) return false;
+    double now = monotonic_seconds();
+    for (size_t i = 0; i < set->count; i++) {
+        const struct ui_surface *surface = set->surfaces[i];
+        if (surface->layer < layer || !surface_matches_output(surface, o, NULL)) continue;
+        struct box placed = { .x = surface->x + surface->offset_x,
+            .y = surface->y + surface->offset_y,
+            .width = surface->width, .height = surface->height };
+        if (!box_intersection(&overlap, &placed, &output)) continue;
+        if (surface_paints(o->server, surface, now)) return true;
+    }
     return false;
 }
 
@@ -1013,11 +1058,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                 surface->blur, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         if (image) draw_texture(f, image, left + x, top + y);
         if (shader) {
-            const struct pointer_sample *last = o->server->pointer_trail_count ?
-                &o->server->pointer_trail[(o->server->pointer_trail_head + POINTER_TRAIL - 1) %
-                    POINTER_TRAIL] : NULL;
-            bool still = surface->idle > 0 && (!last || now - last->t > surface->idle);
-            if (!still) {
+            if (!shader_still(o->server, surface, now)) {
                 double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
                 effect_shader(f, shader, (struct fbox){ left, top, surface->width,
                     surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
