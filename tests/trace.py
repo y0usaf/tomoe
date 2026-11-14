@@ -55,17 +55,43 @@ def lines(path):
 
 
 seen = 0
+seen_layout = 0
 records = []
 
 
+def marks():
+    return len(lines("/run/trace.log")), len(lines("/run/layout.log"))
+
+
+def quiet():
+    last = None
+    stable = 0
+    for _ in range(80):
+        time.sleep(0.1)
+        state = inspect()
+        current = marks()
+        windows = len(items(state.get(":WINDOWS", [])))
+        geometry = len(items(state.get(":WINDOW-GEOMETRY", [])))
+        if current == last and geometry >= windows:
+            stable += 1
+            if stable >= 2:
+                return
+        else:
+            stable = 0
+        last = current
+    raise AssertionError("the session did not settle")
+
+
 def step(label):
-    global seen
-    time.sleep(0.2)
+    global seen, seen_layout
+    quiet()
     trace = lines("/run/trace.log")
+    layout = lines("/run/layout.log")
     record = ("== " + label
               + "\n-- dispatch\n" + "\n".join(trace[seen:])
               + "\n-- commands\n" + "\n".join(
                   line for line in trace[seen:] if " emits=" in line)
+              + "\n-- layout\n" + "\n".join(layout[seen_layout:])
               + "\n-- committed\n" + canonical())
     record = "\n".join(part.rstrip()
                         for line in record.splitlines()
@@ -73,6 +99,7 @@ def step(label):
                                      for index in range(0, max(1, len(line)), 600)))
     records.append(record)
     seen = len(trace)
+    seen_layout = len(layout)
 
 
 def inject(event):
@@ -92,8 +119,8 @@ def wait_windows(count):
 
 
 
-start("--bare", bus=False)
-machine.succeed("rm -f /run/trace.log")
+start("--bare", bus=False, env={"TOMOE_LAYOUT_TRACE": "/run/layout.log"})
+machine.succeed("rm -f /run/trace.log /run/layout.log")
 
 client("trace-one", "--app-id", "trace-window", "--title", "trace-one", "--size", "400x300")
 client("trace-other", "--app-id", "trace-other", "--title", "trace-two", "--size", "240x160")
@@ -152,6 +179,48 @@ inject("(:type :button :state :pressed :button 272 :x 91 :y 91 :id 1)")
 step("shared button again")
 cli("unmount trace-mount-a")
 step("unmount owner a")
+
+for index in range(6):
+    client(f"trace-many-{index}", "--app-id", f"trace-many-{index}",
+           "--title", f"trace-many-{index}", "--size", "200x150")
+wait_windows(8)
+step("many windows")
+
+cli(f"mount {TRACE_GRID}")
+step("mount grid")
+inject("(:type :button :state :pressed :button 272 :x 30 :y 30 :id 1)")
+step("grid button one")
+inject("(:type :button :state :released :button 272 :x 35 :y 34 :id 3)")
+step("grid button two")
+inject("(:type :button :state :pressed :button 272 :x 32 :y 31 :id 2)")
+step("grid button three")
+cli("unmount trace-grid")
+step("unmount grid")
+
+cli(f"mount {TRACE_DELAY}")
+step("mount delay")
+time.sleep(0.5)
+step("delayed timer")
+cli("unmount trace-delay")
+step("unmount delay")
+
+template = machine.succeed(f"cat {TRACE_SWAP}")
+machine.succeed("cat > /run/trace-swap.lisp <<'TRACE_SWAP_EOF'\n" + template + "TRACE_SWAP_EOF\n")
+cli("mount /run/trace-swap.lisp")
+step("mount swap")
+inject("(:type :button :state :pressed :button 272 :x 50 :y 50 :id 1)")
+step("swap button one")
+swapped = template.replace("(defparameter *trace-swap-x* 30)",
+                           "(defparameter *trace-swap-x* 55)")
+assert swapped != template
+machine.succeed("cat > /run/trace-swap.lisp <<'TRACE_SWAP_EOF'\n" + swapped + "TRACE_SWAP_EOF\n")
+time.sleep(0.3)
+cli("reload")
+step("reload swap")
+inject("(:type :button :state :pressed :button 272 :x 51 :y 51 :id 1)")
+step("swap button two")
+cli("unmount trace-swap")
+step("unmount swap")
 
 quit()
 

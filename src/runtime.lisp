@@ -19,23 +19,55 @@
 (defvar *materialized* nil
   "Within a transaction: the mounts, invalidation count, output revision and
 context of its last materialization.")
+(defvar *layout-rebuilds* 0
+  "Counts the materializations that folded every effect again, and the ones that
+reused the context the last commit settled on.")
+(defvar *layout-reuses* 0)
 (defvar *invocations* 0
   "Counts the accepted reducer results and replaced rule declarations that change
 what a materialization folds. A reducer that returns the effects it already owned
 changes nothing, so it does not invalidate the last context.")
+(defvar *definitions-generation* 0
+  "Counts loaded sources and restored patch definitions. Both replace functions the
+fold calls directly, such as the keyboard default and the host command table, so
+they invalidate a context without any effect changing.")
 
 (defvar *timing* nil
   "Whether the native side keeps latency samples, so the loop can report when a
 transaction has returned without paying for a call it does not need.")
 
 
+(defvar *timing-channels* (make-hash-table :test #'equal)
+  "Native channel numbers, resolved once per sample name.")
+
+(defvar *timing-consed* (make-hash-table :test #'eql)
+  "Per native timing channel: a mutable (consed samples name) list.")
+
+(defun timing-channel (name)
+  (or (gethash name *timing-channels*)
+      (setf (gethash name *timing-channels*) (%timing-channel name))))
+
+(defun note-timing-consed (channel name bytes)
+  (let ((entry (gethash channel *timing-consed*)))
+    (if entry
+        (progn (incf (first entry) bytes) (incf (second entry)))
+        (setf (gethash channel *timing-consed*) (list bytes 1 name)))))
+
+(defun timing-consed-report ()
+  "Bytes WITH-SAMPLE recorded per channel, as (:NAME n :CONSED b :SAMPLES c) entries."
+  (loop for entry being the hash-values of *timing-consed*
+        collect (list :name (third entry) :consed (first entry) :samples (second entry))))
+
 (defmacro with-sample ((name) &body body)
-  "Record how long BODY takes on the named native timing path, when it is kept."
-  (let ((start (gensym "START-")))
+  "Record how long BODY takes on the named native timing path, and how many bytes
+it consed, when samples are kept."
+  (let ((start (gensym "START-")) (consed (gensym "CONSED-")) (channel (gensym "CHANNEL-")))
     `(if *timing*
-         (let ((,start (%timing-now)))
+         (let ((,channel (timing-channel ,name)) (,start (%timing-now))
+               (,consed (sb-ext:get-bytes-consed)))
            (prog1 (progn ,@body)
-             (%timing-sample (%timing-channel ,name) (- (%timing-now) ,start))))
+             (%timing-sample ,channel (- (%timing-now) ,start))
+             (note-timing-consed ,channel ,name (- (sb-ext:get-bytes-consed) ,consed))))
          (progn ,@body))))
 
 (defstruct mounted spec state effects (dispatches 0) (failures 0) last-error
@@ -48,7 +80,7 @@ transaction has returned without paying for a call it does not need.")
   system (system-due 0) notification-producer mpris-producer battery-producer network-producer tray-producer
   (running t) last-error (generation 0) (watch t) source-stamps pending-context output-recovery-failures
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
-  reads-cache layers-cache
+  reads-cache layers-cache layout-memo
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
@@ -308,6 +340,20 @@ declarations by identity where that matters."
                      (equal (effect-arguments old) (effect-arguments new))))
               before after)))
 
+(defun check-duplicate-effects (effects)
+  "Reject two effects of one reducer that claim the same key. Reducers own a
+handful of effects, so a scan beats a hash table until the list is long."
+  (if (<= (length effects) 8)
+      (loop for tail on effects
+            for key = (effect-key (first tail))
+            do (when (loop for other in (rest tail) thereis (equal key (effect-key other)))
+                 (error "Duplicate effect: ~S" key)))
+      (let ((keys (make-hash-table :test #'equal :size (length effects))))
+        (dolist (effect effects)
+          (let ((key (effect-key effect)))
+            (when (gethash key keys) (error "Duplicate effect: ~S" key))
+            (setf (gethash key keys) t))))))
+
 (defun invoke-extension (runtime mounted context event)
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
         (*source-directory* (spec-directory (mounted-spec mounted))))
@@ -329,8 +375,7 @@ declarations by identity where that matters."
                                 (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
               (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
             (let ((effects (mapcar #'canonical-effect effects))
-                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands))
-                  (keys (make-hash-table :test #'equal :size (length effects))))
+                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands)))
               (let ((replies (count :reply commands :key #'command-kind)))
                 (when (plusp replies)
                   (unless (and (= replies 1) (eq (getf event :type) :ipc)
@@ -338,10 +383,7 @@ declarations by identity where that matters."
                                (runtime-ipc-call runtime)
                                (eql (getf event :call) (getf (runtime-ipc-call runtime) :token)))
                     (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
-              (dolist (effect effects)
-                (let ((key (effect-key effect)))
-                  (when (gethash key keys) (error "Duplicate effect: ~S" key))
-                  (setf (gethash key keys) t)))
+              (check-duplicate-effects effects)
               (unless (equivalent-effects (mounted-effects mounted) effects)
                 (incf *invocations*))
               (setf (mounted-state mounted) (copy-data state)
@@ -604,22 +646,120 @@ while other owners can settle; a new request or declaration permits recovery."
                 (append (runtime-client-geometries runtime) (list new))))
       t)))
 
+(defvar *layout-trace-path* nil
+  "When the environment names a file, every materialization appends what it settled
+on to it, so a recorded trace can compare an incremental layout with a full one.")
+
+(defun layout-step-record (context)
+  "What a materialization settled on: the layout, its inputs and the commands its
+owners declared, in a form whose printed representation is stable across builds."
+  (list :layout (loop for window in (getf context :layout)
+                      collect (list (getf window :id) (getf window :x) (getf window :y)
+                                    (getf window :width) (getf window :height)
+                                    (and (getf window :visible) t)
+                                    (getf window :properties)))
+        :stacking (getf context :stacking)
+        :window-geometry (getf context :window-geometry)
+        :workareas (getf context :workareas)
+        :surfaces (getf context :surfaces)
+        :view (getf context :view) :focus (getf context :focus)
+        :rules (getf context :rules)
+        :commands (mapcar (lambda (entry) (getf entry :name)) (getf context :commands))
+        :bindings (loop for binding in (getf context :bindings)
+                        collect (list (getf binding :owner) (getf binding :modifiers)
+                                      (getf binding :code) (getf binding :command)
+                                      (getf binding :release)))))
+
+(defun trace-layout-step (context)
+  (when *layout-trace-path*
+    (let ((*print-pretty* nil) (*print-length* nil) (*print-level* nil)
+          (*print-circle* nil) (*print-readably* nil) (*package* *package*))
+      (with-open-file (stream *layout-trace-path* :direction :output
+                                                   :if-exists :append :if-does-not-exist :create)
+        (write (layout-step-record context) :stream stream)
+        (terpri stream)))))
+
+(defstruct layout-memo names invocations definitions revision windows layers client-geometries
+  services system config-error outputs connectors recovery-failures context)
+
+(defun mount-names (mounts)
+  (loop for mounted in mounts collect (spec-name (mounted-spec mounted))))
+
+(defun same-mounts-p (names mounts)
+  (and (= (length names) (length mounts))
+       (loop for name in names
+             for mounted in mounts
+             always (equal name (spec-name (mounted-spec mounted))))))
+
+(defun reusable-layout (runtime mounts)
+  "The context the last materialization produced, when nothing a materialization
+folds has changed since: no owner's effects, no window, layer, client geometry,
+service, system, config-error or output fact, and no output proposal in flight.
+The fold reads exactly those, so a full recompute would produce this again."
+  (let ((memo (runtime-layout-memo runtime)) (backend (runtime-backend runtime)))
+    (when (and memo
+               (eql (layout-memo-invocations memo) *invocations*)
+               (eql (layout-memo-definitions memo) *definitions-generation*)
+               (eql (layout-memo-revision memo) (runtime-outputs-revision runtime))
+               (eq (layout-memo-windows memo) (runtime-windows runtime))
+               (eq (layout-memo-layers memo) (runtime-layers runtime))
+               (eq (layout-memo-client-geometries memo) (runtime-client-geometries runtime))
+               (eq (layout-memo-services memo) (runtime-services runtime))
+               (eq (layout-memo-system memo) (runtime-system runtime))
+               (eq (layout-memo-config-error memo) (runtime-config-error runtime))
+               (eq (layout-memo-outputs memo) (runtime-outputs runtime))
+               (eq (layout-memo-connectors memo) (runtime-connectors runtime))
+               (eq (layout-memo-recovery-failures memo) (runtime-output-recovery-failures runtime))
+               (or (null backend) (not (pending-native-outputs-p backend)))
+               (same-mounts-p (layout-memo-names memo) mounts))
+      (layout-memo-context memo))))
+
+(defun remember-layout (runtime mounts context)
+  (let ((backend (runtime-backend runtime)))
+    (when (or (null backend) (not (pending-native-outputs-p backend)))
+      (setf (runtime-layout-memo runtime)
+            (make-layout-memo :names (mount-names mounts) :invocations *invocations*
+                              :definitions *definitions-generation*
+                              :revision (runtime-outputs-revision runtime)
+                              :windows (runtime-windows runtime)
+                              :layers (runtime-layers runtime)
+                              :client-geometries (runtime-client-geometries runtime)
+                              :services (runtime-services runtime)
+                              :system (runtime-system runtime)
+                              :config-error (runtime-config-error runtime)
+                              :outputs (runtime-outputs runtime)
+                              :connectors (runtime-connectors runtime)
+                              :recovery-failures (runtime-output-recovery-failures runtime)
+                              :context context)))))
+
 (defun materialize (runtime mounts)
   "Reconstruct owned context. Within a transaction, the same mounts with no
 contribution that changes it since the last materialization yield that context
-again. Adopted native output facts are a rebuild cause too, so a transaction
-never commits a context built from superseded output facts."
+again, and a transaction whose event cannot reach the layout reuses the context
+the last one settled on instead of folding every effect again. Adopted native
+output facts are a rebuild cause too, so a transaction never commits a context
+built from superseded output facts."
   (let ((memo *materialized*) (revision (runtime-outputs-revision runtime)))
-    (if (and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
-             (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
-        (third memo)
-        (let ((context (%materialize runtime mounts)))
-          (when memo
-            (setf (first memo) (copy-list mounts) (second memo) *invocations*
-                  (third memo) context (fourth memo) revision))
-          context))))
+    (flet ((republish (context)
+             (when memo
+               (setf (first memo) (copy-list mounts) (second memo) *invocations*
+                     (third memo) context (fourth memo) revision))
+             (trace-layout-step context)
+             context))
+      (cond
+        ((and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
+              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
+         (incf *layout-reuses*)
+         (republish (third memo)))
+        (t (let ((reused (reusable-layout runtime mounts)))
+             (cond (reused (incf *layout-reuses*) (republish reused))
+                   (t (incf *layout-rebuilds*)
+                      (republish (%materialize runtime mounts))))))))))
 
 (defun %materialize (runtime mounts)
+  (with-sample ("mat-total") (%materialize-fold runtime mounts)))
+
+(defun %materialize-fold (runtime mounts)
   "Reconstruct owned context. Preserve live clients, output facts, and map order.
 Unmount removes a contribution, exposing the preceding owner or these defaults.
 The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
@@ -656,10 +796,13 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
         m
       (let* ((live-connectors (or (runtime-connectors runtime)
                                   (output-connectors (list :outputs (runtime-outputs runtime)))))
-             (output-config (default-output-config outputs live-connectors (getf settings :scale)))
+             (output-config
+               (with-sample ("mat-config")
+                 (default-output-config outputs live-connectors (getf settings :scale))))
              (connected
-               (connected-output-config
-                (list :connectors live-connectors :output-config output-config)))
+               (with-sample ("mat-config")
+                 (connected-output-config
+                  (list :connectors live-connectors :output-config output-config))))
              (output-resolution
                (with-sample ("mat-output")
                  (multiple-value-list
@@ -812,6 +955,7 @@ when it is not 1."
     (configure-virtual-outputs backend (getf old :virtual-outputs) (getf context :virtual-outputs))
     (setf (runtime-pending-spawns runtime) pending-spawns)
     (when (runtime-json-server runtime) (publish-json-context runtime context mounts))
+    (remember-layout runtime mounts context)
     spawns))
 
 (defun mounted-reads (runtime)
@@ -859,11 +1003,8 @@ Pending external invalidations join the current event, never an event replay."
                          (union changed (changed-keys (runtime-effective runtime) context)))))
          (commands nil)
          (deferred-deliveries (make-hash-table :test #'eq))
-         (proposal-baselines (make-hash-table :test #'eq))
-         (proposal-start
-           (with-sample ("tx-baselines")
-             (let ((specs (make-hash-table :test #'eq)))
-               (dolist (mounted candidate specs) (setf (gethash (mounted-spec mounted) specs) t)))))
+         (proposal-baselines nil)
+         (proposal-start nil)
          (proposal-deliveries (make-hash-table :test #'eq))
          (initial-event event)
          (initial-force force))
@@ -872,6 +1013,11 @@ Pending external invalidations join the current event, never an event replay."
 mount had when the transaction began, or the declaration's state for a rule
 instance that reconciliation created inside it."
                (let ((spec (mounted-spec mounted)))
+                 (unless proposal-baselines
+                   (setf proposal-baselines (make-hash-table :test #'eq)
+                         proposal-start (make-hash-table :test #'eq))
+                   (dolist (run candidate)
+                     (setf (gethash (mounted-spec run) proposal-start) t)))
                  (multiple-value-bind (baseline captured) (gethash spec proposal-baselines)
                    (if captured baseline
                        (setf (gethash spec proposal-baselines)
@@ -1017,6 +1163,7 @@ into one reused buffer, so watching allocates nothing per file."
     package))
 
 (defun load-specs (runtime path &optional package)
+  (incf *definitions-generation*)
   (let* ((*source* path)
          (directory (directory-namestring (truename path)))
          (*source-directory* directory)

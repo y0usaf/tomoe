@@ -67,6 +67,7 @@
           :value (and value-p (symbol-value symbol)))))
 
 (defun restore-patch-definition (snapshot)
+  (incf *definitions-generation*)
   (let ((symbol (getf snapshot :symbol)) (macro (getf snapshot :macro))
         (function (getf snapshot :function)))
     (cond (macro (setf (macro-function symbol) macro))

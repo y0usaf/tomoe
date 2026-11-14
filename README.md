@@ -122,12 +122,15 @@ the transaction applying it, the wait between an input and its frame, each phase
 of a policy transaction and of a frame, and a client commit to its frame. The
 samples are kept only when the compositor starts with `TOMOE_TIMINGS=1`, so the
 default pays a branch per sample point and nothing else; `tests/timing.py` drives
-one event per frame through it for a repeatable table. `tests/trace.py` mounts a
-set of scripted policies and records the order every reducer was dispatched in,
-the one-shot commands they emitted and the context the transaction settled on,
-then compares that record with `tests/trace.golden`: dependency chains, rule
-replacement, deferred deliveries, mount and unmount ownership, a failing reducer
-and a dependency cycle all have to reproduce it exactly.
+one event per frame through it for a repeatable table, alongside the bytes each
+sample path consed and every frame longer than a refresh, tagged with the
+collection it overlapped. `tests/trace.py` mounts a set of scripted policies and
+records the order every reducer was dispatched in, the one-shot commands they
+emitted and the layout and context every materialization settled on, then
+compares that record with `tests/trace.golden`: dependency chains, rule
+replacement, deferred deliveries, mount and unmount ownership, a failing reducer,
+a dependency cycle, eight windows placed by one grid extension, a delayed interval
+and a source swapped on disk all have to reproduce it exactly.
 
 ## One table of commands
 
@@ -305,7 +308,10 @@ half-updated, and because every effect has an owner, unmounting an extension
 takes its effects with it. Settling a transaction rebuilds the context from the
 current effects rather than editing the last one, but it keeps the last rebuild
 while every accepted reducer result is the same as the one already folded into
-it, which is most of the work an input event would otherwise repeat.
+it, and a transaction whose event changes no window, layer, output or client
+geometry starts from the context the last commit settled on instead of folding
+every effect again, which is most of the work a pointer or key event would
+otherwise repeat.
 
 Sandbox launchers can register private Wayland listening sockets with
 `wp_security_context_manager_v1`, attaching sandbox engine, application and

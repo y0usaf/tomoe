@@ -397,7 +397,8 @@ an edit calls for; a source whose directory is still missing is retried."
          (progn
            (setf native (open-backend name)
                  runtime (make-runtime :backend native :socket name)
-                 *timing* (plusp (%timing-enabled)))
+                 *timing* (plusp (%timing-enabled))
+                 *layout-trace-path* (sb-ext:posix-getenv "TOMOE_LAYOUT_TRACE"))
            (unless (zerop (%watch-signals native))
              (error "Cannot wake the event loop for SIGTERM and SIGINT."))
            (setf json-server (open-json-control (json-socket-path name))
