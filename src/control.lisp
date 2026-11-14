@@ -222,6 +222,13 @@ span of each collection for the frame-stall report."
        nil)
       (:quit (destructuring-bind () args (setf (runtime-running runtime) nil)) nil))))
 
+(defparameter +control-timeout+ 1
+  "Seconds the control server waits for a client's request and for its own reply
+to reach the socket. A local client can be descheduled between connecting and
+writing while the compositor is inside a software-rendered frame, which can take
+longer than 100 ms; the timeout only bounds a client that never writes. The
+client waits five seconds for the whole exchange.")
+
 (defun serve-control (runtime control)
   (when (sb-sys:wait-until-fd-usable
          (sb-bsd-sockets:socket-file-descriptor (control-socket control)) :input 0 nil)
@@ -232,12 +239,14 @@ span of each collection for the frame-stall report."
              (handler-case
                  (let ((reply (handler-case
                                   (list +wire-version+ :ok
-                                        (handle-request runtime (sb-ext:with-timeout 0.1 (read-frame stream))))
+                                        (handle-request runtime
+                                                        (sb-ext:with-timeout +control-timeout+
+                                                          (read-frame stream))))
                                 (serious-condition (condition)
                                   (record-error runtime condition)
                                   (list +wire-version+ :error (princ-to-string condition))))))
                    (handler-case
-                       (sb-ext:with-timeout 0.1 (write-frame stream reply))
+                       (sb-ext:with-timeout +control-timeout+ (write-frame stream reply))
                      (serious-condition () nil)))
                (serious-condition (condition) (record-error runtime condition))))
         (sb-bsd-sockets:socket-close client :abort t)))))
