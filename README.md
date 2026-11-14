@@ -451,13 +451,9 @@ Bug reports, questions and odd setups are welcome in the
 ```sh
 nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
-nix flake check    # NixOS VM tests; needs KVM
+nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
-
-The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
-`opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
-one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that

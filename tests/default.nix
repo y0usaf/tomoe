@@ -67,10 +67,8 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/fifo/fifo-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/tablet/tablet-v2.xml \
-        ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml \
-        ${../native/virtual-keyboard-unstable-v1.xml}; do
+        ${pkgs.wayland-protocols}/share/wayland-protocols/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml; do
         name=$(basename "$xml" .xml)
-        case "$name" in *virtual-keyboard-unstable-v1) name=virtual-keyboard-unstable-v1;; esac
         wayland-scanner client-header "$xml" "$name-client-protocol.h"
         wayland-scanner private-code "$xml" "$name-protocol.c"
       done
@@ -82,15 +80,12 @@ let
         $(pkg-config --cflags --libs wayland-client) -o tomoe-pacing-client
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/cursor-alpha.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-cursor-client
-      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/timing.c *-protocol.c \
-        $(pkg-config --cflags --libs wayland-client) -o tomoe-timing-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
       install -Dm755 tomoe-test-pointer-client $out/bin/tomoe-test-pointer-client
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
       install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
-      install -Dm755 tomoe-timing-client $out/bin/tomoe-timing-client
     '';
   };
   x11Client = pkgs.stdenv.mkDerivation {
@@ -98,7 +93,10 @@ let
     src = ./x11-client.c;
     dontUnpack = true;
     strictDeps = true;
-    buildInputs = [ pkgs.libx11 pkgs.xorgproto ];
+    buildInputs = [
+      pkgs.libx11
+      pkgs.xorgproto
+    ];
     buildPhase = ''
       $CC -std=c11 -O2 -Wall -Wextra -Werror \
         -I${pkgs.lib.getDev pkgs.libx11}/include -I${pkgs.xorgproto}/include \
@@ -111,7 +109,10 @@ let
     src = ./security-client.c;
     dontUnpack = true;
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       xml=${pkgs.wayland-protocols}/share/wayland-protocols/staging/security-context/security-context-v1.xml
@@ -141,6 +142,138 @@ let
     '';
     installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
   };
+  livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
+    (in-package #:tomoe-user)
+
+    (define-extension "livepatch-gap" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (append (loop for window in (context snapshot :windows)
+                            collect (place (getf window :id) 100 60 320 200))
+                      (list (interval :livepatch-tick 60000)
+                            (define-command "livepatch-ping")
+                            (bind-key '(:mod) "F9" "livepatch-ping")
+                            (service :livepatch-sleeper "sleep 3600")))
+              nil))
+  '';
+  livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
+    (defun tomoe::default-keyboard-config ()
+      (list :rules "" :model "" :layout "de" :variant "" :options nil
+            :repeat-rate 25 :repeat-delay 600))
+  '';
+  wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (publish-state :wallpaper-settings
+                                   '(:directory "${pkgs.nixos-icons}/share/icons/hicolor"
+                                     :bind ((:mod :shift) "w" "next-wallpaper"))))
+              nil))
+  '';
+  screenshotProbe = pkgs.writeText "screenshot-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "screenshot-probe" (:reads (:command) :state nil) (snapshot state event)
+      (declare (ignore snapshot))
+      (values state
+              (list (define-command "select")
+                    (bind-key '(:super) "F12" "select"))
+              (when (eq (getf event :type) :command) (list (screenshot)))))
+  '';
+  blurProbe = pkgs.writeText "blur-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "blur-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (settings :blur (list :enabled t :passes 3 :offset 2))
+                    (shell-surface :stripes
+                                   (ui :row :children (loop for i below 100
+                                                            collect (ui :rect :width 4 :height 300
+                                                                        :background (if (evenp i) "#000000ff" "#ffffffff"))))
+                                   :anchors '(:top :left) :margin '(100 0 0 100) :layer :top :background "#00000000")
+                    (shell-surface :frost (ui :row) :anchors '(:top :left) :margin '(100 0 0 100)
+                                   :width 200 :height 300 :layer :overlay :background "#00000000" :blur t))
+              nil))
+  '';
+  offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "offscreen-probe" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (loop for window in (context snapshot :windows)
+                    when (equal (getf window :app-id) "check-flood")
+                      collect (place (getf window :id) 20000 20000 320 240))
+              nil))
+  '';
+  virtualProbe = pkgs.writeText "virtual-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "virtual-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (virtual-output "VIRTUAL-1" :mode '(1280 720))
+                    (virtual-output "VIRTUAL-2" :mode '(1280 720))
+                    (shell-surface :rows
+                                   (ui :column :children (loop for i below 500
+                                                               collect (ui :text :text (format nil "~D" i))))
+                                   :anchors '(:top :left) :layer :overlay))
+              nil))
+  '';
+  themeProbe = pkgs.writeText "theme-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "theme-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (publish-state :theme '(:base "#203040" :text "#f0e0d0" :accent "#c06030"
+                                            :error "#30a050" :surface1 "#504030")))
+              nil))
+  '';
+  viewportProbe = pkgs.writeText "viewport-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "viewport-probe" (:reads (:outputs) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let ((output (first (context snapshot :outputs))))
+        (values state
+                (when output
+                  (list (publish-state :focal-frame
+                                       (list :output (getf output :name)
+                                             :left (floor (getf output :width) 4)
+                                             :top (floor (getf output :height) 8)
+                                             :width (floor (getf output :width) 2)
+                                             :height (floor (getf output :height) 3)))))
+                nil)))
+  '';
+  busProbe = pkgs.writeText "bus-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state
+              (list (run-once :probe "printf %s \"$DBUS_SESSION_BUS_ADDRESS\" > /run/bus-probe"))
+              nil))
+  '';
+  wakeProbe = pkgs.writeText "wake-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "wake-probe" (:reads (:command) :state '(:dark nil)) (snapshot state event)
+      (declare (ignore snapshot))
+      (let* ((command (and (eq (getf event :type) :command) (getf event :name)))
+             (dark (cond ((equal command "dark") t)
+                         ((equal command "light") nil)
+                         (t (getf state :dark)))))
+        (values (list :dark dark)
+                (list (define-command "dark")
+                      (define-command "light")
+                      (define-command "off")
+                      (define-command "on")
+                      (configure-output "Virtual-1" :mode '(1920 1080 60) :disabled dark))
+                (cond ((equal command "off") (list (output-power :off "Virtual-1")))
+                      ((equal command "on") (list (output-power :on "Virtual-1")))))))
+  '';
+  outputOverrideProbe = pkgs.writeText "output-override-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "output-override-probe" (:reads () :state nil) (snapshot state event)
+      (declare (ignore snapshot event))
+      (values state (list (configure-output "HEADLESS-1" :mode '(800 600 60)
+                                            :scale 1 :position '(0 0))) nil))
+  '';
   drawGolden = "5a73e2a585b6d249,cc57125203c563d0,1d550c0eef023248";
   drawPolicy = pkgs.writeText "draw-policy.lisp" ''
     (in-package #:tomoe-user)
@@ -217,25 +350,6 @@ let
                 nil)))
   '';
   frameclockPolicy = ./frameclock-policy.lisp;
-  livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
-    (in-package #:tomoe-user)
-
-    (define-extension "livepatch-gap" (:reads (:windows) :state nil) (snapshot state event)
-      (declare (ignore state event))
-      (values nil
-              (append (loop for window in (context snapshot :windows)
-                            collect (place (getf window :id) 100 60 320 200))
-                      (list (interval :livepatch-tick 60000)
-                            (define-command "livepatch-ping")
-                            (bind-key '(:mod) "F9" "livepatch-ping")
-                            (service :livepatch-sleeper "sleep 3600")))
-              nil))
-  '';
-  livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
-    (defun tomoe::default-keyboard-config ()
-      (list :rules "" :model "" :layout "de" :variant "" :options nil
-            :repeat-rate 25 :repeat-delay 600))
-  '';
   scanoutClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-scanout-client";
     src = ./scanout.c;
@@ -274,40 +388,6 @@ let
     '';
     installPhase = "install -Dm755 tomoe-planes-probe $out/bin/tomoe-planes-probe";
   };
-  wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state
-              (list (publish-state :wallpaper-settings
-                                   '(:directory "${pkgs.nixos-icons}/share/icons/hicolor"
-                                     :bind ((:mod :shift) "w" "next-wallpaper"))))
-              nil))
-  '';
-  screenshotProbe = pkgs.writeText "screenshot-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "screenshot-probe" (:reads (:command) :state nil) (snapshot state event)
-      (declare (ignore snapshot))
-      (values state
-              (list (define-command "select")
-                    (bind-key '(:super) "F12" "select"))
-              (when (eq (getf event :type) :command) (list (screenshot)))))
-  '';
-  blurProbe = pkgs.writeText "blur-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "blur-probe" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state
-              (list (settings :blur (list :enabled t :passes 3 :offset 2))
-                    (shell-surface :stripes
-                                   (ui :row :children (loop for i below 100
-                                                            collect (ui :rect :width 4 :height 300
-                                                                        :background (if (evenp i) "#000000ff" "#ffffffff"))))
-                                   :anchors '(:top :left) :margin '(100 0 0 100) :layer :top :background "#00000000")
-                    (shell-surface :frost (ui :row) :anchors '(:top :left) :margin '(100 0 0 100)
-                                   :width 200 :height 300 :layer :overlay :background "#00000000" :blur t))
-              nil))
-  '';
   scanoutProbe = pkgs.writeText "scanout-probe.lisp" ''
     (in-package #:tomoe-user)
 
@@ -483,85 +563,6 @@ let
                           (planes--surfaces next output)))
                 nil)))
   '';
-  offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "offscreen-probe" (:reads (:windows) :state nil) (snapshot state event)
-      (declare (ignore state event))
-      (values nil
-              (loop for window in (context snapshot :windows)
-                    when (equal (getf window :app-id) "check-flood")
-                      collect (place (getf window :id) 20000 20000 320 240))
-              nil))
-  '';
-  virtualProbe = pkgs.writeText "virtual-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "virtual-probe" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state
-              (list (virtual-output "VIRTUAL-1" :mode '(1280 720))
-                    (virtual-output "VIRTUAL-2" :mode '(1280 720))
-                    (shell-surface :rows
-                                   (ui :column :children (loop for i below 500
-                                                               collect (ui :text :text (format nil "~D" i))))
-                                   :anchors '(:top :left) :layer :overlay))
-              nil))
-  '';
-  themeProbe = pkgs.writeText "theme-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "theme-probe" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state
-              (list (publish-state :theme '(:base "#203040" :text "#f0e0d0" :accent "#c06030"
-                                            :error "#30a050" :surface1 "#504030")))
-              nil))
-  '';
-  viewportProbe = pkgs.writeText "viewport-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "viewport-probe" (:reads (:outputs) :state nil) (snapshot state event)
-      (declare (ignore state event))
-      (let ((output (first (context snapshot :outputs))))
-        (values state
-                (when output
-                  (list (publish-state :focal-frame
-                                       (list :output (getf output :name)
-                                             :left (floor (getf output :width) 4)
-                                             :top (floor (getf output :height) 8)
-                                             :width (floor (getf output :width) 2)
-                                             :height (floor (getf output :height) 3)))))
-                nil)))
-  '';
-  busProbe = pkgs.writeText "bus-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state
-              (list (run-once :probe "printf %s \"$DBUS_SESSION_BUS_ADDRESS\" > /run/bus-probe"))
-              nil))
-  '';
-  wakeProbe = pkgs.writeText "wake-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "wake-probe" (:reads (:command) :state '(:dark nil)) (snapshot state event)
-      (declare (ignore snapshot))
-      (let* ((command (and (eq (getf event :type) :command) (getf event :name)))
-             (dark (cond ((equal command "dark") t)
-                         ((equal command "light") nil)
-                         (t (getf state :dark)))))
-        (values (list :dark dark)
-                (list (define-command "dark")
-                      (define-command "light")
-                      (define-command "off")
-                      (define-command "on")
-                      (configure-output "Virtual-1" :mode '(1920 1080 60) :disabled dark))
-                (cond ((equal command "off") (list (output-power :off "Virtual-1")))
-                      ((equal command "on") (list (output-power :on "Virtual-1")))))))
-  '';
-  outputOverrideProbe = pkgs.writeText "output-override-probe.lisp" ''
-    (in-package #:tomoe-user)
-    (define-extension "output-override-probe" (:reads () :state nil) (snapshot state event)
-      (declare (ignore snapshot event))
-      (values state (list (configure-output "HEADLESS-1" :mode '(800 600 60)
-                                            :scale 1 :position '(0 0))) nil))
-  '';
   pathClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-pointer-path";
     source = ./pointer-path.c;
@@ -577,32 +578,6 @@ let
     '';
     installPhase = "install -Dm755 tomoe-test-pointer-path $out/bin/tomoe-test-pointer-path";
   };
-  checkWith =
-    extra: name: script:
-    pkgs.testers.runNixOSTest {
-      name = "tomoe-${name}";
-      nodes.machine = {
-        imports = [ extra ];
-        boot.kernelModules = [
-          "vgem"
-          "udmabuf"
-        ];
-        hardware.graphics.enable = true;
-        environment.systemPackages = [
-          tomoe
-          client
-          imeClient
-          pkgs.grim
-          pkgs.libnotify
-          pkgs.xdpyinfo
-          pkgs.wayland-utils
-        ];
-        virtualisation.memorySize = 2048;
-        virtualisation.cores = 4;
-      };
-      testScript = builtins.readFile ./tomoe.py + script;
-    };
-  check = checkWith { };
   memorySound = pkgs.runCommand "tomoe-memory-sound" { nativeBuildInputs = [ pkgs.python3 ]; } ''
     mkdir -p $out
     python3 -c 'import sys, wave; w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000); w.writeframes(b"\0" * 9600); w.close()' $out/sound.wav
@@ -627,199 +602,297 @@ in
     machine.wait_for_unit("multi-user.target")
     machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
   '';
-  security = checkWith {
-    environment.systemPackages = [ securityClient pkgs.wayland-utils ];
-  } "security" ''
-    start("--bare", bus=False)
-    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
-    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
-    quit()
-  '';
-  text-input = check "text-input" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
-    quit()
-  '';
-  input-method = check "input-method" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
-    quit()
-  '';
-  shortcuts-inhibit = check "shortcuts-inhibit" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    cli("mount ${shortcutBindings}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
-    quit()
-  '';
-  surface-protocols = checkWith { environment.systemPackages = [ pkgs.pipewire ]; }
-    "surface-protocols" (builtins.readFile ./surface-protocols.py);
-  integration = check "integration" (
-    ''
-      ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
-      SCREENSHOT_PROBE = "${screenshotProbe}"
-      OFFSCREEN_PROBE = "${offscreenProbe}"
-      BLUR_PROBE = "${blurProbe}"
-      THEME_PROBE = "${themeProbe}"
-      VIEWPORT_PROBE = "${viewportProbe}"
-    ''
-    + builtins.readFile ./integration.py
-  );
-  commands = check "commands" (builtins.readFile ./commands.py);
-  bare = check "bare" (
-    ''
-      VIRTUAL_PROBE = "${virtualProbe}"
-    ''
-    + builtins.readFile ./bare.py
-  );
-  fifo = check "fifo" (builtins.readFile ./fifo.py);
-  xwayland =
-    checkWith
-      {
+  vm =
+    {
+      name,
+      suites,
+      packages ? [ ],
+      kernelModules ? [
+        "vgem"
+        "udmabuf"
+      ],
+      extraModprobeConfig ? "",
+      timeout ? 3600,
+    }:
+    pkgs.testers.runNixOSTest {
+      inherit name;
+      globalTimeout = timeout;
+      nodes.machine = {
+        boot.kernelModules = kernelModules;
+        boot.extraModprobeConfig = extraModprobeConfig;
+        hardware.graphics.enable = true;
         environment.systemPackages = [
-          pkgs.xwayland
-          pkgs.xterm
-          pkgs.zenity
-          pkgs.xeyes
-          pkgs.xlogo
-          pkgs.xprop
-          pkgs.xwininfo
-          pkgs.xclip
-          pkgs.wl-clipboard
-          pkgs.xdotool
-          pkgs.wmctrl
-          pkgs.fontmiscmisc
-          pkgs.xset
-          x11Client
-        ];
-      }
-      "xwayland"
-      (
-        ''
-          X11_CLIENT = "${x11Client}/bin/tomoe-x11-client"
-          X11_FONTS = "${pkgs.fontmiscmisc}/share/fonts/X11/misc"
-        ''
-        + builtins.readFile ./xwayland.py
-      );
-  output-management =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.wlr-randr
+          tomoe
+          client
+          imeClient
+          pkgs.grim
+          pkgs.libnotify
+          pkgs.xdpyinfo
           pkgs.wayland-utils
-          outputClient
-        ];
-      }
-      "output-management"
-      (
-        ''
-          VIRTUAL_PROBE = "${virtualProbe}"
-          OUTPUT_OVERRIDE_PROBE = "${outputOverrideProbe}"
-        ''
-        + builtins.readFile ./output-management.py
-      );
-  portal =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.pipewire
-          pkgs.xdg-desktop-portal
-        ];
+        ]
+        ++ packages;
         environment.pathsToLink = [
           "/share/dbus-1"
           "/share/xdg-desktop-portal"
         ];
-      }
-      "portal"
-      (
-        ''
-          CAST = "${./cast.py}"
-          CAST_PYTHON = "${
-            pkgs.python3.withPackages (p: [
-              p.dbus-python
-              p.pygobject3
-            ])
-          }/bin/python3"
-          PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
-        ''
-        + builtins.readFile ./portal.py
-      );
-  session-bus = check "session-bus" (
-    ''
-      BUS_PROBE = "${busProbe}"
-    ''
-    + builtins.readFile ./session-bus.py
-  );
-  clean-unmount = check "clean-unmount" (
-    ''
-      WALLPAPER_SETTINGS = "${wallpaperSettings}"
-      SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
-          "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
-      )
-    ''
-    + builtins.readFile ./clean-unmount.py
-  );
-  livepatch = check "livepatch" (
-    ''
-      GAP_PATCH = "${livePatchGap}"
-      KEYBOARD_PATCH = "${livePatchKeyboard}"
-    ''
-    + builtins.readFile ./livepatch.py
-  );
-  draw = check "draw" (
-    ''
-      DRAW_POLICY = "${drawPolicy}"
-      DRAW_COUNTS = "1,10,50"
-      DRAW_GOLDEN = "${drawGolden}"
-    ''
-    + builtins.readFile ./draw.py
-  );
-  timing = check "timing" (
-    ''
-      TIMING_POLICY = "${timingPolicy}"
-      STALL_POLICY = "${stallPolicy}"
-      CHURN_POLICY = "${churnPolicy}"
-      RUNS = "3"
-      COUNT = "200"
-    ''
-    + builtins.readFile ./timing.py
-  );
-  trace = check "trace" (
-    ''
-      TRACE_CHAIN = "${./trace-chain.lisp}"
-      TRACE_RULES = "${./trace-rules.lisp}"
-      TRACE_FAIL = "${./trace-fail.lisp}"
-      TRACE_CYCLE = "${./trace-cycle.lisp}"
-      TRACE_MOUNT_A = "${./trace-mount-a.lisp}"
-      TRACE_MOUNT_B = "${./trace-mount-b.lisp}"
-      TRACE_GRID = "${./trace-grid.lisp}"
-      TRACE_DELAY = "${./trace-delay.lisp}"
-      TRACE_SWAP = "${./trace-swap.lisp}"
-      TRACE_GOLDEN = ${
-        if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""
-      }
-    ''
-    + builtins.readFile ./trace.py
-  );
-  frameclock = checkWith { boot.kernelModules = [ "vkms" ]; } "frameclock" (
-    ''
-      FRAMECLOCK_POLICY = "${frameclockPolicy}"
-    ''
-    + builtins.readFile ./frameclock.py
-  );
-  animations =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.grim
-          pkgs.python3
-          pkgs.wayland-utils
-        ];
-      }
-      "animations"
+        environment.variables.LP_NUM_THREADS = "4";
+        virtualisation.memorySize = 2048;
+        virtualisation.cores = 4;
+      };
+      testScript = builtins.readFile ./tomoe.py + ''
+        import traceback
+
+        suites = ${builtins.toJSON suites}
+
+        def services():
+            listing = machine.execute(
+                "systemctl list-units --all --type=service --plain --no-legend",
+                check_return=False)[1]
+            return sorted({line.split()[0] for line in listing.splitlines() if line.split()})
+
+        def transients():
+            found = []
+            for unit in services():
+                path = machine.execute("systemctl show -P FragmentPath " + unit,
+                                       check_return=False)[1].strip()
+                if path.startswith("/run/systemd/transient/"):
+                    found.append(unit)
+            return found
+
+        def reset():
+            for unit in transients():
+                machine.execute("systemctl stop " + unit, check_return=False)
+                machine.execute("systemctl reset-failed " + unit, check_return=False)
+            left = transients()
+            if left:
+                print("tomoe reset could not clear: " + " ".join(left), flush=True)
+            machine.execute("rm -rf /run/tomoe /run/check-bus /run/bus-probe "
+                            "/run/security-globals /run/fifo-globals /run/trail "
+                            "/run/animations-frames /run/memory /run/trace.log "
+                            "/run/layout.log /run/trace-swap.lisp /run/draw.ppm "
+                            "/run/tile.ppm /run/timing.ppm /run/crop.py /run/*-display.ppm "
+                            "/run/*-shot.ppm /tmp/.X11-unix/* "
+                            "/tmp/.X*-lock", check_return=False)
+
+        failures = []
+        for suite in suites:
+            print("tomoe suite: " + suite["name"], flush=True)
+            reset()
+            environment = dict(globals())
+            try:
+                exec(compile(suite["script"], "<" + suite["name"] + ">", "exec"), environment)
+            except Exception:
+                failures.append((suite["name"], traceback.format_exc()))
+                print("tomoe suite FAILED: " + suite["name"] + "\n"
+                      + failures[-1][1], flush=True)
+            else:
+                print("tomoe suite passed: " + suite["name"], flush=True)
+        reset()
+        if failures:
+            raise AssertionError(
+                str(len(failures)) + " of " + str(len(suites)) + " suites failed: "
+                + ", ".join(name for name, _ in failures) + "\n"
+                + "\n".join("--- " + name + " ---\n" + trace for name, trace in failures))
+      '';
+    };
+  compositorPackages = [
+    pkgs.python3
+    pkgs.wayland-utils
+    pkgs.pipewire
+    pkgs.xdg-desktop-portal
+    pkgs.wlr-randr
+    pkgs.xwayland
+    pkgs.xterm
+    pkgs.zenity
+    pkgs.xeyes
+    pkgs.xlogo
+    pkgs.xprop
+    pkgs.xwininfo
+    pkgs.xclip
+    pkgs.wl-clipboard
+    pkgs.xdotool
+    pkgs.wmctrl
+    pkgs.fontmiscmisc
+    pkgs.xset
+    securityClient
+    outputClient
+    x11Client
+    scanoutClient
+    pathClient
+  ];
+  compositorSuites = [
+    {
+      name = "pointer-protocols";
+      script = ''
+        machine.wait_for_unit("multi-user.target")
+        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
+      '';
+    }
+    {
+      name = "security";
+      script = ''
+        start("--bare", bus=False)
+        machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
+        machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
+        quit()
+      '';
+    }
+    {
+      name = "text-input";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
+        quit()
+      '';
+    }
+    {
+      name = "input-method";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
+        quit()
+      '';
+    }
+    {
+      name = "shortcuts-inhibit";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        cli("mount ${shortcutBindings}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
+        quit()
+      '';
+    }
+    {
+      name = "surface-protocols";
+      script = builtins.readFile ./surface-protocols.py;
+    }
+    {
+      name = "integration";
+      script = ''
+        ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
+        SCREENSHOT_PROBE = "${screenshotProbe}"
+        OFFSCREEN_PROBE = "${offscreenProbe}"
+        BLUR_PROBE = "${blurProbe}"
+        THEME_PROBE = "${themeProbe}"
+        VIEWPORT_PROBE = "${viewportProbe}"
       ''
+      + builtins.readFile ./integration.py;
+    }
+    {
+      name = "commands";
+      script = builtins.readFile ./commands.py;
+    }
+    {
+      name = "bare";
+      script = ''
+        VIRTUAL_PROBE = "${virtualProbe}"
+      ''
+      + builtins.readFile ./bare.py;
+    }
+    {
+      name = "fifo";
+      script = builtins.readFile ./fifo.py;
+    }
+    {
+      name = "xwayland";
+      script = ''
+        X11_CLIENT = "${x11Client}/bin/tomoe-x11-client"
+        X11_FONTS = "${pkgs.fontmiscmisc}/share/fonts/X11/misc"
+      ''
+      + builtins.readFile ./xwayland.py;
+    }
+    {
+      name = "output-management";
+      script = ''
+        VIRTUAL_PROBE = "${virtualProbe}"
+        OUTPUT_OVERRIDE_PROBE = "${outputOverrideProbe}"
+      ''
+      + builtins.readFile ./output-management.py;
+    }
+    {
+      name = "portal";
+      script = ''
+        CAST = "${./cast.py}"
+        CAST_PYTHON = "${
+          pkgs.python3.withPackages (p: [
+            p.dbus-python
+            p.pygobject3
+          ])
+        }/bin/python3"
+        PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
+      ''
+      + builtins.readFile ./portal.py;
+    }
+    {
+      name = "session-bus";
+      script = ''
+        BUS_PROBE = "${busProbe}"
+      ''
+      + builtins.readFile ./session-bus.py;
+    }
+    {
+      name = "clean-unmount";
+      script = ''
+        WALLPAPER_SETTINGS = "${wallpaperSettings}"
+        SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
+            "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
+        )
+      ''
+      + builtins.readFile ./clean-unmount.py;
+    }
+    {
+      name = "livepatch";
+      script = ''
+        GAP_PATCH = "${livePatchGap}"
+        KEYBOARD_PATCH = "${livePatchKeyboard}"
+      ''
+      + builtins.readFile ./livepatch.py;
+    }
+    {
+      name = "draw";
+      script = ''
+        DRAW_POLICY = "${drawPolicy}"
+        DRAW_COUNTS = "1,10,50"
+        DRAW_GOLDEN = "${drawGolden}"
+      ''
+      + builtins.readFile ./draw.py;
+    }
+    {
+      name = "timing";
+      script = ''
+        TIMING_POLICY = "${timingPolicy}"
+        STALL_POLICY = "${stallPolicy}"
+        CHURN_POLICY = "${churnPolicy}"
+        RUNS = "3"
+        COUNT = "200"
+      ''
+      + builtins.readFile ./timing.py;
+    }
+    {
+      name = "trace";
+      script = ''
+        TRACE_CHAIN = "${./trace-chain.lisp}"
+        TRACE_RULES = "${./trace-rules.lisp}"
+        TRACE_FAIL = "${./trace-fail.lisp}"
+        TRACE_CYCLE = "${./trace-cycle.lisp}"
+        TRACE_MOUNT_A = "${./trace-mount-a.lisp}"
+        TRACE_MOUNT_B = "${./trace-mount-b.lisp}"
+        TRACE_GRID = "${./trace-grid.lisp}"
+        TRACE_DELAY = "${./trace-delay.lisp}"
+        TRACE_SWAP = "${./trace-swap.lisp}"
+        TRACE_GOLDEN = ${
+          if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""
+        }
+      ''
+      + builtins.readFile ./trace.py;
+    }
+    {
+      name = "animations";
+      script = ''
+        machine.succeed("mkdir -p /run/animations-frames")
         machine.succeed(
           "ANIMATIONS_REPORT=/run/animations-frames/report.txt"
           " python3 ${./animations.py} --tomoe ${tomoe}/bin/tomoe"
@@ -827,60 +900,77 @@ in
         )
         print(machine.succeed("cat /run/animations-frames/report.txt"))
       '';
-  kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
-    ''
-      WAKE_PROBE = "${wakeProbe}"
-    ''
-    + builtins.readFile ./kms-wake.py
-  );
-  scanout =
-    checkWith
+    }
+    {
+      name = "trail";
+      script = ''
+        machine.succeed("mkdir -p /run/trail")
+        print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
+      '';
+    }
+    {
+      name = "scanout";
+      script = ''
+        SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+        SCANOUT_PROBE = "${scanoutProbe}"
+      ''
+      + builtins.readFile ./scanout.py;
+    }
+    {
+      name = "memory";
+      script = ''
+        CONFIG = "/run/memory/init.lisp"
+        SOURCE = "${memoryConfig}"
+        TOMOE_BIN = "${tomoe}/bin/tomoe"
+        ATTRIBUTE = "${./memory-attribute.py}"
+      ''
+      + builtins.readFile ./memory.py;
+    }
+  ];
+in
+{
+  compositor = vm {
+    name = "tomoe-compositor";
+    suites = compositorSuites;
+    packages = compositorPackages;
+  };
+  kms = vm {
+    name = "tomoe-kms";
+    kernelModules = [
+      "vgem"
+      "udmabuf"
+      "vkms"
+    ];
+    extraModprobeConfig = "options vkms enable_overlay=1 enable_cursor=1";
+    packages = [
+      pkgs.python3
+      scanoutClient
+      planesTool
+    ];
+    timeout = 900;
+    suites = [
       {
-        environment.systemPackages = [
-          scanoutClient
-          pkgs.python3
-        ];
+        name = "kms-wake";
+        script = ''
+          WAKE_PROBE = "${wakeProbe}"
+        ''
+        + builtins.readFile ./kms-wake.py;
       }
-      "scanout"
-      (
-        ''
-          SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
-          SCANOUT_PROBE = "${scanoutProbe}"
-        ''
-        + builtins.readFile ./scanout.py
-      );
-  planes =
-    checkWith
       {
-        boot.kernelModules = [ "vkms" ];
-        boot.extraModprobeConfig = "options vkms enable_overlay=1 enable_cursor=1";
-        environment.systemPackages = [
-          planesTool
-          scanoutClient
-          pkgs.python3
-        ];
-      }
-      "planes"
-      (
+        name = "frameclock";
+        script = ''
+          FRAMECLOCK_POLICY = "${frameclockPolicy}"
         ''
+        + builtins.readFile ./frameclock.py;
+      }
+      {
+        name = "planes";
+        script = ''
           SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
           PLANES_PROBE = "${planesProbe}"
         ''
-        + builtins.readFile ./planes.py
-      );
-  trail = checkWith {
-    environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
-  } "trail" ''
-    machine.succeed("mkdir -p /run/trail")
-    print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
-  '';
-  memory = checkWith { environment.systemPackages = [ pkgs.python3 ]; } "memory" (
-    ''
-      CONFIG = "/run/memory/init.lisp"
-      SOURCE = "${memoryConfig}"
-      TOMOE_BIN = "${tomoe}/bin/tomoe"
-      ATTRIBUTE = "${./memory-attribute.py}"
-    ''
-    + builtins.readFile ./memory.py
-  );
+        + builtins.readFile ./planes.py;
+      }
+    ];
+  };
 }

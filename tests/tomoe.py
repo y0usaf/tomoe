@@ -3,7 +3,8 @@ import time
 
 RUNTIME = "/run/tomoe"
 BUS = "unix:path=/run/check-bus"
-ENV = f"XDG_RUNTIME_DIR={RUNTIME} DBUS_SESSION_BUS_ADDRESS={BUS} "
+THREADS = "LP_NUM_THREADS=4"
+ENV = f"XDG_RUNTIME_DIR={RUNTIME} DBUS_SESSION_BUS_ADDRESS={BUS} {THREADS} "
 TOKEN = re.compile(r'\s*(?:(\()|(\))|("(?:[^"\\]|\\.)*")|([^\s()"]+))')
 
 
@@ -61,7 +62,7 @@ def start(*options, bus=True, env=None, backend="headless", unit="tomoe", socket
         + (f"--setenv=DBUS_SESSION_BUS_ADDRESS={BUS} " if bus else "")
         + "".join(f"--setenv={key}={value} " for key, value in (env or {}).items())
         + "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin --setenv=MESA_LOADER_DRIVER_OVERRIDE=zink "
-        "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
+        + f"--setenv={THREADS} --setenv=LIBGL_ALWAYS_SOFTWARE=1 "
         f"tomoe --socket {socket} --backend {backend} --no-watch " + " ".join(options)
     )
     for _ in range(600):
