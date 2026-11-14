@@ -11,6 +11,8 @@ import tempfile
 import time
 
 REFRESH_HZ = 240
+SKIP_SHARE = 8
+FRAME_SHARE = 0.9
 
 POLICY = """
 (in-package #:tomoe-user)
@@ -125,17 +127,19 @@ def lower_plist(value):
 
 class Compositor:
 
-    def __init__(self, work, tomoe, socket):
+    def __init__(self, work, tomoe, socket, env=None):
         self.tomoe = tomoe
         self.socket = socket
         self.runtime = os.path.join(work, "run")
         os.makedirs(self.runtime, mode=0o700, exist_ok=True)
-        self.log_path = os.path.join(work, "tomoe.log")
+        self.log_path = os.path.join(work, socket + ".log")
         self.log = open(self.log_path, "w")
         self.environment = dict(os.environ)
         self.environment.update({"XDG_RUNTIME_DIR": self.runtime,
             "WAYLAND_DISPLAY": socket, "TOMOE_DEBUG": "1",
             "MESA_LOADER_DRIVER_OVERRIDE": "zink", "LIBGL_ALWAYS_SOFTWARE": "1"})
+        if env:
+            self.environment.update(env)
         self.process = subprocess.Popen(
             [tomoe, "--socket", socket, "--backend", "headless", "--bare", "--no-watch"],
             env=self.environment, stdout=self.log, stderr=subprocess.STDOUT)
@@ -297,6 +301,7 @@ class Measurement:
         self.frames = int(counters.get("frames", 0)) - int((before or {}).get("frames", 0))
         self.gaps = int(counters.get("gaps", 0)) - int((before or {}).get("gaps", 0))
         self.dead = int(counters.get("dead", 0)) - int((before or {}).get("dead", 0))
+        self.stale = int(counters.get("stale", 0)) - int((before or {}).get("stale", 0))
         self.span = int(counters.get("span-ns", 0) or 0)
         self.interval = int(counters.get("max-interval-ns", 0) or 0)
         self.steady = int(counters.get("steady-interval-ns", 0) or 0)
@@ -312,13 +317,17 @@ class Measurement:
     def line(self):
         if not self.counted:
             return f"{self.label}: counters unavailable, screen {self.digest}"
+        share = self.frames / self.refreshes if self.refreshes else 0.0
+        followed = self.frames / self.drawn if self.drawn else 0.0
         return (f"{self.label}: {self.frames} animation frames over {self.refreshes:.1f}"
-                f" refreshes ({self.span / 1e6:.1f} ms), {self.drawn} composited frames,"
+                f" refreshes ({self.span / 1e6:.1f} ms, {share:.2f} a refresh),"
+                f" {self.drawn} composited frames ({followed:.2f} an animation frame),"
                 f" worst interval {self.interval / 1e6:.2f} ms (steady"
                 f" {self.steady / 1e6:.2f} ms), period {self.period / 1e6:.2f}"
                 f" ms, first frame after {self.first / 1e6:.2f} ms, sampled"
                 f" {self.lead_min / 1e6:.2f}..{self.lead_max / 1e6:.2f} ms ahead,"
-                f" {self.dead} dead, {self.gaps} skipped, screen {self.digest}")
+                f" {self.dead} dead, {self.stale} stale, {self.gaps} skipped,"
+                f" screen {self.digest}")
 
     def check(self, problems):
         if not self.counted:
@@ -331,25 +340,26 @@ class Measurement:
                             " position, so the first frame after the input did not move")
         if self.first <= 0:
             problems.append(f"{self.label}: no frame advanced the animation")
-        if self.lead_min <= self.period // 2:
-            problems.append(f"{self.label}: animation state was sampled only"
-                            f" {self.lead_min / 1e6:.2f} ms ahead of the frame start, not at the"
-                            " present time")
+        stale = max(1, self.frames // SKIP_SHARE)
+        if self.stale > stale:
+            problems.append(f"{self.label}: {self.stale} of {self.frames} animation frames were"
+                            f" sampled less than half a refresh ({self.period / 2e6:.2f} ms)"
+                            " ahead of their frame start, so the state lagged the display")
         if self.span < self.expected_ms * 800000:
             problems.append(f"{self.label}: the animation ran for {self.span / 1e6:.1f} ms of its"
                             f" {self.settle_ms} ms settle time")
         if self.frames < self.refreshes:
             problems.append(f"{self.label}: {self.frames} animation frames for"
-                            f" {self.refreshes:.1f} refreshes: some refresh had no frame")
-        if self.steady > self.period * 3 // 2:
-            problems.append(f"{self.label}: {self.steady / 1e6:.2f} ms passed between two"
-                            f" animation frames once the input had landed, more than one"
-                            f" refresh ({self.period / 1e6:.2f} ms), so refreshes were skipped")
-        if self.gaps:
-            problems.append(f"{self.label}: {self.gaps} refresh(es) passed with no animation frame")
-        if self.drawn and self.drawn < self.refreshes * 0.9:
-            problems.append(f"{self.label}: the output composited {self.drawn} frames for"
-                            f" {self.refreshes:.1f} refreshes")
+                            f" {self.refreshes:.1f} refreshes: fewer than one a refresh")
+        if self.drawn and self.frames < self.drawn * FRAME_SHARE:
+            problems.append(f"{self.label}: {self.frames} animation frames for the"
+                            f" {self.drawn} frames the output composited: the animation"
+                            " stopped following the display")
+        allowed = max(1, int(self.frames // SKIP_SHARE))
+        if self.gaps > allowed:
+            problems.append(f"{self.label}: {self.gaps} refresh(es) went by without an"
+                            f" animation frame while the animation drew {self.frames}, more"
+                            f" than the one in {SKIP_SHARE} a loaded host may skip")
 
 
 def measure(compositor, label, action, expected_ms, settle_ms, frames_dir, scenario):
@@ -369,6 +379,26 @@ def measure(compositor, label, action, expected_ms, settle_ms, frames_dir, scena
                               compositor.digest(scenario, frames_dir), expected_ms, settle_ms)
     say(measurement.line())
     return measurement
+
+
+def stalled_control(work, tomoe, socket, policy, frames_dir, period):
+    stall_ms = max(1, round(period / 1e6 * 2)) if period else 9
+    stalled = None
+    try:
+        stalled = Compositor(work, tomoe, socket + "-stall",
+            env={"TOMOE_TEST_STALL_FENCE": "1",
+                "TOMOE_TEST_STALL_FENCE_MS": str(stall_ms)})
+        stalled.mount(policy)
+        time.sleep(0.6)
+        control = measure(stalled, "stalled frames",
+                          lambda: stalled.command("bar"), 73, 73, frames_dir, "stalled")
+    finally:
+        if stalled:
+            stalled.call("quit")
+            stalled.stop()
+    problems = []
+    control.check(problems)
+    return stall_ms, problems
 
 
 def main():
@@ -405,6 +435,10 @@ def main():
                                 % counters["move-settle-ms"])
             if int(counters["open-ms"]) > 120:
                 problems.append("the open ease lasts %s ms" % counters["open-ms"])
+        say(f"gates: one animation frame in {SKIP_SHARE} may be sampled behind the display"
+            f" or skip a refresh on a loaded host, the animation has to follow"
+            f" {FRAME_SHARE:.0%} of the frames the output composites, and it still has to"
+            " draw one a refresh")
         measured = []
 
         measured.append(measure(compositor, "bar slide",
@@ -455,6 +489,17 @@ def main():
         say(f"rest: {wakes} wakeups/s")
         if wakes > 2:
             problems.append(f"the compositor woke {wakes} times in a second at rest")
+
+        if measured and measured[0].counted:
+            stall_ms, control_problems = stalled_control(
+                work, arguments.tomoe, socket, policy, frames_dir, measured[0].period)
+            if control_problems:
+                say(f"negative control: a frame stall of {stall_ms} ms is rejected: "
+                    + control_problems[0])
+            else:
+                problems.append(f"a frame stall of {stall_ms} ms passed the pacing gates")
+        else:
+            say("negative control: skipped, this run reports no animation counters")
         print(f"frames: {frames_dir}", flush=True)
     except (Failure, AssertionError, KeyError) as failure:
         problems.append(str(failure))

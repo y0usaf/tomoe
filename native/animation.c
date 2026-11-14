@@ -176,6 +176,7 @@ void animation_frame_record(struct tomoe *s, const struct screen *screen,
     if (!st->frames || lead > st->lead_max_ns) st->lead_max_ns = lead;
     int64_t period = screen && screen->refresh > 0 ?
         1000000000000LL / screen->refresh : 0;
+    if (period && lead < period / 2) st->stale++;
     if (!st->last_frame_ns) {
         st->first_frame_ns = start_ns;
         st->max_interval_ns = 0;
@@ -186,7 +187,10 @@ void animation_frame_record(struct tomoe *s, const struct screen *screen,
         if (interval > st->max_interval_ns) st->max_interval_ns = interval;
         if (st->intervals++ > 1) {
             if (interval > st->steady_interval_ns) st->steady_interval_ns = interval;
-            if (period && interval > period + period / 2) st->gaps++;
+            if (period) {
+                int64_t skipped = (interval + period / 2) / period - 1;
+                if (skipped > 0) st->gaps += (uint64_t)skipped;
+            }
         }
     }
     st->last_frame_ns = start_ns;

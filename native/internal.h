@@ -688,7 +688,7 @@ struct animation {
 enum { ANIMATION_SETTLE_MOVE, ANIMATION_SETTLE_OPEN, ANIMATION_SETTLE_CLOSE,
     ANIMATION_SETTLE_RESIZE, ANIMATION_SETTLE_VIEW, ANIMATION_SETTLE_SWITCH };
 struct animation_stats {
-    uint64_t frames, gaps, dead;
+    uint64_t frames, gaps, dead, stale;
     int64_t first_passed_ns, last_frame_ns, lead_min_ns, lead_max_ns;
     int64_t first_frame_ns, max_interval_ns, steady_interval_ns, span_ns, intervals;
 };

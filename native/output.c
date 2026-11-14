@@ -426,9 +426,10 @@ const char *tomoe_animation(struct tomoe *s) {
     if (asprintf(&s->animation_result,
             "(:move-settle-ms %d :open-ms %d :close-ms %d :resize-ms %d"
             " :view-settle-ms %d :switch-ms %d :frames %" PRIu64 " :gaps %" PRIu64
-            " :dead %" PRIu64 " :first-passed-ns %" PRId64 " :lead-min-ns %" PRId64
-            " :lead-max-ns %" PRId64 " :span-ns %" PRId64 " :max-interval-ns %" PRId64
-            " :steady-interval-ns %" PRId64 " :intervals %" PRId64
+            " :dead %" PRIu64 " :stale %" PRIu64 " :first-passed-ns %" PRId64
+            " :lead-min-ns %" PRId64 " :lead-max-ns %" PRId64 " :span-ns %" PRId64
+            " :max-interval-ns %" PRId64 " :steady-interval-ns %" PRId64
+            " :intervals %" PRId64
             " :refresh-mhz %d :period-ns %" PRId64
             " :trail-steps %" PRIu64 " :trail-times (%s))", 
             animation_settle_ms(s, ANIMATION_SETTLE_MOVE),
@@ -437,7 +438,7 @@ const char *tomoe_animation(struct tomoe *s) {
             animation_settle_ms(s, ANIMATION_SETTLE_RESIZE),
             animation_settle_ms(s, ANIMATION_SETTLE_VIEW),
             animation_settle_ms(s, ANIMATION_SETTLE_SWITCH),
-            st->frames, st->gaps, st->dead, st->first_passed_ns,
+            st->frames, st->gaps, st->dead, st->stale, st->first_passed_ns,
             st->lead_min_ns, st->lead_max_ns,
             st->span_ns,
             st->max_interval_ns, st->steady_interval_ns, st->intervals, refresh,
