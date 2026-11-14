@@ -74,6 +74,11 @@
         };
       package =
         pkgs:
+        {
+          cpu ? "",
+          opt ? "-O2",
+          lto ? false,
+        }:
         let
           sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
         in
@@ -121,6 +126,8 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} SBCL_HOME=${sbcl}/lib/sbcl \
+              OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
+              CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
               WP=${pkgs.wayland-protocols}/share/wayland-protocols
             SBCL_HOME=${sbcl}/lib/sbcl \
@@ -189,7 +196,12 @@
     in
     {
       packages = nixpkgs.lib.mapAttrs (_: pkgs: {
-        default = package pkgs;
+        default = package pkgs { };
+        znver4 = package pkgs {
+          cpu = "znver4";
+          opt = "-O3";
+          lto = true;
+        };
       }) pkgsFor;
       devShells = nixpkgs.lib.mapAttrs (_: pkgs: {
         default = devShell pkgs;
@@ -198,7 +210,7 @@
         _: pkgs:
         import ./tests {
           inherit pkgs;
-          tomoe = package pkgs;
+          tomoe = package pkgs { };
         }
       ) pkgsFor;
       apps = nixpkgs.lib.mapAttrs (_: appsFor) pkgsFor;

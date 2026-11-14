@@ -1,5 +1,7 @@
 (in-package #:tomoe)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 
 (defconstant +json-false+ :json-false)
 (defconstant +json-max-text+ 1048576)

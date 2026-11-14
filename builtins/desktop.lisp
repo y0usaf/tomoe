@@ -1,5 +1,7 @@
 (in-package #:tomoe-user)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 
 (defun hotkey-label (binding)
   "Old overlay spelling: \"Mod + Shift + /\"."

@@ -15,6 +15,8 @@
 (defpackage #:tomoe-user (:use #:cl #:tomoe))
 (in-package #:tomoe)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 (define-condition output-configuration-error (simple-error)
   ((output :initarg :output :initform nil :reader output-error-name)))
 
@@ -55,7 +57,9 @@
 (defun copy-data (value)
   "Copy bounded Lisp data. No closures, host handles, shared strings, or cycles cross dispatch."
   (let ((nodes 0))
+    (declare (type fixnum nodes))
     (labels ((walk (item depth)
+               (declare (type fixnum depth))
                (when (or (> (incf nodes) 32768) (> depth 64))
                  (error "Extension data exceeds the node/depth budget."))
                (typecase item

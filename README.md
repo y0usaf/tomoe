@@ -149,6 +149,12 @@ between, rather than composing into a miss. An idle output arms nothing.
 `tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
 with and without `TOMOE_FRAME_CLOCK=0` for comparison, and asserts the drop.
 
+The compositor thread asks for round-robin realtime priority once it is running,
+so a busy desktop cannot delay Tomoe's own frame. Without `CAP_SYS_NICE` (or an
+`rtprio` limit in `limits.conf`) the kernel refuses and Tomoe stays at normal
+priority; `TOMOE_RT_PRIORITY=0` skips the attempt. Processes Tomoe starts stay at
+normal priority, because the policy is set with reset-on-fork.
+
 ## One table of commands
 
 Everything the desktop can do is a named command with typed arguments, and
@@ -444,9 +450,18 @@ Bug reports, questions and odd setups are welcome in the
 
 ```sh
 nix build          # the package
+nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
 nix flake check    # NixOS VM tests; needs KVM
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
+
+The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
+`opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
+one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.
+
+The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
+`opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
+one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.
 
 ## License
 

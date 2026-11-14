@@ -1,5 +1,7 @@
 (in-package #:tomoe)
 
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 (defun default-mpris-state ()
   (list :available nil :player-name "" :status "" :title "" :artist ""
         :album "" :art-url "" :length 0 :position 0 :volume 1.0d0))
