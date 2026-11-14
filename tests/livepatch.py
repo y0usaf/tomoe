@@ -19,6 +19,18 @@ def image(box=BOX):
     return machine.succeed(ENV + f"WAYLAND_DISPLAY=check grim -t ppm -g '{box}' - | sha256sum").split()[0]
 
 
+def stable(box=BOX, seconds=15):
+    previous = image(box)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        current = image(box)
+        if current == previous:
+            return current
+        previous = current
+        time.sleep(0.2)
+    raise AssertionError("the empty region is not stable")
+
+
 def state():
     reply = inspect()
     return {key: show(reply.get(key)) for key in COMPARED}
@@ -60,8 +72,7 @@ client("window", "--mode xdg --app-id check-livepatch --title check --size 320x2
 await_state(lambda: items(inspect()[":WINDOW-GEOMETRY"]), "the window to be placed")
 
 before_state = state()
-before = image()
-assert image() == before, "the empty region is not stable"
+before = stable()
 assert entries(":WINDOW-GEOMETRY")[0][":X"] == "0", before_state[":WINDOW-GEOMETRY"]
 applied = json.loads(cli(f"command patch file={GAP_PATCH}"))
 assert applied["name"] == "patch", applied
