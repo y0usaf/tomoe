@@ -1,4 +1,5 @@
 COUNTS = [int(value) for value in DRAW_COUNTS.split(",")]
+IDLE_BUDGET_NS = 10_000_000
 GOLDEN = [value for value in DRAW_GOLDEN.split(",") if value]
 BLUR_DIGESTS = [value for value in BLUR_GOLDEN.split(",") if value]
 COLOURS = ["3c5a78", "7a4a2c", "2c7a4a", "6a2c7a", "7a7a2c", "2c6a7a",
@@ -32,6 +33,11 @@ def tiles(socket):
 def ticks(unit):
     fields = machine.succeed(f"cat /proc/$(systemctl show -P MainPID {unit})/stat").split()
     return int(fields[13]) + int(fields[14])
+
+
+def cpu_ns(unit):
+    text = machine.succeed(f"cat /proc/$(systemctl show -P MainPID {unit})/schedstat")
+    return int(text.split()[0])
 
 
 def switches(unit):
@@ -130,12 +136,13 @@ for count in COUNTS:
         machine.succeed(f"systemctl stop {shot_socket}-0")
         time.sleep(2)
         try_cli("timings reset", shot_socket)
-        idle_start, idle_calls = ticks(shot_unit), switches(shot_unit)
+        idle_calls = switches(shot_unit)
+        idle_cpu_start = cpu_ns(shot_unit)
         machine.sleep(2)
-        idle_ticks = ticks(shot_unit) - idle_start
+        idle_cpu = cpu_ns(shot_unit) - idle_cpu_start
         idle_calls = switches(shot_unit) - idle_calls
         idle_frames = channel(shot_socket, "frame-total").get("count", 0)
-        print(f"idle: {idle_ticks * 10000} us, {idle_frames} frames and "
+        print(f"idle: {idle_cpu / 1e6:.3f} ms cpu, {idle_frames} frames and "
               f"{idle_calls} wakeups in 2 s")
         print(f"counters {counters(shot_socket)}")
     print("kernel: " + machine.execute("dmesg | tail -3")[1].strip())
@@ -172,7 +179,7 @@ for count in COUNTS:
           f"{draw.get('max', 0) / 1000:.1f} us p50/p99/max over {draw.get('count', 0)} frames")
 quit("tomoe-cost", "cost")
 
-assert idle_ticks <= 1, f"idle cost {idle_ticks * 10000} us over 2 s"
+assert idle_cpu <= IDLE_BUDGET_NS, f"idle cost {idle_cpu / 1e6:.3f} ms over 2 s"
 assert idle_frames == 0, f"idle drew {idle_frames} frames"
 assert all(count[1] > 0 for count in costs), costs
 if GOLDEN:
@@ -223,14 +230,14 @@ for _ in range(20):
     if settled:
         break
 try_cli("timings reset", "blur")
-blur_idle = ticks("tomoe-blur")
+blur_cpu_start = cpu_ns("tomoe-blur")
 machine.sleep(2)
-blur_idle = ticks("tomoe-blur") - blur_idle
+blur_cpu = cpu_ns("tomoe-blur") - blur_cpu_start
 blur_idle_frames = channel("blur", "frame-total").get("count", 0)
-print(f"blur idle: {blur_idle * 10000} us and {blur_idle_frames} frames in 2 s")
+print(f"blur idle: {blur_cpu / 1e6:.3f} ms cpu and {blur_idle_frames} frames in 2 s")
 quit("tomoe-blur", "blur")
 
-assert blur_idle <= 1, f"blurred idle cost {blur_idle * 10000} us over 2 s"
+assert blur_cpu <= IDLE_BUDGET_NS, f"blurred idle cost {blur_cpu / 1e6:.3f} ms over 2 s"
 assert blur_idle_frames == 0, f"blurred idle drew {blur_idle_frames} frames"
 if BLUR_DIGESTS:
     assert blur_digests == BLUR_DIGESTS, \
