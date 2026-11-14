@@ -4,7 +4,9 @@ machine.succeed("mkdir -p /run/user/1001/bolo && printf idle > /run/user/1001/bo
 
 ANON_LIMIT = 60000
 DIRTY_LIMIT = 74000
-COLLECTION_LIMIT = 4170000
+BUDGET_REFRESH_MHZ = 240000
+ANIMATED_WINDOW = 6
+CONTROL_WINDOW = 4
 
 
 def tomoe_process():
@@ -76,27 +78,60 @@ def close_windows(count, first=0, prefix="w"):
         machine.execute(f"systemctl stop {prefix}{index}")
 
 
+def refresh_period():
+    reply = read(cli("animation"))
+    assert reply[1] == ":OK", show(reply)
+    fields = plist(reply[2])
+    refresh = int(fields.get(":REFRESH-MHZ", "0") or 0)
+    period = int(fields.get(":PERIOD-NS", "0") or 0)
+    if period <= 0:
+        refresh = max([refresh] + [int(plist(output).get(":REFRESH-MHZ", "0") or 0)
+                                   for output in items(inspect()[":OUTPUTS"])])
+        period = 1000000000000 // (refresh or BUDGET_REFRESH_MHZ)
+    return refresh, period
+
+
 def read_timings(label):
     reply = read(cli("timings"))
     assert reply[1] == ":OK", show(reply)
     timings = plist(reply[2])
     channels = {text(plist(entry)[":NAME"]): plist(entry) for entry in items(timings[":CHANNELS"])}
     over = [(int(entry[0]), int(entry[1])) for entry in items(timings[":STALLS"])]
-    intervals = [(int(entry[0]), int(entry[1])) for entry in items(timings[":GC-INTERVALS"])]
+    intervals = sorted((int(entry[0]), int(entry[1]))
+                       for entry in items(timings[":GC-INTERVALS"]))
     handbacks = [(int(entry[0]), int(entry[1])) for entry in items(timings[":HANDBACK-INTERVALS"])]
     longest = max([duration for _, duration in over], default=0)
-    collection = max([b - a for a, b in intervals], default=0)
     handback = max([b - a for a, b in handbacks], default=0)
     print(
         f"STALL {label} frames_over={len(over)} longest_ns={longest}"
-        f" collections={len(intervals)} collection_ns={collection}"
-        f" handbacks={len(handbacks)} handback_ns={handback}"
+        f" collections={len(intervals)} handbacks={len(handbacks)} handback_ns={handback}"
         f" frames={channels.get('frame-total', {}).get(':COUNT', 0)}"
         f" frame_p50={channels.get('frame-total', {}).get(':P50', 0)}"
         f" frame_p99={channels.get('frame-total', {}).get(':P99', 0)}",
         flush=True,
     )
-    return longest, collection, handback
+    return longest, intervals, handback
+
+
+def collection_gate(label, intervals, period, window):
+    assert intervals, f"{label}: no collection was logged in the measured window"
+    pauses = sorted(end - start for start, end in intervals)
+    allowed = window // period
+    print(
+        f"COLLECTION {label} period_ns={period} window_ns={window} count={len(intervals)}"
+        f" allowed={allowed} min_us={pauses[0] // 1000}"
+        f" median_us={pauses[len(pauses) // 2] // 1000}"
+        f" mean_us={sum(pauses) // len(pauses) // 1000} max_us={pauses[-1] // 1000}"
+        f" pauses_us={[pause // 1000 for pause in pauses]}",
+        flush=True,
+    )
+    assert len(intervals) <= allowed, (
+        f"{label}: {len(intervals)} collections in {window} ns, more than the one per"
+        f" {period} ns refresh period the budget allows")
+    assert pauses[len(pauses) // 2] <= period, (
+        f"{label}: the median collection paused {pauses[len(pauses) // 2]} ns over one refresh"
+        f" ({period} ns)")
+    return pauses
 
 
 fresh("--bare", bus=False)
@@ -133,13 +168,56 @@ open_windows(2, width=320, height=240, prefix="p")
 time.sleep(4)
 policy_windows = measure("policy-2")
 cli("timings reset")
-time.sleep(6)
-longest, collection, handback = read_timings("policy-2-animated")
+time.sleep(ANIMATED_WINDOW)
+longest, _, handback = read_timings("policy-2-animated")
 settled = measure("policy-2-settled", attribute=True)
 close_windows(2, prefix="p")
 time.sleep(2)
 measure("policy-0")
 quit()
+
+machine.succeed("systemctl stop tomoe check-bus")
+fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1"})
+cli(f"mount {REFRESH_POLICY}")
+cli(f"mount {SCENE_POLICY}")
+open_windows(2, width=320, height=240, prefix="c")
+time.sleep(3)
+refresh, period = refresh_period()
+print("refresh:", refresh, "period:", period, flush=True)
+assert refresh >= BUDGET_REFRESH_MHZ, (
+    f"the measured output runs at {refresh} mHz, below the {BUDGET_REFRESH_MHZ} mHz"
+    " refresh the collection budget is stated against")
+cli("timings reset")
+time.sleep(ANIMATED_WINDOW)
+_, collections, _ = read_timings("collections")
+close_windows(2, prefix="c")
+quit()
+
+machine.succeed("systemctl stop tomoe check-bus")
+fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1",
+                              "TOMOE_TEST_GC_PAUSE_US": str(period * 3 // 2 // 1000)})
+cli(f"mount {REFRESH_POLICY}")
+cli(f"mount {SCENE_POLICY}")
+open_windows(2, width=320, height=240, prefix="s")
+time.sleep(3)
+slow = []
+for attempt in range(3):
+    cli("timings reset")
+    time.sleep(CONTROL_WINDOW)
+    _, slow, _ = read_timings(f"forced-slow-gc-{attempt}")
+    if slow:
+        break
+close_windows(2, prefix="s")
+quit()
+assert slow and min(end - start for start, end in slow) > period, (
+    "the test pause floor did not reach the collector: "
+    + str(sorted(end - start for start, end in slow)))
+try:
+    collection_gate("forced-slow-gc", slow, period, CONTROL_WINDOW * 1000000000)
+except AssertionError as error:
+    print("forced slow collection rejected:", error, flush=True)
+else:
+    raise AssertionError("a collection slower than one refresh was accepted")
 
 assert len(state[":EXTENSIONS"]) > 1, state[":EXTENSIONS"]
 for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty, "tiles-50"),
@@ -147,6 +225,6 @@ for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty
     assert row["Pss_Anon"] <= ANON_LIMIT, f"{label} anon {row['Pss_Anon']} KB over {ANON_LIMIT}"
     assert row["Private_Dirty"] <= DIRTY_LIMIT, (
         f"{label} private dirty {row['Private_Dirty']} KB over {DIRTY_LIMIT}")
-assert collection <= COLLECTION_LIMIT, f"collection {collection} ns over {COLLECTION_LIMIT}"
-print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "collection", COLLECTION_LIMIT,
+collection_gate("collections", collections, period, ANIMATED_WINDOW * 1000000000)
+print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "period", period,
       "tiles", tiles, "longest_frame", longest, "idle_handback", handback, flush=True)

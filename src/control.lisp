@@ -65,12 +65,17 @@ stall can be tagged with the collection it overlapped.")
 starts so a frame stall can name which one it overlapped.")
 (defvar *handback-log-count* 0)
 
+(defvar *test-gc-pause* nil
+  "A test-only floor, in internal time units, for the pause logged for each
+collection, so a check can prove that it rejects a collection outlasting a
+refresh.")
+
 (defun note-gc ()
   "Count collections, keep the longest pause for the memory report and log the
 span of each collection for the frame-stall report."
   (let* ((real sb-ext:*gc-real-time*)
          (run sb-ext:*gc-run-time*)
-         (pause (max 0 (- run *gc-run-seen*)))
+         (pause (max 0 (- run *gc-run-seen*) (or *test-gc-pause* 0)))
          (end (and *timing* (%timing-now))))
     (setf *gc-count* (1+ *gc-count*)
           *gc-longest* (max *gc-longest* (- real *gc-seen*))

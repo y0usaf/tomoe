@@ -208,11 +208,18 @@
       }) pkgsFor;
       checks = nixpkgs.lib.mapAttrs (
         _: pkgs:
-        import ./tests {
+        removeAttrs (import ./tests {
           inherit pkgs;
           tomoe = package pkgs { };
-        }
+        }) [ "suites" ]
       ) pkgsFor;
+      legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
+        suites =
+          (import ./tests {
+            inherit pkgs;
+            tomoe = package pkgs { };
+          }).suites;
+      }) pkgsFor;
       apps = nixpkgs.lib.mapAttrs (_: appsFor) pkgsFor;
       formatter = nixpkgs.lib.mapAttrs (_: pkgs: pkgs.nixfmt) pkgsFor;
     };

@@ -457,8 +457,13 @@ Bug reports, questions and odd setups are welcome in the
 nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
 nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
+nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
+
+Every suite `nix flake check` runs is also a target of its own under
+`legacyPackages.<system>.suites`, named as in `tests/default.nix`, so one suite
+can be iterated on without the whole VM.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that

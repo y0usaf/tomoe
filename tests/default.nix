@@ -943,19 +943,12 @@ let
         TOMOE_BIN = "${tomoe}/bin/tomoe"
         ATTRIBUTE = "${./memory-attribute.py}"
         SCENE_POLICY = "${./timing-policy.lisp}"
+        REFRESH_POLICY = "${./memory-refresh.lisp}"
       ''
       + builtins.readFile ./memory.py;
     }
   ];
-in
-{
-  compositor = vm {
-    name = "tomoe-compositor";
-    suites = compositorSuites;
-    packages = compositorPackages;
-  };
-  kms = vm {
-    name = "tomoe-kms";
+  kmsSettings = {
     kernelModules = [
       "vgem"
       "udmabuf"
@@ -968,29 +961,63 @@ in
       planesTool
     ];
     timeout = 900;
-    suites = [
-      {
-        name = "kms-wake";
-        script = ''
-          WAKE_PROBE = "${wakeProbe}"
-        ''
-        + builtins.readFile ./kms-wake.py;
-      }
-      {
-        name = "frameclock";
-        script = ''
-          FRAMECLOCK_POLICY = "${frameclockPolicy}"
-        ''
-        + builtins.readFile ./frameclock.py;
-      }
-      {
-        name = "planes";
-        script = ''
-          SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
-          PLANES_PROBE = "${planesProbe}"
-        ''
-        + builtins.readFile ./planes.py;
-      }
-    ];
   };
+  kmsSuites = [
+    {
+      name = "kms-wake";
+      script = ''
+        WAKE_PROBE = "${wakeProbe}"
+      ''
+      + builtins.readFile ./kms-wake.py;
+    }
+    {
+      name = "frameclock";
+      script = ''
+        FRAMECLOCK_POLICY = "${frameclockPolicy}"
+      ''
+      + builtins.readFile ./frameclock.py;
+    }
+    {
+      name = "planes";
+      script = ''
+        SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+        PLANES_PROBE = "${planesProbe}"
+      ''
+      + builtins.readFile ./planes.py;
+    }
+  ];
+  suiteTargets =
+    settings: suites:
+    builtins.listToAttrs (
+      map (suite: {
+        name = suite.name;
+        value = vm (
+          settings
+          // {
+            name = "tomoe-${suite.name}";
+            suites = [ suite ];
+          }
+        );
+      }) suites
+    );
+  compositorSettings = {
+    packages = compositorPackages;
+  };
+in
+{
+  compositor = vm (
+    compositorSettings
+    // {
+      name = "tomoe-compositor";
+      suites = compositorSuites;
+    }
+  );
+  kms = vm (
+    kmsSettings
+    // {
+      name = "tomoe-kms";
+      suites = kmsSuites;
+    }
+  );
+  suites = suiteTargets compositorSettings compositorSuites // suiteTargets kmsSettings kmsSuites;
 }

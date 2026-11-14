@@ -576,6 +576,8 @@ an edit calls for; a source whose directory is still missing is retried."
                              1))))
   (setf (sb-ext:bytes-consed-between-gcs) *nursery-bytes*)
   (setf *gc-count* 0 *gc-longest* 0 *gc-seen* sb-ext:*gc-real-time*)
+  (let ((pause (sb-ext:posix-getenv "TOMOE_TEST_GC_PAUSE_US")))
+    (setf *test-gc-pause* (and pause (parse-integer pause :junk-allowed t))))
   (sb-ext:exit
    :code (handler-case
              (handler-bind ((serious-condition

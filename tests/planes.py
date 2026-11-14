@@ -7,6 +7,7 @@ PLANES = "tomoe-planes-probe"
 OUTPUT = "Virtual-1"
 COUNTERS = (":FRAME", ":DRAWN-FRAME", ":BUFFER-AGE", ":DRAWN-PIXELS", ":PIXELS", ":DRAWS",
             ":PLANES", ":DEFERRALS", ":FRAME-NS")
+STABLE = 6
 
 
 def plane_state():
@@ -33,6 +34,10 @@ def plane(kind):
 def box_of(entry):
     return tuple(int(value) for value in
                  entry["dst"].replace(",", "x").replace("+", "x").split("x"))
+
+
+def shift(base, observed):
+    return (observed[0] - base[0], observed[1] - base[1])
 
 
 def frames():
@@ -80,7 +85,8 @@ def overlay_holds(box):
     return check
 
 
-def settled(kind, timeout=20):
+def settled(kind, base=None, move=None, at=None, what=None, timeout=30):
+    label = what or f"the {kind} plane"
     deadline = time.monotonic() + timeout
     last = None
     stable = 0
@@ -88,10 +94,28 @@ def settled(kind, timeout=20):
         now = box_of(plane(kind))
         stable = stable + 1 if now == last else 0
         last = now
-        if stable >= 6:
+        if stable >= STABLE and (base is None or now != base) and (
+                move is None or shift(base, now) == move) and (at is None or now[:2] == at):
             return now
         time.sleep(0.1)
-    return last
+    seen = shift(base, last) if base is not None and last is not None else None
+    raise AssertionError(f"{label} did not settle at {at or base} + {move}: last seen {last} "
+                         f"({seen} from the base)")
+
+
+def frame_settles(what, since=None, timeout=30):
+    deadline = time.monotonic() + timeout
+    last = None
+    stable = 0
+    while time.monotonic() < deadline:
+        entry = counters()
+        now = (entry.get(":FRAME", 0), entry.get(":DRAWN-FRAME", 0), entry.get(":DRAWS", 0))
+        stable = stable + 1 if now == last else 0
+        last = now
+        if stable >= STABLE and (since is None or now[0] > since.get(":FRAME", 0)):
+            return now
+        time.sleep(0.1)
+    raise AssertionError(f"{what} did not finish drawing; last seen {last}")
 
 
 def displayed(name):
@@ -110,6 +134,7 @@ def screenshot(name):
 
 
 def move_by(dx, dy):
+    before = box_of(plane("CURSOR"))
     unit = f"planes-move-{dx}-{dy}".replace("-", "n")
     machine.succeed(
         f"systemd-run --unit={unit} --property=Type=exec "
@@ -117,7 +142,7 @@ def move_by(dx, dy):
         f"{SCANOUT_CLIENT} --move {dx},{dy}"
     )
     machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -qx moved", timeout=30)
-    time.sleep(0.5)
+    return before
 
 
 def scene():
@@ -174,6 +199,7 @@ print("output:", SIZE, "window:", WINDOW, "home:", HOME_BOX, "moved:", MOVED_BOX
 
 def park():
     move_by(20000, 20000)
+    return settled("CURSOR", at=(SIZE[0], SIZE[1]), what="the parked cursor")
 
 
 def wiggle(ms):
@@ -185,8 +211,8 @@ def wiggle(ms):
     )
     machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -q '^waggled'", timeout=60)
     line = machine.succeed(f"journalctl -u {unit} -o cat | grep '^waggled'").split()
-    time.sleep(0.5)
     return int(line[1])
+
 
 park()
 scene()
@@ -221,12 +247,22 @@ composited = counters()
 probe("note-off")
 wait_for(overlay_holds(HOME_BOX), "the overlay plane returning after the notification")
 
-parked = settled("CURSOR")
+parked = park()
 move_by(*SHIFT)
-moved = settled("CURSOR")
-assert (moved[0] - parked[0], moved[1] - parked[1]) == SHIFT, (parked, moved)
+moved = settled("CURSOR", base=parked, move=SHIFT, what="the cursor after a move")
+assert shift(parked, moved) == SHIFT, (parked, moved)
 deferrals = int(frames()[":DEFERRALS"])
 assert deferrals == 0, f"{deferrals} commits met an outstanding flip"
+
+for wrong, what in (((SHIFT[0] + 1, SHIFT[1]), "one step off the commanded move"),
+                    (None, "never moved from where it started")):
+    try:
+        settled("CURSOR", base=parked if wrong else moved, move=wrong, timeout=1,
+                what="the cursor")
+    except AssertionError as error:
+        print(f"negative control: a cursor {what} is rejected:", error, flush=True)
+    else:
+        raise AssertionError(f"a cursor {what} was reported settled")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
@@ -236,10 +272,12 @@ park()
 scene()
 assert plane("OVERLAY")["fb"] == "0", plane("OVERLAY")
 assert counters()[":PLANES"] == 0, counters()
+before = counters()
 probe("move")
-machine.sleep(1)
+frame_settles("the window drawn at the moved position", since=before)
+windowed = counters()
 probe("unmove")
-machine.sleep(1)
+frame_settles("the window composited back home", since=windowed)
 reference = counters()
 reference_displayed = displayed("reference")
 reference_shot = screenshot("reference")
@@ -250,23 +288,21 @@ start("--bare", f"--drm_device {DEVICE}", backend="drm",
     env=dict(DRM, TOMOE_TEST_STALL_FENCE="1", TOMOE_TEST_STALL_FENCE_MS="900",
         TOMOE_TEST_CURSOR_EARLY="1"))
 cli(f"mount {PLANES_PROBE}")
-park()
+move_by(20000, 20000)
 scene()
 wait_for(overlay_holds(HOME_BOX), "the overlay plane holding the window while flips stall")
-move_by(-300, -300)
-stalled = settled("CURSOR", timeout=40)
+probe("move")
+probe("unmove")
+wait_for(overlay_holds(HOME_BOX), "the overlay plane returning while flips stall")
+stalled = settled("CURSOR", base=move_by(-300, -300), timeout=40,
+                  what="the cursor after the jump")
 steps = wiggle(1000)
-after = settled("CURSOR", timeout=40)
-assert (after[0] - stalled[0], after[1] - stalled[1]) == (steps, steps), (stalled, after,
-    steps)
-move_by(*SHIFT)
-late_cursor = settled("CURSOR", timeout=40)
-assert (late_cursor[0] - after[0], late_cursor[1] - after[1]) == SHIFT, (after,
-    late_cursor)
-move_by(-25, -15)
-recovered = settled("CURSOR", timeout=40)
-assert (recovered[0] - after[0], recovered[1] - after[1]) == (SHIFT[0] - 25,
-    SHIFT[1] - 15), (after, recovered)
+after = settled("CURSOR", base=stalled, move=(steps, steps), timeout=40,
+                what="the cursor after the wiggle")
+late_cursor = settled("CURSOR", base=move_by(*SHIFT), move=SHIFT, timeout=40,
+                      what="the late cursor")
+recovered = settled("CURSOR", base=move_by(-25, -15), move=(-25, -15), timeout=40,
+                    what="the recovered cursor")
 assert overlay_holds(HOME_BOX)(), plane("OVERLAY")
 late = counters()
 missing = int(machine.succeed("journalctl -o cat "
