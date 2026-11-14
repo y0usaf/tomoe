@@ -1618,7 +1618,6 @@ or decoded images grew without a collection running."
                   :last-error (runtime-last-error runtime)
                   :pending-context (copy-list (runtime-pending-context runtime))
                   :grab (describe-grab grab)
-                  :invocations *invocations*
                   :motion-plan (copy-data (runtime-motion-plan runtime))
                   :native-grab (describe-grab (applied-grab (runtime-backend runtime)))
                   :native-ui (when (runtime-backend runtime)
