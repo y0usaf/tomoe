@@ -29,6 +29,11 @@ static bool backend_start(struct tomoe *s) {
     return true;
 }
 int tomoe_abi_version(void) { return 42; }
+
+void tomoe_trim_heap(void) {
+    malloc_trim(0);
+}
+
 static int stop_pipe[2] = { -1, -1 };
 static struct sigaction stop_previous[2];
 

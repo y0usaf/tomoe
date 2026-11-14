@@ -920,6 +920,7 @@ let
         SOURCE = "${memoryConfig}"
         TOMOE_BIN = "${tomoe}/bin/tomoe"
         ATTRIBUTE = "${./memory-attribute.py}"
+        SCENE_POLICY = "${./timing-policy.lisp}"
       ''
       + builtins.readFile ./memory.py;
     }

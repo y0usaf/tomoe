@@ -90,7 +90,7 @@ it consed, when samples are kept."
   (fd-watches (make-hash-table)) fd-specs watch-failure
   (source-watches (make-hash-table :test #'equal))
   (source-scans 0) (source-deadline 0)
-  (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)))
+  (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed)
 
 (defconstant +event-readable+ 1)
 (defconstant +event-writable+ 2)
@@ -1306,23 +1306,36 @@ accepted registry. Never enter this helper inside a candidate transaction."
 
 (defparameter *idle-seconds* 1)
 (defparameter *idle-consed* (* 8 1024 1024))
+(defparameter *nursery-bytes* (* 4 1024 1024))
+(defvar *handback-pending* nil
+  "True while the idle handback collects the whole heap, so the timing report can
+count that collection apart from the ones the allocator starts on its own.")
 
 (defun service-memory (runtime)
   "Collect the whole heap while the scene has been quiet for a second, once 8 MB was
 consed since the last collection. The collector hands the dead generations back to the
-system, so an idle desktop keeps only what it is using."
+system, so an idle desktop keeps only what it is using. The native heap is trimmed once
+when the scene falls quiet, which returns the pages a burst of shader compiles, captures
+or decoded images grew without a collection running."
   (let* ((native (runtime-backend runtime))
          (now (get-internal-real-time))
-         (serial (%activity-serial native)))
+         (serial (%activity-serial native))
+         (quiet (>= (- now (runtime-idle-since runtime))
+                    (* *idle-seconds* internal-time-units-per-second))))
     (cond
       ((/= serial (runtime-activity-serial runtime))
-       (setf (runtime-activity-serial runtime) serial (runtime-idle-since runtime) now))
-      ((and (>= (- now (runtime-idle-since runtime))
-                (* *idle-seconds* internal-time-units-per-second))
-            (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
-       (sb-ext:gc :full t)
-       (setf (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
-             (runtime-idle-since runtime) (get-internal-real-time))))))
+       (setf (runtime-activity-serial runtime) serial
+             (runtime-idle-since runtime) now
+             (runtime-idle-trimmed runtime) nil))
+      ((and quiet (>= (- (sb-ext:get-bytes-consed) (runtime-idle-consed runtime)) *idle-consed*))
+       (%trim-heap)
+       (let ((*handback-pending* t)) (sb-ext:gc :full t))
+       (setf (runtime-idle-trimmed runtime) t
+             (runtime-idle-consed runtime) (sb-ext:get-bytes-consed)
+             (runtime-idle-since runtime) (get-internal-real-time)))
+      ((and quiet (not (runtime-idle-trimmed runtime)))
+       (setf (runtime-idle-trimmed runtime) t)
+       (%trim-heap)))))
 
 (defun memory-wait-milliseconds (runtime)
   "How long the backend may sleep before the idle collection is due."

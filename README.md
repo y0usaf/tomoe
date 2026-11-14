@@ -117,14 +117,19 @@ from windows and outputs to each extension's state and last error.
 
 `tomoe frames` prints each output's frame counters, what a composition costs it
 (`:cost-ns`), the vblanks it missed (`:missed`) and its frame clock, and
-`tomoe memory` the heap and buffer use. `tomoe timings` prints the latency Tomoe
-spends on its own work, in nanoseconds: pointer and drag motion to the frame
-carrying it, a key press to the transaction applying it, the wait between an
-input and its frame, each phase of a policy transaction and of a frame, and a
-client commit to its frame. It also prints the same inputs measured to the
-vblank that presented them, so `latch-input` is how old the newest input was
-when the frame took it and `present-input` is how long every input waited for
-the display. The samples are kept only when the compositor starts with
+`tomoe memory` the heap and buffer use. A quiet scene collects the Lisp heap and
+hands the dead generations and the free pages of the native heap back to the
+system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
+the shipping policy and a tiled scene at one, ten and fifty windows and fails if
+that footprint or the longest collection grows past the bound it states.
+`tomoe timings` prints the latency Tomoe spends on its own work, in
+nanoseconds: pointer and drag motion to the frame carrying it, a key press to the
+transaction applying it, the wait between an input and its frame, each phase of a
+policy transaction and of a frame, and a client commit to its frame. It also prints
+the same inputs measured to the vblank that presented them, so `latch-input` is
+how old the newest input was when the frame took it and `present-input` is how long
+every input waited for the display. The samples are kept only when the compositor
+starts with
 `TOMOE_TIMINGS=1`, so the default pays a branch per sample point and nothing
 else; `tests/timing.py` drives one event per frame through it for a repeatable
 table, alongside the bytes each sample path consed and every frame longer than a

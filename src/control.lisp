@@ -60,6 +60,10 @@ collection took is the difference.")
   "The last collections as (START END), in native timing nanoseconds, so a frame
 stall can be tagged with the collection it overlapped.")
 (defvar *gc-log-count* 0)
+(defvar *handback-log* (make-array 64 :initial-element nil)
+  "The idle handbacks as (START END), kept apart from the collections the allocator
+starts so a frame stall can name which one it overlapped.")
+(defvar *handback-log-count* 0)
 
 (defun note-gc ()
   "Count collections, keep the longest pause for the memory report and log the
@@ -74,8 +78,14 @@ span of each collection for the frame-stall report."
           *gc-run-seen* run)
     (when (and end (plusp pause))
       (let ((start (max 0 (- end (round (* pause 1000000000) internal-time-units-per-second)))))
-        (setf (aref *gc-log* (mod *gc-log-count* (length *gc-log*))) (list start end))
-        (incf *gc-log-count*)))))
+        (if *handback-pending*
+            (progn
+              (setf (aref *handback-log* (mod *handback-log-count* (length *handback-log*)))
+                    (list start end))
+              (incf *handback-log-count*))
+            (progn
+              (setf (aref *gc-log* (mod *gc-log-count* (length *gc-log*))) (list start end))
+              (incf *gc-log-count*)))))))
 
 (pushnew 'note-gc sb-ext:*after-gc-hooks*)
 
@@ -83,6 +93,11 @@ span of each collection for the frame-stall report."
   (let ((count (min *gc-log-count* (length *gc-log*))))
     (loop for index from (- *gc-log-count* count) below *gc-log-count*
           collect (aref *gc-log* (mod index (length *gc-log*))))))
+
+(defun handback-interval-report ()
+  (let ((count (min *handback-log-count* (length *handback-log*))))
+    (loop for index from (- *handback-log-count* count) below *handback-log-count*
+          collect (aref *handback-log* (mod index (length *handback-log*))))))
 
 (defun memory-report (runtime)
   "The Lisp heap and collector, then the native heap, textures and output buffers."
@@ -188,12 +203,15 @@ span of each collection for the frame-stall report."
            (%timing-reset)
            (clrhash *timing-consed*)
            (setf *gc-log-count* 0
+                 *handback-log-count* 0
                  *layout-rebuilds* 0
                  *layout-reuses* 0)
-           (fill *gc-log* nil))
+           (fill *gc-log* nil)
+           (fill *handback-log* nil))
          (list* :layout-rebuilds *layout-rebuilds* :layout-reuses *layout-reuses*
                 :consed (timing-consed-report)
                 :gc-intervals (gc-interval-report)
+                :handback-intervals (handback-interval-report)
                 (read-data (or (%timings)
                                (error "Cannot serialize native latency samples."))))))
       (:reload (destructuring-bind () args (configure runtime (runtime-sources runtime))) nil)

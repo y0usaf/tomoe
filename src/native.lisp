@@ -35,6 +35,7 @@
 (define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_animation" %animation) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_memory" %memory) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_trim_heap" %trim-heap) sb-alien:void)
 (define-native ("tomoe_timings" %timings) sb-alien:c-string)
 (define-native ("tomoe_timing_enabled" %timing-enabled) sb-alien:int)
 (define-native ("tomoe_timing_done" %timing-done) sb-alien:void (server (* t)))
