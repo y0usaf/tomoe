@@ -261,6 +261,19 @@ let
     '';
     installPhase = "install -Dm755 tomoe-scanout-client $out/bin/tomoe-scanout-client";
   };
+  planesTool = pkgs.stdenv.mkDerivation {
+    name = "tomoe-planes-probe";
+    src = ./planes.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.libdrm ];
+    buildPhase = ''
+      $CC -std=c11 -O2 -Wall -Wextra -Werror $(pkg-config --cflags libdrm) $src \
+        $(pkg-config --libs libdrm) -o tomoe-planes-probe
+    '';
+    installPhase = "install -Dm755 tomoe-planes-probe $out/bin/tomoe-planes-probe";
+  };
   wallpaperSettings = pkgs.writeText "wallpaper-settings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "check-wallpaper-settings" (:reads () :state nil) (snapshot state event)
@@ -413,6 +426,64 @@ let
                                                 :description "Hide the bar past the edge."))
                           (scanout--placements (context snapshot :windows) output)
                           (scanout--surfaces next output)))
+                nil)))
+  '';
+  planesProbe = pkgs.writeText "planes-probe.lisp" ''
+    (in-package #:tomoe-user)
+
+    (defparameter +planes-states+ (list :note nil :moved nil))
+
+    (defun planes--toggle (state command)
+      (let ((next (copy-list state)))
+        (cond ((equal command "note-on") (setf (getf next :note) t))
+              ((equal command "note-off") (setf (getf next :note) nil))
+              ((equal command "move") (setf (getf next :moved) t))
+              ((equal command "unmove") (setf (getf next :moved) nil)))
+        next))
+
+    (defun planes--surfaces (state output)
+      (let ((name (getf output :name)))
+        (append
+         (list (shell-surface :planes-wallpaper (ui :stack)
+                              :output name :anchors '(:top :left :right :bottom)
+                              :layer :background :background "#101418ff"))
+         (when (getf state :note)
+           (list (shell-surface :planes-note
+                                (ui :stack :children
+                                    (list (ui :rect :width 200 :height 60 :background "#ffffffff")))
+                                :output name :anchors '(:top :left) :margin '(120 0 0 200)
+                                :width 200 :height 60 :layer :overlay
+                                :background "#00000000"))))))
+
+    (define-extension "planes-probe" (:reads (:command :windows :outputs) :state +planes-states+)
+        (snapshot state event)
+      (let* ((command (and (eq (getf event :type) :command)
+                           (equal (getf event :owner) "planes-probe")
+                           (getf event :name)))
+             (next (if command (planes--toggle state command) state))
+             (output (find "Virtual-1" (context snapshot :outputs)
+                           :key (lambda (output) (getf output :name)) :test #'equal)))
+        (values next
+                (when output
+                  (append (list (settings :animations nil)
+                                (define-command "note-on")
+                                (define-command "note-off")
+                                (define-command "move")
+                                (define-command "unmove"))
+                          (loop for window in (context snapshot :windows)
+                                for id = (getf window :id)
+                                collect (if (equal (getf window :app-id) "scanout-client")
+                                            (if (getf next :moved)
+                                                (place id (floor (getf output :width) 4)
+                                                       (floor (getf output :height) 4)
+                                                       (floor (getf output :width) 2)
+                                                       (floor (getf output :height) 2))
+                                                (place id (floor (getf output :width) 8)
+                                                       (floor (getf output :height) 8)
+                                                       (floor (getf output :width) 2)
+                                                       (floor (getf output :height) 2)))
+                                            (place id 100 100 200 150)))
+                          (planes--surfaces next output)))
                 nil)))
   '';
   offscreenProbe = pkgs.writeText "offscreen-probe.lisp" ''
@@ -731,5 +802,24 @@ in
           SCANOUT_PROBE = "${scanoutProbe}"
         ''
         + builtins.readFile ./scanout.py
+      );
+  planes =
+    checkWith
+      {
+        boot.kernelModules = [ "vkms" ];
+        boot.extraModprobeConfig = "options vkms enable_overlay=1 enable_cursor=1";
+        environment.systemPackages = [
+          planesTool
+          scanoutClient
+          pkgs.python3
+        ];
+      }
+      "planes"
+      (
+        ''
+          SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+          PLANES_PROBE = "${planesProbe}"
+        ''
+        + builtins.readFile ./planes.py
       );
 }

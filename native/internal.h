@@ -430,6 +430,14 @@ struct profile {
 };
 enum screen_mode_type { SCREEN_MODE_FIXED, SCREEN_MODE_CUSTOM };
 enum screen_kind { SCREEN_DRM, SCREEN_NESTED, SCREEN_HEADLESS };
+enum { SCREEN_OVERLAYS = 3 };
+struct screen_overlay {
+    struct buffer *buffer;
+    struct timeline *wait;
+    uint64_t wait_point;
+    int x, y, width, height;
+    int src_x, src_y, src_width, src_height;
+};
 struct screen_state {
     uint32_t committed;
     bool enabled, adaptive_sync_enabled, tearing_page_flip;
@@ -444,6 +452,8 @@ struct screen_state {
     uint16_t *gamma;
     size_t gamma_size;
     const struct profile *profile;
+    size_t overlay_count;
+    struct screen_overlay overlays[SCREEN_OVERLAYS];
 };
 struct screen_update {
     struct screen *output;
@@ -462,6 +472,7 @@ struct screen_impl {
     const struct format_set *(*formats)(struct screen *screen);
     size_t (*gamma_size)(struct screen *screen);
     size_t (*degamma_size)(struct screen *screen);
+    size_t (*overlays)(struct screen *screen);
     bool (*cursor)(struct screen *screen, struct buffer *buffer, int hotspot_x, int hotspot_y);
     void (*move_cursor)(struct screen *screen, int x, int y);
     void (*destroy)(struct screen *screen);
@@ -500,6 +511,7 @@ struct screen {
     bool frame_after_events;
     bool frame_pending, needs_frame, animation_only, power_off, frame_replaced, deferred;
     int lx, ly, software_cursor_locks;
+    uint64_t deferrals;
     double cursor_x, cursor_y;
     uint64_t cursor_seen_generation;
     int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
@@ -524,6 +536,19 @@ struct screen {
         struct wl_signal frame, present, request_state, commit, destroy, bind;
     } events;
     void *data;
+};
+
+struct plane_item {
+    struct surface *surface;
+    struct buffer *buffer;
+    struct box dst, src;
+};
+struct plane_assignment {
+    size_t count;
+    struct plane_item item[SCREEN_OVERLAYS];
+    pixman_region32_t excluded;
+    bool changed, retest, tested;
+    uint64_t signature, refused;
 };
 
 struct output {
@@ -553,6 +578,7 @@ struct output {
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
+    struct plane_assignment planes;
     bool damaged;
     struct wl_event_source *tick;
     double tick_at;
@@ -599,6 +625,7 @@ struct frame {
     struct tomoe *server;
     struct pass *pass;
     struct buffer *buffer;
+    const struct plane_assignment *planes;
     int x, y, width, height;
     enum wl_output_transform transform;
     double view_x, view_y, zoom;
@@ -1202,6 +1229,7 @@ void grab_frame_drawn(struct tomoe *s);
 bool grab_waiting(struct tomoe *s);
 
 struct screen *any_output(struct tomoe *s);
+struct output *output_for_screen(struct tomoe *s, struct screen *screen);
 void output_added(struct tomoe *s, struct screen *screen);
 void outputs_request_nested_size(struct tomoe *s);
 struct output_configuration_entry {
@@ -1249,6 +1277,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
     struct ring *ring, const struct presentation *plan);
 bool capture_listen(struct tomoe *s);
 bool capture_wants_cursorless(struct output *o);
+bool capture_wants_output(struct output *o);
 void capture_serve(struct output *o, struct buffer *committed, bool scanout);
 void capture_output_gone(struct tomoe *s, struct output *o);
 void capture_window_gone(struct tomoe *s, uint32_t id);
@@ -1258,6 +1287,13 @@ void finish_captures(struct tomoe *s);
 void frame_done(struct output *o, const struct timespec *when);
 void surfaces_textured(struct output *o);
 struct surface *scanout_surface(struct output *o);
+size_t planes_assign(struct output *o);
+bool planes_attach(struct output *o, struct screen_state *state);
+void planes_clear(struct output *o);
+void planes_refuse(struct output *o);
+void planes_finish(struct plane_assignment *planes);
+bool planes_owned(const struct plane_assignment *planes, const struct surface *surface);
+bool planes_geometry(const struct output *o, size_t index, struct box *dst);
 bool surface_visible(struct tomoe *s, struct surface *surface);
 double physical_hit_ratio(struct tomoe *s, double x, double y);
 uint32_t physical_hit_test(struct tomoe *s, double x, double y,
@@ -1453,6 +1489,11 @@ void screen_state_set_scale(struct screen_state *state, float scale);
 void screen_state_set_transform(struct screen_state *state, enum wl_output_transform transform);
 void screen_state_set_adaptive_sync_enabled(struct screen_state *state, bool enabled);
 void screen_state_set_buffer(struct screen_state *state, struct buffer *buffer);
+bool screen_state_set_overlay(struct screen_state *state, size_t index, struct buffer *buffer,
+    int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height);
+void screen_state_clear_overlays(struct screen_state *state);
+void screen_state_set_overlay_wait(struct screen_state *state, size_t index,
+    struct timeline *timeline, uint64_t point);
 void screen_state_set_wait_timeline(struct screen_state *state,
     struct timeline *timeline, uint64_t point);
 bool screen_state_set_gamma(struct screen_state *state, const uint16_t *ramps, size_t size);

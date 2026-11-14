@@ -369,12 +369,13 @@ const char *tomoe_frames(struct tomoe *s) {
         quote(out, o->screen->name);
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
-            " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
+            " :planes %zu :deferrals %" PRIu64 " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
             " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
             " :predicted %" PRId64 " :slack %" PRId64 " :frame-times (",
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
-            o->timing.ns, o->screen->frame_cost_ns, o->screen->missed_frames,
+            o->planes.count, o->screen->deferrals, o->timing.ns,
+            o->screen->frame_cost_ns, o->screen->missed_frames,
             o->screen->refresh, o->screen->frame_armed_ns, o->screen->frame_start_ns,
             o->screen->vblank_ns, o->screen->clock.predicted_ns, o->screen->clock.slack_ns);
         for (size_t i = 0; i < sizeof(o->timing.counts) / sizeof(o->timing.counts[0]); i++)
@@ -1133,6 +1134,14 @@ bool output_management_configure(struct tomoe *s,
     return true;
 }
 
+struct output *output_for_screen(struct tomoe *s, struct screen *screen) {
+    struct output *o;
+    if (!s || !screen) return NULL;
+    wl_list_for_each(o, &s->outputs, link)
+        if (o->screen == screen) return o;
+    return NULL;
+}
+
 struct screen *any_output(struct tomoe *s) {
     if (!s) return NULL;
     struct output *o;
@@ -1165,7 +1174,9 @@ static void output_frame(struct wl_listener *listener, void *data) {
     struct screen_state state;
     screen_state_init(&state);
     struct surface *scanout = scanout_surface(o);
+    bool overlaid = false;
     if (scanout) {
+        planes_clear(o);
         screen_state_set_buffer(&state, scanout->buffer);
         if (scanout->current.acquire)
             screen_state_set_wait_timeline(&state, scanout->current.acquire,
@@ -1175,6 +1186,10 @@ static void output_frame(struct wl_listener *listener, void *data) {
             screen_state_init(&state);
             scanout = NULL;
         }
+    } else {
+        planes_assign(o);
+        overlaid = planes_attach(o, &state);
+        if (!overlaid) planes_clear(o);
     }
     if (scanout || o->scanout) o->damaged = true;
     if (scanout != o->scanout)
@@ -1203,6 +1218,13 @@ static void output_frame(struct wl_listener *listener, void *data) {
     if (success && (state.committed & SCREEN_BUFFER))
         screen_frame_committed(o->screen, scanout ? &(struct screen_state){0} : &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
+    if (success && overlaid)
+        for (size_t i = 0; i < o->planes.count; i++)
+            surface_release_after(o->planes.item[i].surface, o->planes.item[i].buffer);
+    if (!success && overlaid && !o->screen->deferred) {
+        planes_refuse(o);
+        screen_schedule_frame(o->screen);
+    }
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
         buffer_unlock(o->presented[1]);
         o->presented[1] = o->presented[0];
@@ -1267,6 +1289,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     oplist_finish(&o->ops);
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         pixman_region32_fini(&o->damage[i]);
+    planes_finish(&o->planes);
     screenshot_output_gone(s, o);
     capture_output_gone(s, o);
     gamma_output_gone(o);
@@ -1301,6 +1324,7 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     o->admitted = false;
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         pixman_region32_init(&o->damage[i]);
+    pixman_region32_init(&o->planes.excluded);
     snapshot_output_baseline(wlr, &o->initial);
     screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {

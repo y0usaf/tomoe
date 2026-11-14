@@ -239,10 +239,17 @@ void forget_output(struct tomoe *s, struct screen *output) {
 bool surface_visible(struct tomoe *s, struct surface *surface) {
     return surface->seen;
 }
+bool planes_owned(const struct plane_assignment *planes, const struct surface *surface) {
+    for (size_t i = 0; i < planes->count; i++)
+        if (planes->item[i].surface == surface) return true;
+    return false;
+}
+
 void surfaces_textured(struct output *o) {
     struct surface *surface;
     wl_list_for_each(surface, &o->server->surfaces, link)
-        if (surface->seen && surface->primary == o->screen) surface_presented(surface, o->screen, false);
+        if (surface->seen && surface->primary == o->screen)
+            surface_presented(surface, o->screen, planes_owned(&o->planes, surface));
 }
 void frame_done(struct output *o, const struct timespec *when) {
     struct surface *surface;
@@ -377,6 +384,7 @@ static bool window_mesh_draw(struct tomoe *s, struct frame *f, const struct targ
 
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
+    if (data->planes && planes_owned(data->planes, leaf->surface)) return false;
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
@@ -641,14 +649,14 @@ static int64_t region_area(const pixman_region32_t *region) {
 }
 static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
-        bool cursors, bool chrome, bool track) {
+        bool cursors, bool chrome, bool track, const struct plane_assignment *planes) {
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct timeline *signal = NULL;
     uint64_t phase = timing_enabled && s->timing.frame_at ? timing_now() : 0;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
-        .y = planned ? planned->box.y : o->y, .buffer = buffer,
+        .y = planned ? planned->box.y : o->y, .buffer = buffer, .planes = planes,
         .transform = (state->committed & SCREEN_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height,
         .view_x = plan ? plan->view_x : o->server->view_x,
@@ -665,6 +673,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     bool partial = track && scene_damage(o, &data, locked, &changed, &clip);
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
+    if (o->planes.changed) partial = false;
     if (fenced(output)) {
         if (!s->render_timeline)
             s->render_timeline = timeline_create(render_drm_fd(s->renderer));
@@ -679,8 +688,24 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         return false;
     }
     data.pass = pass;
-    if (partial) pass_clip(pass, &clip);
-    if (track) o->drawn.pixels = partial ? region_area(&clip) :
+    bool skipped = planes && planes->count;
+    if (skipped) {
+        pixman_region32_t skip;
+        pixman_region32_init(&skip);
+        for (size_t i = 0; i < planes->count; i++)
+            pixman_region32_union_rect(&skip, &skip,
+                planes->item[i].dst.x - data.x, planes->item[i].dst.y - data.y,
+                (unsigned)planes->item[i].dst.width, (unsigned)planes->item[i].dst.height);
+        if (!partial) {
+            pixman_region32_union_rect(&clip, &clip, 0, 0, buffer->width, buffer->height);
+            pixman_region32_subtract(&clip, &clip, &skip);
+        } else {
+            pixman_region32_subtract(&clip, &clip, &skip);
+        }
+        pixman_region32_fini(&skip);
+        pass_clip(pass, &clip);
+    } else if (partial) pass_clip(pass, &clip);
+    if (track) o->drawn.pixels = partial || skipped ? region_area(&clip) :
         (int64_t)buffer->width * buffer->height;
     draw_scene(o, &data, plan, locked, cursors, chrome);
     if (phase) timing_frame_draw(o->server, timing_now() - phase);
@@ -706,7 +731,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
 
 bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
-    return render_scene_buffer(o, buffer, &state, NULL, false, false, false);
+    return render_scene_buffer(o, buffer, &state, NULL, false, false, false, NULL);
 }
 
 bool render_presentation(struct output *o, struct screen_state *state,
@@ -729,12 +754,13 @@ bool render_presentation(struct output *o, struct screen_state *state,
             pointer_sync_cursors(o->server);
         }
     }
-    bool success = render_scene_buffer(o, buffer, state, plan, true, true, track);
+    bool success = render_scene_buffer(o, buffer, state, plan, true, true, track,
+        o->planes.count && track ? &o->planes : NULL);
     uint64_t render_point = o->server->render_point;
     if (success) {
         if (capture_wants_cursorless(o)) {
             struct buffer *capture = ring_create(o->server, ring);
-            if (capture && render_scene_buffer(o, capture, state, plan, false, true, false)) {
+            if (capture && render_scene_buffer(o, capture, state, plan, false, true, false, NULL)) {
                 o->capture_buffer = buffer_lock(capture);
             }
             buffer_drop(capture);
@@ -927,6 +953,287 @@ struct surface *scanout_surface(struct output *o) {
         s->pointer_y < data.output.y + data.output.height;
     if (cursor_here && !o->screen->hardware_cursor) return NULL;
     return surface;
+}
+
+struct plane_entry {
+    struct box plane, claim;
+    struct surface *surface;
+    const struct target *target;
+};
+enum { PLANE_ENTRIES = 64 };
+struct plane_scan {
+    struct output *o;
+    struct box output;
+    struct plane_entry entry[PLANE_ENTRIES];
+    size_t count;
+    bool overflow;
+};
+
+static void plane_add(struct plane_scan *scan, struct box plane, struct box claim,
+        struct surface *surface, const struct target *target) {
+    if (scan->count == PLANE_ENTRIES) {
+        scan->overflow = true;
+        return;
+    }
+    scan->entry[scan->count++] = (struct plane_entry){ plane, claim, surface, target };
+}
+
+static bool plane_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
+    struct plane_scan *scan = opaque;
+    struct box plane, claim;
+    if (!box_intersection(&plane, &leaf->shown, &scan->output)) return false;
+    const struct target *t = leaf->target;
+    claim = plane;
+    if (t && t->kind == TARGET_WINDOW && !t->fullscreen && t->client_width > 0) {
+        int grow = s->settings.shadow_range + s->settings.border_width;
+        struct box around = { plane.x - grow, plane.y - grow, plane.width + 2 * grow,
+            plane.height + 2 * grow };
+        if (grow > 0) box_intersection(&claim, &around, &scan->output);
+    }
+    plane_add(scan, plane, claim, leaf->surface, t);
+    return false;
+}
+
+static void plane_ui(struct plane_scan *scan, int layer) {
+    struct box boxes[16];
+    size_t count = ui_claim(scan->o, layer, boxes, sizeof(boxes) / sizeof(*boxes));
+    if (count == SIZE_MAX) {
+        scan->overflow = true;
+        return;
+    }
+    for (size_t i = 0; i < count; i++)
+        plane_add(scan, boxes[i], boxes[i], NULL, NULL);
+}
+
+static void plane_collect(struct plane_scan *scan) {
+    struct tomoe *s = scan->o->server;
+    struct node *child;
+    wl_list_for_each(child, &s->scene->children, link) {
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
+        walk_scene(s, child, NULL, 0, 0, false, plane_leaf, scan);
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
+        if (child == s->layer_tree[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM])
+            plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM);
+    }
+    plane_ui(scan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
+    walk_scene(s, s->drag_icon_tree, NULL, 0, 0, false, plane_leaf, scan);
+}
+
+static bool plane_opaque(uint32_t format) {
+    switch (format) {
+    case DRM_FORMAT_XRGB8888: case DRM_FORMAT_XBGR8888: case DRM_FORMAT_RGBX8888:
+    case DRM_FORMAT_BGRX8888: case DRM_FORMAT_RGB565: case DRM_FORMAT_XRGB2101010:
+    case DRM_FORMAT_XBGR2101010: case DRM_FORMAT_XRGB16161616: case DRM_FORMAT_XBGR16161616:
+    case DRM_FORMAT_RGB888: case DRM_FORMAT_BGR888: case DRM_FORMAT_XRGB4444:
+    case DRM_FORMAT_XBGR4444: case DRM_FORMAT_XRGB1555: case DRM_FORMAT_XBGR1555:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool plane_eligible(const struct plane_scan *scan, const struct plane_entry *entry,
+        struct box *src) {
+    struct tomoe *s = scan->o->server;
+    const struct target *t = entry->target;
+    struct surface *surface = entry->surface;
+    if (!t || t->kind != TARGET_WINDOW) return false;
+    if (!surface) return false;
+    if (t->fullscreen) return false;
+    if (box_empty(&entry->plane) || box_empty(&entry->claim)) return false;
+    if (box_equal(&entry->plane, &scan->output)) return false;
+    if (t->shader || t->mesh || t->visual.closing) return false;
+    if (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width || t->drawn_height)
+        return false;
+    if (t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
+            t->visual.translate_x || t->visual.translate_y || t->visual.tint[3] != 0)
+        return false;
+    int radius = t->style.radius >= 0 ? t->style.radius : s->settings.border_radius;
+    if (radius != 0) return false;
+    if (s->settings.blur_enabled && t->style.blur == 1) return false;
+    if (surface->current.alpha != UINT32_MAX) return false;
+    if (surface->current.viewport.has_src) return false;
+    if (surface->current.transform != scan->o->screen->transform) return false;
+    if (surface->current.buffer_width != entry->plane.width ||
+            surface->current.buffer_height != entry->plane.height) return false;
+    struct dmabuf_attributes dmabuf;
+    struct buffer *buffer = surface->buffer;
+    if (!buffer) return false;
+    if (!buffer_get_dmabuf(buffer, &dmabuf)) return false;
+    if (!plane_opaque(dmabuf.format)) return false;
+    *src = (struct box){ 0, 0, surface->current.buffer_width, surface->current.buffer_height };
+    return true;
+}
+
+void planes_finish(struct plane_assignment *planes) {
+    planes->count = 0;
+    planes->signature = 0;
+    pixman_region32_fini(&planes->excluded);
+    pixman_region32_init(&planes->excluded);
+}
+
+bool planes_geometry(const struct output *o, size_t index, struct box *dst) {
+    if (index >= o->planes.count) return false;
+    const struct box *live = &o->planes.item[index].dst;
+    pixman_box32_t area = { live->x, live->y, live->x + live->width, live->y + live->height };
+    if (pixman_region32_contains_rectangle(&o->planes.excluded, &area) != PIXMAN_REGION_IN)
+        return false;
+    *dst = *live;
+    return true;
+}
+
+static void plane_order(struct plane_item *item, size_t count) {
+    for (size_t i = 1; i < count; i++) {
+        struct plane_item moving = item[i];
+        size_t at = i;
+        while (at > 0 && item[at - 1].dst.width * item[at - 1].dst.height <
+                moving.dst.width * moving.dst.height) {
+            item[at] = item[at - 1];
+            at--;
+        }
+        item[at] = moving;
+    }
+}
+
+static bool planes_disabled(void) {
+    static int disabled = -1;
+    if (disabled < 0) disabled = getenv("TOMOE_NO_PLANES") != NULL;
+    return disabled;
+}
+
+size_t planes_assign(struct output *o) {
+    struct tomoe *s = o->server;
+    struct plane_assignment *planes = &o->planes;
+    struct plane_scan scan = { .o = o };
+    struct plane_item chosen[SCREEN_OVERLAYS];
+    struct box previous[SCREEN_OVERLAYS];
+    size_t capacity = o->screen->impl->overlays ? o->screen->impl->overlays(o->screen) : 0;
+    size_t chosen_count = 0, previous_count = planes->count;
+    uint64_t previous_signature = planes->signature, signature = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < previous_count && i < SCREEN_OVERLAYS; i++)
+        previous[i] = planes->item[i].dst;
+    planes->count = 0;
+    planes->signature = 0;
+    if (capacity && s->view_zoom == 1 && !lock_active(s) && !s->screenshot &&
+            o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
+            !ghosts_visible(s) && !capture_wants_output(o) && !planes_disabled()) {
+        physical_output_box(o, &scan.output);
+        bool cursor_here = !s->cursor_hidden && s->pointer_x >= scan.output.x &&
+            s->pointer_y >= scan.output.y && s->pointer_x < scan.output.x + scan.output.width &&
+            s->pointer_y < scan.output.y + scan.output.height;
+        if (!box_empty(&scan.output) && (!cursor_here || o->screen->hardware_cursor)) {
+            plane_collect(&scan);
+            pixman_region32_t claimed;
+            pixman_region32_init(&claimed);
+            for (size_t i = scan.overflow ? 0 : scan.count; i > 0; i--) {
+                const struct plane_entry *entry = &scan.entry[i - 1];
+                struct box src;
+                pixman_region32_t area;
+                pixman_region32_init_rect(&area, entry->claim.x, entry->claim.y,
+                    (unsigned)entry->claim.width, (unsigned)entry->claim.height);
+                pixman_region32_intersect(&area, &area, &claimed);
+                bool clear = !pixman_region32_not_empty(&area);
+                pixman_region32_fini(&area);
+                if (clear && chosen_count < SCREEN_OVERLAYS &&
+                        plane_eligible(&scan, entry, &src))
+                    chosen[chosen_count++] = (struct plane_item){ .surface = entry->surface,
+                        .buffer = entry->surface->buffer, .dst = entry->plane, .src = src };
+                pixman_region32_union_rect(&claimed, &claimed, entry->claim.x, entry->claim.y,
+                    (unsigned)entry->claim.width, (unsigned)entry->claim.height);
+            }
+            pixman_region32_fini(&claimed);
+        }
+    }
+    if (chosen_count > capacity) chosen_count = capacity;
+    plane_order(chosen, chosen_count);
+    bool moved = chosen_count != previous_count;
+    for (size_t i = 0; !moved && i < chosen_count; i++)
+        moved = !box_equal(&chosen[i].dst, &previous[i]);
+    pixman_region32_clear(&planes->excluded);
+    for (size_t i = 0; i < chosen_count; i++) {
+        planes->item[i] = chosen[i];
+        pixman_region32_union_rect(&planes->excluded, &planes->excluded, chosen[i].dst.x,
+            chosen[i].dst.y, (unsigned)chosen[i].dst.width, (unsigned)chosen[i].dst.height);
+    }
+    planes->count = chosen_count;
+    planes->tested = !planes->retest && planes->tested && previous_count != 0;
+    if (chosen_count && planes->changed && chosen_count != previous_count)
+        tomoe_log(LOG_DEBUG, "tomoe: output %s %zu overlay planes", o->screen->name,
+            chosen_count);
+    if (chosen_count) {
+        signature = (signature ^ chosen_count) * 0x100000001b3ull;
+        for (size_t i = 0; i < chosen_count; i++) {
+            const uint64_t item[] = { (uint64_t)(uintptr_t)chosen[i].surface,
+                (uint64_t)(uintptr_t)chosen[i].buffer, (uint64_t)(uint32_t)chosen[i].dst.x,
+                (uint64_t)(uint32_t)chosen[i].dst.y, (uint64_t)(uint32_t)chosen[i].dst.width,
+                (uint64_t)(uint32_t)chosen[i].dst.height };
+            for (size_t f = 0; f < 6; f++) signature = (signature ^ item[f]) * 0x100000001b3ull;
+        }
+        planes->signature = signature;
+    }
+    planes->changed = moved;
+    planes->retest = planes->signature != previous_signature;
+    if (planes->signature && planes->signature == planes->refused) {
+        planes->count = 0;
+        planes->tested = false;
+        planes->changed = previous_count != 0;
+        pixman_region32_clear(&planes->excluded);
+    }
+    return planes->count;
+}
+
+static bool planes_test(struct output *o) {
+    if (o->planes.tested || !o->presented[0]) return true;
+    struct screen_state probe;
+    screen_state_init(&probe);
+    screen_state_set_buffer(&probe, o->presented[0]);
+    bool ok = true;
+    for (size_t i = 0; ok && i < o->planes.count; i++) {
+        const struct plane_item *item = &o->planes.item[i];
+        ok = screen_state_set_overlay(&probe, i, item->buffer, item->dst.x, item->dst.y,
+            item->dst.width, item->dst.height, item->src.x, item->src.y, item->src.width,
+            item->src.height);
+    }
+    ok = ok && screen_test(o->screen, &probe);
+    screen_state_finish(&probe);
+    return ok;
+}
+
+bool planes_attach(struct output *o, struct screen_state *state) {
+    if (!o->planes.count) return false;
+    if (!planes_test(o)) {
+        if (!o->planes.refused || o->planes.refused != o->planes.signature) {
+            o->planes.refused = o->planes.signature;
+            tomoe_log(LOG_DEBUG, "tomoe: output %s refused %zu overlay planes",
+                o->screen->name, o->planes.count);
+        }
+        return false;
+    }
+    for (size_t i = 0; i < o->planes.count; i++) {
+        const struct plane_item *item = &o->planes.item[i];
+        if (!screen_state_set_overlay(state, i, item->buffer, item->dst.x, item->dst.y,
+                item->dst.width, item->dst.height, item->src.x, item->src.y,
+                item->src.width, item->src.height)) return false;
+        if (item->surface->current.acquire)
+            screen_state_set_overlay_wait(state, i, item->surface->current.acquire,
+                item->surface->current.acquire_point);
+    }
+    o->planes.tested = true;
+    return true;
+}
+
+void planes_clear(struct output *o) {
+    o->planes.changed = o->planes.count != 0;
+    o->planes.count = 0;
+    o->planes.tested = false;
+    pixman_region32_clear(&o->planes.excluded);
+}
+
+void planes_refuse(struct output *o) {
+    o->planes.refused = o->planes.signature;
+    planes_clear(o);
 }
 
 double physical_hit_ratio(struct tomoe *s, double x, double y) {

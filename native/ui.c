@@ -965,6 +965,29 @@ static bool surface_paints(const struct tomoe *s, const struct ui_surface *surfa
     return ui_asset_shader(shown, NULL) && !shader_still(s, surface, now);
 }
 
+size_t ui_claim(struct output *o, int layer, struct box *boxes, size_t max) {
+    if (!o || !o->server) return 0;
+    const struct ui_set *set = o->server->ui;
+    if (!set) return 0;
+    struct box output;
+    physical_output_box(o, &output);
+    if (box_empty(&output)) return 0;
+    double now = monotonic_seconds();
+    size_t count = 0;
+    for (size_t i = 0; i < set->count; i++) {
+        const struct ui_surface *surface = set->surfaces[i];
+        if (surface->layer != layer || !surface_matches_output(surface, o, NULL)) continue;
+        if (!surface_paints(o->server, surface, now)) continue;
+        struct box placed = { .x = surface->x + surface->offset_x,
+            .y = surface->y + surface->offset_y,
+            .width = surface->width, .height = surface->height };
+        if (!box_intersection(&placed, &placed, &output)) continue;
+        if (count == max) return SIZE_MAX;
+        boxes[count++] = placed;
+    }
+    return count;
+}
+
 bool ui_on_output(struct output *o, int layer) {
     if (!o || !o->server) return false;
     const struct ui_set *set = o->server->ui;

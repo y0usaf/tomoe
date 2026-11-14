@@ -1,16 +1,3 @@
-/* A full screen dma-buf client for the direct scanout checks.
- *
- * Commits one linear dma-buf buffer at the size the compositor configures, so
- * the compositor can put the client's own buffer on a plane instead of copying
- * it. The buffer comes from udmabuf, which keeps the check free of a GL stack:
- * a sealed memfd plus /dev/udmabuf exports pages the compositor can import as a
- * dma-buf.
- *
- * Usage: scanout-client [--size WxH] [--color RRGGBB] [--pointer X,Y,MS]
- *
- * It prints one line per step (formats, configured, mapped, hidden) so a driver
- * can line client events up with the compositor's log.
- */
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -60,6 +47,7 @@ static uint32_t color = 0x336699;
 static int width = 320, height = 240;
 static int pending_commit, mapped, hidden;
 static int pointer_x = -1, pointer_y = -1, pointer_ms;
+static int move_x, move_y, wiggle_ms;
 static int have_xrgb, have_xrgb_linear;
 static uint64_t xrgb_modifier = DRM_FORMAT_MOD_LINEAR;
 
@@ -338,13 +326,25 @@ static void parse_size(const char *value, int *w, int *h) {
 }
 
 static void usage(const char *program) {
-    fprintf(stderr, "usage: %s [--size WxH] [--color RRGGBB] [--pointer X,Y,MS]\n", program);
+    fprintf(stderr, "usage: %s [--size WxH] [--color RRGGBB] [--pointer X,Y,MS] "
+        "[--move DX,DY] [--wiggle MS]\n", program);
 }
 
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--size") && i + 1 < argc) parse_size(argv[++i], &width, &height);
         else if (!strcmp(argv[i], "--color") && i + 1 < argc) color = parse_colour(argv[++i]);
+        else if (!strcmp(argv[i], "--wiggle") && i + 1 < argc) wiggle_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--move") && i + 1 < argc) {
+            char *comma = strchr(argv[i + 1], ',');
+            if (!comma) {
+                fprintf(stderr, "scanout-client: --move wants DX,DY\n");
+                return 2;
+            }
+            move_x = atoi(argv[i + 1]);
+            move_y = atoi(comma + 1);
+            i++;
+        }
         else if (!strcmp(argv[i], "--pointer") && i + 1 < argc) {
             char *comma = strchr(argv[i + 1], ',');
             char *second = comma ? strchr(comma + 1, ',') : NULL;
@@ -367,8 +367,6 @@ int main(int argc, char **argv) {
     struct wl_registry *registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registry_listener, NULL);
     if (wl_display_roundtrip(display) < 0) return 1;
-    /* The bind requests queued by the registry handler are only sent now, so
-     * the format and modifier events they provoke arrive on this trip. */
     if (wl_display_roundtrip(display) < 0) return 1;
     if (pointer_ms > 0) {
         if (!virtual_manager) {
@@ -391,6 +389,42 @@ int main(int argc, char **argv) {
             usleep(16000);
         }
         printf("waggled\n");
+        fflush(stdout);
+        return 0;
+    }
+    if (wiggle_ms > 0) {
+        if (!virtual_manager) {
+            fprintf(stderr, "scanout-client: the compositor has no virtual pointer\n");
+            return 1;
+        }
+        virtual_pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(virtual_manager, NULL);
+        if (!virtual_pointer) return 1;
+        double start = seconds();
+        unsigned count = 0;
+        while ((seconds() - start) * 1000 < wiggle_ms) {
+            zwlr_virtual_pointer_v1_motion(virtual_pointer, (uint32_t)(seconds() * 1000),
+                wl_fixed_from_int(1), wl_fixed_from_int(1));
+            zwlr_virtual_pointer_v1_frame(virtual_pointer);
+            wl_display_flush(display);
+            count++;
+            usleep(16000);
+        }
+        printf("waggled %u\n", count);
+        fflush(stdout);
+        return 0;
+    }
+    if (move_x || move_y) {
+        if (!virtual_manager) {
+            fprintf(stderr, "scanout-client: the compositor has no virtual pointer\n");
+            return 1;
+        }
+        virtual_pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(virtual_manager, NULL);
+        if (!virtual_pointer) return 1;
+        zwlr_virtual_pointer_v1_motion(virtual_pointer, (uint32_t)(seconds() * 1000),
+            wl_fixed_from_int(move_x), wl_fixed_from_int(move_y));
+        zwlr_virtual_pointer_v1_frame(virtual_pointer);
+        wl_display_flush(display);
+        printf("moved\n");
         fflush(stdout);
         return 0;
     }

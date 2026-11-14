@@ -397,6 +397,14 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   composites instead. Shell surfaces that draw nothing, and shader overlays that
   are idle, leave scanout alone. The `scanout` field of `tomoe frames` reports
   which output currently scans out.
+- Overlay planes carry the topmost windows that nothing paints above, at their
+  own position and size, when the client draws into a dma-buf that maps one to
+  one onto the output, and the cursor rides on the cursor plane. Only what the
+  planes do not cover is composited, each assignment is validated by an atomic
+  test commit before it is used, and a rejected assignment falls back to
+  compositing the whole output; the frame is identical either way. The `planes`
+  field of `tomoe frames` counts the windows on overlay planes and `deferrals`
+  counts commits the kernel refused because a flip was still outstanding.
 - A window's own opacity, tint, scale, rotation and translation are window state:
   `window-properties` sets them, and each eases towards its new value with the
   matching `:animations` setting. The compositor animates the transitions it sees

@@ -36,6 +36,8 @@ struct crtc {
     uint32_t id;
     int index;
     struct plane *primary, *cursor;
+    struct plane *overlay[SCREEN_OVERLAYS];
+    size_t overlay_count;
     struct props props;
     struct connector *owner;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob;
@@ -62,6 +64,7 @@ struct connector {
     struct buffer *queued, *current;
     bool flip_pending, present_pending;
     size_t flip_seq;
+    struct buffer *overlay_shown[SCREEN_OVERLAYS], *overlay_pending[SCREEN_OVERLAYS];
     struct dumb cursor_bo[CURSOR_SLOTS];
     uint32_t cursor_fb[CURSOR_SLOTS];
     int64_t cursor_retire_at[CURSOR_SLOTS];
@@ -112,6 +115,7 @@ static void cursor_queue(struct connector *c);
 static void cursor_submitted(struct connector *c, bool flip);
 static void cursor_completed(struct connector *c, bool flip);
 static void cursor_settle(struct connector *c, bool off);
+static void overlay_promote(struct connector *c);
 
 #define CURSOR_EVENT(kms) ((void *)((uintptr_t)(kms) | 1))
 enum { CURSOR_LEAD_NS = 1000000 };
@@ -288,6 +292,9 @@ static bool read_resources(struct kms *kms) {
                 crtc->cursor = plane;
                 break;
             }
+            if (plane->type == DRM_PLANE_TYPE_OVERLAY &&
+                    crtc->overlay_count < SCREEN_OVERLAYS)
+                crtc->overlay[crtc->overlay_count++] = plane;
         }
     }
     drmModeFreePlaneResources(planes);
@@ -389,6 +396,22 @@ static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc,
     add(req, plane->id, &plane->props, PROP_CRTC_H, (uint64_t)height);
 }
 
+static void overlay_commit(struct connector *c, const struct screen_state *state) {
+    for (size_t k = 0; k < SCREEN_OVERLAYS; k++) {
+        buffer_unlock(c->overlay_pending[k]);
+        c->overlay_pending[k] = k < state->overlay_count && state->overlays[k].buffer ?
+            buffer_lock(state->overlays[k].buffer) : NULL;
+    }
+}
+
+static void overlay_promote(struct connector *c) {
+    for (size_t k = 0; k < SCREEN_OVERLAYS; k++) {
+        buffer_unlock(c->overlay_shown[k]);
+        c->overlay_shown[k] = c->overlay_pending[k];
+        c->overlay_pending[k] = NULL;
+    }
+}
+
 static bool cursor_visible(const struct connector *c) {
     return c->cursor_on && c->cursor_fb[c->cursor_front];
 }
@@ -406,7 +429,7 @@ struct plan {
     struct crtc *crtc;
     drmModeModeInfo mode, target;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob, fb;
-    int fence;
+    int fence, overlay_fence[SCREEN_OVERLAYS];
     bool enable, modeset, gamma, profile, wake, async;
 };
 
@@ -522,7 +545,10 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     size_t text_size = 0;
     trace = log_verbosity >= LOG_INFO ? open_memstream(&text, &text_size) : NULL;
     bool ok = plans && req, modeset = false, flip = false, tearing = false;
-    for (size_t i = 0; i < count; i++) plans[i].fence = -1;
+    for (size_t i = 0; i < count; i++) {
+        plans[i].fence = -1;
+        for (size_t k = 0; k < SCREEN_OVERLAYS; k++) plans[i].overlay_fence[k] = -1;
+    }
     for (size_t i = 0; ok && i < count; i++) {
         struct connector *c = wl_container_of(updates[i].output, c, screen);
         const struct screen_state *state = &updates[i].base;
@@ -538,6 +564,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             add(req, c->crtc->id, &c->crtc->props, PROP_MODE_ID, 0);
             plane_set(req, c->crtc->primary, 0, 0, 0, 0, 0, 0, 0, 0);
             if (c->crtc->cursor) plane_set(req, c->crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0);
+            for (size_t k = 0; k < c->crtc->overlay_count; k++)
+                plane_set(req, c->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0);
             continue;
         }
         p->crtc = pick_crtc(c);
@@ -568,7 +596,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             memcmp(&p->mode, &p->crtc->mode, sizeof(p->mode));
         modeset |= p->modeset;
         flip |= (state->committed & SCREEN_BUFFER) != 0;
-        p->async = async && state->tearing_page_flip;
+        p->async = async && state->tearing_page_flip && !state->overlay_count;
         tearing |= p->async;
         if (trace) {
             char mode[192];
@@ -596,6 +624,36 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         if (p->fence >= 0)
             add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
                 (uint64_t)p->fence);
+        size_t slots = p->crtc->overlay_count < SCREEN_OVERLAYS ? p->crtc->overlay_count :
+            SCREEN_OVERLAYS;
+        if (!p->async) {
+            struct output *out = output_for_screen(kms->server, &c->screen);
+            for (size_t k = 0; ok && k < slots; k++) {
+                const struct screen_overlay *overlay = k < state->overlay_count ?
+                    &state->overlays[k] : NULL;
+                if (!overlay || !overlay->buffer) {
+                    plane_set(req, p->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0);
+                    continue;
+                }
+                uint32_t ofb = fb_for(kms, overlay->buffer);
+                if (!ofb) {
+                    ok = false;
+                    break;
+                }
+                struct box dst = { overlay->x, overlay->y, overlay->width, overlay->height };
+                struct box live;
+                if (out && planes_geometry(out, k, &live)) dst = live;
+                plane_set(req, p->crtc->overlay[k], p->crtc->id, ofb, dst.x, dst.y,
+                    dst.width, dst.height, overlay->src_width, overlay->src_height);
+                if (overlay->wait) {
+                    p->overlay_fence[k] = timeline_export_sync_file(overlay->wait,
+                        overlay->wait_point);
+                    if (p->overlay_fence[k] >= 0)
+                        add(req, p->crtc->overlay[k]->id, &p->crtc->overlay[k]->props,
+                            PROP_IN_FENCE_FD, (uint64_t)p->overlay_fence[k]);
+                }
+            }
+        }
         if (state->committed & SCREEN_VRR)
             add(req, p->crtc->id, &p->crtc->props, PROP_VRR_ENABLED,
                 state->adaptive_sync_enabled && c->screen.adaptive_sync_supported);
@@ -633,6 +691,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     if (ret == -EBUSY && !test) {
         for (size_t i = 0; i < count; i++) {
             struct connector *c = wl_container_of(updates[i].output, c, screen);
+            c->screen.deferrals++;
             if ((updates[i].base.committed & SCREEN_BUFFER) &&
                     (c->flip_pending || c->cursor_inflight)) {
                 c->screen.deferred = true;
@@ -651,6 +710,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     for (size_t i = 0; plans && i < count; i++) {
         struct plan *p = &plans[i];
         if (p->fence >= 0) close(p->fence);
+        for (size_t k = 0; k < SCREEN_OVERLAYS; k++)
+            if (p->overlay_fence[k] >= 0) close(p->overlay_fence[k]);
         struct connector *c = wl_container_of(updates[i].output, c, screen);
         const struct screen_state *state = &updates[i].base;
         if (!ok || test) {
@@ -660,6 +721,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             if (p->ctm_blob) drmModeDestroyPropertyBlob(kms->fd, p->ctm_blob);
             continue;
         }
+        overlay_commit(c, state);
         if (!p->enable) {
             if (p->crtc) {
                 if (p->crtc->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->mode_blob);
@@ -678,6 +740,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             c->cursor_dirty = c->cursor_inflight = c->redraw = false;
             ns_timer_arm(&c->cursor_timer, 0);
             cursor_settle(c, true);
+            overlay_promote(c);
             continue;
         }
         c->crtc = p->crtc;
@@ -846,6 +909,12 @@ static bool connector_test(struct screen_update *updates, size_t count) {
 
 static bool connector_commit(struct screen_update *updates, size_t count) {
     return commit(updates, count, false);
+}
+
+static size_t connector_overlays(struct screen *screen) {
+    struct connector *c = wl_container_of(screen, c, screen);
+    struct crtc *crtc = pick_crtc(c);
+    return crtc && c->kms->atomic ? crtc->overlay_count : 0;
 }
 
 static const struct format_set *connector_formats(struct screen *screen) {
@@ -1029,10 +1098,18 @@ static bool compose_carries_cursor(const struct connector *c) {
     return c->screen.needs_frame && !c->screen.tearing && !c->flip_async;
 }
 
+static bool cursor_early(void) {
+    static int early = -1;
+    if (early < 0) early = getenv("TOMOE_TEST_CURSOR_EARLY") != NULL;
+    return early;
+}
+
 static void cursor_commit(struct connector *c) {
     struct kms *kms = c->kms;
-    if (!c->cursor_dirty || !c->crtc || !c->crtc->active || !c->crtc->cursor || c->flip_pending ||
-            c->cursor_inflight || compose_carries_cursor(c) || !session_active(kms->server)) return;
+    bool early = cursor_early();
+    if (!c->cursor_dirty || !c->crtc || !c->crtc->active || !c->crtc->cursor ||
+            (c->flip_pending && !early) || c->cursor_inflight ||
+            (compose_carries_cursor(c) && !early) || !session_active(kms->server)) return;
     drmModeAtomicReq *req = drmModeAtomicAlloc();
     if (!req) return;
     cursor_plane_set(req, c, c->crtc);
@@ -1044,7 +1121,9 @@ static void cursor_commit(struct connector *c) {
         c->cursor_dirty = false;
         c->cursor_committed = c->cursor_on;
         cursor_submitted(c, false);
-    } else if (ret != -EBUSY) {
+    } else if (ret == -EBUSY) {
+        c->screen.deferrals++;
+    } else {
         screen_schedule_frame(&c->screen);
     }
 }
@@ -1056,9 +1135,10 @@ static void cursor_fire(void *data) {
 }
 
 static void cursor_queue(struct connector *c) {
+    bool early = cursor_early();
     c->cursor_dirty = true;
-    if (!c->crtc || !c->crtc->cursor || c->flip_pending || c->cursor_inflight ||
-            compose_carries_cursor(c)) return;
+    if (!c->crtc || !c->crtc->cursor || (c->flip_pending && !early) || c->cursor_inflight ||
+            (compose_carries_cursor(c) && !early)) return;
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
     int64_t lead = c->screen.refresh > 0 ? 250000000000LL / c->screen.refresh : 0;
     if (lead > CURSOR_LEAD_NS) lead = CURSOR_LEAD_NS;
@@ -1087,6 +1167,10 @@ static void connector_destroy(struct screen *screen) {
     }
     buffer_unlock(c->queued);
     buffer_unlock(c->current);
+    for (size_t k = 0; k < SCREEN_OVERLAYS; k++) {
+        buffer_unlock(c->overlay_pending[k]);
+        buffer_unlock(c->overlay_shown[k]);
+    }
     for (int i = 0; i < CURSOR_SLOTS; i++) cursor_free(c, i);
     wl_list_remove(&c->link);
     free(c);
@@ -1096,6 +1180,7 @@ static const struct screen_impl connector_impl = {
     .test = connector_test,
     .commit = connector_commit,
     .formats = connector_formats,
+    .overlays = connector_overlays,
     .gamma_size = connector_gamma_size,
     .degamma_size = connector_degamma_size,
     .cursor = connector_cursor,
@@ -1161,6 +1246,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
         if (!c->flip_pending) continue;
         flip_disarmed(c);
         c->flip_pending = false;
+        overlay_promote(c);
         if (!c->flip_async) cursor_completed(c, true);
         buffer_unlock(c->current);
         c->current = c->queued;
@@ -1384,6 +1470,7 @@ void kms_pause(struct tomoe *s) {
         flip_disarmed(c);
         c->flip_pending = false;
         c->cursor_inflight = c->redraw = false;
+        overlay_promote(c);
         ns_timer_arm(&c->cursor_timer, 0);
         cursor_settle(c, false);
     }
