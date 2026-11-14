@@ -216,6 +216,7 @@ let
                 (list (interval :stall-churn 20))
                 nil)))
   '';
+  frameclockPolicy = ./frameclock-policy.lisp;
   livePatchGap = pkgs.writeText "livepatch-gap.lisp" ''
     (in-package #:tomoe-user)
 
@@ -557,6 +558,12 @@ in
       }
     ''
     + builtins.readFile ./trace.py
+  );
+  frameclock = checkWith { boot.kernelModules = [ "vkms" ]; } "frameclock" (
+    ''
+      FRAMECLOCK_POLICY = "${frameclockPolicy}"
+    ''
+    + builtins.readFile ./frameclock.py
   );
   kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
     ''

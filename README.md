@@ -115,22 +115,39 @@ tomoe unmount monocle
 No window restarts. `tomoe inspect` prints everything the compositor knows,
 from windows and outputs to each extension's state and last error.
 
-`tomoe frames` prints each output's frame counters and `tomoe memory` the heap
-and buffer use. `tomoe timings` prints the latency Tomoe spends on its own work,
-in nanoseconds: pointer and drag motion to the frame carrying it, a key press to
-the transaction applying it, the wait between an input and its frame, each phase
-of a policy transaction and of a frame, and a client commit to its frame. The
-samples are kept only when the compositor starts with `TOMOE_TIMINGS=1`, so the
-default pays a branch per sample point and nothing else; `tests/timing.py` drives
-one event per frame through it for a repeatable table, alongside the bytes each
-sample path consed and every frame longer than a refresh, tagged with the
-collection it overlapped. `tests/trace.py` mounts a set of scripted policies and
-records the order every reducer was dispatched in, the one-shot commands they
-emitted and the layout and context every materialization settled on, then
-compares that record with `tests/trace.golden`: dependency chains, rule
-replacement, deferred deliveries, mount and unmount ownership, a failing reducer,
-a dependency cycle, eight windows placed by one grid extension, a delayed interval
-and a source swapped on disk all have to reproduce it exactly.
+`tomoe frames` prints each output's frame counters, what a composition costs it
+(`:cost-ns`), the vblanks it missed (`:missed`) and its frame clock, and
+`tomoe memory` the heap and buffer use. `tomoe timings` prints the latency Tomoe
+spends on its own work, in nanoseconds: pointer and drag motion to the frame
+carrying it, a key press to the transaction applying it, the wait between an
+input and its frame, each phase of a policy transaction and of a frame, and a
+client commit to its frame. It also prints the same inputs measured to the
+vblank that presented them, so `latch-input` is how old the newest input was
+when the frame took it and `present-input` is how long every input waited for
+the display. The samples are kept only when the compositor starts with
+`TOMOE_TIMINGS=1`, so the default pays a branch per sample point and nothing
+else; `tests/timing.py` drives one event per frame through it for a repeatable
+table, alongside the bytes each sample path consed and every frame longer than a
+refresh, tagged with the collection it overlapped. `tests/trace.py` mounts a set
+of scripted policies and records the order every reducer was dispatched in, the
+one-shot commands they emitted and the layout and context every materialization
+settled on, then compares that record with `tests/trace.golden`: dependency
+chains, rule replacement, deferred deliveries, mount and unmount ownership, a
+failing reducer, a dependency cycle, eight windows placed by one grid extension,
+a delayed interval and a source swapped on disk all have to reproduce it exactly.
+
+Every output keeps a frame clock. It records what its compositions cost from the
+moment a repaint starts to the moment the commit is submitted, keeps the 99th
+percentile of that histogram, and adds a slack that grows whenever a frame lands
+a vblank late and decays while none do, so a missed frame widens the deadline
+instead of turning into the steady state. A repaint is armed for the next vblank
+minus that prediction, which leaves the whole period free for input: the frame
+takes the newest pointer position and the newest client buffers and still
+reaches the same vblank. When the prediction says the next vblank cannot be met,
+the repaint waits for the one after it and carries the input that arrived in
+between, rather than composing into a miss. An idle output arms nothing.
+`tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
+with and without `TOMOE_FRAME_CLOCK=0` for comparison, and asserts the drop.
 
 ## One table of commands
 

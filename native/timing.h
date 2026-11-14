@@ -33,10 +33,15 @@ enum timing_channel {
     TIMING_TRANSACTION,
     TIMING_MAT_TOTAL,
     TIMING_MAT_CONFIG,
+    TIMING_LATCH_INPUT,
+    TIMING_LATCH_COMMIT,
+    TIMING_PRESENT_INPUT,
+    TIMING_PRESENT_COMMIT,
     TIMING_CHANNELS
 };
 
 struct tomoe;
+struct screen;
 
 extern bool timing_enabled;
 
@@ -48,6 +53,8 @@ void timing_event_taken(struct tomoe *s);
 void timing_event_done(struct tomoe *s);
 void timing_commit(struct tomoe *s);
 void timing_frame_start(struct tomoe *s);
+void timing_frame_latch(struct screen *screen);
+void timing_screen_present(struct screen *screen, int64_t when_ns);
 void timing_frame_scene(struct tomoe *s, uint64_t ns);
 void timing_frame_draw(struct tomoe *s, uint64_t ns);
 void timing_frame_raster(struct tomoe *s, uint64_t ns);
