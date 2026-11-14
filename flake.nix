@@ -86,6 +86,14 @@
         }:
         let
           sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
+          cairo = pkgs.cairo.override {
+            x11Support = false;
+            xcbSupport = false;
+          };
+          pango = pkgs.pango.override {
+            x11Support = false;
+            inherit cairo;
+          };
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
@@ -122,8 +130,8 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             pkgs.libxkbcommon
-            pkgs.cairo
-            pkgs.pango
+            cairo
+            pango
             pkgs.libjpeg
             (resvg pkgs)
             pkgs.systemdLibs
