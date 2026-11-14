@@ -145,15 +145,19 @@ offscreen_id = machine.succeed(
 ).split()[0]
 
 
-def x_geometry():
+def x_geometry_of(window_id):
     fields = dict(
         line.split("=", 1)
         for line in machine.succeed(
-            f"DISPLAY={display} xdotool getwindowgeometry --shell {offscreen_id}"
+            f"DISPLAY={display} xdotool getwindowgeometry --shell {window_id}"
         ).splitlines()
         if "=" in line
     )
     return tuple(int(fields[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+
+
+def x_geometry():
+    return x_geometry_of(offscreen_id)
 
 
 offscreen_box = offscreen["geometry"]
@@ -229,6 +233,41 @@ for remap_order in [remap_titles, remap_titles[::-1]] * 2:
         machine.succeed(f"DISPLAY={display} xdotool windowmap {remap_ids[title]}")
         wait_drawn(title)
 machine.succeed("systemctl stop remap-0 remap-1")
+
+
+def x_side():
+    found = []
+    for window_id in machine.succeed(
+        f"DISPLAY={display} xdotool search --onlyvisible --name '^X11 '"
+    ).split():
+        title = machine.succeed(f"DISPLAY={display} xdotool getwindowname {window_id}").strip()
+        if title != "X11 Override":
+            found.append((title, x_geometry_of(window_id)))
+    return sorted(found)
+
+
+def reported_side():
+    found = []
+    for window in windows():
+        box = window.get("geometry")
+        if box and window["title"].startswith("X11 "):
+            found.append((window["title"], (box["x"], box["y"], box["w"], box["h"])))
+    return sorted(found)
+
+
+missed = []
+for index in range(8):
+    unit(f"fresh-{index}", f"{X11_CLIENT} normal 'X11 Fresh {index}'")
+    wait_drawn(f"X11 Fresh {index}")
+    for _ in range(100):
+        if x_side() == reported_side():
+            break
+        time.sleep(0.1)
+    if x_side() != reported_side():
+        missed.append((index, x_side(), reported_side()))
+    machine.succeed(f"systemctl stop fresh-{index}")
+    wait_gone(f"X11 Fresh {index}")
+assert not missed, missed
 
 machine.succeed(env(True) + "sh -c 'printf wayland-data | timeout 10 wl-copy' >/dev/null 2>&1")
 time.sleep(0.5)
