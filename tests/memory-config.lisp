@@ -1406,7 +1406,8 @@ this is a float or a fullscreen window, which the spine then sits beneath."
                                :anchors '(:top :right :bottom :left)
                                :layer :overlay
                                :click-through t
-                               :background '(:shader "shaders/trail-pixels.glsl" :fps 60 :idle 0.5)))
+                               :background '(:trail :cell 9 :life 0.35 :steps 4
+                                             :color #xb8e0ffff :idle 0.5)))
           nil))
 
 (define-extension "night-light" (:reads (:command)) (snapshot state event)

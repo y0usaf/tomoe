@@ -311,9 +311,6 @@ let
   scanoutProbe = pkgs.writeText "scanout-probe.lisp" ''
     (in-package #:tomoe-user)
 
-    (defparameter +scanout-trail-shader+
-      "${tomoe}/share/tomoe/examples/shaders/trail-pixels.glsl")
-
     (defparameter +scanout-states+
       (list :bar nil :bar-bottom nil :note nil :trail nil :empty nil :blank nil :away nil))
 
@@ -389,8 +386,8 @@ let
            (list (shell-surface :scanout-trail (ui :stack)
                                 :output name :anchors '(:top :left :right :bottom)
                                 :layer :overlay :click-through t
-                                :background (list :shader +scanout-trail-shader+
-                                                  :fps 60 :idle 0.5)))))))
+                                :background (list :trail :cell 9 :life 0.35
+                                                  :steps 4 :color #xb8e0ffff :idle 0.5)))))))
 
     (define-extension "scanout-probe" (:reads (:command :windows :outputs)
                                                :state +scanout-states+)
@@ -615,7 +612,7 @@ let
     install -m 644 ${./memory-config.lisp} $out/init.lisp
     install -m 644 ${./memory-gtk.css} $out/gtk.css
     install -m 644 ${memorySound}/sound.wav $out/sound.wav
-    for name in aurora cubes liquify okazz-glyphs okazz-spheres stars towers trail-pixels xmb; do
+    for name in aurora cubes liquify okazz-glyphs okazz-spheres stars towers xmb; do
       install -m 644 ${tomoe}/share/tomoe/examples/shaders/$name.glsl $out/shaders/$name.glsl
     done
     for name in balatro cassette-led cassette-squares dot-corridor glass-mound hex-spiral llama-herd llama-herd-night su-ei; do
