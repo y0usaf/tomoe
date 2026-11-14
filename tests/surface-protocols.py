@@ -200,4 +200,49 @@ cli("unmount bell-test")
 assert plist(inspect()[":NATIVE-SOUND"])[":STATE"] == ":OFF", inspect()
 machine.succeed("systemctl stop bell check-pipewire")
 
+cli("mount " + SIZE_PROBE)
+
+def size_window():
+    for window in items(inspect()[":WINDOWS"]):
+        window = plist(window)
+        if text(window[":APP-ID"]) == "tomoe-size-client":
+            return window
+    return None
+
+def size_geometry(window):
+    for entry in items(inspect()[":WINDOW-GEOMETRY"]):
+        entry = plist(entry)
+        if entry[":ID"] == window[":ID"]:
+            return int(entry[":WIDTH"]), int(entry[":HEIGHT"])
+    return None
+
+client("size", "--resize-probe --app-id tomoe-size-client --title SizeProbe"
+              " --size 320x240 --color e04020")
+machine.wait_until_succeeds("journalctl -u size -o cat | grep -qx 'resize-committed 640x480'",
+                            timeout=60)
+for _ in range(100):
+    window = size_window()
+    if window and (window[":WIDTH"], window[":HEIGHT"]) == ("640", "480") \
+            and size_geometry(window) == (640, 480):
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError((window, window and size_geometry(window)))
+
+def probe_pixel(x, y):
+    return [int(v) for v in machine.succeed(
+        ENV + f"WAYLAND_DISPLAY=check grim -g '{x},{y} 1x1' -t ppm - | od -An -v -tu1").split()][-3:]
+
+source = [224, 64, 32]
+for _ in range(100):
+    corners = [probe_pixel(100 + 4, 100 + 4), probe_pixel(100 + 316, 100 + 236),
+               probe_pixel(100 + 632, 100 + 476)]
+    if all(all(abs(a - b) <= 2 for a, b in zip(pixel, source)) for pixel in corners):
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError(corners)
+machine.succeed("systemctl stop size")
+cli("unmount size-probe")
+
 quit()

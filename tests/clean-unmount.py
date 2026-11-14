@@ -1,5 +1,7 @@
+import re
 SKIP = {("commands", "terminal"), ("commands", "launcher"), ("commands", "close"), ("commands", "exit-confirm")}
 COUNTERS = {":GENERATION", ":RASTERIZATIONS", ":ASSET-LOADS"}
+DISPATCHES = re.compile(r":DISPATCHES \d+")
 
 
 def files():
@@ -9,7 +11,7 @@ def files():
 def snapshot():
     state = inspect()
     ui = plist(state.pop(":NATIVE-UI"))
-    flat = {k: show(v).replace('"No focused window."', "NIL")
+    flat = {k: DISPATCHES.sub(":DISPATCHES 0", show(v).replace('"No focused window."', "NIL"))
             for k, v in state.items() if k not in COUNTERS}
     flat.update({":NATIVE-UI " + k: v for k, v in ui.items() if k not in COUNTERS})
     return flat, processes(), files()
@@ -69,9 +71,11 @@ def cycle(path):
 
 start("--bare")
 cli(f"mount {WALLPAPER_SETTINGS}")
+cli(f"mount {CLEAN_BASELINE}")
 client("a", "--mode xdg --app-id check-a")
 client("b", "--mode xdg --app-id check-b")
 client("layer", "--mode layer --namespace check-layer --layer top --anchor top,left,right --size 200x30 --exclusive-zone 30")
+machine.sleep(2)
 failures = []
 for path in SOURCES:
     failures += cycle(path)

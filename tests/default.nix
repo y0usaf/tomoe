@@ -247,6 +247,24 @@ let
                                              :height (floor (getf output :height) 3)))))
                 nil)))
   '';
+  sizeProbe = pkgs.writeText "size-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "size-probe" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (loop for window in (context snapshot :windows)
+                    collect (place (getf window :id) 100 100 640 480))
+              nil))
+  '';
+  cleanBaseline = pkgs.writeText "clean-baseline.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "clean-baseline" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (values nil
+              (loop for window in (context snapshot :windows)
+                    collect (place (getf window :id) 0 0 320 240))
+              nil))
+  '';
   busProbe = pkgs.writeText "bus-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "bus-probe" (:reads () :state nil) (snapshot state event)
@@ -764,7 +782,10 @@ let
     }
     {
       name = "surface-protocols";
-      script = builtins.readFile ./surface-protocols.py;
+      script = ''
+        SIZE_PROBE = "${sizeProbe}"
+      ''
+      + builtins.readFile ./surface-protocols.py;
     }
     {
       name = "integration";
@@ -834,6 +855,7 @@ let
       name = "clean-unmount";
       script = ''
         WALLPAPER_SETTINGS = "${wallpaperSettings}"
+        CLEAN_BASELINE = "${cleanBaseline}"
         SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
             "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
         )

@@ -272,8 +272,9 @@ static void window_geometry_event(struct window *w) {
     struct event *event; size_t size;
     FILE *out = begin_event(w->server, &event, &size);
     if (!out) return;
-    fprintf(out, "(:type :geometry :id %u :width %d :height %d)",
-        w->target.id, w->client_width, w->client_height);
+    fprintf(out, "(:type :geometry :id %u :width %d :height %d"
+        " :client-width %d :client-height %d)",
+        w->target.id, w->width, w->height, w->client_width, w->client_height);
     end_event(w->server, event, out);
 }
 
@@ -819,6 +820,11 @@ void view_publish(struct tomoe *s, const struct presentation *plan) {
     s->view_zoom = values[2] > 0 ? values[2] : 1;
 }
 
+static void window_track_size(struct window *w) {
+    w->width = positive_physical_size(w->client_width, w->target.scale);
+    w->height = positive_physical_size(w->client_height, w->target.scale);
+}
+
 static void window_mapped(struct window *w) {
     bool first_admission = !w->admitted;
     struct ghost *ghost, *next;
@@ -829,10 +835,9 @@ static void window_mapped(struct window *w) {
     xdg_target_geometry(w);
     window_update_scale(w);
     window_client_geometry(w, &w->client_width, &w->client_height);
+    window_track_size(w);
     if (first_admission) {
         if (!cache_xdg_metadata(w) || !cache_xdg_requested(w, NULL)) return;
-        w->width = positive_physical_size(w->client_width, w->target.scale);
-        w->height = positive_physical_size(w->client_height, w->target.scale);
         w->desired_width = w->width;
         w->desired_height = w->height;
         w->desired_visible = true;
@@ -908,6 +913,7 @@ static void window_commit(struct wl_listener *listener, void *data) {
         if (geometry_changed) {
             w->client_width = client_width;
             w->client_height = client_height;
+            window_track_size(w);
         }
     }
     bool fullscreen = w->xdg->current.fullscreen;

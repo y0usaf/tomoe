@@ -70,6 +70,9 @@ struct client {
     struct xdg_dialog_v1 *dialog;
     bool bell_probe;
     unsigned bell_step;
+    bool resize_probe;
+    unsigned resize_step;
+    int crop_width, crop_height;
     struct wp_alpha_modifier_surface_v1 *alpha;
     struct wl_surface *surface;
     struct wl_buffer *buffer;
@@ -253,7 +256,10 @@ static void usage(void) {
            "  --image PATH         binary P6 PPM to fill the buffer instead (exact size)\n"
            "  --seconds N          run time (default 30)\n"
            "  --commit-rate HZ     after mapping, commit HZ times a second with a frame callback\n"
-           "                       it never waits for, and read events once a second\n",
+           "                       it never waits for, and read events once a second\n"
+           "  --resize-probe       map at --size, then answer the first configure that\n"
+           "                       differs by committing a twice-as-large buffer cropped to\n"
+           "                       that size with a viewport source, as Chromium does\n",
            program);
 }
 
@@ -281,6 +287,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--tag-probe") == 0) state->tag_probe = true;
         else if (strcmp(option, "--dialog-probe") == 0) state->dialog_probe = true;
         else if (strcmp(option, "--bell-probe") == 0) state->bell_probe = true;
+        else if (strcmp(option, "--resize-probe") == 0) state->resize_probe = true;
         else if (strcmp(option, "--drag") == 0) { parse_drag(option_value(option, value), state->drag); i++; }
         else if (strcmp(option, "--seconds") == 0)
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
@@ -401,6 +408,11 @@ static void create_buffer(struct client *state, int width, int height) {
     uint32_t color = parse_color(state->color);
     uint32_t *words = pixels;
     for (size_t i = 0; i < size / sizeof(uint32_t); i++) words[i] = color;
+    if (state->resize_probe && state->crop_width > 0 && state->crop_height > 0)
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+                if (x >= state->crop_width || y >= state->crop_height)
+                    words[y * width + x] = 0xff00ff00u;
     if (state->image) fill_from_ppm(state->image, words, width, height);
     struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
     struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
@@ -423,6 +435,25 @@ static void attach_and_commit(struct client *state, int width, int height) {
         state->pixels = NULL;
         create_buffer(state, width, height);
     }
+    wl_surface_attach(state->surface, state->buffer, 0, 0);
+    wl_surface_damage(state->surface, 0, 0, width, height);
+    wl_surface_commit(state->surface);
+}
+
+static void commit_cropped_source(struct client *state, int width, int height) {
+    int buffer_width = width * 2, buffer_height = height * 2;
+    if (state->buffer) wl_buffer_destroy(state->buffer);
+    if (state->pixels) munmap(state->pixels, state->pixels_size);
+    state->buffer = NULL;
+    state->pixels = NULL;
+    state->crop_width = width;
+    state->crop_height = height;
+    create_buffer(state, buffer_width, buffer_height);
+    if (!state->viewport)
+        state->viewport = wp_viewporter_get_viewport(viewporter, state->surface);
+    wp_viewport_set_source(state->viewport, wl_fixed_from_double(0), wl_fixed_from_double(0),
+        wl_fixed_from_double(width), wl_fixed_from_double(height));
+    xdg_surface_set_window_geometry(state->xdg_surface, 0, 0, width, height);
     wl_surface_attach(state->surface, state->buffer, 0, 0);
     wl_surface_damage(state->surface, 0, 0, width, height);
     wl_surface_commit(state->surface);
@@ -461,6 +492,17 @@ static void xdg_surface_configure(void *data, struct xdg_surface *surface, uint3
     struct client *state = data;
     int width = state->preferred_width > 0 ? state->preferred_width : state->width;
     int height = state->preferred_height > 0 ? state->preferred_height : state->height;
+    if (state->resize_probe && state->resize_step == 0 && width > 0 && height > 0 &&
+            (width != state->width || height != state->height)) {
+        state->resize_step = 1;
+        xdg_surface_ack_configure(surface, serial);
+        configured(width, height);
+        commit_cropped_source(state, width, height);
+        printf("resize-committed %dx%d\n", width, height);
+        fflush(stdout);
+        mapped(state);
+        return;
+    }
     xdg_surface_ack_configure(surface, serial);
     configured(width, height);
     attach_and_commit(state, width, height);
@@ -777,6 +819,8 @@ int main(int count, char **arguments) {
     if (!shm) fail("the compositor does not advertise wl_shm");
     if (wm_base) xdg_wm_base_add_listener(wm_base, &xdg_wm_base_listener, &state);
     if (state.protocol_error) protocol_error(state.protocol_error);
+    if (state.resize_probe && !viewporter)
+        fail("the compositor does not advertise wp_viewporter");
     if (strcmp(state.mode, "drag") == 0) {
         if (!pointer_manager) fail("the compositor does not advertise zwlr_virtual_pointer_manager_v1");
         drag(&state);
