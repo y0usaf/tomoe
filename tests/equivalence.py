@@ -20,7 +20,7 @@ def control(binary, arguments):
         f"{binary} --socket check {arguments}")
 
 
-def launch(binary, policy, log):
+def launch(binary, policy, log, bare=False):
     machine.execute("rm -rf %s && mkdir -p %s" % (WORK, WORK))
     machine.execute("systemctl stop tomoe 2>/dev/null")
     machine.execute("systemctl reset-failed tomoe 2>/dev/null")
@@ -31,7 +31,9 @@ def launch(binary, policy, log):
         "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin "
         "--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv=LIBGL_ALWAYS_SOFTWARE=1 "
         f"--setenv=TOMOE_SCENARIO_LOG={log} "
-        f"{binary} --socket check --backend headless --no-watch --config {policy}")
+        f"{binary} --socket check --backend headless --no-watch "
+        + ("--bare " if bare else "")
+        + f"--config {policy}")
     for _ in range(600):
         if machine.execute(
                 f"XDG_RUNTIME_DIR={RUNTIME} {binary} --socket check inspect")[0] == 0:
@@ -91,8 +93,8 @@ def journal(unit):
             if re.match(r"^(configured|mapped|dragged|pressed|released)\b", line)]
 
 
-def scenario(binary, policy, tag, log, transcript):
-    launch(binary, policy, log)
+def scenario(binary, policy, tag, log, transcript, bare=False):
+    launch(binary, policy, log, bare)
     for name in ("one", "two", "three"):
         window(f"w-{tag}-{name}", name)
     script, plan = [], []
@@ -178,6 +180,10 @@ def scenario(binary, policy, tag, log, transcript):
     chord(SUPER, KEY_F)
     handshake("tiled")
     chord(SUPER, KEY_F2)
+    move(640, 500)
+    handshake("near")
+    move(1240, 700)
+    handshake("far")
     move(640, 500)
     handshake("final")
 
@@ -265,7 +271,7 @@ counts = [machine.succeed(f"grep -c '^counter' {log}").strip()
 assert counts[0] == counts[1] and int(counts[0]) > 0, f"the counter saw {counts}"
 print(f"equivalence: a reducer without a contract saw all {counts[0]} pointer events, as before")
 
-transcript = scenario(FASTPATH, CONTRACT_POLICY, "contract", "/run/contract.log", [])
+transcript = scenario(FASTPATH, CONTRACT_POLICY, "contract", "/run/contract.log", [], bare=True)
 wakes = machine.succeed("grep '^contract' /run/contract.log || true").splitlines()
 assert wakes, "the contract published no wakes at all"
 dispatches = None
@@ -275,8 +281,14 @@ for line in transcript:
 assert dispatches is not None, "the contract extension is not mounted"
 assert dispatches - 1 == len(wakes), (
     f"the contract holder ran {dispatches - 1} times for {len(wakes)} published wakes")
-assert any("corner" in line for line in wakes), wakes
-assert any(":top" in line for line in wakes), wakes
-assert any("distance=" in line for line in wakes), wakes
+assert any('entered=("corner")' in line for line in wakes), wakes
+assert any('left=("corner")' in line for line in wakes), wakes
+assert any("in=(:top)" in line for line in wakes), wakes
+assert any("out=(:top)" in line for line in wakes), wakes
+assert len([line for line in wakes
+            if "entered=()" in line and "left=()" in line and "in=()" in line
+            and "out=()" in line]) >= 2, wakes
+assert all(int(line.split("distance=")[1]) >= 500 for line in wakes
+           if "entered=()" in line and "in=()" in line), wakes
 print(f"contract: {len(wakes)} wakes, {dispatches - 1} Lisp runs, "
       "the corner, the top edge and the distance threshold all reported")
