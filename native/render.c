@@ -516,19 +516,13 @@ static const struct builtin {
 static void warm_remember(struct render *r, const char *source);
 
 static EGLContext compile_begin(struct render *r) {
-    EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    EGLContext scratch = eglCreateContext(r->display, EGL_NO_CONFIG_KHR, r->context, attribs);
-    if (scratch == EGL_NO_CONTEXT) return EGL_NO_CONTEXT;
-    if (eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, scratch)) return scratch;
-    eglDestroyContext(r->display, scratch);
-    return EGL_NO_CONTEXT;
+    current(r);
+    return r->context;
 }
 
 static void compile_end(struct render *r, EGLContext scratch) {
     if (scratch == EGL_NO_CONTEXT) return;
     glFinish();
-    eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, r->context);
-    eglDestroyContext(r->display, scratch);
     malloc_trim(0);
 }
 
