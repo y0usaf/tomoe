@@ -93,7 +93,10 @@ let
     src = ./x11-client.c;
     dontUnpack = true;
     strictDeps = true;
-    buildInputs = [ pkgs.libx11 pkgs.xorgproto ];
+    buildInputs = [
+      pkgs.libx11
+      pkgs.xorgproto
+    ];
     buildPhase = ''
       $CC -std=c11 -O2 -Wall -Wextra -Werror \
         -I${pkgs.lib.getDev pkgs.libx11}/include -I${pkgs.xorgproto}/include \
@@ -106,7 +109,10 @@ let
     src = ./security-client.c;
     dontUnpack = true;
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       xml=${pkgs.wayland-protocols}/share/wayland-protocols/staging/security-context/security-context-v1.xml
@@ -268,16 +274,22 @@ let
       (values state (list (configure-output "HEADLESS-1" :mode '(800 600 60)
                                             :scale 1 :position '(0 0))) nil))
   '';
-  checkWith =
-    extra: name: script:
+  vm =
+    {
+      name,
+      suites,
+      packages ? [ ],
+      kernelModules ? [
+        "vgem"
+        "udmabuf"
+      ],
+      timeout ? 3600,
+    }:
     pkgs.testers.runNixOSTest {
-      name = "tomoe-${name}";
+      inherit name;
+      globalTimeout = timeout;
       nodes.machine = {
-        imports = [ extra ];
-        boot.kernelModules = [
-          "vgem"
-          "udmabuf"
-        ];
+        boot.kernelModules = kernelModules;
         hardware.graphics.enable = true;
         environment.systemPackages = [
           tomoe
@@ -287,166 +299,246 @@ let
           pkgs.libnotify
           pkgs.xdpyinfo
           pkgs.wayland-utils
-        ];
-        virtualisation.memorySize = 2048;
-        virtualisation.cores = 4;
-      };
-      testScript = builtins.readFile ./tomoe.py + script;
-    };
-  check = checkWith { };
-in
-{
-  pointer-protocols = checkWith {
-    environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
-  } "pointer-protocols" ''
-    machine.wait_for_unit("multi-user.target")
-    machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
-  '';
-  security = checkWith {
-    environment.systemPackages = [ securityClient pkgs.wayland-utils ];
-  } "security" ''
-    start("--bare", bus=False)
-    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
-    machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
-    quit()
-  '';
-  text-input = check "text-input" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
-    quit()
-  '';
-  input-method = check "input-method" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
-    quit()
-  '';
-  shortcuts-inhibit = check "shortcuts-inhibit" ''
-    start("--bare")
-    cli("mount ${imePolicy}")
-    cli("mount ${shortcutBindings}")
-    machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
-    quit()
-  '';
-  surface-protocols = checkWith { environment.systemPackages = [ pkgs.pipewire ]; }
-    "surface-protocols" (builtins.readFile ./surface-protocols.py);
-  integration = check "integration" (
-    ''
-      ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
-      SCREENSHOT_PROBE = "${screenshotProbe}"
-      OFFSCREEN_PROBE = "${offscreenProbe}"
-      BLUR_PROBE = "${blurProbe}"
-      THEME_PROBE = "${themeProbe}"
-      VIEWPORT_PROBE = "${viewportProbe}"
-    ''
-    + builtins.readFile ./integration.py
-  );
-  commands = check "commands" (builtins.readFile ./commands.py);
-  bare = check "bare" (
-    ''
-      VIRTUAL_PROBE = "${virtualProbe}"
-    ''
-    + builtins.readFile ./bare.py
-  );
-  fifo = check "fifo" (builtins.readFile ./fifo.py);
-  xwayland =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.xwayland
-          pkgs.xterm
-          pkgs.zenity
-          pkgs.xeyes
-          pkgs.xlogo
-          pkgs.xprop
-          pkgs.xwininfo
-          pkgs.xclip
-          pkgs.wl-clipboard
-          pkgs.xdotool
-          pkgs.wmctrl
-          pkgs.fontmiscmisc
-          pkgs.xset
-          x11Client
-        ];
-      }
-      "xwayland"
-      (
-        ''
-          X11_CLIENT = "${x11Client}/bin/tomoe-x11-client"
-          X11_FONTS = "${pkgs.fontmiscmisc}/share/fonts/X11/misc"
-        ''
-        + builtins.readFile ./xwayland.py
-      );
-  output-management =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.wlr-randr
-          pkgs.wayland-utils
-          outputClient
-        ];
-      }
-      "output-management"
-      (
-        ''
-          VIRTUAL_PROBE = "${virtualProbe}"
-          OUTPUT_OVERRIDE_PROBE = "${outputOverrideProbe}"
-        ''
-        + builtins.readFile ./output-management.py
-      );
-  portal =
-    checkWith
-      {
-        environment.systemPackages = [
-          pkgs.pipewire
-          pkgs.xdg-desktop-portal
-        ];
+        ]
+        ++ packages;
         environment.pathsToLink = [
           "/share/dbus-1"
           "/share/xdg-desktop-portal"
         ];
+        environment.variables.LP_NUM_THREADS = "4";
+        virtualisation.memorySize = 2048;
+        virtualisation.cores = 4;
+      };
+      testScript = builtins.readFile ./tomoe.py + ''
+        import traceback
+
+        suites = ${builtins.toJSON suites}
+
+        def services():
+            listing = machine.execute(
+                "systemctl list-units --all --type=service --plain --no-legend",
+                check_return=False)[1]
+            return sorted({line.split()[0] for line in listing.splitlines() if line.split()})
+
+        def transients():
+            found = []
+            for unit in services():
+                path = machine.execute("systemctl show -P FragmentPath " + unit,
+                                       check_return=False)[1].strip()
+                if path.startswith("/run/systemd/transient/"):
+                    found.append(unit)
+            return found
+
+        def reset():
+            for unit in transients():
+                machine.execute("systemctl stop " + unit, check_return=False)
+                machine.execute("systemctl reset-failed " + unit, check_return=False)
+            left = transients()
+            if left:
+                print("tomoe reset could not clear: " + " ".join(left), flush=True)
+            machine.execute("rm -rf /run/tomoe /run/check-bus /run/bus-probe "
+                            "/run/security-globals /run/fifo-globals /tmp/.X11-unix/* "
+                            "/tmp/.X*-lock", check_return=False)
+
+        failures = []
+        for suite in suites:
+            print("tomoe suite: " + suite["name"], flush=True)
+            reset()
+            environment = dict(globals())
+            try:
+                exec(compile(suite["script"], "<" + suite["name"] + ">", "exec"), environment)
+            except Exception:
+                failures.append((suite["name"], traceback.format_exc()))
+                print("tomoe suite FAILED: " + suite["name"] + "\n"
+                      + failures[-1][1], flush=True)
+            else:
+                print("tomoe suite passed: " + suite["name"], flush=True)
+        reset()
+        if failures:
+            raise AssertionError(
+                str(len(failures)) + " of " + str(len(suites)) + " suites failed: "
+                + ", ".join(name for name, _ in failures) + "\n"
+                + "\n".join("--- " + name + " ---\n" + trace for name, trace in failures))
+      '';
+    };
+  compositorPackages = [
+    pkgs.python3
+    pkgs.wayland-utils
+    pkgs.pipewire
+    pkgs.xdg-desktop-portal
+    pkgs.wlr-randr
+    pkgs.xwayland
+    pkgs.xterm
+    pkgs.zenity
+    pkgs.xeyes
+    pkgs.xlogo
+    pkgs.xprop
+    pkgs.xwininfo
+    pkgs.xclip
+    pkgs.wl-clipboard
+    pkgs.xdotool
+    pkgs.wmctrl
+    pkgs.fontmiscmisc
+    pkgs.xset
+    securityClient
+    outputClient
+    x11Client
+  ];
+  compositorSuites = [
+    {
+      name = "pointer-protocols";
+      script = ''
+        machine.wait_for_unit("multi-user.target")
+        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client ${./gesture-inject.lisp}")
+      '';
+    }
+    {
+      name = "security";
+      script = ''
+        start("--bare", bus=False)
+        machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${pkgs.wayland-utils}/bin/wayland-info > /run/security-globals")
+        machine.succeed("env -i HOME=/root XDG_RUNTIME_DIR=/run/tomoe WAYLAND_DISPLAY=check ${securityClient}/bin/tomoe-security-client")
+        quit()
+      '';
+    }
+    {
+      name = "text-input";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client text-only")
+        quit()
+      '';
+    }
+    {
+      name = "input-method";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client")
+        quit()
+      '';
+    }
+    {
+      name = "shortcuts-inhibit";
+      script = ''
+        start("--bare")
+        cli("mount ${imePolicy}")
+        cli("mount ${shortcutBindings}")
+        machine.succeed(ENV + "WAYLAND_DISPLAY=check tomoe-ime-client shortcuts")
+        quit()
+      '';
+    }
+    {
+      name = "surface-protocols";
+      script = builtins.readFile ./surface-protocols.py;
+    }
+    {
+      name = "integration";
+      script = ''
+        ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
+        SCREENSHOT_PROBE = "${screenshotProbe}"
+        OFFSCREEN_PROBE = "${offscreenProbe}"
+        BLUR_PROBE = "${blurProbe}"
+        THEME_PROBE = "${themeProbe}"
+        VIEWPORT_PROBE = "${viewportProbe}"
+      ''
+      + builtins.readFile ./integration.py;
+    }
+    {
+      name = "commands";
+      script = builtins.readFile ./commands.py;
+    }
+    {
+      name = "bare";
+      script = ''
+        VIRTUAL_PROBE = "${virtualProbe}"
+      ''
+      + builtins.readFile ./bare.py;
+    }
+    {
+      name = "fifo";
+      script = builtins.readFile ./fifo.py;
+    }
+    {
+      name = "xwayland";
+      script = ''
+        X11_CLIENT = "${x11Client}/bin/tomoe-x11-client"
+        X11_FONTS = "${pkgs.fontmiscmisc}/share/fonts/X11/misc"
+      ''
+      + builtins.readFile ./xwayland.py;
+    }
+    {
+      name = "output-management";
+      script = ''
+        VIRTUAL_PROBE = "${virtualProbe}"
+        OUTPUT_OVERRIDE_PROBE = "${outputOverrideProbe}"
+      ''
+      + builtins.readFile ./output-management.py;
+    }
+    {
+      name = "portal";
+      script = ''
+        CAST = "${./cast.py}"
+        CAST_PYTHON = "${
+          pkgs.python3.withPackages (p: [
+            p.dbus-python
+            p.pygobject3
+          ])
+        }/bin/python3"
+        PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
+      ''
+      + builtins.readFile ./portal.py;
+    }
+    {
+      name = "session-bus";
+      script = ''
+        BUS_PROBE = "${busProbe}"
+      ''
+      + builtins.readFile ./session-bus.py;
+    }
+    {
+      name = "clean-unmount";
+      script = ''
+        WALLPAPER_SETTINGS = "${wallpaperSettings}"
+        SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
+            "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
+        )
+      ''
+      + builtins.readFile ./clean-unmount.py;
+    }
+    {
+      name = "livepatch";
+      script = ''
+        GAP_PATCH = "${livePatchGap}"
+        KEYBOARD_PATCH = "${livePatchKeyboard}"
+      ''
+      + builtins.readFile ./livepatch.py;
+    }
+  ];
+in
+{
+  compositor = vm {
+    name = "tomoe-compositor";
+    suites = compositorSuites;
+    packages = compositorPackages;
+  };
+  kms = vm {
+    name = "tomoe-kms";
+    kernelModules = [
+      "vgem"
+      "udmabuf"
+      "vkms"
+    ];
+    timeout = 900;
+    suites = [
+      {
+        name = "kms-wake";
+        script = ''
+          WAKE_PROBE = "${wakeProbe}"
+        ''
+        + builtins.readFile ./kms-wake.py;
       }
-      "portal"
-      (
-        ''
-          CAST = "${./cast.py}"
-          CAST_PYTHON = "${
-            pkgs.python3.withPackages (p: [
-              p.dbus-python
-              p.pygobject3
-            ])
-          }/bin/python3"
-          PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
-        ''
-        + builtins.readFile ./portal.py
-      );
-  session-bus = check "session-bus" (
-    ''
-      BUS_PROBE = "${busProbe}"
-    ''
-    + builtins.readFile ./session-bus.py
-  );
-  clean-unmount = check "clean-unmount" (
-    ''
-      WALLPAPER_SETTINGS = "${wallpaperSettings}"
-      SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
-          "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
-      )
-    ''
-    + builtins.readFile ./clean-unmount.py
-  );
-  livepatch = check "livepatch" (
-    ''
-      GAP_PATCH = "${livePatchGap}"
-      KEYBOARD_PATCH = "${livePatchKeyboard}"
-    ''
-    + builtins.readFile ./livepatch.py
-  );
-  kms-wake = checkWith { boot.kernelModules = [ "vkms" ]; } "kms-wake" (
-    ''
-      WAKE_PROBE = "${wakeProbe}"
-    ''
-    + builtins.readFile ./kms-wake.py
-  );
+    ];
+  };
 }

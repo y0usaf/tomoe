@@ -376,7 +376,7 @@ Bug reports, questions and odd setups are welcome in the
 
 ```sh
 nix build          # the package
-nix flake check    # NixOS VM tests; needs KVM
+nix flake check    # two KVM tests (headless suites, vkms wake); needs /dev/kvm
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
 

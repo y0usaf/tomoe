@@ -59,8 +59,19 @@ start("--bare")
 client("window", "--mode xdg --app-id check-livepatch --title check --size 320x200")
 await_state(lambda: items(inspect()[":WINDOW-GEOMETRY"]), "the window to be placed")
 
+def stable(box=BOX, seconds=30):
+    deadline = time.monotonic() + seconds
+    previous = image(box)
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        current = image(box)
+        if current == previous:
+            return current
+        previous = current
+    raise AssertionError("the empty region never stopped changing")
+
+before = stable()
 before_state = state()
-before = image()
 assert image() == before, "the empty region is not stable"
 assert entries(":WINDOW-GEOMETRY")[0][":X"] == "0", before_state[":WINDOW-GEOMETRY"]
 applied = json.loads(cli(f"command patch file={GAP_PATCH}"))
