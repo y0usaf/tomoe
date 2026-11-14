@@ -21,6 +21,20 @@
 (defvar *invocations* 0
   "Counts accepted reducer results and rule definitions replaced in place.")
 
+(defvar *timing* nil
+  "Whether the native side keeps latency samples, so the loop can report when a
+transaction has returned without paying for a call it does not need.")
+
+
+(defmacro with-sample ((name) &body body)
+  "Record how long BODY takes on the named native timing path, when it is kept."
+  (let ((start (gensym "START-")))
+    `(if *timing*
+         (let ((,start (%timing-now)))
+           (prog1 (progn ,@body)
+             (%timing-sample (%timing-channel ,name) (- (%timing-now) ,start))))
+         (progn ,@body))))
+
 (defstruct mounted spec state effects (dispatches 0) (failures 0) last-error
   rule-parent rule-name rule-window rule-definition rule-pending)
 (defstruct runtime backend socket sources mounts windows client-geometries outputs connectors effective layers
@@ -31,6 +45,7 @@
   system (system-due 0) notification-producer mpris-producer battery-producer network-producer tray-producer
   (running t) last-error (generation 0) (watch t) source-stamps pending-context output-recovery-failures
   (outputs-revision 0) (window-buffer-generation 0) timers executions retired-executions (execution-turn 0)
+  reads-cache layers-cache
   watches (watch-turn 0)
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
@@ -589,28 +604,30 @@ invocation since the last materialization yield that context again."
   "Reconstruct owned context. Preserve live clients, output facts, and map order.
 Unmount removes a contribution, exposing the preceding owner or these defaults.
 The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
-  (setf mounts (prune-rule-mounts runtime mounts))
-  (refresh-output-facts runtime)
-  (let ((m (make-materialization
-            :layout (loop for window in (runtime-windows runtime)
-                          collect (list :id (getf window :id) :x 0 :y 0
-                                        :width (max 1 (getf window :width))
-                                        :height (max 1 (getf window :height)) :visible t
-                                        :fullscreen nil :maximize nil :properties nil))
-            :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime))
-            :layers (copy-data (runtime-layers runtime))
-            :keyboard (default-keyboard-config)
-            :settings (%settings-defaults +settings+)
-            :view (list :x 0 :y 0 :zoom 1d0))))
-    (dolist (phase '(0 1))
-      (when (= phase 1)
-        (setf (materialization-mod-bit m)
-              (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64))))
-      (dolist (mounted mounts)
-        (dolist (effect (mounted-effects mounted))
-          (let ((definition (%effect-definition (effect-kind effect))))
-            (when (and (effect-definition-reduce definition) (= phase (effect-definition-phase definition)))
-              (funcall (effect-definition-reduce definition) m (effect-arguments effect) mounted))))))
+  (let ((m (with-sample ("mat-init")
+             (setf mounts (prune-rule-mounts runtime mounts))
+             (refresh-output-facts runtime)
+             (make-materialization
+              :layout (loop for window in (runtime-windows runtime)
+                            collect (list :id (getf window :id) :x 0 :y 0
+                                          :width (max 1 (getf window :width))
+                                          :height (max 1 (getf window :height)) :visible t
+                                          :fullscreen nil :maximize nil :properties nil))
+              :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime))
+              :layers (copy-data (runtime-layers runtime))
+              :keyboard (default-keyboard-config)
+              :settings (%settings-defaults +settings+)
+              :view (list :x 0 :y 0 :zoom 1d0)))))
+    (with-sample ("mat-replay")
+      (dolist (phase '(0 1))
+        (when (= phase 1)
+          (setf (materialization-mod-bit m)
+                (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64))))
+        (dolist (mounted mounts)
+          (dolist (effect (mounted-effects mounted))
+            (let ((definition (%effect-definition (effect-kind effect))))
+              (when (and (effect-definition-reduce definition) (= phase (effect-definition-phase definition)))
+                (funcall (effect-definition-reduce definition) m (effect-arguments effect) mounted)))))))
     (with-accessors ((layout materialization-layout) (stacking materialization-stacking)
                      (layers materialization-layers) (focused materialization-focused)
                      (data materialization-data) (surfaces materialization-surfaces)
@@ -625,28 +642,44 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                (connected-output-config
                 (list :connectors live-connectors :output-config output-config)))
              (output-resolution
-               (multiple-value-list (resolve-output-preview runtime connected live-connectors)))
+               (with-sample ("mat-output")
+                 (multiple-value-list
+                  (resolve-output-preview runtime connected live-connectors))))
              (output-preview (first output-resolution))
              (native-output-config (second output-resolution))
              (output-failures (third output-resolution))
              (output-facts (getf output-preview :outputs))
              (connector-facts (output-connectors output-preview)))
-        (%quantize-layout layout view output-facts)
+        (with-sample ("mat-quantize")
+          (%quantize-layout layout view output-facts))
         (multiple-value-bind (resolved-layers workareas)
-            (if (runtime-backend runtime)
-                (preview-native-layers (runtime-backend runtime) output-facts layers
-                                       (resolved-layer-overrides mounts))
-                (values layers (full-workareas output-facts)))
+            (with-sample ("mat-layers")
+              (let* ((overrides (resolved-layer-overrides mounts))
+                     (cache (runtime-layers-cache runtime)))
+                (if (and cache (equal (first cache) output-facts)
+                         (equal (second cache) layers) (equal (third cache) overrides))
+                    (values (fourth cache) (fifth cache))
+                    (multiple-value-bind (resolved areas)
+                        (if (runtime-backend runtime)
+                            (preview-native-layers (runtime-backend runtime) output-facts layers
+                                                   overrides)
+                            (values layers (full-workareas output-facts)))
+                      (setf (runtime-layers-cache runtime)
+                            (list output-facts layers overrides resolved areas))
+                      (values resolved areas)))))
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
           (multiple-value-bind (surface-plans shell-workareas)
-              (resolve-shell-surfaces
-               (nreverse surfaces) output-facts workareas
-               :asset-loader (when (runtime-backend runtime)
-                               (native-ui-asset-loader (runtime-backend runtime)))
-               :viewport (shell-viewport output-facts (materialization-data m)))
-          (list :windows (runtime-windows runtime)
-                :window-geometry (resolved-window-geometry runtime layout view output-facts)
+              (with-sample ("mat-surfaces")
+               (resolve-shell-surfaces
+                (nreverse surfaces) output-facts workareas
+                :asset-loader (when (runtime-backend runtime)
+                                (native-ui-asset-loader (runtime-backend runtime)))
+                :viewport (shell-viewport output-facts (materialization-data m))))
+          (with-sample ("mat-build")
+           (list :windows (runtime-windows runtime)
+                :window-geometry (with-sample ("mat-quantize")
+                                   (resolved-window-geometry runtime layout view output-facts))
                 :rules (resolved-rule-properties runtime mounts) :data data
                 :services (copy-data (runtime-services runtime))
                 :system (copy-data (runtime-system runtime))
@@ -676,7 +709,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                 :bindings (sort bindings
                                 (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                   (and (= (getf a :modifiers) (getf b :modifiers))
-                                                       (< (getf a :code) (getf b :code)))))))))))))
+                                                       (< (getf a :code) (getf b :code))))))))))))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE
@@ -752,6 +785,7 @@ when it is not 1."
         (setf (runtime-outputs-revision runtime) (%outputs-revision backend))))
     (setf (runtime-mounts runtime) mounts (runtime-effective runtime) context
           (runtime-output-recovery-failures runtime) nil)
+    (setf (runtime-reads-cache runtime) nil)
     (install-watches runtime watches)
     (install-timers runtime timers)
     (install-executions runtime executions)
@@ -761,8 +795,29 @@ when it is not 1."
     (when (runtime-json-server runtime) (publish-json-context runtime context mounts))
     spawns))
 
+(defun mounted-reads (runtime)
+  "The context keys the mounted policy reacts to, cached until a commit, which is
+the only thing that changes the mounts or the effects they own."
+  (or (runtime-reads-cache runtime)
+      (setf (runtime-reads-cache runtime)
+            (remove-duplicates
+             (loop for mounted in (append (root-mounts (runtime-mounts runtime))
+                                          (rule-instances (runtime-mounts runtime)))
+                   append (mount-context-reads mounted))))))
+
+(defun event-matters-p (runtime changed force)
+  "Whether a transaction could differ from the committed context. An event whose
+keys no mounted policy reads, with no forced owner and nothing pending, cannot
+change anything, so staging a candidate context would rebuild it for nothing."
+  (or force
+      (runtime-pending-context runtime)
+      (and changed (intersection changed (mounted-reads runtime)))
+      (loop for mounted in (rule-instances (runtime-mounts runtime))
+            thereis (mounted-rule-pending mounted))))
+
 (defun transact (runtime mounts event changed &optional force)
-  (unwind-protect (%transact runtime mounts event changed force)
+  (unwind-protect (with-sample ("transaction")
+                    (%transact runtime mounts event changed force))
     (discard-ui-asset-scratch runtime)))
 
 (defun discard-ui-asset-scratch (runtime)
@@ -774,24 +829,29 @@ when it is not 1."
 A bad callback or a dependency cycle discards the entire candidate transaction.
 Pending external invalidations join the current event, never an event replay."
   (let* ((*materialized* (list nil -1 nil))
-         (candidate (prune-rule-mounts
-                     runtime (mapcar #'copy-mounted
-                                     (append (root-mounts mounts)
-                                             (rule-instances (runtime-mounts runtime))))))
-         (context (materialize runtime candidate))
-         (dirty (union (runtime-pending-context runtime)
-                       (union changed (changed-keys (runtime-effective runtime) context))))
+         (candidate (with-sample ("tx-mounts")
+                      (prune-rule-mounts
+                       runtime (mapcar #'copy-mounted
+                                       (append (root-mounts mounts)
+                                               (rule-instances (runtime-mounts runtime)))))))
+         (context (with-sample ("tx-material") (materialize runtime candidate)))
+         (dirty (with-sample ("tx-dirty")
+                  (union (runtime-pending-context runtime)
+                         (union changed (changed-keys (runtime-effective runtime) context)))))
          (commands nil)
          (deferred-deliveries (make-hash-table :test #'eq))
          (proposal-baselines
-           (let ((states (make-hash-table :test #'eq)))
-             (dolist (mounted candidate states)
-               (setf (gethash (mounted-spec mounted) states) (copy-data (mounted-state mounted))))))
+           (with-sample ("tx-baselines")
+             (let ((states (make-hash-table :test #'eq)))
+               (dolist (mounted candidate states)
+                 (setf (gethash (mounted-spec mounted) states)
+                       (copy-data (mounted-state mounted)))))))
          (proposal-deliveries (make-hash-table :test #'eq))
          (initial-event event)
          (initial-force force))
     (labels ((invoke (mounted delivered)
-               (when (admission-scope-p mounted candidate)
+               (with-sample ("tx-invoke")
+                (when (admission-scope-p mounted candidate)
                  (let ((spec (mounted-spec mounted)))
                    (multiple-value-bind (baseline existed) (gethash spec proposal-baselines)
                      (setf (mounted-state mounted)
@@ -804,7 +864,7 @@ Pending external invalidations join the current event, never an event replay."
                (setf commands
                      (nconc commands
                             (mapcar (lambda (command) (cons (mounted-spec mounted) command))
-                                    (invoke-extension runtime mounted context delivered))))))
+                                    (invoke-extension runtime mounted context delivered)))))))
       (loop for round below 16 do
         (let ((before context) (invoked nil))
           (dolist (mounted (root-mounts candidate))
@@ -818,7 +878,8 @@ Pending external invalidations join the current event, never an event replay."
               (push (mounted-spec mounted) invoked)))
           (setf context (materialize runtime candidate))
           (multiple-value-bind (reconciled new revised)
-              (reconcile-rule-mounts runtime candidate context)
+              (with-sample ("tx-reconcile")
+                (reconcile-rule-mounts runtime candidate context))
             (setf candidate reconciled context (materialize runtime reconciled))
             (let ((child-dirty (union dirty (changed-keys before context))))
               (dolist (mounted (rule-instances candidate))
@@ -865,13 +926,17 @@ Pending external invalidations join the current event, never an event replay."
           (multiple-value-bind (reconciled new revised)
               (reconcile-rule-mounts runtime candidate context)
             (setf candidate reconciled force (union force (union new revised :test #'equal) :test #'equal)))
-          (let* ((next (materialize runtime candidate)) (changes (changed-keys before next)))
+          (multiple-value-bind (next changes)
+              (with-sample ("tx-diff")
+                (let ((materialized (materialize runtime candidate)))
+                  (values materialized (changed-keys before materialized))))
             (setf context next dirty changes event (list :type :change :keys changes))
             (unless (or changes force)
               (commit-call-resolution runtime context)
               (let* ((commands (loop for (owner . command) in commands
                                      when (find owner candidate :key #'mounted-spec) collect command))
-                     (spawns (commit-context runtime candidate context commands)))
+                     (spawns (with-sample ("tx-commit")
+                               (commit-context runtime candidate context commands))))
                 (setf (runtime-pending-context runtime) nil)
                 (unwind-protect
                      (loop for command in commands for spawn in spawns do
@@ -1054,8 +1119,13 @@ accepted registry. Never enter this helper inside a candidate transaction."
   runtime)
 
 (defun dispatch-observation (runtime text)
-  (handler-case (dispatch-event runtime (read-data text))
-    (serious-condition (condition) (record-error runtime condition))))
+  (unwind-protect
+       (handler-case (dispatch-event runtime
+                                     (if *timing*
+                                         (with-sample ("parse") (read-data text))
+                                         (read-data text)))
+         (serious-condition (condition) (record-error runtime condition)))
+    (when (and *timing* (runtime-backend runtime)) (%timing-done (runtime-backend runtime)))))
 
 (defparameter *idle-seconds* 1)
 (defparameter *idle-consed* (* 8 1024 1024))
@@ -1261,7 +1331,8 @@ system, so an idle desktop keeps only what it is using."
     (setf (runtime-pending-context runtime)
           (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
                  (runtime-pending-context runtime)))
-    (when (or changed (runtime-pending-context runtime))
+    (when (and (or changed (runtime-pending-context runtime))
+               (event-matters-p runtime changed force))
       (handler-case (transact runtime (runtime-mounts runtime) event changed force)
         (serious-condition (condition)
           (record-error runtime condition)

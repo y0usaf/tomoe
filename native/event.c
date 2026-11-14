@@ -116,6 +116,7 @@ bool grab_waiting(struct tomoe *s) {
 const char *tomoe_next_event(struct tomoe *s) {
     free(s->last_event); s->last_event = NULL;
     if (wl_list_empty(&s->events) || grab_held(s)) return NULL;
+    timing_event_taken(s);
     struct event *event = wl_container_of(s->events.next, event, link);
     if (event->grab && !s->stopping) {
         if (!s->grab_release)

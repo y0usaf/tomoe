@@ -115,6 +115,15 @@ tomoe unmount monocle
 No window restarts. `tomoe inspect` prints everything the compositor knows,
 from windows and outputs to each extension's state and last error.
 
+`tomoe frames` prints each output's frame counters and `tomoe memory` the heap
+and buffer use. `tomoe timings` prints the latency Tomoe spends on its own work,
+in nanoseconds: pointer and drag motion to the frame carrying it, a key press to
+the transaction applying it, the wait between an input and its frame, each phase
+of a policy transaction and of a frame, and a client commit to its frame. The
+samples are kept only when the compositor starts with `TOMOE_TIMINGS=1`, so the
+default pays a branch per sample point and nothing else; `tests/timing.py` drives
+one event per frame through it for a repeatable table.
+
 ## One table of commands
 
 Everything the desktop can do is a named command with typed arguments, and

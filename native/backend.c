@@ -185,6 +185,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wl_list_init(&s->idle_notifications);
     wl_list_init(&s->idle_inhibitors);
     wl_list_init(&s->gammas);
+    timing_init();
     wl_list_init(&s->powers);
     wl_list_init(&s->tearings);
     wl_list_init(&s->activation_pending);

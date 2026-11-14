@@ -216,6 +216,7 @@ static bool refresh_leaf(struct tomoe *s, struct leaf *leaf, void *data) {
 }
 void refresh_scene(struct tomoe *s) {
     if (!s->scene_dirty || s->stopping) return;
+    uint64_t timed = timing_enabled && s->timing.frame_at ? timing_now() : 0;
     s->scene_dirty = false;
     struct surface *surface;
     wl_list_for_each(surface, &s->surfaces, link) { surface->seen = false; surface->primary = NULL; }
@@ -225,6 +226,7 @@ void refresh_scene(struct tomoe *s) {
         surface_fifo_unpaced(surface);
     }
     pointer_refresh(s);
+    if (timed) timing_frame_scene(s, timing_now() - timed);
 }
 void forget_output(struct tomoe *s, struct screen *output) {
     struct surface *surface;
@@ -643,6 +645,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct timeline *signal = NULL;
+    uint64_t phase = timing_enabled && s->timing.frame_at ? timing_now() : 0;
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
         .y = planned ? planned->box.y : o->y, .buffer = buffer,
@@ -680,10 +683,13 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     if (track) o->drawn.pixels = partial ? region_area(&clip) :
         (int64_t)buffer->width * buffer->height;
     draw_scene(o, &data, plan, locked, cursors, chrome);
+    if (phase) timing_frame_draw(o->server, timing_now() - phase);
+    phase = timing_enabled ? timing_now() : 0;
     if (highlight) pass_add_rect(pass, &(struct rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
     bool success = pass_submit(pass);
+    if (phase) timing_frame_raster(o->server, timing_now() - phase);
     pixman_region32_fini(&changed);
     pixman_region32_fini(&clip);
     if (success && s->settings.wait_frame && signal) {

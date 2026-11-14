@@ -32,6 +32,14 @@
   (server (* t)) (screen-x sb-alien:double) (screen-y sb-alien:double))
 (define-native ("tomoe_frames" %frames) sb-alien:c-string (server (* t)))
 (define-native ("tomoe_memory" %memory) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_timings" %timings) sb-alien:c-string)
+(define-native ("tomoe_timing_enabled" %timing-enabled) sb-alien:int)
+(define-native ("tomoe_timing_done" %timing-done) sb-alien:void (server (* t)))
+(define-native ("tomoe_timing_now" %timing-now) sb-alien:unsigned-long-long)
+(define-native ("tomoe_timing_channel" %timing-channel) sb-alien:int (name sb-alien:c-string))
+(define-native ("tomoe_timing_reset" %timing-reset) sb-alien:void)
+(define-native ("tomoe_timing_sample" %timing-sample) sb-alien:void
+  (channel sb-alien:int) (ns sb-alien:unsigned-long-long))
 (define-native ("tomoe_activity_serial" %activity-serial) sb-alien:unsigned-long-long
   (server (* t)))
 (define-native ("tomoe_cursor_state" %cursor-state) sb-alien:c-string

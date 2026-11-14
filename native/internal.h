@@ -1,6 +1,7 @@
 #ifndef TOMOE_INTERNAL_H
 #define TOMOE_INTERNAL_H
 #include "backend.h"
+#include "timing.h"
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -941,6 +942,11 @@ struct tomoe {
     int view_x, view_y;
     double view_zoom;
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
+    struct {
+        uint64_t input_at, pointer_at, drag_at, key_at, commit_at, event_at, frame_at;
+        uint64_t scene_ns, draw_ns, raster_ns, submit_ns;
+        bool pointer, drag, key, commit;
+    } timing;
     char *hit_result, *frames_result, *memory_result;
     char *output_preview;
     char *output_current;
