@@ -606,6 +606,22 @@ let
       testScript = builtins.readFile ./tomoe.py + script;
     };
   check = checkWith { };
+  memorySound = pkgs.runCommand "tomoe-memory-sound" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+    mkdir -p $out
+    python3 -c 'import sys, wave; w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000); w.writeframes(b"\0" * 9600); w.close()' $out/sound.wav
+  '';
+  memoryConfig = pkgs.runCommand "tomoe-memory-config" { } ''
+    mkdir -p $out/shaders
+    install -m 644 ${./memory-config.lisp} $out/init.lisp
+    install -m 644 ${./memory-gtk.css} $out/gtk.css
+    install -m 644 ${memorySound}/sound.wav $out/sound.wav
+    for name in aurora cubes liquify okazz-glyphs okazz-spheres stars towers trail-pixels xmb; do
+      install -m 644 ${tomoe}/share/tomoe/examples/shaders/$name.glsl $out/shaders/$name.glsl
+    done
+    for name in balatro cassette-led cassette-squares dot-corridor glass-mound hex-spiral llama-herd llama-herd-night su-ei; do
+      install -m 644 ${tomoe}/share/tomoe/examples/shaders/okazz-glyphs.glsl $out/shaders/$name.glsl
+    done
+  '';
 in
 {
   pointer-protocols = checkWith {
@@ -861,4 +877,13 @@ in
     machine.succeed("mkdir -p /run/trail")
     print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
   '';
+  memory = checkWith { environment.systemPackages = [ pkgs.python3 ]; } "memory" (
+    ''
+      CONFIG = "/run/memory/init.lisp"
+      SOURCE = "${memoryConfig}"
+      TOMOE_BIN = "${tomoe}/bin/tomoe"
+      ATTRIBUTE = "${./memory-attribute.py}"
+    ''
+    + builtins.readFile ./memory.py
+  );
 }

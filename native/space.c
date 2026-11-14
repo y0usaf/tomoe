@@ -54,13 +54,17 @@ struct output *output_for_world(struct tomoe *s, double x, double y) {
     world_to_screen(s, &x, &y);
     return output_at_physical(s, x, y);
 }
-void schedule_scene(struct tomoe *s) {
+void schedule_repaint(struct tomoe *s) {
     if (s->stopping) return;
     s->scene_dirty = true;
-    s->activity_serial++;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
         if (output_is_active(o)) screen_schedule_frame(o->screen);
+}
+
+void schedule_scene(struct tomoe *s) {
+    s->activity_serial++;
+    schedule_repaint(s);
 }
 
 struct leaf {
