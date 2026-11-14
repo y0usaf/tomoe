@@ -58,6 +58,7 @@ def start(*options, bus=True, env=None, backend="headless", unit="tomoe", socket
     machine.succeed(
         f"systemd-run --unit={unit} --property=Type=exec --remain-after-exit "
         "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
+        "--property=LimitCORE=infinity "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} "
         + (f"--setenv=DBUS_SESSION_BUS_ADDRESS={BUS} " if bus else "")
         + "".join(f"--setenv={key}={value} " for key, value in (env or {}).items())

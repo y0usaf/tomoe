@@ -711,9 +711,26 @@ let
                             "/run/layout.log /run/trace-swap.lisp /run/draw.ppm "
                             "/run/tile.ppm /run/timing.ppm /run/crop.py /run/*-display.ppm "
                             "/run/*-shot.ppm /tmp/.X11-unix/* "
-                            "/tmp/.X*-lock", check_return=False)
+                            "/tmp/.X*-lock /run/core.*", check_return=False)
+
+        def backtrace():
+            found = machine.execute("ls /run/core.* 2>/dev/null",
+                                    check_return=False)[1].split()
+            if not found:
+                return
+            print("tomoe core: " + " ".join(found), flush=True)
+            if machine.execute("command -v gdb", check_return=False)[0] != 0:
+                print("tomoe core: no gdb in this test", flush=True)
+                return
+            frames = machine.execute(
+                "gdb -batch -ex 'thread apply all bt 12' $(readlink -f $(command -v tomoe)) "
+                + found[-1] + " 2>&1",
+                check_return=False)[1]
+            print("tomoe core backtrace:\n" + "\n".join(frames.splitlines()[-120:]),
+                  flush=True)
 
         failures = []
+        machine.execute("sysctl -w kernel.core_pattern=/run/core.%p", check_return=False)
         for suite in suites:
             print("tomoe suite: " + suite["name"], flush=True)
             reset()
@@ -724,6 +741,7 @@ let
                 failures.append((suite["name"], traceback.format_exc()))
                 print("tomoe suite FAILED: " + suite["name"] + "\n"
                       + failures[-1][1], flush=True)
+                backtrace()
             else:
                 print("tomoe suite passed: " + suite["name"], flush=True)
         reset()
@@ -736,6 +754,7 @@ let
     };
   compositorPackages = [
     pkgs.python3
+    pkgs.gdb
     pkgs.wayland-utils
     pkgs.pipewire
     pkgs.xdg-desktop-portal
