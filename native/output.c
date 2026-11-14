@@ -375,6 +375,12 @@ const char *tomoe_frames(struct tomoe *s) {
             o->timing.ns);
         for (size_t i = 0; i < sizeof(o->timing.counts) / sizeof(o->timing.counts[0]); i++)
             fprintf(out, i ? " %" PRIu64 : "%" PRIu64, o->timing.counts[i]);
+        fputs(") :frame-us (", out);
+        unsigned first = (o->traced.head + FRAME_TRACE - o->traced.count) % FRAME_TRACE;
+        for (unsigned i = 0; i < o->traced.count; i++)
+            fprintf(out, i ? " %u" : "%u", o->traced.us[(first + i) % FRAME_TRACE]);
+        o->traced.head = 0;
+        o->traced.count = 0;
         fputs("))", out);
     }
     fputc(')', out);
@@ -1139,6 +1145,10 @@ static void frame_timed(struct output *o, const struct timespec *start) {
     for (int64_t bound = 250000; bucket < 7 && ns >= bound; bound *= 2) bucket++;
     o->timing.ns += (uint64_t)ns;
     o->timing.counts[bucket]++;
+    uint64_t us = (uint64_t)ns / 1000;
+    o->traced.us[o->traced.head] = us > UINT32_MAX ? UINT32_MAX : (uint32_t)us;
+    o->traced.head = (o->traced.head + 1) % FRAME_TRACE;
+    if (o->traced.count < FRAME_TRACE) o->traced.count++;
 }
 
 static void output_frame(struct wl_listener *listener, void *data) {

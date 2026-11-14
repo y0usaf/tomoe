@@ -52,6 +52,8 @@ struct ui_surface {
     struct ui_surface_asset *assets;
     size_t asset_count, asset_capacity;
     struct ui_asset *backdrop, *fallback;
+    struct trail_style trail;
+    bool trail_on;
     double fps, idle;
     bool building;
     bool complete;
@@ -499,6 +501,20 @@ int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double i
     return 1;
 }
 
+int tomoe_present_ui_trail(struct tomoe *s, double cell, double life, int steps,
+        uint32_t rgba, double fps, double idle) {
+    struct ui_surface *surface = NULL;
+    if (!surface_is_current(s, &surface) || surface->trail_on || surface->backdrop ||
+            !isfinite(cell) || cell < 1 || cell > 256 || !isfinite(life) ||
+            life <= 0 || life > 4 || steps < 1 || steps > 8 || !isfinite(fps) ||
+            fps < 0 || fps > 1000 || !isfinite(idle) || idle < 0 || idle > 4) return 0;
+    surface->trail = (struct trail_style){ cell, life, steps, rgba };
+    surface->trail_on = true;
+    surface->fps = fps;
+    surface->idle = idle;
+    return 1;
+}
+
 void ui_backdrops_ready(struct tomoe *s) {
     struct ui_set *sets[] = { s->ui, candidate_set(s) };
     for (size_t k = 0; k < 2; k++) {
@@ -935,7 +951,8 @@ bool ui_on_output(struct output *o, int layer) {
     const struct ui_set *set = o->server->ui;
     for (size_t i = 0; set && i < set->count; i++)
         if (set->surfaces[i]->layer >= layer &&
-                (set->surfaces[i]->texture || set->surfaces[i]->backdrop) &&
+                (set->surfaces[i]->texture || set->surfaces[i]->backdrop ||
+                 set->surfaces[i]->trail_on) &&
                 surface_matches_output(set->surfaces[i], o, NULL)) return true;
     return false;
 }
@@ -946,7 +963,7 @@ void ui_pointer_moved(struct tomoe *s) {
     for (size_t k = 0; k < 2; k++) {
         for (size_t i = 0; sets[k] && i < sets[k]->count; i++) {
             const struct ui_surface *surface = sets[k]->surfaces[i];
-            if (surface->idle <= 0 || !surface->backdrop) continue;
+            if (surface->idle <= 0 || !(surface->backdrop || surface->trail_on)) continue;
             struct output *o;
             wl_list_for_each(o, &s->outputs, link)
                 if (o->tick_at == 0 && surface_matches_output(surface, o, NULL))
@@ -1012,16 +1029,24 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             effect_blur(f, (struct fbox){ left, top, surface->width, surface->height },
                 surface->blur, st->blur_passes, st->blur_offset, st->blur_margin, 1);
         if (image) draw_texture(f, image, left + x, top + y);
-        if (shader) {
+        if (shader || surface->trail_on) {
             const struct pointer_sample *last = o->server->pointer_trail_count ?
                 &o->server->pointer_trail[(o->server->pointer_trail_head + POINTER_TRAIL - 1) %
                     POINTER_TRAIL] : NULL;
             bool still = surface->idle > 0 && (!last || now - last->t > surface->idle);
-            if (!still) {
+            struct fbox area = { left, top, surface->width, surface->height };
+            if (!still && shader) {
                 double tick = surface->fps > 0 ? floor((now - epoch) * surface->fps) : 0;
-                effect_shader(f, shader, (struct fbox){ left, top, surface->width,
-                    surface->height }, surface->fps > 0 ? tick / surface->fps : 0, (int)fmin(tick, INT_MAX));
+                effect_shader(f, shader, area, surface->fps > 0 ? tick / surface->fps : 0,
+                    (int)fmin(tick, INT_MAX));
                 if (surface->fps > 0) schedule_step(o, epoch + (tick + 1) / surface->fps, now);
+            }
+            if (!still && surface->trail_on) {
+                effect_trail(f, area, &surface->trail);
+                if (surface->fps > 0) {
+                    double tick = floor(now * surface->fps);
+                    schedule_step(o, (tick + 1) / surface->fps, now);
+                }
             }
         }
         if (surface->texture) draw_texture(f, surface->texture, left, top);

@@ -23,12 +23,16 @@ POLICY = """(in-package #:tomoe-user)
                                :anchors '(:top :right :bottom :left)
                                :layer :overlay
                                :click-through t
-                               :background '(:shader "{shader}" :fps {fps} :idle {idle})))
+                               :background '(:trail :cell {cell} :life {life} :steps {steps}
+                                             :color #xb8e0ffff :fps {fps} :idle {idle})))
           nil))
 """
 
 TOLERANCE = 6.0
 MAXIMUM = 20.0
+DRAGS = 6
+COST_GROWTH = 1.5
+COST_SLACK = 1.0
 
 
 class Failure(Exception):
@@ -42,12 +46,14 @@ def parse_frames(text):
                   re.findall(r':([A-Za-z-]+)\s+([-\w]+)', match.group(2))}
         times = re.search(r':FRAME-TIMES \(([^)]*)\)', match.group(2), re.IGNORECASE)
         fields["frame-times"] = [int(value) for value in times.group(1).split()] if times else []
+        recent = re.search(r':FRAME-US \(([^)]*)\)', match.group(2), re.IGNORECASE)
+        fields["frame-us"] = [int(value) for value in recent.group(1).split()] if recent else []
         entries[match.group(1)] = fields
     return entries
 
 
 class Compositor:
-    def __init__(self, work, tomoe, shader, fps=60, idle=0.5):
+    def __init__(self, work, tomoe, trail=True, fps=60, idle=0.5, cell=9, life=0.35, steps=4):
         self.tomoe = tomoe
         self.socket = "trail"
         self.runtime = os.path.join(work, "run")
@@ -56,8 +62,8 @@ class Compositor:
         self.log = open(self.log_path, "w")
         policy = os.path.join(work, "policy.lisp")
         with open(policy, "w") as handle:
-            handle.write(POLICY.format(shader=shader, fps=fps, idle=idle) if shader
-                         else "(in-package #:tomoe-user)\n")
+            handle.write(POLICY.format(cell=cell, life=life, steps=steps, fps=fps, idle=idle)
+                         if trail else "(in-package #:tomoe-user)\n")
         self.environment = dict(os.environ)
         self.environment.update({"XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": self.socket,
                                  "TOMOE_DEBUG": "1"})
@@ -80,7 +86,8 @@ class Compositor:
         return result.returncode, result.stdout + result.stderr
 
     def text(self):
-        self.log.flush()
+        if not self.log.closed:
+            self.log.flush()
         with open(self.log_path) as handle:
             return handle.read()
 
@@ -215,6 +222,57 @@ def park(compositor, path):
     time.sleep(1.2)
 
 
+def percentile(values, fraction):
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    index = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
+    return ordered[index]
+
+
+def summary(values, areas=()):
+    return {"frames": len(values),
+            "median": round(percentile(values, 0.5), 3),
+            "p99": round(percentile(values, 0.99), 3),
+            "worst": round(max(values), 3) if values else 0.0,
+            "pixels": round(percentile(areas, 0.5)) if areas else 0}
+
+
+def drag_frames(compositor, path, steps, interval, burst):
+    before = compositor.frames()
+    drag(compositor, path, steps, interval, burst, 0)
+    after = compositor.frames()
+    times = [value / 1000.0 for fields in after.values() for value in fields["frame-us"]]
+    drawn = sum(int(fields.get("frame", 0)) - int(before[name].get("frame", 0))
+                for name, fields in after.items() if name in before)
+    pixels = max((int(fields.get("drawn-pixels", 0)) for fields in after.values()), default=0)
+    return times, (pixels if drawn else 0)
+
+
+def drag_cost(work, tomoe, pointer, trail, stroke, verbose=False):
+    tag = "cost-trail" if trail else "cost-plain"
+    directory = os.path.join(work, tag)
+    os.makedirs(directory, exist_ok=True)
+    compositor = Compositor(directory, tomoe, trail)
+    compositor.pointer = pointer
+    compositor.work = directory
+    frames, areas = [], []
+    try:
+        time.sleep(1.0)
+        park(compositor, stroke)
+        for _ in range(DRAGS):
+            times, area = drag_frames(compositor, stroke, 6, 5, True)
+            frames += times
+            if area:
+                areas.append(round(area))
+            time.sleep(0.8)
+    finally:
+        compositor.stop()
+        if verbose:
+            print(directory + ":\n" + compositor.text()[-6000:], file=sys.stderr)
+    return frames, areas
+
+
 class Recorder:
     def __init__(self, compositor, work, tag, keep=False):
         self.compositor, self.work, self.tag = compositor, work, tag
@@ -272,18 +330,24 @@ def main():
     parser = argparse.ArgumentParser(description="Cursor trail path capture and cost check.")
     parser.add_argument("--tomoe", required=True)
     parser.add_argument("--pointer", required=True)
-    parser.add_argument("--shader", default=None, help="trail shader; omit for a plain run")
+    parser.add_argument("--trail", action="store_true",
+                        help="draw the cursor trail; omit for a plain run")
     parser.add_argument("--work", default=None)
     parser.add_argument("--emit", default=None, help="directory for PNG artifacts")
     parser.add_argument("--report", default=None)
     parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--idle", type=float, default=0.5)
+    parser.add_argument("--cell", type=float, default=9.0)
+    parser.add_argument("--life", type=float, default=0.35)
+    parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--verbose", action="store_true", help="print each compositor log")
     arguments = parser.parse_args()
     work = arguments.work or tempfile.mkdtemp(prefix="trail-")
     os.makedirs(work, exist_ok=True)
     report, failures = {}, []
 
-    compositor = Compositor(work, arguments.tomoe, arguments.shader, arguments.fps, arguments.idle)
+    compositor = Compositor(work, arguments.tomoe, arguments.trail, arguments.fps,
+                            arguments.idle, arguments.cell, arguments.life, arguments.steps)
     compositor.pointer = arguments.pointer
     compositor.work = work
     arc = arc_points(640, 440, 300, 3.2, 6.0, 48)
@@ -294,7 +358,7 @@ def main():
         compositor.screenshot(baseline)
         report["idle_lit"] = len(lit_pixels(baseline))
 
-        if not arguments.shader:
+        if not arguments.trail:
             park(compositor, arc)
             frame, _, _ = trace(compositor, arc, 2, 6, False, "plain")
             settled = os.path.join(work, "plain-settled.ppm")
@@ -365,6 +429,21 @@ def main():
         report["rest"] = {"seconds": 1.5, "drawn": compositor.drawn(before, after), "wakes": wakes}
         if report["rest"]["drawn"]:
             failures.append(f"rest: the overlay drew {report['rest']['drawn']} frames with the pointer still")
+
+        compositor.stop()
+        on, on_areas = drag_cost(work, arguments.tomoe, arguments.pointer, True, zigzag,
+                                 arguments.verbose)
+        off, off_areas = drag_cost(work, arguments.tomoe, arguments.pointer, False, zigzag)
+        report["cost"] = {"on": summary(on, on_areas), "off": summary(off, off_areas)}
+        if len(on) < DRAGS or len(off) < DRAGS:
+            failures.append(f"cost: too few frames to compare ({len(on)} with the trail, "
+                            f"{len(off)} without)")
+        for key in ("median", "p99"):
+            carried = report["cost"]["on"][key]
+            plain = report["cost"]["off"][key]
+            if carried > plain * COST_GROWTH + COST_SLACK:
+                failures.append(f"cost: with the trail a drag frame took {carried} ms at the {key}, "
+                                f"against {plain} ms without it")
     finally:
         compositor.stop()
         report["failures"] = failures

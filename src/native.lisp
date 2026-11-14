@@ -109,6 +109,9 @@ once."
   (tint sb-alien:int) (rgba sb-alien:unsigned-int))
 (define-native ("tomoe_present_ui_backdrop" %present-ui-backdrop) sb-alien:int
   (server (* t)) (id sb-alien:unsigned-long-long) (fps sb-alien:double) (idle sb-alien:double))
+(define-native ("tomoe_present_ui_trail" %present-ui-trail) sb-alien:int
+  (server (* t)) (cell sb-alien:double) (life sb-alien:double) (steps sb-alien:int)
+  (rgba sb-alien:unsigned-int) (fps sb-alien:double) (idle sb-alien:double))
 
 (defun native-ui-asset-loader (backend)
   (when backend
@@ -326,6 +329,13 @@ once."
           (destructuring-bind (&optional id fps idle) (getf plan :backdrop)
             (when id (require-ui (%present-ui-backdrop backend id (%double-float fps)
                                                         (%double-float (or idle 0d0))))))
+          (let ((trail (getf plan :trail)))
+            (when trail
+              (require-ui (%present-ui-trail backend (%double-float (getf trail :cell))
+                                             (%double-float (getf trail :life))
+                                             (getf trail :steps) (getf trail :color)
+                                             (%double-float (getf trail :fps))
+                                             (%double-float (or (getf trail :idle) 0d0))))))
           (dolist (operation (getf plan :draw))
             (require-ui (apply #'%present-ui-clip backend (car (last operation))))
             (require-ui

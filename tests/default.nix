@@ -468,6 +468,6 @@ in
     environment.systemPackages = [ pkgs.python3 pkgs.wayland-utils ];
   } "trail" ''
     machine.succeed("mkdir -p /run/trail")
-    print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --shader ${tomoe}/share/tomoe/examples/shaders/trail-pixels.glsl --work /run/trail"))
+    print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
   '';
 }
