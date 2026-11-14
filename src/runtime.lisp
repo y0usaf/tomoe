@@ -340,6 +340,20 @@ declarations by identity where that matters."
                      (equal (effect-arguments old) (effect-arguments new))))
               before after)))
 
+(defun check-duplicate-effects (effects)
+  "Reject two effects of one reducer that claim the same key. Reducers own a
+handful of effects, so a scan beats a hash table until the list is long."
+  (if (<= (length effects) 8)
+      (loop for tail on effects
+            for key = (effect-key (first tail))
+            do (when (loop for other in (rest tail) thereis (equal key (effect-key other)))
+                 (error "Duplicate effect: ~S" key)))
+      (let ((keys (make-hash-table :test #'equal :size (length effects))))
+        (dolist (effect effects)
+          (let ((key (effect-key effect)))
+            (when (gethash key keys) (error "Duplicate effect: ~S" key))
+            (setf (gethash key keys) t))))))
+
 (defun invoke-extension (runtime mounted context event)
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
         (*source-directory* (spec-directory (mounted-spec mounted))))
@@ -369,11 +383,7 @@ declarations by identity where that matters."
                                (runtime-ipc-call runtime)
                                (eql (getf event :call) (getf (runtime-ipc-call runtime) :token)))
                     (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
-              (let ((keys (make-hash-table :test #'equal :size (length effects))))
-                (dolist (effect effects)
-                  (let ((key (effect-key effect)))
-                    (when (gethash key keys) (error "Duplicate effect: ~S" key))
-                    (setf (gethash key keys) t))))
+              (check-duplicate-effects effects)
               (unless (equivalent-effects (mounted-effects mounted) effects)
                 (incf *invocations*))
               (setf (mounted-state mounted) (copy-data state)
@@ -993,11 +1003,8 @@ Pending external invalidations join the current event, never an event replay."
                          (union changed (changed-keys (runtime-effective runtime) context)))))
          (commands nil)
          (deferred-deliveries (make-hash-table :test #'eq))
-         (proposal-baselines (make-hash-table :test #'eq))
-         (proposal-start
-           (with-sample ("tx-baselines")
-             (let ((specs (make-hash-table :test #'eq)))
-               (dolist (mounted candidate specs) (setf (gethash (mounted-spec mounted) specs) t)))))
+         (proposal-baselines nil)
+         (proposal-start nil)
          (proposal-deliveries (make-hash-table :test #'eq))
          (initial-event event)
          (initial-force force))
@@ -1006,6 +1013,11 @@ Pending external invalidations join the current event, never an event replay."
 mount had when the transaction began, or the declaration's state for a rule
 instance that reconciliation created inside it."
                (let ((spec (mounted-spec mounted)))
+                 (unless proposal-baselines
+                   (setf proposal-baselines (make-hash-table :test #'eq)
+                         proposal-start (make-hash-table :test #'eq))
+                   (dolist (run candidate)
+                     (setf (gethash (mounted-spec run) proposal-start) t)))
                  (multiple-value-bind (baseline captured) (gethash spec proposal-baselines)
                    (if captured baseline
                        (setf (gethash spec proposal-baselines)

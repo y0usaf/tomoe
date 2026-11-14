@@ -20,7 +20,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "frame-wait", "frame-scene", "frame-draw", "frame-raster", "frame-submit", "frame-total",
     "commit-frame", "tx-mounts", "tx-material", "tx-invoke", "tx-diff", "tx-commit",
     "mat-init", "mat-quantize", "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
-    "tx-dirty", "tx-baselines", "tx-reconcile", "parse", "transaction",
+    "tx-dirty", "tx-reconcile", "parse", "transaction",
     "mat-total", "mat-config",
 };
 
