@@ -2429,7 +2429,9 @@ uint32_t render_read_format(struct render *renderer) {
 }
 
 static char *render_node_name(int backend_fd) {
-    char *name = backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
+    const char *chosen = getenv("TOMOE_RENDER_NODE");
+    char *name = chosen && *chosen ? strdup(chosen) :
+        backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
     if (!name) {
         drmDevicePtr devices[64];
         int count = drmGetDevices2(0, devices, 64);
