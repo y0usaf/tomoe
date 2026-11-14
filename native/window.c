@@ -932,6 +932,17 @@ static void mapped(struct wl_listener *listener, void *data) {
 void window_external_mapped(struct window *w) {
     if (!w->mapped && surface_of(w) && surface_of(w)->mapped) window_mapped(w);
 }
+void window_client_resized(struct window *w) {
+    if (!w->mapped) return;
+    int width, height;
+    window_client_geometry(w, &width, &height);
+    if (width == w->client_width && height == w->client_height) return;
+    w->client_width = width;
+    w->client_height = height;
+    window_track_size(w);
+    window_geometry_event(w);
+    schedule_scene(w->server);
+}
 static void unmapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, unmap);
     window_retire(w);

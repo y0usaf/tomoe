@@ -1258,6 +1258,7 @@ static void handle_configure_notify(struct xwm *x, const unsigned char *pkt) {
         w->base->geometry.height = w->height;
     }
     if (w->override) override_place(w);
+    else if (w->window) window_client_resized(w->window);
     schedule_scene(x->server);
 }
 

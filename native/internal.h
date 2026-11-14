@@ -1209,6 +1209,7 @@ void xdg_popup_unconstrain_from_box(struct xdg_popup *popup, const struct box *b
 struct window *xdg_toplevel_created(struct tomoe *s, struct xdg_toplevel *toplevel);
 bool window_attach_surface(struct window *w, struct surface *surface);
 void window_external_mapped(struct window *w);
+void window_client_resized(struct window *w);
 void window_external_activate(struct window *w);
 void xdg_popup_created(struct tomoe *s, struct xdg_popup *popup);
 enum { LAYER_STATE_SIZE = 1, LAYER_STATE_ANCHOR = 2, LAYER_STATE_ZONE = 4, LAYER_STATE_MARGIN = 8,
