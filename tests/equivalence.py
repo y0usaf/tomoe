@@ -94,7 +94,7 @@ def journal(unit):
 def scenario(binary, policy, tag, log, transcript):
     launch(binary, policy, log)
     for name in ("one", "two", "three"):
-        window(f"w-{name}", name)
+        window(f"w-{tag}-{name}", name)
     script, plan = [], []
 
     def act(*commands):
@@ -162,11 +162,11 @@ def scenario(binary, policy, tag, log, transcript):
     act("move 240 330", "sync", "sleep 120")
     handshake("drag-before-open")
     act("move 280 360", "sync", "sleep 120")
-    handshake("drag-open", lambda: window("w-four", "four"))
+    handshake("drag-open", lambda: window(f"w-{tag}-four", "four"))
     act("move 320 390", "sync", "sleep 120")
     handshake("drag-reload", lambda: control(binary, "reload"))
     act("move 360 420", "sync", "sleep 120")
-    handshake("drag-close", lambda: machine.succeed("systemctl stop w-four"))
+    handshake("drag-close", lambda: machine.succeed(f"systemctl stop w-{tag}-four"))
     act("move 400 450", "sync", "sleep 120")
     release(LEFT)
     act(f"key {SUPER} up", "sync", "sleep 200")
@@ -206,7 +206,7 @@ def scenario(binary, policy, tag, log, transcript):
         + machine.succeed(f"journalctl -u inject-{tag} -o cat | tail -20"))
     transcript.append("-- clients")
     for name in ("one", "two", "three"):
-        transcript.append(f"w-{name} " + str(journal(f"w-{name}")))
+        transcript.append(f"w-{name} " + str(journal(f"w-{tag}-{name}")))
     transcript.append("-- final")
     transcript.append("state " + state(binary))
     transcript.append("pixels " + pixels(f"{tag}-final"))
@@ -220,7 +220,7 @@ def scenario(binary, policy, tag, log, transcript):
     transcript.append("-- effects")
     transcript.append(machine.succeed(f"cat {log} 2>/dev/null || true").strip())
     for name in ("one", "two", "three", "four"):
-        machine.execute(f"systemctl stop w-{name} 2>/dev/null")
+        machine.execute(f"systemctl stop w-{tag}-{name} 2>/dev/null")
     shut(binary)
     return transcript
 
