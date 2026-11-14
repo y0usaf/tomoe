@@ -104,12 +104,11 @@ it consed, when samples are kept."
 (defun wait-until (now deadline)
   (max 0 (ceiling (* 1000 (- deadline now)) internal-time-units-per-second)))
 
-(defun sync-fd-watches (runtime owner specs)
+(defun sync-fd-watches (runtime specs)
   "Let the native loop wake on SPECS, (DESCRIPTOR MASK IDENTITY) entries. A
-descriptor already watched for the same owner and mask costs no syscall; one
-whose owner changed is watched again, so a number the kernel has just handed to
-another pipe is not left unwatched; descriptors no longer named are dropped.
-OWNER marks the caller in the registry."
+descriptor already watched for the same identity and mask costs no syscall; one
+whose identity changed is watched again, so a number the kernel has just handed
+to another pipe is not left unwatched; descriptors no longer named are dropped."
   (let ((backend (runtime-backend runtime)) (table (runtime-fd-watches runtime)))
     (dolist (spec specs)
       (destructuring-bind (fd mask identity) spec

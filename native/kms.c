@@ -34,7 +34,6 @@ struct plane {
 
 struct crtc {
     uint32_t id;
-    int index;
     struct plane *primary, *cursor;
     struct plane *overlay[SCREEN_OVERLAYS];
     size_t overlay_count;
@@ -71,7 +70,7 @@ struct connector {
     struct cursor_commit { uint64_t seq; int slot; bool flip; } cursor_pending[CURSOR_PENDING];
     int cursor_pending_count, cursor_front, cursor_shown, cursor_x, cursor_y, cursor_hot_x, cursor_hot_y;
     uint64_t cursor_seq, cursor_shown_seq;
-    bool cursor_on, cursor_committed, cursor_dirty, cursor_inflight, cursor_upload_pending;
+    bool cursor_on, cursor_dirty, cursor_inflight, cursor_upload_pending;
     bool redraw, flip_async;
     bool async_refused;
     struct ns_timer cursor_timer;
@@ -259,7 +258,6 @@ static bool read_resources(struct kms *kms) {
     for (size_t i = 0; ok && i < kms->crtc_count; i++) {
         struct crtc *crtc = &kms->crtcs[i];
         crtc->id = res->crtcs[i];
-        crtc->index = (int)i;
         props_read(kms->fd, crtc->id, DRM_MODE_OBJECT_CRTC, &crtc->props);
         crtc->gamma_size = (size_t)crtc->props.value[PROP_GAMMA_LUT_SIZE];
         if (!crtc->gamma_size) {
@@ -785,7 +783,6 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         }
         c->flip_async = p->async;
         if (p->async) continue;
-        c->cursor_committed = c->cursor_on;
         c->cursor_dirty = c->cursor_inflight = false;
         ns_timer_arm(&c->cursor_timer, 0);
         if (!p->crtc->cursor) continue;
@@ -1119,7 +1116,6 @@ static void cursor_commit(struct connector *c) {
     if (ret == 0) {
         c->cursor_inflight = true;
         c->cursor_dirty = false;
-        c->cursor_committed = c->cursor_on;
         cursor_submitted(c, false);
     } else if (ret == -EBUSY) {
         c->screen.deferrals++;

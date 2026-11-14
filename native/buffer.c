@@ -41,7 +41,6 @@ struct dmabuf_buffer {
 
 struct dmabuf_params {
     struct dmabuf_attributes attributes;
-    struct tomoe *server;
     bool has_modifier;
 };
 

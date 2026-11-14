@@ -63,7 +63,6 @@ struct keyboard_stage {
     struct keyboard_modifiers modifiers, shadow_modifiers;
     uint32_t leds;
     bool reuse_keymap, keymap_changed, modifiers_changed, repeat_changed;
-    bool leds_changed;
     struct xkb_keymap *old_keymap;
     struct xkb_state *old_xkb_state;
     struct xkb_state *old_shadow_state;
@@ -446,8 +445,6 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         stage->repeat_changed =
             keyboard->xkb.repeat_info.rate != profile->repeat_rate ||
             keyboard->xkb.repeat_info.delay != profile->repeat_delay;
-        stage->leds_changed = !stage->reuse_keymap &&
-            stage->leds != keyboard->xkb.leds;
     }
 
     if (s->logical_keyboard) {
@@ -471,8 +468,6 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         profile->logical.repeat_changed =
             logical->repeat_info.rate != profile->repeat_rate ||
             logical->repeat_info.delay != profile->repeat_delay;
-        profile->logical.leds_changed = !profile->logical.reuse_keymap &&
-            profile->logical.leds != logical->leds;
     }
     return profile;
 
@@ -773,7 +768,7 @@ static void keyboard_enter(struct tomoe *s, struct surface *surface) {
     struct surface *old_surface = s->seat->keyboard_state.focused_surface;
     seat_keyboard_notify_enter(s->seat, surface, keys, count,
         keyboard ? &keyboard->modifiers : &empty);
-    if (surface && old_surface != s->seat->keyboard_state.focused_surface) {
+    if (old_surface != s->seat->keyboard_state.focused_surface) {
         s->latest_keyboard_enter_serial = wl_display_get_serial(s->display);
         s->have_keyboard_enter_serial = true;
     }

@@ -183,7 +183,6 @@ static void ack_configure(struct wl_client *client, struct wl_resource *resource
     if (!l) return;
     for (size_t i = 0; i < l->sent_count; i++) {
         if (l->sent[i].serial != serial) continue;
-        l->base.pending.configure_serial = serial;
         l->base.pending.actual_width = l->sent[i].width;
         l->base.pending.actual_height = l->sent[i].height;
         l->base.configured = true;

@@ -829,12 +829,6 @@ settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
              (list :kind :ease :duration-ms duration-ms
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
-(defparameter +animation-events+
-  '(:window-move :window-open :window-close :window-resize :window-switch :window-view
-    :window-alpha :window-tint :window-scale :window-rotation :window-translate)
-  "Transitions the compositor can animate. :WINDOW-CLOSE, :WINDOW-RESIZE, :WINDOW-SWITCH,
-:WINDOW-ALPHA, :WINDOW-TINT, :WINDOW-SCALE, :WINDOW-ROTATION and
-:WINDOW-TRANSLATE default to off.")
 
 (defparameter +animation-defaults+
   '(:window-move (:spring (:stiffness 16000 :epsilon 1/1000))
@@ -850,7 +844,7 @@ and :WINDOW-VIEW (workspace and deck scrolling) does too; :WINDOW-OPEN lasts
 90 ms.")
 
 (defun %animation-settings (value)
-  "Normalize :ANIMATIONS: T, NIL, or a plist of +ANIMATION-EVENTS+ specs.
+  "Normalize :ANIMATIONS: T, NIL, or a plist of per-event specs.
 T and NIL speak for every event; a plist leaves the events it omits to the
 preceding owner or the default."
   (unless (or (member value '(t nil)) (and (listp value) (evenp (length value))))

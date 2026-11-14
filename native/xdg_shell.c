@@ -260,7 +260,6 @@ static void ack_configure(struct wl_client *client, struct wl_resource *resource
             xdg->popup->pending.reactive = configure->reactive;
         }
         xdg->configured = true;
-        xdg->pending.configure_serial = serial;
         memmove(xdg->configures, xdg->configures + i + 1,
             sizeof(xdg->configures[0]) * (xdg->configure_count - i - 1));
         xdg->configure_count -= i + 1;
@@ -293,8 +292,7 @@ static void toplevel_reset(struct xdg_toplevel *toplevel) {
     toplevel_parent(toplevel, NULL);
     detach(&toplevel->requested.fullscreen_output_destroy);
     toplevel->requested.fullscreen_output = NULL;
-    toplevel->requested.fullscreen = toplevel->requested.maximized =
-        toplevel->requested.minimized = false;
+    toplevel->requested.fullscreen = toplevel->requested.maximized = false;
 }
 
 static void popup_ungrab(struct xdg_popup *popup) {
@@ -713,7 +711,6 @@ static void toplevel_unset_fullscreen(struct wl_client *client, struct wl_resour
 static void toplevel_set_minimized(struct wl_client *client, struct wl_resource *resource) {
     struct xdg_toplevel *toplevel = xdg_toplevel_from_resource(resource);
     if (!toplevel) return;
-    toplevel->requested.minimized = true;
     wl_signal_emit_mutable(&toplevel->events.request_minimize, NULL);
 }
 
@@ -1052,9 +1049,6 @@ static void positioner_set_parent_size(struct wl_client *client, struct wl_resou
 
 static void positioner_set_parent_configure(struct wl_client *client,
         struct wl_resource *resource, uint32_t serial) {
-    struct positioner_rules *rules = wl_resource_get_user_data(resource);
-    rules->has_parent_configure_serial = true;
-    rules->parent_configure_serial = serial;
 }
 
 static const struct xdg_positioner_interface positioner_impl = {
