@@ -377,6 +377,14 @@ const char *tomoe_frames(struct tomoe *s) {
             fprintf(out, i ? " %" PRIu64 : "%" PRIu64, o->timing.counts[i]);
         fputs("))", out);
     }
+    if (s->renderer) {
+        struct render_counters counters;
+        render_counters(s->renderer, &counters);
+        fprintf(out, "(:gl-calls %" PRIu64 " :quads %" PRIu64 " :runs %" PRIu64
+            " :uploads %" PRIu64 " :upload-bytes %" PRIu64 ")",
+            counters.gl_calls, counters.quads, counters.runs, counters.uploads,
+            counters.upload_bytes);
+    }
     fputc(')', out);
     bool success = !ferror(out);
     if (fclose(out) != 0 || !success) {

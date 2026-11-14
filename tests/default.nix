@@ -141,6 +141,47 @@ let
     '';
     installPhase = "install -Dm755 tomoe-output-management-client $out/bin/tomoe-output-management-client";
   };
+  drawGolden = "5a73e2a585b6d249,cc57125203c563d0,1d550c0eef023248";
+  drawPolicy = pkgs.writeText "draw-policy.lisp" ''
+    (in-package #:tomoe-user)
+
+    (defun draw-cell (index count width height)
+      (let* ((columns (ceiling (sqrt count)))
+             (rows (ceiling (/ count columns)))
+             (cell-width (floor width columns))
+             (cell-height (floor height rows)))
+        (list (* (mod index columns) cell-width)
+              (* (floor index columns) cell-height)
+              cell-width cell-height)))
+
+    (define-extension "draw-grid" (:reads (:windows :outputs) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let* ((output (first (context snapshot :outputs)))
+             (width (or (and output (getf output :width)) 1280))
+             (height (or (and output (getf output :height)) 720))
+             (windows (sort (copy-list (context snapshot :windows))
+                            (lambda (first second) (< (getf first :id) (getf second :id)))))
+             (count (length windows)))
+        (values nil
+                (append
+                 (list (settings :animations nil
+                                 :border (list :width 3 :radius 14)
+                                 :shadow (list :range 10 :power 3))
+                       (shell-surface :draw-strip
+                                      (ui :row :children (list (ui :rect :width 256 :height 24
+                                                                  :background "#ffffff18")))
+                                      :anchors '(:top :left) :margin '(8 0 0 8)
+                                      :layer :overlay :background "#00000000")
+                       (shell-surface :draw-frost (ui :row) :anchors '(:top :right)
+                                      :margin '(0 96 96 0) :width 96 :height 96
+                                      :layer :overlay :background "#00000000" :blur t))
+                 (loop for window in windows
+                       for index from 0
+                       collect (apply #'place (getf window :id)
+                                      (draw-cell index count width height)))
+                 (if windows (list (focus (getf (car windows) :id))) nil))
+                nil)))
+  '';
   timingPolicy = ./timing-policy.lisp;
   stallPolicy = pkgs.writeText "stall-policy.lisp" ''
     (in-package #:tomoe-user)
@@ -481,6 +522,14 @@ in
       KEYBOARD_PATCH = "${livePatchKeyboard}"
     ''
     + builtins.readFile ./livepatch.py
+  );
+  draw = check "draw" (
+    ''
+      DRAW_POLICY = "${drawPolicy}"
+      DRAW_COUNTS = "1,10,50"
+      DRAW_GOLDEN = "${drawGolden}"
+    ''
+    + builtins.readFile ./draw.py
   );
   timing = check "timing" (
     ''

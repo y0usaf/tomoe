@@ -27,6 +27,21 @@ static void to_buffer(struct frame *f, double x, double y, double *bx, double *b
     *by = point.y;
 }
 
+static void scene_geometry(struct frame *f, struct fbox box, const float texcoords[8],
+        double origin_x, double origin_y, struct scene_quad *quad) {
+    double xs[] = { box.x, box.x + box.width, box.x, box.x + box.width };
+    double ys[] = { box.y, box.y, box.y + box.height, box.y + box.height };
+    for (int i = 0; i < 4; i++) {
+        double bx, by;
+        to_buffer(f, xs[i], ys[i], &bx, &by);
+        quad->pos[2 * i] = (float)(bx / f->buffer->width * 2.0 - 1.0);
+        quad->pos[2 * i + 1] = (float)(by / f->buffer->height * 2.0 - 1.0);
+        quad->local[2 * i] = (float)(xs[i] - origin_x);
+        quad->local[2 * i + 1] = (float)(ys[i] - origin_y);
+    }
+    if (texcoords) memcpy(quad->tex, texcoords, sizeof(quad->tex));
+}
+
 static void quad(struct frame *f, struct program *p, struct fbox box,
         const float texcoords[8], double origin_x, double origin_y) {
     GLfloat pos[8], local[8];
@@ -57,9 +72,11 @@ static bool record(struct frame *f, const struct texture_options *texture, struc
     return pass_record(f->pass, texture, covered, (struct box){0}, params, count);
 }
 
-static void color_uniform(GLint location, uint32_t rgba) {
-    glUniform4f(location, (rgba >> 24 & 0xff) / 255.0f, (rgba >> 16 & 0xff) / 255.0f,
-        (rgba >> 8 & 0xff) / 255.0f, (rgba & 0xff) / 255.0f);
+static void color(float out[4], uint32_t rgba) {
+    out[0] = (rgba >> 24 & 0xff) / 255.0f;
+    out[1] = (rgba >> 16 & 0xff) / 255.0f;
+    out[2] = (rgba >> 8 & 0xff) / 255.0f;
+    out[3] = (rgba & 0xff) / 255.0f;
 }
 
 static struct fbox local_box(struct frame *f, struct fbox box) {
@@ -75,15 +92,12 @@ void effect_border(struct frame *f, struct fbox geometry, double width, double r
         geometry.width + 2 * width, geometry.height + 2 * width });
     double params[] = { 3, box.x, box.y, box.width, box.height, width, radius, rgba, alpha };
     if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
-    struct program *p = program(f, PROGRAM_SDF);
-    glUseProgram(p->id);
-    glUniform2f(p->size, box.width, box.height);
-    glUniform1f(p->radius, radius);
-    glUniform1f(p->width, width);
-    glUniform1f(p->kind, 0);
-    glUniform1f(p->alpha, alpha);
-    color_uniform(p->color, rgba);
-    quad(f, p, box, NULL, box.x, box.y);
+    struct scene_quad scene = { .kind = SCENE_BORDER, .blend = 1, .alpha = alpha,
+        .width = width, .radius = radius,
+        .size = { box.width, box.height } };
+    color(scene.color, rgba);
+    scene_geometry(f, box, NULL, box.x, box.y, &scene);
+    pass_scene(f->pass, &scene);
 }
 
 void effect_shadow(struct frame *f, struct fbox geometry, double range, double radius,
@@ -94,16 +108,12 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
     double params[] = { 4, box.x, box.y, box.width, box.height, range, radius, rgba, power,
         alpha };
     if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
-    struct program *p = program(f, PROGRAM_SDF);
-    glUseProgram(p->id);
-    glUniform2f(p->size, box.width, box.height);
-    glUniform1f(p->radius, radius);
-    glUniform1f(p->range, range);
-    glUniform1f(p->power, power);
-    glUniform1f(p->kind, 1);
-    glUniform1f(p->alpha, alpha);
-    color_uniform(p->color, rgba);
-    quad(f, p, box, NULL, box.x, box.y);
+    struct scene_quad scene = { .kind = SCENE_SHADOW, .blend = 1, .alpha = alpha,
+        .range = range, .power = power, .radius = radius,
+        .size = { box.width, box.height } };
+    color(scene.color, rgba);
+    scene_geometry(f, box, NULL, box.x, box.y, &scene);
+    pass_scene(f->pass, &scene);
 }
 
 bool effect_texture(struct frame *f, const struct texture_options *options,
@@ -112,7 +122,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     GLuint tex;
     bool alpha;
     if (options->transform != f->transform ||
-            !render_texture_gl(options->texture, &target, &tex, &alpha)) return false;
+            !render_texture_gl(options->texture, &target, &tex, &alpha) || !tex) return false;
     struct fbox local = local_box(f, clip);
     double params[] = { 5, dst.x, dst.y, dst.width, dst.height, local.x, local.y, local.width,
         local.height, radius };
@@ -120,9 +130,6 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     if (options->wait_timeline &&
             !render_wait(f->server->renderer, options->wait_timeline, options->wait_point))
         return true;
-    struct program *p = program(f, target == GL_TEXTURE_EXTERNAL_OES ?
-        PROGRAM_EXTERNAL : PROGRAM_TEXTURE);
-    if (!p) return false;
     struct fbox src = options->src_box;
     if (src.width <= 0 || src.height <= 0)
         src = (struct fbox){ 0, 0, options->texture->width, options->texture->height };
@@ -131,20 +138,13 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     float v1 = (src.y + src.height) / options->texture->height;
     const float texcoords[] = { u0, v0, u1, v0, u0, v1, u1, v1 };
     clip = local_box(f, clip);
-    glUseProgram(p->id);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(target, tex);
-    GLint filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
-    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
-    glUniform1i(p->tex, 0);
-    glUniform1f(p->alpha, options->alpha ? *options->alpha : 1);
-    glUniform1f(p->opaque, alpha ? 0 : 1);
-    glUniform1f(p->clip, 1);
-    glUniform2f(p->size, clip.width, clip.height);
-    glUniform1f(p->radius, radius);
-    quad(f, p, dst, texcoords, clip.x, clip.y);
-    glBindTexture(target, 0);
+    struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
+        .target = target, .shader_clip = 1, .blend = 1,
+        .filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR,
+        .alpha = options->alpha ? *options->alpha : 1, .opaque = alpha ? 0 : 1,
+        .radius = radius, .size = { clip.width, clip.height } };
+    scene_geometry(f, dst, texcoords, clip.x, clip.y, &scene);
+    pass_scene(f->pass, &scene);
     return true;
 }
 
@@ -252,6 +252,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         return;
     }
     if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) return;
+    pass_flush(f->pass);
     if (passes > 31) passes = 31;
     struct level *levels = chain_for(e, grown.width, grown.height)->levels;
     bool ok = level_ensure(&levels[0], grown.width, grown.height);
@@ -275,26 +276,22 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     if (!ok) return;
-    struct program *p = program(f, PROGRAM_TEXTURE);
     float texcoords[8];
     double xs[] = { box.x, box.x + box.width, box.x, box.x + box.width };
     double ys[] = { box.y, box.y, box.y + box.height, box.y + box.height };
     for (int i = 0; i < 4; i++) {
         double bx, by;
         to_buffer(f, xs[i], ys[i], &bx, &by);
-        texcoords[2 * i] = (bx - grown.x) / grown.width;
-        texcoords[2 * i + 1] = (by - grown.y) / grown.height;
+        texcoords[2 * i] = (float)((bx - grown.x) / grown.width);
+        texcoords[2 * i + 1] = (float)((by - grown.y) / grown.height);
     }
-    glUseProgram(p->id);
-    glBindTexture(GL_TEXTURE_2D, levels[0].texture);
-    glUniform1i(p->tex, 0);
-    glUniform1f(p->alpha, alpha < 1 ? alpha : 1);
-    glUniform1f(p->opaque, 1);
-    glUniform1f(p->clip, 1);
-    glUniform2f(p->size, box.width, box.height);
-    glUniform1f(p->radius, radius);
-    quad(f, p, box, texcoords, box.x, box.y);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    pass_scene_attributes_dirty(f->pass);
+    struct scene_quad scene = { .kind = SCENE_TEXTURE, .raw = levels[0].texture,
+        .target = GL_TEXTURE_2D, .shader_clip = 1, .blend = 1, .opaque = 1,
+        .alpha = alpha < 1 ? alpha : 1, .radius = radius,
+        .size = { box.width, box.height } };
+    scene_geometry(f, box, texcoords, box.x, box.y, &scene);
+    pass_scene(f->pass, &scene);
 }
 
 static bool backdrop(struct frame *f, struct fbox box) {
@@ -305,6 +302,7 @@ static bool backdrop(struct frame *f, struct fbox box) {
         pixel_round(box.y + box.height) - pixel_round(box.y) };
     if (!e || region.width < 1 || region.height < 1 ||
             !level_ensure(&e->backdrop, region.width, region.height)) return false;
+    pass_flush(f->pass);
     GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
     struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, shown;
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
@@ -355,7 +353,9 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     struct box covered = covering(f, box);
     if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
-            10 + 4 * (size_t)count) || (p->channel >= 0 && !backdrop(f, box))) return;
+            10 + 4 * (size_t)count)) return;
+    pass_flush(f->pass);
+    if (p->channel >= 0 && !backdrop(f, box)) return;
     glUseProgram(p->id);
     glUniform3f(p->resolution, box.width, box.height, 1);
     glUniform1f(p->time, time);
