@@ -275,10 +275,7 @@ report a session command returned."
                  (when (getf spec :maximum)
                    (list (cons "maximum" (getf spec :maximum))))
                  (when (getf spec :default-p)
-                   (list (cons "default"
-                               (if (keywordp (getf spec :default))
-                                   (string-downcase (getf spec :default))
-                                   (getf spec :default))))))))
+                   (list (cons "default" (ipc-command-value (getf spec :default))))))))
 
 (defun ipc-commands (context)
   "Every registered command, its owner, description and typed arguments."

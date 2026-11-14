@@ -210,6 +210,24 @@ socket: `{"method": "commands"}` lists it, and
 `{"method": "command", "params": {"name": "focus-window", "arguments": {"window": 42}}}`
 runs it. A command a config never binds is still reachable from both.
 
+### Launching without taking the desk
+
+`spawn` runs a program the session owns. `focus=false` starts it in the
+background: windows of the launched process tree open unfocused and unraised,
+and a window that maps while the focused one is fullscreen never takes it. The
+launch carries no activation token, so the program cannot ask for focus either.
+
+```sh
+tomoe command spawn argv='librewolf https://example.com' focus=false
+tomoe command spawn argv='["sh","-c","sleep 5 && notify-send done"]' focus=false
+```
+
+Each window of such a launch carries the window-rule property `(:focus . nil)`.
+The shipped window manager reads it already; a policy that places windows itself
+reads the same property with `rules-for`. A launch from a key or pointer binding
+is a user action, so it still hands its child an activation token and may come
+forward; anything started from the command line carries none.
+
 ## Patch it while it runs
 
 Two session commands, `patch` and `undo-patch`, change the running compositor

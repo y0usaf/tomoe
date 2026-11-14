@@ -808,6 +808,7 @@ let
       name = "nofocus";
       script = ''
         DECK = "${tomoe}/share/tomoe/examples/deck.lisp"
+        BUILTIN = "${tomoe}/share/tomoe/desktop.lisp"
         PROBE = "${./nofocus-probe.lisp}"
       ''
       + builtins.readFile ./nofocus.py;

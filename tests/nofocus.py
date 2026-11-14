@@ -90,6 +90,31 @@ def journal_lines(pattern):
     return machine.succeed("journalctl -u tomoe -o cat | grep -c '" + pattern + "' || true").strip()
 
 
+def wait_journal(pattern):
+    for _ in range(100):
+        if journal_lines(pattern) != "0":
+            return
+        time.sleep(0.1)
+    raise AssertionError("no journal line matches " + pattern)
+
+
+def shot(name):
+    path = f"/run/nofocus-{name}.ppm"
+    region = f"{screen['x']},{screen['y']} {screen['w']}x{screen['h'] - 56}"
+    return machine.succeed(
+        ENV + f"WAYLAND_DISPLAY=check grim -t ppm -g '{region}' {path} && sha256sum {path}"
+    ).split()[0]
+
+
+def settled_desktop(name):
+    for _ in range(50):
+        first = shot(name + "-a")
+        time.sleep(0.2)
+        if first == shot(name + "-b"):
+            return first
+    raise AssertionError("the desktop never settled")
+
+
 client("holder", "--mode xdg", "--app-id check-holder --title holder --color ff0000 --seconds 3600")
 wait_focus("check-holder")
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
@@ -98,18 +123,20 @@ card = (screen["x"] + 100, screen["y"] + screen["h"] // 2)
 middle = (screen["x"] + screen["w"] // 2, screen["y"] + screen["h"] // 2)
 edge = (screen["x"] + screen["w"] - 40, screen["y"] + screen["h"] // 2)
 sample(card, (255, 0, 0))
+painted = settled_desktop("holder")
 
 ran = json.loads(cli(spawn_command(client_argv("check-background", "background", "00ff00"), focus=False)))
-assert ran["arguments"]["focus"] is False, ran
+assert not ran["arguments"]["focus"], ran
 wait_app("check-background")
 assert focused_app() == "check-holder", windows()
 assert find("check-background")["mapped"], windows()
 sample(card, (255, 0, 0))
+assert settled_desktop("background") == painted, "a background launch changed the desktop"
 
 tree = ("tomoe-test-client --mode xdg --app-id check-tree --title tree --color ffff00 "
         "--activate --seconds 3600 & sleep 3600")
 ran = json.loads(cli(spawn_command(["sh", "-c", tree], focus=False)))
-assert ran["arguments"]["focus"] is False, ran
+assert not ran["arguments"]["focus"], ran
 wait_app("check-tree")
 assert focused_app() == "check-holder", windows()
 sample(card, (255, 0, 0))
@@ -139,11 +166,11 @@ cli("event '(:type :key :owner \"nofocus-probe\" :command \"focused-spawn\" :sta
 wait_app("check-input")
 wait_focus("check-input")
 
-assert journal_lines("^activation-token none check-background$") != "0"
-assert journal_lines("^activation-token none check-tree$") != "0"
-assert journal_lines("^activation-token none check-quiet$") != "0"
-assert journal_lines("^activation-token none check-cli$") != "0"
-assert journal_lines("^activation-token [0-9a-f]* check-input$") != "0"
+wait_journal("^activation-token none check-background$")
+wait_journal("^activation-token none check-tree$")
+wait_journal("^activation-token none check-quiet$")
+wait_journal("^activation-token none check-cli$")
+wait_journal("^activation-token [0-9a-f]* check-input$")
 
 cli(f"command toggle-fullscreen window={holder}")
 unpainted(edge, (255, 0, 0))
@@ -151,4 +178,21 @@ unpainted(edge, (255, 0, 0))
 cli(spawn_command(client_argv("check-normal", "normal", "336699")))
 wait_app("check-normal")
 wait_focus("check-normal")
+
+cli("unmount deck")
+cli(f"mount {BUILTIN}")
+client("wmholder", "--mode xdg --app-id check-wm --title wm --color ff0000 --seconds 3600")
+wait_focus("check-wm")
+cli("command toggle-fullscreen")
+sample(middle, (255, 0, 0))
+sample(edge, (255, 0, 0))
+
+cli(spawn_command(client_argv("check-wm-background", "wmb", "00ff00"), focus=False))
+wait_app("check-wm-background")
+assert focused_app() == "check-wm", windows()
+sample(edge, (255, 0, 0))
+
+cli(spawn_command(client_argv("check-wm-cli", "wmc", "ff00ff")))
+wait_app("check-wm-cli")
+assert focused_app() == "check-wm", windows()
 quit()

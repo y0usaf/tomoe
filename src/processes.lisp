@@ -141,12 +141,15 @@ following a reload command. Launch buffers and tokens are acquired at execution.
   (handler-case
       (let* ((text (with-open-file (stream (format nil "/proc/~D/stat" pid))
                      (read-line stream)))
-             (end (position #\) text :from-end t)))
-        (when end
-          (let* ((fields (read-from-string
-                          (concatenate 'string "(" (subseq text (1+ end)) ")")))
-                 (parent (second fields)))
-            (and (integerp parent) parent))))
+             (end (position #\) text :from-end t))
+             (state (and end (position-if-not (lambda (c) (member c '(#\Space #\Tab)))
+                                              text :start (1+ end))))
+             (after (and state (position-if (lambda (c) (member c '(#\Space #\Tab)))
+                                            text :start state))))
+        (when after
+          (multiple-value-bind (parent next) (parse-integer text :start (1+ after) :junk-allowed t)
+            (declare (ignore next))
+            parent)))
     (error () nil)))
 
 (defun process-descends-p (pid ancestor)
