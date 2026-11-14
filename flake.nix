@@ -74,8 +74,8 @@
         };
       baselineSource = builtins.fetchGit {
         url = "https://github.com/y0usaf/tomoe";
-        rev = "37dec43b3ef58fd3fce12fdfe51999c1445af22f";
-        narHash = "sha256-WbNuWCKzVD78JF8Av7XjuRgIh1B9P4aMJ409YAWOOYo=";
+        rev = "bedd2bb90e361f44f71619b497be1f10afb614b9";
+        narHash = "sha256-oPsCc9MpBTHqSr+vaw9ycMCg19DHEuaJzfHNG5l4Vxs=";
       };
       packageFrom =
         root: pkgs:
