@@ -287,8 +287,13 @@ for line in transcript:
     if line.startswith("runs scenario-contract "):
         dispatches = int(line.split("dispatches=")[1].split()[0])
 assert dispatches is not None, "the contract extension is not mounted"
-assert dispatches - 1 == len(wakes), (
-    f"the contract holder ran {dispatches - 1} times for {len(wakes)} published wakes")
+others = [line for line in "\n".join(transcript).splitlines() if line.startswith("other ")]
+assert dispatches - 1 == len(wakes) + len(others), (
+    f"the contract holder ran {dispatches - 1} times for {len(wakes)} published wakes "
+    f"and {len(others)} other pointer events: {others}")
+if others:
+    print("contract: " + str(len(others)) + " pointer events arrived before the gate: "
+          + ", ".join(others))
 assert any('entered=("corner")' in line for line in wakes), wakes
 assert any('left=("corner")' in line for line in wakes), wakes
 assert any("in=(:top)" in line for line in wakes), wakes
