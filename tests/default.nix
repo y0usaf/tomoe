@@ -809,20 +809,7 @@ let
     pathClient
   ];
   baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
-  compositorSuites =
-    pkgs.lib.optional (baseline != null) {
-      name = "input-equivalence";
-      script = ''
-        BASELINE = "${baselineBinary}"
-        FASTPATH = "${tomoe}/bin/tomoe"
-        INJECTOR = "${scenario}/bin/tomoe-scenario"
-        POLICY = "${scenarioPolicy}"
-        COUNTER_POLICY = "${counterPolicy}"
-        CONTRACT_POLICY = "${contractPolicy}"
-      ''
-      + builtins.readFile ./equivalence.py;
-    }
-    ++ [
+  compositorSuites = [
     {
       name = "pointer-protocols";
       script = ''
@@ -1049,6 +1036,19 @@ let
       + builtins.readFile ./memory.py;
     }
   ];
+  equivalenceSuites =
+    pkgs.lib.optional (baseline != null) {
+      name = "input-equivalence";
+      script = ''
+        BASELINE = "${baselineBinary}"
+        FASTPATH = "${tomoe}/bin/tomoe"
+        INJECTOR = "${scenario}/bin/tomoe-scenario"
+        POLICY = "${scenarioPolicy}"
+        COUNTER_POLICY = "${counterPolicy}"
+        CONTRACT_POLICY = "${contractPolicy}"
+      ''
+      + builtins.readFile ./equivalence.py;
+    };
   kmsSettings = {
     kernelModules = [
       "vgem"
@@ -1111,6 +1111,9 @@ let
   compositorSettings = {
     packages = compositorPackages;
   };
+  equivalenceSettings = compositorSettings // {
+    timeout = 1800;
+  };
 in
 {
   compositor = vm (
@@ -1120,6 +1123,13 @@ in
       suites = compositorSuites;
     }
   );
+  equivalence = vm (
+    equivalenceSettings
+    // {
+      name = "tomoe-equivalence";
+      suites = equivalenceSuites;
+    }
+  );
   kms = vm (
     kmsSettings
     // {
@@ -1127,5 +1137,7 @@ in
       suites = kmsSuites;
     }
   );
-  suites = suiteTargets compositorSettings compositorSuites // suiteTargets kmsSettings kmsSuites;
+  suites = suiteTargets compositorSettings compositorSuites
+    // suiteTargets equivalenceSettings equivalenceSuites
+    // suiteTargets kmsSettings kmsSuites;
 }
