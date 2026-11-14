@@ -829,7 +829,6 @@ settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
              (list :kind :ease :duration-ms duration-ms
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
-
 (defparameter +animation-defaults+
   '(:window-move (:spring (:stiffness 16000 :epsilon 1/1000))
     :window-open (:ease (:duration-ms 90 :curve :ease-out-expo))
