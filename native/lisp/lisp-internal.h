@@ -424,6 +424,7 @@ struct lisp_buf {
 };
 
 void buf_init(struct lisp_buf *buf, char *data, size_t cap);
+bool buf_init_growable(struct lisp_buf *buf, size_t cap);
 void buf_putc(struct lisp_buf *buf, char c);
 void buf_puts(struct lisp_buf *buf, const char *s);
 void buf_putn(struct lisp_buf *buf, const char *s, size_t n);

@@ -35,6 +35,11 @@ void print_double(struct lisp_buf *buf, double value)
         return;
     }
     char tmp[64];
+    if (value == trunc(value) && fabs(value) < 9007199254740992.0 && !(value == 0 && signbit(value))) {
+        print_integer(buf, (int64_t)value);
+        buf_puts(buf, ".0d0");
+        return;
+    }
     if (value == trunc(value) && fabs(value) < 1e16) {
         snprintf(tmp, sizeof(tmp), "%.0f", value);
         if (double_roundtrips(tmp, value)) {
@@ -305,19 +310,13 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
 
 char *lisp_print_alloc(lisp_value value, bool readably)
 {
-    size_t cap = 256;
-    for (;;) {
-        char *buffer = malloc(cap);
-        if (!buffer)
-            return NULL;
-        struct lisp_buf buf;
-        buf_init(&buf, buffer, cap);
-        print_value(value, readably, &buf);
-        if (buf.len + 1 < cap) {
-            buffer[buf.len] = '\0';
-            return buffer;
-        }
-        free(buffer);
-        cap *= 2;
+    struct lisp_buf buf;
+    if (!buf_init_growable(&buf, 256))
+        return NULL;
+    print_value(value, readably, &buf);
+    if (buf.len + 1 >= buf.cap) {
+        free(buf.data);
+        return NULL;
     }
+    return buf.data;
 }

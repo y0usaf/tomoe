@@ -46,8 +46,36 @@ void buf_init(struct lisp_buf *buf, char *data, size_t cap)
         data[0] = '\0';
 }
 
+bool buf_init_growable(struct lisp_buf *buf, size_t cap)
+{
+    buf_init(buf, NULL, 0);
+    buf->data = malloc(cap);
+    if (!buf->data)
+        return false;
+    buf->cap = cap;
+    buf->owned = true;
+    buf->data[0] = '\0';
+    return true;
+}
+
+static void buf_reserve(struct lisp_buf *buf, size_t extra)
+{
+    if (buf->len + extra < buf->cap)
+        return;
+    size_t cap = buf->cap * 2;
+    while (buf->len + extra >= cap)
+        cap *= 2;
+    char *grown = realloc(buf->data, cap);
+    if (!grown)
+        return;
+    buf->data = grown;
+    buf->cap = cap;
+}
+
 void buf_putc(struct lisp_buf *buf, char c)
 {
+    if (buf->owned)
+        buf_reserve(buf, 1);
     if (buf->len + 1 < buf->cap)
         buf->data[buf->len++] = c;
     if (buf->cap > 0)
@@ -56,6 +84,15 @@ void buf_putc(struct lisp_buf *buf, char c)
 
 void buf_putn(struct lisp_buf *buf, const char *s, size_t n)
 {
+    if (buf->owned) {
+        buf_reserve(buf, n);
+        if (buf->len + n < buf->cap) {
+            memcpy(buf->data + buf->len, s, n);
+            buf->len += n;
+            buf->data[buf->len] = '\0';
+            return;
+        }
+    }
     for (size_t i = 0; i < n; i++)
         buf_putc(buf, s[i]);
 }
