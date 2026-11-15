@@ -44,23 +44,6 @@
       (and (not (member (first values) (rest values)))
            (%ui-unique (rest values)))))
 
-(defun %ui-color (value &optional nullable)
-  (cond ((and nullable (null value)) nil)
-        ((and (integerp value) (<= 0 value 4294967295)) value)
-        ((and (stringp value) (member (length value) '(4 7 9))
-              (char= (char value 0) #\#)
-              (every (lambda (c) (digit-char-p c 16)) (subseq value 1)))
-         (let* ((number (parse-integer value :start 1 :radix 16))
-                (digits (length value)))
-           (case digits
-             (4 (let* ((red (floor number 256))
-                       (green (floor (mod number 256) 16))
-                       (blue (mod number 16)))
-                  (+ (* 17 red 16777216) (* 17 green 65536) (* 17 blue 256) 255)))
-             (7 (+ (* number 256) 255))
-             (9 number))))
-        (t (error "UI color must be RRGGBBAA or #rgb/#rrggbb/#rrggbbaa."))))
-
 (defun %ui-edges (value &optional signed)
   (if (%finite-real-p value)
       (make-list 4 :initial-element (%ui-length value nil signed))
@@ -252,14 +235,17 @@ unknown or unmapped ID attaches to nothing. :SLIDE animates the surface's own
 declared position move, and a surface may use both on different axes."
   (%effect :surface (canonical-shell-surface (list* :name name :tree tree options))))
 
-(define-effect :surface
-  :canonical (%effect :surface (canonical-shell-surface args))
-  :key (list :surface (getf args :name))
-  :reduce (push (append (list :owner (spec-name (mounted-spec mounted))
+(%define-effect :surface
+  (lambda (args effect)
+    (%effect :surface (canonical-shell-surface args)))
+  (lambda (args) (list :surface (getf args :name)))
+  (lambda (m args mounted)
+    (setf (getf m :surfaces)
+          (cons (append (list :owner (spec-name (mounted-spec mounted))
                               :source-id (spec-id (mounted-spec mounted))
                               :directory (spec-directory (mounted-spec mounted)))
                         (copy-data args))
-                (materialization-surfaces m)))
+                (getf m :surfaces)))))
 
 (defun shell-viewport (outputs data)
   "The visible rectangle a policy publishes as :focal-frame, in output pixels."
