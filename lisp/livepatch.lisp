@@ -160,7 +160,9 @@ ONLY restricts the mount to those extension names; REFRESH re-invokes mounts."
   (configure (runtime-sources)))
 
 (defun %mount-policy (path)
-  (configure (append (runtime-sources) (list path))))
+  (let ((sources (runtime-sources)))
+    (configure (if (member path sources :test #'equal) sources (append sources (list path)))
+               path)))
 
 (defun apply-patch (&key file forms name)
   "Apply FORMS or the source FILE as one named patch to the running session.
