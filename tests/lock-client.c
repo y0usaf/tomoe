@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -187,6 +188,21 @@ static void terminate(int number) {
     stopping = 1;
 }
 
+static int wait_event(int timeout_ms) {
+    struct pollfd watched = { .fd = wl_display_get_fd(display), .events = POLLIN };
+    wl_display_flush(display);
+    int ready = poll(&watched, 1, timeout_ms);
+    if (ready < 0) return errno == EINTR ? 0 : -1;
+    if (ready > 0 && (watched.revents & POLLIN)) return wl_display_dispatch(display);
+    return wl_display_dispatch_pending(display);
+}
+
+static double monotonic(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / 1e9;
+}
+
 int main(int arguments, char **argv) {
     int seconds_locked = 5;
     for (int i = 1; i < arguments; i++) {
@@ -227,20 +243,12 @@ int main(int arguments, char **argv) {
     for (int i = 0; i < output_count; i++) make_lock_surface(&surfaces[i]);
     double deadline = 0;
     while (!stopping) {
-        if (wl_display_dispatch(display) < 0) {
+        if (wait_event(100) < 0) {
             if (errno == EINTR) continue;
             break;
         }
-        if (locked && !deadline) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            deadline = now.tv_sec + now.tv_nsec / 1e9 + (double)seconds_locked;
-        }
-        if (deadline) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            if (now.tv_sec + now.tv_nsec / 1e9 >= deadline) break;
-        }
+        if (locked && !deadline) deadline = monotonic() + (double)seconds_locked;
+        if (deadline && monotonic() >= deadline) break;
     }
     if (locked && !unlocked) {
         ext_session_lock_v1_unlock_and_destroy(lock);

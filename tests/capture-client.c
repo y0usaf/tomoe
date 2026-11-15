@@ -190,7 +190,8 @@ static void frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *fra
         stopping = 1;
         return;
     }
-    if (!stopping && target->captured + target->failed < frames_per_target && !target->closed)
+    if (!stopping && target->failed < 50 &&
+            target->captured + target->failed < frames_per_target && !target->closed)
         capture(target, index);
 }
 
