@@ -5,3 +5,4 @@
 /target/
 /.worktrees/
 *.fasl
+__pycache__/
