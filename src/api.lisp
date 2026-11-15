@@ -746,6 +746,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
     (:animations :animations t)
+    (:focus-outline-cross (:member :fly :shrink) :fly)
     (:screenshot-freeze :boolean t)
     (:screenshot-colors (:group (:accent :color "#7aa1f7") (:background :color "#1c1c21")
                                 (:text :color "#ffffff") (:chip :color "#45454f")))
@@ -843,12 +844,14 @@ settle in 110 ms, and the open ease is 90 ms."
     :window-close nil :window-resize nil :window-switch nil
     :window-view (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63))
     :window-alpha nil :window-tint nil :window-scale nil
-    :window-rotation nil :window-translate nil)
+    :window-rotation nil :window-translate nil
+    :focus-outline (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63)))
   "Each animation event's default, when a configuration does not name one.
 Every animation advances once per display refresh, at the instant the frame
 reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 110 ms
 and :WINDOW-VIEW (workspace and deck scrolling) does too; :WINDOW-OPEN lasts
-90 ms.")
+90 ms. :FOCUS-OUTLINE is the focus border travelling between windows; off,
+the border is drawn on the focused window instead.")
 
 (defun %animation-settings (value)
   "Normalize :ANIMATIONS: T, NIL, or a plist of per-event specs.

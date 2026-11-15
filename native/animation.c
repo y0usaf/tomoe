@@ -116,8 +116,11 @@ double animation_at(const struct animation *a, double now) {
 double animation_velocity(const struct animation *a, double now) {
     if (!a->active) return 0;
     double passed = now - a->start;
-    if (passed <= 0 || passed >= a->duration) return 0;
+    if (passed <= 0) return a->v0;
+    if (passed >= a->duration) return 0;
     const double step = 1e-4;
+    if (passed < step)
+        return (animation_eval(a, passed + step) - animation_eval(a, passed)) / step;
     return (animation_eval(a, passed + step) - animation_eval(a, passed - step)) /
         (2 * step);
 }

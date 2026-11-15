@@ -41,6 +41,7 @@ static const struct setting_field {
     ANIMATION_FIELDS("animations-window-scale", window_scale)
     ANIMATION_FIELDS("animations-window-rotation", window_rotation)
     ANIMATION_FIELDS("animations-window-translate", window_translate)
+    ANIMATION_FIELDS("animations-focus-outline", focus_outline)
     { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
     { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
     { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },
@@ -67,7 +68,10 @@ void settings_default(struct settings *settings) {
             .epsilon = 0.001, .launch = 63 },
         .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
             .epsilon = 0.001, .launch = 63 },
-        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 } };
+        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 },
+        .focus_outline = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
+            .epsilon = 0.001, .launch = 63 },
+        .outline_fly = true };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }
@@ -110,6 +114,10 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         char *copy = strdup(text);
         if (!copy) return 0;
         settings->blur_namespaces[settings->blur_namespace_count++] = copy;
+        return 1;
+    }
+    if (strcmp(key, "focus-outline-cross") == 0) {
+        settings->outline_fly = strcmp(text, "shrink") != 0;
         return 1;
     }
     int handled = input_setting(settings, key, NAN, text);
