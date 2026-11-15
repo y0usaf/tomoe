@@ -1595,10 +1595,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
   (%persist-state)
   nil))
 
-(defun injected-event (text)
-  "The input event plist a control client injects as TEXT."
-  (check-type text string)
-  (let ((event (read-from-string text)))
+(defun injected-event (data)
+  "The input event plist a control client injects."
+  (let ((event (if (stringp data) (read-from-string data) data)))
     (unless (and (listp event) (getf event :type))
       (error "Injected event must be a plist carrying :type."))
     (unless (member (getf event :type) '(:key :button :grab))
