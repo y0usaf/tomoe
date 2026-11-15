@@ -113,7 +113,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     if (drm_fd == -2) goto failed;
     s->renderer = render_create(drm_fd);
     if (s->backend == SCREEN_NESTED && drm_fd >= 0) close(drm_fd);
-    if (!s->renderer || !buffers_listen(s)) goto failed;
+    if (!s->renderer || !effects_create(s) || !buffers_listen(s)) goto failed;
     if (!capture_listen(s)) goto failed;
     if (!surfaces_listen(s)) goto failed;
     s->scene = node_create(NULL);

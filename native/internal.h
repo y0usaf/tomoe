@@ -709,6 +709,8 @@ bool effect_cursor(struct frame *f, const struct texture_options *options,
 void effects_plan(struct tomoe *s, struct oplist *list);
 void effects_forget(struct tomoe *s);
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused);
+bool effects_create(struct tomoe *s);
+bool effects_admit_trail(struct tomoe *s);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const struct region *background_blur_region(struct tomoe *s, struct surface *surface);
