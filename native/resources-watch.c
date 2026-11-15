@@ -312,7 +312,6 @@ void res_watches_apply(struct want_watch *wanted, size_t count) {
                 break;
             }
         }
-        free(wanted[index].directory);
         if (match >= 0) {
             watches[index] = res.watches[match];
             loop_set_data(watches[index].source, &watches[index]);
@@ -321,6 +320,7 @@ void res_watches_apply(struct want_watch *wanted, size_t count) {
             free(wanted[index].owner);
             free(wanted[index].name);
             free(wanted[index].path);
+            free(wanted[index].directory);
             continue;
         }
         watches[index].owner = wanted[index].owner;
@@ -332,6 +332,7 @@ void res_watches_apply(struct want_watch *wanted, size_t count) {
         watches[index].active = true;
         watches[index].status = WATCH_READY;
         watches[index].absolute = watch_absolute_path(&watches[index], wanted[index].directory);
+        free(wanted[index].directory);
         char *content = NULL;
         char *error = NULL;
         int status = WATCH_READY;
