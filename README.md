@@ -122,8 +122,9 @@ asked the GPU to fill, so a change that stops painting what something else hides
 shows up there directly: a draw a window above it covers opaquely is not issued
 at all, every other draw is scissored to the part of it that nothing hides and to
 the damage that needs it, a rounded window claims the cross its radius leaves
-opaque back as the region it hides, and a border or a shadow is only filled in the
-ring its shader leaves non-transparent. `tests/overdraw.py` mounts a shader
+opaque back as the region it hides, and a border or a shadow is only drawn where
+the window it decorates does not cover it, so it becomes the ring its shader
+fills. `tests/overdraw.py` mounts a shader
 wallpaper with one, ten and fifty rounded windows, compares the presented pixels
 against the ones it recorded and fails if a repaint submits more fragments than
 it did when that record was taken. A quiet scene collects the Lisp heap and

@@ -118,81 +118,6 @@ static void rounded_cover(struct op *op, const struct texture_options *options, 
     cover_rect(op, left, top + r, right - left, bottom - top - 2 * r);
 }
 
-static struct box outward(struct fbox box) {
-    int left = (int)floor(box.x), top = (int)floor(box.y);
-    return (struct box){ left, top, (int)ceil(box.x + box.width) - left,
-        (int)ceil(box.y + box.height) - top };
-}
-
-static struct box inward(struct fbox box) {
-    int left = (int)ceil(box.x), top = (int)ceil(box.y);
-    return (struct box){ left, top, (int)floor(box.x + box.width) - left,
-        (int)floor(box.y + box.height) - top };
-}
-
-static bool band_region(struct region *band, struct box outer, struct box hole, int corner) {
-    if (hole.width <= 0 || hole.height <= 0 || hole.x <= outer.x || hole.y <= outer.y ||
-            hole.x + hole.width >= outer.x + outer.width ||
-            hole.y + hole.height >= outer.y + outer.height) return false;
-    int half = (hole.width < hole.height ? hole.width : hole.height) / 2;
-    if (corner > half) corner = half;
-    if (corner > 0 && (hole.width <= 2 * corner || hole.height <= 2 * corner)) return false;
-    int right = outer.x + outer.width, bottom = outer.y + outer.height;
-    int inner_right = hole.x + hole.width, inner_bottom = hole.y + hole.height;
-    struct rect rects[12];
-    int count = 0;
-    rects[count++] = (struct rect){ outer.x, outer.y, right, hole.y };
-    if (corner > 0) {
-        rects[count++] = (struct rect){ outer.x, hole.y, hole.x, hole.y + corner };
-        rects[count++] = (struct rect){ hole.x, hole.y, hole.x + corner, hole.y + corner };
-        rects[count++] = (struct rect){ inner_right - corner, hole.y, inner_right,
-            hole.y + corner };
-        rects[count++] = (struct rect){ inner_right, hole.y, right, hole.y + corner };
-        rects[count++] = (struct rect){ outer.x, hole.y + corner, hole.x, inner_bottom - corner };
-        rects[count++] = (struct rect){ inner_right, hole.y + corner, right,
-            inner_bottom - corner };
-        rects[count++] = (struct rect){ outer.x, inner_bottom - corner, hole.x, inner_bottom };
-        rects[count++] = (struct rect){ hole.x, inner_bottom - corner, hole.x + corner,
-            inner_bottom };
-        rects[count++] = (struct rect){ inner_right - corner, inner_bottom - corner,
-            inner_right, inner_bottom };
-        rects[count++] = (struct rect){ inner_right, inner_bottom - corner, right,
-            inner_bottom };
-    } else {
-        rects[count++] = (struct rect){ outer.x, hole.y, hole.x, inner_bottom };
-        rects[count++] = (struct rect){ inner_right, hole.y, right, inner_bottom };
-    }
-    rects[count++] = (struct rect){ outer.x, inner_bottom, right, bottom };
-    struct rect *kept = malloc((size_t)count * sizeof(*kept));
-    if (!kept) return false;
-    memcpy(kept, rects, (size_t)count * sizeof(*kept));
-    region_init(band);
-    band->rects = kept;
-    band->count = count;
-    band->capacity = count;
-    band->extents = (struct rect){ outer.x, outer.y, right, bottom };
-    return true;
-}
-
-static bool border_band(struct region *band, struct fbox box, double width, double radius) {
-    double reach = box.width < box.height ? box.width : box.height;
-    if (2 * (radius + width) >= reach) return false;
-    struct box outer = outward(box);
-    struct box hole = inward((struct fbox){ box.x + width, box.y + width,
-        box.width - 2 * width, box.height - 2 * width });
-    return band_region(band, outer, hole, (int)ceil(radius) + 1);
-}
-
-static bool shadow_band(struct region *band, struct fbox box, struct fbox window, double radius) {
-    struct box outer = outward(box);
-    struct box hole = inward((struct fbox){ window.x + 2, window.y + 2,
-        window.width - 4, window.height - 4 });
-    int reach = window.width < window.height ? (int)window.width : (int)window.height;
-    int r = (int)ceil(radius);
-    if (r * 2 > reach) r = reach / 2;
-    return band_region(band, outer, hole, r > 0 ? r + 2 : 0);
-}
-
 static void color(float out[4], uint32_t rgba) {
     out[0] = (rgba >> 24 & 0xff) / 255.0f;
     out[1] = (rgba >> 16 & 0xff) / 255.0f;
@@ -216,15 +141,12 @@ void effect_border(struct frame *f, struct fbox geometry, double width, double r
     if (drawn.recorded) return;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_BORDER, drawn.covered, &clip)) return;
-    struct region band;
-    bool banded = border_band(&band, box, width, radius);
     struct scene_quad scene = { .kind = SCENE_BORDER, .blend = 1, .alpha = alpha,
-        .width = width, .radius = radius, .clip = banded ? &band : NULL,
+        .width = width, .radius = radius,
         .size = { box.width, box.height } };
     color(scene.color, rgba);
     scene_geometry(f, box, NULL, box.x, box.y, &scene);
     pass_scene(f->pass, &scene);
-    if (banded) region_fini(&band);
     op_end(f->pass, &clip);
 }
 
@@ -239,15 +161,12 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
     if (drawn.recorded) return;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_SHADOW, drawn.covered, &clip)) return;
-    struct region band;
-    bool banded = shadow_band(&band, box, local_box(f, geometry), radius);
     struct scene_quad scene = { .kind = SCENE_SHADOW, .blend = 1, .alpha = alpha,
-        .range = range, .power = power, .radius = radius, .clip = banded ? &band : NULL,
+        .range = range, .power = power, .radius = radius,
         .size = { box.width, box.height } };
     color(scene.color, rgba);
     scene_geometry(f, box, NULL, box.x, box.y, &scene);
     pass_scene(f->pass, &scene);
-    if (banded) region_fini(&band);
     op_end(f->pass, &clip);
 }
 
