@@ -195,8 +195,9 @@ def describe(cost):
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
-def session(binary, tag, layout, env):
-    unit, socket = f"tomoe-{tag}-{layout}", f"{tag}{layout}"
+def session(binary, tag, layout, phase, env):
+    name = f"{tag}{layout}{phase}"
+    unit, socket = f"tomoe-{tag}-{layout}-{phase}", name
     start_binary(binary, unit, socket, env=env)
     mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp")
     return unit, socket
@@ -205,7 +206,7 @@ def session(binary, tag, layout, env):
 def run(binary, tag):
     digests, costs = {}, {}
     for layout in ("grid", "stack", "cover"):
-        unit, socket = session(binary, tag, layout, [])
+        unit, socket = session(binary, tag, layout, "pix", [])
         seen = 0
         for count in COUNTS:
             spawn(socket, seen, count, True, unit)
@@ -215,7 +216,7 @@ def run(binary, tag):
             print(f"{tag} {layout} {count} partial: presented {digests[(layout, count)]}",
                   flush=True)
         stop_binary(binary, unit, socket)
-    unit, socket = session(binary, tag, "stack", [("TOMOE_DEBUG_DAMAGE", "1")])
+    unit, socket = session(binary, tag, "stack", "full", [("TOMOE_DEBUG_DAMAGE", "1")])
     spawn(socket, 0, COUNTS[-1], True, unit)
     time.sleep(2)
     digests[("repaint", COUNTS[-1])] = presented_shot(socket)
@@ -223,7 +224,7 @@ def run(binary, tag):
           flush=True)
     stop_binary(binary, unit, socket)
     for layout in ("grid", "stack", "cover"):
-        unit, socket = session(binary, tag, layout, [("TOMOE_DEBUG_DAMAGE", "1")])
+        unit, socket = session(binary, tag, layout, "cost", [("TOMOE_DEBUG_DAMAGE", "1")])
         seen = 0
         for count in COUNTS:
             spawn(socket, seen, count, True, unit)
