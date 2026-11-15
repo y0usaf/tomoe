@@ -673,6 +673,7 @@ let
       install -m 644 ${tomoe}/share/tomoe/examples/shaders/okazz-glyphs.glsl $out/shaders/$name.glsl
     done
   '';
+  benchClient = pkgs.callPackage ../bench/client.nix { };
   vm =
     {
       name,
@@ -684,6 +685,9 @@ let
       ],
       extraModprobeConfig ? "",
       timeout ? 3600,
+      memory ? 2048,
+      qemuOptions ? [ ],
+      uinput ? false,
     }:
     pkgs.testers.runNixOSTest {
       inherit name;
@@ -692,6 +696,7 @@ let
         boot.kernelModules = kernelModules;
         boot.extraModprobeConfig = extraModprobeConfig;
         hardware.graphics.enable = true;
+        hardware.uinput.enable = uinput;
         environment.systemPackages = [
           tomoe
           client
@@ -707,8 +712,9 @@ let
           "/share/xdg-desktop-portal"
         ];
         environment.variables.LP_NUM_THREADS = "4";
-        virtualisation.memorySize = 2048;
+        virtualisation.memorySize = memory;
         virtualisation.cores = 4;
+        virtualisation.qemu.options = qemuOptions;
       };
       testScript = builtins.readFile ./tomoe.py + ''
         import traceback
@@ -1127,6 +1133,54 @@ let
   equivalenceSettings = compositorSettings // {
     timeout = 1800;
   };
+  benchScript =
+    compositors:
+    ''
+      BENCH = "${./../bench}"
+      PATHS = {
+          "client": "${benchClient}/bin/bench-client",
+          "compositors": "${compositors}",
+          "cores": "4",
+          "memory": "4096",
+      }
+      exec(compile(open(BENCH + "/driver.py").read()
+                   + "\nmain(machine, PATHS)\n", "bench", "exec"))
+    '';
+  benchSettings = {
+    kernelModules = [
+      "vkms"
+      "vgem"
+      "udmabuf"
+    ];
+    packages = [
+      benchClient
+      pkgs.sway
+      pkgs.niri
+      pkgs.hyprland
+      pkgs.procps
+    ];
+    qemuOptions = [
+      "-vga"
+      "none"
+    ];
+    uinput = true;
+    memory = 4096;
+    timeout = 3600;
+  };
+  benchSuites = [
+    {
+      name = "bench";
+      script = benchScript "tomoe,sway,niri,hyprland";
+    }
+    {
+      name = "bench-competitors";
+      script = benchScript "sway,hyprland,niri";
+    }
+    {
+      name = "bench-tomoe";
+      script = benchScript "tomoe";
+    }
+  ];
 in
 {
   compositor = vm (
@@ -1152,5 +1206,6 @@ in
   );
   suites = suiteTargets compositorSettings compositorSuites
     // suiteTargets equivalenceSettings equivalenceSuites
-    // suiteTargets kmsSettings kmsSuites;
+    // suiteTargets kmsSettings kmsSuites
+    // suiteTargets benchSettings benchSuites;
 }
