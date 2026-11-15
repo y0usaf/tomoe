@@ -15,7 +15,7 @@ def call(arguments, timeout=60):
 def record():
     reply = read(call("frames"))
     assert reply[1] == ":OK", show(reply)
-    return plist(items(reply)[0])
+    return plist(items(items(reply)[2])[0])
 
 
 def measure(label, window=2.0):
