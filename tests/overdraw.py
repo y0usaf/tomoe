@@ -27,7 +27,7 @@ POLICY = """
          (windows (sort (copy-list (context snapshot :windows))
                         (lambda (first second) (< (getf first :id) (getf second :id)))))
          (count (length windows)))
-    (values (if (and output (not (getf state :rotated))) (list :rotated t) state)
+    (values (list :rotated t)
             (append
              {rotate}
              (list (settings :animations nil
@@ -56,8 +56,8 @@ POLICY = """
 """
 
 
-ROTATE = ("(if (and output (not (getf state :rotated))) (list (configure-output "
-          "(getf output :name) :transform :{name})) nil)\n             ")
+ROTATE = ("(if (getf state :rotated) nil (list (configure-output "
+          "\"HEADLESS-1\" :transform :{name})))\n             ")
 
 
 def policy(layout, rotation, path):
