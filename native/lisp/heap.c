@@ -12,6 +12,11 @@ struct lisp_runtime lisp;
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;
+enum { RESIDENT_FREE_KEEP = 4 };
+
+static uint32_t resident_blocks[RESIDENT_FREE_KEEP];
+static uint32_t resident_free;
+
 struct memo_slot { void *src; void *dst; uint32_t epoch; };
 static struct memo_slot *memo;
 static size_t memo_capacity, memo_used;
@@ -77,6 +82,7 @@ void buf_printf(struct lisp_buf *buf, const char *fmt, ...)
 void heap_reset_blocks(void)
 {
     free_block = 0;
+    resident_free = 0;
 }
 
 void heap_set_reservation(void *base)
@@ -103,31 +109,32 @@ static void map_block(uint32_t index)
     lisp.blocks[index].mapped = 1;
 }
 
-static uint8_t block_resident[LISP_MAX_BLOCKS];
-static uint32_t resident_free;
-
-enum { RESIDENT_FREE_KEEP = 2 };
-
 static uint32_t take_block(void)
 {
-    if (free_block == UINT32_MAX)
+    bool resident = resident_free > 0;
+    if (!resident && free_block == UINT32_MAX)
         lisp_oom();
-    uint32_t index = free_block;
-    free_block = lisp.blocks[index].next;
-    map_block(index);
+    uint32_t index;
+    if (resident) {
+        index = resident_blocks[--resident_free];
+    } else {
+        index = free_block;
+        free_block = lisp.blocks[index].next;
+        map_block(index);
+    }
     memset(&lisp.blocks[index], 0, sizeof(lisp.blocks[index]));
     lisp.blocks[index].in_use = 1;
     lisp.blocks[index].mapped = 1;
-    if (block_resident[index]) {
-        block_resident[index] = 0;
-        resident_free--;
-    }
     lisp.heap_used += LISP_BLOCK_SIZE;
     if (lisp.heap_used > lisp.region_limit && lisp.ctl_top > 0) {
         lisp.heap_used -= LISP_BLOCK_SIZE;
         lisp.blocks[index].in_use = 0;
-        lisp.blocks[index].next = free_block;
-        free_block = index;
+        if (resident) {
+            resident_blocks[resident_free++] = index;
+        } else {
+            lisp.blocks[index].next = free_block;
+            free_block = index;
+        }
         lisp_oom();
     }
     return index;
@@ -140,17 +147,15 @@ static void give_block(uint32_t index)
     b->owner = NULL;
     b->used = 0;
     b->kind = 0;
+    lisp.heap_used -= LISP_BLOCK_SIZE;
+    if (b->mapped && resident_free < RESIDENT_FREE_KEEP) {
+        resident_blocks[resident_free++] = index;
+        return;
+    }
+    if (b->mapped)
+        madvise(block_base(index), LISP_BLOCK_SIZE, MADV_DONTNEED);
     b->next = free_block;
     free_block = index;
-    lisp.heap_used -= LISP_BLOCK_SIZE;
-    if (b->mapped) {
-        if (resident_free < RESIDENT_FREE_KEEP) {
-            block_resident[index] = 1;
-            resident_free++;
-        } else {
-            madvise(block_base(index), LISP_BLOCK_SIZE, MADV_DONTNEED);
-        }
-    }
 }
 
 void *heap_alloc_in(struct lisp_region *region, size_t bytes)
