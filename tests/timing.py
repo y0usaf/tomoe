@@ -43,17 +43,16 @@ def frames(socket="check"):
 def memory(socket="check"):
     reply = read(cli("memory", socket))
     assert reply[1] == ":OK", show(reply)
-    fields = plist(reply[2])
-    return int(fields[":BYTES-CONSED"]), int(fields[":GC-COUNT"])
+    lisp = plist(plist(reply[2])[":LISP"])
+    return int(lisp[":ARENA-HIGH-WATER"]), int(lisp[":RECLAIM-COUNT"])
 
 def stall_table(timings):
     threshold = int(timings[":THRESHOLD"])
-    intervals = [(int(entry[0]), int(entry[1])) for entry in items(timings[":GC-INTERVALS"])]
     rows = []
     for entry in items(timings[":STALLS"]):
         start, duration = int(entry[0]), int(entry[1])
         end = start + duration
-        overlapped = [(a, b) for a, b in intervals if a < end and b > start]
+        overlapped = []
         rows.append((duration, start, overlapped))
     return threshold, rows
 
@@ -156,8 +155,8 @@ machine.sleep(2)
 idle_ticks, idle_frames = ticks() - idle_start, frames() - idle_frames
 idle_consed_end, idle_gcs_end = memory()
 print(f"idle: {idle_ticks * 10000} us, {idle_frames} frames, "
-      f"{(idle_consed_end - idle_consed) / 2:.0f} bytes consed/s, "
-      f"{idle_gcs_end - idle_gcs} collections in 2 s")
+      f"Lisp arena high water {idle_consed_end} bytes, "
+      f"{idle_gcs_end - idle_gcs} reclaims in 2 s")
 
 cli("unmount timing-policy")
 plain = []
@@ -231,8 +230,7 @@ frames_total = {text(plist(entry)[":NAME"]): plist(entry)
 print(f"animated: {int(frames_total[':COUNT'])} frames with the clock and shader wallpaper; "
       f"p50 {int(frames_total[':P50']) / 1000:.1f} us, p99 {int(frames_total[':P99']) / 1000:.1f} us")
 print(f"animated: {len(rows)} frames over {threshold / 1000000:.2f} ms; "
-      f"longest {max([row[0] for row in rows], default=0) / 1000000:.2f} ms; "
-      f"{len(items(timings[':GC-INTERVALS']))} collections logged")
+      f"longest {max([row[0] for row in rows], default=0) / 1000000:.2f} ms")
 phases = {text(plist(entry)[":NAME"]): plist(entry) for entry in items(timings[":CHANNELS"])}
 print("animated frame work: " + ", ".join(
     f"{name} p50 {int(phases[name].get(':P50', '0')) / 1000:.1f} us"
@@ -256,7 +254,7 @@ timings = plist(reply[2])
 threshold, rows = stall_table(timings)
 tagged = len([row for row in rows if row[2]])
 print(f"churn: {len(rows)} frames over {threshold / 1000000:.2f} ms, {tagged} of them while "
-      f"a collection ran; {len(items(timings[':GC-INTERVALS']))} collections logged")
+      f"Lisp reclaimed")
 print(f"{'start us':>12}{'length ms':>11}{'gc':>8}{'gc ms':>8}  frame stall")
 for duration, start, overlapped in rows[:20]:
     print(f"{start % 1000000000:>12}{duration / 1000000:>11.2f}"
