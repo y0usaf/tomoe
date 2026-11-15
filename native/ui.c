@@ -1484,7 +1484,7 @@ static bool surface_paints(const struct tomoe *s, const struct ui_surface *surfa
     return ui_asset_shader(shown, NULL) && !shader_still(s, surface, now);
 }
 
-size_t ui_claim(struct output *o, int layer, struct box *boxes, size_t max) {
+size_t ui_claim(struct output *o, int layer, struct box *boxes, bool *blurs, size_t max) {
     if (!o || !o->server) return 0;
     const struct ui_set *set = o->server->ui;
     if (!set) return 0;
@@ -1502,6 +1502,10 @@ size_t ui_claim(struct output *o, int layer, struct box *boxes, size_t max) {
             .width = surface->width, .height = surface->height };
         if (!box_intersection(&placed, &placed, &output)) continue;
         if (count == max) return SIZE_MAX;
+        struct program *shader = ui_asset_shader(shown_backdrop(surface), NULL);
+        if (blurs)
+            blurs[count] = (o->server->settings.blur_enabled && surface->blur >= 0) ||
+                (shader && shader->channel >= 0);
         boxes[count++] = placed;
     }
     return count;

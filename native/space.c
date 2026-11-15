@@ -227,6 +227,7 @@ void refresh_scene(struct tomoe *s) {
     walk_scene(s, s->scene, NULL, 0, 0, false, refresh_leaf, NULL);
     wl_list_for_each(surface, &s->surfaces, link) {
         if (!surface->seen && surface->scene_owned) surface_leave_all(surface);
+        if (!surface->seen && surface->feedback_mode) dmabuf_surface_feedback(surface, NULL, 0);
         surface_fifo_unpaced(surface);
     }
     pointer_refresh(s);
@@ -236,6 +237,7 @@ void forget_output(struct tomoe *s, struct screen *output) {
     struct surface *surface;
     wl_list_for_each(surface, &s->surfaces, link) {
         if (surface->primary == output) surface->primary = NULL;
+        if (surface->feedback_output == output) dmabuf_surface_feedback(surface, NULL, 0);
         if (surface->scene_owned) surface_send_leave(surface, output);
         surface_fifo_unpaced(surface);
     }
@@ -243,10 +245,14 @@ void forget_output(struct tomoe *s, struct screen *output) {
 bool surface_visible(struct tomoe *s, struct surface *surface) {
     return surface->seen;
 }
-bool planes_owned(const struct plane_assignment *planes, const struct surface *surface) {
+static const struct plane_item *plane_for(const struct plane_assignment *planes,
+        const struct surface *surface) {
     for (size_t i = 0; i < planes->count; i++)
-        if (planes->item[i].surface == surface) return true;
-    return false;
+        if (planes->item[i].surface == surface) return &planes->item[i];
+    return NULL;
+}
+bool planes_owned(const struct plane_assignment *planes, const struct surface *surface) {
+    return plane_for(planes, surface) != NULL;
 }
 
 void surfaces_textured(struct output *o) {
@@ -395,7 +401,8 @@ static bool window_mesh_draw(struct tomoe *s, struct frame *f, const struct targ
 
 static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct frame *data = opaque;
-    if (data->planes && planes_owned(data->planes, leaf->surface)) return false;
+    const struct plane_item *plane = data->planes ? plane_for(data->planes, leaf->surface) : NULL;
+    if (plane && !plane->underlay) return false;
     struct box local = leaf->screen;
     const struct target *t = leaf->target;
     bool window = t && t->kind == TARGET_WINDOW;
@@ -423,6 +430,19 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct box dst;
     box_transform(&dst, &local, transform_invert(data->transform), data->width, data->height);
     struct surface *surface = leaf->surface;
+    if (plane && plane->underlay) {
+        double radius = window && !t->fullscreen ? window_radius(s, t, data) : 0;
+        bool clipped = !box_equal(&leaf->shown, &leaf->screen);
+        if (window && t->client_width > 0 && !transformed &&
+                (radius > 0 || clipped) && toplevel_surface(surface)) {
+            effect_cutout(data, (struct fbox){ local.x, local.y, local.width, local.height },
+                window_box(t, data), radius);
+            return false;
+        }
+        pass_add_rect(data->pass, &(struct rect_options){
+            .box = dst, .color = { 0, 0, 0, 0 }, .blend_mode = BLEND_NONE });
+        return false;
+    }
     if (!pass_record(data->pass, NULL, (struct box){0}, (struct box){0}, NULL, 0))
         surface_release_after(surface, data->buffer);
     struct fbox src;
@@ -679,41 +699,45 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     while (slot < RING_SLOTS && ring->slots[slot] != buffer) slot++;
     return slot;
 }
-static bool scene_damage(struct output *o, const struct frame *data, bool locked,
-        struct region *changed, struct region *clip, bool *recorded) {
-    struct oplist now = {0};
+static bool scene_record_ops(struct output *o, const struct frame *data, bool locked,
+        struct oplist *now, struct region *changed, bool *complete) {
     struct frame record = *data;
-    record.pass = render_record(o->server->renderer, data->buffer, &now);
+    record.pass = render_record(o->server->renderer, data->buffer, now);
     if (!record.pass) {
         o->damaged = true;
+        *complete = false;
         return false;
     }
     draw_scene(o, &record, NULL, locked, true, true);
-    bool complete = pass_submit(record.pass) && oplist_damage(&o->ops, &now, changed);
-    if (!complete || region_not_empty(changed)) o->damaged = true;
+    *complete = pass_submit(record.pass) && oplist_damage(&o->ops, now, changed);
+    if (!*complete || region_not_empty(changed)) o->damaged = true;
     oplist_finish(&o->ops);
-    o->ops = now;
-    if (complete) effects_plan(o->server, &o->ops);
-    *recorded = complete;
+    o->ops = *now;
+    if (*complete) effects_plan(o->server, &o->ops);
+    return true;
+}
+static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
+        const struct region *changed, struct region *clip, bool complete, size_t ops_len) {
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
     uint64_t frame = ++o->frames;
-    struct region *slot_damage = &o->damage[frame % history];
+    uint64_t seq = ++o->damage_seq;
+    struct region *slot_damage = &o->damage[seq % history];
     if (complete) region_copy(slot_damage, changed);
     else {
         region_fini(slot_damage);
-        region_init_rect(slot_damage, 0, 0, data->buffer->width, data->buffer->height);
+        region_init_rect(slot_damage, 0, 0, buffer->width, buffer->height);
     }
-    size_t slot = ring_slot(&o->ring, data->buffer);
+    size_t slot = ring_slot(&o->ring, buffer);
     uint64_t rendered = slot < RING_SLOTS ? o->ring.frames[slot] : 0;
-    if (slot < RING_SLOTS) o->ring.frames[slot] = frame;
+    if (slot < RING_SLOTS) o->ring.frames[slot] = seq;
     o->drawn.frame = frame;
-    o->drawn.age = rendered ? frame - rendered : 0;
-    o->drawn.ops = now.len;
-    if (!complete || !rendered || frame - rendered > history) return false;
-    for (uint64_t f = rendered + 1; f <= frame; f++)
+    o->drawn.age = rendered ? seq - rendered : 0;
+    o->drawn.ops = ops_len;
+    if (!complete || !rendered || seq - rendered > history) return false;
+    for (uint64_t f = rendered + 1; f <= seq; f++)
         region_union(clip, clip, &o->damage[f % history]);
     oplist_expand(&o->ops, clip);
-    region_intersect_rect(clip, clip, 0, 0, data->buffer->width, data->buffer->height);
+    region_intersect_rect(clip, clip, 0, 0, buffer->width, buffer->height);
     int count = 0;
     region_rectangles(clip, &count);
     if (count > 16) {
@@ -723,6 +747,14 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     }
     return true;
 }
+static bool scene_damage(struct output *o, const struct frame *data, bool locked,
+        struct region *changed, struct region *clip, bool *recorded) {
+    struct oplist now = {0};
+    bool complete = false;
+    if (!scene_record_ops(o, data, locked, &now, changed, &complete)) return false;
+    *recorded = complete;
+    return scene_commit_damage(o, data->buffer, changed, clip, complete, now.len);
+}
 static int64_t region_area(const struct region *region) {
     int count = 0;
     const struct rect *rects = region_rectangles(region, &count);
@@ -731,9 +763,10 @@ static int64_t region_area(const struct region *region) {
         area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
     return area;
 }
-static bool render_scene_buffer(struct output *o, struct buffer *buffer,
+static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
-        bool cursors, bool chrome, bool track, const struct plane_assignment *planes) {
+        bool cursors, bool chrome, bool track, const struct plane_assignment *planes,
+        bool pre_recorded, bool pre_complete, const struct region *pre_changed) {
     struct screen *output = o->screen;
     struct tomoe *s = o->server;
     struct timeline *signal = NULL;
@@ -750,14 +783,23 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         .focused = plan ? plan->focused : o->server->focused };
     transform_coords(data.transform, &data.width, &data.height);
     bool locked = lock_active(o->server);
-    bool moving = windows_animate(o->server, data.sample);
-    if (ui_animate(o->server, data.sample)) moving = true;
-    o->animating = moving;
+    if (!pre_recorded) {
+        bool moving = windows_animate(o->server, data.sample);
+        if (ui_animate(o->server, data.sample)) moving = true;
+        o->animating = moving;
+    }
     struct region changed, clip;
     region_init(&changed);
     region_init(&clip);
-    bool recorded = false;
-    bool partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
+    bool recorded = false, partial = false;
+    if (pre_recorded) {
+        if (pre_changed) region_copy(&changed, pre_changed);
+        recorded = pre_complete;
+        partial = track && scene_commit_damage(o, buffer, &changed, &clip, pre_complete,
+            o->ops.len);
+    } else {
+        partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
+    }
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
     if (o->planes.changed) partial = false;
@@ -776,14 +818,20 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     }
     data.pass = pass;
     if (recorded) pass_ops(pass, &o->ops);
-    bool skipped = planes && planes->count;
+    bool skipped = false;
+    if (planes && planes->count) {
+        for (size_t i = 0; i < planes->count; i++)
+            if (!planes->item[i].underlay) skipped = true;
+    }
     if (skipped) {
         struct region skip;
         region_init(&skip);
-        for (size_t i = 0; i < planes->count; i++)
+        for (size_t i = 0; i < planes->count; i++) {
+            if (planes->item[i].underlay) continue;
             region_union_rect(&skip, &skip,
                 planes->item[i].dst.x - data.x, planes->item[i].dst.y - data.y,
                 (unsigned)planes->item[i].dst.width, (unsigned)planes->item[i].dst.height);
+        }
         if (!partial) {
             region_union_rect(&clip, &clip, 0, 0, buffer->width, buffer->height);
             region_subtract(&clip, &clip, &skip);
@@ -816,6 +864,12 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     }
     return success;
 }
+static bool render_scene_buffer(struct output *o, struct buffer *buffer,
+        const struct screen_state *state, const struct presentation *plan,
+        bool cursors, bool chrome, bool track, const struct plane_assignment *planes) {
+    return render_scene_prepared(o, buffer, state, plan, cursors, chrome, track, planes,
+        false, false, NULL);
+}
 
 bool render_output_buffer(struct output *o, struct buffer *buffer) {
     struct screen_state state = {0};
@@ -825,37 +879,79 @@ bool render_output_buffer(struct output *o, struct buffer *buffer) {
 bool render_presentation(struct output *o, struct screen_state *state,
         struct ring *ring, const struct presentation *plan) {
     struct screen *output = o->screen;
+    struct tomoe *s = o->server;
     finish_output_capture(o);
     if ((state->committed & SCREEN_ENABLED) && !state->enabled) return true;
     bool track = !ring && !plan;
     if (!ring) {
         ring = &o->ring;
         if ((ring->width != output->width || ring->height != output->height) &&
-                !ring_configure(o->server, ring, output, output->width, output->height,
+                !ring_configure(s, ring, output, output->width, output->height,
                     ring->implicit)) return false;
     }
-    struct buffer *buffer = ring_acquire(o->server, ring);
-    if (!buffer) return false;
-    if (!plan) {
-        if (!o->server->configuring_outputs) {
-            refresh_scene(o->server);
-            pointer_sync_cursors(o->server);
+    if (!plan && !s->configuring_outputs) {
+        refresh_scene(s);
+        pointer_sync_cursors(s);
+    }
+    bool pre_recorded = false, pre_complete = false;
+    struct region pre_changed;
+    region_init(&pre_changed);
+    if (track && o->planes.count && !o->planes.changed && !o->gamma_dirty &&
+            o->presented[0] && o->presented[0]->width == output->width &&
+            o->presented[0]->height == output->height &&
+            !capture_wants_cursorless(o) && !getenv("TOMOE_DEBUG_DAMAGE")) {
+        struct frame probe = { .server = s, .x = o->x, .y = o->y,
+            .buffer = o->presented[0], .planes = &o->planes,
+            .transform = (state->committed & SCREEN_TRANSFORM) ?
+                state->transform : output->transform,
+            .width = o->presented[0]->width, .height = o->presented[0]->height,
+            .view_x = s->view_x, .view_y = s->view_y, .zoom = s->view_zoom,
+            .sample = o->sample > 0 ? o->sample : animation_now(),
+            .focused = s->focused };
+        transform_coords(probe.transform, &probe.width, &probe.height);
+        bool locked = lock_active(s);
+        bool moving = windows_animate(s, probe.sample);
+        if (ui_animate(s, probe.sample)) moving = true;
+        o->animating = moving;
+        struct oplist now = {0};
+        if (scene_record_ops(o, &probe, locked, &now, &pre_changed, &pre_complete)) {
+            pre_recorded = true;
+            if (pre_complete && !region_not_empty(&pre_changed)) {
+                o->frames++;
+                o->drawn.age = 0;
+                o->drawn.pixels = 0;
+                o->drawn.ops = 0;
+                screen_state_set_buffer(state, o->presented[0]);
+                if (s->render_timeline && fenced(output) && o->presented_point)
+                    screen_state_set_wait_timeline(state, s->render_timeline, o->presented_point);
+                region_fini(&pre_changed);
+                return true;
+            }
         }
     }
-    bool success = render_scene_buffer(o, buffer, state, plan, true, true, track,
-        o->planes.count && track ? &o->planes : NULL);
-    uint64_t render_point = o->server->render_point;
+    struct buffer *buffer = ring_acquire(s, ring);
+    if (!buffer) {
+        region_fini(&pre_changed);
+        return false;
+    }
+    bool success = render_scene_prepared(o, buffer, state, plan, true, true, track,
+        o->planes.count && track ? &o->planes : NULL,
+        pre_recorded, pre_complete, &pre_changed);
+    region_fini(&pre_changed);
+    uint64_t render_point = s->render_point;
     if (success) {
         if (capture_wants_cursorless(o)) {
-            struct buffer *capture = ring_create(o->server, ring);
+            struct buffer *capture = ring_create(s, ring);
             if (capture && render_scene_buffer(o, capture, state, plan, false, true, false, NULL)) {
                 o->capture_buffer = buffer_lock(capture);
             }
             buffer_drop(capture);
         }
         screen_state_set_buffer(state, buffer);
-        if (o->server->render_timeline && fenced(output))
-            screen_state_set_wait_timeline(state, o->server->render_timeline, render_point);
+        if (s->render_timeline && fenced(output)) {
+            screen_state_set_wait_timeline(state, s->render_timeline, render_point);
+            if (track) o->presented_point = render_point;
+        }
     }
     buffer_unlock(buffer);
     return success;
@@ -1034,23 +1130,25 @@ struct surface *scanout_surface(struct output *o) {
             ui_on_output(o, 2)) return NULL;
     walk_scene(s, s->scene, NULL, 0, 0, true, scanout_leaf, &data);
     struct surface *surface = data.surface;
-    struct dmabuf_attributes dmabuf;
-    if (!surface || (!data.window && ui_on_output(o, 0)) ||
-            !surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
-            surface->current.transform != o->screen->transform ||
-            surface->current.buffer_width != o->screen->width ||
-            surface->current.buffer_height != o->screen->height) return NULL;
     bool cursor_here = !s->cursor_hidden && s->pointer_x >= data.output.x &&
         s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
         s->pointer_y < data.output.y + data.output.height;
-    if (cursor_here && !o->screen->hardware_cursor) return NULL;
+    if (!surface || (!data.window && ui_on_output(o, 0)) ||
+            (cursor_here && !o->screen->hardware_cursor) ||
+            surface->current.transform != o->screen->transform) return NULL;
+    struct dmabuf_attributes dmabuf;
+    if (!surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
+            surface->current.buffer_width != o->screen->width ||
+            surface->current.buffer_height != o->screen->height) return NULL;
+    if (o->screen->kind == SCREEN_DRM) dmabuf_surface_feedback(surface, o->screen, 2);
     return surface;
 }
 
 struct plane_entry {
-    struct box plane, claim;
+    struct box plane, claim, screen, blur_box;
     struct surface *surface;
     const struct target *target;
+    bool blurs;
 };
 enum { PLANE_ENTRIES = 64 };
 struct plane_scan {
@@ -1062,39 +1160,75 @@ struct plane_scan {
 };
 
 static void plane_add(struct plane_scan *scan, struct box plane, struct box claim,
+        struct box screen, struct box blur_box, bool blurs,
         struct surface *surface, const struct target *target) {
     if (scan->count == PLANE_ENTRIES) {
         scan->overflow = true;
         return;
     }
-    scan->entry[scan->count++] = (struct plane_entry){ plane, claim, surface, target };
+    scan->entry[scan->count++] = (struct plane_entry){
+        .plane = plane, .claim = claim, .screen = screen, .blur_box = blur_box,
+        .surface = surface, .target = target, .blurs = blurs };
+}
+
+static bool layer_has_blur(struct tomoe *s, const struct target *t) {
+    const struct settings *st = &s->settings;
+    struct layer *l = find_layer(s, t->id);
+    if (!st->blur_enabled || !l) return false;
+    if (background_blur_region(s, l->wlr->surface)) return true;
+    if (!l->wlr->namespace) return false;
+    for (size_t i = 0; i < st->blur_namespace_count; i++)
+        if (strcmp(st->blur_namespaces[i], l->wlr->namespace) == 0) return true;
+    return false;
 }
 
 static bool plane_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     struct plane_scan *scan = opaque;
-    struct box plane, claim;
+    struct box plane, claim, blur_box = {0};
     if (!box_intersection(&plane, &leaf->shown, &scan->output)) return false;
     const struct target *t = leaf->target;
     claim = plane;
+    bool blurs = false;
     if (t && t->kind == TARGET_WINDOW && !t->fullscreen && t->client_width > 0) {
         int grow = s->settings.shadow_range + s->settings.border_width;
         struct box around = { plane.x - grow, plane.y - grow, plane.width + 2 * grow,
             plane.height + 2 * grow };
         if (grow > 0) box_intersection(&claim, &around, &scan->output);
+        if (s->settings.blur_enabled && t->style.blur == 1 && s->view_zoom == 1) {
+            int margin = s->settings.blur_margin;
+            struct box area = { plane.x - margin, plane.y - margin,
+                plane.width + 2 * margin, plane.height + 2 * margin };
+            blurs = box_intersection(&blur_box, &area, &scan->output);
+        }
+    } else if (t && t->kind == TARGET_LAYER && layer_has_blur(s, t)) {
+        int margin = s->settings.blur_margin;
+        struct box area = { plane.x - margin, plane.y - margin,
+            plane.width + 2 * margin, plane.height + 2 * margin };
+        blurs = box_intersection(&blur_box, &area, &scan->output);
     }
-    plane_add(scan, plane, claim, leaf->surface, t);
+    plane_add(scan, plane, claim, leaf->screen, blur_box, blurs, leaf->surface, t);
     return false;
 }
 
 static void plane_ui(struct plane_scan *scan, int layer) {
     struct box boxes[16];
-    size_t count = ui_claim(scan->o, layer, boxes, sizeof(boxes) / sizeof(*boxes));
+    bool blurs[16] = {0};
+    size_t count = ui_claim(scan->o, layer, boxes, blurs, sizeof(boxes) / sizeof(*boxes));
     if (count == SIZE_MAX) {
         scan->overflow = true;
         return;
     }
-    for (size_t i = 0; i < count; i++)
-        plane_add(scan, boxes[i], boxes[i], NULL, NULL);
+    int margin = scan->o->server->settings.blur_margin;
+    for (size_t i = 0; i < count; i++) {
+        struct box blur_box = {0};
+        bool has_blur = false;
+        if (blurs[i]) {
+            struct box area = { boxes[i].x - margin, boxes[i].y - margin,
+                boxes[i].width + 2 * margin, boxes[i].height + 2 * margin };
+            has_blur = box_intersection(&blur_box, &area, &scan->output);
+        }
+        plane_add(scan, boxes[i], boxes[i], boxes[i], blur_box, has_blur, NULL, NULL);
+    }
 }
 
 static void plane_collect(struct plane_scan *scan) {
@@ -1116,46 +1250,68 @@ static void plane_collect(struct plane_scan *scan) {
 static bool plane_opaque(uint32_t format) {
     switch (format) {
     case DRM_FORMAT_XRGB8888: case DRM_FORMAT_XBGR8888: case DRM_FORMAT_RGBX8888:
-    case DRM_FORMAT_BGRX8888: case DRM_FORMAT_RGB565: case DRM_FORMAT_XRGB2101010:
-    case DRM_FORMAT_XBGR2101010: case DRM_FORMAT_XRGB16161616: case DRM_FORMAT_XBGR16161616:
+    case DRM_FORMAT_BGRX8888: case DRM_FORMAT_RGB565: case DRM_FORMAT_BGR565:
+    case DRM_FORMAT_XRGB2101010: case DRM_FORMAT_XBGR2101010:
+    case DRM_FORMAT_XRGB16161616: case DRM_FORMAT_XBGR16161616:
     case DRM_FORMAT_RGB888: case DRM_FORMAT_BGR888: case DRM_FORMAT_XRGB4444:
     case DRM_FORMAT_XBGR4444: case DRM_FORMAT_XRGB1555: case DRM_FORMAT_XBGR1555:
+    case DRM_FORMAT_NV12: case DRM_FORMAT_NV21: case DRM_FORMAT_NV16: case DRM_FORMAT_NV61:
+    case DRM_FORMAT_NV24: case DRM_FORMAT_NV42:
+    case DRM_FORMAT_P010: case DRM_FORMAT_P012: case DRM_FORMAT_P016: case DRM_FORMAT_P210:
+    case DRM_FORMAT_YUV420: case DRM_FORMAT_YVU420: case DRM_FORMAT_YUV422:
+    case DRM_FORMAT_YVU422: case DRM_FORMAT_YUV444: case DRM_FORMAT_YVU444:
+    case DRM_FORMAT_YUYV: case DRM_FORMAT_YVYU: case DRM_FORMAT_UYVY: case DRM_FORMAT_VYUY:
         return true;
     default:
         return false;
     }
 }
 
-static bool plane_eligible(const struct plane_scan *scan, const struct plane_entry *entry,
-        struct box *src) {
+static bool plane_scene_eligible(const struct plane_scan *scan, const struct plane_entry *entry,
+        int *src_x, int *src_y, int *src_w, int *src_h, bool *needs_underlay) {
     struct tomoe *s = scan->o->server;
     const struct target *t = entry->target;
     struct surface *surface = entry->surface;
     if (!t || t->kind != TARGET_WINDOW) return false;
-    if (!surface) return false;
-    if (t->fullscreen) return false;
-    if (box_empty(&entry->plane) || box_empty(&entry->claim)) return false;
-    if (box_equal(&entry->plane, &scan->output)) return false;
+    if (!surface || !toplevel_surface(surface)) return false;
+    if (box_empty(&entry->plane) || box_empty(&entry->claim) || box_empty(&entry->screen))
+        return false;
     if (t->shader || t->mesh || t->visual.closing) return false;
     if (t->alpha != 1 || t->offset_x || t->offset_y || t->drawn_width || t->drawn_height)
         return false;
     if (t->visual.opacity != 1 || t->visual.scale != 1 || t->visual.rotation != 0 ||
             t->visual.translate_x || t->visual.translate_y || t->visual.tint[3] != 0)
         return false;
-    int radius = t->style.radius >= 0 ? t->style.radius : s->settings.border_radius;
-    if (radius != 0) return false;
     if (s->settings.blur_enabled && t->style.blur == 1) return false;
     if (surface->current.alpha != UINT32_MAX) return false;
-    if (surface->current.viewport.has_src) return false;
     if (surface->current.transform != scan->o->screen->transform) return false;
-    if (surface->current.buffer_width != entry->plane.width ||
-            surface->current.buffer_height != entry->plane.height) return false;
-    struct dmabuf_attributes dmabuf;
-    struct buffer *buffer = surface->buffer;
-    if (!buffer) return false;
-    if (!buffer_get_dmabuf(buffer, &dmabuf)) return false;
-    if (!plane_opaque(dmabuf.format)) return false;
-    *src = (struct box){ 0, 0, surface->current.buffer_width, surface->current.buffer_height };
+    if (surface->current.buffer_width <= 0 || surface->current.buffer_height <= 0)
+        return false;
+    struct fbox fsrc;
+    surface_source_box(surface, &fsrc);
+    if (fsrc.width <= 0 || fsrc.height <= 0) return false;
+    double rx0 = (double)(entry->plane.x - entry->screen.x) / entry->screen.width;
+    double ry0 = (double)(entry->plane.y - entry->screen.y) / entry->screen.height;
+    double rx1 = (double)(entry->plane.x + entry->plane.width - entry->screen.x) /
+        entry->screen.width;
+    double ry1 = (double)(entry->plane.y + entry->plane.height - entry->screen.y) /
+        entry->screen.height;
+    int64_t sx = llround((fsrc.x + rx0 * fsrc.width) * 65536.0);
+    int64_t sy = llround((fsrc.y + ry0 * fsrc.height) * 65536.0);
+    int64_t sw = llround((rx1 - rx0) * fsrc.width * 65536.0);
+    int64_t sh = llround((ry1 - ry0) * fsrc.height * 65536.0);
+    int64_t max_w = (int64_t)surface->current.buffer_width << 16;
+    int64_t max_h = (int64_t)surface->current.buffer_height << 16;
+    if (sx < 0 || sy < 0 || sw <= 0 || sh <= 0 || sx + sw > max_w || sy + sh > max_h ||
+            sx > INT_MAX || sy > INT_MAX || sw > INT_MAX || sh > INT_MAX)
+        return false;
+    int radius = t->fullscreen ? 0 :
+        (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius);
+    *src_x = (int)sx;
+    *src_y = (int)sy;
+    *src_w = (int)sw;
+    *src_h = (int)sh;
+    *needs_underlay = radius > 0 || !box_equal(&entry->plane, &entry->screen);
     return true;
 }
 
@@ -1200,14 +1356,21 @@ size_t planes_assign(struct output *o) {
     struct plane_assignment *planes = &o->planes;
     struct plane_scan scan = { .o = o };
     struct plane_item chosen[SCREEN_OVERLAYS];
-    struct box previous[SCREEN_OVERLAYS];
+    struct plane_item previous[SCREEN_OVERLAYS];
     size_t capacity = o->screen->impl->overlays ? o->screen->impl->overlays(o->screen) : 0;
     size_t chosen_count = 0, previous_count = planes->count;
-    uint64_t previous_signature = planes->signature, signature = 0xcbf29ce484222325ull;
+    uint64_t previous_shape = planes->shape;
+    uint64_t signature = 0xcbf29ce484222325ull;
     for (size_t i = 0; i < previous_count && i < SCREEN_OVERLAYS; i++)
-        previous[i] = planes->item[i].dst;
+        previous[i] = planes->item[i];
     planes->count = 0;
     planes->signature = 0;
+    planes->shape = 0;
+    struct surface *eligible_surfaces[PLANE_ENTRIES];
+    uint8_t eligible_modes[PLANE_ENTRIES];
+    size_t eligible_count = 0;
+    bool primary_alpha = o->ring.format.len &&
+        o->ring.format.formats[0].format == DRM_FORMAT_ARGB8888;
     if (capacity && s->view_zoom == 1 && !lock_active(s) && !s->screenshot &&
             o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
             !ghosts_visible(s) && !capture_wants_output(o) && !planes_disabled()) {
@@ -1215,34 +1378,91 @@ size_t planes_assign(struct output *o) {
         bool cursor_here = !s->cursor_hidden && s->pointer_x >= scan.output.x &&
             s->pointer_y >= scan.output.y && s->pointer_x < scan.output.x + scan.output.width &&
             s->pointer_y < scan.output.y + scan.output.height;
-        if (!box_empty(&scan.output) && (!cursor_here || o->screen->hardware_cursor)) {
+        bool allow_overlay = !cursor_here || o->screen->hardware_cursor;
+        if (!box_empty(&scan.output) && (allow_overlay || primary_alpha)) {
             plane_collect(&scan);
-            struct region claimed;
+            struct region claimed, blur_above, planes_taken;
             region_init(&claimed);
+            region_init(&blur_above);
+            region_init(&planes_taken);
             for (size_t i = scan.overflow ? 0 : scan.count; i > 0; i--) {
                 const struct plane_entry *entry = &scan.entry[i - 1];
-                struct box src;
+                int sx = 0, sy = 0, sw = 0, sh = 0;
+                bool needs_underlay = false;
+                struct rect plane_rect = { entry->plane.x, entry->plane.y,
+                    entry->plane.x + entry->plane.width, entry->plane.y + entry->plane.height };
                 struct region area;
                 region_init_rect(&area, entry->claim.x, entry->claim.y,
                     (unsigned)entry->claim.width, (unsigned)entry->claim.height);
                 region_intersect(&area, &area, &claimed);
                 bool clear = !region_not_empty(&area);
                 region_fini(&area);
-                if (clear && chosen_count < SCREEN_OVERLAYS &&
-                        plane_eligible(&scan, entry, &src))
-                    chosen[chosen_count++] = (struct plane_item){ .surface = entry->surface,
-                        .buffer = entry->surface->buffer, .dst = entry->plane, .src = src };
+                bool blurred = region_contains_rectangle(&blur_above, &plane_rect) != REGION_OUT;
+                bool overlaps_plane =
+                    region_contains_rectangle(&planes_taken, &plane_rect) != REGION_OUT;
+                if (!blurred && !overlaps_plane &&
+                        plane_scene_eligible(&scan, entry, &sx, &sy, &sw, &sh, &needs_underlay)) {
+                    bool full = clear && !needs_underlay && allow_overlay &&
+                        box_equal(&entry->plane, &scan.output) &&
+                        entry->surface->current.buffer_width == scan.output.width &&
+                        entry->surface->current.buffer_height == scan.output.height;
+                    bool as_underlay = !clear || needs_underlay || !allow_overlay ||
+                        box_equal(&entry->plane, &scan.output);
+                    if (full) {
+                        if (eligible_count < PLANE_ENTRIES) {
+                            eligible_surfaces[eligible_count] = entry->surface;
+                            eligible_modes[eligible_count++] = 2;
+                        }
+                    } else if (!as_underlay || primary_alpha) {
+                        if (eligible_count < PLANE_ENTRIES) {
+                            eligible_surfaces[eligible_count] = entry->surface;
+                            eligible_modes[eligible_count++] = 1;
+                        }
+                        struct dmabuf_attributes dmabuf;
+                        struct buffer *buffer = entry->surface->buffer;
+                        if (chosen_count < SCREEN_OVERLAYS && buffer &&
+                                buffer_get_dmabuf(buffer, &dmabuf) &&
+                                plane_opaque(dmabuf.format)) {
+                            chosen[chosen_count++] = (struct plane_item){
+                                .surface = entry->surface, .buffer = buffer,
+                                .dst = entry->plane, .src_x = sx, .src_y = sy,
+                                .src_width = sw, .src_height = sh,
+                                .underlay = as_underlay };
+                            region_union_rect(&planes_taken, &planes_taken,
+                                entry->plane.x, entry->plane.y,
+                                (unsigned)entry->plane.width, (unsigned)entry->plane.height);
+                        }
+                    }
+                }
                 region_union_rect(&claimed, &claimed, entry->claim.x, entry->claim.y,
                     (unsigned)entry->claim.width, (unsigned)entry->claim.height);
+                if (entry->blurs && !box_empty(&entry->blur_box))
+                    region_union_rect(&blur_above, &blur_above, entry->blur_box.x,
+                        entry->blur_box.y, (unsigned)entry->blur_box.width,
+                        (unsigned)entry->blur_box.height);
             }
+            region_fini(&planes_taken);
+            region_fini(&blur_above);
             region_fini(&claimed);
+        }
+    }
+    if (o->screen->kind == SCREEN_DRM && !capture_wants_output(o)) {
+        struct surface *surface;
+        wl_list_for_each(surface, &s->surfaces, link) {
+            if (!surface->seen || surface->primary != o->screen) continue;
+            uint8_t mode = 0;
+            for (size_t i = 0; i < eligible_count; i++)
+                if (eligible_surfaces[i] == surface) { mode = eligible_modes[i]; break; }
+            dmabuf_surface_feedback(surface, o->screen, mode);
         }
     }
     if (chosen_count > capacity) chosen_count = capacity;
     plane_order(chosen, chosen_count);
     bool moved = chosen_count != previous_count;
     for (size_t i = 0; !moved && i < chosen_count; i++)
-        moved = !box_equal(&chosen[i].dst, &previous[i]);
+        moved = !box_equal(&chosen[i].dst, &previous[i].dst) ||
+            chosen[i].underlay != previous[i].underlay ||
+            chosen[i].surface != previous[i].surface;
     region_clear(&planes->excluded);
     for (size_t i = 0; i < chosen_count; i++) {
         planes->item[i] = chosen[i];
@@ -1251,23 +1471,37 @@ size_t planes_assign(struct output *o) {
     }
     planes->count = chosen_count;
     planes->tested = !planes->retest && planes->tested && previous_count != 0;
-    if (chosen_count && planes->changed && chosen_count != previous_count)
+    if (chosen_count && moved && chosen_count != previous_count)
         tomoe_log(LOG_DEBUG, "tomoe: output %s %zu overlay planes", o->screen->name,
             chosen_count);
     if (chosen_count) {
+        uint64_t shape = 0xcbf29ce484222325ull;
         signature = (signature ^ chosen_count) * 0x100000001b3ull;
+        shape = (shape ^ chosen_count) * 0x100000001b3ull;
         for (size_t i = 0; i < chosen_count; i++) {
-            const uint64_t item[] = { (uint64_t)(uintptr_t)chosen[i].surface,
-                (uint64_t)(uintptr_t)chosen[i].buffer, (uint64_t)(uint32_t)chosen[i].dst.x,
-                (uint64_t)(uint32_t)chosen[i].dst.y, (uint64_t)(uint32_t)chosen[i].dst.width,
-                (uint64_t)(uint32_t)chosen[i].dst.height };
-            for (size_t f = 0; f < 6; f++) signature = (signature ^ item[f]) * 0x100000001b3ull;
+            struct dmabuf_attributes dmabuf = {0};
+            buffer_get_dmabuf(chosen[i].buffer, &dmabuf);
+            const uint64_t plan[] = {
+                (uint64_t)dmabuf.format, dmabuf.modifier,
+                (uint64_t)(uint32_t)dmabuf.width, (uint64_t)(uint32_t)dmabuf.height,
+                (uint64_t)chosen[i].underlay,
+                (uint64_t)(uint32_t)chosen[i].dst.x, (uint64_t)(uint32_t)chosen[i].dst.y,
+                (uint64_t)(uint32_t)chosen[i].dst.width, (uint64_t)(uint32_t)chosen[i].dst.height,
+                (uint64_t)(uint32_t)chosen[i].src_x, (uint64_t)(uint32_t)chosen[i].src_y,
+                (uint64_t)(uint32_t)chosen[i].src_width, (uint64_t)(uint32_t)chosen[i].src_height,
+            };
+            for (size_t f = 0; f < sizeof(plan) / sizeof(plan[0]); f++) {
+                signature = (signature ^ plan[f]) * 0x100000001b3ull;
+                shape = (shape ^ plan[f]) * 0x100000001b3ull;
+            }
+            signature = (signature ^ (uint64_t)dmabuf.stride[0]) * 0x100000001b3ull;
         }
         planes->signature = signature;
+        planes->shape = shape;
     }
     planes->changed = moved;
-    planes->retest = planes->signature != previous_signature;
-    if (planes->signature && planes->signature == planes->refused) {
+    planes->retest = planes->shape != previous_shape;
+    if (planes->shape && planes->shape == planes->refused) {
         planes->count = 0;
         planes->tested = false;
         planes->changed = previous_count != 0;
@@ -1278,6 +1512,7 @@ size_t planes_assign(struct output *o) {
 
 static bool planes_test(struct output *o) {
     if (o->planes.tested || !o->presented[0]) return true;
+    if (getenv("TOMOE_TEST_REFUSE_PLANES")) return false;
     struct screen_state probe;
     screen_state_init(&probe);
     screen_state_set_buffer(&probe, o->presented[0]);
@@ -1285,8 +1520,8 @@ static bool planes_test(struct output *o) {
     for (size_t i = 0; ok && i < o->planes.count; i++) {
         const struct plane_item *item = &o->planes.item[i];
         ok = screen_state_set_overlay(&probe, i, item->buffer, item->dst.x, item->dst.y,
-            item->dst.width, item->dst.height, item->src.x, item->src.y, item->src.width,
-            item->src.height);
+            item->dst.width, item->dst.height, item->src_x, item->src_y, item->src_width,
+            item->src_height, item->underlay);
     }
     ok = ok && screen_test(o->screen, &probe);
     screen_state_finish(&probe);
@@ -1296,8 +1531,9 @@ static bool planes_test(struct output *o) {
 bool planes_attach(struct output *o, struct screen_state *state) {
     if (!o->planes.count) return false;
     if (!planes_test(o)) {
-        if (!o->planes.refused || o->planes.refused != o->planes.signature) {
-            o->planes.refused = o->planes.signature;
+        if (!o->planes.refused || o->planes.refused != o->planes.shape) {
+            o->planes.refused = o->planes.shape;
+            o->screen->plane_refusals++;
             tomoe_log(LOG_DEBUG, "tomoe: output %s refused %zu overlay planes",
                 o->screen->name, o->planes.count);
         }
@@ -1306,8 +1542,8 @@ bool planes_attach(struct output *o, struct screen_state *state) {
     for (size_t i = 0; i < o->planes.count; i++) {
         const struct plane_item *item = &o->planes.item[i];
         if (!screen_state_set_overlay(state, i, item->buffer, item->dst.x, item->dst.y,
-                item->dst.width, item->dst.height, item->src.x, item->src.y,
-                item->src.width, item->src.height)) return false;
+                item->dst.width, item->dst.height, item->src_x, item->src_y,
+                item->src_width, item->src_height, item->underlay)) return false;
         if (item->surface->current.acquire)
             screen_state_set_overlay_wait(state, i, item->surface->current.acquire,
                 item->surface->current.acquire_point);
@@ -1324,7 +1560,7 @@ void planes_clear(struct output *o) {
 }
 
 void planes_refuse(struct output *o) {
-    o->planes.refused = o->planes.signature;
+    o->planes.refused = o->planes.shape;
     planes_clear(o);
 }
 

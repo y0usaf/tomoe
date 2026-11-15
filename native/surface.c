@@ -816,6 +816,7 @@ static void surface_free(struct wl_resource *resource) {
             (surface->role_resource || surface->role->no_object))
         surface->role->destroy(surface);
     wl_signal_emit_mutable(&surface->events.destroy, surface);
+    dmabuf_surface_destroy(surface);
     struct surface_state *state, *next;
     wl_list_for_each_safe(state, next, &surface->cached, link) {
         surface_state_waits_free(state);
@@ -867,6 +868,7 @@ static void create_surface(struct wl_client *client, struct wl_resource *composi
     wl_list_init(&surface->above);
     wl_list_init(&surface->pending_below);
     wl_list_init(&surface->pending_above);
+    wl_list_init(&surface->dmabuf_feedbacks);
     region_init(&surface->input_region);
     wl_signal_init(&surface->events.client_commit);
     wl_signal_init(&surface->events.commit);

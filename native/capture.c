@@ -1174,6 +1174,7 @@ void capture_serve(struct output *o, struct buffer *committed, bool scanout) {
             (uint32_t)now.tv_sec, (uint32_t)now.tv_nsec);
         if (frame->since) frame->since->damaged = false;
         frame_finish(frame);
+        if (!capture_wants_output(o) && o->planes.changed) screen_schedule_frame(o->screen);
     }
 }
 

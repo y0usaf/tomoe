@@ -17,14 +17,15 @@
 enum { PROP_CRTC_ID, PROP_MODE_ID, PROP_ACTIVE, PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE,
     PROP_DEGAMMA_LUT, PROP_DEGAMMA_LUT_SIZE, PROP_CTM, PROP_VRR_ENABLED, PROP_FB_ID, PROP_SRC_X,
     PROP_SRC_Y, PROP_SRC_W, PROP_SRC_H, PROP_CRTC_X, PROP_CRTC_Y, PROP_CRTC_W, PROP_CRTC_H,
-    PROP_IN_FENCE_FD, PROP_TYPE, PROP_IN_FORMATS, PROP_VRR_CAPABLE, PROP_NON_DESKTOP, PROP_EDID,
+    PROP_IN_FENCE_FD, PROP_TYPE, PROP_IN_FORMATS, PROP_ZPOS, PROP_ALPHA, PROP_BLEND_MODE,
+    PROP_COLOR_ENCODING, PROP_COLOR_RANGE, PROP_VRR_CAPABLE, PROP_NON_DESKTOP, PROP_EDID,
     PROP_LINK_STATUS, PROP_COUNT };
 
 static const char *const prop_names[PROP_COUNT] = { "CRTC_ID", "MODE_ID", "ACTIVE", "GAMMA_LUT",
     "GAMMA_LUT_SIZE", "DEGAMMA_LUT", "DEGAMMA_LUT_SIZE", "CTM", "VRR_ENABLED", "FB_ID", "SRC_X",
     "SRC_Y", "SRC_W", "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "IN_FENCE_FD", "type",
-    "IN_FORMATS", "vrr_capable", "non-desktop", "EDID", "link-status" };
-
+    "IN_FORMATS", "zpos", "alpha", "pixel blend mode", "COLOR_ENCODING", "COLOR_RANGE",
+    "vrr_capable", "non-desktop", "EDID", "link-status" };
 struct props {
     uint32_t id[PROP_COUNT];
     uint64_t value[PROP_COUNT];
@@ -33,6 +34,9 @@ struct props {
 struct plane {
     uint32_t id, type, possible_crtcs;
     struct props props;
+    bool zpos_mutable, has_blend_premulti, has_encoding_bt601, has_range_limited;
+    uint64_t zpos_min, zpos_max;
+    uint64_t blend_premulti, encoding_bt601, range_limited;
     struct format_set formats;
 };
 
@@ -132,6 +136,47 @@ static void props_read(int fd, uint32_t object, uint32_t type, struct props *pro
             if (strcmp(prop->name, prop_names[p])) continue;
             props->id[p] = prop->prop_id;
             props->value[p] = list->prop_values[i];
+        }
+        drmModeFreeProperty(prop);
+    }
+    drmModeFreeObjectProperties(list);
+}
+
+static void plane_props_read(int fd, struct plane *plane) {
+    props_read(fd, plane->id, DRM_MODE_OBJECT_PLANE, &plane->props);
+    drmModeObjectProperties *list = drmModeObjectGetProperties(fd, plane->id,
+        DRM_MODE_OBJECT_PLANE);
+    if (!list) return;
+    for (uint32_t i = 0; i < list->count_props; i++) {
+        drmModePropertyRes *prop = drmModeGetProperty(fd, list->props[i]);
+        if (!prop) continue;
+        bool mutable_prop = !(prop->flags & DRM_MODE_PROP_IMMUTABLE);
+        if (!strcmp(prop->name, "zpos")) {
+            plane->zpos_mutable = mutable_prop;
+            if ((prop->flags & DRM_MODE_PROP_RANGE) && prop->count_values >= 2) {
+                plane->zpos_min = prop->values[0];
+                plane->zpos_max = prop->values[1];
+            } else {
+                plane->zpos_min = plane->zpos_max = list->prop_values[i];
+            }
+        } else if (mutable_prop && !strcmp(prop->name, "pixel blend mode")) {
+            for (int e = 0; e < prop->count_enums; e++)
+                if (!strcmp(prop->enums[e].name, "Pre-multiplied")) {
+                    plane->blend_premulti = prop->enums[e].value;
+                    plane->has_blend_premulti = true;
+                }
+        } else if (mutable_prop && !strcmp(prop->name, "COLOR_ENCODING")) {
+            for (int e = 0; e < prop->count_enums; e++)
+                if (!strcmp(prop->enums[e].name, "ITU-R BT.601 YCbCr")) {
+                    plane->encoding_bt601 = prop->enums[e].value;
+                    plane->has_encoding_bt601 = true;
+                }
+        } else if (mutable_prop && !strcmp(prop->name, "COLOR_RANGE")) {
+            for (int e = 0; e < prop->count_enums; e++)
+                if (!strcmp(prop->enums[e].name, "YCbCr limited range")) {
+                    plane->range_limited = prop->enums[e].value;
+                    plane->has_range_limited = true;
+                }
         }
         drmModeFreeProperty(prop);
     }
@@ -279,7 +324,7 @@ static bool read_resources(struct kms *kms) {
         plane->id = info->plane_id;
         plane->possible_crtcs = info->possible_crtcs;
         drmModeFreePlane(info);
-        props_read(kms->fd, plane->id, DRM_MODE_OBJECT_PLANE, &plane->props);
+        plane_props_read(kms->fd, plane);
         plane->type = (uint32_t)plane->props.value[PROP_TYPE];
         read_formats(kms, plane);
         for (size_t c = 0; c < kms->crtc_count; c++) {
@@ -384,17 +429,52 @@ static void add(drmModeAtomicReq *req, uint32_t object, const struct props *prop
 }
 
 static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc, uint32_t fb,
-        int x, int y, int width, int height, int src_width, int src_height) {
+        int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height) {
     add(req, plane->id, &plane->props, PROP_FB_ID, fb);
     add(req, plane->id, &plane->props, PROP_CRTC_ID, fb ? crtc : 0);
-    add(req, plane->id, &plane->props, PROP_SRC_X, 0);
-    add(req, plane->id, &plane->props, PROP_SRC_Y, 0);
-    add(req, plane->id, &plane->props, PROP_SRC_W, (uint64_t)src_width << 16);
-    add(req, plane->id, &plane->props, PROP_SRC_H, (uint64_t)src_height << 16);
+    add(req, plane->id, &plane->props, PROP_SRC_X, (uint64_t)(uint32_t)src_x);
+    add(req, plane->id, &plane->props, PROP_SRC_Y, (uint64_t)(uint32_t)src_y);
+    add(req, plane->id, &plane->props, PROP_SRC_W, (uint64_t)(uint32_t)src_width);
+    add(req, plane->id, &plane->props, PROP_SRC_H, (uint64_t)(uint32_t)src_height);
     add(req, plane->id, &plane->props, PROP_CRTC_X, (uint64_t)(int64_t)x);
     add(req, plane->id, &plane->props, PROP_CRTC_Y, (uint64_t)(int64_t)y);
     add(req, plane->id, &plane->props, PROP_CRTC_W, (uint64_t)width);
     add(req, plane->id, &plane->props, PROP_CRTC_H, (uint64_t)height);
+    if (fb) {
+        if (plane->props.id[PROP_ALPHA] && !(plane->type == DRM_PLANE_TYPE_CURSOR))
+            add(req, plane->id, &plane->props, PROP_ALPHA, 0xffff);
+        if (plane->has_blend_premulti)
+            add(req, plane->id, &plane->props, PROP_BLEND_MODE, plane->blend_premulti);
+        if (plane->has_encoding_bt601)
+            add(req, plane->id, &plane->props, PROP_COLOR_ENCODING, plane->encoding_bt601);
+        if (plane->has_range_limited)
+            add(req, plane->id, &plane->props, PROP_COLOR_RANGE, plane->range_limited);
+    }
+}
+
+static bool zpos_underlay_plan(const struct crtc *crtc, size_t slots, size_t under_count,
+        size_t over_count, uint64_t *primary_zpos) {
+    if (!under_count || under_count + over_count > slots) return false;
+    const struct plane *pri = crtc->primary;
+    if (!pri->props.id[PROP_ZPOS]) return false;
+    uint64_t pz = pri->zpos_mutable ?
+        (pri->zpos_min > under_count ? pri->zpos_min : under_count) : pri->props.value[PROP_ZPOS];
+    if (pri->zpos_mutable && pz > pri->zpos_max) return false;
+    if (pz < under_count) return false;
+    size_t below = 0, above = 0;
+    for (size_t k = 0; k < slots; k++) {
+        const struct plane *ovl = crtc->overlay[k];
+        if (ovl->zpos_mutable && ovl->zpos_min < pz && below < under_count) {
+            if (ovl->zpos_min + below >= pz || ovl->zpos_min + below > ovl->zpos_max) continue;
+            below++;
+        } else if (!ovl->props.id[PROP_ZPOS] ||
+                (ovl->zpos_mutable ? ovl->zpos_max > pz : ovl->props.value[PROP_ZPOS] > pz)) {
+            above++;
+        }
+    }
+    if (below < under_count || above < over_count) return false;
+    *primary_zpos = pz;
+    return true;
 }
 
 static void overlay_commit(struct connector *c, const struct screen_state *state) {
@@ -421,9 +501,9 @@ static void cursor_plane_set(drmModeAtomicReq *req, struct connector *c, struct 
     int width = (int)c->kms->cursor_width, height = (int)c->kms->cursor_height;
     if (cursor_visible(c))
         plane_set(req, crtc->cursor, crtc->id, c->cursor_fb[c->cursor_front], c->cursor_x,
-            c->cursor_y, width, height, width, height);
+            c->cursor_y, width, height, 0, 0, width << 16, height << 16);
     else
-        plane_set(req, crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0);
+        plane_set(req, crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 struct plan {
@@ -538,6 +618,27 @@ static void log_kernel_state(struct connector *c, const char *label) {
         mode);
 }
 
+static bool plane_zpos(const struct plane *plane, size_t index, int64_t *zpos) {
+    static bool read;
+    static bool synthetic;
+    static int stride;
+    if (!read) {
+        const char *text = getenv("TOMOE_TEST_ZPOS_STRIDE");
+        char *end = NULL;
+        long parsed = text && *text ? strtol(text, &end, 10) : 0;
+        synthetic = text && *text && end && !*end;
+        if (synthetic) stride = (int)parsed;
+        read = true;
+    }
+    if (plane->props.id[PROP_ZPOS] && !plane->zpos_mutable) {
+        *zpos = (int64_t)plane->props.value[PROP_ZPOS];
+        return true;
+    }
+    if (!synthetic) return false;
+    *zpos = (int64_t)stride * (int64_t)index;
+    return true;
+}
+
 static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t count, bool test,
         bool wake, bool async, bool *woke) {
     struct plan *plans = calloc(count, sizeof(*plans));
@@ -563,10 +664,10 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             add(req, c->id, &c->props, PROP_CRTC_ID, 0);
             add(req, c->crtc->id, &c->crtc->props, PROP_ACTIVE, 0);
             add(req, c->crtc->id, &c->crtc->props, PROP_MODE_ID, 0);
-            plane_set(req, c->crtc->primary, 0, 0, 0, 0, 0, 0, 0, 0);
-            if (c->crtc->cursor) plane_set(req, c->crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0);
+            plane_set(req, c->crtc->primary, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            if (c->crtc->cursor) plane_set(req, c->crtc->cursor, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             for (size_t k = 0; k < c->crtc->overlay_count; k++)
-                plane_set(req, c->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0);
+                plane_set(req, c->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             continue;
         }
         p->crtc = pick_crtc(c);
@@ -618,42 +719,186 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             add(req, p->crtc->id, &p->crtc->props, PROP_ACTIVE, 1);
             add(req, c->id, &c->props, PROP_LINK_STATUS, DRM_MODE_LINK_STATUS_GOOD);
         }
-        plane_set(req, p->crtc->primary, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
-            p->mode.vdisplay, p->wake ? p->mode.hdisplay : buffer->width,
-            p->wake ? p->mode.vdisplay : buffer->height);
         p->fence = sync_file(state);
-        if (p->fence >= 0)
-            add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
-                (uint64_t)p->fence);
         size_t slots = p->crtc->overlay_count < SCREEN_OVERLAYS ? p->crtc->overlay_count :
             SCREEN_OVERLAYS;
+        size_t active_idx[SCREEN_OVERLAYS];
+        size_t under_idx[SCREEN_OVERLAYS], over_idx[SCREEN_OVERLAYS];
+        size_t under_count = 0, over_count = 0;
         if (!p->async) {
-            struct output *out = output_for_screen(kms->server, &c->screen);
+            for (size_t k = 0; k < state->overlay_count && k < SCREEN_OVERLAYS; k++) {
+                if (!state->overlays[k].buffer) continue;
+                if (state->overlays[k].underlay) under_idx[under_count++] = k;
+                else over_idx[over_count++] = k;
+            }
+        }
+        c->screen.underlay_plan = 0;
+        if (test && (under_count || over_count)) c->screen.plane_tests++;
+        int pri_src_w = (p->wake ? (int)p->mode.hdisplay : buffer->width) << 16;
+        int pri_src_h = (p->wake ? (int)p->mode.vdisplay : buffer->height) << 16;
+        struct output *out = !p->async ? output_for_screen(kms->server, &c->screen) : NULL;
+        uint64_t pz = 0;
+        if (p->async || under_count + over_count == 0) {
+            plane_set(req, p->crtc->primary, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
+                p->mode.vdisplay, 0, 0, pri_src_w, pri_src_h);
+            if (p->crtc->primary->zpos_mutable)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_ZPOS,
+                    p->crtc->primary->zpos_min);
+            if (p->fence >= 0)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
+                    (uint64_t)p->fence);
+            if (!p->async)
+                for (size_t k = 0; k < slots; k++)
+                    plane_set(req, p->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        } else if (!under_count) {
+            if (over_count > slots) ok = false;
+            uint64_t base_z = p->crtc->primary->zpos_mutable ? p->crtc->primary->zpos_min :
+                p->crtc->primary->props.value[PROP_ZPOS];
+            plane_set(req, p->crtc->primary, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
+                p->mode.vdisplay, 0, 0, pri_src_w, pri_src_h);
+            if (p->crtc->primary->zpos_mutable)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_ZPOS, base_z);
+            if (p->fence >= 0)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
+                    (uint64_t)p->fence);
             for (size_t k = 0; ok && k < slots; k++) {
-                const struct screen_overlay *overlay = k < state->overlay_count ?
-                    &state->overlays[k] : NULL;
-                if (!overlay || !overlay->buffer) {
-                    plane_set(req, p->crtc->overlay[k], 0, 0, 0, 0, 0, 0, 0, 0);
+                struct plane *ovl = p->crtc->overlay[k];
+                if (k >= over_count) {
+                    plane_set(req, ovl, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
                     continue;
                 }
+                size_t idx = over_idx[k];
+                const struct screen_overlay *overlay = &state->overlays[idx];
                 uint32_t ofb = fb_for(kms, overlay->buffer);
-                if (!ofb) {
-                    ok = false;
-                    break;
-                }
+                if (!ofb) { ok = false; break; }
                 struct box dst = { overlay->x, overlay->y, overlay->width, overlay->height };
                 struct box live;
-                if (out && planes_geometry(out, k, &live)) dst = live;
-                plane_set(req, p->crtc->overlay[k], p->crtc->id, ofb, dst.x, dst.y,
-                    dst.width, dst.height, overlay->src_width, overlay->src_height);
+                if (out && planes_geometry(out, idx, &live)) dst = live;
+                plane_set(req, ovl, p->crtc->id, ofb, dst.x, dst.y, dst.width, dst.height,
+                    overlay->src_x, overlay->src_y, overlay->src_width, overlay->src_height);
+                if (ovl->zpos_mutable) {
+                    uint64_t z = (p->crtc->primary->props.id[PROP_ZPOS] ? base_z + 1 + k :
+                        ovl->zpos_min + k);
+                    if (z < ovl->zpos_min) z = ovl->zpos_min;
+                    if (z > ovl->zpos_max) z = ovl->zpos_max;
+                    add(req, ovl->id, &ovl->props, PROP_ZPOS, z);
+                }
                 if (overlay->wait) {
-                    p->overlay_fence[k] = timeline_export_sync_file(overlay->wait,
+                    p->overlay_fence[idx] = timeline_export_sync_file(overlay->wait,
                         overlay->wait_point);
-                    if (p->overlay_fence[k] >= 0)
-                        add(req, p->crtc->overlay[k]->id, &p->crtc->overlay[k]->props,
-                            PROP_IN_FENCE_FD, (uint64_t)p->overlay_fence[k]);
+                    if (p->overlay_fence[idx] >= 0)
+                        add(req, ovl->id, &ovl->props, PROP_IN_FENCE_FD,
+                            (uint64_t)p->overlay_fence[idx]);
                 }
             }
+        } else if (zpos_underlay_plan(p->crtc, slots, under_count, over_count, &pz)) {
+            plane_set(req, p->crtc->primary, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
+                p->mode.vdisplay, 0, 0, pri_src_w, pri_src_h);
+            if (p->crtc->primary->zpos_mutable)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_ZPOS, pz);
+            if (p->fence >= 0)
+                add(req, p->crtc->primary->id, &p->crtc->primary->props, PROP_IN_FENCE_FD,
+                    (uint64_t)p->fence);
+            size_t u = 0, v = 0;
+            for (size_t k = 0; ok && k < slots; k++) {
+                struct plane *ovl = p->crtc->overlay[k];
+                bool take_under = u < under_count && ovl->zpos_mutable &&
+                    ovl->zpos_min + u < pz && ovl->zpos_min + u <= ovl->zpos_max;
+                bool take_over = !take_under && v < over_count &&
+                    (!ovl->props.id[PROP_ZPOS] ||
+                        (ovl->zpos_mutable ? ovl->zpos_max > pz :
+                            ovl->props.value[PROP_ZPOS] > pz));
+                if (!take_under && !take_over) {
+                    plane_set(req, ovl, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    continue;
+                }
+                size_t idx = take_under ? under_idx[u] : over_idx[v];
+                const struct screen_overlay *overlay = &state->overlays[idx];
+                uint32_t ofb = fb_for(kms, overlay->buffer);
+                if (!ofb) { ok = false; break; }
+                struct box dst = { overlay->x, overlay->y, overlay->width, overlay->height };
+                struct box live;
+                if (out && planes_geometry(out, idx, &live)) dst = live;
+                plane_set(req, ovl, p->crtc->id, ofb, dst.x, dst.y, dst.width, dst.height,
+                    overlay->src_x, overlay->src_y, overlay->src_width, overlay->src_height);
+                if (ovl->zpos_mutable) {
+                    uint64_t z = take_under ? ovl->zpos_min + u : pz + 1 + v;
+                    if (z < ovl->zpos_min) z = ovl->zpos_min;
+                    if (z > ovl->zpos_max) z = ovl->zpos_max;
+                    add(req, ovl->id, &ovl->props, PROP_ZPOS, z);
+                }
+                if (overlay->wait) {
+                    p->overlay_fence[idx] = timeline_export_sync_file(overlay->wait,
+                        overlay->wait_point);
+                    if (p->overlay_fence[idx] >= 0)
+                        add(req, ovl->id, &ovl->props, PROP_IN_FENCE_FD,
+                            (uint64_t)p->overlay_fence[idx]);
+                }
+                if (take_under) u++;
+                else v++;
+            }
+            if (u < under_count || v < over_count) ok = false;
+            else if (under_count) c->screen.underlay_plan = 1;
+        } else if (!p->wake && under_count + over_count <= slots) {
+            struct plane *pipe[SCREEN_OVERLAYS + 1];
+            pipe[0] = p->crtc->primary;
+            for (size_t k = 0; k < slots; k++) pipe[k + 1] = p->crtc->overlay[k];
+            size_t total = under_count + 1 + over_count;
+            int64_t prev_z = 0;
+            bool have_z = false;
+            for (size_t s_idx = 0; ok && s_idx < total; s_idx++) {
+                int64_t z;
+                if (!plane_zpos(pipe[s_idx], s_idx, &z)) continue;
+                if (have_z && z < prev_z) ok = false;
+                prev_z = z;
+                have_z = true;
+            }
+            for (size_t u = 0; u < under_count; u++) active_idx[u] = under_idx[u];
+            for (size_t v = 0; v < over_count; v++) active_idx[under_count + v] = over_idx[v];
+            for (size_t s_idx = 0; ok && s_idx <= slots; s_idx++) {
+                struct plane *pl = pipe[s_idx];
+                if (s_idx >= total) {
+                    plane_set(req, pl, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                    continue;
+                }
+                if (s_idx == under_count) {
+                    plane_set(req, pl, p->crtc->id, p->fb, 0, 0, p->mode.hdisplay,
+                        p->mode.vdisplay, 0, 0, pri_src_w, pri_src_h);
+                    if (pl->zpos_mutable) {
+                        uint64_t z = pl->zpos_min + s_idx;
+                        if (z > pl->zpos_max) z = pl->zpos_max;
+                        add(req, pl->id, &pl->props, PROP_ZPOS, z);
+                    }
+                    if (p->fence >= 0)
+                        add(req, pl->id, &pl->props, PROP_IN_FENCE_FD, (uint64_t)p->fence);
+                    continue;
+                }
+                size_t a = s_idx < under_count ? s_idx : s_idx - 1;
+                size_t idx = active_idx[a];
+                const struct screen_overlay *overlay = &state->overlays[idx];
+                uint32_t ofb = fb_for(kms, overlay->buffer);
+                if (!ofb) { ok = false; break; }
+                struct box dst = { overlay->x, overlay->y, overlay->width, overlay->height };
+                struct box live;
+                if (out && planes_geometry(out, idx, &live)) dst = live;
+                plane_set(req, pl, p->crtc->id, ofb, dst.x, dst.y, dst.width, dst.height,
+                    overlay->src_x, overlay->src_y, overlay->src_width, overlay->src_height);
+                if (pl->zpos_mutable) {
+                    uint64_t z = pl->zpos_min + s_idx;
+                    if (z > pl->zpos_max) z = pl->zpos_max;
+                    add(req, pl->id, &pl->props, PROP_ZPOS, z);
+                }
+                if (overlay->wait) {
+                    p->overlay_fence[idx] = timeline_export_sync_file(overlay->wait,
+                        overlay->wait_point);
+                    if (p->overlay_fence[idx] >= 0)
+                        add(req, pl->id, &pl->props, PROP_IN_FENCE_FD,
+                            (uint64_t)p->overlay_fence[idx]);
+                }
+            }
+            if (ok && under_count) c->screen.underlay_plan = 2;
+        } else {
+            ok = false;
         }
         if (state->committed & SCREEN_VRR)
             add(req, p->crtc->id, &p->crtc->props, PROP_VRR_ENABLED,
@@ -923,6 +1168,17 @@ static const struct format_set *connector_formats(struct screen *screen) {
     return crtc && crtc->primary ? &crtc->primary->formats : NULL;
 }
 
+static const struct format_set *connector_overlay_formats(struct screen *screen) {
+    struct connector *c = wl_container_of(screen, c, screen);
+    struct crtc *crtc = pick_crtc(c);
+    return crtc && c->kms->atomic && crtc->overlay_count ? &crtc->overlay[0]->formats : NULL;
+}
+
+static dev_t connector_device(struct screen *screen) {
+    struct connector *c = wl_container_of(screen, c, screen);
+    return c->kms->devnum;
+}
+
 static size_t connector_gamma_size(struct screen *screen) {
     struct connector *c = wl_container_of(screen, c, screen);
     struct crtc *crtc = pick_crtc(c);
@@ -1179,6 +1435,8 @@ static const struct screen_impl connector_impl = {
     .test = connector_test,
     .commit = connector_commit,
     .formats = connector_formats,
+    .overlay_formats = connector_overlay_formats,
+    .device = connector_device,
     .overlays = connector_overlays,
     .gamma_size = connector_gamma_size,
     .degamma_size = connector_degamma_size,

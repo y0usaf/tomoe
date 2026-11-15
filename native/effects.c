@@ -183,6 +183,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     bool alpha;
     if (options->transform != f->transform ||
             !render_texture_gl(options->texture, &target, &tex, &alpha) || !tex) return false;
+    if (target == GL_TEXTURE_EXTERNAL_OES && !program(f, PROGRAM_EXTERNAL)) return false;
     struct fbox local = local_box(f, clip);
     double params[] = { 5, dst.x, dst.y, dst.width, dst.height, local.x, local.y, local.width,
         local.height, radius };
@@ -211,6 +212,28 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     float v1 = (src.y + src.height) / options->texture->height;
     const float texcoords[] = { u0, v0, u1, v0, u0, v1, u1, v1 };
     clip = local_box(f, clip);
+    if (target == GL_TEXTURE_EXTERNAL_OES) {
+        struct program *p = program(f, PROGRAM_EXTERNAL);
+        GLint filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
+        const float *tint = options->tint;
+        pass_flush(f->pass);
+        glUseProgram(p->id);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(target, tex);
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+        glUniform1i(p->tex, 0);
+        glUniform1f(p->alpha, options->alpha ? *options->alpha : 1);
+        glUniform1f(p->opaque, alpha ? 0 : 1);
+        glUniform1f(p->clip, 1);
+        glUniform2f(p->size, clip.width, clip.height);
+        glUniform1f(p->radius, radius);
+        glUniform4f(p->tint, tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0,
+            tint ? tint[3] : 0);
+        quad(f, p, dst, texcoords, clip.x, clip.y);
+        glBindTexture(target, 0);
+        return true;
+    }
     struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
         .target = target, .shader_clip = 1, .blend = 1,
         .filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR,
@@ -220,6 +243,22 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     pass_scene(f->pass, &scene);
     op_end(f->pass, &draw_clip);
     return true;
+}
+
+void effect_cutout(struct frame *f, struct fbox dst, struct fbox clip, double radius) {
+    struct fbox local = local_box(f, clip);
+    double params[] = { OP_RECT, dst.x, dst.y, dst.width, dst.height, local.x, local.y,
+        local.width, local.height, radius };
+    struct drawn drawn = record(f, NULL, dst, params, sizeof(params) / sizeof(params[0]));
+    if (drawn.recorded) return;
+    struct op_clip draw_clip;
+    if (!op_begin(f->pass, OP_RECT, drawn.covered, &draw_clip)) return;
+    struct scene_quad scene = { .kind = SCENE_RECT, .shader_clip = 1, .blend = 2,
+        .alpha = 1, .radius = radius, .size = { local.width, local.height },
+        .color = { 0, 0, 0, 1 } };
+    scene_geometry(f, dst, NULL, local.x, local.y, &scene);
+    pass_scene(f->pass, &scene);
+    op_end(f->pass, &draw_clip);
 }
 
 static bool level_ensure(struct level *level, int width, int height) {

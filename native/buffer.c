@@ -40,6 +40,7 @@ struct dmabuf_buffer {
 };
 
 struct dmabuf_params {
+    struct tomoe *server;
     struct dmabuf_attributes attributes;
     bool has_modifier;
 };
@@ -49,11 +50,22 @@ struct table_entry {
     uint64_t modifier;
 };
 
+struct dmabuf_feedback {
+    struct wl_resource *resource;
+    struct surface *surface;
+    struct wl_list link;
+};
+
+enum { DMABUF_OTHER_DEVICES = 8 };
+
 static struct {
     int drm_fd, table_fd;
     size_t table_size, count;
+    struct table_entry *entries;
     dev_t device;
-} dmabuf = { -1, -1, 0, 0, 0 };
+    dev_t other_devices[DMABUF_OTHER_DEVICES];
+    size_t other_device_count;
+} dmabuf = { -1, -1, 0, 0, NULL, 0, {0}, 0 };
 
 static uint32_t shm_to_drm(uint32_t format) {
     return format == WL_SHM_FORMAT_ARGB8888 ? DRM_FORMAT_ARGB8888 :
@@ -244,7 +256,14 @@ static const char *params_invalid(struct dmabuf_attributes *a, uint32_t *code) {
     return NULL;
 }
 
-static bool importable(const struct dmabuf_attributes *a) {
+static bool importable(struct tomoe *s, const struct dmabuf_attributes *a) {
+    if (s && s->renderer) {
+        const struct format_set *textures = render_texture_formats(s->renderer);
+        if (!format_set_has(textures, a->format, a->modifier) &&
+                !(a->modifier == DRM_FORMAT_MOD_LINEAR &&
+                    format_set_has(textures, a->format, DRM_FORMAT_MOD_INVALID)))
+            return false;
+    }
     for (int i = 0; dmabuf.drm_fd >= 0 && i < a->n_planes; i++) {
         uint32_t handle = 0;
         if (drmPrimeFDToHandle(dmabuf.drm_fd, a->fd[i], &handle) != 0) return false;
@@ -261,6 +280,7 @@ static void params_create_common(struct wl_resource *resource, uint32_t id, int3
             "params already used");
         return;
     }
+    struct tomoe *s = p->server;
     struct dmabuf_attributes attributes = p->attributes;
     wl_resource_set_user_data(resource, NULL);
     free(p);
@@ -274,7 +294,7 @@ static void params_create_common(struct wl_resource *resource, uint32_t id, int3
         dmabuf_attributes_finish(&attributes);
         return;
     }
-    struct dmabuf_buffer *b = !flags && importable(&attributes) ? calloc(1, sizeof(*b)) : NULL;
+    struct dmabuf_buffer *b = !flags && importable(s, &attributes) ? calloc(1, sizeof(*b)) : NULL;
     struct wl_resource *buffer = b ? wl_resource_create(wl_resource_get_client(resource),
         &wl_buffer_interface, 1, id) : NULL;
     if (!buffer) {
@@ -319,6 +339,7 @@ static void create_params(struct wl_client *client, struct wl_resource *manager,
         wl_client_post_no_memory(client);
         return;
     }
+    p->server = wl_resource_get_user_data(manager);
     for (int i = 0; i < DMABUF_MAX_PLANES; i++) p->attributes.fd[i] = -1;
     wl_resource_set_implementation(resource, &params_impl, p, params_free);
 }
@@ -327,7 +348,149 @@ static const struct zwp_linux_dmabuf_feedback_v1_interface feedback_impl = {
     .destroy = destroy_resource,
 };
 
-static void send_feedback(struct wl_client *client, struct wl_resource *manager, uint32_t id) {
+static void feedback_destroyed(struct wl_resource *resource) {
+    struct dmabuf_feedback *fb = wl_resource_get_user_data(resource);
+    if (!fb) return;
+    if (fb->surface) wl_list_remove(&fb->link);
+    free(fb);
+}
+
+static void send_tranche(struct wl_resource *resource, dev_t target_dev, uint32_t flags,
+        struct wl_array *indices) {
+    if (!indices->size) return;
+    struct wl_array device = { .size = sizeof(target_dev), .data = &target_dev };
+    zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(resource, &device);
+    zwp_linux_dmabuf_feedback_v1_send_tranche_formats(resource, indices);
+    zwp_linux_dmabuf_feedback_v1_send_tranche_flags(resource, flags);
+    zwp_linux_dmabuf_feedback_v1_send_tranche_done(resource);
+}
+
+static void emit_feedback(struct wl_resource *resource, struct screen *output, uint8_t mode,
+        bool send_table) {
+    struct wl_array main_dev = { .size = sizeof(dmabuf.device), .data = &dmabuf.device };
+    if (send_table)
+        zwp_linux_dmabuf_feedback_v1_send_format_table(resource, dmabuf.table_fd,
+            (uint32_t)dmabuf.table_size);
+    zwp_linux_dmabuf_feedback_v1_send_main_device(resource, &main_dev);
+    struct wl_array indices;
+    if (mode && output && dmabuf.entries) {
+        const struct format_set *primary = screen_primary_formats(output);
+        const struct format_set *overlay = screen_overlay_formats(output);
+        const struct format_set *scan = mode == 2 ? primary : (overlay ? overlay : primary);
+        dev_t scan_dev = screen_device(output);
+        if (!scan_dev) scan_dev = dmabuf.device;
+        if (scan && scan->len) {
+            wl_array_init(&indices);
+            for (int pass = 0; pass < 2 && !indices.size; pass++) {
+                for (size_t i = 0; i < dmabuf.count; i++) {
+                    uint64_t mod = dmabuf.entries[i].modifier;
+                    if (pass == 0 && mod == DRM_FORMAT_MOD_INVALID) continue;
+                    if (!format_set_has(scan, dmabuf.entries[i].format, mod)) continue;
+                    uint16_t *slot = wl_array_add(&indices, sizeof(*slot));
+                    if (slot) *slot = (uint16_t)i;
+                }
+            }
+            send_tranche(resource, scan_dev, ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
+                &indices);
+            wl_array_release(&indices);
+        }
+    }
+    wl_array_init(&indices);
+    for (size_t i = 0; i < dmabuf.count; i++) {
+        uint16_t *slot = wl_array_add(&indices, sizeof(*slot));
+        if (slot) *slot = (uint16_t)i;
+    }
+    send_tranche(resource, dmabuf.device, 0, &indices);
+    wl_array_release(&indices);
+    if (dmabuf.other_device_count && dmabuf.entries) {
+        wl_array_init(&indices);
+        for (size_t i = 0; i < dmabuf.count; i++) {
+            if (dmabuf.entries[i].modifier != DRM_FORMAT_MOD_LINEAR) continue;
+            uint16_t *slot = wl_array_add(&indices, sizeof(*slot));
+            if (slot) *slot = (uint16_t)i;
+        }
+        for (size_t d = 0; d < dmabuf.other_device_count; d++)
+            send_tranche(resource, dmabuf.other_devices[d], 0, &indices);
+        wl_array_release(&indices);
+    }
+    zwp_linux_dmabuf_feedback_v1_send_done(resource);
+}
+
+static struct ns_timer feedback_timer = { .fd = -1 };
+static const int64_t feedback_default_hold_ns = 250000000;
+
+static int64_t feedback_hold_ns(void) {
+    static int64_t hold = -1;
+    if (hold < 0) {
+        const char *text = getenv("TOMOE_FEEDBACK_HOLD_MS");
+        char *end = NULL;
+        long ms = text && *text ? strtol(text, &end, 10) : -1;
+        hold = text && *text && end && !*end && ms >= 0 ? ms * 1000000 : feedback_default_hold_ns;
+    }
+    return hold;
+}
+
+static void feedback_send(struct surface *surface, struct screen *output, uint8_t mode) {
+    surface->feedback_pending_set = false;
+    surface->feedback_output = output;
+    surface->feedback_mode = mode;
+    if (dmabuf.table_fd < 0) return;
+    struct dmabuf_feedback *fb;
+    wl_list_for_each(fb, &surface->dmabuf_feedbacks, link)
+        emit_feedback(fb->resource, output, mode, false);
+}
+
+static void feedback_timer_fire(void *data) {
+    struct tomoe *s = data;
+    int64_t now = (int64_t)timing_now(), next = 0;
+    struct surface *surface;
+    wl_list_for_each(surface, &s->surfaces, link) {
+        if (!surface->feedback_pending_set) continue;
+        int64_t due = (int64_t)surface->feedback_pending_at + feedback_hold_ns();
+        if (now < due) {
+            if (!next || due < next) next = due;
+            continue;
+        }
+        feedback_send(surface, surface->feedback_output, surface->feedback_pending);
+    }
+    ns_timer_arm(&feedback_timer, next);
+}
+
+void dmabuf_surface_feedback(struct surface *surface, struct screen *output, uint8_t mode) {
+    if (!surface) return;
+    if (surface->feedback_output == output && surface->feedback_mode == mode) {
+        surface->feedback_pending_set = false;
+        return;
+    }
+    if (!surface->feedback_output || output != surface->feedback_output) {
+        feedback_send(surface, output, mode);
+        return;
+    }
+    int64_t now = (int64_t)timing_now();
+    if (!surface->feedback_pending_set || surface->feedback_pending != mode) {
+        surface->feedback_pending = mode;
+        surface->feedback_pending_set = true;
+        surface->feedback_pending_at = (uint64_t)now;
+    }
+    int64_t due = (int64_t)surface->feedback_pending_at + feedback_hold_ns();
+    if (now < due) {
+        ns_timer_arm(&feedback_timer, due);
+        return;
+    }
+    feedback_send(surface, output, mode);
+}
+
+void dmabuf_surface_destroy(struct surface *surface) {
+    struct dmabuf_feedback *fb, *next;
+    wl_list_for_each_safe(fb, next, &surface->dmabuf_feedbacks, link) {
+        wl_list_remove(&fb->link);
+        wl_list_init(&fb->link);
+        fb->surface = NULL;
+    }
+}
+
+static void get_default_feedback(struct wl_client *client, struct wl_resource *manager,
+        uint32_t id) {
     struct wl_resource *resource = wl_resource_create(client,
         &zwp_linux_dmabuf_feedback_v1_interface, wl_resource_get_version(manager), id);
     if (!resource) {
@@ -335,32 +498,26 @@ static void send_feedback(struct wl_client *client, struct wl_resource *manager,
         return;
     }
     wl_resource_set_implementation(resource, &feedback_impl, NULL, NULL);
-    struct wl_array device = { .size = sizeof(dmabuf.device), .data = &dmabuf.device };
-    zwp_linux_dmabuf_feedback_v1_send_format_table(resource, dmabuf.table_fd,
-        (uint32_t)dmabuf.table_size);
-    zwp_linux_dmabuf_feedback_v1_send_main_device(resource, &device);
-    zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(resource, &device);
-    struct wl_array indices;
-    wl_array_init(&indices);
-    for (size_t i = 0; i < dmabuf.count; i++) {
-        uint16_t *index = wl_array_add(&indices, sizeof(*index));
-        if (index) *index = (uint16_t)i;
-    }
-    zwp_linux_dmabuf_feedback_v1_send_tranche_formats(resource, &indices);
-    wl_array_release(&indices);
-    zwp_linux_dmabuf_feedback_v1_send_tranche_flags(resource, 0);
-    zwp_linux_dmabuf_feedback_v1_send_tranche_done(resource);
-    zwp_linux_dmabuf_feedback_v1_send_done(resource);
-}
-
-static void get_default_feedback(struct wl_client *client, struct wl_resource *manager,
-        uint32_t id) {
-    send_feedback(client, manager, id);
+    emit_feedback(resource, NULL, 0, true);
 }
 
 static void get_surface_feedback(struct wl_client *client, struct wl_resource *manager,
-        uint32_t id, struct wl_resource *surface) {
-    send_feedback(client, manager, id);
+        uint32_t id, struct wl_resource *surface_resource) {
+    struct surface *surface = surface_from_resource(surface_resource);
+    struct dmabuf_feedback *fb = calloc(1, sizeof(*fb));
+    struct wl_resource *resource = fb ? wl_resource_create(client,
+        &zwp_linux_dmabuf_feedback_v1_interface, wl_resource_get_version(manager), id) : NULL;
+    if (!resource) {
+        free(fb);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    fb->resource = resource;
+    fb->surface = surface;
+    if (surface) wl_list_insert(&surface->dmabuf_feedbacks, &fb->link);
+    wl_resource_set_implementation(resource, &feedback_impl, fb, feedback_destroyed);
+    emit_feedback(resource, surface ? surface->feedback_output : NULL,
+        surface ? surface->feedback_mode : 0, true);
 }
 
 static const struct zwp_linux_dmabuf_v1_interface dmabuf_impl = {
@@ -409,15 +566,35 @@ static bool dmabuf_table(const struct format_set *formats) {
     int fd = memfd_create("tomoe-dmabuf-formats", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     bool ok = fd >= 0 && write(fd, table, size) == (ssize_t)size &&
         fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) == 0;
-    free(table);
     if (!ok) {
+        free(table);
         if (fd >= 0) close(fd);
         return false;
     }
+    free(dmabuf.entries);
+    dmabuf.entries = table;
     dmabuf.table_fd = fd;
     dmabuf.table_size = size;
     dmabuf.count = count;
     return true;
+}
+
+static void probe_other_devices(dev_t main_dev) {
+    dmabuf.other_device_count = 0;
+    drmDevicePtr devices[64];
+    int count = drmGetDevices2(0, devices, 64);
+    for (int i = 0; i < count; i++) {
+        if (!(devices[i]->available_nodes & (1 << DRM_NODE_RENDER))) continue;
+        struct stat st;
+        if (stat(devices[i]->nodes[DRM_NODE_RENDER], &st) != 0 || st.st_rdev == main_dev)
+            continue;
+        bool seen = false;
+        for (size_t j = 0; j < dmabuf.other_device_count; j++)
+            seen |= dmabuf.other_devices[j] == st.st_rdev;
+        if (!seen && dmabuf.other_device_count < DMABUF_OTHER_DEVICES)
+            dmabuf.other_devices[dmabuf.other_device_count++] = st.st_rdev;
+    }
+    if (count > 0) drmFreeDevices(devices, count);
 }
 
 bool buffers_listen(struct tomoe *s) {
@@ -439,13 +616,20 @@ bool buffers_listen(struct tomoe *s) {
     dmabuf.drm_fd = node ? open(node, O_RDWR | O_CLOEXEC) : -1;
     free(node);
     dmabuf.device = st.st_rdev;
+    probe_other_devices(dmabuf.device);
     if (!dmabuf_table(formats)) return false;
+    if (!ns_timer_init(&feedback_timer, wl_display_get_event_loop(s->display),
+            feedback_timer_fire, s)) return false;
     return wl_global_create(s->display, &zwp_linux_dmabuf_v1_interface, 4, s, bind_dmabuf);
 }
 
 void buffers_finish(void) {
+    ns_timer_finish(&feedback_timer);
     if (dmabuf.table_fd >= 0) close(dmabuf.table_fd);
     if (dmabuf.drm_fd >= 0) close(dmabuf.drm_fd);
+    free(dmabuf.entries);
+    dmabuf.entries = NULL;
+    dmabuf.other_device_count = 0;
     dmabuf.table_fd = dmabuf.drm_fd = -1;
 }
 
