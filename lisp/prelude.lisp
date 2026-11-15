@@ -1,8 +1,15 @@
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *source-directory*)
-(defvar *copy-data-nodes* 32768)
-(defvar *copy-data-chars* 65536)
+(defvar *runtime* nil)
+(defvar *bootstrap-limits*
+  (list :datum-nodes 32768 :string-chars 65536 :source 1048576 :patch 1048576
+        :effects 512 :commands 32 :extensions 64 :watchdog-ms 1000)
+  "The compiled-in floors, used until a commit publishes the :budgets group.")
+
+(defun %limit (key)
+  (or (getf (and *runtime* (%r :budget-limits)) key)
+      (getf *bootstrap-limits* key)))
 
 (defun %finite-float-p (value)
   "True when VALUE is an IEEE float with a finite value."
@@ -30,23 +37,23 @@
 
 (defun copy-data (value)
   "Copy bounded Lisp data. No closures, host handles, shared strings, or cycles cross dispatch."
-  (let ((nodes 0))
+  (let ((nodes 0) (limit (%limit :datum-nodes)) (chars (%limit :string-chars)))
     (labels ((walk (item depth)
-               (when (or (> (incf nodes) *copy-data-nodes*) (> depth 64))
+               (when (or (> (incf nodes) limit) (> depth 64))
                  (error "Extension data exceeds the node/depth budget."))
                (cond
                  ((null item) nil)
                  ((consp item)
                   (let ((items nil) (tail item))
                     (loop while (consp tail) do
-                      (when (> (incf nodes) *copy-data-nodes*)
+                      (when (> (incf nodes) limit)
                         (error "Extension data exceeds the node budget."))
                       (push (walk (car tail) (1+ depth)) items)
                       (setf tail (cdr tail)))
                     (append (nreverse items) (walk tail (1+ depth)))))
                  ((stringp item)
-                  (when (> (length item) *copy-data-chars*)
-                    (error "String exceeds ~D characters." *copy-data-chars*))
+                  (when (> (length item) chars)
+                    (error "String exceeds ~D characters." chars))
                   (copy-seq item))
                  ((or (integerp item) (rationalp item)) item)
                  ((floatp item)

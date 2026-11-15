@@ -99,7 +99,7 @@ changed callback definitions."
                                  ((not (eq (mounted-rule-definition old) definition))
                                   (push (spec-name (mounted-spec instance)) changed)))
                            (unless (eq (mounted-rule-definition instance) definition)
-                             (incf *invocations*))
+                             (%invocations+))
                            (setf (nth 10 instance) definition)
                            (setf result (nconc result (list instance)))))))))
                (lambda (text) (setf message text)))

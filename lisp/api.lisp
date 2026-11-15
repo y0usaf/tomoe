@@ -400,16 +400,12 @@ contains the requested, quantized placement size. WINDOW is an ID or window reco
         (copy-data (loop for key in '(:x :y :width :height)
                          append (list key (getf record key))))))))
 
-(defvar *frame-ms* 16
-  "Milliseconds between display refreshes on the fastest active output.
-The runtime keeps it current; read it with FRAME-MS.")
-
 (defun frame-ms ()
   "Milliseconds between display refreshes, following the monitor.
 240 Hz reads 4 and 60 Hz reads 16. Hand it to INTERVAL, or pass :REFRESH,
 and the animation that timer advances steps once per refresh instead of on a
 fixed clock."
-  *frame-ms*)
+  (%frame-ms-value))
 
 (defun frame-period-ms (outputs)
   "Milliseconds per refresh of the fastest enabled output in OUTPUTS."
@@ -1029,27 +1025,24 @@ merge field by field. Omission restores the preceding owner or the default."
                                ((eq type :animations) (%animation-settings default))
                                (t default)))))
 
-(defvar *effect-limit* 512)
-(defvar *command-limit* 32)
-(defvar *source-limit* 1048576)
-(defvar *patch-limit* 1048576)
-(defvar *extension-limit* 64)
-(defvar *watchdog-ms* 1000)
+(defun %budget-limits-of (settings)
+  "The committed settings as the one table every Lisp-side limit comes from."
+  (let ((budgets (getf settings :budgets)))
+    (list :datum-nodes (getf budgets :datum-nodes 32768)
+          :string-chars (getf budgets :string-chars 65536)
+          :source (* 1024 (getf budgets :source-kb 1024))
+          :patch (* 1024 (getf budgets :patch-kb 1024))
+          :effects (getf budgets :effects-per-extension 512)
+          :commands (getf budgets :commands-per-event 32)
+          :extensions (getf budgets :extensions 64)
+          :watchdog-ms (getf settings :watchdog-ms 1000))))
 
 (defun sync-budgets (settings)
-  "Adopt the committed :BUDGETS group, the one place every Lisp-side limit lives."
-  (let ((budgets (getf settings :budgets)))
-    (setf *copy-data-nodes* (getf budgets :datum-nodes 32768)
-          *copy-data-chars* (getf budgets :string-chars 65536)
-          *source-limit* (* 1024 (getf budgets :source-kb 1024))
-          *patch-limit* (* 1024 (getf budgets :patch-kb 1024))
-          *effect-limit* (getf budgets :effects-per-extension 512)
-          *command-limit* (getf budgets :commands-per-event 32)
-          *extension-limit* (getf budgets :extensions 64)
-          *watchdog-ms* (getf settings :watchdog-ms 1000))
-    settings))
+  "Adopt the committed :BUDGETS group into the runtime state."
+  (%r! :budget-limits (%budget-limits-of settings))
+  settings)
 
-(sync-budgets (%settings-defaults +settings+))
+(setf *bootstrap-limits* (%budget-limits-of (%settings-defaults +settings+)))
 
 (defun %settings-merge (settings plist table)
   (loop for (key value) on plist by #'cddr
@@ -1674,10 +1667,10 @@ turns them all off while any is lit."
 (defun quit () (%command :quit nil))
 (defun reload () (%command :reload nil))
 
-(defvar *next-source-id* 0)
 (defun allocate-source-id ()
-  (when (>= *next-source-id* (1- (expt 2 64))) (error "Source identity space exhausted."))
-  (incf *next-source-id*))
+  (when (>= (%counter :next-source-id) (1- (expt 2 64)))
+    (error "Source identity space exhausted."))
+  (%bump :next-source-id))
 
 (defun make-spec (&key name reads initial update source directory admission package id patch)
   (list :spec name reads initial update source directory admission package

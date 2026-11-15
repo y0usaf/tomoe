@@ -14,21 +14,11 @@
 (defun default-audio-state ()
   (list :volume 1.0d0 :muted nil))
 
-(defvar *runtime* nil
-  "The whole policy state, kept across hooks by %KEEP.")
-
 (defvar *materialized* nil
   "Within a transaction: the mounts, invalidation count, output revision and
 context of its last materialization.")
-(defvar *layout-rebuilds* 0)
-(defvar *layout-reuses* 0)
-(defvar *invocations* 0
-  "Counts the accepted reducer results and replaced rule declarations that change
-what a materialization folds.")
 (defvar *command-input* nil
   "Within a transaction or a host command call: whether input asked for the command.")
-(defvar *definitions-generation* 0
-  "Counts loaded sources and restored patch definitions.")
 (defvar *layout-trace-path* nil
   "When the environment names a file, every materialization appends what it settled
 on to it, so a recorded trace can compare an incremental layout with a full one.")
@@ -47,10 +37,42 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :retired-commands nil :reads-cache nil :layout-memo nil
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
-        :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil))
+        :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil
+        :frame-ms 16 :invocations 0 :layout-rebuilds 0 :layout-reuses 0
+        :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
+        :ipc-baseline-sent nil))
 
-(defun %r (key) (getf *runtime* key))
-(defun %r! (key value) (setf (getf *runtime* key) value))
+(defvar *pending-writes* nil
+  "This hook's state writes, held in the turn's arena until %PERSIST-STATE.")
+
+(defun %r (key)
+  (let ((tail *pending-writes*) (value nil) (found nil))
+    (loop while (consp tail) do
+      (when (eq (car tail) key)
+        (setf value (car (cdr tail)) found t)
+        (return))
+      (setf tail (cddr tail)))
+    (if found value (getf *runtime* key))))
+
+(defun %r! (key value)
+  (let ((tail *pending-writes*) (found nil))
+    (loop while (consp tail) do
+      (when (eq (car tail) key)
+        (setf (car (cdr tail)) value found t)
+        (return))
+      (setf tail (cddr tail)))
+    (unless found
+      (setf *pending-writes* (cons key (cons value *pending-writes*)))))
+  value)
+
+(defun %counter (key) (or (%r key) 0))
+(defun %bump (key)
+  (let ((next (1+ (%counter key))))
+    (%r! key next)
+    next))
+(defun %invocations () (%counter :invocations))
+(defun %invocations+ () (%bump :invocations))
+(defun %frame-ms-value () (or (%r :frame-ms) 16))
 
 (defun runtime-windows () (%r :windows))
 (defun runtime-client-geometries () (%r :client-geometries))
@@ -87,12 +109,30 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
   (%r! :generation (1+ (runtime-generation))))
 (defun runtime-watch () (%r :watch))
 
+(defvar *retired-state* nil
+  "The block the last keep replaced. It is released one hook later, so values the
+current hook built from it stay valid until the turn ends.")
+
 (defun %persist-state ()
-  "Keep the whole runtime state across hooks, the one place it lives."
-  (let ((old *runtime*))
-    (setf *runtime* (%keep *runtime*))
-    (when old (%release old))
-    *runtime*))
+  "Publish this hook's writes into the state the next hook reads."
+  (let ((state *runtime*) (writes *pending-writes*))
+    (loop while (consp writes) do
+      (let ((key (car writes)) (value (car (cdr writes)))
+            (tail state) (found nil))
+        (loop while (consp tail) do
+          (when (eq (car tail) key)
+            (setf (car (cdr tail)) value found t)
+            (return))
+          (setf tail (cddr tail)))
+        (unless found
+          (setf state (cons key (cons value state)))))
+      (setf writes (cddr writes)))
+    (setf *pending-writes* nil)
+    (let ((old *runtime*))
+      (setf *runtime* (%keep state))
+      (when *retired-state* (%release *retired-state*))
+      (setf *retired-state* old)
+      *runtime*)))
 
 (defun make-mounted (&key spec state effects dispatches failures last-error
                           rule-parent rule-name rule-window rule-definition rule-pending)
@@ -324,10 +364,10 @@ command names whose owner has gone away so their bindings retire with it."
                                  (spec-update spec))
                              (make-snapshot context (copy-list reads) (runtime-effective))
                              (copy-data (mounted-state mounted)) (copy-data event))
-                  (when (> (length effects) *effect-limit*)
-                    (error "More than ~D effects." *effect-limit*))
-                  (when (> (length commands) *command-limit*)
-                    (error "More than ~D commands." *command-limit*))
+                  (when (> (length effects) (%limit :effects))
+                    (error "More than ~D effects." (%limit :effects)))
+                  (when (> (length commands) (%limit :commands))
+                    (error "More than ~D commands." (%limit :commands)))
                   (when (and commands
                              (not (or (member (getf event :type)
                                               '(:command :button :timer :watch :exec :request
@@ -350,14 +390,14 @@ command names whose owner has gone away so their bindings retire with it."
                           (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
                     (check-duplicate-effects effects)
                     (unless (equivalent-effects (mounted-effects mounted) effects)
-                      (incf *invocations*))
+                      (%invocations+))
                     (setf (nth 2 mounted) (copy-data state)
                           (nth 3 mounted) effects)
                     (when (mounted-rule-parent mounted) (setf (nth 11 mounted) nil))
                     (setf (nth 4 mounted) (1+ (mounted-dispatches mounted)))
                     commands)))))
     (let ((outcome nil) (message nil))
-      (%catch (lambda () (setf outcome (%with-limits nil *watchdog-ms* run)))
+      (%catch (lambda () (setf outcome (%with-limits nil (%limit :watchdog-ms) run)))
               (lambda (text) (setf message text)))
       (if message
           (progn
@@ -676,8 +716,8 @@ owners declared, in a form whose printed representation is stable across builds.
 folds has changed since."
   (let ((memo (runtime-layout-memo)))
     (when (and memo
-               (eql (layout-memo-invocations memo) *invocations*)
-               (eql (layout-memo-definitions memo) *definitions-generation*)
+               (eql (layout-memo-invocations memo) (%invocations))
+               (eql (layout-memo-definitions memo) (%counter :definitions-generation))
                (eql (layout-memo-revision memo) (runtime-outputs-revision))
                (eq (layout-memo-windows memo) (runtime-windows))
                (eq (layout-memo-layers memo) (runtime-layers))
@@ -693,8 +733,8 @@ folds has changed since."
 
 (defun remember-layout (mounts context)
   (%r! :layout-memo
-       (make-layout-memo :names (mount-names mounts) :invocations *invocations*
-                         :definitions *definitions-generation*
+       (make-layout-memo :names (mount-names mounts) :invocations (%invocations)
+                         :definitions (%counter :definitions-generation)
                          :revision (runtime-outputs-revision)
                          :windows (runtime-windows)
                          :layers (runtime-layers)
@@ -714,19 +754,19 @@ when nothing it folds has changed."
     (labels ((republish (context)
                (when memo
                  (setf (nth 0 memo) (copy-list mounts)
-                       (nth 1 memo) *invocations*
+                       (nth 1 memo) (%invocations)
                        (nth 2 memo) context
                        (nth 3 memo) revision))
                (trace-layout-step context)
                context))
       (cond
-        ((and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
+        ((and memo (eql (second memo) (%invocations)) (eql (fourth memo) revision)
               (= (length mounts) (length (first memo))) (%same-elements-p mounts (first memo)))
-         (incf *layout-reuses*)
+         (%bump :layout-reuses)
          (republish (third memo)))
         (t (let ((reused (reusable-layout mounts)))
-             (cond (reused (incf *layout-reuses*) (republish reused))
-                   (t (incf *layout-rebuilds*)
+             (cond (reused (%bump :layout-reuses) (republish reused))
+                   (t (%bump :layout-rebuilds)
                       (republish (%materialize mounts))))))))))
 
 (defun %materialize (mounts)
@@ -1051,7 +1091,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
 (defun %commit-context (mounts context commands)
   ;; Timers declared :REFRESH resolve against the display rate the context
   ;; reports, so the bar and HUD step once per refresh of the monitor in use.
-  (setf *frame-ms* (frame-period-ms (getf context :outputs)))
+  (%r! :frame-ms (frame-period-ms (getf context :outputs)))
   (sync-budgets (getf context :settings))
   (let* ((old (runtime-effective))
          (restack (not (equal (getf old :stacking) (getf context :stacking))))
@@ -1103,7 +1143,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (remember-layout mounts context)
     nil))
 
-(defvar *package-serial* 0)
+(defvar (%counter :package-serial) 0)
 
 (defun %directory-of (path)
   (let ((slash (position #\/ path :from-end t)))
@@ -1113,21 +1153,21 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
   (not (find #\/ path)))
 
 (defun %fresh-package-name (path)
-  (incf *package-serial*)
+  (%bump :package-serial)
   (format nil "TOMOE-USER/~A-~D"
           (string-upcase (or (and (%directory-of path)
                                   (subseq path (length (%directory-of path))))
                              path))
-          *package-serial*))
+          (%counter :package-serial)))
 
 (defun load-specs (path &optional package)
-  (incf *definitions-generation*)
+  (%bump :definitions-generation)
   (let* ((*source* path)
          (*source-directory* (%directory-of path))
          (package (or package (%fresh-package-name path)))
          (*definitions* nil)
          (text (unless (%embedded-source-p path)
-                 (or (%read-file path *source-limit*)
+                 (or (%read-file path (%limit :source))
                      (error "No extension source at ~A." path)))))
     (unless (member package (runtime-source-packages) :test #'equal)
       (%r! :source-packages (cons package (runtime-source-packages))))
@@ -1138,12 +1178,12 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
           collect spec)))
 
 (defun sweep-source-packages ()
-  (let ((live (mapcar (lambda (mounted) (spec-package (mounted-spec mounted)))
-                      (runtime-mounts))))
+  (let ((live (remove nil (mapcar (lambda (mounted) (spec-package (mounted-spec mounted)))
+                                  (runtime-mounts)))))
     (%r! :source-packages
          (loop for package in (runtime-source-packages)
                if (member package live :test #'equal) collect package
-                 else do (%drop-package package)))))
+                 else do (when (stringp package) (%drop-package package))))))
 
 (defun configure (sources &optional changed-source)
   (unwind-protect
@@ -1158,8 +1198,8 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
           (when (member (spec-name spec) names :test #'equal)
             (error "Duplicate extension: ~A" (spec-name spec)))
           (push (spec-name spec) names))
-        (when (> (length (append retained specs)) *extension-limit*)
-          (error "More than ~D mounted extensions." *extension-limit*))
+        (when (> (length (append retained specs)) (%limit :extensions))
+          (error "More than ~D mounted extensions." (%limit :extensions)))
         (let ((mounts
                 (loop for spec in specs
                       for previous = (find (spec-name spec) (runtime-mounts)
@@ -1211,8 +1251,12 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (when failure (record-error failure))))
 
 (defun newer-native-output-request-p ()
-  (let ((revision (%outputs-revision)))
-    (when (> revision (runtime-outputs-revision))
+  (let ((revision (%outputs-revision)) (state (%r :outputs-revision)))
+    (unless (and (numberp revision) (numberp state))
+      (error "refresh: revision=~S state=~S runtime=~S keys=~S"
+             revision state (and *runtime* t)
+             (and *runtime* (loop for (key value) on *runtime* by #'cddr collect key))))
+    (when (> revision state)
       (loop for connector in (output-connectors (current-native-outputs))
             for previous = (find (getf connector :name) (runtime-connectors)
                                  :test #'equal :key (lambda (item) (getf item :name)))
@@ -1491,6 +1535,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       failure)))
 
 (defun TOMOE-BOOT (sources bare watch)
+  (let ((*pending-writes* nil))
   (%boot-state nil)
   (%r! :watch (and watch t))
   (cond
@@ -1504,22 +1549,23 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
            (progn (%persist-state) nil))))
     (t (let ((failure (boot-default-config t)))
          (%persist-state)
-         failure))))
+         failure)))))
 
 (defun TOMOE-LOAD (sources changed-source)
-  (let ((failure nil))
+  (let ((*pending-writes* nil) (failure nil))
     (%catch (lambda () (configure sources changed-source))
             (lambda (text) (setf failure text)))
     (%persist-state)
     failure))
 
 (defun TOMOE-UNMOUNT (name)
-  (let ((failure nil))
+  (let ((*pending-writes* nil) (failure nil))
     (%catch (lambda () (unmount name)) (lambda (text) (setf failure text)))
     (%persist-state)
     failure))
 
 (defun TOMOE-DISPATCH (events)
+  (let ((*pending-writes* nil))
   (dolist (event events)
     (cond ((eq (getf event :type) :source)
            (let ((failure nil))
@@ -1528,19 +1574,22 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
              (when failure (report-config-error failure nil))))
           (t (dispatch-event event))))
   (%persist-state)
-  nil)
+  nil))
 
 (defun TOMOE-CONTROL (op arguments)
+  (let ((*pending-writes* nil))
   (ecase op
     (:inspect (describe-runtime))
     (:reload (%reload-policy) (%persist-state) nil)
     (:mount (%mount-policy (first arguments)) (%persist-state) nil)
     (:unmount (unload-policy (first arguments)) (%persist-state) nil)
-    (:event (dispatch-event (first arguments)) (%persist-state) nil)))
+    (:event (dispatch-event (first arguments)) (%persist-state) nil))))
 
 (defun TOMOE-JSON (method params)
-  (let ((reply nil) (failure nil))
-    (%catch (lambda () (setf reply (ipc-request method params)))
+  (let ((*pending-writes* nil) (reply nil) (failure nil))
+    (%catch (lambda ()
+              (setf reply (ipc-request method params))
+              (%json-validate-value reply))
             (lambda (text) (setf failure text)))
     (%persist-state)
     (if failure
@@ -1549,7 +1598,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
 
 (defun TOMOE-COMMAND (name arguments origin)
   (declare (ignore origin))
-  (let ((report (run-command name arguments)))
+  (let ((*pending-writes* nil) (report (run-command name arguments)))
     (%persist-state)
     report))
 

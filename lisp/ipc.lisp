@@ -279,6 +279,9 @@ report a session command returned."
     (%r! :ipc-published-context (list :windows windows :outputs outputs :focus focus))
     (%r! :ipc-published-announcements announcements)))
 
+(defparameter *input-events* '("pointer_motion" "pointer_button" "key")
+  "Event names that need the core's input stream, which is off until asked for.")
+
 (defun ipc-subscribe (params)
   "Validate a subscription and replay the present state to the first subscriber.
 The reply's \"events\" lets the core record the filter."
@@ -288,6 +291,8 @@ The reply's \"events\" lets the core record the filter."
                          (every #'stringp (second events))))
       (error "invalid subscribe params (expected {~S: [~S]})" "events" "..."))
     (let ((names (unless all (second events))))
+      (when (or all (some (lambda (name) (member name *input-events* :test #'equal)) names))
+        (%input-stream 1))
       (unless (%r :ipc-baseline-sent)
         (%r! :ipc-baseline-sent t)
         (ipc-publish-baseline (runtime-effective) (runtime-mounts)))

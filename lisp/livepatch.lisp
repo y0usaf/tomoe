@@ -17,14 +17,29 @@
 
 (defun patch-text (path)
   "The UTF-8 text of the patch source at PATH."
-  (let ((text (%read-file path *patch-limit*)))
+  (let ((text (%read-file path (%limit :patch))))
     (unless text (error "Cannot read the patch source ~A." path))
     text))
 
-(defun patch-defined-symbols (text package)
-  "The symbols TEXT defines at top level. Read in PACKAGE, as the loader will."
+(defun %read-forms (text)
+  "Every top-level form in TEXT, read without evaluation."
+  (let ((forms nil) (start 0) (length (length text)))
+    (loop while (< start length) do
+      (multiple-value-bind (form end) (read-from-string text nil :eof :start start)
+        (when (eq form :eof) (return))
+        (setf start end)
+        (push form forms)))
+    (nreverse forms)))
+
+(defun patch-forms (path)
+  (let ((text (patch-text path)))
+    (when (> (length text) (%limit :patch)) (error "A patch source exceeds 1 MiB."))
+    (%read-forms text)))
+
+(defun patch-defined-symbols (path)
+  "The symbols the source at PATH defines at top level."
   (let ((symbols nil) (forms 0))
-    (dolist (form (%read-source text package))
+    (dolist (form (patch-forms path))
       (when (> (incf forms) 4096)
         (error "A patch has more than 4096 top-level forms."))
       (when (and (consp form) (member (first form) +patch-definitions+ :test #'eq))
@@ -40,17 +55,17 @@
         :definition (%symbol-definition symbol)))
 
 (defun restore-patch-definition (snapshot)
-  (incf *definitions-generation*)
+  (%bump :definitions-generation)
   (%set-symbol-definition (getf snapshot :symbol) (getf snapshot :definition)))
 
 (defun refresh-extensions (&rest names)
   "What a patch declares: the extensions it refreshes, read before it loads."
   names)
 
-(defun patch-refresh-list (text package)
-  "The extension names TEXT declares with (REFRESH-EXTENSIONS ...), in order."
+(defun patch-refresh-list (path)
+  "The extension names the source at PATH declares with (REFRESH-EXTENSIONS ...)."
   (let ((names nil))
-    (dolist (form (%read-source text package) (%dedupe (nreverse names)))
+    (dolist (form (patch-forms path) (%dedupe (nreverse names)))
       (when (and (consp form) (symbolp (first form))
                  (string= "REFRESH-EXTENSIONS" (symbol-name (first form))))
         (dolist (name (rest form))
@@ -131,7 +146,7 @@ ONLY restricts the mount to those extension names; REFRESH re-invokes mounts."
       (when mounts
         (transact (append (root-mounts (runtime-mounts)) mounts)
                   (list :type :mount) nil names)))
-    (when refresh (refresh-mounts))
+    (when refresh (refresh-mounts refresh))
     names))
 
 (defun unload-policy (name)
@@ -169,10 +184,11 @@ compositor as it was and signals its error. Returns a report plist."
       (let ((failure nil))
         (%catch
          (lambda ()
-           (let ((text (patch-text path)))
-             (setf snapshots (loop for symbol in (patch-defined-symbols text package)
+           (progn
+             (patch-text path)
+             (setf snapshots (loop for symbol in (patch-defined-symbols path)
                                    collect (patch-definition-snapshot symbol))
-                   refresh (patch-refresh-list text package))
+                   refresh (patch-refresh-list path))
              (setf mounted (mount-patch-specs (load-specs path package)))
              (when refresh (refresh-mounts refresh))
              (let ((patch (list :id id :name name :file path :generated generated
@@ -181,7 +197,8 @@ compositor as it was and signals its error. Returns a report plist."
                                 :definitions (loop for snapshot in snapshots
                                                    collect (getf snapshot :name)))))
                (%r! :patches (append (runtime-patches) (list patch)))
-               (bump-generation))))
+               (bump-generation)
+)))
          (lambda (text) (setf failure text)))
         (if failure
             (progn
@@ -217,7 +234,7 @@ compositor as it was and signals its error. Returns a report plist."
       (bump-generation)
       (let ((warning nil))
         (when refresh
-          (%catch (lambda () (refresh-mounts))
+          (%catch (lambda () (refresh-mounts refresh))
                   (lambda (text) (setf warning text))))
         (list :id (getf patch :id) :name (getf patch :name) :warning warning
               :extensions (copy-list extensions)
