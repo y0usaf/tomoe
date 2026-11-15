@@ -706,7 +706,7 @@ struct presentation_target {
 enum animation_kind { ANIMATION_OFF, ANIMATION_SPRING, ANIMATION_EASE };
 struct animation_config {
     int kind, duration_ms, curve;
-    double damping_ratio, stiffness, epsilon, bezier[4];
+    double damping_ratio, stiffness, epsilon, launch, bezier[4];
 };
 struct animation {
     double from, to, start, duration, v0, sample;

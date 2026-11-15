@@ -47,15 +47,17 @@ static double spring_duration(const struct animation *a) {
     double beta = fmax(a->config.damping_ratio, 0) * sqrt(stiffness);
     if (beta <= DBL_EPSILON) return INFINITY;
     if (fabs(a->to - a->from) <= DBL_EPSILON && a->v0 == 0) return 0;
+    double span = fabs(a->to - a->from);
     double epsilon = fmax(a->config.epsilon, 1e-9);
     double bound = 1.5 * -log(epsilon) / beta;
     if (!isfinite(bound) || bound > 4.0) bound = 4.0;
+    double threshold = epsilon * fmax(span, 1.0);
     const double step = 1.0 / 2000.0;
     double last = 0;
     for (double t = step; t <= bound + 0.1; t += step) {
         double value = spring_at(a, t);
         if (!isfinite(value)) return last;
-        if (fabs(value - a->to) > epsilon) last = t;
+        if (fabs(value - a->to) > threshold) last = t;
         else if (t - last > 0.05) break;
     }
     return last;
@@ -89,6 +91,7 @@ double animation_now(void) {
 void animation_start_from(struct animation *a, const struct animation_config *config,
         double from, double to, double now, double velocity) {
     bool moving = config->kind != ANIMATION_OFF;
+    if (moving && velocity == 0) velocity = config->launch * (to - from);
     *a = (struct animation){ .from = from, .to = to, .start = now,
         .v0 = moving ? velocity : 0, .config = *config, .active = moving, .sample = now };
     a->duration = config->kind == ANIMATION_SPRING ? spring_duration(a) :
@@ -201,7 +204,8 @@ void animation_frame_record(struct tomoe *s, const struct screen *screen,
 static int config_settle_ms(const struct animation_config *config, double from, double to) {
     if (config->kind == ANIMATION_OFF) return 0;
     if (config->kind == ANIMATION_EASE) return config->duration_ms;
-    struct animation probe = { .from = from, .to = to, .config = *config, .active = true };
+    struct animation probe = { .from = from, .to = to, .v0 = config->launch * (to - from),
+        .config = *config, .active = true };
     double duration = spring_duration(&probe);
     return isfinite(duration) ? (int)llround(duration * 1000) : 0;
 }

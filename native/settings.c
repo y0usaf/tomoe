@@ -23,6 +23,7 @@ static const struct setting_field {
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
     { prefix "-stiffness", offsetof(struct settings, member.stiffness), SETTING_REAL }, \
     { prefix "-epsilon", offsetof(struct settings, member.epsilon), SETTING_REAL }, \
+    { prefix "-launch", offsetof(struct settings, member.launch), SETTING_REAL }, \
     { prefix "-duration-ms", offsetof(struct settings, member.duration_ms), SETTING_INT }, \
     { prefix "-curve", offsetof(struct settings, member.curve), SETTING_INT }, \
     { prefix "-x1", offsetof(struct settings, member.bezier[0]), SETTING_REAL }, \
@@ -62,10 +63,10 @@ void settings_default(struct settings *settings) {
         .blur_passes = 3, .blur_offset = 1, .blur_margin = 96, .screenshot_freeze = true,
         .screenshot_colors = { .accent = 0x7aa1f7ff, .background = 0x1c1c21ff, .text = 0xffffffff,
             .chip = 0x45454fff },
-        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 16000,
-            .epsilon = 0.001 },
-        .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 16000,
-            .epsilon = 0.001 },
+        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
+            .epsilon = 0.001, .launch = 63 },
+        .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
+            .epsilon = 0.001, .launch = 63 },
         .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 } };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
