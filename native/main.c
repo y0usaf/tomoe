@@ -437,7 +437,7 @@ static void session_signals_ready(void *data, int fd, uint32_t mask) {
     while (read(fd, &info, sizeof(info)) == (ssize_t)sizeof(info)) loop_state.quit = true;
 }
 
-static int session_signals_start(struct tomoe *server, char *error, size_t error_size) {
+static int session_signals_block(char *error, size_t error_size) {
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGTERM);
@@ -446,12 +446,22 @@ static int session_signals_start(struct tomoe *server, char *error, size_t error
         snprintf(error, error_size, "Cannot block SIGTERM and SIGINT.");
         return -1;
     }
+    return 0;
+}
+
+static int session_signals_start(struct tomoe *server, struct loop_source **watch, char *error,
+        size_t error_size) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGINT);
     int fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
     if (fd < 0) {
         snprintf(error, error_size, "Cannot create the signal descriptor.");
         return -1;
     }
-    if (!loop_watch_fd(server, fd, WL_EVENT_READABLE, session_signals_ready, NULL)) {
+    *watch = loop_watch_fd(server, fd, WL_EVENT_READABLE, session_signals_ready, NULL);
+    if (!*watch) {
         close(fd);
         snprintf(error, error_size, "Cannot wake the event loop for SIGTERM and SIGINT.");
         return -1;
@@ -502,6 +512,7 @@ static int run_compositor(const struct cli_options *options) {
         return cli_error("%s", error);
     if (desktop_socket_answering(control_path))
         return cli_error("Another session is listening on %s.", control_path);
+    if (session_signals_block(error, sizeof(error))) return cli_error("%s", error);
     const char *extra = getenv("TOMOE_PATH");
     if (extra && *extra) prepend_path(extra);
     const char *fontconfig = getenv("TOMOE_FONTCONFIG_FILE");
@@ -528,6 +539,7 @@ static int run_compositor(const struct cli_options *options) {
     bool resources = false;
     bool session = false;
     int signal_fd = -1;
+    struct loop_source *signal_watch = NULL;
     if (lisp_init(BUDGET_LISP_REGION_BOOTSTRAP)) {
         tomoe_log(LOG_ERROR, "tomoe: cannot initialise the Lisp runtime");
         goto done;
@@ -541,7 +553,7 @@ static int run_compositor(const struct cli_options *options) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
         goto done;
     }
-    signal_fd = session_signals_start(server, error, sizeof(error));
+    signal_fd = session_signals_start(server, &signal_watch, error, sizeof(error));
     if (signal_fd < 0) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
         goto done;
@@ -588,6 +600,11 @@ static int run_compositor(const struct cli_options *options) {
     lisp_set_limits(60000000, 5000000000ULL);
     if (policy_call(POLICY_HOOK_BOOT, 3, boot_args, &boot_result, error, sizeof(error)))
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
+    else if (lisp_stringp(boot_result)) {
+        size_t length = 0;
+        const char *message = lisp_get_string(boot_result, &length);
+        if (message) tomoe_log(LOG_ERROR, "tomoe: %.*s", (int)length, message);
+    }
     while (!loop_state.quit) {
         int timeout = policy_events_pending(server) ? 0 : -1;
         int step = tomoe_step(server, timeout);
@@ -614,6 +631,8 @@ done:
     desktop_bus_stop(bus, options->name);
     ipc_stop(ipc);
     control_stop(control);
+    if (signal_watch) loop_remove(signal_watch);
+    if (signal_fd >= 0) close(signal_fd);
     tomoe_destroy(server);
     lisp_shutdown();
     return status;
