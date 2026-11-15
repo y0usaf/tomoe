@@ -789,6 +789,41 @@ struct cursor_motion {
     int history_head, history_count;
     double history_at;
     double shake, shake_distance;
+    double velocity[2], acceleration[2], velocity_at;
+};
+
+enum cursor_term_field {
+    CURSOR_FIELD_SPEED,
+    CURSOR_FIELD_ANGLE,
+    CURSOR_FIELD_ACCELERATION,
+    CURSOR_FIELD_SHAKE,
+    CURSOR_FIELD_VX,
+    CURSOR_FIELD_VY,
+    CURSOR_FIELD_CONSTANT
+};
+
+enum { CURSOR_TERM_CLAUSES = 8, CURSOR_EFFECTS_MAX = 32 };
+
+struct cursor_term_clause {
+    int field;
+    double scale, above, below;
+};
+
+struct cursor_term {
+    int count;
+    struct cursor_term_clause clauses[CURSOR_TERM_CLAUSES];
+};
+
+struct cursor_effect {
+    struct cursor_term rotation, scale, stretch, stretch_angle, offset_x, offset_y;
+    double settle;
+    bool trail_on;
+    struct trail_style trail;
+};
+
+struct cursor_effect_set {
+    int count;
+    struct cursor_effect entries[CURSOR_EFFECTS_MAX];
 };
 struct settings {
     struct input_config touchpad, mouse;
@@ -1055,6 +1090,7 @@ struct tomoe {
     struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
     struct cursor_motion cursor_motion;
+    struct cursor_effect_set cursor_effects;
     struct buffer *default_cursor;
     float default_cursor_scale;
     uint32_t default_cursor_shape;
@@ -1691,6 +1727,8 @@ bool cursor_motion_rest(const struct tomoe *s);
 void cursor_motion_matrix(const struct tomoe *s, double matrix[4], double offset[2]);
 void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double offset[2],
     double settle, const struct trail_style *trail);
+void cursor_effects_register_primitives(struct tomoe *server);
+void cursor_effects_evaluate(struct tomoe *s, double now);
 int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
     double offset_x, double offset_y, double settle, double cell, double life,
     int steps, uint32_t rgba);
