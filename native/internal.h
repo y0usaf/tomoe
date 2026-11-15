@@ -1095,6 +1095,10 @@ struct tomoe {
     uint64_t next_ui_callback_id, ui_rasterizations;
     char *ui_stats_result;
     struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;
+    int capture_inflight;
+    bool input_stream, input_motion_pending, input_stream_armed;
+    uint64_t input_motion_time;
+    struct wl_event_source *input_stream_timer;
     struct wl_list relative_pointers;
     struct wl_list gestures;
     struct input_device *gesture_device;
@@ -1294,6 +1298,13 @@ void unmap_event(struct tomoe *s, uint32_t id);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy);
 void grab_frame_drawn(struct tomoe *s);
 bool grab_waiting(struct tomoe *s);
+int tomoe_input_stream(struct tomoe *s, int enabled);
+void input_stream_pointer(struct tomoe *s, uint32_t time_msec);
+void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, bool pressed);
+void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
+    xkb_keysym_t sym, bool pressed);
+void input_stream_flush(struct tomoe *s);
+uint32_t input_modifier_mask(struct tomoe *s);
 
 struct screen *any_output(struct tomoe *s);
 struct output *output_for_screen(struct tomoe *s, struct screen *screen);
@@ -1393,7 +1404,8 @@ const char *foreign_identifier(struct tomoe *s, uint32_t id);
 uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
     struct screen *output);
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor);
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor,
+    int *fence);
 void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);

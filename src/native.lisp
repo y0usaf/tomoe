@@ -50,6 +50,8 @@
   (server (* t)) (have-generation sb-alien:unsigned-long-long))
 (define-native ("tomoe_keyboard_focus" %keyboard-focus) sb-alien:unsigned-int
   (server (* t)))
+(define-native ("tomoe_input_stream" %input-stream) sb-alien:int
+  (server (* t)) (enabled sb-alien:int))
 (define-native ("tomoe_grab_id" %grab-id) sb-alien:unsigned-int (server (* t)))
 (define-native ("tomoe_grab_mode" %grab-mode) sb-alien:int (server (* t)))
 (define-native ("tomoe_close" %close) sb-alien:void

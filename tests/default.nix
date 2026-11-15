@@ -39,6 +39,18 @@ let
         (values nil (append (loop for w in windows collect (place (getf w :id) 0 0 320 240))
                             (list (focus (getf (car (last windows)) :id)))) nil)))
   '';
+  capturePolicy = pkgs.writeText "capture-policy.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "capture-check" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let ((windows (context snapshot :windows)))
+        (values nil
+                (append (loop for window in windows
+                              for index from 0
+                              collect (place (getf window :id) (* 8 (+ 1 (* 2 index))) 8 400 300))
+                        (list (focus (getf (car (last windows)) :id))))
+                nil)))
+  '';
   shortcutBindings = pkgs.writeText "shortcut-bindings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "shortcut-binding" (:reads () :state nil) (snapshot state event)
@@ -65,6 +77,9 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-dialog/xdg-dialog-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/xdg-system-bell/xdg-system-bell-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
@@ -89,6 +104,8 @@ let
         $(pkg-config --cflags --libs wayland-client) -o tomoe-cursor-client
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/timing.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-timing-client
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/capture-client.c *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-capture-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
@@ -96,6 +113,7 @@ let
       install -Dm755 tomoe-pacing-client $out/bin/tomoe-pacing-client
       install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
       install -Dm755 tomoe-timing-client $out/bin/tomoe-timing-client
+      install -Dm755 tomoe-capture-client $out/bin/tomoe-capture-client
     '';
   };
   x11Client = pkgs.stdenv.mkDerivation {
@@ -1046,6 +1064,14 @@ let
         SCANOUT_PROBE = "${scanoutProbe}"
       ''
       + builtins.readFile ./scanout.py;
+    }
+    {
+      name = "window-capture";
+      script = ''
+        CAPTURE_CLIENT = "${client}/bin/tomoe-capture-client"
+        CAPTURE_POLICY = "${capturePolicy}"
+      ''
+      + builtins.readFile ./window-capture.py;
     }
     {
       name = "memory";

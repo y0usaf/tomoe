@@ -1164,6 +1164,7 @@ static void grab_motion(struct tomoe *s) {
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);
+    input_stream_pointer(s, time);
     pointer_trail_record(s, time);
     ui_pointer_moved(s);
     drag_icons_refresh(s);
@@ -1316,9 +1317,7 @@ static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     seat_pointer_notify_clear_focus(s->seat);
     cursor_default(s);
     if (input->button != 272 || !hit.command || !hit.callback_id) return true;
-    struct keymap_slot *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->xkb : seat_get_keyboard(s->seat);
-    uint32_t modifiers = keyboard ? keymap_slot_modifiers(keyboard) : 0;
+    uint32_t modifiers = input_modifier_mask(s);
     modifiers &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
     struct event *event; size_t size;
     FILE *out = begin_event(s, &event, &size);
@@ -1404,10 +1403,18 @@ static bool pointer_binding_axis(struct tomoe *s, struct pointer_axis *event) {
     return true;
 }
 
+uint32_t input_modifier_mask(struct tomoe *s) {
+    struct keymap_slot *keyboard = s->logical_keyboard ?
+        &s->logical_keyboard->xkb : seat_get_keyboard(s->seat);
+    return keyboard ? keymap_slot_modifiers(keyboard) : 0;
+}
+
 void input_pointer_button(struct pointer_button *input) {
     struct tomoe *s = input->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
+    input_stream_button(s, input->time_msec, input->button,
+        input->state == WL_POINTER_BUTTON_STATE_PRESSED);
     if (input->state == WL_POINTER_BUTTON_STATE_PRESSED) sound_play(s, SOUND_BUTTON);
     if (s->screenshot && !lock_active(s)) {
         screenshot_button(s, input->button, input->state == WL_POINTER_BUTTON_STATE_PRESSED);
@@ -1434,9 +1441,7 @@ void input_pointer_button(struct pointer_button *input) {
         id = pointer_target(s, &surface, &sx, &sy);
         seat_pointer_notify_button(s->seat, input->time_msec, input->button, input->state);
     }
-    struct keymap_slot *keyboard = s->logical_keyboard ?
-        &s->logical_keyboard->xkb : seat_get_keyboard(s->seat);
-    uint32_t modifiers = keyboard ? keymap_slot_modifiers(keyboard) : 0;
+    uint32_t modifiers = input_modifier_mask(s);
     modifiers &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
     struct event *event; size_t size;
     FILE *out = begin_event(s, &event, &size);
@@ -1631,6 +1636,13 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         k->xkb.modifiers = keyboard_modifiers_from_state(k->xkb.xkb_state);
     }
     idle_notify_activity(s);
+    if (s->input_stream) {
+        xkb_keysym_t stream_sym = s->logical_keyboard && s->logical_keyboard->xkb.xkb_state ?
+            xkb_state_key_get_one_sym(s->logical_keyboard->xkb.xkb_state,
+                input->keycode + 8) : XKB_KEY_NoSymbol;
+        input_stream_key(s, input->time_msec, input->keycode, stream_sym,
+            input->state == WL_KEYBOARD_KEY_STATE_PRESSED);
+    }
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
         sound_play(s, SOUND_KEY);
         keyboard_activity(s, input->keycode);

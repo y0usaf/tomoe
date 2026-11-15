@@ -89,6 +89,7 @@ it consed, when samples are kept."
   managed-processes retired-processes once-processes pending-spawns process-history (process-turn 0)
   background-leases
   json-server ipc-call (ipc-sequence 0) screencasts ipc-published-context ipc-published-announcements
+  input-stream
   config-error source-packages retired-commands patches (patch-sequence 0)
   (fd-watches (make-hash-table)) fd-specs watch-failure
   (source-watches (make-hash-table :test #'equal))
@@ -1588,6 +1589,11 @@ burst of shader compiles, captures or decoded images grew without a collection r
            (push :outputs changed))
          (unless (equal (getf (runtime-effective runtime) :connectors) connectors)
            (push :connectors changed))))
+      (:input
+       (when (runtime-json-server runtime)
+         (json-broadcast (runtime-json-server runtime) (getf event :event)
+                         (ipc-input-payload event)))
+       (return-from dispatch-event))
       (:key
        (unless (getf event :state) (setf event (list* :state :pressed event)))
        (when (getf event :binding-id)

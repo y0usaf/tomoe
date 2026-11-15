@@ -687,7 +687,7 @@ static void window_retire(struct window *w) {
         struct buffer *buffer = render_allocate(s->renderer, width, height, format);
         struct texture *texture = NULL;
         if (buffer) {
-            if (render_window_buffer(s, w->target.id, buffer, false))
+            if (render_window_buffer(s, w->target.id, buffer, false, NULL))
                 texture = texture_from_buffer(s->renderer, buffer);
             buffer_drop(buffer);
         }

@@ -785,7 +785,9 @@ bool render_output(struct output *o, struct screen_state *state) {
     return render_presentation(o, state, NULL, NULL);
 }
 
-bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor) {
+bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor,
+        int *fence) {
+    if (fence) *fence = -1;
     struct presentation_target root = {0};
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
@@ -811,7 +813,9 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
         if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
             draw_cursor(s, &f, x, y, root.target.scale);
     }
-    return pass_submit(pass);
+    if (!fence) return pass_submit(pass);
+    *fence = pass_submit_fence(pass);
+    return true;
 }
 
 static bool unpaced_frame_done(struct tomoe *s, struct leaf *leaf, void *data) {

@@ -293,11 +293,20 @@ struct cursor_session {
     enum wl_output_transform served_transform;
 };
 
+enum {
+    CAPTURE_INFLIGHT_LIMIT = 8,
+    CAPTURE_STALL_MS = 250,
+};
+
 struct image_frame {
     struct wl_resource *resource;
     struct session *session;
+    struct tomoe *server;
     struct buffer *buffer;
-    bool capturing;
+    struct buffer *staging;
+    bool capturing, pending, held;
+    uint32_t window;
+    int64_t started;
     struct wl_event_source *copying;
     enum wl_output_transform transform;
     struct timespec when;
@@ -329,8 +338,52 @@ static void image_frame_settle(struct image_frame *frame) {
     frame->copying = NULL;
 }
 
-static void image_frame_fail(struct image_frame *frame, uint32_t reason) {
+static int64_t capture_now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static void capture_slot_take(struct image_frame *frame) {
+    if (frame->pending || !frame->server) return;
+    frame->pending = true;
+    frame->server->capture_inflight++;
+}
+
+static void capture_slot_release(struct image_frame *frame) {
+    if (!frame->pending) return;
+    frame->pending = false;
+    if (frame->server->capture_inflight > 0) frame->server->capture_inflight--;
+}
+
+static void image_frame_release(struct image_frame *frame) {
     image_frame_settle(frame);
+    capture_slot_release(frame);
+    if (frame->staging) buffer_drop(frame->staging);
+    frame->staging = NULL;
+    frame->window = 0;
+}
+
+static void image_frame_hold(struct image_frame *frame, bool keep_resource) {
+    frame->held = true;
+    if (frame->session) {
+        frame->session->frame = NULL;
+        frame->session = NULL;
+    }
+    frame->capturing = false;
+    frame->window = 0;
+    if (keep_resource || !frame->resource) return;
+    wl_resource_set_user_data(frame->resource, NULL);
+    frame->resource = NULL;
+}
+
+static void image_frame_fail(struct image_frame *frame, uint32_t reason) {
+    if (frame->pending) {
+        image_frame_hold(frame, true);
+        return;
+    }
+    image_frame_release(frame);
+    if (!frame->resource) return;
     ext_image_copy_capture_frame_v1_send_failed(frame->resource, reason);
     buffer_unlock(frame->buffer);
     frame->buffer = NULL;
@@ -379,7 +432,12 @@ static void session_stop(struct session *session) {
 
 static void image_frame_resource_destroy(struct wl_resource *resource) {
     struct image_frame *frame = wl_resource_get_user_data(resource);
-    image_frame_settle(frame);
+    if (!frame) return;
+    if (frame->pending) {
+        image_frame_hold(frame, false);
+        return;
+    }
+    image_frame_release(frame);
     if (frame->session) frame->session->frame = NULL;
     buffer_unlock(frame->buffer);
     free(frame);
@@ -458,22 +516,64 @@ static void frame_ready(struct image_frame *frame, enum wl_output_transform tran
     frame->capturing = false;
 }
 
-static int frame_copied(int fd, uint32_t mask, void *data) {
-    struct image_frame *frame = data;
+static int frame_copied(int fd, uint32_t mask, void *data);
+
+static bool frame_readback(struct image_frame *frame) {
+    if (!frame->staging) return true;
+    struct buffer *staging = frame->staging;
+    frame->staging = NULL;
+    bool ok = frame->buffer && blit(frame->server, frame->buffer, staging,
+        (struct box){ 0, 0, staging->width, staging->height }, NULL, NULL);
+    buffer_drop(staging);
+    return ok;
+}
+
+static void frame_complete(struct image_frame *frame) {
+    struct tomoe *s = frame->server;
+    bool late = frame->held || capture_now_ms() - frame->started >= CAPTURE_STALL_MS;
     image_frame_settle(frame);
+    capture_slot_release(frame);
+    if (!frame->resource) {
+        if (frame->staging) buffer_drop(frame->staging);
+        frame->staging = NULL;
+        buffer_unlock(frame->buffer);
+        free(frame);
+        return;
+    }
+    if (late) {
+        if (frame->staging) buffer_drop(frame->staging);
+        frame->staging = NULL;
+        ext_image_copy_capture_frame_v1_send_failed(frame->resource,
+            EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+        buffer_unlock(frame->buffer);
+        frame->buffer = NULL;
+        frame->capturing = false;
+        frame->held = false;
+        frame->window = 0;
+        return;
+    }
+    if (!frame_readback(frame)) {
+        image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+        return;
+    }
     frame_ready(frame, frame->transform, frame->buffer->width, frame->buffer->height,
         &frame->when);
+    if (frame->window) {
+        window_frame_done(s, frame->window, &frame->when);
+        frame->window = 0;
+    }
+}
+
+static int frame_copied(int fd, uint32_t mask, void *data) {
+    frame_complete(data);
     return 0;
 }
 
-static bool copy_later(struct tomoe *s, struct image_frame *frame, int fence,
-        enum wl_output_transform transform, const struct timespec *now) {
+static bool copy_later(struct tomoe *s, struct image_frame *frame, int fence) {
     frame->copying = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fence,
         WL_EVENT_READABLE, frame_copied, frame);
     if (!frame->copying) poll(&(struct pollfd){ .fd = fence, .events = POLLIN }, 1, -1);
     close(fence);
-    frame->transform = transform;
-    frame->when = *now;
     return frame->copying != NULL;
 }
 
@@ -575,11 +675,13 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         session_constraints(s, session);
     }
     if (session->source.kind == SOURCE_OUTPUT && !session->damaged) return;
+    if (s->capture_inflight >= CAPTURE_INFLIGHT_LIMIT) return;
     if (!buffer_fits(s, session, frame->buffer)) {
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
         return;
     }
     bool ok;
+    int fence = -1;
     enum wl_output_transform transform = WL_OUTPUT_TRANSFORM_NORMAL;
     struct box box = { 0, 0, width, height };
     if (session->source.kind == SOURCE_OUTPUT) {
@@ -589,31 +691,38 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
             return;
         }
         transform = o->screen->transform;
-        int fence;
         ok = blit(s, frame->buffer, source, box, o->gamma_lut, &fence);
         if (ok) session->damaged = false;
-        if (ok && fence >= 0 && copy_later(s, frame, fence, transform, now)) return;
     } else {
+        struct buffer *target = frame->buffer;
         struct dmabuf_attributes dmabuf;
-        if (buffer_get_dmabuf(frame->buffer, &dmabuf)) {
-            ok = render_window_buffer(s, (uint32_t)session->source.id, frame->buffer,
-                session->cursors);
-        } else {
-            const struct format *render = format_set_get(
-                render_formats(s->renderer), format);
-            struct buffer *scratch = render ?
+        frame->window = (uint32_t)session->source.id;
+        if (!buffer_get_dmabuf(frame->buffer, &dmabuf)) {
+            const struct format *render = format_set_get(render_formats(s->renderer), format);
+            frame->staging = render ?
                 render_allocate(s->renderer, width, height, render) : NULL;
-            ok = scratch && render_window_buffer(s, (uint32_t)session->source.id, scratch,
-                session->cursors) && blit(s, frame->buffer, scratch, box, NULL, NULL);
-            if (scratch) buffer_drop(scratch);
+            if (!frame->staging) {
+                image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+                return;
+            }
+            target = frame->staging;
         }
+        ok = render_window_buffer(s, (uint32_t)session->source.id, target, session->cursors,
+            &fence);
     }
     if (!ok) {
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
         return;
     }
-    frame_ready(frame, transform, width, height, now);
-    if (session->source.kind == SOURCE_WINDOW) window_frame_done(s, (uint32_t)session->source.id, now);
+    frame->transform = transform;
+    frame->when = *now;
+    frame->started = capture_now_ms();
+    if (fence >= 0) {
+        capture_slot_take(frame);
+        if (copy_later(s, frame, fence)) return;
+        capture_slot_release(frame);
+    }
+    frame_complete(frame);
 }
 
 static void session_resource_destroy(struct wl_resource *resource) {
@@ -645,6 +754,7 @@ static void session_create_frame(struct wl_client *client, struct wl_resource *r
     }
     frame->resource = frame_resource;
     frame->session = session;
+    frame->server = session ? session->server : NULL;
     if (session) session->frame = frame;
     wl_resource_set_implementation(frame_resource, &image_frame_impl, frame,
         image_frame_resource_destroy);

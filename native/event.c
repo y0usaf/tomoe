@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <inttypes.h>
 
 enum { GRAB_HOLD_MS = 16 };
 
@@ -138,4 +139,118 @@ int tomoe_event_count(struct tomoe *s) {
 
 int tomoe_event_barrier(struct tomoe *s) {
     return s ? (int)s->observation_barrier : 0;
+}
+
+int tomoe_input_stream(struct tomoe *s, int enabled) {
+    if (!s) return 0;
+    s->input_stream = enabled != 0;
+    if (!s->input_stream) s->input_motion_pending = false;
+    return 1;
+}
+
+static void input_stream_fields(struct tomoe *s, FILE *out, uint32_t window) {
+    int x = pixel_round(s->pointer_x), y = pixel_round(s->pointer_y);
+    fprintf(out, " :x %d :y %d", x, y);
+    struct output *o = output_at_physical(s, s->pointer_x, s->pointer_y);
+    if (o) {
+        fputs(" :output ", out);
+        quote(out, o->screen->name);
+        fprintf(out, " :output-x %d :output-y %d", x - o->x, y - o->y);
+    } else {
+        fputs(" :output nil", out);
+    }
+    if (!window) {
+        fputs(" :window nil", out);
+        return;
+    }
+    fprintf(out, " :window %u", window);
+    int wx, wy, width, height;
+    if (!window_box_native(s, window, &wx, &wy, &width, &height)) return;
+    double origin_x = wx, origin_y = wy;
+    world_to_screen(s, &origin_x, &origin_y);
+    double extent_x = origin_x + width * s->view_zoom;
+    double extent_y = origin_y + height * s->view_zoom;
+    if (s->pointer_x < origin_x || s->pointer_y < origin_y ||
+            s->pointer_x >= extent_x || s->pointer_y >= extent_y) return;
+    fprintf(out, " :window-x %d :window-y %d", pixel_round(s->pointer_x - origin_x),
+        pixel_round(s->pointer_y - origin_y));
+}
+
+enum { INPUT_STREAM_MS = 16 };
+
+static int input_stream_flush_later(void *data) {
+    struct tomoe *s = data;
+    s->input_stream_armed = false;
+    input_stream_flush(s);
+    return 0;
+}
+
+void input_stream_pointer(struct tomoe *s, uint32_t time_msec) {
+    if (!s->input_stream) return;
+    s->input_motion_pending = true;
+    s->input_motion_time = (uint64_t)time_msec * 1000;
+    if (!s->input_stream_timer)
+        s->input_stream_timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display),
+            input_stream_flush_later, s);
+    if (s->input_stream_timer && !s->input_stream_armed)
+        s->input_stream_armed = wl_event_source_timer_update(s->input_stream_timer,
+            INPUT_STREAM_MS) == 0;
+}
+
+void input_stream_flush(struct tomoe *s) {
+    if (!s->input_stream || !s->input_motion_pending) return;
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    s->input_motion_pending = false;
+    fprintf(out, "(:type :input :event \"pointer_motion\" :time %" PRIu64,
+        s->input_motion_time);
+    input_stream_fields(s, out, tomoe_keyboard_focus(s));
+    fputc(')', out);
+    end_event(s, event, out);
+}
+
+void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, bool pressed) {
+    if (!s->input_stream) return;
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    fprintf(out, "(:type :input :event \"pointer_button\" :time %" PRIu64
+        " :button %u :state \"%s\"", (uint64_t)time_msec * 1000, button,
+        pressed ? "pressed" : "released");
+    input_stream_fields(s, out, tomoe_keyboard_focus(s));
+    fputc(')', out);
+    end_event(s, event, out);
+}
+
+void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
+        xkb_keysym_t sym, bool pressed) {
+    if (!s->input_stream) return;
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return;
+    char name[64];
+    fprintf(out, "(:type :input :event \"key\" :time %" PRIu64 " :keycode %u :keysym ",
+        (uint64_t)time_msec * 1000, keycode);
+    if (sym != XKB_KEY_NoSymbol && xkb_keysym_get_name(sym, name, sizeof(name)) > 0)
+        quote(out, name);
+    else
+        fputs("nil", out);
+    fprintf(out, " :state \"%s\" :modifiers (", pressed ? "pressed" : "released");
+    uint32_t mods = input_modifier_mask(s);
+    static const struct { uint32_t mask; const char *name; } names[] = {
+        { MOD_SHIFT, "shift" }, { MOD_CTRL, "ctrl" }, { MOD_ALT, "alt" },
+        { MOD_LOGO, "logo" },
+    };
+    bool first = true;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (!(mods & names[i].mask)) continue;
+        fprintf(out, "%s\"%s\"", first ? "" : " ", names[i].name);
+        first = false;
+    }
+    fprintf(out, ") :window %u)", tomoe_keyboard_focus(s));
+    end_event(s, event, out);
 }

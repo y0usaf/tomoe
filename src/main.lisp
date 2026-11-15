@@ -450,6 +450,7 @@ an edit calls for; a source whose directory is still missing is retried."
              (service-system runtime)
              (serve-control runtime control)
              (serve-json-control runtime json-server)
+             (sync-input-stream runtime)
              (service-timers runtime)
              (service-memory runtime)
              (service-watches runtime)

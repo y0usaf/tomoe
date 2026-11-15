@@ -124,6 +124,39 @@ compositor's layout. The image is sent only when GENERATION changes."
   (some (lambda (client) (and (json-client-subscribed client) (not (json-client-dead client))))
         (json-server-clients server)))
 
+(defparameter *input-events* '("pointer_motion" "pointer_button" "key"))
+
+(defun ipc-input-value (value)
+  (if (consp value) (apply #'json-array (mapcar #'ipc-input-value value)) value))
+
+(defun ipc-input-payload (event)
+  "The payload object for a native input event, keyed as the event named it."
+  (apply #'json-object
+         (loop for (key value) on (cddr event) by #'cddr
+               unless (eq key :event)
+                 collect (cons (substitute #\_ #\- (string-downcase (symbol-name key)))
+                               (ipc-input-value value)))))
+
+(defun ipc-input-wanted (server)
+  "True when a live subscriber asked for input events, by name or for all."
+  (some (lambda (client)
+          (and (not (json-client-dead client)) (json-client-subscribed client)
+               (let ((events (json-client-events client)))
+                 (or (null events)
+                     (some (lambda (name) (member name *input-events* :test #'equal))
+                           events)))))
+        (json-server-clients server)))
+
+(defun sync-input-stream (runtime)
+  "Ask the core for input events only while a client wants them."
+  (let ((backend (runtime-backend runtime)))
+    (when backend
+      (let ((wanted (and (runtime-json-server runtime)
+                         (ipc-input-wanted (runtime-json-server runtime)))))
+        (unless (eq wanted (and (runtime-input-stream runtime) t))
+          (setf (runtime-input-stream runtime) wanted)
+          (%input-stream backend (if wanted 1 0)))))))
+
 (defun publish-json-context (runtime context mounts &optional baseline)
   "Emit the events between the last published context and CONTEXT. Nothing is
 built while no client subscribes; BASELINE builds anyway, so that a first
@@ -169,6 +202,7 @@ subscriber's events start from the present state."
       (unless (json-subscribed-p (runtime-json-server runtime))
         (publish-json-context runtime (runtime-effective runtime) (runtime-mounts runtime) t))
       (setf (json-client-subscribed client) t (json-client-events client) names)
+      (sync-input-stream runtime)
       (json-object (cons "events" (if names (apply #'json-array names) "all"))))))
 
 (defun poll-json-focus (runtime)

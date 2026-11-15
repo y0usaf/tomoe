@@ -53,6 +53,8 @@ struct render {
     bool held_reported, held_refused;
     bool stall_test;
     int stall_write, stall_delay_ms;
+    bool stall_capture_on;
+    int stall_capture_write, stall_capture_delay_ms;
     size_t textures;
     uint64_t texture_bytes;
     struct gbm_device *gbm;
@@ -2071,7 +2073,46 @@ void render_retire_fences(struct render *r) {
     }
 }
 
+static int capture_stall_fence(struct render *r) {
+    int fds[2];
+    glFlush();
+    if (pipe2(fds, O_CLOEXEC) < 0) return -1;
+    if (r->stall_capture_delay_ms > 0) {
+        int *delay_and_fd = calloc(2, sizeof(*delay_and_fd));
+        pthread_t thread;
+        bool started = false;
+        if (delay_and_fd) {
+            delay_and_fd[0] = r->stall_capture_delay_ms;
+            delay_and_fd[1] = fcntl(fds[1], F_DUPFD_CLOEXEC, 0);
+        }
+        if (delay_and_fd && delay_and_fd[1] >= 0 &&
+                pthread_create(&thread, NULL, stall_release, delay_and_fd) == 0) {
+            pthread_detach(thread);
+            started = true;
+        }
+        if (!started && delay_and_fd) {
+            if (delay_and_fd[1] >= 0) close(delay_and_fd[1]);
+            free(delay_and_fd);
+        }
+        close(fds[1]);
+    } else if (r->stall_capture_write < 0) {
+        r->stall_capture_write = fds[1];
+    } else {
+        close(fds[1]);
+    }
+    return fds[0];
+}
+
 int pass_submit_fence(struct pass *pass) {
+    struct render *r = pass->r;
+    if (r->stall_capture_on) {
+        current(r);
+        pass_flush(pass);
+        int fd = capture_stall_fence(r);
+        if (fd < 0) glFinish();
+        pass_finish(pass);
+        return fd;
+    }
     int fd = pass_export_fence(pass);
     pass_finish(pass);
     return fd;
@@ -2501,6 +2542,7 @@ static void render_free(struct render *r) {
     }
     r->held_count = 0;
     if (r->stall_write >= 0) close(r->stall_write);
+    if (r->stall_capture_write >= 0) close(r->stall_capture_write);
     struct image *image, *next_image;
     wl_list_for_each_safe(image, next_image, &r->images, link) image_destroy(image);
     struct bo *b, *next_bo;
@@ -2730,6 +2772,12 @@ static struct render *render_open(char *node) {
         return NULL;
     }
     r->stall_write = -1;
+    r->stall_capture_write = -1;
+    r->stall_capture_on = getenv("TOMOE_TEST_STALL_CAPTURE") != NULL;
+    if (r->stall_capture_on) {
+        const char *delay = getenv("TOMOE_TEST_STALL_CAPTURE_MS");
+        r->stall_capture_delay_ms = delay ? atoi(delay) : 0;
+    }
     r->stall_test = getenv("TOMOE_TEST_STALL_FENCE") != NULL;
     if (r->stall_test) {
         const char *delay = getenv("TOMOE_TEST_STALL_FENCE_MS");
