@@ -59,6 +59,17 @@ void ipc_broadcast(const char *name, lisp_value value) {
     (void)value;
 }
 
+void timing_event_taken(struct tomoe *s) {
+    (void)s;
+}
+
+void timing_event_done(struct tomoe *s) {
+    (void)s;
+}
+
+void lisp_end_turn(void) {
+}
+
 struct test_cell {
     lisp_value car, cdr;
 };
@@ -271,11 +282,11 @@ static void drain_empties(void) {
     policy_drain(&server);
     check(server.event_count == 0, "drain empties ring");
     check(server.event_arena_used == 0, "drain resets arena");
-    check(dispatch_calls == 1, "one dispatch call");
-    check(dispatch_events == 2, "both events dispatched");
+    check(dispatch_calls == 2, "one dispatch call per event");
+    check(dispatch_events == 1, "each dispatch carries one event");
     check(policy_events_pending(&server) == false, "nothing pending");
     policy_drain(&server);
-    check(dispatch_calls == 1, "empty drain dispatches nothing");
+    check(dispatch_calls == 2, "empty drain dispatches nothing");
 }
 
 static void drain_holds_after_grab(void) {
