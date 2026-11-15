@@ -11,22 +11,6 @@
       (setf tail (cddr tail))))
   options)
 
-(defun %cursor-color (value)
-  (cond ((and (integerp value) (<= 0 value 4294967295)) value)
-        ((and (stringp value) (member (length value) '(4 7 9))
-              (char= (char value 0) #\#)
-              (every (lambda (c) (digit-char-p c 16)) (subseq value 1)))
-         (let* ((number (parse-integer value :start 1 :radix 16))
-                (digits (length value)))
-           (case digits
-             (4 (let* ((red (floor number 256))
-                       (green (floor (mod number 256) 16))
-                       (blue (mod number 16)))
-                  (+ (* 17 red 16777216) (* 17 green 65536) (* 17 blue 256) 255)))
-             (7 (+ (* number 256) 255))
-             (9 number))))
-        (t (error "Cursor color must be RRGGBBAA or #rgb/#rrggbb/#rrggbbaa."))))
-
 (defun %cursor-clause (clause)
   (cond
     ((realp clause) (%double-float clause))
@@ -61,7 +45,7 @@
   (let ((cell (%double-float (getf trail :cell 9)))
         (life (%double-float (getf trail :life 0.35d0)))
         (steps (getf trail :steps 4))
-        (color (%cursor-color (getf trail :color #xb8e0ffff))))
+        (color (%ui-color (getf trail :color #xb8e0ffff))))
     (unless (<= 1d0 cell 256d0) (error "Cursor trail :cell must be from 1 to 256 pixels."))
     (unless (<= 0d0 life 4d0) (error "Cursor trail :life must be from 0 to 4 seconds."))
     (unless (and (integerp steps) (<= 1 steps 8))
@@ -117,16 +101,17 @@ the CURSOR-EFFECT from its result removes its contribution entirely."
   (unless (integerp order) (error "Cursor effect order must be an integer."))
   (%effect :cursor-effect (list name (%cursor-spec spec) order)))
 
-(define-effect :cursor-effect
-  :canonical (destructuring-bind (name spec order) args
-               (%effect :cursor-effect (list name (%cursor-spec spec) order)))
-  :key '(:cursor-effect)
-  :reduce (destructuring-bind (name spec order) args
-            (declare (ignore name))
-            (setf (materialization-cursors m)
-                  (append (materialization-cursors m)
-                          (list (list :owner (spec-name (mounted-spec mounted))
-                                      :order order :spec spec))))))
+(%define-effect :cursor-effect
+  (lambda (args effect)
+    (destructuring-bind (name spec order) args
+      (%effect :cursor-effect (list name (%cursor-spec spec) order))))
+  (lambda (args) '(:cursor-effect))
+  (lambda (m args mounted)
+    (destructuring-bind (name spec order) args
+      (setf (getf m :cursors)
+            (append (getf m :cursors)
+                    (list (list :owner (spec-name (mounted-spec mounted))
+                                :order order :spec spec)))))))
 
 (defun stage-cursor-effects (context)
   "Hand the ordered cursor behaviours of CONTEXT to the compositor, which
