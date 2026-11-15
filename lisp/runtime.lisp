@@ -1462,9 +1462,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       (:screenshot (push :screenshot changed))
       (:screencast (push :screencast changed))
       (:grab (push :grab changed))
-      (:timer (push :timer changed))
-      (:watch (push :watch changed))
-      (:exec (push :exec changed))
+      (:timer
+       (push (getf event :owner) force)
+       (setf event (list :type :timer :name (getf event :name)))
+       (push :timer changed))
+      (:watch
+       (push (getf event :owner) force)
+       (push :watch changed))
+      (:exec
+       (push (getf event :owner) force)
+       (setf event (%plist-remove :owner event))
+       (push :exec changed))
       (:process (push :process changed)))
     (%r! :pending-context
          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
