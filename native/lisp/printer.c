@@ -314,7 +314,7 @@ char *lisp_print_alloc(lisp_value value, bool readably)
     if (!buf_init_growable(&buf, 256))
         return NULL;
     print_value(value, readably, &buf);
-    if (buf.len + 1 >= buf.cap) {
+    if (!buf.owned) {
         free(buf.data);
         return NULL;
     }

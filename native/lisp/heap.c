@@ -66,8 +66,10 @@ static void buf_reserve(struct lisp_buf *buf, size_t extra)
     while (buf->len + extra >= cap)
         cap *= 2;
     char *grown = realloc(buf->data, cap);
-    if (!grown)
+    if (!grown) {
+        buf->owned = false;
         return;
+    }
     buf->data = grown;
     buf->cap = cap;
 }
