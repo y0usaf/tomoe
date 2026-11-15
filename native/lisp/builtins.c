@@ -443,24 +443,32 @@ lisp_value builtin_position(int argc, lisp_value *argv)
     lisp_value seq = argv[1];
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
+    bool from_end = kw.has_from_end && !nilp(kw.from_end);
+    lisp_value found = NIL_VAL;
     if (stringp(seq)) {
         uint32_t len = PTR(seq, lisp_string)->len;
         for (uint32_t i = 0; i < len; i++) {
             lisp_value ch = make_char(string_char_at(seq, i));
-            if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, ch)))
-                return make_int(i);
+            if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, ch))) {
+                found = make_int(i);
+                if (!from_end)
+                    break;
+            }
         }
-        return NIL_VAL;
+        return found;
     }
     int64_t index = 0;
     while (consp(seq)) {
         lisp_value value = CAR(seq);
         seq = CDR(seq);
-        if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, value)))
-            return make_int(index);
+        if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, value))) {
+            found = make_int(index);
+            if (!from_end)
+                break;
+        }
         index++;
     }
-    return NIL_VAL;
+    return found;
 }
 
 lisp_value builtin_sort(int argc, lisp_value *argv)

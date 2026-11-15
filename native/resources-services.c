@@ -237,7 +237,7 @@ static void producer_ready(struct res_producer *producer, uint64_t now) {
         return;
     }
     int timeout = producer_timeout(producer);
-    producer->due = now + (timeout > 0 ? (uint64_t)timeout : 0);
+    producer->due = timeout < 0 ? UINT64_MAX : now + (uint64_t)timeout;
     producer_update_fd(producer);
     if (status > 0) {
         producer_refresh(producer);

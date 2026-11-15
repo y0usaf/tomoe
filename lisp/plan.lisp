@@ -236,7 +236,7 @@
   (let ((failure nil))
     (%catch
      (lambda ()
-       (when outputs-changed (stage-native-outputs (getf context :native-output-config)))
+       (when outputs-changed (stage-native-outputs (resolved-native-output-config context)))
        (preview-native-layers (getf context :outputs) (getf context :layers) overrides)
        (let ((view (getf context :view)))
          (unless (= 1 (%present-begin (getf view :x) (getf view :y) (getf view :zoom)
@@ -276,6 +276,6 @@
        (let ((message (%present-apply)))
          (when message (error "~A" message))))
      (lambda (text) (setf failure text)))
+    (%present-abort)
     (when failure
-      (%present-abort)
       (error "~A" failure))))

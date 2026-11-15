@@ -5,14 +5,15 @@
 ;;; and the layout it settles on is the layout the following steps inherit.
 
 (defun trace--record (control &rest arguments)
-  (with-open-file (stream "/run/trace.log" :direction :output :if-exists :append
-                          :if-does-not-exist :create)
-    (apply #'format stream control arguments)
-    (terpri stream)))
+  (tomoe::%write-append "/run/trace.log"
+                        (format nil "~A~%" (apply #'format nil control arguments))))
 
 (defun trace--event (event)
-  (format nil "~A~@[ keys=~S~]~@[ id=~A~]~@[ fail=~A~]"
-          (getf event :type) (getf event :keys) (getf event :id) (getf event :fail)))
+  (let ((keys (getf event :keys)) (id (getf event :id)) (fail (getf event :fail)))
+    (concatenate 'string (format nil "~A" (getf event :type))
+                 (if keys (format nil " keys=~S" keys) "")
+                 (if id (format nil " id=~A" id) "")
+                 (if fail (format nil " fail=~A" fail) ""))))
 
 (define-extension "trace-delay" (:reads (:windows :button) :state '(:fired nil))
     (snapshot state event)

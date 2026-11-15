@@ -23,7 +23,7 @@ for _ in range(600):
 else:
     raise AssertionError("tomoe did not start: " + machine.execute("cat /run/killed.log")[1])
 for _ in range(600):
-    status, listing = machine.execute("pgrep -f 'address=unix:path=/run/tomoe/tomoe.check.bus'")
+    status, listing = machine.execute("pgrep -f '^dbus-daemon .*address=unix:path=/run/tomoe/tomoe.check.bus'")
     bus = listing.split()
     if status == 0 and len(bus) == 1 and machine.execute("test -S /run/tomoe/tomoe.check.bus")[0] == 0:
         break
@@ -33,4 +33,4 @@ else:
 machine.succeed("kill -9 $(cat /run/killed.pid)")
 machine.wait_until_succeeds("test ! -e /run/tomoe/tomoe.check.bus", timeout=5)
 machine.wait_until_succeeds(f"test ! -e /proc/{bus[0]}", timeout=5)
-machine.fail("pgrep -f 'address=unix:path=/run/tomoe/tomoe.check.bus'")
+machine.fail("pgrep -f '^dbus-daemon .*address=unix:path=/run/tomoe/tomoe.check.bus'")

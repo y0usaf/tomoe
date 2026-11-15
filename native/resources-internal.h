@@ -137,7 +137,7 @@ struct res_process {
     char **env;
     size_t env_count;
     int run, restart, reload;
-    bool focus;
+    bool focus, input;
     struct res_lease *lease;
     bool starts;
     int status;

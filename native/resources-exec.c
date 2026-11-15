@@ -820,7 +820,7 @@ static void process_start(struct res_process *process) {
     const char *token = NULL;
     char *revoke = NULL;
     process->attempts++;
-    if (process->session && process->focus) {
+    if (process->session && process->focus && process->input) {
         token = tomoe_activation_token(res.server);
         if (!token) {
             process->status = PROCESS_SPAWN_ERROR;
@@ -1072,9 +1072,20 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
     error[0] = 0;
     char **argv = NULL;
     size_t argc = 0;
-    if (!plist_argv(plist, &argv, &argc, error, sizeof(error))) lisp_error("%s", error);
+    char *command = NULL;
+    lisp_value shell;
+    if (res_plist_get(plist, "ARGV", &shell) && lisp_stringp(shell)) {
+        command = res_plist_string(shell);
+        if (!command || !*command || strlen(command) > 65536) {
+            free(command);
+            lisp_error("Invalid process command.");
+        }
+    } else if (!plist_argv(plist, &argv, &argc, error, sizeof(error))) {
+        lisp_error("%s", error);
+    }
     struct res_process process;
     memset(&process, 0, sizeof(process));
+    process.command = command;
     process.argv = argv;
     process.argc = argc;
     process.kind = launch ? PROCESS_LAUNCH : PROCESS_SPAWN;
@@ -1091,6 +1102,8 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
         process_free(&process);
         lisp_error("More than 128 live or reserved managed processes.");
     }
+    lisp_value input;
+    process.input = res_plist_get(plist, "INPUT", &input) && !lisp_nilp(input);
     process_start(&process);
     uint64_t lease_id = process.lease ? process.lease->id : 0;
     if (process.status == PROCESS_SPAWN_ERROR) {

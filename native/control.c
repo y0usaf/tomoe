@@ -329,6 +329,20 @@ static int handle_request(struct control_server *server, const char *text, size_
     } else if (!strcasecmp(operation, "RELOAD") || !strcasecmp(operation, "MOUNT") ||
             !strcasecmp(operation, "UNMOUNT") || !strcasecmp(operation, "EVENT")) {
         lisp_value argv[2] = { lisp_car(rest), args };
+        if (!strcasecmp(operation, "EVENT")) {
+            if (count != 1 || !lisp_stringp(lisp_car(args))) {
+                *reply = error_reply("event requires exactly one data plist argument.");
+                return 0;
+            }
+            size_t event_length = 0;
+            const char *event_text = lisp_get_string(lisp_car(args), &event_length);
+            lisp_value event;
+            if (lisp_read_data(event_text, event_length, &event, error, sizeof(error))) {
+                *reply = error_reply(error);
+                return 0;
+            }
+            argv[1] = lisp_cons(event, lisp_nil());
+        }
         lisp_set_limits(5000000, 1000000000ULL);
         if (policy_call(POLICY_HOOK_CONTROL, 2, argv, &result, error, sizeof(error))) {
             *reply = error_reply(error);

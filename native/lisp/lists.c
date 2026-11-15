@@ -267,14 +267,58 @@ lisp_value builtin_count_if(int argc, lisp_value *argv)
 
 static bool contains(lisp_value list, lisp_value item, struct kw *kw)
 {
+    lisp_value probe = kw->has_key ? lisp_kw_key(kw, item) : item;
     while (consp(list)) {
         lisp_value value = CAR(list);
         list = CDR(list);
         lisp_value key = kw->has_key ? lisp_kw_key(kw, value) : value;
-        if (lisp_kw_test(kw, item, key))
+        if (lisp_kw_test(kw, probe, key))
             return true;
     }
     return false;
+}
+
+static void shorter_list(lisp_value list1, lisp_value list2, lisp_value *shorter, lisp_value *longer,
+                         size_t *short_length, size_t *long_rest)
+{
+    size_t length = 0;
+    lisp_value a = list1, b = list2;
+    for (;;) {
+        if (!consp(a)) {
+            *shorter = list1;
+            *longer = list2;
+            break;
+        }
+        if (!consp(b)) {
+            *shorter = list2;
+            *longer = list1;
+            b = a;
+            break;
+        }
+        a = CDR(a);
+        b = CDR(b);
+        length++;
+    }
+    *short_length = length;
+    size_t rest = 0;
+    while (consp(b) && rest < 100) {
+        rest++;
+        b = CDR(b);
+    }
+    *long_rest = rest;
+}
+
+static bool standard_hash_test(struct kw *kw)
+{
+    if (kw->has_test_not && !nilp(kw->test_not))
+        return false;
+    if (!kw->has_test || nilp(kw->test))
+        return true;
+    if (TYPE(kw->test) != LT_FUNCTION)
+        return false;
+    struct lisp_function *f = PTR(kw->test, lisp_function);
+    return f->kind == FN_BUILTIN &&
+           (f->fn == builtin_eq || f->fn == builtin_eql || f->fn == builtin_equal);
 }
 
 lisp_value builtin_set_difference(int argc, lisp_value *argv)
@@ -283,19 +327,15 @@ lisp_value builtin_set_difference(int argc, lisp_value *argv)
         lisp_error("SET-DIFFERENCE needs two lists");
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
-    lisp_value out = NIL_VAL, tail = NIL_VAL;
+    if (nilp(argv[1]))
+        return argv[0];
+    lisp_value out = NIL_VAL;
     lisp_value list = argv[0];
     while (consp(list)) {
         lisp_value value = CAR(list);
         list = CDR(list);
-        if (!contains(argv[1], value, &kw)) {
-            lisp_value cell = cons(value, NIL_VAL);
-            if (nilp(out))
-                out = cell;
-            else
-                CDR(tail) = cell;
-            tail = cell;
-        }
+        if (!contains(argv[1], value, &kw))
+            out = cons(value, out);
     }
     return out;
 }
@@ -306,19 +346,21 @@ lisp_value builtin_intersection(int argc, lisp_value *argv)
         lisp_error("INTERSECTION needs two lists");
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
-    lisp_value out = NIL_VAL, tail = NIL_VAL;
-    lisp_value list = argv[0];
-    while (consp(list)) {
-        lisp_value value = CAR(list);
-        list = CDR(list);
-        if (contains(argv[1], value, &kw)) {
-            lisp_value cell = cons(value, NIL_VAL);
-            if (nilp(out))
-                out = cell;
-            else
-                CDR(tail) = cell;
-            tail = cell;
-        }
+    if (nilp(argv[0]) || nilp(argv[1]))
+        return NIL_VAL;
+    lisp_value shorter, longer;
+    size_t short_length, long_rest;
+    shorter_list(argv[0], argv[1], &shorter, &longer, &short_length, &long_rest);
+    bool hashing = standard_hash_test(&kw) &&
+                   (short_length > 20 || (short_length >= 3 && long_rest + short_length >= 100));
+    lisp_value out = NIL_VAL;
+    lisp_value scan = hashing ? longer : shorter;
+    lisp_value other = hashing ? shorter : longer;
+    while (consp(scan)) {
+        lisp_value value = CAR(scan);
+        scan = CDR(scan);
+        if (contains(other, value, &kw))
+            out = cons(value, out);
     }
     return out;
 }
@@ -457,22 +499,19 @@ lisp_value builtin_union(int argc, lisp_value *argv)
         lisp_error("UNION needs two lists");
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
-    lisp_value out = NIL_VAL, tail = NIL_VAL;
-    lisp_value lists[2] = { argv[0], argv[1] };
-    for (int i = 0; i < 2; i++) {
-        lisp_value list = lists[i];
-        while (consp(list)) {
-            lisp_value value = CAR(list);
-            list = CDR(list);
-            if (contains(out, value, &kw))
-                continue;
-            lisp_value cell = cons(value, NIL_VAL);
-            if (nilp(out))
-                out = cell;
-            else
-                CDR(tail) = cell;
-            tail = cell;
-        }
+    if (nilp(argv[0]))
+        return argv[1];
+    if (nilp(argv[1]))
+        return argv[0];
+    lisp_value shorter, longer;
+    size_t short_length, long_rest;
+    shorter_list(argv[0], argv[1], &shorter, &longer, &short_length, &long_rest);
+    lisp_value out = shorter;
+    while (consp(longer)) {
+        lisp_value value = CAR(longer);
+        longer = CDR(longer);
+        if (!contains(shorter, value, &kw))
+            out = cons(value, out);
     }
     return out;
 }
