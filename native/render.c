@@ -3182,10 +3182,46 @@ struct buffer *ring_create(struct tomoe *s, struct ring *ring) {
 }
 
 void ring_reserve(struct tomoe *s, struct ring *ring) {
-    for (size_t i = 0; i < 3; i++) {
-        if (!ring->slots[i]) ring->slots[i] = ring_create(s, ring);
-        if (ring->slots[i]) render_buffer_fbo(s->renderer, ring->slots[i]);
+    bool any = false;
+    for (size_t i = 0; i < RING_SLOTS; i++) {
+        if (!ring->slots[i]) continue;
+        render_buffer_fbo(s->renderer, ring->slots[i]);
+        any = true;
     }
+    if (!any) {
+        ring->slots[0] = ring_create(s, ring);
+        if (ring->slots[0]) render_buffer_fbo(s->renderer, ring->slots[0]);
+    }
+}
+
+struct buffer *ring_take(struct ring *ring) {
+    size_t count = 0;
+    for (size_t i = 0; i < RING_SLOTS; i++) {
+        if (!ring->slots[i]) continue;
+        if (ring->slots[i]->n_locks == 0) return buffer_lock(ring->slots[i]);
+        count++;
+    }
+    if (count < RING_FRAME_SLOTS && ring->format.len) {
+        ring->grow = true;
+        return NULL;
+    }
+    tomoe_log(LOG_ERROR, "tomoe: every output buffer is still held");
+    return NULL;
+}
+
+bool ring_grow(struct tomoe *s, struct ring *ring) {
+    if (!ring->grow) return false;
+    ring->grow = false;
+    size_t count = 0;
+    for (size_t i = 0; i < RING_SLOTS; i++) count += ring->slots[i] != NULL;
+    for (size_t i = 0; i < RING_SLOTS && count < RING_FRAME_SLOTS; i++) {
+        if (ring->slots[i]) continue;
+        ring->slots[i] = ring_create(s, ring);
+        if (!ring->slots[i]) return false;
+        render_buffer_fbo(s->renderer, ring->slots[i]);
+        return true;
+    }
+    return false;
 }
 
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring) {

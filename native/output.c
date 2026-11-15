@@ -1372,6 +1372,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
     budget_hot_enter("frame");
     output_frame_build(o);
     budget_hot_leave();
+    if (ring_grow(o->server, &o->ring)) screen_schedule_frame(o->screen);
     oplist_reserve(&o->ops, o->ops.len);
     oplist_reserve(&o->spare_ops, o->ops.len);
 }

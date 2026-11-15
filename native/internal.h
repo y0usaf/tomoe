@@ -405,11 +405,13 @@ struct mesh_options {
 };
 void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
+#define RING_FRAME_SLOTS 3
 struct ring {
     struct buffer *slots[RING_SLOTS];
     uint64_t frames[RING_SLOTS];
     int width, height;
     bool implicit;
+    bool grow;
     struct format_set format;
 };
 struct render *render_create(int drm_fd);
@@ -428,6 +430,8 @@ bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct buffer *ring_create(struct tomoe *s, struct ring *ring);
 void ring_reserve(struct tomoe *s, struct ring *ring);
+struct buffer *ring_take(struct ring *ring);
+bool ring_grow(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
 bool fenced(struct screen *output);
 
