@@ -69,22 +69,28 @@ static void sleep_ms(long milliseconds) {
     while (nanosleep(&pause, &pause) == -1 && errno == EINTR) { }
 }
 
+static uint32_t stamp(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint32_t)(now.tv_sec * 1000 + now.tv_nsec / 1000000);
+}
+
 static void motion(int x, int y) {
-    zwlr_virtual_pointer_v1_motion_absolute(pointer, 0, (uint32_t)x, (uint32_t)y,
+    zwlr_virtual_pointer_v1_motion_absolute(pointer, stamp(), (uint32_t)x, (uint32_t)y,
         (uint32_t)extent_width, (uint32_t)extent_height);
     zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_flush(display);
 }
 
 static void button(uint32_t value, uint32_t state) {
-    zwlr_virtual_pointer_v1_button(pointer, 0, value, state);
+    zwlr_virtual_pointer_v1_button(pointer, stamp(), value, state);
     zwlr_virtual_pointer_v1_frame(pointer);
     wl_display_flush(display);
 }
 
 static void key(uint32_t code, uint32_t state) {
     if (!keyboard) fail("the compositor does not advertise zwp_virtual_keyboard_manager_v1");
-    zwp_virtual_keyboard_v1_key(keyboard, 0, code, state);
+    zwp_virtual_keyboard_v1_key(keyboard, stamp(), code, state);
     wl_display_flush(display);
 }
 

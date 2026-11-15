@@ -50,6 +50,9 @@ def capture(unit, options):
 def finished(unit, timeout=90):
     machine.wait_until_succeeds(f"systemctl show -P SubState {unit} | grep -qx 'exited\\|failed'",
                                 timeout=timeout)
+    status = machine.succeed(f"systemctl show -P ExecMainStatus {unit}").strip()
+    assert status == "0", f"{unit} exited {status}: " + machine.succeed(
+        f"journalctl -u {unit} -o cat | tail -20")
     return machine.succeed(f"cat {REPORT}").splitlines()
 
 

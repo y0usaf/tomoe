@@ -148,6 +148,26 @@ int tomoe_input_stream(struct tomoe *s, int enabled) {
     return 1;
 }
 
+static bool input_stream_live(struct tomoe *s) {
+    return s->input_stream && !lock_shields_input(s);
+}
+
+void input_stream_suspend(struct tomoe *s) {
+    s->input_motion_pending = false;
+    if (s->input_stream_armed && s->input_stream_timer) {
+        wl_event_source_timer_update(s->input_stream_timer, 0);
+        s->input_stream_armed = false;
+    }
+    struct event *event, *next;
+    wl_list_for_each_safe(event, next, &s->events, link) {
+        if (!event->text || strncmp(event->text, "(:type :input", 13) != 0) continue;
+        wl_list_remove(&event->link);
+        if (s->event_count > 0) s->event_count--;
+        free(event->text);
+        free(event);
+    }
+}
+
 static void input_stream_fields(struct tomoe *s, FILE *out, uint32_t window) {
     int x = pixel_round(s->pointer_x), y = pixel_round(s->pointer_y);
     fprintf(out, " :x %d :y %d", x, y);
@@ -186,7 +206,7 @@ static int input_stream_flush_later(void *data) {
 }
 
 void input_stream_pointer(struct tomoe *s, uint32_t time_msec) {
-    if (!s->input_stream) return;
+    if (!input_stream_live(s)) return;
     s->input_motion_pending = true;
     s->input_motion_time = (uint64_t)time_msec * 1000;
     if (!s->input_stream_timer)
@@ -198,7 +218,7 @@ void input_stream_pointer(struct tomoe *s, uint32_t time_msec) {
 }
 
 void input_stream_flush(struct tomoe *s) {
-    if (!s->input_stream || !s->input_motion_pending) return;
+    if (!input_stream_live(s) || !s->input_motion_pending) return;
     struct event *event;
     size_t size;
     FILE *out = begin_event(s, &event, &size);
@@ -212,7 +232,7 @@ void input_stream_flush(struct tomoe *s) {
 }
 
 void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, bool pressed) {
-    if (!s->input_stream) return;
+    if (!input_stream_live(s)) return;
     struct event *event;
     size_t size;
     FILE *out = begin_event(s, &event, &size);
@@ -227,7 +247,7 @@ void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, b
 
 void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
         xkb_keysym_t sym, bool pressed) {
-    if (!s->input_stream) return;
+    if (!input_stream_live(s)) return;
     struct event *event;
     size_t size;
     FILE *out = begin_event(s, &event, &size);

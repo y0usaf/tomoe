@@ -1304,6 +1304,8 @@ void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, b
 void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
     xkb_keysym_t sym, bool pressed);
 void input_stream_flush(struct tomoe *s);
+void input_stream_suspend(struct tomoe *s);
+bool lock_shields_input(struct tomoe *s);
 uint32_t input_modifier_mask(struct tomoe *s);
 
 struct screen *any_output(struct tomoe *s);

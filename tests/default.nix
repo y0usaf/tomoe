@@ -51,6 +51,14 @@ let
                         (list (focus (getf (car (last windows)) :id))))
                 nil)))
   '';
+  inputPolicy = pkgs.writeText "input-policy.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "input-check" (:reads (:windows) :state nil) (snapshot state event)
+      (declare (ignore state event))
+      (let ((windows (context snapshot :windows)))
+        (values nil (append (loop for w in windows collect (place (getf w :id) 100 100 320 240))
+                            (list (focus (getf (car (last windows)) :id)))) nil)))
+  '';
   shortcutBindings = pkgs.writeText "shortcut-bindings.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "shortcut-binding" (:reads () :state nil) (snapshot state event)
@@ -80,6 +88,7 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml \
         ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/staging/ext-session-lock/ext-session-lock-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-output-power-management-unstable-v1.xml \
@@ -106,6 +115,12 @@ let
         $(pkg-config --cflags --libs wayland-client) -o tomoe-timing-client
       $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/capture-client.c *-protocol.c \
         $(pkg-config --cflags --libs wayland-client) -o tomoe-capture-client
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/pointer-script.c \
+        wlr-virtual-pointer-unstable-v1-protocol.c virtual-keyboard-unstable-v1-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-pointer-script
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src/lock-client.c \
+        ext-session-lock-v1-protocol.c \
+        $(pkg-config --cflags --libs wayland-client) -o tomoe-lock-client
     '';
     installPhase = ''
       install -Dm755 tomoe-test-client $out/bin/tomoe-test-client
@@ -114,6 +129,8 @@ let
       install -Dm755 tomoe-cursor-client $out/bin/tomoe-cursor-client
       install -Dm755 tomoe-timing-client $out/bin/tomoe-timing-client
       install -Dm755 tomoe-capture-client $out/bin/tomoe-capture-client
+      install -Dm755 tomoe-pointer-script $out/bin/tomoe-pointer-script
+      install -Dm755 tomoe-lock-client $out/bin/tomoe-lock-client
     '';
   };
   x11Client = pkgs.stdenv.mkDerivation {
@@ -1072,6 +1089,23 @@ let
         CAPTURE_POLICY = "${capturePolicy}"
       ''
       + builtins.readFile ./window-capture.py;
+    }
+    {
+      name = "input-stream";
+      script = ''
+        SCRIPT = "${client}/bin/tomoe-pointer-script"
+        INPUT_POLICY = "${inputPolicy}"
+        SHORTCUT_POLICY = "${shortcutBindings}"
+      ''
+      + builtins.readFile ./input-stream.py;
+    }
+    {
+      name = "input-lock";
+      script = ''
+        SCRIPT = "${client}/bin/tomoe-pointer-script"
+        LOCK_CLIENT = "${client}/bin/tomoe-lock-client"
+      ''
+      + builtins.readFile ./input-lock.py;
     }
     {
       name = "memory";

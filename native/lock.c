@@ -24,6 +24,10 @@ bool lock_active(struct tomoe *s) {
     return s->lock_state == LOCK_LOCKING || s->lock_state == LOCK_LOCKED;
 }
 
+bool lock_shields_input(struct tomoe *s) {
+    return s->lock_state != LOCK_UNLOCKED;
+}
+
 static struct output *output_of(struct tomoe *s, struct screen *wlr) {
     struct output *o;
     wl_list_for_each(o, &s->outputs, link)
@@ -168,6 +172,7 @@ static void begin_locking(struct tomoe *s) {
     if (s->lock_deadline_source) wl_event_source_remove(s->lock_deadline_source);
     s->lock_deadline_source = NULL;
     s->lock_state = LOCK_LOCKING;
+    input_stream_suspend(s);
     struct output *o;
     bool any = false;
     wl_list_for_each(o, &s->outputs, link) {
@@ -318,6 +323,7 @@ static void lock(struct wl_client *client, struct wl_resource *manager, uint32_t
     }
     wl_resource_set_implementation(resource, &lock_impl, s, lock_resource_destroy);
     s->session_lock = resource;
+    input_stream_suspend(s);
     if (lock_active(s)) {
         confirm(s);
         return;

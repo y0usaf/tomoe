@@ -675,7 +675,10 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
         session_constraints(s, session);
     }
     if (session->source.kind == SOURCE_OUTPUT && !session->damaged) return;
-    if (s->capture_inflight >= CAPTURE_INFLIGHT_LIMIT) return;
+    if (s->capture_inflight >= CAPTURE_INFLIGHT_LIMIT) {
+        image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_UNKNOWN);
+        return;
+    }
     if (!buffer_fits(s, session, frame->buffer)) {
         image_frame_fail(frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS);
         return;
