@@ -9,11 +9,11 @@ def start_binary(binary, unit, socket, bus=False):
         f"systemd-run --unit={unit} --property=Type=exec --remain-after-exit "
         "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={BUS} "
-        "--setenv=HOME=/root "
+        "--setenv=TOMOE_TIMINGS=1 --setenv=HOME=/root "
         "--setenv=PATH=/run/current-system/sw/bin "
         f"--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv={THREADS} "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        f"{binary} --socket {socket} --backend headless --no-watch --test-timings")
+        f"{binary} --socket {socket} --backend headless --no-watch")
     for _ in range(600):
         if machine.execute(ENV + f"{binary} --socket {socket} inspect")[0] == 0:
             return
