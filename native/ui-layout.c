@@ -698,6 +698,8 @@ struct ui_cached_plan {
     char *identity;
     char *arguments;
     uint64_t id;
+    double *measure;
+    size_t measure_count;
     struct ui_draw *draw;
     size_t draw_count;
     struct ui_plan_hit *hits;
@@ -731,6 +733,7 @@ static void clear_plan_cache(void) {
         if (!entry->used) continue;
         free(entry->identity);
         free(entry->arguments);
+        free(entry->measure);
         free_draw(entry->draw, entry->draw_count);
         free_hits(entry->hits, entry->hit_count);
         memset(entry, 0, sizeof(*entry));
@@ -749,6 +752,39 @@ static struct ui_cached_plan *plan_find_id(uint64_t id) {
     for (size_t i = 0; i < UI_PLAN_CACHE; i++)
         if (plan_cache[i].used && plan_cache[i].id == id) return &plan_cache[i];
     return NULL;
+}
+
+static size_t node_total(const struct ui_lnode *node) {
+    size_t total = 1;
+    for (size_t i = 0; i < node->child_count; i++) total += node_total(node->children[i]);
+    return total;
+}
+
+static void collect_measurement(const struct ui_lnode *node, double *out, size_t *at) {
+    out[(*at)++] = node->width;
+    out[(*at)++] = node->height;
+    out[(*at)++] = (double)node->asset_id;
+    out[(*at)++] = node->asset_available ? 1 : 0;
+    for (size_t i = 0; i < node->child_count; i++)
+        collect_measurement(node->children[i], out, at);
+}
+
+static bool measurement_matches(const struct ui_cached_plan *entry,
+        const double *measure, size_t count) {
+    return entry->measure && entry->measure_count == count &&
+        !memcmp(entry->measure, measure, count * 4 * sizeof(double));
+}
+
+static void store_measurement(struct ui_cached_plan *entry, const double *measure,
+        size_t count) {
+    free(entry->measure);
+    entry->measure = NULL;
+    entry->measure_count = 0;
+    if (!count) return;
+    entry->measure = malloc(count * 4 * sizeof(double));
+    if (!entry->measure) lisp_error("Cannot allocate shell plan cache.");
+    memcpy(entry->measure, measure, count * 4 * sizeof(double));
+    entry->measure_count = count;
 }
 
 static struct ui_cached_plan *plan_insert(const char *identity, const char *arguments) {
@@ -1095,26 +1131,37 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
             lisp_value arguments_value = lisp_list(7, measured.tree, lisp_int(width), lisp_int(height),
                 lisp_double(scale), draw_background, color, font_size);
             char *arguments_text = printed(arguments_value);
+            size_t nodes = node_total(&measured);
+            double *measure = arena_alloc(nodes * 4 * sizeof(double));
+            size_t measure_at = 0;
+            collect_measurement(&measured, measure, &measure_at);
             struct ui_cached_plan *entry = plan_find_identity(identity_text);
-            if (entry && strcmp(entry->arguments, arguments_text)) {
+            bool reuse = entry && !strcmp(entry->arguments, arguments_text) &&
+                measurement_matches(entry, measure, nodes);
+            if (entry && !reuse) {
                 free(entry->arguments);
                 entry->arguments = strdup(arguments_text);
+                if (!entry->arguments) lisp_error("Cannot allocate shell plan cache.");
                 free_draw(entry->draw, entry->draw_count);
                 free_hits(entry->hits, entry->hit_count);
                 entry->draw = NULL;
                 entry->draw_count = entry->hit_count = 0;
                 entry->hits = NULL;
                 entry->id = ++next_plan_id;
+                store_measurement(entry, measure, nodes);
             }
-            if (!entry || !entry->draw) {
-                if (!entry) entry = plan_insert(identity_text, arguments_text);
+            if (!entry) {
+                entry = plan_insert(identity_text, arguments_text);
+                entry->id = ++next_plan_id;
+                store_measurement(entry, measure, nodes);
+            }
+            if (!reuse || !entry->draw) {
                 struct ui_builder builder;
                 memset(&builder, 0, sizeof(builder));
                 builder.scale = scale;
                 builder.color = lisp_nilp(color) ? UINT32_MAX : (uint32_t)lisp_get_uint(color);
                 builder.size = lisp_nilp(font_size) ? 13.0 : lisp_get_double(font_size);
                 draw_plan(entry, &measured, (int)width, (int)height, &builder, draw_background);
-                if (!entry->id) entry->id = ++next_plan_id;
             }
             lisp_value assets = lisp_nil();
             uint64_t asset_ids[512];
