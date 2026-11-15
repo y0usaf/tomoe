@@ -101,6 +101,11 @@ static void map_block(uint32_t index)
     lisp.blocks[index].mapped = 1;
 }
 
+static uint8_t block_resident[LISP_MAX_BLOCKS];
+static uint32_t resident_free;
+
+enum { RESIDENT_FREE_KEEP = 8 };
+
 static uint32_t take_block(void)
 {
     if (free_block == UINT32_MAX)
@@ -111,8 +116,12 @@ static uint32_t take_block(void)
     memset(&lisp.blocks[index], 0, sizeof(lisp.blocks[index]));
     lisp.blocks[index].in_use = 1;
     lisp.blocks[index].mapped = 1;
+    if (block_resident[index]) {
+        block_resident[index] = 0;
+        resident_free--;
+    }
     lisp.heap_used += LISP_BLOCK_SIZE;
-    if (lisp.heap_used > lisp.region_limit) {
+    if (lisp.heap_used > lisp.region_limit && lisp.ctl_top > 0) {
         lisp.heap_used -= LISP_BLOCK_SIZE;
         lisp.blocks[index].in_use = 0;
         lisp.blocks[index].next = free_block;
@@ -132,6 +141,14 @@ static void give_block(uint32_t index)
     b->next = free_block;
     free_block = index;
     lisp.heap_used -= LISP_BLOCK_SIZE;
+    if (b->mapped) {
+        if (resident_free < RESIDENT_FREE_KEEP) {
+            block_resident[index] = 1;
+            resident_free++;
+        } else {
+            madvise(block_base(index), LISP_BLOCK_SIZE, MADV_DONTNEED);
+        }
+    }
 }
 
 void *heap_alloc_in(struct lisp_region *region, size_t bytes)

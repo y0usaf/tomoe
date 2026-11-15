@@ -863,7 +863,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                                 (:text :color "#ffffff") (:chip :color "#45454f")))
     (:watchdog-ms (:integer 0 60000) 1000)
     (:budgets (:group
-               (:lisp-heap-mb (:integer 4 1024) 64)
+               (:lisp-heap-mb (:integer 4 1024) 256)
                (:windows (:integer 16 65536) 512)
                (:surfaces (:integer 16 65536) 512)
                (:events (:integer 256 65536) 4096)
