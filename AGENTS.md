@@ -53,5 +53,3 @@ this for you.
 - If something breaks on `main`, revert it rather than leaving it red.
 - Update `AGENTS.md` and the README when behaviour changes; this file is short on
   purpose.
-
-Throwaway landing test: this line exists only to prove the queue lands and reverts.
