@@ -728,10 +728,12 @@ folds has changed since."
                (eq (layout-memo-outputs memo) (runtime-outputs))
                (eq (layout-memo-connectors memo) (runtime-connectors))
                (eq (layout-memo-recovery-failures memo) (runtime-output-recovery-failures))
+               (not (pending-native-outputs-p))
                (same-mounts-p (layout-memo-names memo) mounts))
       (layout-memo-context memo))))
 
 (defun remember-layout (mounts context)
+  (unless (pending-native-outputs-p)
   (%r! :layout-memo
        (make-layout-memo :names (mount-names mounts) :invocations (%invocations)
                          :definitions (%counter :definitions-generation)
@@ -745,7 +747,7 @@ folds has changed since."
                          :outputs (runtime-outputs)
                          :connectors (runtime-connectors)
                          :recovery-failures (runtime-output-recovery-failures)
-                         :context context)))
+                         :context context))))
 
 (defun materialize (mounts)
   "Reconstruct owned context, reusing what the last materialization settled on
@@ -1109,7 +1111,8 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
          (layout-changed (not (equal (getf old :layout) (getf context :layout))))
          (focus-changed (not (eql (getf old :focus) (getf context :focus))))
          (outputs (resolved-native-output-config context))
-         (outputs-changed (not (equal (resolved-native-output-config old) outputs)))
+         (outputs-changed (or (pending-native-outputs-p)
+                              (not (equal (resolved-native-output-config old) outputs))))
          (bindings-changed (not (equal (getf old :bindings) (getf context :bindings))))
          (keyboard-changed (not (equal (getf old :keyboard) (getf context :keyboard))))
          (settings-changed (not (equal (getf old :settings) (getf context :settings))))
@@ -1136,7 +1139,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       (%r! :motion-plan motion))
     (when outputs-changed
       (%r! :outputs (getf context :outputs))
-      (%r! :connectors (getf context :connectors)))
+      (%r! :connectors (getf context :connectors))
+      (unless (pending-native-outputs-p)
+        (%r! :outputs-revision (%outputs-revision))))
     (when (not (equal (getf old :virtual-outputs) (getf context :virtual-outputs)))
       (configure-virtual-outputs (getf old :virtual-outputs) (getf context :virtual-outputs)))
     (%r! :mounts mounts)
