@@ -8,8 +8,12 @@ STALL_MS = 900
 REPORT = "/run/capture/report"
 
 
+def call(arguments, timeout=60):
+    return machine.succeed(ENV + "tomoe --socket check " + arguments, timeout=timeout)
+
+
 def record():
-    reply = read(cli("frames"))
+    reply = read(call("frames"))
     assert reply[1] == ":OK", show(reply)
     return plist(items(reply)[0])
 
