@@ -141,4 +141,7 @@ void resources_stop(struct tomoe *server);
 lisp_value tomoe_memory_report(struct tomoe *server);
 lisp_value resources_describe(struct tomoe *server, const char *kind);
 
+void loop_request_quit(struct tomoe *server);
+void ipc_broadcast(const char *name, lisp_value payload);
+
 #endif
