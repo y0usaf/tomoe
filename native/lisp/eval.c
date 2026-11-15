@@ -292,7 +292,7 @@ void frame_bind(struct lisp_frame *frame, uint32_t index, lisp_value sym, lisp_v
 lisp_value *frame_slot(struct lisp_frame *frame, lisp_value sym, int kind)
 {
     for (struct lisp_frame *f = frame; f; f = f->parent) {
-        for (uint32_t i = 0; i < f->count; i++) {
+        for (uint32_t i = f->count; i-- > 0;) {
             if (f->entry[i].sym == sym && f->entry[i].kind == kind)
                 return &f->entry[i].value;
         }

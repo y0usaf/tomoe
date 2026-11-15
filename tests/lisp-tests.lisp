@@ -13,6 +13,8 @@
 (unit-check "ratio-floor" 480 (floor (* 1440 1/3)))
 (unit-check "division" 1/3 (/ 1 3))
 (unit-check "unary-minus" -5 (- 5))
+(unit-check "let-star-shadow" '(2 4)
+            (let* ((x (list 1 2 3 4)) (x (remove-if-not (lambda (n) (evenp n)) x))) x))
 (unit-check "unary-divide" 1/2 (/ 2))
 (unit-check "floor-values" '(2 1)
             (multiple-value-bind (q r) (floor 5 2) (list q r)))
