@@ -131,5 +131,3 @@ if BASELINE:
         assert ratio >= 2.0, (
             f"a ui update costs {ratio:.2f}x less {name} time than the baseline, not 2x: "
             + describe(base_cost) + " -> " + describe(cost))
-
-quit()
