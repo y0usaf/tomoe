@@ -188,7 +188,7 @@ static void usage(void) {
         "event sends one data plist to a live instance as an injected input event.\n"
         "hit-test reads one screen-space point from a live instance without changing it.\n"
         "frames reads each output's frame counter, last drawn frame, buffer age, drawn pixels and frame times.\n"
-        "timings reads the latency samples each path keeps when TOMOE_TIMINGS is set; timings reset clears them.\n"
+        "timings reads the latency samples each path keeps when --test-timings is set; timings reset clears them.\n"
         "animation reads the configured settle times and how animation frames were paced:\n"
         "moving frames, refreshes skipped between them, samples with no elapsed time, how\n"
         "long the first frame advanced the animation, how far ahead of the frame it\n"
