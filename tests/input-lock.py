@@ -52,7 +52,7 @@ class Events:
             self.buffer += chunk
 
     def collect(self, timeout):
-        return [frame for frame in self.read(timeout) if "event" in frame]
+        return [frame for frame in self.read(timeout) if frame.get("event") in INPUT]
 
     def drain(self, timeout=0.3):
         return self.collect(timeout)
