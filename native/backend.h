@@ -20,7 +20,6 @@ int tomoe_event_barrier(struct tomoe *server);
 void tomoe_destroy(struct tomoe *server);
 const char *tomoe_hit_test(struct tomoe *server, double x, double y);
 const char *tomoe_frames(struct tomoe *server);
-const char *tomoe_memory(struct tomoe *server);
 uint64_t tomoe_activity_serial(struct tomoe *server);
 const char *tomoe_cursor_state(struct tomoe *server, uint64_t have_generation);
 void tomoe_focus(struct tomoe *server, uint32_t id);

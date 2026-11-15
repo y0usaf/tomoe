@@ -456,43 +456,6 @@ const char *tomoe_animation(struct tomoe *s) {
     return s->animation_result;
 }
 
-const char *tomoe_memory(struct tomoe *s) {
-    free(s->memory_result);
-    s->memory_result = NULL;
-    size_t size = 0;
-    FILE *out = open_memstream(&s->memory_result, &size);
-    if (!out) return NULL;
-    struct mallinfo2 heap = mallinfo2();
-    size_t textures, images;
-    uint64_t texture_bytes;
-    render_usage(s->renderer, &textures, &texture_bytes, &images);
-    fprintf(out, "(:heap-used %zu :heap-held %zu :textures %zu :texture-bytes %" PRIu64
-        " :images %zu :surfaces %d :outputs (", heap.uordblks + heap.hblkhd,
-        heap.arena + heap.hblkhd, textures, texture_bytes, images, wl_list_length(&s->surfaces));
-    struct output *o;
-    wl_list_for_each(o, &s->outputs, link) {
-        size_t buffers = 0;
-        uint64_t bytes = 0;
-        for (size_t i = 0; i < RING_SLOTS; i++) {
-            struct dmabuf_attributes dmabuf;
-            if (!o->ring.slots[i] || !buffer_get_dmabuf(o->ring.slots[i], &dmabuf)) continue;
-            buffers++;
-            for (int plane = 0; plane < dmabuf.n_planes; plane++)
-                bytes += (uint64_t)dmabuf.stride[plane] * dmabuf.height;
-        }
-        fputs("(:name ", out);
-        quote(out, o->screen->name);
-        fprintf(out, " :buffers %zu :buffer-bytes %" PRIu64 ")", buffers, bytes);
-    }
-    fputs("))", out);
-    bool success = !ferror(out);
-    if (fclose(out) != 0 || !success) {
-        free(s->memory_result);
-        s->memory_result = NULL;
-    }
-    return s->memory_result;
-}
-
 const char *tomoe_outputs_current(struct tomoe *s) {
     char *text = NULL;
     size_t size = 0;
