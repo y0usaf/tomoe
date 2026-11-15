@@ -286,10 +286,23 @@ static int handle_request(struct control_server *server, const char *text, size_
             return 0;
         }
         if (count) tomoe_timing_reset();
-        if (!native_text(&result, tomoe_timings(), "Cannot serialize native latency samples.",
+        lisp_value native = lisp_nil();
+        if (!native_text(&native, tomoe_timings(), "Cannot serialize native latency samples.",
                 error, sizeof(error))) {
             *reply = error_reply(error);
             return 0;
+        }
+        lisp_value counters[10] = {
+            lisp_keyword("LAYOUT-REBUILDS"), lisp_int(0),
+            lisp_keyword("LAYOUT-REUSES"), lisp_int(0),
+            lisp_keyword("CONSED"), lisp_nil(),
+            lisp_keyword("GC-INTERVALS"), lisp_nil(),
+            lisp_keyword("HANDBACK-INTERVALS"), lisp_nil()
+        };
+        result = native;
+        for (int i = 4; i >= 0; i--) {
+            result = lisp_cons(counters[i * 2 + 1], result);
+            result = lisp_cons(counters[i * 2], result);
         }
     } else if (!strcasecmp(operation, "HIT-TEST")) {
         if (count != 2 || !finite_number(lisp_car(args)) ||

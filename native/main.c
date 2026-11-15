@@ -28,7 +28,6 @@
 enum { JSON_WIRE_VERSION = 3, CONTROL_WIRE_VERSION = 2 };
 
 struct loop_runtime {
-    struct tomoe *server;
     bool quit;
     bool failed;
     char xwayland_display[8];
@@ -147,7 +146,7 @@ static lisp_value primitive_xwayland_display(int count, lisp_value *arguments) {
 }
 
 void loop_register_primitives(struct tomoe *server) {
-    loop_state.server = server;
+    (void)server;
     lisp_define_primitive("%QUIT", primitive_quit, 0, 0);
     lisp_define_primitive("%RELOAD-REQUESTED", primitive_reload_requested, 0, 0);
     lisp_define_primitive("%XWAYLAND-DISPLAY", primitive_xwayland_display, 0, 0);
