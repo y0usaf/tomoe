@@ -28,117 +28,12 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 44; }
+int tomoe_abi_version(void) { return 45; }
 
 void tomoe_trim_heap(void) {
     malloc_trim(0);
 }
 
-static int stop_pipe[2] = { -1, -1 };
-static struct sigaction stop_previous[2];
-
-static void stop_write(void) {
-    char byte = 0;
-    if (stop_pipe[1] >= 0) {
-        ssize_t count = write(stop_pipe[1], &byte, 1);
-        (void)count;
-    }
-}
-
-static void stop_forward(int signal, siginfo_t *info, void *context,
-        const struct sigaction *previous) {
-    if (previous->sa_flags & SA_SIGINFO) previous->sa_sigaction(signal, info, context);
-    else if (previous->sa_handler == SIG_DFL) raise(signal);
-    else if (previous->sa_handler != SIG_IGN) previous->sa_handler(signal);
-}
-
-static void stop_term(int signal, siginfo_t *info, void *context) {
-    stop_write();
-    stop_forward(signal, info, context, &stop_previous[0]);
-}
-
-static void stop_int(int signal, siginfo_t *info, void *context) {
-    stop_write();
-    stop_forward(signal, info, context, &stop_previous[1]);
-}
-
-static int stop_drain(int fd, uint32_t mask, void *data) {
-    char buffer[64];
-    (void)mask; (void)data;
-    while (read(fd, buffer, sizeof(buffer)) > 0) { }
-    return 0;
-}
-
-int tomoe_watch_signals(struct tomoe *s) {
-    if (!s || !s->display) return -1;
-    if (stop_pipe[0] >= 0) return 0;
-    if (pipe2(stop_pipe, O_CLOEXEC | O_NONBLOCK) < 0) return -errno;
-    if (!wl_event_loop_add_fd(wl_display_get_event_loop(s->display), stop_pipe[0],
-            WL_EVENT_READABLE, stop_drain, NULL)) return -ENOMEM;
-    struct sigaction action;
-    memset(&action, 0, sizeof(action));
-    sigfillset(&action.sa_mask);
-    action.sa_flags = SA_SIGINFO;
-    action.sa_sigaction = stop_term;
-    if (sigaction(SIGTERM, &action, &stop_previous[0]) < 0) {
-        stop_pipe[1] = stop_pipe[0] = -1;
-        return -errno;
-    }
-    action.sa_sigaction = stop_int;
-    if (sigaction(SIGINT, &action, &stop_previous[1]) < 0) return -errno;
-    return 0;
-}
-struct fd_watch {
-    struct tomoe *server;
-    struct wl_event_source *source;
-    int fd;
-};
-static int watch_died(int fd, uint32_t mask, void *data) {
-    struct fd_watch *watch = data;
-    (void)fd;
-    if (!(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) return 0;
-    if (watch->source) {
-        wl_event_source_remove(watch->source);
-        watch->source = NULL;
-    }
-    if (watch->server && watch->server->dead_watch_count <
-            sizeof(watch->server->dead_watches) / sizeof(watch->server->dead_watches[0]))
-        watch->server->dead_watches[watch->server->dead_watch_count++] = (uintptr_t)watch;
-    return 0;
-}
-uintptr_t tomoe_watch_fd(struct tomoe *s, int fd, uint32_t mask) {
-    if (!s || !s->display || fd < 0) return 0;
-    struct fd_watch *watch = calloc(1, sizeof(*watch));
-    if (!watch) return 0;
-    watch->server = s;
-    watch->fd = fd;
-    watch->source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fd,
-        mask ? mask : WL_EVENT_READABLE, watch_died, watch);
-    if (!watch->source) {
-        free(watch);
-        return 0;
-    }
-    return (uintptr_t)watch;
-}
-uintptr_t tomoe_dead_watch(struct tomoe *s) {
-    if (!s || !s->dead_watch_count) return 0;
-    uintptr_t watch = s->dead_watches[0];
-    memmove(s->dead_watches, s->dead_watches + 1,
-        (s->dead_watch_count - 1) * sizeof(s->dead_watches[0]));
-    s->dead_watch_count--;
-    return watch;
-}
-void tomoe_update_fd(struct tomoe *s, uintptr_t handle, uint32_t mask) {
-    struct fd_watch *watch = (struct fd_watch *)handle;
-    if (!s || !watch || !watch->source) return;
-    wl_event_source_fd_update(watch->source, mask ? mask : WL_EVENT_READABLE);
-}
-void tomoe_unwatch_fd(struct tomoe *s, uintptr_t handle) {
-    struct fd_watch *watch = (struct fd_watch *)handle;
-    if (!s || !watch) return;
-    if (watch->source) wl_event_source_remove(watch->source);
-    free(watch);
-}
 int tomoe_frames_waiting(struct tomoe *s) {
     return s && s->renderer && render_frames_held(s->renderer);
 }
