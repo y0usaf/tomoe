@@ -241,7 +241,8 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
     bool has_method = json_has(request, "method", &method_value);
     size_t method_length = 0;
     const char *method = has_method ? lisp_get_string(method_value, &method_length) : NULL;
-    if (!method || !method_length || (has_id && !lisp_intp(id))) {
+    if (!method || !method_length ||
+            (has_id && (!lisp_intp(id) || lisp_get_double(id) < 0))) {
         ipc_log("ignoring a request with an invalid method or ID");
         return;
     }
@@ -640,7 +641,7 @@ int ipc_client(const char *path, const char *method, lisp_value params, char *er
         }
         lisp_value frame;
         char parse_error[512];
-        if (json_parse(line, line_length, true, &frame, parse_error, sizeof(parse_error))) {
+        if (json_parse(line, line_length, false, &frame, parse_error, sizeof(parse_error))) {
             free(line);
             snprintf(error, error_size, "Invalid IPC response frame: %s", parse_error);
             status = 1;
