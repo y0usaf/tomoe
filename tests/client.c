@@ -717,12 +717,17 @@ static void run(struct client *state) {
         while (wl_display_prepare_read(display) != 0) {
             if (wl_display_dispatch_pending(display) < 0) fail_display("dispatch pending events");
         }
-        if (wl_display_flush(display) < 0 && errno != EAGAIN) {
-            wl_display_cancel_read(display);
-            if (errno == EPIPE) finish(0);
-            fail_display("flush requests");
+        bool blocked = false;
+        if (wl_display_flush(display) < 0) {
+            if (errno != EAGAIN) {
+                wl_display_cancel_read(display);
+                if (errno == EPIPE) finish(0);
+                fail_display("flush requests");
+            }
+            blocked = true;
         }
-        struct pollfd descriptor = { .fd = wl_display_get_fd(display), .events = POLLIN | POLLOUT };
+        struct pollfd descriptor = { .fd = wl_display_get_fd(display),
+            .events = POLLIN | (blocked ? POLLOUT : 0) };
         int status = poll(&descriptor, 1, 200);
         if (status < 0) {
             wl_display_cancel_read(display);
