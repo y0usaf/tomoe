@@ -1215,17 +1215,17 @@ let
   compositorSettings = {
     packages = compositorPackages;
   };
-  smokeSuites = builtins.filter (
-    suite:
-    builtins.elem suite.name [
-      "commands"
-      "text-input"
-      "pointer-protocols"
-      "clean-unmount"
-      "session-bus"
-      "window-capture"
-    ]
-  ) compositorSuites;
+  smokeOrder = [
+    "window-capture"
+    "commands"
+    "text-input"
+    "pointer-protocols"
+    "clean-unmount"
+    "session-bus"
+  ];
+  smokeSuites = map (
+    name: builtins.head (builtins.filter (suite: suite.name == name) compositorSuites)
+  ) smokeOrder;
   smokeSettings = compositorSettings // {
     timeout = 900;
   };
