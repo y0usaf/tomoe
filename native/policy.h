@@ -1,0 +1,106 @@
+#ifndef TOMOE_POLICY_H
+#define TOMOE_POLICY_H
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "lisp.h"
+
+struct tomoe;
+
+#define POLICY_HOOK_BOOT "TOMOE::TOMOE-BOOT"
+#define POLICY_HOOK_LOAD "TOMOE::TOMOE-LOAD"
+#define POLICY_HOOK_UNMOUNT "TOMOE::TOMOE-UNMOUNT"
+#define POLICY_HOOK_DISPATCH "TOMOE::TOMOE-DISPATCH"
+#define POLICY_HOOK_COMMAND "TOMOE::TOMOE-COMMAND"
+#define POLICY_HOOK_JSON "TOMOE::TOMOE-JSON"
+#define POLICY_HOOK_CONTROL "TOMOE::TOMOE-CONTROL"
+#define POLICY_HOOK_INSPECT "TOMOE::TOMOE-INSPECT"
+
+enum tomoe_event_type {
+    EV_NONE = 0,
+    EV_MAP,
+    EV_METADATA,
+    EV_BUFFER,
+    EV_GEOMETRY,
+    EV_LAYER,
+    EV_UNMAP,
+    EV_OUTPUTS,
+    EV_KEY,
+    EV_BUTTON,
+    EV_POINTER,
+    EV_GRAB,
+    EV_ACTIVITY,
+    EV_INPUT,
+    EV_REQUEST,
+    EV_SCREENSHOT,
+    EV_UI,
+    EV_TIMER,
+    EV_WATCH,
+    EV_EXEC,
+    EV_PROCESS,
+    EV_SERVICES,
+    EV_SYSTEM,
+    EV_SCREENCAST,
+    EV_SOURCE,
+    EV_TEXT,
+    EV_TYPE_COUNT
+};
+
+enum tomoe_event_flag {
+    EVF_FACT = 1u << 0,
+    EVF_COALESCE = 1u << 1,
+    EVF_OPTIONAL = 1u << 2,
+    EVF_INJECTED = 1u << 3
+};
+
+enum { EVENT_STRINGS = 4 };
+
+struct tomoe_event {
+    uint16_t type;
+    uint16_t flags;
+    uint32_t id;
+    int32_t x, y, dx, dy;
+    uint32_t button, keycode, modifiers, state;
+    uint64_t source_id, binding_or_callback_id, time_us;
+    double fx, fy, sx, sy, delta;
+    uint32_t str[EVENT_STRINGS];
+};
+
+enum { EVENT_NO_STRING = UINT32_MAX };
+
+struct tomoe_event *policy_event_push(struct tomoe *server, enum tomoe_event_type type);
+uint32_t policy_event_string(struct tomoe *server, const char *text, size_t length);
+uint32_t policy_event_cstring(struct tomoe *server, const char *text);
+const char *policy_event_string_at(struct tomoe *server, uint32_t handle, size_t *length);
+int policy_event_barrier(struct tomoe *server);
+bool policy_reads(struct tomoe *server, enum tomoe_event_type type);
+uint64_t policy_events_dropped(struct tomoe *server);
+bool policy_events_pending(struct tomoe *server);
+void policy_drain(struct tomoe *server);
+typedef lisp_value (*policy_converter)(struct tomoe *server, const struct tomoe_event *event);
+void policy_set_converter(enum tomoe_event_type type, policy_converter fn);
+
+void policy_register_primitives(struct tomoe *server);
+void resources_register_primitives(struct tomoe *server);
+void ui_layout_register_primitives(struct tomoe *server);
+void loop_register_primitives(struct tomoe *server);
+
+int policy_call(const char *hook, int argc, const lisp_value *argv, lisp_value *result,
+    char *error, size_t error_size);
+
+typedef void (*loop_fd_fn)(void *data, int fd, uint32_t mask);
+typedef void (*loop_timer_fn)(void *data);
+struct loop_source;
+struct loop_source *loop_watch_fd(struct tomoe *server, int fd, uint32_t mask, loop_fd_fn fn, void *data);
+void loop_update_fd(struct loop_source *source, uint32_t mask);
+void loop_remove(struct loop_source *source);
+struct loop_source *loop_timer(struct tomoe *server, loop_timer_fn fn, void *data);
+void loop_timer_arm(struct loop_source *source, uint64_t delay_ms);
+uint64_t loop_now_ms(void);
+double loop_refresh_ms(struct tomoe *server);
+
+int resources_start(struct tomoe *server);
+void resources_stop(struct tomoe *server);
+lisp_value resources_describe(struct tomoe *server, const char *kind);
+
+#endif
