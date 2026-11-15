@@ -1307,6 +1307,12 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
         (%r! :connectors connectors)
         (%r! :outputs-revision snapshot-revision)))))
 
+(defun deliver-owned-event (event owner)
+  (let ((failure nil))
+    (%catch (lambda () (transact (runtime-mounts) event nil (list owner)))
+            (lambda (text) (setf failure text)))
+    (when failure (record-error failure))))
+
 (defun dispatch-event (event)
   (let ((changed nil) (force nil))
     (ecase (getf event :type)
@@ -1472,9 +1478,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       (:screenshot (push :screenshot changed))
       (:screencast (push :screencast changed))
       (:grab (push :grab changed))
-      (:timer (push :timer changed))
-      (:watch (push :watch changed))
-      (:exec (push :exec changed))
+      (:timer (deliver-owned-event (list :type :timer :name (getf event :name))
+                                   (getf event :owner))
+       (return-from dispatch-event))
+      (:watch (deliver-owned-event event (getf event :owner))
+       (return-from dispatch-event))
+      (:exec (deliver-owned-event
+              (list :type :exec :name (getf event :name) :status (getf event :status)
+                    :code (getf event :code) :stdout (getf event :stdout)
+                    :stderr (getf event :stderr) :error (getf event :error))
+              (getf event :owner))
+       (return-from dispatch-event))
       (:process (push :process changed)))
     (%r! :pending-context
          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))
