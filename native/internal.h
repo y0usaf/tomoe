@@ -1096,6 +1096,9 @@ struct tomoe {
     char *ui_stats_result;
     struct wl_list copy_frames, copy_damage, capture_sessions, cursor_sessions;
     int capture_inflight;
+    struct wl_list capture_pending;
+    struct wl_event_source *capture_fence_timer;
+    bool capture_watch_fail, capture_watch_reported;
     bool input_stream, input_motion_pending, input_stream_armed;
     uint64_t input_motion_time;
     struct wl_event_source *input_stream_timer;

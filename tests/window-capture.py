@@ -135,4 +135,23 @@ time.sleep(2)
 after, _, _ = measure("hung-after-kill")
 assert after >= max(FLOOR, BOUND * hang_control), f"{after:.1f} fps after the client died, control {hang_control:.1f}"
 assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0
+
+quit()
+start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1",
+                     "TOMOE_TEST_CAPTURE_WATCH_FAIL": "1"})
+cli(f"mount {CAPTURE_POLICY}")
+window("watch-win", COLOURS[0])
+time.sleep(0.5)
+watch_control, _, _ = measure("unwatched-control")
+capture("capture-nowatch", "--windows 1 --frames 1 --seconds 8")
+time.sleep(0.5)
+nowatch, _, _ = measure("unwatched-capture")
+assert nowatch >= max(FLOOR, BOUND * watch_control), (watch_control, nowatch)
+assert "polling it from a timer" in machine.succeed("journalctl -u tomoe -o cat"), \
+    "the capture fence was never polled from a timer"
+lines = finished("capture-nowatch")
+assert lines[-1] == "end 1 0 0", f"a frame reported before its fence signalled: {lines}"
+after_watch, _, _ = measure("unwatched-after-client")
+assert after_watch >= max(FLOOR, BOUND * watch_control), (watch_control, after_watch)
+assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0
 quit()

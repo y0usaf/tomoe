@@ -296,6 +296,7 @@ struct cursor_session {
 enum {
     CAPTURE_INFLIGHT_LIMIT = 8,
     CAPTURE_STALL_MS = 250,
+    CAPTURE_FENCE_POLL_MS = 4,
 };
 
 struct image_frame {
@@ -307,6 +308,8 @@ struct image_frame {
     bool capturing, pending, held;
     uint32_t window;
     int64_t started;
+    int fence;
+    struct wl_list pending_link;
     struct wl_event_source *copying;
     enum wl_output_transform transform;
     struct timespec when;
@@ -336,6 +339,10 @@ static bool source_size(struct tomoe *s, const struct source *source, int *width
 static void image_frame_settle(struct image_frame *frame) {
     if (frame->copying) wl_event_source_remove(frame->copying);
     frame->copying = NULL;
+}
+
+static bool frame_waiting(const struct image_frame *frame) {
+    return frame->copying || frame->fence >= 0;
 }
 
 static int64_t capture_now_ms(void) {
@@ -569,12 +576,55 @@ static int frame_copied(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-static bool copy_later(struct tomoe *s, struct image_frame *frame, int fence) {
-    frame->copying = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fence,
-        WL_EVENT_READABLE, frame_copied, frame);
-    if (!frame->copying) poll(&(struct pollfd){ .fd = fence, .events = POLLIN }, 1, -1);
-    close(fence);
-    return frame->copying != NULL;
+static int capture_fence_ready(void *data) {
+    struct tomoe *s = data;
+    bool waiting = false, overdue = false;
+    int64_t now = capture_now_ms();
+    struct image_frame *frame, *next;
+    wl_list_for_each_safe(frame, next, &s->capture_pending, pending_link) {
+        struct pollfd fence = { .fd = frame->fence, .events = POLLIN };
+        int ready = poll(&fence, 1, 0);
+        if (ready == 0 || (ready < 0 && errno == EINTR)) {
+            waiting = true;
+            if (now - frame->started >= CAPTURE_STALL_MS) overdue = true;
+            continue;
+        }
+        wl_list_remove(&frame->pending_link);
+        close(frame->fence);
+        frame->fence = -1;
+        frame_complete(frame);
+    }
+    if (waiting) wl_event_source_timer_update(s->capture_fence_timer,
+        overdue ? CAPTURE_STALL_MS : CAPTURE_FENCE_POLL_MS);
+    return 0;
+}
+
+static void copy_later(struct tomoe *s, struct image_frame *frame, int fence) {
+    if (!s->capture_watch_fail)
+        frame->copying = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fence,
+            WL_EVENT_READABLE, frame_copied, frame);
+    if (frame->copying) {
+        close(fence);
+        return;
+    }
+    if (!s->capture_fence_timer)
+        s->capture_fence_timer = wl_event_loop_add_timer(
+            wl_display_get_event_loop(s->display), capture_fence_ready, s);
+    if (!s->capture_fence_timer) {
+        tomoe_log(LOG_ERROR, "tomoe: cannot watch a capture fence; %s",
+            "the frame keeps its buffer and slot until the GPU is done");
+        image_frame_hold(frame, false);
+        close(fence);
+        return;
+    }
+    if (!s->capture_watch_reported) {
+        s->capture_watch_reported = true;
+        tomoe_log(LOG_ERROR, "tomoe: no event loop source for a capture fence; %s",
+            "polling it from a timer");
+    }
+    frame->fence = fence;
+    wl_list_insert(s->capture_pending.prev, &frame->pending_link);
+    wl_event_source_timer_update(s->capture_fence_timer, CAPTURE_FENCE_POLL_MS);
 }
 
 static void serve_cursor(struct session *session) {
@@ -663,7 +713,7 @@ static const struct ext_image_copy_capture_frame_v1_interface image_frame_impl =
 static void serve_session(struct tomoe *s, struct session *session, struct output *o,
         struct buffer *committed, bool scanout, const struct timespec *now) {
     struct image_frame *frame = session->frame;
-    if (!frame || !frame->capturing || frame->copying) return;
+    if (!frame || !frame->capturing || frame_waiting(frame)) return;
     int width, height;
     uint32_t format;
     if (!source_size(s, &session->source, &width, &height, &format)) return;
@@ -722,8 +772,8 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
     frame->started = capture_now_ms();
     if (fence >= 0) {
         capture_slot_take(frame);
-        if (copy_later(s, frame, fence)) return;
-        capture_slot_release(frame);
+        copy_later(s, frame, fence);
+        return;
     }
     frame_complete(frame);
 }
@@ -731,7 +781,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
 static void session_resource_destroy(struct wl_resource *resource) {
     struct session *session = wl_resource_get_user_data(resource);
     if (!session) return;
-    if (session->frame && session->frame->copying)
+    if (session->frame && frame_waiting(session->frame))
         image_frame_fail(session->frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
     if (session->frame) session->frame->session = NULL;
     if (session->cursor) session->cursor->capture = NULL;
@@ -1061,7 +1111,7 @@ bool capture_wants_cursorless(struct output *o) {
     wl_list_for_each(session, &o->server->capture_sessions, link)
         if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id &&
                 !session->cursor && session->frame && session->frame->capturing &&
-                !session->frame->copying && (session->damaged || o->damaged) &&
+                !frame_waiting(session->frame) && (session->damaged || o->damaged) &&
                 !session->cursors) return true;
     return false;
 }
