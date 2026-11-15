@@ -54,8 +54,50 @@
           cp -r ${pkgs.resvg}/include $out
           cp ${pkgs.resvg}/lib/libresvg.so $out/lib
         '';
+      lean =
+        pkgs:
+        let
+          libdrm = pkgs.libdrm.override { withIntel = false; };
+          libglvnd = pkgs.libglvnd.overrideAttrs (old: {
+            buildInputs = [ pkgs.xorgproto ];
+            configureFlags = (old.configureFlags or [ ]) ++ [
+              "--disable-x11"
+              "--disable-glx"
+            ];
+          });
+          libxkbcommon = pkgs.libxkbcommon.overrideAttrs (old: {
+            buildInputs = [
+              pkgs.xkeyboard_config
+              pkgs.wayland
+              pkgs.wayland-protocols
+            ];
+            mesonFlags = [
+              "-Dxkb-config-root=${pkgs.xkeyboard_config}/etc/X11/xkb"
+              "-Dxkb-config-extra-path=/etc/xkb"
+              "-Denable-docs=true"
+              "-Denable-x11=false"
+              "-Denable-xkbregistry=false"
+              "-Denable-wayland=true"
+            ];
+          });
+          libgbm = (pkgs.libgbm.override { inherit libdrm libglvnd; }).overrideAttrs {
+            propagatedBuildInputs = [ ];
+            buildInputs = [ libdrm ];
+          };
+        in
+        {
+          inherit
+            libdrm
+            libgbm
+            libglvnd
+            libxkbcommon
+            ;
+        };
       portal =
         pkgs:
+        let
+          libs = lean pkgs;
+        in
         pkgs.rustPlatform.buildRustPackage {
           pname = "xdg-desktop-portal-tomoe";
           inherit version;
@@ -67,8 +109,9 @@
           ];
           buildInputs = [
             (pipewire pkgs)
-            pkgs.libgbm
-            pkgs.libdrm
+            libs.libgbm
+            libs.libdrm
+            libs.libdrm.dev
           ];
           doCheck = false;
         };
@@ -94,6 +137,7 @@
             x11Support = false;
             inherit cairo;
           };
+          libs = lean pkgs;
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
@@ -121,15 +165,16 @@
             pkgs.wayland-scanner
           ];
           buildInputs = [
-            pkgs.libdrm
+            libs.libdrm
+            libs.libdrm.dev
             (pkgs.libinput.override { luaSupport = false; })
             (pkgs.seatd.override { systemd = pkgs.systemdLibs; })
-            pkgs.libGL
-            pkgs.libgbm
+            libs.libglvnd
+            libs.libgbm
             pkgs.wayland
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            pkgs.libxkbcommon
+            libs.libxkbcommon
             cairo
             pango
             pkgs.libjpeg
@@ -190,7 +235,7 @@
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             pkgs.wayland
-            pkgs.libxkbcommon
+            (lean pkgs).libxkbcommon
           ];
           WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
         };

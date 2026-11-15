@@ -1,6 +1,7 @@
 #include "internal.h"
 #include <stdarg.h>
 #include <sys/eventfd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <xf86drm.h>
 
@@ -31,9 +32,37 @@ void tomoe_log(int level, const char *fmt, ...) {
         keep_error(fmt, kept);
         va_end(kept);
     }
+    va_list logged;
+    va_copy(logged, args);
     vfprintf(stderr, fmt, args);
     va_end(args);
     fputc('\n', stderr);
+    tomoe_syslog_line(level, fmt, logged);
+    va_end(logged);
+}
+
+const char *tomoe_data_dirs(void) {
+    const char *dirs = getenv("XDG_DATA_DIRS");
+    if (dirs && *dirs) return dirs;
+    static char fallback[1024];
+    if (fallback[0]) return fallback;
+    struct stat info;
+    const char *user = getenv("USER");
+    char profile[512];
+    size_t length = 0;
+    if (stat("/run/current-system/sw/share", &info) == 0)
+        length += (size_t)snprintf(fallback, sizeof fallback, "/run/current-system/sw/share");
+    if (user && *user
+            && snprintf(profile, sizeof profile, "/etc/profiles/per-user/%s/share", user) > 0
+            && stat(profile, &info) == 0 && length + strlen(profile) + 2 < sizeof fallback) {
+        length += (size_t)snprintf(fallback + length, sizeof fallback - length, "%s%s",
+            length ? ":" : "", profile);
+    }
+    if (length + 24 < sizeof fallback) {
+        snprintf(fallback + length, sizeof fallback - length, "%s/usr/local/share:/usr/share",
+            length ? ":" : "");
+    }
+    return fallback;
 }
 
 const char *tomoe_native_errors(void) {
@@ -552,7 +581,7 @@ static char *xcursor_path(void) {
     const char *env = getenv("XCURSOR_PATH");
     if (env) return strdup(env);
     const char *home = getenv("HOME"), *data = getenv("XDG_DATA_HOME");
-    char *dirs = strdup(getenv("XDG_DATA_DIRS") ? getenv("XDG_DATA_DIRS") : ""), *save = NULL;
+    char *dirs = strdup(tomoe_data_dirs()), *save = NULL;
     char *path = NULL, *next;
     if (asprintf(&path, "%s%s:%s/.icons:/usr/share/icons:/usr/share/pixmaps",
             data ? data : home ? home : "", data ? "/icons" : "/.local/share/icons",

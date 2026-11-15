@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,8 @@ enum { LOG_ERROR = 1, LOG_WARNING, LOG_INFO, LOG_DEBUG };
 enum { FRAME_TRACE = 128 };
 extern int log_verbosity;
 void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void tomoe_syslog_line(int level, const char *fmt, va_list args);
+const char *tomoe_data_dirs(void);
 
 struct box { int x, y, width, height; };
 struct fbox { double x, y, width, height; };

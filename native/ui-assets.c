@@ -127,8 +127,7 @@ done:
 static enum asset_status read_icon(const char *path, const char *name,
         struct asset_data *data) {
     if (*path) return read_asset(path, ASSET_SVG_LIMIT, data);
-    const char *dirs = getenv("XDG_DATA_DIRS");
-    if (!dirs) dirs = "/usr/share:/usr/local/share";
+    const char *dirs = tomoe_data_dirs();
     if (!bounded_string(dirs)) return ASSET_HARD;
     size_t directory_count = 1;
     for (const char *cursor = dirs; *cursor; cursor++)
