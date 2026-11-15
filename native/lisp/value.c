@@ -29,6 +29,8 @@ lisp_value cons(lisp_value car, lisp_value cdr)
 static struct lisp_int small_ints[SMALL_INT_COUNT];
 static bool small_ints_ready;
 
+static struct lisp_char ascii_chars[128];
+
 void lisp_init_small_ints(void)
 {
     for (int64_t value = SMALL_INT_MIN; value <= SMALL_INT_MAX; value++) {
@@ -38,6 +40,14 @@ void lisp_init_small_ints(void)
         slot->h.aux = 0;
         slot->h.size = sizeof(*slot);
         slot->value = value;
+    }
+    for (uint32_t code = 0; code < 128; code++) {
+        struct lisp_char *slot = &ascii_chars[code];
+        slot->h.type = LT_CHAR;
+        slot->h.flags = 0;
+        slot->h.aux = 0;
+        slot->h.size = sizeof(*slot);
+        slot->code = code;
     }
     small_ints_ready = true;
 }
@@ -97,6 +107,8 @@ lisp_value make_double(double v)
 
 lisp_value make_char(uint32_t cp)
 {
+    if (small_ints_ready && cp < 128)
+        return VAL(&ascii_chars[cp]);
     struct lisp_char *out = PTR(alloc_obj(LT_CHAR, sizeof(*out)), lisp_char);
     out->code = cp;
     return VAL(out);
@@ -590,6 +602,8 @@ uint32_t utf8_strlen(const char *s, size_t len)
 uint32_t string_char_at(lisp_value str, uint32_t index)
 {
     struct lisp_string *s = PTR(str, lisp_string);
+    if (s->len == s->byte_len && index < s->byte_len && (unsigned char)s->data[index] < 0x80)
+        return (unsigned char)s->data[index];
     size_t pos = 0;
     uint32_t i = 0;
     while (pos < s->byte_len) {
@@ -606,6 +620,8 @@ uint32_t string_char_at(lisp_value str, uint32_t index)
 static size_t string_byte_offset(lisp_value str, uint32_t index)
 {
     struct lisp_string *s = PTR(str, lisp_string);
+    if (s->len == s->byte_len)
+        return index < s->byte_len ? index : s->byte_len;
     size_t pos = 0;
     uint32_t i = 0;
     while (pos < s->byte_len && i < index) {
