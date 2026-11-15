@@ -1568,7 +1568,9 @@ static lisp_value round_like(int argc, lisp_value *argv, int mode)
         default: rounded = trunc(q); break;
         }
         double r = x - rounded * y;
-        mv_return2(make_double(rounded), make_double(r));
+        if (!(rounded >= -9223372036854775808.0 && rounded < 9223372036854775808.0))
+            lisp_error("arithmetic overflow");
+        mv_return2(make_int((int64_t)rounded), make_double(r));
         return lisp.mv[0];
     }
     int64_t an = intp(a) ? INTVAL(a) : PTR(a, lisp_ratio)->num;
