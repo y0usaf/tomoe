@@ -930,85 +930,6 @@ static uint64_t quad_pixels(const struct pass *pass, const float pos[8],
     return (uint64_t)(right - left) * (uint64_t)(bottom - top);
 }
 
-static void draw_rotated(struct pass *pass, struct program *p, const float pos[8],
-        const struct region *clip, const float texcoords[8]) {
-    struct render *r = pass->r;
-    if (!clip) {
-        render_quad(r, p, pos, NULL, texcoords);
-        return;
-    }
-    int count = 0;
-    const struct rect *rects = region_rectangles((struct region *)clip, &count);
-    GL(r, glEnable(GL_SCISSOR_TEST));
-    for (int i = 0; i < count; i++) {
-        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
-            rects[i].y2 - rects[i].y1));
-        render_quad(r, p, pos, NULL, texcoords);
-    }
-    GL(r, glDisable(GL_SCISSOR_TEST));
-}
-
-struct scene_vertex {
-    float pos[2], local[2], tex[2];
-    float color[4], tint[4], params[4], extra[4];
-    float size[2];
-};
-
-struct scene_instance {
-    float pos[8], local[8], tex[8];
-    float color[4], tint[4], params[4], extra[4];
-    float size[2], scissor[4];
-    struct gl_texture *texture;
-    GLuint id;
-    GLenum target;
-    int program, filter, blend;
-};
-
-struct scene_run {
-    size_t first, count;
-    struct gl_texture *texture;
-    GLuint id;
-    GLenum target;
-    int program, filter, blend;
-    float scissor[4];
-};
-
-enum { SCENE_VERTICES = 6 };
-
-static void quad_positions(const struct pass *pass, struct box box, double rotation,
-        float pos[8]) {
-    float w = pass->buffer->width, h = pass->buffer->height;
-    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
-    double c = 1, s = 0;
-    if (rotation != 0) {
-        double rad = rotation * 3.14159265358979323846 / 180.0;
-        c = cos(rad);
-        s = sin(rad);
-    }
-    for (int i = 0; i < 4; i++) {
-        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
-        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
-        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
-    }
-}
-
-static void rotated_bounds(struct box *out, struct box box, double rotation) {
-    if (rotation == 0) {
-        *out = box;
-        return;
-    }
-    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
-    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
-    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-    for (int i = 0; i < 4; i++) {
-        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
-        double x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
-        x0 = fmin(x0, x); y0 = fmin(y0, y); x1 = fmax(x1, x); y1 = fmax(y1, y);
-    }
-    int left = (int)floor(x0), top = (int)floor(y0);
-    *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
-}
-
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
         const float texcoords[8]) {
     struct render *r = pass->r;
@@ -1327,6 +1248,85 @@ bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     bool ok = r->wait_sync(r->display, sync, 0) == EGL_TRUE;
     r->destroy_sync(r->display, sync);
     return ok;
+}
+
+static void draw_rotated(struct pass *pass, struct program *p, const float pos[8],
+        const struct region *clip, const float texcoords[8]) {
+    struct render *r = pass->r;
+    if (!clip) {
+        render_quad(r, p, pos, NULL, texcoords);
+        return;
+    }
+    int count = 0;
+    const struct rect *rects = region_rectangles((struct region *)clip, &count);
+    GL(r, glEnable(GL_SCISSOR_TEST));
+    for (int i = 0; i < count; i++) {
+        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
+            rects[i].y2 - rects[i].y1));
+        render_quad(r, p, pos, NULL, texcoords);
+    }
+    GL(r, glDisable(GL_SCISSOR_TEST));
+}
+
+struct scene_vertex {
+    float pos[2], local[2], tex[2];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2];
+};
+
+struct scene_instance {
+    float pos[8], local[8], tex[8];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2], scissor[4];
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+};
+
+struct scene_run {
+    size_t first, count;
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+    float scissor[4];
+};
+
+enum { SCENE_VERTICES = 6 };
+
+static void quad_positions(const struct pass *pass, struct box box, double rotation,
+        float pos[8]) {
+    float w = pass->buffer->width, h = pass->buffer->height;
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double c = 1, s = 0;
+    if (rotation != 0) {
+        double rad = rotation * 3.14159265358979323846 / 180.0;
+        c = cos(rad);
+        s = sin(rad);
+    }
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
+        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
+    }
+}
+
+static void rotated_bounds(struct box *out, struct box box, double rotation) {
+    if (rotation == 0) {
+        *out = box;
+        return;
+    }
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        double x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
+        x0 = fmin(x0, x); y0 = fmin(y0, y); x1 = fmax(x1, x); y1 = fmax(y1, y);
+    }
+    int left = (int)floor(x0), top = (int)floor(y0);
+    *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
 }
 
 static void scene_emit(struct pass *pass, const struct scene_quad *quad,

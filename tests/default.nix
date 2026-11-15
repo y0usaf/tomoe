@@ -986,7 +986,7 @@ let
       script = ''
         OVERDRAW_COUNTS = "1,10,50"
         OVERDRAW_GOLDEN = "${overdrawGolden}"
-        OVERDRAW_BASELINE = ""
+        OVERDRAW_BASELINE = "${baseline}/bin/tomoe"
         OVERDRAW_WALLPAPER = "${./overdraw-wallpaper.glsl}"
       ''
       + builtins.readFile ./overdraw.py;

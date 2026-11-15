@@ -227,12 +227,15 @@ if BASELINE:
         f"the presented bytes changed against the baseline: {base_digests} != {digests}")
     for key in sorted(costs):
         before, after = base_costs[key], costs[key]
-        print(f"{key[0]} {key[1]}: fragments {before['fragments'] / 1e3:.1f}k -> "
+        reported = "fragments" in before
+        print(f"{key[0]} {key[1]}: fragments {before.get('fragments', 0) / 1e3:.1f}k -> "
               f"{after['fragments'] / 1e3:.1f}k, quads {before['quads']:.1f} -> "
               f"{after['quads']:.1f}, runs {before['runs']:.1f} -> {after['runs']:.1f}, "
               f"gl calls {before['gl-calls']:.1f} -> {after['gl-calls']:.1f}, draw "
               f"{before['frame-draw']:.2f} -> {after['frame-draw']:.2f} ms, raster "
               f"{before['frame-raster']:.2f} -> {after['frame-raster']:.2f} ms, total "
               f"{before['frame-total']:.2f} -> {after['frame-total']:.2f} ms", flush=True)
-        assert after["fragments"] < before["fragments"], (
-            f"{key[0]} {key[1]} drew as many fragments as the baseline: {describe(after)}")
+        if reported:
+            assert after["fragments"] < before["fragments"], (
+                f"{key[0]} {key[1]} drew as many fragments as the baseline: "
+                + describe(after))

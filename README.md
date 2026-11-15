@@ -117,7 +117,16 @@ from windows and outputs to each extension's state and last error.
 
 `tomoe frames` prints each output's frame counters, what a composition costs it
 (`:cost-ns`), the vblanks it missed (`:missed`) and its frame clock, and
-`tomoe memory` the heap and buffer use. A quiet scene collects the Lisp heap and
+`tomoe memory` the heap and buffer use. `:fragments` is how many pixels the frame
+asked the GPU to fill, so a change that stops painting what something else hides
+shows up there directly: a draw a window above it covers opaquely is not issued
+at all, every other draw is scissored to the part of it that nothing hides and to
+the damage that needs it, a rounded window claims the cross its radius leaves
+opaque back as the region it hides, and a border or a shadow is only filled in the
+ring its shader leaves non-transparent. `tests/overdraw.py` mounts a shader
+wallpaper with one, ten and fifty rounded windows, compares the presented pixels
+against the ones it recorded and fails if a repaint submits more fragments than
+it did when that record was taken. A quiet scene collects the Lisp heap and
 hands the dead generations and the free pages of the native heap back to the
 system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
 the shipping policy and a tiled scene at one, ten and fifty windows and fails if
