@@ -840,9 +840,11 @@ let
         virtualisation.qemu.options = qemuOptions;
       };
       testScript = builtins.readFile ./tomoe.py + ''
+        import json
         import traceback
 
-        suites = ${builtins.toJSON suites}
+        with open("${pkgs.writeText "${name}-suites.json" (builtins.toJSON suites)}") as file:
+            suites = json.load(file)
 
         def services():
             listing = machine.execute(
