@@ -1218,9 +1218,12 @@ let
   smokeSuites = builtins.filter (
     suite:
     builtins.elem suite.name [
-      "integration"
+      "commands"
+      "text-input"
       "pointer-protocols"
-      "livepatch"
+      "clean-unmount"
+      "session-bus"
+      "window-capture"
     ]
   ) compositorSuites;
   smokeSettings = compositorSettings // {
