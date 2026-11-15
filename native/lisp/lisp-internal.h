@@ -198,6 +198,7 @@ struct lisp_function {
     struct lisp_obj h;
     uint8_t kind;
     uint8_t info;
+    uint16_t calls;
     uint32_t slots;
     int16_t min_args;
     int16_t max_args;

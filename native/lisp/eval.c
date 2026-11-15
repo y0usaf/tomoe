@@ -689,7 +689,7 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
 {
     if (!(fn->info & FNI_KNOWN))
         lisp_closure_info(fn);
-    if (!(fn->info & FNI_COMPILED) && fn->gen)
+    if (!(fn->info & FNI_COMPILED) && fn->gen && ++fn->calls >= 2)
         lisp_compile_closure(fn);
     uint32_t count = fn->slots;
     uint8_t info = fn->info;

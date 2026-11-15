@@ -16,12 +16,16 @@ struct cnode {
     uint32_t count;
     bool stack;
     const struct cnode *a;
-    const struct cnode *b;
-    const struct cnode *c;
+    union {
+        const struct cnode *b;
+        uint8_t *dynamic;
+    };
+    union {
+        const struct cnode *c;
+        lisp_value *syms;
+        const struct lisp_code *code;
+    };
     const struct cnode **kids;
-    lisp_value *syms;
-    uint8_t *dynamic;
-    const struct lisp_code *code;
 };
 
 struct lisp_code {

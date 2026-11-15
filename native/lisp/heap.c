@@ -12,7 +12,7 @@ struct lisp_runtime lisp;
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;
-enum { RESIDENT_FREE_KEEP = 4 };
+enum { RESIDENT_FREE_KEEP = 2 };
 
 static uint32_t resident_blocks[RESIDENT_FREE_KEEP];
 static uint32_t resident_free;
