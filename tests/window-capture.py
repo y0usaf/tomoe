@@ -88,7 +88,7 @@ for index, colour in enumerate(COLOURS):
     window(f"win-{index}", colour)
 time.sleep(0.5)
 control, control_median, _ = measure("control")
-assert control > 20, f"the control scene runs at {control:.1f} fps"
+assert control >= FLOOR, f"the control scene runs at {control:.1f} fps"
 
 capture("capture-shm", "--windows 4 --frames 100000 --delay-ms 50 --seconds 12")
 time.sleep(0.5)
