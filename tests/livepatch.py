@@ -124,6 +124,33 @@ undone = json.loads(cli("command undo-patch name=kbd"))
 assert undone["result"]["warning"] is None, undone
 await_state(lambda: layout() == "", "the restored keyboard layout")
 
+
+def variable_patch(name, form, extension=True):
+    source = form
+    if extension:
+        source += (' (in-package #:tomoe-user) (define-extension "livepatch-var" (:reads () :state nil) '
+                   '(snapshot state event) (declare (ignore snapshot state event)) '
+                   '(values nil (list (serve-state "livepatch_var" tomoe::*livepatch-x*)) nil))')
+    else:
+        source += ' (refresh-extensions "livepatch-var")'
+    return json.loads(cli("command patch forms=" + quoted(source) + " name=" + name))
+
+
+def served():
+    return json.loads(cli("msg livepatch_var"))
+
+
+variable_patch("var", '(defvar tomoe::*livepatch-x* "kept-100")')
+assert served() == "kept-100", served()
+variable_patch("var2", "(defparameter tomoe::*livepatch-x* 200)", extension=False)
+assert served() == 200, served()
+cli("command undo-patch name=var2")
+assert served() == "kept-100", f"undo did not restore the variable's value: {served()}"
+cli("command undo-patch name=var")
+variable_patch("var", "(defvar tomoe::*livepatch-x* 150)")
+assert served() == 150, f"undo did not unbind the variable the patch introduced: {served()}"
+cli("command undo-patch name=var")
+
 broken = fail("command patch forms=" + quoted(
     '(defun tomoe::default-keyboard-config () (list :rules "" :model "" :layout "fr" '
     ':variant "" :options nil :repeat-rate 25 :repeat-delay 600)) (no-such-function 1)')

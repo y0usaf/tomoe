@@ -39,18 +39,29 @@
             (unless (member name symbols :test #'eq) (push name symbols))))))
     (nreverse symbols)))
 
-(defun patch-definition-snapshot (symbol)
-  "SYMBOL's definitions now, for undo to restore over the patch's own."
-  (list :symbol symbol
-        :name (let ((package (%symbol-package-name symbol)))
-                (if package
-                    (format nil "~A::~A" package (symbol-name symbol))
-                    (symbol-name symbol)))
-        :definition (%symbol-definition symbol)))
+(defun patch-definition-snapshot (symbol patch-name index)
+  "SYMBOL's definitions now, for undo to restore over the patch's own. The
+definitions stay in the cells of a holder symbol, because the runtime state keeps
+only copies and a restored definition must be the original object."
+  (let ((holder (intern (format nil "%SNAPSHOT/~A/~D" patch-name index) 'tomoe)))
+    (multiple-value-bind (value boundp) (%symbol-value symbol)
+      (%set-symbol-definition holder (%symbol-definition symbol))
+      (if boundp (%set-symbol-value holder value) (%unbind-symbol holder))
+      (list :symbol symbol
+            :name (let ((package (%symbol-package-name symbol)))
+                    (if package
+                        (format nil "~A::~A" package (symbol-name symbol))
+                        (symbol-name symbol)))
+            :holder holder
+            :boundp boundp))))
 
 (defun restore-patch-definition (snapshot)
   (%bump :definitions-generation)
-  (%set-symbol-definition (getf snapshot :symbol) (getf snapshot :definition)))
+  (let ((symbol (getf snapshot :symbol)) (holder (getf snapshot :holder)))
+    (%set-symbol-definition symbol (%symbol-definition holder))
+    (if (getf snapshot :boundp)
+        (%set-symbol-value symbol (%symbol-value holder))
+        (%unbind-symbol symbol))))
 
 (defun refresh-extensions (&rest names)
   "What a patch declares: the extensions it refreshes, read before it loads."
@@ -185,7 +196,8 @@ compositor as it was and signals its error. Returns a report plist."
            (progn
              (patch-text path)
              (setf snapshots (loop for symbol in (patch-defined-symbols path package)
-                                   collect (patch-definition-snapshot symbol))
+                                   for index from 0
+                                   collect (patch-definition-snapshot symbol name index))
                    refresh (patch-refresh-list path package))
              (setf mounted (mount-patch-specs (load-specs path package)))
              (refresh-mounts refresh)
