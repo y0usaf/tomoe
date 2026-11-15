@@ -13,7 +13,11 @@
                                 ((equal key "comma") ",") ((equal key "period") ".")
                                 ((equal key "space") "Space") ((equal key "minus") "-")
                                 ((equal key "equal") "=")
-                                (t (string-capitalize key :end (min 1 (length key))))))))))
+                                (t (if (plusp (length key))
+                                       (concatenate 'string
+                                                    (string-upcase (subseq key 0 1))
+                                                    (subseq key 1))
+                                       key)))))))
 
 (defparameter +hotkey-order+
   '("Spawn foot" "Run an Application" "Close Window" "Toggle Fullscreen" "Exit"
@@ -150,9 +154,9 @@
          (geometry-key (list outputs workareas gap count))
          (retired-full nil)
          (commands nil))
-    (check-type gap (integer 0 16384))
-    (check-type count (integer 1 128))
-    (check-type honor boolean)
+    (unless (%in-range-p gap 0 16384) (error "Invalid layout gap: ~S" gap))
+    (unless (%in-range-p count 1 128) (error "Invalid workspace count: ~S" count))
+    (unless (%boolean-p honor) (error "Invalid layout honor setting: ~S" honor))
     (setf active (max 1 (min count active))
           workspaces
           (loop for index below count
@@ -539,14 +543,26 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                              :theme (state-value snapshot :theme))))
             commands)))
 
+(defun %wallpaper-directory (directory)
+  "DIRECTORY without its trailing slashes."
+  (let ((path directory))
+    (loop while (and (plusp (length path))
+                     (char= (char path (1- (length path))) #\/))
+          do (setf path (subseq path 0 (1- (length path)))))
+    path))
+
+(defun %wallpaper-file-p (path)
+  (or (and (search ".png" path :start2 (max 0 (- (length path) 4)) :test #'string-equal) t)
+      (and (search ".jpg" path :start2 (max 0 (- (length path) 4)) :test #'string-equal) t)
+      (and (search ".jpeg" path :start2 (max 0 (- (length path) 5)) :test #'string-equal) t)))
+
 (defun wallpaper--pick (directory current)
   "A random PNG or JPEG under DIRECTORY other than CURRENT, or CURRENT when there is no other."
   (let ((files (remove current
-                       (loop for path in (directory (format nil "~A/**/*.*" (string-right-trim "/" directory)))
-                             when (member (pathname-type path) '("png" "jpg" "jpeg") :test #'string-equal)
-                               collect (sb-ext:native-namestring path))
+                       (remove-if-not #'%wallpaper-file-p
+                                      (%list-directory (%wallpaper-directory directory)))
                        :test #'equal)))
-    (if files (nth (random (length files) (make-random-state t)) files) current)))
+    (if files (nth (random (length files)) files) current)))
 
 (define-extension "wallpaper" (:reads (:data :command) :state nil) (snapshot state event)
   (let* ((settings (state-value snapshot :wallpaper-settings))

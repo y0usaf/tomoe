@@ -1,0 +1,1 @@
+(load-policy "desktop")
