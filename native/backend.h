@@ -38,6 +38,16 @@ uint32_t tomoe_keysym(const char *name);
 int tomoe_warm_shaders(const char *node, const char *directory);
 void tomoe_clear_bindings(struct tomoe *server);
 int tomoe_binding_current(struct tomoe *server, uint64_t binding_id);
+uint64_t tomoe_binding_id_for(struct tomoe *server, uint32_t modifiers, uint32_t keysym,
+    const char *owner, const char *press, uint64_t source_id);
+int tomoe_oracle_begin(struct tomoe *server, uint64_t binding_id, uint64_t epoch,
+    uint32_t expected_focus, int view_x, int view_y, double view_zoom, uint32_t focused,
+    int restack, unsigned int window_count, unsigned int stacking_count);
+int tomoe_oracle_window(struct tomoe *server, uint32_t id, int x, int y, int width, int height,
+    int visible, int fullscreen, int maximize);
+int tomoe_oracle_stack(struct tomoe *server, uint32_t id);
+int tomoe_oracle_end(struct tomoe *server);
+void tomoe_oracle_arm(struct tomoe *server, uint64_t epoch);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);
 int tomoe_output(struct tomoe *server, const char *name, int mode,

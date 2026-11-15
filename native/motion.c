@@ -97,6 +97,7 @@ bool motion_drag_begin(struct tomoe *s) {
     m->dx = m->dy = 0;
     m->drag_pending = false;
     m->drag_active = true;
+    oracle_invalidate(s);
     return true;
 }
 
@@ -143,6 +144,7 @@ bool motion_drag_motion(struct tomoe *s) {
     m->box_width = box_w;
     m->box_height = box_h;
     window_place_native(s, m->drag_id, box_x, box_y, box_w, box_h);
+    oracle_invalidate(s);
     m->dx += x - m->last_x;
     m->dy += y - m->last_y;
     m->last_x = x;

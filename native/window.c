@@ -338,6 +338,7 @@ static void pointer_follow(struct window *w) {
 }
 void tomoe_focus(struct tomoe *s, uint32_t id) {
     struct window *previous = s->focused ? find_window_registered(s, s->focused) : NULL;
+    oracle_invalidate(s);
     struct window *next = id ? find_window_registered(s, id) : NULL;
     struct window *mapped_next = find_window(s, id);
     if (mapped_next) node_raise_to_top(mapped_next->tree);
@@ -357,6 +358,7 @@ void tomoe_focus(struct tomoe *s, uint32_t id) {
 void tomoe_close(struct tomoe *s, uint32_t id) {
     struct window *w = find_window_registered(s, id);
     if (!w) return;
+    oracle_invalidate(s);
     xdg_toplevel_close(w->xdg);
 }
 const char *tomoe_window_identifier(struct tomoe *s, uint32_t id) {
@@ -813,6 +815,7 @@ void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, 
     struct window *w = find_window(s, id);
     if (!w || !w->tree || width < 1 || height < 1 || s->stopping) return;
     const struct settings *st = &s->settings;
+    oracle_invalidate(s);
     double now = animation_now();
     int old_x = w->target.x, old_y = w->target.y;
     bool shown = w->tree->enabled;
@@ -892,6 +895,7 @@ static void window_track_size(struct window *w) {
 
 static void window_mapped(struct window *w) {
     bool first_admission = !w->admitted;
+    oracle_invalidate(w->server);
     struct ghost *ghost, *next;
     wl_list_for_each_safe(ghost, next, &w->server->ghosts, link)
         if (ghost->id == w->target.id) ghost_release(ghost);
@@ -940,12 +944,14 @@ void window_client_resized(struct window *w) {
     w->client_width = width;
     w->client_height = height;
     window_track_size(w);
+    oracle_invalidate(w->server);
     window_geometry_event(w);
     schedule_scene(w->server);
 }
 static void unmapped(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, unmap);
     window_retire(w);
+    oracle_invalidate(w->server);
     w->mapped = false;
     w->configured = false;
     if (w->server->grab_id == w->target.id) grab_clear(w->server);

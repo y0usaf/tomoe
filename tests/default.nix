@@ -1047,6 +1047,15 @@ let
       ''
       + builtins.readFile ./purity.py;
     }
+    {
+      name = "oracle";
+      script = ''
+        INJECTOR = "${scenario}/bin/tomoe-scenario"
+        ORACLE_POLICY = "${./oracle-policy.lisp}"
+        ORACLE_LIVE_POLICY = "${./oracle-live-policy.lisp}"
+      ''
+      + builtins.readFile ./oracle.py;
+    }
   ];
   equivalenceSuites =
     pkgs.lib.optional (baseline != null) {

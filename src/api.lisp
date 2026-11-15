@@ -21,7 +21,7 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 2)
-(defconstant +native-abi-version+ 42)
+(defconstant +native-abi-version+ 43)
 (defparameter +context-keys+
   '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
 (defvar *definitions* :not-loading)
@@ -1499,11 +1499,13 @@ turns them all off while any is lit."
   (incf *next-source-id*))
 
 (defstruct (spec (:copier nil)) name reads initial update source directory admission package (token (gensym "SOURCE-"))
-  (id (allocate-source-id) :read-only t) patch form immutable-generation)
-(defun register-spec (name reads initial update &optional admission form)
+  (id (allocate-source-id) :read-only t) patch form immutable-generation precompute precompute-generation)
+(defun register-spec (name reads initial update &optional admission form precompute)
   (when (eq *definitions* :not-loading) (error "Load declarations with MOUNT or RELOAD."))
   (check-type name string)
   (check-type admission boolean)
+  (unless (or (null precompute) (eq precompute t) (eq precompute :passive))
+    (error "Invalid precompute declaration: ~S" precompute))
   (unless (and (<= 1 (length name) 80)
                (every (lambda (c) (or (find c "-_./") (alphanumericp c))) name))
     (error "Invalid extension name: ~S" name))
@@ -1513,17 +1515,24 @@ turns them all off while any is lit."
     (error "Duplicate extension: ~A" name))
   (push (make-spec :name (copy-seq name) :reads (copy-list reads)
                    :initial (copy-data initial) :update update :source *source* :admission admission
-                   :form form)
+                   :form form :precompute (copy-data precompute))
         *definitions*))
 
-(defmacro define-extension (name (&key reads state admission) (snapshot state-name event) &body body)
+(defmacro define-extension (name (&key reads state admission precompute) (snapshot state-name event) &body body)
   "Declare a pure reducer. Return state, owned effects, and one-shot commands.
 With :ADMISSION T, evaluate after ordinary reducers/rules, recalculating from
 the transaction's starting private state and event on every dependency round.
-Only the final proposal's state, effects and commands are accepted."
+Only the final proposal's state, effects and commands are accepted.
+With :PRECOMPUTE T the compositor may run this reducer's transaction before the
+key that runs it arrives, apply the presentation it would publish from the
+input handler, and adopt the state it settled on. The declaration is honoured
+only when the source is also proven free of mutation, clock and random reads,
+input/output, and writes outside its own arguments; every other reducer the
+transaction would wake must declare it too. :PRECOMPUTE :PASSIVE skips that
+proof and instead promises the same thing."
   `(register-spec ,name ',reads ,state
                   (lambda (,snapshot ,state-name ,event) ,@body) ,admission
-                  '(lambda (,snapshot ,state-name ,event) ,@body)))
+                  '(lambda (,snapshot ,state-name ,event) ,@body) ',precompute))
 
 (defparameter *host-commands* nil
   "Session commands the compositor owns. Keys, the command line and JSON all reach them.")

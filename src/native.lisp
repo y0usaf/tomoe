@@ -66,6 +66,24 @@
 (define-native ("tomoe_binding_current" %binding-current) sb-alien:int
   (server (* t)) (binding-id sb-alien:unsigned-long-long))
 
+(define-native ("tomoe_binding_id_for" %oracle-binding-id) sb-alien:unsigned-long-long
+  (server (* t)) (modifiers sb-alien:unsigned-int) (keysym sb-alien:unsigned-int)
+  (owner sb-alien:c-string) (press sb-alien:c-string) (source-id sb-alien:unsigned-long-long))
+(define-native ("tomoe_oracle_begin" %oracle-begin) sb-alien:int
+  (server (* t)) (binding-id sb-alien:unsigned-long-long) (epoch sb-alien:unsigned-long-long)
+  (expected-focus sb-alien:unsigned-int) (view-x sb-alien:int) (view-y sb-alien:int)
+  (view-zoom sb-alien:double) (focused sb-alien:unsigned-int) (restack sb-alien:int)
+  (window-count sb-alien:unsigned-int) (stacking-count sb-alien:unsigned-int))
+(define-native ("tomoe_oracle_window" %oracle-window) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int) (x sb-alien:int) (y sb-alien:int)
+  (width sb-alien:int) (height sb-alien:int) (visible sb-alien:int)
+  (fullscreen sb-alien:int) (maximize sb-alien:int))
+(define-native ("tomoe_oracle_stack" %oracle-stack) sb-alien:int
+  (server (* t)) (id sb-alien:unsigned-int))
+(define-native ("tomoe_oracle_end" %oracle-end) sb-alien:int (server (* t)))
+(define-native ("tomoe_oracle_arm" %oracle-arm) sb-alien:void
+  (server (* t)) (epoch sb-alien:unsigned-long-long))
+
 (define-native ("tomoe_ui_text_size" %ui-text-size-raw) sb-alien:unsigned-long-long
   (text sb-alien:c-string) (font sb-alien:c-string) (size sb-alien:double) (line-height sb-alien:double))
 (defvar *ui-text-sizes* (make-hash-table :test #'equal))

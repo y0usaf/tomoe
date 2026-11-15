@@ -34,7 +34,7 @@
           :description "Show or hide the sheet of bound hotkeys.")))
 
 (define-extension "commands" (:reads (:command :ui :focus :bindings :settings :data)
-                               :state '(:exit nil :overlay nil))
+                               :state '(:exit nil :overlay nil) :precompute t)
     (snapshot state event)
   (let* ((command (and (equal (getf event :owner) "commands")
                        (if (eq (getf event :type) :command)
@@ -116,7 +116,7 @@
 (define-extension "wm"
     (:reads (:windows :rules :data :outputs :workareas :layout :focus :button :pointer :command
              :request :settings)
-     :state nil :admission t)
+     :state nil :admission t :precompute t)
     (snapshot state event)
   (let* ((excluded (state-value snapshot :wm-exclude))
          (windows (remove-if (lambda (window) (member (getf window :id) excluded))
@@ -402,7 +402,7 @@
   "A Super+drag moves or resizes a window by pure arithmetic the native core can
 carry alone, so the pointer never waits for Lisp while a window follows it.")
 
-(define-extension "drag" (:reads (:windows :layout :button :grab :settings) :state nil) (snapshot state event)
+(define-extension "drag" (:reads (:windows :layout :button :grab :settings) :state nil :precompute t) (snapshot state event)
   (labels ((drag-box (state dx dy)
              (flet ((bound (value) (min 1048576 (max -1048576 value)))
                     (size (value) (min 16384 (max 64 value))))
@@ -475,7 +475,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                nil))
       (t (values nil (list +drag-contract+) nil))))))
 
-(define-extension "config-error" (:reads (:config-error :data) :state nil) (snapshot hidden event)
+(define-extension "config-error" (:reads (:config-error :data) :state nil :precompute t) (snapshot hidden event)
   (let* ((failure (context snapshot :config-error))
          (serial (getf failure :serial))
          (timer (and serial (intern (format nil "HIDE-~D" serial) :keyword)))
@@ -511,7 +511,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
       (1 (first picks))
       (t (list :menu (reverse items) (reverse picks))))))
 
-(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :command :ui :data) :state nil)
+(define-extension "screencast" (:reads (:screencast :windows :outputs :rules :command :ui :data) :state nil :precompute t)
     (snapshot state event)
   (let ((queue (getf state :queue)) (selected (getf state :selected 0)) (commands nil))
     (flet ((answer (token pick) (push (screencast-answer token (first pick) (second pick)) commands)))
@@ -551,7 +551,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                        :test #'equal)))
     (if files (nth (random (length files) (make-random-state t)) files) current)))
 
-(define-extension "wallpaper" (:reads (:data :command) :state nil) (snapshot state event)
+(define-extension "wallpaper" (:reads (:data :command) :state nil :precompute :passive) (snapshot state event)
   (let* ((settings (state-value snapshot :wallpaper-settings))
          (directory (getf settings :directory))
          (bind (getf settings :bind))
@@ -571,13 +571,13 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                                            :background (list :image path :fit (getf settings :fit :cover))))))
             nil)))
 
-(define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil) (snapshot state event)
+(define-extension "screenshot-clipboard" (:reads (:screenshot) :state nil :precompute t) (snapshot state event)
   (declare (ignore snapshot))
   (values state nil
           (when (eq (getf event :type) :screenshot)
             (list (clipboard-copy (getf event :path) "image/png" :delete t)))))
 
-(define-extension "screenshot-theme" (:reads (:data) :state nil) (snapshot state event)
+(define-extension "screenshot-theme" (:reads (:data) :state nil :precompute t) (snapshot state event)
   (declare (ignore event))
   (let ((published (state-value snapshot :theme)))
     (values state
@@ -590,7 +590,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
 (defparameter +notification-theme+ '(:base "#1e1e2e" :text "#cdd6f4" :subtext0 "#a6adc8")
   "The notification card colours when no :theme is published.")
 
-(define-extension "notification-popups" (:reads (:services :outputs :data) :state nil)
+(define-extension "notification-popups" (:reads (:services :outputs :data) :state nil :precompute t)
     (snapshot state event)
   (declare (ignore state event))
   (let* ((published (state-value snapshot :theme))

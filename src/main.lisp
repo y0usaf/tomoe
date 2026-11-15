@@ -402,6 +402,7 @@ an edit calls for; a source whose directory is still missing is retried."
            (setf native (open-backend name)
                  runtime (make-runtime :backend native :socket name)
                  *timing* (plusp (%timing-enabled))
+                 *oracle-enabled* (not (equal (sb-ext:posix-getenv "TOMOE_ORACLE") "0"))
                  *layout-trace-path* (sb-ext:posix-getenv "TOMOE_LAYOUT_TRACE"))
            (unless (zerop (%watch-signals native))
              (error "Cannot wake the event loop for SIGTERM and SIGINT."))
@@ -461,7 +462,10 @@ an edit calls for; a source whose directory is still missing is retried."
                (watch-sources runtime stamps)
                (decf (runtime-source-scans runtime))
                (setf (runtime-source-deadline runtime)
-                     (+ (get-internal-real-time) (floor internal-time-units-per-second 4)))))
+                     (+ (get-internal-real-time) (floor internal-time-units-per-second 4))))
+             ;; Everything this turn asked for has been served, so the next key
+             ;; can find the transition it would run already computed.
+             (prepare-oracle-deltas runtime))
            (loop with deadline = (+ (get-internal-real-time) (ceiling internal-time-units-per-second 10))
                  while (and (json-control-pending-p json-server)
                             (< (get-internal-real-time) deadline))

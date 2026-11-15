@@ -24,6 +24,7 @@ struct binding {
     bool active, matched;
     struct binding *replacement;
     char *owner, *press, *release;
+    struct binding_delta *delta;
 };
 struct binding_latch {
     struct binding *binding;
@@ -865,6 +866,7 @@ static void binding_free(struct binding *binding) {
     free(binding->owner);
     free(binding->press);
     free(binding->release);
+    binding_delta_free(binding->delta);
     free(binding);
 }
 
@@ -891,6 +893,7 @@ static void release_binding_list(struct wl_list *bindings, bool deactivate) {
 
 static void keyboard_latches_cancel(struct tomoe *s);
 void input_lock_begin(struct tomoe *s) {
+    oracle_invalidate(s);
     grab_clear(s);
     keyboard_latches_cancel(s);
     pointer_refresh(s);
@@ -972,6 +975,109 @@ int tomoe_binding_current(struct tomoe *s, uint64_t binding_id) {
     wl_list_for_each(binding, &s->bindings, link)
         if (binding->active && binding->id == binding_id) return 1;
     return 0;
+}
+
+void oracle_invalidate(struct tomoe *s) {
+    if (s) s->oracle_valid = false;
+}
+
+uint64_t tomoe_binding_id_for(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
+        const char *owner, const char *press, uint64_t source_id) {
+    if (!s || !owner || !press) return 0;
+    struct binding *b;
+    wl_list_for_each(b, &s->bindings, link) {
+        if (b->active && b->modifiers == modifiers && b->keysym == keysym &&
+                b->source_id == source_id && strcmp(b->owner, owner) == 0 &&
+                strcmp(b->press, press) == 0)
+            return b->id;
+    }
+    return 0;
+}
+
+int tomoe_oracle_begin(struct tomoe *s, uint64_t binding_id, uint64_t epoch,
+        uint32_t expected_focus, int view_x, int view_y, double view_zoom,
+        uint32_t focused, int restack, unsigned int window_count, unsigned int stacking_count) {
+    if (!s || binding_id == 0 || epoch == 0 || window_count > 4096 || stacking_count > 4096)
+        return 0;
+    binding_delta_free(s->staging_delta);
+    s->staging_delta = NULL;
+    s->staging_binding_id = 0;
+    struct binding_delta *d = calloc(1, sizeof(*d));
+    if (!d) return 0;
+    if (window_count) {
+        d->windows = calloc(window_count, sizeof(*d->windows));
+        if (!d->windows) { binding_delta_free(d); return 0; }
+    }
+    if (stacking_count) {
+        d->stacking = calloc(stacking_count, sizeof(*d->stacking));
+        if (!d->stacking) { binding_delta_free(d); return 0; }
+    }
+    d->epoch = epoch;
+    d->expected_focus = expected_focus == UINT32_MAX ? tomoe_keyboard_focus(s) : expected_focus;
+    d->view_x = view_x;
+    d->view_y = view_y;
+    d->view_zoom = view_zoom;
+    d->focused = focused;
+    d->restack = restack != 0;
+    d->window_cap = window_count;
+    d->stacking_cap = stacking_count;
+    s->staging_delta = d;
+    s->staging_binding_id = binding_id;
+    return 1;
+}
+
+int tomoe_oracle_window(struct tomoe *s, uint32_t id, int x, int y, int width, int height,
+        int visible, int fullscreen, int maximize) {
+    if (!s || !s->staging_delta) return 0;
+    struct binding_delta *d = s->staging_delta;
+    if (d->window_count >= d->window_cap) return 0;
+    d->windows[d->window_count++] = (struct delta_window){
+        .id = id, .x = x, .y = y, .width = width, .height = height,
+        .visible = visible != 0, .fullscreen = fullscreen != 0, .maximize = maximize != 0,
+    };
+    return 1;
+}
+
+int tomoe_oracle_stack(struct tomoe *s, uint32_t id) {
+    if (!s || !s->staging_delta) return 0;
+    struct binding_delta *d = s->staging_delta;
+    if (d->stacking_count >= d->stacking_cap) return 0;
+    d->stacking[d->stacking_count++] = id;
+    return 1;
+}
+
+int tomoe_oracle_end(struct tomoe *s) {
+    if (!s || !s->staging_delta) return 0;
+    struct binding_delta *d = s->staging_delta;
+    uint64_t id = s->staging_binding_id;
+    s->staging_delta = NULL;
+    s->staging_binding_id = 0;
+    if (d->window_count != d->window_cap || d->stacking_count != d->stacking_cap) {
+        binding_delta_free(d);
+        return 0;
+    }
+    struct binding *b;
+    wl_list_for_each(b, &s->bindings, link) {
+        if (b->active && b->id == id) {
+            binding_delta_free(b->delta);
+            b->delta = d;
+            return 1;
+        }
+    }
+    binding_delta_free(d);
+    return 0;
+}
+
+void tomoe_oracle_arm(struct tomoe *s, uint64_t epoch) {
+    if (!s || epoch == 0) return;
+    if (s->stopping || s->failed || s->event_count != 0 || s->configuring_outputs ||
+            s->outputs_deferred || s->grab_mode != 0 || s->grab_owner || s->popup_grab ||
+            s->screenshot || lock_active(s) || s->motion.drag_active || s->motion.drag_pending) {
+        s->oracle_valid = false;
+        return;
+    }
+    s->oracle_epoch = epoch;
+    s->oracle_valid = true;
 }
 
 static bool binding_equivalent(const struct binding *left,
@@ -1536,6 +1642,33 @@ static void binding_event(struct keyboard *keyboard, const struct binding *bindi
     fputc(')', out);
     end_event(s, event, out);
 }
+static bool oracle_try_apply(struct keyboard *keyboard, struct binding *binding) {
+    if (!keyboard || !binding || !binding->delta) return false;
+    struct tomoe *s = keyboard->server;
+    const struct binding_delta *d = binding->delta;
+    if (!s || !s->oracle_valid || d->epoch == 0 || d->epoch != s->oracle_epoch) return false;
+    if (s->stopping || s->failed || s->configuring_outputs || s->outputs_deferred) return false;
+    if (s->grab_mode != 0 || s->grab_owner || s->popup_grab || s->screenshot) return false;
+    if (s->motion.drag_active || s->motion.drag_pending) return false;
+    if (tomoe_keyboard_focus(s) != d->expected_focus) return false;
+    struct event *event;
+    size_t size;
+    FILE *out = begin_event(s, &event, &size);
+    if (!out) return false;
+    if (!presentation_apply_delta(s, d)) {
+        drop_event(event, out);
+        return false;
+    }
+    timing_key_done(s);
+    fprintf(out, "(:type :adopted :epoch %" PRIu64 " :binding-id %" PRIu64
+        " :source-id %" PRIu64 " :owner ", d->epoch, binding->id, binding->source_id);
+    quote(out, binding->owner);
+    fputs(" :command ", out);
+    quote(out, binding->press);
+    fputc(')', out);
+    end_event(s, event, out);
+    return true;
+}
 
 static bool keyboard_has_unconsumed(struct tomoe *s,
         const struct keyboard *ignore, uint32_t keycode) {
@@ -1728,7 +1861,8 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
             binding_ref(b);
             latch->binding = b;
             latch->consumed = true;
-            binding_event(k, b, b->press, "pressed", input->keycode);
+            if (!oracle_try_apply(k, b))
+                binding_event(k, b, b->press, "pressed", input->keycode);
             logical_key_event_done(s, input->keycode, input->state,
                 first_global, last_global);
             return;

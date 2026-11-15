@@ -37,6 +37,23 @@ fold calls directly, such as the keyboard default and the host command table, so
 they invalidate a context without any effect changing.")
 
 (defvar *patch-generation* 0)
+
+(defvar *speculating* nil
+  "Non-nil while a transaction is evaluated for a key that has not arrived yet.
+Speculation neither commits nor runs a command, and it stops at the first
+reducer that has not declared itself safe to evaluate ahead of its event.")
+
+(defvar *speculation* nil
+  "The mounts, context and commands a speculative transaction settled on.")
+
+(defparameter +oracle-focus-unset+ 4294967295
+  "Ask the native side for the keyboard focus it holds now when staging a delta.")
+
+(defvar *oracle-enabled* t
+  "Whether a key with a staged transition is applied by the native side.
+The session sets it from TOMOE_ORACLE when it starts, so a saved image does not
+freeze the answer it was built with.")
+(defvar *precomputing* nil)
 (defvar *timing* nil
   "Whether the native side keeps latency samples, so the loop can report when a
 transaction has returned without paying for a call it does not need.")
@@ -96,7 +113,9 @@ it consed, when samples are kept."
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed
   idle-swept
-  motion-plan)
+  motion-plan
+  (oracle-generation 0) (oracle-epoch 0) oracle-ready oracle-memo oracle-mru
+  (oracle-adopted 0) (oracle-prepared 0) (oracle-missed 0))
 
 (defconstant +event-readable+ 1)
 (defconstant +event-writable+ 2)
@@ -366,6 +385,8 @@ handful of effects, so a scan beats a hash table until the list is long."
 (defun spec-immutable-p (spec)
   (and spec (eql (spec-immutable-generation spec) *patch-generation*)))
 
+(defun spec-precomputable-p (spec)
+  (and spec (spec-precompute spec) (eql (spec-precompute-generation spec) *patch-generation*)))
 (defun invoke-extension (runtime mounted context event)
   (let* ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
          (rule-p (not (null (mounted-rule-parent mounted))))
@@ -983,16 +1004,19 @@ when it is not 1."
                          :test #'equal :key (lambda (o) (getf o :name))))
                  (getf context :output-config)))
 
-(defun commit-context (runtime mounts context &optional commands)
-  "The only extension-to-native write path. All reducers have returned and validated."
+(defun commit-context (runtime mounts context &optional commands &key (native t))
+  "The only extension-to-native write path. All reducers have returned and validated.
+NATIVE NIL adopts a context whose presentation the native side has published
+already, and commits the rest of it without publishing a second time."
   (setf mounts (prune-rule-mounts runtime mounts))
   (let ((watches (prepare-watches runtime mounts)))
-    (unwind-protect (%commit-context runtime mounts context commands watches)
+    (unwind-protect (%commit-context runtime mounts context commands watches native)
       (discard-watch-plan watches))))
 
-(defun %commit-context (runtime mounts context commands watches)
+(defun %commit-context (runtime mounts context commands watches native)
   ;; Timers declared :REFRESH resolve against the display rate the context
   ;; reports, so the bar and HUD step once per refresh of the monitor in use.
+  (incf (runtime-oracle-generation runtime))
   (setf *frame-ms* (frame-period-ms (getf context :outputs)))
   (let* ((old (runtime-effective runtime)) (backend (runtime-backend runtime))
          (restack (not (equal (getf old :stacking) (getf context :stacking))))
@@ -1025,10 +1049,11 @@ when it is not 1."
               (not (equal (resolved-layer-overrides (runtime-mounts runtime)) overrides))
               (not (equal grab (applied-grab backend)))
               (motion-plan-changed-p runtime motion))
-      (configure-native-presentation backend outputs context overrides restack
-                                     outputs-changed bindings-changed grab motion keyboard-changed
-                                     settings-changed sounds-changed)
-      (setf (runtime-motion-plan runtime) motion))
+      (when native
+        (configure-native-presentation backend outputs context overrides restack
+                                       outputs-changed bindings-changed grab motion keyboard-changed
+                                       settings-changed sounds-changed)
+        (setf (runtime-motion-plan runtime) motion)))
     (when outputs-changed
       (setf (runtime-outputs runtime) (getf context :outputs)
             (runtime-connectors runtime) (getf context :connectors))
@@ -1117,6 +1142,10 @@ instance that reconciliation created inside it."
                                      (copy-data (mounted-state mounted)))
                                  (sixth (effect-arguments (mounted-rule-definition mounted)))))))))
              (invoke (mounted delivered)
+               (when *speculating*
+                 (unless (and (not (mounted-rule-parent mounted))
+                              (spec-precomputable-p (mounted-spec mounted)))
+                   (throw 'speculation-aborted nil)))
                (with-sample ("tx-invoke")
                 (when (admission-scope-p mounted candidate)
                  (let* ((spec (mounted-spec mounted))
@@ -1199,6 +1228,9 @@ instance that reconciliation created inside it."
                   (values materialized (changed-keys before materialized))))
             (setf context next dirty changes event (list :type :change :keys changes))
             (unless (or changes force)
+              (when *speculating*
+                (setf *speculation* (list candidate context commands))
+                (return-from %transact t))
               (commit-call-resolution runtime context)
               (let* ((commands (loop for (owner . command) in commands
                                      when (find owner candidate :key #'mounted-spec) collect command))
@@ -1317,6 +1349,11 @@ into one reused buffer, so watching allocates nothing per file."
   '(clock-text clock-boundary-ms frame-ms get-internal-real-time get-internal-run-time
     get-universal-time get-decoded-time))
 
+(defparameter +local-mutation-operators+
+  '(rplaca rplacd sb-kernel:%rplaca sb-kernel:%rplacd sb-impl::%putf
+    nreverse nreconc nconc sort stable-sort delete delete-if delete-if-not
+    delete-duplicates nsubstitute nsubst))
+
 (defparameter +designator-positions+
   (let ((table (make-hash-table :test #'eq)))
     (dolist (entry '((mapcar 0) (mapc 0) (maplist 0) (mapl 0) (mapcan 0) (mapcon 0)
@@ -1355,19 +1392,22 @@ CHECK resolves one designator form, returning NIL when it cannot."
                           (member (car tail) +designator-keywords+)
                           (not (funcall check (second tail))))))))
 
-(defun form-verified-p (form defuns constants &optional seen)
+(defun form-verified-p (form mode defuns constants &optional seen)
   (let ((ok t)
         (local-fns nil)
         (dx-tails (make-hash-table :test #'eq)))
     (labels ((helper-safe-p (sym)
                (cond ((member sym seen :test #'eq) t)
                      ((gethash sym defuns)
-                      (form-verified-p (gethash sym defuns) defuns constants (cons sym seen)))
+                      (form-verified-p (gethash sym defuns) mode defuns constants (cons sym seen)))
+                     ((eq mode :passive) t)
                      (t nil)))
              (operator-safe-p (sym)
                (or (member sym local-fns :test #'eq)
                    (gethash sym +pure-functions+)
-                   (member sym +clock-read-functions+ :test #'eq)
+                   (and (eq mode :immutable) (member sym +clock-read-functions+ :test #'eq))
+                   (and (member mode '(:precompute :passive))
+                        (member sym +local-mutation-operators+ :test #'eq))
                    (helper-safe-p sym)))
              (designator-safe-p (arg)
                "Whether ARG, evaluated where the callee will call it, is a function
@@ -1445,7 +1485,8 @@ variable, an INTERN or a computed name can name any function."
                         ((eq op 'format)
                          (unless (null (first args)) (setf ok nil)))
                         ((member op '(funcall apply))
-                         (unless (callable-arg-safe-p (first args))
+                         (unless (or (callable-arg-safe-p (first args))
+                                     (eq mode :passive))
                            (setf ok nil)))
                         ((not (operator-safe-p op))
                          (setf ok nil)))
@@ -1503,12 +1544,17 @@ variable, an INTERN or a computed name can name any function."
     (dolist (entry (nreverse params))
       (let ((sym (car entry)) (init (cdr entry)))
         (when (and (not (gethash sym mutated))
-                   (form-verified-p init defuns constants))
+                   (form-verified-p init :precompute defuns constants))
           (setf (gethash sym constants) t))))
     (dolist (spec specs specs)
-      (when (and (spec-form spec)
-                 (form-verified-p (spec-form spec) defuns constants))
-        (setf (spec-immutable-generation spec) *patch-generation*)))))
+      (when (spec-form spec)
+        (when (form-verified-p (spec-form spec) :immutable defuns constants)
+          (setf (spec-immutable-generation spec) *patch-generation*))
+        (when (spec-precompute spec)
+          (let ((mode (if (eq (spec-precompute spec) :passive) :passive :precompute)))
+            (if (form-verified-p (spec-form spec) mode defuns constants)
+                (setf (spec-precompute-generation spec) *patch-generation*)
+                (setf (spec-precompute spec) nil))))))))
 (defun load-specs (runtime path &optional package)
   (incf *definitions-generation*)
   (let* ((*source* path)
@@ -1728,6 +1774,209 @@ burst of shader compiles, captures or decoded images grew without a collection r
   (let ((backend (runtime-backend runtime)))
     (and backend (%window-identifier backend id))))
 
+
+;;; Keybinding oracle.
+;;;
+;;; A key runs a policy transaction. When the binding's owner has declared that
+;;; its reducer is safe to evaluate ahead of its event, the loop can run that
+;;; transaction before the key arrives, keep the state it settled on, and hand
+;;; the native side the presentation it would have published. The key then
+;;; moves the screen from the input handler, and Lisp adopts the state it
+;;; already computed.
+;;;
+;;; Every guard here exists so a delta can never land state the committed
+;;; context disagrees with. A delta is keyed to the commit it was computed
+;;; from, the native side checks the focus it staged against the focus it
+;;; holds, and a binding without a fresh preparation runs the ordinary path.
+
+(defparameter +oracle-fixed-keys+
+  '(:outputs :connectors :output-config :native-output-config :layers :surface-plans
+    :settings :sounds :keyboard :keyboard-grab :bindings :virtual-outputs)
+  "Context keys the native side publishes, other than the view, focus, window
+geometry and stacking a delta carries. A transaction that changes any of them is
+published the ordinary way. Everything else a context holds is Lisp's alone, so
+an adopted transaction may change it freely.")
+
+(defun motion-plan-for (runtime mounts)
+  (multiple-value-bind (grab details) (resolved-grab runtime mounts)
+    (resolved-motion-plan mounts grab details)))
+
+(defun same-windows-p (before after)
+  "Whether two layouts describe the same windows with the same properties.
+Geometry, visibility, fullscreen and maximize are what a delta carries, so a
+window that appeared, went away or changed a property is published the
+ordinary way."
+  (and (= (length before) (length after))
+       (every (lambda (window)
+                (let ((after (find (getf window :id) after :key (lambda (one) (getf one :id)))))
+                  (and after (equal (getf window :properties) (getf after :properties)))))
+              before)))
+
+(defun presentation-only-p (runtime mounts context)
+  "Whether CONTEXT differs from the committed one only in what a delta carries."
+  (and (null (remove-if (lambda (key) (equal (getf (runtime-effective runtime) key)
+                                             (getf context key)))
+                        +oracle-fixed-keys+))
+       (same-windows-p (getf (runtime-effective runtime) :layout) (getf context :layout))
+       (equal (runtime-motion-plan runtime) (motion-plan-for runtime mounts))))
+
+(defun key-transaction (runtime event)
+  "What a :KEY event does, as (:TYPE :TRANSACTION :EVENT :CHANGED :FORCE), or
+(:TYPE :HOST :ENTRY :ARGUMENTS) when it runs a host command, or NIL when it
+names nothing this session owns."
+  (when (getf event :binding-id)
+    (let* ((owner (find (getf event :owner) (runtime-mounts runtime) :test #'equal
+                        :key (lambda (mount) (spec-name (mounted-spec mount)))))
+           (source-id (and owner (spec-id (mounted-spec owner)))))
+      (unless (and source-id (eql source-id (getf event :source-id))
+                   (runtime-backend runtime)
+                   (typep (getf event :binding-id) '(integer 1 18446744073709551615))
+                   (= 1 (%binding-current (runtime-backend runtime) (getf event :binding-id))))
+        (return-from key-transaction nil))))
+  (let ((call (keyboard-call runtime event)))
+    (cond
+      ((null call) nil)
+      ((eq (first call) :callback)
+       (list :type :transaction :event (callback-event event (second call))
+             :changed '(:command) :force (list (getf event :owner))))
+      (t (let ((entry (registered-command (getf (runtime-effective runtime) :commands)
+                                          (first call))))
+           (unless entry (return-from key-transaction nil))
+           (if (getf entry :host)
+               (list :type :host :entry entry :arguments (rest call))
+               (list :type :transaction
+                     :event (command-event runtime entry (first call) (rest call) event)
+                     :changed '(:command) :force (list (getf entry :owner)))))))))
+
+(defun run-host-key (runtime dispatch)
+  (let ((*command-input* t))
+    (handler-case (host-command-call runtime (getf dispatch :entry) (getf dispatch :arguments))
+      (serious-condition (condition) (record-error runtime condition)))))
+
+(defun oracle-binding (runtime key)
+  "The binding (:OWNER :COMMAND) names, or NIL once it is gone."
+  (find-if (lambda (binding)
+             (and (stringp (getf binding :command))
+                  (equal (getf binding :owner) (first key))
+                  (equal (getf binding :command) (second key))))
+           (getf (runtime-effective runtime) :bindings)))
+
+(defun precomputable-binding-p (runtime binding)
+  (let ((mount (find (getf binding :source-id) (root-mounts (runtime-mounts runtime))
+                     :key (lambda (mounted) (spec-id (mounted-spec mounted))))))
+    (and mount (spec-precomputable-p (mounted-spec mount)))))
+
+(defun oracle-note-key (runtime event)
+  "Remember the binding EVENT ran, so its next transition can be staged. A key
+that names no binding of its own, such as the release of one, leaves the
+remembered binding alone."
+  (let ((binding (and (getf event :owner) (getf event :command)
+                      (oracle-binding runtime (list (getf event :owner) (getf event :command))))))
+    (when (and binding (precomputable-binding-p runtime binding))
+      (setf (runtime-oracle-mru runtime)
+            (list (getf binding :owner) (getf binding :command))))))
+
+(defun oracle-key-event (backend binding)
+  "The :KEY event the native side emits for BINDING's press, or NIL when the
+native side does not have that binding."
+  (let ((id (%oracle-binding-id backend (getf binding :modifiers) (getf binding :code)
+                                (getf binding :owner) (getf binding :command)
+                                (getf binding :source-id))))
+    (when (and id (plusp id))
+      (list :type :key :state :pressed :binding-id id
+            :owner (getf binding :owner) :command (getf binding :command)
+            :source-id (getf binding :source-id)))))
+
+(defun speculation-clean-p (runtime candidate)
+  "Whether the speculative transaction left every reducer it ran as healthy as
+the committed one, so a reducer that failed is never published for a key."
+  (every (lambda (mounted)
+           (let ((base (find (spec-id (mounted-spec mounted))
+                             (root-mounts (runtime-mounts runtime))
+                             :key (lambda (one) (spec-id (mounted-spec one))))))
+             (or (null base) (= (mounted-failures mounted) (mounted-failures base)))))
+         (root-mounts candidate)))
+
+(defun speculative-transaction (runtime dispatch)
+  "Evaluate DISPATCH's transaction without committing it. NIL when a reducer
+this session cannot evaluate ahead of its event would run."
+  (catch 'speculation-aborted
+    (let ((*speculating* t) (*speculation* nil))
+      (unwind-protect
+           (when (%transact runtime (runtime-mounts runtime) (getf dispatch :event)
+                            (getf dispatch :changed) (getf dispatch :force))
+             *speculation*)
+        (discard-ui-asset-scratch runtime)))))
+
+(defun stage-oracle-delta (backend binding-id epoch restack context)
+  "Hand the native side the presentation CONTEXT would have published."
+  (let ((view (getf context :view))
+        (layout (getf context :layout))
+        (stacking (getf context :stacking)))
+    (unless (= 1 (%oracle-begin backend binding-id epoch +oracle-focus-unset+
+                                (getf view :x) (getf view :y) (getf view :zoom)
+                                (or (getf context :focus) 0) (if restack 1 0)
+                                (length layout) (length stacking)))
+      (return-from stage-oracle-delta nil))
+    (dolist (window layout)
+      (unless (= 1 (%oracle-window backend (getf window :id) (getf window :x) (getf window :y)
+                                   (getf window :width) (getf window :height)
+                                   (if (getf window :visible t) 1 0)
+                                   (if (getf window :fullscreen) 1 0)
+                                   (if (getf window :maximize) 1 0)))
+        (return-from stage-oracle-delta nil)))
+    (dolist (id stacking)
+      (unless (= 1 (%oracle-stack backend id)) (return-from stage-oracle-delta nil)))
+    (= 1 (%oracle-end backend))))
+
+(defun prepare-oracle-deltas (runtime)
+  "Stage the transition of the key pressed most recently, when its owner has
+declared that transition safe to evaluate ahead of the event. Runs between
+events, at most one speculative transaction per commit, and does nothing once
+the committed state has been staged."
+  (handler-case (prepare-oracle-delta runtime)
+    (serious-condition (condition)
+      ;; Evaluation ahead of the event is an optimisation: once it surprises
+      ;; us, the session keeps the synchronous path for the rest of its life.
+      (setf *oracle-enabled* nil)
+      (record-error runtime condition))))
+
+(defun prepare-oracle-delta (runtime)
+  (let ((backend (runtime-backend runtime)))
+    (when (and backend *oracle-enabled* (runtime-running runtime)
+               (zerop (%event-count backend))
+               (not (eql (runtime-oracle-ready runtime) (runtime-oracle-generation runtime))))
+      (setf (runtime-oracle-ready runtime) (runtime-oracle-generation runtime))
+      (let* ((binding (oracle-binding runtime (runtime-oracle-mru runtime)))
+             (event (and binding (precomputable-binding-p runtime binding)
+                         (oracle-key-event backend binding)))
+             (dispatch (and event (key-transaction runtime event))))
+        (when (and dispatch (eq (getf dispatch :type) :transaction))
+          (let ((result (speculative-transaction runtime dispatch)))
+            (when (and result (null (third result))
+                       (speculation-clean-p runtime (first result))
+                       (presentation-only-p runtime (first result) (second result)))
+              (let* ((context (second result))
+                     (base (runtime-effective runtime))
+                     (restack (not (equal (getf base :stacking) (getf context :stacking))))
+                     (epoch (incf (runtime-oracle-epoch runtime))))
+                (when (stage-oracle-delta backend (getf event :binding-id) epoch restack context)
+                  (incf (runtime-oracle-prepared runtime))
+                  (setf (runtime-oracle-memo runtime)
+                        (list :epoch epoch :generation (runtime-oracle-generation runtime)
+                              :mounts (first result) :context context))
+                  (%oracle-arm backend epoch))))))))))
+
+(defun adopt-transaction (runtime memo)
+  "Commit the transaction the native side has already applied. The context is
+the one staged for this epoch, so nothing is published a second time: the
+native presentation of that commit is already on screen."
+  (let ((context (getf memo :context)) (mounts (getf memo :mounts)))
+    (setf (runtime-oracle-memo runtime) nil)
+    (commit-call-resolution runtime context)
+    (commit-context runtime mounts context nil :native nil)
+    (setf (runtime-pending-context runtime) nil)))
+
 (defun dispatch-event (runtime event)
   (let ((changed nil) (force nil))
     (ecase (getf event :type)
@@ -1866,33 +2115,43 @@ burst of shader compiles, captures or decoded images grew without a collection r
            (push :connectors changed))))
       (:key
        (unless (getf event :state) (setf event (list* :state :pressed event)))
-       (when (getf event :binding-id)
-         (let* ((owner (find (getf event :owner) (runtime-mounts runtime) :test #'equal
-                             :key (lambda (mount) (spec-name (mounted-spec mount)))))
-                (source-id (and owner (spec-id (mounted-spec owner)))))
-           (unless (and source-id (eql source-id (getf event :source-id))
-                        (runtime-backend runtime)
-                        (typep (getf event :binding-id) '(integer 1 18446744073709551615))
-                        (= 1 (%binding-current (runtime-backend runtime) (getf event :binding-id))))
-             (return-from dispatch-event))))
-       (let ((call (keyboard-call runtime event)))
+       (let ((dispatch (key-transaction runtime event)))
          (cond
-           ((null call) (return-from dispatch-event))
-           ((eq (first call) :callback)
-            (setf event (callback-event event (second call)))
-            (push (getf event :owner) force)
-            (push :command changed))
-           (t (let ((entry (registered-command (getf (runtime-effective runtime) :commands)
-                                              (first call))))
-                (unless entry (return-from dispatch-event))
-                (when (getf entry :host)
-                  (let ((*command-input* t))
-                    (handler-case (host-command-call runtime entry (rest call))
-                      (serious-condition (condition) (record-error runtime condition))))
-                  (return-from dispatch-event))
-                (setf event (command-event runtime entry (first call) (rest call) event))
-                (push (getf entry :owner) force)
-                (push :command changed))))))
+           ((null dispatch) (return-from dispatch-event))
+           ((eq (getf dispatch :type) :host)
+            (run-host-key runtime dispatch)
+            (return-from dispatch-event))
+           (t (oracle-note-key runtime event)
+              (setf event (getf dispatch :event))
+              (dolist (name (getf dispatch :force)) (push name force))
+              (dolist (key (getf dispatch :changed)) (pushnew key changed))))))
+      (:adopted
+       ;; The native side applied a staged transition before Lisp saw the key.
+       (let ((memo (runtime-oracle-memo runtime))
+             (key (list :type :key :state :pressed :owner (getf event :owner)
+                        :command (getf event :command) :source-id (getf event :source-id)
+                        :binding-id (getf event :binding-id))))
+         (oracle-note-key runtime key)
+         (if (and memo (eql (getf memo :epoch) (getf event :epoch))
+                  (eql (getf memo :generation) (runtime-oracle-generation runtime)))
+             (progn
+               (incf (runtime-oracle-adopted runtime))
+               (adopt-transaction runtime memo)
+               (return-from dispatch-event))
+             ;; Without the staged transaction the screen has still moved, so
+             ;; run the key the ordinary way and let it commit what it finds.
+             (progn
+               (incf (runtime-oracle-missed runtime))
+               (setf (runtime-oracle-memo runtime) nil)
+               (let ((dispatch (key-transaction runtime key)))
+                 (cond
+                   ((null dispatch) (return-from dispatch-event))
+                   ((eq (getf dispatch :type) :host)
+                    (run-host-key runtime dispatch)
+                    (return-from dispatch-event))
+                   (t (setf event (getf dispatch :event))
+                      (dolist (name (getf dispatch :force)) (push name force))
+                      (dolist (change (getf dispatch :changed)) (pushnew change changed)))))))))
       (:command
        (push (getf event :owner) force)
        (push :command changed))
@@ -1951,6 +2210,10 @@ burst of shader compiles, captures or decoded images grew without a collection r
                   :native-sound (when (runtime-backend runtime)
                                   (read-data (%sound-stats (runtime-backend runtime))))
                   :native-errors (read-data (%native-errors))
+                  :oracle (list :enabled (and *oracle-enabled* t)
+                                :prepared (runtime-oracle-prepared runtime)
+                                :adopted (runtime-oracle-adopted runtime)
+                                :missed (runtime-oracle-missed runtime))
                   :watch (runtime-watch runtime)
                   :timers (describe-timers runtime)
                   :watches (describe-watches runtime)
@@ -1969,6 +2232,7 @@ burst of shader compiles, captures or decoded images grew without a collection r
                         collect (list :name (spec-name spec) :source (spec-source spec)
                                       :reads (spec-reads spec) :admission (spec-admission spec) :state (mounted-state m)
                                       :shared (and (spec-immutable-p spec) t)
+                                      :precompute (if (spec-precomputable-p spec) t nil)
                                       :dispatches (mounted-dispatches m)
                                       :failures (mounted-failures m)
                                       :last-error (mounted-last-error m)

@@ -799,6 +799,23 @@ struct presentation {
     struct sound_bank *sounds;
     struct motion_plan motion;
 };
+struct delta_window {
+    uint32_t id;
+    int x, y, width, height;
+    bool visible, fullscreen, maximize;
+};
+struct binding_delta {
+    uint64_t epoch;
+    uint32_t expected_focus;
+    int view_x, view_y;
+    double view_zoom;
+    uint32_t focused;
+    bool restack;
+    struct delta_window *windows;
+    size_t window_count, window_cap;
+    uint32_t *stacking;
+    size_t stacking_count, stacking_cap;
+};
 void settings_publish(struct tomoe *s, struct presentation *plan);
 enum sound_event { SOUND_KEY, SOUND_BUTTON, SOUND_OPEN, SOUND_CLOSE, SOUND_BELL, SOUND_EVENTS };
 void sound_play(struct tomoe *s, enum sound_event event);
@@ -1064,6 +1081,10 @@ struct tomoe {
     size_t event_count;
     size_t observation_barrier;
     struct motion_state motion;
+    uint64_t oracle_epoch;
+    bool oracle_valid;
+    struct binding_delta *staging_delta;
+    uint64_t staging_binding_id;
     int press_world_x, press_world_y;
     bool grab_held;
     struct wl_event_source *grab_release;
@@ -1270,6 +1291,7 @@ static inline void fail(struct tomoe *s, const char *message) {
 
 void quote(FILE *out, const char *text);
 FILE *begin_event(struct tomoe *s, struct event **event, size_t *size);
+void drop_event(struct event *event, FILE *out);
 void end_event(struct tomoe *s, struct event *event, FILE *out);
 void unmap_event(struct tomoe *s, uint32_t id);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy);
@@ -1405,6 +1427,9 @@ void grab_clear(struct tomoe *s);
 void input_listen(struct tomoe *s);
 void presentation_bindings_finish(struct presentation *plan);
 void presentation_input_publish(struct tomoe *s, struct presentation *plan);
+void oracle_invalidate(struct tomoe *s);
+void binding_delta_free(struct binding_delta *delta);
+bool presentation_apply_delta(struct tomoe *s, const struct binding_delta *delta);
 void pointer_refresh(struct tomoe *s);
 void pointer_trail_record(struct tomoe *s, uint32_t time_msec);
 void ui_input_finish(struct tomoe *s);
