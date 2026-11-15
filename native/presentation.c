@@ -78,7 +78,6 @@ int tomoe_present_begin(struct tomoe *s, int view_x, int view_y,
     plan->view_y = view_y;
     plan->view_zoom = zoom;
     plan->focused = focus;
-    plan->restack = restack != 0;
     struct node *bands[] = { s->layer_tree[0], s->layer_tree[1],
         s->window_tree, s->layer_tree[2], s->fullscreen_tree, s->popup_tree, s->layer_tree[3] };
     for (size_t band = 0; band < sizeof(bands) / sizeof(bands[0]); band++) {
@@ -128,7 +127,6 @@ int tomoe_present_window(struct tomoe *s, uint32_t id, int x, int y,
     entry->maximize = maximize != 0;
     entry->target.visual = (struct visual){ .opacity = 1, .scale = 1 };
     entry->staged = true;
-    if (plan->restack) entry->order = plan->next_order++;
     return 1;
 }
 
@@ -203,7 +201,6 @@ int tomoe_present_keyboard_grab(struct tomoe *s, const char *owner, uint64_t sou
 int tomoe_present_stack(struct tomoe *s, uint32_t id) {
     struct presentation *plan = s->presentation;
     if (!plan) return 0;
-    plan->explicit_stacking = true;
     struct presentation_target *entry = presentation_target_for(plan, id);
     if (!entry || !find_window_registered(s, id)) return 1;
     entry->order = plan->next_order++;
@@ -220,10 +217,6 @@ bool presentation_prepare(struct tomoe *s) {
     struct presentation *plan = s->presentation;
     if (!plan || !ui_prepare(s) || !layers_prepare_presentation(s, plan)) return false;
     windows_prepare_presentation(s, plan);
-    struct presentation_target *focus = presentation_target_for(plan, plan->focused);
-    if (!plan->explicit_stacking && (plan->restack || s->focused != plan->focused) &&
-            focus && focus->target.kind == TARGET_WINDOW)
-        focus->order = plan->next_order++;
     qsort(plan->targets, plan->target_count, sizeof(*plan->targets), compare_targets);
     return true;
 }
@@ -245,7 +238,7 @@ void presentation_publish(struct tomoe *s) {
     settings_publish(s, plan);
     sound_publish(s, plan);
     uint32_t previous_focus = s->focused;
-    if (plan->restack || s->focused != plan->focused) tomoe_focus(s, plan->focused);
+    if (s->focused != plan->focused) tomoe_focus(s, plan->focused);
     if (s->focused == previous_focus) update_keyboard_focus(s);
     for (size_t i = 0; i < plan->target_count; i++)
         node_raise_to_top(plan->targets[i].node);

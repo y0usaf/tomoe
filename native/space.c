@@ -297,11 +297,6 @@ struct fbox window_live_box(struct tomoe *s, const struct target *t) {
     struct frame probe = { .view_x = s->view_x, .view_y = s->view_y, .zoom = s->view_zoom };
     return window_box(t, &probe);
 }
-static bool outline_moving(const struct tomoe *s) {
-    return s->outline.dx.active || s->outline.dy.active || s->outline.dw.active ||
-        s->outline.dh.active || s->outline.reveal.active ||
-        (s->outline.box_valid && s->outline.reveal_now < 1);
-}
 static float window_shader_seed(uint32_t id) {
     uint32_t hash = id * 2654435761u;
     hash ^= hash >> 15;
@@ -601,14 +596,7 @@ static void decorate(struct tomoe *s, const struct target *t, struct frame *f) {
     effect_shadow(f, box, st->shadow_range * zoom, radius, st->shadow_color, st->shadow_power, t->alpha);
     int64_t color = focused ? t->style.focused : t->style.unfocused;
     uint32_t rgba = color >= 0 ? (uint32_t)color : focused ? st->border_focused : st->border_unfocused;
-    if (focused) {
-        s->outline.width = st->border_width * zoom;
-        s->outline.radius = radius;
-        s->outline.rgba = rgba;
-        s->outline.alpha = t->alpha;
-    }
-    if (!focused || st->focus_outline.kind == ANIMATION_OFF || !outline_moving(s))
-        effect_border(f, box, st->border_width * zoom, radius, rgba, t->alpha);
+    effect_border(f, box, st->border_width * zoom, radius, rgba, t->alpha);
     if (st->blur_enabled && t->style.blur == 1 && zoom == 1)
         effect_blur(f, box, radius, st->blur_passes, st->blur_offset, st->blur_margin, t->alpha);
 }
@@ -633,69 +621,6 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
 bool fenced(struct screen *output) {
     return render_has_timeline(output->server->renderer) &&
         (output->kind == SCREEN_DRM || output->kind == SCREEN_HEADLESS);
-}
-static double outline_alpha(double reveal) {
-    double alpha = (reveal - 0.9) / 0.1;
-    return alpha > 1 ? 1 : alpha > 0 ? alpha : 0;
-}
-static struct fbox outline_scale(struct fbox box, double reveal) {
-    double x = box.width * (1 - reveal) / 2, y = box.height * (1 - reveal) / 2;
-    return (struct fbox){ box.x + x, box.y + y, box.width - 2 * x, box.height - 2 * y };
-}
-static bool outline_visible(struct fbox box, const struct frame *f) {
-    return box.x < f->x + f->width && box.y < f->y + f->height &&
-        box.x + box.width > f->x && box.y + box.height > f->y;
-}
-static struct fbox outline_inside(struct fbox box, const struct frame *f) {
-    double right = f->x + f->width, bottom = f->y + f->height;
-    double x = box.x + box.width > right ? right - box.width : box.x < f->x ? f->x : box.x;
-    double y = box.y + box.height > bottom ? bottom - box.height : box.y < f->y ? f->y : box.y;
-    if (x < f->x) x = f->x;
-    if (y < f->y) y = f->y;
-    return (struct fbox){ x, y, box.width, box.height };
-}
-static void draw_outline(struct tomoe *s, struct output *o, struct frame *data) {
-    const struct settings *st = &s->settings;
-    if (st->focus_outline.kind == ANIMATION_OFF) return;
-    if (o->outline.active) {
-        double fade = outline_alpha(o->outline.reveal_now);
-        if (fade > 0)
-            effect_border(data,
-                outline_inside(outline_scale(o->outline.box, o->outline.reveal_now), data),
-                o->outline.width, o->outline.radius, o->outline.rgba,
-                (float)(o->outline.alpha * fade));
-    }
-    if (!s->outline.box_valid) return;
-    const struct target *t = window_focused_target(s);
-    if (!t || s->outline.owner != t->id) return;
-    bool flying = s->outline.dx.active || s->outline.dy.active || s->outline.dw.active ||
-        s->outline.dh.active;
-    if (!flying && s->outline.output && s->outline.output != o->screen) return;
-    struct fbox live = window_box(t, data);
-    struct fbox box = { live.x + animation_at(&s->outline.dx, data->sample),
-        live.y + animation_at(&s->outline.dy, data->sample),
-        live.width + animation_at(&s->outline.dw, data->sample),
-        live.height + animation_at(&s->outline.dh, data->sample) };
-    if (!isfinite(box.x) || !isfinite(box.y) || !isfinite(box.width) ||
-            !isfinite(box.height)) return;
-    double reveal = s->outline.reveal_now;
-    if (reveal < 1) box = outline_scale(box, reveal);
-    bool visible = outline_visible(box, data);
-    if (!flying) {
-        if (visible) {
-            if (!outline_moving(s)) return;
-        } else {
-            box = outline_inside(box, data);
-        }
-    } else if (!visible) {
-        return;
-    }
-    double width = st->border_width * data->zoom;
-    double radius = window_radius(s, t, data);
-    uint32_t rgba = t->style.focused >= 0 ? (uint32_t)t->style.focused : st->border_focused;
-    float alpha = (float)(t->alpha * outline_alpha(reveal));
-    if (alpha <= 0) return;
-    effect_border(data, box, width, radius, rgba, alpha);
 }
 static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
         bool locked, bool cursors, bool chrome) {
@@ -734,7 +659,6 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         }
     }
     if (!locked && !frozen && !plan) ghosts_draw(o->server, data);
-    if (!locked && !frozen) draw_outline(o->server, o, data);
     if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
     if (!locked && chrome) screenshot_render(o, data);
     if (cursors) render_cursor(o, data, plan);

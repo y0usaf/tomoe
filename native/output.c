@@ -1208,6 +1208,7 @@ struct screen *any_output(struct tomoe *s) {
 }
 
 static void frame_timed(struct output *o, const struct timespec *start) {
+    if (!timing_enabled) return;
     struct timespec end;
     clock_gettime(CLOCK_MONOTONIC, &end);
     int64_t ns = (int64_t)(end.tv_sec - start->tv_sec) * 1000000000 +

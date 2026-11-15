@@ -17,9 +17,8 @@ struct window {
     double configured_scale;
     bool configured;
     bool mapped, admitted, presented, desired_visible, fullscreen_state, maximize_state;
-    char *xdg_title, *xdg_app_id, *xdg_fullscreen_output;
+    char *xdg_title, *xdg_app_id;
     uint32_t content_type;
-    bool xdg_fullscreen_requested, xdg_maximize_requested;
     bool desired_fullscreen, desired_maximize;
     struct animation move, fade;
     double move_from_x, move_from_y;
@@ -31,6 +30,9 @@ struct window {
     int resize_from_w, resize_from_h, resize_to_w, resize_to_h;
     int wanted_w, wanted_h;
     double stale_until;
+    bool foreign_known;
+    struct screen *foreign_outputs[16];
+    size_t foreign_output_count;
     bool hired, closing;
     double shader_moved;
     struct {
@@ -168,33 +170,21 @@ static bool cache_xdg_metadata(struct window *w) {
     w->xdg_app_id = app_id;
     return true;
 }
-static bool cache_xdg_requested(struct window *w, const char *request) {
-    bool update_fullscreen = !request || strcmp(request, "fullscreen") == 0;
-    bool update_maximize = !request || strcmp(request, "maximize") == 0;
-    char *output_copy = NULL;
-    if (update_fullscreen) {
-        const char *output = w->xdg->requested.fullscreen_output
-            ? w->xdg->requested.fullscreen_output->name : NULL;
-        output_copy = output ? strdup(output) : NULL;
-        if (output && !output_copy) {
-            fail(w->server, "window request allocation failed");
-            return false;
-        }
-    }
-    if (update_fullscreen) {
-        free(w->xdg_fullscreen_output);
-        w->xdg_fullscreen_output = output_copy;
-        w->xdg_fullscreen_requested = w->xdg->requested.fullscreen;
-    }
-    if (update_maximize)
-        w->xdg_maximize_requested = w->xdg->requested.maximized;
-    return true;
-}
 static const char *title_of(struct window *w) {
     return w->xdg_title ? w->xdg_title : "";
 }
 static const char *app_id_of(struct window *w) {
     return w->xdg_app_id ? w->xdg_app_id : "";
+}
+static uint32_t foreign_state(struct tomoe *s, const struct window *w) {
+    return (w->maximize_state ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED : 0) |
+        (s->focused == w->target.id ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED : 0) |
+        (w->fullscreen_state ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN : 0);
+}
+static void foreign_state_send(struct window *w) {
+    if (!w || !w->foreign_known) return;
+    foreign_fields(w->server, w->target.id, title_of(w), app_id_of(w),
+        foreign_state(w->server, w));
 }
 static void window_activate(struct window *w, bool activated) {
     if (w->xdg->base->initialized) xdg_toplevel_configure_activated(w->xdg, activated);
@@ -233,8 +223,8 @@ static void window_event(struct window *w, const char *type, const char *request
         parent && dialog && w->xdg->modal ? "t" : "nil");
     fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
         w->maximize_state ? "t" : "nil");
-    bool fullscreen_requested = w->xdg_fullscreen_requested;
-    bool maximize_requested = w->xdg_maximize_requested;
+    bool fullscreen_requested = w->xdg->requested.fullscreen;
+    bool maximize_requested = w->xdg->requested.maximized;
     fprintf(out, " :fullscreen-requested %s :maximize-requested %s",
         fullscreen_requested ? "t" : "nil", maximize_requested ? "t" : "nil");
     if (request) {
@@ -244,9 +234,9 @@ static void window_event(struct window *w, const char *type, const char *request
         else if (strcmp(request, "maximize") == 0)
             fprintf(out, " :requested %s", maximize_requested ? "t" : "nil");
     }
-    if (w->xdg_fullscreen_output) {
+    if (w->xdg->requested.fullscreen_output) {
         fputs(" :output ", out);
-        quote(out, w->xdg_fullscreen_output);
+        quote(out, w->xdg->requested.fullscreen_output->name);
     }
     fputc(')', out);
     end_event(w->server, event, out);
@@ -264,13 +254,13 @@ static void buffer_event(struct window *w, bool attached) {
     fputs(" :app-id ", out); quote(out, app_id_of(w));
     fprintf(out, " :fullscreen %s :maximize %s",
         w->fullscreen_state ? "t" : "nil", w->maximize_state ? "t" : "nil");
-    bool fullscreen_requested = w->xdg_fullscreen_requested;
-    bool maximize_requested = w->xdg_maximize_requested;
+    bool fullscreen_requested = w->xdg->requested.fullscreen;
+    bool maximize_requested = w->xdg->requested.maximized;
     fprintf(out, " :fullscreen-requested %s :maximize-requested %s",
         fullscreen_requested ? "t" : "nil", maximize_requested ? "t" : "nil");
-    if (w->xdg_fullscreen_output) {
+    if (w->xdg->requested.fullscreen_output) {
         fputs(" :output ", out);
-        quote(out, w->xdg_fullscreen_output);
+        quote(out, w->xdg->requested.fullscreen_output->name);
     }
     fputc(')', out);
     end_event(w->server, event, out);
@@ -356,6 +346,8 @@ void tomoe_focus(struct tomoe *s, uint32_t id) {
     if (previous) window_activate(previous, false);
     s->focused = target;
     if (next) window_activate(next, true);
+    foreign_state_send(previous);
+    foreign_state_send(next);
     update_keyboard_focus(s);
     if (mapped_next) pointer_follow(mapped_next);
     schedule_scene(s);
@@ -416,7 +408,7 @@ static void window_move(struct wl_listener *listener, void *data) {
 static void window_resize(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, request_resize);
     struct xdg_toplevel_request *event = data;
-    uint32_t edges = event->edges ? event->edges : EDGE_BOTTOM | EDGE_RIGHT;
+    uint32_t edges = event->edges;
     if (interactive_allowed(w, event->serial)) request_event(w, "resize", -1, NULL, edges);
 }
 static void window_minimize(struct wl_listener *listener, void *data) {
@@ -458,29 +450,63 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
     }
     return false;
 }
+static size_t window_foreign_outputs(struct tomoe *s, const struct window *w,
+        struct screen **outputs, size_t capacity) {
+    double x = w->target.x, y = w->target.y;
+    double right = x + w->width, bottom = y + w->height;
+    world_to_screen(s, &x, &y);
+    world_to_screen(s, &right, &bottom);
+    struct box box = { pixel_round(x), pixel_round(y),
+        pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) };
+    size_t count = 0;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        struct box output_box, overlap;
+        physical_output_box(o, &output_box);
+        if (count < capacity && output_is_active(o) && w->tree->enabled &&
+                box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->screen;
+    }
+    return count;
+}
+
+bool window_foreign_fields(struct tomoe *s, uint32_t id, const char **title,
+        const char **app_id, uint32_t *state, struct screen **outputs, size_t capacity,
+        size_t *output_count) {
+    struct window *w = find_window(s, id);
+    if (!w) return false;
+    *title = title_of(w);
+    *app_id = app_id_of(w);
+    *state = foreign_state(s, w);
+    *output_count = window_foreign_outputs(s, w, outputs, capacity);
+    return true;
+}
+
 void foreign_toplevels_refresh(struct tomoe *s) {
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
-        if (!w->mapped) { foreign_forget(s, w->target.id); continue; }
-        uint32_t state = (w->maximize_state ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED : 0) |
-            (s->focused == w->target.id ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED : 0) |
-            (w->fullscreen_state ? 1u << ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN : 0);
-        double x = w->target.x, y = w->target.y;
-        double right = x + w->width, bottom = y + w->height;
-        world_to_screen(s, &x, &y);
-        world_to_screen(s, &right, &bottom);
-        struct box box = { pixel_round(x), pixel_round(y),
-            pixel_round(right) - pixel_round(x), pixel_round(bottom) - pixel_round(y) };
+        if (!w->mapped) { foreign_forget(s, w->target.id); w->foreign_known = false; continue; }
         struct screen *outputs[16];
-        size_t count = 0;
-        struct output *o;
-        wl_list_for_each(o, &s->outputs, link) {
-            struct box output_box, overlap;
-            physical_output_box(o, &output_box);
-            if (count < 16 && output_is_active(o) && w->tree->enabled &&
-                    box_intersection(&overlap, &box, &output_box)) outputs[count++] = o->screen;
+        size_t count = window_foreign_outputs(s, w, outputs, 16);
+        if (!w->foreign_known) {
+            w->foreign_known = true;
+            memcpy(w->foreign_outputs, outputs, count * sizeof(*outputs));
+            w->foreign_output_count = count;
+            foreign_announce(s, w->target.id);
+            continue;
         }
-        foreign_update(s, w->target.id, title_of(w), app_id_of(w), state, outputs, count);
+        for (size_t i = 0; i < w->foreign_output_count; i++) {
+            bool kept = false;
+            for (size_t j = 0; j < count; j++) kept |= outputs[j] == w->foreign_outputs[i];
+            if (!kept) foreign_output(s, w->target.id, w->foreign_outputs[i], false);
+        }
+        for (size_t j = 0; j < count; j++) {
+            bool known = false;
+            for (size_t i = 0; i < w->foreign_output_count; i++)
+                known |= w->foreign_outputs[i] == outputs[j];
+            if (!known) foreign_output(s, w->target.id, outputs[j], true);
+        }
+        memcpy(w->foreign_outputs, outputs, count * sizeof(*outputs));
+        w->foreign_output_count = count;
     }
 }
 
@@ -714,99 +740,6 @@ static void window_retire(struct window *w) {
     wl_list_insert(&s->ghosts, &g->link);
     tomoe_log(LOG_DEBUG, "tomoe: window %u closes into a %dx%d ghost", w->target.id, width, height);
 }
-static struct window *focused_window(struct tomoe *s) {
-    struct window *w;
-    wl_list_for_each(w, &s->windows, link)
-        if (w->target.id == s->focused && w->tree && w->mapped) return w;
-    return NULL;
-}
-
-struct target *window_focused_target(struct tomoe *s) {
-    struct window *w = focused_window(s);
-    return w ? &w->target : NULL;
-}
-
-static void outline_shrink_out(struct tomoe *s, const struct animation_config *plain,
-        double now) {
-    struct focus_outline *ring = &s->outline;
-    struct output *o;
-    wl_list_for_each(o, &s->outputs, link) {
-        if (o->screen != ring->output || !ring->box_valid) continue;
-        o->outline.box = ring->box;
-        o->outline.width = ring->width;
-        o->outline.radius = ring->radius;
-        o->outline.rgba = ring->rgba;
-        o->outline.alpha = ring->alpha;
-        o->outline.active = true;
-        animation_start_from(&o->outline.reveal, plain, 1, 0.9, now, 0);
-        return;
-    }
-}
-
-static double window_live_velocity(struct tomoe *s, const struct window *w, double now,
-        bool horizontal) {
-    const struct animation *view = horizontal ? &s->view_x_anim : &s->view_y_anim;
-    double move = horizontal ? w->move_from_x : w->move_from_y;
-    return (move * animation_velocity(&w->move, now) - animation_velocity(view, now)) *
-        s->view_zoom;
-}
-
-bool focus_outline_animate(struct tomoe *s, double now) {
-    struct focus_outline *ring = &s->outline;
-    const struct animation_config *config = &s->settings.focus_outline;
-    bool active = false;
-    struct output *o;
-    wl_list_for_each(o, &s->outputs, link) {
-        if (!o->outline.active) continue;
-        o->outline.reveal_now = animation_advance(&o->outline.reveal, now, &s->animation);
-        if (!o->outline.reveal.active) o->outline.active = false;
-        active |= o->outline.active;
-    }
-    struct animation_config plain = *config;
-    plain.launch = 0;
-    struct window *w = config->kind == ANIMATION_OFF ? NULL : focused_window(s);
-    if (!w || w->target.fullscreen || w->target.mesh || w->target.visual.rotation != 0) {
-        ring->owner = 0;
-        ring->box_valid = false;
-        ring->output = NULL;
-        return active;
-    }
-    struct fbox live = window_live_box(s, &w->target);
-    if (ring->owner != w->target.id) {
-        if (ring->box_valid && ring->output && w->target.output &&
-                ring->output != w->target.output && !s->settings.outline_fly) {
-            outline_shrink_out(s, &plain, now);
-            ring->dx = ring->dy = ring->dw = ring->dh = (struct animation){ 0 };
-            animation_start_from(&ring->reveal, &plain, 0.9, 1, now, 0);
-        } else if (ring->box_valid) {
-            animation_start_from(&ring->dx, config, ring->box.x - live.x, 0, now,
-                ring->live_vx + animation_velocity(&ring->dx, now) -
-                window_live_velocity(s, w, now, true));
-            animation_start_from(&ring->dy, config, ring->box.y - live.y, 0, now,
-                ring->live_vy + animation_velocity(&ring->dy, now) -
-                window_live_velocity(s, w, now, false));
-            animation_start_from(&ring->dw, config, ring->box.width - live.width, 0, now,
-                animation_velocity(&ring->dw, now));
-            animation_start_from(&ring->dh, config, ring->box.height - live.height, 0, now,
-                animation_velocity(&ring->dh, now));
-        }
-        ring->owner = w->target.id;
-    }
-    ring->reveal_now = ring->reveal.config.kind == ANIMATION_OFF ? 1 :
-        animation_advance(&ring->reveal, now, &s->animation);
-    struct fbox box = { live.x + animation_advance(&ring->dx, now, &s->animation),
-        live.y + animation_advance(&ring->dy, now, &s->animation),
-        live.width + animation_advance(&ring->dw, now, &s->animation),
-        live.height + animation_advance(&ring->dh, now, &s->animation) };
-    ring->box = box;
-    ring->live_vx = window_live_velocity(s, w, now, true);
-    ring->live_vy = window_live_velocity(s, w, now, false);
-    ring->output = w->target.output;
-    ring->box_valid = true;
-    return active || ring->dx.active || ring->dy.active || ring->dw.active || ring->dh.active ||
-        ring->reveal.active;
-}
-
 bool windows_animate(struct tomoe *s, double now) {
     const struct settings *st = &s->settings;
     bool active = view_animate(s, st, now);
@@ -837,7 +770,6 @@ bool windows_animate(struct tomoe *s, double now) {
             node_set_enabled(w->tree, w->mapped && w->desired_visible);
         }
     }
-    active |= focus_outline_animate(s, now);
     return ghosts_animate(s, now) || active;
 }
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
@@ -946,7 +878,6 @@ void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, 
     w->desired_visible = true;
     w->desired_width = width;
     w->desired_height = height;
-    tomoe_window_state(s, id, 0, w->desired_maximize);
     if (w->mapped) w->presented = true;
     node_set_enabled(w->tree, w->mapped || w->closing);
     window_park(w);
@@ -1000,7 +931,7 @@ static void window_mapped(struct window *w) {
     window_client_geometry(w, &w->client_width, &w->client_height);
     window_track_size(w);
     if (first_admission) {
-        if (!cache_xdg_metadata(w) || !cache_xdg_requested(w, NULL)) return;
+        if (!cache_xdg_metadata(w)) return;
         w->desired_width = w->width;
         w->desired_height = w->height;
         w->desired_visible = true;
@@ -1100,6 +1031,7 @@ static void window_commit(struct wl_listener *listener, void *data) {
     if (changed) {
         w->fullscreen_state = fullscreen;
         w->maximize_state = maximize;
+        foreign_state_send(w);
         window_park(w);
         if (buffer_active || (w->admitted && !w->mapped)) window_event(w, "metadata", NULL);
     }
@@ -1113,12 +1045,14 @@ static void window_title(struct wl_listener *listener, void *data) {
     if (!replace_text(w->server, &w->xdg_title, w->xdg->title,
                 "window title allocation failed")) return;
     if (w->mapped || w->admitted) window_event(w, "metadata", NULL);
+    foreign_state_send(w);
 }
 static void window_app_id(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, app_id);
     if (!replace_text(w->server, &w->xdg_app_id, w->xdg->app_id,
                 "window app-id allocation failed")) return;
     if (w->mapped || w->admitted) window_event(w, "metadata", NULL);
+    foreign_state_send(w);
 }
 static void window_metadata(struct wl_listener *listener, void *data) {
     struct window *w = wl_container_of(listener, w, metadata);
@@ -1126,7 +1060,6 @@ static void window_metadata(struct wl_listener *listener, void *data) {
 }
 
 static void window_request(struct window *w, const char *request) {
-    if (!cache_xdg_requested(w, request)) return;
     if (w->xdg->base->initialized) xdg_surface_schedule_configure(w->xdg->base);
     if (w->mapped || w->admitted) window_event(w, "metadata", request);
 }
@@ -1161,7 +1094,6 @@ static void window_destroy(struct wl_listener *listener, void *data) {
     schedule_scene(s);
     free(w->xdg_title);
     free(w->xdg_app_id);
-    free(w->xdg_fullscreen_output);
     free(w);
 }
 static void surface_gone(struct wl_listener *listener, void *data) {

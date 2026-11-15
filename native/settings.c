@@ -41,7 +41,6 @@ static const struct setting_field {
     ANIMATION_FIELDS("animations-window-scale", window_scale)
     ANIMATION_FIELDS("animations-window-rotation", window_rotation)
     ANIMATION_FIELDS("animations-window-translate", window_translate)
-    ANIMATION_FIELDS("animations-focus-outline", focus_outline)
     { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
     { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
     { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },
@@ -56,6 +55,24 @@ static const struct setting_field {
         offsetof(struct settings, honor_invalid_serial), SETTING_BOOL },
     { "pointer-follows-focus", offsetof(struct settings, pointer_follows_focus), SETTING_BOOL },
 };
+
+static const char *const policy_keys[] = {
+    "scale", "focus-follows-mouse", "watchdog-ms",
+};
+
+static const char *const policy_text_keys[] = { "mod" };
+
+static int policy_key(const char *key) {
+    for (size_t i = 0; i < sizeof(policy_keys) / sizeof(policy_keys[0]); i++)
+        if (!strcmp(policy_keys[i], key)) return 1;
+    return 0;
+}
+
+static int policy_text_key(const char *key) {
+    for (size_t i = 0; i < sizeof(policy_text_keys) / sizeof(policy_text_keys[0]); i++)
+        if (!strcmp(policy_text_keys[i], key)) return 1;
+    return 0;
+}
 
 void settings_clear(struct settings *settings) {
     memset(settings, 0, sizeof(*settings));
@@ -89,7 +106,7 @@ int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
         }
         return 1;
     }
-    return 1;
+    return policy_key(key);
 }
 
 int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *text) {
@@ -103,14 +120,9 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         settings->blur_namespaces[settings->blur_namespace_count++] = copy;
         return 1;
     }
-    if (strcmp(key, "focus-outline-cross") == 0) {
-        if (strcmp(text, "fly") == 0) settings->outline_fly = true;
-        else if (strcmp(text, "shrink") == 0) settings->outline_fly = false;
-        else return 0;
-        return 1;
-    }
     int handled = input_setting(settings, key, NAN, text);
-    return handled >= 0 ? handled : 1;
+    if (handled >= 0) return handled;
+    return policy_text_key(key);
 }
 
 void settings_publish(struct tomoe *s, struct presentation *plan) {
