@@ -7,7 +7,7 @@ DRM = {
 }
 PHASES = (("input", "--motion-stream 1000 3000"), ("commit", "--commit-stream 500 3000"))
 WARMUP = "--motion-stream 1000 800"
-SCENES = (("plain", {}), ("scene", {"TOMOE_PHASE_SHADER": SHADER, "TOMOE_PHASE_BLUR": "1"}))
+SCENES = (("plain", {}), ("scene", {"TOMOE_PHASE_SHADER": PHASE_SHADER, "TOMOE_PHASE_BLUR": "1"}))
 MODES = (("pooled", "0"), ("class", "1"))
 MUST_DROP = (("vkms", "plain", "input"),)
 CARD = machine.succeed(
