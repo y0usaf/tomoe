@@ -131,6 +131,7 @@ struct loop_source;
 struct loop_source *loop_watch_fd(struct tomoe *server, int fd, uint32_t mask, loop_fd_fn fn, void *data);
 void loop_update_fd(struct loop_source *source, uint32_t mask);
 void loop_remove(struct loop_source *source);
+void loop_set_data(struct loop_source *source, void *data);
 struct loop_source *loop_timer(struct tomoe *server, loop_timer_fn fn, void *data);
 void loop_timer_arm(struct loop_source *source, uint64_t delay_ms);
 uint64_t loop_now_ms(void);

@@ -315,6 +315,7 @@ void res_watches_apply(struct want_watch *wanted, size_t count) {
         free(wanted[index].directory);
         if (match >= 0) {
             watches[index] = res.watches[match];
+            loop_set_data(watches[index].source, &watches[index]);
             watches[index].source_id = wanted[index].source_id;
             used[match] = true;
             free(wanted[index].owner);

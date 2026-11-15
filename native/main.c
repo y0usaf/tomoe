@@ -75,6 +75,10 @@ void loop_update_fd(struct loop_source *source, uint32_t mask) {
     wl_event_source_fd_update(source->source, mask ? mask : WL_EVENT_READABLE);
 }
 
+void loop_set_data(struct loop_source *source, void *data) {
+    if (source) source->data = data;
+}
+
 void loop_remove(struct loop_source *source) {
     if (!source) return;
     if (source->source) wl_event_source_remove(source->source);

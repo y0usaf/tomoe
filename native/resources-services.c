@@ -704,6 +704,7 @@ bool res_sources_set(lisp_value paths, char *error, size_t size) {
         for (size_t old = 0; old < res.source_count; old++) {
             if (res.sources[old].path && !strcmp(res.sources[old].path, path)) {
                 *source = res.sources[old];
+                loop_set_data(source->source, source);
                 memset(&res.sources[old], 0, sizeof(res.sources[old]));
                 break;
             }

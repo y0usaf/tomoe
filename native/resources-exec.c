@@ -452,6 +452,7 @@ void res_execs_apply(struct want_exec *wanted, size_t count) {
         }
         if (match >= 0) {
             execs[index] = res.execs[match];
+            for (int which = 0; which < 3; which++) loop_set_data(execs[index].fd[which], &execs[index]);
             used[match] = true;
             free(wanted[index].owner);
             free(wanted[index].name);
