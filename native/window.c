@@ -680,21 +680,16 @@ static void window_retire(struct window *w) {
     if (w->target.drawn_width > 0) width = w->target.drawn_width;
     if (w->target.drawn_height > 0) height = w->target.drawn_height;
     if (width < 1 || height < 1 || width > 16384 || height > 16384) return;
-    const struct format *format = format_set_get(render_formats(s->renderer),
-        DRM_FORMAT_ARGB8888);
+    struct texture *texture = render_texture_target(s->renderer, DRM_FORMAT_ABGR8888,
+        width, height);
     struct ghost *g = NULL;
-    if (format && format->len) {
-        struct buffer *buffer = render_allocate(s->renderer, width, height, format);
-        struct texture *texture = NULL;
-        if (buffer) {
-            if (render_window_buffer(s, w->target.id, buffer, false))
-                texture = texture_from_buffer(s->renderer, buffer);
-            buffer_drop(buffer);
-        }
-        if (texture) g = calloc(1, sizeof(*g));
-        if (g) g->texture = texture;
+    if (texture && render_window_texture(s, w->target.id, texture, false))
+        g = calloc(1, sizeof(*g));
+    if (!g) {
+        texture_destroy(texture);
+        return;
     }
-    if (!g) return;
+    g->texture = texture;
     double now = animation_now();
     double x = w->target.x + w->target.offset_x - s->view_x;
     double y = w->target.y + w->target.offset_y - s->view_y;

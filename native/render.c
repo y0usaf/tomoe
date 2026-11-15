@@ -107,6 +107,8 @@ struct pass {
     uint64_t point;
     struct oplist *record;
     const struct region *clip;
+    GLuint fbo;
+    int width, height;
 };
 
 static uint64_t serials;
@@ -1151,6 +1153,31 @@ struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t 
     return &t->base;
 }
 
+struct texture *render_texture_target(struct render *r, uint32_t format, int width,
+        int height) {
+    struct gl_texture *t = calloc(1, sizeof(*t));
+    if (!t) return NULL;
+    if (width <= 0 || height <= 0 || !pixel_format(format, &t->gl, &t->alpha)) {
+        free(t);
+        return NULL;
+    }
+    t->base = (struct texture){ (uint32_t)width, (uint32_t)height, ++serials };
+    t->r = r;
+    t->format = format;
+    t->target = GL_TEXTURE_2D;
+    current(r);
+    glGenTextures(1, &t->tex);
+    glBindTexture(GL_TEXTURE_2D, t->tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, t->gl, width, height, 0, t->gl, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    t->bytes = (uint64_t)width * (uint64_t)height * 4;
+    r->textures++;
+    r->texture_bytes += t->bytes;
+    return &t->base;
+}
+
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {
     struct dmabuf_attributes dmabuf;
     if (!buffer_get_dmabuf(buffer, &dmabuf)) {
@@ -1247,7 +1274,7 @@ enum { SCENE_VERTICES = 6 };
 
 static void quad_positions(const struct pass *pass, struct box box, double rotation,
         float pos[8]) {
-    float w = pass->buffer->width, h = pass->buffer->height;
+    float w = pass->width, h = pass->height;
     double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
     double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
     for (int i = 0; i < 4; i++) {
@@ -1574,7 +1601,7 @@ static void texture_cover(struct op *op, const struct texture_options *options,
 void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     const struct color *c = &options->color;
     struct box box = box_empty(&options->box) ?
-        (struct box){ 0, 0, pass->buffer->width, pass->buffer->height } : options->box;
+        (struct box){ 0, 0, pass->width, pass->height } : options->box;
     if (pass->record) {
         struct box shown = box;
         struct rect *e = options->clip ? region_extents(options->clip) : NULL;
@@ -1792,7 +1819,7 @@ static float *mesh_vertices(struct render *r, const struct pass *pass,
                     double px = o->origin[0] + point[0] * o->scale;
                     double py = o->origin[1] + point[1] * o->scale;
                     transform_point(&px, &py, o->position_transform,
-                        pass->buffer->width, pass->buffer->height);
+                        pass->width, pass->height);
                     gx = (px - o->dst_box.x) / o->dst_box.width;
                     gy = 1.0 - (py - o->dst_box.y) / o->dst_box.height;
                     u = gu;
@@ -1890,7 +1917,7 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     if (count && p->trail >= 0) glUniform4fv(p->trail, count, options->trail);
     if (p->path_count >= 0) glUniform1i(p->path_count, path_count);
     if (path_count && p->path >= 0) glUniform4fv(p->path, path_count, options->path);
-    float w = pass->buffer->width, h = pass->buffer->height;
+    float w = pass->width, h = pass->height;
     float x0 = dst.x / w * 2 - 1, x1 = (dst.x + dst.width) / w * 2 - 1;
     float top = dst.y / h * 2 - 1, bottom = (dst.y + dst.height) / h * 2 - 1;
     if (p->min_ndc >= 0) glUniform2f(p->min_ndc, x0, bottom);
@@ -2050,6 +2077,26 @@ bool pass_submit(struct pass *pass) {
     return ok;
 }
 
+bool pass_submit_texture(struct pass *pass) {
+    current(pass->r);
+    pass_flush(pass);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    free(pass);
+    return true;
+}
+
+int pass_width(const struct pass *pass) {
+    return pass->width;
+}
+
+int pass_height(const struct pass *pass) {
+    return pass->height;
+}
+
+GLuint pass_fbo(const struct pass *pass) {
+    return pass->fbo;
+}
+
 struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeline *signal,
         uint64_t point) {
     if (r->held_count >= HELD_FRAME_LIMIT) {
@@ -2065,6 +2112,9 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
     if (!pass) return NULL;
     pass->r = r;
     pass->buffer = buffer_lock(buffer);
+    pass->fbo = fbo;
+    pass->width = buffer->width;
+    pass->height = buffer->height;
     if (signal) {
         pass->signal = timeline_ref(signal);
         pass->point = point;
@@ -2078,12 +2128,31 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
     return pass;
 }
 
+struct pass *render_begin_texture(struct render *r, struct texture *target) {
+    struct gl_texture *t = texture_of(target);
+    current(r);
+    GLuint fbo = texture_fbo(t);
+    struct pass *pass = fbo ? calloc(1, sizeof(*pass)) : NULL;
+    if (!pass) return NULL;
+    pass->r = r;
+    pass->fbo = fbo;
+    pass->width = (int)target->width;
+    pass->height = (int)target->height;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, pass->width, pass->height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_SCISSOR_TEST);
+    return pass;
+}
+
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list) {
     struct pass *pass = calloc(1, sizeof(*pass));
     if (!pass) return NULL;
     list->len = 0;
     list->lost = false;
-    *pass = (struct pass){ .r = r, .buffer = buffer_lock(buffer), .record = list };
+    *pass = (struct pass){ .r = r, .buffer = buffer_lock(buffer), .record = list,
+        .width = buffer->width, .height = buffer->height };
     return pass;
 }
 

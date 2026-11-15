@@ -37,8 +37,8 @@ static void scene_geometry(struct frame *f, struct fbox box, const float texcoor
     for (int i = 0; i < 4; i++) {
         double bx, by;
         to_buffer(f, xs[i], ys[i], &bx, &by);
-        quad->pos[2 * i] = (float)(bx / f->buffer->width * 2.0 - 1.0);
-        quad->pos[2 * i + 1] = (float)(by / f->buffer->height * 2.0 - 1.0);
+        quad->pos[2 * i] = (float)(bx / f->target.width * 2.0 - 1.0);
+        quad->pos[2 * i + 1] = (float)(by / f->target.height * 2.0 - 1.0);
         quad->local[2 * i] = (float)(xs[i] - origin_x);
         quad->local[2 * i + 1] = (float)(ys[i] - origin_y);
     }
@@ -53,8 +53,8 @@ static void quad(struct frame *f, struct program *p, struct fbox box,
     for (int i = 0; i < 4; i++) {
         double bx, by;
         to_buffer(f, xs[i], ys[i], &bx, &by);
-        pos[2 * i] = bx / f->buffer->width * 2.0 - 1.0;
-        pos[2 * i + 1] = by / f->buffer->height * 2.0 - 1.0;
+        pos[2 * i] = bx / f->target.width * 2.0 - 1.0;
+        pos[2 * i + 1] = by / f->target.height * 2.0 - 1.0;
         local[2 * i] = xs[i] - origin_x;
         local[2 * i + 1] = ys[i] - origin_y;
     }
@@ -291,7 +291,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         pixel_round(box.y + box.height) - pixel_round(box.y) };
     box_transform(&region, &region, transform_invert(f->transform),
         f->width, f->height);
-    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height };
+    struct box bounds = { 0, 0, f->target.width, f->target.height };
     struct box grown = { region.x - margin, region.y - margin,
         region.width + 2 * margin, region.height + 2 * margin };
     if (!box_intersection(&grown, &grown, &bounds)) return;
@@ -334,7 +334,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         for (int i = 1; ok && i <= passes; i++)
             ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
                 grown.height >> i > 0 ? grown.height >> i : 1);
-        GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+        GLuint target = f->target.fbo;
         if (ok) {
             glBindFramebuffer(GL_FRAMEBUFFER, target);
             glActiveTexture(GL_TEXTURE0);
@@ -348,7 +348,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
                 sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
         }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
-        glViewport(0, 0, f->buffer->width, f->buffer->height);
+        glViewport(0, 0, f->target.width, f->target.height);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         if (!ok) return;
@@ -382,8 +382,8 @@ static bool backdrop(struct frame *f, struct fbox box) {
     if (!e || region.width < 1 || region.height < 1 ||
             !level_ensure(&e->backdrop, region.width, region.height)) return false;
     pass_flush(f->pass);
-    GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
-    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, shown;
+    GLuint target = f->target.fbo;
+    struct box bounds = { 0, 0, f->target.width, f->target.height }, shown;
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -394,7 +394,7 @@ static bool backdrop(struct frame *f, struct fbox box) {
             x, y, x + shown.width, y - shown.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, target);
-    glViewport(0, 0, f->buffer->width, f->buffer->height);
+    glViewport(0, 0, f->target.width, f->target.height);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, e->backdrop.texture);
     return true;
@@ -514,7 +514,7 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     fbox_transform(&shown, &shown, transform_invert(f->transform), f->width, f->height);
     double surface_left = floor(shown.x), surface_top = floor(shown.y);
     double surface_right = ceil(shown.x + shown.width), surface_bottom = ceil(shown.y + shown.height);
-    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height };
+    struct box bounds = { 0, 0, f->target.width, f->target.height };
     double left = fmax(fmax(surface_left, reach_left), bounds.x);
     double top = fmax(fmax(surface_top, reach_top), bounds.y);
     double right = fmin(fmin(surface_right, reach_right), bounds.x + bounds.width);
@@ -610,10 +610,10 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
             double x1 = fmin((gx0 + (double)cx + 1) * cell, surface_right);
             double y1 = fmin((gy0 + (double)cy + 1) * cell, surface_bottom);
             if (x1 - x0 < 0.5 || y1 - y0 < 0.5) continue;
-            float px0 = (float)(x0 / f->buffer->width * 2.0 - 1.0);
-            float px1 = (float)(x1 / f->buffer->width * 2.0 - 1.0);
-            float py0 = (float)(y0 / f->buffer->height * 2.0 - 1.0);
-            float py1 = (float)(y1 / f->buffer->height * 2.0 - 1.0);
+            float px0 = (float)(x0 / f->target.width * 2.0 - 1.0);
+            float px1 = (float)(x1 / f->target.width * 2.0 - 1.0);
+            float py0 = (float)(y0 / f->target.height * 2.0 - 1.0);
+            float py1 = (float)(y1 / f->target.height * 2.0 - 1.0);
             float *quad = &quads[(offsets[step] + used[step]) * 2];
             used[step] += 6;
             quad[0] = px0; quad[1] = py0;

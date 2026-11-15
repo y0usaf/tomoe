@@ -661,6 +661,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     const struct presentation_output *planned = plan ? presentation_output_for(plan, output) : NULL;
     struct frame data = { .server = o->server, .x = planned ? planned->box.x : o->x,
         .y = planned ? planned->box.y : o->y, .buffer = buffer, .planes = planes,
+        .target = { buffer->width, buffer->height, 0 },
         .transform = (state->committed & SCREEN_TRANSFORM) ? state->transform : output->transform,
         .width = buffer->width, .height = buffer->height,
         .view_x = plan ? plan->view_x : o->server->view_x,
@@ -696,6 +697,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         return false;
     }
     data.pass = pass;
+    data.target.fbo = pass_fbo(pass);
     bool skipped = planes && planes->count;
     if (skipped) {
         struct region skip;
@@ -785,33 +787,50 @@ bool render_output(struct output *o, struct screen_state *state) {
     return render_presentation(o, state, NULL, NULL);
 }
 
+static void render_window_pass(struct tomoe *s, struct presentation_target *root,
+        struct pass *pass, struct buffer *buffer, bool cursor) {
+    int width = pass_width(pass), height = pass_height(pass);
+    root->target.offset_x = root->target.offset_y = 0;
+    root->target.width = root->target.height = 0;
+    root->target.alpha = 1;
+    struct presentation plan = { .view_x = root->target.x, .view_y = root->target.y,
+        .view_zoom = 1 };
+    struct frame f = { .server = s, .pass = pass, .buffer = buffer,
+        .target = { width, height, pass_fbo(pass) }, .width = width,
+        .height = height, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
+        .view_x = plan.view_x, .view_y = plan.view_y, .zoom = 1 };
+    pass_add_rect(pass, &(struct rect_options){
+        .box = { .width = width, .height = height },
+        .blend_mode = BLEND_NONE });
+    walk_presentation_root(s, &plan, root, root->node, 0, 0, render_leaf, &f);
+    if (cursor && s->cursor_image.texture && root->node->enabled) {
+        double x = s->pointer_x, y = s->pointer_y;
+        screen_to_world(s, &x, &y);
+        x -= root->target.x;
+        y -= root->target.y;
+        if (x >= 0 && y >= 0 && x < width && y < height)
+            draw_cursor(s, &f, x, y, root->target.scale);
+    }
+}
+
 bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor) {
     struct presentation_target root = {0};
     root.node = window_capture_node(s, id, &root.target);
     if (!root.node) return false;
-    root.target.offset_x = root.target.offset_y = 0;
-    root.target.width = root.target.height = 0;
-    root.target.alpha = 1;
-    struct presentation plan = { .view_x = root.target.x, .view_y = root.target.y,
-        .view_zoom = 1 };
     struct pass *pass = render_begin(s->renderer, buffer, NULL, 0);
     if (!pass) return false;
-    struct frame f = { .server = s, .pass = pass, .buffer = buffer, .width = buffer->width,
-        .height = buffer->height, .transform = WL_OUTPUT_TRANSFORM_NORMAL,
-        .view_x = plan.view_x, .view_y = plan.view_y, .zoom = 1 };
-    pass_add_rect(pass, &(struct rect_options){
-        .box = { .width = buffer->width, .height = buffer->height },
-        .blend_mode = BLEND_NONE });
-    walk_presentation_root(s, &plan, &root, root.node, 0, 0, render_leaf, &f);
-    if (cursor && s->cursor_image.texture && root.node->enabled) {
-        double x = s->pointer_x, y = s->pointer_y;
-        screen_to_world(s, &x, &y);
-        x -= root.target.x;
-        y -= root.target.y;
-        if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
-            draw_cursor(s, &f, x, y, root.target.scale);
-    }
+    render_window_pass(s, &root, pass, buffer, cursor);
     return pass_submit(pass);
+}
+
+bool render_window_texture(struct tomoe *s, uint32_t id, struct texture *texture, bool cursor) {
+    struct presentation_target root = {0};
+    root.node = window_capture_node(s, id, &root.target);
+    if (!root.node) return false;
+    struct pass *pass = render_begin_texture(s->renderer, texture);
+    if (!pass) return false;
+    render_window_pass(s, &root, pass, NULL, cursor);
+    return pass_submit_texture(pass);
 }
 
 static bool unpaced_frame_done(struct tomoe *s, struct leaf *leaf, void *data) {

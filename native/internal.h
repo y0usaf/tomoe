@@ -205,6 +205,7 @@ const struct format_set *render_shm_formats(struct render *r);
 struct buffer *render_allocate(struct render *r, int width, int height,
     const struct format *format);
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer);
+struct texture *render_texture_target(struct render *r, uint32_t format, int width, int height);
 struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
     uint32_t width, uint32_t height, const void *data);
 bool texture_update(struct texture *texture, struct buffer *buffer,
@@ -213,9 +214,14 @@ bool texture_read_pixels(struct texture *texture, const struct read_options *opt
 void texture_destroy(struct texture *texture);
 struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeline *signal,
     uint64_t point);
+struct pass *render_begin_texture(struct render *r, struct texture *texture);
+int pass_width(const struct pass *pass);
+int pass_height(const struct pass *pass);
+GLuint pass_fbo(const struct pass *pass);
 void pass_add_texture(struct pass *pass, const struct texture_options *options);
 void pass_add_rect(struct pass *pass, const struct rect_options *options);
 bool pass_submit(struct pass *pass);
+bool pass_submit_texture(struct pass *pass);
 int pass_submit_fence(struct pass *pass);
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list);
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
@@ -633,6 +639,7 @@ struct frame {
     struct tomoe *server;
     struct pass *pass;
     struct buffer *buffer;
+    struct { int width, height; GLuint fbo; } target;
     const struct plane_assignment *planes;
     const struct oplist *ops;
     size_t op_next;
@@ -1375,6 +1382,7 @@ uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
     struct screen *output);
 bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, bool cursor);
+bool render_window_texture(struct tomoe *s, uint32_t id, struct texture *texture, bool cursor);
 void window_frame_done(struct tomoe *s, uint32_t id, const struct timespec *when);
 bool windows_want_tearing(struct tomoe *s, struct output *o);
 void windows_prepare_presentation(struct tomoe *s, struct presentation *plan);
