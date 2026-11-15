@@ -1043,7 +1043,7 @@ let
       name = "nofocus";
       script = ''
         DECK = "${tomoe}/share/tomoe/examples/deck.lisp"
-        BUILTIN = "${tomoe}/share/tomoe/desktop.lisp"
+        BUILTIN = "${tomoe}/share/tomoe/lisp/desktop.lisp"
         PROBE = "${./nofocus-probe.lisp}"
       ''
       + builtins.readFile ./nofocus.py;
@@ -1104,7 +1104,7 @@ let
       script = ''
         WALLPAPER_SETTINGS = "${wallpaperSettings}"
         CLEAN_BASELINE = "${cleanBaseline}"
-        SOURCES = ["${tomoe}/share/tomoe/desktop.lisp"] + sorted(
+        SOURCES = ["${tomoe}/share/tomoe/lisp/desktop.lisp"] + sorted(
             "${tomoe}/share/tomoe/examples/" + name for name in ${builtins.toJSON (builtins.filter (pkgs.lib.hasSuffix ".lisp") (builtins.attrNames (builtins.readDir ../examples)))}
         )
       ''

@@ -1551,6 +1551,8 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
 (defun TOMOE-BOOT (sources bare watch)
   (let ((*pending-writes* nil))
   (%boot-state nil)
+  (let ((trace (%getenv "TOMOE_LAYOUT_TRACE")))
+    (setf *layout-trace-path* (and trace (plusp (length trace)) (%keep trace))))
   (%r! :watch (and watch t))
   (cond
     (bare nil)

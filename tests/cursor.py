@@ -109,7 +109,7 @@ CONFIGURE = """
 
 
 class Compositor:
-    def __init__(self, work, tomoe, pointer, body, bare=True, builtins=None):
+    def __init__(self, work, tomoe, pointer, body, bare=True):
         self.tomoe = tomoe
         self.pointer = pointer
         self.socket = "cursor"
@@ -129,8 +129,6 @@ class Compositor:
         self.environment.update(
             XDG_RUNTIME_DIR=str(self.runtime), WAYLAND_DISPLAY=self.socket,
             XCURSOR_PATH=self.icons, XCURSOR_THEME="check", TOMOE_DEBUG="1")
-        if builtins:
-            self.environment["TOMOE_BUILTINS"] = builtins
         arguments = [tomoe, "--socket", self.socket, "--backend", "headless", "--no-watch"]
         if bare:
             arguments.append("--bare")
@@ -324,11 +322,11 @@ def main():
     pointer = os.path.abspath(arguments.pointer)
     failures = []
 
-    def build(name, body, bare=True, builtins=None):
+    def build(name, body, bare=True):
         work = root / name
         work.mkdir(exist_ok=True)
         compositor = Compositor(str(work), tomoe, pointer, CONFIGURE + body,
-                                bare=bare, builtins=builtins)
+                                bare=bare)
         compositor.icons = str(root / "icons")
         return compositor
 

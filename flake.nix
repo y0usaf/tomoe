@@ -1,10 +1,11 @@
 {
-  description = "Tomoe, a Common Lisp Wayland compositor with reloadable policy";
+  description = "Tomoe, a Lisp-configured Wayland compositor with reloadable policy";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e52c192be9d7b2c4bd4aed326c8731b35f8bb75c";
+  inputs.baseline.url = "github:y0usaf/tomoe/e3f69434a6e913af5c014d385f293dcf024d10ed";
 
   outputs =
-    { self, nixpkgs, ... }:
+    { self, nixpkgs, baseline, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -93,11 +94,6 @@
             libxkbcommon
             ;
         };
-      baselineSource = builtins.fetchGit {
-        url = "https://github.com/y0usaf/tomoe";
-        rev = "e3f69434a6e913af5c014d385f293dcf024d10ed";
-        narHash = "sha256-j7uXheIewijC7V0FzrVlZhR7xnt3tmID1etcUR5DWHY=";
-      };
       packageFrom =
         root: pkgs:
         {
@@ -248,7 +244,7 @@
         removeAttrs (import ./tests {
           inherit pkgs;
           tomoe = package pkgs { };
-          baseline = packageFrom baselineSource pkgs { portal = false; };
+          baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
         }) [ "suites" ]
       ) pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
@@ -256,7 +252,7 @@
           (import ./tests {
             inherit pkgs;
             tomoe = package pkgs { };
-            baseline = packageFrom baselineSource pkgs { portal = false; };
+            baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
           }).suites;
         bench = import ./bench {
           inherit pkgs;
