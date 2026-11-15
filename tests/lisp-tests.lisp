@@ -43,6 +43,7 @@
 (unit-check "remove" '(1 3) (remove 2 '(1 2 3)))
 (unit-check "find" 2 (find 2 '(1 2 3)))
 (unit-check "position" 1 (position 2 '(1 2 3)))
+(unit-check "position-from-end" 4 (position #\/ "/a/b/c" :from-end t))
 (unit-check "some" t (and (some #'oddp '(2 3)) (every #'integerp '(1 2)) (notany #'oddp '(2 4))))
 (unit-check "count-if" 2 (count-if #'oddp '(1 2 3)))
 (unit-check "set-difference" '(3 1) (set-difference '(1 2 3) '(2)))
