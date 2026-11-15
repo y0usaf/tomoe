@@ -540,6 +540,19 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                              :theme (state-value snapshot :theme))))
             commands)))
 
+(defun %wallpaper-directory (directory)
+  "DIRECTORY without its trailing slashes."
+  (let ((path directory))
+    (loop while (and (plusp (length path))
+                     (char= (char path (1- (length path))) #\/))
+          do (setf path (subseq path 0 (1- (length path)))))
+    path))
+
+(defun %wallpaper-file-p (path)
+  (or (and (search ".png" path :start2 (max 0 (- (length path) 4)) :test #'string-equal) t)
+      (and (search ".jpg" path :start2 (max 0 (- (length path) 4)) :test #'string-equal) t)
+      (and (search ".jpeg" path :start2 (max 0 (- (length path) 5)) :test #'string-equal) t)))
+
 (defun wallpaper--pick (directory current)
   "A random PNG or JPEG under DIRECTORY other than CURRENT, or CURRENT when there is no other."
   (let ((files (remove current

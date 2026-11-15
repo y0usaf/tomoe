@@ -1,6 +1,3 @@
-(in-package #:tomoe)
-
-
 (defun root-mounts (mounts)
   (remove-if #'mounted-rule-parent mounts))
 
@@ -25,16 +22,15 @@
                   (eq (first (effect-arguments effect)) name)))
            (mounted-effects mounted)))
 
-(defun prune-rule-mounts (runtime mounts)
-  "Prune external lifetimes without evaluating any extension code.
-Recovery must still release dead window scopes when a predicate or reducer
-has failed. Retain only descendants whose parent and declaration still exist."
+(defun prune-rule-mounts (mounts)
+  "Prune external lifetimes without evaluating any extension code. Recovery must
+still release dead window scopes when a predicate or reducer has failed."
   (let ((result (copy-list (root-mounts mounts))))
     (dolist (instance (rule-instances mounts) result)
       (let ((parent (find (mounted-rule-parent instance) result :key #'mounted-spec)))
         (when (and parent
                    (find-rule-declaration parent (mounted-rule-name instance))
-                   (find (mounted-rule-window instance) (runtime-windows runtime)
+                   (find (mounted-rule-window instance) (runtime-windows)
                          :key (lambda (window) (getf window :id))))
           (setf result (nconc result (list instance))))))))
 
@@ -51,71 +47,72 @@ has failed. Retain only descendants whose parent and declaration still exist."
 
 (defun rule-matches-p (definition window context &optional previous)
   (destructuring-bind (name app-id title properties reads state) (effect-arguments definition)
-    (declare (ignore name properties state))
     (and (or (null app-id) (string= app-id (or (getf window :app-id) "")))
          (or (null title) (search title (or (getf window :title) "")))
          (or (null (effect-predicate definition))
              (funcall (effect-predicate definition) (copy-data window)
                       (rule-snapshot context reads previous))))))
 
-(defun rule-evaluation-error (runtime parent condition)
-  (let ((live (find (spec-name (mounted-spec parent)) (runtime-mounts runtime)
-                    :test #'equal :key (lambda (mount) (spec-name (mounted-spec mount))))))
-    (when live
-      (incf (mounted-failures live))
-      (setf (mounted-last-error live) (princ-to-string condition))))
-  (error 'extension-error :unit (spec-name (mounted-spec parent)) :cause condition))
+(defun rule-evaluation-error (parent message)
+  (record-failure parent message)
+  (error "Extension ~A: ~A" (spec-name (mounted-spec parent)) message))
 
-(defun reconcile-rule-mounts (runtime mounts context)
+(defun reconcile-rule-mounts (mounts context)
   "Match a bounded snapshot of declarations. New nested declarations are seen
-by the next reconciliation pass, so a callback never extends its own traversal.
-Return complete mounts, new instance names, and changed callback definitions."
-  (let* ((mounts (prune-rule-mounts runtime mounts))
-         (previous (make-hash-table :test #'equal))
+by the next reconciliation pass. Return complete mounts, new instance names, and
+changed callback definitions."
+  (let* ((mounts (prune-rule-mounts mounts))
+         (previous nil)
          (result (copy-list (root-mounts mounts)))
          (new nil) (changed nil) (count 0))
     (dolist (instance (rule-instances mounts))
-      (setf (gethash (rule-instance-key instance) previous) instance))
+      (setf previous (%alist-set (rule-instance-key instance) instance previous)))
     (dolist (parent mounts)
       (when (find (mounted-spec parent) result :key #'mounted-spec)
         (dolist (definition (mounted-effects parent))
           (when (eq (effect-kind definition) :rule)
-            (handler-case
-                (sb-ext:with-timeout 0.025
-                  (dolist (window (runtime-windows runtime))
-                    (when (rule-matches-p definition window context (runtime-effective runtime))
-                      (when (> (incf count) 4096) (error "More than 4096 matching rule instances."))
-                      (let* ((name (first (effect-arguments definition)))
-                             (id (getf window :id))
-                             (owner (mounted-spec parent))
-                             (key (list owner name id))
-                             (old (gethash key previous))
-                             (instance
-                               (or old
-                                   (make-mounted
-                                    :spec (make-spec :name (rule-instance-identity owner name id)
-                                                     :source (spec-source owner)
-                                                     :directory (spec-directory owner))
-                                    :state (copy-data (sixth (effect-arguments definition)))
-                                    :rule-parent owner :rule-name name :rule-window id :rule-pending t))))
-                        (cond ((null old) (push (spec-name (mounted-spec instance)) new))
-                              ((not (eq (mounted-rule-definition old) definition))
-                               (push (spec-name (mounted-spec instance)) changed)))
-                        (unless (eq (mounted-rule-definition instance) definition)
-                          (incf *invocations*))
-                        (setf (mounted-rule-definition instance) definition)
-                        (setf result (nconc result (list instance)))))))
-              (serious-condition (condition)
-                (rule-evaluation-error runtime parent condition)))))))
+            (let ((message nil))
+              (%catch
+               (lambda ()
+                 (%with-limits nil 25
+                   (lambda ()
+                     (dolist (window (runtime-windows))
+                       (when (rule-matches-p definition window context (runtime-effective))
+                         (when (> (incf count) 4096) (error "More than 4096 matching rule instances."))
+                         (let* ((name (first (effect-arguments definition)))
+                                (id (getf window :id))
+                                (owner (mounted-spec parent))
+                                (key (list owner name id))
+                                (entry (assoc key previous :test #'equal))
+                                (old (cdr entry))
+                                (instance
+                                  (if old
+                                      old
+                                      (make-mounted
+                                       :spec (make-spec :name (rule-instance-identity owner name id)
+                                                        :source (spec-source owner)
+                                                        :directory (spec-directory owner))
+                                       :state (copy-data (sixth (effect-arguments definition)))
+                                       :rule-parent owner :rule-name name :rule-window id
+                                       :rule-pending t))))
+                           (cond ((null old) (push (spec-name (mounted-spec instance)) new))
+                                 ((not (eq (mounted-rule-definition old) definition))
+                                  (push (spec-name (mounted-spec instance)) changed)))
+                           (unless (eq (mounted-rule-definition instance) definition)
+                             (incf *invocations*))
+                           (setf (nth 10 instance) definition)
+                           (setf result (nconc result (list instance)))))))))
+               (lambda (text) (setf message text)))
+              (when message (rule-evaluation-error parent message)))))))
     (values result new changed)))
 
-(defun resolved-rule-properties (runtime mounts)
+(defun resolved-rule-properties (mounts)
   "Merge copied arbitrary properties in declaration order, including NIL. A window
 of a launch that asked to stay in the background carries (:FOCUS . NIL) ahead of
 every declared property, so no rule can focus it back."
-  (let ((result (loop for window in (runtime-windows runtime)
+  (let ((result (loop for window in (runtime-windows)
                       collect (list :id (getf window :id) :properties nil))))
-    (dolist (instance (rule-instances (prune-rule-mounts runtime mounts)))
+    (dolist (instance (rule-instances (prune-rule-mounts mounts)))
       (let ((record (find (mounted-rule-window instance) result
                           :key (lambda (window) (getf window :id)))))
         (dolist (entry (fourth (effect-arguments (mounted-rule-definition instance))))
@@ -123,16 +120,16 @@ every declared property, so no rule can focus it back."
             (if old (setf (cdr old) (copy-data (cdr entry)))
                 (setf (getf record :properties)
                       (nconc (getf record :properties) (list (copy-data entry)))))))))
-    (dolist (window (runtime-windows runtime) result)
+    (dolist (window (runtime-windows) result)
       (when (null (getf window :focus t))
         (let ((record (find (getf window :id) result
                             :key (lambda (entry) (getf entry :id)))))
           (setf (getf record :properties) (acons :focus nil (getf record :properties))))))))
 
-(defun invoke-rule-application (runtime instance snapshot state event)
+(defun invoke-rule-application (instance snapshot state event)
   (let ((application (effect-application (mounted-rule-definition instance))))
     (if application
-        (let ((window (find (mounted-rule-window instance) (runtime-windows runtime)
+        (let ((window (find (mounted-rule-window instance) (runtime-windows)
                             :key (lambda (record) (getf record :id)))))
           (unless window (error "Rule instance target no longer exists."))
           (funcall application
@@ -142,10 +139,11 @@ every declared property, so no rule can focus it back."
                           :parent (copy-seq (spec-name (mounted-rule-parent instance))) event)))
         (values state nil nil))))
 
-(defun describe-rule-instances (runtime)
-  (loop for instance in (rule-instances (runtime-mounts runtime))
+(defun describe-rule-instances ()
+  (loop for instance in (rule-instances (runtime-mounts))
         collect (list :owner (spec-name (mounted-rule-parent instance))
-                      :name (mounted-rule-name instance) :window (mounted-rule-window instance)
+                      :name (mounted-rule-name instance)
+                      :window (mounted-rule-window instance)
                       :identity (spec-name (mounted-spec instance))
                       :source-id (spec-id (mounted-spec instance))
                       :state (copy-data (mounted-state instance))

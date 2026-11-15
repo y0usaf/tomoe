@@ -1,5 +1,3 @@
-(in-package #:tomoe)
-
 (defparameter +dialog-theme+
   '(:base "#1c1c21" :text "#ffffff" :accent "#7aa1f7" :error "#bf2e38" :surface1 "#45454f")
   "The dialog colours when no theme is given.")
@@ -80,8 +78,8 @@ THEME is as for CONFIRM-DIALOG."
   "Interpret a menu command: (values :select index), (values :cancel), or
 (values :move index)."
   (let* ((command (or (getf event :name) (getf event :command)))
-         (prefix (format nil "~(~A~)-" select))
-         (hover-prefix (format nil "~(~A~)-" hover)))
+         (prefix (concatenate 'string (string-downcase select) "-"))
+         (hover-prefix (concatenate 'string (string-downcase hover) "-")))
     (cond ((not (stringp command)) nil)
           ((equal command (string-downcase select)) (values :select selected))
           ((equal command (string-downcase cancel)) (values :cancel))
@@ -195,20 +193,4 @@ colour, occupied ones in text colour, empty ones only with SHOW-EMPTY. Read :DAT
 
 (defun clock-text (&optional (format "%H:%M"))
   "The local time formatted by strftime FORMAT."
-  (let ((tm (sb-alien:make-alien (sb-alien:unsigned 8) 128))
-        (out (sb-alien:make-alien sb-alien:char 256)))
-    (unwind-protect
-         (sb-alien:with-alien ((now sb-alien:long 0))
-           (sb-alien:alien-funcall (sb-alien:extern-alien "tzset" (function sb-alien:void)))
-           (setf now (sb-alien:alien-funcall (sb-alien:extern-alien "time" (function sb-alien:long (* t)))
-                                             nil))
-           (sb-alien:alien-funcall (sb-alien:extern-alien "localtime_r" (function (* t) (* sb-alien:long) (* t)))
-                                   (sb-alien:addr now) tm)
-           (if (zerop (sb-alien:alien-funcall
-                       (sb-alien:extern-alien "strftime" (function sb-alien:unsigned-long (* sb-alien:char)
-                                                                   sb-alien:unsigned-long sb-alien:c-string (* t)))
-                       out 256 format tm))
-               ""
-               (sb-alien:cast out sb-alien:c-string)))
-      (sb-alien:free-alien tm)
-      (sb-alien:free-alien out))))
+  (or (%strftime format) ""))
