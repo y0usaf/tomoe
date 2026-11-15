@@ -177,7 +177,12 @@ static lisp_value converter_process(struct tomoe *server, const struct tomoe_eve
 }
 
 static lisp_value converter_services(struct tomoe *server, const struct tomoe_event *event) {
-    return res_event_value(server, event);
+    lisp_value value = res_event_value(server, event);
+    if (lisp_nilp(value)) return value;
+    return lisp_cons(lisp_keyword("TYPE"),
+        lisp_cons(lisp_keyword("services"),
+        lisp_cons(lisp_keyword("SERVICES"),
+        lisp_cons(value, lisp_nil()))));
 }
 
 static lisp_value converter_system(struct tomoe *server, const struct tomoe_event *event) {

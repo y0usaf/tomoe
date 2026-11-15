@@ -14,7 +14,7 @@ static struct tomoe *server(void) {
 }
 
 static lisp_value put(lisp_value list, const char *key, lisp_value value) {
-    return lisp_cons(lisp_keyword(key), lisp_cons(value, list));
+    return lisp_cons(value, lisp_cons(lisp_keyword(key), list));
 }
 
 static lisp_value boolean(bool value) {
@@ -479,7 +479,6 @@ static void ring_consume(struct tomoe *s, size_t consumed) {
 
 void policy_drain(struct tomoe *s) {
     if (!s || !s->event_ring || !s->event_count || s->grab_held) return;
-    lisp_value events = lisp_nil();
     size_t consumed = 0;
     uint16_t last = EV_NONE;
     for (; consumed < s->event_count; consumed++) {
@@ -488,7 +487,14 @@ void policy_drain(struct tomoe *s) {
             policy_event_broadcast(s, event);
         if (policy_event_delivers(s, event->type) && converters[event->type]) {
             lisp_value value = converters[event->type](s, event);
-            if (!lisp_nilp(value)) events = lisp_cons(value, events);
+            if (!lisp_nilp(value)) {
+                lisp_value events = lisp_cons(value, lisp_nil());
+                char error[256];
+                lisp_value result;
+                if (policy_call(POLICY_HOOK_DISPATCH, 1, &events, &result, error, sizeof(error)))
+                    tomoe_log(LOG_ERROR, "tomoe: dispatch failed: %s", error);
+                lisp_end_turn();
+            }
         }
         last = event->type;
         if (event->type == EV_GRAB) {
@@ -497,13 +503,6 @@ void policy_drain(struct tomoe *s) {
         }
     }
     ring_consume(s, consumed);
-    if (!lisp_nilp(events)) {
-        events = lisp_nreverse(events);
-        char error[256];
-        lisp_value result;
-        if (policy_call(POLICY_HOOK_DISPATCH, 1, &events, &result, error, sizeof(error)))
-            tomoe_log(LOG_ERROR, "tomoe: dispatch failed: %s", error);
-    }
     if (last == EV_GRAB) policy_event_grab_hold(s);
     if (!s->event_count) s->event_arena_used = 0;
 }
@@ -933,6 +932,33 @@ static lisp_value prim_getenv(int argc, lisp_value *argv) {
     return value ? lisp_cstring(value) : lisp_nil();
 }
 
+static lisp_value prim_read_file(int argc, lisp_value *argv) {
+    const char *path = string(argv[0]);
+    uint64_t limit = unsigned_integer(argv[1]);
+    if (!*path) return lisp_nil();
+    struct stat status;
+    if (stat(path, &status) < 0 || !S_ISREG(status.st_mode)) return lisp_nil();
+    if (status.st_size < 0 || (uint64_t)status.st_size > limit) return lisp_nil();
+    FILE *file = fopen(path, "rb");
+    if (!file) return lisp_nil();
+    size_t size = (size_t)status.st_size;
+    char *buffer = malloc(size + 1);
+    if (!buffer) {
+        fclose(file);
+        return lisp_nil();
+    }
+    size_t got = fread(buffer, 1, size, file);
+    fclose(file);
+    if (got != size) {
+        free(buffer);
+        return lisp_nil();
+    }
+    buffer[size] = '\0';
+    lisp_value text = lisp_string(buffer, size);
+    free(buffer);
+    return text;
+}
+
 struct path_list {
     char **items;
     size_t count, capacity;
@@ -1164,6 +1190,7 @@ static const struct primitive {
     { "%strftime", prim_strftime, 1, 1 },
     { "%log", prim_log, 2, 2 },
     { "%getenv", prim_getenv, 1, 1 },
+    { "%read-file", prim_read_file, 2, 2 },
     { "%list-directory", prim_list_directory, 1, 1 },
     { "%read-source", prim_read_source, 2, 2 },
     { "%write-patch-file", prim_write_patch_file, 2, 2 },

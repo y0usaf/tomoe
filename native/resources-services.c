@@ -47,7 +47,7 @@ static void services_text(struct res_buffer *text) {
     rb_append(text, " :tray ", 7);
     rb_append(text, res.producers[PRODUCER_TRAY].snapshot,
         strlen(res.producers[PRODUCER_TRAY].snapshot));
-    rb_append(text, " :audio (:volume 1.0d0 :muted nil))", 32);
+    rb_append(text, " :audio (:volume 1.0d0 :muted nil))", 35);
 }
 
 static void services_push(void) {
@@ -702,7 +702,7 @@ bool res_sources_set(lisp_value paths, char *error, size_t size) {
         char *path = res_dup_span(text, text_length);
         struct res_source *source = &sources[length++];
         for (size_t old = 0; old < res.source_count; old++) {
-            if (!strcmp(res.sources[old].path, path)) {
+            if (res.sources[old].path && !strcmp(res.sources[old].path, path)) {
                 *source = res.sources[old];
                 memset(&res.sources[old], 0, sizeof(res.sources[old]));
                 break;
@@ -767,7 +767,7 @@ static void sources_scan(uint64_t now, uint64_t *next) {
             source->stable = 0;
             source->have_sample = false;
             struct res_buffer text = {0};
-            rb_append(&text, "(:TYPE :SOURCE :PATH ", 20);
+            rb_append(&text, "(:TYPE :SOURCE :PATH ", 21);
             rb_quoted_cstring(&text, source->path);
             rb_append(&text, ")", 1);
             char *message = rb_take(&text);
