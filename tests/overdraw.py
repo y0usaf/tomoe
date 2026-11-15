@@ -158,20 +158,30 @@ def spawn(socket, first, count, repaint, unit):
                socket=socket)
 
 
-def measure(binary, unit, socket, seconds=3):
+def sample(binary, unit, socket, seconds=2):
     command(binary, socket, "timings reset")
     time.sleep(0.3)
     before_frames, before = frames(binary, socket), counters(binary, socket)
     machine.sleep(seconds)
     drawn = max(frames(binary, socket) - before_frames, 1)
     after = counters(binary, socket)
-    cost = {"frames": drawn}
+    taken = {"frames": drawn}
     for name in before:
-        cost[name] = (after[name] - before[name]) / drawn
+        taken[name] = (after[name] - before[name]) / drawn
     for name in ("frame-draw", "frame-raster", "frame-total"):
         block = channel(binary, socket, name)
-        cost[name] = block.get("p50", 0) / 1000.0
-        cost[name + "-p99"] = block.get("p99", 0) / 1000.0
+        taken[name] = block.get("p50", 0) / 1000.0
+        taken[name + "-p99"] = block.get("p99", 0) / 1000.0
+    return taken
+
+
+def measure(binary, unit, socket, runs=3):
+    taken = [sample(binary, unit, socket) for _ in range(runs)]
+    cost = {}
+    for name in taken[0]:
+        values = sorted(one[name] for one in taken)
+        cost[name] = values[len(values) // 2]
+        cost[name + "-noise"] = f"{values[0]:.2f}..{values[-1]:.2f}"
     return cost
 
 
