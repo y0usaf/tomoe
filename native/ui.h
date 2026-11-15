@@ -51,7 +51,6 @@ int tomoe_present_ui_end(struct tomoe *s);
 
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
     double size, double line_height);
-int tomoe_ui_callback_current(struct tomoe *s, uint64_t callback_id);
 const char *tomoe_ui_stats(struct tomoe *s);
 
 bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out);

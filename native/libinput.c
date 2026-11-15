@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "budget.h"
 #include <stddef.h>
 #include <libinput.h>
 #include <libudev.h>
@@ -335,10 +336,12 @@ static int dispatch(int fd, uint32_t mask, void *data) {
         return 0;
     }
     struct libinput_event *event;
+    budget_hot_enter("libinput");
     while ((event = libinput_get_event(s->libinput))) {
         handle(s, event);
         libinput_event_destroy(event);
     }
+    budget_hot_leave();
     return 0;
 }
 

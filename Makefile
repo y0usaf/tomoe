@@ -112,6 +112,11 @@ build/warp-client: tests/warp-client.c tests/client.c $(HEADERS)
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
+build/event-ring: tests/event-ring.c native/event.c native/policy.c $(wildcard native/*.h) $(HEADERS) | build
+	$(CC) $(CFLAGS_NATIVE) -Inative -ffunction-sections -fdata-sections \
+		tests/event-ring.c native/event.c native/policy.c -Wl,--gc-sections \
+		$(shell $(PKG_CONFIG) --libs wayland-server) -lm -o $@
+
 build/obj/%-protocol.o: build/%-protocol.c $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 

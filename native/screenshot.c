@@ -83,14 +83,8 @@ static void capture(struct tomoe *s, struct output *o, struct box region) {
         cairo_status_t written = cairo_surface_write_to_png(surface, path);
         cairo_surface_destroy(surface);
         if (written == CAIRO_STATUS_SUCCESS) {
-            struct event *event; size_t size;
-            FILE *out = begin_event(s, &event, &size);
-            if (out) {
-                fputs("(:type :screenshot :path ", out);
-                quote(out, path);
-                fputc(')', out);
-                end_event(s, event, out);
-            }
+            struct tomoe_event *event = policy_event_push(s, EV_SCREENSHOT);
+            if (event) event->str[0] = policy_event_cstring(s, path);
         }
     }
     free(path);

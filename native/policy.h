@@ -68,12 +68,48 @@ struct tomoe_event {
 
 enum { EVENT_NO_STRING = UINT32_MAX };
 
+enum policy_window_flag {
+    POLICY_WINDOW_BUFFERED = 1u << 0,
+    POLICY_WINDOW_DIALOG = 1u << 1,
+    POLICY_WINDOW_MODAL = 1u << 2,
+    POLICY_WINDOW_FULLSCREEN = 1u << 3,
+    POLICY_WINDOW_MAXIMIZE = 1u << 4,
+    POLICY_WINDOW_FULLSCREEN_REQUESTED = 1u << 5,
+    POLICY_WINDOW_MAXIMIZE_REQUESTED = 1u << 6,
+    POLICY_WINDOW_ATTACHED = 1u << 7
+};
+
+enum policy_key_flag {
+    POLICY_KEY_KEYSYM = 1u << 8,
+    POLICY_KEY_POINTER = 1u << 9
+};
+
+enum policy_key_state { POLICY_KEY_PRESSED = 0, POLICY_KEY_RELEASED = 1 };
+enum policy_pointer_state { POLICY_POINTER_ENTER = 0, POLICY_POINTER_LEAVE = 1,
+    POLICY_POINTER_MOTION = 2 };
+enum policy_request_state { POLICY_REQUEST_FALSE = 0, POLICY_REQUEST_TRUE = 1,
+    POLICY_REQUEST_ABSENT = 2 };
+
+struct policy_layer_payload {
+    uint32_t id;
+    uint32_t layer, anchor, width, height, exclusive_zone, keyboard;
+    int32_t margin[4];
+    uint32_t request_width, request_height, request_exclusive_zone;
+    int32_t request_margin[4];
+    uint32_t request_anchor, request_exclusive_edge;
+    int32_t request_layer, request_keyboard;
+    double scale_120;
+};
+
 struct tomoe_event *policy_event_push(struct tomoe *server, enum tomoe_event_type type);
 uint32_t policy_event_string(struct tomoe *server, const char *text, size_t length);
 uint32_t policy_event_cstring(struct tomoe *server, const char *text);
 const char *policy_event_string_at(struct tomoe *server, uint32_t handle, size_t *length);
 int policy_event_barrier(struct tomoe *server);
 bool policy_reads(struct tomoe *server, enum tomoe_event_type type);
+bool policy_event_delivers(struct tomoe *server, enum tomoe_event_type type);
+uint16_t policy_event_flags(enum tomoe_event_type type);
+void policy_event_broadcast(struct tomoe *server, const struct tomoe_event *event);
 uint64_t policy_events_dropped(struct tomoe *server);
 bool policy_events_pending(struct tomoe *server);
 void policy_drain(struct tomoe *server);
@@ -87,6 +123,7 @@ void loop_register_primitives(struct tomoe *server);
 
 int policy_call(const char *hook, int argc, const lisp_value *argv, lisp_value *result,
     char *error, size_t error_size);
+void ipc_broadcast(const char *name, lisp_value value);
 
 typedef void (*loop_fd_fn)(void *data, int fd, uint32_t mask);
 typedef void (*loop_timer_fn)(void *data);
