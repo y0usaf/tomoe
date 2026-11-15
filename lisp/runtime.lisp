@@ -1066,10 +1066,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                (getf call :replied) t))))
     (:broadcast (%json-broadcast (first (command-arguments command))
                                  (second (command-arguments command))))
-    (:launch (destructuring-bind (launch cwd env focus) (command-arguments command)
-               (%spawn launch cwd env focus)))
+    (:launch (%launch (list :argv (command-arguments command) :focus t)))
     (:spawn (destructuring-bind (launch cwd env focus) (command-arguments command)
-              (%spawn launch cwd env focus)))
+              (%spawn (list :argv launch :cwd cwd :env env :focus focus))))
     (:close (%close (first (command-arguments command))))
     (:screencast (destructuring-bind (token answer value) (command-arguments command)
                    (%screencast-answer token answer value)))
@@ -1082,6 +1081,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
               (%output-power name (ecase mode (:off 0) (:on 1) (:toggle 2)))))
     (:quit (%quit))
     (:reload (%reload-policy))))
+
+(defun spawn-command (arguments)
+  (execute-command (canonical-command (spawn (getf arguments :argv)
+                                             :focus (getf arguments :focus))))
+  (list :argv (getf arguments :argv) :focus (getf arguments :focus)))
+
+(define-host-command "spawn"
+  :description "Run a program whose windows stay out of the way."
+  :arguments '((:argv :argv :required t :description "Program and arguments.")
+               (:focus :boolean :default t :description "Let its windows take focus."))
+  :call 'spawn-command)
 
 (defun commit-context (mounts context &optional commands)
   "The only extension-to-native write path. All reducers have returned and validated."

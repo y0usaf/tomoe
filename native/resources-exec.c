@@ -1072,9 +1072,20 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
     error[0] = 0;
     char **argv = NULL;
     size_t argc = 0;
-    if (!plist_argv(plist, &argv, &argc, error, sizeof(error))) lisp_error("%s", error);
+    char *command = NULL;
+    lisp_value shell;
+    if (res_plist_get(plist, "ARGV", &shell) && lisp_stringp(shell)) {
+        command = res_plist_string(shell);
+        if (!command || !*command || strlen(command) > 65536) {
+            free(command);
+            lisp_error("Invalid process command.");
+        }
+    } else if (!plist_argv(plist, &argv, &argc, error, sizeof(error))) {
+        lisp_error("%s", error);
+    }
     struct res_process process;
     memset(&process, 0, sizeof(process));
+    process.command = command;
     process.argv = argv;
     process.argc = argc;
     process.kind = launch ? PROCESS_LAUNCH : PROCESS_SPAWN;
