@@ -39,7 +39,7 @@ static void ring_ready(struct tomoe *s) {
     if (capacity > EVENT_CAPACITY_MAX) capacity = EVENT_CAPACITY_MAX;
     if (!budget_admit(BUDGET_EVENTS, capacity))
         tomoe_log(LOG_WARNING, "tomoe: event ring exceeds its budget");
-    s->event_ring = t_calloc((size_t)capacity, sizeof(*s->event_ring));
+    s->event_ring = calloc((size_t)capacity, sizeof(*s->event_ring));
     if (!s->event_ring) {
         tomoe_log(LOG_ERROR, "tomoe: event ring allocation failed");
         s->event_capacity = 0;
@@ -56,7 +56,7 @@ static uint32_t arena_store(struct tomoe *s, const void *data, size_t length) {
         size_t size = s->event_arena_size ? s->event_arena_size : EVENT_ARENA_BOOTSTRAP;
         while (size < s->event_arena_used + need) size *= 2;
         if (size > EVENT_ARENA_MAX) return EVENT_NO_STRING;
-        char *grown = t_realloc(s->event_arena, size);
+        char *grown = realloc(s->event_arena, size);
         if (!grown) return EVENT_NO_STRING;
         s->event_arena = grown;
         s->event_arena_size = size;

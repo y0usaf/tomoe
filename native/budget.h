@@ -43,12 +43,7 @@ lisp_value budget_report(void);
 void budget_hot_enter(const char *tag);
 void budget_hot_leave(void);
 bool budget_hot(void);
-void budget_hot_violation(const char *tag);
 uint64_t budget_hot_allocs(void);
 uint64_t budget_hot_allocs_all(void);
-
-void *t_malloc(size_t size);
-void *t_calloc(size_t count, size_t size);
-void *t_realloc(void *pointer, size_t size);
 
 #endif

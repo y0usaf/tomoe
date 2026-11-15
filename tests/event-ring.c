@@ -22,19 +22,23 @@ void budget_release(enum budget_kind kind, uint64_t amount) {
     (void)amount;
 }
 
-void *t_malloc(size_t size) {
+extern void *__libc_malloc(size_t size);
+extern void *__libc_calloc(size_t count, size_t size);
+extern void *__libc_realloc(void *pointer, size_t size);
+
+void *malloc(size_t size) {
     allocations++;
-    return malloc(size);
+    return __libc_malloc(size);
 }
 
-void *t_calloc(size_t count, size_t size) {
+void *calloc(size_t count, size_t size) {
     allocations++;
-    return calloc(count, size);
+    return __libc_calloc(count, size);
 }
 
-void *t_realloc(void *pointer, size_t size) {
+void *realloc(void *pointer, size_t size) {
     allocations++;
-    return realloc(pointer, size);
+    return __libc_realloc(pointer, size);
 }
 
 void tomoe_log(int level, const char *format, ...) {

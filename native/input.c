@@ -1255,7 +1255,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_motion(s, time, true);
     motion_wake(s);
 }
-void input_pointer_motion(struct pointer_motion *event) {
+static void input_pointer_motion_body(struct pointer_motion *event) {
     struct tomoe *s = event->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1282,7 +1282,7 @@ static struct screen *named_pointer_output(struct tomoe *s, struct input_device 
     }
     return NULL;
 }
-void input_pointer_absolute(struct pointer_absolute *event) {
+static void input_pointer_absolute_body(struct pointer_absolute *event) {
     struct tomoe *s = event->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1486,7 +1486,7 @@ uint32_t input_modifier_mask(struct tomoe *s) {
     return keyboard ? keymap_slot_modifiers(keyboard) : 0;
 }
 
-void input_pointer_button(struct pointer_button *input) {
+static void input_pointer_button_body(struct pointer_button *input) {
     struct tomoe *s = input->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1532,7 +1532,7 @@ void input_pointer_button(struct pointer_button *input) {
     event->y = (uint32_t)pixel_round(y);
     event->modifiers = modifiers;
 }
-void input_pointer_axis(struct pointer_axis *event) {
+static void input_pointer_axis_body(struct pointer_axis *event) {
     struct tomoe *s = event->device->server;
     idle_notify_activity(s);
     if (s->grab_mode != 0) return;
@@ -1541,9 +1541,31 @@ void input_pointer_axis(struct pointer_axis *event) {
     seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source, event->relative_direction);
 }
+void input_pointer_motion(struct pointer_motion *event) {
+    budget_hot_enter("pointer");
+    input_pointer_motion_body(event);
+    budget_hot_leave();
+}
+void input_pointer_absolute(struct pointer_absolute *event) {
+    budget_hot_enter("pointer");
+    input_pointer_absolute_body(event);
+    budget_hot_leave();
+}
+void input_pointer_button(struct pointer_button *input) {
+    budget_hot_enter("pointer");
+    input_pointer_button_body(input);
+    budget_hot_leave();
+}
+void input_pointer_axis(struct pointer_axis *event) {
+    budget_hot_enter("pointer");
+    input_pointer_axis_body(event);
+    budget_hot_leave();
+}
 void input_pointer_frame(struct input_device *device) {
     struct tomoe *s = device->server;
+    budget_hot_enter("pointer");
     seat_pointer_notify_frame(s->seat);
+    budget_hot_leave();
 }
 static void cursor_apply(struct tomoe *s) {
     struct surface *surface = s->cursor_surface;
