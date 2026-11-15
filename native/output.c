@@ -368,13 +368,17 @@ const char *tomoe_frames(struct tomoe *s) {
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
             " :suspended %s :pending %s"
-            " :planes %zu :deferrals %" PRIu64 " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
+            " :planes %zu :deferrals %" PRIu64 " :plane-tests %" PRIu64
+            " :plane-refusals %" PRIu64 " :underlay-plan %u"
+            " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
             " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
             " :predicted %" PRId64 " :slack %" PRId64 " :heavy %u :frame-times (",
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
             o->screen->suspended ? "t" : "nil", o->screen->frame_pending ? "t" : "nil",
-            o->planes.count, o->screen->deferrals, o->timing.ns,
+            o->planes.count, o->screen->deferrals,
+            o->screen->plane_tests, o->screen->plane_refusals, o->screen->underlay_plan,
+            o->timing.ns,
             o->screen->frame_cost_ns, o->screen->missed_frames,
             o->screen->refresh, o->screen->frame_armed_ns, o->screen->frame_start_ns,
             o->screen->vblank_ns, o->screen->clock.predicted_ns, o->screen->clock.slack_ns,
@@ -1286,9 +1290,10 @@ static void output_frame(struct wl_listener *listener, void *data) {
         screen_schedule_frame(o->screen);
     }
     if (success && !scanout && (state.committed & SCREEN_BUFFER)) {
+        struct buffer *next_presented = buffer_lock(state.buffer);
         buffer_unlock(o->presented[1]);
         o->presented[1] = o->presented[0];
-        o->presented[0] = buffer_lock(state.buffer);
+        o->presented[0] = next_presented;
     }
     if (success && (state.committed & SCREEN_BUFFER))
         capture_serve(o, state.buffer, scanout != NULL);

@@ -495,6 +495,34 @@ let
     '';
     installPhase = "install -Dm755 tomoe-scanout-client $out/bin/tomoe-scanout-client";
   };
+  dmabufClient = pkgs.stdenv.mkDerivation {
+    name = "tomoe-dmabuf-client";
+    src = ./dmabuf-client.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    buildInputs = [
+      pkgs.wayland
+      pkgs.libgbm
+      pkgs.libdrm
+    ];
+    buildPhase = ''
+      wp=${pkgs.wayland-protocols}/share/wayland-protocols
+      for xml in $wp/stable/xdg-shell/xdg-shell.xml \
+        $wp/stable/linux-dmabuf/linux-dmabuf-v1.xml \
+        $wp/stable/viewporter/viewporter.xml; do
+        name=$(basename "$xml" .xml)
+        wayland-scanner client-header "$xml" "$name-client-protocol.h"
+        wayland-scanner private-code "$xml" "$name-protocol.c"
+      done
+      $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -I. $src *-protocol.c \
+        $(pkg-config --cflags --libs wayland-client gbm libdrm) -o tomoe-dmabuf-client
+    '';
+    installPhase = "install -Dm755 tomoe-dmabuf-client $out/bin/tomoe-dmabuf-client";
+  };
   planesTool = pkgs.stdenv.mkDerivation {
     name = "tomoe-planes-probe";
     src = ./planes.c;
@@ -628,12 +656,19 @@ let
   planesProbe = pkgs.writeText "planes-probe.lisp" ''
     (in-package #:tomoe-user)
 
-    (defparameter +planes-states+ (list :note nil :moved nil))
+    (defparameter +planes-states+ (list :note nil :moved nil :blur nil :chrome nil :rotate nil))
 
     (defun planes--toggle (state command)
       (let ((next (copy-list state)))
         (cond ((equal command "note-on") (setf (getf next :note) t))
               ((equal command "note-off") (setf (getf next :note) nil))
+              ((equal command "blur-on") (setf (getf next :blur) t))
+              ((equal command "blur-off") (setf (getf next :blur) nil))
+              ((equal command "chrome-on") (setf (getf next :chrome) t))
+              ((equal command "chrome-off") (setf (getf next :chrome) nil))
+              ((equal command "rotate-ninety") (setf (getf next :rotate) :90))
+              ((equal command "rotate-two-seventy") (setf (getf next :rotate) :270))
+              ((equal command "rotate-off") (setf (getf next :rotate) nil))
               ((equal command "move") (setf (getf next :moved) t))
               ((equal command "unmove") (setf (getf next :moved) nil)))
         next))
@@ -644,13 +679,26 @@ let
          (list (shell-surface :planes-wallpaper (ui :stack)
                               :output name :anchors '(:top :left :right :bottom)
                               :layer :background :background "#101418ff"))
+         (when (getf state :chrome)
+           (list (shell-surface :planes-bar
+                                (ui :stack :children
+                                    (list (ui :rect :width (getf output :width) :height 140
+                                              :background "#ff8800ff")))
+                                :output name :anchors '(:top :left :right)
+                                :width (getf output :width) :height 140 :layer :top
+                                :click-through t :background "#00000000")))
          (when (getf state :note)
            (list (shell-surface :planes-note
                                 (ui :stack :children
                                     (list (ui :rect :width 200 :height 60 :background "#ffffffff")))
                                 :output name :anchors '(:top :left) :margin '(120 0 0 200)
                                 :width 200 :height 60 :layer :overlay
-                                :background "#00000000"))))))
+                                :background "#00000000")))
+         (when (getf state :blur)
+           (list (shell-surface :planes-frost (ui :row)
+                                :output name :anchors '(:top :left) :margin '(120 0 0 200)
+                                :width 200 :height 60 :layer :overlay
+                                :background "#00000000" :blur t))))))
 
     (define-extension "planes-probe" (:reads (:command :windows :outputs) :state +planes-states+)
         (snapshot state event)
@@ -662,14 +710,32 @@ let
                            :key (lambda (output) (getf output :name)) :test #'equal)))
         (values next
                 (when output
-                  (append (list (settings :animations nil)
+                  (append (list (apply #'settings :animations nil
+                                       (append (when (getf next :chrome)
+                                                 (list :border (list :width 2 :radius 8
+                                                                     :focused "#d0e0f0ff"
+                                                                     :unfocused "#d0e0f0ff")))
+                                               (when (getf next :blur)
+                                                 (list :blur (list :enabled t :passes 2 :offset 2)))))
                                 (define-command "note-on")
                                 (define-command "note-off")
+                                (define-command "blur-on")
+                                (define-command "blur-off")
+                                (define-command "chrome-on")
+                                (define-command "chrome-off")
+                                (define-command "rotate-ninety")
+                                (define-command "rotate-two-seventy")
+                                (define-command "rotate-off")
                                 (define-command "move")
                                 (define-command "unmove"))
+                          (when (getf next :rotate)
+                            (list (configure-output (getf output :name)
+                                                    :transform (getf next :rotate))))
                           (loop for window in (context snapshot :windows)
                                 for id = (getf window :id)
-                                collect (if (equal (getf window :app-id) "scanout-client")
+                                for app = (getf window :app-id)
+                                collect (if (or (equal app "scanout-client")
+                                                (equal app "dmabuf-check"))
                                             (if (getf next :moved)
                                                 (place id (floor (getf output :width) 4)
                                                        (floor (getf output :height) 4)
@@ -1145,9 +1211,10 @@ let
     packages = [
       pkgs.python3
       scanoutClient
+      dmabufClient
       planesTool
     ];
-    timeout = 900;
+    timeout = 1800;
   };
   kmsSuites = [
     {
@@ -1177,7 +1244,9 @@ let
       name = "planes";
       script = ''
         SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+        DMABUF_CLIENT = "${dmabufClient}/bin/tomoe-dmabuf-client"
         PLANES_PROBE = "${planesProbe}"
+        BASELINE = "${baselineBinary}"
       ''
       + builtins.readFile ./planes.py;
     }

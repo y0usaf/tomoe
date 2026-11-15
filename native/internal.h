@@ -151,7 +151,7 @@ struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *
 
 struct render;
 struct texture { uint32_t width, height; uint64_t serial; };
-enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE };
+enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE, BLEND_CUTOUT };
 enum filter_mode { FILTER_BILINEAR, FILTER_NEAREST };
 struct color { float r, g, b, a; };
 struct texture_options {
@@ -460,6 +460,7 @@ struct screen_overlay {
     uint64_t wait_point;
     int x, y, width, height;
     int src_x, src_y, src_width, src_height;
+    bool underlay;
 };
 struct screen_state {
     uint32_t committed;
@@ -493,6 +494,8 @@ struct screen_impl {
     bool (*test)(struct screen_update *updates, size_t count);
     bool (*commit)(struct screen_update *updates, size_t count);
     const struct format_set *(*formats)(struct screen *screen);
+    const struct format_set *(*overlay_formats)(struct screen *screen);
+    dev_t (*device)(struct screen *screen);
     size_t (*gamma_size)(struct screen *screen);
     size_t (*degamma_size)(struct screen *screen);
     size_t (*overlays)(struct screen *screen);
@@ -536,6 +539,8 @@ struct screen {
     bool suspended;
     int lx, ly, software_cursor_locks;
     uint64_t deferrals;
+    uint64_t plane_tests, plane_refusals;
+    unsigned underlay_plan;
     double cursor_x, cursor_y;
     uint64_t cursor_seen_generation;
     int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
@@ -567,14 +572,16 @@ struct screen {
 struct plane_item {
     struct surface *surface;
     struct buffer *buffer;
-    struct box dst, src;
+    struct box dst;
+    int src_x, src_y, src_width, src_height;
+    bool underlay;
 };
 struct plane_assignment {
     size_t count;
     struct plane_item item[SCREEN_OVERLAYS];
     struct region excluded;
     bool changed, retest, tested;
-    uint64_t signature, refused;
+    uint64_t signature, shape, refused;
 };
 
 struct output {
@@ -601,6 +608,7 @@ struct output {
     struct buffer *capture_buffer;
     struct texture *gamma_lut;
     struct buffer *presented[2];
+    uint64_t presented_point;
     struct ring ring;
     bool lock_rendered, gamma_dirty;
     struct surface *scanout;
@@ -612,6 +620,7 @@ struct output {
     bool animating;
     struct oplist ops;
     uint64_t frames;
+    uint64_t damage_seq;
     struct region damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
     struct { uint64_t ns, counts[8]; } timing;
@@ -669,6 +678,7 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
     uint32_t rgba, double power, float alpha);
 bool effect_texture(struct frame *f, const struct texture_options *options,
     struct fbox dst, struct fbox clip, double radius);
+void effect_cutout(struct frame *f, struct fbox dst, struct fbox clip, double radius);
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin, double alpha);
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame);
@@ -862,6 +872,7 @@ struct surface {
     struct wl_list link;
     struct surface_state pending, current, *last_cached;
     struct wl_list cached, synced, outputs, below, above, pending_below, pending_above;
+    struct wl_list dmabuf_feedbacks;
     struct texture *texture;
     struct buffer *buffer;
     struct release *release;
@@ -874,6 +885,10 @@ struct surface {
     struct wl_listener role_resource_destroy;
     struct subsurface *subsurface;
     struct screen *primary;
+    struct screen *feedback_output;
+    uint8_t feedback_mode, feedback_pending;
+    bool feedback_pending_set;
+    uint64_t feedback_pending_at;
     time_t frames_answered;
     uint64_t commit_seq, buffer_serial;
     struct { uint64_t seq, prev; struct box box; } commits[4];
@@ -1577,7 +1592,8 @@ void screen_state_set_transform(struct screen_state *state, enum wl_output_trans
 void screen_state_set_adaptive_sync_enabled(struct screen_state *state, bool enabled);
 void screen_state_set_buffer(struct screen_state *state, struct buffer *buffer);
 bool screen_state_set_overlay(struct screen_state *state, size_t index, struct buffer *buffer,
-    int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height);
+    int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height,
+    bool underlay);
 void screen_state_clear_overlays(struct screen_state *state);
 void screen_state_set_overlay_wait(struct screen_state *state, size_t index,
     struct timeline *timeline, uint64_t point);
@@ -1600,6 +1616,8 @@ bool screen_commit(struct screen *screen, const struct screen_state *state);
 bool screens_test(struct screen_update *updates, size_t count);
 bool screens_commit(struct screen_update *updates, size_t count);
 const struct format_set *screen_primary_formats(struct screen *screen);
+const struct format_set *screen_overlay_formats(struct screen *screen);
+dev_t screen_device(struct screen *screen);
 size_t screen_gamma_size(struct screen *screen);
 size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
@@ -1647,6 +1665,8 @@ void headless_finish(struct tomoe *s);
 void libinput_active(struct tomoe *s, bool active);
 
 bool buffers_listen(struct tomoe *s);
+void dmabuf_surface_feedback(struct surface *surface, struct screen *output, uint8_t mode);
+void dmabuf_surface_destroy(struct surface *surface);
 bool surfaces_listen(struct tomoe *s);
 void surfaces_finish(struct tomoe *s);
 void surfaces_fifo_frame(struct screen *screen);

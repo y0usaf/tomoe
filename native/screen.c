@@ -116,7 +116,8 @@ void screen_state_set_profile(struct screen_state *state, const struct profile *
 }
 
 bool screen_state_set_overlay(struct screen_state *state, size_t index, struct buffer *buffer,
-        int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height) {
+        int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height,
+        bool underlay) {
     if (index >= SCREEN_OVERLAYS || !buffer || width <= 0 || height <= 0 ||
             src_width <= 0 || src_height <= 0) return false;
     struct screen_overlay *overlay = &state->overlays[index];
@@ -124,7 +125,8 @@ bool screen_state_set_overlay(struct screen_state *state, size_t index, struct b
     timeline_unref(overlay->wait);
     *overlay = (struct screen_overlay){ .buffer = buffer_lock(buffer),
         .x = x, .y = y, .width = width, .height = height,
-        .src_x = src_x, .src_y = src_y, .src_width = src_width, .src_height = src_height };
+        .src_x = src_x, .src_y = src_y, .src_width = src_width, .src_height = src_height,
+        .underlay = underlay };
     if (index >= state->overlay_count) state->overlay_count = index + 1;
     return true;
 }
@@ -340,6 +342,14 @@ bool screen_commit(struct screen *screen, const struct screen_state *state) {
 
 const struct format_set *screen_primary_formats(struct screen *screen) {
     return screen->impl->formats ? screen->impl->formats(screen) : NULL;
+}
+
+const struct format_set *screen_overlay_formats(struct screen *screen) {
+    return screen->impl->overlay_formats ? screen->impl->overlay_formats(screen) : NULL;
+}
+
+dev_t screen_device(struct screen *screen) {
+    return screen->impl->device ? screen->impl->device(screen) : 0;
 }
 
 size_t screen_gamma_size(struct screen *screen) {

@@ -14,11 +14,10 @@
 #include <xf86drmMode.h>
 
 enum { P_CRTC_ID, P_FB_ID, P_SRC_X, P_SRC_Y, P_SRC_W, P_SRC_H, P_CRTC_X, P_CRTC_Y, P_CRTC_W,
-    P_CRTC_H, P_TYPE, P_MODE_ID, P_ACTIVE, P_COUNT };
+    P_CRTC_H, P_TYPE, P_ZPOS, P_MODE_ID, P_ACTIVE, P_COUNT };
 
 static const char *const prop_names[P_COUNT] = { "CRTC_ID", "FB_ID", "SRC_X", "SRC_Y", "SRC_W",
-    "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "type", "MODE_ID", "ACTIVE" };
-
+    "SRC_H", "CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H", "type", "zpos", "MODE_ID", "ACTIVE" };
 struct prop {
     uint32_t id;
     uint64_t value;
@@ -60,10 +59,11 @@ static int dump(int fd) {
         struct props props;
         props_read(fd, planes->planes[i], DRM_MODE_OBJECT_PLANE, &props);
         uint64_t src_w = props.item[P_SRC_W].value >> 16, src_h = props.item[P_SRC_H].value >> 16;
-        printf("plane %u type=%s crtc=%llu fb=%llu dst=%llu,%llu+%llux%llu src=%llu,%llu+%llux%llu\n",
+        printf("plane %u type=%s crtc=%llu fb=%llu zpos=%llu dst=%llu,%llu+%llux%llu src=%llu,%llu+%llux%llu\n",
             planes->planes[i], type_name(props.item[P_TYPE].value),
             (unsigned long long)props.item[P_CRTC_ID].value,
             (unsigned long long)props.item[P_FB_ID].value,
+            (unsigned long long)props.item[P_ZPOS].value,
             (unsigned long long)props.item[P_CRTC_X].value,
             (unsigned long long)props.item[P_CRTC_Y].value,
             (unsigned long long)props.item[P_CRTC_W].value,
@@ -182,11 +182,56 @@ static int pending(int fd, uint32_t crtc, uint32_t primary, uint32_t primary_fb,
 }
 
 
-static void blend_pixel(uint8_t *out, const uint8_t *in, int alpha, bool swap) {
-    uint8_t red = in[swap ? 2 : 0], green = in[1], blue = in[swap ? 0 : 2];
-    uint8_t rgb[3] = { red, green, blue };
-    for (int i = 0; i < 3; i++)
-        out[i] = alpha == 255 ? rgb[i] : (uint8_t)((rgb[i] * alpha + out[i] * (255 - alpha)) / 255);
+static uint8_t clamp_u8(int v) {
+    return v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+}
+
+static void blend_premul(uint8_t *out, uint8_t r, uint8_t g, uint8_t b, int alpha) {
+    if (alpha >= 255) {
+        out[0] = r;
+        out[1] = g;
+        out[2] = b;
+        return;
+    }
+    if (alpha <= 0) return;
+    out[0] = clamp_u8(r + (out[0] * (255 - alpha) + 127) / 255);
+    out[1] = clamp_u8(g + (out[1] * (255 - alpha) + 127) / 255);
+    out[2] = clamp_u8(b + (out[2] * (255 - alpha) + 127) / 255);
+}
+
+static void yuv_to_rgb(int y, int u, int v, uint8_t *r, uint8_t *g, uint8_t *b) {
+    int c = y - 16, d = u - 128, e = v - 128;
+    *r = clamp_u8((298 * c + 409 * e + 128) >> 8);
+    *g = clamp_u8((298 * c - 100 * d - 208 * e + 128) >> 8);
+    *b = clamp_u8((298 * c + 516 * d + 128) >> 8);
+}
+
+struct active_plane {
+    uint32_t id;
+    uint64_t order;
+    struct props props;
+};
+
+static uint64_t plane_rank(const struct props *props, uint32_t index) {
+    if (props->item[P_ZPOS].id)
+        return (props->item[P_ZPOS].value << 16) | index;
+    uint64_t group = props->item[P_TYPE].value == DRM_PLANE_TYPE_PRIMARY ? 0 :
+        props->item[P_TYPE].value == DRM_PLANE_TYPE_OVERLAY ? 1 : 2;
+    return (group << 16) | index;
+}
+
+static bool map_plane_handle(int fd, uint32_t handle, size_t need, uint8_t **out_map,
+        size_t *out_len) {
+    int prime = -1;
+    if (drmPrimeHandleToFD(fd, handle, DRM_CLOEXEC, &prime) || prime < 0) return false;
+    off_t end = lseek(prime, 0, SEEK_END);
+    size_t length = end > 0 && (size_t)end > need ? (size_t)end : need;
+    uint8_t *map = mmap(NULL, length, PROT_READ, MAP_SHARED, prime, 0);
+    close(prime);
+    if (map == MAP_FAILED) return false;
+    *out_map = map;
+    *out_len = length;
+    return true;
 }
 
 static int compose(int fd, const char *out) {
@@ -219,81 +264,122 @@ static int compose(int fd, const char *out) {
         return 1;
     }
     uint8_t *image = calloc((size_t)width * (size_t)height, 4);
-    if (!image) return 1;
-    const uint32_t order[] = { DRM_PLANE_TYPE_PRIMARY, DRM_PLANE_TYPE_OVERLAY,
-        DRM_PLANE_TYPE_CURSOR };
-    for (size_t pass = 0; pass < sizeof(order) / sizeof(*order); pass++) {
-        uint32_t wanted = order[pass];
-        for (uint32_t i = 0; i < planes->count_planes; i++) {
-            struct props props;
-            props_read(fd, planes->planes[i], DRM_MODE_OBJECT_PLANE, &props);
-            if (props.item[P_TYPE].value != wanted) continue;
-            if (props.item[P_CRTC_ID].value != crtc || !props.item[P_FB_ID].value) {
-                printf("compose skip plane %u type=%u crtc=%llu fb=%llu\n", planes->planes[i],
-                    wanted, (unsigned long long)props.item[P_CRTC_ID].value,
-                    (unsigned long long)props.item[P_FB_ID].value);
-                continue;
-            }
-            drmModeFB2 *fb = drmModeGetFB2(fd, (uint32_t)props.item[P_FB_ID].value);
-            if (!fb || !fb->handles[0]) {
-                drmModeFreeFB2(fb);
-                fprintf(stderr, "planes: plane %u has no readable buffer\n",
-                    planes->planes[i]);
-                return 1;
-            }
-            if (fb->modifier != DRM_FORMAT_MOD_LINEAR && fb->modifier != DRM_FORMAT_MOD_INVALID) {
-                fprintf(stderr, "planes: plane %u buffer is not linear (0x%llx)\n",
-                    planes->planes[i], (unsigned long long)fb->modifier);
-                return 1;
-            }
-            int prime = -1;
-            if (drmPrimeHandleToFD(fd, fb->handles[0], DRM_CLOEXEC, &prime) || prime < 0) {
-                fprintf(stderr, "planes: plane %u buffer cannot be exported\n",
-                    planes->planes[i]);
-                return 1;
-            }
-            size_t stride = fb->pitches[0], length = stride * fb->height;
-            uint8_t *map = mmap(NULL, length, PROT_READ, MAP_SHARED, prime, 0);
-            close(prime);
-            if (map == MAP_FAILED) {
-                fprintf(stderr, "planes: plane %u buffer cannot be mapped\n",
-                    planes->planes[i]);
-                return 1;
-            }
-            int sx = (int)(props.item[P_SRC_X].value >> 16);
-            int sy = (int)(props.item[P_SRC_Y].value >> 16);
-            int sw = (int)(props.item[P_SRC_W].value >> 16);
-            int sh = (int)(props.item[P_SRC_H].value >> 16);
-            int dx = (int)(int64_t)props.item[P_CRTC_X].value;
-            int dy = (int)(int64_t)props.item[P_CRTC_Y].value;
-            int dw = (int)props.item[P_CRTC_W].value;
-            int dh = (int)props.item[P_CRTC_H].value;
-            uint32_t format = fb->pixel_format;
-            bool swap = format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888;
-            bool alpha = format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_ABGR8888;
-            for (int y = 0; y < dh; y++) {
-                int py = dy + y;
-                if (py < 0 || py >= height || y >= sh) continue;
-                int row = sy + y * sh / dh;
-                if (row < 0 || row >= (int)fb->height) continue;
-                for (int x = 0; x < dw; x++) {
-                    int px = dx + x;
-                    if (px < 0 || px >= width || x >= sw) continue;
-                    int column = sx + x * sw / dw;
-                    if (column < 0 || column >= (int)fb->width) continue;
-                    const uint8_t *source = map + (size_t)row * stride + (size_t)column * 4;
-                    uint8_t *target = image + ((size_t)py * (size_t)width + (size_t)px) * 4;
-                    blend_pixel(target, source, alpha ? source[3] : 255, swap);
-                }
-            }
-            munmap(map, length);
-            printf("compose plane %u type=%u fb=%llu dst=%d,%d+%dx%d src=%d,%d+%dx%d "
-                "format=0x%08x\n", planes->planes[i], wanted,
-                (unsigned long long)props.item[P_FB_ID].value, dx, dy, dw, dh, sx, sy, sw, sh,
-                format);
-            drmModeFreeFB2(fb);
+    struct active_plane *active = calloc(planes->count_planes ? planes->count_planes : 1,
+        sizeof(*active));
+    if (!image || !active) return 1;
+    size_t active_count = 0;
+    for (uint32_t i = 0; i < planes->count_planes; i++) {
+        struct props props;
+        props_read(fd, planes->planes[i], DRM_MODE_OBJECT_PLANE, &props);
+        if (props.item[P_CRTC_ID].value != crtc || !props.item[P_FB_ID].value) {
+            printf("compose skip plane %u type=%llu crtc=%llu fb=%llu\n", planes->planes[i],
+                (unsigned long long)props.item[P_TYPE].value,
+                (unsigned long long)props.item[P_CRTC_ID].value,
+                (unsigned long long)props.item[P_FB_ID].value);
+            continue;
         }
+        active[active_count++] = (struct active_plane){
+            .id = planes->planes[i], .order = plane_rank(&props, i), .props = props };
     }
+    for (size_t i = 1; i < active_count; i++) {
+        struct active_plane cur = active[i];
+        size_t j = i;
+        while (j > 0 && active[j - 1].order > cur.order) {
+            active[j] = active[j - 1];
+            j--;
+        }
+        active[j] = cur;
+    }
+    for (size_t k = 0; k < active_count; k++) {
+        const struct props *props = &active[k].props;
+        drmModeFB2 *fb = drmModeGetFB2(fd, (uint32_t)props->item[P_FB_ID].value);
+        if (!fb || !fb->handles[0]) {
+            drmModeFreeFB2(fb);
+            fprintf(stderr, "planes: plane %u has no readable buffer\n", active[k].id);
+            return 1;
+        }
+        if (fb->modifier != DRM_FORMAT_MOD_LINEAR && fb->modifier != DRM_FORMAT_MOD_INVALID) {
+            fprintf(stderr, "planes: plane %u buffer is not linear (0x%llx)\n",
+                active[k].id, (unsigned long long)fb->modifier);
+            return 1;
+        }
+        uint32_t format = fb->pixel_format;
+        bool yuv = format == DRM_FORMAT_NV12 || format == DRM_FORMAT_P010;
+        size_t need0 = (size_t)fb->offsets[0] + (size_t)fb->pitches[0] * fb->height;
+        size_t need1 = yuv ? (size_t)fb->offsets[1] + (size_t)fb->pitches[1] * (fb->height / 2) : 0;
+        uint8_t *map0 = NULL, *map1 = NULL;
+        size_t len0 = 0, len1 = 0;
+        bool shared_uv = yuv && fb->handles[1] == fb->handles[0];
+        if (!map_plane_handle(fd, fb->handles[0],
+                shared_uv && need1 > need0 ? need1 : need0, &map0, &len0)) {
+            fprintf(stderr, "planes: plane %u buffer cannot be mapped\n", active[k].id);
+            return 1;
+        }
+        if (yuv) {
+            if (shared_uv) map1 = map0;
+            else if (!fb->handles[1] || !map_plane_handle(fd, fb->handles[1], need1, &map1, &len1)) {
+                munmap(map0, len0);
+                fprintf(stderr, "planes: plane %u chroma plane cannot be mapped\n", active[k].id);
+                return 1;
+            }
+        }
+        int sx = (int)(props->item[P_SRC_X].value >> 16);
+        int sy = (int)(props->item[P_SRC_Y].value >> 16);
+        int sw = (int)(props->item[P_SRC_W].value >> 16);
+        int sh = (int)(props->item[P_SRC_H].value >> 16);
+        int dx = (int)(int64_t)props->item[P_CRTC_X].value;
+        int dy = (int)(int64_t)props->item[P_CRTC_Y].value;
+        int dw = (int)props->item[P_CRTC_W].value;
+        int dh = (int)props->item[P_CRTC_H].value;
+        bool swap = format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888;
+        bool alpha = format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_ABGR8888;
+        for (int y = 0; y < dh; y++) {
+            int py = dy + y;
+            if (py < 0 || py >= height || dw <= 0 || dh <= 0) continue;
+            int row = sy + (int)((int64_t)y * sh / dh);
+            if (row < 0 || row >= (int)fb->height) continue;
+            for (int x = 0; x < dw; x++) {
+                int px = dx + x;
+                if (px < 0 || px >= width) continue;
+                int column = sx + (int)((int64_t)x * sw / dw);
+                if (column < 0 || column >= (int)fb->width) continue;
+                uint8_t r = 0, g = 0, b = 0;
+                int a = 255;
+                if (format == DRM_FORMAT_NV12) {
+                    const uint8_t *yp = map0 + fb->offsets[0] +
+                        (size_t)row * fb->pitches[0] + (size_t)column;
+                    const uint8_t *uvp = map1 + fb->offsets[1] +
+                        (size_t)(row / 2) * fb->pitches[1] + (size_t)(column & ~1);
+                    yuv_to_rgb(yp[0], uvp[0], uvp[1], &r, &g, &b);
+                } else if (format == DRM_FORMAT_P010) {
+                    const uint16_t *yp = (const uint16_t *)(map0 + fb->offsets[0] +
+                        (size_t)row * fb->pitches[0]) + (size_t)column;
+                    const uint16_t *uvp = (const uint16_t *)(map1 + fb->offsets[1] +
+                        (size_t)(row / 2) * fb->pitches[1]) + (size_t)(column & ~1);
+                    yuv_to_rgb(yp[0] >> 8, uvp[0] >> 8, uvp[1] >> 8, &r, &g, &b);
+                } else {
+                    const uint8_t *source = map0 + fb->offsets[0] +
+                        (size_t)row * fb->pitches[0] + (size_t)column * 4;
+                    r = source[swap ? 2 : 0];
+                    g = source[1];
+                    b = source[swap ? 0 : 2];
+                    a = alpha ? source[3] : 255;
+                }
+                uint8_t *target = image + ((size_t)py * (size_t)width + (size_t)px) * 4;
+                blend_premul(target, r, g, b, a);
+            }
+        }
+        if (map1 && map1 != map0) munmap(map1, len1);
+        munmap(map0, len0);
+        printf("compose plane %u type=%llu zpos=%llu fb=%llu dst=%d,%d+%dx%d src=%d,%d+%dx%d "
+            "format=0x%08x\n", active[k].id,
+            (unsigned long long)props->item[P_TYPE].value,
+            (unsigned long long)props->item[P_ZPOS].value,
+            (unsigned long long)props->item[P_FB_ID].value, dx, dy, dw, dh, sx, sy, sw, sh,
+            format);
+        drmModeFreeFB2(fb);
+    }
+    free(active);
     printf("compose %dx%d\n", width, height);
     FILE *file = fopen(out, "wb");
     if (!file) return 1;

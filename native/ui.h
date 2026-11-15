@@ -57,7 +57,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out);
 void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer);
 void ui_output_finish(struct tomoe *s, const char *output);
 bool ui_on_output(struct output *o, int layer);
-size_t ui_claim(struct output *o, int layer, struct box *boxes, size_t max);
+size_t ui_claim(struct output *o, int layer, struct box *boxes, bool *blurs, size_t max);
 bool ui_prepare(struct tomoe *s);
 void ui_publish(struct tomoe *s);
 bool ui_animate(struct tomoe *s, double now);

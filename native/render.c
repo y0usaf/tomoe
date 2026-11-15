@@ -253,6 +253,12 @@ static const char scene_source[] =
     "    float alpha = v_params.x;\n"
     "    float kind = v_extra.w;\n"
     "    if (kind < 0.5) {\n"
+    "        if (v_params.w > 0.5) {\n"
+    "            if (v_local.x < 0.0 || v_local.y < 0.0 || v_local.x > v_size.x ||\n"
+    "                    v_local.y > v_size.y) discard;\n"
+    "            gl_FragColor = v_color * rounding_alpha(v_local, v_size, v_params.z);\n"
+    "            return;\n"
+    "        }\n"
     "        gl_FragColor = v_color;\n"
     "        return;\n"
     "    }\n"
@@ -1458,7 +1464,7 @@ static void scene_dummy_texture(struct render *r) {
     GL(r, glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
 }
 
-static void scene_run_draw(struct render *r, struct scene_run *run, bool *blending,
+static void scene_run_draw(struct render *r, struct scene_run *run, int *blending,
         bool *scissoring, int *program) {
     if (*program != run->program) {
         GL(r, glUseProgram(r->programs[run->program].id));
@@ -1474,10 +1480,15 @@ static void scene_run_draw(struct render *r, struct scene_run *run, bool *blendi
     } else if (run->program == PROGRAM_SCENE) {
         GL(r, glBindTexture(GL_TEXTURE_2D, r->scene.dummy));
     }
-    if (*blending != (run->blend != 0)) {
-        if (run->blend) GL(r, glEnable(GL_BLEND));
-        else GL(r, glDisable(GL_BLEND));
-        *blending = run->blend != 0;
+    if (*blending != run->blend) {
+        if (!run->blend) {
+            GL(r, glDisable(GL_BLEND));
+        } else {
+            if (!*blending) GL(r, glEnable(GL_BLEND));
+            if (run->blend == 2) GL(r, glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA));
+            else GL(r, glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA));
+        }
+        *blending = run->blend;
     }
     if (run->scissor[2] > run->scissor[0]) {
         if (!*scissoring) {
@@ -1505,7 +1516,9 @@ static void scene_draw(struct render *r, size_t count) {
     }
     scene_dummy_texture(r);
     GL(r, glEnable(GL_BLEND));
-    bool blending = true, scissoring = false;
+    GL(r, glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA));
+    int blending = 1;
+    bool scissoring = false;
     int program = PROGRAM_COUNT;
     struct scene_run run = {0};
     for (size_t i = 0; i < count; i++) {
@@ -1531,6 +1544,8 @@ static void scene_draw(struct render *r, size_t count) {
         memcpy(run.scissor, in->scissor, sizeof(run.scissor));
     }
     if (run.count) scene_run_draw(r, &run, &blending, &scissoring, &program);
+    if (blending == 2) GL(r, glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA));
+    if (!blending) GL(r, glEnable(GL_BLEND));
     if (scissoring) GL(r, glDisable(GL_SCISSOR_TEST));
 }
 
@@ -1647,7 +1662,8 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     if (!op_begin(pass, OP_RECT, shown, &clip)) return;
     struct scene_quad quad = {
         .kind = SCENE_RECT, .alpha = 1, .filter = GL_LINEAR, .clip = options->clip,
-        .blend = c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED };
+        .blend = options->blend_mode == BLEND_CUTOUT ? 2 :
+            (c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED ? 1 : 0) };
     quad.color[0] = c->r;
     quad.color[1] = c->g;
     quad.color[2] = c->b;
@@ -3017,17 +3033,26 @@ struct render *render_create(int drm_fd) {
 static bool ring_pick(struct tomoe *s, struct screen *output, bool implicit,
         struct format_set *out) {
     struct render *r = s->renderer;
-    const struct format_set *display =
-        screen_primary_formats(output);
-    const uint32_t codes[] = { DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888 };
+    const struct format_set *display = screen_primary_formats(output);
+    const struct format_set *overlays = screen_overlay_formats(output);
+    bool want_alpha = output && output->impl && output->impl->overlays &&
+        output->impl->overlays(output) > 0;
+    const uint32_t codes[] = {
+        want_alpha ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_XRGB8888,
+        want_alpha ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_ARGB8888,
+    };
     for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
         const struct format *rendered = format_set_get(&r->render_formats, codes[i]);
-        const struct format *shown = display ?
-            format_set_get(display, codes[i]) : rendered;
-        for (size_t j = 0; rendered && shown && j < rendered->len; j++) {
-            uint64_t modifier = rendered->modifiers[j];
-            if ((modifier == DRM_FORMAT_MOD_INVALID) == implicit && format_has(shown, modifier))
+        const struct format *shown = display ? format_set_get(display, codes[i]) : rendered;
+        const struct format *over = overlays ? format_set_get(overlays, codes[i]) : NULL;
+        for (int pass = 0; pass < 2 && !out->len; pass++) {
+            for (size_t j = 0; rendered && shown && j < rendered->len; j++) {
+                uint64_t modifier = rendered->modifiers[j];
+                if ((modifier == DRM_FORMAT_MOD_INVALID) != implicit) continue;
+                if (!format_has(shown, modifier)) continue;
+                if (pass == 0 && over && !format_has(over, modifier)) continue;
                 format_set_add(out, codes[i], modifier);
+            }
         }
         if (out->len) return true;
     }

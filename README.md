@@ -499,6 +499,28 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   compositing the whole output; the frame is identical either way. The `planes`
   field of `tomoe frames` counts the windows on overlay planes and `deferrals`
   counts commits the kernel refused because a flip was still outstanding.
+- A window that a bar, border or notification paints over keeps its plane: when
+  the output has a plane the window itself can go on and another above it for the
+  chrome, the window goes underneath and the compositor punches the covering
+  corners, borders and chrome out of its own frame instead of compositing the
+  window. Video in a dma-buf takes the same path for any format the plane
+  accepts, cropped or scaled through viewporter, so a steady video frame costs
+  no GL at all. Each set is still validated by an atomic test commit, a rejected
+  set falls back to compositing the whole output, and a set the kernel refuses is
+  remembered by its shape, so a driver that refuses planes is not test-committed
+  once per video frame. Rotated outputs composite, because a plane would have to
+  carry the rotation too. The `plane-tests` and `plane-refusals` fields of `tomoe
+  frames` count those test commits and refusals, `underlay-plan` reports whether
+  the underlay used mutable zpos (`1`) or the fixed plane order of drivers that
+  expose no mutable zpos (`2`), and `deferrals` counts commits the kernel
+  refused because a flip was still outstanding.
+- Clients learn from their per-surface dma-buf feedback which formats can reach
+  a plane: a scanout tranche of the output's primary formats, an overlay tranche
+  of its plane formats, and neither while the surface is ineligible. A window
+  flapping in and out of eligibility would otherwise renegotiate every frame, so
+  a change is published only once it has held for 250 ms
+  (`TOMOE_FEEDBACK_HOLD_MS`). Buffers stay importable either way; the effect is
+  fewer client reallocations while a window moves under a bar or a blur toggles.
 - A window's own opacity, tint, scale, rotation and translation are window state:
   `window-properties` sets them, and each eases towards its new value with the
   matching `:animations` setting. The compositor animates the transitions it sees
