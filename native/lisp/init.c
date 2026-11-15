@@ -434,13 +434,17 @@ void lisp_heap_stats(struct lisp_heap_stats *out)
         return;
     memset(out, 0, sizeof(*out));
     out->region_bytes = lisp.region_limit;
+    out->heap_bytes = lisp.heap_used;
+    out->arena_peak = lisp.arena_peak;
     out->persistent_used = lisp.persistent_used;
     out->persistent_high_water = lisp.persistent_high_water;
     out->arena_used = lisp.arena.used;
     out->arena_high_water = lisp.arena.high_water;
     uint64_t generations = 0;
-    for (struct lisp_region *gen = lisp.generations; gen; gen = gen->next)
+    for (struct lisp_region *gen = lisp.generations; gen; gen = gen->next) {
         generations++;
+        out->generation_bytes += gen->used;
+    }
     out->generations = generations;
     out->reclaim_count = lisp.reclaim_count;
     out->reclaim_longest_us = lisp.reclaim_longest_us;

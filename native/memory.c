@@ -64,7 +64,10 @@ lisp_value tomoe_memory_report(struct tomoe *s) {
         lisp_keyword("IMAGES"), lisp_uint(images),
         lisp_keyword("BUFFER-BYTES"), lisp_uint(buffer_total),
         lisp_keyword("OUTPUTS"), outputs);
-    lisp_value region = lisp_list(18, lisp_keyword("REGION-BYTES"), lisp_uint(lisp.region_bytes),
+    lisp_value region = lisp_list(24, lisp_keyword("REGION-BYTES"), lisp_uint(lisp.region_bytes),
+        lisp_keyword("HEAP-BYTES"), lisp_uint(lisp.heap_bytes),
+        lisp_keyword("GENERATION-BYTES"), lisp_uint(lisp.generation_bytes),
+        lisp_keyword("ARENA-PEAK"), lisp_uint(lisp.arena_peak),
         lisp_keyword("PERSISTENT-USED"), lisp_uint(lisp.persistent_used),
         lisp_keyword("PERSISTENT-HIGH-WATER"), lisp_uint(lisp.persistent_high_water),
         lisp_keyword("ARENA-USED"), lisp_uint(lisp.arena_used),

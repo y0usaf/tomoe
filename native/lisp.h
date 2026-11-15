@@ -8,6 +8,9 @@ typedef uintptr_t lisp_value;
 
 struct lisp_heap_stats {
     uint64_t region_bytes;
+    uint64_t heap_bytes;
+    uint64_t generation_bytes;
+    uint64_t arena_peak;
     uint64_t persistent_used;
     uint64_t persistent_high_water;
     uint64_t arena_used;

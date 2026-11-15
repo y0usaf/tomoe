@@ -268,6 +268,8 @@ struct lisp_ctl {
 };
 
 struct lisp_runtime {
+    uint64_t arena_peak;
+    uint32_t memo_epochs;
     struct lisp_symbol symbols[LISP_MAX_SYMBOLS];
     uint32_t symbol_count;
     uint32_t *intern_table;

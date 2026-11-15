@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/mman.h>
@@ -11,9 +12,10 @@ struct lisp_runtime lisp;
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;
-static void *memo_src[1024];
-static void *memo_dst[1024];
-static int memo_count;
+struct memo_slot { void *src; void *dst; uint32_t epoch; };
+static struct memo_slot *memo;
+static size_t memo_capacity, memo_used;
+static uint32_t memo_epoch;
 
 static lisp_value deep_copy(lisp_value value, struct lisp_region *dst);
 
@@ -262,6 +264,8 @@ static void free_region_blocks(struct lisp_region *region)
 
 void region_reset(struct lisp_region *region)
 {
+    if (region == &lisp.arena && region->high_water > lisp.arena_peak)
+        lisp.arena_peak = region->high_water;
     uint64_t start = lisp_now_ns();
     if (region->used > 0)
         heap_note_reclaim(start);
@@ -324,21 +328,55 @@ void heap_arena_reset(void)
     region_reset(&lisp.arena);
 }
 
+static size_t memo_hash(void *src)
+{
+    uint64_t x = (uint64_t)(uintptr_t)src >> 3;
+    x *= 0x9e3779b97f4a7c15ull;
+    return (size_t)(x >> 20);
+}
+
 static lisp_value memo_lookup(void *src)
 {
-    for (int i = 0; i < memo_count; i++)
-        if (memo_src[i] == src)
-            return VAL(memo_dst[i]);
-    return 0;
+    if (!memo_capacity)
+        return 0;
+    size_t mask = memo_capacity - 1;
+    for (size_t i = memo_hash(src) & mask;; i = (i + 1) & mask) {
+        if (memo[i].epoch != memo_epoch)
+            return 0;
+        if (memo[i].src == src)
+            return VAL(memo[i].dst);
+    }
+}
+
+static void memo_insert(void *src, void *dst)
+{
+    size_t mask = memo_capacity - 1;
+    size_t i = memo_hash(src) & mask;
+    while (memo[i].epoch == memo_epoch && memo[i].src != src)
+        i = (i + 1) & mask;
+    if (memo[i].epoch != memo_epoch)
+        memo_used++;
+    memo[i] = (struct memo_slot){ src, dst, memo_epoch };
 }
 
 static void memo_add(void *src, void *dst)
 {
-    if (memo_count < (int)(sizeof(memo_src) / sizeof(memo_src[0]))) {
-        memo_src[memo_count] = src;
-        memo_dst[memo_count] = dst;
-        memo_count++;
+    if ((memo_used + 1) * 2 > memo_capacity) {
+        size_t old_capacity = memo_capacity;
+        struct memo_slot *old = memo;
+        size_t capacity = old_capacity ? old_capacity * 2 : 4096;
+        struct memo_slot *grown = calloc(capacity, sizeof(*grown));
+        if (!grown)
+            lisp_oom();
+        memo = grown;
+        memo_capacity = capacity;
+        memo_used = 0;
+        for (size_t i = 0; i < old_capacity; i++)
+            if (old[i].epoch == memo_epoch)
+                memo_insert(old[i].src, old[i].dst);
+        free(old);
     }
+    memo_insert(src, dst);
 }
 
 static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst);
@@ -351,7 +389,7 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
     case LT_SYMBOL:
         return value;
     case LT_CONS: {
-        lisp_value hit = memo_lookup((void *)(uintptr_t)value);
+        lisp_value hit = memo_lookup(PTR(value, lisp_cons));
         if (hit)
             return hit;
         struct lisp_cons *src = PTR(value, lisp_cons);
@@ -481,10 +519,17 @@ static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst)
 
 lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst)
 {
-    int saved = memo_count;
-    memo_count = 0;
+    uint32_t saved = memo_epoch;
+    size_t saved_used = memo_used;
+    memo_epoch = ++lisp.memo_epochs;
+    if (memo_epoch == 0) {
+        memset(memo, 0, memo_capacity * sizeof(*memo));
+        memo_epoch = ++lisp.memo_epochs;
+    }
+    memo_used = 0;
     lisp_value out = deep_copy(value, dst);
-    memo_count = saved;
+    memo_epoch = saved;
+    memo_used = saved_used;
     return out;
 }
 

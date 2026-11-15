@@ -202,7 +202,18 @@ lisp_value builtin_load_source(int argc, lisp_value *argv)
     lisp.cur_region = saved;
     if (status != 0)
         lisp_signal_error(error);
-    return lisp.mv[0];
+    lisp_value result = lisp.mv[0];
+    for (struct lisp_region *old = lisp.generations; old;) {
+        struct lisp_region *next = old->next;
+        if (old != gen && old->package == package && package != PKG_TOMOE) {
+            if (old->pin_count == 0)
+                region_destroy(old);
+            else
+                old->dropped = true;
+        }
+        old = next;
+    }
+    return result;
 }
 
 lisp_value builtin_drop_package(int argc, lisp_value *argv)
