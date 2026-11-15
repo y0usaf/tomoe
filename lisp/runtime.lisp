@@ -1540,9 +1540,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
   (setf *runtime* (%keep (make-runtime-state socket))))
 
 (defun boot-default-config (fallback)
-  "Load the embedded default config, the built-in Lisp config."
+  "Load the embedded default config, the built-in Lisp config, as the only source."
   (let ((failure nil))
-    (%catch (lambda () (load-policy "desktop"))
+    (%catch (lambda () (configure (list "default-config")))
             (lambda (text) (setf failure text)))
     (when failure
       (report-config-error failure fallback)
