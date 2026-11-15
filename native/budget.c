@@ -13,6 +13,8 @@ struct budget {
     uint64_t limit, used, high_water, refused;
 };
 
+const size_t budget_lisp_region_bootstrap = (size_t)256 << 20;
+
 static struct budget budgets[BUDGET_COUNT] = {
     [BUDGET_LISP_HEAP_MB] = { "lisp-heap-mb" },
     [BUDGET_WINDOWS] = { "windows" },

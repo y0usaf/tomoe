@@ -286,7 +286,7 @@ static int control_operation(const char *name, enum control_operation *operation
 static int client_values_ready(void) {
     static bool ready;
     if (ready) return 0;
-    if (lisp_init(BUDGET_LISP_REGION_BOOTSTRAP))
+    if (lisp_init(budget_lisp_region_bootstrap))
         return cli_error("Cannot initialise the Lisp runtime.");
     ready = true;
     return 0;
@@ -569,7 +569,7 @@ static int run_compositor(const struct cli_options *options) {
     bool session = false;
     int signal_fd = -1;
     struct loop_source *signal_watch = NULL;
-    if (lisp_init(BUDGET_LISP_REGION_BOOTSTRAP)) {
+    if (lisp_init(budget_lisp_region_bootstrap)) {
         tomoe_log(LOG_ERROR, "tomoe: cannot initialise the Lisp runtime");
         goto done;
     }

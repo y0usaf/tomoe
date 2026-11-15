@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "lisp.h"
 
-enum { BUDGET_LISP_REGION_BOOTSTRAP = 256u << 20 };
+extern const size_t budget_lisp_region_bootstrap;
 
 enum budget_kind {
     BUDGET_LISP_HEAP_MB,
