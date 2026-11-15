@@ -561,6 +561,17 @@ struct plane_assignment {
     uint64_t signature, refused;
 };
 
+enum animation_kind { ANIMATION_OFF, ANIMATION_SPRING, ANIMATION_EASE };
+struct animation_config {
+    int kind, duration_ms, curve;
+    double damping_ratio, stiffness, epsilon, launch, bezier[4];
+};
+struct animation {
+    double from, to, start, duration, v0, sample;
+    struct animation_config config;
+    bool active, advanced;
+};
+
 struct output {
     struct wl_list link;
     struct tomoe *server;
@@ -598,6 +609,8 @@ struct output {
     uint64_t frames;
     struct region damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
+    struct { struct fbox box; struct animation reveal; double width, radius;
+        uint32_t rgba; float alpha; bool active; double reveal_now; } outline;
     struct { uint64_t ns, counts[8]; } timing;
     struct { uint32_t us[FRAME_TRACE]; unsigned head, count; } traced;
 };
@@ -633,6 +646,17 @@ struct target {
     struct window_shader *shader;
     struct window_mesh *mesh;
     double shader_time;
+};
+struct focus_outline {
+    struct animation dx, dy, dw, dh, reveal;
+    struct fbox box;
+    double live_vx, live_vy;
+    struct screen *output;
+    uint32_t owner;
+    double width, radius, reveal_now;
+    uint32_t rgba;
+    float alpha;
+    bool box_valid;
 };
 struct frame {
     struct tomoe *server;
@@ -688,16 +712,6 @@ struct presentation_target {
     size_t order;
     bool visible, desired_visible, staged;
     int width, height, fullscreen, maximize;
-};
-enum animation_kind { ANIMATION_OFF, ANIMATION_SPRING, ANIMATION_EASE };
-struct animation_config {
-    int kind, duration_ms, curve;
-    double damping_ratio, stiffness, epsilon, launch, bezier[4];
-};
-struct animation {
-    double from, to, start, duration, v0, sample;
-    struct animation_config config;
-    bool active, advanced;
 };
 enum { ANIMATION_SETTLE_MOVE, ANIMATION_SETTLE_OPEN, ANIMATION_SETTLE_CLOSE,
     ANIMATION_SETTLE_RESIZE, ANIMATION_SETTLE_VIEW, ANIMATION_SETTLE_SWITCH };
@@ -759,7 +773,9 @@ struct settings {
     bool screenshot_freeze;
     struct screenshot_colors screenshot_colors;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
-        window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
+        window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate,
+        focus_outline;
+    bool outline_fly;
     char *blur_namespaces[64];
     size_t blur_namespace_count;
 };
@@ -1056,6 +1072,7 @@ struct tomoe {
         bool pointer, drag, key, commit;
     } timing;
     struct animation_stats animation;
+    struct focus_outline outline;
     uint64_t trail_steps;
     struct { int64_t ns[512]; unsigned head, count; } trail_times;
     char *hit_result, *frames_result, *memory_result, *animation_result;
@@ -1364,6 +1381,9 @@ void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s, double now);
+bool focus_outline_animate(struct tomoe *s, double now);
+struct fbox window_live_box(struct tomoe *s, const struct target *target);
+struct target *window_focused_target(struct tomoe *s);
 void view_publish(struct tomoe *s, const struct presentation *plan);
 bool view_animate(struct tomoe *s, const struct settings *settings, double now);
 bool ghosts_animate(struct tomoe *s, double now);

@@ -784,7 +784,38 @@ let
                 + "\n".join("--- " + name + " ---\n" + trace for name, trace in failures))
       '';
     };
+  animationUnit = pkgs.stdenv.mkDerivation {
+    name = "tomoe-animation-unit";
+    src = ./..;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    buildInputs = [
+      pkgs.wayland
+      pkgs.libxkbcommon
+      pkgs.libdrm
+      pkgs.libGL
+    ];
+    dontConfigure = true;
+    buildPhase = ''
+      wayland-scanner client-header \
+        ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
+        wlr-layer-shell-unstable-v1-protocol.h
+      wayland-scanner client-header \
+        ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+        xdg-shell-protocol.h
+      $CC -std=c11 -D_GNU_SOURCE -O1 -Wall -Wextra -Werror -Wno-unused-parameter \
+        -Inative -I. tests/animation-unit.c native/animation.c \
+        $(pkg-config --cflags --libs wayland-server xkbcommon libdrm glesv2) -lm \
+        -o animation-unit
+      ./animation-unit
+    '';
+    installPhase = "install -Dm755 animation-unit $out/bin/tomoe-animation-unit";
+  };
   compositorPackages = [
+    animationUnit
     pkgs.python3
     pkgs.gdb
     pkgs.wayland-utils

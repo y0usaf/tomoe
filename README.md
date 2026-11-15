@@ -503,6 +503,16 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   fastest a critically damped spring can make without overshooting. The shipped
   `:window-move` and `:window-view` springs are 4000 stiffness with a launch of
   63, and settle in 110 ms.
+- The focus border is one outline the compositor draws, not a border on each
+  window. `:focus-outline` is the spring that carries it from the window that
+  lost focus to the one that gained it, aiming every frame at where the new
+  window is on screen: it lands with a window that is still sliding, and waits
+  at the output edge while the window is off screen. `:focus-outline-cross`
+  picks what happens when focus leaves an output: `:fly` (the default) flies the
+  outline through layout space, each output painting the part that is on it, and
+  `:shrink` shrinks it out on the old output and grows it in on the new one.
+  Keyboard focus never waits for the outline, a fullscreen window has none, and
+  a focus change that keeps the same rectangle draws no travel.
 - Committed content-type hints are available to window policy as `:content-type`
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
 - Toplevel tags and translated descriptions are available as `:tag` and

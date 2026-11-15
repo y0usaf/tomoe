@@ -710,6 +710,99 @@ static void window_retire(struct window *w) {
     wl_list_insert(&s->ghosts, &g->link);
     tomoe_log(LOG_DEBUG, "tomoe: window %u closes into a %dx%d ghost", w->target.id, width, height);
 }
+static struct window *focused_window(struct tomoe *s) {
+    struct window *w;
+    wl_list_for_each(w, &s->windows, link)
+        if (w->target.id == s->focused && w->tree && w->mapped) return w;
+    return NULL;
+}
+
+struct target *window_focused_target(struct tomoe *s) {
+    struct window *w = focused_window(s);
+    return w ? &w->target : NULL;
+}
+
+static void outline_shrink_out(struct tomoe *s, const struct animation_config *plain,
+        double now) {
+    struct focus_outline *ring = &s->outline;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (o->screen != ring->output || !ring->box_valid) continue;
+        o->outline.box = ring->box;
+        o->outline.width = ring->width;
+        o->outline.radius = ring->radius;
+        o->outline.rgba = ring->rgba;
+        o->outline.alpha = ring->alpha;
+        o->outline.active = true;
+        animation_start_from(&o->outline.reveal, plain, 1, 0.9, now, 0);
+        return;
+    }
+}
+
+static double window_live_velocity(struct tomoe *s, const struct window *w, double now,
+        bool horizontal) {
+    const struct animation *view = horizontal ? &s->view_x_anim : &s->view_y_anim;
+    double move = horizontal ? w->move_from_x : w->move_from_y;
+    return (move * animation_velocity(&w->move, now) - animation_velocity(view, now)) *
+        s->view_zoom;
+}
+
+bool focus_outline_animate(struct tomoe *s, double now) {
+    struct focus_outline *ring = &s->outline;
+    const struct animation_config *config = &s->settings.focus_outline;
+    bool active = false;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        if (!o->outline.active) continue;
+        o->outline.reveal_now = animation_advance(&o->outline.reveal, now, &s->animation);
+        if (!o->outline.reveal.active) o->outline.active = false;
+        active |= o->outline.active;
+    }
+    struct animation_config plain = *config;
+    plain.launch = 0;
+    struct window *w = config->kind == ANIMATION_OFF ? NULL : focused_window(s);
+    if (!w || w->target.fullscreen || w->target.mesh || w->target.visual.rotation != 0) {
+        ring->owner = 0;
+        ring->box_valid = false;
+        ring->output = NULL;
+        return active;
+    }
+    struct fbox live = window_live_box(s, &w->target);
+    if (ring->owner != w->target.id) {
+        if (ring->box_valid && ring->output && w->target.output &&
+                ring->output != w->target.output && !s->settings.outline_fly) {
+            outline_shrink_out(s, &plain, now);
+            ring->dx = ring->dy = ring->dw = ring->dh = (struct animation){ 0 };
+            animation_start_from(&ring->reveal, &plain, 0.9, 1, now, 0);
+        } else if (ring->box_valid) {
+            animation_start_from(&ring->dx, config, ring->box.x - live.x, 0, now,
+                ring->live_vx + animation_velocity(&ring->dx, now) -
+                window_live_velocity(s, w, now, true));
+            animation_start_from(&ring->dy, config, ring->box.y - live.y, 0, now,
+                ring->live_vy + animation_velocity(&ring->dy, now) -
+                window_live_velocity(s, w, now, false));
+            animation_start_from(&ring->dw, config, ring->box.width - live.width, 0, now,
+                animation_velocity(&ring->dw, now));
+            animation_start_from(&ring->dh, config, ring->box.height - live.height, 0, now,
+                animation_velocity(&ring->dh, now));
+        }
+        ring->owner = w->target.id;
+    }
+    ring->reveal_now = ring->reveal.config.kind == ANIMATION_OFF ? 1 :
+        animation_advance(&ring->reveal, now, &s->animation);
+    struct fbox box = { live.x + animation_advance(&ring->dx, now, &s->animation),
+        live.y + animation_advance(&ring->dy, now, &s->animation),
+        live.width + animation_advance(&ring->dw, now, &s->animation),
+        live.height + animation_advance(&ring->dh, now, &s->animation) };
+    ring->box = box;
+    ring->live_vx = window_live_velocity(s, w, now, true);
+    ring->live_vy = window_live_velocity(s, w, now, false);
+    ring->output = w->target.output;
+    ring->box_valid = true;
+    return active || ring->dx.active || ring->dy.active || ring->dw.active || ring->dh.active ||
+        ring->reveal.active;
+}
+
 bool windows_animate(struct tomoe *s, double now) {
     const struct settings *st = &s->settings;
     bool active = view_animate(s, st, now);
@@ -740,6 +833,7 @@ bool windows_animate(struct tomoe *s, double now) {
             node_set_enabled(w->tree, w->mapped && w->desired_visible);
         }
     }
+    active |= focus_outline_animate(s, now);
     return ghosts_animate(s, now) || active;
 }
 void windows_publish_presentation(struct tomoe *s, struct presentation *plan) {
