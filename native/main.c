@@ -269,6 +269,15 @@ static int control_operation(const char *name, enum control_operation *operation
     return -1;
 }
 
+static int client_values_ready(void) {
+    static bool ready;
+    if (ready) return 0;
+    if (lisp_init(BUDGET_LISP_REGION_BOOTSTRAP))
+        return cli_error("Cannot initialise the Lisp runtime.");
+    ready = true;
+    return 0;
+}
+
 static int client_status(int code, const char *error) {
     if (!code) return 0;
     if (error && *error) return cli_error("%s", error);
@@ -341,6 +350,7 @@ static int run_cli(int argc, char **argv) {
             int remaining = argc - index;
             if (remaining < 1 || remaining > 2)
                 return cli_error("msg requires METHOD and at most one JSON argument.");
+            if (client_values_ready()) return 1;
             const char *method = argv[index++];
             lisp_value params = lisp_nil();
             if (index < argc) {
@@ -359,6 +369,7 @@ static int run_cli(int argc, char **argv) {
             int status = client_verb_allowed(&options, "commands");
             if (status) return status;
             if (index < argc) return cli_error("commands takes no arguments.");
+            if (client_values_ready()) return 1;
             char path[PATH_MAX], error[512];
             if (desktop_json_client_path(options.explicit_name ? options.name : NULL, path,
                     sizeof(path), error, sizeof(error)))
@@ -369,6 +380,7 @@ static int run_cli(int argc, char **argv) {
             int status = client_verb_allowed(&options, "command");
             if (status) return status;
             if (index >= argc) return cli_error("command requires a NAME.");
+            if (client_values_ready()) return 1;
             const char *command = argv[index++];
             int pairs = argc - index;
             const char **keys = pairs ? calloc((size_t)pairs, sizeof(*keys)) : NULL;
@@ -418,6 +430,7 @@ static int run_cli(int argc, char **argv) {
             }
             int status = client_verb_allowed(&options, "a control command");
             if (status) return status;
+            if (client_values_ready()) return 1;
             char path[PATH_MAX], error[512];
             if (desktop_control_path(options.name, path, sizeof(path), error, sizeof(error)))
                 return cli_error("%s", error);
