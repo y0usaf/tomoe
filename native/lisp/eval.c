@@ -962,9 +962,22 @@ struct lisp_place {
     lisp_value value;
 };
 
-static struct lisp_symbol *special_symbol(const char *name)
+static lisp_value place_getf, place_cdr, place_car, place_nth, place_gethash, sym_lambda, sym_define_extension;
+
+static lisp_value tomoe_symbol(const char *name)
 {
-    return symbol_find(PKG_TOMOE, name, strlen(name));
+    return VAL(symbol_intern(PKG_TOMOE, name, strlen(name), false));
+}
+
+void lisp_eval_symbols_init(void)
+{
+    place_getf = tomoe_symbol("GETF");
+    place_cdr = tomoe_symbol("CDR");
+    place_car = tomoe_symbol("CAR");
+    place_nth = tomoe_symbol("NTH");
+    place_gethash = tomoe_symbol("GETHASH");
+    sym_lambda = tomoe_symbol("LAMBDA");
+    sym_define_extension = tomoe_symbol("%DEFINE-EXTENSION");
 }
 
 lisp_value place_get(struct lisp_place *place);
@@ -987,14 +1000,14 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
     if (!consp(form))
         lisp_error("bad setf place");
     lisp_value head = CAR(form);
-    if (head != VAL(special_symbol("GETF")) && head != VAL(special_symbol("CDR")) &&
-            head != VAL(special_symbol("CAR")) && head != VAL(special_symbol("NTH")) &&
-            head != VAL(special_symbol("GETHASH"))) {
+    if (head != place_getf && head != place_cdr &&
+            head != place_car && head != place_nth &&
+            head != place_gethash) {
         place->kind = PLACE_VALUE;
         place->value = eval(form, env);
         return;
     }
-    if (head == VAL(special_symbol("CAR"))) {
+    if (head == place_car) {
         struct lisp_place parent;
         eval_place(CAR(CDR(form)), env, &parent);
         place->kind = PLACE_NTH;
@@ -1004,7 +1017,7 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
         place->container = place_get(&parent);
         return;
     }
-    if (head == VAL(special_symbol("GETF"))) {
+    if (head == place_getf) {
         struct lisp_place parent;
         eval_place(CAR(CDR(form)), env, &parent);
         place->kind = PLACE_GETF;
@@ -1015,7 +1028,7 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
         place->key = eval(CAR(CDR(CDR(form))), env);
         return;
     }
-    if (head == VAL(special_symbol("CDR"))) {
+    if (head == place_cdr) {
         struct lisp_place parent;
         eval_place(CAR(CDR(form)), env, &parent);
         place->kind = PLACE_CDR;
@@ -1024,7 +1037,7 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
         place->container = place_get(&parent);
         return;
     }
-    if (head == VAL(special_symbol("NTH"))) {
+    if (head == place_nth) {
         struct lisp_place parent;
         eval_place(CAR(CDR(CDR(form))), env, &parent);
         place->kind = PLACE_NTH;
@@ -1034,7 +1047,7 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
         place->container = place_get(&parent);
         return;
     }
-    if (head == VAL(special_symbol("GETHASH"))) {
+    if (head == place_gethash) {
         struct lisp_place parent;
         eval_place(CAR(CDR(CDR(form))), env, &parent);
         place->kind = PLACE_GETHASH;
@@ -1299,7 +1312,7 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
             mv_return1(fn);
             return fn;
         }
-        if (TYPE(target) == LT_CONS && CAR(target) == VAL(symbol_find(PKG_TOMOE, "LAMBDA", 6))) {
+        if (TYPE(target) == LT_CONS && CAR(target) == sym_lambda) {
             lisp_value fn = eval(target, env);
             mv_return1(fn);
             return fn;
@@ -1794,8 +1807,8 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         if (nilp(reads))
             reads = NIL_VAL;
         lisp_value fn = make_closure(lambda_list, body, env, NIL_VAL);
-        struct lisp_symbol *register_sym = symbol_find(PKG_TOMOE, "%DEFINE-EXTENSION", 17);
-        if (!register_sym || nilp(register_sym->function))
+        struct lisp_symbol *register_sym = SYM(sym_define_extension);
+        if (nilp(register_sym->function))
             lisp_error("%s", "%DEFINE-EXTENSION is not defined");
         lisp_value argv[5] = { name, reads, state, fn, admission };
         mv_return1(NIL_VAL);
@@ -1822,8 +1835,8 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         bool is_place = symbolp(form);
         if (consp(form)) {
             lisp_value head = CAR(form);
-            is_place = head == VAL(special_symbol("GETF")) || head == VAL(special_symbol("CDR")) ||
-                       head == VAL(special_symbol("NTH")) || head == VAL(special_symbol("GETHASH"));
+            is_place = head == place_getf || head == place_cdr ||
+                       head == place_nth || head == place_gethash;
         }
         lisp_value value;
         if (is_place) {

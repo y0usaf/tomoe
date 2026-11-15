@@ -12,6 +12,18 @@ static void kw_init(struct kw *kw)
     memset(kw, 0, sizeof(*kw));
 }
 
+enum kw_id {
+    KW_TEST, KW_TEST_NOT, KW_KEY, KW_START, KW_END, KW_FROM_END, KW_RADIX, KW_JUNK_ALLOWED,
+    KW_START2, KW_END2, KW_INITIAL_VALUE, KW_INITIAL_ELEMENT, KW_COUNT, KW_IDS
+};
+
+static const char *const kw_names[KW_IDS] = {
+    "TEST", "TEST-NOT", "KEY", "START", "END", "FROM-END", "RADIX", "JUNK-ALLOWED",
+    "START2", "END2", "INITIAL-VALUE", "INITIAL-ELEMENT", "COUNT"
+};
+
+static lisp_value kw_symbols[KW_IDS];
+
 void kw_parse(int argc, lisp_value *argv, int base, struct kw *kw)
 {
     kw_init(kw);
@@ -21,66 +33,58 @@ void kw_parse(int argc, lisp_value *argv, int base, struct kw *kw)
             lisp_error("odd keyword arguments");
         lisp_value key = argv[i];
         lisp_value value = argv[i + 1];
-        if (!lisp_eq_keyword(key, "TEST") && !lisp_eq_keyword(key, "TEST-NOT") &&
-            !lisp_eq_keyword(key, "KEY") &&
-            !lisp_eq_keyword(key, "START") && !lisp_eq_keyword(key, "END") &&
-            !lisp_eq_keyword(key, "FROM-END") && !lisp_eq_keyword(key, "RADIX") &&
-            !lisp_eq_keyword(key, "JUNK-ALLOWED") && !lisp_eq_keyword(key, "START2") &&
-            !lisp_eq_keyword(key, "END2") && !lisp_eq_keyword(key, "INITIAL-VALUE") &&
-            !lisp_eq_keyword(key, "INITIAL-ELEMENT") && !lisp_eq_keyword(key, "COUNT"))
-            lisp_error("unsupported keyword argument %s", SYM(key)->name);
-        if (lisp_eq_keyword(key, "TEST")) {
-            kw->has_test = true;
-            kw->test = value;
-        } else if (lisp_eq_keyword(key, "TEST-NOT")) {
-            kw->has_test_not = true;
-            kw->test_not = value;
-        } else if (lisp_eq_keyword(key, "KEY")) {
-            kw->has_key = true;
-            kw->key = value;
-        } else if (lisp_eq_keyword(key, "START")) {
-            kw->has_start = true;
-            kw->start = value;
-        } else if (lisp_eq_keyword(key, "END")) {
-            kw->has_end = true;
-            kw->end = value;
-        } else if (lisp_eq_keyword(key, "FROM-END")) {
-            kw->has_from_end = true;
-            kw->from_end = value;
-        } else if (lisp_eq_keyword(key, "RADIX")) {
-            kw->has_radix = true;
-            kw->radix = value;
-        } else if (lisp_eq_keyword(key, "JUNK-ALLOWED")) {
-            kw->has_junk = true;
-            kw->junk = truthy(value);
-        } else if (lisp_eq_keyword(key, "START2")) {
-            kw->has_start2 = true;
-            kw->start2 = value;
-        } else if (lisp_eq_keyword(key, "END2")) {
-            kw->has_end2 = true;
-            kw->end2 = value;
-        } else if (lisp_eq_keyword(key, "INITIAL-VALUE")) {
-            kw->has_initial_value = true;
-            kw->initial_value = value;
-        } else if (lisp_eq_keyword(key, "INITIAL-ELEMENT")) {
-            kw->has_initial_element = true;
-            kw->initial_element = value;
-        } else if (lisp_eq_keyword(key, "COUNT")) {
-            kw->has_count = true;
-            kw->count = value;
+        int id = 0;
+        while (id < KW_IDS && kw_symbols[id] != key)
+            id++;
+        switch (id) {
+        case KW_TEST: kw->has_test = true; kw->test = value; break;
+        case KW_TEST_NOT: kw->has_test_not = true; kw->test_not = value; break;
+        case KW_KEY: kw->has_key = true; kw->key = value; break;
+        case KW_START: kw->has_start = true; kw->start = value; break;
+        case KW_END: kw->has_end = true; kw->end = value; break;
+        case KW_FROM_END: kw->has_from_end = true; kw->from_end = value; break;
+        case KW_RADIX: kw->has_radix = true; kw->radix = value; break;
+        case KW_JUNK_ALLOWED: kw->has_junk = true; kw->junk = truthy(value); break;
+        case KW_START2: kw->has_start2 = true; kw->start2 = value; break;
+        case KW_END2: kw->has_end2 = true; kw->end2 = value; break;
+        case KW_INITIAL_VALUE: kw->has_initial_value = true; kw->initial_value = value; break;
+        case KW_INITIAL_ELEMENT: kw->has_initial_element = true; kw->initial_element = value; break;
+        case KW_COUNT: kw->has_count = true; kw->count = value; break;
+        default: lisp_error("unsupported keyword argument %s", SYM(key)->name);
         }
         i += 2;
     }
 }
 
+static bool kw_direct_test(lisp_value fn, lisp_value a, lisp_value b, bool *result)
+{
+    if (TYPE(fn) != LT_FUNCTION || PTR(fn, lisp_function)->kind != FN_BUILTIN)
+        return false;
+    lisp_primitive prim = PTR(fn, lisp_function)->fn;
+    if (prim == builtin_eq)
+        *result = a == b;
+    else if (prim == builtin_eql)
+        *result = eql_value(a, b);
+    else if (prim == builtin_equal)
+        *result = equal_value(a, b);
+    else
+        return false;
+    return true;
+}
+
 bool lisp_kw_test(struct kw *kw, lisp_value a, lisp_value b)
 {
+    bool direct;
     if (kw->has_test_not && !nilp(kw->test_not)) {
+        if (kw_direct_test(kw->test_not, a, b, &direct))
+            return !direct;
         lisp_value args[2] = { a, b };
         return !truthy(apply_function(kw->test_not, 2, args));
     }
     if (!kw->has_test || nilp(kw->test))
         return eql_value(a, b);
+    if (kw_direct_test(kw->test, a, b, &direct))
+        return direct;
     lisp_value args[2] = { a, b };
     return truthy(apply_function(kw->test, 2, args));
 }
@@ -1909,6 +1913,8 @@ static struct lisp_symbol *sym_runtime, *sym_pending_writes, *sym_retired_state,
 
 void lisp_runtime_symbols_init(void)
 {
+    for (int i = 0; i < KW_IDS; i++)
+        kw_symbols[i] = VAL(symbol_intern(PKG_KEYWORD, kw_names[i], strlen(kw_names[i]), false));
     sym_runtime = symbol_intern(PKG_TOMOE, "*RUNTIME*", 9, false);
     sym_pending_writes = symbol_intern(PKG_TOMOE, "*PENDING-WRITES*", 16, false);
     sym_retired_state = symbol_intern(PKG_TOMOE, "*RETIRED-STATE*", 15, false);

@@ -364,6 +364,7 @@ int init_primitives(void)
     lisp_register_special("MULTIPLE-VALUE-LIST", SF_MULTIPLE_VALUE_LIST);
     lisp_register_special("PROG1", SF_PROG1);
     lisp_register_special("CHECK-TYPE", SF_CHECK_TYPE);
+    lisp_eval_symbols_init();
     return 0;
 }
 

@@ -709,6 +709,7 @@ lisp_value builtin_string_prefix_p(int argc, lisp_value *argv);
 lisp_value builtin_string_suffix_p(int argc, lisp_value *argv);
 _Noreturn void lisp_fail_format(const char *control, int argc, lisp_value *argv);
 void lisp_runtime_symbols_init(void);
+void lisp_eval_symbols_init(void);
 void lisp_ui_init(void);
 lisp_value builtin_canonical_ui(int argc, lisp_value *argv);
 lisp_value builtin_ui(int argc, lisp_value *argv);
