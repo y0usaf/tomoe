@@ -37,7 +37,6 @@
   (concatenate 'string "/tmp/" name ".lisp"))
 (defun %delete-file (path) (stub-record '%delete-file path) nil)
 (defun %write-append (path text) (declare (ignore text)) (stub-record '%write-append path) nil)
-(defun %read-source (text package) (declare (ignore text package)) nil)
 (defun %symbol-definition (symbol) (list :symbol symbol))
 (defun %set-symbol-definition (symbol definition) (declare (ignore definition)) symbol)
 (defun %set-reads (reads) (stub-record '%set-reads reads) nil)

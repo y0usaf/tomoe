@@ -21,25 +21,16 @@
     (unless text (error "Cannot read the patch source ~A." path))
     text))
 
-(defun %read-forms (text)
-  "Every top-level form in TEXT, read without evaluation."
-  (let ((forms nil) (start 0) (length (length text)))
-    (loop while (< start length) do
-      (multiple-value-bind (form end) (read-from-string text nil :eof :start start)
-        (when (eq form :eof) (return))
-        (setf start end)
-        (push form forms)))
-    (nreverse forms)))
-
-(defun patch-forms (path)
+(defun patch-forms (path package)
+  "Every top-level form of the source at PATH, read in PACKAGE without evaluation."
   (let ((text (patch-text path)))
     (when (> (length text) (%limit :patch)) (error "A patch source exceeds 1 MiB."))
-    (%read-forms text)))
+    (%read-source text package)))
 
-(defun patch-defined-symbols (path)
-  "The symbols the source at PATH defines at top level."
+(defun patch-defined-symbols (path package)
+  "The symbols the source at PATH, read in PACKAGE, defines at top level."
   (let ((symbols nil) (forms 0))
-    (dolist (form (patch-forms path))
+    (dolist (form (patch-forms path package))
       (when (> (incf forms) 4096)
         (error "A patch has more than 4096 top-level forms."))
       (when (and (consp form) (member (first form) +patch-definitions+ :test #'eq))
@@ -62,10 +53,10 @@
   "What a patch declares: the extensions it refreshes, read before it loads."
   names)
 
-(defun patch-refresh-list (path)
+(defun patch-refresh-list (path package)
   "The extension names the source at PATH declares with (REFRESH-EXTENSIONS ...)."
   (let ((names nil))
-    (dolist (form (patch-forms path) (%dedupe (nreverse names)))
+    (dolist (form (patch-forms path package) (%dedupe (nreverse names)))
       (when (and (consp form) (symbolp (first form))
                  (string= "REFRESH-EXTENSIONS" (symbol-name (first form))))
         (dolist (name (rest form))
@@ -187,9 +178,9 @@ compositor as it was and signals its error. Returns a report plist."
          (lambda ()
            (progn
              (patch-text path)
-             (setf snapshots (loop for symbol in (patch-defined-symbols path)
+             (setf snapshots (loop for symbol in (patch-defined-symbols path package)
                                    collect (patch-definition-snapshot symbol))
-                   refresh (patch-refresh-list path))
+                   refresh (patch-refresh-list path package))
              (setf mounted (mount-patch-specs (load-specs path package)))
              (refresh-mounts refresh)
              (let ((patch (list :id id :name name :file path :generated generated

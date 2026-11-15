@@ -1025,27 +1025,6 @@ static lisp_value prim_list_directory(int argc, lisp_value *argv) {
     return result;
 }
 
-static lisp_value prim_read_source(int argc, lisp_value *argv) {
-    const char *path = string(argv[0]);
-    size_t limit = (size_t)unsigned_integer(argv[1]);
-    if (!limit) limit = 1u << 20;
-    FILE *file = fopen(path, "rb");
-    if (!file) lisp_error("Cannot read policy source %s.", path);
-    char *text = t_malloc(limit + 1);
-    if (!text) { fclose(file); lisp_error("Cannot read policy source %s.", path); }
-    size_t length = fread(text, 1, limit, file);
-    bool too_long = !feof(file) && fgetc(file) != EOF;
-    fclose(file);
-    if (too_long) {
-        free(text);
-        lisp_error("Policy source %s exceeds %zu bytes.", path, limit);
-    }
-    text[length] = 0;
-    lisp_value result = lisp_string(text, length);
-    free(text);
-    return result;
-}
-
 static bool patch_name(const char *name) {
     size_t length = strlen(name);
     if (length < 1 || length > 40) return false;
@@ -1192,7 +1171,6 @@ static const struct primitive {
     { "%getenv", prim_getenv, 1, 1 },
     { "%read-file", prim_read_file, 2, 2 },
     { "%list-directory", prim_list_directory, 1, 1 },
-    { "%read-source", prim_read_source, 2, 2 },
     { "%write-patch-file", prim_write_patch_file, 2, 2 },
     { "%write-append", prim_write_append, 2, 2 },
     { "%delete-file", prim_delete_file, 1, 1 },
