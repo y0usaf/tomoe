@@ -4,8 +4,8 @@
 (defparameter +spring-tags+ '("1" "2" "3") "The Super key that switches each.")
 
 (defparameter +spring-names+
-  (loop for number from 1 to (length +spring-tags+)
-        collect (format nil "spring-tag-~(~R~)" number))
+  (loop for name in '("one" "two" "three")
+        collect (format nil "spring-tag-~A" name))
   "The command each tag's Super key runs. Command names end in letters, not digits.")
 
 (defparameter +spring-commands+

@@ -29,13 +29,12 @@
            (length (length value))
            (truncated (> length limit))
            (keep (if truncated (1- limit) limit)))
-      (with-output-to-string (stream)
-        (loop for index below (min length keep)
-              do (write-char (if (network--control-character-p (char value index))
-                                 #\Space
-                                 (char value index))
-                               stream))
-        (when truncated (write-char #\… stream))))))
+      (concatenate 'string
+                   (map 'string
+                        (lambda (character)
+                          (if (network--control-character-p character) #\Space character))
+                        (subseq value 0 keep))
+                   (if truncated "…" "")))))
 
 (defun network--icon (service)
   (if (not (network--connected-p service))
