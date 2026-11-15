@@ -220,6 +220,7 @@ struct cli_options {
     bool explicit_name;
     const char *backend;
     bool bare;
+    bool config_missing;
     const char *config;
     bool watch;
     const char *drm_device;
@@ -329,8 +330,12 @@ static int run_cli(int argc, char **argv) {
             if (index >= argc) return cli_error("--config requires a value.");
             char error[512];
             char *path = absolute_source(argv[index++], error, sizeof(error));
-            if (!path) return cli_error("%s", error);
-            options.config = path;
+            if (!path) {
+                fprintf(stderr, "tomoe: %s\n", error);
+                options.config_missing = true;
+            } else {
+                options.config = path;
+            }
         } else if (!strcmp(option, "--drm_device")) {
             if (index >= argc) return cli_error("--drm_device requires a value.");
             options.drm_device = argv[index++];
@@ -447,7 +452,8 @@ static int run_cli(int argc, char **argv) {
                 error, sizeof(error)), error);
         }
     }
-    if (!options.bare && !options.config) options.config = desktop_default_config();
+    if (!options.bare && !options.config && !options.config_missing)
+        options.config = desktop_default_config();
     return run_compositor(&options);
 }
 
@@ -611,6 +617,9 @@ static int run_compositor(const struct cli_options *options) {
     if (resources_start(server))
         tomoe_log(LOG_ERROR, "tomoe: cannot start the native resources");
     resources = true;
+    const char *outputs_error = tomoe_outputs_apply(server);
+    if (outputs_error)
+        tomoe_log(LOG_ERROR, "tomoe: %s", outputs_error);
     lisp_value sources = lisp_nil();
     if (!options->bare && options->config)
         sources = lisp_cons(lisp_cstring(options->config), lisp_nil());

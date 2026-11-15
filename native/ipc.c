@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -247,6 +248,13 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
         return;
     }
     lisp_value params = json_get(request, "params");
+    if (method_length == 7 && !memcmp(method, "version", 7)) {
+        const char *version = getenv("TOMOE_VERSION");
+        const char *keys[2] = { "wire", "version" };
+        lisp_value values[2] = { lisp_int(3), lisp_cstring(version && *version ? version : "dev") };
+        if (has_id) ipc_reply(client, id, json_build_object(2, keys, values));
+        return;
+    }
     lisp_value arguments[2] = { lisp_string(method, method_length), params };
     lisp_value result = lisp_nil();
     lisp_set_limits(5000000, 1000000000ULL);

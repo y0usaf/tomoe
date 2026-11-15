@@ -281,6 +281,12 @@ static int handle_request(struct control_server *server, const char *text, size_
         }
     } else if (!strcasecmp(operation, "MEMORY")) {
         result = tomoe_memory_report(s);
+    } else if (!strcasecmp(operation, "INSPECT")) {
+        lisp_set_limits(5000000, 1000000000ULL);
+        if (policy_call(POLICY_HOOK_INSPECT, 0, NULL, &result, error, sizeof(error))) {
+            *reply = error_reply(error);
+            return 0;
+        }
     } else if (!strcasecmp(operation, "TIMINGS")) {
         if (count > 1) {
             *reply = error_reply("timings takes at most one argument.");

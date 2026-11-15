@@ -452,8 +452,10 @@ static bool plan_output_member(const struct layer_plan *plan,
 
 static bool plan_lifetime_valid(struct tomoe *s, const struct layer_plan *plan,
         bool check_enabled) {
-    if (!s || !plan || !plan->serialized || !plan->outputs || !plan->layers ||
-            plan->output_count != (size_t)wl_list_length(&s->outputs) ||
+    if (!s || !plan || !plan->serialized) return false;
+    if ((plan->output_count && !plan->outputs) || (plan->layer_count && !plan->layers))
+        return false;
+    if (plan->output_count != (size_t)wl_list_length(&s->outputs) ||
             plan->layer_count != (size_t)wl_list_length(&s->layers)) return false;
 
     for (size_t i = 0; i < plan->output_count; i++) {
@@ -1156,6 +1158,9 @@ static bool publish_layer_plan(struct tomoe *s, struct layer_plan *plan,
 
 void layers_publish_presentation(struct tomoe *s) {
     if (!s || !s->layer_preview) return;
+    struct output *output;
+    wl_list_for_each(output, &s->outputs, link)
+        if (!output->admitted) return;
     struct layer_plan *plan = s->layer_preview;
     if (!publish_layer_plan(s, plan, true)) {
         if (!plan->published) fail(s, "layer presentation lifetime changed");

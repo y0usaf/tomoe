@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "budget.h"
 #include <stddef.h>
 
 enum setting_kind { SETTING_BOOL, SETTING_INT, SETTING_REAL, SETTING_COLOR };
@@ -62,6 +63,16 @@ static const char *const policy_keys[] = {
 
 static const char *const policy_text_keys[] = { "mod" };
 
+static int budget_key(const char *key, double value) {
+    static const char prefix[] = "budgets-";
+    size_t length = sizeof(prefix) - 1;
+    if (strncmp(key, prefix, length) != 0) return 0;
+    if (!budget_set_limit(key + length, (uint64_t)value)) return 0;
+    if (!strcmp(key + length, "lisp-heap-mb") && value > 0)
+        lisp_set_region_limit((size_t)value * 1024 * 1024);
+    return 1;
+}
+
 static int policy_key(const char *key) {
     for (size_t i = 0; i < sizeof(policy_keys) / sizeof(policy_keys[0]); i++)
         if (!strcmp(policy_keys[i], key)) return 1;
@@ -106,6 +117,7 @@ int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
         }
         return 1;
     }
+    if (budget_key(key, value)) return 1;
     return policy_key(key);
 }
 

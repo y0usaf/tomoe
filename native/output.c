@@ -314,7 +314,7 @@ static bool write_outputs_payload(FILE *out, struct tomoe *s, bool pending) {
 }
 
 static lisp_value ev_put(lisp_value list, const char *key, lisp_value value) {
-    return lisp_cons(lisp_keyword(key), lisp_cons(value, list));
+    return lisp_cons(value, lisp_cons(lisp_keyword(key), list));
 }
 
 static lisp_value ev_boolean(bool value) {
