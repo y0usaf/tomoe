@@ -164,6 +164,7 @@ static void client_flush(struct control_client *client) {
 static bool frame_ready(struct control_client *client, const char **text, size_t *length,
         const char **fatal) {
     *fatal = NULL;
+    if (!client->in) return false;
     size_t available = client->in_length - client->in_start;
     char *start = client->in + client->in_start;
     char *newline = memchr(start, '\n', available);

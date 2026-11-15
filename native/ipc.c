@@ -261,6 +261,7 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
 static bool ipc_next_line(struct ipc_client *client, const char **text, size_t *length,
         bool *oversized) {
     *oversized = false;
+    if (!client->in) return false;
     size_t start = client->in_start;
     size_t scan = client->in_scan > start ? client->in_scan : start;
     char *newline = memchr(client->in + scan, '\n', client->in_length - scan);
@@ -346,6 +347,7 @@ static void ipc_read_client(struct ipc_server *server, struct ipc_client *client
 static bool ipc_drained(struct ipc_client *client) {
     if (!client->read_eof) return false;
     if (client->out_offset < client->out_length) return false;
+    if (!client->in) return true;
     return !memchr(client->in + client->in_start, '\n', client->in_length - client->in_start);
 }
 
