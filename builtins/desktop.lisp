@@ -159,9 +159,12 @@
                 collect (remove-if-not (lambda (id) (member id ids))
                                        (nth index (getf state :workspaces)))))
     (labels ((workspace (number) (nth (1- number) workspaces))
+             (set-workspace (number items)
+               (setf workspaces
+                     (loop for wins in workspaces for index from 1
+                           collect (if (= index number) items wins))))
              (append-window (number id)
-               (setf (nth (1- number) workspaces)
-                     (append (workspace number) (list id))))
+               (set-workspace number (append (workspace number) (list id))))
              (window-box (id) (find id boxes :key (lambda (entry) (getf entry :id))))
              (full-box (id) (find id full :key (lambda (entry) (getf entry :id))))
              (remember-box (id x y width height)
@@ -246,7 +249,7 @@
                (focus-id (car (last (workspace active)))))
              (move-window (number id)
                (when (and id (member id ids) (<= 1 number count) (/= number active))
-                 (setf (nth (1- active) workspaces) (remove id (workspace active)))
+                 (set-workspace active (remove id (workspace active)))
                  (hide-id id)
                  (append-window number id)
                  (arrange)
@@ -392,7 +395,7 @@
         (values (list :active active :workspaces workspaces :fullscreen full
                       :focused focused :ids ids :boxes boxes :stacking stack
                       :visible visible :geometry-key geometry-key)
-                (nreverse effects) commands)))))
+                (reverse effects) commands)))))
 
 (defparameter +drag-contract+
   (motion-contract :drag '(:bound 1048576 :min-size 64 :max-size 16384))
@@ -506,7 +509,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
     (case (length items)
       (0 (list :deny nil))
       (1 (first picks))
-      (t (list :menu (nreverse items) (nreverse picks))))))
+      (t (list :menu (reverse items) (reverse picks))))))
 
 (define-extension "screencast" (:reads (:screencast :windows :outputs :rules :command :ui :data) :state nil)
     (snapshot state event)
@@ -637,7 +640,7 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
                               (return)))
                  (when (< (length lines) limit)
                    (push (subseq value start end) lines))
-                 (nreverse lines)))
+                 (reverse lines)))
              (text (value size color)
                (ui :text :text value :size size :color color))
              (text-block (value line-limit character-limit size color)

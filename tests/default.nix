@@ -1038,6 +1038,16 @@ let
       + builtins.readFile ./memory.py;
     }
   ];
+  keybindingSuites = [
+    {
+      name = "purity";
+      script = ''
+        PURITY_POLICY = "${./purity-policy.lisp}"
+        PURITY_PATCH = "${./purity-patch.lisp}"
+      ''
+      + builtins.readFile ./purity.py;
+    }
+  ];
   equivalenceSuites =
     pkgs.lib.optional (baseline != null) {
       name = "input-equivalence";
@@ -1139,7 +1149,15 @@ in
       suites = kmsSuites;
     }
   );
+  keybindings = vm (
+    compositorSettings
+    // {
+      name = "tomoe-keybindings";
+      suites = keybindingSuites;
+    }
+  );
   suites = suiteTargets compositorSettings compositorSuites
+    // suiteTargets compositorSettings keybindingSuites
     // suiteTargets equivalenceSettings equivalenceSuites
     // suiteTargets kmsSettings kmsSuites;
 }
