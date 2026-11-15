@@ -33,13 +33,21 @@ POLICY = """
                    (shell-surface :overdraw-wallpaper (ui :stack)
                                   :anchors '(:top :right :bottom :left) :layer :background
                                   :background (list :shader "{wallpaper}" :fps 60)))
-             (if (equal "{layout}" "stack")
-                 (loop for window in windows for index from 0
-                       collect (place (getf window :id) (+ 40 (* 16 index))
-                                      (+ 30 (* 16 index)) (- width 200) (- height 160)))
-                 (loop for window in windows for index from 0
-                       collect (apply #'place (getf window :id)
-                                      (overdraw-cell index count width height))))
+             (cond
+               ((equal "{layout}" "cover")
+                (loop for window in windows for index from 0
+                      collect (if (= index (1- count))
+                                  (place (getf window :id) 0 0 width height)
+                                  (place (getf window :id) (+ 40 (* 16 index))
+                                         (+ 30 (* 16 index)) (- width 200) (- height 160)))))
+               ((equal "{layout}" "stack")
+                (loop for window in windows for index from 0
+                      collect (place (getf window :id) (+ 40 (* 16 index))
+                                     (+ 30 (* 16 index)) (- width 200) (- height 160))))
+               (t
+                (loop for window in windows for index from 0
+                      collect (apply #'place (getf window :id)
+                                     (overdraw-cell index count width height)))))
              (if windows (list (focus (getf (car windows) :id))) nil))
             nil)))
 """
@@ -184,7 +192,7 @@ def session(binary, tag, layout, env):
 
 def run(binary, tag):
     digests, costs = {}, {}
-    for layout in ("grid", "stack"):
+    for layout in ("grid", "stack", "cover"):
         unit, socket = session(binary, tag, layout, [])
         seen = 0
         for count in COUNTS:
@@ -202,7 +210,7 @@ def run(binary, tag):
     print(f"{tag} repaint {COUNTS[-1]}: presented {digests[('repaint', COUNTS[-1])]}",
           flush=True)
     stop_binary(binary, unit, socket)
-    for layout in ("grid", "stack"):
+    for layout in ("grid", "stack", "cover"):
         unit, socket = session(binary, tag, layout, [("TOMOE_DEBUG_DAMAGE", "1")])
         seen = 0
         for count in COUNTS:

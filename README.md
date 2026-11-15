@@ -121,7 +121,8 @@ from windows and outputs to each extension's state and last error.
 asked the GPU to fill, so a change that stops painting what something else hides
 shows up there directly: a draw a window above it covers opaquely is not issued
 at all, every other draw is scissored to the part of it that nothing hides and to
-the damage that needs it, a rounded window claims the cross its radius leaves
+the damage that needs it, unless that part needs more than the sixteen rectangles
+the damage clip already allows, a rounded window claims the cross its radius leaves
 opaque back as the region it hides, and a border or a shadow is only drawn where
 the window it decorates does not cover it, so it becomes the ring its shader
 fills. `tests/overdraw.py` mounts a shader

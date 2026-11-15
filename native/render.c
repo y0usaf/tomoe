@@ -1293,7 +1293,7 @@ struct scene_run {
     float scissor[4];
 };
 
-enum { SCENE_VERTICES = 6 };
+enum { SCENE_VERTICES = 6, CLIP_RECTS = 16 };
 
 static void quad_positions(const struct pass *pass, struct box box, double rotation,
         float pos[8]) {
@@ -2196,6 +2196,10 @@ bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip)
     if (!region_not_empty(&clip->region)) {
         region_fini(&clip->region);
         return false;
+    }
+    if (clip->region.count > CLIP_RECTS) {
+        region_fini(&clip->region);
+        return true;
     }
     pass->clip = &clip->region;
     clip->limited = true;
