@@ -2184,22 +2184,38 @@ struct op *pass_recorded(struct pass *pass, size_t before) {
 bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip) {
     clip->limited = false;
     clip->saved = NULL;
+    region_init(&clip->region);
     clip->op = next_op(pass, kind, box);
     if (!clip->op) return true;
     if (clip->op->hidden) return false;
     struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
     if (region_contains_rectangle(&clip->op->visible, &r) == REGION_IN) return true;
-    clip->saved = pass->clip;
-    region_init(&clip->region);
-    if (clip->saved) region_intersect(&clip->region, &clip->op->visible, clip->saved);
-    else region_copy(&clip->region, &clip->op->visible);
-    if (!region_not_empty(&clip->region)) {
-        region_fini(&clip->region);
-        return false;
-    }
-    if (clip->region.count > CLIP_RECTS) {
-        region_fini(&clip->region);
+    if (!pass->clip) {
+        if (clip->op->visible.count > CLIP_RECTS) return true;
+        pass->clip = &clip->op->visible;
+        clip->limited = true;
         return true;
+    }
+    clip->saved = pass->clip;
+    if (clip->saved->count == 1 && clip->op->visible.count == 1) {
+        struct rect both = clip->saved->extents, other = clip->op->visible.extents;
+        if (other.x1 > both.x1) both.x1 = other.x1;
+        if (other.y1 > both.y1) both.y1 = other.y1;
+        if (other.x2 < both.x2) both.x2 = other.x2;
+        if (other.y2 < both.y2) both.y2 = other.y2;
+        if (both.x1 >= both.x2 || both.y1 >= both.y2) return false;
+        region_init_rect(&clip->region, both.x1, both.y1, (uint32_t)(both.x2 - both.x1),
+            (uint32_t)(both.y2 - both.y1));
+    } else {
+        region_intersect(&clip->region, &clip->op->visible, clip->saved);
+        if (!region_not_empty(&clip->region)) {
+            region_fini(&clip->region);
+            return false;
+        }
+        if (clip->region.count > CLIP_RECTS) {
+            region_fini(&clip->region);
+            return true;
+        }
     }
     pass->clip = &clip->region;
     clip->limited = true;
