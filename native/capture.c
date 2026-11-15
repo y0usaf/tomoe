@@ -339,6 +339,10 @@ static bool source_size(struct tomoe *s, const struct source *source, int *width
 static void image_frame_settle(struct image_frame *frame) {
     if (frame->copying) wl_event_source_remove(frame->copying);
     frame->copying = NULL;
+    if (frame->fence < 0) return;
+    wl_list_remove(&frame->pending_link);
+    close(frame->fence);
+    frame->fence = -1;
 }
 
 static bool frame_waiting(const struct image_frame *frame) {
@@ -613,6 +617,7 @@ static void copy_later(struct tomoe *s, struct image_frame *frame, int fence) {
     if (!s->capture_fence_timer) {
         tomoe_log(LOG_ERROR, "tomoe: cannot watch a capture fence; %s",
             "the frame keeps its buffer and slot until the GPU is done");
+        capture_slot_release(frame);
         image_frame_hold(frame, false);
         close(fence);
         return;
@@ -808,6 +813,7 @@ static void session_create_frame(struct wl_client *client, struct wl_resource *r
     frame->resource = frame_resource;
     frame->session = session;
     frame->server = session ? session->server : NULL;
+    frame->fence = -1;
     if (session) session->frame = frame;
     wl_resource_set_implementation(frame_resource, &image_frame_impl, frame,
         image_frame_resource_destroy);
