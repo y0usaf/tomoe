@@ -22,7 +22,9 @@ def start_binary(binary, unit, socket):
         "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin "
         f"--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv={THREADS} "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        f"{binary} --socket {socket} --backend headless --no-watch --test-timings --bare")
+        + ("--setenv=TOMOE_TIMINGS=1 " if binary == BASELINE else "")
+        + f"{binary} --socket {socket} --backend headless --no-watch --bare"
+        + ("" if binary == BASELINE else " --test-timings"))
     for _ in range(600):
         if machine.execute(ENV + f"{binary} --socket {socket} inspect")[0] == 0:
             return
