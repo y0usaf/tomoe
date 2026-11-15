@@ -3,20 +3,19 @@ DRM = {
     "TOMOE_DEBUG": "1",
     "LIBSEAT_BACKEND": "noop",
     "WLR_NO_HARDWARE_CURSORS": "1",
-    "TOMOE_TIMINGS": "1",
 }
 PHASES = (("input", "--motion-stream 1000 3000"), ("commit", "--commit-stream 500 3000"))
 WARMUP = "--motion-stream 1000 800"
 SCENES = (("plain", {}), ("scene", {"TOMOE_PHASE_SHADER": PHASE_SHADER, "TOMOE_PHASE_BLUR": "1"}))
-MODES = (("pooled", "0"), ("class", "1"))
+MODES = (("pooled", "--test-pacing-class=0"), ("class", "--test-pacing-class=1"))
 MUST_DROP = (("vkms", "plain", "input"),)
 CARD = machine.succeed(
     "for c in /sys/class/drm/card*-Virtual-1; do basename $c | cut -d- -f1; done").strip()
 CASES = (
-    ("headless", 240, ("--bare",), {"backend": "headless", "bus": True,
-                                    "env": {"TOMOE_TEST_FRAME_CLOCK": "1"}}),
-    ("vkms", 60, ("--bare", f"--drm_device /dev/dri/{CARD}"), {"backend": "drm", "bus": False,
-                                                               "env": DRM}),
+    ("headless", 240, ("--bare", "--test-timings", "--test-frame-clock"),
+     {"backend": "headless", "bus": True, "env": {}}),
+    ("vkms", 60, ("--bare", "--test-timings", f"--drm_device /dev/dri/{CARD}"),
+     {"backend": "drm", "bus": False, "env": DRM}),
 )
 RUNS = int(RUNS)
 
@@ -110,8 +109,8 @@ for backend, refresh, options, settings in CASES:
             for mode in order:
                 machine.execute("systemctl stop tomoe; systemctl reset-failed tomoe",
                                 check_return=False)
-                start(*options, backend=settings["backend"], bus=settings["bus"],
-                      env=dict(settings["env"], **scene_env, TOMOE_FRAME_CLASS=dict(MODES)[mode]))
+                start(*options, dict(MODES)[mode], backend=settings["backend"],
+                      bus=settings["bus"], env=dict(settings["env"], **scene_env))
                 cli(f"mount {PHASE_POLICY}")
                 wait_output("HEADLESS-1" if backend == "headless" else "Virtual-1")
                 assert inspect()[":LAST-ERROR"] == "NIL", inspect()[":LAST-ERROR"]

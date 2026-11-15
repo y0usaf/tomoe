@@ -158,6 +158,8 @@ static void set_keyboard_interactivity(struct wl_client *client, struct wl_resou
     }
     struct layer_shell_surface *l = from_resource(resource);
     if (!l) return;
+    if (interactive == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND)
+        interactive = ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE;
     l->base.pending.keyboard_interactive = version <
         ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND_SINCE_VERSION ? !!interactive :
         interactive;

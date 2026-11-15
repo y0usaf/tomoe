@@ -127,7 +127,7 @@ def lower_plist(value):
 
 class Compositor:
 
-    def __init__(self, work, tomoe, socket, env=None):
+    def __init__(self, work, tomoe, socket, env=None, options=()):
         self.tomoe = tomoe
         self.socket = socket
         self.runtime = os.path.join(work, "run")
@@ -141,7 +141,8 @@ class Compositor:
         if env:
             self.environment.update(env)
         self.process = subprocess.Popen(
-            [tomoe, "--socket", socket, "--backend", "headless", "--bare", "--no-watch"],
+            [tomoe, "--socket", socket, "--backend", "headless", "--bare", "--no-watch",
+                *options],
             env=self.environment, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.time() + 120
         while time.time() < deadline:
@@ -386,8 +387,7 @@ def stalled_control(work, tomoe, socket, policy, frames_dir, period):
     stalled = None
     try:
         stalled = Compositor(work, tomoe, socket + "-stall",
-            env={"TOMOE_TEST_STALL_FENCE": "1",
-                "TOMOE_TEST_STALL_FENCE_MS": str(stall_ms)})
+            options=("--test-stall-fence", "--test-stall-fence-ms=%d" % stall_ms))
         stalled.mount(policy)
         time.sleep(0.6)
         control = measure(stalled, "stalled frames",

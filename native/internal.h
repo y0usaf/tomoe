@@ -639,8 +639,6 @@ struct output {
     uint64_t damage_seq;
     struct region damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;
-    struct { struct fbox box; struct animation reveal; double width, radius;
-        uint32_t rgba; float alpha; bool active; double reveal_now; } outline;
     struct { uint64_t ns, counts[8]; } timing;
     struct { uint32_t us[FRAME_TRACE]; unsigned head, count; } traced;
 };
@@ -676,17 +674,6 @@ struct target {
     struct window_shader *shader;
     struct window_mesh *mesh;
     double shader_time;
-};
-struct focus_outline {
-    struct animation dx, dy, dw, dh, reveal;
-    struct fbox box;
-    double live_vx, live_vy;
-    struct screen *output;
-    uint32_t owner;
-    double width, radius, reveal_now;
-    uint32_t rgba;
-    float alpha;
-    bool box_valid;
 };
 struct frame {
     struct tomoe *server;
@@ -820,14 +807,18 @@ struct settings {
     bool screenshot_freeze;
     struct screenshot_colors screenshot_colors;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
-        window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate,
-        focus_outline;
-    bool outline_fly;
+        window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
     size_t blur_namespace_count;
 };
 void settings_clear(struct settings *settings);
 void settings_finish(struct settings *settings);
+int tomoe_test_flag(const char *name);
+const char *tomoe_test_flag_value(const char *name);
+int tomoe_set_test_flag(const char *name, const char *value);
+void tomoe_select_backend(const char *kind);
+void tomoe_select_drm_devices(const char *devices);
+void tomoe_select_render_node(const char *node);
 void input_config_unset(struct input_config *config);
 int input_setting(struct settings *settings, const char *key, double value, const char *text);
 void input_devices_apply(struct tomoe *s);
@@ -858,7 +849,7 @@ struct presentation {
     int grab_mode;
     struct wl_list bindings;
     struct keyboard_profile *keyboard;
-    bool restack, explicit_stacking, outputs_changed, replace_bindings;
+    bool outputs_changed, replace_bindings;
     struct ui_set *ui;
     struct settings *settings;
     char *grab_owner, *grab_otherwise;
@@ -1126,7 +1117,6 @@ struct tomoe {
         bool pointer, drag, key, commit;
     } timing;
     struct animation_stats animation;
-    struct focus_outline outline;
     uint64_t trail_steps;
     struct { int64_t ns[512]; unsigned head, count; } trail_times;
     char *hit_result, *frames_result, *animation_result;
@@ -1452,9 +1442,6 @@ void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s, double now);
-bool focus_outline_animate(struct tomoe *s, double now);
-struct fbox window_live_box(struct tomoe *s, const struct target *target);
-struct target *window_focused_target(struct tomoe *s);
 void view_publish(struct tomoe *s, const struct presentation *plan);
 bool view_animate(struct tomoe *s, const struct settings *settings, double now);
 bool ghosts_animate(struct tomoe *s, double now);
@@ -1463,9 +1450,14 @@ void ghosts_draw(struct tomoe *s, struct frame *frame);
 bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height);
 struct node *window_capture_node(struct tomoe *s, uint32_t id, struct target *target);
 bool foreign_listen(struct tomoe *s);
-void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
-    uint32_t state, struct screen *const *outputs, size_t output_count);
+bool foreign_announce(struct tomoe *s, uint32_t id);
+void foreign_fields(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
+    uint32_t state);
+void foreign_output(struct tomoe *s, uint32_t id, struct screen *output, bool enter);
 void foreign_forget(struct tomoe *s, uint32_t id);
+bool window_foreign_fields(struct tomoe *s, uint32_t id, const char **title,
+    const char **app_id, uint32_t *state, struct screen **outputs, size_t capacity,
+    size_t *output_count);
 const char *foreign_identifier(struct tomoe *s, uint32_t id);
 uint32_t foreign_handle_window(struct wl_resource *handle);
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,

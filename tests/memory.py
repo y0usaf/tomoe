@@ -140,7 +140,7 @@ time.sleep(2)
 measure("tiles-0")
 quit()
 
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1"})
+fresh("--config", CONFIG, "--test-timings")
 time.sleep(3)
 state = inspect()
 print("config error:", state[":LAST-ERROR"], flush=True)

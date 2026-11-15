@@ -370,7 +370,7 @@ static void dispatch_frame(struct screen *screen) {
 
 static bool test_frame_clock(void) {
     static int enabled = -1;
-    if (enabled < 0) enabled = getenv("TOMOE_TEST_FRAME_CLOCK") != NULL;
+    if (enabled < 0) enabled = tomoe_test_flag("frame-clock");
     return enabled;
 }
 
@@ -399,7 +399,7 @@ static int64_t bucket_percentile(const uint16_t *buckets, uint32_t percentile, u
 static bool cost_split(void) {
     static int enabled = -1;
     if (enabled < 0) {
-        const char *value = getenv("TOMOE_FRAME_CLASS");
+        const char *value = tomoe_test_flag_value("pacing-class");
         enabled = !(value && !strcmp(value, "0"));
     }
     return enabled;
@@ -467,7 +467,7 @@ static int64_t frame_margin(const struct screen *screen, int64_t period) {
 static bool frame_clock(void) {
     static int enabled = -1;
     if (enabled < 0) {
-        const char *value = getenv("TOMOE_FRAME_CLOCK");
+        const char *value = tomoe_test_flag_value("pacing");
         enabled = !(value && !strcmp(value, "0"));
     }
     return enabled;

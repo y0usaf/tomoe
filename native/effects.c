@@ -14,8 +14,7 @@ struct effects {
     struct chain chains[BLUR_CHAINS];
     struct level backdrop;
     uint64_t stamp, blurs, reused;
-    struct { float *levels; size_t capacity; float *quads; size_t capacity_quads;
-             bool refused; } trail;
+    struct { float *levels; size_t capacity; float *quads; size_t capacity_quads; } trail;
 };
 
 static struct program *program(struct frame *f, int kind) {
@@ -635,11 +634,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     size_t gw = (size_t)(gx1 - gx0 + 1), gh = (size_t)(gy1 - gy0 + 1);
     if (!gw || !gh) return;
     if (gw * gh > TRAIL_CELLS_MAX) {
-        if (!e->trail.refused) {
-            e->trail.refused = true;
-            tomoe_log(LOG_ERROR, "tomoe: the trail covers %zux%zu cells of %g pixels; "
-                "use a larger :cell", gw, gh, cell);
-        }
+        tomoe_log(LOG_ERROR, "tomoe: the trail covers %zux%zu cells of %g pixels; "
+            "use a larger :cell", gw, gh, cell);
         return;
     }
     if (!grow_floats(&e->trail.levels, &e->trail.capacity, gw * gh)) return;

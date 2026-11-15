@@ -114,7 +114,12 @@ static const struct zxdg_decoration_manager_v1_interface manager_impl = {
 
 static void kde_request_mode(struct wl_client *client, struct wl_resource *resource,
         uint32_t mode) {
-    org_kde_kwin_server_decoration_send_mode(resource, mode);
+    struct tomoe *s = wl_resource_get_user_data(resource);
+    bool client_side = mode == ORG_KDE_KWIN_SERVER_DECORATION_MODE_CLIENT &&
+        !(s && s->settings.force_ssd);
+    org_kde_kwin_server_decoration_send_mode(resource, client_side ?
+        ORG_KDE_KWIN_SERVER_DECORATION_MODE_CLIENT :
+        ORG_KDE_KWIN_SERVER_DECORATION_MODE_SERVER);
 }
 
 static const struct org_kde_kwin_server_decoration_interface kde_impl = {
@@ -124,15 +129,17 @@ static const struct org_kde_kwin_server_decoration_interface kde_impl = {
 
 static void kde_create(struct wl_client *client, struct wl_resource *manager, uint32_t id,
         struct wl_resource *surface) {
+    struct tomoe *s = wl_resource_get_user_data(manager);
     struct wl_resource *resource = wl_resource_create(client,
         &org_kde_kwin_server_decoration_interface, wl_resource_get_version(manager), id);
     if (!resource) {
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(resource, &kde_impl, NULL, NULL);
-    org_kde_kwin_server_decoration_send_mode(resource,
-        ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_MODE_SERVER);
+    wl_resource_set_implementation(resource, &kde_impl, s, NULL);
+    org_kde_kwin_server_decoration_send_mode(resource, s->settings.force_ssd ?
+        ORG_KDE_KWIN_SERVER_DECORATION_MODE_SERVER :
+        ORG_KDE_KWIN_SERVER_DECORATION_MODE_CLIENT);
 }
 
 static const struct org_kde_kwin_server_decoration_manager_interface kde_manager_impl = {
@@ -156,9 +163,11 @@ static void bind_kde(struct wl_client *client, void *data, uint32_t version, uin
         wl_client_post_no_memory(client);
         return;
     }
+    struct tomoe *s = data;
     wl_resource_set_implementation(resource, &kde_manager_impl, data, NULL);
     org_kde_kwin_server_decoration_manager_send_default_mode(resource,
-        ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_MODE_SERVER);
+        s->settings.force_ssd ? ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_MODE_SERVER :
+        ORG_KDE_KWIN_SERVER_DECORATION_MANAGER_MODE_CLIENT);
 }
 
 bool decoration_listen(struct tomoe *s) {

@@ -124,7 +124,7 @@ digests = []
 idle_ticks = idle_frames = idle_calls = 0
 for count in COUNTS:
     shot_unit, shot_socket = f"tomoe-shot{count}", f"shot{count}"
-    start(env={"TOMOE_TIMINGS": "1"}, unit=shot_unit, socket=shot_socket)
+    start("--test-timings", unit=shot_unit, socket=shot_socket)
     cli(f"mount {DRAW_POLICY}", shot_socket)
     state = inspect(shot_socket)
     assert state[":LAST-ERROR"] == "NIL", state[":LAST-ERROR"]
@@ -148,7 +148,7 @@ for count in COUNTS:
     print("kernel: " + machine.execute("dmesg | tail -3")[1].strip())
     quit(shot_unit, shot_socket)
 
-start(env={"TOMOE_TIMINGS": "1", "TOMOE_DEBUG_DAMAGE": "1"}, unit="tomoe-cost",
+start("--test-timings", "--test-debug-damage", unit="tomoe-cost",
       socket="cost")
 cli(f"mount {DRAW_POLICY}", "cost")
 assert inspect("cost")[":LAST-ERROR"] == "NIL", inspect("cost")[":LAST-ERROR"]
@@ -188,7 +188,7 @@ if GOLDEN:
 blur_digests = []
 for count in COUNTS:
     shot_unit, shot_socket = f"tomoe-blurshot{count}", f"blurshot{count}"
-    start(env={"TOMOE_TIMINGS": "1"}, unit=shot_unit, socket=shot_socket)
+    start("--test-timings", unit=shot_unit, socket=shot_socket)
     cli(f"mount {BLUR_POLICY}", shot_socket)
     cli(f"mount {BLUR_BACKDROP}", shot_socket)
     state = inspect(shot_socket)
@@ -199,7 +199,7 @@ for count in COUNTS:
     print(f"blur windows {count}: screenshot {blur_digests[-2]} presented {blur_digests[-1]}")
     quit(shot_unit, shot_socket)
 
-start(env={"TOMOE_TIMINGS": "1"}, unit="tomoe-blur", socket="blur")
+start("--test-timings", unit="tomoe-blur", socket="blur")
 cli(f"mount {BLUR_POLICY}", "blur")
 assert inspect("blur")[":LAST-ERROR"] == "NIL", inspect("blur")[":LAST-ERROR"]
 blur_costs = {}

@@ -993,11 +993,8 @@ static const char *layer_name(int layer) {
     return "overlay";
 }
 static const char *keyboard_name(int keyboard) {
-    switch (keyboard) {
-    case ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE: return "none";
-    case ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE: return "exclusive";
-    }
-    return "on-demand";
+    return keyboard == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE ?
+        "exclusive" : "none";
 }
 static const struct {
     uint32_t bit;

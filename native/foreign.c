@@ -10,10 +10,6 @@ struct foreign {
     struct tomoe *server;
     uint32_t id;
     char identifier[33];
-    char *title, *app_id;
-    uint32_t state;
-    struct screen *outputs[FOREIGN_OUTPUTS];
-    size_t output_count;
     struct wl_list wlr_handles, ext_handles;
 };
 
@@ -47,7 +43,8 @@ static void handle_resource_destroy(struct wl_resource *resource) {
     wl_list_remove(wl_resource_get_link(resource));
 }
 
-static void announce_wlr(struct foreign *f, struct wl_resource *manager) {
+static void announce_wlr(struct foreign *f, struct wl_resource *manager, const char *title,
+        const char *app_id, uint32_t state, struct screen *const *outputs, size_t output_count) {
     struct wl_resource *handle = wl_resource_create(wl_resource_get_client(manager),
         &zwlr_foreign_toplevel_handle_v1_interface, wl_resource_get_version(manager), 0);
     if (!handle) {
@@ -57,14 +54,15 @@ static void announce_wlr(struct foreign *f, struct wl_resource *manager) {
     wl_resource_set_implementation(handle, &wlr_handle_impl, f, handle_resource_destroy);
     wl_list_insert(&f->wlr_handles, wl_resource_get_link(handle));
     zwlr_foreign_toplevel_manager_v1_send_toplevel(manager, handle);
-    zwlr_foreign_toplevel_handle_v1_send_title(handle, f->title);
-    zwlr_foreign_toplevel_handle_v1_send_app_id(handle, f->app_id);
-    for (size_t i = 0; i < f->output_count; i++) send_output(handle, f->outputs[i], true);
-    send_state(handle, f->state);
+    zwlr_foreign_toplevel_handle_v1_send_title(handle, title);
+    zwlr_foreign_toplevel_handle_v1_send_app_id(handle, app_id);
+    for (size_t i = 0; i < output_count; i++) send_output(handle, outputs[i], true);
+    send_state(handle, state);
     zwlr_foreign_toplevel_handle_v1_send_done(handle);
 }
 
-static void announce_ext(struct foreign *f, struct wl_resource *list) {
+static void announce_ext(struct foreign *f, struct wl_resource *list, const char *title,
+        const char *app_id) {
     struct wl_resource *handle = wl_resource_create(wl_resource_get_client(list),
         &ext_foreign_toplevel_handle_v1_interface, wl_resource_get_version(list), 0);
     if (!handle) {
@@ -75,8 +73,8 @@ static void announce_ext(struct foreign *f, struct wl_resource *list) {
     wl_list_insert(&f->ext_handles, wl_resource_get_link(handle));
     ext_foreign_toplevel_list_v1_send_toplevel(list, handle);
     ext_foreign_toplevel_handle_v1_send_identifier(handle, f->identifier);
-    ext_foreign_toplevel_handle_v1_send_title(handle, f->title);
-    ext_foreign_toplevel_handle_v1_send_app_id(handle, f->app_id);
+    ext_foreign_toplevel_handle_v1_send_title(handle, title);
+    ext_foreign_toplevel_handle_v1_send_app_id(handle, app_id);
     ext_foreign_toplevel_handle_v1_send_done(handle);
 }
 
@@ -89,9 +87,8 @@ static struct foreign *foreign_find(struct tomoe *s, uint32_t id) {
 static struct foreign *foreign_create(struct tomoe *s, uint32_t id) {
     struct foreign *f = calloc(1, sizeof(*f));
     unsigned char bytes[16];
-    if (!f || getrandom(bytes, sizeof(bytes), 0) != sizeof(bytes) ||
-            !(f->title = strdup("")) || !(f->app_id = strdup(""))) {
-        if (f) { free(f->title); free(f); }
+    if (!f || getrandom(bytes, sizeof(bytes), 0) != sizeof(bytes)) {
+        free(f);
         fail(s, "foreign toplevel allocation failed");
         return NULL;
     }
@@ -101,62 +98,50 @@ static struct foreign *foreign_create(struct tomoe *s, uint32_t id) {
     wl_list_init(&f->wlr_handles);
     wl_list_init(&f->ext_handles);
     wl_list_insert(s->foreigns.prev, &f->link);
-    struct wl_resource *manager;
-    wl_resource_for_each(manager, &s->foreign_managers) announce_wlr(f, manager);
-    wl_resource_for_each(manager, &s->foreign_lists) announce_ext(f, manager);
     return f;
 }
 
-static bool replace(char **slot, const char *text) {
-    if (!strcmp(*slot, text)) return false;
-    char *copy = strdup(text);
-    if (!copy) return false;
-    free(*slot);
-    *slot = copy;
+bool foreign_announce(struct tomoe *s, uint32_t id) {
+    const char *title, *app_id;
+    uint32_t state;
+    struct screen *outputs[FOREIGN_OUTPUTS];
+    size_t output_count;
+    if (!window_foreign_fields(s, id, &title, &app_id, &state, outputs, FOREIGN_OUTPUTS,
+            &output_count)) return false;
+    struct foreign *f = foreign_find(s, id);
+    if (!f && !(f = foreign_create(s, id))) return false;
+    struct wl_resource *manager;
+    wl_resource_for_each(manager, &s->foreign_managers)
+        announce_wlr(f, manager, title, app_id, state, outputs, output_count);
+    wl_resource_for_each(manager, &s->foreign_lists) announce_ext(f, manager, title, app_id);
     return true;
 }
 
-void foreign_update(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
-        uint32_t state, struct screen *const *outputs, size_t output_count) {
+void foreign_fields(struct tomoe *s, uint32_t id, const char *title, const char *app_id,
+        uint32_t state) {
     struct foreign *f = foreign_find(s, id);
-    if (!f && !(f = foreign_create(s, id))) return;
-    if (output_count > FOREIGN_OUTPUTS) output_count = FOREIGN_OUTPUTS;
-    bool title_changed = replace(&f->title, title);
-    bool app_id_changed = replace(&f->app_id, app_id);
-    bool state_changed = f->state != state;
-    f->state = state;
-    bool outputs_changed = false;
+    if (!f) return;
     struct wl_resource *handle;
-    for (size_t i = 0; i < f->output_count; i++) {
-        bool kept = false;
-        for (size_t j = 0; j < output_count; j++) kept |= outputs[j] == f->outputs[i];
-        if (kept) continue;
-        outputs_changed = true;
-        wl_resource_for_each(handle, &f->wlr_handles) send_output(handle, f->outputs[i], false);
+    wl_resource_for_each(handle, &f->wlr_handles) {
+        zwlr_foreign_toplevel_handle_v1_send_title(handle, title);
+        zwlr_foreign_toplevel_handle_v1_send_app_id(handle, app_id);
+        send_state(handle, state);
+        zwlr_foreign_toplevel_handle_v1_send_done(handle);
     }
-    for (size_t j = 0; j < output_count; j++) {
-        bool known = false;
-        for (size_t i = 0; i < f->output_count; i++) known |= outputs[j] == f->outputs[i];
-        if (known) continue;
-        outputs_changed = true;
-        wl_resource_for_each(handle, &f->wlr_handles) send_output(handle, outputs[j], true);
+    wl_resource_for_each(handle, &f->ext_handles) {
+        ext_foreign_toplevel_handle_v1_send_title(handle, title);
+        ext_foreign_toplevel_handle_v1_send_app_id(handle, app_id);
+        ext_foreign_toplevel_handle_v1_send_done(handle);
     }
-    memcpy(f->outputs, outputs, output_count * sizeof(*outputs));
-    f->output_count = output_count;
-    if (title_changed || app_id_changed || state_changed || outputs_changed) {
-        wl_resource_for_each(handle, &f->wlr_handles) {
-            if (title_changed) zwlr_foreign_toplevel_handle_v1_send_title(handle, f->title);
-            if (app_id_changed) zwlr_foreign_toplevel_handle_v1_send_app_id(handle, f->app_id);
-            if (state_changed) send_state(handle, f->state);
-            zwlr_foreign_toplevel_handle_v1_send_done(handle);
-        }
-    }
-    if (title_changed || app_id_changed) {
-        wl_resource_for_each(handle, &f->ext_handles) {
-            if (title_changed) ext_foreign_toplevel_handle_v1_send_title(handle, f->title);
-            if (app_id_changed) ext_foreign_toplevel_handle_v1_send_app_id(handle, f->app_id);
-            ext_foreign_toplevel_handle_v1_send_done(handle);
-        }
+}
+
+void foreign_output(struct tomoe *s, uint32_t id, struct screen *output, bool enter) {
+    struct foreign *f = foreign_find(s, id);
+    if (!f || !output) return;
+    struct wl_resource *handle;
+    wl_resource_for_each(handle, &f->wlr_handles) {
+        send_output(handle, output, enter);
+        zwlr_foreign_toplevel_handle_v1_send_done(handle);
     }
 }
 
@@ -177,8 +162,6 @@ void foreign_forget(struct tomoe *s, uint32_t id) {
         wl_list_init(wl_resource_get_link(handle));
     }
     wl_list_remove(&f->link);
-    free(f->title);
-    free(f->app_id);
     free(f);
 }
 
@@ -294,7 +277,15 @@ static void bind_manager(struct wl_client *client, void *data, uint32_t version,
     wl_resource_set_implementation(manager, &manager_impl, s, handle_resource_destroy);
     wl_list_insert(&s->foreign_managers, wl_resource_get_link(manager));
     struct foreign *f;
-    wl_list_for_each(f, &s->foreigns, link) announce_wlr(f, manager);
+    wl_list_for_each(f, &s->foreigns, link) {
+        const char *title, *app_id;
+        uint32_t state;
+        struct screen *outputs[FOREIGN_OUTPUTS];
+        size_t output_count;
+        if (!window_foreign_fields(s, f->id, &title, &app_id, &state, outputs, FOREIGN_OUTPUTS,
+                &output_count)) continue;
+        announce_wlr(f, manager, title, app_id, state, outputs, output_count);
+    }
 }
 
 static void bind_list(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
@@ -308,7 +299,15 @@ static void bind_list(struct wl_client *client, void *data, uint32_t version, ui
     wl_resource_set_implementation(list, &list_impl, s, handle_resource_destroy);
     wl_list_insert(&s->foreign_lists, wl_resource_get_link(list));
     struct foreign *f;
-    wl_list_for_each(f, &s->foreigns, link) announce_ext(f, list);
+    wl_list_for_each(f, &s->foreigns, link) {
+        const char *title, *app_id;
+        uint32_t state;
+        struct screen *outputs[FOREIGN_OUTPUTS];
+        size_t output_count;
+        if (!window_foreign_fields(s, f->id, &title, &app_id, &state, outputs, FOREIGN_OUTPUTS,
+                &output_count)) continue;
+        announce_ext(f, list, title, app_id);
+    }
 }
 
 bool foreign_listen(struct tomoe *s) {
