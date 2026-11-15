@@ -143,7 +143,7 @@ the same inputs measured to the vblank that presented them, so `latch-input` is
 how old the newest input was when the frame took it and `present-input` is how long
 every input waited for the display. The samples are kept only when the compositor
 starts with
-`TOMOE_TIMINGS=1`, so the default pays a branch per sample point and nothing
+`--test-timings`, so the default pays a branch per sample point and nothing
 else; `tests/timing.py` drives one event per frame through it for a repeatable
 table, alongside the bytes each sample path consed and every frame longer than a
 refresh, tagged with the collection it overlapped. `tests/trace.py` mounts a set
@@ -169,12 +169,12 @@ more than twice the light median, because a lone blur rebuild, shader pass or
 collection would otherwise hold the estimate above what a cheap repaint costs
 for the next few hundred frames; a repaint predicts with the histogram of the
 class it last landed in, and the first heavy frame of an episode pays for itself
-through the slack instead of through every frame after it. `TOMOE_FRAME_CLASS=0`
+through the slack instead of through every frame after it. `--test-pacing-class=0`
 pools the two histograms again for comparison. An idle output arms nothing.
 `tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
-with and without `TOMOE_FRAME_CLOCK=0` for comparison, and asserts the drop.
+with and without `--test-pacing=0` for comparison, and asserts the drop.
 `tests/phase.py` runs the clock at 60 Hz on vkms and at 240 Hz on the headless
-output, which joins the clock under `TOMOE_TEST_FRAME_CLOCK=1`, with a shader
+output, which joins the clock under `--test-frame-clock`, with a shader
 wallpaper and blurred windows on and off, and asserts that the class split
 lowers `present-input` without dropping more frames.
 An output that cannot present draws nothing. When the seat goes away Tomoe stops
@@ -556,16 +556,9 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   fastest a critically damped spring can make without overshooting. The shipped
   `:window-move` and `:window-view` springs are 4000 stiffness with a launch of
   63, and settle in 110 ms.
-- By default each window draws its own focus border. Set `:focus-outline` to a
-  spring and the border becomes one outline the compositor draws, carried from
-  the window that lost focus to the one that gained it, aiming every frame at where the new
-  window is on screen: it lands with a window that is still sliding, and waits
-  at the output edge while the window is off screen. `:focus-outline-cross`
-  picks what happens when focus leaves an output: `:fly` (the default) flies the
-  outline through layout space, each output painting the part that is on it, and
-  `:shrink` shrinks it out on the old output and grows it in on the new one.
-  Keyboard focus never waits for the outline, a fullscreen window has none, and
-  a focus change that keeps the same rectangle draws no travel.
+- Each window draws its own focus border, on every frame, in the colour its
+  focus state gives it. A fullscreen window draws none, and the border follows a
+  window that is still sliding instead of travelling on its own.
 - Committed content-type hints are available to window policy as `:content-type`
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
 - Toplevel tags and translated descriptions are available as `:tag` and
