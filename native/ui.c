@@ -14,6 +14,7 @@
 #define UI_MAX_OPS 8192
 #define UI_TEXT_LIMIT 256
 #define UI_TEXT_BUCKETS 512
+#define UI_CONTENT_HISTORY 8
 #define UI_MAX_SURFACE_BYTES (UINT64_C(64) * 1024 * 1024)
 #define UI_MAX_TOTAL_BYTES (UINT64_C(128) * 1024 * 1024)
 #define UI_MAX_STRING (size_t)(8 * 1024 * 1024)
@@ -48,6 +49,8 @@ struct ui_surface {
     double from_x, from_y;
     int offset_x, offset_y;
     uint64_t bytes;
+    uint64_t content_seq;
+    struct { uint64_t seq, prev; struct box box; } commits[UI_CONTENT_HISTORY];
     struct ui_canvas *canvas;
     struct ui_op *ops;
     size_t op_count;
@@ -698,6 +701,8 @@ static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
         surface->op_count = prior->op_count;
         prior->ops = NULL;
         prior->op_count = 0;
+        surface->content_seq = prior->content_seq;
+        memcpy(surface->commits, prior->commits, sizeof(surface->commits));
     }
     return surface;
 failed:
@@ -1174,6 +1179,39 @@ static bool canvas_upload(struct tomoe *s, struct ui_surface *surface,
     return ok;
 }
 
+static uint64_t ui_content_seqs;
+
+static void content_record(struct ui_surface *surface, const struct region *damage) {
+    struct rect *extents = region_extents(damage);
+    const size_t count = sizeof(surface->commits) / sizeof(surface->commits[0]);
+    memmove(&surface->commits[1], &surface->commits[0],
+        (count - 1) * sizeof(surface->commits[0]));
+    surface->commits[0].prev = surface->content_seq;
+    surface->commits[0].seq = surface->content_seq = ++ui_content_seqs;
+    surface->commits[0].box = (struct box){ extents->x1, extents->y1,
+        extents->x2 - extents->x1, extents->y2 - extents->y1 };
+}
+
+bool ui_damage_since(const struct ui_surface *surface, uint64_t seq, struct box *out) {
+    if (!surface) return false;
+    struct region changed;
+    region_init(&changed);
+    size_t count = sizeof(surface->commits) / sizeof(surface->commits[0]), i = 0;
+    for (uint64_t at = surface->content_seq; at != seq; at = surface->commits[i++].prev) {
+        if (i == count || surface->commits[i].seq != at) {
+            region_fini(&changed);
+            return false;
+        }
+        const struct box *b = &surface->commits[i].box;
+        region_union_rect(&changed, &changed, b->x, b->y, b->width, b->height);
+    }
+    struct rect *extents = region_extents(&changed);
+    *out = (struct box){ extents->x1, extents->y1, extents->x2 - extents->x1,
+        extents->y2 - extents->y1 };
+    region_fini(&changed);
+    return true;
+}
+
 static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
     ui_commits++;
     if (!surface->drawn) {
@@ -1218,6 +1256,7 @@ static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
     if (region_not_empty(&damage)) {
         ui_updates++;
         ok = canvas_replay(surface, &damage) && canvas_upload(s, surface, &damage);
+        if (ok) content_record(surface, &damage);
         if (full) ui_redraws++;
     }
     region_fini(&damage);
@@ -1562,7 +1601,8 @@ static void schedule_step(struct output *o, double due, double now) {
     wl_event_source_timer_update(o->tick, (int)fmax(1, ceil((due - now) * 1000)));
 }
 
-static void draw_texture(struct frame *f, struct texture *texture, int x, int y) {
+static void draw_texture(struct frame *f, struct texture *texture, int x, int y,
+        const struct ui_surface *surface) {
     struct box bounds = { .x = 0, .y = 0, .width = f->width, .height = f->height };
     struct box source = { .x = x - f->x, .y = y - f->y,
         .width = (int)texture->width, .height = (int)texture->height };
@@ -1579,7 +1619,8 @@ static void draw_texture(struct frame *f, struct texture *texture, int x, int y)
         .texture = texture, .src_box = source_box,
         .dst_box = destination, .transform = f->transform,
         .filter_mode = FILTER_BILINEAR,
-        .blend_mode = BLEND_PREMULTIPLIED });
+        .blend_mode = BLEND_PREMULTIPLIED,
+        .ui = surface, .content_seq = surface ? surface->content_seq : 0 });
 }
 
 void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer) {
@@ -1602,7 +1643,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         if (surface->blur >= 0 && st->blur_enabled)
             effect_blur(f, (struct fbox){ left, top, surface->width, surface->height },
                 surface->blur, st->blur_passes, st->blur_offset, st->blur_margin, 1);
-        if (image) draw_texture(f, image, left + x, top + y);
+        if (image) draw_texture(f, image, left + x, top + y, NULL);
         if (shader || surface->trail_on) {
             bool still = shader_still(o->server, surface, now);
             struct fbox area = { left, top, surface->width, surface->height };
@@ -1623,7 +1664,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             }
         }
         if (surface->canvas && surface->canvas->texture)
-            draw_texture(f, surface->canvas->texture, left, top);
+            draw_texture(f, surface->canvas->texture, left, top, surface);
     }
 }
 

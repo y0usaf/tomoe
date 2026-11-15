@@ -1141,6 +1141,14 @@ let
       + builtins.readFile ./overdraw.py;
     }
     {
+      name = "ui-damage";
+      script = ''
+        DAMAGE_POLICY = "${./ui-damage-policy.lisp}"
+        BASELINE = "${baselineBinary}"
+      ''
+      + builtins.readFile ./ui-damage.py;
+    }
+    {
       name = "timing";
       script = ''
         TIMING_POLICY = "${timingPolicy}"
