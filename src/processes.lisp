@@ -7,6 +7,9 @@
 (sb-alien:define-alien-routine ("tomoe_process_start" %process-start) (* t)
   (argv (* (* sb-alien:unsigned-char))) (cwd (sb-alien:c-string :external-format :utf-8))
   (environment (* (* sb-alien:unsigned-char))) (error (* sb-alien:int)))
+(sb-alien:define-alien-routine ("tomoe_process_start_dependent" %process-start-dependent) (* t)
+  (argv (* (* sb-alien:unsigned-char)))
+  (environment (* (* sb-alien:unsigned-char))) (error (* sb-alien:int)))
 
 (defstruct managed-process owner identity arguments lease history session-link
   (status :pending) (deadline 0) (attempts 0) code error (turn 0) (focus t) input)

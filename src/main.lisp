@@ -211,6 +211,12 @@ only after it changes again."
     (ignore-errors (sb-posix:unlink path))))
 
 (defun start-bus-daemon (path own)
+  "Start the private session bus as a child that cannot outlive Tomoe.
+The kernel signals it when the compositor dies, including an uncatchable
+SIGKILL, and dbus-daemon removes its socket on the way out, so a killed
+instance leaves neither a daemon nor a socket behind. posix_spawn has no hook
+between fork and exec, which is why this uses the dependent spawn path;
+applications Tomoe launches keep the ordinary one and outlive it as before."
   (require-execution-support)
   (call-with-process-strings
    (list "dbus-daemon" "--session" "--nofork" (format nil "--address=unix:path=~A" path))
@@ -219,7 +225,7 @@ only after it changes again."
       (process-environment (list (cons "DBUS_SESSION_BUS_ADDRESS" own)))
       (lambda (environment)
         (sb-alien:with-alien ((error-code sb-alien:int))
-          (let ((job (%process-start argv nil environment (sb-alien:addr error-code))))
+          (let ((job (%process-start-dependent argv environment (sb-alien:addr error-code))))
             (when (sb-alien:null-alien job) (error "Cannot start dbus-daemon: errno ~D." error-code))
             job)))))))
 

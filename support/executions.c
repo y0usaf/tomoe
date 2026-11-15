@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/pidfd.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -40,6 +41,43 @@ static void close_fd(int *fd) {
 static void record_pid(struct execution *job) {
     pid_t pid = pidfd_getpid(job->pidfd);
     job->pid = pid > 0 ? pid : 0;
+}
+
+static int start_dependent(int *pidfd, char *const argv[], char *const envp[]) {
+    struct sigaction action;
+    sigset_t mask;
+    pid_t parent = getpid();
+    pid_t child = fork();
+    if (child < 0) return errno;
+    if (child == 0) {
+        int null = open("/dev/null", O_RDONLY);
+        setpgid(0, 0);
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = SIG_DFL;
+        sigemptyset(&action.sa_mask);
+        for (int number = 1; number < NSIG; number++)
+            sigaction(number, &action, NULL);
+        sigemptyset(&mask);
+        sigprocmask(SIG_SETMASK, &mask, NULL);
+        if (null >= 0 && null != STDIN_FILENO) {
+            dup2(null, STDIN_FILENO);
+            close(null);
+        }
+        closefrom(3);
+        if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0 || getppid() != parent)
+            _exit(127);
+        execvpe(argv[0], argv, envp);
+        _exit(127);
+    }
+    int fd = pidfd_open(child, 0);
+    if (fd < 0) {
+        int error = errno;
+        kill(child, SIGKILL);
+        while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
+        return error;
+    }
+    *pidfd = fd;
+    return 0;
 }
 
 struct spawn_context {
@@ -269,6 +307,15 @@ static int spawn_from_path(int *pidfd, const char *file,
     return saved_error;
 }
 
+static int validate_process_arguments(char *const argv[], char *const envp[]) {
+    int result = validate_vector(argv, TOMOE_PROCESS_MAX_ARGS,
+                                 TOMOE_PROCESS_MAX_ARG_BYTES, 0);
+    if (result) return result;
+    if (argv[0][0] == '\0') return EINVAL;
+    return validate_vector(envp, TOMOE_PROCESS_MAX_ENV,
+                           TOMOE_PROCESS_MAX_ENV_BYTES, 1);
+}
+
 struct execution *tomoe_process_start(char *const argv[], const char *cwd,
                                       char *const envp[], int *error) {
     char *const *effective_envp = envp ? envp : environ;
@@ -278,15 +325,7 @@ struct execution *tomoe_process_start(char *const argv[], const char *cwd,
     memset(&context, 0, sizeof(context));
     context.cwd_fd = -1;
     if (!error) return NULL;
-    result = validate_vector(argv, TOMOE_PROCESS_MAX_ARGS,
-                             TOMOE_PROCESS_MAX_ARG_BYTES, 0);
-    if (result) goto failed;
-    if (argv[0][0] == '\0') {
-        result = EINVAL;
-        goto failed;
-    }
-    result = validate_vector(effective_envp, TOMOE_PROCESS_MAX_ENV,
-                             TOMOE_PROCESS_MAX_ENV_BYTES, 1);
+    result = validate_process_arguments(argv, effective_envp);
     if (result) goto failed;
     job = calloc(1, sizeof(*job));
     if (!job) { result = ENOMEM; goto failed; }
@@ -306,6 +345,28 @@ struct execution *tomoe_process_start(char *const argv[], const char *cwd,
     return job;
 failed:
     spawn_context_destroy(&context);
+    free(job);
+    *error = result;
+    return NULL;
+}
+
+struct execution *tomoe_process_start_dependent(char *const argv[],
+                                                char *const envp[], int *error) {
+    char *const *effective_envp = envp ? envp : environ;
+    struct execution *job = NULL;
+    int result;
+    if (!error) return NULL;
+    result = validate_process_arguments(argv, effective_envp);
+    if (result) goto failed;
+    job = calloc(1, sizeof(*job));
+    if (!job) { result = ENOMEM; goto failed; }
+    job->pidfd = job->out = job->err = -1;
+    result = start_dependent(&job->pidfd, argv, effective_envp);
+    if (result) goto failed;
+    record_pid(job);
+    *error = 0;
+    return job;
+failed:
     free(job);
     *error = result;
     return NULL;
