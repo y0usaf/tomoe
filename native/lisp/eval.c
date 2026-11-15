@@ -283,8 +283,11 @@ void frame_bind(struct lisp_frame *frame, uint32_t index, lisp_value sym, lisp_v
     frame->entry[index].sym = sym;
     frame->entry[index].value = value;
     frame->entry[index].kind = (uint8_t)kind;
-    if (TYPE(sym) == LT_SYMBOL)
-        SYM(sym)->h.flags |= kind == BIND_FUNC ? SYM_LOCAL_FUNC : SYM_LOCAL_VAR;
+    if (TYPE(sym) == LT_SYMBOL) {
+        uint8_t flag = kind == BIND_FUNC ? SYM_LOCAL_FUNC : SYM_LOCAL_VAR;
+        if (!(SYM(sym)->h.flags & flag))
+            SYM(sym)->h.flags |= flag;
+    }
 }
 
 lisp_value *frame_slot(struct lisp_frame *frame, lisp_value sym, int kind)
@@ -689,8 +692,9 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
     if (!(fn->info & FNI_COMPILED) && fn->gen)
         lisp_compile_closure(fn);
     uint32_t count = fn->slots;
+    uint8_t info = fn->info;
     struct lisp_frame *frame;
-    if (fn->info & FNI_CAPTURES) {
+    if (info & FNI_CAPTURES) {
         frame = frame_new(fn->env, count);
     } else {
         frame = __builtin_alloca(offsetof(struct lisp_frame, entry) + (size_t)count * sizeof(struct lisp_binding));
@@ -700,20 +704,28 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
         frame->h.size = 0;
         frame->parent = fn->env;
         frame->count = count;
-        for (uint32_t i = 0; i < count; i++) {
-            frame->entry[i].sym = NIL_VAL;
-            frame->entry[i].value = VAL(lisp.sym_unbound);
-            frame->entry[i].kind = BIND_VAR;
+        if (!(info & FNI_SIMPLE)) {
+            for (uint32_t i = 0; i < count; i++) {
+                frame->entry[i].sym = NIL_VAL;
+                frame->entry[i].value = VAL(lisp.sym_unbound);
+                frame->entry[i].kind = BIND_VAR;
+            }
         }
     }
-    if (fn->info & FNI_SIMPLE) {
+    if (info & FNI_SIMPLE) {
         if (argc < (int)count) {
             lisp_value missing = list_nth(fn->params, argc);
             lisp_error("missing argument %s", SYM(missing)->name);
         }
         lisp_value scan = fn->params;
-        for (uint32_t i = 0; i < count; i++, scan = CDR(scan))
-            frame_bind(frame, i, CAR(scan), argv[i], BIND_VAR);
+        for (uint32_t i = 0; i < count; i++, scan = CDR(scan)) {
+            lisp_value sym = CAR(scan);
+            if (!(SYM(sym)->h.flags & SYM_LOCAL_VAR))
+                SYM(sym)->h.flags |= SYM_LOCAL_VAR;
+            frame->entry[i].sym = sym;
+            frame->entry[i].value = argv[i];
+            frame->entry[i].kind = BIND_VAR;
+        }
     } else {
         eval_bind_lambda(frame, fn->params, argc, argv);
     }
@@ -796,7 +808,7 @@ static lisp_value eval_call(lisp_value fn, lisp_value args, struct lisp_frame *e
         argv[i++] = eval(CAR(args), env);
         args = CDR(args);
     }
-    return apply_function(fn, i, argv);
+    return apply_fast(fn, i, argv);
 }
 
 

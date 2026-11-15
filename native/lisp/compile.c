@@ -49,7 +49,7 @@ enum lookup { LOOKUP_LEXICAL, LOOKUP_RUNTIME };
 static const struct cnode *compile_form(struct compiler *cc, lisp_value form, struct cscope *scope);
 static const struct cnode *compile_body(struct compiler *cc, lisp_value body, struct cscope *scope);
 static const struct lisp_code *compile_lambda(struct compiler *cc, lisp_value params, lisp_value body,
-    uint8_t info, uint32_t slots);
+    uint8_t info, uint32_t slots, struct cscope *outer);
 
 static struct cnode *node_new(struct compiler *cc, cnode_run run, lisp_value form)
 {
@@ -160,7 +160,7 @@ static lisp_value call_with(const struct cnode *node, lisp_value fn, struct lisp
     lisp_value *argv = count <= CALL_STACK_ARGS ? stack : heap_alloc(sizeof(lisp_value) * count);
     for (uint32_t i = 0; i < count; i++)
         argv[i] = node->kids[i]->run(node->kids[i], env);
-    return apply_function(fn, (int)count, argv);
+    return apply_fast(fn, (int)count, argv);
 }
 
 static lisp_value run_call(const struct cnode *node, struct lisp_frame *env)
@@ -775,7 +775,8 @@ static const struct cnode *compile_assign(struct compiler *cc, cnode_run run, li
     return node;
 }
 
-static const struct cnode *compile_lambda_node(struct compiler *cc, lisp_value form, lisp_value lambda)
+static const struct cnode *compile_lambda_node(struct compiler *cc, lisp_value form, lisp_value lambda,
+    struct cscope *outer)
 {
     if (!consp(lambda) || !consp(CDR(lambda)))
         return NULL;
@@ -786,7 +787,7 @@ static const struct cnode *compile_lambda_node(struct compiler *cc, lisp_value f
     probe.params = CAR(CDR(lambda));
     probe.body = CDR(CDR(lambda));
     lisp_closure_info(&probe);
-    node->code = compile_lambda(cc, probe.params, probe.body, probe.info, probe.slots);
+    node->code = compile_lambda(cc, probe.params, probe.body, probe.info, probe.slots, outer);
     return node;
 }
 
@@ -840,11 +841,11 @@ static const struct cnode *compile_special(struct compiler *cc, lisp_value form,
             return node;
         }
         if (consp(target) && symbolp(CAR(target)) && SYM(CAR(target))->special_id == SF_LAMBDA)
-            return compile_lambda_node(cc, form, target);
+            return compile_lambda_node(cc, form, target, scope);
         return NULL;
     }
     case SF_LAMBDA:
-        return compile_lambda_node(cc, form, form);
+        return compile_lambda_node(cc, form, form, scope);
     case SF_IF: {
         struct cnode *node = node_new(cc, run_if, form);
         node->a = compile_form(cc, CAR(args), scope);
@@ -1058,17 +1059,17 @@ static const struct cnode *compile_special(struct compiler *cc, lisp_value form,
         node->count = count;
         node->kids = kids_new(cc, count);
         node->syms = count ? heap_alloc_in(cc->region, sizeof(lisp_value) * count) : NULL;
+        struct cscope inner = { scope, true, false, 0, NULL };
         uint32_t i = 0;
         for (lisp_value b = bindings; consp(b); b = CDR(b), i++) {
             lisp_value binding = CAR(b);
             if (!consp(binding) || !symbolp(CAR(binding)) || !consp(CDR(binding)))
                 return NULL;
             node->syms[i] = CAR(binding);
-            node->kids[i] = compile_lambda_node(cc, binding, binding);
+            node->kids[i] = compile_lambda_node(cc, binding, binding, node->index ? &inner : scope);
             if (!node->kids[i])
                 return NULL;
         }
-        struct cscope inner = { scope, true, false, 0, NULL };
         node->a = compile_body(cc, CDR(args), &inner);
         return node->a ? node : NULL;
     }
@@ -1116,11 +1117,11 @@ static const struct cnode *compile_form(struct compiler *cc, lisp_value form, st
 }
 
 static const struct lisp_code *compile_lambda(struct compiler *cc, lisp_value params, lisp_value body,
-    uint8_t info, uint32_t slots)
+    uint8_t info, uint32_t slots, struct cscope *outer)
 {
     struct compiler inner = { cc->region, !(info & FNI_CAPTURES), cc->depth };
     lisp_value *names = slots ? heap_alloc_in(cc->region, sizeof(lisp_value) * slots) : NULL;
-    struct cscope scope = { NULL, true, !(info & FNI_SIMPLE), 0, names };
+    struct cscope scope = { outer, true, !(info & FNI_SIMPLE), 0, names };
     if (info & FNI_SIMPLE) {
         for (lisp_value p = params; consp(p) && scope.count < slots; p = CDR(p))
             names[scope.count++] = CAR(p);
@@ -1141,7 +1142,7 @@ void lisp_compile_closure(struct lisp_function *fn)
     if (!region || region->kind != REG_GENERATION || !region->in_use)
         return;
     struct compiler cc = { region, false, 0 };
-    fn->code = compile_lambda(&cc, fn->params, fn->body, fn->info, fn->slots);
+    fn->code = compile_lambda(&cc, fn->params, fn->body, fn->info, fn->slots, NULL);
     fn->info |= FNI_COMPILED;
 }
 

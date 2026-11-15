@@ -478,6 +478,26 @@ lisp_value make_closure(lisp_value params, lisp_value body, struct lisp_frame *e
 lisp_value make_builtin(lisp_primitive fn, const char *name, int min_args, int max_args);
 lisp_value apply_function(lisp_value fn, int argc, lisp_value *argv);
 lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv);
+
+static inline lisp_value apply_fast(lisp_value fn, int argc, lisp_value *argv)
+{
+    if (TYPE(fn) == LT_FUNCTION) {
+        struct lisp_function *f = PTR(fn, lisp_function);
+        if (f->kind == FN_CLOSURE) {
+            check_steps();
+            return apply_closure(f, argc, argv);
+        }
+        if (argc >= f->min_args && (f->max_args < 0 || argc <= f->max_args)) {
+            check_steps();
+            lisp.mv_count = 0;
+            lisp_value result = f->fn(argc, argv);
+            if (lisp.mv_count == 0 || lisp.mv[0] != result)
+                mv_return1(result);
+            return lisp.mv[0];
+        }
+    }
+    return apply_function(fn, argc, argv);
+}
 void lisp_closure_info(struct lisp_function *fn);
 void lisp_compile_closure(struct lisp_function *fn);
 lisp_value lisp_run_code(const struct lisp_code *code, struct lisp_frame *frame);
