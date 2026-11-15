@@ -982,7 +982,7 @@ the cursor eases back to its plain texture.")
 
 (defun cursor-matrix (spec)
   "The transform a behaviour returned, as the matrix (A B C D) applied to the
-cursor's offsets from its hotspot: a stretch along STREACH-ANGLE, then a scale,
+cursor's offsets from its hotspot: a stretch along STRETCH-ANGLE, then a scale,
 then a clockwise rotation in degrees."
   (let* ((scale (coerce (or (getf spec :scale) 1) 'double-float))
          (stretch (coerce (or (getf spec :stretch) 0) 'double-float))
@@ -1009,8 +1009,8 @@ then a clockwise rotation in degrees."
 
 (defun cursor-present (runtime context)
   "Ask the compositor to draw the cursor the mounted behaviours describe, in
-order. Every built-in behaviour comes through here exactly like a user's own, so
-an extension that stops asking for a transform leaves nothing behind."
+order. Everything here is a user's own registration, so an extension that stops
+asking for a transform leaves nothing behind."
   (let ((entries (getf context :cursors)) (backend (runtime-backend runtime)))
     (when (and backend (or entries (runtime-cursor-plan runtime)))
       (let ((motion (and entries (cursor-motion)))
