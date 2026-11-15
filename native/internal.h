@@ -1129,7 +1129,7 @@ struct tomoe {
     struct focus_outline outline;
     uint64_t trail_steps;
     struct { int64_t ns[512]; unsigned head, count; } trail_times;
-    char *hit_result, *frames_result, *memory_result, *animation_result;
+    char *hit_result, *frames_result, *animation_result;
     char *output_preview;
     char *output_current;
     uint64_t outputs_revision;
