@@ -1592,6 +1592,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
   (%persist-state)
   nil))
 
+(defun injected-event (text)
+  "The input event plist a control client injects as TEXT."
+  (check-type text string)
+  (let ((event (read-from-string text)))
+    (unless (and (listp event) (getf event :type))
+      (error "Injected event must be a plist carrying :type."))
+    (unless (member (getf event :type) '(:key :button :grab))
+      (error "Injected event type must be :key, :button or :grab, not ~S."
+             (getf event :type)))
+    event))
+
 (defun TOMOE-CONTROL (op arguments)
   (let ((*pending-writes* nil))
   (ecase op
@@ -1599,7 +1610,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (:reload (%reload-policy) (%persist-state) nil)
     (:mount (%mount-policy (first arguments)) (%persist-state) nil)
     (:unmount (unload-policy (first arguments)) (%persist-state) nil)
-    (:event (dispatch-event (first arguments)) (%persist-state) nil))))
+    (:event (dispatch-event (injected-event (first arguments))) (%persist-state) nil))))
 
 (defun TOMOE-JSON (method params)
   (let ((*pending-writes* nil) (reply nil) (failure nil))
