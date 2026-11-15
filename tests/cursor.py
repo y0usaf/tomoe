@@ -229,11 +229,18 @@ class Compositor:
 
     def screenshot(self, name):
         path = str(self.root / name)
-        result = subprocess.run(["grim", "-t", "ppm", path], env=self.environment,
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Failure("grim failed: " + result.stderr.strip())
-        return path
+        for attempt in range(4):
+            try:
+                result = subprocess.run(["grim", "-t", "ppm", path], env=self.environment,
+                                        capture_output=True, text=True, timeout=10)
+            except subprocess.TimeoutExpired:
+                self.stroke([(400, 380 + attempt), (401, 380 + attempt)], steps=1, hold_ms=20)
+                time.sleep(0.2)
+                continue
+            if result.returncode != 0:
+                raise Failure("grim failed: " + result.stderr.strip())
+            return path
+        raise Failure("grim never received a frame")
 
     def stroke(self, path, steps=8, interval_ms=8, hold_ms=0):
         encoded = ";".join("%d,%d" % point for point in path)
@@ -337,8 +344,8 @@ def case(compositor, path, steps=16):
 
 
 def park(compositor):
-    compositor.stroke([(PARK[0] - 1, PARK[1]), PARK], steps=1, hold_ms=80)
-    time.sleep(0.6)
+    compositor.stroke([(PARK[0] - 24, PARK[1]), PARK], steps=6, hold_ms=120)
+    time.sleep(0.7)
 
 
 def idle(build, seconds=2.0):
