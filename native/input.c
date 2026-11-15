@@ -1326,6 +1326,8 @@ struct ui_pointer {
     struct { uint32_t button; bool consumed; } buttons[32];
     size_t count;
 };
+#define UI_POINTERS 64
+static struct ui_pointer ui_pointer_pool[UI_POINTERS];
 static void ui_cancel_client_edges(struct tomoe *s) {
     for (struct ui_pointer *pointer = s->ui_pointers; pointer; pointer = pointer->next)
         for (size_t i = 0; i < pointer->count; i++) pointer->buttons[i].consumed = true;
@@ -1350,18 +1352,15 @@ static void ui_pointer_destroy(struct wl_listener *listener, void *data) {
         }
         if (released) seat_pointer_notify_frame(s->seat);
     }
-    free(pointer);
+    *pointer = (struct ui_pointer){0};
 }
 void ui_input_finish(struct tomoe *s) {
     while (s->ui_pointers) ui_pointer_destroy(&s->ui_pointers->destroy, NULL);
 }
 static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     struct ui_pointer *pointer;
-    size_t devices = 0;
-    for (pointer = s->ui_pointers; pointer; pointer = pointer->next) {
-        devices++;
+    for (pointer = s->ui_pointers; pointer; pointer = pointer->next)
         if (pointer->pointer == input->device) break;
-    }
     if (pointer) {
         for (size_t i = 0; i < pointer->count; i++) {
             if (pointer->buttons[i].button != input->button) continue;
@@ -1378,9 +1377,9 @@ static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     struct ui_hit hit;
     bool consumed = s->grab_mode == 0 && ui_hit_at(s, s->pointer_x, s->pointer_y, &hit);
     if (!pointer) {
-        if (devices >= 64) { fail(s, "too many pointer devices with held buttons"); return true; }
-        pointer = calloc(1, sizeof(*pointer));
-        if (!pointer) { fail(s, "pointer edge allocation failed"); return true; }
+        for (size_t i = 0; i < UI_POINTERS && !pointer; i++)
+            if (!ui_pointer_pool[i].server) pointer = &ui_pointer_pool[i];
+        if (!pointer) { fail(s, "too many pointer devices with held buttons"); return true; }
         pointer->server = s; pointer->pointer = input->device;
         pointer->next = s->ui_pointers; s->ui_pointers = pointer;
         listen(&pointer->destroy, &input->device->events.destroy, ui_pointer_destroy);
