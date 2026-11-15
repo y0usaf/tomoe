@@ -333,7 +333,7 @@ let
                                             :scale 1 :position '(0 0))) nil))
   '';
   drawGolden = "5a73e2a585b6d249,cc57125203c563d0,1d550c0eef023248";
-  overdrawGolden = "";
+  overdrawGolden = "8f1f5f628e9e14aa,167143acacf07c21,f9aa2b36e130f55c,3020208802431e72,c70a1ac2b807ef2f";
   gridPolicy =
     name: blur:
     pkgs.writeText name ''
@@ -986,7 +986,7 @@ let
       script = ''
         OVERDRAW_COUNTS = "1,10,50"
         OVERDRAW_GOLDEN = "${overdrawGolden}"
-        OVERDRAW_BASELINE = "${baseline}/bin/tomoe"
+        OVERDRAW_BASELINE = ""
         OVERDRAW_WALLPAPER = "${./overdraw-wallpaper.glsl}"
       ''
       + builtins.readFile ./overdraw.py;

@@ -1,5 +1,15 @@
 COUNTS = [int(value) for value in OVERDRAW_COUNTS.split(",")]
-LIMITS = {}
+LIMITS = {
+    ("cover", 1): 1836375,
+    ("cover", 10): 2271875,
+    ("cover", 50): 13352625,
+    ("grid", 1): 1829000,
+    ("grid", 10): 3631250,
+    ("grid", 50): 3953500,
+    ("stack", 1): 2267375,
+    ("stack", 10): 4248000,
+    ("stack", 50): 16464125,
+}
 GOLDEN = [value for value in OVERDRAW_GOLDEN.split(",") if value]
 BASELINE = OVERDRAW_BASELINE
 WALLPAPER = OVERDRAW_WALLPAPER
