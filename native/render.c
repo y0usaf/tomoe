@@ -40,11 +40,26 @@ struct scene {
     struct scene_instance *in, *prev;
     size_t count, cap, prev_count, prev_cap;
     struct scene_vertex *vertex;
+    size_t vertex_cap;
     struct pass *owner;
     GLuint vbo, dummy;
     size_t vbo_bytes;
     bool attributes;
 };
+
+struct pass {
+    struct render *r;
+    struct buffer *buffer;
+    struct timeline *signal;
+    uint64_t point;
+    struct oplist *record;
+    const struct region *clip;
+    const struct oplist *ops;
+    size_t op_next;
+    bool op_lost;
+};
+
+enum { PASS_POOL = 4, SCENE_RESERVE = 4096, OPLIST_RESERVE = 64, OPLIST_STACK = 256 };
 
 struct render {
     int fd;
@@ -74,6 +89,8 @@ struct render {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
     struct scene scene;
+    struct pass passes[PASS_POOL];
+    bool pass_used[PASS_POOL];
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
     float *mesh;
     size_t mesh_cap;
@@ -103,17 +120,23 @@ struct gl_texture {
     struct buffer *buffer;
 };
 
-struct pass {
-    struct render *r;
-    struct buffer *buffer;
-    struct timeline *signal;
-    uint64_t point;
-    struct oplist *record;
-    const struct region *clip;
-    const struct oplist *ops;
-    size_t op_next;
-    bool op_lost;
-};
+static struct pass *pass_take(struct render *r) {
+    for (size_t i = 0; i < PASS_POOL; i++)
+        if (!r->pass_used[i]) {
+            r->pass_used[i] = true;
+            r->passes[i] = (struct pass){ .r = r };
+            return &r->passes[i];
+        }
+    struct pass *pass = calloc(1, sizeof(*pass));
+    if (pass) pass->r = r;
+    return pass;
+}
+
+static void pass_give(struct pass *pass) {
+    struct render *r = pass->r;
+    if (pass >= r->passes && pass < r->passes + PASS_POOL) r->pass_used[pass - r->passes] = false;
+    else free(pass);
+}
 
 static uint64_t serials;
 
@@ -1342,6 +1365,10 @@ static void scene_emit(struct pass *pass, const struct scene_quad *quad,
         const struct rect *scissor) {
     struct render *r = pass->r;
     struct scene *s = &r->scene;
+    if (s->count == s->cap && s->cap && s->owner == pass) {
+        pass_flush(pass);
+        s->owner = pass;
+    }
     if (s->count == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 64;
         struct scene_instance *grown = realloc(s->in, cap * sizeof(*grown));
@@ -1556,13 +1583,18 @@ void pass_flush(struct pass *pass) {
     if (!s->count || s->owner != pass) return;
     s->owner = NULL;
     size_t vertices = s->count * SCENE_VERTICES;
-    struct scene_vertex *staging = realloc(s->vertex, vertices * sizeof(*staging));
-    if (!staging) {
-        tomoe_log(LOG_ERROR, "tomoe: cannot stage %zu scene instances", s->count);
-        s->count = 0;
-        return;
+    if (vertices > s->vertex_cap) {
+        size_t want = s->cap * SCENE_VERTICES;
+        struct scene_vertex *staging = realloc(s->vertex, want * sizeof(*staging));
+        if (!staging) {
+            tomoe_log(LOG_ERROR, "tomoe: cannot stage %zu scene instances", s->count);
+            s->count = 0;
+            return;
+        }
+        s->vertex = staging;
+        s->vertex_cap = want;
     }
-    s->vertex = staging;
+    struct scene_vertex *staging = s->vertex;
     size_t bytes = vertices * sizeof(*staging);
     bool full = bytes > s->vbo_bytes;
     if (full) {
@@ -2024,7 +2056,7 @@ static void pass_finish(struct pass *pass) {
     pass_flush(pass);
     if (r->context) glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
-    free(pass);
+    pass_give(pass);
 }
 
 static bool fence_ready(int fd, int timeout_ms) {
@@ -2140,7 +2172,7 @@ bool pass_submit(struct pass *pass) {
     if (pass->record) {
         bool complete = !pass->record->lost;
         buffer_unlock(pass->buffer);
-        free(pass);
+        pass_give(pass);
         return complete;
     }
     if (!pass->signal) {
@@ -2162,7 +2194,7 @@ bool pass_submit(struct pass *pass) {
     timeline_unref(pass->signal);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     buffer_unlock(pass->buffer);
-    free(pass);
+    pass_give(pass);
     return ok;
 }
 
@@ -2177,9 +2209,8 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
         return NULL;
     }
     GLuint fbo = render_buffer_fbo(r, buffer);
-    struct pass *pass = fbo ? calloc(1, sizeof(*pass)) : NULL;
+    struct pass *pass = fbo ? pass_take(r) : NULL;
     if (!pass) return NULL;
-    pass->r = r;
     pass->buffer = buffer_lock(buffer);
     if (signal) {
         pass->signal = timeline_ref(signal);
@@ -2195,12 +2226,26 @@ struct pass *render_begin(struct render *r, struct buffer *buffer, struct timeli
 }
 
 struct pass *render_record(struct render *r, struct buffer *buffer, struct oplist *list) {
-    struct pass *pass = calloc(1, sizeof(*pass));
+    struct pass *pass = pass_take(r);
     if (!pass) return NULL;
+    for (size_t i = 0; i < list->len; i++) {
+        region_fini(&list->ops[i].opaque);
+        region_fini(&list->ops[i].visible);
+    }
     list->len = 0;
     list->lost = false;
-    *pass = (struct pass){ .r = r, .buffer = buffer_lock(buffer), .record = list };
+    list->valid = false;
+    pass->buffer = buffer_lock(buffer);
+    pass->record = list;
     return pass;
+}
+
+void oplist_reserve(struct oplist *list) {
+    if (list->cap >= OPLIST_RESERVE) return;
+    struct op *ops = realloc(list->ops, OPLIST_RESERVE * sizeof(*ops));
+    if (!ops) return;
+    list->ops = ops;
+    list->cap = OPLIST_RESERVE;
 }
 
 void pass_clip(struct pass *pass, const struct region *clip) {
@@ -2455,13 +2500,17 @@ static void visibility(struct oplist *list) {
 
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
     if (old->lost || now->lost) return false;
-    size_t *match = malloc((now->len + 1) * sizeof(*match));
-    bool *used = calloc(old->len + 1, sizeof(*used));
+    size_t match_stack[OPLIST_STACK];
+    bool used_stack[OPLIST_STACK];
+    size_t *match = now->len < OPLIST_STACK ? match_stack :
+        malloc((now->len + 1) * sizeof(*match));
+    bool *used = old->len < OPLIST_STACK ? used_stack : malloc(old->len + 1);
     if (!match || !used) {
-        free(match);
-        free(used);
+        if (match != match_stack) free(match);
+        if (used != used_stack) free(used);
         return false;
     }
+    memset(used, 0, old->len + 1);
     visibility(old);
     visibility(now);
     struct region changed;
@@ -2506,8 +2555,8 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         }
     }
     region_fini(&changed);
-    free(match);
-    free(used);
+    if (match != match_stack) free(match);
+    if (used != used_stack) free(used);
     return true;
 }
 
@@ -3042,14 +3091,38 @@ int tomoe_warm_shaders(const char *node, const char *dir) {
     return 0;
 }
 
+static void scene_reserve(struct scene *s) {
+    struct scene_instance *in = s->cap < SCENE_RESERVE ?
+        realloc(s->in, SCENE_RESERVE * sizeof(*in)) : NULL;
+    if (in) {
+        s->in = in;
+        s->cap = SCENE_RESERVE;
+    }
+    struct scene_instance *prev = s->prev_cap < SCENE_RESERVE ?
+        realloc(s->prev, SCENE_RESERVE * sizeof(*prev)) : NULL;
+    if (prev) {
+        s->prev = prev;
+        s->prev_cap = SCENE_RESERVE;
+    }
+    struct scene_vertex *vertex = s->vertex_cap < SCENE_RESERVE * SCENE_VERTICES ?
+        realloc(s->vertex, SCENE_RESERVE * SCENE_VERTICES * sizeof(*vertex)) : NULL;
+    if (vertex) {
+        s->vertex = vertex;
+        s->vertex_cap = SCENE_RESERVE * SCENE_VERTICES;
+    }
+}
+
 struct render *render_create(int drm_fd) {
     struct render *r = render_open(render_node_name(drm_fd));
     if (!r) return NULL;
     warm_setup(r);
     warm(r);
-    if (programs_ready(r)) return r;
-    render_free(r);
-    return NULL;
+    if (!programs_ready(r)) {
+        render_free(r);
+        return NULL;
+    }
+    scene_reserve(&r->scene);
+    return r;
 }
 
 static bool ring_pick(struct tomoe *s, struct screen *output, bool implicit,
@@ -3105,6 +3178,13 @@ struct buffer *ring_create(struct tomoe *s, struct ring *ring) {
     if (!ring->format.len) return NULL;
     return render_allocate(s->renderer, ring->width, ring->height,
         &ring->format.formats[0]);
+}
+
+void ring_reserve(struct tomoe *s, struct ring *ring) {
+    for (size_t i = 0; i < 3; i++) {
+        if (!ring->slots[i]) ring->slots[i] = ring_create(s, ring);
+        if (ring->slots[i]) render_buffer_fbo(s->renderer, ring->slots[i]);
+    }
 }
 
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring) {

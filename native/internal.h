@@ -211,6 +211,7 @@ void op_end(struct pass *pass, struct op_clip *clip);
 struct op *pass_recorded(struct pass *pass, size_t before);
 size_t pass_record_count(const struct pass *pass);
 void oplist_finish(struct oplist *list);
+void oplist_reserve(struct oplist *list);
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out);
 void oplist_expand(const struct oplist *list, struct region *region);
 void render_destroy(struct render *r);
@@ -426,6 +427,7 @@ bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
     int width, int height, bool implicit);
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct buffer *ring_create(struct tomoe *s, struct ring *ring);
+void ring_reserve(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
 bool fenced(struct screen *output);
 
@@ -634,7 +636,7 @@ struct output {
     double tick_at;
     double sample;
     bool animating;
-    struct oplist ops;
+    struct oplist ops, spare_ops;
     uint64_t frames;
     uint64_t damage_seq;
     struct region damage[8];
