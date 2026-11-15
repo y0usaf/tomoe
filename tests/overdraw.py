@@ -18,9 +18,8 @@ POLICY = """
           (* (floor index columns) cell-height)
           cell-width cell-height)))
 
-(define-extension "overdraw" (:reads (:windows :outputs) :state '(:rotated nil))
-    (snapshot state event)
-  (declare (ignore event))
+(define-extension "overdraw" (:reads (:windows :outputs) :state nil) (snapshot state event)
+  (declare (ignore state event))
   (let* ((output (first (context snapshot :outputs)))
          (width (or (and output (getf output :width)) 1280))
          (height (or (and output (getf output :height)) 720))
@@ -28,9 +27,8 @@ POLICY = """
                         (lambda (first second)
                           (string< (getf first :app-id) (getf second :app-id)))))
          (count (length windows)))
-    (values (list :rotated t)
+    (values nil
             (append
-             {rotate}
              (list (settings :animations nil
                              :border (list :width 3 :radius 14)
                              :shadow (list :range 10 :power 3))
@@ -57,16 +55,9 @@ POLICY = """
 """
 
 
-ROTATE = ("(if (getf state :rotated) nil (list (configure-output "
-          "\"HEADLESS-1\" :transform :{name})))\n             ")
-
-
-def policy(layout, rotation, path):
-    rotate = ""
-    if rotation:
-        rotate = ROTATE.format(name=rotation)
+def policy(layout, path):
     machine.succeed(f"cat > {path} <<'OVERDRAWPOLICY'\n"
-                    + POLICY.format(wallpaper=WALLPAPER, layout=layout, rotate=rotate)
+                    + POLICY.format(wallpaper=WALLPAPER, layout=layout)
                     + "OVERDRAWPOLICY")
     return path
 
@@ -110,8 +101,8 @@ def command(binary, socket, arguments):
                            + arguments)
 
 
-def mount(binary, socket, layout, path, rotation=""):
-    command(binary, socket, f"mount {policy(layout, rotation, path)}")
+def mount(binary, socket, layout, path):
+    command(binary, socket, f"mount {policy(layout, path)}")
     reply = read(command(binary, socket, "inspect"))
     assert reply[1] == ":OK", show(reply)
     error = plist(reply[2])[":LAST-ERROR"]
@@ -213,12 +204,19 @@ def describe(cost):
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
-def session(binary, tag, layout, phase, env, rotation=""):
+def session(binary, tag, layout, phase, env):
     name = f"{tag}{layout}{phase}"
     unit, socket = f"tomoe-{tag}-{layout}-{phase}", name
     start_binary(binary, unit, socket, env=env)
-    mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp", rotation)
+    mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp")
     return unit, socket
+
+
+def rotate(socket, degrees):
+    machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} wlr-randr --output HEADLESS-1 "
+                          f"--transform {degrees}")
+    listing = machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} wlr-randr")
+    assert f"Transform: {degrees}" in listing, listing
 
 
 def run(binary, tag):
@@ -235,7 +233,8 @@ def run(binary, tag):
                   flush=True)
         stop_binary(binary, unit, socket)
     for rotation in ("90", "270"):
-        unit, socket = session(binary, tag, "stack", f"rot{rotation}", [], rotation)
+        unit, socket = session(binary, tag, "stack", f"rot{rotation}", [])
+        rotate(socket, rotation)
         spawn(socket, 0, COUNTS[1], True, unit)
         time.sleep(1.5)
         key = (f"rot{rotation}", COUNTS[1])
