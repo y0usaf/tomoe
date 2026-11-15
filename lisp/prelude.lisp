@@ -77,12 +77,6 @@
     (dolist (item list (nreverse result))
       (unless (member item result :test test) (push item result)))))
 
-(defun %dedupe-by-last (list key &optional (test #'equal))
-  (let ((result nil))
-    (dolist (item (reverse list) result)
-      (unless (member (funcall key item) result :test test :key key)
-        (push item result)))))
-
 (defun %in-range-p (value low high)
   (and (integerp value) (<= low value high)))
 

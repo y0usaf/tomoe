@@ -16,9 +16,6 @@
 (defun stage-native-outputs (outputs)
   (%plan-outputs (mapcar #'stage-native-output-config outputs)))
 
-(defun pending-native-outputs-p ()
-  nil)
-
 (defun preview-native-outputs (outputs)
   "Resolve candidate active outputs and connected ports without native writes."
   (stage-native-outputs outputs)

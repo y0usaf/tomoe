@@ -1086,6 +1086,8 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (when outputs-changed
       (%r! :outputs (getf context :outputs))
       (%r! :connectors (getf context :connectors)))
+    (when (not (equal (getf old :virtual-outputs) (getf context :virtual-outputs)))
+      (configure-virtual-outputs (getf old :virtual-outputs) (getf context :virtual-outputs)))
     (%r! :mounts mounts)
     (%r! :effective context)
     (%r! :output-recovery-failures nil)
@@ -1460,7 +1462,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                   :timers (%describe :timers)
                   :watches (%describe :watches)
                   :executions (%describe :executions)
-                  :managed-processes (%describe :processes)
+                  :managed-processes (%describe :managed-processes)
                   :rule-instances (describe-rule-instances)
                   :patches (describe-patches)
                   :extensions

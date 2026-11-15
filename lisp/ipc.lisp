@@ -14,11 +14,6 @@
   (find method (resolved-ipc-effects (runtime-mounts) :method)
         :test #'equal :key #'first))
 
-(defun ipc-method-state (method)
-  (let ((record (ipc-method-record method)))
-    (when (and record (eq (second (third record)) :state))
-      (third (third record)))))
-
 (defun ipc-invoke-method (method params)
   "Run the extension method METHOD for PARAMS, or its state value. Signals for a
 method no mount owns."
@@ -113,47 +108,3 @@ method no mount owns."
         (%json-broadcast (first previous) nil)))
     (%r! :ipc-published-context (list :windows windows :outputs outputs :focus focus))
     (%r! :ipc-published-announcements announcements)))
-
-(defun ipc-command-argument (value)
-  "A JSON argument value as the Lisp value the command takes."
-  (cond ((eq value +json-false+) nil)
-        ((and (consp value) (eq (first value) :json-array)) (second value))
-        (t value)))
-
-(defun ipc-command-arguments (json)
-  "A JSON object of command arguments as a plist of keyword/value pairs."
-  (if (null json)
-      nil
-      (progn
-        (unless (and (consp json) (eq (first json) :json-object))
-          (error "command arguments must be an object."))
-        (loop for (key . value) in (second json)
-              collect (intern (string-upcase key) :keyword)
-              collect (ipc-command-argument value)))))
-
-(defun ipc-command-value (value)
-  "A resolved command argument as JSON data."
-  (cond ((keywordp value) (string-downcase value))
-        ((consp value) (apply #'json-array
-                              (loop for item in value
-                                    collect (if (stringp item) item (princ-to-string item)))))
-        (t value)))
-
-(defun ipc-command-report (report)
-  (when report
-    (apply #'json-object
-           (loop for (key value) on report by #'cddr
-                 collect (cons (string-downcase key) (ipc-command-value value))))))
-
-(defun ipc-command-result (result)
-  "The JSON form of a ran command: its name and the values it ran with, plus the
-report a session command returned."
-  (apply #'json-object
-         (append (list (cons "name" (getf result :name))
-                       (cons "arguments"
-                             (apply #'json-object
-                                    (loop for (key value) on (getf result :arguments) by #'cddr
-                                          collect (cons (string-downcase key)
-                                                        (ipc-command-value value))))))
-                 (when (getf result :result)
-                   (list (cons "result" (ipc-command-report (getf result :result))))))))

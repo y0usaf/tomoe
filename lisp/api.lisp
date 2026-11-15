@@ -420,19 +420,6 @@ fixed clock."
           (setf fastest refresh))))
     (if (plusp fastest) (max 1 (floor 1000000 fastest)) 16)))
 
-(defun %timer-milliseconds (declared)
-  "Resolve a timer's declared period.
-:REFRESH follows the display, :SECOND and :MINUTE follow the wall clock."
-  (case declared
-    (:refresh (frame-ms))
-    (:second 1000)
-    (:minute 60000)
-    (t declared)))
-
-(defun %timer-clock-step (declared)
-  "The wall-clock step of a declared period, in seconds, or NIL."
-  (case declared (:second 1) (:minute 60) (t nil)))
-
 (defun clock-boundary-ms (step)
   "Milliseconds from now to the next multiple of STEP seconds on the wall clock.
 A timer that ticks on it changes its output at the same instant the clock does."
