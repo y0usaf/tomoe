@@ -21,8 +21,7 @@
 (defun bar--volume (stdout)
   "(PERCENT MUTED) from `wpctl get-volume` output."
   (let ((start (position-if #'digit-char-p stdout)))
-    (list (if start (round (* 100 (let ((*read-default-float-format* 'double-float))
-                                    (read-from-string stdout t nil :start start))))
+    (list (if start (round (* 100 (read-from-string stdout t nil :start start)))
               100)
           (and (search "MUTED" stdout) t))))
 

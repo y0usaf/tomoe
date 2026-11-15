@@ -1,7 +1,5 @@
 (in-package #:tomoe-user)
 
-(declaim (optimize (speed 3) (safety 1) (debug 1)))
-
 
 (defun hotkey-label (binding)
   "Old overlay spelling: \"Mod + Shift + /\"."
@@ -13,7 +11,10 @@
                                 ((equal key "comma") ",") ((equal key "period") ".")
                                 ((equal key "space") "Space") ((equal key "minus") "-")
                                 ((equal key "equal") "=")
-                                (t (string-capitalize key :end (min 1 (length key))))))))))
+                                (t (if (plusp (length key))
+                                       (concatenate 'string (string-upcase (subseq key 0 1))
+                                                    (subseq key 1))
+                                       key))))))))
 
 (defparameter +hotkey-order+
   '("Spawn foot" "Run an Application" "Close Window" "Toggle Fullscreen" "Exit"
@@ -150,9 +151,9 @@
          (geometry-key (list outputs workareas gap count))
          (retired-full nil)
          (commands nil))
-    (check-type gap (integer 0 16384))
-    (check-type count (integer 1 128))
-    (check-type honor boolean)
+    (unless (and (integerp gap) (<= 0 gap 16384)) (error "Invalid gap: ~S" gap))
+    (unless (and (integerp count) (<= 1 count 128)) (error "Invalid workspace count: ~S" count))
+    (unless (or (null honor) (eq honor t)) (error "Invalid honor-client-fullscreen: ~S" honor))
     (setf active (max 1 (min count active))
           workspaces
           (loop for index below count
@@ -542,11 +543,17 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
 (defun wallpaper--pick (directory current)
   "A random PNG or JPEG under DIRECTORY other than CURRENT, or CURRENT when there is no other."
   (let ((files (remove current
-                       (loop for path in (directory (format nil "~A/**/*.*" (string-right-trim "/" directory)))
-                             when (member (pathname-type path) '("png" "jpg" "jpeg") :test #'string-equal)
-                               collect (sb-ext:native-namestring path))
+                       (loop for path in (%list-directory directory)
+                             for length = (length path)
+                             when (or (and (>= length 4)
+                                           (string-equal (subseq path (- length 4)) ".png"))
+                                      (and (>= length 4)
+                                           (string-equal (subseq path (- length 4)) ".jpg"))
+                                      (and (>= length 5)
+                                           (string-equal (subseq path (- length 5)) ".jpeg")))
+                               collect path)
                        :test #'equal)))
-    (if files (nth (random (length files) (make-random-state t)) files) current)))
+    (if files (nth (random (length files)) files) current)))
 
 (define-extension "wallpaper" (:reads (:data :command) :state nil) (snapshot state event)
   (let* ((settings (state-value snapshot :wallpaper-settings))

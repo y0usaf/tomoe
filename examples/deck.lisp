@@ -113,8 +113,8 @@ against the output the layout is drawing on."
          (output (or (and entry (deck--output-of outputs entry)) (first outputs))))
     (when output
       (flet ((inset (edge)
-               (reduce #'+ (context snapshot :layers) :initial-value 0
-                       :key (lambda (layer) (deck--layer-inset layer edge)))))
+               (loop for layer in (context snapshot :layers)
+                     sum (deck--layer-inset layer edge))))
         (let ((left (inset :left)) (right (inset :right))
               (top (inset :top)) (bottom (inset :bottom)))
           (list :output output
