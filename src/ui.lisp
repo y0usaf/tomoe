@@ -612,7 +612,7 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                          (getf (cddr background) :fps 0d0)
                                          (getf (cddr background) :idle 0d0)))))
                   (multiple-value-bind (draw hits plan-id)
-                      (%ui-draw-plan-for (list owner name (getf output :name))
+                      (%ui-draw-plan-for (list owner name (getf output :name) backdrop trail)
                                          measured width height scale
                                          (unless (or backdrop trail) background)
                                          (getf declaration :color) (getf declaration :font-size))
