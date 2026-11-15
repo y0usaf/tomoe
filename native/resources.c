@@ -807,6 +807,15 @@ static void res_apply_timers(struct want_timer *wanted, size_t count) {
     bool *used = res_alloc((res.timer_count ? res.timer_count : 1) * sizeof(bool));
     struct res_timer *timers = res_alloc((count ? count : 1) * sizeof(struct res_timer));
     uint64_t now = res_now();
+    if (!used || !timers) {
+        free(used);
+        free(timers);
+        for (size_t index = 0; index < count; index++) {
+            free(wanted[index].owner);
+            free(wanted[index].name);
+        }
+        return;
+    }
     for (size_t index = 0; index < count; index++) {
         struct want_timer *want = &wanted[index];
         ssize_t match = -1;
