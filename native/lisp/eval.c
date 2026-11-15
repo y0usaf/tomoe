@@ -101,6 +101,13 @@ _Noreturn void lisp_error(const char *format, ...)
     va_start(ap, format);
     vsnprintf(message, sizeof(message), format, ap);
     va_end(ap);
+    for (int i = lisp.ctl_top - 1; i >= 0; i--) {
+        if (lisp.ctl[i].kind == CTL_BLOCK && symbolp(lisp.ctl[i].name) && !nilp(lisp.ctl[i].name)) {
+            size_t used = strlen(message);
+            snprintf(message + used, sizeof(message) - used, " (in %s)", SYM(lisp.ctl[i].name)->name);
+            break;
+        }
+    }
     if (g_file)
         snprintf(g_error, sizeof(g_error), "%s:%d: %s", g_file, g_line, message);
     else
@@ -848,7 +855,7 @@ static lisp_value quasiquote(lisp_value x, struct lisp_frame *env, int depth)
     return x;
 }
 
-enum place_kind { PLACE_VAR, PLACE_GETF, PLACE_CDR, PLACE_NTH, PLACE_GETHASH };
+enum place_kind { PLACE_VAR, PLACE_GETF, PLACE_CDR, PLACE_NTH, PLACE_GETHASH, PLACE_VALUE };
 
 struct lisp_place {
     int kind;
@@ -857,6 +864,8 @@ struct lisp_place {
     lisp_value key;
     int64_t index;
     struct lisp_frame *env;
+    lisp_value parent_form;
+    lisp_value value;
 };
 
 static struct lisp_symbol *special_symbol(const char *name)
@@ -874,6 +883,8 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
     place->key = NIL_VAL;
     place->index = 0;
     place->env = env;
+    place->parent_form = NIL_VAL;
+    place->value = NIL_VAL;
     if (symbolp(form)) {
         place->kind = PLACE_VAR;
         place->sym = form;
@@ -882,12 +893,30 @@ static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_plac
     if (!consp(form))
         lisp_error("bad setf place");
     lisp_value head = CAR(form);
+    if (head != VAL(special_symbol("GETF")) && head != VAL(special_symbol("CDR")) &&
+            head != VAL(special_symbol("CAR")) && head != VAL(special_symbol("NTH")) &&
+            head != VAL(special_symbol("GETHASH"))) {
+        place->kind = PLACE_VALUE;
+        place->value = eval(form, env);
+        return;
+    }
+    if (head == VAL(special_symbol("CAR"))) {
+        struct lisp_place parent;
+        eval_place(CAR(CDR(form)), env, &parent);
+        place->kind = PLACE_NTH;
+        place->sym = parent.sym;
+        place->env = parent.env;
+        place->index = 0;
+        place->container = place_get(&parent);
+        return;
+    }
     if (head == VAL(special_symbol("GETF"))) {
         struct lisp_place parent;
         eval_place(CAR(CDR(form)), env, &parent);
         place->kind = PLACE_GETF;
         place->sym = parent.sym;
-        place->env = parent.env;
+        place->env = env;
+        place->parent_form = CAR(CDR(form));
         place->container = place_get(&parent);
         place->key = eval(CAR(CDR(CDR(form))), env);
         return;
@@ -929,6 +958,8 @@ lisp_value place_get(struct lisp_place *place)
     switch (place->kind) {
     case PLACE_VAR:
         return variable_value(place->sym, place->env);
+    case PLACE_VALUE:
+        return place->value;
     case PLACE_GETF:
         return keyword_get(place->container, place->key, NIL_VAL);
     case PLACE_CDR:
@@ -959,6 +990,8 @@ void place_set(struct lisp_place *place, lisp_value value)
     case PLACE_VAR:
         set_variable(place->sym, value, place->env);
         return;
+    case PLACE_VALUE:
+        lisp_error("setf of a value that is not a place");
     case PLACE_GETF: {
         lisp_value plist = place->container;
         lisp_value scan = plist;
@@ -970,7 +1003,9 @@ void place_set(struct lisp_place *place, lisp_value value)
             scan = CDR(CDR(scan));
         }
         lisp_value fresh = cons(place->key, cons(value, plist));
-        set_variable(place->sym, fresh, place->env);
+        struct lisp_place parent;
+        eval_place(place->parent_form, place->env, &parent);
+        place_set(&parent, fresh);
         return;
     }
     case PLACE_CDR:

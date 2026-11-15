@@ -378,7 +378,9 @@ static void ratio_parts(lisp_value v, int64_t *num, int64_t *den)
         *num = PTR(v, lisp_ratio)->num;
         *den = PTR(v, lisp_ratio)->den;
     } else {
-        lisp_error("argument must be a number");
+        char shown[120];
+        lisp_print(v, true, shown, sizeof(shown));
+        lisp_error("argument must be a number, got %s", shown);
     }
 }
 

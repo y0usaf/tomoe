@@ -1170,7 +1170,7 @@ static const struct primitive {
     { "%present-setting-text", prim_present_setting_text, 2, 2 },
     { "%present-window-style", prim_present_window_style, 6, 6 },
     { "%present-window-visual", prim_present_window_visual, 7, 7 },
-    { "%present-window-shader", prim_present_window_shader, 6, 6 },
+    { "%present-window-shader", prim_present_window_shader, 7, 7 },
     { "%present-window-mesh", prim_present_window_mesh, 4, 4 },
     { "%present-keyboard-grab", prim_present_keyboard_grab, 3, 3 },
     { "%motion", prim_motion, 5, 5 },
