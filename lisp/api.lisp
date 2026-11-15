@@ -1075,44 +1075,6 @@ diagonal in pixels, and :DEFORMED is whether the drawn cursor differs from the
 plain texture right now."
   (%cursor-motion))
 
-(defun cursor-effect (name function &key (order 0))
-  "Own a cursor behaviour, so the compositor asks this extension how the pointer
-should look. FUNCTION is a symbol called with the plist CURSOR-MOTION returns,
-and it answers with a transform plist or NIL for no opinion:
-
-  :ROTATION degrees clockwise, :SCALE a multiplier (2 doubles its size),
-  :STRETCH a fraction stretched along :STRETCH-ANGLE degrees (0.5 is half again
-  as long and a quarter narrower across), :OFFSET-X and :OFFSET-Y in pixels away
-  from the hotspot, :SETTLE seconds the answer holds once the policy stops asking
-  (the cursor then eases back to its plain texture), and :TRAIL a plist
-  (:CELL :LIFE :STEPS :COLOR) for the fading pixel trail. Add :SETTLED NIL while
-  the answer is still moving: the compositor then asks again on the next display
-  refresh, for as long as it takes, so a spring can come back to rest after the
-  pointer stops. Answer :SETTLED T (the default) once it has, and nothing wakes
-  the policy again until the pointer moves.
-
-Behaviours compose in ORDER, then mount order: rotations add, scales multiply,
-offsets add, the last :TRAIL wins and the largest :SETTLE is used. An extension
-is woken for pointer motion when it declares :POINTER in its :READS, and dropping
-the CURSOR-EFFECT from its result removes its contribution entirely."
-  (check-type name string)
-  (unless (<= 1 (length name) 256) (error "Cursor effect names need 1 to 256 characters."))
-  (check-type function symbol)
-  (check-type order integer)
-  (%effect :cursor-effect (list (copy-seq name) function order)))
-
-(%define-effect :cursor-effect
-  (lambda (args effect)
-    (destructuring-bind (name function order) args
-      (cursor-effect name function :order order)))
-  (lambda (args) '(:cursor-effect))
-  (lambda (m args mounted)
-    (destructuring-bind (name function order) args
-      (setf (getf m :cursors)
-            (append (materialization-cursors m)
-                    (list (list :owner (spec-name (mounted-spec mounted))
-                                :order order :call function)))))))
-
 (defun setting (snapshot &rest path)
   "Read a resolved compositor setting. Declare :SETTINGS as a dependency."
   (let ((value (context snapshot :settings)))
