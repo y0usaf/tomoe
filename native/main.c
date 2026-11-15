@@ -152,9 +152,12 @@ void loop_register_primitives(struct tomoe *server) {
     lisp_define_primitive("%XWAYLAND-DISPLAY", primitive_xwayland_display, 0, 0);
 }
 
+#ifndef TOMOE_VERSION
+#define TOMOE_VERSION "dev"
+#endif
+
 static const char *version_string(void) {
-    const char *version = getenv("TOMOE_VERSION");
-    return version && *version ? version : "dev";
+    return TOMOE_VERSION;
 }
 
 static void usage(void) {

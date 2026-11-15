@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef TOMOE_VERSION
+#define TOMOE_VERSION "dev"
+#endif
+
 enum stub_type {
     STUB_NONE = 0,
     STUB_INT,
@@ -611,8 +615,7 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
         }
         if (length == 7 && !memcmp(method, "version", 7)) {
             const char *keys[2] = { "wire", "version" };
-            const char *version = getenv("TOMOE_VERSION");
-            lisp_value values[2] = { lisp_int(3), lisp_cstring(version && *version ? version : "dev") };
+            lisp_value values[2] = { lisp_int(3), lisp_cstring(TOMOE_VERSION) };
             *result = json_build_object(2, keys, values);
             return 0;
         }
