@@ -1,0 +1,13 @@
+(in-package #:tomoe-user)
+
+(define-extension "reload-probe" (:reads (:windows :key) :state '(:hits 0 :version "B"))
+  (snapshot state event)
+  (let* ((hits (getf state :hits))
+         (command (and (eq (getf event :type) :key) (getf event :command)))
+         (next (if (equal command "hit") (1+ hits) hits)))
+    (values (list :hits next :version "B")
+            (append (loop for window in (context snapshot :windows)
+                          collect (place (getf window :id) 0 0 400 300))
+                    (list (define-command "hit")
+                          (bind-key nil "a" "hit")))
+            nil)))

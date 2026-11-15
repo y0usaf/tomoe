@@ -1084,6 +1084,15 @@ let
       + builtins.readFile ./scanout.py;
     }
     {
+      name = "reload";
+      script = ''
+        POLICY_A = "${./reload-policy-a.lisp}"
+        POLICY_B = "${./reload-policy-b.lisp}"
+        CAPTURE_CLIENT = "${client}/bin/tomoe-capture-client"
+      ''
+      + builtins.readFile ./reload.py;
+    }
+    {
       name = "window-capture";
       script = ''
         CAPTURE_CLIENT = "${client}/bin/tomoe-capture-client"
@@ -1220,19 +1229,17 @@ let
   equivalenceSettings = compositorSettings // {
     timeout = 1800;
   };
-  benchScript =
-    compositors:
-    ''
-      BENCH = "${./../bench}"
-      PATHS = {
-          "client": "${benchClient}/bin/bench-client",
-          "compositors": "${compositors}",
-          "cores": "4",
-          "memory": "4096",
-      }
-      exec(compile(open(BENCH + "/driver.py").read()
-                   + "\nmain(machine, PATHS)\n", "bench", "exec"))
-    '';
+  benchScript = compositors: ''
+    BENCH = "${./../bench}"
+    PATHS = {
+        "client": "${benchClient}/bin/bench-client",
+        "compositors": "${compositors}",
+        "cores": "4",
+        "memory": "4096",
+    }
+    exec(compile(open(BENCH + "/driver.py").read()
+                 + "\nmain(machine, PATHS)\n", "bench", "exec"))
+  '';
   benchSettings = {
     kernelModules = [
       "vkms"
