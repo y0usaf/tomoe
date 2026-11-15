@@ -1079,7 +1079,14 @@ let
       name = "cursor";
       script = ''
         machine.succeed("mkdir -p /run/cursor")
-        print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./cursor.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor"))
+        status, output = machine.execute(
+          "LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink "
+          "python3 ${./cursor.py} --tomoe ${tomoe}/bin/tomoe "
+          "--pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor 2>&1",
+          check_return=False)
+        print(output)
+        if status != 0:
+            raise AssertionError("the cursor proof failed: see the report above")
       '';
     }
     {
