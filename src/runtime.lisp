@@ -366,7 +366,7 @@ handful of effects, so a scan beats a hash table until the list is long."
   (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
         (*source-directory* (spec-directory (mounted-spec mounted))))
     (handler-case
-        (sb-ext:with-timeout (/ (getf (getf context :settings) :watchdog-ms 1000) 1000)
+        (sb-ext:with-timeout (/ (getf (getf context :settings) :watchdog-ms) 1000)
           (multiple-value-bind (state effects commands)
               (funcall (if (mounted-rule-parent mounted)
                            (lambda (snapshot state event)
