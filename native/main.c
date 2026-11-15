@@ -215,6 +215,7 @@ struct cli_options {
     const char *config;
     bool watch;
     const char *drm_device;
+    const char *render_node;
 };
 
 static char *absolute_source(const char *path, char *error, size_t error_size) {
@@ -316,6 +317,19 @@ static int run_cli(int argc, char **argv) {
         } else if (!strcmp(option, "--drm_device")) {
             if (index >= argc) return cli_error("--drm_device requires a value.");
             options.drm_device = argv[index++];
+        } else if (!strcmp(option, "--render_node")) {
+            if (index >= argc) return cli_error("--render_node requires a value.");
+            options.render_node = argv[index++];
+        } else if (!strncmp(option, "--test-", 7)) {
+            const char *spec = option + 7;
+            size_t length = strcspn(spec, "=");
+            char name[128];
+            if (length >= sizeof(name)) return cli_error("Unknown test flag: %s", option);
+            memcpy(name, spec, length);
+            name[length] = '\0';
+            const char *value = spec[length] == '=' ? spec + length + 1 : NULL;
+            if (!tomoe_set_test_flag(name, value))
+                return cli_error("Unknown test flag: %s", option);
         } else if (!strcmp(option, "--bare")) {
             options.bare = true;
         } else if (!strcmp(option, "--watch")) {
@@ -475,7 +489,6 @@ static int resolve_backend(const struct cli_options *options, char *backend, siz
         snprintf(error, error_size, "Unknown backend: %s", backend);
         return -1;
     }
-    setenv("TOMOE_BACKEND", backend, 1);
     return 0;
 }
 
@@ -496,12 +509,14 @@ static int run_compositor(const struct cli_options *options) {
     char backend[16];
     if (resolve_backend(options, backend, sizeof(backend), error, sizeof(error)))
         return cli_error("%s", error);
+    tomoe_select_backend(backend);
+    if (options->render_node) tomoe_select_render_node(options->render_node);
     if (options->drm_device) {
         char devices[PATH_MAX];
         if (desktop_primary_drm_devices(options->drm_device, devices, sizeof(devices), error,
                 sizeof(error)))
             return cli_error("%s", error);
-        setenv("TOMOE_DRM_DEVICES", devices, 1);
+        tomoe_select_drm_devices(devices);
     }
     bool drm = !strcmp(backend, "drm");
     struct tomoe *server = tomoe_create(options->name);
