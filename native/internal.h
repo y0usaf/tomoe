@@ -16,6 +16,7 @@
 #include <wayland-server-core.h>
 #include <drm_fourcc.h>
 #include "region.h"
+#include "policy.h"
 #include <xkbcommon/xkbcommon.h>
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg-shell-protocol.h"
@@ -253,7 +254,6 @@ bool render_frames_held(struct render *r);
 
 struct screen;
 
-struct event;
 struct binding;
 struct pointer_latch { uint32_t button; struct binding *binding; };
 struct window;
@@ -1089,7 +1089,6 @@ struct tomoe {
     uintptr_t dead_watches[64];
     size_t dead_watch_count;
 
-    char *last_event;
     uint32_t next_id, focused, grab_id;
     uint64_t next_binding_id, next_device_id, next_output_id;
     uint32_t latest_keyboard_enter_serial, latest_pointer_enter_serial;
@@ -1107,7 +1106,7 @@ struct tomoe {
     char *cursor_result;
     char *motion_result;
     uint32_t hovered;
-    char *ui_hovered;
+    uint64_t ui_hovered;
     struct pointer_latch pointer_latches[32];
     char *grab_owner, *grab_otherwise;
     uint64_t grab_source;
@@ -1139,6 +1138,13 @@ struct tomoe {
     struct presentation *presentation;
     size_t event_count;
     size_t observation_barrier;
+    struct tomoe_event *event_ring;
+    size_t event_capacity, event_head;
+    uint64_t event_read_mask, event_dropped, event_drop_log_ns;
+    char *event_arena;
+    size_t event_arena_used, event_arena_size;
+    struct binding_index *binding_index;
+    uint64_t policy_steps, policy_deadline_ns;
     struct motion_state motion;
     int press_world_x, press_world_y;
     bool grab_held;
@@ -1352,8 +1358,8 @@ static inline void fail(struct tomoe *s, const char *message) {
 }
 
 void quote(FILE *out, const char *text);
-FILE *begin_event(struct tomoe *s, struct event **event, size_t *size);
-void end_event(struct tomoe *s, struct event *event, FILE *out);
+void policy_event_grab_hold(struct tomoe *s);
+void tomoe_trim_heap(void);
 void unmap_event(struct tomoe *s, uint32_t id);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy);
 void grab_frame_drawn(struct tomoe *s);
@@ -1536,6 +1542,7 @@ bool power_listen(struct tomoe *s);
 bool output_power(struct output *o, bool on);
 void power_output_gone(struct output *o);
 void outputs_event(struct tomoe *s);
+lisp_value outputs_event_value(struct tomoe *s, const struct tomoe_event *event);
 void drag_icons_refresh(struct tomoe *s);
 bool ime_listen(struct tomoe *s);
 bool input_method_listen(struct tomoe *s);
