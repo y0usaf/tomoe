@@ -405,6 +405,7 @@ struct mesh_options {
 };
 void pass_add_mesh(struct pass *pass, const struct mesh_options *options);
 #define RING_SLOTS 4
+#define RING_START_SLOTS 2
 #define RING_FRAME_SLOTS 3
 struct ring {
     struct buffer *slots[RING_SLOTS];

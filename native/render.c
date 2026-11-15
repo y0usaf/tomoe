@@ -3182,15 +3182,13 @@ struct buffer *ring_create(struct tomoe *s, struct ring *ring) {
 }
 
 void ring_reserve(struct tomoe *s, struct ring *ring) {
-    bool any = false;
+    size_t count = 0;
     for (size_t i = 0; i < RING_SLOTS; i++) {
+        if (!ring->slots[i] && count < RING_START_SLOTS)
+            ring->slots[i] = ring_create(s, ring);
         if (!ring->slots[i]) continue;
         render_buffer_fbo(s->renderer, ring->slots[i]);
-        any = true;
-    }
-    if (!any) {
-        ring->slots[0] = ring_create(s, ring);
-        if (ring->slots[0]) render_buffer_fbo(s->renderer, ring->slots[0]);
+        count++;
     }
 }
 

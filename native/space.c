@@ -909,7 +909,10 @@ bool render_presentation(struct output *o, struct screen_state *state,
     }
     struct buffer *buffer = ring == &o->ring ? ring_take(ring) : ring_acquire(s, ring);
     if (!buffer) {
-        if (ring->grow) o->screen->deferred = true;
+        if (ring->grow) {
+            o->screen->deferred = true;
+            screen_schedule_frame(o->screen);
+        }
         region_fini(&pre_changed);
         return false;
     }
