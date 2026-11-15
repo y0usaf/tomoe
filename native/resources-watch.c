@@ -174,6 +174,14 @@ static void watch_close_native(struct res_watch *watch) {
 
 static void watch_fd_callback(void *data, int fd, uint32_t mask);
 
+static void watch_ensure_source(struct res_watch *watch) {
+    if (!watch->native || watch->source) return;
+    int descriptor = tomoe_watch_descriptor(watch->native);
+    if (descriptor < 0) return;
+    watch->source = loop_watch_fd(res.server, descriptor, LOOP_READABLE,
+        watch_fd_callback, watch);
+}
+
 static bool watch_attach(struct res_watch *watch) {
     int error = 0;
     struct file_watch *native = tomoe_watch_open(watch->absolute ? watch->absolute : "", &error);
@@ -191,9 +199,7 @@ static bool watch_attach(struct res_watch *watch) {
     watch->native = native;
     watch->active = true;
     watch->retry = 0;
-    int descriptor = tomoe_watch_descriptor(native);
-    if (descriptor >= 0)
-        watch->source = loop_watch_fd(res.server, descriptor, LOOP_READABLE, watch_fd_callback, watch);
+    watch_ensure_source(watch);
     return true;
 }
 
@@ -249,6 +255,7 @@ static void watch_poll(struct res_watch *watch, uint64_t now) {
     if (bits & 8) res_watch_deliver(watch, WATCH_RESTORED, content, NULL, true);
     else res_watch_deliver(watch, (bits & 2) ? WATCH_OVERFLOW : WATCH_CHANGED, content, NULL, true);
     free(content);
+    watch_ensure_source(watch);
 }
 
 static void watch_fd_callback(void *data, int fd, uint32_t mask) {
@@ -258,12 +265,7 @@ static void watch_fd_callback(void *data, int fd, uint32_t mask) {
     if (!res.started) return;
     uint64_t now = res_now();
     watch_poll(watch, now);
-    if (watch->native && !watch->source) {
-        int descriptor = tomoe_watch_descriptor(watch->native);
-        if (descriptor >= 0)
-            watch->source = loop_watch_fd(res.server, descriptor, LOOP_READABLE,
-                watch_fd_callback, watch);
-    }
+    watch_ensure_source(watch);
     res_engine_kick();
 }
 
@@ -361,6 +363,7 @@ void res_watches_service(uint64_t now, uint64_t *next) {
     for (size_t index = 0; index < res.watch_count; index++) {
         struct res_watch *watch = &res.watches[index];
         if (watch->retry && now >= watch->retry) watch_poll(watch, now);
+        watch_ensure_source(watch);
         if (watch->retry && watch->retry < *next) *next = watch->retry;
     }
 }

@@ -845,10 +845,9 @@ static void res_apply_timers(struct want_timer *wanted, size_t count) {
 }
 
 static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
-    struct tomoe *server = res.server;
     char error[512];
     error[0] = 0;
-    if (!server) return lisp_nil();
+    if (!res.started) return lisp_cstring("Resource ownership is not running.");
     struct want_timer *timers = NULL;
     struct want_watch *watches = NULL;
     struct want_exec *execs = NULL;
@@ -919,13 +918,18 @@ static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
         lisp_value value = lisp_cstring(error[0] ? error : "Invalid resource declaration.");
         return value;
     }
-    if (watch_count + res.watch_count > 512) {
+    const char *rejection = NULL;
+    if (watch_count + res.watch_count > 512) rejection = "More than 512 live or candidate file watches.";
+    else if (exec_count + res.retired_exec_count > 128) rejection = "More than 128 active or retiring executions.";
+    else if (process_count + res_process_reservations() > 128)
+        rejection = "More than 128 live or reserved managed processes.";
+    if (rejection) {
         for (size_t index = 0; index < watch_count; index++) want_watch_free(&watches[index]);
         for (size_t index = 0; index < exec_count; index++) want_exec_free(&execs[index]);
         for (size_t index = 0; index < process_count; index++) want_process_free(&processes[index]);
         for (size_t index = 0; index < timer_count; index++) want_timer_free(&timers[index]);
         free(timers); free(watches); free(execs); free(processes);
-        return lisp_cstring("More than 512 live or candidate file watches.");
+        return lisp_cstring(rejection);
     }
     res.commit_sequence++;
     res_apply_timers(timers, timer_count);

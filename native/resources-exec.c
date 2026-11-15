@@ -98,6 +98,12 @@ bool res_lease_reap(struct res_lease *lease, bool cancel) {
 
 void res_lease_drop(struct res_lease *lease) {
     if (!lease) return;
+    for (size_t index = 0; index < res.process_count; index++) {
+        if (res.processes[index].lease == lease) res.processes[index].lease = NULL;
+    }
+    for (size_t index = 0; index < res.retired_count; index++) {
+        if (res.retired[index].lease == lease) res.retired[index].lease = NULL;
+    }
     if (lease->job) {
         tomoe_exec_stop(lease->job, SIGKILL);
         tomoe_exec_poll(lease->job);
@@ -464,6 +470,7 @@ void res_execs_apply(struct want_exec *wanted, size_t count) {
         if (used[old]) continue;
         struct res_exec *existing = &res.execs[old];
         if (existing->lease.job) {
+            exec_unwatch(existing);
             struct res_exec *retired = realloc(res.retired_execs,
                 (res.retired_exec_count + 1) * sizeof(*retired));
             if (retired) {
@@ -575,6 +582,16 @@ static void history_set(const char *owner, const char *name, uint64_t stamp) {
     res.history[res.history_count].name = res_dup(name);
     res.history[res.history_count].stamp = stamp;
     res.history_count++;
+}
+
+size_t res_process_reservations(void) {
+    size_t total = res.lease_count + res.retired_count;
+    for (size_t index = 0; index < res.process_count; index++) {
+        struct res_process *process = &res.processes[index];
+        if (process->kind == PROCESS_SERVICE || process->status == PROCESS_PENDING)
+            total++;
+    }
+    return total;
 }
 
 static size_t process_reservations(void) {
@@ -834,6 +851,9 @@ static void process_start(struct res_process *process) {
         process->error = NULL;
         process->has_code = false;
         if (process->kind == PROCESS_ONCE) history_set(process->owner, process->name, process->token);
+    }
+    if (owned) {
+        for (size_t index = 0; owned[index]; index++) free(owned[index]);
     }
     free(owned);
     free(environment);

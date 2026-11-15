@@ -291,6 +291,7 @@ void res_processes_apply(struct want_process *wanted, size_t count);
 void res_processes_service(uint64_t now, uint64_t *next);
 const char *res_process_status_name(int status);
 lisp_value res_spawn(lisp_value plist, bool launch);
+size_t res_process_reservations(void);
 
 uint64_t res_refresh_ms(void);
 void res_processes_stop(void);
