@@ -784,6 +784,7 @@ static bool res_parse_process(lisp_value entry, struct want_process *want, char 
     if (restart_symbol && !strcmp(restart_symbol, "NEVER")) want->restart = RESTART_NEVER;
     else if (restart_symbol && !strcmp(restart_symbol, "ON-FAILURE")) want->restart = RESTART_ON_FAILURE;
     else if (restart_symbol && !strcmp(restart_symbol, "ON-EXIT")) want->restart = RESTART_ON_EXIT;
+    else if (lisp_nilp(restart) && want->kind == PROCESS_ONCE) want->restart = RESTART_NEVER;
     else { res_error(error, size, "Invalid process restart policy."); return false; }
     if (!lisp_consp(tail)) { res_error(error, size, "Invalid process declaration."); return false; }
     lisp_value reload = lisp_car(tail);
@@ -792,6 +793,8 @@ static bool res_parse_process(lisp_value entry, struct want_process *want, char 
         want->reload = RELOAD_KEEP_IF_UNCHANGED;
     else if (reload_symbol && !strcmp(reload_symbol, "ALWAYS-RESTART"))
         want->reload = RELOAD_ALWAYS_RESTART;
+    else if (lisp_nilp(reload) && want->kind == PROCESS_ONCE)
+        want->reload = RELOAD_KEEP_IF_UNCHANGED;
     else { res_error(error, size, "Invalid process reload policy."); return false; }
     return true;
 }
