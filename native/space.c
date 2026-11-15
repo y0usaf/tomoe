@@ -305,10 +305,6 @@ static struct fbox window_box(const struct target *t, const struct frame *f) {
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }
-struct fbox window_live_box(struct tomoe *s, const struct target *t) {
-    struct frame probe = { .view_x = s->view_x, .view_y = s->view_y, .zoom = s->view_zoom };
-    return window_box(t, &probe);
-}
 static float window_shader_seed(uint32_t id) {
     uint32_t hash = id * 2654435761u;
     hash ^= hash >> 15;

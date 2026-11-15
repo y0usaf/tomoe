@@ -1442,7 +1442,6 @@ void popup_create(struct xdg_popup *xdg, struct node *parent);
 void windows_refresh(struct tomoe *s);
 void foreign_toplevels_refresh(struct tomoe *s);
 bool windows_animate(struct tomoe *s, double now);
-struct fbox window_live_box(struct tomoe *s, const struct target *target);
 void view_publish(struct tomoe *s, const struct presentation *plan);
 bool view_animate(struct tomoe *s, const struct settings *settings, double now);
 bool ghosts_animate(struct tomoe *s, double now);
