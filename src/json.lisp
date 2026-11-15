@@ -199,19 +199,30 @@ Duplicate keys are replaced by their last value, like serde_json::Value."
     (setf pairs (mapcan (lambda (pair) (list (car pair) (cdr pair))) pairs)))
   (when (oddp (length pairs))
     (error "JSON object needs alternating key/value arguments."))
-  (let ((members nil)
-        (seen (make-hash-table :test #'equal :size (floor (length pairs) 2))))
-    (loop for tail = pairs then (cddr tail) while tail do
-      (let ((key (car tail)) (value (second tail)))
-        (check-type key string)
-        (%json-check-string key)
-        (multiple-value-bind (entry presentp) (gethash key seen)
-          (if presentp
-              (setf (cdr entry) value)
-              (let ((entry (cons (copy-seq key) value)))
-                (setf (gethash key seen) entry)
-                (push entry members))))))
-    (%json-copy-value (list :json-object (nreverse members)))))
+  (if (<= (length pairs) 16)
+      (let ((members nil))
+        (loop for tail = pairs then (cddr tail) while tail do
+          (let ((key (car tail)) (value (second tail)))
+            (check-type key string)
+            (%json-check-string key)
+            (let ((entry (assoc key members :test #'string=)))
+              (if entry
+                  (setf (cdr entry) value)
+                  (push (cons (copy-seq key) value) members)))))
+        (%json-copy-value (list :json-object (nreverse members))))
+      (let ((members nil)
+            (seen (make-hash-table :test #'equal :size (floor (length pairs) 2))))
+        (loop for tail = pairs then (cddr tail) while tail do
+          (let ((key (car tail)) (value (second tail)))
+            (check-type key string)
+            (%json-check-string key)
+            (multiple-value-bind (entry presentp) (gethash key seen)
+              (if presentp
+                  (setf (cdr entry) value)
+                  (let ((entry (cons (copy-seq key) value)))
+                    (setf (gethash key seen) entry)
+                    (push entry members))))))
+        (%json-copy-value (list :json-object (nreverse members))))))
 
 (defun json-array (&rest values)
   "Construct a JSON array, preserving NIL as an array element only through

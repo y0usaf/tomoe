@@ -53,6 +53,9 @@ void end_event(struct tomoe *s, struct event *event, FILE *out) {
     s->event_count++;
     if (observation_event_text(event->text))
         s->observation_barrier = s->event_count;
+    if (strncmp(event->text, "(:type :activity ", 17) != 0 &&
+            strncmp(event->text, "(:type :adopted ", 16) != 0)
+        oracle_invalidate(s);
 }
 static bool grab_text(struct event *event) {
     static const char *const modes[] = { "", "move", "resize", "pointer" };
@@ -67,6 +70,7 @@ static bool grab_text(struct event *event) {
 static bool grab_held(struct tomoe *s);
 void queue_grab_motion(struct tomoe *s, uint32_t id, int mode, int x, int y, int dx, int dy) {
     if (s->stopping || s->failed || mode < 1 || mode > 3) return;
+    oracle_invalidate(s);
     struct event *last = wl_list_empty(&s->events) ? NULL :
         wl_container_of(s->events.prev, last, link);
     if (last && last->grab && last->grab_id == id && last->grab_mode == mode) {

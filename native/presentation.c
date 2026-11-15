@@ -230,6 +230,7 @@ bool presentation_prepare(struct tomoe *s) {
 
 void presentation_publish(struct tomoe *s) {
     struct presentation *plan = s->presentation;
+    oracle_invalidate(s);
     view_publish(s, plan);
     windows_publish_presentation(s, plan);
     if (s->failed) return;
@@ -257,4 +258,65 @@ const char *tomoe_present_apply(struct tomoe *s) {
     if (s->presentation->outputs_changed) return tomoe_outputs_apply(s);
     presentation_publish(s);
     return s->failed ? "Presentation publication failed; stopping the compositor." : NULL;
+}
+
+void binding_delta_free(struct binding_delta *delta) {
+    if (!delta) return;
+    free(delta->windows);
+    free(delta->stacking);
+    free(delta);
+}
+
+bool presentation_apply_delta(struct tomoe *s, const struct binding_delta *delta) {
+    if (!s || !delta || s->presentation) return false;
+    if (!tomoe_present_begin(s, delta->view_x, delta->view_y, delta->view_zoom,
+            delta->focused, delta->restack ? 1 : 0, 0, 0, s->grab_id, s->grab_mode))
+        return false;
+    struct presentation *plan = s->presentation;
+    for (size_t i = 0; i < delta->window_count; i++) {
+        const struct delta_window *dw = &delta->windows[i];
+        struct presentation_target *entry = presentation_target_for(plan, dw->id);
+        struct visual saved = entry ? entry->target.visual : (struct visual){ .opacity = 1, .scale = 1 };
+        if (!tomoe_present_window(s, dw->id, dw->x, dw->y, dw->width, dw->height,
+                dw->visible ? 1 : 0, dw->fullscreen ? 1 : 0, dw->maximize ? 1 : 0)) {
+            presentation_finish(s);
+            return false;
+        }
+        if (entry) entry->target.visual = saved;
+    }
+    if (delta->stacking_count == 0) {
+        if (!tomoe_present_stack(s, 0)) {
+            presentation_finish(s);
+            return false;
+        }
+    } else {
+        for (size_t i = 0; i < delta->stacking_count; i++) {
+            if (!tomoe_present_stack(s, delta->stacking[i])) {
+                presentation_finish(s);
+                return false;
+            }
+        }
+    }
+    windows_prepare_presentation(s, plan);
+    struct presentation_target *focus = presentation_target_for(plan, plan->focused);
+    if (!plan->explicit_stacking && (plan->restack || s->focused != plan->focused) &&
+            focus && focus->target.kind == TARGET_WINDOW)
+        focus->order = plan->next_order++;
+    qsort(plan->targets, plan->target_count, sizeof(*plan->targets), compare_targets);
+    oracle_invalidate(s);
+    view_publish(s, plan);
+    windows_publish_presentation(s, plan);
+    if (s->failed) {
+        presentation_finish(s);
+        return false;
+    }
+    uint32_t previous_focus = s->focused;
+    if (plan->restack || s->focused != plan->focused) tomoe_focus(s, plan->focused);
+    if (s->focused == previous_focus) update_keyboard_focus(s);
+    for (size_t i = 0; i < plan->target_count; i++)
+        node_raise_to_top(plan->targets[i].node);
+    schedule_repaint(s);
+    presentation_finish(s);
+    oracle_invalidate(s);
+    return true;
 }

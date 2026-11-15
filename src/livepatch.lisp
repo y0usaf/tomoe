@@ -68,6 +68,7 @@
 
 (defun restore-patch-definition (snapshot)
   (incf *definitions-generation*)
+  (incf *patch-generation*)
   (let ((symbol (getf snapshot :symbol)) (macro (getf snapshot :macro))
         (function (getf snapshot :function)))
     (cond (macro (setf (macro-function symbol) macro))
@@ -160,7 +161,7 @@ compositor as it was and signals its error. Returns a report plist."
                                   collect (patch-definition-snapshot symbol))
                   shared (patch-shared-definitions-p snapshots package))
             (setf mounted (mount-patch-specs runtime (load-specs runtime path package)))
-            (when shared (refresh-mounts runtime))
+            (when shared (incf *patch-generation*) (refresh-mounts runtime))
             (let ((patch (list :id id :name name :file path :generated generated
                                :refresh shared :snapshots snapshots
                                :extensions mounted

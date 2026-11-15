@@ -390,7 +390,7 @@ against the output the layout is drawing on."
 
 (define-extension "deck"
     (:reads (:windows :outputs :layers :layout :rules :focus :request :command :button)
-     :state (deck--state))
+     :state (deck--state) :precompute t)
     (snapshot state event)
   (let* ((windows (context snapshot :windows))
          (ids (mapcar (lambda (window) (getf window :id)) windows))

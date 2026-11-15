@@ -111,6 +111,12 @@ void timing_event_done(struct tomoe *s) {
     }
 }
 
+void timing_key_done(struct tomoe *s) {
+    if (!timing_enabled || !s || !s->timing.key) return;
+    timing_add(TIMING_KEY, timing_now() - s->timing.key_at);
+    s->timing.key = false;
+}
+
 void timing_commit(struct tomoe *s) {
     if (!timing_enabled) return;
     s->timing.commit_at = timing_now();

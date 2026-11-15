@@ -1176,6 +1176,7 @@ void layers_publish_presentation(struct tomoe *s) {
 
 void arrange_layers(struct tomoe *s) {
     if (s->stopping) return;
+    oracle_invalidate(s);
     struct layer_plan plan;
     if (!plan_init_live(s, &plan) || !plan_layers(&plan)) {
         plan_free_arrays(&plan);
@@ -1216,6 +1217,7 @@ static void layer_map(struct wl_listener *listener, void *data) {
 static void layer_unmap(struct wl_listener *listener, void *data) {
     struct layer *l = wl_container_of(listener, l, unmap);
     l->mapped = false;
+    oracle_invalidate(l->server);
     l->ready_to_configure = false;
     reset_layer_configure(l);
     if (l->server->grab_id == l->target.id) grab_clear(l->server);

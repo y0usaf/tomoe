@@ -51,6 +51,7 @@ void timing_add(enum timing_channel channel, uint64_t ns);
 void timing_input(struct tomoe *s, enum timing_channel channel);
 void timing_event_taken(struct tomoe *s);
 void timing_event_done(struct tomoe *s);
+void timing_key_done(struct tomoe *s);
 void timing_commit(struct tomoe *s);
 void timing_frame_start(struct tomoe *s);
 void timing_frame_latch(struct screen *screen);

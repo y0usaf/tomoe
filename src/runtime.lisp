@@ -36,6 +36,8 @@ changes nothing, so it does not invalidate the last context.")
 fold calls directly, such as the keyboard default and the host command table, so
 they invalidate a context without any effect changing.")
 
+(defvar *patch-generation* 0)
+(defvar *precomputing* nil)
 (defvar *timing* nil
   "Whether the native side keeps latency samples, so the loop can report when a
 transaction has returned without paying for a call it does not need.")
@@ -302,8 +304,10 @@ Returns (:NAME NAME :ARGUMENTS a plist of the values it ran with)."
 
 (defun canonical-effect (effect)
   (check-type effect effect)
-  (funcall (effect-definition-canonical (%effect-definition (effect-kind effect)))
-           (copy-data (effect-arguments effect)) effect))
+  (if (effect-sealed effect)
+      effect
+      (funcall (effect-definition-canonical (%effect-definition (effect-kind effect)))
+               (copy-data (effect-arguments effect)) effect)))
 
 (defun canonical-command (command &optional directory)
   (check-type command command)
@@ -361,29 +365,42 @@ handful of effects, so a scan beats a hash table until the list is long."
             (when (gethash key keys) (error "Duplicate effect: ~S" key))
             (setf (gethash key keys) t))))))
 
+
+(defun spec-immutable-p (spec)
+  (and spec (eql (spec-immutable-generation spec) *patch-generation*)))
+
+(defun spec-precomputable-p (spec)
+  (and spec (spec-precompute spec) (eql (spec-precompute-generation spec) *patch-generation*)))
 (defun invoke-extension (runtime mounted context event)
-  (let ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
-        (*source-directory* (spec-directory (mounted-spec mounted))))
+  (let* ((spec (mounted-spec mounted)) (reads (mount-context-reads mounted))
+         (rule-p (not (null (mounted-rule-parent mounted))))
+         (shared (and (not rule-p) (spec-immutable-p spec)))
+         (*source-directory* (spec-directory spec)))
     (handler-case
         (sb-ext:with-timeout (/ (getf (getf context :settings) :watchdog-ms 1000) 1000)
           (multiple-value-bind (state effects commands)
-              (funcall (if (mounted-rule-parent mounted)
+              (funcall (if rule-p
                            (lambda (snapshot state event)
                              (invoke-rule-application runtime mounted snapshot state event))
                            (spec-update spec))
-                       (make-snapshot context (copy-list reads) (runtime-effective runtime))
-                       (copy-data (mounted-state mounted)) (copy-data event))
+                       (make-snapshot context (if shared reads (copy-list reads))
+                                      (runtime-effective runtime) shared)
+                       (if shared (mounted-state mounted) (copy-data (mounted-state mounted)))
+                       (if shared event (copy-data event)))
             (when (> (length effects) 512) (error "More than 512 effects."))
             (when (> (length commands) 32) (error "More than 32 commands."))
             (when (and commands
                        (not (or (member (getf event :type)
                                         '(:command :button :timer :watch :exec :request :screenshot
                                           :screencast :ipc :ui))
-                                (and (mounted-rule-parent mounted) (eq (getf event :type) :mount)))))
+                                (and rule-p (eq (getf event :type) :mount)))))
               (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
-            (let ((effects (mapcar #'canonical-effect effects))
-                  (commands (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands)))
-              (let ((replies (count :reply commands :key #'command-kind)))
+            (let ((effects (if (every #'effect-sealed effects)
+                               (copy-list effects)
+                               (mapcar #'canonical-effect effects)))
+                  (commands (when commands
+                              (mapcar (lambda (command) (canonical-command command (spec-directory spec))) commands))))
+              (let ((replies (if commands (count :reply commands :key #'command-kind) 0)))
                 (when (plusp replies)
                   (unless (and (= replies 1) (eq (getf event :type) :ipc)
                                (equal (getf event :owner) (spec-name spec))
@@ -393,9 +410,9 @@ handful of effects, so a scan beats a hash table until the list is long."
               (check-duplicate-effects effects)
               (unless (equivalent-effects (mounted-effects mounted) effects)
                 (incf *invocations*))
-              (setf (mounted-state mounted) (copy-data state)
+              (setf (mounted-state mounted) (if shared (check-data state) (copy-data state))
                     (mounted-effects mounted) effects)
-              (when (mounted-rule-parent mounted) (setf (mounted-rule-pending mounted) nil))
+              (when rule-p (setf (mounted-rule-pending mounted) nil))
               (incf (mounted-dispatches mounted))
               commands)))
       (serious-condition (condition)
@@ -837,7 +854,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                           :height (max 1 (getf window :height)) :visible t
                                           :fullscreen nil :maximize nil :properties nil))
               :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows runtime))
-              :layers (copy-data (runtime-layers runtime))
+              :layers (mapcar #'copy-list (runtime-layers runtime))
               :keyboard (default-keyboard-config)
               :settings (%settings-defaults +settings+)
               :view (list :x 0 :y 0 :zoom 1d0)))))
@@ -907,18 +924,21 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                 :window-geometry (with-sample ("mat-quantize")
                                    (resolved-window-geometry runtime layout view output-facts))
                 :rules (resolved-rule-properties runtime mounts) :data data
-                :services (copy-data (runtime-services runtime))
-                :system (copy-data (runtime-system runtime))
+                :services (runtime-services runtime)
+                :system (runtime-system runtime)
                 :outputs output-facts :connectors connector-facts
                 :output-config output-config :native-output-config native-output-config
                 :output-failures output-failures
                 :output-errors (loop for failure in output-failures collect
                                  (list :name (getf failure :name) :message (getf failure :message)))
                 :workareas shell-workareas
-                :surface-plans (mapcar #'copy-data surface-plans)
+                :surface-plans surface-plans
                 :surfaces (loop for plan in surface-plans
-                                collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer :click-through)
-                                              append (list key (copy-data (getf plan key)))))
+                                collect (list :owner (getf plan :owner) :source-id (getf plan :source-id)
+                                              :name (getf plan :name) :output (getf plan :output)
+                                              :x (getf plan :x) :y (getf plan :y)
+                                              :width (getf plan :width) :height (getf plan :height)
+                                              :layer (getf plan :layer) :click-through (getf plan :click-through)))
                 :view view :layout layout
                 :stacking (remove-if-not
                            (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
@@ -927,7 +947,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                 :sounds (materialization-sounds m)
                 :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
                                        :key (lambda (o) (getf o :name)))
-                :config-error (copy-data (runtime-config-error runtime))
+                :config-error (runtime-config-error runtime)
                 :keyboard-grab keyboard-grab
                 :commands (sort (append (host-command-entries)
                                         (copy-list (materialization-commands m)))
@@ -1094,16 +1114,21 @@ instance that reconciliation created inside it."
                    (if captured baseline
                        (setf (gethash spec proposal-baselines)
                              (if (gethash spec proposal-start)
-                                 (copy-data (mounted-state mounted))
+                                 (if (and (not (mounted-rule-parent mounted)) (spec-immutable-p spec))
+                                     (mounted-state mounted)
+                                     (copy-data (mounted-state mounted)))
                                  (sixth (effect-arguments (mounted-rule-definition mounted)))))))))
              (invoke (mounted delivered)
                (with-sample ("tx-invoke")
                 (when (admission-scope-p mounted candidate)
-                 (let ((spec (mounted-spec mounted)))
-                   (setf (mounted-state mounted) (copy-data (baseline mounted)))
+                 (let* ((spec (mounted-spec mounted))
+                        (shared (and (not (mounted-rule-parent mounted)) (spec-immutable-p spec))))
+                   (setf (mounted-state mounted)
+                         (if shared (baseline mounted) (copy-data (baseline mounted))))
                    (multiple-value-bind (original delivered-p) (gethash spec proposal-deliveries)
                      (if delivered-p (setf delivered original)
-                         (setf (gethash spec proposal-deliveries) (copy-data delivered))))
+                         (setf (gethash spec proposal-deliveries)
+                               (if shared delivered (copy-data delivered)))))
                    (setf commands (delete spec commands :key #'car))))
                (setf commands
                      (nconc commands
@@ -1234,6 +1259,226 @@ into one reused buffer, so watching allocates nothing per file."
     (sb-ext:add-package-local-nickname "TOMOE-USER" package package)
     package))
 
+
+(defparameter +pure-special-operators+
+  '(quote function progn let let* flet labels macrolet symbol-macrolet if block return-from
+    tagbody go the locally multiple-value-call multiple-value-prog1 unwind-protect catch throw
+    sb-ext:truly-the sb-kernel:the*))
+
+(defparameter +pure-functions+
+  (let ((table (make-hash-table :test #'eq)))
+    (dolist (sym '(+ - * / = /= < <= > >= 1+ 1- max min mod rem floor ceiling truncate round
+                   ffloor fceiling ftruncate fround abs signum minusp plusp zerop evenp oddp
+                   logand logior logxor logeqv lognand lognor logandc1 logandc2 logorc1 logorc2
+                   lognot logtest logbitp logcount integer-length ash ldb dpb byte byte-size
+                   byte-position expt sqrt exp log sin cos tan asin acos atan sinh cosh tanh
+                   isqrt numerator denominator rational rationalize float coerce
+                   eq eql equal equalp not null atom consp listp numberp integerp rationalp
+                   floatp realp stringp characterp symbolp keywordp typep subtypep endp
+                   char= char/= char< char<= char> char>= char-equal char-not-equal
+                   alpha-char-p alphanumericp digit-char-p upper-case-p lower-case-p
+                   graphic-char-p standard-char-p
+                   string= string/= string< string<= string> string>= string-equal
+                   string-not-equal string-lessp string-greaterp
+                   car cdr caar cadr cdar cddr caaar caadr cadar caddr cdaar cdadr cddar cdddr
+                   caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr cdaaar cdaadr cdadar
+                   cdaddr cddaar cddadr cdddar cddddr first second third fourth fifth sixth
+                   seventh eighth ninth tenth rest last butlast nth nthcdr elt length
+                   cons list list* acons pairlis copy-list copy-alist copy-tree copy-seq
+                   make-list append revappend reverse subseq getf get-properties
+                   assoc assoc-if assoc-if-not rassoc member member-if member-if-not tailp ldiff
+                   subsetp subst subst-if subst-if-not sublis
+                   find find-if find-if-not position position-if position-if-not
+                   count count-if count-if-not remove remove-if remove-if-not remove-duplicates
+                   substitute substitute-if substitute-if-not
+                   set-difference set-exclusive-or union intersection mismatch search
+                   mapcar mapc maplist mapl every some notany notevery reduce
+                   char schar code-char char-code char-int char-upcase char-downcase digit-char
+                   string make-string concatenate string-upcase string-downcase string-capitalize
+                   string-trim string-left-trim string-right-trim parse-integer
+                   princ-to-string prin1-to-string write-to-string symbol-name intern
+                   values values-list identity constantly complement error
+                   sb-c::check-ds-list sb-kernel:check-type-error-trap sb-kernel:case-failure
+                   sb-kernel:ecase-failure sb-kernel:etypecase-failure sb-impl::xsubtract
+                   sb-impl::copy-list-to sb-kernel:unaligned-dx-cons
+                   context previous-context state-value service-state rules-for window-geometry
+                   setting theme bar-layout workspaces-widget place focus raise-window
+                   show-window hide-window fullscreen maximize grab set-view settings
+                   motion-contract window-properties configure-output virtual-output
+                   configure-keyboard layer bind-key bind-button bind-scroll keyboard-grab sound
+                   define-command invoke publish-state serve-state serve-method announce
+                   broadcast ipc-reply window-rule ui shell-surface confirm-dialog menu-dialog
+                   menu-choice sheet-dialog toast once interval watch-file exec-async run-once
+                   service launch spawn close-window screenshot clipboard-copy media-control
+                   adjust-brightness screencast-answer output-power quit reload
+                   json-object json-array json-get copy-data))
+      (setf (gethash sym table) t))
+    table))
+
+(defparameter +clock-read-functions+
+  '(clock-text clock-boundary-ms frame-ms get-internal-real-time get-internal-run-time
+    get-universal-time get-decoded-time))
+
+(defparameter +local-mutation-operators+
+  '(rplaca rplacd sb-kernel:%rplaca sb-kernel:%rplacd sb-impl::%putf
+    nreverse nreconc nconc sort stable-sort delete delete-if delete-if-not
+    delete-duplicates nsubstitute nsubst))
+
+(defun fresh-copy-spine-form-p (form)
+  (and (consp form)
+       (or (eq (car form) 'copy-list)
+           (and (member (car form) '(sort stable-sort))
+                (fresh-copy-spine-form-p (second form))))))
+
+(defun callable-arg-safe-p (arg)
+  (and (consp arg) (member (car arg) '(function lambda))))
+
+(defun form-verified-p (form mode defuns constants &optional seen)
+  (let ((ok t)
+        (safe-sorts (make-hash-table :test #'eq))
+        (dx-tails (make-hash-table :test #'eq)))
+    (labels ((helper-safe-p (sym)
+               (cond ((member sym seen :test #'eq) t)
+                     ((gethash sym defuns)
+                      (form-verified-p (gethash sym defuns) mode defuns constants (cons sym seen)))
+                     ((eq mode :passive) t)
+                     (t nil)))
+             (operator-safe-p (sym local-fns)
+               (or (member sym local-fns :test #'eq)
+                   (gethash sym +pure-functions+)
+                   (and (eq mode :immutable) (member sym +clock-read-functions+ :test #'eq))
+                   (and (member mode '(:precompute :passive))
+                        (member sym +local-mutation-operators+ :test #'eq))
+                   (helper-safe-p sym))))
+      (handler-case
+          (let ((sb-walker:*walk-form-expand-macros-p* t)
+                (local-fns nil))
+            (sb-walker:walk-form
+             form nil
+             (lambda (sub ctx env)
+               (unless ok (return-from form-verified-p nil))
+               (when (consp sub)
+                 (when (and (eq (car sub) 'let*) (consp (second sub)) (= 2 (length (second sub))))
+                   (let ((b1 (first (second sub))) (b2 (second (second sub))))
+                     (when (and (consp b1) (consp b2)
+                                (symbolp (first b1)) (null (symbol-package (first b1)))
+                                (symbolp (first b2)) (null (symbol-package (first b2)))
+                                (eq (second b2) (first b1))
+                                (consp (second b1))
+                                (or (equal (second b1) '(sb-kernel:unaligned-dx-cons nil))
+                                    (equal (second b1) '(list nil))))
+                       (setf (gethash (first b2) dx-tails) t))))
+                 (when (and (member (car sub) '(flet labels)) (listp (second sub)))
+                   (dolist (def (second sub))
+                     (when (and (consp def) (symbolp (car def)))
+                       (pushnew (car def) local-fns :test #'eq))))
+                 (when (and (member (car sub) '(sort stable-sort))
+                            (fresh-copy-spine-form-p (second sub)))
+                   (setf (gethash sub safe-sorts) t)))
+               (when (eq ctx :eval)
+                 (cond
+                   ((and (symbolp sub) (not (keywordp sub)) (not (constantp sub)))
+                    (unless (or (and (sb-walker:var-lexical-p sub env)
+                                     (not (sb-walker:var-special-p sub env)))
+                                (gethash sub constants))
+                      (setf ok nil)))
+                   ((and (consp sub) (symbolp (car sub)) (not (macro-function (car sub) env)))
+                    (let ((op (car sub)) (args (cdr sub)))
+                      (cond
+                        ((eq op 'setq)
+                         (loop for (var val) on args by #'cddr do
+                           (unless (and (symbolp var)
+                                        (sb-walker:var-lexical-p var env)
+                                        (not (sb-walker:var-special-p var env)))
+                             (setf ok nil))
+                           (when (and (gethash var dx-tails)
+                                      (not (and (consp val)
+                                                (member (car val) '(list cdr last sb-impl::copy-list-to)))))
+                             (setf ok nil))))
+                        ((eq op 'function)
+                         (let ((fn (first args)))
+                           (when (symbolp fn)
+                             (unless (operator-safe-p fn local-fns) (setf ok nil)))))
+                        ((member op +pure-special-operators+ :test #'eq)
+                         (when (member op '(let let*))
+                           (dolist (binding (first args))
+                             (let ((var (if (consp binding) (car binding) binding)))
+                               (when (and (symbolp var) (sb-walker:var-special-p var env))
+                                 (setf ok nil))))))
+                        ((and (member op '(rplacd sb-kernel:%rplacd)) (gethash (first args) dx-tails))
+                         nil)
+                        ((gethash sub safe-sorts)
+                         nil)
+                        ((eq op 'format)
+                         (unless (null (first args)) (setf ok nil)))
+                        ((member op '(funcall apply))
+                         (unless (or (callable-arg-safe-p (first args))
+                                     (eq mode :passive))
+                           (setf ok nil)))
+                        ((not (operator-safe-p op local-fns))
+                         (setf ok nil)))))
+                   ((and (consp sub) (not (symbolp (car sub)))
+                         (not (and (consp (car sub)) (eq (caar sub) 'lambda))))
+                    (setf ok nil))))
+               sub)))
+        (serious-condition () (setf ok nil)))
+      ok)))
+
+(defun collect-mutated-symbols (form into)
+  (when (consp form)
+    (when (and (listp (cdr form)) (member (car form) '(setq setf incf decf push pop)) (cdr form))
+      (loop for tail = (cdr form) then (if (member (car form) '(setq setf))
+                                           (and (consp (cdr tail)) (cddr tail))
+                                           (cdr tail))
+            while (consp tail)
+            when (symbolp (car tail)) do (setf (gethash (car tail) into) t)))
+    (loop for tail = form then (cdr tail)
+          while (consp tail) do (collect-mutated-symbols (car tail) into)
+          finally (when tail (collect-mutated-symbols tail into)))))
+
+(defun analyze-source-specs (path package specs)
+  (let ((forms nil)
+        (defuns (make-hash-table :test #'eq))
+        (defun-counts (make-hash-table :test #'eq))
+        (params nil)
+        (mutated (make-hash-table :test #'eq))
+        (constants (make-hash-table :test #'eq)))
+    (handler-case
+        (let ((*package* package) (*read-eval* nil) (*read-default-float-format* 'double-float))
+          (with-open-file (stream path)
+            (loop for form = (read stream nil :eof) until (eq form :eof) do
+              (if (and (consp form) (eq (car form) 'in-package) (second form))
+                  (let ((found (find-package (second form))))
+                    (when found (setf *package* found)))
+                  (push form forms)))))
+      (serious-condition () (return-from analyze-source-specs specs)))
+    (setf forms (nreverse forms))
+    (dolist (form forms)
+      (collect-mutated-symbols form mutated)
+      (when (consp form)
+        (cond
+          ((and (eq (car form) 'defun) (symbolp (second form)) (listp (third form)))
+           (incf (gethash (second form) defun-counts 0))
+           (setf (gethash (second form) defuns) (list* 'lambda (third form) (cdddr form))))
+          ((and (eq (car form) 'defparameter) (symbolp (second form)))
+           (push (cons (second form) (third form)) params)))))
+    (maphash (lambda (sym count)
+               (when (or (> count 1) (gethash sym mutated)) (remhash sym defuns)))
+             defun-counts)
+    (dolist (entry (nreverse params))
+      (let ((sym (car entry)) (init (cdr entry)))
+        (when (and (not (gethash sym mutated))
+                   (form-verified-p init :precompute defuns constants))
+          (setf (gethash sym constants) t))))
+    (dolist (spec specs specs)
+      (when (spec-form spec)
+        (when (form-verified-p (spec-form spec) :immutable defuns constants)
+          (setf (spec-immutable-generation spec) *patch-generation*))
+        (when (spec-precompute spec)
+          (let ((mode (if (eq (spec-precompute spec) :passive) :passive :precompute)))
+            (if (form-verified-p (spec-form spec) mode defuns constants)
+                (setf (spec-precompute-generation spec) *patch-generation*)
+                (setf (spec-precompute spec) nil))))))))
 (defun load-specs (runtime path &optional package)
   (incf *definitions-generation*)
   (let* ((*source* path)
@@ -1252,9 +1497,10 @@ into one reused buffer, so watching allocates nothing per file."
           (let ((undefined (undefined-references)))
             (when undefined
               (error "~A refers to undefined ~{~(~A~)~^, ~}." path undefined))))))
-    (loop for spec in (nreverse *definitions*)
-          do (setf (spec-directory spec) directory (spec-package spec) package)
-          collect spec)))
+    (let ((specs (loop for spec in (nreverse *definitions*)
+                       do (setf (spec-directory spec) directory (spec-package spec) package)
+                       collect spec)))
+      (analyze-source-specs path package specs))))
 
 (defun sweep-source-packages (runtime)
   (let ((live (mapcar (lambda (mounted) (spec-package (mounted-spec mounted)))
@@ -1539,7 +1785,7 @@ burst of shader compiles, captures or decoded images grew without a collection r
            (when (observe-client-geometry runtime (getf event :id)
                                           (getf event :client-width) (getf event :client-height))
              (push :window-geometry changed))
-           (let ((new (copy-data old)))
+           (let ((new (copy-list old)))
              (setf (getf new :width) (getf event :width)
                    (getf new :height) (getf event :height))
              (unless (equal old new)

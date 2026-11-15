@@ -28,7 +28,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 42; }
+int tomoe_abi_version(void) { return 43; }
 
 void tomoe_trim_heap(void) {
     malloc_trim(0);
@@ -289,6 +289,8 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->display) wl_display_destroy(s->display);
     buffers_finish();
     tomoe_clear_bindings(s);
+    binding_delta_free(s->staging_delta);
+    s->staging_delta = NULL;
     free(s->ui_hovered);
     free(s->grab_owner);
     free(s->grab_otherwise);

@@ -94,34 +94,76 @@
                  (t (error "Not extension data: ~S" (type-of item))))))
       (walk value 0))))
 
-(defstruct (snapshot (:constructor make-snapshot (data reads &optional previous)))
+(defun check-data (value &optional (initial-nodes 0) (initial-depth 0))
+  (let ((nodes initial-nodes))
+    (declare (type fixnum nodes))
+    (labels ((walk (item depth)
+               (declare (type fixnum depth))
+               (when (or (> (incf nodes) 32768) (> depth 64))
+                 (error "Extension data exceeds the node/depth budget."))
+               (typecase item
+                 (null nil)
+                 (cons
+                  (let ((tail item))
+                    (loop while (consp tail) do
+                      (when (> (incf nodes) 32768) (error "Extension data exceeds the node budget."))
+                      (walk (car tail) (1+ depth))
+                      (setf tail (cdr tail)))
+                    (walk tail (1+ depth))))
+                 (string
+                  (when (> (length item) 65536) (error "String exceeds 65536 characters.")))
+                 (integer
+                  (unless (<= (- (expt 2 63)) item (1- (expt 2 64)))
+                    (error "Integer outside the data range.")))
+                 (ratio
+                  (unless (and (<= (- (expt 2 63)) (numerator item) (1- (expt 2 64)))
+                               (<= 1 (denominator item) (1- (expt 2 64))))
+                    (error "Rational outside the data range.")))
+                 (float
+                  (unless (%finite-float-p item)
+                    (error "Only finite floats are extension data.")))
+                 (symbol
+                  (unless (or (eq item t) (keywordp item))
+                    (error "Only keywords, T, and NIL are data symbols: ~S" item)))
+                 (t (error "Not extension data: ~S" (type-of item))))))
+      (walk value initial-depth)
+      value)))
+
+(defstruct (snapshot (:constructor make-snapshot (data reads &optional previous shared)))
   (data nil :read-only t) (reads nil :read-only t) (previous nil :read-only t)
-  (copies nil) (previous-copies nil))
+  (shared nil :read-only t) (copies nil) (previous-copies nil))
 (defun context (snapshot key)
   "Read a declared context key. Values belong to this invocation, not the host:
 a key is copied on its first read, and later reads return that copy."
   (unless (member key (snapshot-reads snapshot))
     (error "Undeclared context dependency: ~S" key))
-  (let ((entry (assoc key (snapshot-copies snapshot))))
-    (if entry
-        (cdr entry)
-        (cdar (push (cons key (copy-data (getf (snapshot-data snapshot) key)))
-                    (snapshot-copies snapshot))))))
+  (if (snapshot-shared snapshot)
+      (getf (snapshot-data snapshot) key)
+      (let ((entry (assoc key (snapshot-copies snapshot))))
+        (if entry
+            (cdr entry)
+            (cdar (push (cons key (copy-data (getf (snapshot-data snapshot) key)))
+                        (snapshot-copies snapshot)))))))
 
 (defun previous-context (snapshot key)
   "Read the context before this transaction. Shares CONTEXT's declared reads;
 unlike CONTEXT, this value is stable while candidate dependencies settle."
   (unless (member key (snapshot-reads snapshot))
     (error "Undeclared context dependency: ~S" key))
-  (let ((entry (assoc key (snapshot-previous-copies snapshot))))
-    (if entry
-        (cdr entry)
-        (cdar (push (cons key (copy-data (getf (snapshot-previous snapshot) key)))
-                    (snapshot-previous-copies snapshot))))))
+  (if (snapshot-shared snapshot)
+      (getf (snapshot-previous snapshot) key)
+      (let ((entry (assoc key (snapshot-previous-copies snapshot))))
+        (if entry
+            (cdr entry)
+            (cdar (push (cons key (copy-data (getf (snapshot-previous snapshot) key)))
+                        (snapshot-previous-copies snapshot)))))))
 
-(defstruct (effect (:constructor %effect (kind arguments &optional predicate application)))
+(defstruct (effect (:constructor %%effect (kind arguments &optional predicate application sealed)))
   (kind nil :read-only t) (arguments nil :read-only t)
-  (predicate nil :read-only t) (application nil :read-only t))
+  (predicate nil :read-only t) (application nil :read-only t)
+  (sealed nil :read-only t))
+(defun %effect (kind arguments &optional predicate application)
+  (%%effect kind arguments predicate application t))
 (defstruct (command (:constructor %command (kind arguments)))
   (kind nil :read-only t) (arguments nil :read-only t))
 
@@ -166,7 +208,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
     (%json-validate-value value)
     (when (> (%json-output-size value 0 nil) 1044480)
       (error "IPC payload exceeds the frame budget."))
-    (copy-data (list :json-object (list (cons "event" "") (cons "payload" value))))
+    (check-data value 16 3)
     value))
 
 (defun serve-state (method value)
@@ -187,7 +229,7 @@ Return IPC-REPLY among commands to answer; the default result is JSON null."
                  (:command
                   (check-type value string)
                   (unless (<= 1 (length value) 256) (error "Invalid IPC command."))
-                  (%effect :method (list (ipc-name name) :command value))))))
+                  (%effect :method (list (ipc-name name) :command (copy-seq value)))))))
 
 (defun announce (event value)
   "Own an event snapshot. Publish changes only after successful commit.
@@ -217,29 +259,31 @@ NIL. Omission or unmount exposes the preceding owner. Values are bounded data."
   :canonical (destructuring-bind (name value) args (publish-state name value))
   :reduce (destructuring-bind (name value) args
             (let ((entry (assoc name (materialization-data m))))
-              (if entry (setf (cdr entry) (copy-data value))
+              (if entry (setf (cdr entry) value)
                   (setf (materialization-data m)
-                        (nconc (materialization-data m) (list (cons name (copy-data value)))))))))
+                        (nconc (materialization-data m) (list (cons name value))))))))
 
 (defun state-value (snapshot name &optional default)
   "Read a named published value. Declare :DATA as a context dependency."
   (check-type name keyword)
-  (let ((entry (assoc name (context snapshot :data))))
-    (copy-data (if entry (cdr entry) default))))
+  (let* ((entry (assoc name (context snapshot :data)))
+         (value (if entry (cdr entry) default)))
+    (if (snapshot-shared snapshot) value (copy-data value))))
 
 (defun service-state (snapshot name &optional default)
   "Read copied session service facts. Declare :SERVICES as a dependency.
 Producer lifetimes belong to the session; removing a consumer releases only its
 own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
   (check-type name keyword)
-  (copy-data (getf (context snapshot :services) name default)))
+  (let ((value (getf (context snapshot :services) name default)))
+    (if (snapshot-shared snapshot) value (copy-data value))))
 
 (defun shader-path (path)
   "Absolute window shader path, or one relative to the declaring source."
   (check-type path string)
   (when (or (zerop (length path)) (> (length path) 4096) (find #\Null path))
     (error "Invalid window shader path."))
-  (cond ((char= (char path 0) #\/) path)
+  (cond ((char= (char path 0) #\/) (copy-seq path))
         ((and (stringp *source-directory*) (plusp (length *source-directory*))
               (char= (char *source-directory* 0) #\/))
          (concatenate 'string *source-directory* path))
@@ -255,7 +299,7 @@ own effects. :NOTIFICATIONS supplies :AVAILABLE and a :NOTIFICATIONS list."
                             (char= character #\_)))
                       entry))
     (error "Invalid window shader entry ~S." entry))
-  entry)
+  (copy-seq entry))
 
 (defun rule-reserved-property-p (key)
   (or (member key '(:app-id :app_id :title :match :apply))
@@ -297,8 +341,9 @@ reloads invoke APPLY with :MOUNT; losing the match removes the instance."
 Declare :RULES in the calling extension's context dependencies."
   (let ((id (if (listp window) (getf window :id) window)))
     (check-type id (integer 1 4294967295))
-    (copy-data (getf (find id (context snapshot :rules)
-                          :key (lambda (record) (getf record :id))) :properties))))
+    (let ((props (getf (find id (context snapshot :rules)
+                             :key (lambda (record) (getf record :id))) :properties)))
+      (if (snapshot-shared snapshot) props (copy-data props)))))
 
 (defun window-geometry (snapshot window)
   "Read a visible window's physical rectangle, or NIL if hidden/unknown.
@@ -310,8 +355,8 @@ contains the requested, quantized placement size. WINDOW is an ID or window reco
     (let ((record (find id (context snapshot :window-geometry)
                         :key (lambda (record) (getf record :id)))))
       (when record
-        (copy-data (loop for key in '(:x :y :width :height)
-                         append (list key (getf record key))))))))
+        (list :x (getf record :x) :y (getf record :y)
+              :width (getf record :width) :height (getf record :height))))))
 
 (defvar *frame-ms* 16
   "Milliseconds between display refreshes on the fastest active output.
@@ -816,7 +861,7 @@ settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
           ((eq value t) (%animation-spec default default))
           ((and (consp value) (eq (first value) :kind)
                 (member (second value) '(:off :spring :ease)))
-           (copy-list value))
+           (copy-data value))
           ((not (and (consp value) (member (first value) '(:spring :ease)) (= 2 (length value)))) (bad))
           ((eq (first value) :spring)
            (destructuring-bind (&key (damping-ratio 1) (stiffness 16000) (epsilon 1/1000))
@@ -894,7 +939,8 @@ merge field by field. Omission restores the preceding owner or the default."
 (defun setting (snapshot &rest path)
   "Read a resolved compositor setting. Declare :SETTINGS as a dependency."
   (let ((value (context snapshot :settings)))
-    (dolist (key path (copy-data value)) (setf value (getf value key)))))
+    (dolist (key path (if (snapshot-shared snapshot) value (copy-data value)))
+      (setf value (getf value key)))))
 
 (defun default-keyboard-config ()
   (list :rules "" :model "" :layout "" :variant "" :options nil :repeat-rate 25 :repeat-delay 600))
@@ -983,7 +1029,7 @@ pointer event on the Lisp path, exactly as before."
                           (check-type x integer) (check-type y integer)
                           (check-type width (integer 1 1048576))
                           (check-type height (integer 1 1048576))
-                          (list name x y width height))))
+                          (list (copy-seq name) x y width height))))
         (edges
           (loop for edge in edges
                 collect (destructuring-bind (side thickness) edge
@@ -1076,8 +1122,8 @@ pointer event on the Lisp path, exactly as before."
         (error "Only :WORKSPACE command arguments take :MAXIMUM: ~S" spec))
       (unless (and (integerp maximum) (<= 1 maximum 128))
         (error "A :WORKSPACE :MAXIMUM is a workspace number from 1 through 128: ~S" spec)))
-    (let ((spec (list :name name :type type :required required :default default
-                      :default-p (and default-p t) :description (or description "")
+    (let ((spec (list :name name :type type :required required :default (copy-data default)
+                      :default-p (and default-p t) :description (if description (copy-seq description) "")
                       :values (copy-list values)
                       :maximum (and (eq type :workspace) (or maximum 128)))))
       (when default-p
@@ -1234,20 +1280,30 @@ for a name that was never a command."
 that was a command and is not one now drops its bindings with the owner that went
 away; a name that was never a command is an error, so a typo in a config fails
 its load rather than leaving a key that does nothing."
-  (let ((commands (getf context :commands)) (bindings nil))
+  (let ((commands (getf context :commands)) (bindings nil) (changed nil))
     (dolist (binding (getf context :bindings))
       (let ((call (resolve-binding-call commands retired (getf binding :call)))
             (release (resolve-binding-call commands retired (getf binding :release-call))))
-        (unless (or (eq call :retired) (eq release :retired))
-          (setf (getf binding :call) call (getf binding :release-call) release)
-          (push binding bindings))))
-    (setf (getf context :bindings) (nreverse bindings))
+        (if (or (eq call :retired) (eq release :retired))
+            (setf changed t)
+            (if (and (equal call (getf binding :call))
+                     (equal release (getf binding :release-call)))
+                (push binding bindings)
+                (let ((copy (copy-list binding)))
+                  (setf changed t
+                        (getf copy :call) call
+                        (getf copy :release-call) release)
+                  (push copy bindings))))))
+    (when changed
+      (setf (getf context :bindings) (nreverse bindings)))
     (let ((grab (getf context :keyboard-grab)))
       (when grab
         (let ((call (resolve-binding-call commands retired (getf grab :call))))
-          (if (eq call :retired)
-              (setf (getf context :keyboard-grab) nil)
-              (setf (getf grab :call) call))))))
+          (cond ((eq call :retired) (setf (getf context :keyboard-grab) nil))
+                ((not (equal call (getf grab :call)))
+                 (let ((copy (copy-list grab)))
+                   (setf (getf copy :call) call
+                         (getf context :keyboard-grab) copy))))))))
   context)
 
 (defun bind-key (modifiers keysym command &key release description)
@@ -1446,11 +1502,14 @@ turns them all off while any is lit."
   (incf *next-source-id*))
 
 (defstruct (spec (:copier nil)) name reads initial update source directory admission package (token (gensym "SOURCE-"))
-  (id (allocate-source-id) :read-only t) patch)
-(defun register-spec (name reads initial update &optional admission)
+  (id (allocate-source-id) :read-only t) patch form immutable-generation precompute precompute-generation)
+(defun register-spec (name reads initial update &optional admission form precompute)
   (when (eq *definitions* :not-loading) (error "Load declarations with MOUNT or RELOAD."))
   (check-type name string)
   (check-type admission boolean)
+  (unless (or (typep precompute 'boolean) (eq precompute :passive)
+              (and (consp precompute) (every #'stringp precompute)))
+    (error "Invalid precompute declaration: ~S" precompute))
   (unless (and (<= 1 (length name) 80)
                (every (lambda (c) (or (find c "-_./") (alphanumericp c))) name))
     (error "Invalid extension name: ~S" name))
@@ -1459,16 +1518,18 @@ turns them all off while any is lit."
   (when (find name *definitions* :key #'spec-name :test #'equal)
     (error "Duplicate extension: ~A" name))
   (push (make-spec :name (copy-seq name) :reads (copy-list reads)
-                   :initial (copy-data initial) :update update :source *source* :admission admission)
+                   :initial (copy-data initial) :update update :source *source* :admission admission
+                   :form form :precompute (copy-data precompute))
         *definitions*))
 
-(defmacro define-extension (name (&key reads state admission) (snapshot state-name event) &body body)
+(defmacro define-extension (name (&key reads state admission precompute) (snapshot state-name event) &body body)
   "Declare a pure reducer. Return state, owned effects, and one-shot commands.
 With :ADMISSION T, evaluate after ordinary reducers/rules, recalculating from
 the transaction's starting private state and event on every dependency round.
 Only the final proposal's state, effects and commands are accepted."
   `(register-spec ,name ',reads ,state
-                  (lambda (,snapshot ,state-name ,event) ,@body) ,admission))
+                  (lambda (,snapshot ,state-name ,event) ,@body) ,admission
+                  '(lambda (,snapshot ,state-name ,event) ,@body) ',precompute))
 
 (defparameter *host-commands* nil
   "Session commands the compositor owns. Keys, the command line and JSON all reach them.")

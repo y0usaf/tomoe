@@ -239,10 +239,10 @@ its canvas position until the viewport leaves it, then glides in."
 (define-effect :surface
   :canonical (%effect :surface (canonical-shell-surface args))
   :key (list :surface (getf args :name))
-  :reduce (push (append (list :owner (spec-name (mounted-spec mounted))
-                              :source-id (spec-id (mounted-spec mounted))
-                              :directory (spec-directory (mounted-spec mounted)))
-                        (copy-data args))
+  :reduce (push (list* :owner (spec-name (mounted-spec mounted))
+                       :source-id (spec-id (mounted-spec mounted))
+                       :directory (spec-directory (mounted-spec mounted))
+                       args)
                 (materialization-surfaces m)))
 
 (defun %ui-round (number)

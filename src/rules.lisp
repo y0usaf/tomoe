@@ -120,9 +120,9 @@ every declared property, so no rule can focus it back."
                           :key (lambda (window) (getf window :id)))))
         (dolist (entry (fourth (effect-arguments (mounted-rule-definition instance))))
           (let ((old (assoc (car entry) (getf record :properties) :test #'equal)))
-            (if old (setf (cdr old) (copy-data (cdr entry)))
+            (if old (setf (cdr old) (cdr entry))
                 (setf (getf record :properties)
-                      (nconc (getf record :properties) (list (copy-data entry)))))))))
+                      (nconc (getf record :properties) (list (cons (car entry) (cdr entry))))))))))
     (dolist (window (runtime-windows runtime) result)
       (when (null (getf window :focus t))
         (let ((record (find (getf window :id) result
