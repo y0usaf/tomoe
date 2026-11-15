@@ -9,7 +9,7 @@ ANIMATED_WINDOW = 6
 CONTROL_WINDOW = 4
 CHURN_LIMIT = 3 * 1024 * 1024
 
-exec(compile(open(HANDBACK_GATE).read(), "memory-handback", "exec"), globals())
+exec(compile(open(HANDBACK_GATE).read(), "memory-arena", "exec"), globals())
 
 
 def tomoe_process():
@@ -22,6 +22,10 @@ def tomoe_process():
     raise AssertionError("no tomoe process")
 
 
+def report_value(report, key):
+    return int(report.split(f":{key} ")[1].split()[0].rstrip(")"))
+
+
 def rollup():
     values = {}
     for line in machine.succeed(f"cat /proc/{tomoe_process()}/smaps_rollup").splitlines():
@@ -29,10 +33,10 @@ def rollup():
         if rest:
             values[key] = int(rest.split()[0])
     report = cli("memory").strip()
-    values["heap-used"] = int(report.split(":HEAP-USED ")[1].split()[0])
-    values["heap-held"] = int(report.split(":HEAP-HELD ")[1].split()[0])
-    values["dynamic-usage"] = int(report.split(":DYNAMIC-USAGE ")[1].split()[0])
-    values["gc-count"] = int(report.split(":GC-COUNT ")[1].split()[0])
+    for key in ("RSS-BYTES", "MALLOC-HEAP-USED", "MALLOC-HEAP-HELD", "TEXTURE-BYTES",
+                "PERSISTENT-USED", "ARENA-USED", "ARENA-HIGH-WATER", "RECLAIM-LONGEST-US",
+                "HOT-ALLOCS", "EVENTS-DROPPED"):
+        values[key.lower()] = report_value(report, key)
     return values
 
 
@@ -49,9 +53,10 @@ def measure(label, attribute=False, samples=4, gap=0.4):
         f" pss_anon_median={typical['Pss_Anon']} private_dirty={peak['Private_Dirty']}"
         f" pss_file={peak['Pss_File']} shmem={peak['Pss_Shmem']}"
         f" noise_anon={peak['Pss_Anon'] - min(sample['Pss_Anon'] for sample in rows)}"
-        f" heap_used={peak['heap-used']} heap_held={peak['heap-held']}"
-        f" heap_free={peak['heap-held'] - peak['heap-used']}"
-        f" dynamic={peak['dynamic-usage']} gc={peak['gc-count']}",
+        f" rss={peak['rss-bytes']} malloc_used={peak['malloc-heap-used']}"
+        f" malloc_held={peak['malloc-heap-held']} gpu_textures={peak['texture-bytes']}"
+        f" lisp_persistent={peak['persistent-used']} lisp_arena_peak={peak['arena-high-water']}"
+        f" hot_allocs={peak['hot-allocs']} events_dropped={peak['events-dropped']}",
         flush=True,
     )
     if attribute:
@@ -100,41 +105,15 @@ def read_timings(label):
     timings = plist(reply[2])
     channels = {text(plist(entry)[":NAME"]): plist(entry) for entry in items(timings[":CHANNELS"])}
     over = [(int(entry[0]), int(entry[1])) for entry in items(timings[":STALLS"])]
-    intervals = sorted((int(entry[0]), int(entry[1]))
-                       for entry in items(timings[":GC-INTERVALS"]))
-    handbacks = [(int(entry[0]), int(entry[1])) for entry in items(timings[":HANDBACK-INTERVALS"])]
     longest = max([duration for _, duration in over], default=0)
-    handback = max([b - a for a, b in handbacks], default=0)
     print(
         f"STALL {label} frames_over={len(over)} longest_ns={longest}"
-        f" collections={len(intervals)} handbacks={len(handbacks)} handback_ns={handback}"
         f" frames={channels.get('frame-total', {}).get(':COUNT', 0)}"
         f" frame_p50={channels.get('frame-total', {}).get(':P50', 0)}"
         f" frame_p99={channels.get('frame-total', {}).get(':P99', 0)}",
         flush=True,
     )
-    return longest, intervals, handbacks
-
-
-def collection_gate(label, intervals, period, window):
-    assert intervals, f"{label}: no collection was logged in the measured window"
-    pauses = sorted(end - start for start, end in intervals)
-    allowed = window // period
-    print(
-        f"COLLECTION {label} period_ns={period} window_ns={window} count={len(intervals)}"
-        f" allowed={allowed} min_us={pauses[0] // 1000}"
-        f" median_us={pauses[len(pauses) // 2] // 1000}"
-        f" mean_us={sum(pauses) // len(pauses) // 1000} max_us={pauses[-1] // 1000}"
-        f" pauses_us={[pause // 1000 for pause in pauses]}",
-        flush=True,
-    )
-    assert len(intervals) <= allowed, (
-        f"{label}: {len(intervals)} collections in {window} ns, more than the one per"
-        f" {period} ns refresh period the budget allows")
-    assert pauses[len(pauses) // 2] <= period, (
-        f"{label}: the median collection paused {pauses[len(pauses) // 2]} ns over one refresh"
-        f" ({period} ns)")
-    return pauses
+    return longest
 
 
 fresh("--bare", bus=False)
@@ -172,7 +151,7 @@ time.sleep(4)
 policy_windows = measure("policy-2")
 cli("timings reset")
 time.sleep(ANIMATED_WINDOW)
-longest, _, _ = read_timings("policy-2-animated")
+longest = read_timings("policy-2-animated")
 settled = measure("policy-2-settled", attribute=True)
 close_windows(2, prefix="p")
 time.sleep(2)
@@ -180,51 +159,7 @@ measure("policy-0")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1"})
-cli(f"mount {REFRESH_POLICY}")
-cli(f"mount {SCENE_POLICY}")
-open_windows(2, width=320, height=240, prefix="c")
-time.sleep(3)
-refresh, period = refresh_period()
-print("refresh:", refresh, "period:", period, flush=True)
-assert refresh >= BUDGET_REFRESH_MHZ, (
-    f"the measured output runs at {refresh} mHz, below the {BUDGET_REFRESH_MHZ} mHz"
-    " refresh the collection budget is stated against")
-cli("timings reset")
-time.sleep(ANIMATED_WINDOW)
-_, collections, _ = read_timings("collections")
-close_windows(2, prefix="c")
-quit()
-
-machine.succeed("systemctl stop tomoe check-bus")
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1",
-                              "TOMOE_TEST_GC_PAUSE_US": str(period * 3 // 2 // 1000)})
-cli(f"mount {REFRESH_POLICY}")
-cli(f"mount {SCENE_POLICY}")
-open_windows(2, width=320, height=240, prefix="s")
-time.sleep(3)
-slow = []
-for attempt in range(3):
-    cli("timings reset")
-    time.sleep(CONTROL_WINDOW)
-    _, slow, _ = read_timings(f"forced-slow-gc-{attempt}")
-    if slow:
-        break
-close_windows(2, prefix="s")
-quit()
-assert slow and min(end - start for start, end in slow) > period, (
-    "the test pause floor did not reach the collector: "
-    + str(sorted(end - start for start, end in slow)))
-try:
-    collection_gate("forced-slow-gc", slow, period, CONTROL_WINDOW * 1000000000)
-except AssertionError as error:
-    print("forced slow collection rejected:", error, flush=True)
-else:
-    raise AssertionError("a collection slower than one refresh was accepted")
-
-handbacks, handback_period = handback_window("h")
-handback_gate("idle-handback", handbacks, handback_period)
-slow_handback_window("s", handback_period)
+arena = arena_window("a")
 
 assert len(state[":EXTENSIONS"]) > 1, state[":EXTENSIONS"]
 for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty, "tiles-50"),
@@ -232,6 +167,7 @@ for row, label in ((tiles_one, "tiles-1"), (tiles_ten, "tiles-10"), (tiles_fifty
     assert row["Pss_Anon"] <= ANON_LIMIT, f"{label} anon {row['Pss_Anon']} KB over {ANON_LIMIT}"
     assert row["Private_Dirty"] <= DIRTY_LIMIT, (
         f"{label} private dirty {row['Private_Dirty']} KB over {DIRTY_LIMIT}")
-collection_gate("collections", collections, period, ANIMATED_WINDOW * 1000000000)
-print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "period", period,
+assert settled["hot-allocs"] == 0, f"{settled['hot-allocs']} allocations on the frame or input path"
+assert settled["events-dropped"] == 0, f"{settled['events-dropped']} events dropped"
+print("memory bounds: anon", ANON_LIMIT, "dirty", DIRTY_LIMIT, "arena", arena,
       "tiles", tiles, "longest_frame", longest, flush=True)

@@ -1,86 +1,34 @@
-HANDBACK_SAMPLES = 4
-HANDBACK_WAIT = 1.8
+ARENA_SAMPLES = 4
+ARENA_WAIT = 0.5
 
 
-def handback_gate(label, handbacks, period):
-    assert handbacks, f"{label}: no idle handback was logged in the measured window"
-    pauses = sorted(end - start for start, end in handbacks)
-    print(
-        f"HANDBACK {label} period_ns={period} count={len(handbacks)}"
-        f" min_us={pauses[0] // 1000} median_us={pauses[len(pauses) // 2] // 1000}"
-        f" max_us={pauses[-1] // 1000} pauses_us={[pause // 1000 for pause in pauses]}"
-        f" order_us={[(end - start) // 1000 for start, end in handbacks]}",
-        flush=True,
-    )
-    assert pauses[-1] <= period, (
-        f"{label}: the slowest idle handback paused {pauses[-1]} ns over one refresh"
-        f" ({period} ns)")
-    return pauses
-
-
-def handback_window(prefix):
-    fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1"})
+def arena_window(prefix):
+    fresh("--bare", bus=False)
     cli(f"mount {REFRESH_POLICY}")
     cli(f"mount {SCENE_POLICY}")
     cli(f"mount {HANDBACK_POLICY}")
     open_windows(2, width=320, height=240, prefix=prefix)
     time.sleep(3)
     refresh, period = refresh_period()
-    print("handback refresh:", refresh, "period:", period, flush=True)
-    assert refresh >= BUDGET_REFRESH_MHZ, (
-        f"the measured output runs at {refresh} mHz, below the {BUDGET_REFRESH_MHZ} mHz"
-        " refresh the handback budget is stated against")
-    before = measure("handback-before")
-    cli("timings reset")
-    cli("command churn")
+    before = measure("arena-before")
+    for _ in range(ARENA_SAMPLES):
+        cli("command churn")
+        time.sleep(ARENA_WAIT)
     churn = [plist(entry).get(":STATE") for entry in items(inspect()[":EXTENSIONS"])
              if text(plist(entry).get(":NAME", '""')) == "memory-handback"]
     assert churn and plist(churn[0]).get(":CELLS") == "300000", churn
-    for _ in range(HANDBACK_SAMPLES - 1):
-        time.sleep(HANDBACK_WAIT)
-        cli("command churn")
-    time.sleep(HANDBACK_WAIT)
-    _, _, handbacks = read_timings("idle-handback")
-    after = measure("handback-after")
+    after = measure("arena-after")
     close_windows(2, prefix=prefix)
     quit()
-    assert after["dynamic-usage"] <= before["dynamic-usage"] + CHURN_LIMIT, (
-        f"the idle handback left {after['dynamic-usage'] - before['dynamic-usage']} bytes of"
-        f" the churn behind, over {CHURN_LIMIT}")
-    return handbacks, period
-
-
-def slow_handback_window(prefix, period):
-    fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1",
-                                    "TOMOE_TEST_HANDBACK_PAUSE_US": str(period * 3 // 2 // 1000)})
-    cli(f"mount {REFRESH_POLICY}")
-    cli(f"mount {SCENE_POLICY}")
-    cli(f"mount {HANDBACK_POLICY}")
-    open_windows(2, width=320, height=240, prefix=prefix)
-    time.sleep(3)
-    slow = []
-    for attempt in range(3):
-        cli("timings reset")
-        for sample in range(HANDBACK_SAMPLES):
-            if sample:
-                time.sleep(HANDBACK_WAIT)
-            cli("command churn")
-        time.sleep(HANDBACK_WAIT)
-        _, _, slow = read_timings(f"forced-slow-handback-{attempt}")
-        if slow:
-            break
-    close_windows(2, prefix=prefix)
-    quit()
-    pauses = sorted(end - start for start, end in slow)
-    floor = period * 3 // 2 // 1000 * 1000
-    assert len(pauses) >= 3, "the forced window logged too few handbacks: " + str(pauses)
-    assert len([pause for pause in pauses if pause >= floor]) == 1, (
-        "the forced window did not hold one padded handback: " + str(pauses))
-    assert all(pause <= period for pause in pauses if pause < floor), (
-        "a real handback in the forced window outlasted a refresh: " + str(pauses))
-    try:
-        handback_gate("forced-slow-handback", slow, period)
-    except AssertionError as error:
-        print("forced slow handback rejected:", error, flush=True)
-    else:
-        raise AssertionError("an idle handback slower than one refresh was accepted")
+    print(f"ARENA period_ns={period} high_water={after['arena-high-water']}"
+          f" reclaim_longest_us={after['reclaim-longest-us']}"
+          f" persistent_before={before['persistent-used']}"
+          f" persistent_after={after['persistent-used']}", flush=True)
+    assert after["arena-high-water"] >= 300000 * 16, "the churn never reached the dispatch arena"
+    assert after["arena-used"] == 0, f"{after['arena-used']} arena bytes outlived the dispatch"
+    assert after["persistent-used"] <= before["persistent-used"] + CHURN_LIMIT, (
+        f"the churn left {after['persistent-used'] - before['persistent-used']} persistent bytes")
+    assert after["reclaim-longest-us"] * 1000 <= period, (
+        f"the longest Lisp reclaim took {after['reclaim-longest-us']} us, over one refresh"
+        f" ({period} ns)")
+    return after["reclaim-longest-us"]
