@@ -299,7 +299,6 @@ void tomoe_destroy(struct tomoe *s) {
     while (tomoe_next_event(s)) { }
     free(s->hit_result);
     free(s->frames_result);
-    free(s->memory_result);
     free(s->animation_result);
     free(s->cursor_result);
     free(s->motion_result);
