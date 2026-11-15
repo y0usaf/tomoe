@@ -166,6 +166,7 @@ void input_stream_suspend(struct tomoe *s) {
         free(event->text);
         free(event);
     }
+    if (s->observation_barrier > s->event_count) s->observation_barrier = s->event_count;
 }
 
 static void input_stream_fields(struct tomoe *s, FILE *out, uint32_t window) {
