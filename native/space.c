@@ -958,6 +958,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
         bool locked = lock_active(s);
         bool moving = windows_animate(s, probe.sample);
         if (ui_animate(s, probe.sample)) moving = true;
+        if (cursor_motion_advance(s, animation_now())) moving = true;
         o->animating = moving;
         struct oplist now = {0};
         if (scene_record_ops(o, &probe, locked, &now, &pre_changed, &pre_complete)) {
