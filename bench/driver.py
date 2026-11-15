@@ -607,12 +607,18 @@ def merge_runs(runs):
         "lost": sum(run.get("lost", 0) for run in runs),
         "presented_abandoned": any(run.get("presented_abandoned") for run in runs),
         "redraw_abandoned": any(run.get("redraw_abandoned") for run in runs),
+        "clock": next((run.get("clock") for run in runs if run.get("clock")), None),
+        "clock_id": next((run.get("clock_id") for run in runs
+                          if run.get("clock_id") is not None), None),
+        "presented_usable": all(run.get("presented_usable", False) for run in runs),
         "event": endpoint(runs, "event_us"),
         "presented": endpoint(runs, "presented_us"),
         "redraw": endpoint(runs, "redraw_us"),
     }
     if merged["presented_abandoned"]:
         merged["presented"]["status"] = "unreliable"
+    if not merged["presented_usable"]:
+        merged["presented"]["status"] = "unsupported"
     if merged["redraw_abandoned"]:
         merged["redraw"]["status"] = "unreliable"
     return merged

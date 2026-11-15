@@ -80,6 +80,10 @@ static unsigned missing_presented, missing_redraw;
 static bool presented_abandoned, redraw_abandoned;
 
 static uint64_t sample_start;
+static int64_t sample_start_present;
+static clockid_t presentation_clock = CLOCK_MONOTONIC;
+static const char *presentation_clock_name = "CLOCK_MONOTONIC";
+static bool presentation_clock_ok = true;
 static int64_t sample_presented, sample_event, sample_redraw;
 static bool presented_seen, event_seen, redraw_seen, discarded_seen;
 static struct wp_presentation_feedback *pending_feedback;
@@ -99,6 +103,12 @@ static uint64_t now_ns(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static int64_t clock_now_ns(clockid_t id) {
+    struct timespec now;
+    if (clock_gettime(id, &now) < 0) return -1;
+    return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
 }
 
 static bool pump(int timeout_ms) {
@@ -188,7 +198,20 @@ static void paint(struct window *window) {
 }
 
 static void presentation_clock_id(void *data, struct wp_presentation *handle, uint32_t clock) {
-    (void)data; (void)handle; (void)clock;
+    (void)data; (void)handle;
+    presentation_clock_ok = true;
+    switch (clock) {
+    case CLOCK_MONOTONIC: presentation_clock = CLOCK_MONOTONIC;
+        presentation_clock_name = "CLOCK_MONOTONIC"; break;
+    case CLOCK_MONOTONIC_RAW: presentation_clock = CLOCK_MONOTONIC_RAW;
+        presentation_clock_name = "CLOCK_MONOTONIC_RAW"; break;
+    case CLOCK_BOOTTIME: presentation_clock = CLOCK_BOOTTIME;
+        presentation_clock_name = "CLOCK_BOOTTIME"; break;
+    case CLOCK_REALTIME: presentation_clock = CLOCK_REALTIME;
+        presentation_clock_name = "CLOCK_REALTIME"; break;
+    default: presentation_clock_ok = false;
+        presentation_clock_name = "unsupported"; break;
+    }
 }
 
 static const struct wp_presentation_listener presentation_listener = {
@@ -536,6 +559,7 @@ static void inject_key(int code, bool pressed) {
 
 static void begin_sample(void) {
     sample_start = now_ns();
+    sample_start_present = presentation_clock_ok ? clock_now_ns(presentation_clock) : -1;
     sample_presented = sample_event = sample_redraw = -1;
     presented_seen = event_seen = redraw_seen = discarded_seen = false;
 }
@@ -561,7 +585,8 @@ static void record(bool want_redraw, int redraw_window) {
     if (sample_count >= MAX_SAMPLES) return;
     struct sample *sample = &samples[sample_count];
     memset(sample, 0, sizeof(*sample));
-    sample->presented_us = presented_seen ? (sample_presented - (int64_t)sample_start) / 1000 : -1;
+    sample->presented_us = (presented_seen && sample_start_present >= 0)
+        ? (sample_presented - sample_start_present) / 1000 : -1;
     sample->event_us = event_seen ? (sample_event - (int64_t)sample_start) / 1000 : -1;
     if (want_redraw && redraw_seen && sample_redraw >= 0)
         sample->redraw_us = (sample_redraw - (int64_t)sample_start) / 1000;
@@ -585,7 +610,7 @@ static void settle(void) {
 static int lost;
 
 static void measure(bool want_redraw, int redraw_window) {
-    if (presentation && !presented_abandoned) {
+    if (presentation && presentation_clock_ok && !presented_abandoned) {
         if (!spin(&presented_seen, &discarded_seen, SAMPLE_TIMEOUT_NS)) {
             lost++;
             if (++missing_presented >= LOST_LIMIT) presented_abandoned = true;
@@ -688,7 +713,8 @@ static void phase_frames(double seconds) {
         if (sample_count < MAX_SAMPLES) {
             struct sample *sample = &samples[sample_count++];
             memset(sample, 0, sizeof(*sample));
-            sample->presented_us = presented_seen ? (sample_presented - (int64_t)sample_start) / 1000 : -1;
+            sample->presented_us = (presented_seen && sample_start_present >= 0)
+                ? (sample_presented - sample_start_present) / 1000 : -1;
             sample->event_us = sample->redraw_us = -1;
         }
         frames++;
@@ -732,9 +758,11 @@ static void report(const char *phase) {
         if (samples[i].redraw_us >= 0) redraws[redraws_count++] = samples[i].redraw_us;
     }
     printf("{\"phase\": \"%s\", \"windows\": %d, \"lost\": %d,"
-           " \"presented_abandoned\": %s, \"redraw_abandoned\": %s,\n",
+           " \"presented_abandoned\": %s, \"redraw_abandoned\": %s,"
+           " \"clock_id\": %d, \"clock\": \"%s\", \"presented_usable\": %s,\n",
         phase, window_count, lost, presented_abandoned ? "true" : "false",
-        redraw_abandoned ? "true" : "false");
+        redraw_abandoned ? "true" : "false", (int)presentation_clock,
+        presentation_clock_name, presentation_clock_ok ? "true" : "false");
     emit("event_us", events, events_count, false);
     emit("presented_us", presented, presented_count, false);
     emit("redraw_us", redraws, redraws_count, true);
