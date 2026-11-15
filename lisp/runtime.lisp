@@ -1556,7 +1556,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                   (%persist-state)
                   failure)
            (progn (%persist-state) nil))))
-    (bare nil)
+    (bare (%persist-state) nil)
     (t (let ((failure (boot-default-config t)))
          (%persist-state)
          failure)))))

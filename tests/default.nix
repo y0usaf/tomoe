@@ -958,8 +958,27 @@ let
     '';
     installPhase = "install -Dm755 animation-unit $out/bin/tomoe-animation-unit";
   };
+  hostUnit =
+    name: target: run:
+    tomoe.overrideAttrs (old: {
+      pname = "tomoe-${name}";
+      src = ./..;
+      buildPhase = ''
+        runHook preBuild
+        make -j"$NIX_BUILD_CORES" build/${target} \
+          WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
+          WP=${pkgs.wayland-protocols}/share/wayland-protocols
+        ${run}
+        runHook postBuild
+      '';
+      installPhase = "install -Dm755 build/${target} $out/bin/tomoe-${name}";
+    });
+  lispUnit = hostUnit "lisp-unit" "lisp-unit" "make lisp-unit";
+  eventRing = hostUnit "event-ring" "event-ring" "build/event-ring";
   compositorPackages = [
     animationUnit
+    lispUnit
+    eventRing
     pkgs.python3
     pkgs.gdb
     pkgs.wayland-utils
@@ -1424,6 +1443,8 @@ let
   ];
 in
 {
+  lisp-unit = lispUnit;
+  event-ring = eventRing;
   compositor = vm (
     compositorSettings
     // {

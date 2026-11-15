@@ -498,12 +498,23 @@ static bool may_draw(struct screen *screen) {
         !surfaces_fifo_waiting(screen));
 }
 
-static void idle_frame(void *data) {
-    struct screen *screen = data;
-    screen->idle_frame = NULL;
+static void idle_frame(struct screen *screen) {
+    screen->idle_frame = false;
     if (!may_draw(screen)) return;
     if (screen->frame_pending) screen->frame_replaced = true;
     dispatch_frame(screen);
+}
+
+void screens_idle_frames(struct tomoe *s) {
+    for (bool again = true; again;) {
+        again = false;
+        struct output *o, *next;
+        wl_list_for_each_safe(o, next, &s->outputs, link) {
+            if (!o->screen->idle_frame) continue;
+            again = true;
+            idle_frame(o->screen);
+        }
+    }
 }
 
 static bool frame_paced(struct screen *screen) {
@@ -522,8 +533,7 @@ static void frame_request(struct screen *screen) {
     if (screen->idle_frame || screen->frame_timer.at || !may_draw(screen) || frame_paced(screen) ||
             frame_defer(screen))
         return;
-    screen->idle_frame = wl_event_loop_add_idle(
-        wl_display_get_event_loop(screen->server->display), idle_frame, screen);
+    screen->idle_frame = true;
 }
 
 static bool frame_due(struct screen *screen) {
@@ -699,7 +709,7 @@ void screen_destroy(struct screen *screen) {
     wl_signal_emit_mutable(&screen->events.destroy, screen);
     screen->enabled = false;
     global_update(screen);
-    if (screen->idle_frame) wl_event_source_remove(screen->idle_frame);
+    screen->idle_frame = false;
     if (screen->frame_timer.source) ns_timer_finish(&screen->frame_timer);
     if (screen->frame_fence >= 0) close(screen->frame_fence);
     struct screen_mode *mode, *next;
