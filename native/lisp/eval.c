@@ -287,10 +287,15 @@ void frame_bind(struct lisp_frame *frame, uint32_t index, lisp_value sym, lisp_v
     frame->entry[index].sym = sym;
     frame->entry[index].value = value;
     frame->entry[index].kind = (uint8_t)kind;
+    if (TYPE(sym) == LT_SYMBOL)
+        SYM(sym)->h.flags |= kind == BIND_FUNC ? SYM_LOCAL_FUNC : SYM_LOCAL_VAR;
 }
 
 lisp_value *frame_slot(struct lisp_frame *frame, lisp_value sym, int kind)
 {
+    if (TYPE(sym) == LT_SYMBOL &&
+            !(SYM(sym)->h.flags & (kind == BIND_FUNC ? SYM_LOCAL_FUNC : SYM_LOCAL_VAR)))
+        return NULL;
     for (struct lisp_frame *f = frame; f; f = f->parent) {
         for (uint32_t i = 0; i < f->count; i++) {
             if (f->entry[i].sym == sym && f->entry[i].kind == kind)

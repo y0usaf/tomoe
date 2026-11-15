@@ -45,7 +45,9 @@ enum lisp_symbol_flags {
     SYM_MACRO = 1u << 2,
     SYM_VISIBLE = 1u << 3,
     SYM_UNINTERNED = 1u << 4,
-    SYM_CONSTANT = 1u << 5
+    SYM_CONSTANT = 1u << 5,
+    SYM_LOCAL_VAR = 1u << 6,
+    SYM_LOCAL_FUNC = 1u << 7
 };
 
 enum lisp_binding_kind {
