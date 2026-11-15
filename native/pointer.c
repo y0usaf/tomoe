@@ -367,6 +367,7 @@ static void warp_pointer(struct wl_client *client, struct wl_resource *resource,
     s->pointer_x = nx;
     s->pointer_y = ny;
     pointer_refresh(s);
+    capture_cursor_update(s);
     schedule_scene(s);
 }
 

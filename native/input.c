@@ -1163,6 +1163,7 @@ static void grab_motion(struct tomoe *s) {
         pixel_round(x) - pixel_round(old_x), pixel_round(y) - pixel_round(old_y));
 }
 static void pointer_update(struct tomoe *s, uint32_t time) {
+    capture_cursor_update(s);
     pointer_sync_cursors(s);
     input_stream_pointer(s, time);
     pointer_trail_record(s, time);

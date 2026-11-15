@@ -272,6 +272,7 @@ struct session {
     struct wl_list link;
     struct tomoe *server;
     struct source source;
+    struct screen *cursor_lock;
     bool cursors, damaged;
     int width, height;
     uint32_t format;
@@ -433,7 +434,14 @@ static void session_constraints(struct tomoe *s, struct session *session) {
     ext_image_copy_capture_session_v1_send_done(resource);
 }
 
+static void session_unlock_cursor(struct session *session) {
+    if (!session->cursor_lock) return;
+    screen_lock_software_cursors(session->cursor_lock, false);
+    session->cursor_lock = NULL;
+}
+
 static void session_stop(struct session *session) {
+    session_unlock_cursor(session);
     if (session->frame && session->frame->capturing)
         image_frame_fail(session->frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
     ext_image_copy_capture_session_v1_send_stopped(session->resource);
@@ -690,16 +698,11 @@ static void image_frame_capture(struct wl_client *client, struct wl_resource *re
     struct output *o = source_output(session->server, &session->source);
     if (!o) {
         schedule_scene(session->server);
-    } else if (session->cursors && !o->scanout && o->presented[0] &&
-            (session->damaged || !o->damaged)) {
+    } else if (session->cursors && !o->scanout && o->presented[0] && session->damaged) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        session->damaged = true;
         serve_session(session->server, session, o, o->presented[0], false, &now);
     } else if (session->damaged || o->damaged) {
-        screen_schedule_frame(o->screen);
-    } else {
-        session->damaged = true;
         screen_schedule_frame(o->screen);
     }
 }
@@ -786,6 +789,7 @@ static void serve_session(struct tomoe *s, struct session *session, struct outpu
 static void session_resource_destroy(struct wl_resource *resource) {
     struct session *session = wl_resource_get_user_data(resource);
     if (!session) return;
+    session_unlock_cursor(session);
     if (session->frame && frame_waiting(session->frame))
         image_frame_fail(session->frame, EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
     if (session->frame) session->frame->session = NULL;
@@ -862,6 +866,13 @@ static void create_session(struct wl_client *client, struct wl_resource *manager
     session->source = *source;
     session->cursors = options & EXT_IMAGE_COPY_CAPTURE_MANAGER_V1_OPTIONS_PAINT_CURSORS;
     session->damaged = true;
+    if (session->cursors && session->source.kind == SOURCE_OUTPUT) {
+        struct output *o = source_output(s, &session->source);
+        if (o) {
+            screen_lock_software_cursors(o->screen, true);
+            session->cursor_lock = o->screen;
+        }
+    }
     wl_resource_set_user_data(resource, session);
     wl_list_insert(&s->capture_sessions, &session->link);
     session_constraints(s, session);
@@ -1104,7 +1115,10 @@ bool capture_wants_output(struct output *o) {
         if (frame->output == o->screen && frame->buffer) return true;
     struct session *session;
     wl_list_for_each(session, &o->server->capture_sessions, link)
-        if (session->source.kind == SOURCE_OUTPUT && session->source.id == o->id) return true;
+        if (!session->cursor && session->source.kind == SOURCE_OUTPUT &&
+                session->source.id == o->id && session->frame &&
+                session->frame->capturing && !session->frame->copying &&
+                (session->damaged || o->damaged)) return true;
     return false;
 }
 
