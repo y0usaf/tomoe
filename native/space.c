@@ -78,6 +78,9 @@ static bool toplevel_surface(struct surface *surface) {
     struct surface *root = surface_root(surface);
     return xdg_toplevel_from_surface(root);
 }
+static bool popup_root(struct surface *surface) {
+    return surface == surface_root(surface) && xdg_surface_is_popup(surface);
+}
 static void leaf_to_screen(struct tomoe *s, const struct presentation *plan,
         double *x, double *y) {
     if (!plan) {
@@ -445,6 +448,10 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     }
     if (!pass_record(data->pass, NULL, (struct box){0}, (struct box){0}, NULL, 0))
         surface_release_after(surface, data->buffer);
+    if (window && !t->fullscreen && s->settings.blur_enabled && t->style.blur == 1 &&
+            data->zoom == 1 && popup_root(surface))
+        effect_blur(data, (struct fbox){ local.x, local.y, local.width, local.height }, 0,
+            s->settings.blur_passes, s->settings.blur_offset, s->settings.blur_margin, 1);
     struct fbox src;
     surface_source_box(surface, &src);
     double opacity = window ? t->alpha * t->visual.opacity : 1;

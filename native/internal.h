@@ -1280,6 +1280,7 @@ struct xdg_toplevel *xdg_toplevel_from_resource(struct wl_resource *resource);
 struct xdg_popup *xdg_popup_from_resource(struct wl_resource *resource);
 struct xdg_surface *xdg_surface_from_surface(struct surface *surface);
 struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface);
+bool xdg_surface_is_popup(struct surface *surface);
 struct node *xdg_surface_scene(struct node *parent, struct xdg_surface *xdg);
 uint32_t xdg_surface_schedule_configure(struct xdg_surface *xdg);
 uint32_t xdg_toplevel_configure_size(struct xdg_toplevel *toplevel, int32_t width, int32_t height);
