@@ -635,10 +635,15 @@ def async_client(machine, runner, arguments, unit):
     )
     for _ in range(600):
         if machine.execute(f"test -s {READY}", check_return=False)[0] == 0:
-            return
+            break
+        log = machine.execute(f"journalctl -u {unit} -o cat | tail -6", check_return=False)[1]
+        if "globals presentation" in log:
+            break
         time.sleep(0.1)
-    raise AssertionError("the bench client never reported ready:\n"
-                         + machine.succeed(f"journalctl -u {unit} -o cat | tail -20"))
+    else:
+        raise AssertionError("the bench client never reported ready:\n"
+                             + machine.succeed(f"journalctl -u {unit} -o cat | tail -20"))
+    time.sleep(1)
 
 
 def unit_alive(machine, unit):
