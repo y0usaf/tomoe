@@ -186,7 +186,7 @@ def measure(binary, unit, socket, runs=3):
 
 
 def describe(cost):
-    return (f"{cost['frames']} frames, {cost['fragments'] / 1e3:.1f}k fragments, "
+    return (f"{cost['frames']} frames, {cost.get('fragments', 0) / 1e3:.1f}k fragments, "
             f"{cost['quads']:.1f} quads, {cost['runs']:.1f} runs and "
             f"{cost['gl-calls']:.1f} gl calls/frame, draw/raster/total "
             f"{cost['frame-draw']:.2f}/{cost['frame-raster']:.2f}/{cost['frame-total']:.2f} ms "
