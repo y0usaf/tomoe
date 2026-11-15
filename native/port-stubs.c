@@ -643,4 +643,3 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
 
 void lisp_end_turn(void) { }
 
-void ui_layout_register_primitives(struct tomoe *server) { (void)server; }
