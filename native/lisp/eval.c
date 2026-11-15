@@ -123,8 +123,8 @@ int push_ctl(int kind)
     if (kind == CTL_TOP)
         ctl_ready = true;
     struct lisp_ctl *entry = &lisp.ctl[index];
-    memset(entry, 0, sizeof(*entry));
     entry->kind = (uint8_t)kind;
+    entry->armed = true;
     entry->name = NIL_VAL;
     entry->form = NIL_VAL;
     entry->env = NULL;
@@ -205,7 +205,7 @@ _Noreturn void throw_return(lisp_value name, int count, lisp_value *values)
         escape_values[i] = values[i];
     int target = -1;
     for (int i = lisp.ctl_top - 1; i >= 0; i--) {
-        if (lisp.ctl[i].kind == CTL_BLOCK && eql_value(lisp.ctl[i].name, name)) {
+        if (lisp.ctl[i].kind == CTL_BLOCK && lisp.ctl[i].armed && eql_value(lisp.ctl[i].name, name)) {
             target = i;
             break;
         }
@@ -619,27 +619,114 @@ uint32_t pattern_slot_count(lisp_value pattern)
     return pattern_slots(pattern);
 }
 
-lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv)
+static uint8_t scan_body(lisp_value form, int depth)
+{
+    uint8_t found = 0;
+    while (consp(form) && depth < 256) {
+        lisp_value head = CAR(form);
+        if (consp(head)) {
+            found |= scan_body(head, depth + 1);
+        } else if (symbolp(head)) {
+            struct lisp_symbol *sym = SYM(head);
+            if (sym->h.flags & SYM_MACRO)
+                return FNI_ARMED | FNI_CAPTURES;
+            switch (sym->special_id) {
+            case SF_RETURN:
+            case SF_RETURN_FROM:
+                found |= FNI_ARMED;
+                break;
+            case SF_EVAL:
+                return FNI_ARMED | FNI_CAPTURES;
+            case SF_LAMBDA:
+            case SF_FLET:
+            case SF_LABELS:
+            case SF_DEFUN:
+            case SF_DEFMACRO:
+            case SF_DEFINE_EXTENSION:
+                found |= FNI_CAPTURES;
+                break;
+            default:
+                break;
+            }
+        }
+        form = CDR(form);
+    }
+    if (depth >= 256)
+        return FNI_ARMED | FNI_CAPTURES;
+    return found;
+}
+
+static void closure_info(struct lisp_function *fn)
 {
     uint32_t count = 0;
+    uint8_t info = FNI_KNOWN | FNI_SIMPLE;
     lisp_value scan = fn->params;
     while (consp(scan)) {
         lisp_value item = CAR(scan);
         scan = CDR(scan);
         if (item == VAL(lisp.sym_optional) || item == VAL(lisp.sym_key) ||
             item == VAL(lisp.sym_aux) || item == VAL(lisp.sym_allow_other_keys) ||
-            item == VAL(lisp.sym_whole) || item == VAL(lisp.sym_environment))
+            item == VAL(lisp.sym_whole) || item == VAL(lisp.sym_environment) ||
+            item == VAL(lisp.sym_rest) || item == VAL(lisp.sym_body)) {
+            info &= (uint8_t)~FNI_SIMPLE;
             continue;
-        if (item == VAL(lisp.sym_rest) || item == VAL(lisp.sym_body))
-            continue;
+        }
         count++;
-        if (consp(item))
+        if (consp(item)) {
+            info &= (uint8_t)~FNI_SIMPLE;
             count += (uint32_t)(list_length(CDR(item)));
+        } else if (!symbolp(item)) {
+            info &= (uint8_t)~FNI_SIMPLE;
+        }
     }
-    struct lisp_frame *frame = frame_new(fn->env, count + 8);
-    eval_bind_lambda(frame, fn->params, argc, argv);
+    if (!nilp(scan))
+        info &= (uint8_t)~FNI_SIMPLE;
+    info |= scan_body(fn->params, 0) | scan_body(fn->body, 0);
+    fn->slots = count;
+    fn->info = info;
+}
+
+__attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv)
+{
+    if (!(fn->info & FNI_KNOWN))
+        closure_info(fn);
+    uint32_t count = fn->slots;
+    struct lisp_frame *frame;
+    if (fn->info & FNI_CAPTURES) {
+        frame = frame_new(fn->env, count);
+    } else {
+        frame = __builtin_alloca(offsetof(struct lisp_frame, entry) + (size_t)count * sizeof(struct lisp_binding));
+        frame->h.type = LT_FRAME;
+        frame->h.flags = 0;
+        frame->h.aux = 0;
+        frame->h.size = 0;
+        frame->parent = fn->env;
+        frame->count = count;
+        for (uint32_t i = 0; i < count; i++) {
+            frame->entry[i].sym = NIL_VAL;
+            frame->entry[i].value = VAL(lisp.sym_unbound);
+            frame->entry[i].kind = BIND_VAR;
+        }
+    }
+    if (fn->info & FNI_SIMPLE) {
+        if (argc < (int)count) {
+            lisp_value missing = list_nth(fn->params, argc);
+            lisp_error("missing argument %s", SYM(missing)->name);
+        }
+        lisp_value scan = fn->params;
+        for (uint32_t i = 0; i < count; i++, scan = CDR(scan))
+            frame_bind(frame, i, CAR(scan), argv[i], BIND_VAR);
+    } else {
+        eval_bind_lambda(frame, fn->params, argc, argv);
+    }
     int ctl = push_ctl(CTL_BLOCK);
     lisp.ctl[ctl].name = fn->self_name;
+    if (!(fn->info & FNI_ARMED)) {
+        lisp.ctl[ctl].armed = false;
+        lisp_value result = eval_progn(fn->body, frame);
+        lisp.ctl_top = ctl;
+        return result;
+    }
     if (setjmp(lisp.ctl[ctl].jb) != 0) {
         lisp.ctl_top = ctl;
         int n = escape_count > 0 ? escape_count : 1;
@@ -697,19 +784,21 @@ lisp_value eval_body(lisp_value body, struct lisp_frame *env)
     return eval_progn(body, env);
 }
 
-static lisp_value *eval_arguments(lisp_value args, struct lisp_frame *env, int *argc_out)
+enum { CALL_STACK_ARGS = 8 };
+
+static lisp_value eval_call(lisp_value fn, lisp_value args, struct lisp_frame *env)
 {
     int n = 0;
     for (lisp_value scan = args; consp(scan); scan = CDR(scan))
         n++;
-    lisp_value *argv = heap_alloc(sizeof(lisp_value) * (size_t)(n + 1));
+    lisp_value stack[CALL_STACK_ARGS];
+    lisp_value *argv = n <= CALL_STACK_ARGS ? stack : heap_alloc(sizeof(lisp_value) * (size_t)n);
     int i = 0;
     while (consp(args)) {
         argv[i++] = eval(CAR(args), env);
         args = CDR(args);
     }
-    *argc_out = i;
-    return argv;
+    return apply_function(fn, i, argv);
 }
 
 static void restore_dynamic_to(int ctl_index);
@@ -1164,11 +1253,8 @@ lisp_value eval(lisp_value form, struct lisp_frame *env)
     lisp_value head = CAR(form);
     if (TYPE(head) == LT_SYMBOL) {
         lisp_value *local_slot = frame_slot(env, head, BIND_FUNC);
-        if (local_slot && !nilp(*local_slot)) {
-            int argc = 0;
-            lisp_value *argv = eval_arguments(CDR(form), env, &argc);
-            return apply_function(*local_slot, argc, argv);
-        }
+        if (local_slot && !nilp(*local_slot))
+            return eval_call(*local_slot, CDR(form), env);
         if (SYM(head)->special_id)
             return eval_special(form, env, (int)SYM(head)->special_id);
         if (SYM(head)->h.flags & SYM_MACRO) {
@@ -1185,17 +1271,11 @@ lisp_value eval(lisp_value form, struct lisp_frame *env)
             lisp_value expansion = apply_function(SYM(head)->function, argc, argv);
             return eval(expansion, env);
         }
-        if (!nilp(SYM(head)->function)) {
-            int argc = 0;
-            lisp_value *argv = eval_arguments(CDR(form), env, &argc);
-            return apply_function(SYM(head)->function, argc, argv);
-        }
+        if (!nilp(SYM(head)->function))
+            return eval_call(SYM(head)->function, CDR(form), env);
         lisp_error("undefined function %s", SYM(head)->name);
     }
-    lisp_value fn = eval(head, env);
-    int argc = 0;
-    lisp_value *argv = eval_arguments(CDR(form), env, &argc);
-    return apply_function(fn, argc, argv);
+    return eval_call(eval(head, env), CDR(form), env);
 }
 
 static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)

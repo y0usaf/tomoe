@@ -184,9 +184,18 @@ struct lisp_frame;
 
 struct lisp_generation;
 
+enum lisp_fn_info {
+    FNI_KNOWN = 1u << 0,
+    FNI_SIMPLE = 1u << 1,
+    FNI_ARMED = 1u << 2,
+    FNI_CAPTURES = 1u << 3
+};
+
 struct lisp_function {
     struct lisp_obj h;
     uint8_t kind;
+    uint8_t info;
+    uint32_t slots;
     int16_t min_args;
     int16_t max_args;
     lisp_primitive fn;
@@ -261,6 +270,7 @@ struct lisp_region {
 
 struct lisp_ctl {
     uint8_t kind;
+    bool armed;
     jmp_buf jb;
     lisp_value name;
     lisp_value form;
