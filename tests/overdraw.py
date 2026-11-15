@@ -1,4 +1,5 @@
 COUNTS = [int(value) for value in OVERDRAW_COUNTS.split(",")]
+LIMITS = {}
 GOLDEN = [value for value in OVERDRAW_GOLDEN.split(",") if value]
 BASELINE = OVERDRAW_BASELINE
 WALLPAPER = OVERDRAW_WALLPAPER
@@ -225,6 +226,9 @@ def run(binary, tag):
 
 
 digests, costs = run("tomoe", "branch")
+for key, limit in LIMITS.items():
+    assert costs[key]["fragments"] <= limit, (
+        f"{key[0]} {key[1]} drew more pixels than the bound: " + describe(costs[key]))
 if GOLDEN:
     assert [digests[key] for key in sorted(digests)] == GOLDEN, (
         f"the presented bytes changed: {digests} != {GOLDEN}")
