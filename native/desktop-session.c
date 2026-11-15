@@ -598,7 +598,17 @@ struct desktop_bus *desktop_bus_start(const char *name, char *error, size_t erro
     }
     setenv("DBUS_SESSION_BUS_ADDRESS", own, 1);
     struct desktop_bus *bus = calloc(1, sizeof(*bus));
-    if (!bus) return NULL;
+    if (!bus) {
+        tomoe_exec_stop(job, SIGKILL);
+        for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
+            struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
+            nanosleep(&pause, NULL);
+        }
+        if (tomoe_exec_poll(job) > 0) tomoe_exec_release(job);
+        unlink(socket_path);
+        unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        return NULL;
+    }
     bus->job = job;
     bus->transient = (fresh || orphan) ? strdup(transient) : NULL;
     return bus;
