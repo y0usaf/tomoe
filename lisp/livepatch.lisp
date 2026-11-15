@@ -134,6 +134,9 @@ ONLY restricts the mount to those extension names; REFRESH re-invokes mounts."
          (names (mapcar #'spec-name specs)))
     (unless (or specs (null only))
       (error "No extension named ~{~A~^, ~} in ~A." only source))
+    (unless (eq *library-specs* :outside)
+      (setf *library-specs* (append *library-specs* specs))
+      (return-from load-policy names))
     (dolist (spec specs)
       (when (find (spec-name spec) (root-mounts (runtime-mounts)) :test #'equal
                   :key (lambda (mounted) (spec-name (mounted-spec mounted))))

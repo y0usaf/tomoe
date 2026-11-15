@@ -1160,9 +1160,12 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                              path))
           (%counter :package-serial)))
 
+(defvar *library-specs* :outside)
+
 (defun load-specs (path &optional package)
   (%bump :definitions-generation)
-  (let* ((*source* path)
+  (let* ((*library-specs* nil)
+         (*source* path)
          (*source-directory* (%directory-of path))
          (package (or package (%fresh-package-name path)))
          (*definitions* nil)
@@ -1172,10 +1175,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (unless (member package (runtime-source-packages) :test #'equal)
       (%r! :source-packages (cons package (runtime-source-packages))))
     (%load-source path text package)
-    (loop for spec in (nreverse *definitions*)
-          do (setf (nth 6 spec) *source-directory*)
-             (setf (nth 8 spec) package)
-          collect spec)))
+    (when *library-specs*
+      (%r! :library-owners
+           (append (loop for spec in *library-specs* collect (cons (spec-name spec) path))
+                   (remove-if (lambda (entry)
+                                (find (car entry) *library-specs* :key #'spec-name :test #'equal))
+                              (%r :library-owners)))))
+    (append *library-specs*
+            (loop for spec in (nreverse *definitions*)
+                  do (setf (nth 6 spec) *source-directory*)
+                     (setf (nth 8 spec) package)
+                  collect spec))))
 
 (defun sweep-source-packages ()
   (let ((live (remove nil (mapcar (lambda (mounted) (spec-package (mounted-spec mounted)))
@@ -1185,6 +1195,10 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                if (member package live :test #'equal) collect package
                  else do (when (stringp package) (%drop-package package))))))
 
+(defun %owner-source (spec)
+  (or (cdr (assoc (spec-name spec) (%r :library-owners) :test #'equal))
+      (spec-source spec)))
+
 (defun configure (sources &optional changed-source)
   (unwind-protect
       (let* ((specs (loop for path in sources
@@ -1192,7 +1206,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                             append (load-specs path)))
              (retained (when changed-source
                          (remove changed-source (root-mounts (runtime-mounts)) :test #'equal
-                                 :key (lambda (m) (spec-source (mounted-spec m))))))
+                                 :key (lambda (m) (%owner-source (mounted-spec m))))))
              (names nil))
         (dolist (spec (append (mapcar #'mounted-spec retained) specs))
           (when (member (spec-name spec) names :test #'equal)
@@ -1212,7 +1226,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
           (transact
            (append (loop for source in sources append
                      (remove source (append retained mounts) :test-not #'equal
-                             :key (lambda (m) (spec-source (mounted-spec m)))))
+                             :key (lambda (m) (%owner-source (mounted-spec m)))))
                    patched)
            '(:type :mount) nil (mapcar #'spec-name specs)))
         (%r! :sources (copy-list sources))
