@@ -677,19 +677,20 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     return slot;
 }
 static bool scene_record_ops(struct output *o, const struct frame *data, bool locked,
-        struct oplist *now, struct region *changed, bool *complete) {
+        struct region *changed, bool *complete) {
     struct frame record = *data;
-    record.pass = render_record(o->server->renderer, data->buffer, now);
+    record.pass = render_record(o->server->renderer, data->buffer, &o->spare_ops);
     if (!record.pass) {
         o->damaged = true;
         *complete = false;
         return false;
     }
     draw_scene(o, &record, NULL, locked, true, true);
-    *complete = pass_submit(record.pass) && oplist_damage(&o->ops, now, changed);
+    *complete = pass_submit(record.pass) && oplist_damage(&o->ops, &o->spare_ops, changed);
     if (!*complete || region_not_empty(changed)) o->damaged = true;
-    oplist_finish(&o->ops);
-    o->ops = *now;
+    struct oplist old = o->ops;
+    o->ops = o->spare_ops;
+    o->spare_ops = old;
     if (*complete) effects_plan(o->server, &o->ops);
     return true;
 }
@@ -726,11 +727,10 @@ static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
 }
 static bool scene_damage(struct output *o, const struct frame *data, bool locked,
         struct region *changed, struct region *clip, bool *recorded) {
-    struct oplist now = {0};
     bool complete = false;
-    if (!scene_record_ops(o, data, locked, &now, changed, &complete)) return false;
+    if (!scene_record_ops(o, data, locked, changed, &complete)) return false;
     *recorded = complete;
-    return scene_commit_damage(o, data->buffer, changed, clip, complete, now.len);
+    return scene_commit_damage(o, data->buffer, changed, clip, complete, o->ops.len);
 }
 static int64_t region_area(const struct region *region) {
     int count = 0;
@@ -892,8 +892,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
         if (ui_animate(s, probe.sample)) moving = true;
         if (cursor_motion_advance(s, animation_now())) moving = true;
         o->animating = moving;
-        struct oplist now = {0};
-        if (scene_record_ops(o, &probe, locked, &now, &pre_changed, &pre_complete)) {
+        if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {
             pre_recorded = true;
             if (pre_complete && !region_not_empty(&pre_changed)) {
                 o->frames++;

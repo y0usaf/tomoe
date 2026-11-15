@@ -14,7 +14,7 @@ struct effects {
     struct chain chains[BLUR_CHAINS];
     struct level backdrop;
     uint64_t stamp, blurs, reused;
-    struct { float *levels; size_t capacity; float *quads; size_t capacity_quads; } trail;
+    struct { float *levels; } trail;
 };
 
 static struct program *program(struct frame *f, int kind) {
@@ -378,7 +378,6 @@ static void sample_pass(struct program *p, struct level *from, struct level *to,
 
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         double offset, int margin, double alpha) {
-    if (!f->server->effects) f->server->effects = calloc(1, sizeof(*f->server->effects));
     struct effects *e = f->server->effects;
     if (!e || passes < 1 || alpha <= 0) return;
     struct fbox box = local_box(f, area);
@@ -477,7 +476,6 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
 }
 
 static bool backdrop(struct frame *f, struct fbox box) {
-    if (!f->server->effects) f->server->effects = calloc(1, sizeof(*f->server->effects));
     struct effects *e = f->server->effects;
     struct box region = { pixel_round(box.x), pixel_round(box.y),
         pixel_round(box.x + box.width) - pixel_round(box.x),
@@ -557,14 +555,20 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
 #define TRAIL_STEPS_MAX 8
 #define TRAIL_CELLS_MAX (1u << 20)
 
-static bool grow_floats(float **buffer, size_t *capacity, size_t needed) {
-    if (*capacity >= needed) return true;
-    size_t grown = *capacity ? *capacity : 4096;
-    while (grown < needed) grown *= 2;
-    float *moved = realloc(*buffer, grown * sizeof(float));
-    if (!moved) return false;
-    *buffer = moved;
-    *capacity = grown;
+bool effects_create(struct tomoe *s) {
+    s->effects = calloc(1, sizeof(*s->effects));
+    return s->effects != NULL;
+}
+
+bool effects_admit_trail(struct tomoe *s) {
+    struct effects *e = s->effects;
+    if (!e) return false;
+    if (e->trail.levels) return true;
+    e->trail.levels = calloc(TRAIL_CELLS_MAX, sizeof(float));
+    if (!e->trail.levels) {
+        tomoe_log(LOG_ERROR, "tomoe: no memory for the trail's cell grid");
+        return false;
+    }
     return true;
 }
 
@@ -598,9 +602,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     struct tomoe *s = f->server;
     int count = s ? s->pointer_trail_count : 0;
     if (!f->pass || count <= 0) return;
-    if (!s->effects) s->effects = calloc(1, sizeof(*s->effects));
     struct effects *e = s->effects;
-    if (!e) return;
+    if (!e || !e->trail.levels) return;
     double cell = style->cell < 1 ? 1 : style->cell > 256 ? 256 : style->cell;
     double life = style->life > 0 ? style->life : 1;
     int steps = style->steps < 1 ? 1 : style->steps > TRAIL_STEPS_MAX ? TRAIL_STEPS_MAX : style->steps;
@@ -638,7 +641,6 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
             "use a larger :cell", gw, gh, cell);
         return;
     }
-    if (!grow_floats(&e->trail.levels, &e->trail.capacity, gw * gh)) return;
     float *levels = e->trail.levels;
     memset(levels, 0, gw * gh * sizeof(float));
     for (int i = 0; i < count; i++) {
@@ -671,9 +673,11 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     int lit_left = INT_MAX, lit_top = INT_MAX, lit_right = INT_MIN, lit_bottom = INT_MIN;
     for (size_t cy = 0; cy < gh; cy++) {
         for (size_t cx = 0; cx < gw; cx++) {
-            float lit = levels[cy * gw + cx];
+            float *slot = &levels[cy * gw + cx];
+            float lit = *slot;
             if (lit <= 0) continue;
             int step = trail_step(lit, gx0 + (int)cx, gy0 + (int)cy, steps);
+            *slot = (float)step;
             if (step < 1) continue;
             steps_used[step]++;
             digest = mix_cell(digest, ((uint64_t)cx << 32) | (uint32_t)cy);
@@ -700,45 +704,13 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     if (!pass_touches(f->pass, covered)) goto done;
     size_t total = 0;
     for (int step = 1; step <= steps; step++) total += (size_t)steps_used[step];
-    if (!total || !grow_floats(&e->trail.quads, &e->trail.capacity_quads, total * 12))
-        goto done;
-    float *quads = e->trail.quads;
-    size_t offsets[TRAIL_STEPS_MAX + 1] = {0}, used[TRAIL_STEPS_MAX + 1] = {0};
-    for (int step = 1, next = 0; step <= steps; step++) {
-        offsets[step] = next;
-        next += steps_used[step] * 6;
-    }
-    for (size_t cy = 0; cy < gh; cy++) {
-        for (size_t cx = 0; cx < gw; cx++) {
-            float lit = levels[cy * gw + cx];
-            if (lit <= 0) continue;
-            int step = trail_step(lit, gx0 + (int)cx, gy0 + (int)cy, steps);
-            if (step < 1) continue;
-            double x0 = fmax((gx0 + (double)cx) * cell, surface_left);
-            double y0 = fmax((gy0 + (double)cy) * cell, surface_top);
-            double x1 = fmin((gx0 + (double)cx + 1) * cell, surface_right);
-            double y1 = fmin((gy0 + (double)cy + 1) * cell, surface_bottom);
-            if (x1 - x0 < 0.5 || y1 - y0 < 0.5) continue;
-            float px0 = (float)(x0 / f->buffer->width * 2.0 - 1.0);
-            float px1 = (float)(x1 / f->buffer->width * 2.0 - 1.0);
-            float py0 = (float)(y0 / f->buffer->height * 2.0 - 1.0);
-            float py1 = (float)(y1 / f->buffer->height * 2.0 - 1.0);
-            float *quad = &quads[(offsets[step] + used[step]) * 2];
-            used[step] += 6;
-            quad[0] = px0; quad[1] = py0;
-            quad[2] = px1; quad[3] = py0;
-            quad[4] = px0; quad[5] = py1;
-            quad[6] = px1; quad[7] = py0;
-            quad[8] = px1; quad[9] = py1;
-            quad[10] = px0; quad[11] = py1;
-        }
-    }
+    if (!total) goto done;
     s->trail_times.ns[s->trail_times.head] = (int64_t)llround(now * 1e9);
     s->trail_times.head = (s->trail_times.head + 1) % 512;
     if (s->trail_times.count < 512) s->trail_times.count++;
     s->trail_steps++;
     for (int step = 1; step <= steps; step++) {
-        if (!used[step]) continue;
+        if (!steps_used[step]) continue;
         float alpha = (float)step / (float)steps;
         struct scene_quad scene = {
             .kind = SCENE_RECT, .alpha = 1, .filter = GL_LINEAR, .blend = 1 };
@@ -746,17 +718,28 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         scene.color[1] = ((style->rgba >> 16) & 0xff) / 255.0f * alpha;
         scene.color[2] = ((style->rgba >> 8) & 0xff) / 255.0f * alpha;
         scene.color[3] = alpha;
-        for (size_t vertex = 0; vertex < used[step]; vertex += 6) {
-            const float *quad = &quads[(offsets[step] + vertex) * 2];
-            scene.pos[0] = quad[0];
-            scene.pos[1] = quad[1];
-            scene.pos[2] = quad[2];
-            scene.pos[3] = quad[3];
-            scene.pos[4] = quad[4];
-            scene.pos[5] = quad[5];
-            scene.pos[6] = quad[8];
-            scene.pos[7] = quad[9];
-            pass_scene(f->pass, &scene);
+        for (size_t cy = 0; cy < gh; cy++) {
+            for (size_t cx = 0; cx < gw; cx++) {
+                if (levels[cy * gw + cx] != (float)step) continue;
+                double x0 = fmax((gx0 + (double)cx) * cell, surface_left);
+                double y0 = fmax((gy0 + (double)cy) * cell, surface_top);
+                double x1 = fmin((gx0 + (double)cx + 1) * cell, surface_right);
+                double y1 = fmin((gy0 + (double)cy + 1) * cell, surface_bottom);
+                if (x1 - x0 < 0.5 || y1 - y0 < 0.5) continue;
+                float px0 = (float)(x0 / f->buffer->width * 2.0 - 1.0);
+                float px1 = (float)(x1 / f->buffer->width * 2.0 - 1.0);
+                float py0 = (float)(y0 / f->buffer->height * 2.0 - 1.0);
+                float py1 = (float)(y1 / f->buffer->height * 2.0 - 1.0);
+                scene.pos[0] = px0;
+                scene.pos[1] = py0;
+                scene.pos[2] = px1;
+                scene.pos[3] = py0;
+                scene.pos[4] = px0;
+                scene.pos[5] = py1;
+                scene.pos[6] = px1;
+                scene.pos[7] = py1;
+                pass_scene(f->pass, &scene);
+            }
         }
     }
 done:
@@ -805,10 +788,7 @@ bool effect_cursor(struct frame *f, const struct texture_options *options,
 }
 
 void effects_finish(struct tomoe *s) {
-    if (s->effects) {
-        free(s->effects->trail.levels);
-        free(s->effects->trail.quads);
-    }
+    if (s->effects) free(s->effects->trail.levels);
     free(s->effects);
     s->effects = NULL;
 }

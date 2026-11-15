@@ -1020,6 +1020,7 @@ static const char *commit_outputs(struct tomoe *s,
             if (o->screen != states[i].output) continue;
             ring_finish(&o->ring);
             o->ring = rings[i];
+            ring_reserve(s, &o->ring);
             rings[i] = (struct ring){0};
         }
     }
@@ -1367,9 +1368,12 @@ static void output_frame_build(struct output *o) {
 
 static void output_frame(struct wl_listener *listener, void *data) {
     struct output *o = wl_container_of(listener, o, frame);
+    refresh_scene(o->server);
     budget_hot_enter("frame");
     output_frame_build(o);
     budget_hot_leave();
+    oplist_reserve(&o->ops, o->ops.len);
+    oplist_reserve(&o->spare_ops, o->ops.len);
 }
 
 static void output_presented(struct wl_listener *listener, void *data) {
@@ -1408,6 +1412,7 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     buffer_unlock(o->presented[1]);
     ring_finish(&o->ring);
     oplist_finish(&o->ops);
+    oplist_finish(&o->spare_ops);
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         region_fini(&o->damage[i]);
     planes_finish(&o->planes);
@@ -1446,6 +1451,8 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         region_init(&o->damage[i]);
     region_init(&o->planes.excluded);
+    oplist_reserve(&o->ops, 0);
+    oplist_reserve(&o->spare_ops, 0);
     snapshot_output_baseline(wlr, &o->initial);
     screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {

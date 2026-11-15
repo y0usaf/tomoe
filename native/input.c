@@ -1255,7 +1255,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_motion(s, time, true);
     motion_wake(s);
 }
-void input_pointer_motion(struct pointer_motion *event) {
+static void input_pointer_motion_body(struct pointer_motion *event) {
     struct tomoe *s = event->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1282,7 +1282,7 @@ static struct screen *named_pointer_output(struct tomoe *s, struct input_device 
     }
     return NULL;
 }
-void input_pointer_absolute(struct pointer_absolute *event) {
+static void input_pointer_absolute_body(struct pointer_absolute *event) {
     struct tomoe *s = event->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1326,6 +1326,8 @@ struct ui_pointer {
     struct { uint32_t button; bool consumed; } buttons[32];
     size_t count;
 };
+#define UI_POINTERS 64
+static struct ui_pointer ui_pointer_pool[UI_POINTERS];
 static void ui_cancel_client_edges(struct tomoe *s) {
     for (struct ui_pointer *pointer = s->ui_pointers; pointer; pointer = pointer->next)
         for (size_t i = 0; i < pointer->count; i++) pointer->buttons[i].consumed = true;
@@ -1350,18 +1352,15 @@ static void ui_pointer_destroy(struct wl_listener *listener, void *data) {
         }
         if (released) seat_pointer_notify_frame(s->seat);
     }
-    free(pointer);
+    *pointer = (struct ui_pointer){0};
 }
 void ui_input_finish(struct tomoe *s) {
     while (s->ui_pointers) ui_pointer_destroy(&s->ui_pointers->destroy, NULL);
 }
 static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     struct ui_pointer *pointer;
-    size_t devices = 0;
-    for (pointer = s->ui_pointers; pointer; pointer = pointer->next) {
-        devices++;
+    for (pointer = s->ui_pointers; pointer; pointer = pointer->next)
         if (pointer->pointer == input->device) break;
-    }
     if (pointer) {
         for (size_t i = 0; i < pointer->count; i++) {
             if (pointer->buttons[i].button != input->button) continue;
@@ -1378,9 +1377,9 @@ static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     struct ui_hit hit;
     bool consumed = s->grab_mode == 0 && ui_hit_at(s, s->pointer_x, s->pointer_y, &hit);
     if (!pointer) {
-        if (devices >= 64) { fail(s, "too many pointer devices with held buttons"); return true; }
-        pointer = calloc(1, sizeof(*pointer));
-        if (!pointer) { fail(s, "pointer edge allocation failed"); return true; }
+        for (size_t i = 0; i < UI_POINTERS && !pointer; i++)
+            if (!ui_pointer_pool[i].server) pointer = &ui_pointer_pool[i];
+        if (!pointer) { fail(s, "too many pointer devices with held buttons"); return true; }
         pointer->server = s; pointer->pointer = input->device;
         pointer->next = s->ui_pointers; s->ui_pointers = pointer;
         listen(&pointer->destroy, &input->device->events.destroy, ui_pointer_destroy);
@@ -1486,7 +1485,7 @@ uint32_t input_modifier_mask(struct tomoe *s) {
     return keyboard ? keymap_slot_modifiers(keyboard) : 0;
 }
 
-void input_pointer_button(struct pointer_button *input) {
+static void input_pointer_button_body(struct pointer_button *input) {
     struct tomoe *s = input->device->server;
     timing_input(s, s->grab_mode ? TIMING_DRAG : TIMING_POINTER);
     idle_notify_activity(s);
@@ -1532,7 +1531,7 @@ void input_pointer_button(struct pointer_button *input) {
     event->y = (uint32_t)pixel_round(y);
     event->modifiers = modifiers;
 }
-void input_pointer_axis(struct pointer_axis *event) {
+static void input_pointer_axis_body(struct pointer_axis *event) {
     struct tomoe *s = event->device->server;
     idle_notify_activity(s);
     if (s->grab_mode != 0) return;
@@ -1541,9 +1540,31 @@ void input_pointer_axis(struct pointer_axis *event) {
     seat_pointer_notify_axis(s->seat, event->time_msec, event->orientation,
         event->delta, event->delta_discrete, event->source, event->relative_direction);
 }
+void input_pointer_motion(struct pointer_motion *event) {
+    budget_hot_enter("pointer");
+    input_pointer_motion_body(event);
+    budget_hot_leave();
+}
+void input_pointer_absolute(struct pointer_absolute *event) {
+    budget_hot_enter("pointer");
+    input_pointer_absolute_body(event);
+    budget_hot_leave();
+}
+void input_pointer_button(struct pointer_button *input) {
+    budget_hot_enter("pointer");
+    input_pointer_button_body(input);
+    budget_hot_leave();
+}
+void input_pointer_axis(struct pointer_axis *event) {
+    budget_hot_enter("pointer");
+    input_pointer_axis_body(event);
+    budget_hot_leave();
+}
 void input_pointer_frame(struct input_device *device) {
     struct tomoe *s = device->server;
+    budget_hot_enter("pointer");
     seat_pointer_notify_frame(s->seat);
+    budget_hot_leave();
 }
 static void cursor_apply(struct tomoe *s) {
     struct surface *surface = s->cursor_surface;

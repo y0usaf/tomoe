@@ -40,10 +40,14 @@ static struct budget budgets[BUDGET_COUNT] = {
     [BUDGET_PATCH_KB] = { "patch-kb" },
 };
 
+extern char __executable_start[], etext[];
+
 static __thread const char *hot_tag;
 static __thread int hot_depth;
+static __thread bool hot_logging;
 static uint64_t hot_allocs, hot_allocs_all;
-static struct timespec hot_logged;
+static time_t hot_logged;
+static uintptr_t hot_callers[64];
 
 bool budget_set_limit(const char *name, uint64_t limit) {
     for (int i = 0; i < BUDGET_COUNT; i++)
@@ -105,15 +109,30 @@ bool budget_hot(void) {
     return hot_depth > 0;
 }
 
-void budget_hot_violation(const char *tag) {
+static void hot_violation(uintptr_t caller) {
     hot_allocs++;
+    size_t slot = 0;
+    while (slot < sizeof(hot_callers) / sizeof(hot_callers[0]) && hot_callers[slot] &&
+            hot_callers[slot] != caller)
+        slot++;
+    bool fresh = slot < sizeof(hot_callers) / sizeof(hot_callers[0]) && !hot_callers[slot];
+    if (fresh) hot_callers[slot] = caller;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    if (now.tv_sec != hot_logged.tv_sec) {
-        hot_logged = now;
-        fprintf(stderr, "tomoe: allocation in hot path %s (%s)\n", tag ? tag : "?",
-            hot_tag ? hot_tag : "?");
-    }
+    if (!fresh && now.tv_sec == hot_logged) return;
+    hot_logged = now.tv_sec;
+    hot_logging = true;
+    fprintf(stderr, "tomoe: allocation in hot path %s at tomoe+%#lx (%llu so far)\n",
+        hot_tag ? hot_tag : "?", (unsigned long)(caller - (uintptr_t)__executable_start),
+        (unsigned long long)hot_allocs);
+    hot_logging = false;
+}
+
+static inline void hot_count(uintptr_t caller) {
+    if (!hot_depth || hot_logging) return;
+    hot_allocs_all++;
+    if (caller >= (uintptr_t)__executable_start && caller < (uintptr_t)etext)
+        hot_violation(caller);
 }
 
 uint64_t budget_hot_allocs(void) {
@@ -124,32 +143,17 @@ uint64_t budget_hot_allocs_all(void) {
     return hot_allocs_all;
 }
 
-void *t_malloc(size_t size) {
-    if (hot_depth) budget_hot_violation(__func__);
+__attribute__((noinline)) void *malloc(size_t size) {
+    hot_count((uintptr_t)__builtin_return_address(0));
     return __libc_malloc(size);
 }
 
-void *t_calloc(size_t count, size_t size) {
-    if (hot_depth) budget_hot_violation(__func__);
+__attribute__((noinline)) void *calloc(size_t count, size_t size) {
+    hot_count((uintptr_t)__builtin_return_address(0));
     return __libc_calloc(count, size);
 }
 
-void *t_realloc(void *pointer, size_t size) {
-    if (hot_depth) budget_hot_violation(__func__);
-    return __libc_realloc(pointer, size);
-}
-
-void *malloc(size_t size) {
-    if (hot_depth) hot_allocs_all++;
-    return __libc_malloc(size);
-}
-
-void *calloc(size_t count, size_t size) {
-    if (hot_depth) hot_allocs_all++;
-    return __libc_calloc(count, size);
-}
-
-void *realloc(void *pointer, size_t size) {
-    if (hot_depth) hot_allocs_all++;
+__attribute__((noinline)) void *realloc(void *pointer, size_t size) {
+    hot_count((uintptr_t)__builtin_return_address(0));
     return __libc_realloc(pointer, size);
 }

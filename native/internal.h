@@ -211,6 +211,7 @@ void op_end(struct pass *pass, struct op_clip *clip);
 struct op *pass_recorded(struct pass *pass, size_t before);
 size_t pass_record_count(const struct pass *pass);
 void oplist_finish(struct oplist *list);
+void oplist_reserve(struct oplist *list, size_t used);
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out);
 void oplist_expand(const struct oplist *list, struct region *region);
 void render_destroy(struct render *r);
@@ -426,6 +427,7 @@ bool ring_configure(struct tomoe *s, struct ring *ring, struct screen *output,
     int width, int height, bool implicit);
 struct buffer *ring_acquire(struct tomoe *s, struct ring *ring);
 struct buffer *ring_create(struct tomoe *s, struct ring *ring);
+void ring_reserve(struct tomoe *s, struct ring *ring);
 void ring_finish(struct ring *ring);
 bool fenced(struct screen *output);
 
@@ -634,7 +636,7 @@ struct output {
     double tick_at;
     double sample;
     bool animating;
-    struct oplist ops;
+    struct oplist ops, spare_ops;
     uint64_t frames;
     uint64_t damage_seq;
     struct region damage[8];
@@ -709,6 +711,8 @@ bool effect_cursor(struct frame *f, const struct texture_options *options,
 void effects_plan(struct tomoe *s, struct oplist *list);
 void effects_forget(struct tomoe *s);
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused);
+bool effects_create(struct tomoe *s);
+bool effects_admit_trail(struct tomoe *s);
 void effects_finish(struct tomoe *s);
 bool background_effects_listen(struct tomoe *s);
 const struct region *background_blur_region(struct tomoe *s, struct surface *surface);

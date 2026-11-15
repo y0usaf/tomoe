@@ -808,7 +808,7 @@ static lisp_value prim_present_window_mesh(int argc, lisp_value *argv) {
     for (lisp_value item = tail; lisp_consp(item); item = lisp_cdr(item)) count++;
     double inline_values[256];
     double *values = count <= sizeof(inline_values) / sizeof(inline_values[0]) ? inline_values :
-        t_malloc(count * sizeof(double));
+        malloc(count * sizeof(double));
     if (!values) return lisp_nil();
     size_t index = 0;
     for (lisp_value item = tail; lisp_consp(item) && index < count; item = lisp_cdr(item))

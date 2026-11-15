@@ -4,22 +4,76 @@
 
 #define REGION_MIN INT32_MIN
 #define REGION_MAX INT32_MAX
+#define POOL_CLASSES 8
+#define POOL_RECTS 16384
+#define SCRATCH_RECTS 1024
 
 struct build {
     struct rect *rects;
     int count, capacity;
 };
 
+static struct rect pool[POOL_RECTS];
+static size_t pool_used;
+static struct rect *pool_free[POOL_CLASSES];
+static struct rect scratch_rects[SCRATCH_RECTS];
+static struct build scratch = { scratch_rects, 0, SCRATCH_RECTS };
+
+static int pool_class(int count) {
+    int class = 0;
+    while (class < POOL_CLASSES && (4 << class) < count) class++;
+    return class;
+}
+
+static bool pooled(const struct rect *rects) {
+    return (uintptr_t)rects >= (uintptr_t)pool && (uintptr_t)rects < (uintptr_t)(pool + POOL_RECTS);
+}
+
+static struct rect *rects_take(int count, int *capacity) {
+    int class = pool_class(count);
+    if (class < POOL_CLASSES) {
+        int size = 4 << class;
+        struct rect *rects = pool_free[class];
+        if (rects) memcpy(&pool_free[class], rects, sizeof(rects));
+        else if (pool_used + (size_t)size <= POOL_RECTS) {
+            rects = pool + pool_used;
+            pool_used += (size_t)size;
+        }
+        if (rects) {
+            *capacity = size;
+            return rects;
+        }
+        count = size;
+    }
+    struct rect *rects = malloc((size_t)count * sizeof(*rects));
+    *capacity = rects ? count : 0;
+    return rects;
+}
+
+static void rects_give(struct rect *rects, int capacity) {
+    if (!rects) return;
+    if (!pooled(rects)) {
+        free(rects);
+        return;
+    }
+    int class = pool_class(capacity);
+    memcpy(rects, &pool_free[class], sizeof(pool_free[class]));
+    pool_free[class] = rects;
+}
+
 static const struct rect *region_rects(const struct region *region) {
-    return region->rects ? region->rects : &region->extents;
+    return region->count > 1 ? region->rects : &region->extents;
 }
 
 static bool build_add(struct build *build, int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
     if (x1 >= x2 || y1 >= y2) return true;
     if (build->count == build->capacity) {
-        int capacity = build->capacity ? build->capacity * 2 : 8;
-        struct rect *rects = realloc(build->rects, (size_t)capacity * sizeof(*rects));
+        int capacity = build->capacity * 2;
+        bool fixed = build->rects == scratch_rects;
+        struct rect *rects = fixed ? malloc((size_t)capacity * sizeof(*rects)) :
+            realloc(build->rects, (size_t)capacity * sizeof(*rects));
         if (!rects) return false;
+        if (fixed) memcpy(rects, scratch_rects, (size_t)build->count * sizeof(*rects));
         build->rects = rects;
         build->capacity = capacity;
     }
@@ -157,36 +211,49 @@ static void build_coalesce(struct build *build, int *previous, int current) {
 
 enum combine { COMBINE_UNION, COMBINE_INTERSECT, COMBINE_SUBTRACT };
 
-static void region_install(struct region *region, struct build *build) {
-    free(region->rects);
-    region->rects = build->rects;
-    region->count = build->count;
-    region->capacity = build->capacity;
-    if (!build->count) {
-        region->extents = (struct rect){ 0, 0, 0, 0 };
-    } else if (build->count == 1) {
-        region->extents = build->rects[0];
-        free(build->rects);
-        region->rects = NULL;
-        region->capacity = 0;
-    } else {
-        struct rect extents = build->rects[0];
-        for (int i = 1; i < build->count; i++) {
-            struct rect rect = build->rects[i];
-            if (rect.x1 < extents.x1) extents.x1 = rect.x1;
-            if (rect.y1 < extents.y1) extents.y1 = rect.y1;
-            if (rect.x2 > extents.x2) extents.x2 = rect.x2;
-            if (rect.y2 > extents.y2) extents.y2 = rect.y2;
+static void region_store(struct region *region, const struct rect *rects, int count) {
+    if (count > 1 && count > region->capacity) {
+        int capacity = 0;
+        struct rect *grown = rects_take(count, &capacity);
+        if (!grown) {
+            region->count = 0;
+            region->extents = (struct rect){ 0, 0, 0, 0 };
+            return;
         }
-        region->extents = extents;
+        rects_give(region->rects, region->capacity);
+        region->rects = grown;
+        region->capacity = capacity;
     }
-    build->rects = NULL;
-    build->count = build->capacity = 0;
+    if (count <= 0) {
+        region->count = 0;
+        region->extents = (struct rect){ 0, 0, 0, 0 };
+        return;
+    }
+    region->count = count;
+    if (count == 1) {
+        region->extents = rects[0];
+        return;
+    }
+    memcpy(region->rects, rects, (size_t)count * sizeof(*rects));
+    struct rect extents = rects[0];
+    for (int i = 1; i < count; i++) {
+        struct rect rect = rects[i];
+        if (rect.x1 < extents.x1) extents.x1 = rect.x1;
+        if (rect.y1 < extents.y1) extents.y1 = rect.y1;
+        if (rect.x2 > extents.x2) extents.x2 = rect.x2;
+        if (rect.y2 > extents.y2) extents.y2 = rect.y2;
+    }
+    region->extents = extents;
+}
+
+static void region_install(struct region *region, struct build *build) {
+    region_store(region, build->rects, build->count);
+    scratch = (struct build){ build->rects, 0, build->capacity };
 }
 
 static void region_combine(struct region *dst, const struct region *a, const struct region *b,
         enum combine op) {
-    struct build build = { NULL, 0, 0 };
+    struct build build = scratch;
     const struct rect *first = region_rects(a), *first_end = first + a->count;
     const struct rect *other = region_rects(b), *other_end = other + b->count;
     bool append_first = op == COMBINE_UNION || op == COMBINE_SUBTRACT;
@@ -265,8 +332,8 @@ static void region_combine(struct region *dst, const struct region *a, const str
     region_install(dst, &build);
     return;
 out:
-    free(build.rects);
-    region_install(dst, &(struct build){ NULL, 0, 0 });
+    build.count = 0;
+    region_install(dst, &build);
 }
 
 void region_init(struct region *region) {
@@ -325,32 +392,17 @@ void region_init_rects(struct region *region, const struct rect *rects, int coun
 }
 
 void region_fini(struct region *region) {
-    free(region->rects);
+    rects_give(region->rects, region->capacity);
     region_init(region);
 }
 
 void region_copy(struct region *dst, const struct region *src) {
     if (dst == src) return;
-    free(dst->rects);
-    dst->count = src->count;
-    dst->capacity = src->count > 1 ? src->count : 0;
-    dst->extents = src->extents;
-    dst->rects = NULL;
-    if (src->count > 1) {
-        dst->rects = malloc((size_t)src->count * sizeof(*dst->rects));
-        if (!dst->rects) {
-            dst->count = dst->capacity = 0;
-            dst->extents = (struct rect){ 0, 0, 0, 0 };
-            return;
-        }
-        memcpy(dst->rects, src->rects, (size_t)src->count * sizeof(*dst->rects));
-    }
+    region_store(dst, region_rects(src), src->count);
 }
 
 void region_clear(struct region *region) {
-    free(region->rects);
-    region->rects = NULL;
-    region->count = region->capacity = 0;
+    region->count = 0;
     region->extents = (struct rect){ 0, 0, 0, 0 };
 }
 
