@@ -197,8 +197,8 @@ def stop_main():
 
 def flap_feedback(hold_ms):
     machine.succeed("systemctl stop tomoe check-bus")
-    start("--bare", f"--drm_device {DEVICE}", backend="drm",
-          env=dict(DRM, TOMOE_FEEDBACK_HOLD_MS=str(hold_ms)))
+    start("--bare", f"--test-feedback-hold-ms={hold_ms}", f"--drm_device {DEVICE}",
+          backend="drm", env=DRM)
     cli(f"mount {PLANES_PROBE}")
     park()
     probe("chrome-on")
@@ -451,7 +451,7 @@ for wrong, what in (((SHIFT[0] + 1, SHIFT[1]), "one step off the commanded move"
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm", env=dict(DRM, TOMOE_NO_PLANES="1"))
+start("--bare", "--test-refuse-planes", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 scene()
@@ -469,9 +469,8 @@ reference_shot = screenshot("reference")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm",
-    env=dict(DRM, TOMOE_TEST_STALL_FENCE="1", TOMOE_TEST_STALL_FENCE_MS="900",
-        TOMOE_TEST_CURSOR_EARLY="1"))
+start("--bare", "--test-stall-fence", "--test-stall-fence-ms=900", "--test-cursor-early",
+    f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 move_by(20000, 20000)
 scene()
@@ -679,7 +678,7 @@ machine.succeed("systemctl stop audit-video")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm", env=dict(DRM, TOMOE_NO_PLANES="1"))
+start("--bare", "--test-refuse-planes", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -707,8 +706,7 @@ machine.succeed("systemctl stop gl-video")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm",
-      env=dict(DRM, TOMOE_TEST_REFUSE_PLANES="1"))
+start("--bare", "--test-refuse-planes", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -730,8 +728,7 @@ machine.succeed("systemctl stop refused-video")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm",
-      env=dict(DRM, TOMOE_TEST_ZPOS_STRIDE="1"))
+start("--bare", "--test-zpos-stride=1", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -749,8 +746,7 @@ machine.succeed("systemctl stop fixed-video")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm",
-      env=dict(DRM, TOMOE_TEST_ZPOS_STRIDE="-1"))
+start("--bare", "--test-zpos-stride=-1", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -771,14 +767,14 @@ machine.succeed("systemctl stop descending-video")
 quit()
 
 
-def turned_frame(degrees, command, env, baseline=False):
+def turned_frame(degrees, command, options=(), baseline=False):
     machine.succeed("systemctl stop tomoe check-bus")
     socket = "main" if baseline else "check"
     unit = f"turn-{degrees}-{socket}"
     if baseline:
         start_main()
     else:
-        start("--bare", f"--drm_device {DEVICE}", backend="drm", env=env)
+        start("--bare", *options, f"--drm_device {DEVICE}", backend="drm", env=DRM)
     cli(f"mount {PLANES_PROBE}", socket)
     machine.succeed(
         f"systemd-run --unit={unit}-park --property=Type=exec "
@@ -795,7 +791,7 @@ def turned_frame(degrees, command, env, baseline=False):
     machine.wait_until_succeeds(
         f"journalctl -u {unit}-client -o cat | grep -q '^mapped'", timeout=60)
     machine.sleep(1)
-    shot = displayed(f"turn-{degrees}-{socket}-{bool(env)}")
+    shot = displayed(f"turn-{degrees}-{socket}-{bool(options)}")
     if baseline:
         stop_main()
     else:
@@ -808,9 +804,9 @@ def turned_frame(degrees, command, env, baseline=False):
 
 if BASELINE:
     for degrees, command in ((90, "rotate-ninety"), (270, "rotate-two-seventy")):
-        scanned = turned_frame(degrees, command, dict(DRM))
-        composited = turned_frame(degrees, command, dict(DRM, TOMOE_NO_PLANES="1"))
-        main = turned_frame(degrees, command, None, baseline=True)
+        scanned = turned_frame(degrees, command)
+        composited = turned_frame(degrees, command, ("--test-refuse-planes",))
+        main = turned_frame(degrees, command, baseline=True)
         print(f"rotated {degrees}: planes {scanned} composited {composited} main {main}",
               flush=True)
         assert scanned == composited, (degrees, scanned, composited)

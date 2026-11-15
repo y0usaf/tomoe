@@ -19,7 +19,7 @@ def handback_gate(label, handbacks, period):
 
 
 def handback_window(prefix):
-    fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1"})
+    fresh("--bare", "--test-timings", bus=False)
     cli(f"mount {REFRESH_POLICY}")
     cli(f"mount {SCENE_POLICY}")
     cli(f"mount {HANDBACK_POLICY}")
@@ -51,8 +51,8 @@ def handback_window(prefix):
 
 
 def slow_handback_window(prefix, period):
-    fresh("--bare", bus=False, env={"TOMOE_TIMINGS": "1",
-                                    "TOMOE_TEST_HANDBACK_PAUSE_US": str(period * 3 // 2 // 1000)})
+    fresh("--bare", "--test-timings", bus=False,
+          env={"TOMOE_TEST_HANDBACK_PAUSE_US": str(period * 3 // 2 // 1000)})
     cli(f"mount {REFRESH_POLICY}")
     cli(f"mount {SCENE_POLICY}")
     cli(f"mount {HANDBACK_POLICY}")

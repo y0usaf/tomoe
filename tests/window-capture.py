@@ -139,8 +139,7 @@ machine.succeed(f"{ENV}WAYLAND_DISPLAY=check timeout 60 grim {SHOT}")
 machine.succeed(f"test -s {SHOT}")
 
 quit()
-start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1",
-                     "TOMOE_TEST_STALL_CAPTURE_MS": str(STALL_MS)})
+start("--bare", "--test-stall-capture", "--test-stall-capture-ms=%d" % STALL_MS)
 cli(f"mount {CAPTURE_POLICY}")
 window("stall-win", COLOURS[0])
 time.sleep(0.5)
@@ -156,7 +155,7 @@ assert latency >= STALL_MS * 0.9, f"failed after {latency:.0f} ms"
 assert counts["intact"] == ["deadbeef"], f"the buffer was written after the frame failed: {counts}"
 
 quit()
-start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1"})
+start("--bare", "--test-stall-capture")
 cli(f"mount {CAPTURE_POLICY}")
 window("hang-win", COLOURS[0])
 time.sleep(0.5)
@@ -172,8 +171,7 @@ assert after >= max(FLOOR, BOUND * hang_control), f"{after:.1f} fps after the cl
 assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0
 
 quit()
-start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1",
-                     "TOMOE_TEST_CAPTURE_WATCH_FAIL": "1"})
+start("--bare", "--test-stall-capture", "--test-capture-watch-fail")
 cli(f"mount {CAPTURE_POLICY}")
 window("watch-win", COLOURS[0])
 time.sleep(0.5)

@@ -6,14 +6,13 @@ DRM = {
     "TOMOE_DEBUG": "1",
     "LIBSEAT_BACKEND": "noop",
     "WLR_NO_HARDWARE_CURSORS": "1",
-    "TOMOE_TIMINGS": "1",
 }
 PHASES = (
     ("motion", "--motion-stream 1000 3000", "present-input"),
     ("commit", "--commit-stream 500 3000", "present-commit"),
     ("load", "--motion-stream 1000 6000", "present-input"),
 )
-MODES = (("late-latch", {}), ("immediate", {"TOMOE_FRAME_CLOCK": "0"}))
+MODES = (("late-latch", ()), ("immediate", ("--test-pacing=0",)))
 
 
 def ticks():
@@ -128,8 +127,8 @@ driven = {}
 for index, (mode, extra) in enumerate(MODES):
     if index:
         machine.succeed("systemctl stop tomoe")
-    start("--bare", f"--drm_device /dev/dri/{CARD}", backend="drm", bus=not index,
-          env=dict(DRM, **extra))
+    start("--bare", "--test-timings", *extra, f"--drm_device /dev/dri/{CARD}",
+          backend="drm", bus=not index, env=DRM)
     cli(f"mount {FRAMECLOCK_POLICY}")
     fields = wait_output("Virtual-1")
     assert (text(fields[":WIDTH"]), text(fields[":HEIGHT"])) == ("1920", "1080"), fields

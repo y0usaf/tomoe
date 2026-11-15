@@ -45,7 +45,7 @@ def dark():
     )
 
 
-start("--bare", f"--drm_device /dev/dri/{CARD}", backend="drm", env=dict(DRM, TOMOE_DRM_WAKE_MS="1500"))
+start("--bare", "--test-drm-wake-ms=1500", f"--drm_device /dev/dri/{CARD}", backend="drm", env=DRM)
 cli(f"mount {WAKE_PROBE}")
 kernel_mode("1920x1080@60")
 assert "was dark" not in kms_log(), kms_log()
@@ -83,7 +83,7 @@ assert inspect()[":LAST-ERROR"] == "NIL", inspect()[":LAST-ERROR"]
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device /dev/dri/{CARD}", backend="drm", bus=False, env=dict(DRM, TOMOE_DRM_WAKE_MS="0"))
+start("--bare", "--test-drm-wake-ms=0", f"--drm_device /dev/dri/{CARD}", backend="drm", bus=False, env=DRM)
 cli(f"mount {WAKE_PROBE}")
 kernel_mode("1920x1080@60")
 dark()

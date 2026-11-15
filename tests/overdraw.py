@@ -78,7 +78,7 @@ def policy(layout, decorated, path):
     return path
 
 
-def start_binary(binary, unit, socket, env=()):
+def start_binary(binary, unit, socket, options=()):
     machine.wait_for_unit("multi-user.target")
     machine.execute(
         "systemd-run --unit=check-bus --property=Type=exec "
@@ -88,11 +88,11 @@ def start_binary(binary, unit, socket, env=()):
         f"systemd-run --unit={unit} --property=Type=exec --remain-after-exit "
         "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={BUS} "
-        "--setenv=TOMOE_TIMINGS=1 --setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin "
+        "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin "
         f"--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv={THREADS} "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        + "".join(f"--setenv={name}={value} " for name, value in env)
-        + f"{binary} --socket {socket} --backend headless --no-watch")
+        + f"{binary} --socket {socket} --backend headless --no-watch --test-timings "
+        + " ".join(options))
     for _ in range(600):
         if machine.execute(ENV + f"{binary} --socket {socket} inspect")[0] == 0:
             return
@@ -220,10 +220,10 @@ def describe(cost):
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
-def session(binary, tag, layout, phase, env, decorated=True):
+def session(binary, tag, layout, phase, options, decorated=True):
     name = f"{tag}{layout}{phase}"
     unit, socket = f"tomoe-{tag}-{layout}-{phase}", name
-    start_binary(binary, unit, socket, env=env)
+    start_binary(binary, unit, socket, options=options)
     mount(binary, socket, layout, decorated, f"/run/overdraw-{layout}.lisp")
     return unit, socket
 
@@ -256,7 +256,7 @@ def run(binary, tag):
         print(f"{tag} rotated {rotation} {COUNTS[1]}: presented {digests[key]}", flush=True)
         stop_binary(binary, unit, socket)
     for layout in ("grid", "stack", "cover"):
-        unit, socket = session(binary, tag, layout, "cost", [("TOMOE_DEBUG_DAMAGE", "1")])
+        unit, socket = session(binary, tag, layout, "cost", ["--test-debug-damage"])
         seen = 0
         for count in COUNTS:
             spawn(socket, seen, count, True, unit)

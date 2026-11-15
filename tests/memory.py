@@ -161,7 +161,7 @@ time.sleep(2)
 measure("tiles-0")
 quit()
 
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1"})
+fresh("--config", CONFIG, "--test-timings")
 time.sleep(3)
 state = inspect()
 print("config error:", state[":LAST-ERROR"], flush=True)
@@ -180,7 +180,7 @@ measure("policy-0")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1"})
+fresh("--config", CONFIG, "--test-timings")
 cli(f"mount {REFRESH_POLICY}")
 cli(f"mount {SCENE_POLICY}")
 open_windows(2, width=320, height=240, prefix="c")
@@ -197,8 +197,8 @@ close_windows(2, prefix="c")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-fresh("--config", CONFIG, env={"TOMOE_TIMINGS": "1",
-                              "TOMOE_TEST_GC_PAUSE_US": str(period * 3 // 2 // 1000)})
+fresh("--config", CONFIG, "--test-timings",
+      env={"TOMOE_TEST_GC_PAUSE_US": str(period * 3 // 2 // 1000)})
 cli(f"mount {REFRESH_POLICY}")
 cli(f"mount {SCENE_POLICY}")
 open_windows(2, width=320, height=240, prefix="s")
