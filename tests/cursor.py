@@ -29,93 +29,45 @@ SETTINGS = """
 PARK = (400, 380)
 
 THROWAWAY = """
-(defun test-jelly (motion)
-  "Lean the cursor 35 degrees while the pointer moves."
-  (when (> (abs (getf motion :vx)) 1)
-    (list :rotation 35 :settle +test-settle+)))
+(defparameter +jelly+ (list :rotation (list :speed 0.035d0 :above 1d0 :below 1000d0)
+                            :settle +test-settle+))
 """
 
 TILT = """
-(defun test-tilt (motion)
-  "Lean the cursor in proportion to horizontal speed, up to 45 degrees."
-  (let ((lean (* 45d0 (max -1d0 (min 1d0 (/ (coerce (getf motion :vx) 'double-float)
-                                          5000d0))))))
-    (when (> (abs lean) 2)
-      (list :rotation lean :settle +test-settle+))))
+(defparameter +tilt+ (list :rotation (list :vx 0.009d0 :below 5000d0)
+                           :settle +test-settle+))
 """
 
 STRETCH = """
-(defun test-stretch (motion)
-  "Stretch the cursor along its motion, by up to its own length."
-  (let* ((vx (coerce (getf motion :vx) 'double-float))
-         (vy (coerce (getf motion :vy) 'double-float))
-         (speed (sqrt (+ (* vx vx) (* vy vy)))))
-    (when (> speed 200)
-      (list :stretch (min 1d0 (/ speed 4000d0))
-            :stretch-angle (/ (* 180d0 (atan (- vx) vy)) pi)
-            :settle +test-settle+))))
+(defparameter +stretch+ (list :stretch (list :speed (/ 1d0 4000d0) :above 200d0 :below 4000d0)
+                              :stretch-angle (list -90d0 (list :angle 1d0))
+                              :settle +test-settle+))
 """
 
 SHAKE = """
-(defvar *test-shake* (list :until 0d0 :zoom 1d0 :time 0d0))
+(defparameter +shake+ (list :scale (list :shake 0.5d0 :above 6d0 :below 8d0) :settle 0.2d0))
 
-(defun test-shake (motion)
-  "Magnify the cursor while it is being shaken."
-  (when (> (getf *test-shake* :until) (getf motion :time))
-    (list :scale (getf *test-shake* :zoom) :settle 0.2)))
-
-(define-extension "test-shake" (:reads (:pointer) :state nil) (snapshot state event)
-  (declare (ignore snapshot state))
-  (let* ((motion (cursor-motion))
-         (now (getf motion :time))
-         (state *test-shake*)
-         (shaking (and (> (getf motion :shake-distance) 100)
-                       (> (getf motion :shake) 6))))
-    (setf (getf state :time) now)
-    (when shaking
-      ;; a hard shake is four times the size, and the timeout is short enough
-      ;; that the test does not wait around for it
-      (setf (getf state :zoom) 4d0
-            (getf state :until) (+ now 0.4d0)))
-    (values nil
-            (remove nil
-                    (list (cursor-effect "shake" 'test-shake :order 20)
-                          (when (> (getf state :until) now)
-                            (interval :test-shake 60))))
-            nil)))
+(define-extension "test-shake" (:reads () :state nil) (snapshot state event)
+  (declare (ignore snapshot state event))
+  (values nil (list (cursor-effect "shake" +shake+ :order 20)) nil))
 """
 
 SPRING = """
-(defvar *test-spring* (list :angle 0d0 :time 0d0))
+(defparameter +spring+ (list :rotation (list :vx 0.01d0 :below 3000d0) :settle 0.3d0))
 
-(defun test-spring (motion)
-  "A spring of our own: the cursor leans with speed and comes back to rest on
-its own, asking for another frame until it is sitting still."
-  (let* ((state *test-spring*)
-         (now (getf motion :time))
-         (elapsed (max 0d0 (min 0.25d0 (- now (getf state :time)))))
-         (target (* 30d0 (max -1d0 (min 1d0 (/ (coerce (getf motion :vx) 'double-float)
-                                              3000d0)))))
-         (previous (getf state :angle))
-         (angle (+ previous (* (- target previous) (min 1d0 (/ elapsed 0.12d0))))))
-    (setf (getf state :time) now (getf state :angle) angle)
-    (list :rotation angle :settle 0.3 :settled (<= (abs angle) 0.4d0))))
-
-(define-extension "test-spring" (:reads (:pointer) :state nil) (snapshot state event)
+(define-extension "test-spring" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "spring" 'test-spring :order 5)) nil))
+  (values nil (list (cursor-effect "spring" +spring+ :order 5)) nil))
 """
 
 TRAIL = """
-(defun test-trail (motion)
-  "Leave a fading pixel trail behind the pointer."
-  (declare (ignore motion))
-  (list :settle +test-settle+
-        :trail (list :cell 9 :life 0.35 :steps 4 :color "#b8e0ff")))
+(defparameter +trail+ (list :settle +test-settle+
+                            :trail (list :cell 9d0 :life 0.35d0 :steps 4
+                                         :color "#b8e0ff")))
 
 (define-extension "test-trail" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "trail" 'test-trail :order 30)) nil))
+  (values nil (list (cursor-effect "trail" +trail+ :order 30)) nil))
 """
 
 
@@ -474,15 +426,15 @@ def main():
             failures.append(name + ": the trail never drew")
 
     check("tilt", TILT + """
-(define-extension "test-cursor" (:reads (:pointer) :state nil) (snapshot state event)
+(define-extension "test-cursor" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "tilt" 'test-tilt)) nil))
+  (values nil (list (cursor-effect "tilt" +tilt+)) nil))
 """, moved)
 
     check("stretch", STRETCH + """
-(define-extension "test-cursor" (:reads (:pointer) :state nil) (snapshot state event)
+(define-extension "test-cursor" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "stretch" 'test-stretch)) nil))
+  (values nil (list (cursor-effect "stretch" +stretch+)) nil))
 """, moved)
 
     check("spring", SPRING, settled_late)
@@ -494,9 +446,9 @@ def main():
     unload = root / "unload"
     unload.mkdir(exist_ok=True)
     compositor = build("unload", THROWAWAY + """
-(define-extension "test-cursor" (:reads (:pointer) :state nil) (snapshot state event)
+(define-extension "test-cursor" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "jelly" 'test-jelly)) nil))
+  (values nil (list (cursor-effect "jelly" +jelly+)) nil))
 """)
     try:
         time.sleep(1.0)
