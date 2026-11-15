@@ -48,15 +48,23 @@ void analyse_push_pattern(struct lisp_actx *ctx, lisp_value pattern)
     }
     if (!consp(pattern))
         return;
+    int mode = 0;
     lisp_value p = pattern;
     while (consp(p)) {
         lisp_value head = CAR(p);
         p = CDR(p);
-        if (symbolp(head)) {
-            if (head == VAL(lisp.sym_rest) || head == VAL(lisp.sym_body) ||
-                head == VAL(lisp.sym_optional) || head == VAL(lisp.sym_key))
-                continue;
-            analyse_push_var(ctx, head);
+        if (head == VAL(lisp.sym_rest) || head == VAL(lisp.sym_body) ||
+                head == VAL(lisp.sym_allow_other_keys))
+            continue;
+        if (head == VAL(lisp.sym_optional)) { mode = 1; continue; }
+        if (head == VAL(lisp.sym_key)) { mode = 2; continue; }
+        if (mode && consp(head)) {
+            lisp_value var = CAR(head);
+            if (mode == 2 && consp(var)) var = CAR(CDR(var));
+            if (consp(CDR(head))) analyse_expr(ctx, CAR(CDR(head)));
+            analyse_push_pattern(ctx, var);
+            if (consp(CDR(head)) && consp(CDR(CDR(head))))
+                analyse_push_pattern(ctx, CAR(CDR(CDR(head))));
             continue;
         }
         analyse_push_pattern(ctx, head);

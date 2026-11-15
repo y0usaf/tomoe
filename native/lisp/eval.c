@@ -424,7 +424,7 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
                 if (nilp(default_form))
                     value = NIL_VAL;
                 else
-                    value = eval(default_form, frame->parent);
+                    value = eval(default_form, frame);
             }
             frame_bind(frame, slot++, var, value, BIND_VAR);
             if (symbolp(supplied))
@@ -460,6 +460,13 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
     }
 }
 
+static bool pattern_marker(lisp_value head)
+{
+    return head == VAL(lisp.sym_rest) || head == VAL(lisp.sym_optional) ||
+        head == VAL(lisp.sym_key) || head == VAL(lisp.sym_body) ||
+        head == VAL(lisp.sym_allow_other_keys);
+}
+
 static uint32_t pattern_slots(lisp_value pattern)
 {
     if (nilp(pattern))
@@ -469,14 +476,25 @@ static uint32_t pattern_slots(lisp_value pattern)
     if (!consp(pattern))
         return 0;
     uint32_t n = 0;
+    int mode = 0;
     lisp_value p = pattern;
     while (consp(p)) {
-        if (CAR(p) == VAL(lisp.sym_rest) || CAR(p) == VAL(lisp.sym_optional) ||
-            CAR(p) == VAL(lisp.sym_key) || CAR(p) == VAL(lisp.sym_body))
-            ;
-        else
-            n += pattern_slots(CAR(p));
+        lisp_value head = CAR(p);
         p = CDR(p);
+        if (pattern_marker(head)) {
+            if (head == VAL(lisp.sym_optional)) mode = 1;
+            else if (head == VAL(lisp.sym_key)) mode = 2;
+            continue;
+        }
+        if (mode && consp(head)) {
+            lisp_value var = CAR(head);
+            if (mode == 2 && consp(var)) var = CAR(CDR(var));
+            n += pattern_slots(var);
+            if (consp(CDR(head)) && consp(CDR(CDR(head))))
+                n += 1;
+        } else {
+            n += pattern_slots(head);
+        }
     }
     if (!nilp(p))
         n += pattern_slots(p);
@@ -491,31 +509,71 @@ static uint32_t bind_pattern(struct lisp_frame *frame, uint32_t slot, lisp_value
         frame_bind(frame, slot++, pattern, value, BIND_VAR);
         return slot;
     }
-    if (!consp(pattern))
-        lisp_error("bad destructuring pattern");
-    bool rest = false;
+    if (!consp(pattern)) {
+        char shown[160], given[160];
+        lisp_print(pattern, true, shown, sizeof(shown));
+        lisp_print(value, true, given, sizeof(given));
+        lisp_error("bad destructuring pattern %s for %s", shown, given);
+    }
+    int mode = 0;
     lisp_value p = pattern;
     lisp_value item = value;
+    lisp_value keys = NIL_VAL;
     while (consp(p)) {
         lisp_value head = CAR(p);
         p = CDR(p);
         if (head == VAL(lisp.sym_rest) || head == VAL(lisp.sym_body)) {
-            rest = true;
+            if (consp(p)) {
+                slot = bind_pattern(frame, slot, CAR(p), item);
+                p = CDR(p);
+            }
             continue;
         }
-        if (rest) {
-            slot = bind_pattern(frame, slot, head, item);
-            item = NIL_VAL;
-            rest = false;
-            continue;
-        }
-        if (!consp(item)) {
-            if (!nilp(head))
+        if (head == VAL(lisp.sym_optional)) { mode = 1; continue; }
+        if (head == VAL(lisp.sym_key)) { mode = 2; keys = item; continue; }
+        if (head == VAL(lisp.sym_allow_other_keys)) continue;
+        if (mode == 0) {
+            if (!consp(item)) {
                 slot = bind_pattern(frame, slot, head, NIL_VAL);
+                continue;
+            }
+            slot = bind_pattern(frame, slot, head, CAR(item));
+            item = CDR(item);
             continue;
         }
-        slot = bind_pattern(frame, slot, head, CAR(item));
-        item = CDR(item);
+        lisp_value var = head, default_form = NIL_VAL, supplied = NIL_VAL, keyword = NIL_VAL;
+        if (consp(head)) {
+            var = CAR(head);
+            if (consp(CDR(head))) default_form = CAR(CDR(head));
+            if (consp(CDR(head)) && consp(CDR(CDR(head)))) supplied = CAR(CDR(CDR(head)));
+        }
+        bool supplied_p = false;
+        lisp_value found = NIL_VAL;
+        if (mode == 1) {
+            if (consp(item)) {
+                found = CAR(item);
+                item = CDR(item);
+                supplied_p = true;
+            }
+        } else {
+            if (consp(var)) {
+                keyword = CAR(var);
+                var = CAR(CDR(var));
+            } else {
+                keyword = VAL(symbol_intern(PKG_KEYWORD, SYM(var)->name, strlen(SYM(var)->name), false));
+            }
+            for (lisp_value k = keys; consp(k) && consp(CDR(k)); k = CDR(CDR(k)))
+                if (CAR(k) == keyword) {
+                    found = CAR(CDR(k));
+                    supplied_p = true;
+                    break;
+                }
+        }
+        if (!supplied_p && !nilp(default_form))
+            found = eval(default_form, frame);
+        slot = bind_pattern(frame, slot, var, found);
+        if (symbolp(supplied) && !nilp(supplied))
+            frame_bind(frame, slot++, supplied, supplied_p ? T_VAL : NIL_VAL, BIND_VAR);
     }
     if (!nilp(p))
         slot = bind_pattern(frame, slot, p, item);

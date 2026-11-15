@@ -61,8 +61,8 @@ PROTOCOLS = \
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
-LISP_SOURCES = prelude api runtime rules dialogs ui cursor ipc desktop-lib default-config
-LISP_EMBED = $(wildcard lisp/*.lisp) builtins/desktop.lisp
+LISP_SOURCES = prelude api ui cursor dialogs rules ipc plan runtime livepatch desktop default-config
+LISP_EMBED = $(wildcard lisp/*.lisp)
 LISP_NATIVE = $(patsubst native/lisp/%.c,build/obj/lisp-%.o,$(wildcard native/lisp/*.c))
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o)
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
@@ -92,7 +92,7 @@ build/embed: tools/embed.c | build
 	$(CC) $(CFLAGS_CODE) -o $@ $<
 
 build/lisp-sources.h: build/embed $(LISP_EMBED) FORCE
-	sh -c 'set --; for n in $(LISP_SOURCES); do if [ -f lisp/$$n.lisp ]; then set -- "$$@" "$$n" "lisp/$$n.lisp"; fi; done; set -- "$$@" desktop builtins/desktop.lisp; exec build/embed build/lisp-sources.h "$$@"'
+	sh -c 'set --; for n in $(LISP_SOURCES); do if [ -f lisp/$$n.lisp ]; then set -- "$$@" "$$n" "lisp/$$n.lisp"; fi; done; exec build/embed build/lisp-sources.h "$$@"'
 
 build/obj/main.o: build/lisp-sources.h
 
@@ -135,7 +135,7 @@ build/lisp-unit: $(wildcard native/lisp/*.c) $(wildcard native/lisp/*.h) native/
 	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard native/lisp/*.c) tests/lisp-unit.c -lm \
 		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc
 
-UNIT_SOURCES = tomoe:tests/lisp-api-stub.lisp user:builtins/desktop.lisp \
+UNIT_SOURCES = tomoe:tests/lisp-api-stub.lisp user:lisp/desktop.lisp \
 	$(patsubst %,user:%,$(sort $(wildcard examples/*.lisp))) \
 	tomoe:tests/lisp-internal-tests.lisp user:tests/lisp-tests.lisp
 
