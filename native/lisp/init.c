@@ -288,6 +288,7 @@ int init_primitives(void)
     define_internal("%EXPORT", builtin_export, 1, 1);
     define_internal("%READ-SOURCE", builtin_read_source, 2, 2);
     define_internal("%SYMBOL-DEFINITION", builtin_symbol_definition, 1, 1);
+    define_internal("%SYMBOL-PACKAGE-NAME", builtin_symbol_package_name, 1, 1);
     define_internal("%SET-SYMBOL-DEFINITION", builtin_set_symbol_definition, 2, 2);
     define_internal("%CATCH", builtin_catch, 2, 2);
     define_internal("%SYMBOL-VALUE", builtin_symbol_value_cell, 1, 1);

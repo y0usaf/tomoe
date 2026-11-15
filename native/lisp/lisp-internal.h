@@ -713,6 +713,7 @@ lisp_value builtin_reduce(int argc, lisp_value *argv);
 lisp_value builtin_catch(int argc, lisp_value *argv);
 lisp_value builtin_read_source(int argc, lisp_value *argv);
 lisp_value builtin_symbol_definition(int argc, lisp_value *argv);
+lisp_value builtin_symbol_package_name(int argc, lisp_value *argv);
 lisp_value builtin_set_symbol_definition(int argc, lisp_value *argv);
 lisp_value builtin_symbol_value_cell(int argc, lisp_value *argv);
 lisp_value builtin_set_symbol_value_cell(int argc, lisp_value *argv);

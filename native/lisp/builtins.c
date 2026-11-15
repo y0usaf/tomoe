@@ -2022,6 +2022,17 @@ lisp_value builtin_symbol_definition(int argc, lisp_value *argv)
     return SYM(argv[0])->function;
 }
 
+lisp_value builtin_symbol_package_name(int argc, lisp_value *argv)
+{
+    if (argc < 1 || !symbolp(argv[0]))
+        lisp_error("%%SYMBOL-PACKAGE-NAME needs a symbol");
+    struct lisp_symbol *sym = SYM(argv[0]);
+    if ((sym->h.flags & SYM_UNINTERNED) || sym->package >= LISP_MAX_PACKAGES ||
+        !lisp.packages[sym->package].used)
+        return NIL_VAL;
+    return lisp_cstring(lisp.packages[sym->package].name);
+}
+
 lisp_value builtin_set_symbol_definition(int argc, lisp_value *argv)
 {
     if (argc < 2 || !symbolp(argv[0]))

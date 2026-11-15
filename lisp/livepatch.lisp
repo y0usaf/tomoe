@@ -42,7 +42,10 @@
 (defun patch-definition-snapshot (symbol)
   "SYMBOL's definitions now, for undo to restore over the patch's own."
   (list :symbol symbol
-        :name (symbol-name symbol)
+        :name (let ((package (%symbol-package-name symbol)))
+                (if package
+                    (format nil "~A::~A" package (symbol-name symbol))
+                    (symbol-name symbol)))
         :definition (%symbol-definition symbol)))
 
 (defun restore-patch-definition (snapshot)
