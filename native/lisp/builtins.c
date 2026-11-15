@@ -1911,8 +1911,18 @@ lisp_value builtin_copy_data(int argc, lisp_value *argv)
 
 static struct lisp_symbol *sym_runtime, *sym_pending_writes, *sym_retired_state, *sym_keep, *sym_release;
 
+struct runtime_cache_entry {
+    lisp_value state;
+    lisp_value key;
+    lisp_value *cell;
+    uint64_t epoch;
+};
+
+static struct runtime_cache_entry runtime_cache[64];
+
 void lisp_runtime_symbols_init(void)
 {
+    memset(runtime_cache, 0, sizeof(runtime_cache));
     for (int i = 0; i < KW_IDS; i++)
         kw_symbols[i] = VAL(symbol_intern(PKG_KEYWORD, kw_names[i], strlen(kw_names[i]), false));
     sym_runtime = symbol_intern(PKG_TOMOE, "*RUNTIME*", 9, false);
@@ -1930,12 +1940,22 @@ static lisp_value *plist_cell(lisp_value plist, lisp_value key)
     return NULL;
 }
 
+
 lisp_value builtin_runtime_read(int argc, lisp_value *argv)
 {
-    lisp_value *cell = plist_cell(sym_pending_writes->value, argv[0]);
-    if (!cell)
-        cell = plist_cell(sym_runtime->value, argv[0]);
-    return cell ? *cell : NIL_VAL;
+    lisp_value key = argv[0];
+    lisp_value *cell = plist_cell(sym_pending_writes->value, key);
+    if (cell)
+        return *cell;
+    lisp_value state = sym_runtime->value;
+    struct runtime_cache_entry *entry = &runtime_cache[(key >> 4) & 63];
+    if (entry->state != state || entry->key != key || entry->epoch != lisp.reclaim_count) {
+        entry->state = state;
+        entry->key = key;
+        entry->cell = plist_cell(state, key);
+        entry->epoch = lisp.reclaim_count;
+    }
+    return entry->cell ? *entry->cell : NIL_VAL;
 }
 
 lisp_value builtin_runtime_write(int argc, lisp_value *argv)

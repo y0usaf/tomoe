@@ -382,6 +382,40 @@ static void memo_add(void *src, void *dst)
 
 static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst);
 
+enum { CONS_FORWARDED = 0x80 };
+
+struct forward_entry {
+    struct lisp_cons *src;
+    lisp_value car;
+};
+
+static struct forward_entry *forwards;
+static size_t forward_used, forward_capacity;
+
+static void forward_cons(struct lisp_cons *src, struct lisp_cons *out)
+{
+    if (forward_used == forward_capacity) {
+        size_t capacity = forward_capacity ? forward_capacity * 2 : 4096;
+        struct forward_entry *grown = realloc(forwards, capacity * sizeof(*grown));
+        if (!grown)
+            lisp_oom();
+        forwards = grown;
+        forward_capacity = capacity;
+    }
+    forwards[forward_used++] = (struct forward_entry){ src, src->car };
+    src->car = VAL(out);
+    src->h.flags |= CONS_FORWARDED;
+}
+
+static void unforward_conses(void)
+{
+    for (size_t i = forward_used; i-- > 0;) {
+        forwards[i].src->car = forwards[i].car;
+        forwards[i].src->h.flags &= (uint8_t)~CONS_FORWARDED;
+    }
+    forward_used = 0;
+}
+
 static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
 {
     if (!heap_region_of((void *)(uintptr_t)value))
@@ -390,21 +424,40 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
     case LT_SYMBOL:
         return value;
     case LT_CONS: {
-        lisp_value hit = memo_lookup(PTR(value, lisp_cons));
-        if (hit)
-            return hit;
         struct lisp_cons *src = PTR(value, lisp_cons);
-        struct lisp_cons *out = heap_alloc_in(dst, sizeof(*out));
-        out->h.type = LT_CONS;
-        out->h.flags = 0;
-        out->h.aux = 0;
-        out->h.size = sizeof(*out);
-        out->car = NIL_VAL;
-        out->cdr = NIL_VAL;
-        memo_add(src, out);
-        out->car = deep_copy(src->car, dst);
-        out->cdr = deep_copy(src->cdr, dst);
-        return VAL(out);
+        if (src->h.flags & CONS_FORWARDED)
+            return src->car;
+        lisp_value head = NIL_VAL;
+        struct lisp_cons *prev = NULL;
+        for (;;) {
+            struct lisp_cons *out = heap_alloc_in(dst, sizeof(*out));
+            out->h.type = LT_CONS;
+            out->h.flags = 0;
+            out->h.aux = 0;
+            out->h.size = sizeof(*out);
+            out->car = NIL_VAL;
+            out->cdr = NIL_VAL;
+            lisp_value car = src->car;
+            forward_cons(src, out);
+            if (prev)
+                prev->cdr = VAL(out);
+            else
+                head = VAL(out);
+            out->car = deep_copy(car, dst);
+            lisp_value next = src->cdr;
+            if (TYPE(next) != LT_CONS || !heap_region_of((void *)(uintptr_t)next)) {
+                out->cdr = deep_copy(next, dst);
+                break;
+            }
+            struct lisp_cons *following = PTR(next, lisp_cons);
+            if (following->h.flags & CONS_FORWARDED) {
+                out->cdr = following->car;
+                break;
+            }
+            prev = out;
+            src = following;
+        }
+        return head;
     }
     case LT_INT: {
         struct lisp_int *src = PTR(value, lisp_int);
@@ -432,8 +485,9 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
     }
     case LT_STRING: {
         struct lisp_string *src = PTR(value, lisp_string);
-        if (memo_lookup(src))
-            return memo_lookup(src);
+        lisp_value hit = memo_lookup(src);
+        if (hit)
+            return hit;
         size_t size = offsetof(struct lisp_string, data) + src->byte_len + 1;
         struct lisp_string *out = heap_alloc_in(dst, size);
         out->h.type = LT_STRING;
@@ -467,6 +521,7 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
                 out->params = deep_copy(src->params, dst);
                 out->body = deep_copy(src->body, dst);
                 out->gen = NULL;
+                out->code = NULL;
             }
         }
         return VAL(out);
@@ -528,7 +583,17 @@ lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst)
         memo_epoch = ++lisp.memo_epochs;
     }
     memo_used = 0;
+    int ctl = push_ctl(CTL_CATCH);
+    if (setjmp(lisp.ctl[ctl].jb) != 0) {
+        lisp.ctl_top = ctl;
+        unforward_conses();
+        memo_epoch = saved;
+        memo_used = saved_used;
+        throw_error_value(lisp_escape_condition());
+    }
     lisp_value out = deep_copy(value, dst);
+    lisp.ctl_top = ctl;
+    unforward_conses();
     memo_epoch = saved;
     memo_used = saved_used;
     return out;

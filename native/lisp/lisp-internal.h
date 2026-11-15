@@ -188,8 +188,11 @@ enum lisp_fn_info {
     FNI_KNOWN = 1u << 0,
     FNI_SIMPLE = 1u << 1,
     FNI_ARMED = 1u << 2,
-    FNI_CAPTURES = 1u << 3
+    FNI_CAPTURES = 1u << 3,
+    FNI_COMPILED = 1u << 4
 };
+
+struct lisp_code;
 
 struct lisp_function {
     struct lisp_obj h;
@@ -206,6 +209,7 @@ struct lisp_function {
     lisp_value body;
     struct lisp_frame *env;
     struct lisp_region *gen;
+    const struct lisp_code *code;
 };
 
 struct lisp_binding {
@@ -397,6 +401,21 @@ static inline double DBLVAL(lisp_value v) { return PTR(v, lisp_double)->value; }
 static inline bool truthy(lisp_value v) { return v != NIL_VAL; }
 static inline lisp_value truth(bool b) { return b ? T_VAL : NIL_VAL; }
 
+static inline void mv_return1(lisp_value v)
+{
+    lisp.mv[0] = v;
+    lisp.mv_count = 1;
+}
+
+void check_steps_slow(void);
+
+static inline void check_steps(void)
+{
+    lisp.steps++;
+    if ((lisp.steps_limit && lisp.steps > lisp.steps_limit) || (lisp.steps & 1023u) == 0)
+        check_steps_slow();
+}
+
 struct lisp_buf {
     char *data;
     size_t len;
@@ -458,6 +477,33 @@ lisp_value make_closure(lisp_value params, lisp_value body, struct lisp_frame *e
 lisp_value make_builtin(lisp_primitive fn, const char *name, int min_args, int max_args);
 lisp_value apply_function(lisp_value fn, int argc, lisp_value *argv);
 lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv);
+void lisp_closure_info(struct lisp_function *fn);
+void lisp_compile_closure(struct lisp_function *fn);
+lisp_value lisp_run_code(const struct lisp_code *code, struct lisp_frame *frame);
+lisp_value variable_value(lisp_value sym, struct lisp_frame *env);
+void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env);
+lisp_value function_value(lisp_value sym, struct lisp_frame *env, bool *found);
+void restore_dynamic_to(int ctl_index);
+
+enum place_kind { PLACE_VAR, PLACE_GETF, PLACE_CDR, PLACE_NTH, PLACE_GETHASH, PLACE_VALUE };
+
+struct lisp_place {
+    int kind;
+    lisp_value sym;
+    lisp_value container;
+    lisp_value key;
+    int64_t index;
+    struct lisp_frame *env;
+    lisp_value parent_form;
+    lisp_value value;
+};
+
+void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_place *place);
+lisp_value place_get(struct lisp_place *place);
+void place_set(struct lisp_place *place, lisp_value value);
+bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame *env);
+bool lisp_place_head(lisp_value head);
+bool case_match(lisp_value key, lisp_value spec);
 lisp_value eval(lisp_value form, struct lisp_frame *env);
 lisp_value eval_progn(lisp_value body, struct lisp_frame *env);
 lisp_value eval_body(lisp_value body, struct lisp_frame *env);
@@ -472,7 +518,6 @@ void frame_bind(struct lisp_frame *frame, uint32_t index, lisp_value sym, lisp_v
 int push_ctl(int kind);
 void pop_ctl(int index);
 _Noreturn void unwind_to(int index);
-void check_steps(void);
 const char *lisp_error_message(void);
 void lisp_set_limits(uint64_t steps, uint64_t deadline_ns);
 void lisp_end_turn(void);
@@ -569,7 +614,6 @@ lisp_value list_last(lisp_value list);
 int64_t list_count(lisp_value list);
 void mv_reset(lisp_value primary);
 lisp_value mv_first(void);
-void mv_return1(lisp_value v);
 void mv_return2(lisp_value a, lisp_value b);
 lisp_value number_add(lisp_value a, lisp_value b);
 lisp_value number_sub(lisp_value a, lisp_value b);

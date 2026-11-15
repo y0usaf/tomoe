@@ -126,10 +126,7 @@ int push_ctl(int kind)
     entry->kind = (uint8_t)kind;
     entry->armed = true;
     entry->name = NIL_VAL;
-    entry->form = NIL_VAL;
-    entry->env = NULL;
     entry->sym = NULL;
-    entry->old = NIL_VAL;
     return index;
 }
 
@@ -215,9 +212,8 @@ _Noreturn void throw_return(lisp_value name, int count, lisp_value *values)
     unwind_to(target);
 }
 
-void check_steps(void)
+void check_steps_slow(void)
 {
-    lisp.steps++;
     if (lisp.steps_limit && lisp.steps > lisp.steps_limit) {
         lisp.budget_failures++;
         snprintf(g_error, sizeof(g_error), "evaluation budget exceeded");
@@ -321,7 +317,7 @@ static lisp_value *local_var_slot(lisp_value sym, struct lisp_frame *env, bool *
     return slot;
 }
 
-static lisp_value variable_value(lisp_value sym, struct lisp_frame *env)
+lisp_value variable_value(lisp_value sym, struct lisp_frame *env)
 {
     if (TYPE(sym) != LT_SYMBOL)
         lisp_error("not a variable name");
@@ -341,7 +337,7 @@ static lisp_value variable_value(lisp_value sym, struct lisp_frame *env)
     return SYM(sym)->value;
 }
 
-static void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env)
+void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env)
 {
     if (TYPE(sym) != LT_SYMBOL)
         lisp_error("not a variable name");
@@ -363,7 +359,7 @@ static void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *en
     SYM(sym)->value = value;
 }
 
-static lisp_value function_value(lisp_value sym, struct lisp_frame *env, bool *found)
+lisp_value function_value(lisp_value sym, struct lisp_frame *env, bool *found)
 {
     lisp_value local = NIL_VAL;
     lisp_value *slot = frame_slot(env, sym, BIND_FUNC);
@@ -656,7 +652,7 @@ static uint8_t scan_body(lisp_value form, int depth)
     return found;
 }
 
-static void closure_info(struct lisp_function *fn)
+void lisp_closure_info(struct lisp_function *fn)
 {
     uint32_t count = 0;
     uint8_t info = FNI_KNOWN | FNI_SIMPLE;
@@ -689,7 +685,9 @@ static void closure_info(struct lisp_function *fn)
 __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv)
 {
     if (!(fn->info & FNI_KNOWN))
-        closure_info(fn);
+        lisp_closure_info(fn);
+    if (!(fn->info & FNI_COMPILED) && fn->gen)
+        lisp_compile_closure(fn);
     uint32_t count = fn->slots;
     struct lisp_frame *frame;
     if (fn->info & FNI_CAPTURES) {
@@ -723,7 +721,7 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
     lisp.ctl[ctl].name = fn->self_name;
     if (!(fn->info & FNI_ARMED)) {
         lisp.ctl[ctl].armed = false;
-        lisp_value result = eval_progn(fn->body, frame);
+        lisp_value result = fn->code ? lisp_run_code(fn->code, frame) : eval_progn(fn->body, frame);
         lisp.ctl_top = ctl;
         return result;
     }
@@ -735,7 +733,7 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
             lisp.mv[i] = i < escape_count ? escape_values[i] : NIL_VAL;
         return lisp.mv[0];
     }
-    lisp_value result = eval_progn(fn->body, frame);
+    lisp_value result = fn->code ? lisp_run_code(fn->code, frame) : eval_progn(fn->body, frame);
     lisp.ctl_top = ctl;
     return result;
 }
@@ -801,7 +799,6 @@ static lisp_value eval_call(lisp_value fn, lisp_value args, struct lisp_frame *e
     return apply_function(fn, i, argv);
 }
 
-static void restore_dynamic_to(int ctl_index);
 
 static lisp_value eval_let(lisp_value form, struct lisp_frame *env, bool star)
 {
@@ -841,7 +838,7 @@ static lisp_value eval_let(lisp_value form, struct lisp_frame *env, bool star)
     return result;
 }
 
-static void restore_dynamic_to(int ctl_index)
+void restore_dynamic_to(int ctl_index)
 {
     while (lisp.ctl_top > ctl_index) {
         int at = lisp.ctl_top - 1;
@@ -873,7 +870,7 @@ static lisp_value eval_flet(lisp_value form, struct lisp_frame *env, bool recurs
     return eval_progn(body, frame);
 }
 
-static bool case_match(lisp_value key, lisp_value spec)
+bool case_match(lisp_value key, lisp_value spec)
 {
     if (consp(spec)) {
         while (consp(spec)) {
@@ -949,19 +946,6 @@ static lisp_value quasiquote(lisp_value x, struct lisp_frame *env, int depth)
     return x;
 }
 
-enum place_kind { PLACE_VAR, PLACE_GETF, PLACE_CDR, PLACE_NTH, PLACE_GETHASH, PLACE_VALUE };
-
-struct lisp_place {
-    int kind;
-    lisp_value sym;
-    lisp_value container;
-    lisp_value key;
-    int64_t index;
-    struct lisp_frame *env;
-    lisp_value parent_form;
-    lisp_value value;
-};
-
 static lisp_value place_getf, place_cdr, place_car, place_nth, place_gethash, sym_lambda, sym_define_extension;
 
 static lisp_value tomoe_symbol(const char *name)
@@ -980,9 +964,13 @@ void lisp_eval_symbols_init(void)
     sym_define_extension = tomoe_symbol("%DEFINE-EXTENSION");
 }
 
-lisp_value place_get(struct lisp_place *place);
 
-static void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_place *place)
+bool lisp_place_head(lisp_value head)
+{
+    return head == place_getf || head == place_cdr || head == place_nth || head == place_gethash;
+}
+
+void eval_place(lisp_value form, struct lisp_frame *env, struct lisp_place *place)
 {
     place->kind = PLACE_VAR;
     place->sym = NIL_VAL;
@@ -1144,9 +1132,16 @@ void place_set(struct lisp_place *place, lisp_value value)
     }
 }
 
+static bool named(const struct lisp_symbol *sym, const char *name, uint32_t len)
+{
+    return sym->name_len == len && memcmp(sym->name, name, len) == 0;
+}
+
+#define NAMED(sym, literal) named((sym), literal, sizeof(literal) - 1)
+
 static bool type_bound(lisp_value spec, lisp_value value, bool lower)
 {
-    if (symbolp(spec) && strcmp(SYM(spec)->name, "*") == 0)
+    if (symbolp(spec) && NAMED(SYM(spec), "*"))
         return true;
     bool ok = true;
     int cmp = number_compare(value, spec, &ok);
@@ -1155,41 +1150,41 @@ static bool type_bound(lisp_value spec, lisp_value value, bool lower)
     return lower ? cmp >= 0 : cmp <= 0;
 }
 
-static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame *env)
+bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame *env)
 {
     if (symbolp(type)) {
-        const char *name = SYM(type)->name;
-        if (strcmp(name, "INTEGER") == 0)
+        const struct lisp_symbol *name = SYM(type);
+        if (NAMED(name, "INTEGER"))
             return intp(value);
-        if (strcmp(name, "FIXNUM") == 0)
+        if (NAMED(name, "FIXNUM"))
             return intp(value);
-        if (strcmp(name, "BOOLEAN") == 0)
+        if (NAMED(name, "BOOLEAN"))
             return value == T_VAL || nilp(value);
-        if (strcmp(name, "STRING") == 0)
+        if (NAMED(name, "STRING"))
             return stringp(value);
-        if (strcmp(name, "NUMBER") == 0)
+        if (NAMED(name, "NUMBER"))
             return numberp(value);
-        if (strcmp(name, "REAL") == 0)
+        if (NAMED(name, "REAL"))
             return numberp(value);
-        if (strcmp(name, "RATIO") == 0)
+        if (NAMED(name, "RATIO"))
             return ratiop(value);
-        if (strcmp(name, "DOUBLE-FLOAT") == 0)
+        if (NAMED(name, "DOUBLE-FLOAT"))
             return doublep(value);
-        if (strcmp(name, "FUNCTION") == 0)
+        if (NAMED(name, "FUNCTION"))
             return functionp(value);
-        if (strcmp(name, "NULL") == 0)
+        if (NAMED(name, "NULL"))
             return nilp(value);
-        if (strcmp(name, "LIST") == 0)
+        if (NAMED(name, "LIST"))
             return nilp(value) || consp(value);
-        if (strcmp(name, "CONS") == 0)
+        if (NAMED(name, "CONS"))
             return consp(value);
-        if (strcmp(name, "SYMBOL") == 0)
+        if (NAMED(name, "SYMBOL"))
             return symbolp(value);
-        if (strcmp(name, "KEYWORD") == 0)
+        if (NAMED(name, "KEYWORD"))
             return symbol_is_keyword(value);
-        if (strcmp(name, "CHARACTER") == 0)
+        if (NAMED(name, "CHARACTER"))
             return charp(value);
-        if (strcmp(name, "VECTOR") == 0)
+        if (NAMED(name, "VECTOR"))
             return false;
         return true;
     }
@@ -1198,11 +1193,11 @@ static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame
     lisp_value head = CAR(type);
     if (!symbolp(head))
         return true;
-    const char *op = SYM(head)->name;
-    if (strcmp(op, "INTEGER") == 0 || strcmp(op, "REAL") == 0) {
+    const struct lisp_symbol *op = SYM(head);
+    if (NAMED(op, "INTEGER") || NAMED(op, "REAL")) {
         if (!numberp(value))
             return false;
-        if (strcmp(op, "INTEGER") == 0 && !intp(value))
+        if (NAMED(op, "INTEGER") && !intp(value))
             return false;
         if (consp(CDR(type)) && !type_bound(CAR(CDR(type)), value, true))
             return false;
@@ -1210,7 +1205,7 @@ static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame
             return false;
         return true;
     }
-    if (strcmp(op, "AND") == 0) {
+    if (NAMED(op, "AND")) {
         lisp_value p = CDR(type);
         while (consp(p)) {
             if (!lisp_type_check(value, CAR(p), env))
@@ -1219,7 +1214,7 @@ static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame
         }
         return true;
     }
-    if (strcmp(op, "OR") == 0) {
+    if (NAMED(op, "OR")) {
         lisp_value p = CDR(type);
         while (consp(p)) {
             if (lisp_type_check(value, CAR(p), env))
@@ -1228,15 +1223,15 @@ static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame
         }
         return false;
     }
-    if (strcmp(op, "NOT") == 0)
+    if (NAMED(op, "NOT"))
         return !lisp_type_check(value, CAR(CDR(type)), env);
-    if (strcmp(op, "SATISFIES") == 0) {
+    if (NAMED(op, "SATISFIES")) {
         lisp_value fn = CAR(CDR(type));
         lisp_value fn_value = symbolp(fn) ? fn : (nilp(fn) ? NIL_VAL : eval(fn, env));
         lisp_value args[1] = { value };
         return truthy(apply_function(fn_value, 1, args));
     }
-    if (strcmp(op, "MEMBER") == 0) {
+    if (NAMED(op, "MEMBER")) {
         lisp_value p = CDR(type);
         while (consp(p)) {
             if (eql_value(value, CAR(p)))
@@ -1245,7 +1240,7 @@ static bool lisp_type_check(lisp_value value, lisp_value type, struct lisp_frame
         }
         return false;
     }
-    if (strcmp(op, "EQL") == 0)
+    if (NAMED(op, "EQL"))
         return eql_value(value, CAR(CDR(type)));
     return true;
 }

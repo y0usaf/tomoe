@@ -366,12 +366,6 @@ lisp_value mv_first(void)
     return lisp.mv[0];
 }
 
-void mv_return1(lisp_value v)
-{
-    lisp.mv[0] = v;
-    lisp.mv_count = 1;
-}
-
 void mv_return2(lisp_value a, lisp_value b)
 {
     lisp.mv[0] = a;
@@ -675,6 +669,14 @@ lisp_value string_concat(int count, lisp_value *items)
 
 lisp_value keyword_get(lisp_value plist, lisp_value key, lisp_value deflt)
 {
+    if (symbolp(key)) {
+        while (consp(plist) && consp(CDR(plist))) {
+            if (CAR(plist) == key)
+                return CAR(CDR(plist));
+            plist = CDR(CDR(plist));
+        }
+        return deflt;
+    }
     while (consp(plist) && consp(CDR(plist))) {
         if (eql_value(CAR(plist), key))
             return CAR(CDR(plist));
