@@ -623,11 +623,11 @@ static bool plane_zpos(const struct plane *plane, size_t index, int64_t *zpos) {
     static bool synthetic;
     static int stride;
     if (!read) {
-        const char *text = getenv("TOMOE_TEST_ZPOS_STRIDE");
+        const char *text = tomoe_test_flag_value("zpos-stride");
         char *end = NULL;
         long parsed = text && *text ? strtol(text, &end, 10) : 0;
         synthetic = text && *text && end && !*end;
-        if (synthetic) stride = (int)parsed;
+        stride = (int)parsed;
         read = true;
     }
     if (plane->props.id[PROP_ZPOS] && !plane->zpos_mutable) {
@@ -1356,7 +1356,7 @@ static bool compose_carries_cursor(const struct connector *c) {
 
 static bool cursor_early(void) {
     static int early = -1;
-    if (early < 0) early = getenv("TOMOE_TEST_CURSOR_EARLY") != NULL;
+    if (early < 0) early = tomoe_test_flag("cursor-early");
     return early;
 }
 
@@ -1669,8 +1669,14 @@ static int drm_uevent(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
+static const char *selected_drm_devices;
+
+void tomoe_select_drm_devices(const char *devices) {
+    selected_drm_devices = devices;
+}
+
 static char *primary_path(void) {
-    const char *list = getenv("TOMOE_DRM_DEVICES");
+    const char *list = selected_drm_devices;
     if (list && *list) {
         size_t length = strcspn(list, ":");
         return strndup(list, length);
@@ -1710,14 +1716,15 @@ int kms_create(struct tomoe *s) {
     kms->devnum = st.st_rdev;
     uint64_t cap = 0;
     drmSetClientCap(kms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
-    kms->atomic = !getenv("TOMOE_DRM_LEGACY") && drmSetClientCap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1) == 0;
+    kms->atomic = !tomoe_test_flag("drm-legacy") &&
+        drmSetClientCap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1) == 0;
     kms->impl = connector_impl;
     kms->impl.late_frames = kms->atomic;
     kms->modifiers = drmGetCap(kms->fd, DRM_CAP_ADDFB2_MODIFIERS, &cap) == 0 && cap;
     kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
     kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;
     kms->cursor_height = drmGetCap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) == 0 && cap ? cap : 64;
-    const char *wake = getenv("TOMOE_DRM_WAKE_MS");
+    const char *wake = tomoe_test_flag_value("drm-wake-ms");
     kms->wake_ms = wake && *wake ? (unsigned)strtoul(wake, NULL, 10) : 5000;
     if (!read_resources(kms)) {
         tomoe_log(LOG_ERROR, "tomoe: DRM resources unavailable");

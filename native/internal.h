@@ -813,6 +813,12 @@ struct settings {
 };
 void settings_clear(struct settings *settings);
 void settings_finish(struct settings *settings);
+int tomoe_test_flag(const char *name);
+const char *tomoe_test_flag_value(const char *name);
+int tomoe_set_test_flag(const char *name, const char *value);
+void tomoe_select_backend(const char *kind);
+void tomoe_select_drm_devices(const char *devices);
+void tomoe_select_render_node(const char *node);
 void input_config_unset(struct input_config *config);
 int input_setting(struct settings *settings, const char *key, double value, const char *text);
 void input_devices_apply(struct tomoe *s);

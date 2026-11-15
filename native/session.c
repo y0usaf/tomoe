@@ -75,7 +75,7 @@ bool session_create(struct tomoe *s) {
     for (int tries = 0; !session->active && tries < 100; tries++)
         if (libseat_dispatch(session->seat, 100) < 0) break;
     if (!session->active) tomoe_log(LOG_ERROR, "tomoe: libseat never activated the seat");
-    const char *test = getenv("TOMOE_TEST_SESSION");
+    const char *test = tomoe_test_flag_value("session");
     if (test && *test && (session->test_path = strdup(test))) {
         session->test_timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display),
             test_session_poll, session);
