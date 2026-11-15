@@ -28,6 +28,7 @@ POLICY = """
          (count (length windows)))
     (values nil
             (append
+             {rotate}
              (list (settings :animations nil
                              :border (list :width 3 :radius 14)
                              :shadow (list :range 10 :power 3))
@@ -54,9 +55,18 @@ POLICY = """
 """
 
 
-def policy(layout, path):
+ROTATE = ("(if (eql (getf output :transform) {index}) nil (list (configure-output "
+          "(getf output :name) :transform :{name})))\n             ")
+
+
+def policy(layout, rotation, path):
+    rotate = ""
+    if rotation:
+        names = {"90": (1, "90"), "270": (3, "270")}
+        index, name = names[rotation]
+        rotate = ROTATE.format(index=index, name=name)
     machine.succeed(f"cat > {path} <<'OVERDRAWPOLICY'\n"
-                    + POLICY.format(wallpaper=WALLPAPER, layout=layout)
+                    + POLICY.format(wallpaper=WALLPAPER, layout=layout, rotate=rotate)
                     + "OVERDRAWPOLICY")
     return path
 
@@ -100,8 +110,8 @@ def command(binary, socket, arguments):
                            + arguments)
 
 
-def mount(binary, socket, layout, path):
-    command(binary, socket, f"mount {policy(layout, path)}")
+def mount(binary, socket, layout, path, rotation=""):
+    command(binary, socket, f"mount {policy(layout, rotation, path)}")
     reply = read(command(binary, socket, "inspect"))
     assert reply[1] == ":OK", show(reply)
     error = plist(reply[2])[":LAST-ERROR"]
@@ -195,11 +205,11 @@ def describe(cost):
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
-def session(binary, tag, layout, phase, env):
+def session(binary, tag, layout, phase, env, rotation=""):
     name = f"{tag}{layout}{phase}"
     unit, socket = f"tomoe-{tag}-{layout}-{phase}", name
     start_binary(binary, unit, socket, env=env)
-    mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp")
+    mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp", rotation)
     return unit, socket
 
 
@@ -215,6 +225,14 @@ def run(binary, tag):
             digests[(layout, count)] = presented_shot(socket)
             print(f"{tag} {layout} {count} partial: presented {digests[(layout, count)]}",
                   flush=True)
+        stop_binary(binary, unit, socket)
+    for rotation in ("90", "270"):
+        unit, socket = session(binary, tag, "stack", f"rot{rotation}", [], rotation)
+        spawn(socket, 0, COUNTS[1], True, unit)
+        time.sleep(1.5)
+        key = (f"rot{rotation}", COUNTS[1])
+        digests[key] = presented_shot(socket)
+        print(f"{tag} rotated {rotation} {COUNTS[1]}: presented {digests[key]}", flush=True)
         stop_binary(binary, unit, socket)
     unit, socket = session(binary, tag, "stack", "full", [("TOMOE_DEBUG_DAMAGE", "1")])
     spawn(socket, 0, COUNTS[-1], True, unit)

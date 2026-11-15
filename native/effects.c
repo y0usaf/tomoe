@@ -80,13 +80,21 @@ static struct drawn record(struct frame *f, const struct texture_options *textur
     return out;
 }
 
-static void cover_rect(struct op *op, int x, int y, int width, int height) {
+static void cover_rect(struct frame *f, struct op *op, int x, int y, int width, int height) {
     if (width <= 0 || height <= 0) return;
-    region_union_rect(&op->opaque, &op->opaque, x, y, (uint32_t)width, (uint32_t)height);
+    struct fbox box = { x, y, width, height };
+    if (f->transform != WL_OUTPUT_TRANSFORM_NORMAL)
+        fbox_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
+    int left = (int)ceil(box.x), top = (int)ceil(box.y);
+    int right = (int)floor(box.x + box.width), bottom = (int)floor(box.y + box.height);
+    if (right <= left || bottom <= top) return;
+    region_union_rect(&op->opaque, &op->opaque, left, top, (uint32_t)(right - left),
+        (uint32_t)(bottom - top));
 }
 
-static void rounded_cover(struct op *op, const struct texture_options *options, bool alpha,
-        struct box dst, struct fbox clip, double radius) {
+static void rounded_cover(struct frame *f, struct op *op,
+        const struct texture_options *options, bool alpha, struct box dst, struct fbox clip,
+        double radius) {
     float level = options->alpha ? *options->alpha : 1;
     if (options->blend_mode != BLEND_NONE && (alpha || level < 1)) {
         const struct surface *surface = options->surface;
@@ -109,11 +117,11 @@ static void rounded_cover(struct op *op, const struct texture_options *options, 
     if (right <= left || bottom <= top) return;
     int r = (int)ceil(radius);
     if (r <= 0) {
-        cover_rect(op, left, top, right - left, bottom - top);
+        cover_rect(f, op, left, top, right - left, bottom - top);
         return;
     }
-    cover_rect(op, left + r, top, right - left - 2 * r, bottom - top);
-    cover_rect(op, left, top + r, right - left, bottom - top - 2 * r);
+    cover_rect(f, op, left + r, top, right - left - 2 * r, bottom - top);
+    cover_rect(f, op, left, top + r, right - left, bottom - top - 2 * r);
 }
 
 static void color(float out[4], uint32_t rgba) {
@@ -184,7 +192,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
             struct box area = { (int)ceil(dst.x), (int)ceil(dst.y), 0, 0 };
             area.width = (int)floor(dst.x + dst.width) - area.x;
             area.height = (int)floor(dst.y + dst.height) - area.y;
-            rounded_cover(drawn.op, options, alpha, area, local, radius);
+            rounded_cover(f, drawn.op, options, alpha, area, local, radius);
         }
         return true;
     }
