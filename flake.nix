@@ -93,28 +93,6 @@
             libxkbcommon
             ;
         };
-      portal =
-        pkgs:
-        let
-          libs = lean pkgs;
-        in
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "xdg-desktop-portal-tomoe";
-          inherit version;
-          src = ./portal;
-          cargoLock.lockFile = ./portal/Cargo.lock;
-          nativeBuildInputs = [
-            pkgs.rustPlatform.bindgenHook
-            pkgs.pkg-config
-          ];
-          buildInputs = [
-            (pipewire pkgs)
-            libs.libgbm
-            libs.libdrm
-            libs.libdrm.dev
-          ];
-          doCheck = false;
-        };
       baselineSource = builtins.fetchGit {
         url = "https://github.com/y0usaf/tomoe";
         rev = "e3f69434a6e913af5c014d385f293dcf024d10ed";
@@ -126,6 +104,7 @@
           cpu ? "",
           opt ? "-O2",
           lto ? false,
+          portal ? true,
         }:
         let
           sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
@@ -208,10 +187,12 @@
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
             install -Dm644 share/tomoe.portal $out/share/xdg-desktop-portal/portals/tomoe.portal
-            install -Dm755 ${portal pkgs}/bin/xdg-desktop-portal-tomoe $out/libexec/xdg-desktop-portal-tomoe
-            install -d $out/share/dbus-1/services
-            printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.tomoe\nExec=%s/libexec/xdg-desktop-portal-tomoe\n' \
-              "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
+            ${pkgs.lib.optionalString portal ''
+              install -Dm755 build/tomoe-portal $out/libexec/xdg-desktop-portal-tomoe
+              install -d $out/share/dbus-1/services
+              printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.tomoe\nExec=%s/libexec/xdg-desktop-portal-tomoe\n' \
+                "$out" > $out/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tomoe.service
+            ''}
             install -d $out/share/tomoe/examples
             install -m 644 examples/*.lisp $out/share/tomoe/examples/
             install -Dm644 -t $out/share/tomoe/examples/shaders examples/shaders/*.glsl
@@ -274,7 +255,7 @@
         removeAttrs (import ./tests {
           inherit pkgs;
           tomoe = package pkgs { };
-          baseline = packageFrom baselineSource pkgs { };
+          baseline = packageFrom baselineSource pkgs { portal = false; };
         }) [ "suites" ]
       ) pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
@@ -282,7 +263,7 @@
           (import ./tests {
             inherit pkgs;
             tomoe = package pkgs { };
-            baseline = packageFrom baselineSource pkgs { };
+            baseline = packageFrom baselineSource pkgs { portal = false; };
           }).suites;
         bench = import ./bench {
           inherit pkgs;

@@ -43,7 +43,11 @@ bus.add_signal_receiver(
     lambda *a: (log("CLOSED"), loop.quit()), "Closed", "org.freedesktop.portal.Session", path=session
 )
 types = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-code, results = request("SelectSources", dbus.ObjectPath(session), {"types": dbus.UInt32(types)})
+options = {"types": dbus.UInt32(types)}
+cursor_mode = os.environ.get("CURSOR_MODE")
+if cursor_mode:
+    options["cursor_mode"] = dbus.UInt32(int(cursor_mode))
+code, results = request("SelectSources", dbus.ObjectPath(session), options)
 log("select", code)
 code, results = request("Start", dbus.ObjectPath(session), "", {})
 log("start", code, [(int(s[0]), dict(s[1])) for s in results.get("streams", [])])

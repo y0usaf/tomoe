@@ -9,6 +9,7 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 
 LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client libpipewire-0.3
+PORTAL_LIBS = wayland-client libpipewire-0.3 libsystemd libdrm gbm
 SUPPORT = executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
@@ -65,8 +66,20 @@ NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(NAMES:%=b
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
+CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
+
+PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c))
+PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
+
+all: build/tomoe-runtime build/tomoe-portal
+
+build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o)
+	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))
+
+build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(HEADERS) | build/obj
+	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
 build/tomoe-runtime: $(NATIVE) $(SUPPORT:%=build/%.o)
 	$(CC) $(LTO) -Wl,--export-dynamic $(SBCL_HOME)/sbcl.o $^ -o $@ \

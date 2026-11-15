@@ -683,6 +683,19 @@ let
                           (planes--surfaces next output)))
                 nil)))
   '';
+  portalConsumer = pkgs.stdenv.mkDerivation {
+    name = "tomoe-portal-consumer";
+    src = ./portal-consumer.c;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.pipewire ];
+    buildPhase = ''
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Wno-unused-parameter $src \
+        $(pkg-config --cflags --libs libpipewire-0.3) -o tomoe-portal-consumer
+    '';
+    installPhase = "install -Dm755 tomoe-portal-consumer $out/bin/tomoe-portal-consumer";
+  };
   pathClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-pointer-path";
     source = ./pointer-path.c;
@@ -976,6 +989,9 @@ let
           ])
         }/bin/python3"
         PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
+        CONSUMER = "${portalConsumer}/bin/tomoe-portal-consumer"
+        POINTER = "${pathClient}/bin/tomoe-test-pointer-path"
+        PORTAL_SUITE = "${./portal-suite.py}"
       ''
       + builtins.readFile ./portal.py;
     }
