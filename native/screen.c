@@ -304,7 +304,9 @@ static void apply(struct screen *screen, const struct screen_state *state) {
 }
 
 static bool each_backend(struct screen_update *updates, size_t count, bool commit) {
-    struct screen_update *group = calloc(count ? count : 1, sizeof(*group));
+    struct screen_update stack[4];
+    struct screen_update *group = count <= sizeof(stack) / sizeof(stack[0]) ? stack :
+        calloc(count, sizeof(*group));
     bool ok = group != NULL;
     for (size_t i = 0; ok && i < count; i++) {
         const struct screen_impl *impl = updates[i].output->impl;
@@ -316,7 +318,7 @@ static bool each_backend(struct screen_update *updates, size_t count, bool commi
             if (updates[j].output->impl == impl) group[n++] = updates[j];
         ok = commit ? impl->commit(group, n) : impl->test(group, n);
     }
-    free(group);
+    if (group != stack) free(group);
     return ok;
 }
 
