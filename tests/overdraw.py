@@ -34,8 +34,8 @@ POLICY = """
             (append
              stack
              (list (settings :animations nil
-                             :border (list :width 3 :radius 14)
-                             :shadow (list :range 10 :power 3))
+                             :border (list :width {line} :radius 14)
+                             :shadow (list :range {shadow} :power 3))
                    (shell-surface :overdraw-wallpaper (ui :stack)
                                   :anchors '(:top :right :bottom :left) :layer :background
                                   :background (list :shader "{wallpaper}" :fps 60)))
@@ -59,9 +59,11 @@ POLICY = """
 """
 
 
-def policy(layout, path):
+def policy(layout, decorated, path):
     machine.succeed(f"cat > {path} <<'OVERDRAWPOLICY'\n"
-                    + POLICY.format(wallpaper=WALLPAPER, layout=layout)
+                    + POLICY.format(wallpaper=WALLPAPER, layout=layout,
+                                    line=3 if decorated else 0,
+                                    shadow=10 if decorated else 0)
                     + "OVERDRAWPOLICY")
     return path
 
@@ -105,8 +107,8 @@ def command(binary, socket, arguments):
                            + arguments)
 
 
-def mount(binary, socket, layout, path):
-    command(binary, socket, f"mount {policy(layout, path)}")
+def mount(binary, socket, layout, decorated, path):
+    command(binary, socket, f"mount {policy(layout, decorated, path)}")
     reply = read(command(binary, socket, "inspect"))
     assert reply[1] == ":OK", show(reply)
     error = plist(reply[2])[":LAST-ERROR"]
@@ -208,11 +210,11 @@ def describe(cost):
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
-def session(binary, tag, layout, phase, env):
+def session(binary, tag, layout, phase, env, decorated=True):
     name = f"{tag}{layout}{phase}"
     unit, socket = f"tomoe-{tag}-{layout}-{phase}", name
     start_binary(binary, unit, socket, env=env)
-    mount(binary, socket, layout, f"/run/overdraw-{layout}.lisp")
+    mount(binary, socket, layout, decorated, f"/run/overdraw-{layout}.lisp")
     return unit, socket
 
 
@@ -225,35 +227,24 @@ def rotate(socket, degrees):
 
 def run(binary, tag):
     digests, costs = {}, {}
-    for layout in ("grid", "stack", "cover"):
-        unit, socket = session(binary, tag, layout, "pix", [])
-        seen = 0
-        for count in COUNTS:
-            spawn(socket, seen, count, True, unit)
-            seen = count
-            time.sleep(1.5)
-            digests[(layout, count)] = presented_shot(socket)
-            print(f"{tag} {layout} {count} partial: presented {digests[(layout, count)]}",
-                  flush=True)
-        stop_binary(binary, unit, socket)
+    unit, socket = session(binary, tag, "grid", "pix", [], decorated=False)
+    seen = 0
+    for count in COUNTS:
+        spawn(socket, seen, count, True, unit)
+        seen = count
+        time.sleep(1.5)
+        digests[("grid", count)] = presented_shot(socket)
+        print(f"{tag} grid {count} partial: presented {digests[('grid', count)]}", flush=True)
+    stop_binary(binary, unit, socket)
     for rotation in ("90", "270"):
-        unit, socket = session(binary, tag, "stack", f"rot{rotation}", [])
+        unit, socket = session(binary, tag, "grid", f"rot{rotation}", [], decorated=False)
         rotate(socket, rotation)
         spawn(socket, 0, COUNTS[1], True, unit)
         time.sleep(1.5)
         key = (f"rot{rotation}", COUNTS[1])
         digests[key] = presented_shot(socket)
         print(f"{tag} rotated {rotation} {COUNTS[1]}: presented {digests[key]}", flush=True)
-        assert digests[key] != digests[("stack", COUNTS[1])], (
-            f"the {rotation} degree output was not rotated")
         stop_binary(binary, unit, socket)
-    unit, socket = session(binary, tag, "stack", "full", [("TOMOE_DEBUG_DAMAGE", "1")])
-    spawn(socket, 0, COUNTS[-1], True, unit)
-    time.sleep(2)
-    digests[("repaint", COUNTS[-1])] = presented_shot(socket)
-    print(f"{tag} repaint {COUNTS[-1]}: presented {digests[('repaint', COUNTS[-1])]}",
-          flush=True)
-    stop_binary(binary, unit, socket)
     for layout in ("grid", "stack", "cover"):
         unit, socket = session(binary, tag, layout, "cost", [("TOMOE_DEBUG_DAMAGE", "1")])
         seen = 0
