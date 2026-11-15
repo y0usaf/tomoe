@@ -437,6 +437,15 @@ committed listener. This only restricts Wayland connections routed through the
 registered socket; the launcher must isolate the main Wayland and Tomoe control
 sockets and other host access itself.
 
+Shell surfaces are retained trees of UI nodes that an extension owns: bars,
+panels, menus and wallpaper overlays, each placed on an output and animated by
+the compositor. `(shell-surface :badge tree :attach ID :attach-axes '(:y))`
+glues a surface to a moving window: on every frame the compositor adds that
+window's in-flight placement offset, on the attached axes only, to the drawn
+position, so a badge, a label or a focus indicator stays pixel-locked to a
+window through its move spring and its drag. An attached axis never slides;
+`:slide` still animates the surface's own declared position on the other axes.
+
 ## Documentation
 
 - [Running Tomoe](docs/running.md): backends, flags, the default desktop, X11 and D-Bus

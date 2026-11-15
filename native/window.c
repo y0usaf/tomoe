@@ -298,6 +298,12 @@ struct window *find_window_registered(struct tomoe *s, uint32_t id) {
         if (w->target.id == id && registered_window(w)) return w;
     return NULL;
 }
+
+void window_move_offset(struct tomoe *s, uint32_t id, double *x, double *y) {
+    struct window *w = find_window(s, id);
+    *x = w ? w->target.offset_x : 0.0;
+    *y = w ? w->target.offset_y : 0.0;
+}
 struct window *find_window_any(struct tomoe *s, uint32_t id) {
     return find_window_registered(s, id);
 }

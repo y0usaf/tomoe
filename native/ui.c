@@ -45,8 +45,11 @@ struct ui_surface {
     uint64_t plan_id;
     int x, y, width, height, layer, blur;
     bool click_through, slide;
+    uint32_t attach;
+    int attach_axes;
     struct animation move;
     double from_x, from_y;
+    double slide_x, slide_y;
     int offset_x, offset_y;
     uint64_t bytes;
     uint64_t content_seq;
@@ -618,13 +621,16 @@ static bool same_declaration(const struct ui_surface *surface,
 static bool same_cached_surface(const struct ui_surface *surface,
         const char *owner, uint64_t source_id, const char *name,
         const char *output, uint64_t plan_id, int x, int y,
-        int width, int height, int layer, bool click_through, bool slide, int blur) {
+        int width, int height, int layer, bool click_through, bool slide, int blur,
+        uint32_t attach, int attach_axes) {
     return surface->source_id == source_id && surface->plan_id == plan_id &&
         string_equal(surface->owner, owner) && string_equal(surface->name, name) &&
         string_equal(surface->output, output) && surface->x == x &&
         surface->y == y && surface->width == width && surface->height == height &&
         surface->layer == layer && surface->click_through == click_through &&
-        surface->slide == slide && surface->blur == blur && surface->complete;
+        surface->slide == slide && surface->blur == blur &&
+        surface->attach == attach && surface->attach_axes == attach_axes &&
+        surface->complete;
 }
 
 static uint64_t reusable_callback_id(struct tomoe *s,
@@ -672,7 +678,8 @@ static struct ui_surface *prior_surface(struct tomoe *s, const char *owner,
 static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         uint64_t plan_id, int x, int y, int width, int height, int layer,
-        bool click_through, bool slide, int blur, uint64_t bytes, size_t stride) {
+        bool click_through, bool slide, int blur, uint32_t attach, int attach_axes,
+        uint64_t bytes, size_t stride) {
     struct ui_surface *surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
     surface->references = 1;
@@ -682,6 +689,8 @@ static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
     surface->width = width; surface->height = height; surface->layer = layer;
     surface->click_through = click_through;
     surface->slide = slide;
+    surface->attach = attach;
+    surface->attach_axes = attach_axes;
     surface->blur = blur;
     surface->bytes = bytes;
     surface->building = true;
@@ -713,10 +722,11 @@ failed:
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         uint64_t plan_id, int x, int y, int width, int height, int layer,
-        int click_through, int slide, int blur) {
+        int click_through, int slide, int blur, uint32_t attach, int attach_axes) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
             height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
             click_through < 0 || click_through > 1 || slide < 0 || slide > 1 ||
+            attach_axes < 0 || attach_axes > 3 ||
             blur < -1 || blur > UI_MAX_DIMENSION) return 0;
     struct ui_set *set = s->presentation->ui;
     if (!set) {
@@ -742,7 +752,8 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         for (size_t i = 0; i < s->ui->count; i++) {
             struct ui_surface *surface = s->ui->surfaces[i];
             if (same_cached_surface(surface, owner, source_id, name, output,
-                    plan_id, x, y, width, height, layer, click_through, slide, blur)) {
+                    plan_id, x, y, width, height, layer, click_through, slide, blur,
+                    attach, attach_axes)) {
                 cached = surface;
                 break;
             }
@@ -760,7 +771,8 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     if (existing == UINT64_MAX || existing > UI_MAX_TOTAL_BYTES ||
             bytes > UI_MAX_TOTAL_BYTES - existing) return 0;
     struct ui_surface *surface = new_surface(s, owner, source_id, name, output,
-        plan_id, x, y, width, height, layer, click_through, slide, blur, bytes, stride);
+        plan_id, x, y, width, height, layer, click_through, slide, blur, attach, attach_axes,
+        bytes, stride);
     if (!surface) return 0;
     if (!set_append(set, surface)) {
         surface_unref(surface);
@@ -1393,6 +1405,8 @@ static void slide_from(struct tomoe *s, const struct ui_set *old, struct ui_set 
             if (surface->from_x == 0 && surface->from_y == 0) surface->move.active = false;
             break;
         }
+        if (surface->attach_axes & 1) surface->from_x = 0;
+        if (surface->attach_axes & 2) surface->from_y = 0;
     }
 }
 
@@ -1414,9 +1428,15 @@ bool ui_animate(struct tomoe *s, double now) {
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *surface = s->ui->surfaces[i];
         double progress = animation_advance(&surface->move, now, &s->animation);
-        surface->offset_x = (int)round(surface->from_x * progress);
-        surface->offset_y = (int)round(surface->from_y * progress);
-        active |= surface->move.active;
+        surface->slide_x = surface->from_x * progress;
+        surface->slide_y = surface->from_y * progress;
+        double attached_x = 0, attached_y = 0;
+        if (surface->attach) window_move_offset(s, surface->attach, &attached_x, &attached_y);
+        if (!(surface->attach_axes & 1)) attached_x = 0;
+        if (!(surface->attach_axes & 2)) attached_y = 0;
+        surface->offset_x = (int)lround(surface->slide_x + attached_x);
+        surface->offset_y = (int)lround(surface->slide_y + attached_y);
+        active |= surface->move.active || attached_x != 0 || attached_y != 0;
         if (surface->fps <= 0 && background_moving(s, surface, now)) active = true;
     }
     return active;

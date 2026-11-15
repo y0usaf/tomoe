@@ -96,7 +96,8 @@ once."
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
   (name sb-alien:c-string) (output sb-alien:c-string) (plan-id sb-alien:unsigned-long-long)
   (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int) (layer sb-alien:int)
-  (click-through sb-alien:int) (slide sb-alien:int) (blur sb-alien:int))
+  (click-through sb-alien:int) (slide sb-alien:int) (blur sb-alien:int)
+  (attach sb-alien:unsigned-int) (attach-axes sb-alien:int))
 (define-native ("tomoe_present_ui_clip" %present-ui-clip) sb-alien:int
   (server (* t)) (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int))
 (define-native ("tomoe_present_ui_rect" %present-ui-rect) sb-alien:int
@@ -352,7 +353,12 @@ once."
                                           (ecase (getf plan :layer) (:background 0) (:bottom 1) (:top 2) (:overlay 3))
                                           (if (getf plan :click-through) 1 0)
                                           (if (getf plan :slide) 1 0)
-                                          (or (getf plan :blur) -1))))
+                                          (or (getf plan :blur) -1)
+                                          (or (getf plan :attach) 0)
+                                          (loop for axis in '(:x :y)
+                                                for bit in '(1 2)
+                                                when (member axis (getf plan :attach-axes '(:x :y)))
+                                                  sum bit))))
         (unless (member status '(1 2)) (error "Cannot prepare shell surface ~S." (getf plan :name)))
         (when (= status 1)
           (dolist (id (getf plan :assets))

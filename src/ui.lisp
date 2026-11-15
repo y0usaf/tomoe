@@ -193,11 +193,13 @@ pointer stops, so a background that names it costs nothing at rest."
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer
                              :exclusive-zone :visible :output :background :color :font-size :stack
-                             :click-through :slide :blur :placement))
+                             :click-through :slide :blur :placement :attach :attach-axes))
   (let ((anchors (getf arguments :anchors '(:top :left :right)))
         (visible (getf arguments :visible t))
         (click-through (getf arguments :click-through))
         (slide (getf arguments :slide))
+        (attach (getf arguments :attach))
+        (attach-axes (getf arguments :attach-axes '(:x :y)))
         (blur (getf arguments :blur)))
     (%ui-list anchors 4 "Shell anchors")
     (dolist (anchor anchors) (%ui-choice anchor '(:top :right :bottom :left)))
@@ -206,6 +208,12 @@ pointer stops, so a background that names it costs nothing at rest."
     (unless (member visible '(t nil)) (error "Shell visibility must be T or NIL."))
     (unless (member click-through '(t nil)) (error "Shell click-through must be T or NIL."))
     (unless (member slide '(t nil)) (error "Shell slide must be T or NIL."))
+    (unless (or (null attach) (typep attach '(unsigned-byte 32)))
+      (error "Shell attach must be NIL or a window id."))
+    (%ui-list attach-axes 2 "Shell attach axes")
+    (dolist (axis attach-axes) (%ui-choice axis '(:x :y)))
+    (unless (= (length attach-axes) (length (remove-duplicates attach-axes)))
+      (error "Duplicate shell attach axis."))
     (unless (or (member blur '(t nil)) (realp blur)) (error "Shell blur must be T, NIL or a corner radius."))
     (list :name (%ui-key (getf arguments :name))
           :tree (canonical-ui (getf arguments :tree))
@@ -227,13 +235,21 @@ pointer stops, so a background that names it costs nothing at rest."
           :stack (%ui-key (getf arguments :stack) t)
           :click-through click-through
           :slide slide
+          :attach attach
+          :attach-axes (loop for axis in '(:x :y) when (member axis attach-axes) collect axis)
           :blur (if (eq blur t) 0d0 (%ui-length blur t)))))
 
 (defun shell-surface (name tree &rest options)
   "Own a retained shell surface and its click commands in this extension.
 :PLACEMENT :WORLD anchors to the output canvas, :VIEW anchors to the visible
 viewport (a published :focal-frame, otherwise the output), and :FOLLOW keeps
-its canvas position until the viewport leaves it, then glides in."
+its canvas position until the viewport leaves it, then glides in.
+:ATTACH ID glues the surface to the moving window ID: every frame adds that
+window's in-flight placement offset to the drawn position, on :ATTACH-AXES
+(a subset of (:x :y), both by default). An attached axis never slides, so the
+window's own motion carries the surface and the two cannot drift apart; an
+unknown or unmapped ID attaches to nothing. :SLIDE animates the surface's own
+declared position move, and a surface may use both on different axes."
   (%effect :surface (canonical-shell-surface (list* :name name :tree tree options))))
 
 (define-effect :surface
@@ -621,6 +637,8 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                       :width width :height height :layer (getf declaration :layer)
                                       :click-through (getf declaration :click-through)
                                       :slide (or (getf declaration :slide) (eq placement :follow))
+                                      :attach (getf declaration :attach)
+                                      :attach-axes (getf declaration :attach-axes '(:x :y))
                                       :blur (let ((blur (getf declaration :blur)))
                                               (when blur (%ui-round (* scale blur))))
                                       :plan-id plan-id))

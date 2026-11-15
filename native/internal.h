@@ -1445,6 +1445,7 @@ struct surface *surface_of(struct window *w);
 struct window *find_window(struct tomoe *s, uint32_t id);
 struct window *find_window_registered(struct tomoe *s, uint32_t id);
 struct window *find_window_any(struct tomoe *s, uint32_t id);
+void window_move_offset(struct tomoe *s, uint32_t id, double *x, double *y);
 uint32_t find_window_id_for_surface(struct tomoe *s, struct surface *surface);
 bool window_surface_mapped(struct tomoe *s, struct surface *surface);
 void popup_create(struct xdg_popup *xdg, struct node *parent);
