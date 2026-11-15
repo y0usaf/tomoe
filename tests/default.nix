@@ -354,13 +354,26 @@ let
     '';
     installPhase = "install -Dm755 tomoe-scenario $out/bin/tomoe-scenario";
   };
-  scenarioPolicy = ./scenario-policy.lisp;
-  counterPolicy = pkgs.writeText "scenario-counter.lisp" (
-    builtins.readFile ./scenario-policy.lisp + builtins.readFile ./scenario-counter.lisp
-  );
-  contractPolicy = pkgs.writeText "scenario-contract.lisp" (
-    builtins.readFile ./scenario-policy.lisp + builtins.readFile ./scenario-contract.lisp
-  );
+  scenarioSource =
+    name: prefix: parts:
+    pkgs.writeText name (
+      pkgs.lib.concatMapStrings builtins.readFile (prefix ++ [ ./scenario-policy.lisp ] ++ parts)
+    );
+  baselinePolicy = scenarioSource "scenario-policy.lisp" [ ./scenario-log-sbcl.lisp ] [ ];
+  baselineCounterPolicy = scenarioSource "scenario-counter.lisp" [ ./scenario-log-sbcl.lisp ] [
+    ./scenario-counter.lisp
+  ];
+  scenarioPolicy = scenarioSource "scenario-policy.lisp" [
+    ./scenario-desktop.lisp
+    ./scenario-log.lisp
+  ] [ ];
+  counterPolicy = scenarioSource "scenario-counter.lisp" [
+    ./scenario-desktop.lisp
+    ./scenario-log.lisp
+  ] [ ./scenario-counter.lisp ];
+  contractPolicy = scenarioSource "scenario-contract.lisp" [ ./scenario-log.lisp ] [
+    ./scenario-contract.lisp
+  ];
   outputOverrideProbe = pkgs.writeText "output-override-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "output-override-probe" (:reads () :state nil) (snapshot state event)
@@ -1264,6 +1277,8 @@ let
       BASELINE = "${baselineBinary}"
       FASTPATH = "${tomoe}/bin/tomoe"
       INJECTOR = "${scenario}/bin/tomoe-scenario"
+      BASELINE_POLICY = "${baselinePolicy}"
+      BASELINE_COUNTER_POLICY = "${baselineCounterPolicy}"
       POLICY = "${scenarioPolicy}"
       COUNTER_POLICY = "${counterPolicy}"
       CONTRACT_POLICY = "${contractPolicy}"

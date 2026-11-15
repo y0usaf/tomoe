@@ -250,7 +250,7 @@ machine.succeed(
     f"dbus-daemon --session --nofork --address={BUS}")
 machine.wait_for_file("/run/check-bus")
 
-baseline = scenario(BASELINE, POLICY, "baseline", "/run/baseline.log", [])
+baseline = scenario(BASELINE, BASELINE_POLICY, "baseline", "/run/baseline.log", [])
 fastpath = scenario(FASTPATH, POLICY, "fastpath", "/run/fastpath.log", [])
 compare(baseline, fastpath, "the shipped desktop", ignore_runs=True)
 assert "command mark key" in machine.succeed("cat /run/fastpath.log"), (
@@ -263,7 +263,8 @@ for line in fastpath:
         raise AssertionError(f"an extension failed on the fast path: {line}")
 print("equivalence: the shipped desktop makes the same decisions and draws the same frames")
 
-baseline = scenario(BASELINE, COUNTER_POLICY, "count-baseline", "/run/count-baseline.log", [])
+baseline = scenario(BASELINE, BASELINE_COUNTER_POLICY, "count-baseline",
+                    "/run/count-baseline.log", [])
 fastpath = scenario(FASTPATH, COUNTER_POLICY, "count-fastpath", "/run/count-fastpath.log", [])
 compare(baseline, fastpath, "a reducer without a contract", ignore_runs=True)
 def counter_events(transcript):

@@ -1,0 +1,29 @@
+(in-package #:tomoe-user)
+
+(defparameter +scenario-commands+
+  (list (define-command "mark"
+          :description "Note a command run in the scenario log."
+          :arguments '((:name :string :required t)))
+        (define-command "snapshot"
+          :description "Note a checkpoint in the scenario log."
+          :arguments '((:name :string :required t)))))
+
+(define-extension "scenario" (:reads (:command :windows :layout :focus :stacking) :state nil)
+    (snapshot state event)
+  (declare (ignore state))
+  (let ((command (and (eq (getf event :type) :command)
+                      (equal (getf event :owner) "scenario")
+                      (getf event :name)))
+        (arguments (getf event :arguments))
+        (layout (context snapshot :layout)))
+    (when (member (getf event :type) '(:command :map :unmap :mount :request))
+      (scenario-note (format nil "event ~A ~A"
+                             (getf event :type)
+                             (loop for window in layout collect (getf window :id)))))
+    (when command
+      (scenario-note (format nil "command ~A ~A" command (getf arguments :name))))
+    (values nil
+            (append +scenario-commands+
+                    (list (bind-key '(:mod) "F2" (invoke "mark" :name "key"))
+                          (settings :animations nil)))
+            nil)))
