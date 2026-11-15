@@ -388,7 +388,7 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
         const char *variant, const char *options, int repeat_rate,
         int repeat_delay) {
     if (!xkb_names_bounded(rules, model, layout, variant, options) ||
-            repeat_rate < 0 || repeat_delay < 1) return NULL;
+            repeat_rate < 0 || repeat_delay < 0) return NULL;
 
     struct keyboard_profile *profile = calloc(1, sizeof(*profile));
     if (!profile) return NULL;
@@ -1907,8 +1907,8 @@ void input_add(struct tomoe *s, struct input_device *device) {
 }
 void input_listen(struct tomoe *s) {
     struct keyboard_profile *profile = keyboard_profile_prepare(s, NULL, NULL,
-        NULL, NULL, NULL, 25, 600);
-    if (!profile || !keyboard_logical_init(s, profile->keymap, 25, 600)) {
+        NULL, NULL, NULL, 0, 0);
+    if (!profile || !keyboard_logical_init(s, profile->keymap, 0, 0)) {
         keyboard_profile_finish(profile);
         fail(s, "default keyboard keymap failed");
         return;

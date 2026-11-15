@@ -431,8 +431,6 @@ bool window_capture_size(struct tomoe *s, uint32_t id, int *width, int *height) 
     return true;
 }
 bool windows_want_tearing(struct tomoe *s, struct output *o) {
-    static int force = -1;
-    if (force < 0) force = getenv("TOMOE_FORCE_TEARING") && !strcmp(getenv("TOMOE_FORCE_TEARING"), "1");
     struct box output_box;
     physical_output_box(o, &output_box);
     if (!s->cursor_hidden && s->pointer_x >= output_box.x && s->pointer_y >= output_box.y &&
@@ -450,7 +448,7 @@ bool windows_want_tearing(struct tomoe *s, struct output *o) {
         if (!box_intersection(&overlap, &box, &output_box)) continue;
         bool hinted = surface_of(w) && tearing_async(s, surface_of(w));
         bool allowed = w->target.style.tearing >= 0 ? w->target.style.tearing : s->settings.tearing;
-        if (force || (allowed && (w->target.style.tearing == 1 || hinted))) return true;
+        if (allowed && (w->target.style.tearing == 1 || hinted)) return true;
     }
     return false;
 }
