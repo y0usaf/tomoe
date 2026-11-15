@@ -29,7 +29,32 @@ struct release_hold {
     struct release *release;
     struct buffer *buffer;
     struct wl_listener buffer_release;
+    struct release_hold *next;
 };
+
+#define HOLD_POOL 128
+
+static struct release_hold holds[HOLD_POOL];
+static size_t holds_used;
+static struct release_hold *holds_free;
+
+static struct release_hold *hold_take(void) {
+    struct release_hold *hold = holds_free;
+    if (hold) holds_free = hold->next;
+    else if (holds_used < HOLD_POOL) hold = &holds[holds_used++];
+    else return calloc(1, sizeof(*hold));
+    *hold = (struct release_hold){0};
+    return hold;
+}
+
+static void hold_give(struct release_hold *hold) {
+    if (hold < holds || hold >= holds + HOLD_POOL) {
+        free(hold);
+        return;
+    }
+    hold->next = holds_free;
+    holds_free = hold;
+}
 
 struct feedback {
     struct wl_list resources, link;
@@ -97,7 +122,7 @@ static void hold_released(struct wl_listener *listener, void *data) {
     detach(&hold->buffer_release);
     release_unref(hold->release);
     buffer_unlock(hold->buffer);
-    free(hold);
+    hold_give(hold);
 }
 
 void surface_release_after(struct surface *surface, struct buffer *consumer) {
@@ -105,7 +130,7 @@ void surface_release_after(struct surface *surface, struct buffer *consumer) {
     bool read = !surface->release && surface->buffer && surface->buffer != consumer &&
         buffer_get_dmabuf(surface->buffer, &dmabuf);
     if (!consumer || (!surface->release && !read)) return;
-    struct release_hold *hold = calloc(1, sizeof(*hold));
+    struct release_hold *hold = hold_take();
     if (!hold) return;
     hold->release = surface->release;
     if (hold->release) hold->release->refs++;
