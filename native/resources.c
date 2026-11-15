@@ -856,6 +856,7 @@ static void res_apply_timers(struct want_timer *wanted, size_t count) {
 static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
     char error[512];
     error[0] = 0;
+    if (!res.started && res.server) resources_start(res.server);
     if (!res.started) return lisp_cstring("Resource ownership is not running.");
     struct want_timer *timers = NULL;
     struct want_watch *watches = NULL;
@@ -955,10 +956,12 @@ static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
 }
 
 static lisp_value prim_spawn(int argc, lisp_value *argv) {
+    if (!res.started) lisp_error("Resource ownership is not running.");
     return res_spawn(argv[0], false);
 }
 
 static lisp_value prim_launch(int argc, lisp_value *argv) {
+    if (!res.started) lisp_error("Resource ownership is not running.");
     (void)res_spawn(argv[0], true);
     return lisp_nil();
 }
@@ -1002,6 +1005,7 @@ static lisp_value prim_background_window_p(int argc, lisp_value *argv) {
 }
 
 static lisp_value prim_sources(int argc, lisp_value *argv) {
+    if (!res.started) lisp_error("Resource ownership is not running.");
     char error[512];
     if (!res_sources_set(argv[0], error, sizeof(error))) lisp_error("%s", error);
     return lisp_nil();
