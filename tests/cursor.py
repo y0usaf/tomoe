@@ -27,6 +27,7 @@ SETTINGS = """
 """
 
 PARK = (400, 380)
+ZIGZAG = [(PARK[0] + 70, PARK[1] - 50), (PARK[0] - 70, PARK[1] + 50)] * 6 + [PARK]
 
 THROWAWAY = """
 (defparameter +jelly+ (list :rotation (list :speed 0.035d0 :above 1d0 :below 1000d0)
@@ -181,7 +182,7 @@ class Compositor:
         path = str(self.root / name)
         for attempt in range(4):
             try:
-                result = subprocess.run(["grim", "-t", "ppm", path], env=self.environment,
+                result = subprocess.run(["grim", "-c", "-t", "ppm", path], env=self.environment,
                                         capture_output=True, text=True, timeout=10)
             except subprocess.TimeoutExpired:
                 self.stroke([(400, 380 + attempt), (401, 380 + attempt)], steps=1, hold_ms=20)
@@ -210,6 +211,14 @@ class Compositor:
              "--delay-ms", "50", "--extent", "1280x720"],
             env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True)
+
+    def stroke_until(self, path, word, steps=8, interval_ms=8):
+        mover = self.stroke_async(path, steps=steps, interval_ms=interval_ms)
+        for line in mover.stdout:
+            if line.strip().startswith(word):
+                return mover
+        mover.wait()
+        raise Failure("pointer-path ended before it " + word + ": " + mover.stderr.read().strip())
 
     def reload(self):
         code, output = self.call("reload")
@@ -264,10 +273,10 @@ def near(points, x, y, radius):
 
 
 def same(a, b):
-    return read_ppm(a)[2] == read_ppm(b)[2]
+    return signature(a) == signature(b)
 
 
-def case(compositor, path, steps=16):
+def case(compositor, path, steps=16, interval_ms=20):
     shots = []
     stop = threading.Event()
 
@@ -284,7 +293,7 @@ def case(compositor, path, steps=16):
     thread = threading.Thread(target=capture, daemon=True)
     thread.start()
     time.sleep(0.1)
-    compositor.stroke(path, steps=steps, interval_ms=20)
+    compositor.stroke(path, steps=steps, interval_ms=interval_ms)
     time.sleep(0.05)
     stop.set()
     thread.join()
@@ -356,13 +365,16 @@ def main():
         plain_wakeups = wakeups
     finally:
         plain.stop()
+        for path in (root / "plain").glob("walk-*.ppm"):
+            path.unlink()
 
-    def check(name, body, expect):
+    def check(name, body, expect, path=((PARK[0], PARK[1]), (900, PARK[1])), steps=16,
+               interval_ms=20):
         work = root / name
         compositor = build(name, body)
         try:
             time.sleep(1.0)
-            rest, shots, settled = case(compositor, [(PARK[0], PARK[1]), (900, PARK[1])])
+            rest, shots, settled = case(compositor, list(path), steps, interval_ms)
             if not same(rest, reference):
                 failures.append(name + ": the resting cursor is not the plain image")
             if not any(not same(shot, reference) for shot in shots):
@@ -380,6 +392,8 @@ def main():
             expect(compositor, name, reference, shots, settled)
         finally:
             compositor.stop()
+            for path in work.glob("frame-*.ppm"):
+                path.unlink()
 
     def moved(compositor, name, reference, shots, settled):
         pass
@@ -387,9 +401,9 @@ def main():
     def magnified(compositor, name, reference, shots, settled):
         park(compositor)
         before = compositor.screenshot("shake-before.ppm")
-        zigzag = [(PARK[0] + 70, PARK[1] - 50), (PARK[0] - 70, PARK[1] + 50)] * 6 + [PARK]
-        compositor.stroke(zigzag, steps=3, interval_ms=6)
+        mover = compositor.stroke_until(ZIGZAG, "dragged", steps=3, interval_ms=6)
         magnified_shot = compositor.screenshot("shake-magnified.ppm")
+        mover.wait()
         rest_lit = len(near(lit_points(before), PARK[0], PARK[1], 120))
         shaken_lit = len(near(lit_points(magnified_shot), PARK[0], PARK[1], 120))
         print("%s: %d lit pixels at rest, %d magnified" % (name, rest_lit, shaken_lit))
@@ -403,12 +417,14 @@ def main():
     def settled_late(compositor, name, reference, shots, settled):
         park(compositor)
         before = compositor.screenshot("spring-before.ppm")
-        compositor.stroke([(PARK[0], PARK[1]), (900, PARK[1])], steps=8, interval_ms=10)
+        mover = compositor.stroke_until([(PARK[0], PARK[1]), (900, PARK[1])], "released",
+                                        steps=8, interval_ms=10)
         early = compositor.screenshot("spring-early.ppm")
         time.sleep(0.12)
         middle = compositor.screenshot("spring-middle.ppm")
         time.sleep(1.2)
         after = compositor.screenshot("spring-after.ppm")
+        mover.wait()
         if same(early, reference):
             failures.append(name + ": the cursor was already at rest when the motion stopped")
         if same(early, middle):
@@ -439,7 +455,7 @@ def main():
 
     check("trail", TRAIL, trailed)
 
-    check("shake", SHAKE, magnified)
+    check("shake", SHAKE, magnified, path=ZIGZAG, steps=3, interval_ms=6)
 
     unload = root / "unload"
     unload.mkdir(exist_ok=True)

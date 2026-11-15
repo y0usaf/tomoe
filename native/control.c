@@ -102,12 +102,12 @@ static void client_read(struct control_client *client) {
         ssize_t count = read(client->fd, buffer, sizeof(buffer));
         if (count < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
-            client->dead = true;
+            client_kill(client);
             return;
         }
         if (!count) return;
         if (!client_append(client, buffer, (size_t)count)) {
-            client->dead = true;
+            client_kill(client);
             return;
         }
         if (client->in_length > CONTROL_LIMIT + 16) return;
@@ -150,11 +150,11 @@ static void client_flush(struct control_client *client) {
             client->out_length - client->out_offset);
         if (count < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
-            client->dead = true;
+            client_kill(client);
             return;
         }
         if (!count) {
-            client->dead = true;
+            client_kill(client);
             return;
         }
         client->out_offset += (size_t)count;
