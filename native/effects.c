@@ -767,6 +767,47 @@ done:
     op_end(f->pass, &clip);
 }
 
+bool effect_cursor(struct frame *f, const struct texture_options *options,
+        const struct fbox corners[4], const float texcoords[8]) {
+    GLenum target;
+    GLuint tex;
+    bool alpha;
+    if (!render_texture_gl(options->texture, &target, &tex, &alpha) || !tex) return false;
+    double left = corners[0].x, top = corners[0].y;
+    double right = corners[0].x, bottom = corners[0].y;
+    for (int i = 1; i < 4; i++) {
+        if (corners[i].x < left) left = corners[i].x;
+        if (corners[i].x > right) right = corners[i].x;
+        if (corners[i].y < top) top = corners[i].y;
+        if (corners[i].y > bottom) bottom = corners[i].y;
+    }
+    struct fbox box = { left, top, right - left, bottom - top };
+    if (box.width <= 0 || box.height <= 0) return false;
+    double params[] = { OP_CURSOR, corners[0].x, corners[0].y, corners[1].x, corners[1].y,
+        corners[2].x, corners[2].y, corners[3].x, corners[3].y };
+    struct drawn drawn = record(f, options, box, params, sizeof(params) / sizeof(params[0]));
+    if (drawn.recorded) return true;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_CURSOR, drawn.covered, &clip)) return true;
+    float level = options->alpha ? *options->alpha : 1;
+    struct scene_quad scene = { .kind = SCENE_TEXTURE, .texture = options->texture,
+        .target = target, .filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR,
+        .alpha = level, .opaque = alpha ? 0 : 1, .blend = alpha || level < 1 };
+    for (int i = 0; i < 4; i++) {
+        double bx, by;
+        to_buffer(f, corners[i].x, corners[i].y, &bx, &by);
+        scene.pos[2 * i] = (float)(bx / f->buffer->width * 2.0 - 1.0);
+        scene.pos[2 * i + 1] = (float)(by / f->buffer->height * 2.0 - 1.0);
+        scene.local[2 * i] = (float)(corners[i].x - f->x);
+        scene.local[2 * i + 1] = (float)(corners[i].y - f->y);
+        scene.tex[2 * i] = texcoords[2 * i];
+        scene.tex[2 * i + 1] = texcoords[2 * i + 1];
+    }
+    pass_scene(f->pass, &scene);
+    op_end(f->pass, &clip);
+    return true;
+}
+
 void effects_finish(struct tomoe *s) {
     if (s->effects) {
         free(s->effects->trail.levels);

@@ -96,7 +96,7 @@ it consed, when samples are kept."
   (source-scans 0) (source-deadline 0)
   (activity-serial 0) (idle-since 0) (idle-consed (sb-ext:get-bytes-consed)) idle-trimmed
   idle-swept
-  motion-plan)
+  motion-plan cursor-plan cursor-settling cursor-timer)
 
 (defconstant +event-readable+ 1)
 (defconstant +event-writable+ 2)
@@ -926,6 +926,8 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                            stacking)
                 :layers resolved-layers :focus focused :keyboard keyboard :settings settings
                 :sounds (materialization-sounds m)
+                :cursors (stable-sort (copy-list (materialization-cursors m)) #'<
+                                      :key (lambda (entry) (getf entry :order)))
                 :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
                                        :key (lambda (o) (getf o :name)))
                 :config-error (copy-data (runtime-config-error runtime))
@@ -965,6 +967,104 @@ when it is not 1."
                    (find (getf config :name) (output-connectors context)
                          :test #'equal :key (lambda (o) (getf o :name))))
                  (getf context :output-config)))
+
+(defparameter +cursor-settle+ 0.08
+  "Seconds a cursor transform holds after the policy last asked for it, before
+the cursor eases back to its plain texture.")
+
+(defun cursor-trail-style (trail)
+  "A behaviour's :TRAIL plist as (CELL LIFE STEPS RGBA), or NIL for no trail."
+  (when (and (consp trail) (getf trail :steps))
+    (list (max 1 (min 256 (getf trail :cell 9)))
+          (max 0d0 (min 4d0 (coerce (getf trail :life 0.35) 'double-float)))
+          (max 1 (min 8 (getf trail :steps 4)))
+          (%ui-color (getf trail :color "#b8e0ff")))))
+
+(defun cursor-matrix (spec)
+  "The transform a behaviour returned, as the matrix (A B C D) applied to the
+cursor's offsets from its hotspot: a stretch along STRETCH-ANGLE, then a scale,
+then a clockwise rotation in degrees."
+  (let* ((scale (coerce (or (getf spec :scale) 1) 'double-float))
+         (stretch (coerce (or (getf spec :stretch) 0) 'double-float))
+         (across (- 1d0 (* 0.5d0 stretch)))
+         (along (+ 1d0 stretch))
+         (phi (* pi (/ (coerce (or (getf spec :stretch-angle) 0) 'double-float) 180)))
+         (cp (cos phi)) (sp (sin phi))
+         (s00 (+ (* cp cp across) (* sp sp along)))
+         (s01 (* cp sp (- across along)))
+         (s11 (+ (* sp sp across) (* cp cp along)))
+         (theta (* pi (/ (coerce (or (getf spec :rotation) 0) 'double-float) 180)))
+         (ct (cos theta)) (st (sin theta)))
+    (list (* scale (- (* ct s00) (* st s01)))
+          (* scale (- (* ct s01) (* st s11)))
+          (* scale (+ (* st s00) (* ct s01)))
+          (* scale (+ (* st s01) (* ct s11))))))
+
+(defun cursor-compose (outer inner)
+  "The matrix that applies INNER, then OUTER."
+  (destructuring-bind (a0 a1 a2 a3) outer
+    (destructuring-bind (b0 b1 b2 b3) inner
+      (list (+ (* a0 b0) (* a1 b2)) (+ (* a0 b1) (* a1 b3))
+            (+ (* a2 b0) (* a3 b2)) (+ (* a2 b1) (* a3 b3))))))
+
+(defun cursor-present (runtime context)
+  "Ask the compositor to draw the cursor the mounted behaviours describe, in
+order. Everything here is a user's own registration, so an extension that stops
+asking for a transform leaves nothing behind."
+  (let ((entries (getf context :cursors)) (backend (runtime-backend runtime)))
+    (when (and backend (or entries (runtime-cursor-plan runtime)))
+      (let ((motion (and entries (cursor-motion)))
+            (matrix '(1 0 0 1)) (offset-x 0d0) (offset-y 0d0)
+            (settle 0d0) (trail nil) (settled t))
+        (dolist (entry entries)
+          (let ((spec (handler-case (funcall (getf entry :call) motion)
+                        (serious-condition (condition) (record-error runtime condition) nil))))
+            (when spec
+              (setf matrix (cursor-compose (cursor-matrix spec) matrix))
+              (incf offset-x (coerce (or (getf spec :offset-x) 0) 'double-float))
+              (incf offset-y (coerce (or (getf spec :offset-y) 0) 'double-float))
+              (setf settle (max settle (coerce (or (getf spec :settle) +cursor-settle+)
+                                               'double-float))
+                    settled (and settled (getf spec :settled t)))
+              (let ((style (cursor-trail-style (getf spec :trail))))
+                (when style (setf trail style))))))
+        (unless (plusp settle) (setf settle +cursor-settle+))
+        (destructuring-bind (a b c d) matrix
+          (%cursor-apply backend a b c d offset-x offset-y settle
+                         (or (first trail) 0d0) (or (second trail) 0d0)
+                         (or (third trail) 0) (or (fourth trail) 0)))
+        (setf (runtime-cursor-plan runtime) entries
+              (runtime-cursor-settling runtime) (and entries (not settled)))))))
+
+(defvar *cursor-settle-spec* (make-spec :name "cursor-settle")
+  "The runtime's own owner for the wake-up that keeps asking cursor behaviours
+whether they have settled, so an effect never has to declare a timer for it.")
+
+(defun cursor-settle-timer (runtime)
+  "A timer that re-asks the cursor behaviours once per display refresh while any
+of them reports that it has not settled, or NIL once they all have, so a settled
+cursor costs no wake-ups at all."
+  (unless (runtime-cursor-settling runtime)
+    (setf (runtime-cursor-timer runtime) nil)
+    (return-from cursor-settle-timer nil))
+  (let ((timer (runtime-cursor-timer runtime)))
+    (when (or (null timer) (owned-timer-fired timer))
+      (let* ((milliseconds (max 1 (%timer-milliseconds :refresh)))
+             (ticks (ceiling (* milliseconds internal-time-units-per-second) 1000)))
+        (setf timer (make-owned-timer :owner *cursor-settle-spec*
+                                      :arguments '(:settle :refresh t)
+                                      :milliseconds milliseconds :clock nil
+                                      :ticks ticks :period ticks)
+              (runtime-cursor-timer runtime) timer)))
+    timer))
+
+(defun cursor-settle-tick (runtime timer)
+  "Ask the cursor behaviours again while any of them is still settling, and stop
+the wake-up entirely the moment they all report that they have settled."
+  (when (runtime-running runtime) (cursor-present runtime (runtime-effective runtime)))
+  (unless (runtime-cursor-settling runtime)
+    (setf (runtime-timers runtime) (remove timer (runtime-timers runtime) :test #'eq)
+          (runtime-cursor-timer runtime) nil)))
 
 (defun commit-context (runtime mounts context &optional commands)
   "The only extension-to-native write path. All reducers have returned and validated."
@@ -1020,8 +1120,10 @@ when it is not 1."
     (setf (runtime-mounts runtime) mounts (runtime-effective runtime) context
           (runtime-output-recovery-failures runtime) nil)
     (setf (runtime-reads-cache runtime) nil)
+    (cursor-present runtime context)
     (install-watches runtime watches)
-    (install-timers runtime timers)
+    (let ((settle (cursor-settle-timer runtime)))
+      (install-timers runtime (if settle (append timers (list settle)) timers)))
     (install-executions runtime executions)
     (install-managed-processes runtime processes)
     (configure-virtual-outputs backend (getf old :virtual-outputs) (getf context :virtual-outputs))

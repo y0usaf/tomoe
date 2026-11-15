@@ -185,7 +185,7 @@ struct read_options {
     struct box src_box;
 };
 enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
-    OP_MESH = 9, OP_TRAIL = 13 };
+    OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14 };
 struct pass;
 struct op {
     uint64_t hash, seq, backdrop, key;
@@ -717,6 +717,8 @@ struct trail_style {
     uint32_t rgba;
 };
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
+bool effect_cursor(struct frame *f, const struct texture_options *options,
+    const struct fbox corners[4], const float texcoords[8]);
 void effects_plan(struct tomoe *s, struct oplist *list);
 void effects_forget(struct tomoe *s);
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused);
@@ -784,6 +786,22 @@ struct named_input_config {
 };
 struct screenshot_colors {
     uint32_t accent, background, text, chip;
+};
+enum { CURSOR_HISTORY = 128 };
+struct cursor_sample { float x, y; double t; };
+struct cursor_motion {
+    double sample;
+    double presented;
+    double settle;
+    bool live;
+    double target[4], target_offset[2];
+    double current[4], current_offset[2];
+    struct trail_style trail;
+    bool software;
+    struct cursor_sample history[CURSOR_HISTORY];
+    int history_head, history_count;
+    double history_at;
+    double shake, shake_distance;
 };
 struct settings {
     struct input_config touchpad, mouse;
@@ -1045,6 +1063,7 @@ struct tomoe {
     struct node *scene;
     struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
+    struct cursor_motion cursor_motion;
     struct buffer *default_cursor;
     float default_cursor_scale;
     uint32_t default_cursor_shape;
@@ -1086,6 +1105,7 @@ struct tomoe {
     bool cursor_hidden;
     uint64_t cursor_generation;
     char *cursor_result;
+    char *motion_result;
     uint32_t hovered;
     char *ui_hovered;
     struct pointer_latch pointer_latches[32];
@@ -1668,6 +1688,17 @@ bool screens_listen(struct tomoe *s);
 void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,
     float scale);
 void cursor_finish(struct tomoe *s);
+bool cursor_motion_advance(struct tomoe *s, double now);
+bool cursor_motion_rest(const struct tomoe *s);
+void cursor_motion_matrix(const struct tomoe *s, double matrix[4], double offset[2]);
+void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double offset[2],
+    double settle, const struct trail_style *trail);
+int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
+    double offset_x, double offset_y, double settle, double cell, double life,
+    int steps, uint32_t rgba);
+const char *tomoe_cursor_motion(struct tomoe *s);
+const char *cursor_shape_name(uint32_t shape);
+void screens_cursor_refresh(struct tomoe *s);
 struct buffer *pixel_buffer_create(int width, int height, size_t stride, uint32_t format,
     const void *pixels);
 bool session_create(struct tomoe *s);

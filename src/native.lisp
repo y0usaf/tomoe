@@ -48,6 +48,12 @@
   (server (* t)))
 (define-native ("tomoe_cursor_state" %cursor-state) sb-alien:c-string
   (server (* t)) (have-generation sb-alien:unsigned-long-long))
+(define-native ("tomoe_cursor_motion" %cursor-motion) sb-alien:c-string (server (* t)))
+(define-native ("tomoe_cursor_apply" %cursor-apply) sb-alien:int
+  (server (* t)) (a sb-alien:double) (b sb-alien:double) (c sb-alien:double)
+  (d sb-alien:double) (offset-x sb-alien:double) (offset-y sb-alien:double)
+  (settle sb-alien:double) (cell sb-alien:double) (life sb-alien:double)
+  (steps sb-alien:int) (rgba sb-alien:unsigned-int))
 (define-native ("tomoe_keyboard_focus" %keyboard-focus) sb-alien:unsigned-int
   (server (* t)))
 (define-native ("tomoe_input_stream" %input-stream) sb-alien:int

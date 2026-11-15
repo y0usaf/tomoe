@@ -28,7 +28,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 42; }
+int tomoe_abi_version(void) { return 43; }
 
 void tomoe_trim_heap(void) {
     malloc_trim(0);
@@ -202,6 +202,9 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->next_output_id = 1;
     s->next_ui_callback_id = 1;
     s->view_zoom = 1.0;
+    s->cursor_motion.current[0] = s->cursor_motion.current[3] = 1;
+    s->cursor_motion.target[0] = s->cursor_motion.target[3] = 1;
+    s->cursor_motion.shake = 1;
     settings_default(&s->settings);
     s->settings.nested_width = s->settings.nested_height = 0;
     s->display = wl_display_create();
@@ -300,6 +303,7 @@ void tomoe_destroy(struct tomoe *s) {
     free(s->memory_result);
     free(s->animation_result);
     free(s->cursor_result);
+    free(s->motion_result);
     free(s->output_preview);
     free(s->output_current);
     layers_preview_finish(s);
