@@ -223,7 +223,11 @@ int64_t require_int(lisp_value v, const char *what)
 lisp_value require_number(lisp_value v, const char *what)
 {
     if (!numberp(v))
-        lisp_error("%s must be a number", what);
+    {
+        char shown[120];
+        lisp_print(v, true, shown, sizeof(shown));
+        lisp_error("%s must be a number, got %s", what, shown);
+    }
     return v;
 }
 
