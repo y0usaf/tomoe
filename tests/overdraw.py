@@ -169,8 +169,10 @@ def spawn(socket, first, count, repaint, unit):
             f"--color {COLOURS[index % len(COLOURS)]}"
             + (" --commit-rate 60 --repaint" if index == 0 and repaint else ""))
     if count > first:
+        units = " ".join(f"-u {socket}-{index}" for index in range(count))
         machine.wait_until_succeeds(
-            f"journalctl -u {socket}-{count - 1} -o cat | grep -qx mapped", timeout=120)
+            f"test \"$(journalctl {units} -o cat | grep -cx mapped)\" -ge {count}",
+            timeout=180)
 
 
 def sample(binary, unit, socket, seconds=2):
