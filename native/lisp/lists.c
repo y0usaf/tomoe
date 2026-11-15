@@ -267,11 +267,12 @@ lisp_value builtin_count_if(int argc, lisp_value *argv)
 
 static bool contains(lisp_value list, lisp_value item, struct kw *kw)
 {
+    lisp_value probe = kw->has_key ? lisp_kw_key(kw, item) : item;
     while (consp(list)) {
         lisp_value value = CAR(list);
         list = CDR(list);
         lisp_value key = kw->has_key ? lisp_kw_key(kw, value) : value;
-        if (lisp_kw_test(kw, item, key))
+        if (lisp_kw_test(kw, probe, key))
             return true;
     }
     return false;
