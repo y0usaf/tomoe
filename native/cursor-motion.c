@@ -188,7 +188,10 @@ static lisp_value cursor_effects(int argc, lisp_value *argv) {
         lisp_value spec = cursor_plist(lisp_car(tail), "SPEC");
         if (cursor_server->cursor_effects.count == CURSOR_EFFECTS_MAX)
             lisp_error("Cursor effect set exceeds its budget.");
-        parse_effect(spec, &cursor_server->cursor_effects.entries[cursor_server->cursor_effects.count++]);
+        struct cursor_effect *effect =
+            &cursor_server->cursor_effects.entries[cursor_server->cursor_effects.count++];
+        parse_effect(spec, effect);
+        if (effect->trail_on && !effects_admit_trail(cursor_server)) effect->trail_on = false;
     }
     cursor_effects_evaluate(cursor_server, animation_now());
     return lisp_nil();
@@ -454,7 +457,7 @@ int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
             !isfinite(offset_x) || !isfinite(offset_y) || !isfinite(settle) ||
             !isfinite(cell) || !isfinite(life)) return 0;
     struct trail_style trail = {0};
-    if (steps > 0) {
+    if (steps > 0 && effects_admit_trail(s)) {
         trail = (struct trail_style){ cell < 1 ? 1 : cell > 256 ? 256 : cell,
             life < 0 ? 0 : life > 4 ? 4 : life, steps > 8 ? 8 : steps, rgba };
     }
