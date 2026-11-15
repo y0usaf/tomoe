@@ -646,6 +646,7 @@ static int run_compositor(const struct cli_options *options) {
             break;
         }
         if (step > 0) break;
+        tomoe_test_gestures(server);
         if (policy_events_pending(server)) {
             lisp_set_limits(2000000, 25000000ULL);
             policy_drain(server);

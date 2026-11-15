@@ -1,4 +1,6 @@
 #include "internal.h"
+#include "lisp.h"
+#include <unistd.h>
 
 static struct test_flag {
     const char *name;
@@ -24,6 +26,7 @@ static struct test_flag {
     { "timings", NULL, false },
     { "stall-ns", NULL, false },
     { "ui-stats", NULL, false },
+    { "gesture", NULL, false },
 };
 
 static struct test_flag *flag_for(const char *name) {
@@ -49,4 +52,60 @@ int tomoe_set_test_flag(const char *name, const char *value) {
     flag->value = value;
     flag->set = true;
     return 1;
+}
+
+static uint32_t gesture_arg(lisp_value *list) {
+    uint32_t value = (uint32_t)lisp_get_int(lisp_car(*list));
+    *list = lisp_cdr(*list);
+    return value;
+}
+
+static double gesture_double(lisp_value *list) {
+    double value = lisp_get_double(lisp_car(*list));
+    *list = lisp_cdr(*list);
+    return value;
+}
+
+void tomoe_test_gestures(struct tomoe *s) {
+    static struct input_device *device, *other;
+    static bool stopped;
+    const char *path = tomoe_test_flag_value("gesture");
+    if (!path || stopped) return;
+    if (!device) device = input_device_create(s, "private-gesture-test", INPUT_POINTER);
+    if (!other) other = input_device_create(s, "private-other-test", INPUT_POINTER);
+    FILE *file = fopen(path, "r");
+    if (!file) return;
+    char text[512];
+    size_t length = fread(text, 1, sizeof(text) - 1, file);
+    fclose(file);
+    unlink(path);
+    text[length] = '\0';
+    lisp_value request;
+    char error[256];
+    if (lisp_read_data(text, length, &request, error, sizeof(error)) || !lisp_consp(request)) {
+        tomoe_log(LOG_ERROR, "tomoe: gesture test request: %s", error);
+        return;
+    }
+    lisp_value head = lisp_car(request), args = lisp_cdr(request);
+    if (lisp_eq_keyword(head, "BEGIN")) {
+        uint32_t kind = gesture_arg(&args), time = gesture_arg(&args);
+        pointer_gesture_begin(s, device, kind, time, gesture_arg(&args));
+    } else if (lisp_eq_keyword(head, "UPDATE") || lisp_eq_keyword(head, "OTHER-UPDATE")) {
+        struct input_device *target = lisp_eq_keyword(head, "UPDATE") ? device : other;
+        uint32_t kind = gesture_arg(&args), time = gesture_arg(&args);
+        double dx = gesture_double(&args), dy = gesture_double(&args);
+        double scale = gesture_double(&args);
+        pointer_gesture_update(s, target, kind, time, dx, dy, scale, gesture_double(&args));
+    } else if (lisp_eq_keyword(head, "END")) {
+        uint32_t kind = gesture_arg(&args), time = gesture_arg(&args);
+        pointer_gesture_end(s, device, kind, time, (int)gesture_arg(&args));
+    } else if (lisp_eq_keyword(head, "REMOVE")) {
+        input_device_destroy(device);
+        device = NULL;
+    } else if (lisp_eq_keyword(head, "STOP")) {
+        input_device_destroy(device);
+        input_device_destroy(other);
+        device = other = NULL;
+        stopped = true;
+    }
 }

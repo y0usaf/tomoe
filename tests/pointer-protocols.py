@@ -23,9 +23,8 @@ with tempfile.TemporaryDirectory(prefix="tomoe-pointer-", dir=os.environ.get("TM
     env = {key: os.environ[key] for key in ("PATH", "MESA_LOADER_DRIVER_OVERRIDE", "LIBGL_DRIVERS_PATH", "__EGL_VENDOR_LIBRARY_FILENAMES", "LD_LIBRARY_PATH") if key in os.environ}
     env.update(HOME=str(root), XDG_RUNTIME_DIR=str(runtime), XCURSOR_PATH=str(root / "icons"),
                XCURSOR_THEME="check", LIBGL_ALWAYS_SOFTWARE="1")
-    env["TOMOE_GESTURE_TEST"] = str(root / "gesture-command")
     log = open(root / "compositor.log", "w+")
-    compositor = subprocess.Popen([sys.argv[1], "--backend", "headless", "--bare", "--socket", "pointer-check", "--no-watch"], env=env, stdout=log, stderr=log)
+    compositor = subprocess.Popen([sys.argv[1], "--backend", "headless", "--bare", "--socket", "pointer-check", "--no-watch", "--test-gesture=" + str(root / "gesture-command")], env=env, stdout=log, stderr=log)
     client = None
     def cli(*args):
         return subprocess.check_output([sys.argv[1], "--socket", "pointer-check", *args], env=env, text=True)
@@ -74,72 +73,70 @@ with tempfile.TemporaryDirectory(prefix="tomoe-pointer-", dir=os.environ.get("TM
         command("manager")
         command("shape 4")
         assert image()[1] == 0xff000004
-        if len(sys.argv) > 3:
-            assert "zwp_pointer_gestures_v1" in info
-            cli("mount", sys.argv[3])
-            def inject(request):
-                path = root / "gesture-command"
-                temporary = root / "gesture-command.tmp"
-                temporary.write_text(request)
-                os.replace(temporary, path)
-                cli("msg", "cursor")
-                cli("msg", "cursor")
-                assert not path.exists(), "gesture injection was not consumed"
-            for kind, name, fingers in ((1, "swipe", 3), (2, "pinch", 2), (3, "hold", 1)):
-                inject(f"(:begin {kind} 10 {fingers})")
-                assert command("sync") == [f"{name} begin 10 {fingers}"]
-                if kind != 3:
-                    inject(f"(:update {kind} 11 2.5d0 -1.25d0 1.5d0 15d0)")
-                    expected = f"{name} update 11 2.500 -1.250" + (" 1.500 15.000" if kind == 2 else "")
-                    assert command("sync") == [expected]
-                inject(f"(:end {kind} 12 0)")
-                assert command("sync") == [f"{name} end 0"]
-            inject("(:update 1 20 1d0 2d0 1d0 0d0)")
+        assert "zwp_pointer_gestures_v1" in info
+        def inject(request):
+            path = root / "gesture-command"
+            temporary = root / "gesture-command.tmp"
+            temporary.write_text(request)
+            os.replace(temporary, path)
+            cli("msg", "cursor")
+            cli("msg", "cursor")
+            assert not path.exists(), "gesture injection was not consumed"
+        for kind, name, fingers in ((1, "swipe", 3), (2, "pinch", 2), (3, "hold", 1)):
+            inject(f"(:begin {kind} 10 {fingers})")
+            assert command("sync") == [f"{name} begin 10 {fingers}"]
+            if kind != 3:
+                inject(f"(:update {kind} 11 2.5d0 -1.25d0 1.5d0 15d0)")
+                expected = f"{name} update 11 2.500 -1.250" + (" 1.500 15.000" if kind == 2 else "")
+                assert command("sync") == [expected]
+            inject(f"(:end {kind} 12 0)")
+            assert command("sync") == [f"{name} end 0"]
+        inject("(:update 1 20 1d0 2d0 1d0 0d0)")
+        assert command("sync") == []
+        inject("(:begin 1 21 3)")
+        assert command("sync") == ["swipe begin 21 3"]
+        inject("(:other-update 1 22 1d0 2d0 1d0 0d0)")
+        assert command("sync") == []
+        inject("(:begin 2 23 2)")
+        assert command("sync") == ["swipe end 1", "pinch begin 23 2"]
+        inject("(:end 2 24 1)")
+        assert command("sync") == ["pinch end 1"]
+        inject("(:begin 1 30 3)")
+        assert command("sync") == ["swipe begin 30 3"]
+        command("resubscribe")
+        inject("(:update 1 31 1d0 2d0 1d0 0d0)")
+        inject("(:end 1 32 0)")
+        assert command("sync") == []
+        inject("(:begin 3 40 2)")
+        assert command("sync") == ["hold begin 40 2"]
+        inject("(:remove)")
+        assert command("sync") == ["hold end 1"]
+        command("release-gestures")
+        inject("(:begin 1 50 3)")
+        assert command("sync") == ["swipe begin 50 3"]
+        second = subprocess.Popen([sys.argv[2]], env=env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            while (line := second.stdout.readline().strip()) != "ready":
+                assert line, "second client failed to enter"
+            assert command("sync") == ["swipe end 1"]
+            inject("(:update 1 51 1d0 2d0 1d0 0d0)")
+            assert command("sync", second) == []
+            inject("(:begin 2 52 2)")
+            assert command("sync", second) == ["pinch begin 52 2"]
             assert command("sync") == []
-            inject("(:begin 1 21 3)")
-            assert command("sync") == ["swipe begin 21 3"]
-            inject("(:other-update 1 22 1d0 2d0 1d0 0d0)")
-            assert command("sync") == []
-            inject("(:begin 2 23 2)")
-            assert command("sync") == ["swipe end 1", "pinch begin 23 2"]
-            inject("(:end 2 24 1)")
-            assert command("sync") == ["pinch end 1"]
-            inject("(:begin 1 30 3)")
-            assert command("sync") == ["swipe begin 30 3"]
-            command("resubscribe")
-            inject("(:update 1 31 1d0 2d0 1d0 0d0)")
-            inject("(:end 1 32 0)")
-            assert command("sync") == []
-            inject("(:begin 3 40 2)")
-            assert command("sync") == ["hold begin 40 2"]
-            inject("(:remove)")
-            assert command("sync") == ["hold end 1"]
-            command("release-gestures")
-            inject("(:begin 1 50 3)")
-            assert command("sync") == ["swipe begin 50 3"]
-            second = subprocess.Popen([sys.argv[2]], env=env, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-            try:
-                while (line := second.stdout.readline().strip()) != "ready":
-                    assert line, "second client failed to enter"
-                assert command("sync") == ["swipe end 1"]
-                inject("(:update 1 51 1d0 2d0 1d0 0d0)")
-                assert command("sync", second) == []
-                inject("(:begin 2 52 2)")
-                assert command("sync", second) == ["pinch begin 52 2"]
-                assert command("sync") == []
-                assert command("unmap", second) == ["pinch end 1"]
-                inject("(:update 2 53 1d0 2d0 1d0 0d0)")
-                assert command("sync", second) == []
-            finally:
-                second.stdin.write("quit\n")
-                second.stdin.flush()
-                second.wait(timeout=10)
-            command("remap")
-            inject("(:begin 3 60 1)")
-            assert command("sync") == ["hold begin 60 1"]
-            assert command("unmap") == ["hold end 1"]
-            inject("(:stop)")
-            print("gestures: swipe/pinch/hold phases and values, cancelled overlap/device removal, late subscriptions, manager lifetime, focus isolation and loss passed")
+            assert command("unmap", second) == ["pinch end 1"]
+            inject("(:update 2 53 1d0 2d0 1d0 0d0)")
+            assert command("sync", second) == []
+        finally:
+            second.stdin.write("quit\n")
+            second.stdin.flush()
+            second.wait(timeout=10)
+        command("remap")
+        inject("(:begin 3 60 1)")
+        assert command("sync") == ["hold begin 60 1"]
+        assert command("unmap") == ["hold end 1"]
+        inject("(:stop)")
+        print("gestures: swipe/pinch/hold phases and values, cancelled overlap/device removal, late subscriptions, manager lifetime, focus isolation and loss passed")
         command("unmap")
         before = image()
         command("shape 9")
