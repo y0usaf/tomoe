@@ -43,9 +43,18 @@
   (incf *definitions-generation*)
   (%set-symbol-definition (getf snapshot :symbol) (getf snapshot :definition)))
 
-(defun patch-shared-definitions-p (snapshots)
-  "True when the patch replaced a definition that already existed."
-  (not (null (some (lambda (snapshot) (getf snapshot :definition)) snapshots))))
+(defun refresh-extensions (&rest names)
+  "What a patch declares: the extensions it refreshes, read before it loads."
+  names)
+
+(defun patch-refresh-list (text package)
+  "The extension names TEXT declares with (REFRESH-EXTENSIONS ...), in order."
+  (let ((names nil))
+    (dolist (form (%read-source text package) (%dedupe (nreverse names)))
+      (when (and (consp form) (symbolp (first form))
+                 (string= "REFRESH-EXTENSIONS" (symbol-name (first form))))
+        (dolist (name (rest form))
+          (push (if (stringp name) name (symbol-name name)) names))))))
 
 (defun later-definition-patch (patch)
   "The patch applied after PATCH that replaced one of the same definitions.
@@ -58,11 +67,16 @@ was written against, so such an undo is refused instead."
                                            collect (getf snapshot :symbol)) :test #'eq))
              (cdr (member patch (runtime-patches) :test #'eq)))))
 
-(defun refresh-mounts ()
-  "Re-invoke every root reducer, so changed definitions reach the next commit."
-  (let ((roots (root-mounts (runtime-mounts))))
-    (transact roots (list :type :change :keys nil) nil
-              (mapcar (lambda (mounted) (spec-name (mounted-spec mounted))) roots))))
+(defun refresh-mounts (names)
+  "Re-invoke the root reducers named NAMES, so changed definitions reach the next
+commit."
+  (let ((roots (remove-if-not (lambda (mounted)
+                                (member (spec-name (mounted-spec mounted)) names
+                                        :test #'equal))
+                              (root-mounts (runtime-mounts)))))
+    (when roots
+      (transact roots (list :type :change :keys nil) nil
+                (mapcar (lambda (mounted) (spec-name (mounted-spec mounted))) roots)))))
 
 (defun remove-patch-mounts (extensions &optional refresh)
   "Drop the mounts named EXTENSIONS. REFRESH also re-invokes every other mount."
@@ -149,7 +163,7 @@ compositor as it was and signals its error. Returns a report plist."
     (let* ((generated (null file))
            (path (if file file (write-patch-source name forms)))
            (package (format nil "TOMOE-USER/PATCH-~A" (string-upcase name)))
-           (snapshots nil) (mounted nil) (shared nil))
+           (snapshots nil) (mounted nil) (refresh nil))
       (%r! :source-packages (cons package (runtime-source-packages)))
       (%r! :patch-sequence id)
       (let ((failure nil))
@@ -158,11 +172,11 @@ compositor as it was and signals its error. Returns a report plist."
            (let ((text (patch-text path)))
              (setf snapshots (loop for symbol in (patch-defined-symbols text package)
                                    collect (patch-definition-snapshot symbol))
-                   shared (patch-shared-definitions-p snapshots))
+                   refresh (patch-refresh-list text package))
              (setf mounted (mount-patch-specs (load-specs path package)))
-             (when shared (refresh-mounts))
+             (when refresh (refresh-mounts refresh))
              (let ((patch (list :id id :name name :file path :generated generated
-                                :refresh shared :snapshots snapshots
+                                :refresh refresh :snapshots snapshots
                                 :extensions mounted
                                 :definitions (loop for snapshot in snapshots
                                                    collect (getf snapshot :name)))))
@@ -171,11 +185,11 @@ compositor as it was and signals its error. Returns a report plist."
          (lambda (text) (setf failure text)))
         (if failure
             (progn
-              (roll-back-patch mounted snapshots shared)
+              (roll-back-patch mounted snapshots refresh)
               (when generated (ignore-errors (%delete-file path)))
               (error "~A" failure))
             (let ((patch (first (last (runtime-patches)))))
-              (list :id id :name name :file path :refresh shared
+              (list :id id :name name :file path :refresh refresh
                     :extensions (getf patch :extensions)
                     :definitions (getf patch :definitions))))))))
 
