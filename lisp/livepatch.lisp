@@ -45,11 +45,7 @@
 
 (defun patch-shared-definitions-p (snapshots)
   "True when the patch replaced a definition that already existed."
-  (not (null (some (lambda (snapshot)
-                     (let ((definition (getf snapshot :definition)))
-                       (or (getf definition :function) (getf definition :macro)
-                           (getf definition :boundp))))
-                   snapshots))))
+  (not (null (some (lambda (snapshot) (getf snapshot :definition)) snapshots))))
 
 (defun later-definition-patch (patch)
   "The patch applied after PATCH that replaced one of the same definitions.
@@ -171,7 +167,7 @@ compositor as it was and signals its error. Returns a report plist."
                                 :definitions (loop for snapshot in snapshots
                                                    collect (getf snapshot :name)))))
                (%r! :patches (append (runtime-patches) (list patch)))
-               (incf (runtime-generation)))))
+               (bump-generation))))
          (lambda (text) (setf failure text)))
         (if failure
             (progn
@@ -181,7 +177,7 @@ compositor as it was and signals its error. Returns a report plist."
             (let ((patch (first (last (runtime-patches)))))
               (list :id id :name name :file path :refresh shared
                     :extensions (getf patch :extensions)
-                    :definitions (getf patch :definitions)))))))))
+                    :definitions (getf patch :definitions))))))))
 
 (defun undo-patch (&key name id)
   "Withdraw the patch named NAME, numbered ID, or the most recent one."
@@ -204,7 +200,7 @@ compositor as it was and signals its error. Returns a report plist."
       (%r! :patches (remove patch (runtime-patches) :test #'eq))
       (sweep-source-packages)
       (when (getf patch :generated) (ignore-errors (%delete-file (getf patch :file))))
-      (incf (runtime-generation))
+      (bump-generation)
       (let ((warning nil))
         (when refresh
           (%catch (lambda () (refresh-mounts))

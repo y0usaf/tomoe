@@ -17,7 +17,7 @@
                                        (concatenate 'string
                                                     (string-upcase (subseq key 0 1))
                                                     (subseq key 1))
-                                       key)))))))
+                                       key))))))))
 
 (defparameter +hotkey-order+
   '("Spawn foot" "Run an Application" "Close Window" "Toggle Fullscreen" "Exit"

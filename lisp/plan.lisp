@@ -22,13 +22,13 @@
 (defun preview-native-outputs (outputs)
   "Resolve candidate active outputs and connected ports without native writes."
   (stage-native-outputs outputs)
-  (let ((preview (read-data (%outputs-preview))))
+  (let ((preview (%outputs-preview)))
     (unless preview (error "Cannot allocate output configuration preview."))
     preview))
 
 (defun current-native-outputs ()
   "Read currently committed output facts without changing native state."
-  (let ((snapshot (read-data (%outputs-current))))
+  (let ((snapshot (%outputs-current)))
     (unless (and (listp snapshot)
                  (integerp (getf snapshot :revision))
                  (<= 0 (getf snapshot :revision))
@@ -39,7 +39,7 @@
 (defun preview-native-layers (outputs layers overrides)
   "Resolve layer placement and usable output areas without sending configures."
   (%plan-layers (list :outputs outputs :layers layers :overrides overrides))
-  (let ((preview (read-data (%layers-preview))))
+  (let ((preview (%layers-preview)))
     (unless preview (error "Cannot serialize layer preview."))
     (values (getf preview :layers) (getf preview :workareas))))
 
@@ -148,7 +148,7 @@
          (%plan-stack (getf context :stacking))
          (%plan-surfaces (getf context :surface-plans))
          (let ((message (%plan-commit)))
-           (when message (error "~A" message))))
+           (when message (error "~A" message)))))
      (lambda (text) (setf failure text)))
     (when failure
       (%plan-abort)

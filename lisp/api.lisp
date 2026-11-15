@@ -240,7 +240,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
 (defun ipc-name (name)
   (check-type name string)
   (unless (<= 1 (length name) 256) (error "IPC name must contain 1 through 256 characters."))
-  (write-json name)
+  (%json-check-string name)
   (copy-seq name))
 
 (defun ipc-value (value)
@@ -871,7 +871,6 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
     (:animations :animations t)
-    (:focus-outline-cross (:member :fly :shrink) :fly)
     (:screenshot-freeze :boolean t)
     (:screenshot-colors (:group (:accent :color "#7aa1f7") (:background :color "#1c1c21")
                                 (:text :color "#ffffff") (:chip :color "#45454f")))
@@ -1002,14 +1001,12 @@ settle in 110 ms, and the open ease is 90 ms."
     :window-close nil :window-resize nil :window-switch nil
     :window-view (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63))
     :window-alpha nil :window-tint nil :window-scale nil
-    :window-rotation nil :window-translate nil
-    :focus-outline nil)
+    :window-rotation nil :window-translate nil)
   "Each animation event's default, when a configuration does not name one.
 Every animation advances once per display refresh, at the instant the frame
 reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 110 ms
 and :WINDOW-VIEW (workspace and deck scrolling) does too; :WINDOW-OPEN lasts
-90 ms. :FOCUS-OUTLINE is the focus border travelling between windows; off,
-the border is drawn on the focused window instead.")
+90 ms.")
 
 (defun %animation-settings (value)
   "Normalize :ANIMATIONS: T, NIL, or a plist of per-event specs.
@@ -1089,7 +1086,7 @@ last second divided by the diagonal of the area it covered, which is around 1
 for a straight line and many times more for a shake), :SHAKE-DISTANCE is that
 diagonal in pixels, and :DEFORMED is whether the drawn cursor differs from the
 plain texture right now."
-  (read-data (%cursor-motion)))
+  (%cursor-motion))
 
 (defun cursor-effect (name function &key (order 0))
   "Own a cursor behaviour, so the compositor asks this extension how the pointer
@@ -1142,7 +1139,7 @@ NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults 
   (check-type id (integer 1 4294967295))
   (check-type layer (member nil :background :bottom :top :overlay))
   (check-type exclusive-zone (or null (integer 0 4096)))
-  (check-type keyboard (member nil :none :exclusive :on-demand))
+  (check-type keyboard (member nil :none :exclusive))
   (check-type visible boolean)
   (%effect :layer (list id layer exclusive-zone keyboard visible)))
 
@@ -1425,13 +1422,39 @@ NAME with keyword arguments, whose declared defaults fill the rest."
         ((member value '("false" "0" "no" "off") :test #'string-equal) nil)
         (t (error "Command argument ~A takes true or false, not ~S." (%lower name) value))))
 
+(defun %json-array-text (text)
+  "The items of a JSON array of strings, or an error."
+  (let* ((n (length text))
+         (end (1- n))
+         (index 1)
+         (items nil)
+         (current "")
+         (quoted nil)
+         (escaped nil)
+         (started nil))
+    (unless (and (>= n 2) (char= (char text 0) #\[) (char= (char text end) #\]))
+      (error "The argv argument takes a JSON array or a space-separated command line, not ~S"
+             text))
+    (loop while (< index end) do
+      (let ((character (char text index)))
+        (cond
+          (escaped (setf current (concatenate 'string current (string character))
+                         escaped nil started t))
+          ((and quoted (char= character #\\)) (setf escaped t))
+          ((char= character #\") (setf quoted (not quoted) started t))
+          ((and (not quoted) (char= character #\,))
+           (when started (push current items))
+           (setf current "" started nil))
+          ((and (not quoted) (member character '(#\Space #\Tab #\Newline #\Return))) nil)
+          (t (setf current (concatenate 'string current (string character)) started t))))
+      (incf index))
+    (when quoted (error "Unterminated string in the argv JSON array: ~S" text))
+    (when started (push current items))
+    (nreverse items)))
+
 (defun %command-argv (text)
   (if (and (plusp (length text)) (char= (char text 0) #\[))
-      (let ((value (parse-json text)))
-        (unless (and (consp value) (eq (first value) :json-array))
-          (error "The argv argument takes a JSON array or a space-separated command line, not ~S."
-                 text))
-        (second value))
+      (%json-array-text text)
       (let ((items nil) (start 0))
         (loop for space = (position #\Space text :start start)
               do (let ((item (subseq text start space)))
@@ -1544,17 +1567,15 @@ or replacing the binding/source cancels that callback and still swallows key-up.
   (%effect :bind (list mask (copy-seq keysym) (copy-data call) (copy-data release)
                        (when description (copy-seq description)))))
 
-(defvar *keysym-codes* nil)
-
 (defun keysym-code (name)
   "The native keysym for NAME. Resolution is pure and every transaction resolves
 every declared binding three times, so each name crosses into C once."
-  (let ((entry (assoc name *keysym-codes* :test #'equal)))
+  (let ((entry (assoc name (%keysym-codes) :test #'equal)))
     (if entry
         (cdr entry)
         (let ((code (%keysym name)))
-          (when (>= (length *keysym-codes*) 4096) (setf *keysym-codes* nil))
-          (push (cons (copy-seq name) code) *keysym-codes*)
+          (when (>= (length (%keysym-codes)) 4096) (%r! :keysym-codes nil))
+          (%r! :keysym-codes (cons (cons (copy-seq name) code) (%keysym-codes)))
           code))))
 
 (%define-effect :bind
@@ -1745,13 +1766,10 @@ turns them all off while any is lit."
 (defparameter *host-commands* nil
   "Session commands the compositor owns. Keys, the command line and JSON all reach them.")
 
-(defvar *host-command-context* nil
-  "The host commands as copied context data, rebuilt when one is registered.")
-
 (defun define-host-command (name &key description arguments call)
   "Register command NAME for the session itself, not for an extension.
-CALL receives (runtime arguments), a plist of the declared argument values, and
-returns a report plist, published as the command's JSON result."
+CALL receives the plist of declared argument values and returns a report plist,
+published as the command's JSON result."
   (check-type call symbol)
   (let ((entry (list :name (%command-name name) :owner "session" :host t
                      :description (or description "")
@@ -1759,18 +1777,15 @@ returns a report plist, published as the command's JSON result."
                      :call call)))
     (setf *host-commands*
           (cons entry (remove (getf entry :name) *host-commands* :test #'equal
-                              :key (lambda (item) (getf item :name))))
-          *host-command-context* nil)
+                              :key (lambda (item) (getf item :name)))))
     entry))
 
 (defun host-command-entries ()
-  "The host commands as context data, shared by every materialization."
-  (or *host-command-context*
-      (setf *host-command-context*
-            (loop for entry in *host-commands*
-                  collect (list :name (getf entry :name) :owner (getf entry :owner)
-                                :host t :description (getf entry :description)
-                                :arguments (copy-data (getf entry :arguments)))))))
+  "The host commands as context data, rebuilt when a materialization needs them."
+  (loop for entry in *host-commands*
+        collect (list :name (getf entry :name) :owner (getf entry :owner)
+                      :host t :description (getf entry :description)
+                      :arguments (copy-data (getf entry :arguments)))))
 
 (defun host-command-implementation (name)
   (or (getf (find name *host-commands* :test #'equal :key (lambda (item) (getf item :name)))

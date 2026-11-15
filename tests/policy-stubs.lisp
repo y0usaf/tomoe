@@ -1,12 +1,33 @@
 (defvar *stub-log* nil)
 
+(defun %catch (thunk handler)
+  (declare (ignore handler))
+  (funcall thunk))
+(defun %with-limits (steps ms thunk)
+  (declare (ignore steps ms))
+  (funcall thunk))
+(defun %keep (value) value)
+(defun %release (value) (declare (ignore value)) nil)
+(defun %drop-package (name) (declare (ignore name)) nil)
+
 (defun stub-record (name &rest arguments)
   (push (cons name arguments) *stub-log*)
   (first arguments))
 
-(defun %keysym (name) (stub-record '%keysym name) (length name))
+(defvar *stub-keysyms* nil)
+(defun %keysym (name)
+  (stub-record '%keysym name)
+  (let ((entry (assoc name *stub-keysyms* :test #'equal)))
+    (if entry
+        (cdr entry)
+        (let ((code (1+ (length *stub-keysyms*))))
+          (push (cons name code) *stub-keysyms*)
+          code))))
 (defun %now-ms () 0)
-(defun %strftime (format) (declare (ignore format)) "00:00")
+(defun %strftime (format)
+  (cond ((string-equal format "%S") "00")
+        ((search "%Y" format) "2026-11-15")
+        (t "00:00")))
 (defun %log (level text) (stub-record '%log level text) nil)
 (defun %getenv (name) (stub-record '%getenv name) nil)
 (defun %list-directory (path) (stub-record '%list-directory path) nil)
@@ -23,14 +44,14 @@
 
 (defun %outputs-preview ()
   (list :revision 1
-        :outputs (list (list :name "OUT-1" :x 0 :y 0 :width 1920 :height 1080
+        :outputs (list (list :name "OUT-1" :x 0 :y 0 :width 5120 :height 1440
                              :scale-120 120 :refresh-mhz 60000 :transform 0))
         :connectors (list (list :name "OUT-1" :enabled t))))
 (defun %outputs-current () (%outputs-preview))
 (defun %outputs-revision () 1)
 (defun %layers-preview ()
   (list :layers nil :workareas (list (list :name "OUT-1" :x 0 :y 0
-                                           :width 1920 :height 1080))))
+                                           :width 5120 :height 1440))))
 (defun %ui-stats () nil)
 (defun %sound-stats () nil)
 (defun %native-errors () nil)
@@ -54,6 +75,7 @@
 (defun %plan-abort () nil)
 
 (defun %resources-commit (wanted) (stub-record '%resources-commit wanted) nil)
+(defun %sources (sources) (stub-record '%sources sources) nil)
 (defun %cursor-motion () (list :x 0 :y 0 :vx 0d0 :vy 0d0 :time 0d0 :shape "left_ptr"))
 (defun %keyboard-focus () 0)
 (defun %grab-id () 0)
@@ -75,6 +97,23 @@
   (declare (ignore declarations asset-loader viewport))
   (values nil workareas))
 
+(defun ui (kind &rest properties)
+  "S6 owns the real UI tree; the stub keeps the declaration shape."
+  (list* :kind kind (copy-list properties)))
+
+(defun shell-surface (name tree &rest options)
+  (%effect :surface (list* :name name :tree tree options)))
+
+(%define-effect :surface
+  (lambda (args effect) (%effect :surface args))
+  (lambda (args) (list :surface (getf args :name)))
+  (lambda (m args mounted)
+    (setf (getf m :surfaces)
+          (cons (append (list :owner (spec-name (mounted-spec mounted))
+                              :source-id (spec-id (mounted-spec mounted)))
+                        (copy-data args))
+                (materialization-surfaces m)))))
+
 (defun shell-viewport (outputs data)
   (declare (ignore outputs data))
   nil)
@@ -84,10 +123,9 @@
   nil)
 
 (defun policy-selftest ()
-  "Mount the built-in desktop and feed it one map, key, timer and IPC event."
+  "Boot the built-in desktop and feed it one map, key, timer and IPC event."
   (setf *stub-log* nil)
   (TOMOE-BOOT nil nil nil)
-  (load-policy "desktop")
   (TOMOE-DISPATCH (list (list :type :map :id 1 :title "Stub" :app-id "stub"
                               :width 800 :height 600 :client-width 800 :client-height 600)))
   (TOMOE-DISPATCH (list (list :type :key :owner "commands" :command "toggle-hotkeys"

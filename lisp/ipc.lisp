@@ -74,14 +74,14 @@ method no mount owns."
                (cons "maximized" (if (getf record :maximized) t +json-false+))))
 
 (defun ipc-outputs-json (context)
-  (json-array
-   (loop for output in (getf context :outputs)
-         collect (json-object
-                  (cons "name" (getf output :name))
-                  (cons "x" (getf output :x)) (cons "y" (getf output :y))
-                  (cons "width" (getf output :width)) (cons "height" (getf output :height))
-                  (cons "scale" (/ (getf output :scale-120 120) 120d0))
-                  (cons "transform" (getf output :transform 0))))))
+  (apply #'json-array
+         (loop for output in (getf context :outputs)
+               collect (json-object
+                        (cons "name" (getf output :name))
+                        (cons "x" (getf output :x)) (cons "y" (getf output :y))
+                        (cons "width" (getf output :width)) (cons "height" (getf output :height))
+                        (cons "scale" (/ (getf output :scale-120 120) 120d0))
+                        (cons "transform" (getf output :transform 0))))))
 
 (defun publish-json-context (context mounts)
   "Emit the events between the last published context and CONTEXT, at commit."

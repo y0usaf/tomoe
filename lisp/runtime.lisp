@@ -47,7 +47,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :retired-commands nil :reads-cache nil :layout-memo nil
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
-        :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil))
+        :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil))
 
 (defun %r (key) (getf *runtime* key))
 (defun %r! (key value) (setf (getf *runtime* key) value))
@@ -82,6 +82,9 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
 (defun runtime-motion-plan () (%r :motion-plan))
 (defun runtime-layers-cache () (%r :layers-cache))
 (defun runtime-socket () (%r :socket))
+(defun %keysym-codes () (%r :keysym-codes))
+(defun bump-generation ()
+  (%r! :generation (1+ (runtime-generation))))
 (defun runtime-watch () (%r :watch))
 
 (defun %persist-state ()
@@ -247,22 +250,25 @@ command names whose owner has gone away so their bindings retire with it."
               (list :name name :arguments (getf event :arguments))))))))
 
 (defun canonical-effect (effect)
-  (check-type effect effect)
+  (unless (and (consp effect) (eq (first effect) :effect))
+    (error "Not an effect: ~S" effect))
   (funcall (second (%effect-definition (effect-kind effect)))
            (copy-data (effect-arguments effect)) effect))
 
 (defun canonical-command (command &optional directory)
-  (check-type command command)
+  (unless (and (consp command) (eq (first command) :command))
+    (error "Not a command: ~S" command))
   (let ((args (copy-data (command-arguments command))))
     (ecase (command-kind command)
       (:reply (destructuring-bind (value) args (ipc-reply value)))
       (:broadcast (destructuring-bind (name value) args (broadcast name value)))
       (:launch (apply #'launch args))
       (:spawn (destructuring-bind (launch cwd env focus) args
-                (let ((result (spawn launch :cwd cwd :env env :focus focus)))
+                (let* ((result (spawn launch :cwd cwd :env env :focus focus))
+                       (spawn-arguments (command-arguments result)))
                   (when (and cwd (not (char= (char cwd 0) #\/)))
                     (unless directory (error "Relative spawn cwd requires a declaring source."))
-                    (setf (second (command-arguments result))
+                    (setf (nth 1 spawn-arguments)
                           (concatenate 'string directory cwd)))
                   result)))
       (:close (destructuring-bind (id) args (close-window id)))
@@ -333,7 +339,9 @@ command names whose owner has gone away so their bindings retire with it."
                         (commands (mapcar (lambda (command)
                                             (canonical-command command (spec-directory spec)))
                                           commands)))
-                    (let ((replies (count :reply commands :key #'command-kind)))
+                    (let ((replies (count-if (lambda (command)
+                                               (eq (command-kind command) :reply))
+                                             commands)))
                       (when (plusp replies)
                         (unless (and (= replies 1) (eq (getf event :type) :ipc)
                                      (equal (getf event :owner) name)
@@ -431,10 +439,10 @@ Lisp."
               (unless entry
                 (setf entry (list id nil nil nil t))
                 (push entry overrides))
-              (when layer (setf (second entry) layer))
-              (when zone (setf (third entry) zone))
-              (when keyboard (setf (fourth entry) keyboard))
-              (setf (fifth entry) visible))))))))
+              (when layer (setf (nth 1 entry) layer))
+              (when zone (setf (nth 2 entry) zone))
+              (when keyboard (setf (nth 3 entry) keyboard))
+              (setf (nth 4 entry) visible))))))))
 
 (defun applied-grab ()
   "Read the backend's actual grab. No Lisp cache can outlive a native target."
@@ -705,13 +713,15 @@ when nothing it folds has changed."
   (let ((memo *materialized*) (revision (runtime-outputs-revision)))
     (labels ((republish (context)
                (when memo
-                 (setf (first memo) (copy-list mounts) (second memo) *invocations*
-                       (third memo) context (fourth memo) revision))
+                 (setf (nth 0 memo) (copy-list mounts)
+                       (nth 1 memo) *invocations*
+                       (nth 2 memo) context
+                       (nth 3 memo) revision))
                (trace-layout-step context)
                context))
       (cond
         ((and memo (eql (second memo) *invocations*) (eql (fourth memo) revision)
-              (= (length mounts) (length (first memo))) (every #'eq mounts (first memo)))
+              (= (length mounts) (length (first memo))) (%same-elements-p mounts (first memo)))
          (incf *layout-reuses*)
          (republish (third memo)))
         (t (let ((reused (reusable-layout mounts)))
@@ -819,7 +829,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                   :bindings (sort bindings
                                   (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                     (and (= (getf a :modifiers) (getf b :modifiers))
-                                                         (< (getf a :code) (getf b :code))))))))))))
+                                                         (< (getf a :code) (getf b :code)))))))))))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE
@@ -901,25 +911,21 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
          (commands nil)
          (deferred-deliveries nil)
          (proposal-baselines nil)
-         (proposal-start nil)
+         (proposal-start (mapcar #'mounted-spec candidate))
          (proposal-deliveries nil)
          (initial-event event)
          (initial-force force))
     (labels ((baseline (mounted)
-               (let ((spec (mounted-spec mounted)))
-                 (unless proposal-baselines
-                   (setf proposal-baselines t proposal-start t)
-                   (dolist (run candidate)
-                     (setf proposal-start (cons (mounted-spec run) proposal-start))))
-                 (let ((entry (assoc spec proposal-baselines :test #'eq)))
-                   (if (and entry (cdr entry))
-                       (cdr entry)
-                       (let ((value (if (member spec proposal-start :test #'eq)
-                                        (copy-data (mounted-state mounted))
-                                        (sixth (effect-arguments (mounted-rule-definition mounted))))))
-                         (setf proposal-baselines
-                               (%alist-set spec (cons t value) proposal-baselines #'eq))
-                         value)))))
+               (let* ((spec (mounted-spec mounted))
+                      (entry (assoc spec proposal-baselines :test #'eq)))
+                 (if entry
+                     (cdr entry)
+                     (let ((value (if (member spec proposal-start :test #'eq)
+                                      (copy-data (mounted-state mounted))
+                                      (sixth (effect-arguments (mounted-rule-definition mounted))))))
+                       (setf proposal-baselines
+                             (%alist-set spec value proposal-baselines #'eq))
+                       value))))
              (invoke (mounted delivered)
                (when (admission-scope-p mounted candidate)
                  (let ((spec (mounted-spec mounted)))
@@ -975,7 +981,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                             (invoke mounted delivery)
                             (push spec invoked))
                           (setf deferred-deliveries
-                                (%alist-set spec delivery deferred-deliveries #'eq))))))))))
+                                (%alist-set spec delivery deferred-deliveries #'eq)))))))))
           (setf context (materialize candidate))
           (multiple-value-bind (reconciled new revised)
               (reconcile-rule-mounts candidate context)
@@ -1169,7 +1175,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
            '(:type :mount) nil (mapcar #'spec-name specs)))
         (%r! :sources (copy-list sources))
         (%r! :last-error nil)
-        (incf (runtime-generation)))
+        (bump-generation))
     (sweep-source-packages)))
 
 (defun unmount (name)
@@ -1181,7 +1187,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                          :key (lambda (m) (spec-name (mounted-spec m))))
                  (list :type :unmount :name name) nil)
     (sweep-source-packages))
-  (incf (runtime-generation)))
+  (bump-generation))
 
 (defun record-error (message)
   (%r! :last-error message)
@@ -1224,9 +1230,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
         (unless (and (integerp snapshot-revision) (>= snapshot-revision revision))
           (error "Native output snapshot revision regressed: ~S" snapshot))
         (unless (equal facts (runtime-outputs))
-          (pushnew :outputs (runtime-pending-context)))
+          (%r! :pending-context (adjoin :outputs (runtime-pending-context))))
         (unless (equal connectors (runtime-connectors))
-          (pushnew :connectors (runtime-pending-context)))
+          (%r! :pending-context (adjoin :connectors (runtime-pending-context))))
         (%r! :outputs facts)
         (%r! :connectors connectors)
         (%r! :outputs-revision snapshot-revision)))))
@@ -1385,6 +1391,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       (:command
        (push (getf event :owner) force)
        (push :command changed))
+      (:ipc
+       (push (getf event :owner) force)
+       (push :ipc changed))
       (:request
        (when (find (getf event :id) (runtime-windows) :key (lambda (w) (getf w :id)))
          (push :request changed)))
@@ -1421,7 +1430,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                    (let ((context (materialize (runtime-mounts))))
                      (dolist (key '(:workareas :window-geometry :surfaces :output-errors))
                        (unless (equal (getf context key) (getf (runtime-effective) key))
-                         (pushnew key (runtime-pending-context))))
+                         (%r! :pending-context (adjoin key (runtime-pending-context)))))
                      (commit-context (runtime-mounts) context)))))
              (lambda (text) (setf recovery text)))
             (when recovery (record-error recovery))))))))
@@ -1444,9 +1453,9 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                   :grab (describe-grab grab)
                   :motion-plan (copy-data (runtime-motion-plan))
                   :native-grab (describe-grab (applied-grab))
-                  :native-ui (read-data (%ui-stats))
-                  :native-sound (read-data (%sound-stats))
-                  :native-errors (read-data (%native-errors))
+                  :native-ui (%ui-stats)
+                  :native-sound (%sound-stats)
+                  :native-errors (%native-errors)
                   :watch (runtime-watch)
                   :timers (%describe :timers)
                   :watches (%describe :watches)
@@ -1531,13 +1540,16 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
   (let ((reply nil) (failure nil))
     (%catch (lambda () (setf reply (ipc-invoke-method method params)))
             (lambda (text) (setf failure text)))
+    (%persist-state)
     (if failure
         (error "~A" failure)
         reply)))
 
 (defun TOMOE-COMMAND (name arguments origin)
   (declare (ignore origin))
-  (run-command name arguments))
+  (let ((report (run-command name arguments)))
+    (%persist-state)
+    report))
 
 (defun TOMOE-INSPECT ()
   (describe-runtime))

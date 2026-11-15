@@ -53,14 +53,15 @@
                   (unless (%finite-float-p item)
                     (error "Only finite floats are extension data."))
                   item)
-                 ((symbolp item)
-                  (unless (or (eq item t) (keywordp item))
-                    (error "Only keywords, T, and NIL are data symbols: ~S" item))
-                  item)
+                 ((symbolp item) item)
                  (t (error "Not extension data: ~S" item)))))
       (walk value 0))))
 
 (defparameter %nul (code-char 0))
+
+(defun %same-elements-p (first second)
+  (and (= (length first) (length second))
+       (loop for left in first for right in second always (eq left right))))
 
 (defun %boolean-p (value) (or (eq value t) (null value)))
 

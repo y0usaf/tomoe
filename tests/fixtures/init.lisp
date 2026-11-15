@@ -1,6 +1,6 @@
 (in-package #:tomoe-user)
 (defparameter +policy-displays+ (list (list "DP-4" :icc "/nix/store/ajsjigd9g9267vbjyzzhp89d3q891k44-ls49ag95.icc" :mode (list 5120 1440)) (list "HDMI-A-2" :mode (list 1920 1080 60) :position (list 5120 0))))
-(defparameter +policy-settings+ (list :|ANIMATIONS| (list :|FOCUS-OUTLINE| nil) :|FOCUS-FOLLOWS-MOUSE| t :|HONOR-XDG-ACTIVATION-WITH-INVALID-SERIAL| t :|POINTER-FOLLOWS-FOCUS| t :|WAIT-FOR-FRAME-COMPLETION| t))
+(defparameter +policy-settings+ (list :|ANIMATIONS| t :|FOCUS-FOLLOWS-MOUSE| t :|HONOR-XDG-ACTIVATION-WITH-INVALID-SERIAL| t :|POINTER-FOLLOWS-FOCUS| t :|WAIT-FOR-FRAME-COMPLETION| t))
 (defparameter +policy-launcher+ (list :|APP-ID| "launcher" :|RATIO| 1/3))
 (defparameter +policy-hidden-window+ (list :|APP-ID| "steam_proton" :|TITLE-PREFIX| "Lovely"))
 (defparameter +policy-terminal+ (list :|APP-ID| "so.stencil.tern"))
