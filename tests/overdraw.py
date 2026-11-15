@@ -18,15 +18,16 @@ POLICY = """
           (* (floor index columns) cell-height)
           cell-width cell-height)))
 
-(define-extension "overdraw" (:reads (:windows :outputs) :state nil) (snapshot state event)
-  (declare (ignore state event))
+(define-extension "overdraw" (:reads (:windows :outputs) :state '(:rotated nil))
+    (snapshot state event)
+  (declare (ignore event))
   (let* ((output (first (context snapshot :outputs)))
          (width (or (and output (getf output :width)) 1280))
          (height (or (and output (getf output :height)) 720))
          (windows (sort (copy-list (context snapshot :windows))
                         (lambda (first second) (< (getf first :id) (getf second :id)))))
          (count (length windows)))
-    (values nil
+    (values (list :rotated t)
             (append
              {rotate}
              (list (settings :animations nil
@@ -55,8 +56,8 @@ POLICY = """
 """
 
 
-ROTATE = ("(if (eql (getf output :transform) {index}) nil (list (configure-output "
-          "(getf output :name) :transform :{name})))\n             ")
+ROTATE = ("(if (or (getf state :rotated) (eql (getf output :transform) {index})) nil "
+          "(list (configure-output (getf output :name) :transform :{name})))\n             ")
 
 
 def policy(layout, rotation, path):
