@@ -229,7 +229,7 @@ applications Tomoe launches keep the ordinary one and outlive it as before."
             (when (sb-alien:null-alien job) (error "Cannot start dbus-daemon: errno ~D." error-code))
             job)))))))
 
-(defun stop-session-bus (bus name)
+(defun stop-session-bus (bus path)
   (let ((job (car bus)) (transient (cdr bus)))
     (when job
       (%exec-stop job sb-posix:sigterm)
@@ -238,10 +238,48 @@ applications Tomoe launches keep the ordinary one and outlive it as before."
         (%exec-stop job sb-posix:sigkill)
         (loop repeat 100 until (plusp (%exec-poll job)) do (sleep 0.01)))
       (when (plusp (%exec-poll job)) (%exec-release job))
-      (ignore-errors (sb-posix:unlink (bus-socket-path name)))
+      (ignore-errors (sb-posix:unlink path))
       (when transient
         (ignore-errors (sb-posix:rmdir (format nil "~A/services" transient)))
         (ignore-errors (sb-posix:rmdir transient))))))
+
+(defun await-session-bus (job path)
+  "Wait up to two seconds for the daemon behind JOB to answer on PATH."
+  (loop repeat 400
+        do (cond ((socket-answering-p path) (return))
+                 ((plusp (%exec-poll job))
+                  (error "dbus-daemon exited with code ~D." (%exec-code job))))
+           (sleep 0.005)
+        finally (error "dbus-daemon is not listening after 2 s.")))
+
+(defun launch-session-bus (path)
+  "Start a bus daemon on PATH, wait until it answers, or clean it up and signal."
+  (let ((job (start-bus-daemon path (format nil "unix:path=~A" path))))
+    (handler-case (await-session-bus job path)
+      (serious-condition (condition)
+        (stop-session-bus (cons job nil) path)
+        (error condition)))
+    job))
+
+(defun service-session-bus (bus name)
+  "Reap the private bus daemon once it exits under a running Tomoe, report how it
+died, and start a replacement at the same address so children keep a working bus."
+  (let ((job (car bus)))
+    (when job
+      (let ((status (%exec-poll job)))
+        (when (plusp status)
+          (let ((code (%exec-code job)) (path (bus-socket-path name)))
+            (%exec-release job)
+            (setf (car bus) nil)
+            (ignore-errors (sb-posix:unlink path))
+            (format *error-output* "tomoe: session bus daemon ~A; starting a replacement~%"
+                    (if (= status 2)
+                        (format nil "was killed by signal ~D" code)
+                        (format nil "exited with status ~D" code)))
+            (handler-case (setf (car bus) (launch-session-bus path))
+              (serious-condition (condition)
+                (format *error-output* "tomoe: session bus unavailable: ~A~%" condition)))))))
+    bus))
 
 (defun start-session-bus (name)
   (let* ((path (bus-socket-path name))
@@ -255,17 +293,11 @@ applications Tomoe launches keep the ordinary one and outlive it as before."
     (handler-case
         (let* ((fresh (not (probe-file transient)))
                (orphan (kill-orphaned-bus path)))
-          (setf bus (cons (start-bus-daemon path own) (when (or fresh orphan) transient)))
-          (loop repeat 400
-                do (cond ((socket-answering-p path) (return))
-                         ((plusp (%exec-poll (car bus)))
-                          (error "dbus-daemon exited with code ~D." (%exec-code (car bus)))))
-                   (sleep 0.005)
-                finally (error "dbus-daemon is not listening after 2 s."))
+          (setf bus (cons (launch-session-bus path) (when (or fresh orphan) transient)))
           (sb-posix:setenv "DBUS_SESSION_BUS_ADDRESS" own 1)
           bus)
       (serious-condition (condition)
-        (stop-session-bus bus name)
+        (stop-session-bus bus path)
         (sb-posix:unsetenv "DBUS_SESSION_BUS_ADDRESS")
         (format *error-output* "tomoe: session bus unavailable: ~A~%" condition)
         nil))))
@@ -297,19 +329,25 @@ applications Tomoe launches keep the ordinary one and outlive it as before."
         for fd = (%watch-descriptor native)
         when (>= fd 0) collect (list fd +event-readable+ native)))
 
-(defun wake-specs (runtime control server)
+(defun bus-wake-spec (bus)
+  "The private bus daemon's pidfd, readable once it exits."
+  (let ((fd (and bus (car bus) (%exec-descriptor (car bus) 0))))
+    (when (and fd (>= fd 0)) (list (list fd +event-readable+ :session-bus)))))
+
+(defun wake-specs (runtime control server bus)
   (append (list (list (socket-descriptor (control-socket control)) +event-readable+ :control))
           (json-wake-specs server)
           (service-wake-specs runtime)
+          (bus-wake-spec bus)
           (watch-specs runtime)
           (execution-specs runtime)
           (source-specs runtime)))
 
-(defun sync-wake-sources (runtime control server)
+(defun sync-wake-sources (runtime control server bus)
   "Register every descriptor whose readiness can start new work, so the loop can
 sleep until one of them, a timer, a command deadline or a held frame is due."
   (when (runtime-watch runtime) (sync-source-watches runtime))
-  (let ((specs (wake-specs runtime control server)))
+  (let ((specs (wake-specs runtime control server bus)))
     (when (or (runtime-watch-failure runtime) (not (equal specs (runtime-fd-specs runtime))))
       (setf (runtime-fd-specs runtime) specs
             (runtime-watch-failure runtime) nil)
@@ -439,7 +477,7 @@ an edit calls for; a source whose directory is still missing is retried."
                    (runtime-source-deadline runtime)
                    (+ (get-internal-real-time) (floor internal-time-units-per-second 4))))
            (loop while (and (runtime-running runtime) (not *stop-requested*)) do
-             (sync-wake-sources runtime control json-server)
+             (sync-wake-sources runtime control json-server bus)
              (let ((status (%step native (if (plusp (%event-count native)) 0
                                             (or (idle-wait-milliseconds runtime) -1)))))
                (when (< status 0) (error "Native event loop failed."))
@@ -448,6 +486,7 @@ an edit calls for; a source whose directory is still missing is retried."
                      do (drop-dead-fd-watch runtime dead)))
              (drain-backend-events runtime)
              (unless (and (runtime-running runtime) (not *stop-requested*)) (return))
+             (service-session-bus bus name)
              (service-notifications runtime)
              (service-mpris runtime)
              (service-battery runtime)
@@ -486,7 +525,7 @@ an edit calls for; a source whose directory is still missing is retried."
                                       (unwind-protect (stop-executions runtime)
                                         (stop-managed-processes runtime))))))))))
         (unwind-protect (when (and runtime (equal backend "drm")) (stop-session))
-          (unwind-protect (stop-session-bus bus name)
+          (unwind-protect (stop-session-bus bus (bus-socket-path name))
             (unwind-protect (when native (%destroy native))
               (unwind-protect (close-json-control json-server) (close-control control)))))))))
 
