@@ -1,4 +1,4 @@
-def start_binary(binary, unit, socket, bus=False):
+def start_binary(binary, unit, socket, bus=False, timings=True):
     machine.wait_for_unit("multi-user.target")
     if bus:
         machine.execute(
@@ -9,11 +9,11 @@ def start_binary(binary, unit, socket, bus=False):
         f"systemd-run --unit={unit} --property=Type=exec --remain-after-exit "
         "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={BUS} "
-        "--setenv=HOME=/root "
+        + ("--setenv=TOMOE_TIMINGS=1 " if timings else "") + "--setenv=HOME=/root "
         "--setenv=PATH=/run/current-system/sw/bin "
         f"--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv={THREADS} "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        f"{binary} --socket {socket} --backend headless --no-watch --test-timings")
+        f"{binary} --socket {socket} --backend headless --no-watch")
     for _ in range(600):
         if machine.execute(ENV + f"{binary} --socket {socket} inspect")[0] == 0:
             return
@@ -43,7 +43,10 @@ def frames(socket="check"):
 def memory(socket="check"):
     reply = read(cli("memory", socket))
     assert reply[1] == ":OK", show(reply)
-    lisp = plist(plist(reply[2])[":LISP"])
+    fields = plist(reply[2])
+    if ":LISP" not in fields:
+        return int(fields[":BYTES-CONSED"]), int(fields[":GC-COUNT"])
+    lisp = plist(fields[":LISP"])
     return int(lisp[":ARENA-HIGH-WATER"]), int(lisp[":RECLAIM-COUNT"])
 
 def stall_table(timings):
@@ -129,14 +132,28 @@ def measure_policy(label, policy, name, socket="check", unit="tomoe", gate=True)
     finally:
         cli(f"unmount {name}", socket)
 
+def count_runs(policy, name, socket):
+    cli(f"mount {policy}", socket)
+    try:
+        before = extensions(socket)
+        machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} tomoe-timing-client --count " + COUNT)
+        after = extensions(socket)
+        return sum(after[key][0] - before.get(key, (0, 0))[0] for key in after)
+    finally:
+        cli(f"unmount {name}", socket)
+
 runs = int(RUNS)
 main = []
+main_runs = None
 if BASELINE:
     start_binary(BASELINE, "tomoe-main", "main", bus=True)
     for run in range(runs):
         main.append(measure_policy(f"origin/main {run}", TIMING_POLICY, "timing-policy",
                                    "main", "tomoe-main", gate=False))
     stop_binary(BASELINE, "tomoe-main", "main")
+    start_binary(BASELINE, "tomoe-main-runs", "main", timings=False)
+    main_runs = count_runs(TIMING_POLICY, "timing-policy", "main")
+    stop_binary(BASELINE, "tomoe-main-runs", "main")
 
 start("--test-timings")
 cli(f"mount {TIMING_POLICY}")
@@ -191,7 +208,8 @@ print(f"{'runs':<12} origin/main "
       + (f"{min(run[1] for run in main)}..{max(run[1] for run in main)}" if main else "n/a")
       + f"   no contract {before[0]}..{before[-1]}   contract {after[0]}..{after[-1]}")
 if main:
-    print(f"{'runs':<12} origin/main median {sorted(run[1] for run in main)[len(main) // 2]}")
+    print(f"{'runs':<12} origin/main median {sorted(run[1] for run in main)[len(main) // 2]}"
+          f", untimed {main_runs}")
 
 drag_after = spread(contract, "drag", "p50")[1]
 drag_p99_before = spread(plain, "drag", "p99")[1]
@@ -200,17 +218,17 @@ print(f"drag p50 {spread(plain, 'drag', 'p50')[1]:.1f} -> {drag_after:.1f} us, "
       f"p99 {drag_p99_before:.1f} -> {drag_p99_after:.1f} us")
 assert drag_after < spread(plain, "drag", "p50")[1], (
     "the native drag was not faster than the Lisp path: "
-    + show([spread(plain, "drag", "p50"), spread(contract, "drag", "p50")]))
+    + str([spread(plain, "drag", "p50"), spread(contract, "drag", "p50")]))
 if main:
     assert drag_after < spread(main, "drag", "p50")[1], (
         "the native drag was not faster than origin/main: "
-        + show([spread(main, "drag", "p50"), spread(contract, "drag", "p50")]))
-    assert min(run[1] for run in plain) == min(run[1] for run in main), (
+        + str([spread(main, "drag", "p50"), spread(contract, "drag", "p50")]))
+    assert min(run[1] for run in plain) == main_runs, (
         "the no-contract path ran a different number of reducers than origin/main: "
-        + show([[run[1] for run in main], [run[1] for run in plain]]))
+        + str([main_runs, [run[1] for run in plain]]))
 assert min(run[1] for run in contract) < min(run[1] for run in plain), (
     "the contract published no fewer Lisp runs: "
-    + show([[run[1] for run in plain], [run[1] for run in contract]]))
+    + str([[run[1] for run in plain], [run[1] for run in contract]]))
 
 machine.succeed(ENV + "WAYLAND_DISPLAY=check grim -t ppm /run/timing.ppm")
 print("screenshot: " + machine.succeed("sha256sum /run/timing.ppm").split()[0])

@@ -62,7 +62,6 @@ void timing_frame_submit(struct tomoe *s, uint64_t ns);
 void timing_frame_end(struct tomoe *s, bool committed);
 const char *tomoe_timings(void);
 int tomoe_timing_enabled(void);
-void tomoe_timing_done(struct tomoe *s);
 uint64_t tomoe_timing_now(void);
 int tomoe_timing_channel(const char *name);
 void tomoe_timing_reset(void);

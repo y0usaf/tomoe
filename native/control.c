@@ -280,6 +280,7 @@ static int handle_request(struct control_server *server, const char *text, size_
             return 0;
         }
     } else if (!strcasecmp(operation, "MEMORY")) {
+        lisp_end_turn();
         result = tomoe_memory_report(s);
     } else if (!strcasecmp(operation, "INSPECT")) {
         lisp_set_limits(5000000, 1000000000ULL);

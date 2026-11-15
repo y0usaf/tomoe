@@ -133,7 +133,9 @@ for backend, refresh, options, settings in CASES:
     for scene, _ in SCENES:
         runs = measured[(backend, scene)]
         for name, _ in PHASES:
-            pooled, split = spread(runs["pooled"], name)[1], spread(runs["class"], name)[1]
+            channel = "present" if name == "input" else "commit"
+            pooled = spread(runs["pooled"], name, channel)[1]
+            split = spread(runs["class"], name, channel)[1]
             print(f"{backend} {refresh} Hz {scene} {name}: pooled {pooled:.3f} ms, "
                   f"class {split:.3f} ms, {100 * (pooled - split) / pooled:+.1f}%")
             assert split <= pooled * 1.02, (

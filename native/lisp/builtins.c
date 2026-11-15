@@ -364,111 +364,70 @@ static lisp_value filter_list(int argc, lisp_value *argv, int mode)
     return out;
 }
 
+static bool search_hit(lisp_value probe, bool predicate, struct kw *kw, lisp_value value)
+{
+    lisp_value key = lisp_kw_key(kw, value);
+    if (!predicate)
+        return lisp_kw_test(kw, probe, key);
+    lisp_value args[1] = { key };
+    return truthy(apply_function(probe, 1, args));
+}
+
+static lisp_value sequence_search(int argc, lisp_value *argv, bool predicate, bool element)
+{
+    lisp_value probe = argv[0];
+    lisp_value seq = argv[1];
+    struct kw kw;
+    kw_parse(argc, argv, 2, &kw);
+    int64_t start = opt_int(&kw, kw.has_start, kw.start, 0);
+    int64_t end = kw.has_end && !nilp(kw.end) ? require_int(kw.end, "keyword value") : INT64_MAX;
+    bool from_end = kw.has_from_end && truthy(kw.from_end);
+    if (stringp(seq)) {
+        int64_t len = PTR(seq, lisp_string)->len;
+        if (end > len)
+            end = len;
+        int64_t step = from_end ? -1 : 1;
+        for (int64_t i = from_end ? end - 1 : start; i >= start && i < end; i += step) {
+            lisp_value ch = make_char(string_char_at(seq, (uint32_t)i));
+            if (search_hit(probe, predicate, &kw, ch))
+                return element ? ch : make_int(i);
+        }
+        return NIL_VAL;
+    }
+    lisp_value found = NIL_VAL;
+    int64_t found_at = -1;
+    for (int64_t index = 0; consp(seq) && index < end; seq = CDR(seq), index++) {
+        if (index < start || !search_hit(probe, predicate, &kw, CAR(seq)))
+            continue;
+        found = CAR(seq);
+        found_at = index;
+        if (!from_end)
+            break;
+    }
+    if (found_at < 0)
+        return NIL_VAL;
+    return element ? found : make_int(found_at);
+}
+
 lisp_value builtin_find(int argc, lisp_value *argv)
 {
     if (argc < 2)
         lisp_error("FIND needs an item and a sequence");
-    lisp_value item = argv[0];
-    lisp_value seq = argv[1];
-    struct kw kw;
-    kw_parse(argc, argv, 2, &kw);
-    if (stringp(seq)) {
-        uint32_t len = PTR(seq, lisp_string)->len;
-        for (uint32_t i = 0; i < len; i++) {
-            lisp_value ch = make_char(string_char_at(seq, i));
-            if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, ch)))
-                return ch;
-        }
-        return NIL_VAL;
-    }
-    while (consp(seq)) {
-        lisp_value value = CAR(seq);
-        seq = CDR(seq);
-        if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, value)))
-            return value;
-    }
-    return NIL_VAL;
+    return sequence_search(argc, argv, false, true);
 }
 
 static lisp_value find_if_impl(int argc, lisp_value *argv, bool find_mode)
 {
     if (argc < 2)
         lisp_error("FIND-IF needs a predicate and a sequence");
-    lisp_value fn = argv[0];
-    lisp_value seq = argv[1];
-    struct kw kw;
-    kw_parse(argc, argv, 2, &kw);
-    int64_t start = opt_int(&kw, kw.has_start, kw.start, 0);
-    if (stringp(seq)) {
-        uint32_t len = PTR(seq, lisp_string)->len;
-        int64_t end = opt_int(&kw, kw.has_end, kw.end, (int64_t)len);
-        if (end > (int64_t)len)
-            end = (int64_t)len;
-        if (kw.has_from_end && truthy(kw.from_end)) {
-            for (int64_t i = end - 1; i >= start; i--) {
-                lisp_value ch = make_char(string_char_at(seq, (uint32_t)i));
-                lisp_value args[1] = { ch };
-                if (truthy(apply_function(fn, 1, args)))
-                    return find_mode ? ch : make_int(i);
-            }
-        } else {
-            for (int64_t i = start; i < end; i++) {
-                lisp_value ch = make_char(string_char_at(seq, (uint32_t)i));
-                lisp_value args[1] = { ch };
-                if (truthy(apply_function(fn, 1, args)))
-                    return find_mode ? ch : make_int(i);
-            }
-        }
-        return NIL_VAL;
-    }
-    int64_t index = 0;
-    while (consp(seq)) {
-        lisp_value value = CAR(seq);
-        seq = CDR(seq);
-        if (index >= start) {
-            lisp_value args[1] = { value };
-            if (truthy(apply_function(fn, 1, args)))
-                return find_mode ? value : make_int(index);
-        }
-        index++;
-    }
-    return NIL_VAL;
+    return sequence_search(argc, argv, true, find_mode);
 }
 
 lisp_value builtin_position(int argc, lisp_value *argv)
 {
     if (argc < 2)
         lisp_error("POSITION needs an item and a sequence");
-    lisp_value item = argv[0];
-    lisp_value seq = argv[1];
-    struct kw kw;
-    kw_parse(argc, argv, 2, &kw);
-    bool from_end = kw.has_from_end && !nilp(kw.from_end);
-    lisp_value found = NIL_VAL;
-    if (stringp(seq)) {
-        uint32_t len = PTR(seq, lisp_string)->len;
-        for (uint32_t i = 0; i < len; i++) {
-            lisp_value ch = make_char(string_char_at(seq, i));
-            if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, ch))) {
-                found = make_int(i);
-                if (!from_end)
-                    break;
-            }
-        }
-        return found;
-    }
-    int64_t index = 0;
-    while (consp(seq)) {
-        lisp_value value = CAR(seq);
-        seq = CDR(seq);
-        if (lisp_kw_test(&kw, item, lisp_kw_key(&kw, value))) {
-            found = make_int(index);
-            if (!from_end)
-                break;
-        }
-        index++;
-    }
-    return found;
+    return sequence_search(argc, argv, false, false);
 }
 
 lisp_value builtin_sort(int argc, lisp_value *argv)

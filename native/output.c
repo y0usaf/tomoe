@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "budget.h"
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include "ui.h"
@@ -1271,8 +1272,7 @@ static void frame_timed(struct output *o, const struct timespec *start) {
     if (o->traced.count < FRAME_TRACE) o->traced.count++;
 }
 
-static void output_frame(struct wl_listener *listener, void *data) {
-    struct output *o = wl_container_of(listener, o, frame);
+static void output_frame_build(struct output *o) {
     if (!output_is_active(o) || !o->screen->needs_frame) return;
     o->screen->needs_frame = false;
     struct timespec start;
@@ -1363,6 +1363,13 @@ static void output_frame(struct wl_listener *listener, void *data) {
     animation_frame_record(o->server, o->screen, start_ns, o->sample, moving);
     timing_frame_end(o->server, true);
     frame_timed(o, &start);
+}
+
+static void output_frame(struct wl_listener *listener, void *data) {
+    struct output *o = wl_container_of(listener, o, frame);
+    budget_hot_enter("frame");
+    output_frame_build(o);
+    budget_hot_leave();
 }
 
 static void output_presented(struct wl_listener *listener, void *data) {

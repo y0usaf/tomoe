@@ -1,4 +1,5 @@
 (in-package #:tomoe-user)
+(load-policy "desktop")
 (defparameter +policy-displays+ (list (list "DP-4" :icc "/nix/store/ajsjigd9g9267vbjyzzhp89d3q891k44-ls49ag95.icc" :mode (list 5120 1440)) (list "HDMI-A-2" :mode (list 1920 1080 60) :position (list 5120 0))))
 (defparameter +policy-settings+ (list :|FOCUS-FOLLOWS-MOUSE| t :|HONOR-XDG-ACTIVATION-WITH-INVALID-SERIAL| t :|POINTER-FOLLOWS-FOCUS| t :|WAIT-FOR-FRAME-COMPLETION| t))
 (defparameter +policy-launcher+ (list :|APP-ID| "launcher" :|RATIO| 1/3))
@@ -793,12 +794,13 @@ is the tab's hit key, TAB-ID."
                    (t (return nil))))))
 
 (defun theme--palette (css)
-  (let ((table nil))
-    (with-input-from-string (in css)
-      (loop for line = (read-line in nil) while line
-            do (let ((words (theme--words line)))
-                 (when (and (= 3 (length words)) (equal (first words) "@define-color"))
-                   (push (cons (second words) (third words)) table)))))
+  (let ((table nil) (tail css))
+    (loop while tail
+          for cut = (position #\Newline tail)
+          do (let ((words (theme--words (subseq tail 0 (or cut (length tail))))))
+               (when (and (= 3 (length words)) (equal (first words) "@define-color"))
+                 (push (cons (second words) (third words)) table))
+               (setf tail (and cut (subseq tail (1+ cut))))))
     (loop for (name) in (reverse table)
           for value = (theme--resolve name table)
           when value append (list (intern (string-upcase name) :keyword) value))))
@@ -1075,7 +1077,7 @@ is the tab's hit key, TAB-ID."
 
 (defun spine--stacked (text color)
   (ui :column :align :center
-      :children (loop for c across (string-right-trim " " text)
+      :children (loop for c across (subseq text 0 (1+ (or (position-if (lambda (c) (not (char= c #\Space))) text :from-end t) -1)))
                       collect (spine--text (string c) color 8))))
 
 (defun spine--media (snapshot)

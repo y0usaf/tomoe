@@ -33,6 +33,8 @@ static void rollup(uint64_t *rss, uint64_t *pss, uint64_t *anon, uint64_t *file)
 }
 
 lisp_value tomoe_memory_report(struct tomoe *s) {
+    struct lisp_heap_stats lisp;
+    lisp_heap_stats(&lisp);
     uint64_t rss, pss, anon, file;
     rollup(&rss, &pss, &anon, &file);
     struct mallinfo2 heap = mallinfo2();
@@ -57,8 +59,6 @@ lisp_value tomoe_memory_report(struct tomoe *s) {
             lisp_keyword("BUFFERS"), lisp_uint(buffers), lisp_keyword("BUFFER-BYTES"),
             lisp_uint(bytes)), outputs);
     }
-    struct lisp_heap_stats lisp;
-    lisp_heap_stats(&lisp);
     lisp_value gpu = lisp_list(10, lisp_keyword("TEXTURES"), lisp_uint(textures),
         lisp_keyword("TEXTURE-BYTES"), lisp_uint(texture_bytes),
         lisp_keyword("IMAGES"), lisp_uint(images),

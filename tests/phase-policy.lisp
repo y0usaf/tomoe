@@ -8,8 +8,8 @@
 (defun phase-slot (index)
   (list (+ 40 (* 340 index)) 100 320 240))
 
-(defparameter +phase-shader+ (sb-ext:posix-getenv "TOMOE_PHASE_SHADER"))
-(defparameter +phase-blur+ (sb-ext:posix-getenv "TOMOE_PHASE_BLUR"))
+(defparameter +phase-shader+ (tomoe::%getenv "TOMOE_PHASE_SHADER"))
+(defparameter +phase-blur+ (tomoe::%getenv "TOMOE_PHASE_BLUR"))
 
 (define-extension "phase" (:reads (:windows :outputs) :state nil) (snapshot state event)
   (declare (ignore state event))

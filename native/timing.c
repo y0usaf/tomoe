@@ -46,10 +46,6 @@ int tomoe_timing_enabled(void) {
     return timing_enabled ? 1 : 0;
 }
 
-void tomoe_timing_done(struct tomoe *s) {
-    timing_event_done(s);
-}
-
 uint64_t tomoe_timing_now(void) {
     return timing_enabled ? timing_now() : 0;
 }

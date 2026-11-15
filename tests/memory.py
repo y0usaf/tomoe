@@ -34,7 +34,7 @@ def rollup():
             values[key] = int(rest.split()[0])
     report = cli("memory").strip()
     for key in ("RSS-BYTES", "MALLOC-HEAP-USED", "MALLOC-HEAP-HELD", "TEXTURE-BYTES",
-                "PERSISTENT-USED", "ARENA-USED", "ARENA-HIGH-WATER", "RECLAIM-LONGEST-US",
+                "PERSISTENT-USED", "ARENA-USED", "ARENA-PEAK", "RECLAIM-LONGEST-US",
                 "HOT-ALLOCS", "EVENTS-DROPPED"):
         values[key.lower()] = report_value(report, key)
     return values
@@ -55,7 +55,7 @@ def measure(label, attribute=False, samples=4, gap=0.4):
         f" noise_anon={peak['Pss_Anon'] - min(sample['Pss_Anon'] for sample in rows)}"
         f" rss={peak['rss-bytes']} malloc_used={peak['malloc-heap-used']}"
         f" malloc_held={peak['malloc-heap-held']} gpu_textures={peak['texture-bytes']}"
-        f" lisp_persistent={peak['persistent-used']} lisp_arena_peak={peak['arena-high-water']}"
+        f" lisp_persistent={peak['persistent-used']} lisp_arena_peak={peak['arena-peak']}"
         f" hot_allocs={peak['hot-allocs']} events_dropped={peak['events-dropped']}",
         flush=True,
     )

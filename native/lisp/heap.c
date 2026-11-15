@@ -106,7 +106,7 @@ static void map_block(uint32_t index)
 static uint8_t block_resident[LISP_MAX_BLOCKS];
 static uint32_t resident_free;
 
-enum { RESIDENT_FREE_KEEP = 8 };
+enum { RESIDENT_FREE_KEEP = 2 };
 
 static uint32_t take_block(void)
 {
@@ -241,9 +241,9 @@ struct lisp_region *region_new(int kind, const char *name, uint32_t package)
     return region;
 }
 
-void heap_note_reclaim(uint64_t start_ns)
+static void note_reclaim(uint64_t start_ns)
 {
-    uint64_t elapsed = lisp_now_ns() - start_ns;
+    uint64_t elapsed = (lisp_now_ns() - start_ns) / 1000u;
     lisp.reclaim_count++;
     if (elapsed > lisp.reclaim_longest_us)
         lisp.reclaim_longest_us = elapsed;
@@ -266,10 +266,11 @@ void region_reset(struct lisp_region *region)
 {
     if (region == &lisp.arena && region->high_water > lisp.arena_peak)
         lisp.arena_peak = region->high_water;
-    uint64_t start = lisp_now_ns();
-    if (region->used > 0)
-        heap_note_reclaim(start);
+    bool reclaimed = region->used > 0;
+    uint64_t start = reclaimed ? lisp_now_ns() : 0;
     free_region_blocks(region);
+    if (reclaimed)
+        note_reclaim(start);
     region->high_water = 0;
 }
 

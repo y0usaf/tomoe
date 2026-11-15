@@ -483,6 +483,7 @@ void policy_drain(struct tomoe *s) {
     uint16_t last = EV_NONE;
     for (; consumed < s->event_count; consumed++) {
         const struct tomoe_event *event = ring_at(s, consumed);
+        timing_event_taken(s);
         if (event->type == EV_INPUT || event->type == EV_ACTIVITY)
             policy_event_broadcast(s, event);
         if (policy_event_delivers(s, event->type) && converters[event->type]) {
@@ -496,6 +497,7 @@ void policy_drain(struct tomoe *s) {
                 lisp_end_turn();
             }
         }
+        timing_event_done(s);
         last = event->type;
         if (event->type == EV_GRAB) {
             consumed++;
@@ -596,11 +598,6 @@ static lisp_value prim_timings(int argc, lisp_value *argv) {
 
 static lisp_value prim_timing_enabled(int argc, lisp_value *argv) {
     return status(tomoe_timing_enabled());
-}
-
-static lisp_value prim_timing_done(int argc, lisp_value *argv) {
-    tomoe_timing_done(server());
-    return lisp_nil();
 }
 
 static lisp_value prim_timing_now(int argc, lisp_value *argv) {
@@ -1106,7 +1103,6 @@ static const struct primitive {
     { "%trim-heap", prim_trim_heap, 0, 0 },
     { "%timings", prim_timings, 0, 0 },
     { "%timing-enabled", prim_timing_enabled, 0, 0 },
-    { "%timing-done", prim_timing_done, 0, 0 },
     { "%timing-now", prim_timing_now, 0, 0 },
     { "%timing-channel", prim_timing_channel, 1, 1 },
     { "%timing-reset", prim_timing_reset, 0, 0 },
