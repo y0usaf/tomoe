@@ -1540,7 +1540,7 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
 
 (defun TOMOE-JSON (method params)
   (let ((reply nil) (failure nil))
-    (%catch (lambda () (setf reply (ipc-invoke-method method params)))
+    (%catch (lambda () (setf reply (ipc-request method params)))
             (lambda (text) (setf failure text)))
     (%persist-state)
     (if failure
