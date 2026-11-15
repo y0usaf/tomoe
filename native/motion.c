@@ -153,36 +153,18 @@ bool motion_drag_motion(struct tomoe *s) {
 
 static void motion_report(struct tomoe *s, uint64_t entered, uint64_t left,
         uint64_t edges_in, uint64_t edges_out, int travelled) {
-    static const char *const sides[] = { "top", "bottom", "left", "right" };
-    struct motion_state *m = &s->motion;
-    struct event *event;
-    size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :pointer :state :motion :id %u :moved t :x %d :y %d :distance %d",
-        s->hovered, pixel_round(s->pointer_x), pixel_round(s->pointer_y), travelled);
-    fputs(" :entered (", out);
-    for (size_t i = 0; i < m->plan.region_count; i++)
-        if (entered >> i & 1) {
-            fputs(" \"", out);
-            fputs(m->plan.region[i].name, out);
-            fputs("\"", out);
-        }
-    fputs(") :left (", out);
-    for (size_t i = 0; i < m->plan.region_count; i++)
-        if (left >> i & 1) {
-            fputs(" \"", out);
-            fputs(m->plan.region[i].name, out);
-            fputs("\"", out);
-        }
-    fputs(") :edges-in (", out);
-    for (size_t i = 0; i < m->plan.edge_count && i < 4; i++)
-        if (edges_in >> i & 1) fprintf(out, " :%s", sides[m->plan.edge[i].side]);
-    fputs(") :edges-out (", out);
-    for (size_t i = 0; i < m->plan.edge_count && i < 4; i++)
-        if (edges_out >> i & 1) fprintf(out, " :%s", sides[m->plan.edge[i].side]);
-    fputs("))\n", out);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_POINTER);
+    if (!event) return;
+    event->id = s->hovered;
+    event->state = POLICY_POINTER_MOTION;
+    event->button = 1;
+    event->x = (uint32_t)pixel_round(s->pointer_x);
+    event->y = (uint32_t)pixel_round(s->pointer_y);
+    event->dx = (uint32_t)travelled;
+    event->source_id = entered;
+    event->binding_or_callback_id = left;
+    event->keycode = (uint32_t)edges_in;
+    event->modifiers = (uint32_t)edges_out;
 }
 
 int motion_wake(struct tomoe *s) {

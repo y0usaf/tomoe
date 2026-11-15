@@ -999,15 +999,6 @@ static const char *keyboard_name(int keyboard) {
     }
     return "on-demand";
 }
-static const struct {
-    uint32_t bit;
-    const char *name;
-} layer_anchors[] = {
-    { ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP, "top" },
-    { ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM, "bottom" },
-    { ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT, "left" },
-    { ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT, "right" },
-};
 static struct layer_state layer_state_of(struct layer *l) {
     struct layer_surface_state *client = &l->wlr->current;
     struct layer_state state = {
@@ -1048,35 +1039,38 @@ static void layer_event(struct layer *l) {
     if (!l->mapped) return;
     struct layer_state state = layer_state_of(l);
     if (l->announced && !layer_state_changed(&l->last, &state)) return;
-    struct event *event; size_t size;
-    FILE *out = begin_event(l->server, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :layer :id %u :namespace ", l->target.id);
-    quote(out, l->wlr->namespace);
-    fprintf(out, " :layer :%s :anchors (", layer_name(state.layer));
-    for (size_t i = 0; i < sizeof(layer_anchors) / sizeof(layer_anchors[0]); i++) {
-        if (state.anchor & layer_anchors[i].bit) fprintf(out, " :%s", layer_anchors[i].name);
-    }
-    fprintf(out, ") :exclusive-zone %d :margin (%d %d %d %d)"
-        " :width %u :height %u :keyboard :%s :scale-120 %.0f :output ",
-        state.exclusive_zone, state.margin[0], state.margin[1], state.margin[2],
-        state.margin[3], state.width, state.height, keyboard_name(state.keyboard),
-        l->target.scale * 120.0);
-    quote(out, l->wlr->output ? l->wlr->output->name : "");
     struct layer_surface_state *client = &l->wlr->current;
-    fprintf(out, " :request (:width %u :height %u :margin (%d %d %d %d)"
-        " :exclusive-zone %d :anchors ", client->desired_width,
-        client->desired_height, client->margin.top, client->margin.right,
-        client->margin.bottom, client->margin.left, client->exclusive_zone);
-    write_anchor_list(out, client->anchor);
-    fputs(" :exclusive-edge ", out);
-    write_edge(out, client->exclusive_edge);
-    fprintf(out, " :layer :%s :keyboard :%s)", layer_name(client->layer),
-        keyboard_name(client->keyboard_interactive));
-    fputc(')', out);
+    struct policy_layer_payload payload = {
+        .id = l->target.id,
+        .layer = (uint32_t)state.layer,
+        .anchor = state.anchor,
+        .width = state.width,
+        .height = state.height,
+        .exclusive_zone = (uint32_t)state.exclusive_zone,
+        .keyboard = (uint32_t)state.keyboard,
+        .request_width = client->desired_width,
+        .request_height = client->desired_height,
+        .request_exclusive_zone = (uint32_t)client->exclusive_zone,
+        .request_anchor = client->anchor,
+        .request_exclusive_edge = client->exclusive_edge,
+        .request_layer = client->layer,
+        .request_keyboard = client->keyboard_interactive,
+        .scale_120 = l->target.scale * 120.0
+    };
+    for (int i = 0; i < 4; i++) {
+        payload.margin[i] = state.margin[i];
+        payload.request_margin[i] = i == 0 ? client->margin.top :
+            i == 1 ? client->margin.right : i == 2 ? client->margin.bottom :
+            client->margin.left;
+    }
+    struct tomoe *s = l->server;
+    struct tomoe_event *event = policy_event_push(s, EV_LAYER);
+    if (!event) return;
+    event->str[0] = policy_event_cstring(s, l->wlr->namespace);
+    event->str[1] = policy_event_cstring(s, l->wlr->output ? l->wlr->output->name : "");
+    event->str[2] = policy_event_string(s, (const char *)&payload, sizeof(payload));
     l->last = state;
     l->announced = true;
-    end_event(l->server, event, out);
 }
 
 static void layer_reparent_to(struct layer *l, int layer) {

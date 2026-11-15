@@ -200,15 +200,10 @@ static void window_activate(struct window *w, bool activated) {
     if (w->xdg->base->initialized) xdg_toplevel_configure_activated(w->xdg, activated);
 }
 static void window_event(struct window *w, const char *type, const char *request) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(w->server, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :%s :id %u :width %d :height %d",
-        type, w->target.id, w->width, w->height);
-    fprintf(out, " :client-width %d :client-height %d :buffered %s :title ",
-        w->client_width, w->client_height, w->mapped ? "t" : "nil");
-    quote(out, title_of(w));
-    fputs(" :app-id ", out); quote(out, app_id_of(w));
+    struct tomoe *s = w->server;
+    struct tomoe_event *event = policy_event_push(s,
+        strcmp(type, "map") == 0 ? EV_MAP : EV_METADATA);
+    if (!event) return;
     struct surface *client_surface = surface_of(w);
     pid_t client_pid = 0;
     uid_t client_uid;
@@ -216,74 +211,61 @@ static void window_event(struct window *w, const char *type, const char *request
     if (client_surface && client_surface->resource)
         wl_client_get_credentials(wl_resource_get_client(client_surface->resource),
             &client_pid, &client_uid, &client_gid);
-    fprintf(out, " :pid %ld", (long)client_pid);
-    static const char *const types[] = { "none", "photo", "video", "game" };
-    struct surface *event_surface = surface_of(w);
-    fprintf(out, " :content-type :%s", types[event_surface ? event_surface->current.content_type : 0]);
-    fputs(" :tag ", out); quote(out, w->xdg->tag ? w->xdg->tag : "");
-    fputs(" :description ", out); quote(out, w->xdg->description ? w->xdg->description : "");
     uint32_t parent = 0;
     struct window *other;
-    wl_list_for_each(other, &w->server->windows, link)
+    wl_list_for_each(other, &s->windows, link)
         if (other->xdg == w->xdg->parent) { parent = other->target.id; break; }
-    if (parent) fprintf(out, " :parent %u", parent);
-    else fputs(" :parent nil", out);
     bool dialog = w->xdg->dialog || w->xdg->external_dialog;
-    fprintf(out, " :dialog %s :modal %s", parent && dialog ? "t" : "nil",
-        parent && dialog && w->xdg->modal ? "t" : "nil");
-    fprintf(out, " :fullscreen %s :maximize %s", w->fullscreen_state ? "t" : "nil",
-        w->maximize_state ? "t" : "nil");
-    bool fullscreen_requested = w->xdg_fullscreen_requested;
-    bool maximize_requested = w->xdg_maximize_requested;
-    fprintf(out, " :fullscreen-requested %s :maximize-requested %s",
-        fullscreen_requested ? "t" : "nil", maximize_requested ? "t" : "nil");
-    if (request) {
-        fprintf(out, " :request :%s", request);
-        if (strcmp(request, "fullscreen") == 0)
-            fprintf(out, " :requested %s", fullscreen_requested ? "t" : "nil");
-        else if (strcmp(request, "maximize") == 0)
-            fprintf(out, " :requested %s", maximize_requested ? "t" : "nil");
-    }
-    if (w->xdg_fullscreen_output) {
-        fputs(" :output ", out);
-        quote(out, w->xdg_fullscreen_output);
-    }
-    fputc(')', out);
-    end_event(w->server, event, out);
+    event->id = w->target.id;
+    event->x = (uint32_t)w->width;
+    event->y = (uint32_t)w->height;
+    event->dx = (uint32_t)w->client_width;
+    event->dy = (uint32_t)w->client_height;
+    event->button = (uint32_t)client_pid;
+    event->keycode = client_surface ? client_surface->current.content_type : 0;
+    event->modifiers = parent;
+    if (w->mapped) event->state |= POLICY_WINDOW_BUFFERED;
+    if (parent && dialog) event->state |= POLICY_WINDOW_DIALOG;
+    if (parent && dialog && w->xdg->modal) event->state |= POLICY_WINDOW_MODAL;
+    if (w->fullscreen_state) event->state |= POLICY_WINDOW_FULLSCREEN;
+    if (w->maximize_state) event->state |= POLICY_WINDOW_MAXIMIZE;
+    if (w->xdg_fullscreen_requested) event->state |= POLICY_WINDOW_FULLSCREEN_REQUESTED;
+    if (w->xdg_maximize_requested) event->state |= POLICY_WINDOW_MAXIMIZE_REQUESTED;
+    event->str[0] = policy_event_cstring(s, title_of(w));
+    event->str[1] = policy_event_cstring(s, app_id_of(w));
+    event->str[2] = policy_event_cstring(s, w->xdg->tag ? w->xdg->tag : "");
+    event->str[3] = policy_event_cstring(s, w->xdg->description ? w->xdg->description : "");
+    event->source_id = request ? policy_event_cstring(s, request) : EVENT_NO_STRING;
+    event->binding_or_callback_id = w->xdg_fullscreen_output ?
+        policy_event_cstring(s, w->xdg_fullscreen_output) : EVENT_NO_STRING;
 }
 
 static void buffer_event(struct window *w, bool attached) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(w->server, &event, &size);
-    if (!out) return;
-    int width = attached ? w->client_width : 0;
-    int height = attached ? w->client_height : 0;
-    fprintf(out, "(:type :buffer :id %u :attached %s :width %d :height %d",
-        w->target.id, attached ? "t" : "nil", width, height);
-    fputs(" :title ", out); quote(out, title_of(w));
-    fputs(" :app-id ", out); quote(out, app_id_of(w));
-    fprintf(out, " :fullscreen %s :maximize %s",
-        w->fullscreen_state ? "t" : "nil", w->maximize_state ? "t" : "nil");
-    bool fullscreen_requested = w->xdg_fullscreen_requested;
-    bool maximize_requested = w->xdg_maximize_requested;
-    fprintf(out, " :fullscreen-requested %s :maximize-requested %s",
-        fullscreen_requested ? "t" : "nil", maximize_requested ? "t" : "nil");
-    if (w->xdg_fullscreen_output) {
-        fputs(" :output ", out);
-        quote(out, w->xdg_fullscreen_output);
-    }
-    fputc(')', out);
-    end_event(w->server, event, out);
+    struct tomoe *s = w->server;
+    struct tomoe_event *event = policy_event_push(s, EV_BUFFER);
+    if (!event) return;
+    event->id = w->target.id;
+    event->x = (uint32_t)(attached ? w->client_width : 0);
+    event->y = (uint32_t)(attached ? w->client_height : 0);
+    if (attached) event->state |= POLICY_WINDOW_ATTACHED;
+    if (w->fullscreen_state) event->state |= POLICY_WINDOW_FULLSCREEN;
+    if (w->maximize_state) event->state |= POLICY_WINDOW_MAXIMIZE;
+    if (w->xdg_fullscreen_requested) event->state |= POLICY_WINDOW_FULLSCREEN_REQUESTED;
+    if (w->xdg_maximize_requested) event->state |= POLICY_WINDOW_MAXIMIZE_REQUESTED;
+    event->str[0] = policy_event_cstring(s, title_of(w));
+    event->str[1] = policy_event_cstring(s, app_id_of(w));
+    event->binding_or_callback_id = w->xdg_fullscreen_output ?
+        policy_event_cstring(s, w->xdg_fullscreen_output) : EVENT_NO_STRING;
 }
 
 static void window_geometry_event(struct window *w) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(w->server, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :geometry :id %u :width %d :height %d"
-        " :client-width %d :client-height %d)",
-        w->target.id, w->width, w->height, w->client_width, w->client_height);
-    end_event(w->server, event, out);
+    struct tomoe_event *event = policy_event_push(w->server, EV_GEOMETRY);
+    if (!event) return;
+    event->id = w->target.id;
+    event->x = (uint32_t)w->width;
+    event->y = (uint32_t)w->height;
+    event->dx = (uint32_t)w->client_width;
+    event->dy = (uint32_t)w->client_height;
 }
 
 struct window *find_window(struct tomoe *s, uint32_t id) {
@@ -385,18 +367,15 @@ void tomoe_window_state(struct tomoe *s, uint32_t id, int fullscreen, int maximi
 
 static void request_event(struct window *w, const char *request, int requested,
         struct screen *output, uint32_t edges) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(w->server, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :request :id %u :request :%s", w->target.id, request);
-    if (requested >= 0) fprintf(out, " :requested %s", requested ? "t" : "nil");
-    if (output) { fputs(" :output ", out); quote(out, output->name); }
-    if (edges) fprintf(out, " :edges :%s%s%s%s", edges & EDGE_TOP ? "top" : "",
-        edges & EDGE_BOTTOM ? "bottom" : "",
-        (edges & (EDGE_TOP | EDGE_BOTTOM)) && (edges & (EDGE_LEFT | EDGE_RIGHT)) ? "-" : "",
-        edges & EDGE_LEFT ? "left" : edges & EDGE_RIGHT ? "right" : "");
-    fputc(')', out);
-    end_event(w->server, event, out);
+    struct tomoe *s = w->server;
+    struct tomoe_event *event = policy_event_push(s, EV_REQUEST);
+    if (!event) return;
+    event->id = w->target.id;
+    event->str[0] = policy_event_cstring(s, request);
+    event->str[1] = output ? policy_event_cstring(s, output->name) : EVENT_NO_STRING;
+    event->x = requested < 0 ? POLICY_REQUEST_ABSENT :
+        requested ? POLICY_REQUEST_TRUE : POLICY_REQUEST_FALSE;
+    event->button = edges;
 }
 void window_foreign_request(struct tomoe *s, uint32_t id, const char *request, int requested,
         struct screen *output) {

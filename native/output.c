@@ -313,37 +313,121 @@ static bool write_outputs_payload(FILE *out, struct tomoe *s, bool pending) {
         write_connectors(out, s, pending) && fputs(")", out) >= 0;
 }
 
+static lisp_value ev_put(lisp_value list, const char *key, lisp_value value) {
+    return lisp_cons(lisp_keyword(key), lisp_cons(value, list));
+}
+
+static lisp_value ev_boolean(bool value) {
+    return lisp_bool(value);
+}
+
+static lisp_value output_modes_value(struct output *o) {
+    lisp_value list = lisp_nil();
+    struct screen_mode *mode;
+    wl_list_for_each(mode, &o->screen->modes, link) {
+        lisp_value entry = lisp_nil();
+        entry = ev_put(entry, "WIDTH", lisp_int(mode->width));
+        entry = ev_put(entry, "HEIGHT", lisp_int(mode->height));
+        entry = ev_put(entry, "REFRESH-MHZ", lisp_int(mode->refresh));
+        entry = ev_put(entry, "PREFERRED", ev_boolean(mode->preferred));
+        list = lisp_cons(lisp_nreverse(entry), list);
+    }
+    return lisp_nreverse(list);
+}
+
+static lisp_value output_render_value(struct output *o) {
+    if (!o->ring.format.len) return lisp_nil();
+    char *name = drmGetFormatName(o->ring.format.formats[0].format);
+    lisp_value value = lisp_nil();
+    value = ev_put(value, "FORMAT", lisp_cstring(name ? name : "?"));
+    free(name);
+    struct dmabuf_attributes dmabuf;
+    value = ev_put(value, "MODIFIER",
+        o->ring.slots[0] && buffer_get_dmabuf(o->ring.slots[0], &dmabuf) ?
+        lisp_uint(dmabuf.modifier) : lisp_nil());
+    value = ev_put(value, "IMPLICIT", ev_boolean(o->ring.implicit));
+    value = ev_put(value, "WIDTH", lisp_int(o->ring.width));
+    value = ev_put(value, "HEIGHT", lisp_int(o->ring.height));
+    value = ev_put(value, "FENCED", ev_boolean(fenced(o->screen)));
+    return lisp_nreverse(value);
+}
+
+static lisp_value output_facts_value(struct output *o, const struct output_facts *facts) {
+    if (!facts->enabled || facts->width == 0 || facts->height == 0) return lisp_nil();
+    lisp_value value = lisp_nil();
+    value = ev_put(value, "NAME", lisp_cstring(o->screen->name));
+    value = ev_put(value, "X", lisp_int(facts->x));
+    value = ev_put(value, "Y", lisp_int(facts->y));
+    value = ev_put(value, "WIDTH", lisp_int(facts->width));
+    value = ev_put(value, "HEIGHT", lisp_int(facts->height));
+    value = ev_put(value, "PHYSICAL-WIDTH", lisp_int(facts->physical_width));
+    value = ev_put(value, "PHYSICAL-HEIGHT", lisp_int(facts->physical_height));
+    value = ev_put(value, "REFRESH-MHZ", lisp_int(facts->refresh));
+    value = ev_put(value, "SCALE-120", lisp_int(facts->scale_120));
+    value = ev_put(value, "TRANSFORM", lisp_int((int)facts->transform));
+    value = ev_put(value, "ADAPTIVE-SYNC-SUPPORTED",
+        ev_boolean(facts->adaptive_sync_supported));
+    value = ev_put(value, "ADAPTIVE-SYNC", ev_boolean(facts->adaptive_sync));
+    value = ev_put(value, "ICC", facts->profile ? lisp_cstring(facts->profile->path) : lisp_nil());
+    value = ev_put(value, "ICC-ERROR",
+        facts->profile_error ? lisp_cstring(facts->profile_error) : lisp_nil());
+    value = ev_put(value, "MODES", output_modes_value(o));
+    return lisp_nreverse(value);
+}
+
+static lisp_value output_connector_value(struct output *o, bool pending) {
+    struct output_facts facts;
+    output_state_facts(o, pending, &facts);
+    lisp_value value = lisp_nil();
+    value = ev_put(value, "ID", lisp_uint(o->id));
+    value = ev_put(value, "NAME", lisp_cstring(o->screen->name));
+    value = ev_put(value, "ENABLED", ev_boolean(facts.enabled));
+    value = ev_put(value, "PENDING", ev_boolean(!(pending || o->admitted)));
+    value = ev_put(value, "ADAPTIVE-SYNC-SUPPORTED",
+        ev_boolean(facts.adaptive_sync_supported));
+    value = ev_put(value, "ADAPTIVE-SYNC", ev_boolean(facts.adaptive_sync));
+    value = ev_put(value, "REQUEST-ID", lisp_uint(facts.request_id));
+    value = ev_put(value, "REQUEST-PENDING", ev_boolean(facts.request_pending));
+    value = ev_put(value, "POWER", ev_boolean(!o->screen->power_off));
+    value = ev_put(value, "MODES", output_modes_value(o));
+    value = ev_put(value, "RENDER", output_render_value(o));
+    return lisp_nreverse(value);
+}
+
+lisp_value outputs_event_value(struct tomoe *s, const struct tomoe_event *event) {
+    struct output_location *locations = NULL;
+    size_t count = 0;
+    lisp_value outputs = lisp_nil(), connectors = lisp_nil();
+    if (!output_locations(s, false, &locations, &count)) return lisp_nil();
+    for (size_t i = 0; i < count; i++) {
+        if (!locations[i].active) continue;
+        struct output_facts facts;
+        output_state_facts(locations[i].output, false, &facts);
+        facts.x = locations[i].x;
+        facts.y = locations[i].y;
+        lisp_value value = output_facts_value(locations[i].output, &facts);
+        if (!lisp_nilp(value)) outputs = lisp_cons(value, outputs);
+    }
+    free(locations);
+    struct output *output;
+    wl_list_for_each(output, &s->outputs, link)
+        connectors = lisp_cons(output_connector_value(output, false), connectors);
+    lisp_value list = lisp_nil();
+    list = ev_put(list, "TYPE", lisp_keyword("outputs"));
+    list = ev_put(list, "REVISION", lisp_uint(event->source_id));
+    list = ev_put(list, "OUTPUTS", lisp_nreverse(outputs));
+    list = ev_put(list, "CONNECTORS", lisp_nreverse(connectors));
+    return lisp_nreverse(list);
+}
+
 void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
     output_management_refresh(s);
     uint64_t revision = s->outputs_revision + 1;
-    char *text = NULL;
-    size_t text_size = 0;
-    FILE *staged = open_memstream(&text, &text_size);
-    if (!staged) {
-        fail(s, "output event stream allocation failed");
-        return;
-    }
-    bool success = fprintf(staged, "(:type :outputs :revision %" PRIu64 " ",
-        revision) >= 0;
-    success = success && write_outputs_payload(staged, s, false);
-    success = success && fputc(')', staged) != EOF;
-    if (fclose(staged) != 0) success = false;
-    if (!success) {
-        free(text);
-        fail(s, "output event serialization failed");
-        return;
-    }
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) {
-        free(text);
-        return;
-    }
-    fputs(text, out);
-    free(text);
+    struct tomoe_event *event = policy_event_push(s, EV_OUTPUTS);
+    if (!event) return;
+    event->source_id = revision;
     s->outputs_revision = revision;
-    end_event(s, event, out);
 }
 
 uint64_t tomoe_outputs_revision(struct tomoe *s) {

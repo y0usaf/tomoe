@@ -126,13 +126,12 @@ static void pending_surface_destroy(struct wl_listener *listener, void *data) {
 }
 
 static void emit_request(struct tomoe *s, uint32_t id, bool activate) {
-    struct event *event;
-    size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :request :id %u :request :%s)", id,
-        activate ? "activate" : "urgent");
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_REQUEST);
+    if (!event) return;
+    event->id = id;
+    event->str[0] = policy_event_cstring(s, activate ? "activate" : "urgent");
+    event->str[1] = EVENT_NO_STRING;
+    event->x = POLICY_REQUEST_ABSENT;
 }
 
 static void pending_map(struct tomoe *s, struct surface *surface) {
