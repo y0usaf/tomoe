@@ -205,12 +205,8 @@ lisp_value builtin_load_source(int argc, lisp_value *argv)
     lisp_value result = lisp.mv[0];
     for (struct lisp_region *old = lisp.generations; old;) {
         struct lisp_region *next = old->next;
-        if (old != gen && old->package == package && package != PKG_TOMOE) {
-            if (old->pin_count == 0)
-                region_destroy(old);
-            else
-                old->dropped = true;
-        }
+        if (old != gen && old->package == package && package != PKG_TOMOE)
+            old->dropped = true;
         old = next;
     }
     return result;
@@ -227,12 +223,8 @@ lisp_value builtin_drop_package(int argc, lisp_value *argv)
     struct lisp_region *gen = lisp.generations;
     while (gen) {
         struct lisp_region *next = gen->next;
-        if (strcmp(gen->name, name) == 0) {
-            if (gen->pin_count == 0)
-                region_destroy(gen);
-            else
-                gen->dropped = true;
-        }
+        if (strcmp(gen->name, name) == 0)
+            gen->dropped = true;
         gen = next;
     }
     uint32_t package = package_find(name);
