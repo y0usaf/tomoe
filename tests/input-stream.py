@@ -105,7 +105,7 @@ def inject(unit, *commands):
     machine.succeed(
         f"systemd-run --unit={unit} --property=Type=exec --remain-after-exit "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check "
-        f"{SCRIPT} --extent 1280x720 " + " ".join(commands))
+        f"{SCRIPT} --extent 1280x720 " + " ".join(f"'{command}'" for command in commands))
     machine.wait_until_succeeds(
         f"systemctl show -P SubState {unit} | grep -qx 'exited\\|failed'", timeout=60)
     status = machine.succeed(f"systemctl show -P ExecMainStatus {unit}").strip()
