@@ -107,9 +107,7 @@ static void rounded_cover(struct op *op, const struct texture_options *options, 
     int left = area.x + inset, top = area.y + inset;
     int right = area.x + area.width - inset, bottom = area.y + area.height - inset;
     if (right <= left || bottom <= top) return;
-    int reach = right - left < bottom - top ? right - left : bottom - top;
     int r = (int)ceil(radius);
-    if (r * 2 >= reach) r = reach / 2;
     if (r <= 0) {
         cover_rect(op, left, top, right - left, bottom - top);
         return;
