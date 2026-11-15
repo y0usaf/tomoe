@@ -322,6 +322,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail that costs only the cells it lights |
+| [`cursor-wave.lisp`](examples/cursor-wave.lisp) | A cursor behaviour of your own: the cursor leans further with the pointer's speed, stacked on the built-in tilt |
 | [`drag-smear.lisp`](examples/drag-smear.lisp) | A moving window leaves a quantized smear of its own pixels and collapses once it stops |
 | [`horosphere.lisp`](examples/horosphere.lisp) | Windows tiled on the squares of a hyperbolic {4,5} tiling in a Poincare disk, warped onto their curved tiles; a middle-button drag pans the plane |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
@@ -465,6 +466,16 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   the current queue applies parent state before releasing child caches.
 - Applications can select themed cursor shapes, including text, resize and drag
   cursors, through `wp_cursor_shape_manager_v1`.
+- The cursor is drawn by the policy. A `cursor-effect` registration is asked how
+  the pointer should look for the motion the compositor measures - position,
+  velocity, time, shape, and how hard the pointer is being shaken - and it
+  answers with a rotation, a scale, a stretch, an offset and optionally a fading
+  pixel trail. Registrations compose in `:order`, then mount order, and the
+  compositor eases whatever they ask for, so the cursor is never a frame behind.
+  A behaviour that answers nothing, or is unmounted, leaves no trace: the plain
+  texture goes back on the cursor plane, and a still pointer draws nothing at
+  all. The shipped policy registers tilt, shake to find and the trail in
+  `builtins/desktop.lisp`, which is also the code to copy for your own.
 - Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,

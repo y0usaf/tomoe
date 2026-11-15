@@ -445,32 +445,77 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     pass_add_texture(data->pass, &options);
     return false;
 }
+static void draw_cursor_trail(struct tomoe *s, struct frame *data) {
+    if (s->cursor_motion.trail.steps <= 0) return;
+    int width = data->width, height = data->height;
+    if (data->transform & WL_OUTPUT_TRANSFORM_90) {
+        width = data->height;
+        height = data->width;
+    }
+    effect_trail(data, (struct fbox){ data->x, data->y, width, height },
+        &s->cursor_motion.trail);
+}
 static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
-        double scale) {
+        double scale, bool sprite) {
+    draw_cursor_trail(s, data);
+    if (!sprite) return;
     const struct cursor_image *image = &s->cursor_image;
+    double matrix[4], offset[2];
+    cursor_motion_matrix(s, matrix, offset);
+    bool plain = matrix[0] == 1 && matrix[1] == 0 && matrix[2] == 0 && matrix[3] == 1 &&
+        offset[0] == 0 && offset[1] == 0;
     double ratio = scale / image->scale;
-    struct box box = {
-        .x = pixel_round(x - image->hotspot_x * ratio),
-        .y = pixel_round(y - image->hotspot_y * ratio),
-        .width = pixel_round(image->texture->width * ratio),
-        .height = pixel_round(image->texture->height * ratio),
-    };
-    struct box bounds = { .width = data->width, .height = data->height }, overlap;
-    if (!box_intersection(&overlap, &box, &bounds)) return;
-    box_transform(&box, &box, transform_invert(data->transform),
-        data->width, data->height);
     float alpha = s->cursor_surface ? (double)s->cursor_surface->current.alpha / UINT32_MAX : 1;
-    pass_add_texture(data->pass, &(struct texture_options){
-        .texture = image->texture, .dst_box = box, .transform = data->transform, .alpha = &alpha,
-    });
+    if (plain) {
+        struct box box = {
+            .x = pixel_round(x - image->hotspot_x * ratio),
+            .y = pixel_round(y - image->hotspot_y * ratio),
+            .width = pixel_round(image->texture->width * ratio),
+            .height = pixel_round(image->texture->height * ratio),
+        };
+        struct box bounds = { .width = data->width, .height = data->height }, overlap;
+        if (!box_intersection(&overlap, &box, &bounds)) return;
+        box_transform(&box, &box, transform_invert(data->transform),
+            data->width, data->height);
+        pass_add_texture(data->pass, &(struct texture_options){
+            .texture = image->texture, .dst_box = box, .transform = data->transform,
+            .alpha = &alpha,
+        });
+        return;
+    }
+    struct fbox corners[4];
+    double left = 0, top = 0, right = 0, bottom = 0;
+    for (int i = 0; i < 4; i++) {
+        double tx = (i & 1) ? image->texture->width : 0;
+        double ty = (i & 2) ? image->texture->height : 0;
+        double dx = (tx - image->hotspot_x) * ratio;
+        double dy = (ty - image->hotspot_y) * ratio;
+        double px = x + offset[0] + matrix[0] * dx + matrix[1] * dy;
+        double py = y + offset[1] + matrix[2] * dx + matrix[3] * dy;
+        transform_point(&px, &py, transform_invert(data->transform), data->width,
+            data->height);
+        corners[i] = (struct fbox){ px, py, 0, 0 };
+        left = i ? fmin(left, px) : px;
+        right = i ? fmax(right, px) : px;
+        top = i ? fmin(top, py) : py;
+        bottom = i ? fmax(bottom, py) : py;
+    }
+    if (right < 0 || bottom < 0 || left >= data->width || top >= data->height) return;
+    enum filter_mode filter = matrix[0] * matrix[3] - matrix[1] * matrix[2] > 1.04 ?
+        FILTER_NEAREST : FILTER_BILINEAR;
+    const float texcoords[8] = { 0, 0, 1, 0, 0, 1, 1, 1 };
+    effect_cursor(data, &(struct texture_options){ .texture = image->texture,
+        .filter_mode = filter, .blend_mode = BLEND_PREMULTIPLIED, .alpha = &alpha },
+        corners, texcoords);
 }
 static void render_cursor(struct output *o, struct frame *data, const struct presentation *plan) {
     const struct presentation_output *planned = plan ? presentation_output_for(plan, o->screen) :
         NULL;
-    if (!o->server->cursor_image.texture || o->screen->hardware_cursor || (plan && !planned))
-        return;
-    draw_cursor(o->server, data, o->server->pointer_x - data->x, o->server->pointer_y - data->y,
-        planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale));
+    struct tomoe *s = o->server;
+    bool sprite = s->cursor_image.texture && !o->screen->hardware_cursor;
+    if ((!sprite && s->cursor_motion.trail.steps <= 0) || (plan && !planned)) return;
+    draw_cursor(s, data, s->pointer_x - data->x, s->pointer_y - data->y,
+        planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale), sprite);
 }
 
 void finish_output_capture(struct output *o) {
@@ -672,6 +717,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     bool locked = lock_active(o->server);
     bool moving = windows_animate(o->server, data.sample);
     if (ui_animate(o->server, data.sample)) moving = true;
+    if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
     o->animating = moving;
     struct region changed, clip;
     region_init(&changed);
@@ -811,7 +857,7 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
         x -= root.target.x;
         y -= root.target.y;
         if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
-            draw_cursor(s, &f, x, y, root.target.scale);
+            draw_cursor(s, &f, x, y, root.target.scale, true);
     }
     if (!fence) return pass_submit(pass);
     *fence = pass_submit_fence(pass);

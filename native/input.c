@@ -652,13 +652,18 @@ static void cursor_surface_destroy(struct wl_listener *listener, void *data) {
     wl_list_init(&s->cursor_surface_destroy.link);
     s->cursor_surface = NULL;
 }
+static const char *const cursor_shape_names[] = { NULL, "default", "context-menu", "help", "pointer",
+    "progress", "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy",
+    "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize", "n-resize",
+    "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize", "w-resize",
+    "ew-resize", "ns-resize", "nesw-resize", "nwse-resize", "col-resize", "row-resize",
+    "all-scroll", "zoom-in", "zoom-out", "dnd-ask", "all-resize" };
+const char *cursor_shape_name(uint32_t shape) {
+    size_t count = sizeof(cursor_shape_names) / sizeof(cursor_shape_names[0]);
+    return shape < count && cursor_shape_names[shape] ? cursor_shape_names[shape] : "default";
+}
 void cursor_shape_set(struct tomoe *s, uint32_t shape) {
-    static const char *const names[] = { NULL, "default", "context-menu", "help", "pointer",
-        "progress", "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy",
-        "move", "no-drop", "not-allowed", "grab", "grabbing", "e-resize", "n-resize",
-        "ne-resize", "nw-resize", "s-resize", "se-resize", "sw-resize", "w-resize",
-        "ew-resize", "ns-resize", "nesw-resize", "nwse-resize", "col-resize", "row-resize",
-        "all-scroll", "zoom-in", "zoom-out", "dnd-ask", "all-resize" };
+    static const char *const *names = cursor_shape_names;
     static const char *const fallback[] = { NULL, "left_ptr", "context-menu", "question_arrow",
         "hand2", "left_ptr_watch", "watch", "plus", "crosshair", "xterm", "vertical-text",
         "dnd-link", "dnd-copy", "dnd-move", "dnd-none", "crossed_circle", "openhand",
@@ -667,7 +672,7 @@ void cursor_shape_set(struct tomoe *s, uint32_t shape) {
         "sb_h_double_arrow", "sb_v_double_arrow", "fd_double_arrow", "bd_double_arrow",
         "sb_h_double_arrow", "sb_v_double_arrow", "fleur", "zoom-in", "zoom-out",
         "dnd-ask", "fleur" };
-    if (!shape || shape >= sizeof(names) / sizeof(names[0])) return;
+    if (!shape || shape >= sizeof(cursor_shape_names) / sizeof(cursor_shape_names[0])) return;
     s->cursor_hidden = false;
     if (s->cursor_surface) cursor_surface_destroy(&s->cursor_surface_destroy, NULL);
     float scale = 1;
@@ -1144,6 +1149,7 @@ void pointer_refresh(struct tomoe *s) {
     }
     pointer_sync_cursors(s);
     pointer_trail_record(s, 0);
+    cursor_motion_advance(s, animation_now());
     ui_pointer_moved(s);
     if (s->grab_mode != 0) return;
     struct timespec now;
@@ -1166,6 +1172,7 @@ static void pointer_update(struct tomoe *s, uint32_t time) {
     pointer_sync_cursors(s);
     input_stream_pointer(s, time);
     pointer_trail_record(s, time);
+    cursor_motion_advance(s, animation_now());
     ui_pointer_moved(s);
     drag_icons_refresh(s);
     if (s->screenshot && !lock_active(s)) { screenshot_motion(s); return; }

@@ -8,7 +8,7 @@
            #:serve-state #:serve-method #:announce #:broadcast #:ipc-reply
            #:layer #:fullscreen #:maximize #:grab #:set-view #:settings #:setting #:motion-contract
            #:bind-button #:bind-scroll #:window-properties #:keyboard-grab #:sound
-           #:define-command #:invoke
+           #:define-command #:invoke #:cursor-effect #:cursor-motion
            #:confirm-dialog #:menu-dialog #:menu-choice #:sheet-dialog #:toast
            #:theme #:bar-layout #:workspaces-widget #:clock-text #:+theme+ #:+theme-presets+
            #:frame-ms #:clock-boundary-ms #:once #:interval #:watch-file #:exec-async #:run-once #:service #:spawn #:launch #:close-window #:output-power #:quit #:reload))
@@ -21,9 +21,9 @@
   ((output :initarg :output :initform nil :reader output-error-name)))
 
 (defconstant +wire-version+ 2)
-(defconstant +native-abi-version+ 42)
+(defconstant +native-abi-version+ 43)
 (defparameter +context-keys+
-  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system))
+  '(:windows :window-geometry :rules :data :services :outputs :connectors :output-config :output-errors :config-error :workareas :view :layout :stacking :focus :bindings :commands :keyboard :settings :layers :surfaces :command :button :pointer :grab :request :screenshot :screencast :ipc :ui :activity :system :cursors))
 (defvar *definitions* :not-loading)
 (defvar *source*)
 (defvar *source-directory*)
@@ -147,7 +147,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
 
 (defstruct materialization
   layout stacking layers focused data surfaces keyboard-grab outputs bindings commands
-  (binding-order 0) keyboard settings view mod-bit sounds virtual-outputs)
+  (binding-order 0) keyboard settings view mod-bit sounds virtual-outputs cursors)
 
 (defun %materialized-window (m id)
   (find id (materialization-layout m) :key (lambda (window) (getf window :id))))
@@ -894,6 +894,54 @@ merge field by field. Omission restores the preceding owner or the default."
                           merged))
                        (t value))))
   settings)
+
+(defun cursor-motion ()
+  "The pointer's motion as the compositor measures it, for cursor behaviours.
+A plist: :X and :Y are screen pixels, :VX and :VY are pixels per second over the
+last 100 ms, :TIME is monotonic seconds, :SHAPE is the cursor shape's name,
+:SHAKE is how much the pointer has been shaken (the distance it covered in the
+last second divided by the diagonal of the area it covered, which is around 1
+for a straight line and many times more for a shake), :SHAKE-DISTANCE is that
+diagonal in pixels, and :DEFORMED is whether the drawn cursor differs from the
+plain texture right now."
+  (read-data (%cursor-motion)))
+
+(defun cursor-effect (name function &key (order 0))
+  "Own a cursor behaviour, so the compositor asks this extension how the pointer
+should look. FUNCTION is a symbol called with the plist CURSOR-MOTION returns,
+and it answers with a transform plist or NIL for no opinion:
+
+  :ROTATION degrees clockwise, :SCALE a multiplier (2 doubles its size),
+  :STRETCH a fraction stretched along :STRETCH-ANGLE degrees (0.5 is half again
+  as long and a quarter narrower across), :OFFSET-X and :OFFSET-Y in pixels away
+  from the hotspot, :SETTLE seconds the answer holds once the policy stops asking
+  (the cursor then eases back to its plain texture), and :TRAIL a plist
+  (:CELL :LIFE :STEPS :COLOR) for the fading pixel trail. Add :SETTLED NIL while
+  the answer is still moving: the compositor then asks again on the next display
+  refresh, for as long as it takes, so a spring can come back to rest after the
+  pointer stops. Answer :SETTLED T (the default) once it has, and nothing wakes
+  the policy again until the pointer moves.
+
+Behaviours compose in ORDER, then mount order: rotations add, scales multiply,
+offsets add, the last :TRAIL wins and the largest :SETTLE is used. An extension
+is woken for pointer motion when it declares :POINTER in its :READS, and dropping
+the CURSOR-EFFECT from its result removes its contribution entirely."
+  (check-type name string)
+  (unless (<= 1 (length name) 256) (error "Cursor effect names need 1 to 256 characters."))
+  (check-type function symbol)
+  (check-type order integer)
+  (%effect :cursor-effect (list (copy-seq name) function order)))
+
+(define-effect :cursor-effect
+  :canonical (destructuring-bind (name function order) args
+               (cursor-effect name function :order order))
+  :key '(:cursor-effect)
+  :reduce (destructuring-bind (name function order) args
+            (declare (ignore name))
+            (setf (materialization-cursors m)
+                  (append (materialization-cursors m)
+                          (list (list :owner (spec-name (mounted-spec mounted))
+                                      :order order :call function))))))
 
 (defun setting (snapshot &rest path)
   "Read a resolved compositor setting. Declare :SETTINGS as a dependency."

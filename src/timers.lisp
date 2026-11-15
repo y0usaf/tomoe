@@ -77,9 +77,13 @@ The retained fired record prevents an unchanged one-shot effect from rearming."
         (setf (owned-timer-fired timer) t)
         (unwind-protect
              (handler-case
-                 (transact runtime (runtime-mounts runtime)
-                           (list :type :timer :name (first (owned-timer-arguments timer)))
-                           nil (list (spec-name (owned-timer-owner timer))))
+                 (if (eq (owned-timer-owner timer) *cursor-settle-spec*)
+                     ;; A settling cursor asks its behaviours again rather than
+                     ;; running a transaction: nothing else in the policy changed.
+                     (cursor-settle-tick runtime timer)
+                     (transact runtime (runtime-mounts runtime)
+                               (list :type :timer :name (first (owned-timer-arguments timer)))
+                               nil (list (spec-name (owned-timer-owner timer)))))
                (serious-condition (condition) (record-error runtime condition)))
           (when (and (owned-timer-period timer)
                      (member timer (runtime-timers runtime) :test #'eq))

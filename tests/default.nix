@@ -788,7 +788,7 @@ let
             if left:
                 print("tomoe reset could not clear: " + " ".join(left), flush=True)
             machine.execute("rm -rf /run/tomoe /run/check-bus /run/bus-probe "
-                            "/run/security-globals /run/fifo-globals /run/trail "
+                            "/run/security-globals /run/fifo-globals /run/trail /run/cursor "
                             "/run/animations-frames /run/memory /run/trace.log "
                             "/run/layout.log /run/trace-swap.lisp /run/draw.ppm "
                             "/run/tile.ppm /run/timing.ppm /run/crop.py /run/*-display.ppm "
@@ -1073,6 +1073,13 @@ let
       script = ''
         machine.succeed("mkdir -p /run/trail")
         print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
+      '';
+    }
+    {
+      name = "cursor";
+      script = ''
+        machine.succeed("mkdir -p /run/cursor")
+        print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./cursor.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor"))
       '';
     }
     {
