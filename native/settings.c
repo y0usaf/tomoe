@@ -69,8 +69,6 @@ void settings_default(struct settings *settings) {
         .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
             .epsilon = 0.001, .launch = 63 },
         .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 },
-        .focus_outline = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
-            .epsilon = 0.001, .launch = 63 },
         .outline_fly = true };
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);

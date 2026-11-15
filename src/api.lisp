@@ -845,7 +845,7 @@ settle in 110 ms, and the open ease is 90 ms."
     :window-view (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63))
     :window-alpha nil :window-tint nil :window-scale nil
     :window-rotation nil :window-translate nil
-    :focus-outline (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63)))
+    :focus-outline nil)
   "Each animation event's default, when a configuration does not name one.
 Every animation advances once per display refresh, at the instant the frame
 reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 110 ms
