@@ -820,7 +820,7 @@ static void process_start(struct res_process *process) {
     const char *token = NULL;
     char *revoke = NULL;
     process->attempts++;
-    if (process->session && process->focus) {
+    if (process->session && process->focus && process->input) {
         token = tomoe_activation_token(res.server);
         if (!token) {
             process->status = PROCESS_SPAWN_ERROR;
@@ -1102,6 +1102,8 @@ lisp_value res_spawn(lisp_value plist, bool launch) {
         process_free(&process);
         lisp_error("More than 128 live or reserved managed processes.");
     }
+    lisp_value input;
+    process.input = res_plist_get(plist, "INPUT", &input) && !lisp_nilp(input);
     process_start(&process);
     uint64_t lease_id = process.lease ? process.lease->id : 0;
     if (process.status == PROCESS_SPAWN_ERROR) {

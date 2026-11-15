@@ -1066,9 +1066,10 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                (getf call :replied) t))))
     (:broadcast (%json-broadcast (first (command-arguments command))
                                  (second (command-arguments command))))
-    (:launch (%launch (list :argv (command-arguments command) :focus t)))
+    (:launch (%launch (list :argv (command-arguments command) :focus t :input *command-input*)))
     (:spawn (destructuring-bind (launch cwd env focus) (command-arguments command)
-              (%spawn (list :argv launch :cwd cwd :env env :focus focus))))
+              (%spawn (list :argv launch :cwd cwd :env env :focus focus
+                            :input *command-input*))))
     (:close (%close (first (command-arguments command))))
     (:screencast (destructuring-bind (token answer value) (command-arguments command)
                    (%screencast-answer token answer value)))
