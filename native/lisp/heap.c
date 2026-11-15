@@ -433,31 +433,38 @@ struct forward_entry {
     lisp_value car;
 };
 
-static struct forward_entry *forwards;
-static size_t forward_used, forward_capacity;
+enum { FORWARD_CHUNK = 2048 };
+
+struct forward_chunk {
+    struct forward_chunk *next;
+    uint32_t used;
+    struct forward_entry entry[FORWARD_CHUNK];
+};
+
+static struct forward_chunk *forwards;
 
 static void forward_cons(struct lisp_cons *src, struct lisp_cons *out)
 {
-    if (forward_used == forward_capacity) {
-        size_t capacity = forward_capacity ? forward_capacity * 2 : 4096;
-        struct forward_entry *grown = realloc(forwards, capacity * sizeof(*grown));
-        if (!grown)
-            lisp_oom();
-        forwards = grown;
-        forward_capacity = capacity;
+    if (!forwards || forwards->used == FORWARD_CHUNK) {
+        struct forward_chunk *chunk = heap_alloc_in(&lisp.arena, sizeof(*chunk));
+        chunk->next = forwards;
+        chunk->used = 0;
+        forwards = chunk;
     }
-    forwards[forward_used++] = (struct forward_entry){ src, src->car };
+    forwards->entry[forwards->used++] = (struct forward_entry){ src, src->car };
     src->car = VAL(out);
     src->h.flags |= CONS_FORWARDED;
 }
 
 static void unforward_conses(void)
 {
-    for (size_t i = forward_used; i-- > 0;) {
-        forwards[i].src->car = forwards[i].car;
-        forwards[i].src->h.flags &= (uint8_t)~CONS_FORWARDED;
+    for (struct forward_chunk *chunk = forwards; chunk; chunk = chunk->next) {
+        for (uint32_t i = chunk->used; i-- > 0;) {
+            chunk->entry[i].src->car = chunk->entry[i].car;
+            chunk->entry[i].src->h.flags &= (uint8_t)~CONS_FORWARDED;
+        }
     }
-    forward_used = 0;
+    forwards = NULL;
 }
 
 static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
