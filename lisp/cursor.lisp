@@ -90,7 +90,8 @@ the same for :ACCELERATION and :SHAKE (magnitudes in pixels per second, pixels
 per second squared, and the shake ratio; a magnitude at or below :ABOVE
 contributes nothing and :BELOW caps it), (:ANGLE SCALE [:BELOW N]) for the
 motion direction in degrees, or (:VX SCALE [:BELOW N])/(:VY SCALE [:BELOW N])
-for the signed velocity, where :BELOW caps the magnitude.
+for the signed velocity, where :BELOW caps the magnitude. A term none of whose
+clauses contributes leaves its transform alone: :SCALE stays 1.
 
 Behaviours compose in ORDER, then mount order: rotations add, scales multiply,
 offsets add, the last :TRAIL wins and the largest :SETTLE is used. An extension

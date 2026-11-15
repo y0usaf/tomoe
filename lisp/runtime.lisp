@@ -728,10 +728,12 @@ folds has changed since."
                (eq (layout-memo-outputs memo) (runtime-outputs))
                (eq (layout-memo-connectors memo) (runtime-connectors))
                (eq (layout-memo-recovery-failures memo) (runtime-output-recovery-failures))
+               (not (pending-native-outputs-p))
                (same-mounts-p (layout-memo-names memo) mounts))
       (layout-memo-context memo))))
 
 (defun remember-layout (mounts context)
+  (unless (pending-native-outputs-p)
   (%r! :layout-memo
        (make-layout-memo :names (mount-names mounts) :invocations (%invocations)
                          :definitions (%counter :definitions-generation)
@@ -745,7 +747,7 @@ folds has changed since."
                          :outputs (runtime-outputs)
                          :connectors (runtime-connectors)
                          :recovery-failures (runtime-output-recovery-failures)
-                         :context context)))
+                         :context context))))
 
 (defun materialize (mounts)
   "Reconstruct owned context, reusing what the last materialization settled on
@@ -935,7 +937,8 @@ when it is not 1."
 
 (defun transact (mounts event changed &optional force)
   (let ((*command-input* (and (getf event :input) t)))
-    (%transact mounts event changed force)))
+    (unwind-protect (%transact mounts event changed force)
+      (%ui-assets-discard))))
 
 (defun %transact (mounts event changed &optional force)
   "Stage reducers and dependency propagation before touching the native scene.
@@ -1066,10 +1069,10 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                (getf call :replied) t))))
     (:broadcast (%json-broadcast (first (command-arguments command))
                                  (second (command-arguments command))))
-    (:launch (destructuring-bind (launch cwd env focus) (command-arguments command)
-               (%spawn launch cwd env focus)))
+    (:launch (%launch (list :argv (command-arguments command) :focus t :input *command-input*)))
     (:spawn (destructuring-bind (launch cwd env focus) (command-arguments command)
-              (%spawn launch cwd env focus)))
+              (%spawn (list :argv launch :cwd cwd :env env :focus focus
+                            :input *command-input*))))
     (:close (%close (first (command-arguments command))))
     (:screencast (destructuring-bind (token answer value) (command-arguments command)
                    (%screencast-answer token answer value)))
@@ -1082,6 +1085,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
               (%output-power name (ecase mode (:off 0) (:on 1) (:toggle 2)))))
     (:quit (%quit))
     (:reload (%reload-policy))))
+
+(defun spawn-command (arguments)
+  (execute-command (canonical-command (spawn (getf arguments :argv)
+                                             :focus (getf arguments :focus))))
+  (list :argv (getf arguments :argv) :focus (getf arguments :focus)))
+
+(define-host-command "spawn"
+  :description "Run a program whose windows stay out of the way."
+  :arguments '((:argv :argv :required t :description "Program and arguments.")
+               (:focus :boolean :default t :description "Let its windows take focus."))
+  :call 'spawn-command)
 
 (defun commit-context (mounts context &optional commands)
   "The only extension-to-native write path. All reducers have returned and validated."
@@ -1139,9 +1153,10 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (stage-cursor-effects context)
     (let ((message (%resources-commit wanted)))
       (when message (error "~A" message)))
-    (%sources (loop for mounted in (root-mounts mounts)
-                    for source = (spec-source (mounted-spec mounted))
-                    when (and source (not (%embedded-source-p source))) collect source))
+    (%sources (when (runtime-watch)
+                (loop for mounted in (root-mounts mounts)
+                      for source = (spec-source (mounted-spec mounted))
+                      when (and source (not (%embedded-source-p source))) collect source)))
     (publish-json-context context mounts)
     (remember-layout mounts context)
     nil))
@@ -1299,6 +1314,12 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
         (%r! :outputs facts)
         (%r! :connectors connectors)
         (%r! :outputs-revision snapshot-revision)))))
+
+(defun deliver-owned-event (event owner)
+  (let ((failure nil))
+    (%catch (lambda () (transact (runtime-mounts) event nil (list owner)))
+            (lambda (text) (setf failure text)))
+    (when failure (record-error failure))))
 
 (defun dispatch-event (event)
   (let ((changed nil) (force nil))
@@ -1465,9 +1486,17 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
       (:screenshot (push :screenshot changed))
       (:screencast (push :screencast changed))
       (:grab (push :grab changed))
-      (:timer (push :timer changed))
-      (:watch (push :watch changed))
-      (:exec (push :exec changed))
+      (:timer (deliver-owned-event (list :type :timer :name (getf event :name))
+                                   (getf event :owner))
+       (return-from dispatch-event))
+      (:watch (deliver-owned-event event (getf event :owner))
+       (return-from dispatch-event))
+      (:exec (deliver-owned-event
+              (list :type :exec :name (getf event :name) :status (getf event :status)
+                    :code (getf event :code) :stdout (getf event :stdout)
+                    :stderr (getf event :stderr) :error (getf event :error))
+              (getf event :owner))
+       (return-from dispatch-event))
       (:process (push :process changed)))
     (%r! :pending-context
          (union (intersection changed '(:windows :window-geometry :layers :outputs :connectors :services :system))

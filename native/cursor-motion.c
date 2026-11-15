@@ -96,6 +96,7 @@ static double term_value(const struct cursor_term *term, const struct cursor_fie
         double fallback) {
     if (!term->count) return fallback;
     double total = 0;
+    bool contributed = false;
     for (int i = 0; i < term->count; i++) {
         const struct cursor_term_clause *clause = &term->clauses[i];
         double magnitude = 0;
@@ -113,16 +114,19 @@ static double term_value(const struct cursor_term *term, const struct cursor_fie
                 else if (value < -clause->below) value = -clause->below;
             }
             total += clause->scale * value;
+            contributed = true;
             continue;
         }
         default:
             total += clause->scale;
+            contributed = true;
             continue;
         }
         if (!(magnitude > clause->above)) continue;
         total += clause->scale * (magnitude < clause->below ? magnitude : clause->below);
+        contributed = true;
     }
-    return total;
+    return contributed ? total : fallback;
 }
 
 static void effect_matrix(const struct cursor_effect *effect, const struct cursor_fields *fields,
