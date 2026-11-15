@@ -17,7 +17,7 @@
                                        key))))))))
 
 (defparameter +hotkey-order+
-  '("Spawn foot" "Run an Application" "Close Window" "Toggle Fullscreen" "Exit"
+  '("Run an Application" "Close Window" "Toggle Fullscreen" "Exit"
     "Show Important Hotkeys" "Focus Next Window" "Focus Previous Window"
     "Switch to Workspace 1-9" "Move Window to Workspace 1-9")
   "The old init.lua declaration order of the shipped bindings, for the hotkey sheet.")
@@ -58,11 +58,7 @@
                        collect (list (hotkey-label binding) (getf binding :description)))))
     (values (list :exit exit :overlay overlay)
             (append +session-commands+
-                    (list (bind-key '(:mod) "Return"
-                                    (invoke "launch" :argv '("foot")) :description "Spawn foot")
-                          (bind-key '(:mod) "d"
-                                    (invoke "launch" :argv '("fuzzel")) :description "Run an Application")
-                          (bind-key '(:mod) "q" "close-window" :description "Close Window")
+                    (list (bind-key '(:mod) "q" "close-window" :description "Close Window")
                           (bind-key '(:mod :shift) "e" (invoke "quit" :confirm t)
                                     :description "Exit")
                           (bind-key '(:mod :shift) "slash" "toggle-hotkeys"

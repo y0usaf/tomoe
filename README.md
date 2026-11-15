@@ -29,8 +29,7 @@ can read, replace or delete.
   with it.
 - **One executable.** SBCL with Tomoe's own C core for Wayland, rendering and
   input; no wlroots. It has a built-in X11 bridge (Xwayland from your `PATH`),
-  a notification server and a screencast portal. The default terminal and
-  launcher bindings run `foot` and `fuzzel` from your `PATH`.
+  a notification server and a screencast portal.
 
 ## Try it
 
@@ -46,8 +45,6 @@ Tomoe and a few patched dependencies, so give it a while.
 
 | Keys | What they do |
 | --- | --- |
-| Super+Return | Open a terminal |
-| Super+d | Open the launcher |
 | Super+j, Super+k | Focus the next or previous window |
 | Super+f | Toggle fullscreen |
 | Super+1 … 9 | Switch workspace |
