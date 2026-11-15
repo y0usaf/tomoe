@@ -81,7 +81,7 @@ class Compositor:
                                  "TOMOE_DEBUG": "1"})
         self.process = subprocess.Popen(
             [tomoe, "--socket", self.socket, "--backend", "headless", "--bare", "--no-watch",
-             "--config", policy],
+             "--test-timings", "--config", policy],
             env=self.environment, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.time() + 60
         while time.time() < deadline:
