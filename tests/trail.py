@@ -240,9 +240,6 @@ def drag(compositor, path, steps, interval_ms, burst, hold_ms=400):
 
 
 def drag_async(compositor, path, steps, interval_ms, burst, hold_ms=0):
-    """Start a drag client and return once it has released the button, so the
-    compositor's own frames during the pointer's :idle window can be read
-    before the client's tail sleep ends."""
     arguments = [compositor.pointer, "--path", encode_path(path), "--steps", str(steps),
                  "--interval-ms", str(interval_ms), "--hold-ms", str(hold_ms),
                  "--delay-ms", "50", "--extent", "1280x720"]
@@ -371,7 +368,6 @@ def trace(compositor, path, steps, interval_ms, burst, tag):
 
 
 def steps_of(times, period):
-    """Summarize one run of trail steps against the display's own period."""
     steps = len(times)
     span = times[-1] - times[0] if steps > 1 else 0
     gaps = sorted(b - a for a, b in zip(times, times[1:]))
@@ -384,11 +380,6 @@ def steps_of(times, period):
 
 
 def paced(work, tomoe, pointer, path, hz, fps=0):
-    """Drag once on an output at HZ and read how the trail paced its steps.
-
-    The trail steps during the drag and, while the pointer rests inside its
-    :idle window, on the frames the compositor produces for it alone; the
-    second run is what a refresh-rate gate or a :fps cap decides."""
     tag = f"refresh-{hz}" if not fps else f"refresh-{hz}-cap-{fps}"
     directory = os.path.join(work, tag)
     os.makedirs(directory, exist_ok=True)
