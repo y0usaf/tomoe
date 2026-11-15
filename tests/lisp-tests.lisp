@@ -81,6 +81,7 @@
 (unit-check "intern-name" "HELLO" (symbol-name (intern "HELLO" :keyword)))
 (unit-check "format-basic" "TOP-1" (format nil "~A-~D" :top 1))
 (unit-check "format-padded" "TOP-07-FF" (format nil "~A-~2,'0D-~X" :top 7 255))
+(unit-check "format-grows" 300 (length (format nil "~A" (make-string 300 :initial-element #\x))))
 (unit-check "format-fixed" " 1.5" (format nil "~4,1F" 1.5d0))
 (unit-check "format-iteration" "a + b" (format nil "~{~A~^ + ~}" '("a" "b")))
 (unit-check "format-newline" "a

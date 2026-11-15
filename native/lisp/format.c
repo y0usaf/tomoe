@@ -277,21 +277,23 @@ static void format_range(struct fstate *fs)
 
 lisp_value lisp_format(const char *control, size_t len, int argc, lisp_value *argv)
 {
-    size_t cap = len * 2 + 64;
-    char *buffer = heap_alloc(cap);
-    struct lisp_buf out;
-    buf_init(&out, buffer, cap);
-    struct fstate fs;
-    fs.s = control;
-    fs.pos = 0;
-    fs.end = len;
-    fs.argv = argv;
-    fs.argc = argc;
-    fs.argi = 0;
-    fs.out = &out;
-    fs.terminated = false;
-    format_range(&fs);
-    return make_string_raw(out.data, out.len, utf8_strlen(out.data, out.len));
+    for (size_t cap = len * 2 + 64;; cap *= 2) {
+        char *buffer = heap_alloc(cap);
+        struct lisp_buf out;
+        buf_init(&out, buffer, cap);
+        struct fstate fs;
+        fs.s = control;
+        fs.pos = 0;
+        fs.end = len;
+        fs.argv = argv;
+        fs.argc = argc;
+        fs.argi = 0;
+        fs.out = &out;
+        fs.terminated = false;
+        format_range(&fs);
+        if (out.len + 1 < cap)
+            return make_string_raw(out.data, out.len, utf8_strlen(out.data, out.len));
+    }
 }
 
 lisp_value builtin_format(int argc, lisp_value *argv)
