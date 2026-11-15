@@ -43,7 +43,10 @@ def frames(socket="check"):
 def memory(socket="check"):
     reply = read(cli("memory", socket))
     assert reply[1] == ":OK", show(reply)
-    lisp = plist(plist(reply[2])[":LISP"])
+    fields = plist(reply[2])
+    if ":LISP" not in fields:
+        return int(fields[":BYTES-CONSED"]), int(fields[":GC-COUNT"])
+    lisp = plist(fields[":LISP"])
     return int(lisp[":ARENA-HIGH-WATER"]), int(lisp[":RECLAIM-COUNT"])
 
 def stall_table(timings):
