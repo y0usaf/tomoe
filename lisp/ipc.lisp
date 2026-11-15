@@ -131,8 +131,8 @@ method no mount owns."
     (unless record (error "unknown method: ~A" method))
     (destructuring-bind (name spec mode-value) record
       (declare (ignore name))
-      (ecase (second mode-value)
-        (:state (third mode-value))
+      (ecase (first mode-value)
+        (:state (second mode-value))
         (:command
          (when (runtime-ipc-call) (error "Nested IPC dispatch is not supported."))
          (when (>= (runtime-ipc-sequence) most-positive-fixnum)
@@ -147,7 +147,7 @@ method no mount owns."
                     (%catch (lambda ()
                               (dispatch-event (list :type :ipc :owner (spec-name spec)
                                                     :method method
-                                                    :command (third mode-value) :params params
+                                                    :command (second mode-value) :params params
                                                     :call token)))
                             (lambda (text) (setf failure text)))
                     (when failure
