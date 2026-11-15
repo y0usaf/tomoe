@@ -11,6 +11,7 @@ enum {
     FRAME_SLACK_START_NS = 250000,
     FRAME_SLACK_STEP_NS = 40000,
     FRAME_COST_SAMPLES = 256,
+    FRAME_COST_HEAVY_FACTOR = 2,
 };
 
 #define OUTPUT_VERSION 4
@@ -357,25 +358,68 @@ static void dispatch_frame(struct screen *screen) {
     }
 }
 
-static bool late_frames(const struct screen *screen) {
-    return screen->impl->late_frames && screen->frame_timer.source;
+static bool test_frame_clock(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("TOMOE_TEST_FRAME_CLOCK") != NULL;
+    return enabled;
 }
 
-static uint32_t cost_samples(const struct screen *screen) {
+static bool late_frames(const struct screen *screen) {
+    if (!screen->frame_timer.source) return false;
+    return screen->impl->late_frames || (screen->kind == SCREEN_HEADLESS && test_frame_clock());
+}
+
+static uint32_t bucket_total(const uint16_t *buckets) {
     uint32_t total = 0;
-    for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) total += screen->clock.buckets[i];
+    for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) total += buckets[i];
     return total;
 }
 
-static int64_t cost_quantile(const struct screen *screen) {
-    uint32_t total = cost_samples(screen);
-    if (total < 16) return FRAME_COST_START_NS;
-    uint32_t wanted = total - total / 100, seen = 0;
+static int64_t bucket_percentile(const uint16_t *buckets, uint32_t percentile, uint32_t minimum) {
+    uint32_t total = bucket_total(buckets);
+    if (total < minimum) return 0;
+    uint32_t wanted = total - total * (100 - percentile) / 100, seen = 0;
     for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) {
-        seen += screen->clock.buckets[i];
+        seen += buckets[i];
         if (seen >= wanted) return (int64_t)(i + 1) * TOMOE_COST_GRAIN_NS;
     }
     return (int64_t)TOMOE_COST_BUCKETS * TOMOE_COST_GRAIN_NS;
+}
+
+static bool cost_split(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("TOMOE_FRAME_CLASS");
+        enabled = !(value && !strcmp(value, "0"));
+    }
+    return enabled;
+}
+
+static int64_t cost_quantile(const struct screen *screen) {
+    int64_t estimate = bucket_percentile(screen->clock.buckets, 99, 16);
+    return estimate ? estimate : FRAME_COST_START_NS;
+}
+
+static int64_t cost_class_quantile(const struct screen *screen) {
+    const bool heavy = screen->clock.heavy_last;
+    int64_t estimate = bucket_percentile(heavy ? screen->clock.heavy : screen->clock.buckets, 99, 16);
+    if (!estimate && heavy) estimate = screen->frame_cost_ns;
+    if (!estimate) estimate = bucket_percentile(heavy ? screen->clock.buckets : screen->clock.heavy, 99, 16);
+    return estimate ? estimate : FRAME_COST_START_NS;
+}
+
+static void bucket_record(uint16_t *buckets, uint32_t *samples, int64_t cost) {
+    int64_t horizon = (int64_t)TOMOE_COST_BUCKETS * TOMOE_COST_GRAIN_NS;
+    size_t bucket = cost >= horizon ? TOMOE_COST_BUCKETS - 1 : (size_t)(cost / TOMOE_COST_GRAIN_NS);
+    if (*samples >= FRAME_COST_SAMPLES) {
+        *samples = 0;
+        for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) {
+            buckets[i] /= 2;
+            *samples += buckets[i];
+        }
+    }
+    buckets[bucket]++;
+    (*samples)++;
 }
 
 static void cost_record(struct screen *screen, int64_t cost) {
@@ -384,14 +428,24 @@ static void cost_record(struct screen *screen, int64_t cost) {
         return;
     }
     if (cost < 0) cost = 0;
-    int64_t horizon = (int64_t)TOMOE_COST_BUCKETS * TOMOE_COST_GRAIN_NS;
-    size_t bucket = cost >= horizon ? TOMOE_COST_BUCKETS - 1 : (size_t)(cost / TOMOE_COST_GRAIN_NS);
-    if (screen->clock.samples >= FRAME_COST_SAMPLES) {
-        for (size_t i = 0; i < TOMOE_COST_BUCKETS; i++) screen->clock.buckets[i] /= 2;
-        screen->clock.samples = cost_samples(screen);
+    if (!cost_split()) {
+        screen->clock.heavy_last = false;
+        bucket_record(screen->clock.buckets, &screen->clock.samples, cost);
+        return;
     }
-    screen->clock.buckets[bucket]++;
-    screen->clock.samples++;
+    int64_t base = bucket_percentile(screen->clock.buckets, 50, 8);
+    if (!base) base = FRAME_COST_START_NS;
+    if (cost > base * FRAME_COST_HEAVY_FACTOR) {
+        screen->clock.heavy_last = true;
+        bucket_record(screen->clock.heavy, &screen->clock.heavy_samples, cost);
+        return;
+    }
+    screen->clock.heavy_last = false;
+    bucket_record(screen->clock.buckets, &screen->clock.samples, cost);
+}
+
+uint32_t screen_cost_heavy(const struct screen *screen) {
+    return bucket_total(screen->clock.heavy);
 }
 
 static int64_t frame_margin(const struct screen *screen, int64_t period) {
@@ -543,7 +597,7 @@ static void frame_account(struct screen *screen) {
         screen->clock.slack_ns += screen->clock.predicted_ns / 4 + FRAME_SLACK_STEP_NS;
         if (screen->clock.slack_ns > cap) screen->clock.slack_ns = cap;
     } else screen->clock.slack_ns -= screen->clock.slack_ns / 256;
-    screen->clock.predicted_ns = cost_quantile(screen);
+    screen->clock.predicted_ns = cost_split() ? cost_class_quantile(screen) : cost_quantile(screen);
     screen->frame_ready_ns = 0;
 }
 
@@ -573,6 +627,8 @@ void screen_schedule_animation(struct screen *screen) {
 
 void screen_send_present(struct screen *screen, struct screen_present *present) {
     present->output = screen;
+    if (present->presented && screen->kind == SCREEN_HEADLESS && test_frame_clock())
+        screen->vblank_ns = (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec;
     if (timing_enabled && present->presented)
         timing_screen_present(screen,
             (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec);
@@ -595,7 +651,7 @@ void screen_init(struct screen *screen, struct tomoe *s, const struct screen_imp
     screen->clock.predicted_ns = FRAME_COST_START_NS;
     screen->clock.slack_ns = FRAME_SLACK_START_NS;
     screen->clock.warmup = 16;
-    if (impl->late_frames)
+    if (impl->late_frames || (kind == SCREEN_HEADLESS && test_frame_clock()))
         ns_timer_init(&screen->frame_timer, wl_display_get_event_loop(s->display), frame_fire, screen);
     wl_list_init(&screen->modes);
     wl_list_init(&screen->resources);

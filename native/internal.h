@@ -528,7 +528,9 @@ struct screen {
     int64_t vblank_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
     struct {
         uint16_t buckets[TOMOE_COST_BUCKETS];
-        uint32_t samples, warmup;
+        uint16_t heavy[TOMOE_COST_BUCKETS];
+        uint32_t samples, heavy_samples, warmup;
+        bool heavy_last;
         int64_t predicted_ns, slack_ns;
     } clock;
     uint64_t input_seen, commit_seen;
@@ -1581,6 +1583,7 @@ void screen_request_state(struct screen *screen, struct screen_state *state);
 void screen_set_position(struct screen *screen, int lx, int ly);
 void screen_cursor_move(struct screen *screen, double x, double y);
 int64_t screen_next_vblank(const struct screen *screen, int64_t after);
+uint32_t screen_cost_heavy(const struct screen *screen);
 int64_t monotonic_ns(void);
 bool ns_timer_init(struct ns_timer *timer, struct wl_event_loop *loop, void (*fire)(void *data),
     void *data);

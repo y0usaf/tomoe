@@ -427,6 +427,8 @@ let
                 nil)))
   '';
   frameclockPolicy = ./frameclock-policy.lisp;
+  phasePolicy = ./phase-policy.lisp;
+  phaseShader = "${tomoe}/share/tomoe/examples/shaders/aurora.glsl";
   scanoutClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-scanout-client";
     src = ./scanout.c;
@@ -1079,6 +1081,15 @@ let
         FRAMECLOCK_POLICY = "${frameclockPolicy}"
       ''
       + builtins.readFile ./frameclock.py;
+    }
+    {
+      name = "phase";
+      script = ''
+        PHASE_POLICY = "${phasePolicy}"
+        PHASE_SHADER = "${phaseShader}"
+        RUNS = "3"
+      ''
+      + builtins.readFile ./phase.py;
     }
     {
       name = "planes";

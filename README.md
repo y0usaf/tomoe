@@ -152,9 +152,20 @@ minus that prediction, which leaves the whole period free for input: the frame
 takes the newest pointer position and the newest client buffers and still
 reaches the same vblank. When the prediction says the next vblank cannot be met,
 the repaint waits for the one after it and carries the input that arrived in
-between, rather than composing into a miss. An idle output arms nothing.
+between, rather than composing into a miss. It keeps that percentile twice, once
+for the frames that cost what the last one did and once for the frames that cost
+more than twice the light median, because a lone blur rebuild, shader pass or
+collection would otherwise hold the estimate above what a cheap repaint costs
+for the next few hundred frames; a repaint predicts with the histogram of the
+class it last landed in, and the first heavy frame of an episode pays for itself
+through the slack instead of through every frame after it. `TOMOE_FRAME_CLASS=0`
+pools the two histograms again for comparison. An idle output arms nothing.
 `tests/frameclock.py` drives vkms with a 1000 Hz pointer and a 500 Hz client,
 with and without `TOMOE_FRAME_CLOCK=0` for comparison, and asserts the drop.
+`tests/phase.py` runs the clock at 60 Hz on vkms and at 240 Hz on the headless
+output, which joins the clock under `TOMOE_TEST_FRAME_CLOCK=1`, with a shader
+wallpaper and blurred windows on and off, and asserts that the class split
+lowers `present-input` without dropping more frames.
 An output that cannot present draws nothing. When the seat goes away Tomoe stops
 submitting frames, stops telling clients their frames are on screen, and leaves
 the display on its last picture; the frame a repaint was waiting for is dropped
