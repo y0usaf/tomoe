@@ -1125,11 +1125,10 @@ void texture_destroy(struct texture *base) {
     free(t);
 }
 
-struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
-        uint32_t width, uint32_t height, const void *data) {
+struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, uint32_t height) {
     struct gl_texture *t = calloc(1, sizeof(*t));
     if (!t) return NULL;
-    if (!pixel_format(format, &t->gl, &t->alpha) || stride % 4 != 0) {
+    if (!pixel_format(format, &t->gl, &t->alpha)) {
         tomoe_log(LOG_ERROR, "tomoe: unsupported pixel buffer format 0x%08x", format);
         free(t);
         return NULL;
@@ -1144,11 +1143,34 @@ struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, t->gl, width, height, 0, t->gl, GL_UNSIGNED_BYTE, NULL);
-    upload(t, data, stride, &(struct rect){ 0, 0, width, height }, 1);
+    glBindTexture(GL_TEXTURE_2D, 0);
     t->bytes = (uint64_t)width * height * 4;
     r->textures++;
     r->texture_bytes += t->bytes;
     return &t->base;
+}
+
+bool texture_upload(struct texture *base, const void *data, uint32_t format,
+        uint32_t stride, const struct rect *rects, int count) {
+    if (!base || !data || count <= 0 || stride % 4 != 0) return false;
+    struct gl_texture *t = texture_of(base);
+    if (t->buffer || format != t->format) return false;
+    current(t->r);
+    upload(t, data, stride, rects, count);
+    base->serial = ++serials;
+    return true;
+}
+
+struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
+        uint32_t width, uint32_t height, const void *data) {
+    struct texture *texture = texture_new(r, format, width, height);
+    if (!texture) return NULL;
+    struct rect full = { 0, 0, (int32_t)width, (int32_t)height };
+    if (!texture_upload(texture, data, format, stride, &full, 1)) {
+        texture_destroy(texture);
+        return NULL;
+    }
+    return texture;
 }
 
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer) {

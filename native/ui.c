@@ -11,6 +11,9 @@
 
 #define UI_MAX_SURFACES 64
 #define UI_MAX_DIMENSION 16384
+#define UI_MAX_OPS 8192
+#define UI_TEXT_LIMIT 256
+#define UI_TEXT_BUCKETS 512
 #define UI_MAX_SURFACE_BYTES (UINT64_C(64) * 1024 * 1024)
 #define UI_MAX_TOTAL_BYTES (UINT64_C(128) * 1024 * 1024)
 #define UI_MAX_STRING (size_t)(8 * 1024 * 1024)
@@ -29,24 +32,27 @@ struct ui_surface_asset {
     struct ui_asset *asset;
 };
 
+struct ui_canvas;
+struct ui_op;
+
 struct ui_surface {
     size_t references;
     char *owner;
     char *name;
     char *output;
-    char *signature;
     uint64_t source_id;
+    uint64_t plan_id;
     int x, y, width, height, layer, blur;
     bool click_through, slide;
     struct animation move;
     double from_x, from_y;
     int offset_x, offset_y;
-    size_t stride;
     uint64_t bytes;
-    unsigned char *pixels;
-    cairo_surface_t *cairo_surface;
-    cairo_t *cairo;
-    struct texture *texture;
+    struct ui_canvas *canvas;
+    struct ui_op *ops;
+    size_t op_count;
+    struct ui_op *build;
+    size_t build_count, build_capacity;
     struct ui_hit_entry *hits;
     size_t hit_count, hit_capacity;
     struct ui_surface_asset *assets;
@@ -138,12 +144,412 @@ static uint64_t union_bytes(const struct ui_set *left, const struct ui_set *righ
     return bytes;
 }
 
+enum ui_op_kind { UI_OP_RECT, UI_OP_ARC, UI_OP_ASSET, UI_OP_TEXT };
+
+struct ui_text {
+    size_t references;
+    char *font, *text;
+    double size, line_height;
+    uint64_t hash;
+    PangoLayout *layout;
+    int width, height;
+    struct rect ink;
+    struct ui_text *next, *newer, *older;
+};
+
+struct ui_op {
+    enum ui_op_kind kind;
+    uint32_t rgba;
+    bool clip_set;
+    int rotate;
+    struct rect clip;
+    struct rect reach;
+    double x, y, width, height, radius, stroke;
+    union {
+        struct { uint64_t id; int tint; } asset;
+        struct { struct ui_text *text; } text;
+        struct { double cx, cy, radius, thickness, start, end; } arc;
+    } u;
+};
+
+struct ui_canvas {
+    size_t references;
+    int width, height;
+    size_t stride;
+    uint64_t bytes;
+    unsigned char *pixels;
+    cairo_surface_t *cairo_surface;
+    cairo_t *cairo;
+    struct texture *texture;
+};
+
+static struct ui_text *ui_text_buckets[UI_TEXT_BUCKETS];
+static struct ui_text *ui_text_head;
+static size_t ui_text_count;
+static uint64_t ui_text_builds, ui_text_hits;
+static cairo_t *ui_text_pen;
+static uint64_t ui_commits, ui_updates, ui_upload_bytes, ui_redraws;
+
+static uint64_t hash_text(uint64_t hash, const char *value) {
+    for (const unsigned char *byte = (const unsigned char *)value; *byte; byte++)
+        hash = (hash ^ *byte) * UINT64_C(0x100000001b3);
+    return hash;
+}
+
+static uint64_t hash_double(uint64_t hash, double value) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return (hash ^ bits) * UINT64_C(0x100000001b3);
+}
+
+static cairo_t *text_pen(void) {
+    if (ui_text_pen) return ui_text_pen;
+    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    if (!surface) return NULL;
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(surface);
+        return NULL;
+    }
+    ui_text_pen = cairo_create(surface);
+    cairo_surface_destroy(surface);
+    if (cairo_status(ui_text_pen) != CAIRO_STATUS_SUCCESS) {
+        cairo_destroy(ui_text_pen);
+        ui_text_pen = NULL;
+    }
+    return ui_text_pen;
+}
+
+static PangoLayout *text_layout(const char *font, const char *text,
+        double size, double line_height) {
+    cairo_t *pen = text_pen();
+    if (!pen) return NULL;
+    PangoFontMap *map = pango_cairo_font_map_get_default();
+    PangoContext *context = map ? pango_font_map_create_context(map) : NULL;
+    if (!context) return NULL;
+    cairo_font_options_t *options = cairo_font_options_create();
+    if (!options) {
+        g_object_unref(context);
+        return NULL;
+    }
+    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
+    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
+    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
+    pango_cairo_context_set_font_options(context, options);
+    cairo_font_options_destroy(options);
+    PangoLayout *layout = pango_layout_new(context);
+    g_object_unref(context);
+    if (!layout) return NULL;
+    PangoFontDescription *description = pango_font_description_from_string(
+        string_or_empty(font)[0] ? string_or_empty(font) : "sans");
+    if (!description) {
+        g_object_unref(layout);
+        return NULL;
+    }
+    pango_font_description_set_absolute_size(description, size * PANGO_SCALE);
+    pango_layout_set_font_description(layout, description);
+    pango_font_description_free(description);
+    pango_layout_set_text(layout, text, -1);
+    pango_layout_set_width(layout, -1);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+    pango_layout_set_single_paragraph_mode(layout, TRUE);
+    PangoFontMetrics *metrics = pango_context_get_metrics(pango_layout_get_context(layout),
+        pango_layout_get_font_description(layout), pango_language_get_default());
+    if (metrics) {
+        double natural = (double)(pango_font_metrics_get_ascent(metrics) +
+            pango_font_metrics_get_descent(metrics)) / PANGO_SCALE;
+        double spacing = line_height - natural;
+        if (spacing > 0.0) pango_layout_set_spacing(layout, spacing * PANGO_SCALE);
+        pango_font_metrics_unref(metrics);
+    }
+    pango_cairo_update_layout(pen, layout);
+    return layout;
+}
+
+static void ui_text_release(struct ui_text *entry);
+
+static void text_touch(struct ui_text *entry) {
+    if (entry == ui_text_head) return;
+    if (entry->newer) entry->newer->older = entry->older;
+    if (entry->older) entry->older->newer = entry->newer;
+    entry->newer = NULL;
+    entry->older = ui_text_head;
+    if (ui_text_head) ui_text_head->newer = entry;
+    ui_text_head = entry;
+}
+
+static void text_destroy(struct ui_text *entry) {
+    if (entry->layout) g_object_unref(entry->layout);
+    free(entry->font);
+    free(entry->text);
+    free(entry);
+}
+
+static void text_unlink(struct ui_text *entry) {
+    struct ui_text **link = &ui_text_buckets[entry->hash % UI_TEXT_BUCKETS];
+    while (*link && *link != entry) link = &(*link)->next;
+    if (*link) *link = entry->next;
+    entry->next = NULL;
+    if (entry->newer) entry->newer->older = entry->older;
+    else ui_text_head = entry->older;
+    if (entry->older) entry->older->newer = entry->newer;
+    entry->newer = entry->older = NULL;
+    ui_text_count--;
+}
+
+static bool text_evict(void) {
+    struct ui_text *entry = ui_text_head;
+    while (entry && entry->references > 1) entry = entry->older;
+    if (!entry) return false;
+    text_unlink(entry);
+    ui_text_release(entry);
+    return true;
+}
+
+static void ui_text_release(struct ui_text *entry) {
+    if (!entry) return;
+    if (--entry->references) return;
+    text_destroy(entry);
+}
+
+static struct ui_text *text_build(const char *font, const char *text,
+        double size, double line_height, uint64_t hash) {
+    struct ui_text *entry = calloc(1, sizeof(*entry));
+    if (!entry) return NULL;
+    entry->references = 2;
+    entry->hash = hash;
+    entry->size = size;
+    entry->line_height = line_height;
+    entry->font = copy_string(font);
+    entry->text = copy_string(text);
+    entry->layout = entry->font && entry->text ?
+        text_layout(font, text, size, line_height) : NULL;
+    if (!entry->layout) {
+        free(entry->font);
+        free(entry->text);
+        free(entry);
+        return NULL;
+    }
+    PangoRectangle ink;
+    pango_layout_get_pixel_extents(entry->layout, &ink, NULL);
+    pango_layout_get_pixel_size(entry->layout, &entry->width, NULL);
+    entry->ink = (struct rect){ ink.x, ink.y, ink.x + ink.width, ink.y + ink.height };
+    entry->height = (int)ceil(line_height);
+    return entry;
+}
+
+static struct ui_text *ui_text_get(const char *font, const char *text,
+        double size, double line_height) {
+    font = string_or_empty(font);
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    hash = hash_text(hash, font);
+    hash = hash_text(hash, text);
+    hash = hash_double(hash, size);
+    hash = hash_double(hash, line_height);
+    for (struct ui_text *entry = ui_text_buckets[hash % UI_TEXT_BUCKETS];
+            entry; entry = entry->next) {
+        if (entry->hash != hash || entry->size != size ||
+                entry->line_height != line_height || strcmp(entry->text, text) ||
+                strcmp(entry->font, font)) continue;
+        entry->references++;
+        ui_text_hits++;
+        text_touch(entry);
+        return entry;
+    }
+    struct ui_text *entry = text_build(font, text, size, line_height, hash);
+    if (!entry) return NULL;
+    while (ui_text_count >= UI_TEXT_LIMIT && text_evict()) { }
+    entry->next = ui_text_buckets[hash % UI_TEXT_BUCKETS];
+    ui_text_buckets[hash % UI_TEXT_BUCKETS] = entry;
+    text_touch(entry);
+    ui_text_count++;
+    ui_text_builds++;
+    return entry;
+}
+
+static void ui_texts_finish(void) {
+    struct ui_text *entry = ui_text_head;
+    while (ui_text_head) {
+        entry = ui_text_head;
+        text_unlink(entry);
+        entry->references--;
+        if (!entry->references) text_destroy(entry);
+    }
+    if (ui_text_pen) cairo_destroy(ui_text_pen);
+    ui_text_pen = NULL;
+}
+
+static void canvas_destroy(struct ui_canvas *canvas) {
+    if (canvas->cairo) cairo_destroy(canvas->cairo);
+    if (canvas->cairo_surface) cairo_surface_destroy(canvas->cairo_surface);
+    if (canvas->texture) texture_destroy(canvas->texture);
+    free(canvas->pixels);
+    free(canvas);
+}
+
+static struct ui_canvas *canvas_create(int width, int height, size_t stride, uint64_t bytes) {
+    struct ui_canvas *canvas = calloc(1, sizeof(*canvas));
+    if (!canvas) return NULL;
+    canvas->references = 1;
+    canvas->width = width;
+    canvas->height = height;
+    canvas->stride = stride;
+    canvas->bytes = bytes;
+    canvas->pixels = calloc(1, (size_t)bytes);
+    if (!canvas->pixels) {
+        free(canvas);
+        return NULL;
+    }
+    return canvas;
+}
+
+static struct ui_canvas *canvas_ref(struct ui_canvas *canvas) {
+    if (canvas) canvas->references++;
+    return canvas;
+}
+
+static void canvas_unref(struct ui_canvas *canvas) {
+    if (!canvas) return;
+    if (--canvas->references) return;
+    canvas_destroy(canvas);
+}
+
+static bool canvas_ready(struct ui_canvas *canvas) {
+    if (canvas->cairo) return true;
+    canvas->cairo_surface = cairo_image_surface_create_for_data(canvas->pixels,
+        CAIRO_FORMAT_ARGB32, canvas->width, canvas->height, (int)canvas->stride);
+    if (cairo_surface_status(canvas->cairo_surface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(canvas->cairo_surface);
+        canvas->cairo_surface = NULL;
+        return false;
+    }
+    canvas->cairo = cairo_create(canvas->cairo_surface);
+    if (cairo_status(canvas->cairo) != CAIRO_STATUS_SUCCESS) {
+        cairo_destroy(canvas->cairo);
+        canvas->cairo = NULL;
+        return false;
+    }
+    return true;
+}
+
+static void op_release(struct ui_op *op) {
+    if (op->kind == UI_OP_TEXT) ui_text_release(op->u.text.text);
+    memset(op, 0, sizeof(*op));
+}
+
+static void ops_free(struct ui_op *ops, size_t count) {
+    for (size_t i = 0; i < count; i++) op_release(&ops[i]);
+    free(ops);
+}
+
+static struct ui_op *op_append(struct ui_surface *surface) {
+    if (surface->build_count == surface->build_capacity) {
+        size_t capacity = surface->build_capacity ? surface->build_capacity * 2 : 32;
+        if (capacity > UI_MAX_OPS) return NULL;
+        struct ui_op *ops = realloc(surface->build, capacity * sizeof(*ops));
+        if (!ops) return NULL;
+        surface->build = ops;
+        surface->build_capacity = capacity;
+    }
+    struct ui_op *op = &surface->build[surface->build_count++];
+    memset(op, 0, sizeof(*op));
+    surface->drawn = true;
+    if (surface->clip_set) {
+        op->clip_set = true;
+        op->clip = (struct rect){ surface->clip_x, surface->clip_y,
+            surface->clip_x + surface->clip_width, surface->clip_y + surface->clip_height };
+    }
+    return op;
+}
+
+static struct rect padded_box(double x, double y, double width, double height, double pad) {
+    double left = floor(x - pad), top = floor(y - pad);
+    double right = ceil(x + width + pad), bottom = ceil(y + height + pad);
+    if (!(right > left) || !(bottom > top)) return (struct rect){ 0, 0, 0, 0 };
+    if (left < -INT32_MAX) left = -INT32_MAX;
+    if (top < -INT32_MAX) top = -INT32_MAX;
+    if (right > INT32_MAX) right = INT32_MAX;
+    if (bottom > INT32_MAX) bottom = INT32_MAX;
+    return (struct rect){ (int32_t)left, (int32_t)top, (int32_t)right, (int32_t)bottom };
+}
+
+static struct rect text_reach(const struct ui_text *entry, double x, double y,
+        int rotate, double line_height) {
+    double width = entry->width, height = ceil(line_height);
+    double left = DBL_MAX, top = DBL_MAX, right = -DBL_MAX, bottom = -DBL_MAX;
+    const double points[4][2] = { { entry->ink.x1, entry->ink.y1 },
+        { entry->ink.x2, entry->ink.y1 }, { entry->ink.x1, entry->ink.y2 },
+        { entry->ink.x2, entry->ink.y2 } };
+    for (size_t i = 0; i < 4; i++) {
+        double pen_x = points[i][0], pen_y = points[i][1], draw_x, draw_y;
+        switch (rotate) {
+        case 90: draw_x = x + height - pen_y; draw_y = y + pen_x; break;
+        case 180: draw_x = x + width - pen_x; draw_y = y + height - pen_y; break;
+        case 270: draw_x = x + pen_y; draw_y = y + width - pen_x; break;
+        default: draw_x = x + pen_x; draw_y = y + pen_y; break;
+        }
+        if (draw_x < left) left = draw_x;
+        if (draw_y < top) top = draw_y;
+        if (draw_x > right) right = draw_x;
+        if (draw_y > bottom) bottom = draw_y;
+    }
+    return padded_box(left, top, right - left, bottom - top, 2.0);
+}
+
+static bool rect_intersect(struct rect *dst, const struct rect *first,
+        const struct rect *second) {
+    int32_t x1 = first->x1 > second->x1 ? first->x1 : second->x1;
+    int32_t y1 = first->y1 > second->y1 ? first->y1 : second->y1;
+    int32_t x2 = first->x2 < second->x2 ? first->x2 : second->x2;
+    int32_t y2 = first->y2 < second->y2 ? first->y2 : second->y2;
+    if (x1 >= x2 || y1 >= y2) return false;
+    *dst = (struct rect){ x1, y1, x2, y2 };
+    return true;
+}
+
+static void damage_rect(struct region *damage, const struct ui_op *op,
+        int width, int height) {
+    struct rect box = op->reach;
+    if (op->clip_set && !rect_intersect(&box, &box, &op->clip)) return;
+    int32_t x1 = box.x1 < 0 ? 0 : box.x1, y1 = box.y1 < 0 ? 0 : box.y1;
+    int32_t x2 = box.x2 > width ? width : box.x2;
+    int32_t y2 = box.y2 > height ? height : box.y2;
+    if (x1 >= x2 || y1 >= y2) return;
+    region_union_rect(damage, damage, x1, y1, (uint32_t)(x2 - x1), (uint32_t)(y2 - y1));
+}
+
+static bool op_same(const struct ui_op *left, const struct ui_op *right) {
+    if (left->kind != right->kind || left->rgba != right->rgba ||
+            left->clip_set != right->clip_set) return false;
+    if (left->clip_set && (left->clip.x1 != right->clip.x1 ||
+            left->clip.y1 != right->clip.y1 || left->clip.x2 != right->clip.x2 ||
+            left->clip.y2 != right->clip.y2)) return false;
+    switch (left->kind) {
+    case UI_OP_RECT:
+        return left->x == right->x && left->y == right->y &&
+            left->width == right->width && left->height == right->height &&
+            left->radius == right->radius && left->stroke == right->stroke;
+    case UI_OP_ARC:
+        return left->u.arc.cx == right->u.arc.cx && left->u.arc.cy == right->u.arc.cy &&
+            left->u.arc.radius == right->u.arc.radius &&
+            left->u.arc.thickness == right->u.arc.thickness &&
+            left->u.arc.start == right->u.arc.start && left->u.arc.end == right->u.arc.end;
+    case UI_OP_ASSET:
+        return left->u.asset.id == right->u.asset.id &&
+            left->u.asset.tint == right->u.asset.tint && left->x == right->x &&
+            left->y == right->y && left->width == right->width &&
+            left->height == right->height;
+    case UI_OP_TEXT:
+        return left->u.text.text == right->u.text.text && left->x == right->x &&
+            left->y == right->y && left->rotate == right->rotate;
+    }
+    return false;
+}
+
 static void surface_free(struct ui_surface *surface) {
     if (!surface) return;
-    if (surface->texture) texture_destroy(surface->texture);
-    if (surface->cairo) cairo_destroy(surface->cairo);
-    if (surface->cairo_surface) cairo_surface_destroy(surface->cairo_surface);
-    free(surface->pixels);
+    canvas_unref(surface->canvas);
+    ops_free(surface->ops, surface->op_count);
+    ops_free(surface->build, surface->build_count);
     for (size_t i = 0; i < surface->hit_count; i++) {
         free(surface->hits[i].key);
         free(surface->hits[i].command);
@@ -157,7 +563,6 @@ static void surface_free(struct ui_surface *surface) {
     free(surface->owner);
     free(surface->name);
     free(surface->output);
-    free(surface->signature);
     free(surface);
 }
 
@@ -209,12 +614,11 @@ static bool same_declaration(const struct ui_surface *surface,
 
 static bool same_cached_surface(const struct ui_surface *surface,
         const char *owner, uint64_t source_id, const char *name,
-        const char *output, const char *signature, int x, int y,
+        const char *output, uint64_t plan_id, int x, int y,
         int width, int height, int layer, bool click_through, bool slide, int blur) {
-    return surface->source_id == source_id &&
+    return surface->source_id == source_id && surface->plan_id == plan_id &&
         string_equal(surface->owner, owner) && string_equal(surface->name, name) &&
-        string_equal(surface->output, output) &&
-        string_equal(surface->signature, signature) && surface->x == x &&
+        string_equal(surface->output, output) && surface->x == x &&
         surface->y == y && surface->width == width && surface->height == height &&
         surface->layer == layer && surface->click_through == click_through &&
         surface->slide == slide && surface->blur == blur && surface->complete;
@@ -252,20 +656,31 @@ static bool surface_is_current(struct tomoe *s, struct ui_surface **out) {
     return true;
 }
 
+static struct ui_surface *prior_surface(struct tomoe *s, const char *owner,
+        const char *name, const char *output) {
+    if (!s || !s->ui) return NULL;
+    for (size_t i = 0; i < s->ui->count; i++) {
+        struct ui_surface *surface = s->ui->surfaces[i];
+        if (same_declaration(surface, owner, name, output)) return surface;
+    }
+    return NULL;
+}
+
 static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
-        const char *signature, int x, int y, int width, int height, int layer,
+        uint64_t plan_id, int x, int y, int width, int height, int layer,
         bool click_through, bool slide, int blur, uint64_t bytes, size_t stride) {
     struct ui_surface *surface = calloc(1, sizeof(*surface));
     if (!surface) return NULL;
     surface->references = 1;
     surface->source_id = source_id;
+    surface->plan_id = plan_id;
     surface->x = x; surface->y = y;
     surface->width = width; surface->height = height; surface->layer = layer;
     surface->click_through = click_through;
     surface->slide = slide;
     surface->blur = blur;
-    surface->bytes = bytes; surface->stride = stride;
+    surface->bytes = bytes;
     surface->building = true;
     surface->clip_set = true;
     surface->clip_width = width;
@@ -273,23 +688,17 @@ static struct ui_surface *new_surface(struct tomoe *s, const char *owner,
     surface->owner = copy_string(owner);
     surface->name = copy_string(name);
     surface->output = copy_string(output);
-    surface->signature = copy_string(signature);
-    if (!surface->owner || !surface->name || !surface->output || !surface->signature)
-        goto failed;
-    surface->pixels = calloc(1, (size_t)bytes);
-    if (!surface->pixels) goto failed;
-    surface->cairo_surface = cairo_image_surface_create_for_data(surface->pixels,
-        CAIRO_FORMAT_ARGB32, width, height, (int)stride);
-    if (!surface->cairo_surface || cairo_surface_status(surface->cairo_surface) != CAIRO_STATUS_SUCCESS)
-        goto failed;
-    surface->cairo = cairo_create(surface->cairo_surface);
-    if (!surface->cairo || cairo_status(surface->cairo) != CAIRO_STATUS_SUCCESS)
-        goto failed;
-    cairo_set_operator(surface->cairo, CAIRO_OPERATOR_OVER);
-    cairo_set_source_rgba(surface->cairo, 0, 0, 0, 0);
-    cairo_paint(surface->cairo);
-    cairo_new_path(surface->cairo);
-    (void)s;
+    if (!surface->owner || !surface->name || !surface->output) goto failed;
+    struct ui_surface *prior = prior_surface(s, owner, name, output);
+    struct ui_canvas *canvas = prior ? prior->canvas : NULL;
+    if (canvas && canvas->width == width && canvas->height == height &&
+            canvas->stride == stride) {
+        surface->canvas = canvas_ref(canvas);
+        surface->ops = prior->ops;
+        surface->op_count = prior->op_count;
+        prior->ops = NULL;
+        prior->op_count = 0;
+    }
     return surface;
 failed:
     surface_free(surface);
@@ -298,7 +707,7 @@ failed:
 
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
-        const char *signature, int x, int y, int width, int height, int layer,
+        uint64_t plan_id, int x, int y, int width, int height, int layer,
         int click_through, int slide, int blur) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
             height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
@@ -312,11 +721,10 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     }
     if (set->current) return 0;
     owner = string_or_empty(owner); name = string_or_empty(name);
-    output = string_or_empty(output); signature = string_or_empty(signature);
+    output = string_or_empty(output);
     if (strnlen(owner, UI_MAX_STRING + 1) > UI_MAX_STRING ||
             strnlen(name, UI_MAX_STRING + 1) > UI_MAX_STRING ||
-            strnlen(output, UI_MAX_STRING + 1) > UI_MAX_STRING ||
-            strnlen(signature, UI_MAX_STRING + 1) > UI_MAX_STRING) return 0;
+            strnlen(output, UI_MAX_STRING + 1) > UI_MAX_STRING) return 0;
     for (size_t i = 0; i < set->count; i++)
         if (same_declaration(set->surfaces[i], owner, name, output)) return 0;
 
@@ -329,7 +737,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         for (size_t i = 0; i < s->ui->count; i++) {
             struct ui_surface *surface = s->ui->surfaces[i];
             if (same_cached_surface(surface, owner, source_id, name, output,
-                    signature, x, y, width, height, layer, click_through, slide, blur)) {
+                    plan_id, x, y, width, height, layer, click_through, slide, blur)) {
                 cached = surface;
                 break;
             }
@@ -347,7 +755,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     if (existing == UINT64_MAX || existing > UI_MAX_TOTAL_BYTES ||
             bytes > UI_MAX_TOTAL_BYTES - existing) return 0;
     struct ui_surface *surface = new_surface(s, owner, source_id, name, output,
-        signature, x, y, width, height, layer, click_through, slide, blur, bytes, stride);
+        plan_id, x, y, width, height, layer, click_through, slide, blur, bytes, stride);
     if (!surface) return 0;
     if (!set_append(set, surface)) {
         surface_unref(surface);
@@ -431,23 +839,6 @@ static void rounded_path(cairo_t *cairo, double x, double y, double width,
     cairo_arc(cairo, x + radius, y + height - radius, radius, pi / 2, pi);
     cairo_arc(cairo, x + radius, y + radius, radius, pi, 3 * pi / 2);
     cairo_close_path(cairo);
-}
-
-static bool cairo_begin_clip(struct ui_surface *surface) {
-    cairo_t *cairo = surface->cairo;
-    if (!cairo || cairo_status(cairo) != CAIRO_STATUS_SUCCESS) return false;
-    surface->drawn = true;
-    cairo_save(cairo);
-    if (surface->clip_set) {
-        cairo_rectangle(cairo, surface->clip_x, surface->clip_y,
-            surface->clip_width, surface->clip_height);
-        cairo_clip(cairo);
-    }
-    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
-}
-
-static void cairo_end_clip(struct ui_surface *surface) {
-    cairo_restore(surface->cairo);
 }
 
 static bool clip_paints(const struct ui_surface *surface) {
@@ -548,6 +939,12 @@ void ui_backdrops_ready(struct tomoe *s) {
     schedule_scene(s);
 }
 
+static struct ui_asset *surface_asset(const struct ui_surface *surface, uint64_t id) {
+    for (size_t i = 0; i < surface->asset_count; i++)
+        if (surface->assets[i].id == id) return surface->assets[i].asset;
+    return NULL;
+}
+
 int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
         double x, double y, double width, double height, int tint, uint32_t rgba) {
     struct ui_surface *surface = NULL;
@@ -556,13 +953,16 @@ int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
             (tint != 0 && tint != 1) || !tomoe_present_ui_asset_ref(s, id)) return 0;
     if (width == 0.0 || height == 0.0) return 1;
     note_paint(surface, !tint || (rgba & 0xff) != 0);
-    struct ui_asset *asset = NULL;
-    for (size_t i = 0; i < surface->asset_count; i++)
-        if (surface->assets[i].id == id) asset = surface->assets[i].asset;
-    if (!asset || !cairo_begin_clip(surface)) return 0;
-    bool success = ui_asset_paint(asset, surface->cairo, x, y, width, height, tint != 0, rgba);
-    cairo_end_clip(surface);
-    return success && cairo_status(surface->cairo) == CAIRO_STATUS_SUCCESS;
+    if (!surface_asset(surface, id)) return 0;
+    struct ui_op *op = op_append(surface);
+    if (!op) return 0;
+    op->kind = UI_OP_ASSET;
+    op->rgba = rgba;
+    op->x = x; op->y = y; op->width = width; op->height = height;
+    op->u.asset.id = id;
+    op->u.asset.tint = tint;
+    op->reach = padded_box(x, y, width, height, 2.0);
+    return 1;
 }
 
 int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
@@ -572,24 +972,18 @@ int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
     if (!finite_number(x) || !finite_number(y) ||
             !finite_nonnegative(width) || !finite_nonnegative(height) ||
             !finite_nonnegative(radius) || !finite_nonnegative(stroke)) return 0;
-    if (!cairo_begin_clip(surface)) return 0;
-    double red, green, blue, alpha;
-    color_components(rgba, &red, &green, &blue, &alpha);
+    double alpha = (rgba & 0xff) / 255.0;
     note_paint(surface, alpha > 0.0 && (stroke > 0.0 ?
         (width > stroke && height > stroke) : (width > 0.0 && height > 0.0)));
-    cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
-    if (stroke <= 0.0) {
-        rounded_path(surface->cairo, x, y, width, height, radius);
-        cairo_fill(surface->cairo);
-    } else if (width > stroke && height > stroke) {
-        double inset = stroke / 2.0;
-        rounded_path(surface->cairo, x + inset, y + inset,
-            width - stroke, height - stroke, fmax(0.0, radius - inset));
-        cairo_set_line_width(surface->cairo, stroke);
-        cairo_stroke(surface->cairo);
-    }
-    cairo_end_clip(surface);
-    return cairo_status(surface->cairo) == CAIRO_STATUS_SUCCESS;
+    struct ui_op *op = op_append(surface);
+    if (!op) return 0;
+    op->kind = UI_OP_RECT;
+    op->rgba = rgba;
+    op->x = x; op->y = y; op->width = width; op->height = height;
+    op->radius = radius; op->stroke = stroke;
+    op->reach = padded_box(x, y, width, height,
+        stroke > 0.0 ? stroke / 2.0 + 2.0 : 2.0);
+    return 1;
 }
 
 static bool valid_text_args(const char *text, const char *font, double size,
@@ -602,67 +996,15 @@ static bool valid_text_args(const char *text, const char *font, double size,
         isfinite(line_height) && line_height >= 0.0 && line_height <= UI_MAX_DIMENSION;
 }
 
-static PangoLayout *make_layout(cairo_t *cairo, const char *text,
-        const char *font, double size, double line_height) {
-    if (!valid_text_args(text, font, size, line_height)) return NULL;
-    PangoLayout *layout = pango_cairo_create_layout(cairo);
-    if (!layout) return NULL;
-    cairo_font_options_t *options = cairo_font_options_create();
-    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
-    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
-    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
-    pango_cairo_context_set_font_options(pango_layout_get_context(layout), options);
-    cairo_font_options_destroy(options);
-    PangoFontDescription *description = pango_font_description_from_string(
-        string_or_empty(font)[0] ? string_or_empty(font) : "sans");
-    if (!description) {
-        g_object_unref(layout);
-        return NULL;
-    }
-    pango_font_description_set_absolute_size(description, size * PANGO_SCALE);
-    pango_layout_set_font_description(layout, description);
-    pango_font_description_free(description);
-    pango_layout_set_text(layout, text, -1);
-    pango_layout_set_width(layout, -1);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
-    pango_layout_set_single_paragraph_mode(layout, TRUE);
-    PangoContext *context = pango_layout_get_context(layout);
-    PangoFontMetrics *metrics = pango_context_get_metrics(context,
-        pango_layout_get_font_description(layout), pango_language_get_default());
-    if (metrics) {
-        double natural = (double)(pango_font_metrics_get_ascent(metrics) +
-            pango_font_metrics_get_descent(metrics)) / PANGO_SCALE;
-        double spacing = line_height - natural;
-        if (spacing > 0.0) pango_layout_set_spacing(layout, spacing * PANGO_SCALE);
-        pango_font_metrics_unref(metrics);
-    }
-    pango_cairo_update_layout(cairo, layout);
-    return layout;
-}
-
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
         double size, double line_height) {
-    if (!text || strnlen(text, UI_MAX_STRING + 1) > UI_MAX_STRING ||
-            !valid_text_args(text, font, size, line_height)) return UINT64_MAX;
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-    if (!surface || cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        if (surface) cairo_surface_destroy(surface);
-        return UINT64_MAX;
-    }
-    cairo_t *cairo = cairo_create(surface);
-    PangoLayout *layout = cairo_status(cairo) == CAIRO_STATUS_SUCCESS ?
-        make_layout(cairo, text, font, size, line_height) : NULL;
-    int width = 0, height = 0;
-    if (layout) pango_layout_get_pixel_size(layout, &width, &height);
-    int requested_height = (int)ceil(line_height);
-    height = requested_height;
-    bool valid = layout && cairo_status(cairo) == CAIRO_STATUS_SUCCESS &&
-        width >= 0 && height >= 0 && (uint64_t)width <= UINT32_MAX &&
-        (uint64_t)height <= UINT32_MAX;
-    if (layout) g_object_unref(layout);
-    cairo_destroy(cairo);
-    cairo_surface_destroy(surface);
-    return valid ? ((uint64_t)(uint32_t)width << 32) | (uint32_t)height : UINT64_MAX;
+    if (!text || !valid_text_args(text, font, size, line_height)) return UINT64_MAX;
+    struct ui_text *entry = ui_text_get(font, text, size, line_height);
+    if (!entry) return UINT64_MAX;
+    int width = entry->width, height = entry->height;
+    ui_text_release(entry);
+    if (width < 0 || height < 0) return UINT64_MAX;
+    return ((uint64_t)(uint32_t)width << 32) | (uint32_t)height;
 }
 
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
@@ -672,31 +1014,22 @@ int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     if (!surface_is_current(s, &surface)) return 0;
     if (rotate != 0 && rotate != 90 && rotate != 180 && rotate != 270) return 0;
     if (!finite_number(x) || !finite_number(y) ||
-            !valid_text_args(text, font, size, line_height) ||
-            strnlen(text, UI_MAX_STRING + 1) > UI_MAX_STRING) return 0;
-    if (!cairo_begin_clip(surface)) return 0;
-    PangoLayout *layout = make_layout(surface->cairo, text, font, size, line_height);
-    if (!layout) {
-        cairo_end_clip(surface);
+            !valid_text_args(text, font, size, line_height)) return 0;
+    struct ui_text *entry = ui_text_get(font, text, size, line_height);
+    if (!entry) return 0;
+    struct ui_op *op = op_append(surface);
+    if (!op) {
+        ui_text_release(entry);
         return 0;
     }
-    double red, green, blue, alpha;
-    color_components(rgba, &red, &green, &blue, &alpha);
-    note_paint(surface, alpha > 0.0 && text[0]);
-    cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
-    int width = 0;
-    pango_layout_get_pixel_size(layout, &width, NULL);
-    double height = ceil(line_height);
-    cairo_translate(surface->cairo,
-        x + (rotate == 90 ? height : rotate == 180 ? width : 0),
-        y + (rotate == 180 ? height : rotate == 270 ? width : 0));
-    cairo_rotate(surface->cairo, rotate * G_PI / 180.0);
-    pango_cairo_update_layout(surface->cairo, layout);
-    cairo_move_to(surface->cairo, 0, 0);
-    pango_cairo_show_layout(surface->cairo, layout);
-    g_object_unref(layout);
-    cairo_end_clip(surface);
-    return cairo_status(surface->cairo) == CAIRO_STATUS_SUCCESS;
+    op->kind = UI_OP_TEXT;
+    op->rgba = rgba;
+    op->x = x; op->y = y;
+    op->rotate = rotate;
+    op->u.text.text = entry;
+    op->reach = text_reach(entry, x, y, rotate, line_height);
+    note_paint(surface, (rgba & 0xff) > 0 && text[0]);
+    return 1;
 }
 
 int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
@@ -707,20 +1040,193 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
             !finite_nonnegative(radius) || !finite_nonnegative(thickness) ||
             !isfinite(start) || !isfinite(end)) return 0;
     if (radius <= 0.0 || thickness <= 0.0) return 1;
-    if (!cairo_begin_clip(surface)) return 0;
+    note_paint(surface, (rgba & 0xff) > 0);
+    struct ui_op *op = op_append(surface);
+    if (!op) return 0;
+    op->kind = UI_OP_ARC;
+    op->rgba = rgba;
+    op->u.arc.cx = cx;
+    op->u.arc.cy = cy;
+    op->u.arc.radius = radius;
+    op->u.arc.thickness = thickness;
+    op->u.arc.start = start;
+    op->u.arc.end = end;
+    double outer = radius + thickness / 2.0;
+    op->reach = padded_box(cx - outer, cy - outer, outer * 2.0, outer * 2.0, 2.0);
+    return 1;
+}
+
+static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
+        const struct rect *clip) {
+    cairo_t *cairo = surface->canvas->cairo;
     double red, green, blue, alpha;
-    color_components(rgba, &red, &green, &blue, &alpha);
-    note_paint(surface, alpha > 0.0);
-    cairo_set_source_rgba(surface->cairo, red, green, blue, alpha);
-    cairo_set_line_width(surface->cairo, thickness);
-    cairo_set_line_cap(surface->cairo, CAIRO_LINE_CAP_BUTT);
-    if (end >= start)
-        cairo_arc(surface->cairo, cx, cy, radius, start, end);
-    else
-        cairo_arc_negative(surface->cairo, cx, cy, radius, start, end);
-    cairo_stroke(surface->cairo);
-    cairo_end_clip(surface);
-    return cairo_status(surface->cairo) == CAIRO_STATUS_SUCCESS;
+    color_components(op->rgba, &red, &green, &blue, &alpha);
+    cairo_save(cairo);
+    cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
+    cairo_clip(cairo);
+    switch (op->kind) {
+    case UI_OP_RECT:
+        cairo_set_source_rgba(cairo, red, green, blue, alpha);
+        if (op->stroke <= 0.0) {
+            rounded_path(cairo, op->x, op->y, op->width, op->height, op->radius);
+            cairo_fill(cairo);
+        } else if (op->width > op->stroke && op->height > op->stroke) {
+            double inset = op->stroke / 2.0;
+            rounded_path(cairo, op->x + inset, op->y + inset,
+                op->width - op->stroke, op->height - op->stroke,
+                fmax(0.0, op->radius - inset));
+            cairo_set_line_width(cairo, op->stroke);
+            cairo_stroke(cairo);
+        }
+        break;
+    case UI_OP_ARC:
+        cairo_set_source_rgba(cairo, red, green, blue, alpha);
+        cairo_set_line_width(cairo, op->u.arc.thickness);
+        cairo_set_line_cap(cairo, CAIRO_LINE_CAP_BUTT);
+        if (op->u.arc.end >= op->u.arc.start)
+            cairo_arc(cairo, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
+                op->u.arc.start, op->u.arc.end);
+        else
+            cairo_arc_negative(cairo, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
+                op->u.arc.start, op->u.arc.end);
+        cairo_stroke(cairo);
+        break;
+    case UI_OP_ASSET: {
+        struct ui_asset *asset = surface_asset(surface, op->u.asset.id);
+        if (asset)
+            ui_asset_paint(asset, cairo, op->x, op->y, op->width, op->height,
+                op->u.asset.tint != 0, op->rgba);
+        break;
+    }
+    case UI_OP_TEXT: {
+        const struct ui_text *entry = op->u.text.text;
+        double height = ceil(entry->line_height);
+        int width = entry->width;
+        cairo_set_source_rgba(cairo, red, green, blue, alpha);
+        cairo_translate(cairo,
+            op->x + (op->rotate == 90 ? height : op->rotate == 180 ? width : 0),
+            op->y + (op->rotate == 180 ? height : op->rotate == 270 ? width : 0));
+        cairo_rotate(cairo, op->rotate * G_PI / 180.0);
+        pango_cairo_update_layout(cairo, entry->layout);
+        cairo_move_to(cairo, 0, 0);
+        pango_cairo_show_layout(cairo, entry->layout);
+        break;
+    }
+    }
+    cairo_restore(cairo);
+    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+}
+
+static bool canvas_replay(struct ui_surface *surface, const struct region *damage) {
+    struct ui_canvas *canvas = surface->canvas;
+    if (!canvas_ready(canvas)) return false;
+    cairo_t *cairo = canvas->cairo;
+    int count = 0;
+    const struct rect *rects = region_rectangles(damage, &count);
+    for (int i = 0; i < count; i++) {
+        const struct rect *dirty = &rects[i];
+        cairo_save(cairo);
+        cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
+        cairo_set_source_rgba(cairo, 0, 0, 0, 0);
+        cairo_rectangle(cairo, dirty->x1, dirty->y1,
+            dirty->x2 - dirty->x1, dirty->y2 - dirty->y1);
+        cairo_fill(cairo);
+        cairo_restore(cairo);
+        for (size_t k = 0; k < surface->build_count; k++) {
+            const struct ui_op *op = &surface->build[k];
+            struct rect probe, clip = *dirty;
+            if (!rect_intersect(&probe, &op->reach, dirty)) continue;
+            if (op->clip_set && !rect_intersect(&clip, &clip, &op->clip)) continue;
+            if (!op_paint(surface, op, &clip)) return false;
+        }
+    }
+    cairo_surface_flush(canvas->cairo_surface);
+    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+}
+
+static bool canvas_upload(struct tomoe *s, struct ui_surface *surface,
+        const struct region *damage) {
+    struct ui_canvas *canvas = surface->canvas;
+    bool fresh = !canvas->texture;
+    if (fresh) {
+        canvas->texture = texture_new(s->renderer, TOMOE_DRM_FORMAT_ARGB8888,
+            (uint32_t)canvas->width, (uint32_t)canvas->height);
+        if (!canvas->texture) return false;
+        s->ui_rasterizations++;
+    }
+    struct region whole, rects;
+    region_init(&rects);
+    if (fresh) {
+        region_init_rect(&whole, 0, 0, (uint32_t)canvas->width, (uint32_t)canvas->height);
+        region_copy(&rects, &whole);
+        region_fini(&whole);
+    } else {
+        region_copy(&rects, damage);
+    }
+    int count = 0;
+    const struct rect *boxes = region_rectangles(&rects, &count);
+    bool ok = texture_upload(canvas->texture, canvas->pixels, TOMOE_DRM_FORMAT_ARGB8888,
+        (uint32_t)canvas->stride, boxes, count);
+    for (int i = 0; i < count; i++)
+        ui_upload_bytes += (uint64_t)(boxes[i].x2 - boxes[i].x1) *
+            (uint64_t)(boxes[i].y2 - boxes[i].y1) * 4;
+    region_fini(&rects);
+    return ok;
+}
+
+static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
+    ui_commits++;
+    if (!surface->drawn) {
+        canvas_unref(surface->canvas);
+        surface->canvas = NULL;
+        surface->bytes = 0;
+        ops_free(surface->ops, surface->op_count);
+        surface->ops = NULL;
+        surface->op_count = 0;
+        return true;
+    }
+    struct region damage;
+    region_init(&damage);
+    bool full = !surface->canvas || surface->canvas->width != surface->width ||
+        surface->canvas->height != surface->height;
+    if (full) {
+        uint64_t bytes = surface->bytes;
+        size_t stride = (size_t)cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32,
+            surface->width);
+        canvas_unref(surface->canvas);
+        surface->canvas = canvas_create(surface->width, surface->height, stride, bytes);
+        if (!surface->canvas) {
+            region_fini(&damage);
+            return false;
+        }
+        ops_free(surface->ops, surface->op_count);
+        surface->ops = NULL;
+        surface->op_count = 0;
+        region_init_rect(&damage, 0, 0, (uint32_t)surface->width,
+            (uint32_t)surface->height);
+    } else if (surface->op_count != surface->build_count) {
+        region_init_rect(&damage, 0, 0, (uint32_t)surface->width,
+            (uint32_t)surface->height);
+    } else {
+        for (size_t i = 0; i < surface->build_count; i++) {
+            if (op_same(&surface->ops[i], &surface->build[i])) continue;
+            damage_rect(&damage, &surface->ops[i], surface->width, surface->height);
+            damage_rect(&damage, &surface->build[i], surface->width, surface->height);
+        }
+    }
+    bool ok = true;
+    if (region_not_empty(&damage)) {
+        ui_updates++;
+        ok = canvas_replay(surface, &damage) && canvas_upload(s, surface, &damage);
+        if (full) ui_redraws++;
+    }
+    region_fini(&damage);
+    ops_free(surface->ops, surface->op_count);
+    surface->ops = surface->build;
+    surface->op_count = surface->build_count;
+    surface->build = NULL;
+    surface->build_count = surface->build_capacity = 0;
+    return ok;
 }
 
 static bool checked_hit_rect(const struct ui_surface *surface, int *x, int *y,
@@ -783,32 +1289,15 @@ int tomoe_present_ui_end(struct tomoe *s) {
     struct ui_surface *surface;
     if (!surface_is_current(s, &surface)) return 0;
     set->current = NULL;
-    if (!surface->building || !surface->cairo || !s || !s->renderer) return 0;
-    cairo_surface_flush(surface->cairo_surface);
-    if (cairo_status(surface->cairo) != CAIRO_STATUS_SUCCESS ||
-            cairo_surface_status(surface->cairo_surface) != CAIRO_STATUS_SUCCESS) goto failed;
-
-    cairo_destroy(surface->cairo);
-    surface->cairo = NULL;
-    cairo_surface_destroy(surface->cairo_surface);
-    surface->cairo_surface = NULL;
-
-    struct texture *texture = surface->drawn ? texture_from_pixels(s->renderer,
-        TOMOE_DRM_FORMAT_ARGB8888, surface->stride,
-        (uint32_t)surface->width, (uint32_t)surface->height, surface->pixels) : NULL;
-    free(surface->pixels);
-    surface->pixels = NULL;
-    if (surface->drawn && !texture) goto failed;
-    surface->texture = texture;
+    if (!surface->building || !s || !s->renderer) return 0;
     surface->building = false;
+    if (!surface_commit(s, surface)) {
+        remove_surface(set, surface);
+        surface_unref(surface);
+        return 0;
+    }
     surface->complete = true;
-    if (!texture) surface->bytes = 0;
-    else s->ui_rasterizations++;
     return 1;
-failed:
-    remove_surface(set, surface);
-    surface_unref(surface);
-    return 0;
 }
 
 static void sort_surfaces(struct ui_set *set) {
@@ -988,7 +1477,7 @@ bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out) {
 static bool surface_paints(const struct tomoe *s, const struct ui_surface *surface,
         double now) {
     if (s->settings.blur_enabled && surface->blur >= 0) return true;
-    if (surface->texture && surface->paints) return true;
+    if (surface->canvas && surface->canvas->texture && surface->paints) return true;
     if (surface->trail_on && !shader_still(s, surface, now)) return true;
     struct ui_asset *shown = shown_backdrop(surface);
     if (ui_asset_backdrop(shown, NULL, NULL)) return true;
@@ -1129,7 +1618,8 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                 }
             }
         }
-        if (surface->texture) draw_texture(f, surface->texture, left, top);
+        if (surface->canvas && surface->canvas->texture)
+            draw_texture(f, surface->canvas->texture, left, top);
     }
 }
 
@@ -1148,7 +1638,7 @@ static size_t set_texture_count(const struct ui_set *set) {
     if (!set) return 0;
     size_t count = 0;
     for (size_t i = 0; i < set->count; i++)
-        if (set->surfaces[i]->texture) count++;
+        if (set->surfaces[i]->canvas && set->surfaces[i]->canvas->texture) count++;
     return count;
 }
 
@@ -1159,8 +1649,24 @@ static size_t set_callback_count(const struct ui_set *set) {
     return count;
 }
 
+#define UI_STATS_FIELDS "(:surfaces %zu :textures %zu :bytes %" PRIu64 \
+    " :callbacks %zu :rasterizations %" PRIu64 \
+    " :candidate-surfaces %zu :candidate-textures %zu :candidate-bytes %" PRIu64 \
+    " :assets %" PRIu64 " :asset-bytes %" PRIu64 " :asset-loads %" PRIu64
+
+static bool ui_counter_stats(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("TOMOE_UI_STATS");
+        cached = value && value[0] && strcmp(value, "0") != 0;
+    }
+    return cached;
+}
+
 const char *tomoe_ui_stats(struct tomoe *s) {
-    static const char unavailable[] = "(:surfaces 0 :textures 0 :bytes 0 :callbacks 0 :rasterizations 0)";
+    static const char unavailable[] = UI_STATS_FIELDS
+        " :updates 0 :redraws 0 :upload-bytes 0 :commits 0"
+        " :texts 0 :text-hits 0 :text-cache 0)";
     if (!s) return unavailable;
     const struct ui_set *candidate = s->presentation ? s->presentation->ui : NULL;
     size_t surfaces = s->ui ? s->ui->count : 0;
@@ -1172,16 +1678,21 @@ const char *tomoe_ui_stats(struct tomoe *s) {
     uint64_t candidate_bytes = set_bytes(candidate);
     free(s->ui_stats_result);
     s->ui_stats_result = NULL;
-    if (asprintf(&s->ui_stats_result,
-            "(:surfaces %zu :textures %zu :bytes %" PRIu64
-            " :callbacks %zu :rasterizations %" PRIu64
-            " :candidate-surfaces %zu :candidate-textures %zu"
-            " :candidate-bytes %" PRIu64 " :assets %" PRIu64
-            " :asset-bytes %" PRIu64 " :asset-loads %" PRIu64 ")",
+    int written = ui_counter_stats() ?
+        asprintf(&s->ui_stats_result,
+            UI_STATS_FIELDS " :updates %" PRIu64 " :redraws %" PRIu64
+            " :upload-bytes %" PRIu64 " :commits %" PRIu64
+            " :texts %" PRIu64 " :text-hits %" PRIu64 " :text-cache %zu)",
             surfaces, textures, bytes, callbacks, s->ui_rasterizations,
             candidate_surfaces, candidate_textures, candidate_bytes,
-            ui_assets_count(s), ui_assets_bytes(s), ui_assets_loads(s)) < 0)
-        return unavailable;
+            ui_assets_count(s), ui_assets_bytes(s), ui_assets_loads(s),
+            ui_updates, ui_redraws, ui_upload_bytes, ui_commits,
+            ui_text_builds, ui_text_hits, ui_text_count) :
+        asprintf(&s->ui_stats_result, UI_STATS_FIELDS ")",
+            surfaces, textures, bytes, callbacks, s->ui_rasterizations,
+            candidate_surfaces, candidate_textures, candidate_bytes,
+            ui_assets_count(s), ui_assets_bytes(s), ui_assets_loads(s));
+    if (written < 0) return unavailable;
     return s->ui_stats_result;
 }
 
@@ -1190,6 +1701,7 @@ void ui_finish(struct tomoe *s) {
     ui_set_finish(s->ui);
     s->ui = NULL;
     ui_assets_finish(s);
+    ui_texts_finish();
     free(s->ui_stats_result);
     s->ui_stats_result = NULL;
 }

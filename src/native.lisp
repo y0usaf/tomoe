@@ -86,7 +86,7 @@ once."
                   extent))))))
 (define-native ("tomoe_present_ui_surface" %present-ui-surface) sb-alien:int
   (server (* t)) (owner sb-alien:c-string) (source-id sb-alien:unsigned-long-long)
-  (name sb-alien:c-string) (output sb-alien:c-string) (signature sb-alien:c-string)
+  (name sb-alien:c-string) (output sb-alien:c-string) (plan-id sb-alien:unsigned-long-long)
   (x sb-alien:int) (y sb-alien:int) (width sb-alien:int) (height sb-alien:int) (layer sb-alien:int)
   (click-through sb-alien:int) (slide sb-alien:int) (blur sb-alien:int))
 (define-native ("tomoe_present_ui_clip" %present-ui-clip) sb-alien:int
@@ -337,9 +337,9 @@ once."
   (flet ((require-ui (status)
            (unless (= 1 status) (error "Cannot prepare retained shell rendering."))))
     (dolist (plan plans)
-      (let* ((signature (with-standard-io-syntax (write-to-string plan :readably t :pretty nil)))
-             (status (%present-ui-surface backend (getf plan :owner) (getf plan :source-id)
-                                          (string-downcase (getf plan :name)) (getf plan :output) signature
+      (let* ((status (%present-ui-surface backend (getf plan :owner) (getf plan :source-id)
+                                          (string-downcase (getf plan :name)) (getf plan :output)
+                                          (getf plan :plan-id)
                                           (getf plan :x) (getf plan :y) (getf plan :width) (getf plan :height)
                                           (ecase (getf plan :layer) (:background 0) (:bottom 1) (:top 2) (:overlay 3))
                                           (if (getf plan :click-through) 1 0)

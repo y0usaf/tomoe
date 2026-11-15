@@ -208,6 +208,9 @@ const struct format_set *render_shm_formats(struct render *r);
 struct buffer *render_allocate(struct render *r, int width, int height,
     const struct format *format);
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer);
+struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, uint32_t height);
+bool texture_upload(struct texture *texture, const void *data, uint32_t format,
+    uint32_t stride, const struct rect *rects, int count);
 struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
     uint32_t width, uint32_t height, const void *data);
 bool texture_update(struct texture *texture, struct buffer *buffer,

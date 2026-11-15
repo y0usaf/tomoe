@@ -513,15 +513,17 @@ its canvas position until the viewport leaves it, then glides in."
           (t position))))
 
 (defvar *ui-draw-plans* (make-hash-table :test #'equal))
+(defvar *ui-draw-plan-id* 0)
 
 (defun %ui-draw-plan-for (identity &rest arguments)
-  "The draw plan for ARGUMENTS, reusing the surface's previous plan when they are
-EQUAL to last time. Plans are pure in their arguments and only read afterwards,
-and most transactions leave every shell surface unchanged."
+  "Three values: the draw plan for ARGUMENTS, its hit list, and a monotonic id for
+that exact plan. The plan is reused, with its id, when ARGUMENTS are EQUAL to last
+time; native keeps a surface whose id already painted its canvas."
   (let ((last (gethash identity *ui-draw-plans*)))
     (if (and last (equal (car last) arguments))
         (values-list (cdr last))
-        (let ((result (multiple-value-list (apply #'%ui-draw-plan arguments))))
+        (let ((result (nconc (multiple-value-list (apply #'%ui-draw-plan arguments))
+                             (list (incf *ui-draw-plan-id*)))))
           (when (>= (hash-table-count *ui-draw-plans*) 256) (clrhash *ui-draw-plans*))
           (setf (gethash (copy-tree identity) *ui-draw-plans*) (cons (copy-tree arguments) result))
           (values-list result)))))
@@ -609,7 +611,7 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                                                 (cddr background)))
                                          (getf (cddr background) :fps 0d0)
                                          (getf (cddr background) :idle 0d0)))))
-                  (multiple-value-bind (draw hits)
+                  (multiple-value-bind (draw hits plan-id)
                       (%ui-draw-plan-for (list owner name (getf output :name))
                                          measured width height scale
                                          (unless (or backdrop trail) background)
@@ -620,7 +622,8 @@ VIEWPORT is the visible rectangle published for one output, if any."
                                       :click-through (getf declaration :click-through)
                                       :slide (or (getf declaration :slide) (eq placement :follow))
                                       :blur (let ((blur (getf declaration :blur)))
-                                              (when blur (%ui-round (* scale blur))))))
+                                              (when blur (%ui-round (* scale blur))))
+                                      :plan-id plan-id))
                           (asset-ids (append (%ui-asset-ids measured) (when backdrop (list (first backdrop))))))
                       (when asset-ids
                         (setf plan (nconc plan (list :assets asset-ids))))
