@@ -27,7 +27,7 @@ POLICY = """
          (windows (sort (copy-list (context snapshot :windows))
                         (lambda (first second) (< (getf first :id) (getf second :id)))))
          (count (length windows)))
-    (values (list :rotated t)
+    (values (if (and output (not (getf state :rotated))) (list :rotated t) state)
             (append
              {rotate}
              (list (settings :animations nil
@@ -39,7 +39,7 @@ POLICY = """
              (cond
                ((equal "{layout}" "cover")
                 (loop for window in windows for index from 0
-                      collect (if (= index (1- count))
+                      collect (if (zerop index)
                                   (place (getf window :id) 0 0 width height)
                                   (place (getf window :id) (+ 40 (* 16 index))
                                          (+ 30 (* 16 index)) (- width 200) (- height 160)))))
@@ -56,16 +56,14 @@ POLICY = """
 """
 
 
-ROTATE = ("(if (or (getf state :rotated) (eql (getf output :transform) {index})) nil "
-          "(list (configure-output (getf output :name) :transform :{name})))\n             ")
+ROTATE = ("(if (and output (not (getf state :rotated))) (list (configure-output "
+          "(getf output :name) :transform :{name})) nil)\n             ")
 
 
 def policy(layout, rotation, path):
     rotate = ""
     if rotation:
-        names = {"90": (1, "90"), "270": (3, "270")}
-        index, name = names[rotation]
-        rotate = ROTATE.format(index=index, name=name)
+        rotate = ROTATE.format(name=rotation)
     machine.succeed(f"cat > {path} <<'OVERDRAWPOLICY'\n"
                     + POLICY.format(wallpaper=WALLPAPER, layout=layout, rotate=rotate)
                     + "OVERDRAWPOLICY")
@@ -163,10 +161,16 @@ def spawn(socket, first, count, repaint, unit):
         assert machine.execute(f"systemctl show -P SubState {unit} | grep -qx running")[0] == 0, (
             f"{unit} is not running:\n"
             + machine.succeed(f"journalctl -u {unit} -o cat | tail -20"))
-        client(f"{socket}-{index}", f"--mode xdg --app-id overdraw-{index} --size 320x200 "
-               f"--color {COLOURS[index % len(COLOURS)]}"
-               + (" --commit-rate 60 --repaint" if index == 0 and repaint else ""),
-               socket=socket)
+        machine.execute(
+            f"systemd-run --unit={socket}-{index} --property=Type=exec "
+            f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY={socket} "
+            "tomoe-test-client --seconds 3600 "
+            f"--mode xdg --app-id overdraw-{index} --size 320x200 "
+            f"--color {COLOURS[index % len(COLOURS)]}"
+            + (" --commit-rate 60 --repaint" if index == 0 and repaint else ""))
+    if count > first:
+        machine.wait_until_succeeds(
+            f"journalctl -u {socket}-{count - 1} -o cat | grep -qx mapped", timeout=120)
 
 
 def sample(binary, unit, socket, seconds=2):
@@ -181,8 +185,8 @@ def sample(binary, unit, socket, seconds=2):
         taken[name] = (after[name] - before[name]) / drawn
     for name in ("frame-draw", "frame-raster", "frame-total"):
         block = channel(binary, socket, name)
-        taken[name] = block.get("p50", 0) / 1000.0
-        taken[name + "-p99"] = block.get("p99", 0) / 1000.0
+        taken[name] = block.get("p50", 0) / 1e6
+        taken[name + "-p99"] = block.get("p99", 0) / 1e6
     return taken
 
 
@@ -234,6 +238,8 @@ def run(binary, tag):
         key = (f"rot{rotation}", COUNTS[1])
         digests[key] = presented_shot(socket)
         print(f"{tag} rotated {rotation} {COUNTS[1]}: presented {digests[key]}", flush=True)
+        assert digests[key] != digests[("stack", COUNTS[1])], (
+            f"the {rotation} degree output was not rotated")
         stop_binary(binary, unit, socket)
     unit, socket = session(binary, tag, "stack", "full", [("TOMOE_DEBUG_DAMAGE", "1")])
     spawn(socket, 0, COUNTS[-1], True, unit)
