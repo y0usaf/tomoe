@@ -117,8 +117,8 @@ from windows and outputs to each extension's state and last error.
 
 `tomoe frames` prints each output's frame counters, what a composition costs it
 (`:cost-ns`), the vblanks it missed (`:missed`) and its frame clock, and
-`tomoe memory` the heap and buffer use. `:fragments` is how many pixels the frame
-asked the GPU to fill, so a change that stops painting what something else hides
+`tomoe memory` the heap and buffer use. `:fragments` is how many pixels the frame's
+scene draws covered, so a change that stops painting what something else hides
 shows up there directly: a draw a window above it covers opaquely is not issued
 at all, every other draw is scissored to the part of it that nothing hides and to
 the damage that needs it, unless that part needs more than the sixteen rectangles
