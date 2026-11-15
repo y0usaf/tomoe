@@ -11,26 +11,6 @@
   (or (getf (and *runtime* (%r :budget-limits)) key)
       (getf *bootstrap-limits* key)))
 
-(defun %finite-float-p (value)
-  "True when VALUE is an IEEE float with a finite value."
-  (and (floatp value)
-       (= value value)
-       (<= (abs value) 1.7976931348623157d308)))
-
-(defun %finite-real-p (value)
-  (and (realp value)
-       (or (not (floatp value)) (%finite-float-p value))))
-
-(defun %double-float (value)
-  "Coerce a finite real to a finite double-float, or signal a type error."
-  (unless (%finite-real-p value)
-    (error "Expected a finite real number, got ~S." value))
-  (let ((result (ignore-errors (coerce value 'double-float))))
-    (unless (and result (%finite-float-p result))
-      (error "Real number cannot be represented as a finite double-float: ~S."
-             value))
-    result))
-
 (defun %round-away-positive (value)
   "Round a non-negative REAL away from zero at an exact half."
   (floor (+ (coerce value 'double-float) 0.5d0)))
@@ -60,21 +40,6 @@
 
 (defun %in-range-p (value low high)
   (and (integerp value) (<= low value high)))
-
-(defun %ui-color (value &optional nullable)
-  (cond ((and nullable (null value)) nil)
-        ((%in-range-p value 0 4294967295) value)
-        ((and (stringp value) (member (length value) '(4 7 9))
-              (char= (char value 0) #\#)
-              (every (lambda (c) (digit-char-p c 16)) (subseq value 1)))
-         (let ((number (parse-integer value :start 1 :radix 16)))
-           (case (length value)
-             (4 (logior (ash (* 17 (ldb (byte 4 8) number)) 24)
-                        (ash (* 17 (ldb (byte 4 4) number)) 16)
-                        (ash (* 17 (ldb (byte 4 0) number)) 8) 255))
-             (7 (logior (ash number 8) 255))
-             (9 number))))
-        (t (error "UI color must be RRGGBBAA or #rgb/#rrggbb/#rrggbbaa."))))
 
 (defun %alist-set (key value alist &optional (test #'equal))
   (let ((entry (assoc key alist :test test)))

@@ -1850,7 +1850,7 @@ struct copy_budget {
     int64_t chars;
 };
 
-static _Noreturn void copy_fail(const char *control, int argc, lisp_value *argv)
+_Noreturn void lisp_fail_format(const char *control, int argc, lisp_value *argv)
 {
     lisp_value message = lisp_format(control, strlen(control), argc, argv);
     throw_error_value(make_condition_obj(PTR(message, lisp_string)->data));
@@ -1859,13 +1859,13 @@ static _Noreturn void copy_fail(const char *control, int argc, lisp_value *argv)
 static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int depth)
 {
     if (++budget->nodes > budget->limit || depth > 64)
-        copy_fail("Extension data exceeds the node/depth budget.", 0, NULL);
+        lisp_fail_format("Extension data exceeds the node/depth budget.", 0, NULL);
     switch (TYPE(item)) {
     case LT_CONS: {
         lisp_value head = NIL_VAL, last = NIL_VAL, tail = item;
         while (consp(tail)) {
             if (++budget->nodes > budget->limit)
-                copy_fail("Extension data exceeds the node budget.", 0, NULL);
+                lisp_fail_format("Extension data exceeds the node budget.", 0, NULL);
             lisp_value cell = cons(copy_walk(budget, CAR(tail), depth + 1), NIL_VAL);
             if (nilp(head))
                 head = cell;
@@ -1881,7 +1881,7 @@ static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int dep
     case LT_STRING:
         if ((int64_t)PTR(item, lisp_string)->len > budget->chars) {
             lisp_value limit = make_int(budget->chars);
-            copy_fail("String exceeds ~D characters.", 1, &limit);
+            lisp_fail_format("String exceeds ~D characters.", 1, &limit);
         }
         return item;
     case LT_INT:
@@ -1890,10 +1890,10 @@ static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int dep
         return item;
     case LT_DOUBLE:
         if (!(DBLVAL(item) == DBLVAL(item)) || fabs(DBLVAL(item)) > 1.7976931348623157e308)
-            copy_fail("Only finite floats are extension data.", 0, NULL);
+            lisp_fail_format("Only finite floats are extension data.", 0, NULL);
         return item;
     default:
-        copy_fail("Not extension data: ~S", 1, &item);
+        lisp_fail_format("Not extension data: ~S", 1, &item);
     }
 }
 
@@ -1907,11 +1907,13 @@ lisp_value builtin_copy_data(int argc, lisp_value *argv)
 
 static struct lisp_symbol *sym_runtime, *sym_pending_writes, *sym_retired_state, *sym_keep, *sym_release;
 
-static struct lisp_symbol *runtime_symbol(struct lisp_symbol **cache, const char *name)
+void lisp_runtime_symbols_init(void)
 {
-    if (!*cache)
-        *cache = symbol_intern(PKG_TOMOE, name, strlen(name), false);
-    return *cache;
+    sym_runtime = symbol_intern(PKG_TOMOE, "*RUNTIME*", 9, false);
+    sym_pending_writes = symbol_intern(PKG_TOMOE, "*PENDING-WRITES*", 16, false);
+    sym_retired_state = symbol_intern(PKG_TOMOE, "*RETIRED-STATE*", 15, false);
+    sym_keep = symbol_intern(PKG_TOMOE, "%KEEP", 5, false);
+    sym_release = symbol_intern(PKG_TOMOE, "%RELEASE", 8, false);
 }
 
 static lisp_value *plist_cell(lisp_value plist, lisp_value key)
@@ -1924,15 +1926,15 @@ static lisp_value *plist_cell(lisp_value plist, lisp_value key)
 
 lisp_value builtin_runtime_read(int argc, lisp_value *argv)
 {
-    lisp_value *cell = plist_cell(runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*")->value, argv[0]);
+    lisp_value *cell = plist_cell(sym_pending_writes->value, argv[0]);
     if (!cell)
-        cell = plist_cell(runtime_symbol(&sym_runtime, "*RUNTIME*")->value, argv[0]);
+        cell = plist_cell(sym_runtime->value, argv[0]);
     return cell ? *cell : NIL_VAL;
 }
 
 lisp_value builtin_runtime_write(int argc, lisp_value *argv)
 {
-    struct lisp_symbol *writes = runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*");
+    struct lisp_symbol *writes = sym_pending_writes;
     lisp_value *cell = plist_cell(writes->value, argv[0]);
     if (cell)
         *cell = argv[1];
@@ -1943,9 +1945,9 @@ lisp_value builtin_runtime_write(int argc, lisp_value *argv)
 
 lisp_value builtin_persist_state(int argc, lisp_value *argv)
 {
-    struct lisp_symbol *runtime = runtime_symbol(&sym_runtime, "*RUNTIME*");
-    struct lisp_symbol *writes = runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*");
-    struct lisp_symbol *retired = runtime_symbol(&sym_retired_state, "*RETIRED-STATE*");
+    struct lisp_symbol *runtime = sym_runtime;
+    struct lisp_symbol *writes = sym_pending_writes;
+    struct lisp_symbol *retired = sym_retired_state;
     lisp_value state = runtime->value;
     for (lisp_value scan = writes->value; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
         lisp_value *cell = plist_cell(state, CAR(scan));
@@ -1956,10 +1958,10 @@ lisp_value builtin_persist_state(int argc, lisp_value *argv)
     }
     writes->value = NIL_VAL;
     lisp_value old = runtime->value;
-    lisp_value kept = apply_function(VAL(runtime_symbol(&sym_keep, "%KEEP")), 1, &state);
+    lisp_value kept = apply_function(VAL(sym_keep), 1, &state);
     runtime->value = kept;
     if (truthy(retired->value))
-        apply_function(VAL(runtime_symbol(&sym_release, "%RELEASE")), 1, &retired->value);
+        apply_function(VAL(sym_release), 1, &retired->value);
     retired->value = old;
     return kept;
 }
