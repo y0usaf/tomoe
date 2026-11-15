@@ -154,6 +154,7 @@
                   ./examples
                   ./share
                   ./build.lisp
+                  ./land.sh
                   ./Makefile
                 ];
               }
@@ -204,6 +205,7 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
+            install -Dm755 land.sh $out/bin/tomoe-land
             install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
