@@ -2,6 +2,7 @@
 #include "budget.h"
 #include "policy.h"
 #include <malloc.h>
+#include <unistd.h>
 
 static void rollup(uint64_t *rss, uint64_t *pss, uint64_t *anon, uint64_t *file) {
     *rss = *pss = *anon = *file = 0;
