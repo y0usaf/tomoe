@@ -625,7 +625,7 @@ static int run_compositor(const struct cli_options *options) {
     if (outputs_error)
         tomoe_log(LOG_ERROR, "tomoe: %s", outputs_error);
     lisp_value sources = lisp_nil();
-    if (!options->bare && options->config)
+    if (options->config)
         sources = lisp_cons(lisp_cstring(options->config), lisp_nil());
     lisp_value boot_args[3] = { sources, lisp_bool(options->bare), lisp_bool(options->watch) };
     lisp_value boot_result = lisp_nil();
