@@ -2676,8 +2676,14 @@ uint32_t render_read_format(struct render *renderer) {
     return renderer->read_bgra ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_XBGR8888;
 }
 
+static const char *selected_render_node;
+
+void tomoe_select_render_node(const char *node) {
+    selected_render_node = node;
+}
+
 static char *render_node_name(int backend_fd) {
-    const char *chosen = getenv("TOMOE_RENDER_NODE");
+    const char *chosen = selected_render_node;
     char *name = chosen && *chosen ? strdup(chosen) :
         backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
     if (!name) {
@@ -2805,14 +2811,14 @@ static struct render *render_open(char *node) {
     }
     r->stall_write = -1;
     r->stall_capture_write = -1;
-    r->stall_capture_on = getenv("TOMOE_TEST_STALL_CAPTURE") != NULL;
+    r->stall_capture_on = tomoe_test_flag("stall-capture");
     if (r->stall_capture_on) {
-        const char *delay = getenv("TOMOE_TEST_STALL_CAPTURE_MS");
+        const char *delay = tomoe_test_flag_value("stall-capture-ms");
         r->stall_capture_delay_ms = delay ? atoi(delay) : 0;
     }
-    r->stall_test = getenv("TOMOE_TEST_STALL_FENCE") != NULL;
+    r->stall_test = tomoe_test_flag("stall-fence");
     if (r->stall_test) {
-        const char *delay = getenv("TOMOE_TEST_STALL_FENCE_MS");
+        const char *delay = tomoe_test_flag_value("stall-fence-ms");
         r->stall_delay_ms = delay ? atoi(delay) : 0;
     }
     wl_list_init(&r->images);

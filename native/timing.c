@@ -33,9 +33,8 @@ static uint64_t stall_threshold = 4170000;
 bool timing_enabled;
 
 void timing_init(void) {
-    const char *value = getenv("TOMOE_TIMINGS");
-    timing_enabled = value && *value && strcmp(value, "0") != 0;
-    const char *threshold = getenv("TOMOE_STALL_NS");
+    timing_enabled = tomoe_test_flag("timings");
+    const char *threshold = tomoe_test_flag_value("stall-ns");
     if (threshold && *threshold) {
         char *end = NULL;
         unsigned long long parsed = strtoull(threshold, &end, 10);

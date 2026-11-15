@@ -420,14 +420,10 @@ static struct ns_timer feedback_timer = { .fd = -1 };
 static const int64_t feedback_default_hold_ns = 250000000;
 
 static int64_t feedback_hold_ns(void) {
-    static int64_t hold = -1;
-    if (hold < 0) {
-        const char *text = getenv("TOMOE_FEEDBACK_HOLD_MS");
-        char *end = NULL;
-        long ms = text && *text ? strtol(text, &end, 10) : -1;
-        hold = text && *text && end && !*end && ms >= 0 ? ms * 1000000 : feedback_default_hold_ns;
-    }
-    return hold;
+    const char *text = tomoe_test_flag_value("feedback-hold-ms");
+    char *end = NULL;
+    long ms = text && *text ? strtol(text, &end, 10) : -1;
+    return text && *text && end && !*end && ms >= 0 ? ms * 1000000 : feedback_default_hold_ns;
 }
 
 static void feedback_send(struct surface *surface, struct screen *output, uint8_t mode) {

@@ -1720,12 +1720,7 @@ static size_t set_callback_count(const struct ui_set *set) {
     " :assets %" PRIu64 " :asset-bytes %" PRIu64 " :asset-loads %" PRIu64
 
 static bool ui_counter_stats(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        const char *value = getenv("TOMOE_UI_STATS");
-        cached = value && value[0] && strcmp(value, "0") != 0;
-    }
-    return cached;
+    return tomoe_test_flag("ui-stats");
 }
 
 const char *tomoe_ui_stats(struct tomoe *s) {

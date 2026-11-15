@@ -3,6 +3,18 @@
 #include <poll.h>
 #include <unistd.h>
 
+static bool debug_damage(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = tomoe_test_flag("debug-damage");
+    return enabled;
+}
+
+static bool refuse_planes(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = tomoe_test_flag("refuse-planes");
+    return enabled;
+}
+
 
 int pixel_round(double value) {
     if (value >= INT_MAX) return INT_MAX;
@@ -846,7 +858,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     } else {
         partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
     }
-    bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
+    bool highlight = track && debug_damage();
     if (highlight) partial = false;
     if (o->planes.changed) partial = false;
     if (fenced(output)) {
@@ -945,7 +957,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
     if (track && o->planes.count && !o->planes.changed && !o->gamma_dirty &&
             o->presented[0] && o->presented[0]->width == output->width &&
             o->presented[0]->height == output->height &&
-            !capture_wants_cursorless(o) && !getenv("TOMOE_DEBUG_DAMAGE")) {
+            !capture_wants_cursorless(o) && !debug_damage()) {
         struct frame probe = { .server = s, .x = o->x, .y = o->y,
             .buffer = o->presented[0], .planes = &o->planes,
             .transform = (state->committed & SCREEN_TRANSFORM) ?
@@ -1392,12 +1404,6 @@ static void plane_order(struct plane_item *item, size_t count) {
     }
 }
 
-static bool planes_disabled(void) {
-    static int disabled = -1;
-    if (disabled < 0) disabled = getenv("TOMOE_NO_PLANES") != NULL;
-    return disabled;
-}
-
 size_t planes_assign(struct output *o) {
     struct tomoe *s = o->server;
     struct plane_assignment *planes = &o->planes;
@@ -1420,7 +1426,7 @@ size_t planes_assign(struct output *o) {
         o->ring.format.formats[0].format == DRM_FORMAT_ARGB8888;
     if (capacity && s->view_zoom == 1 && !lock_active(s) && !s->screenshot &&
             o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
-            !ghosts_visible(s) && !capture_wants_output(o) && !planes_disabled()) {
+            !ghosts_visible(s) && !capture_wants_output(o)) {
         physical_output_box(o, &scan.output);
         bool cursor_here = !s->cursor_hidden && s->pointer_x >= scan.output.x &&
             s->pointer_y >= scan.output.y && s->pointer_x < scan.output.x + scan.output.width &&
@@ -1559,7 +1565,7 @@ size_t planes_assign(struct output *o) {
 
 static bool planes_test(struct output *o) {
     if (o->planes.tested || !o->presented[0]) return true;
-    if (getenv("TOMOE_TEST_REFUSE_PLANES")) return false;
+    if (refuse_planes()) return false;
     struct screen_state probe;
     screen_state_init(&probe);
     screen_state_set_buffer(&probe, o->presented[0]);

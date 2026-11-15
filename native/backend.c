@@ -6,8 +6,14 @@
 #include <signal.h>
 #include <unistd.h>
 
+static const char *selected_backend;
+
+void tomoe_select_backend(const char *kind) {
+    selected_backend = kind;
+}
+
 static int backend_open(struct tomoe *s) {
-    const char *kind = getenv("TOMOE_BACKEND");
+    const char *kind = selected_backend;
     if (kind && !strcmp(kind, "headless")) {
         s->backend = SCREEN_HEADLESS;
         return -1;
@@ -83,7 +89,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     wl_list_init(&s->capture_sessions);
     wl_list_init(&s->capture_pending);
     wl_list_init(&s->cursor_sessions);
-    s->capture_watch_fail = getenv("TOMOE_TEST_CAPTURE_WATCH_FAIL") != NULL;
+    s->capture_watch_fail = tomoe_test_flag("capture-watch-fail");
     wl_list_init(&s->idle_notifications);
     wl_list_init(&s->idle_inhibitors);
     wl_list_init(&s->gammas);
