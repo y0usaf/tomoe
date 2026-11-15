@@ -753,7 +753,11 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:watchdog-ms (:integer 0 60000) 1000)
     (:force-server-side-decorations :boolean nil)
     (:honor-xdg-activation-with-invalid-serial :boolean nil))
-  "Compositor settings: (key type default). A :group type holds its own table.")
+  "Compositor settings: (key type default). A :group type holds its own table.
+This table is the only place a settings default is written: the native side
+stores no default of its own and takes every value, named by a config or not,
+from the settings staged on each commit, so a key a config omits comes from
+here.")
 
 (defparameter +input-device-settings+
   '((:disabled :boolean) (:disabled-on-external-mouse :boolean) (:tap :boolean)

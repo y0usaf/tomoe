@@ -57,19 +57,8 @@ static const struct setting_field {
     { "pointer-follows-focus", offsetof(struct settings, pointer_follows_focus), SETTING_BOOL },
 };
 
-void settings_default(struct settings *settings) {
-    *settings = (struct settings){ .nested_width = 1280, .nested_height = 800,
-        .border_width = 2, .border_focused = 0x7aa2f7ff, .border_unfocused = 0x3b4261ff,
-        .shadow_range = 12, .shadow_color = 0x00000099, .shadow_power = 3,
-        .blur_passes = 3, .blur_offset = 1, .blur_margin = 96, .screenshot_freeze = true,
-        .screenshot_colors = { .accent = 0x7aa1f7ff, .background = 0x1c1c21ff, .text = 0xffffffff,
-            .chip = 0x45454fff },
-        .window_move = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
-            .epsilon = 0.001, .launch = 63 },
-        .window_view = { .kind = ANIMATION_SPRING, .damping_ratio = 1, .stiffness = 4000,
-            .epsilon = 0.001, .launch = 63 },
-        .window_open = { .kind = ANIMATION_EASE, .duration_ms = 90, .curve = 3 },
-        .outline_fly = true };
+void settings_clear(struct settings *settings) {
+    memset(settings, 0, sizeof(*settings));
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
 }
@@ -80,7 +69,7 @@ int tomoe_present_settings(struct tomoe *s) {
     if (plan->settings) settings_finish(plan->settings);
     else plan->settings = calloc(1, sizeof(*plan->settings));
     if (!plan->settings) return 0;
-    settings_default(plan->settings);
+    settings_clear(plan->settings);
     return 1;
 }
 
@@ -115,7 +104,9 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         return 1;
     }
     if (strcmp(key, "focus-outline-cross") == 0) {
-        settings->outline_fly = strcmp(text, "shrink") != 0;
+        if (strcmp(text, "fly") == 0) settings->outline_fly = true;
+        else if (strcmp(text, "shrink") == 0) settings->outline_fly = false;
+        else return 0;
         return 1;
     }
     int handled = input_setting(settings, key, NAN, text);

@@ -826,7 +826,7 @@ struct settings {
     char *blur_namespaces[64];
     size_t blur_namespace_count;
 };
-void settings_default(struct settings *settings);
+void settings_clear(struct settings *settings);
 void settings_finish(struct settings *settings);
 void input_config_unset(struct input_config *config);
 int input_setting(struct settings *settings, const char *key, double value, const char *text);

@@ -205,8 +205,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     s->cursor_motion.current[0] = s->cursor_motion.current[3] = 1;
     s->cursor_motion.target[0] = s->cursor_motion.target[3] = 1;
     s->cursor_motion.shake = 1;
-    settings_default(&s->settings);
-    s->settings.nested_width = s->settings.nested_height = 0;
+    settings_clear(&s->settings);
     s->display = wl_display_create();
     if (!s->display) goto failed;
     int drm_fd = backend_open(s);
