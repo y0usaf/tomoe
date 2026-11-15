@@ -3,6 +3,7 @@
 static struct test_flag {
     const char *name;
     const char *value;
+    bool set;
 } test_flags[] = {
     { "debug-damage", NULL },
     { "refuse-planes", NULL },
@@ -34,7 +35,7 @@ static struct test_flag *flag_for(const char *name) {
 
 int tomoe_test_flag(const char *name) {
     const struct test_flag *flag = flag_for(name);
-    return flag && !(flag->value && !strcmp(flag->value, "0"));
+    return flag && flag->set && !(flag->value && !strcmp(flag->value, "0"));
 }
 
 const char *tomoe_test_flag_value(const char *name) {
@@ -46,5 +47,6 @@ int tomoe_set_test_flag(const char *name, const char *value) {
     struct test_flag *flag = flag_for(name);
     if (!flag) return 0;
     flag->value = value;
+    flag->set = true;
     return 1;
 }
