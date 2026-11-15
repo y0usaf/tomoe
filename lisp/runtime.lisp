@@ -937,7 +937,8 @@ when it is not 1."
 
 (defun transact (mounts event changed &optional force)
   (let ((*command-input* (and (getf event :input) t)))
-    (%transact mounts event changed force)))
+    (unwind-protect (%transact mounts event changed force)
+      (%ui-assets-discard))))
 
 (defun %transact (mounts event changed &optional force)
   "Stage reducers and dependency propagation before touching the native scene.
