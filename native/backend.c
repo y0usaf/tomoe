@@ -148,6 +148,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     refresh_scene(s);
     screens_frame_after_events(s);
     wl_display_flush_clients(s->display);
+    screens_idle_frames(s);
     int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);
     if (status < 0 && errno != EINTR) return -1;
     keyboard_sync_leds(s);

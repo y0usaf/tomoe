@@ -567,7 +567,7 @@ struct screen {
     uint64_t missed_frames;
     int frame_fence;
     struct ns_timer frame_timer;
-    struct wl_event_source *idle_frame;
+    bool idle_frame;
     struct wl_global *global;
     struct wl_list resources, xdg_resources;
     struct {
@@ -1709,6 +1709,7 @@ void screen_schedule_animation(struct screen *screen);
 void screen_send_frame(struct screen *screen);
 void screen_frame_committed(struct screen *screen, const struct screen_state *state);
 void screens_frame_after_events(struct tomoe *s);
+void screens_idle_frames(struct tomoe *s);
 void screens_grab_waiting(struct tomoe *s);
 bool screen_frames_late(struct screen *screen);
 void screen_send_present(struct screen *screen, struct screen_present *present);
