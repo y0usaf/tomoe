@@ -205,6 +205,8 @@ class Compositor:
         return result.returncode, result.stdout + result.stderr
 
     def text(self):
+        if self.log.closed:
+            return ""
         self.log.flush()
         with open(self.log_path) as handle:
             return handle.read()
@@ -308,7 +310,7 @@ def same(a, b):
     return read_ppm(a)[2] == read_ppm(b)[2]
 
 
-def case(compositor, path, steps=8):
+def case(compositor, path, steps=16):
     shots = []
     stop = threading.Event()
 
@@ -325,7 +327,7 @@ def case(compositor, path, steps=8):
     thread = threading.Thread(target=capture, daemon=True)
     thread.start()
     time.sleep(0.1)
-    compositor.stroke(path, steps=steps, interval_ms=10)
+    compositor.stroke(path, steps=steps, interval_ms=20)
     time.sleep(0.05)
     stop.set()
     thread.join()
@@ -428,8 +430,8 @@ def main():
     def magnified(compositor, name, reference, shots, settled):
         park(compositor)
         before = compositor.screenshot("shake-before.ppm")
-        zigzag = [(PARK[0] + 160, PARK[1] - 60), (PARK[0], PARK[1] + 60)] * 4 + [PARK]
-        compositor.stroke(zigzag, steps=3, interval_ms=8)
+        zigzag = [(PARK[0] + 70, PARK[1] - 50), (PARK[0] - 70, PARK[1] + 50)] * 6 + [PARK]
+        compositor.stroke(zigzag, steps=3, interval_ms=6)
         magnified_shot = compositor.screenshot("shake-magnified.ppm")
         rest_lit = len(near(lit_points(before), PARK[0], PARK[1], 120))
         shaken_lit = len(near(lit_points(magnified_shot), PARK[0], PARK[1], 120))

@@ -456,9 +456,7 @@ static void draw_cursor_trail(struct tomoe *s, struct frame *data) {
         &s->cursor_motion.trail);
 }
 static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
-        double scale, bool sprite) {
-    draw_cursor_trail(s, data);
-    if (!sprite) return;
+        double scale) {
     const struct cursor_image *image = &s->cursor_image;
     double matrix[4], offset[2];
     cursor_motion_matrix(s, matrix, offset);
@@ -514,8 +512,10 @@ static void render_cursor(struct output *o, struct frame *data, const struct pre
     struct tomoe *s = o->server;
     bool sprite = s->cursor_image.texture && !o->screen->hardware_cursor;
     if ((!sprite && s->cursor_motion.trail.steps <= 0) || (plan && !planned)) return;
-    draw_cursor(s, data, s->pointer_x - data->x, s->pointer_y - data->y,
-        planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale), sprite);
+    draw_cursor_trail(s, data);
+    if (sprite)
+        draw_cursor(s, data, s->pointer_x - data->x, s->pointer_y - data->y,
+            planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale));
 }
 
 void finish_output_capture(struct output *o) {
@@ -857,7 +857,7 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
         x -= root.target.x;
         y -= root.target.y;
         if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
-            draw_cursor(s, &f, x, y, root.target.scale, true);
+            draw_cursor(s, &f, x, y, root.target.scale);
     }
     if (!fence) return pass_submit(pass);
     *fence = pass_submit_fence(pass);
