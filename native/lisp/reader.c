@@ -212,6 +212,25 @@ static lisp_value read_atom(struct lisp_reader *rd)
     for (size_t k = 0; k < len; k++)
         buffer[k] = (char)toupper((unsigned char)token[k]);
     buffer[len] = '\0';
+    char *colon = memchr(buffer, ':', len);
+    if (colon && colon > buffer) {
+        size_t prefix = (size_t)(colon - buffer);
+        char *name = colon + 1;
+        if (*name == ':')
+            name++;
+        if (!*name)
+            reader_error(rd, "empty symbol after package prefix");
+        *colon = '\0';
+        if (strcmp(buffer, "TOMOE") == 0)
+            return VAL(symbol_intern(PKG_TOMOE, name, strlen(name), false));
+        if (strcmp(buffer, "KEYWORD") == 0)
+            return lisp_intern_token(PKG_KEYWORD, name, strlen(name), true, false);
+        if (strcmp(buffer, "TOMOE-USER") == 0 || strcmp(buffer, "CL") == 0 ||
+                strcmp(buffer, "COMMON-LISP") == 0)
+            return lisp_intern_token(rd->package, name, strlen(name), false, false);
+        (void)prefix;
+        reader_error(rd, "unknown package prefix %s", buffer);
+    }
     return lisp_intern_token(rd->package, buffer, len, false, false);
 }
 

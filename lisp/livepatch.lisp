@@ -85,13 +85,11 @@ was written against, so such an undo is refused instead."
 (defun refresh-mounts (names)
   "Re-invoke the root reducers named NAMES, so changed definitions reach the next
 commit."
-  (let ((roots (remove-if-not (lambda (mounted)
-                                (member (spec-name (mounted-spec mounted)) names
-                                        :test #'equal))
-                              (root-mounts (runtime-mounts)))))
-    (when roots
-      (transact roots (list :type :change :keys nil) nil
-                (mapcar (lambda (mounted) (spec-name (mounted-spec mounted))) roots)))))
+  (let ((roots (root-mounts (runtime-mounts))))
+    (transact roots (list :type :change :keys nil) nil
+              (loop for mounted in roots
+                    for name = (spec-name (mounted-spec mounted))
+                    when (member name names :test #'equal) collect name))))
 
 (defun remove-patch-mounts (extensions &optional refresh)
   "Drop the mounts named EXTENSIONS. REFRESH also re-invokes every other mount."
@@ -190,7 +188,7 @@ compositor as it was and signals its error. Returns a report plist."
                                    collect (patch-definition-snapshot symbol))
                    refresh (patch-refresh-list path))
              (setf mounted (mount-patch-specs (load-specs path package)))
-             (when refresh (refresh-mounts refresh))
+             (refresh-mounts refresh)
              (let ((patch (list :id id :name name :file path :generated generated
                                 :refresh refresh :snapshots snapshots
                                 :extensions mounted
@@ -233,9 +231,8 @@ compositor as it was and signals its error. Returns a report plist."
       (when (getf patch :generated) (ignore-errors (%delete-file (getf patch :file))))
       (bump-generation)
       (let ((warning nil))
-        (when refresh
-          (%catch (lambda () (refresh-mounts refresh))
-                  (lambda (text) (setf warning text))))
+        (%catch (lambda () (refresh-mounts refresh))
+                (lambda (text) (setf warning text)))
         (list :id (getf patch :id) :name (getf patch :name) :warning warning
               :extensions (copy-list extensions)
               :definitions (copy-list (getf patch :definitions)))))))
