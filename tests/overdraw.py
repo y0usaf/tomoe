@@ -25,7 +25,8 @@ POLICY = """
          (width (or (and output (getf output :width)) 1280))
          (height (or (and output (getf output :height)) 720))
          (windows (sort (copy-list (context snapshot :windows))
-                        (lambda (first second) (< (getf first :id) (getf second :id)))))
+                        (lambda (first second)
+                          (string< (getf first :app-id) (getf second :app-id)))))
          (count (length windows)))
     (values (list :rotated t)
             (append
@@ -165,7 +166,7 @@ def spawn(socket, first, count, repaint, unit):
             f"systemd-run --unit={socket}-{index} --property=Type=exec "
             f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY={socket} "
             "tomoe-test-client --seconds 3600 "
-            f"--mode xdg --app-id overdraw-{index} --size 320x200 "
+            f"--mode xdg --app-id overdraw-{index:02d} --size 320x200 "
             f"--color {COLOURS[index % len(COLOURS)]}"
             + (" --commit-rate 60 --repaint" if index == 0 and repaint else ""))
     if count > first:
