@@ -18,17 +18,21 @@ POLICY = """
           (* (floor index columns) cell-height)
           cell-width cell-height)))
 
-(define-extension "overdraw" (:reads (:windows :outputs) :state nil) (snapshot state event)
-  (declare (ignore state event))
+(define-extension "overdraw" (:reads (:windows :outputs) :state '(:stacked -1))
+    (snapshot state event)
+  (declare (ignore event))
   (let* ((output (first (context snapshot :outputs)))
          (width (or (and output (getf output :width)) 1280))
          (height (or (and output (getf output :height)) 720))
          (windows (sort (copy-list (context snapshot :windows))
                         (lambda (first second)
                           (string< (getf first :app-id) (getf second :app-id)))))
-         (count (length windows)))
-    (values nil
+         (count (length windows))
+         (stack (unless (eql count (getf state :stacked))
+                  (loop for window in windows collect (raise-window (getf window :id))))))
+    (values (list :stacked count)
             (append
+             stack
              (list (settings :animations nil
                              :border (list :width 3 :radius 14)
                              :shadow (list :range 10 :power 3))
