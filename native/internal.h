@@ -211,7 +211,7 @@ void op_end(struct pass *pass, struct op_clip *clip);
 struct op *pass_recorded(struct pass *pass, size_t before);
 size_t pass_record_count(const struct pass *pass);
 void oplist_finish(struct oplist *list);
-void oplist_reserve(struct oplist *list);
+void oplist_reserve(struct oplist *list, size_t used);
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out);
 void oplist_expand(const struct oplist *list, struct region *region);
 void render_destroy(struct render *r);

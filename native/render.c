@@ -2240,12 +2240,13 @@ struct pass *render_record(struct render *r, struct buffer *buffer, struct oplis
     return pass;
 }
 
-void oplist_reserve(struct oplist *list) {
-    if (list->cap >= OPLIST_RESERVE) return;
-    struct op *ops = realloc(list->ops, OPLIST_RESERVE * sizeof(*ops));
+void oplist_reserve(struct oplist *list, size_t used) {
+    size_t want = used * 2 > OPLIST_RESERVE ? used * 2 : OPLIST_RESERVE;
+    if (list->cap >= want) return;
+    struct op *ops = realloc(list->ops, want * sizeof(*ops));
     if (!ops) return;
     list->ops = ops;
-    list->cap = OPLIST_RESERVE;
+    list->cap = want;
 }
 
 void pass_clip(struct pass *pass, const struct region *clip) {
