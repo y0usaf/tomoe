@@ -190,7 +190,8 @@ def describe(cost):
             f"{cost['quads']:.1f} quads, {cost['runs']:.1f} runs and "
             f"{cost['gl-calls']:.1f} gl calls/frame, draw/raster/total "
             f"{cost['frame-draw']:.2f}/{cost['frame-raster']:.2f}/{cost['frame-total']:.2f} ms "
-            f"p50, draw {cost['frame-draw-p99']:.2f} and raster "
+            f"p50 in {cost['frame-draw-noise']}/{cost['frame-raster-noise']}/"
+            f"{cost['frame-total-noise']}, draw {cost['frame-draw-p99']:.2f} and raster "
             f"{cost['frame-raster-p99']:.2f} ms p99")
 
 
