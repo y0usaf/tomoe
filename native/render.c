@@ -71,7 +71,7 @@ struct render {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
     struct scene scene;
-    uint64_t gl_calls, quads, runs, uploads, upload_bytes;
+    uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
     float *mesh;
     size_t mesh_cap;
     char *node, *exe, *warm_dir, *driver;
@@ -107,6 +107,9 @@ struct pass {
     uint64_t point;
     struct oplist *record;
     const struct region *clip;
+    const struct oplist *ops;
+    size_t op_next;
+    bool op_lost;
 };
 
 static uint64_t serials;
@@ -904,11 +907,114 @@ void pass_triangles(struct pass *pass, struct program *p, const float *pos, size
     glDisableVertexAttribArray(p->pos);
 }
 
+static uint64_t quad_pixels(const struct pass *pass, const float pos[8],
+        const struct rect *clip) {
+    double x0 = 1e18, x1 = -1e18, y0 = 1e18, y1 = -1e18;
+    double width = pass->buffer->width, height = pass->buffer->height;
+    for (int i = 0; i < 4; i++) {
+        double x = (pos[2 * i] + 1.0) * 0.5 * width, y = (pos[2 * i + 1] + 1.0) * 0.5 * height;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    int32_t left = (int32_t)floor(x0), right = (int32_t)ceil(x1);
+    int32_t top = (int32_t)floor(y0), bottom = (int32_t)ceil(y1);
+    if (clip) {
+        if (clip->x1 > left) left = clip->x1;
+        if (clip->y1 > top) top = clip->y1;
+        if (clip->x2 < right) right = clip->x2;
+        if (clip->y2 < bottom) bottom = clip->y2;
+    }
+    if (right <= left || bottom <= top) return 0;
+    return (uint64_t)(right - left) * (uint64_t)(bottom - top);
+}
+
+static void draw_rotated(struct pass *pass, struct program *p, const float pos[8],
+        const struct region *clip, const float texcoords[8]) {
+    struct render *r = pass->r;
+    if (!clip) {
+        render_quad(r, p, pos, NULL, texcoords);
+        return;
+    }
+    int count = 0;
+    const struct rect *rects = region_rectangles((struct region *)clip, &count);
+    GL(r, glEnable(GL_SCISSOR_TEST));
+    for (int i = 0; i < count; i++) {
+        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
+            rects[i].y2 - rects[i].y1));
+        render_quad(r, p, pos, NULL, texcoords);
+    }
+    GL(r, glDisable(GL_SCISSOR_TEST));
+}
+
+struct scene_vertex {
+    float pos[2], local[2], tex[2];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2];
+};
+
+struct scene_instance {
+    float pos[8], local[8], tex[8];
+    float color[4], tint[4], params[4], extra[4];
+    float size[2], scissor[4];
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+};
+
+struct scene_run {
+    size_t first, count;
+    struct gl_texture *texture;
+    GLuint id;
+    GLenum target;
+    int program, filter, blend;
+    float scissor[4];
+};
+
+enum { SCENE_VERTICES = 6 };
+
+static void quad_positions(const struct pass *pass, struct box box, double rotation,
+        float pos[8]) {
+    float w = pass->buffer->width, h = pass->buffer->height;
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double c = 1, s = 0;
+    if (rotation != 0) {
+        double rad = rotation * 3.14159265358979323846 / 180.0;
+        c = cos(rad);
+        s = sin(rad);
+    }
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
+        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
+    }
+}
+
+static void rotated_bounds(struct box *out, struct box box, double rotation) {
+    if (rotation == 0) {
+        *out = box;
+        return;
+    }
+    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
+    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
+    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (int i = 0; i < 4; i++) {
+        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
+        double x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
+        x0 = fmin(x0, x); y0 = fmin(y0, y); x1 = fmax(x1, x); y1 = fmax(y1, y);
+    }
+    int left = (int)floor(x0), top = (int)floor(y0);
+    *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
+}
+
 void pass_quad(struct pass *pass, struct program *p, const float pos[8], const float local[8],
         const float texcoords[8]) {
     struct render *r = pass->r;
     pass_flush(pass);
     if (!pass->clip) {
+        r->fragments += quad_pixels(pass, pos, NULL);
         render_quad(r, p, pos, local, texcoords);
         return;
     }
@@ -918,6 +1024,7 @@ void pass_quad(struct pass *pass, struct program *p, const float pos[8], const f
     for (int i = 0; i < count; i++) {
         GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
             rects[i].y2 - rects[i].y1));
+        r->fragments += quad_pixels(pass, pos, &rects[i]);
         render_quad(r, p, pos, local, texcoords);
     }
     GL(r, glDisable(GL_SCISSOR_TEST));
@@ -1222,82 +1329,9 @@ bool render_wait(struct render *r, struct timeline *timeline, uint64_t point) {
     return ok;
 }
 
-static void draw_rotated(struct pass *pass, struct program *p, const float pos[8],
-        const struct region *clip, const float texcoords[8]) {
-    struct render *r = pass->r;
-    if (!clip) {
-        render_quad(r, p, pos, NULL, texcoords);
-        return;
-    }
-    int count = 0;
-    const struct rect *rects = region_rectangles((struct region *)clip, &count);
-    GL(r, glEnable(GL_SCISSOR_TEST));
-    for (int i = 0; i < count; i++) {
-        GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
-            rects[i].y2 - rects[i].y1));
-        render_quad(r, p, pos, NULL, texcoords);
-    }
-    GL(r, glDisable(GL_SCISSOR_TEST));
-}
-
-struct scene_vertex {
-    float pos[2], local[2], tex[2];
-    float color[4], tint[4], params[4], extra[4];
-    float size[2];
-};
-
-struct scene_instance {
-    float pos[8], local[8], tex[8];
-    float color[4], tint[4], params[4], extra[4];
-    float size[2], scissor[4];
-    struct gl_texture *texture;
-    GLuint id;
-    GLenum target;
-    int program, filter, blend;
-};
-
-struct scene_run {
-    size_t first, count;
-    struct gl_texture *texture;
-    GLuint id;
-    GLenum target;
-    int program, filter, blend;
-    float scissor[4];
-};
-
-enum { SCENE_VERTICES = 6 };
-
-static void quad_positions(const struct pass *pass, struct box box, double rotation,
-        float pos[8]) {
-    float w = pass->buffer->width, h = pass->buffer->height;
-    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
-    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
-    for (int i = 0; i < 4; i++) {
-        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
-        pos[2 * i] = (float)((cx + dx * c - dy * s) / w * 2 - 1);
-        pos[2 * i + 1] = (float)((cy + dx * s + dy * c) / h * 2 - 1);
-    }
-}
-
-static void rotated_bounds(struct box *out, struct box box, double rotation) {
-    if (rotation == 0) {
-        *out = box;
-        return;
-    }
-    double cx = box.x + box.width / 2.0, cy = box.y + box.height / 2.0;
-    double rad = rotation * 3.14159265358979323846 / 180.0, c = cos(rad), s = sin(rad);
-    double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-    for (int i = 0; i < 4; i++) {
-        double dx = ((i & 1) ? 0.5 : -0.5) * box.width, dy = ((i >> 1) ? 0.5 : -0.5) * box.height;
-        double x = cx + dx * c - dy * s, y = cy + dx * s + dy * c;
-        x0 = fmin(x0, x); y0 = fmin(y0, y); x1 = fmax(x1, x); y1 = fmax(y1, y);
-    }
-    int left = (int)floor(x0), top = (int)floor(y0);
-    *out = (struct box){ left, top, (int)ceil(x1) - left, (int)ceil(y1) - top };
-}
-
-static void scene_emit(struct render *r, const struct scene_quad *quad,
+static void scene_emit(struct pass *pass, const struct scene_quad *quad,
         const struct rect *scissor) {
+    struct render *r = pass->r;
     struct scene *s = &r->scene;
     if (s->count == s->cap) {
         size_t cap = s->cap ? s->cap * 2 : 64;
@@ -1338,6 +1372,7 @@ static void scene_emit(struct render *r, const struct scene_quad *quad,
     in->filter = quad->filter;
     in->blend = quad->blend;
     s->count++;
+    r->fragments += quad_pixels(pass, quad->pos, scissor);
 }
 
 void pass_scene(struct pass *pass, const struct scene_quad *quad) {
@@ -1349,12 +1384,12 @@ void pass_scene(struct pass *pass, const struct scene_quad *quad) {
         region_intersect(&both, quad->clip, pass->clip);
         clip = &both;
     }
-    if (!clip) scene_emit(pass->r, quad, NULL);
+    if (!clip) scene_emit(pass, quad, NULL);
     else {
         int count = 0;
         const struct rect *rects = region_rectangles(
             (struct region *)clip, &count);
-        for (int i = 0; i < count; i++) scene_emit(pass->r, quad, &rects[i]);
+        for (int i = 0; i < count; i++) scene_emit(pass, quad, &rects[i]);
     }
     if (clip == &both) region_fini(&both);
 }
@@ -1551,11 +1586,6 @@ void pass_flush(struct pass *pass) {
     GL(r, glBindBuffer(GL_ARRAY_BUFFER, 0));
 }
 
-static struct op *recorded(struct pass *pass, size_t before) {
-    struct oplist *list = pass->record;
-    return !list->lost && list->len > before ? &list->ops[list->len - 1] : NULL;
-}
-
 static void cover(struct op *op, struct box box, const struct region *clip) {
     if (box_empty(&box)) return;
     region_union_rect(&op->opaque, &op->opaque, box.x, box.y, box.width, box.height);
@@ -1597,20 +1627,22 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     const struct color *c = &options->color;
     struct box box = box_empty(&options->box) ?
         (struct box){ 0, 0, pass->buffer->width, pass->buffer->height } : options->box;
+    struct box shown = box;
+    struct rect *e = options->clip ? region_extents(options->clip) : NULL;
+    if (e && !box_intersection(&shown, &box,
+            &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
     if (pass->record) {
-        struct box shown = box;
-        struct rect *e = options->clip ? region_extents(options->clip) : NULL;
-        if (e && !box_intersection(&shown, &box,
-                &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
         double params[] = { 1, box.x, box.y, box.width, box.height, c->r, c->g, c->b, c->a,
             options->blend_mode, e ? e->x1 : 0, e ? e->y1 : 0, e ? e->x2 : 0, e ? e->y2 : 0 };
         size_t before = pass->record->len;
         pass_record(pass, NULL, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
-        struct op *op = recorded(pass, before);
+        struct op *op = pass_recorded(pass, before);
         if (op && (c->a >= 1 || options->blend_mode == BLEND_NONE))
             cover(op, box, options->clip);
         return;
     }
+    struct op_clip clip;
+    if (!op_begin(pass, OP_RECT, shown, &clip)) return;
     struct scene_quad quad = {
         .kind = SCENE_RECT, .alpha = 1, .filter = GL_LINEAR, .clip = options->clip,
         .blend = c->a < 1 && options->blend_mode == BLEND_PREMULTIPLIED };
@@ -1620,6 +1652,7 @@ void pass_add_rect(struct pass *pass, const struct rect_options *options) {
     quad.color[3] = c->a;
     quad_positions(pass, box, 0, quad.pos);
     pass_scene(pass, &quad);
+    op_end(pass, &clip);
 }
 
 static void texture_draw(struct pass *pass, const struct texture_options *options,
@@ -1656,7 +1689,7 @@ static void texture_draw(struct pass *pass, const struct texture_options *option
     }
     float pos[8];
     quad_positions(pass, dst, options->rotation, pos);
-    draw_rotated(pass, p, pos, options->clip, texcoords);
+    draw_rotated(pass, p, pos, options->clip ? options->clip : pass->clip, texcoords);
     if (options->lut) {
         GL(r, glBindTexture(GL_TEXTURE_2D, 0));
         GL(r, glActiveTexture(GL_TEXTURE0));
@@ -1667,39 +1700,36 @@ static void texture_draw(struct pass *pass, const struct texture_options *option
 void pass_add_texture(struct pass *pass, const struct texture_options *options) {
     struct render *r = pass->r;
     struct gl_texture *t = texture_of(options->texture);
+    struct box dst = options->dst_box, shown;
+    if (box_empty(&dst)) {
+        dst.width = options->texture->width;
+        dst.height = options->texture->height;
+    }
+    shown = dst;
+    rotated_bounds(&shown, dst, options->rotation);
+    struct rect *e = options->clip ? region_extents(options->clip) : NULL;
+    if (e && !box_intersection(&shown, &shown,
+            &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
     if (pass->record) {
-        struct box dst = options->dst_box, shown;
-        if (box_empty(&dst)) {
-            dst.width = options->texture->width;
-            dst.height = options->texture->height;
-        }
-        shown = dst;
-        rotated_bounds(&shown, dst, options->rotation);
-        struct rect *e = options->clip ? region_extents(options->clip) : NULL;
-        if (e && !box_intersection(&shown, &shown,
-                &(struct box){ e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1 })) return;
         const float *tint = options->tint;
         double params[] = { 2, dst.x, dst.y, dst.width, dst.height, options->rotation,
             tint ? tint[0] : 0, tint ? tint[1] : 0, tint ? tint[2] : 0, tint ? tint[3] : 0 };
         size_t before = pass->record->len;
         pass_record(pass, options, shown, (struct box){0}, params, sizeof(params) / sizeof(params[0]));
-        struct op *op = recorded(pass, before);
+        struct op *op = pass_recorded(pass, before);
         if (op) texture_cover(op, options, t, dst);
         return;
     }
+    struct op_clip clip;
+    if (!op_begin(pass, OP_TEXTURE, shown, &clip)) return;
     if (options->wait_timeline &&
             !render_wait(r, options->wait_timeline, options->wait_point)) {
         tomoe_log(LOG_ERROR, "tomoe: client acquire fence wait failed");
-        return;
+        goto done;
     }
     struct texture *texture = options->texture;
     struct fbox src = options->src_box.width <= 0 || options->src_box.height <= 0 ?
         (struct fbox){ 0, 0, texture->width, texture->height } : options->src_box;
-    struct box dst = options->dst_box;
-    if (box_empty(&dst)) {
-        dst.width = texture->width;
-        dst.height = texture->height;
-    }
     float alpha = options->alpha ? *options->alpha : 1;
     enum wl_output_transform transform = options->transform;
     const float *m = transforms[transform & WL_OUTPUT_TRANSFORM_90 ?
@@ -1714,7 +1744,7 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     bool external = t->target == GL_TEXTURE_EXTERNAL_OES;
     if (external || options->lut) {
         texture_draw(pass, options, t, dst, texcoords, alpha);
-        return;
+        goto done;
     }
     int filter = options->filter_mode == FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
     struct scene_quad quad = {
@@ -1726,6 +1756,8 @@ void pass_add_texture(struct pass *pass, const struct texture_options *options) 
     quad_positions(pass, dst, options->rotation, quad.pos);
     memcpy(quad.tex, texcoords, sizeof(quad.tex));
     pass_scene(pass, &quad);
+done:
+    op_end(pass, &clip);
 }
 
 static void *stall_release(void *data) {
@@ -1870,13 +1902,15 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
         pass_record(pass, &record, dst, (struct box){0}, params, used);
         return;
     }
-    if (!pass_touches(pass, dst)) return;
+    struct op_clip clip;
+    if (!op_begin(pass, OP_MESH, dst, &clip)) return;
+    if (!pass_touches(pass, dst)) goto done;
     pass_flush(pass);
     pass_scene_attributes_dirty(pass);
     if (options->wait_timeline &&
             !render_wait(r, options->wait_timeline, options->wait_point)) {
         tomoe_log(LOG_ERROR, "tomoe: client acquire fence wait failed");
-        return;
+        goto done;
     }
     struct program *p = options->shader;
     glEnable(GL_BLEND);
@@ -1918,7 +1952,7 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     if (p->min_ndc >= 0) glUniform2f(p->min_ndc, x0, bottom);
     if (p->max_ndc >= 0) glUniform2f(p->max_ndc, x1, top);
     float *mesh = mesh_vertices(r, pass, options, grid_x, grid_y);
-    if (!mesh) return;
+    if (!mesh) goto done;
     size_t stride = 6 * sizeof(float);
     GLsizei vertices = (GLsizei)((size_t)grid_x * (size_t)grid_y * 6);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, mesh);
@@ -1944,6 +1978,8 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
     glBindTexture(t->target, 0);
+done:
+    op_end(pass, &clip);
 }
 
 static int flush_fence(struct render *r) {
@@ -2113,9 +2149,64 @@ void pass_clip(struct pass *pass, const struct region *clip) {
     pass->clip = clip;
 }
 
+void pass_ops(struct pass *pass, const struct oplist *ops) {
+    pass->ops = ops;
+}
+
 bool pass_touches(struct pass *pass, struct box box) {
     struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
     return !pass->clip || region_contains_rectangle(pass->clip, &r) != REGION_OUT;
+}
+
+static const struct op *next_op(struct pass *pass, int kind, struct box box) {
+    if (!pass->ops || pass->op_lost || !pass->ops->valid) return NULL;
+    if (pass->op_next >= pass->ops->len) {
+        pass->op_lost = true;
+        return NULL;
+    }
+    const struct op *op = &pass->ops->ops[pass->op_next++];
+    if (op->kind != kind || !box_equal(&op->box, &box)) {
+        pass->op_lost = true;
+        return NULL;
+    }
+    return op;
+}
+
+size_t pass_record_count(const struct pass *pass) {
+    return pass->record ? pass->record->len : 0;
+}
+
+struct op *pass_recorded(struct pass *pass, size_t before) {
+    struct oplist *list = pass->record;
+    return !list->lost && list->len > before ? &list->ops[list->len - 1] : NULL;
+}
+
+bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip) {
+    clip->limited = false;
+    clip->saved = NULL;
+    clip->op = next_op(pass, kind, box);
+    if (!clip->op) return true;
+    if (clip->op->hidden) return false;
+    struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
+    if (region_contains_rectangle(&clip->op->visible, &r) == REGION_IN) return true;
+    clip->saved = pass->clip;
+    region_init(&clip->region);
+    if (clip->saved) region_intersect(&clip->region, &clip->op->visible, clip->saved);
+    else region_copy(&clip->region, &clip->op->visible);
+    if (!region_not_empty(&clip->region)) {
+        region_fini(&clip->region);
+        return false;
+    }
+    pass->clip = &clip->region;
+    clip->limited = true;
+    return true;
+}
+
+void op_end(struct pass *pass, struct op_clip *clip) {
+    if (!clip->limited) return;
+    pass->clip = clip->saved;
+    region_fini(&clip->region);
+    clip->limited = false;
 }
 
 static uint64_t mix(uint64_t hash, const void *data, size_t size) {
@@ -2139,8 +2230,10 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
         list->ops = ops;
         list->cap = cap;
     }
-    struct op op = { .box = box, .reach = reach };
+    struct op op = { .box = box, .reach = reach,
+        .kind = params && count ? (int)params[0] : 0 };
     region_init(&op.opaque);
+    region_init(&op.visible);
     op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
     if (texture) {
         const struct surface *surface = texture->surface;
@@ -2187,7 +2280,10 @@ bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struc
 }
 
 void oplist_finish(struct oplist *list) {
-    for (size_t i = 0; i < list->len; i++) region_fini(&list->ops[i].opaque);
+    for (size_t i = 0; i < list->len; i++) {
+        region_fini(&list->ops[i].opaque);
+        region_fini(&list->ops[i].visible);
+    }
     free(list->ops);
     *list = (struct oplist){0};
 }
@@ -2236,20 +2332,21 @@ static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
     return false;
 }
 
-static struct region *visibility(struct oplist *list) {
-    struct region *visible = calloc(list->len + 1, sizeof(*visible)), covered;
-    if (!visible) return NULL;
+static void visibility(struct oplist *list) {
+    if (list->valid) return;
+    struct region covered;
     region_init(&covered);
     for (size_t i = list->len; i-- > 0;) {
         struct op *op = &list->ops[i];
-        region_init_rect(&visible[i], op->box.x, op->box.y, op->box.width, op->box.height);
-        region_subtract(&visible[i], &visible[i], &covered);
-        op->hidden = !region_not_empty(&visible[i]);
+        region_fini(&op->visible);
+        region_init_rect(&op->visible, op->box.x, op->box.y, op->box.width, op->box.height);
+        region_subtract(&op->visible, &op->visible, &covered);
+        op->hidden = !region_not_empty(&op->visible);
         if (!op->hidden && !box_empty(&op->footprint)) {
             struct rect f = { op->footprint.x, op->footprint.y,
                 op->footprint.x + op->footprint.width, op->footprint.y + op->footprint.height };
             op->hidden = region_contains_rectangle(&covered, &f) == REGION_IN;
-            if (op->hidden) region_clear(&visible[i]);
+            if (op->hidden) region_clear(&op->visible);
         }
         if (!op->hidden && !box_empty(&op->reach)) {
             struct region reach;
@@ -2261,27 +2358,20 @@ static struct region *visibility(struct oplist *list) {
         region_union(&covered, &covered, &op->opaque);
     }
     region_fini(&covered);
-    return visible;
-}
-
-static void visibility_finish(struct region *visible, size_t len) {
-    if (!visible) return;
-    for (size_t i = 0; i < len; i++) region_fini(&visible[i]);
-    free(visible);
+    list->valid = true;
 }
 
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
     if (old->lost || now->lost) return false;
     size_t *match = malloc((now->len + 1) * sizeof(*match));
     bool *used = calloc(old->len + 1, sizeof(*used));
-    struct region *was = visibility(old), *is = visibility(now);
-    if (!match || !used || !was || !is) {
+    if (!match || !used) {
         free(match);
         free(used);
-        visibility_finish(was, old->len);
-        visibility_finish(is, now->len);
         return false;
     }
+    visibility(old);
+    visibility(now);
     struct region changed;
     region_init(&changed);
     size_t start = 0;
@@ -2301,18 +2391,18 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
             op->key = match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) ?
                 old->ops[match[i]].key : ++generation;
         }
-        if (match[i] == SIZE_MAX) region_union(out, out, &is[i]);
+        if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
-            region_union(out, out, &is[i]);
+            region_union(out, out, &op->visible);
         else if (op->surface && op->seq != old->ops[match[i]].seq) {
             region_clear(&changed);
             damage_content(&changed, &old->ops[match[i]], op);
-            region_intersect(&changed, &changed, &is[i]);
+            region_intersect(&changed, &changed, &op->visible);
             region_union(out, out, &changed);
         }
     }
     for (size_t j = 0; j < old->len; j++)
-        if (!used[j]) region_union(out, out, &was[j]);
+        if (!used[j]) region_union(out, out, &old->ops[j].visible);
     for (size_t i = 0; i < now->len; i++) {
         if (match[i] == SIZE_MAX) continue;
         for (size_t k = i + 1; k < now->len; k++) {
@@ -2323,8 +2413,6 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         }
     }
     region_fini(&changed);
-    visibility_finish(was, old->len);
-    visibility_finish(is, now->len);
     free(match);
     free(used);
     return true;
@@ -2373,7 +2461,8 @@ void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, s
 
 void render_counters(struct render *r, struct render_counters *out) {
     *out = (struct render_counters){ .gl_calls = r->gl_calls, .quads = r->quads,
-        .runs = r->runs, .uploads = r->uploads, .upload_bytes = r->upload_bytes };
+        .runs = r->runs, .fragments = r->fragments, .uploads = r->uploads,
+        .upload_bytes = r->upload_bytes };
 }
 
 static void render_free(struct render *r) {

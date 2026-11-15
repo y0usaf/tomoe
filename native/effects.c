@@ -69,10 +69,53 @@ static struct box covering(struct frame *f, struct fbox box) {
         (int)ceil(box.y + box.height) + 1 - y };
 }
 
-static bool record(struct frame *f, const struct texture_options *texture, struct fbox box,
-        const double *params, size_t count) {
-    struct box covered = covering(f, box);
-    return pass_record(f->pass, texture, covered, (struct box){0}, params, count);
+struct drawn { struct box covered; struct op *op; bool recorded; };
+
+static struct drawn record(struct frame *f, const struct texture_options *texture,
+        struct fbox box, const double *params, size_t count) {
+    struct drawn out = { .covered = covering(f, box) };
+    size_t before = pass_record_count(f->pass);
+    out.recorded = pass_record(f->pass, texture, out.covered, (struct box){0}, params, count);
+    if (out.recorded) out.op = pass_recorded(f->pass, before);
+    return out;
+}
+
+static void cover_rect(struct op *op, int x, int y, int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    region_union_rect(&op->opaque, &op->opaque, x, y, (uint32_t)width, (uint32_t)height);
+}
+
+static void rounded_cover(struct op *op, const struct texture_options *options, bool alpha,
+        struct box dst, struct fbox clip, double radius) {
+    float level = options->alpha ? *options->alpha : 1;
+    if (options->blend_mode != BLEND_NONE && (alpha || level < 1)) {
+        const struct surface *surface = options->surface;
+        if (level < 1 || !surface || surface->current.width <= 0 ||
+                surface->current.height <= 0 ||
+                options->transform != WL_OUTPUT_TRANSFORM_NORMAL ||
+                surface->current.transform != WL_OUTPUT_TRANSFORM_NORMAL) return;
+        struct rect whole = { 0, 0, surface->current.width, surface->current.height };
+        if (region_contains_rectangle(&surface->current.opaque, &whole) != REGION_IN) return;
+    }
+    struct box shown = { (int)ceil(clip.x), (int)ceil(clip.y), 0, 0 };
+    shown.width = (int)floor(clip.x + clip.width) - shown.x;
+    shown.height = (int)floor(clip.y + clip.height) - shown.y;
+    struct box area;
+    if (!box_intersection(&area, &dst, &shown) || box_empty(&area)) return;
+    int inset = dst.width == (int)options->texture->width &&
+        dst.height == (int)options->texture->height ? 0 : 1;
+    int left = area.x + inset, top = area.y + inset;
+    int right = area.x + area.width - inset, bottom = area.y + area.height - inset;
+    if (right <= left || bottom <= top) return;
+    int reach = right - left < bottom - top ? right - left : bottom - top;
+    int r = (int)ceil(radius);
+    if (r * 2 >= reach) r = reach / 2;
+    if (r <= 0) {
+        cover_rect(op, left, top, right - left, bottom - top);
+        return;
+    }
+    cover_rect(op, left + r, top, right - left - 2 * r, bottom - top);
+    cover_rect(op, left, top + r, right - left, bottom - top - 2 * r);
 }
 
 static void color(float out[4], uint32_t rgba) {
@@ -94,13 +137,17 @@ void effect_border(struct frame *f, struct fbox geometry, double width, double r
     struct fbox box = local_box(f, (struct fbox){ geometry.x - width, geometry.y - width,
         geometry.width + 2 * width, geometry.height + 2 * width });
     double params[] = { 3, box.x, box.y, box.width, box.height, width, radius, rgba, alpha };
-    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
+    struct drawn drawn = record(f, NULL, box, params, sizeof(params) / sizeof(params[0]));
+    if (drawn.recorded) return;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_BORDER, drawn.covered, &clip)) return;
     struct scene_quad scene = { .kind = SCENE_BORDER, .blend = 1, .alpha = alpha,
         .width = width, .radius = radius,
         .size = { box.width, box.height } };
     color(scene.color, rgba);
     scene_geometry(f, box, NULL, box.x, box.y, &scene);
     pass_scene(f->pass, &scene);
+    op_end(f->pass, &clip);
 }
 
 void effect_shadow(struct frame *f, struct fbox geometry, double range, double radius,
@@ -110,13 +157,17 @@ void effect_shadow(struct frame *f, struct fbox geometry, double range, double r
         geometry.width + 2 * range, geometry.height + 2 * range });
     double params[] = { 4, box.x, box.y, box.width, box.height, range, radius, rgba, power,
         alpha };
-    if (record(f, NULL, box, params, sizeof(params) / sizeof(params[0]))) return;
+    struct drawn drawn = record(f, NULL, box, params, sizeof(params) / sizeof(params[0]));
+    if (drawn.recorded) return;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_SHADOW, drawn.covered, &clip)) return;
     struct scene_quad scene = { .kind = SCENE_SHADOW, .blend = 1, .alpha = alpha,
         .range = range, .power = power, .radius = radius,
         .size = { box.width, box.height } };
     color(scene.color, rgba);
     scene_geometry(f, box, NULL, box.x, box.y, &scene);
     pass_scene(f->pass, &scene);
+    op_end(f->pass, &clip);
 }
 
 bool effect_texture(struct frame *f, const struct texture_options *options,
@@ -129,10 +180,23 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
     struct fbox local = local_box(f, clip);
     double params[] = { 5, dst.x, dst.y, dst.width, dst.height, local.x, local.y, local.width,
         local.height, radius };
-    if (record(f, options, dst, params, sizeof(params) / sizeof(params[0]))) return true;
-    if (options->wait_timeline &&
-            !render_wait(f->server->renderer, options->wait_timeline, options->wait_point))
+    struct drawn drawn = record(f, options, dst, params, sizeof(params) / sizeof(params[0]));
+    if (drawn.recorded) {
+        if (drawn.op) {
+            struct box area = { (int)ceil(dst.x), (int)ceil(dst.y), 0, 0 };
+            area.width = (int)floor(dst.x + dst.width) - area.x;
+            area.height = (int)floor(dst.y + dst.height) - area.y;
+            rounded_cover(drawn.op, options, alpha, area, local, radius);
+        }
         return true;
+    }
+    struct op_clip draw_clip;
+    if (!op_begin(f->pass, OP_ROUNDED, drawn.covered, &draw_clip)) return true;
+    if (options->wait_timeline &&
+            !render_wait(f->server->renderer, options->wait_timeline, options->wait_point)) {
+        op_end(f->pass, &draw_clip);
+        return true;
+    }
     struct fbox src = options->src_box;
     if (src.width <= 0 || src.height <= 0)
         src = (struct fbox){ 0, 0, options->texture->width, options->texture->height };
@@ -148,6 +212,7 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
         .radius = radius, .size = { clip.width, clip.height } };
     scene_geometry(f, dst, texcoords, clip.x, clip.y, &scene);
     pass_scene(f->pass, &scene);
+    op_end(f->pass, &draw_clip);
     return true;
 }
 
@@ -237,19 +302,6 @@ void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused) {
     *reused = s->effects ? s->effects->reused : 0;
 }
 
-static const struct op *recorded_blur(struct frame *f, int blur, struct box box,
-        struct box reach) {
-    if (!f->ops) return NULL;
-    for (size_t i = f->op_next; i < f->ops->len; i++) {
-        const struct op *op = &f->ops->ops[i];
-        if (op->blur != blur) continue;
-        f->op_next = i + 1;
-        return memcmp(&op->box, &box, sizeof(box)) == 0 &&
-            memcmp(&op->reach, &reach, sizeof(reach)) == 0 ? op : NULL;
-    }
-    return NULL;
-}
-
 static bool planes_cross(const struct frame *f, struct box area) {
     if (!f->planes) return false;
     for (size_t i = 0; i < f->planes->count; i++) {
@@ -316,11 +368,14 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     if (pass_record_blur(f->pass, covered, reach, footprint, params,
             sizeof(params) / sizeof(params[0]), blur, seed,
             planes_cross(f, grown) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
-    const struct op *op = recorded_blur(f, blur, covered, reach);
-    if (op && op->hidden) return;
-    if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) return;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_BLUR, covered, &clip)) return;
+    if (box_empty(&footprint) || !pass_touches(f->pass, footprint)) {
+        op_end(f->pass, &clip);
+        return;
+    }
     int64_t now = monotonic_ns();
-    uint64_t key = op ? op->key : 0;
+    uint64_t key = clip.op ? clip.op->key : 0;
     struct chain *chain = chain_cached(e, key);
     if (chain) {
         chain->used = now;
@@ -351,7 +406,10 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         glViewport(0, 0, f->buffer->width, f->buffer->height);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        if (!ok) return;
+        if (!ok) {
+            op_end(f->pass, &clip);
+            return;
+        }
         chain->key = key;
         e->blurs++;
         pass_scene_attributes_dirty(f->pass);
@@ -371,6 +429,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         .size = { box.width, box.height } };
     scene_geometry(f, box, texcoords, box.x, box.y, &scene);
     pass_scene(f->pass, &scene);
+    op_end(f->pass, &clip);
 }
 
 static bool backdrop(struct frame *f, struct fbox box) {
@@ -431,8 +490,13 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     struct box covered = covering(f, box);
     if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
             10 + 4 * (size_t)count)) return;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_SHADER, covered, &clip)) return;
     pass_flush(f->pass);
-    if (p->channel >= 0 && !backdrop(f, box)) return;
+    if (p->channel >= 0 && !backdrop(f, box)) {
+        op_end(f->pass, &clip);
+        return;
+    }
     glUseProgram(p->id);
     glUniform3f(p->resolution, box.width, box.height, 1);
     glUniform1f(p->time, time);
@@ -443,6 +507,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     if (count) glUniform4fv(p->trail, count, trail);
     quad(f, p, box, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
+    op_end(f->pass, &clip);
 }
 
 #define TRAIL_STEPS_MAX 8
@@ -589,10 +654,13 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         steps, (double)style->rgba, (double)(digest & 0x1fffffffffffffull) };
     if (pass_record(f->pass, NULL, covered, (struct box){0}, params,
             sizeof(params) / sizeof(params[0]))) return;
-    if (!pass_touches(f->pass, covered)) return;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_TRAIL, covered, &clip)) return;
+    if (!pass_touches(f->pass, covered)) goto done;
     size_t total = 0;
     for (int step = 1; step <= steps; step++) total += (size_t)steps_used[step];
-    if (!total || !grow_floats(&e->trail.quads, &e->trail.capacity_quads, total * 12)) return;
+    if (!total || !grow_floats(&e->trail.quads, &e->trail.capacity_quads, total * 12))
+        goto done;
     float *quads = e->trail.quads;
     size_t offsets[TRAIL_STEPS_MAX + 1] = {0}, used[TRAIL_STEPS_MAX + 1] = {0};
     for (int step = 1, next = 0; step <= steps; step++) {
@@ -650,6 +718,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
             pass_scene(f->pass, &scene);
         }
     }
+done:
+    op_end(f->pass, &clip);
 }
 
 void effects_finish(struct tomoe *s) {

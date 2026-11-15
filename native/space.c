@@ -678,7 +678,6 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
     region_init(&clip);
     bool recorded = false;
     bool partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
-    if (recorded) data.ops = &o->ops;
     bool highlight = track && getenv("TOMOE_DEBUG_DAMAGE");
     if (highlight) partial = false;
     if (o->planes.changed) partial = false;
@@ -696,6 +695,7 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         return false;
     }
     data.pass = pass;
+    if (recorded) pass_ops(pass, &o->ops);
     bool skipped = planes && planes->count;
     if (skipped) {
         struct region skip;

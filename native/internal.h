@@ -181,17 +181,29 @@ struct read_options {
     uint32_t format, stride;
     struct box src_box;
 };
+enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
+    OP_MESH = 9, OP_TRAIL = 13 };
 struct pass;
 struct op {
     uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
     struct box box, reach, footprint;
     struct fbox src;
-    struct region opaque;
-    int blur;
+    struct region opaque, visible;
+    int kind, blur;
     bool mapped, hidden, cached;
 };
-struct oplist { struct op *ops; size_t len, cap; bool lost; };
+struct oplist { struct op *ops; size_t len, cap; bool lost, valid; };
+struct op_clip {
+    struct region region;
+    const struct region *saved;
+    const struct op *op;
+    bool limited;
+};
+bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip);
+void op_end(struct pass *pass, struct op_clip *clip);
+struct op *pass_recorded(struct pass *pass, size_t before);
+size_t pass_record_count(const struct pass *pass);
 void oplist_finish(struct oplist *list);
 bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out);
 void oplist_expand(const struct oplist *list, struct region *region);
@@ -200,7 +212,7 @@ int render_drm_fd(struct render *r);
 bool render_has_timeline(struct render *r);
 void render_usage(struct render *r, size_t *textures, uint64_t *texture_bytes, size_t *images);
 struct render_counters {
-    uint64_t gl_calls, quads, runs, uploads, upload_bytes;
+    uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
 };
 void render_counters(struct render *r, struct render_counters *out);
 const struct format_set *render_texture_formats(struct render *r);
@@ -230,6 +242,7 @@ bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struc
     const double *params, size_t count, int blur, const double *seed, size_t seeds);
 void pass_clip(struct pass *pass, const struct region *clip);
 bool pass_touches(struct pass *pass, struct box box);
+void pass_ops(struct pass *pass, const struct oplist *ops);
 void render_retire_fences(struct render *r);
 bool render_frames_held(struct render *r);
 
@@ -642,8 +655,6 @@ struct frame {
     struct pass *pass;
     struct buffer *buffer;
     const struct plane_assignment *planes;
-    const struct oplist *ops;
-    size_t op_next;
     int blurs;
     int x, y, width, height;
     enum wl_output_transform transform;

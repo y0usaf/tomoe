@@ -333,6 +333,7 @@ let
                                             :scale 1 :position '(0 0))) nil))
   '';
   drawGolden = "5a73e2a585b6d249,cc57125203c563d0,1d550c0eef023248";
+  overdrawGolden = "";
   gridPolicy =
     name: blur:
     pkgs.writeText name ''
@@ -979,6 +980,16 @@ let
         BLUR_GOLDEN = "${blurGolden}"
       ''
       + builtins.readFile ./draw.py;
+    }
+    {
+      name = "overdraw";
+      script = ''
+        OVERDRAW_COUNTS = "1,10,50"
+        OVERDRAW_GOLDEN = "${overdrawGolden}"
+        OVERDRAW_BASELINE = ""
+        OVERDRAW_WALLPAPER = "${./overdraw-wallpaper.glsl}"
+      ''
+      + builtins.readFile ./overdraw.py;
     }
     {
       name = "timing";
