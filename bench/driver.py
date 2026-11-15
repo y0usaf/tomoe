@@ -602,13 +602,20 @@ def endpoint(runs, name):
 
 
 def merge_runs(runs):
-    return {
+    merged = {
         "runs": len(runs),
         "lost": sum(run.get("lost", 0) for run in runs),
+        "presented_abandoned": any(run.get("presented_abandoned") for run in runs),
+        "redraw_abandoned": any(run.get("redraw_abandoned") for run in runs),
         "event": endpoint(runs, "event_us"),
         "presented": endpoint(runs, "presented_us"),
         "redraw": endpoint(runs, "redraw_us"),
     }
+    if merged["presented_abandoned"]:
+        merged["presented"]["status"] = "unreliable"
+    if merged["redraw_abandoned"]:
+        merged["redraw"]["status"] = "unreliable"
+    return merged
 
 
 def placement(rows):

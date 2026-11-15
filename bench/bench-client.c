@@ -28,6 +28,7 @@
 #define XKB_KEY_LEFTMETA 133
 #define SAMPLE_TIMEOUT_NS 1000000000ULL
 #define EVENT_TIMEOUT_NS 100000000ULL
+#define LOST_LIMIT 10
 
 static const char keymap[] =
     "xkb_keymap {\n"
@@ -75,6 +76,8 @@ static uint32_t serial;
 
 static struct sample samples[MAX_SAMPLES];
 static size_t sample_count;
+static unsigned missing_presented, missing_redraw;
+static bool presented_abandoned, redraw_abandoned;
 
 static uint64_t sample_start;
 static int64_t sample_presented, sample_event, sample_redraw;
@@ -582,10 +585,21 @@ static void settle(void) {
 static int lost;
 
 static void measure(bool want_redraw, int redraw_window) {
-    if (presentation) {
-        if (!spin(&presented_seen, &discarded_seen, SAMPLE_TIMEOUT_NS)) lost++;
+    if (presentation && !presented_abandoned) {
+        if (!spin(&presented_seen, &discarded_seen, SAMPLE_TIMEOUT_NS)) {
+            lost++;
+            if (++missing_presented >= LOST_LIMIT) presented_abandoned = true;
+        } else {
+            missing_presented = 0;
+        }
     }
-    if (!redraw_seen) spin(&redraw_seen, &discarded_seen, EVENT_TIMEOUT_NS);
+    if (!redraw_abandoned && !redraw_seen) {
+        if (!spin(&redraw_seen, &discarded_seen, SAMPLE_TIMEOUT_NS)) {
+            if (++missing_redraw >= LOST_LIMIT) redraw_abandoned = true;
+        } else {
+            missing_redraw = 0;
+        }
+    }
     if (!event_seen) spin(&event_seen, &discarded_seen, EVENT_TIMEOUT_NS);
     record(want_redraw, redraw_window);
 }
@@ -717,7 +731,10 @@ static void report(const char *phase) {
         if (samples[i].event_us >= 0) events[events_count++] = samples[i].event_us;
         if (samples[i].redraw_us >= 0) redraws[redraws_count++] = samples[i].redraw_us;
     }
-    printf("{\"phase\": \"%s\", \"windows\": %d, \"lost\": %d,\n", phase, window_count, lost);
+    printf("{\"phase\": \"%s\", \"windows\": %d, \"lost\": %d,"
+           " \"presented_abandoned\": %s, \"redraw_abandoned\": %s,\n",
+        phase, window_count, lost, presented_abandoned ? "true" : "false",
+        redraw_abandoned ? "true" : "false");
     emit("event_us", events, events_count, false);
     emit("presented_us", presented, presented_count, false);
     emit("redraw_us", redraws, redraws_count, true);
