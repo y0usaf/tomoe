@@ -701,8 +701,20 @@ key."
                   (%materialized-raise m id))
                 (setf (getf window :visible) visible)))))
 
-(defun configure-keyboard (&key (rules "") (model "") (layout "") (variant "") options
-                                (repeat-rate 25) (repeat-delay 600))
+(defparameter +keyboard-defaults+
+  (list :rules "" :model "" :layout "" :variant "" :options nil
+        :repeat-rate 25 :repeat-delay 600)
+  "The session's keyboard policy: what CONFIGURE-KEYBOARD falls back to when a
+config names nothing, and what the session runs on before any config speaks.
+The values are written here and nowhere else.")
+
+(defun configure-keyboard (&key (rules (getf +keyboard-defaults+ :rules))
+                                (model (getf +keyboard-defaults+ :model))
+                                (layout (getf +keyboard-defaults+ :layout))
+                                (variant (getf +keyboard-defaults+ :variant))
+                                (options (getf +keyboard-defaults+ :options))
+                                (repeat-rate (getf +keyboard-defaults+ :repeat-rate))
+                                (repeat-delay (getf +keyboard-defaults+ :repeat-delay)))
   "Own the seat's XKB keymap and repeat policy, including future keyboards.
 Empty names use XKB defaults. NIL options use XKB_DEFAULT_OPTIONS; an empty
 options string disables those defaults. The last declaration wins as a whole; omission
@@ -956,7 +968,7 @@ the CURSOR-EFFECT from its result removes its contribution entirely."
     (dolist (key path (copy-data value)) (setf value (getf value key)))))
 
 (defun default-keyboard-config ()
-  (list :rules "" :model "" :layout "" :variant "" :options nil :repeat-rate 25 :repeat-delay 600))
+  (copy-list +keyboard-defaults+))
 (defun layer (id &key layer exclusive-zone keyboard (visible t))
   "Own a layer surface's stacking, exclusive zone, keyboard mode, and visibility.
 NIL fields inherit earlier owners, then the client's request; :VISIBLE defaults to shown."
