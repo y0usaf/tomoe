@@ -67,6 +67,7 @@ CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
+CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative
 
 PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c))
 PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
@@ -111,6 +112,19 @@ build/warp-client: tests/warp-client.c tests/client.c $(HEADERS)
 
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
+
+build/lisp-unit: $(wildcard native/lisp/*.c) $(wildcard native/lisp/*.h) native/lisp.h tests/lisp-unit.c | build
+	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard native/lisp/*.c) tests/lisp-unit.c -lm \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc
+
+UNIT_SOURCES = tomoe:tests/lisp-api-stub.lisp user:builtins/desktop.lisp \
+	$(patsubst %,user:%,$(sort $(wildcard examples/*.lisp))) \
+	tomoe:tests/lisp-internal-tests.lisp user:tests/lisp-tests.lisp
+
+lisp-unit: build/lisp-unit
+	build/lisp-unit $(UNIT_SOURCES)
+
+.PHONY: lisp-unit
 
 build/obj/%-protocol.o: build/%-protocol.c $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
