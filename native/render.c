@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "ui.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
@@ -2298,15 +2299,24 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
     op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
     if (texture) {
         const struct surface *surface = texture->surface;
+        const struct ui_surface *ui = texture->ui && texture->content_seq ? texture->ui : NULL;
         double fields[] = { texture->src_box.x, texture->src_box.y, texture->src_box.width,
             texture->src_box.height, texture->transform, texture->alpha ? *texture->alpha : 1,
             texture->filter_mode, texture->blend_mode, texture_of(texture->texture)->alpha,
-            surface ? 0 : (double)texture->texture->serial };
+            surface || ui ? 0 : (double)texture->texture->serial };
         op.hash = mix(op.hash, fields, sizeof(fields));
         op.hash = mix(op.hash, &surface, sizeof(surface));
         if (surface) {
             op.surface = surface;
             op.seq = surface->commit_seq;
+            op.src = texture->src_box;
+            if (op.src.width <= 0 || op.src.height <= 0)
+                op.src = (struct fbox){ 0, 0, texture->texture->width, texture->texture->height };
+            op.mapped = texture->transform == WL_OUTPUT_TRANSFORM_NORMAL;
+        } else if (ui) {
+            op.hash = mix(op.hash, &texture->texture, sizeof(texture->texture));
+            op.ui = ui;
+            op.content_seq = texture->content_seq;
             op.src = texture->src_box;
             if (op.src.width <= 0 || op.src.height <= 0)
                 op.src = (struct fbox){ 0, 0, texture->texture->width, texture->texture->height };
@@ -2355,7 +2365,10 @@ static void damage_box(struct region *out, struct box box) {
 
 static void damage_content(struct region *out, const struct op *was, const struct op *op) {
     struct box changed;
-    if (!op->mapped || !surface_damage_since(op->surface, was->seq, &changed)) {
+    bool known = op->mapped && (op->content_seq
+        ? ui_damage_since(op->ui, was->content_seq, &changed)
+        : surface_damage_since(op->surface, was->seq, &changed));
+    if (!known) {
         damage_box(out, op->box);
         return;
     }
@@ -2382,7 +2395,9 @@ static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
         if (match[j] == SIZE_MAX) return true;
         const struct op *before = &old->ops[match[j]];
         if (under->blur && under->key != before->key) return true;
-        if (!under->surface || under->seq == before->seq) continue;
+        bool differs = under->surface ? under->seq != before->seq :
+            under->content_seq && under->content_seq != before->content_seq;
+        if (!differs) continue;
         struct region changed;
         region_init(&changed);
         damage_content(&changed, before, under);
@@ -2455,7 +2470,8 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
             region_union(out, out, &op->visible);
-        else if (op->surface && op->seq != old->ops[match[i]].seq) {
+        else if ((op->surface && op->seq != old->ops[match[i]].seq) ||
+                (op->content_seq && op->content_seq != old->ops[match[i]].content_seq)) {
             region_clear(&changed);
             damage_content(&changed, &old->ops[match[i]], op);
             region_intersect(&changed, &changed, &op->visible);

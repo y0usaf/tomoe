@@ -150,6 +150,7 @@ void positioner_unconstrain(const struct positioner_rules *rules, const struct b
 struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *hotspot_y);
 
 struct render;
+struct ui_surface;
 struct texture { uint32_t width, height; uint64_t serial; };
 enum blend_mode { BLEND_PREMULTIPLIED, BLEND_NONE };
 enum filter_mode { FILTER_BILINEAR, FILTER_NEAREST };
@@ -166,6 +167,8 @@ struct texture_options {
     struct timeline *wait_timeline;
     uint64_t wait_point;
     const struct surface *surface;
+    const struct ui_surface *ui;
+    uint64_t content_seq;
     struct texture *lut;
     double rotation;
     const float *tint;
@@ -187,6 +190,8 @@ struct pass;
 struct op {
     uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
+    const struct ui_surface *ui;
+    uint64_t content_seq;
     struct box box, reach, footprint;
     struct fbox src;
     struct region opaque, visible;

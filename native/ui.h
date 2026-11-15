@@ -12,6 +12,7 @@ struct output;
 struct presentation;
 struct tomoe;
 struct ui_set;
+struct ui_surface;
 struct frame;
 
 struct ui_hit {
@@ -54,6 +55,7 @@ int tomoe_ui_callback_current(struct tomoe *s, uint64_t callback_id);
 const char *tomoe_ui_stats(struct tomoe *s);
 
 bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out);
+bool ui_damage_since(const struct ui_surface *surface, uint64_t seq, struct box *out);
 void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer);
 void ui_output_finish(struct tomoe *s, const char *output);
 bool ui_on_output(struct output *o, int layer);
