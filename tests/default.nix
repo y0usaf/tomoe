@@ -1128,6 +1128,17 @@ let
   compositorSettings = {
     packages = compositorPackages;
   };
+  smokeSuites = builtins.filter (
+    suite:
+    builtins.elem suite.name [
+      "integration"
+      "pointer-protocols"
+      "livepatch"
+    ]
+  ) compositorSuites;
+  smokeSettings = compositorSettings // {
+    timeout = 900;
+  };
   equivalenceSettings = compositorSettings // {
     timeout = 1800;
   };
@@ -1152,6 +1163,13 @@ in
     // {
       name = "tomoe-kms";
       suites = kmsSuites;
+    }
+  );
+  smoke = vm (
+    smokeSettings
+    // {
+      name = "tomoe-smoke";
+      suites = smokeSuites;
     }
   );
   suites =

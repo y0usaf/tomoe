@@ -514,9 +514,11 @@ Bug reports, questions and odd setups are welcome in the
 ```sh
 nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
+nix build .#checks.x86_64-linux.smoke      # the landing check: one VM, a few minutes
 nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
+./land.sh --push BRANCH                    # smoke check, then land it on main
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
 
