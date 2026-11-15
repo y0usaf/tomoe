@@ -880,7 +880,7 @@ let
             if not found:
                 return
             print("tomoe core: " + " ".join(found), flush=True)
-            if machine.execute("command -v gdb", check_return=False)[0] != 0:
+            if machine.execute("command -v gdb")[0] != 0:
                 print("tomoe core: no gdb in this test", flush=True)
                 return
             frames = machine.execute(
@@ -1203,8 +1203,7 @@ let
         status, output = machine.execute(
           "LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink "
           "python3 ${./cursor.py} --tomoe ${tomoe}/bin/tomoe "
-          "--pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor 2>&1",
-          check_return=False)
+          "--pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor 2>&1")
         print(output)
         if status != 0:
             raise AssertionError("the cursor proof failed: see the report above")
