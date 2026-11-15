@@ -24,7 +24,8 @@ enum {
     IPC_IO_QUOTA = 16 * 1024,
     IPC_REQUEST_QUOTA = 16,
     IPC_ACCEPT_QUOTA = 8,
-    IPC_SERVE_MS = 8
+    IPC_SERVE_MS = 8,
+    IPC_ERROR_CHARACTERS = 4096
 };
 
 struct ipc_client {
@@ -258,8 +259,15 @@ static void ipc_dispatch(struct ipc_server *server, struct ipc_client *client,
     lisp_value arguments[2] = { lisp_string(method, method_length), params };
     lisp_value result = lisp_nil();
     lisp_set_limits(5000000, 1000000000ULL);
-    if (policy_call(POLICY_HOOK_JSON, 2, arguments, &result, error, sizeof(error))) {
-        if (has_id) ipc_error_reply(client, id, error);
+    char failure[4 * IPC_ERROR_CHARACTERS + 1];
+    if (policy_call(POLICY_HOOK_JSON, 2, arguments, &result, failure, sizeof(failure))) {
+        size_t characters = 0, end = 0;
+        for (; failure[end]; end++) {
+            if (((unsigned char)failure[end] & 0xc0) != 0x80 &&
+                    characters++ == IPC_ERROR_CHARACTERS) break;
+        }
+        failure[end] = '\0';
+        if (has_id) ipc_error_reply(client, id, failure);
         return;
     }
     if (method_length == 9 && !memcmp(method, "subscribe", 9))
