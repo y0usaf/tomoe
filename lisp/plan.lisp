@@ -276,6 +276,6 @@
        (let ((message (%present-apply)))
          (when message (error "~A" message))))
      (lambda (text) (setf failure text)))
+    (%present-abort)
     (when failure
-      (%present-abort)
       (error "~A" failure))))
