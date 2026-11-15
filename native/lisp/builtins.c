@@ -1844,6 +1844,126 @@ lisp_value builtin_cons(int argc, lisp_value *argv)
     return cons(argc > 0 ? argv[0] : NIL_VAL, argc > 1 ? argv[1] : NIL_VAL);
 }
 
+struct copy_budget {
+    int64_t nodes;
+    int64_t limit;
+    int64_t chars;
+};
+
+static _Noreturn void copy_fail(const char *control, int argc, lisp_value *argv)
+{
+    lisp_value message = lisp_format(control, strlen(control), argc, argv);
+    throw_error_value(make_condition_obj(PTR(message, lisp_string)->data));
+}
+
+static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int depth)
+{
+    if (++budget->nodes > budget->limit || depth > 64)
+        copy_fail("Extension data exceeds the node/depth budget.", 0, NULL);
+    switch (TYPE(item)) {
+    case LT_CONS: {
+        lisp_value head = NIL_VAL, last = NIL_VAL, tail = item;
+        while (consp(tail)) {
+            if (++budget->nodes > budget->limit)
+                copy_fail("Extension data exceeds the node budget.", 0, NULL);
+            lisp_value cell = cons(copy_walk(budget, CAR(tail), depth + 1), NIL_VAL);
+            if (nilp(head))
+                head = cell;
+            else
+                CDR(last) = cell;
+            last = cell;
+            tail = CDR(tail);
+        }
+        lisp_value end = copy_walk(budget, tail, depth + 1);
+        CDR(last) = end;
+        return head;
+    }
+    case LT_STRING:
+        if ((int64_t)PTR(item, lisp_string)->len > budget->chars) {
+            lisp_value limit = make_int(budget->chars);
+            copy_fail("String exceeds ~D characters.", 1, &limit);
+        }
+        return item;
+    case LT_INT:
+    case LT_RATIO:
+    case LT_SYMBOL:
+        return item;
+    case LT_DOUBLE:
+        if (!(DBLVAL(item) == DBLVAL(item)) || fabs(DBLVAL(item)) > 1.7976931348623157e308)
+            copy_fail("Only finite floats are extension data.", 0, NULL);
+        return item;
+    default:
+        copy_fail("Not extension data: ~S", 1, &item);
+    }
+}
+
+lisp_value builtin_copy_data(int argc, lisp_value *argv)
+{
+    struct copy_budget budget = {
+        0, require_int(argv[1], "node limit"), require_int(argv[2], "character limit")
+    };
+    return copy_walk(&budget, argv[0], 0);
+}
+
+static struct lisp_symbol *sym_runtime, *sym_pending_writes, *sym_retired_state, *sym_keep, *sym_release;
+
+static struct lisp_symbol *runtime_symbol(struct lisp_symbol **cache, const char *name)
+{
+    if (!*cache)
+        *cache = symbol_intern(PKG_TOMOE, name, strlen(name), false);
+    return *cache;
+}
+
+static lisp_value *plist_cell(lisp_value plist, lisp_value key)
+{
+    for (; consp(plist) && consp(CDR(plist)); plist = CDR(CDR(plist)))
+        if (CAR(plist) == key)
+            return &CAR(CDR(plist));
+    return NULL;
+}
+
+lisp_value builtin_runtime_read(int argc, lisp_value *argv)
+{
+    lisp_value *cell = plist_cell(runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*")->value, argv[0]);
+    if (!cell)
+        cell = plist_cell(runtime_symbol(&sym_runtime, "*RUNTIME*")->value, argv[0]);
+    return cell ? *cell : NIL_VAL;
+}
+
+lisp_value builtin_runtime_write(int argc, lisp_value *argv)
+{
+    struct lisp_symbol *writes = runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*");
+    lisp_value *cell = plist_cell(writes->value, argv[0]);
+    if (cell)
+        *cell = argv[1];
+    else
+        writes->value = cons(argv[0], cons(argv[1], writes->value));
+    return argv[1];
+}
+
+lisp_value builtin_persist_state(int argc, lisp_value *argv)
+{
+    struct lisp_symbol *runtime = runtime_symbol(&sym_runtime, "*RUNTIME*");
+    struct lisp_symbol *writes = runtime_symbol(&sym_pending_writes, "*PENDING-WRITES*");
+    struct lisp_symbol *retired = runtime_symbol(&sym_retired_state, "*RETIRED-STATE*");
+    lisp_value state = runtime->value;
+    for (lisp_value scan = writes->value; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
+        lisp_value *cell = plist_cell(state, CAR(scan));
+        if (cell)
+            *cell = CAR(CDR(scan));
+        else
+            state = cons(CAR(scan), cons(CAR(CDR(scan)), state));
+    }
+    writes->value = NIL_VAL;
+    lisp_value old = runtime->value;
+    lisp_value kept = apply_function(VAL(runtime_symbol(&sym_keep, "%KEEP")), 1, &state);
+    runtime->value = kept;
+    if (truthy(retired->value))
+        apply_function(VAL(runtime_symbol(&sym_release, "%RELEASE")), 1, &retired->value);
+    retired->value = old;
+    return kept;
+}
+
 lisp_value builtin_keep(int argc, lisp_value *argv)
 {
     if (argc < 1)

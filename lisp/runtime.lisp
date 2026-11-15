@@ -45,26 +45,6 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
 (defvar *pending-writes* nil
   "This hook's state writes, held in the turn's arena until %PERSIST-STATE.")
 
-(defun %r (key)
-  (let ((tail *pending-writes*) (value nil) (found nil))
-    (loop while (consp tail) do
-      (when (eq (car tail) key)
-        (setf value (car (cdr tail)) found t)
-        (return))
-      (setf tail (cddr tail)))
-    (if found value (getf *runtime* key))))
-
-(defun %r! (key value)
-  (let ((tail *pending-writes*) (found nil))
-    (loop while (consp tail) do
-      (when (eq (car tail) key)
-        (setf (car (cdr tail)) value found t)
-        (return))
-      (setf tail (cddr tail)))
-    (unless found
-      (setf *pending-writes* (cons key (cons value *pending-writes*)))))
-  value)
-
 (defun %counter (key) (or (%r key) 0))
 (defun %bump (key)
   (let ((next (1+ (%counter key))))
@@ -112,27 +92,6 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
 (defvar *retired-state* nil
   "The block the last keep replaced. It is released one hook later, so values the
 current hook built from it stay valid until the turn ends.")
-
-(defun %persist-state ()
-  "Publish this hook's writes into the state the next hook reads."
-  (let ((state *runtime*) (writes *pending-writes*))
-    (loop while (consp writes) do
-      (let ((key (car writes)) (value (car (cdr writes)))
-            (tail state) (found nil))
-        (loop while (consp tail) do
-          (when (eq (car tail) key)
-            (setf (car (cdr tail)) value found t)
-            (return))
-          (setf tail (cddr tail)))
-        (unless found
-          (setf state (cons key (cons value state)))))
-      (setf writes (cddr writes)))
-    (setf *pending-writes* nil)
-    (let ((old *runtime*))
-      (setf *runtime* (%keep state))
-      (when *retired-state* (%release *retired-state*))
-      (setf *retired-state* old)
-      *runtime*)))
 
 (defun make-mounted (&key spec state effects dispatches failures last-error
                           rule-parent rule-name rule-window rule-definition rule-pending)

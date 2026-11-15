@@ -36,33 +36,7 @@
   (floor (+ (coerce value 'double-float) 0.5d0)))
 
 (defun copy-data (value)
-  "Copy bounded Lisp data. No closures, host handles, shared strings, or cycles cross dispatch."
-  (let ((nodes 0) (limit (%limit :datum-nodes)) (chars (%limit :string-chars)))
-    (labels ((walk (item depth)
-               (when (or (> (incf nodes) limit) (> depth 64))
-                 (error "Extension data exceeds the node/depth budget."))
-               (cond
-                 ((null item) nil)
-                 ((consp item)
-                  (let ((items nil) (tail item))
-                    (loop while (consp tail) do
-                      (when (> (incf nodes) limit)
-                        (error "Extension data exceeds the node budget."))
-                      (push (walk (car tail) (1+ depth)) items)
-                      (setf tail (cdr tail)))
-                    (append (nreverse items) (walk tail (1+ depth)))))
-                 ((stringp item)
-                  (when (> (length item) chars)
-                    (error "String exceeds ~D characters." chars))
-                  (copy-seq item))
-                 ((or (integerp item) (rationalp item)) item)
-                 ((floatp item)
-                  (unless (%finite-float-p item)
-                    (error "Only finite floats are extension data."))
-                  item)
-                 ((symbolp item) item)
-                 (t (error "Not extension data: ~S" item)))))
-      (walk value 0))))
+  (%copy-data value (%limit :datum-nodes) (%limit :string-chars)))
 
 (defparameter %nul (code-char 0))
 

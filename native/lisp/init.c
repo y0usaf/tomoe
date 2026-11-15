@@ -280,6 +280,10 @@ int init_primitives(void)
     define_builtin("MAPHASH", builtin_maphash, 2, 2);
 
     define_internal("%KEEP", builtin_keep, 1, 1);
+    define_internal("%COPY-DATA", builtin_copy_data, 3, 3);
+    define_internal("%R", builtin_runtime_read, 1, 1);
+    define_internal("%R!", builtin_runtime_write, 2, 2);
+    define_internal("%PERSIST-STATE", builtin_persist_state, 0, 0);
     define_internal("%RELEASE", builtin_release, 1, 1);
     define_internal("%CONDITION-MESSAGE", builtin_condition_message, 1, 1);
     define_internal("%WITH-LIMITS", builtin_with_limits, 3, 3);
