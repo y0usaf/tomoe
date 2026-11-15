@@ -107,7 +107,6 @@
           portal ? true,
         }:
         let
-          sbcl = pkgs.sbcl.overrideAttrs { markRegionGC = false; };
           cairo = pkgs.cairo.override {
             x11Support = false;
             xcbSupport = false;
@@ -128,11 +127,10 @@
                 fileset = pkgs.lib.fileset.unions [
                   ./native
                   ./support
-                  ./src
-                  ./builtins
+                  ./lisp
+                  ./tools
                   ./examples
                   ./share
-                  ./build.lisp
                   ./Makefile
                 ];
               }
@@ -140,7 +138,6 @@
               root;
           nativeBuildInputs = [
             pkgs.pkg-config
-            sbcl
             pkgs.wayland-scanner
           ];
           buildInputs = [
@@ -166,24 +163,20 @@
           dontStrip = true;
           buildPhase = ''
             runHook preBuild
-            make -j"$NIX_BUILD_CORES" VERSION=${version} SBCL_HOME=${sbcl}/lib/sbcl \
+            make -j"$NIX_BUILD_CORES" VERSION=${version} \
+              PATH_PREFIX=$out/bin \
+              FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
               WP=${pkgs.wayland-protocols}/share/wayland-protocols
-            SBCL_HOME=${sbcl}/lib/sbcl \
-            TOMOE_VERSION=${version} \
-            TOMOE_BUILTINS=$out/share/tomoe/desktop.lisp \
-            TOMOE_FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
-            TOMOE_PATH=$out/bin \
-              build/tomoe-runtime --core ${sbcl}/lib/sbcl/sbcl.core --noinform \
-              --non-interactive --no-userinit --load build.lisp
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
-            install -Dm644 builtins/desktop.lisp $out/share/tomoe/desktop.lisp
+            install -d $out/share/tomoe/lisp
+            install -m 644 lisp/*.lisp $out/share/tomoe/lisp/
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
             install -Dm644 share/tomoe.portal $out/share/xdg-desktop-portal/portals/tomoe.portal
@@ -199,7 +192,7 @@
             runHook postInstall
           '';
           meta = {
-            description = "Common Lisp window management on a native Wayland stack";
+            description = "Lisp-configured window management on a native Wayland stack";
             mainProgram = "tomoe";
             platforms = systems;
           };

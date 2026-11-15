@@ -152,6 +152,12 @@ void loop_register_primitives(struct tomoe *server) {
     lisp_define_primitive("%XWAYLAND-DISPLAY", primitive_xwayland_display, 0, 0);
 }
 
+#ifndef TOMOE_PATH_PREFIX
+#define TOMOE_PATH_PREFIX ""
+#endif
+#ifndef TOMOE_FONTCONFIG_FILE
+#define TOMOE_FONTCONFIG_FILE ""
+#endif
 #ifndef TOMOE_VERSION
 #define TOMOE_VERSION "dev"
 #endif
@@ -528,10 +534,8 @@ static int run_compositor(const struct cli_options *options) {
     if (desktop_socket_answering(control_path))
         return cli_error("Another session is listening on %s.", control_path);
     if (session_signals_block(error, sizeof(error))) return cli_error("%s", error);
-    const char *extra = getenv("TOMOE_PATH");
-    if (extra && *extra) prepend_path(extra);
-    const char *fontconfig = getenv("TOMOE_FONTCONFIG_FILE");
-    if (fontconfig && *fontconfig) setenv("FONTCONFIG_FILE", fontconfig, 0);
+    if (*TOMOE_PATH_PREFIX) prepend_path(TOMOE_PATH_PREFIX);
+    if (*TOMOE_FONTCONFIG_FILE) setenv("FONTCONFIG_FILE", TOMOE_FONTCONFIG_FILE, 0);
     char backend[16];
     if (resolve_backend(options, backend, sizeof(backend), error, sizeof(error)))
         return cli_error("%s", error);
