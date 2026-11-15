@@ -1599,7 +1599,15 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
     (:reload (%reload-policy) (%persist-state) nil)
     (:mount (%mount-policy (first arguments)) (%persist-state) nil)
     (:unmount (unload-policy (first arguments)) (%persist-state) nil)
-    (:event (dispatch-event (first arguments)) (%persist-state) nil))))
+    (:event
+     (let ((event (first arguments)))
+       (unless (and (listp event) (getf event :type))
+         (error "Injected event must be a plist carrying :type."))
+       (unless (member (getf event :type) '(:key :button :grab))
+         (error "Injected event type must be :key, :button or :grab, not ~S."
+                (getf event :type)))
+       (dispatch-event event))
+     (%persist-state) nil))))
 
 (defun TOMOE-JSON (method params)
   (let ((*pending-writes* nil) (reply nil) (failure nil))
