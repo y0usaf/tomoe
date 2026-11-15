@@ -4,7 +4,6 @@ VERSION ?= dev
 OPT ?= -O2
 LTO ?=
 CPU ?=
-SBCL_HOME ?= $(shell dirname "$$(readlink -f "$$(command -v sbcl)")")/../lib/sbcl
 WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 
@@ -62,9 +61,12 @@ PROTOCOLS = \
 
 NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
-NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(NAMES:%=build/obj/%-protocol.o)
+LISP_SOURCES = prelude api runtime rules dialogs ui cursor ipc desktop-lib default-config
+LISP_EMBED = $(wildcard lisp/*.lisp) builtins/desktop.lisp
+LISP_NATIVE = $(patsubst native/lisp/%.c,build/obj/lisp-%.o,$(wildcard native/lisp/*.c))
+NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o)
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Inative $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 
@@ -73,7 +75,7 @@ PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-s
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
 
-all: build/tomoe-runtime build/tomoe-portal
+all: build/tomoe build/tomoe-portal
 
 build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))
@@ -81,9 +83,17 @@ build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o)
 build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-build/tomoe-runtime: $(NATIVE) $(SUPPORT:%=build/%.o)
-	$(CC) $(LTO) -Wl,--export-dynamic $(SBCL_HOME)/sbcl.o $^ -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) -lresvg -ldl -lpthread -lzstd -lm
+build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
+	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) \
+		-lresvg -ldl -lpthread -lzstd -lm
+
+build/embed: tools/embed.c | build
+	$(CC) $(CFLAGS_CODE) -o $@ $<
+
+build/lisp-sources.h: build/embed $(LISP_EMBED) FORCE
+	sh -c 'set --; for n in $(LISP_SOURCES); do if [ -f lisp/$$n.lisp ]; then set -- "$$@" "$$n" "lisp/$$n.lisp"; fi; done; set -- "$$@" desktop builtins/desktop.lisp; exec build/embed build/lisp-sources.h "$$@"'
+
+build/obj/main.o: build/lisp-sources.h
 
 build/test-client: tests/client.c $(HEADERS)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild tests/client.c $(NAMES:%=build/%-protocol.c) \
@@ -112,6 +122,9 @@ build/warp-client: tests/warp-client.c tests/client.c $(HEADERS)
 build/obj/%.o: native/%.c $(wildcard native/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
+build/obj/lisp-%.o: native/lisp/%.c $(wildcard native/lisp/*.h) $(wildcard native/*.h) $(HEADERS) | build/obj
+	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
+
 build/obj/%-protocol.o: build/%-protocol.c $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
@@ -129,5 +142,8 @@ build/%-protocol.c: %.xml | build
 
 build build/obj:
 	mkdir -p $@
+
+.PHONY: FORCE
+FORCE:
 
 .SECONDARY:
