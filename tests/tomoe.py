@@ -49,6 +49,8 @@ def inspect(socket="check"):
 
 def start(*options, bus=True, env=None, backend="headless", unit="tomoe", socket="check"):
     machine.wait_for_unit("multi-user.target")
+    machine.execute(f"systemctl stop {unit} 2>/dev/null; "
+                    f"systemctl reset-failed {unit} 2>/dev/null", check_return=False)
     if bus:
         machine.execute(
             "systemd-run --unit=check-bus --property=Type=exec "

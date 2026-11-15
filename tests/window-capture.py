@@ -6,6 +6,40 @@ BOUND = 0.6
 FLOOR = 5.0
 STALL_MS = 900
 REPORT = "/run/capture/report"
+CHECK = "/run/capture-check.py"
+SHOT = "/run/capture/grim.png"
+
+REPORT_CHECK = """cat > /run/capture-check.py <<'CAPTURECHECK'
+targets, frames, ended, intact = {}, [], [], []
+report = open("/run/capture/report").read().splitlines()
+for line in report:
+    parts = line.split()
+    if not parts:
+        continue
+    if parts[0] == "target" and len(parts) >= 5:
+        targets[int(parts[1])] = parts[4]
+    elif parts[0] == "frame" and len(parts) >= 6:
+        frames.append((int(parts[1]), parts[3], float(parts[4]),
+                       int(parts[5], 16) & 0xFFFFFF))
+    elif parts[0] == "end":
+        ended = parts[1:]
+    elif parts[0] == "intact" and len(parts) >= 2:
+        intact.append(parts[1])
+ready = [frame for frame in frames if frame[1] == "ready"]
+failed = [frame for frame in frames if frame[1] == "failed"]
+wrong = [frame for frame in ready if targets.get(frame[0]) != "c%06x" % frame[3]]
+print("ready", len(ready))
+print("failed", len(failed))
+print("wrong", len(wrong))
+print("targets", *["%d:%s" % (key, value) for key, value in sorted(targets.items())])
+print("first", *["%d:%s:%06x" % (frame[0], frame[1], frame[3]) for frame in ready[:4]])
+print("failed-latency", "%.3f" % (failed[0][2] if failed else 0.0))
+print("end", *ended)
+print("intact", *intact)
+print("lines", len(report))
+print("head", report[0] if report else "")
+print("tail", report[-1] if report else "")
+CAPTURECHECK"""
 
 
 def call(arguments, timeout=60):
@@ -29,7 +63,7 @@ def measure(label, window=2.0):
     missed = int(after[":MISSED"]) - int(before[":MISSED"])
     print(f"{label} {frames / window:.1f} fps median-cost {median:.0f} us peak {peak} us"
           f" missed {missed}", flush=True)
-    return frames / window, median, missed, peak
+    return frames / window, median, missed
 
 
 def window(unit, colour, rate=120):
@@ -42,11 +76,12 @@ def window(unit, colour, rate=120):
 
 
 def capture(unit, options):
-    machine.succeed("mkdir -p /run/capture")
     machine.execute(f"systemctl stop {unit}", check_return=False)
+    machine.succeed(f"mkdir -p /run/capture; rm -f {REPORT} {REPORT}.err")
     machine.succeed(
-        f"systemd-run --unit={unit} --property=Type=exec "
+        f"systemd-run --unit={unit} --property=Type=exec --property=RemainAfterExit=yes "
         f"--property=StandardOutput=file:{REPORT} "
+        f"--property=StandardError=file:{REPORT}.err "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check "
         f"{CAPTURE_CLIENT} {options}")
 
@@ -55,33 +90,26 @@ def finished(unit, timeout=90):
     machine.wait_until_succeeds(f"systemctl show -P SubState {unit} | grep -qx 'exited\\|failed'",
                                 timeout=timeout)
     status = machine.succeed(f"systemctl show -P ExecMainStatus {unit}").strip()
-    assert status == "0", f"{unit} exited {status}: " + machine.succeed(
-        f"journalctl -u {unit} -o cat | tail -20")
-    return machine.succeed(f"cat {REPORT}").splitlines()
-
-
-def parse(lines):
-    targets, frames = {}, []
-    for line in lines:
+    assert status == "0", f"{unit} exited {status}: " + machine.execute(
+        f"cat {REPORT}.err; head -n 4 {REPORT}")[1]
+    counts = {}
+    for line in machine.succeed(f"python3 {CHECK}").splitlines():
         parts = line.split()
-        if parts[0] == "target":
-            targets[int(parts[1])] = parts[5]
-        elif parts[0] == "frame":
-            frames.append({"target": int(parts[1]), "result": parts[3],
-                           "latency": float(parts[4]), "pixel": int(parts[5], 16) & 0xFFFFFF})
-    return targets, frames
+        if parts:
+            counts[parts[0]] = parts[1:]
+    print(f"{unit} {counts}", flush=True)
+    return counts
 
 
-def check_pixels(lines, count):
-    targets, frames = parse(lines)
-    ready = [frame for frame in frames if frame["result"] == "ready"]
-    assert len(ready) >= count, f"{len(ready)} captured frames, wanted {count}: {lines[-5:]}"
-    for frame in ready:
-        title = targets[frame["target"]]
-        assert title.startswith("c"), title
-        assert frame["pixel"] == int(title[1:], 16), (title, frame)
+def check_pixels(counts, count, windows=True):
+    ready = int(counts["ready"][0])
+    assert ready >= count, f"{ready} captured frames, wanted {count}: {counts}"
+    if windows:
+        assert counts["wrong"] == ["0"], f"{counts['wrong'][0]} frames do not show their window"
 
 
+machine.wait_for_unit("multi-user.target")
+machine.succeed(REPORT_CHECK)
 start("--bare")
 cli(f"mount {CAPTURE_POLICY}")
 for index, colour in enumerate(COLOURS):
@@ -98,8 +126,17 @@ assert capturing >= FLOOR, capturing
 assert capturing_median <= 1.6 * control_median, (control_median, capturing_median)
 check_pixels(finished("capture-shm"), 40)
 
-capture("capture-dmabuf", "--windows 2 --frames 12 --delay-ms 5 --seconds 20 --dmabuf")
-check_pixels(finished("capture-dmabuf"), 8)
+if machine.execute("test -e /dev/udmabuf")[0] == 0:
+    capture("capture-dmabuf", "--windows 2 --frames 12 --delay-ms 5 --seconds 20 --dmabuf")
+    check_pixels(finished("capture-dmabuf"), 8)
+else:
+    print("no /dev/udmabuf: skipped the dma-buf capture phase", flush=True)
+
+capture("capture-output", "--output --frames 12 --delay-ms 5 --seconds 20")
+check_pixels(finished("capture-output"), 8, windows=False)
+
+machine.succeed(f"{ENV}WAYLAND_DISPLAY=check timeout 60 grim {SHOT}")
+machine.succeed(f"test -s {SHOT}")
 
 quit()
 start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1",
@@ -112,13 +149,11 @@ capture("capture-stalled", "--windows 1 --frames 3 --seconds 20 --reuse-check")
 time.sleep(0.5)
 stalled, _, _ = measure("stalled-capture")
 assert stalled >= max(FLOOR, BOUND * stall_control), (stall_control, stalled)
-lines = finished("capture-stalled")
-_, frames = parse(lines)
-failed = [frame for frame in frames if frame["result"] == "failed"]
-assert failed, f"no frame was dropped when its fence stalled: {lines}"
-assert failed[0]["latency"] >= STALL_MS * 0.9, f"failed after {failed[0]['latency']:.0f} ms"
-intact = [line.split()[1] for line in lines if line.startswith("intact ")]
-assert intact == ["deadbeef"], f"the buffer was written after the frame failed: {intact}"
+counts = finished("capture-stalled")
+assert counts["failed"] != ["0"], f"no frame was dropped when its fence stalled: {counts}"
+latency = float(counts["failed-latency"][0])
+assert latency >= STALL_MS * 0.9, f"failed after {latency:.0f} ms"
+assert counts["intact"] == ["deadbeef"], f"the buffer was written after the frame failed: {counts}"
 
 quit()
 start("--bare", env={"TOMOE_TEST_STALL_CAPTURE": "1"})
@@ -149,8 +184,8 @@ nowatch, _, _ = measure("unwatched-capture")
 assert nowatch >= max(FLOOR, BOUND * watch_control), (watch_control, nowatch)
 assert "polling it from a timer" in machine.succeed("journalctl -u tomoe -o cat"), \
     "the capture fence was never polled from a timer"
-lines = finished("capture-nowatch")
-assert lines[-1] == "end 1 0 0", f"a frame reported before its fence signalled: {lines}"
+counts = finished("capture-nowatch")
+assert counts["end"] == ["1", "0", "0"], f"a frame reported before its fence signalled: {counts}"
 after_watch, _, _ = measure("unwatched-after-client")
 assert after_watch >= max(FLOOR, BOUND * watch_control), (watch_control, after_watch)
 assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0

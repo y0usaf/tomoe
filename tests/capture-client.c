@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -61,13 +62,16 @@ static struct wl_shm *shm;
 static struct zwp_linux_dmabuf_v1 *dmabuf_manager;
 static struct ext_foreign_toplevel_list_v1 *toplevels;
 static struct ext_foreign_toplevel_image_capture_source_manager_v1 *source_manager;
+static struct ext_output_image_capture_source_manager_v1 *output_sources;
 static struct ext_image_copy_capture_manager_v1 *capture_manager;
+static struct wl_output *output;
 static struct target targets[TARGETS_MAX];
 static int seen;
 static int wanted = 1;
 static int frames_per_target = 60;
 static int delay_ms;
 static int udmabuf_mode;
+static int output_mode;
 static int reuse_check;
 static const char *wanted_app_id = "capture-target";
 static uint32_t shm_format = DRM_FORMAT_ARGB8888;
@@ -100,20 +104,23 @@ static uint32_t shm_token(uint32_t format) {
 
 static void allocate(struct target *target) {
     size_t stride = (size_t)target->width * 4;
+    long page = sysconf(_SC_PAGESIZE);
     target->bytes = stride * (size_t)target->height;
+    size_t size = target->bytes;
+    if (page > 0) size = (size + (size_t)page - 1) / (size_t)page * (size_t)page;
     target->memfd = memfd_create("tomoe-capture", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (target->memfd < 0) fail("memfd_create: %s", strerror(errno));
-    if (ftruncate(target->memfd, (off_t)target->bytes) != 0)
-        fail("ftruncate to %zu: %s", target->bytes, strerror(errno));
-    target->pixels = mmap(NULL, target->bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+    if (ftruncate(target->memfd, (off_t)size) != 0)
+        fail("ftruncate to %zu: %s", size, strerror(errno));
+    target->pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
         target->memfd, 0);
     if (target->pixels == MAP_FAILED)
-        fail("mmap of %zu bytes: %s", target->bytes, strerror(errno));
-    memset(target->pixels, 0, target->bytes);
+        fail("mmap of %zu bytes: %s", size, strerror(errno));
+    memset(target->pixels, 0, size);
     fcntl(target->memfd, F_ADD_SEALS, F_SEAL_SHRINK);
     if (!udmabuf_mode) {
-        target->pool = wl_shm_create_pool(shm, target->memfd, (int32_t)target->bytes);
-        if (!target->pool) fail("wl_shm_create_pool refused %zu bytes", target->bytes);
+        target->pool = wl_shm_create_pool(shm, target->memfd, (int32_t)size);
+        if (!target->pool) fail("wl_shm_create_pool refused %zu bytes", size);
         target->buffer = wl_shm_pool_create_buffer(target->pool, 0, target->width,
             target->height, (int32_t)stride, shm_token(shm_format));
         if (!target->buffer) fail("wl_shm_pool_create_buffer refused the pool");
@@ -122,7 +129,7 @@ static void allocate(struct target *target) {
     int device = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
     if (device < 0) fail("cannot open /dev/udmabuf: %s", strerror(errno));
     struct udmabuf_create create = { .memfd = (uint32_t)target->memfd, .flags = 0,
-        .offset = 0, .size = target->bytes };
+        .offset = 0, .size = size };
     int fd = ioctl(device, UDMABUF_CREATE, &create);
     close(device);
     if (fd < 0) fail("udmabuf create: %s", strerror(errno));
@@ -370,6 +377,23 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
     .modifier = dmabuf_modifier,
 };
 
+static void output_geometry(void *data, struct wl_output *handle, int32_t x, int32_t y,
+        int32_t physical_width, int32_t physical_height, int32_t subpixel, const char *make,
+        const char *model, int32_t transform) {
+    (void)data; (void)handle; (void)x; (void)y; (void)physical_width; (void)physical_height;
+    (void)subpixel; (void)make; (void)model; (void)transform;
+}
+
+static void output_mode_event(void *data, struct wl_output *handle, uint32_t flags,
+        int32_t width, int32_t height, int32_t refresh) {
+    (void)data; (void)handle; (void)flags; (void)width; (void)height; (void)refresh;
+}
+
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode_event,
+};
+
 static void global(void *data, struct wl_registry *handle, uint32_t name,
         const char *interface, uint32_t version) {
     (void)data; (void)version;
@@ -382,7 +406,13 @@ static void global(void *data, struct wl_registry *handle, uint32_t name,
     else if (!strcmp(interface, "ext_foreign_toplevel_image_capture_source_manager_v1"))
         source_manager = wl_registry_bind(handle, name,
             &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1);
-    else if (!strcmp(interface, "ext_image_copy_capture_manager_v1"))
+    else if (!strcmp(interface, "ext_output_image_capture_source_manager_v1"))
+        output_sources = wl_registry_bind(handle, name,
+            &ext_output_image_capture_source_manager_v1_interface, 1);
+    else if (!strcmp(interface, "wl_output") && !output) {
+        output = wl_registry_bind(handle, name, &wl_output_interface, 1);
+        wl_output_add_listener(output, &output_listener, NULL);
+    } else if (!strcmp(interface, "ext_image_copy_capture_manager_v1"))
         capture_manager = wl_registry_bind(handle, name,
             &ext_image_copy_capture_manager_v1_interface, 1);
 }
@@ -428,6 +458,22 @@ static bool finished(int schedule[], int count) {
     return true;
 }
 
+static bool pump(void) {
+    while (wl_display_prepare_read(display) != 0)
+        if (wl_display_dispatch_pending(display) < 0) return false;
+    if (wl_display_flush(display) < 0 && errno != EAGAIN) {
+        wl_display_cancel_read(display);
+        return false;
+    }
+    struct pollfd fd = { .fd = wl_display_get_fd(display), .events = POLLIN };
+    if (poll(&fd, 1, 100) > 0) {
+        if (wl_display_read_events(display) < 0) return false;
+    } else {
+        wl_display_cancel_read(display);
+    }
+    return wl_display_dispatch_pending(display) >= 0;
+}
+
 int main(int arguments, char **argv) {
     int seconds_budget = 30;
     for (int i = 1; i < arguments; i++) {
@@ -439,6 +485,7 @@ int main(int arguments, char **argv) {
             seconds_budget = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--app-id") && i + 1 < arguments) wanted_app_id = argv[++i];
         else if (!strcmp(argv[i], "--dmabuf")) udmabuf_mode = 1;
+        else if (!strcmp(argv[i], "--output")) output_mode = 1;
         else if (!strcmp(argv[i], "--reuse-check")) reuse_check = 1;
         else fail("unknown argument %s", argv[i]);
     }
@@ -452,38 +499,58 @@ int main(int arguments, char **argv) {
     wl_registry_add_listener(registry, &registry_listener, NULL);
     if (wl_display_roundtrip(display) < 0) fail("the registry roundtrip failed");
     if (!capture_manager) fail("the compositor does not advertise ext_image_copy_capture_v1");
-    if (!source_manager)
-        fail("the compositor does not advertise a foreign toplevel capture source");
-    if (!toplevels) fail("the compositor does not advertise ext_foreign_toplevel_list_v1");
     if (!shm) fail("the compositor does not advertise wl_shm");
+    if (output_mode) {
+        if (!output_sources)
+            fail("the compositor does not advertise an output capture source");
+        if (!output) fail("the compositor announced no output");
+    } else {
+        if (!source_manager)
+            fail("the compositor does not advertise a foreign toplevel capture source");
+        if (!toplevels) fail("the compositor does not advertise ext_foreign_toplevel_list_v1");
+    }
     if (dmabuf_manager) zwp_linux_dmabuf_v1_add_listener(dmabuf_manager, &dmabuf_listener, NULL);
     if (udmabuf_mode && !dmabuf_manager) fail("dma-buf capture needs zwp_linux_dmabuf_v1");
-    ext_foreign_toplevel_list_v1_add_listener(toplevels, &toplevel_listener, NULL);
-    for (int round = 0; round < 200 && live_targets() < wanted; round++) {
-        if (wl_display_roundtrip(display) < 0) break;
-        if (round > 4) usleep(20000);
-    }
+    if (toplevels) ext_foreign_toplevel_list_v1_add_listener(toplevels, &toplevel_listener, NULL);
     int schedule[TARGETS_MAX];
-    int count = select_targets(schedule);
-    if (count < wanted) fail("only %d of %d capture targets were announced", count, wanted);
-    for (int i = 0; i < count; i++) {
-        struct target *target = &targets[schedule[i]];
-        target->source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
-            source_manager, target->handle);
-        if (!target->source) fail("the compositor refused a capture source");
+    int count;
+    if (output_mode) {
+        struct target *target = &targets[0];
+        target->described = true;
+        snprintf(target->title, sizeof(target->title), "output");
+        target->source = ext_output_image_capture_source_manager_v1_create_source(
+            output_sources, output);
+        if (!target->source) fail("the compositor refused an output capture source");
         target->session = ext_image_copy_capture_manager_v1_create_session(capture_manager,
             target->source, 0);
         if (!target->session) fail("the compositor refused a capture session");
         ext_image_copy_capture_session_v1_add_listener(target->session, &session_listener,
             target);
-    }
-    alarm((unsigned)seconds_budget);
-    while (!stopping && !finished(schedule, count)) {
-        if (wl_display_dispatch(display) < 0) {
-            if (errno == EINTR) continue;
-            break;
+        seen = 1;
+        schedule[0] = 0;
+        count = 1;
+    } else {
+        for (int round = 0; round < 200 && live_targets() < wanted; round++) {
+            if (wl_display_roundtrip(display) < 0) break;
+            if (round > 4) usleep(20000);
+        }
+        count = select_targets(schedule);
+        if (count < wanted) fail("only %d of %d capture targets were announced", count, wanted);
+        for (int i = 0; i < count; i++) {
+            struct target *target = &targets[schedule[i]];
+            target->source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(
+                source_manager, target->handle);
+            if (!target->source) fail("the compositor refused a capture source");
+            target->session = ext_image_copy_capture_manager_v1_create_session(capture_manager,
+                target->source, 0);
+            if (!target->session) fail("the compositor refused a capture session");
+            ext_image_copy_capture_session_v1_add_listener(target->session, &session_listener,
+                target);
         }
     }
+    alarm((unsigned)seconds_budget);
+    while (!stopping && !finished(schedule, count))
+        if (!pump()) break;
     int captured = 0, failures = 0;
     for (int i = 0; i < count; i++) {
         captured += targets[schedule[i]].captured;
