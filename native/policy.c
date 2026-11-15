@@ -1029,6 +1029,29 @@ static bool patch_name(const char *name) {
     return true;
 }
 
+static lisp_value prim_write_append(int argc, lisp_value *argv) {
+    const char *path = string(argv[0]);
+    size_t length = 0;
+    const char *text = lisp_get_string(argv[1], &length);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (fd < 0) lisp_error("Cannot open %s.", path);
+    while (length > 0) {
+        ssize_t written = write(fd, text, length);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) { close(fd); lisp_error("Cannot write %s.", path); }
+        text += written;
+        length -= (size_t)written;
+    }
+    close(fd);
+    return lisp_t();
+}
+
+static lisp_value prim_delete_file(int argc, lisp_value *argv) {
+    const char *path = string(argv[0]);
+    if (unlink(path) != 0 && errno != ENOENT) lisp_error("Cannot delete %s.", path);
+    return lisp_t();
+}
+
 static lisp_value prim_write_patch_file(int argc, lisp_value *argv) {
     const char *name = string(argv[0]);
     if (!patch_name(name)) lisp_error("Invalid patch name %s.", name);
@@ -1144,6 +1167,8 @@ static const struct primitive {
     { "%list-directory", prim_list_directory, 1, 1 },
     { "%read-source", prim_read_source, 2, 2 },
     { "%write-patch-file", prim_write_patch_file, 2, 2 },
+    { "%write-append", prim_write_append, 2, 2 },
+    { "%delete-file", prim_delete_file, 1, 1 },
     { "%json-broadcast", prim_json_broadcast, 2, 2 }
 };
 
