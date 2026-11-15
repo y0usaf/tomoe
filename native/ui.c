@@ -1452,18 +1452,6 @@ void ui_publish(struct tomoe *s) {
     ui_set_finish(old);
 }
 
-static bool surface_output_live(struct tomoe *s, const struct ui_surface *surface) {
-    if (!s || !surface) return false;
-    struct output *output;
-    wl_list_for_each(output, &s->outputs, link) {
-        if (!output_is_active(output)) continue;
-        if (!surface->output[0] ||
-                (output->screen->name && strcmp(surface->output, output->screen->name) == 0))
-            return true;
-    }
-    return false;
-}
-
 static bool surface_matches_output(const struct ui_surface *surface,
         const struct output *output, const struct presentation *plan) {
     if (!surface || !output || !output->screen) return false;
@@ -1686,17 +1674,6 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         if (surface->canvas && surface->canvas->texture)
             draw_texture(f, surface->canvas->texture, left, top, surface);
     }
-}
-
-int tomoe_ui_callback_current(struct tomoe *s, uint64_t callback_id) {
-    if (!s || !s->ui || callback_id == 0) return 0;
-    for (size_t i = 0; i < s->ui->count; i++) {
-        struct ui_surface *surface = s->ui->surfaces[i];
-        if (!surface_output_live(s, surface)) continue;
-        for (size_t j = 0; j < surface->hit_count; j++)
-            if (surface->hits[j].callback_id == callback_id) return 1;
-    }
-    return 0;
 }
 
 static size_t set_texture_count(const struct ui_set *set) {

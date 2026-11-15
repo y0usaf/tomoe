@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "budget.h"
 #include <fcntl.h>
 #include <drm_fourcc.h>
 #include <sys/mman.h>
@@ -19,7 +20,7 @@ struct key_input {
 struct binding {
     struct wl_list link;
     uint32_t modifiers, keysym;
-    uint64_t source_id, id;
+    uint64_t source_id, id, order;
     uint32_t references;
     bool active, matched;
     struct binding *replacement;
@@ -894,6 +895,82 @@ static void release_binding_list(struct wl_list *bindings, bool deactivate) {
     }
 }
 
+struct binding_entry {
+    struct binding *binding;
+    struct binding_entry *next;
+};
+
+struct binding_index {
+    struct binding_entry **slots;
+    struct binding_entry *entries;
+    size_t capacity, count;
+};
+
+static uint32_t binding_hash(uint32_t modifiers, uint32_t keysym) {
+    uint32_t hash = keysym * 2654435761u;
+    hash ^= modifiers * 40503u;
+    return hash ^ hash >> 16;
+}
+
+static uint32_t binding_sym(uint32_t keysym) {
+    return keysym >= POINTER_BINDING ? keysym : xkb_keysym_to_lower(keysym);
+}
+
+static void binding_index_free(struct tomoe *s) {
+    struct binding_index *index = s->binding_index;
+    if (!index) return;
+    free(index->slots);
+    free(index->entries);
+    free(index);
+    s->binding_index = NULL;
+}
+
+static void binding_index_build(struct tomoe *s) {
+    binding_index_free(s);
+    size_t count = 0;
+    struct binding *binding;
+    wl_list_for_each(binding, &s->bindings, link) count++;
+    if (!count) return;
+    struct binding_index *index = calloc(1, sizeof(*index));
+    if (!index) return;
+    size_t capacity = 16;
+    while (capacity < count * 2) capacity *= 2;
+    index->slots = calloc(capacity, sizeof(*index->slots));
+    index->entries = calloc(count, sizeof(*index->entries));
+    if (!index->slots || !index->entries) {
+        free(index->slots);
+        free(index->entries);
+        free(index);
+        return;
+    }
+    index->capacity = capacity;
+    wl_list_for_each_reverse(binding, &s->bindings, link) {
+        uint32_t slot = binding_hash(binding->modifiers, binding->keysym) &
+            (uint32_t)(capacity - 1);
+        index->entries[index->count] = (struct binding_entry){
+            .binding = binding, .next = index->slots[slot] };
+        index->slots[slot] = &index->entries[index->count];
+        index->count++;
+    }
+    s->binding_index = index;
+}
+
+static struct binding *binding_find(struct tomoe *s, uint32_t modifiers,
+        uint32_t keysym, const char *owner) {
+    struct binding_index *index = s->binding_index;
+    if (!index) return NULL;
+    keysym = binding_sym(keysym);
+    uint32_t slot = binding_hash(modifiers, keysym) & (uint32_t)(index->capacity - 1);
+    for (struct binding_entry *entry = index->slots[slot]; entry; entry = entry->next) {
+        struct binding *binding = entry->binding;
+        if (!binding->active || binding->modifiers != modifiers ||
+                binding->keysym != keysym) continue;
+        if (owner && strcmp(binding->owner, owner) != 0) continue;
+        return binding;
+    }
+    return NULL;
+}
+
 static void keyboard_latches_cancel(struct tomoe *s);
 void input_lock_begin(struct tomoe *s) {
     grab_clear(s);
@@ -933,6 +1010,7 @@ static int add_binding(struct tomoe *s, struct wl_list *bindings,
         uint32_t modifiers, uint32_t keysym, const char *owner,
         const char *press, const char *release, uint64_t source_id,
         bool active) {
+    static uint64_t order;
     if (!s || !bindings || !owner || !press) return 0;
     uint64_t id;
     if (!next_binding_id(s, &id)) return 0;
@@ -946,7 +1024,8 @@ static int add_binding(struct tomoe *s, struct wl_list *bindings,
         return 0;
     }
     binding->modifiers = modifiers;
-    binding->keysym = keysym;
+    binding->keysym = binding_sym(keysym);
+    binding->order = ++order;
     binding->source_id = source_id;
     binding->id = id;
     binding->references = 1;
@@ -958,6 +1037,7 @@ static int add_binding(struct tomoe *s, struct wl_list *bindings,
 void tomoe_clear_bindings(struct tomoe *s) {
     if (s) {
         keyboard_latches_cancel(s);
+        binding_index_free(s);
         release_binding_list(&s->bindings, true);
     }
 }
@@ -969,14 +1049,6 @@ int tomoe_present_bind(struct tomoe *s, uint32_t modifiers, uint32_t keysym,
     if (!s || !s->presentation || !s->presentation->replace_bindings) return 0;
     return add_binding(s, &s->presentation->bindings, modifiers, keysym,
         owner, press, release, source_id, false);
-}
-
-int tomoe_binding_current(struct tomoe *s, uint64_t binding_id) {
-    if (!s || binding_id == 0) return 0;
-    struct binding *binding;
-    wl_list_for_each(binding, &s->bindings, link)
-        if (binding->active && binding->id == binding_id) return 1;
-    return 0;
 }
 
 static bool binding_equivalent(const struct binding *left,
@@ -1051,6 +1123,7 @@ void presentation_input_publish(struct tomoe *s, struct presentation *plan) {
         if (!wl_list_empty(&plan->bindings))
             wl_list_insert_list(&s->bindings, &plan->bindings);
         wl_list_init(&plan->bindings);
+        binding_index_build(s);
     }
     if (s->grab_id != plan->grab_id || s->grab_mode != plan->grab_mode)
         tomoe_grab(s, plan->grab_id, plan->grab_mode);
@@ -1078,32 +1151,29 @@ static void pointer_release_client_buttons(struct tomoe *s, uint32_t time) {
     seat_pointer_notify_frame(s->seat);
 }
 static void ui_hover(struct tomoe *s, const struct ui_hit *hit) {
-    char *key = NULL;
-    if (hit && hit->hover && hit->key &&
-            asprintf(&key, "%s\x1f%s\x1f%s\x1f%s", hit->owner, hit->name, hit->output, hit->key) < 0)
-        key = NULL;
-    bool same = (!key && !s->ui_hovered) || (key && s->ui_hovered && !strcmp(key, s->ui_hovered));
-    free(s->ui_hovered);
-    s->ui_hovered = key;
-    if (same || !key) return;
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fputs("(:type :ui :owner ", out); quote(out, hit->owner);
-    fprintf(out, " :source-id %" PRIu64 " :callback-id %" PRIu64, hit->source_id, hit->callback_id);
-    fputs(" :surface ", out); quote(out, hit->name);
-    fputs(" :output ", out); quote(out, hit->output);
-    fputs(" :element ", out); quote(out, hit->key);
-    fputs(" :command ", out); quote(out, hit->hover);
-    fprintf(out, " :x %.17fd0 :y %.17fd0 :button 0 :modifiers 0)", hit->x, hit->y);
-    end_event(s, event, out);
+    uint64_t id = hit && hit->hover && hit->key ? hit->callback_id : 0;
+    if (id == s->ui_hovered) return;
+    s->ui_hovered = id;
+    if (!id || !hit || !hit->hover || !hit->key || s->stopping) return;
+    struct tomoe_event *event = policy_event_push(s, EV_UI);
+    if (!event) return;
+    event->source_id = hit->source_id;
+    event->binding_or_callback_id = hit->callback_id;
+    event->fx = hit->x;
+    event->fy = hit->y;
+    event->str[0] = policy_event_cstring(s, hit->owner);
+    event->str[1] = policy_event_cstring(s, hit->name);
+    event->str[2] = policy_event_cstring(s, hit->output);
+    event->str[3] = policy_event_cstring(s, hit->key);
+    event->time_us = policy_event_cstring(s, hit->hover);
 }
-static void hover_event(struct tomoe *s, const char *state, uint32_t id, bool moved) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fprintf(out, "(:type :pointer :state :%s :id %u :moved %s)", state, id, moved ? "t" : "nil");
-    end_event(s, event, out);
+
+static void hover_event(struct tomoe *s, uint32_t state, uint32_t id, bool moved) {
+    struct tomoe_event *event = policy_event_push(s, EV_POINTER);
+    if (!event) return;
+    event->id = id;
+    event->state = state;
+    event->button = moved ? 1 : 0;
 }
 static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
     struct surface *surface = NULL; double sx = 0, sy = 0;
@@ -1111,8 +1181,8 @@ static void pointer_motion(struct tomoe *s, uint32_t time, bool moved) {
     uint32_t hovered = find_window(s, id) ? id : 0;
     if (hovered != s->hovered && !lock_active(s)) {
         if (!s->motion.plan.fast || s->motion.plan.hover) {
-            if (s->hovered) hover_event(s, "leave", s->hovered, moved);
-            if (hovered) hover_event(s, "enter", hovered, moved);
+            if (s->hovered) hover_event(s, POLICY_POINTER_LEAVE, s->hovered, moved);
+            if (hovered) hover_event(s, POLICY_POINTER_ENTER, hovered, moved);
         }
         s->hovered = hovered;
     }
@@ -1327,55 +1397,54 @@ static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     if (input->button != 272 || !hit.command || !hit.callback_id) return true;
     uint32_t modifiers = input_modifier_mask(s);
     modifiers &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return true;
-    fputs("(:type :ui :owner ", out); quote(out, hit.owner);
-    fprintf(out, " :source-id %" PRIu64 " :callback-id %" PRIu64, hit.source_id, hit.callback_id);
-    fputs(" :surface ", out); quote(out, hit.name);
-    fputs(" :output ", out); quote(out, hit.output);
-    fputs(" :element ", out); quote(out, hit.key);
-    fputs(" :command ", out); quote(out, hit.command);
-    fprintf(out, " :x %.17fd0 :y %.17fd0 :button %u :modifiers %u)",
-        hit.x, hit.y, input->button, modifiers);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_UI);
+    if (!event) return true;
+    event->source_id = hit.source_id;
+    event->binding_or_callback_id = hit.callback_id;
+    event->button = input->button;
+    event->modifiers = modifiers;
+    event->fx = hit.x;
+    event->fy = hit.y;
+    event->str[0] = policy_event_cstring(s, hit.owner);
+    event->str[1] = policy_event_cstring(s, hit.name);
+    event->str[2] = policy_event_cstring(s, hit.output);
+    event->str[3] = policy_event_cstring(s, hit.key);
+    event->time_us = policy_event_cstring(s, hit.command);
     return true;
 }
-static void pointer_fields(struct tomoe *s, FILE *out) {
+static void pointer_fields(struct tomoe *s, struct tomoe_event *event) {
     double x = s->pointer_x, y = s->pointer_y;
     screen_to_world(s, &x, &y);
-    fprintf(out, " :x %.17fd0 :y %.17fd0 :sx %.17fd0 :sy %.17fd0", x, y, s->pointer_x, s->pointer_y);
+    event->fx = x;
+    event->fy = y;
+    event->sx = s->pointer_x;
+    event->sy = s->pointer_y;
 }
 static void pointer_binding_event(struct tomoe *s, const struct binding *binding,
-        const char *command, const char *state, uint32_t code, double delta) {
-    if (!binding || !command || s->stopping) return;
+        const char *command, uint32_t state, uint32_t code, double delta) {
+    if (!binding || !command || !binding->active || s->stopping) return;
     struct surface *surface = NULL;
     double sx, sy;
     uint32_t id = physical_hit_test(s, s->pointer_x, s->pointer_y, &surface, &sx, &sy);
-    struct event *event;
-    size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fputs("(:type :key :owner ", out);
-    quote(out, binding->owner);
-    fputs(" :command ", out);
-    quote(out, command);
-    fprintf(out, " :state :%s :source-id %" PRIu64 " :binding-id %" PRIu64
-        " :device 0 :button %u :window %u :delta %.17fd0", state, binding->source_id,
-        binding->id, code, find_window(s, id) ? id : 0, delta);
-    pointer_fields(s, out);
-    fputc(')', out);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_KEY);
+    if (!event) return;
+    event->flags |= POLICY_KEY_POINTER;
+    event->id = find_window(s, id) ? id : 0;
+    event->button = code;
+    event->state = state;
+    event->source_id = binding->source_id;
+    event->binding_or_callback_id = binding->id;
+    event->delta = delta;
+    event->str[0] = policy_event_cstring(s, binding->owner);
+    event->str[1] = policy_event_cstring(s, command);
+    pointer_fields(s, event);
 }
 static struct binding *pointer_binding(struct tomoe *s, uint32_t code) {
     struct keymap_slot *keyboard = s->logical_keyboard ?
         &s->logical_keyboard->xkb : seat_get_keyboard(s->seat);
     uint32_t mods = keyboard ? keymap_slot_modifiers(keyboard) : 0;
     mods &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
-    struct binding *b;
-    wl_list_for_each(b, &s->bindings, link)
-        if (b->keysym == code && b->modifiers == mods) return b;
-    return NULL;
+    return binding_find(s, mods, code, NULL);
 }
 static bool pointer_binding_button(struct tomoe *s, struct pointer_button *input) {
     size_t count = s->pointer_latch_count;
@@ -1384,8 +1453,8 @@ static bool pointer_binding_button(struct tomoe *s, struct pointer_button *input
         if (latch->button != input->button) continue;
         if (input->state == WL_POINTER_BUTTON_STATE_RELEASED) {
             if (latch->binding->active)
-                pointer_binding_event(s, latch->binding, latch->binding->release, "released",
-                    input->button, 0);
+                pointer_binding_event(s, latch->binding, latch->binding->release,
+                    POLICY_KEY_RELEASED, input->button, 0);
             binding_unref(latch->binding);
             *latch = s->pointer_latches[--s->pointer_latch_count];
         }
@@ -1398,7 +1467,7 @@ static bool pointer_binding_button(struct tomoe *s, struct pointer_button *input
     binding_ref(binding);
     s->pointer_latches[s->pointer_latch_count++] =
         (struct pointer_latch){ .button = input->button, .binding = binding };
-    pointer_binding_event(s, binding, binding->press, "pressed", input->button, 0);
+    pointer_binding_event(s, binding, binding->press, POLICY_KEY_PRESSED, input->button, 0);
     return true;
 }
 static bool pointer_binding_axis(struct tomoe *s, struct pointer_axis *event) {
@@ -1407,7 +1476,7 @@ static bool pointer_binding_axis(struct tomoe *s, struct pointer_axis *event) {
     uint32_t code = SCROLL_BINDING + (vertical ? 0 : 2) + (event->delta > 0 ? 1 : 0);
     struct binding *binding = pointer_binding(s, code);
     if (!binding) return false;
-    pointer_binding_event(s, binding, binding->press, "pressed", 0, event->delta);
+    pointer_binding_event(s, binding, binding->press, POLICY_KEY_PRESSED, 0, event->delta);
     return true;
 }
 
@@ -1451,16 +1520,17 @@ void input_pointer_button(struct pointer_button *input) {
     }
     uint32_t modifiers = input_modifier_mask(s);
     modifiers &= MOD_SHIFT | MOD_CTRL | MOD_ALT | MOD_LOGO;
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
     double x = s->pointer_x, y = s->pointer_y;
     if (find_window(s, id)) screen_to_world(s, &x, &y);
-    fprintf(out, "(:type :button :id %u :button %u :state :%s :x %d :y %d :modifiers %u)",
-        id, input->button,
-        input->state == WL_POINTER_BUTTON_STATE_PRESSED ? "pressed" : "released",
-        pixel_round(x), pixel_round(y), modifiers);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_BUTTON);
+    if (!event) return;
+    event->id = id;
+    event->button = input->button;
+    event->state = input->state == WL_POINTER_BUTTON_STATE_PRESSED ?
+        POLICY_KEY_PRESSED : POLICY_KEY_RELEASED;
+    event->x = (uint32_t)pixel_round(x);
+    event->y = (uint32_t)pixel_round(y);
+    event->modifiers = modifiers;
 }
 void input_pointer_axis(struct pointer_axis *event) {
     struct tomoe *s = event->device->server;
@@ -1513,41 +1583,34 @@ static int keyboard_binding_syms(struct logical_keyboard *keyboard,
 
 static void grab_event(struct keyboard *keyboard, uint32_t keycode, xkb_keysym_t sym) {
     struct tomoe *s = keyboard->server;
-    char name[64];
-    xkb_keysym_get_name(sym, name, sizeof(name));
-    struct event *event;
-    size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fputs("(:type :key :owner ", out);
-    quote(out, s->grab_owner);
-    fputs(" :command ", out);
-    quote(out, s->grab_otherwise);
-    fprintf(out, " :state :pressed :source-id %" PRIu64 " :device %" PRIu64 " :keycode %u :keysym ",
-        s->grab_source, keyboard->id, keycode);
-    quote(out, name);
-    fputc(')', out);
-    end_event(s, event, out);
+    char name[64] = "";
+    if (xkb_keysym_get_name(sym, name, sizeof(name)) <= 0) name[0] = 0;
+    struct tomoe_event *event = policy_event_push(s, EV_KEY);
+    if (!event) return;
+    event->flags |= POLICY_KEY_KEYSYM;
+    event->keycode = keycode;
+    event->state = POLICY_KEY_PRESSED;
+    event->source_id = s->grab_source;
+    event->time_us = keyboard->id;
+    event->str[0] = policy_event_cstring(s, s->grab_owner);
+    event->str[1] = policy_event_cstring(s, s->grab_otherwise);
+    event->str[2] = policy_event_cstring(s, name);
 }
 static void binding_event(struct keyboard *keyboard, const struct binding *binding,
-        const char *command, const char *state, uint32_t keycode) {
-    if (!binding || !command) return;
+        const char *command, uint32_t state, uint32_t keycode) {
+    if (!binding || !command || !binding->active) return;
     struct tomoe *s = keyboard->server;
     if (s->stopping) return;
-    struct event *event;
-    size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fputs("(:type :key :owner ", out);
-    quote(out, binding->owner);
-    fputs(" :command ", out);
-    quote(out, command);
-    fprintf(out, " :state :%s :source-id %" PRIu64
-        " :binding-id %" PRIu64 " :device %" PRIu64 " :keycode %u",
-        state, binding->source_id, binding->id, keyboard->id, keycode);
-    pointer_fields(s, out);
-    fputc(')', out);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_KEY);
+    if (!event) return;
+    event->keycode = keycode;
+    event->state = state;
+    event->source_id = binding->source_id;
+    event->binding_or_callback_id = binding->id;
+    event->time_us = keyboard->id;
+    event->str[0] = policy_event_cstring(s, binding->owner);
+    event->str[1] = policy_event_cstring(s, command);
+    pointer_fields(s, event);
 }
 
 static bool keyboard_has_unconsumed(struct tomoe *s,
@@ -1611,27 +1674,23 @@ static void logical_key_event_done(struct tomoe *s, uint32_t keycode,
         logical_key_transition(s, keycode, state);
 }
 
-static const char *keyboard_hand(uint32_t keycode) {
+static bool keyboard_left(uint32_t keycode) {
     static const uint32_t left_keys[] = {
         1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 29, 30, 31, 32, 33,
         34, 41, 42, 44, 45, 46, 47, 48, 56, 58, 125,
     };
     for (size_t i = 0; i < sizeof(left_keys) / sizeof(left_keys[0]); i++)
-        if (left_keys[i] == keycode) return "left";
-    return "right";
+        if (left_keys[i] == keycode) return true;
+    return false;
 }
 
 static void keyboard_activity(struct tomoe *s, uint32_t keycode) {
-    struct event *event; size_t size;
-    FILE *out = begin_event(s, &event, &size);
-    if (!out) return;
-    fputs("(:type :activity :hand ", out);
-    quote(out, keyboard_hand(keycode));
-    fputc(')', out);
-    end_event(s, event, out);
+    struct tomoe_event *event = policy_event_push(s, EV_ACTIVITY);
+    if (!event) return;
+    event->id = keyboard_left(keycode) ? 0 : 1;
 }
 
-void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode,
+static void input_key_body(struct input_device *device, uint32_t time_msec, uint32_t keycode,
         uint32_t state) {
     struct keyboard *k = device->keyboard;
     if (!k) return;
@@ -1679,7 +1738,7 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         if (input->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
             struct binding *binding = latch->binding;
             if (binding && binding->active)
-                binding_event(k, binding, binding->release, "released", input->keycode);
+                binding_event(k, binding, binding->release, POLICY_KEY_RELEASED, input->keycode);
             binding_unref(binding);
             latch->binding = NULL;
             latch->consumed = false;
@@ -1721,15 +1780,21 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             struct binding_latch *latch = &k->latches[input->keycode];
             latch->consumed = true;
-            struct binding *b, *match = NULL;
-            for (int exact = 1; exact >= 0 && !match; exact--)
-                wl_list_for_each(b, &s->bindings, link) for (int i = 0; !match && i < count; i++)
-                    if (strcmp(b->owner, s->grab_owner) == 0 && (!exact || b->modifiers == mods) &&
-                            xkb_keysym_to_lower(syms[i]) == xkb_keysym_to_lower(b->keysym)) match = b;
+            struct binding *match = NULL;
+            for (int exact = 1; exact >= 0 && !match; exact--) {
+                struct binding *b;
+                wl_list_for_each(b, &s->bindings, link) {
+                    if (!b->active || strcmp(b->owner, s->grab_owner) != 0 ||
+                            (exact && b->modifiers != mods)) continue;
+                    for (int i = 0; i < count; i++)
+                        if (xkb_keysym_to_lower(syms[i]) == b->keysym) { match = b; break; }
+                    if (match) break;
+                }
+            }
             if (match) {
                 binding_ref(match);
                 latch->binding = match;
-                binding_event(k, match, match->press, "pressed", input->keycode);
+                binding_event(k, match, match->press, POLICY_KEY_PRESSED, input->keycode);
             } else if (s->grab_otherwise && count && !((syms[0] >= XKB_KEY_Shift_L && syms[0] <= XKB_KEY_Hyper_R) ||
                     (syms[0] >= XKB_KEY_ISO_Lock && syms[0] <= XKB_KEY_ISO_Level5_Lock))) {
                 grab_event(k, input->keycode, syms[0]);
@@ -1739,16 +1804,17 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         return;
     }
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && !lock_active(s) && !shortcuts_inhibited(s)) {
-        struct binding *b;
-        wl_list_for_each(b, &s->bindings, link) for (int i = 0; i < count; i++) {
-            if (b->modifiers != mods ||
-                    xkb_keysym_to_lower(syms[i]) != xkb_keysym_to_lower(b->keysym))
-                continue;
+        struct binding *b = NULL;
+        for (int i = 0; i < count; i++) {
+            struct binding *candidate = binding_find(s, mods, syms[i], NULL);
+            if (candidate && (!b || candidate->order > b->order)) b = candidate;
+        }
+        if (b) {
             struct binding_latch *latch = &k->latches[input->keycode];
             binding_ref(b);
             latch->binding = b;
             latch->consumed = true;
-            binding_event(k, b, b->press, "pressed", input->keycode);
+            binding_event(k, b, b->press, POLICY_KEY_PRESSED, input->keycode);
             logical_key_event_done(s, input->keycode, input->state,
                 first_global, last_global);
             return;
@@ -1772,7 +1838,15 @@ void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode
         first_global, last_global);
 }
 
-void input_modifiers(struct input_device *device, const struct keyboard_modifiers *snapshot) {
+void input_key(struct input_device *device, uint32_t time_msec, uint32_t keycode,
+        uint32_t state) {
+    budget_hot_enter("keyboard");
+    input_key_body(device, time_msec, keycode, state);
+    budget_hot_leave();
+}
+
+static void input_modifiers_body(struct input_device *device,
+        const struct keyboard_modifiers *snapshot) {
     struct keyboard *k = device->keyboard;
     if (!k) return;
     struct keyboard_modifiers incoming = *snapshot;
@@ -1799,6 +1873,12 @@ void input_modifiers(struct input_device *device, const struct keyboard_modifier
     logical_external_modifiers(k->server, k, &old, &incoming);
 }
 
+void input_modifiers(struct input_device *device, const struct keyboard_modifiers *snapshot) {
+    budget_hot_enter("keyboard");
+    input_modifiers_body(device, snapshot);
+    budget_hot_leave();
+}
+
 static void capabilities(struct tomoe *s) {
     seat_set_capabilities(s->seat, WL_SEAT_CAPABILITY_POINTER |
         (wl_list_empty(&s->keyboards) ? 0 : WL_SEAT_CAPABILITY_KEYBOARD));
@@ -1814,7 +1894,7 @@ static void keyboard_latches_finish(struct keyboard *keyboard) {
         bool was_pressed = keyboard->pressed[code];
         bool consumed = latch->consumed;
         if (consumed && binding && binding->active)
-            binding_event(keyboard, binding, binding->release, "released", code);
+            binding_event(keyboard, binding, binding->release, POLICY_KEY_RELEASED, code);
         keyboard->pressed[code] = false;
         bool last_global = was_pressed && !keyboard_has_pressed(s, keyboard,
             (uint32_t)code);

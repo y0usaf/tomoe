@@ -14,9 +14,6 @@ void tomoe_update_fd(struct tomoe *server, uintptr_t source, uint32_t mask);
 void tomoe_unwatch_fd(struct tomoe *server, uintptr_t source);
 int tomoe_frames_waiting(struct tomoe *server);
 int tomoe_watch_signals(struct tomoe *server);
-const char *tomoe_next_event(struct tomoe *server);
-int tomoe_event_count(struct tomoe *server);
-int tomoe_event_barrier(struct tomoe *server);
 void tomoe_destroy(struct tomoe *server);
 const char *tomoe_hit_test(struct tomoe *server, double x, double y);
 const char *tomoe_frames(struct tomoe *server);
@@ -36,7 +33,6 @@ void tomoe_window_state(struct tomoe *server, uint32_t id, int fullscreen,
 uint32_t tomoe_keysym(const char *name);
 int tomoe_warm_shaders(const char *node, const char *directory);
 void tomoe_clear_bindings(struct tomoe *server);
-int tomoe_binding_current(struct tomoe *server, uint64_t binding_id);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);
 int tomoe_output(struct tomoe *server, const char *name, int mode,
@@ -104,7 +100,6 @@ int tomoe_present_ui_hit(struct tomoe *server, const char *key, const char *comm
 int tomoe_present_ui_end(struct tomoe *server);
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
     double size, double line_height);
-int tomoe_ui_callback_current(struct tomoe *server, uint64_t callback_id);
 const char *tomoe_ui_stats(struct tomoe *server);
 int tomoe_present_settings(struct tomoe *server);
 int tomoe_present_setting(struct tomoe *server, const char *key, double value);
