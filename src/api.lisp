@@ -806,11 +806,14 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
 
 (defun %animation-spec (value default)
   "Normalize NIL (off), T (DEFAULT), (:SPRING plist) or (:EASE plist).
-A spring settles when it stays within EPSILON of its target; the old
-1/10000 epsilon made the 800 stiffness spring run for 326 ms. The shipped
-defaults are calibrated by settle time: 16000 stiffness at a 1/1000 epsilon
-settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
-90 ms."
+A spring settles when it stays within EPSILON of its target, measured as a
+fraction of the distance it covers; the old 1/10000 epsilon made the 800
+stiffness spring run for 326 ms. LAUNCH is the speed a fresh start begins at,
+as a multiple of the distance per second: about the square root of the
+stiffness starts at the speed a critically damped spring would reach, so the
+motion begins fast and still never overshoots. The shipped defaults are
+calibrated by settle time: 4000 stiffness, 63 launch and a 1/1000 epsilon
+settle in 110 ms, and the open ease is 90 ms."
   (flet ((bad () (error "Invalid animation: ~S" value)))
     (cond ((null value) (list :kind :off))
           ((eq value t) (%animation-spec default default))
@@ -819,11 +822,12 @@ settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
            (copy-list value))
           ((not (and (consp value) (member (first value) '(:spring :ease)) (= 2 (length value)))) (bad))
           ((eq (first value) :spring)
-           (destructuring-bind (&key (damping-ratio 1) (stiffness 16000) (epsilon 1/1000))
+           (destructuring-bind (&key (damping-ratio 1) (stiffness 4000) (epsilon 1/1000) (launch 63))
                (%settings-plist (second value) '((:damping-ratio (:real 0 1000)) (:stiffness (:real 0 100000))
-                                                 (:epsilon (:real 0 1))) :spring)
+                                                 (:epsilon (:real 0 1)) (:launch (:real 0 100000))) :spring)
              (list :kind :spring :damping-ratio (%double-float damping-ratio)
-                   :stiffness (%double-float stiffness) :epsilon (%double-float epsilon))))
+                   :stiffness (%double-float stiffness) :epsilon (%double-float epsilon)
+                   :launch (%double-float launch))))
           (t
            (destructuring-bind (&key (duration-ms 90) (curve :ease-out-expo)) (second value)
              (unless (typep duration-ms '(integer 1 600000)) (bad))
@@ -834,15 +838,15 @@ settles in 73 ms (within 1% of the travel at 52 ms), and the open ease is
                    :curve (if (keywordp curve) curve (mapcar #'%double-float curve))))))))
 
 (defparameter +animation-defaults+
-  '(:window-move (:spring (:stiffness 16000 :epsilon 1/1000))
+  '(:window-move (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63))
     :window-open (:ease (:duration-ms 90 :curve :ease-out-expo))
     :window-close nil :window-resize nil :window-switch nil
-    :window-view (:spring (:stiffness 16000 :epsilon 1/1000))
+    :window-view (:spring (:stiffness 4000 :epsilon 1/1000 :launch 63))
     :window-alpha nil :window-tint nil :window-scale nil
     :window-rotation nil :window-translate nil)
   "Each animation event's default, when a configuration does not name one.
 Every animation advances once per display refresh, at the instant the frame
-reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 73 ms
+reaches the screen; there is no tick to tune. :WINDOW-MOVE settles in 110 ms
 and :WINDOW-VIEW (workspace and deck scrolling) does too; :WINDOW-OPEN lasts
 90 ms.")
 

@@ -421,7 +421,7 @@ once."
                   (loop for (property spec) on value by #'cddr
                         for prefix = (format nil "~A-~(~A~)" name property) do
                     (number (format nil "~A-kind" prefix) (ecase (getf spec :kind) (:off 0) (:spring 1) (:ease 2)))
-                    (loop for key in '(:damping-ratio :stiffness :epsilon :duration-ms)
+                    (loop for key in '(:damping-ratio :stiffness :epsilon :launch :duration-ms)
                           when (getf spec key) do (number (format nil "~A-~(~A~)" prefix key) (getf spec key)))
                     (let ((curve (getf spec :curve)))
                       (when curve

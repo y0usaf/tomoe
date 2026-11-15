@@ -495,6 +495,14 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   `:window-resize`, `:window-switch` and `:window-view`, each a spring or an ease
   set once. Nothing animates while nothing changes, and a non-identity state
   keeps that window out of direct scanout.
+- A spring takes `:stiffness`, `:damping-ratio`, `:epsilon` and `:launch`.
+  `:launch` is the speed a fresh start begins at, counted in distances per
+  second, so a move is already moving on its first frame instead of easing out of
+  a standstill; retargeting a spring that is still moving keeps the velocity it
+  has. At a `:launch` about the square root of the stiffness the motion is the
+  fastest a critically damped spring can make without overshooting. The shipped
+  `:window-move` and `:window-view` springs are 4000 stiffness with a launch of
+  63, and settle in 110 ms.
 - Committed content-type hints are available to window policy as `:content-type`
   (`:none`, `:photo`, `:video`, or `:game`); they do not force a rendering policy.
 - Toplevel tags and translated descriptions are available as `:tag` and
