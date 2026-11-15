@@ -114,8 +114,7 @@ def measure(label, socket="check", unit="tomoe", gate=True):
 
     threshold, rows = stall_table(timings)
     print(f"{label}: {len(rows)} frames over {threshold / 1000000:.2f} ms; "
-          f"longest {max([row[0] for row in rows], default=0) / 1000000:.2f} ms; "
-          f"{len(items(timings[':GC-INTERVALS']))} collections logged")
+          f"longest {max([row[0] for row in rows], default=0) / 1000000:.2f} ms")
     print(f"{'start us':>12}{'length ms':>11}{'gc':>8}{'gc ms':>8}  frame stall")
     for duration, start, overlapped in rows[:40]:
         print(f"{start % 1000000000:>12}{duration / 1000000:>11.2f}"
