@@ -23,6 +23,8 @@ static lisp_value cdr_of(lisp_value v)
 lisp_value builtin_car(int argc, lisp_value *argv) { return car_of(argc > 0 ? argv[0] : NIL_VAL); }
 lisp_value builtin_cdr(int argc, lisp_value *argv) { return cdr_of(argc > 0 ? argv[0] : NIL_VAL); }
 lisp_value builtin_cddr(int argc, lisp_value *argv) { return cdr_of(cdr_of(argc > 0 ? argv[0] : NIL_VAL)); }
+lisp_value builtin_caar(int argc, lisp_value *argv) { return car_of(car_of(argc > 0 ? argv[0] : NIL_VAL)); }
+lisp_value builtin_cdar(int argc, lisp_value *argv) { return cdr_of(car_of(argc > 0 ? argv[0] : NIL_VAL)); }
 
 lisp_value builtin_first(int argc, lisp_value *argv) { return car_of(argc > 0 ? argv[0] : NIL_VAL); }
 lisp_value builtin_second(int argc, lisp_value *argv) { return car_of(cdr_of(argc > 0 ? argv[0] : NIL_VAL)); }
@@ -30,6 +32,11 @@ lisp_value builtin_third(int argc, lisp_value *argv) { return car_of(cdr_of(cdr_
 lisp_value builtin_fourth(int argc, lisp_value *argv) { return car_of(cdr_of(cdr_of(cdr_of(argc > 0 ? argv[0] : NIL_VAL)))); }
 lisp_value builtin_fifth(int argc, lisp_value *argv) { return car_of(cdr_of(cdr_of(cdr_of(cdr_of(argc > 0 ? argv[0] : NIL_VAL))))); }
 lisp_value builtin_rest(int argc, lisp_value *argv) { return cdr_of(argc > 0 ? argv[0] : NIL_VAL); }
+
+lisp_value builtin_sixth(int argc, lisp_value *argv)
+{
+    return car_of(cdr_of(cdr_of(cdr_of(cdr_of(cdr_of(argc > 0 ? argv[0] : NIL_VAL))))));
+}
 
 lisp_value builtin_nth(int argc, lisp_value *argv)
 {
@@ -408,4 +415,64 @@ lisp_value builtin_copy_tree(int argc, lisp_value *argv)
         return cons(builtin_copy_tree(1, &head), builtin_copy_tree(1, &tail));
     }
     return value;
+}
+
+lisp_value builtin_copy_seq(int argc, lisp_value *argv)
+{
+    if (argc < 1)
+        return NIL_VAL;
+    if (stringp(argv[0]))
+        return argv[0];
+    if (nilp(argv[0]) || consp(argv[0]))
+        return list_reverse_copy(list_reverse_copy(argv[0]));
+    lisp_error("COPY-SEQ needs a list or a string");
+}
+
+lisp_value builtin_byte(int argc, lisp_value *argv)
+{
+    if (argc < 2)
+        lisp_error("BYTE needs a size and a position");
+    return cons(make_int(require_int(argv[0], "byte size")),
+                make_int(require_int(argv[1], "byte position")));
+}
+
+lisp_value builtin_ldb(int argc, lisp_value *argv)
+{
+    if (argc < 2)
+        lisp_error("LDB needs a byte spec and an integer");
+    if (!consp(argv[0]))
+        lisp_error("LDB needs a byte spec");
+    int64_t size = require_int(CAR(argv[0]), "byte size");
+    int64_t position = require_int(CDR(argv[0]), "byte position");
+    int64_t value = require_int(argv[1], "integer");
+    if (size < 0 || size > 63 || position < 0 || position + size > 64)
+        lisp_error("LDB: bad byte spec");
+    uint64_t mask = size == 0 ? 0 : (UINT64_C(1) << size) - 1;
+    return make_int((int64_t)(((uint64_t)value >> position) & mask));
+}
+
+lisp_value builtin_union(int argc, lisp_value *argv)
+{
+    if (argc < 2)
+        lisp_error("UNION needs two lists");
+    struct kw kw;
+    kw_parse(argc, argv, 2, &kw);
+    lisp_value out = NIL_VAL, tail = NIL_VAL;
+    lisp_value lists[2] = { argv[0], argv[1] };
+    for (int i = 0; i < 2; i++) {
+        lisp_value list = lists[i];
+        while (consp(list)) {
+            lisp_value value = CAR(list);
+            list = CDR(list);
+            if (contains(out, value, &kw))
+                continue;
+            lisp_value cell = cons(value, NIL_VAL);
+            if (nilp(out))
+                out = cell;
+            else
+                CDR(tail) = cell;
+            tail = cell;
+        }
+    }
+    return out;
 }

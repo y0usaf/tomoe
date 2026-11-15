@@ -863,7 +863,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                                 (:text :color "#ffffff") (:chip :color "#45454f")))
     (:watchdog-ms (:integer 0 60000) 1000)
     (:budgets (:group
-               (:lisp-heap-mb (:integer 4 1024) 32)
+               (:lisp-heap-mb (:integer 4 1024) 64)
                (:windows (:integer 16 65536) 512)
                (:surfaces (:integer 16 65536) 512)
                (:events (:integer 256 65536) 4096)
@@ -1005,9 +1005,10 @@ preceding owner or the default."
       (loop for (key default) on +animation-defaults+ by #'cddr
             append (list key (%animation-spec value default)))
       (loop for (key spec) on value by #'cddr
-            do (unless (member key +animation-defaults+)
-                 (error "Unknown animation: ~S" key))
-            append (list key (%animation-spec spec (getf +animation-defaults+ key))))))
+            if (member key +animation-defaults+)
+              append (list key (%animation-spec spec (getf +animation-defaults+ key)))
+            else
+              do (unless (null spec) (error "Unknown animation: ~S" key)))))
 
 (defun settings (&rest plist)
   "Own compositor settings. Later owners replace individual keys; grouped keys

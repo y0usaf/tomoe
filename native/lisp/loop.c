@@ -3,7 +3,7 @@
 
 #include "lisp-internal.h"
 
-enum loop_for_kind { LF_IN, LF_ON, LF_FROM, LF_EQ };
+enum loop_for_kind { LF_IN, LF_ON, LF_ACROSS, LF_FROM, LF_EQ };
 
 enum loop_bound_kind { LB_NONE, LB_TO, LB_BELOW, LB_DOWNTO };
 
@@ -18,6 +18,7 @@ struct loop_for {
     int bound_kind;
     lisp_value state;
     lisp_value step_fn;
+    int64_t index;
 };
 
 enum loop_acc_kind { ACC_COLLECT, ACC_APPEND, ACC_NCONC, ACC_SUM, ACC_COUNT, ACC_MAX, ACC_MIN };
@@ -42,7 +43,8 @@ enum loop_act_kind {
     ACT_MIN,
     ACT_DO,
     ACT_RETURN,
-    ACT_THEREIS
+    ACT_THEREIS,
+    ACT_ALWAYS
 };
 
 struct loop_act {
@@ -87,6 +89,9 @@ static lisp_value acc_value(struct loop_acc *acc)
     switch (acc->kind) {
     case ACC_COLLECT:
         return list_reverse_copy(acc->value);
+    case ACC_SUM:
+    case ACC_COUNT:
+        return nilp(acc->value) ? make_int(0) : acc->value;
     default:
         return acc->value;
     }
@@ -125,13 +130,52 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
     int nf = 0, na = 0, nb = 0, nw = 0, nfin = 0;
     lisp_value while_expr = NIL_VAL;
     lisp_value repeat_expr = NIL_VAL;
+    bool while_after_for = false;
+    bool always_used = false;
     int i = 0;
 
     while (i < n) {
         lisp_value token = tokens[i++];
-        if (!symbolp(token))
-            lisp_error("LOOP: unsupported clause");
+        if (!symbolp(token)) {
+            if (!consp(token)) {
+                char shown[160];
+                lisp_print(token, true, shown, sizeof(shown));
+                lisp_error("LOOP: unsupported clause %s", shown);
+            }
+            if (nb >= 64)
+                lisp_error("LOOP: too many clauses");
+            struct loop_act *act = &acts[nb++];
+            memset(act, 0, sizeof(*act));
+            act->guard = NIL_VAL;
+            act->expr = NIL_VAL;
+            act->forms = LIST1(token);
+            act->kind = ACT_DO;
+            continue;
+        }
         const char *name = SYM(token)->name;
+        if (strcmp(name, "IF") == 0) {
+            if (i >= n)
+                lisp_error("LOOP: IF needs a test");
+            lisp_value guard = tokens[i];
+            tokens[i - 1] = VAL(symbol_intern(PKG_TOMOE, "WHEN", 4, false));
+            int else_at = -1;
+            for (int j = i + 1; j < n; j++)
+                if (symbolp(tokens[j]) && strcmp(SYM(tokens[j])->name, "ELSE") == 0) {
+                    else_at = j;
+                    break;
+                }
+            if (else_at >= 0) {
+                if (n + 1 > 512)
+                    lisp_error("LOOP: too many clauses");
+                for (int j = n - 1; j > else_at; j--)
+                    tokens[j + 1] = tokens[j];
+                n += 1;
+                tokens[else_at] = VAL(symbol_intern(PKG_TOMOE, "UNLESS", 6, false));
+                tokens[else_at + 1] = guard;
+            }
+            i--;
+            continue;
+        }
         if (strcmp(name, "FOR") == 0 || strcmp(name, "AS") == 0) {
             if (nf >= 16)
                 lisp_error("LOOP: too many FOR clauses");
@@ -147,11 +191,14 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             clause->then_expr = NIL_VAL;
             clause->expr = NIL_VAL;
             clause->step_fn = NIL_VAL;
+            clause->index = 0;
             int kind = -1;
             if (i < n && name_is(tokens[i], "IN"))
                 kind = LF_IN;
             else if (i < n && name_is(tokens[i], "ON"))
                 kind = LF_ON;
+            else if (i < n && name_is(tokens[i], "ACROSS"))
+                kind = LF_ACROSS;
             else if (i < n && name_is(tokens[i], "="))
                 kind = LF_EQ;
             else if (i < n && name_is(tokens[i], "FROM"))
@@ -159,10 +206,16 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             else if (i < n && (name_is(tokens[i], "BELOW") || name_is(tokens[i], "TO") ||
                                name_is(tokens[i], "DOWNTO")))
                 kind = LF_FROM;
-            else
-                lisp_error("LOOP: bad FOR clause");
+            else {
+                char shown[600];
+                size_t used = 0;
+                shown[0] = '\0';
+                for (int j = 0; j < n && used < sizeof(shown) - 1; j++)
+                    used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
+                lisp_error("LOOP: bad FOR clause in %s", shown);
+            }
             clause->kind = kind;
-            if (kind == LF_IN || kind == LF_ON) {
+            if (kind == LF_IN || kind == LF_ON || kind == LF_ACROSS) {
                 i++;
                 if (i >= n)
                     lisp_error("LOOP: missing list");
@@ -240,6 +293,8 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         if (strcmp(name, "WHILE") == 0) {
             if (i >= n)
                 lisp_error("LOOP: WHILE needs a test");
+            if (nf > 0)
+                while_after_for = true;
             while_expr = tokens[i++];
             continue;
         }
@@ -248,11 +303,23 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             if (i >= n)
                 lisp_error("LOOP: WHEN needs a test");
             lisp_value guard = tokens[i++];
-            if (i >= n)
-                lisp_error("LOOP: WHEN needs a clause");
+            if (i >= n) {
+                char shown[600];
+                size_t used = 0;
+                shown[0] = '\0';
+                for (int j = 0; j < n && used < sizeof(shown) - 1; j++)
+                    used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
+                lisp_error("LOOP: WHEN needs a clause in %s", shown);
+            }
             lisp_value sub = tokens[i++];
-            if (!symbolp(sub))
-                lisp_error("LOOP: WHEN needs a clause");
+            if (!symbolp(sub)) {
+                char shown[600];
+                size_t used = 0;
+                shown[0] = '\0';
+                for (int j = 0; j < n && used < sizeof(shown) - 1; j++)
+                    used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
+                lisp_error("LOOP: WHEN needs a clause, saw %s in %s", "value", shown);
+            }
             const char *subname = SYM(sub)->name;
             if (nb >= 64)
                 lisp_error("LOOP: too many clauses");
@@ -332,7 +399,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     act->expr = first;
                 }
             } else {
-                lisp_error("LOOP: unsupported clause after WHEN");
+                lisp_error("LOOP: unsupported clause %s after WHEN", subname);
             }
             continue;
         }
@@ -415,7 +482,8 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             act->forms = forms;
             continue;
         }
-        if (strcmp(name, "RETURN") == 0 || strcmp(name, "THEREIS") == 0) {
+        if (strcmp(name, "RETURN") == 0 || strcmp(name, "THEREIS") == 0 ||
+            strcmp(name, "ALWAYS") == 0) {
             if (i >= n)
                 lisp_error("LOOP: missing expression");
             if (nb >= 64)
@@ -425,7 +493,8 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             act->guard = NIL_VAL;
             act->expr = NIL_VAL;
             act->forms = NIL_VAL;
-            act->kind = strcmp(name, "RETURN") == 0 ? ACT_RETURN : ACT_THEREIS;
+            act->kind = strcmp(name, "RETURN") == 0 ? ACT_RETURN :
+                        strcmp(name, "ALWAYS") == 0 ? ACT_ALWAYS : ACT_THEREIS;
             act->expr = tokens[i++];
             continue;
         }
@@ -441,9 +510,19 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         }
         if (strcmp(name, "END") == 0)
             continue;
-        lisp_error("LOOP: unsupported clause %s", name);
+        {
+            char shown[600];
+            size_t used = 0;
+            shown[0] = '\0';
+            for (int j = i - 1; j < n && used < sizeof(shown) - 1; j++)
+                used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
+            lisp_error("LOOP: unsupported clause %s in %s", name, shown);
+        }
     }
 
+    for (int k = 0; k < nb; k++)
+        if (acts[k].kind == ACT_ALWAYS)
+            always_used = true;
     uint32_t frame_slots = (uint32_t)(nw + na);
     struct lisp_frame *frame = frame_new(env, frame_slots + 1);
     uint32_t slot = 0;
@@ -461,7 +540,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
     for (int k = 0; k < nf; k++) {
         struct loop_for *clause = &fors[k];
         clause->state = NIL_VAL;
-        if (clause->kind == LF_IN || clause->kind == LF_ON) {
+        if (clause->kind == LF_IN || clause->kind == LF_ON || clause->kind == LF_ACROSS) {
             clause->state = eval(clause->expr, frame);
             if (!nilp(clause->by))
                 clause->step_fn = eval(clause->by, frame);
@@ -506,6 +585,16 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 done = true;
                 break;
             }
+            if (clause->kind == LF_ACROSS) {
+                if (stringp(clause->state)) {
+                    if (clause->index >= (int64_t)PTR(clause->state, lisp_string)->len)
+                        done = true;
+                } else if (!consp(clause->state)) {
+                    done = true;
+                }
+                if (done)
+                    break;
+            }
             if (clause->kind == LF_FROM && clause->bound_kind != LB_NONE) {
                 bool ok = true;
                 int cmp = number_compare(clause->state, clause->bound, &ok);
@@ -524,7 +613,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         if (done)
             break;
         struct lisp_frame *iter = frame;
-        if (!nilp(while_expr)) {
+        if (!nilp(while_expr) && !while_after_for) {
             lisp_value test = eval(while_expr, iter);
             if (nilp(test))
                 break;
@@ -536,6 +625,12 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 value = consp(clause->state) ? CAR(clause->state) : NIL_VAL;
             else if (clause->kind == LF_ON)
                 value = clause->state;
+            else if (clause->kind == LF_ACROSS) {
+                if (stringp(clause->state))
+                    value = make_char(string_char_at(clause->state, (uint32_t)clause->index));
+                else
+                    value = consp(clause->state) ? CAR(clause->state) : NIL_VAL;
+            }
             uint32_t slots = pattern_slot_count(clause->pattern);
             if (clause->kind == LF_EQ) {
                 struct lisp_frame *then_env = iter;
@@ -555,6 +650,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             struct lisp_frame *binding = frame_new(iter, slots + 1);
             destructure_bind(binding, clause->pattern, value);
             iter = binding;
+        }
+        if (!nilp(while_expr) && while_after_for) {
+            lisp_value test = eval(while_expr, iter);
+            if (nilp(test))
+                break;
         }
         last_env = iter;
         for (int k = 0; k < nb; k++) {
@@ -576,6 +676,14 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 lisp_value value = eval(act->expr, iter);
                 if (truthy(value)) {
                     returned = value;
+                    returning = true;
+                }
+                break;
+            }
+            case ACT_ALWAYS: {
+                lisp_value value = eval(act->expr, iter);
+                if (nilp(value)) {
+                    returned = NIL_VAL;
                     returning = true;
                 }
                 break;
@@ -636,11 +744,14 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             break;
         for (int k = 0; k < nf; k++) {
             struct loop_for *clause = &fors[k];
-            if (clause->kind == LF_IN || clause->kind == LF_ON) {
-                if (!nilp(clause->step_fn))
+            if (clause->kind == LF_IN || clause->kind == LF_ON || clause->kind == LF_ACROSS) {
+                if (!nilp(clause->step_fn)) {
                     clause->state = apply_function(clause->step_fn, 1, &clause->state);
-                else
+                } else if (clause->kind == LF_ACROSS && stringp(clause->state)) {
+                    clause->index++;
+                } else {
                     clause->state = consp(clause->state) ? CDR(clause->state) : NIL_VAL;
+                }
             } else if (clause->kind == LF_FROM) {
                 clause->state = clause->bound_kind == LB_DOWNTO
                     ? number_sub(clause->state, clause->by)
@@ -661,12 +772,13 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
     lisp_value result = NIL_VAL;
     if (returning) {
         result = returned;
+    } else if (always_used) {
+        result = T_VAL;
+        for (int k = 0; k < nfin; k++)
+            eval(finally_forms[k], last_env);
     } else {
-        if (anonymous_count == 1 && accs[anonymous].used)
+        if (anonymous_count == 1)
             result = acc_value(&accs[anonymous]);
-        else if (anonymous_count == 1)
-            result = nilp(accs[anonymous].value) && accs[anonymous].kind != ACC_SUM &&
-                             accs[anonymous].kind != ACC_COUNT ? NIL_VAL : acc_value(&accs[anonymous]);
         for (int k = 0; k < nfin; k++)
             eval(finally_forms[k], last_env);
     }

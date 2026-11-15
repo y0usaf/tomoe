@@ -89,8 +89,15 @@ static int load_source_internal(const char *name, const char *text, size_t lengt
     int index = push_ctl(CTL_CATCH);
     if (setjmp(lisp.ctl[index].jb) != 0) {
         lisp.ctl_top = index;
-        if (error && error_size)
-            snprintf(error, error_size, "%s", lisp_error_message());
+        if (error && error_size) {
+            lisp_value message = condition_message(lisp_escape_condition());
+            size_t length = 0;
+            const char *text = lisp_get_string(message, &length);
+            if (text && length)
+                snprintf(error, error_size, "%.*s", (int)length, text);
+            else
+                snprintf(error, error_size, "%s", lisp_error_message());
+        }
         lisp.cur_region = saved_region;
         lisp.cur_package = saved_package;
         lisp.load_depth--;
@@ -266,8 +273,15 @@ int lisp_load_builtins(const struct lisp_builtin_source *sources, size_t count,
     int status = 0;
     if (setjmp(lisp.ctl[index].jb) != 0) {
         lisp.ctl_top = index;
-        if (error && error_size)
-            snprintf(error, error_size, "%s", lisp_error_message());
+        if (error && error_size) {
+            lisp_value message = condition_message(lisp_escape_condition());
+            size_t length = 0;
+            const char *text = lisp_get_string(message, &length);
+            if (text && length)
+                snprintf(error, error_size, "%.*s", (int)length, text);
+            else
+                snprintf(error, error_size, "%s", lisp_error_message());
+        }
         status = -1;
     } else {
         for (size_t i = 0; i < count; i++) {

@@ -22,8 +22,30 @@ lisp_value cons(lisp_value car, lisp_value cdr)
     return VAL(out);
 }
 
+#define SMALL_INT_MIN (-4096)
+#define SMALL_INT_MAX 65536
+#define SMALL_INT_COUNT (SMALL_INT_MAX - SMALL_INT_MIN + 1)
+
+static struct lisp_int small_ints[SMALL_INT_COUNT];
+static bool small_ints_ready;
+
+void lisp_init_small_ints(void)
+{
+    for (int64_t value = SMALL_INT_MIN; value <= SMALL_INT_MAX; value++) {
+        struct lisp_int *slot = &small_ints[value - SMALL_INT_MIN];
+        slot->h.type = LT_INT;
+        slot->h.flags = 0;
+        slot->h.aux = 0;
+        slot->h.size = sizeof(*slot);
+        slot->value = value;
+    }
+    small_ints_ready = true;
+}
+
 lisp_value make_int(int64_t v)
 {
+    if (small_ints_ready && v >= SMALL_INT_MIN && v <= SMALL_INT_MAX)
+        return VAL(&small_ints[v - SMALL_INT_MIN]);
     struct lisp_int *out = PTR(alloc_obj(LT_INT, sizeof(*out)), lisp_int);
     out->value = v;
     return VAL(out);

@@ -71,6 +71,23 @@ lisp_value condition_message(lisp_value condition)
     return make_string_len("unknown error", 13);
 }
 
+_Noreturn void lisp_oom(void)
+{
+    if (g_file)
+        snprintf(g_error, sizeof(g_error), "%s:%d: lisp heap limit reached", g_file, g_line);
+    else
+        snprintf(g_error, sizeof(g_error), "lisp heap limit reached");
+    uint64_t gen_used = 0;
+    for (struct lisp_region *gen = lisp.generations; gen; gen = gen->next)
+        gen_used += gen->used;
+    fprintf(stderr, "tomoe: %s (hook %s heap %llu generation %llu arena %llu limit %llu)\n",
+        g_error, lisp.current_hook ? lisp.current_hook : "-",
+        (unsigned long long)lisp.heap_used, (unsigned long long)gen_used,
+        (unsigned long long)(lisp.cur_region ? lisp.cur_region->used : 0),
+        (unsigned long long)lisp.region_limit);
+    throw_error_value(lisp.oom_condition);
+}
+
 _Noreturn void lisp_signal_error(const char *msg)
 {
     snprintf(g_error, sizeof(g_error), "%s", msg);
@@ -389,7 +406,7 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
             continue;
         }
         if (key) {
-            lisp_value var = item, default_form = NIL_VAL, supplied = NIL_VAL;
+            lisp_value var = item, default_form = NIL_VAL, supplied = VAL(lisp.sym_unbound);
             lisp_value keyword = NIL_VAL;
             if (consp(item)) {
                 lisp_value head = CAR(item);
@@ -427,12 +444,12 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
                     value = eval(default_form, frame);
             }
             frame_bind(frame, slot++, var, value, BIND_VAR);
-            if (symbolp(supplied))
+            if (supplied != VAL(lisp.sym_unbound) && symbolp(supplied))
                 frame_bind(frame, slot++, supplied, supplied_p ? T_VAL : NIL_VAL, BIND_VAR);
             continue;
         }
         if (optional) {
-            lisp_value var = item, default_form = NIL_VAL, supplied = NIL_VAL;
+            lisp_value var = item, default_form = NIL_VAL, supplied = VAL(lisp.sym_unbound);
             if (consp(item)) {
                 var = CAR(item);
                 if (consp(CDR(item)))
@@ -450,7 +467,7 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
                 value = eval(default_form, frame);
             }
             frame_bind(frame, slot++, var, value, BIND_VAR);
-            if (symbolp(supplied))
+            if (supplied != VAL(lisp.sym_unbound) && symbolp(supplied))
                 frame_bind(frame, slot++, supplied, supplied_p ? T_VAL : NIL_VAL, BIND_VAR);
             continue;
         }
@@ -668,17 +685,19 @@ lisp_value eval_body(lisp_value body, struct lisp_frame *env)
     return eval_progn(body, env);
 }
 
-static lisp_value eval_arguments(lisp_value args, struct lisp_frame *env, int *argc_out, lisp_value *argv, int max)
+static lisp_value *eval_arguments(lisp_value args, struct lisp_frame *env, int *argc_out)
 {
     int n = 0;
+    for (lisp_value scan = args; consp(scan); scan = CDR(scan))
+        n++;
+    lisp_value *argv = heap_alloc(sizeof(lisp_value) * (size_t)(n + 1));
+    int i = 0;
     while (consp(args)) {
-        if (n >= max)
-            lisp_error("too many arguments");
-        argv[n++] = eval(CAR(args), env);
+        argv[i++] = eval(CAR(args), env);
         args = CDR(args);
     }
-    *argc_out = n;
-    return NIL_VAL;
+    *argc_out = i;
+    return argv;
 }
 
 static void restore_dynamic_to(int ctl_index);
@@ -1107,20 +1126,20 @@ lisp_value eval(lisp_value form, struct lisp_frame *env)
         lisp_value *local_slot = frame_slot(env, head, BIND_FUNC);
         if (local_slot && !nilp(*local_slot)) {
             int argc = 0;
-            lisp_value argv[64];
-            eval_arguments(CDR(form), env, &argc, argv, 64);
+            lisp_value *argv = eval_arguments(CDR(form), env, &argc);
             return apply_function(*local_slot, argc, argv);
         }
         if (SYM(head)->special_id)
             return eval_special(form, env, (int)SYM(head)->special_id);
         if (SYM(head)->h.flags & SYM_MACRO) {
             int argc = 0;
-            lisp_value argv[64];
+            for (lisp_value scan = CDR(form); consp(scan); scan = CDR(scan))
+                argc++;
+            lisp_value *argv = heap_alloc(sizeof(lisp_value) * (size_t)(argc + 1));
             lisp_value macro_args = CDR(form);
+            int i = 0;
             while (consp(macro_args)) {
-                if (argc >= 64)
-                    lisp_error("too many macro arguments");
-                argv[argc++] = CAR(macro_args);
+                argv[i++] = CAR(macro_args);
                 macro_args = CDR(macro_args);
             }
             lisp_value expansion = apply_function(SYM(head)->function, argc, argv);
@@ -1128,16 +1147,14 @@ lisp_value eval(lisp_value form, struct lisp_frame *env)
         }
         if (!nilp(SYM(head)->function)) {
             int argc = 0;
-            lisp_value argv[64];
-            eval_arguments(CDR(form), env, &argc, argv, 64);
+            lisp_value *argv = eval_arguments(CDR(form), env, &argc);
             return apply_function(SYM(head)->function, argc, argv);
         }
         lisp_error("undefined function %s", SYM(head)->name);
     }
     lisp_value fn = eval(head, env);
     int argc = 0;
-    lisp_value argv[64];
-    eval_arguments(CDR(form), env, &argc, argv, 64);
+    lisp_value *argv = eval_arguments(CDR(form), env, &argc);
     return apply_function(fn, argc, argv);
 }
 
@@ -1340,9 +1357,12 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         if (!name)
             lisp_error("in-package needs a package name");
         if (lisp.cur_package < LISP_MAX_PACKAGES && lisp.packages[lisp.cur_package].used) {
-            if (strcmp(name, lisp.packages[lisp.cur_package].name) == 0)
+            const char *current = lisp.packages[lisp.cur_package].name;
+            const char *nickname = lisp.packages[lisp.cur_package].nickname;
+            if (strcmp(name, current) == 0 || (nickname[0] && strcmp(name, nickname) == 0))
                 return NIL_VAL;
-            if (lisp.cur_package == PKG_TOMOE_USER && strcmp(name, "TOMOE-USER") == 0)
+            if (strcmp(name, "TOMOE-USER") == 0 &&
+                    lisp.cur_package != PKG_TOMOE && lisp.cur_package != PKG_KEYWORD)
                 return NIL_VAL;
             if (lisp.cur_package == PKG_TOMOE && strcmp(name, "TOMOE") == 0)
                 return NIL_VAL;
@@ -1417,8 +1437,13 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
             }
             clauses = CDR(clauses);
         }
-        if (id == SF_ECASE)
-            lisp_error("ECASE: no matching clause");
+        if (id == SF_ECASE) {
+            char shown[160];
+            char whole[400];
+            lisp_print(key, true, shown, sizeof(shown));
+            lisp_print(form, true, whole, sizeof(whole));
+            lisp_error("ECASE %s has no clause for %s", whole, shown);
+        }
         (void)matched;
         mv_return1(NIL_VAL);
         return NIL_VAL;
@@ -1648,12 +1673,11 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         }
         if (nilp(reads))
             reads = NIL_VAL;
-        lisp_value quoted_reads = LIST2(VAL(lisp.sym_quote), reads);
         lisp_value fn = make_closure(lambda_list, body, env, NIL_VAL);
         struct lisp_symbol *register_sym = symbol_find(PKG_TOMOE, "%DEFINE-EXTENSION", 17);
         if (!register_sym || nilp(register_sym->function))
             lisp_error("%s", "%DEFINE-EXTENSION is not defined");
-        lisp_value argv[5] = { name, quoted_reads, state, fn, admission };
+        lisp_value argv[5] = { name, reads, state, fn, admission };
         mv_return1(NIL_VAL);
         return apply_function(register_sym->function, 5, argv);
     }
@@ -1769,6 +1793,7 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
         return -1;
     }
     lisp_value fn = lookup_hook(function);
+    lisp.current_hook = function;
     if (nilp(fn)) {
         if (error && error_size)
             snprintf(error, error_size, "undefined lisp hook %s", function);
@@ -1798,9 +1823,17 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
     lisp.steps_total_last = lisp.steps;
     lisp.deadline_at = 0;
     lisp.steps_limit = 0;
+    lisp.current_hook = NULL;
     if (!ok) {
-        if (error && error_size)
-            snprintf(error, error_size, "%s", lisp_error_message());
+        if (error && error_size) {
+            lisp_value message = condition_message(lisp_escape_condition());
+            size_t length = 0;
+            const char *text = lisp_get_string(message, &length);
+            if (text && length)
+                snprintf(error, error_size, "%.*s", (int)length, text);
+            else
+                snprintf(error, error_size, "%s", lisp_error_message());
+        }
         lisp_clear_location();
         return -1;
     }

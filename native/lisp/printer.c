@@ -306,25 +306,18 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
 char *lisp_print_alloc(lisp_value value, bool readably)
 {
     size_t cap = 256;
-    char *buffer = malloc(cap);
-    if (!buffer)
-        return NULL;
-    struct lisp_buf buf;
-    buf_init(&buf, buffer, cap);
-    print_value(value, readably, &buf);
-    if (buf.len + 1 < cap) {
-        buffer[buf.len] = '\0';
-        return buffer;
-    }
-    size_t needed = buf.len + 1;
-    char *grown = malloc(needed + 64);
-    if (!grown) {
+    for (;;) {
+        char *buffer = malloc(cap);
+        if (!buffer)
+            return NULL;
+        struct lisp_buf buf;
+        buf_init(&buf, buffer, cap);
+        print_value(value, readably, &buf);
+        if (buf.len + 1 < cap) {
+            buffer[buf.len] = '\0';
+            return buffer;
+        }
         free(buffer);
-        return NULL;
+        cap *= 2;
     }
-    buf_init(&buf, grown, needed + 64);
-    print_value(value, readably, &buf);
-    grown[buf.len] = '\0';
-    free(buffer);
-    return grown;
 }

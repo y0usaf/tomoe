@@ -21,16 +21,20 @@ void kw_parse(int argc, lisp_value *argv, int base, struct kw *kw)
             lisp_error("odd keyword arguments");
         lisp_value key = argv[i];
         lisp_value value = argv[i + 1];
-        if (!lisp_eq_keyword(key, "TEST") && !lisp_eq_keyword(key, "KEY") &&
+        if (!lisp_eq_keyword(key, "TEST") && !lisp_eq_keyword(key, "TEST-NOT") &&
+            !lisp_eq_keyword(key, "KEY") &&
             !lisp_eq_keyword(key, "START") && !lisp_eq_keyword(key, "END") &&
             !lisp_eq_keyword(key, "FROM-END") && !lisp_eq_keyword(key, "RADIX") &&
             !lisp_eq_keyword(key, "JUNK-ALLOWED") && !lisp_eq_keyword(key, "START2") &&
             !lisp_eq_keyword(key, "END2") && !lisp_eq_keyword(key, "INITIAL-VALUE") &&
             !lisp_eq_keyword(key, "INITIAL-ELEMENT") && !lisp_eq_keyword(key, "COUNT"))
-            lisp_error("unsupported keyword argument");
+            lisp_error("unsupported keyword argument %s", SYM(key)->name);
         if (lisp_eq_keyword(key, "TEST")) {
             kw->has_test = true;
             kw->test = value;
+        } else if (lisp_eq_keyword(key, "TEST-NOT")) {
+            kw->has_test_not = true;
+            kw->test_not = value;
         } else if (lisp_eq_keyword(key, "KEY")) {
             kw->has_key = true;
             kw->key = value;
@@ -71,6 +75,10 @@ void kw_parse(int argc, lisp_value *argv, int base, struct kw *kw)
 
 bool lisp_kw_test(struct kw *kw, lisp_value a, lisp_value b)
 {
+    if (kw->has_test_not && !nilp(kw->test_not)) {
+        lisp_value args[2] = { a, b };
+        return !truthy(apply_function(kw->test_not, 2, args));
+    }
     if (!kw->has_test || nilp(kw->test))
         return eql_value(a, b);
     lisp_value args[2] = { a, b };
@@ -1494,6 +1502,26 @@ lisp_value builtin_logior(int argc, lisp_value *argv)
     return make_int(acc);
 }
 
+lisp_value builtin_logandc2(int argc, lisp_value *argv)
+{
+    if (argc < 2)
+        lisp_error("LOGANDC2 needs two integers");
+    return make_int(integer_value(argv[0], "LOGANDC2") & ~integer_value(argv[1], "LOGANDC2"));
+}
+
+lisp_value builtin_logxor(int argc, lisp_value *argv)
+{
+    int64_t acc = 0;
+    for (int i = 0; i < argc; i++)
+        acc ^= integer_value(argv[i], "LOGXOR");
+    return make_int(acc);
+}
+
+lisp_value builtin_lognot(int argc, lisp_value *argv)
+{
+    return make_int(~integer_value(argc > 0 ? argv[0] : NIL_VAL, "LOGNOT"));
+}
+
 lisp_value builtin_logtest(int argc, lisp_value *argv)
 {
     if (argc < 2)
@@ -1872,7 +1900,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
 {
     if (argc < 3)
         lisp_error("%%WITH-LIMITS needs steps, milliseconds and a function");
-    uint64_t steps = (uint64_t)require_int(argv[0], "steps");
+    uint64_t steps = nilp(argv[0]) ? 0 : (uint64_t)require_int(argv[0], "steps");
     uint64_t ms = (uint64_t)require_int(argv[1], "milliseconds");
     lisp_value fn = argv[2];
     uint64_t saved_steps = lisp.steps;

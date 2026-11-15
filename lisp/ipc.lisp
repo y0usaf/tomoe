@@ -25,7 +25,7 @@ method no mount owns."
         (:state (third mode-value))
         (:command
          (when (runtime-ipc-call) (error "Nested IPC dispatch is not supported."))
-         (when (>= (runtime-ipc-sequence) 18446744073709551615)
+         (when (>= (runtime-ipc-sequence) most-positive-fixnum)
            (error "IPC request identity space exhausted."))
          (let* ((token (1+ (runtime-ipc-sequence)))
                 (call (list :token token :result nil :replied nil)))

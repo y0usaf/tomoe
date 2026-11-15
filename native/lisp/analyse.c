@@ -523,7 +523,8 @@ void loop_analyse(struct lisp_actx *ctx, lisp_value clauses)
                     strcmp(name, "COUNT") == 0 || strcmp(name, "MAXIMIZE") == 0 ||
                     strcmp(name, "MINIMIZE") == 0 || strcmp(name, "WHILE") == 0 ||
                     strcmp(name, "REPEAT") == 0 || strcmp(name, "THEREIS") == 0 ||
-                    strcmp(name, "RETURN") == 0 || strcmp(name, "WHEN") == 0 ||
+                    strcmp(name, "RETURN") == 0 || strcmp(name, "ALWAYS") == 0 ||
+                    strcmp(name, "WHEN") == 0 ||
                     strcmp(name, "UNLESS") == 0) {
                     if (i + 1 < n && consp(tokens[i + 1]))
                         analyse_expr(ctx, tokens[i + 1]);

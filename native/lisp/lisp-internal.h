@@ -311,6 +311,9 @@ struct lisp_runtime {
     uint64_t rng_state;
     bool initialised;
     void *cache_reservation;
+    lisp_value oom_condition;
+    const char *current_hook;
+
     struct lisp_symbol *sym_nil;
     struct lisp_symbol *sym_t;
     struct lisp_symbol *sym_unbound;
@@ -409,6 +412,7 @@ uint64_t heap_region_used(struct lisp_region *region);
 void heap_arena_reset(void);
 void heap_reset_blocks(void);
 void heap_set_reservation(void *base);
+_Noreturn void lisp_oom(void);
 lisp_value lisp_keep(lisp_value value);
 void lisp_release(lisp_value value);
 lisp_value lisp_frame_alloc(struct lisp_frame *parent, uint32_t count);
@@ -475,10 +479,10 @@ lisp_value lisp_analyse_and_eval(lisp_value form, struct lisp_frame *env);
 void lisp_analyse_form(lisp_value form, lisp_value file_functions, lisp_value file_variables);
 
 struct kw {
-    bool has_test, has_key, has_start, has_end, has_from_end, has_radix, has_junk;
+    bool has_test, has_test_not, has_key, has_start, has_end, has_from_end, has_radix, has_junk;
     bool has_start2, has_end2, has_initial_value, has_initial_element, has_count;
     lisp_value test, key, start, end, start2, end2, initial_value, initial_element, count;
-    lisp_value from_end, radix;
+    lisp_value from_end, radix, test_not;
     bool junk;
 };
 
@@ -524,6 +528,7 @@ void print_double(struct lisp_buf *buf, double value);
 void print_integer(struct lisp_buf *buf, int64_t value);
 
 lisp_value cons(lisp_value car, lisp_value cdr);
+void lisp_init_small_ints(void);
 lisp_value make_int(int64_t v);
 lisp_value make_ratio(int64_t num, int64_t den);
 lisp_value make_double(double v);
@@ -665,6 +670,9 @@ lisp_value builtin_oddp(int argc, lisp_value *argv);
 lisp_value builtin_signum(int argc, lisp_value *argv);
 lisp_value builtin_logand(int argc, lisp_value *argv);
 lisp_value builtin_logior(int argc, lisp_value *argv);
+lisp_value builtin_logandc2(int argc, lisp_value *argv);
+lisp_value builtin_logxor(int argc, lisp_value *argv);
+lisp_value builtin_lognot(int argc, lisp_value *argv);
 lisp_value builtin_logtest(int argc, lisp_value *argv);
 lisp_value builtin_ash(int argc, lisp_value *argv);
 lisp_value builtin_float(int argc, lisp_value *argv);
@@ -754,6 +762,13 @@ lisp_value builtin_string_impl(int argc, lisp_value *argv);
 lisp_value builtin_remove_if(int argc, lisp_value *argv);
 lisp_value builtin_remove_if_not(int argc, lisp_value *argv);
 lisp_value builtin_stable_sort(int argc, lisp_value *argv);
+lisp_value builtin_caar(int argc, lisp_value *argv);
+lisp_value builtin_cdar(int argc, lisp_value *argv);
+lisp_value builtin_sixth(int argc, lisp_value *argv);
+lisp_value builtin_copy_seq(int argc, lisp_value *argv);
+lisp_value builtin_ldb(int argc, lisp_value *argv);
+lisp_value builtin_byte(int argc, lisp_value *argv);
+lisp_value builtin_union(int argc, lisp_value *argv);
 
 int init_symbols(void);
 int init_primitives(void);

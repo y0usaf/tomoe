@@ -103,6 +103,9 @@ int init_primitives(void)
     define_builtin("CAR", builtin_car, 1, 1);
     define_builtin("CDR", builtin_cdr, 1, 1);
     define_builtin("CDDR", builtin_cddr, 1, 1);
+    define_builtin("CAAR", builtin_caar, 1, 1);
+    define_builtin("CDAR", builtin_cdar, 1, 1);
+    define_builtin("SIXTH", builtin_sixth, 1, 1);
     define_builtin("FIRST", builtin_first, 1, 1);
     define_builtin("SECOND", builtin_second, 1, 1);
     define_builtin("THIRD", builtin_third, 1, 1);
@@ -118,6 +121,7 @@ int init_primitives(void)
     define_builtin("ACONS", builtin_acons, 3, 3);
     define_builtin("APPEND", builtin_append, 0, -1);
     define_builtin("COPY-LIST", builtin_copy_list, 1, 1);
+    define_builtin("COPY-SEQ", builtin_copy_seq, 1, 1);
     define_builtin("REVERSE", builtin_reverse, 1, 1);
     define_builtin("NREVERSE", builtin_nreverse, 1, 1);
     define_builtin("LENGTH", builtin_length, 1, 1);
@@ -147,6 +151,7 @@ int init_primitives(void)
     define_builtin("COUNT-IF", builtin_count_if, 2, -1);
     define_builtin("SET-DIFFERENCE", builtin_set_difference, 2, -1);
     define_builtin("INTERSECTION", builtin_intersection, 2, -1);
+    define_builtin("UNION", builtin_union, 2, -1);
     define_builtin("SUBSETP", builtin_subsetp, 2, -1);
     define_builtin("ADJOIN", builtin_adjoin, 2, -1);
     define_builtin("NCONC", builtin_nconc, 0, -1);
@@ -215,7 +220,12 @@ int init_primitives(void)
     define_builtin("ACOSH", builtin_acosh, 1, 1);
     define_builtin("EXPT", builtin_expt, 2, 2);
     define_builtin("LOGTEST", builtin_logtest, 2, 2);
+    define_builtin("LDB", builtin_ldb, 2, 2);
+    define_builtin("BYTE", builtin_byte, 2, 2);
     define_builtin("LOGAND", builtin_logand, 0, -1);
+    define_builtin("LOGANDC2", builtin_logandc2, 2, 2);
+    define_builtin("LOGXOR", builtin_logxor, 0, -1);
+    define_builtin("LOGNOT", builtin_lognot, 1, 1);
     define_builtin("LOGIOR", builtin_logior, 0, -1);
     define_builtin("ASH", builtin_ash, 2, 2);
     define_builtin("SIGNUM", builtin_signum, 1, 1);
@@ -380,11 +390,13 @@ int lisp_init(size_t region_bytes)
     if (lisp.rng_state == 0)
         lisp.rng_state = 1;
     lisp.cur_region = &lisp.system;
+    lisp_init_small_ints();
     init_symbols();
     init_primitives();
     define_constant("PI", make_double(3.14159265358979323846));
     define_constant("INTERNAL-TIME-UNITS-PER-SECOND", make_int(1000000));
     define_constant("MOST-POSITIVE-FIXNUM", make_int(INT64_C(4611686018427387903)));
+    lisp.oom_condition = make_condition_obj("lisp heap limit reached");
     lisp.cur_region = &lisp.arena;
     lisp.initialised = true;
     lisp.mv_count = 0;

@@ -104,7 +104,7 @@ static void map_block(uint32_t index)
 static uint32_t take_block(void)
 {
     if (free_block == UINT32_MAX)
-        lisp_error("lisp heap exhausted");
+        lisp_oom();
     uint32_t index = free_block;
     free_block = lisp.blocks[index].next;
     map_block(index);
@@ -117,7 +117,7 @@ static uint32_t take_block(void)
         lisp.blocks[index].in_use = 0;
         lisp.blocks[index].next = free_block;
         free_block = index;
-        lisp_error("lisp heap limit reached");
+        lisp_oom();
     }
     return index;
 }
@@ -328,6 +328,8 @@ static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst);
 
 static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
 {
+    if (!heap_region_of((void *)(uintptr_t)value))
+        return value;
     switch (TYPE(value)) {
     case LT_SYMBOL:
         return value;

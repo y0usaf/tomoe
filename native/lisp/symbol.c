@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 #include "lisp-internal.h"
 
@@ -213,22 +214,34 @@ lisp_value symbol_global(struct lisp_symbol *sym)
     return sym->value;
 }
 
+static struct lisp_symbol *symbol_intern_name(const char *name)
+{
+    char buffer[128];
+    size_t len = strlen(name);
+    if (len >= sizeof(buffer))
+        len = sizeof(buffer) - 1;
+    for (size_t i = 0; i < len; i++)
+        buffer[i] = (char)toupper((unsigned char)name[i]);
+    buffer[len] = '\0';
+    return symbol_intern(PKG_TOMOE, buffer, len, false);
+}
+
 void lisp_register_builtin(const char *name, lisp_primitive fn, int min_args, int max_args)
 {
-    struct lisp_symbol *sym = symbol_intern(PKG_TOMOE, name, strlen(name), false);
+    struct lisp_symbol *sym = symbol_intern_name(name);
     sym->function = make_builtin(fn, name, min_args, max_args);
     sym->h.flags |= SYM_VISIBLE;
 }
 
 void lisp_register_internal(const char *name, lisp_primitive fn, int min_args, int max_args)
 {
-    struct lisp_symbol *sym = symbol_intern(PKG_TOMOE, name, strlen(name), false);
+    struct lisp_symbol *sym = symbol_intern_name(name);
     sym->function = make_builtin(fn, name, min_args, max_args);
 }
 
 void lisp_register_special(const char *name, int id)
 {
-    struct lisp_symbol *sym = symbol_intern(PKG_TOMOE, name, strlen(name), false);
+    struct lisp_symbol *sym = symbol_intern_name(name);
     sym->special_id = (uint32_t)id;
     sym->h.flags |= SYM_VISIBLE;
 }

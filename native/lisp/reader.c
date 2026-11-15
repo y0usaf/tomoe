@@ -48,7 +48,7 @@ void reader_error(struct lisp_reader *rd, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    lisp_error("%s:%d: %s", rd->file, rd->line, message);
+    lisp_error("%s:%d@%zu: %s", rd->file, rd->line, rd->pos, message);
 }
 
 static int peek(struct lisp_reader *rd)
