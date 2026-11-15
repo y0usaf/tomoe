@@ -1,4 +1,8 @@
-{ pkgs, tomoe, baseline ? null }:
+{
+  pkgs,
+  tomoe,
+  baseline ? null,
+}:
 let
   imeClient = pkgs.stdenv.mkDerivation {
     name = "tomoe-ime-client";
@@ -647,7 +651,10 @@ let
     source = ./pointer-path.c;
     dontUnpack = true;
     strictDeps = true;
-    nativeBuildInputs = [ pkgs.pkg-config pkgs.wayland-scanner ];
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
     buildInputs = [ pkgs.wayland ];
     buildPhase = ''
       wayland-scanner client-header ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-virtual-pointer-unstable-v1.xml wlr-virtual-pointer-unstable-v1-client-protocol.h
@@ -998,9 +1005,7 @@ let
         TRACE_GRID = "${./trace-grid.lisp}"
         TRACE_DELAY = "${./trace-delay.lisp}"
         TRACE_SWAP = "${./trace-swap.lisp}"
-        TRACE_GOLDEN = ${
-          if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""
-        }
+        TRACE_GOLDEN = ${if builtins.pathExists ./trace.golden then "\"${./trace.golden}\"" else "\"\""}
       ''
       + builtins.readFile ./trace.py;
     }
@@ -1046,19 +1051,18 @@ let
       + builtins.readFile ./memory.py;
     }
   ];
-  equivalenceSuites =
-    pkgs.lib.optional (baseline != null) {
-      name = "input-equivalence";
-      script = ''
-        BASELINE = "${baselineBinary}"
-        FASTPATH = "${tomoe}/bin/tomoe"
-        INJECTOR = "${scenario}/bin/tomoe-scenario"
-        POLICY = "${scenarioPolicy}"
-        COUNTER_POLICY = "${counterPolicy}"
-        CONTRACT_POLICY = "${contractPolicy}"
-      ''
-      + builtins.readFile ./equivalence.py;
-    };
+  equivalenceSuites = pkgs.lib.optional (baseline != null) {
+    name = "input-equivalence";
+    script = ''
+      BASELINE = "${baselineBinary}"
+      FASTPATH = "${tomoe}/bin/tomoe"
+      INJECTOR = "${scenario}/bin/tomoe-scenario"
+      POLICY = "${scenarioPolicy}"
+      COUNTER_POLICY = "${counterPolicy}"
+      CONTRACT_POLICY = "${contractPolicy}"
+    ''
+    + builtins.readFile ./equivalence.py;
+  };
   kmsSettings = {
     kernelModules = [
       "vgem"
@@ -1204,7 +1208,8 @@ in
       suites = kmsSuites;
     }
   );
-  suites = suiteTargets compositorSettings compositorSuites
+  suites =
+    suiteTargets compositorSettings compositorSuites
     // suiteTargets equivalenceSettings equivalenceSuites
     // suiteTargets kmsSettings kmsSuites
     // suiteTargets benchSettings benchSuites;
