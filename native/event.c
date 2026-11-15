@@ -346,7 +346,7 @@ static lisp_value json_modifiers(uint32_t mask) {
     lisp_value list = lisp_nil();
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         if (mask & names[i].bit) list = lisp_cons(lisp_cstring(names[i].name), list);
-    return lisp_cons(lisp_keyword("JSON-ARRAY"), lisp_nreverse(list));
+    return lisp_cons(lisp_keyword("JSON-ARRAY"), lisp_cons(lisp_nreverse(list), lisp_nil()));
 }
 
 static lisp_value json_state(uint32_t state) {
