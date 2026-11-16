@@ -1,5 +1,5 @@
 #include "internal.h"
-#include "resources-internal.h"
+#include <sys/inotify.h>
 #include "budget.h"
 #include <fcntl.h>
 #include <drm/drm_fourcc.h>
@@ -673,48 +673,94 @@ static void cursor_theme_reload(struct tomoe *s) {
     if (shown) cursor_shape_set(s, s->default_cursor_shape);
 }
 
-static void cursor_theme_watch_close(struct cursor_theme_watch *slot) {
-    if (slot->source) wl_event_source_remove(slot->source);
-    tomoe_watch_close(slot->watch);
-    slot->source = NULL;
-    slot->watch = NULL;
-}
-
-static int cursor_theme_changed(int fd, uint32_t mask, void *data) {
-    struct cursor_theme_watch *slot = data;
-    struct tomoe *s = slot->server;
-    int bits = tomoe_watch_poll(slot->watch);
-    if (bits < 0 || (bits & 4)) cursor_theme_watch_close(slot);
-    if (bits) cursor_theme_reload(s);
-    return 0;
-}
-
 static void cursor_theme_watch(struct tomoe *s) {
+    if (!s->cursor_theme_source) return;
+    int old[CURSOR_THEME_WATCHES];
+    for (size_t i = 0; i < CURSOR_THEME_WATCHES; i++) {
+        old[i] = s->cursor_theme_watches[i].name ? s->cursor_theme_watches[i].wd : -1;
+        free(s->cursor_theme_watches[i].name);
+        s->cursor_theme_watches[i] = (struct cursor_theme_watch){ .wd = -1 };
+    }
     const char *theme = getenv("XCURSOR_THEME");
     if (!theme || !*theme) theme = "default";
     char *path = xcursor_path(), *save = NULL;
-    size_t index = 0;
-    for (char *dir = path ? strtok_r(path, ":", &save) : NULL; dir && index < CURSOR_THEME_WATCHES;
-            dir = strtok_r(NULL, ":", &save), index++) {
-        struct cursor_theme_watch *slot = &s->cursor_theme_watches[index];
-        if (slot->watch || dir[0] != '/') continue;
-        char *entry = NULL;
-        int error = 0;
-        if (asprintf(&entry, "%s/%s", dir, theme) < 0) break;
-        slot->watch = tomoe_watch_open(entry, &error);
-        free(entry);
-        if (!slot->watch) continue;
-        slot->server = s;
-        slot->source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
-            tomoe_watch_descriptor(slot->watch), WL_EVENT_READABLE, cursor_theme_changed, slot);
-        if (!slot->source) cursor_theme_watch_close(slot);
+    size_t count = 0;
+    for (char *dir = path ? strtok_r(path, ":", &save) : NULL; dir && count < CURSOR_THEME_WATCHES;
+            dir = strtok_r(NULL, ":", &save)) {
+        if (dir[0] != '/') continue;
+        char *at = strdup(dir), *name = strdup(theme);
+        while (at && name) {
+            int wd = inotify_add_watch(s->cursor_theme_fd, at, IN_ONLYDIR | IN_CREATE |
+                IN_MOVED_TO | IN_DELETE | IN_MOVED_FROM | IN_DELETE_SELF | IN_MOVE_SELF);
+            if (wd >= 0) {
+                s->cursor_theme_watches[count++] = (struct cursor_theme_watch){ wd, name };
+                name = NULL;
+                break;
+            }
+            char *slash = strrchr(at, '/');
+            if ((errno != ENOENT && errno != ENOTDIR) || !slash || slash == at) break;
+            free(name);
+            name = strdup(slash + 1);
+            *slash = '\0';
+        }
+        free(at);
+        free(name);
     }
     free(path);
+    for (size_t i = 0; i < CURSOR_THEME_WATCHES; i++) {
+        bool kept = old[i] < 0;
+        for (size_t j = 0; j < count && !kept; j++) kept = s->cursor_theme_watches[j].wd == old[i];
+        if (!kept) inotify_rm_watch(s->cursor_theme_fd, old[i]);
+    }
+}
+
+static int cursor_theme_changed(int fd, uint32_t mask, void *data) {
+    struct tomoe *s = data;
+    _Alignas(struct inotify_event) char buffer[4096];
+    bool changed = false;
+    ssize_t length;
+    while ((length = read(fd, buffer, sizeof(buffer))) > 0)
+        for (char *at = buffer; at < buffer + length;) {
+            const struct inotify_event *event = (const struct inotify_event *)at;
+            if (event->mask & IN_Q_OVERFLOW) changed = true;
+            for (size_t i = 0; i < CURSOR_THEME_WATCHES; i++) {
+                const struct cursor_theme_watch *slot = &s->cursor_theme_watches[i];
+                if (slot->name && slot->wd == event->wd &&
+                        ((event->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) ||
+                         (event->len && !strcmp(event->name, slot->name))))
+                    changed = true;
+            }
+            at += sizeof(*event) + event->len;
+        }
+    if (!changed) return 0;
+    cursor_theme_watch(s);
+    cursor_theme_reload(s);
+    return 0;
+}
+
+static void cursor_theme_arm(struct tomoe *s) {
+    if (s->cursor_theme_source) return;
+    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (fd < 0) return;
+    s->cursor_theme_source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display), fd,
+        WL_EVENT_READABLE, cursor_theme_changed, s);
+    if (!s->cursor_theme_source) {
+        close(fd);
+        return;
+    }
+    s->cursor_theme_fd = fd;
+    cursor_theme_watch(s);
 }
 
 void cursor_theme_unwatch(struct tomoe *s) {
-    for (size_t i = 0; i < CURSOR_THEME_WATCHES; i++)
-        cursor_theme_watch_close(&s->cursor_theme_watches[i]);
+    if (!s->cursor_theme_source) return;
+    wl_event_source_remove(s->cursor_theme_source);
+    s->cursor_theme_source = NULL;
+    close(s->cursor_theme_fd);
+    for (size_t i = 0; i < CURSOR_THEME_WATCHES; i++) {
+        free(s->cursor_theme_watches[i].name);
+        s->cursor_theme_watches[i].name = NULL;
+    }
 }
 
 void cursor_shape_set(struct tomoe *s, uint32_t shape) {
@@ -737,7 +783,7 @@ void cursor_shape_set(struct tomoe *s, uint32_t shape) {
     if (!s->default_cursor || s->default_cursor_scale != scale ||
             s->default_cursor_shape != shape) {
         int x, y;
-        cursor_theme_watch(s);
+        cursor_theme_arm(s);
         struct buffer *image = xcursor_load(names[shape], scale, &x, &y);
         if (!image) image = xcursor_load(fallback[shape], scale, &x, &y);
         if (!image && shape != 1) image = xcursor_load("left_ptr", scale, &x, &y);

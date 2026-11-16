@@ -442,11 +442,9 @@ struct screen;
 struct session;
 struct kms;
 #define CURSOR_THEME_WATCHES 8
-struct file_watch;
 struct cursor_theme_watch {
-    struct tomoe *server;
-    struct file_watch *watch;
-    struct wl_event_source *source;
+    int wd;
+    char *name;
 };
 struct cursor_image {
     struct buffer *buffer;
@@ -1124,6 +1122,8 @@ struct tomoe {
     uint32_t default_cursor_shape;
     int default_hotspot_x, default_hotspot_y;
     struct cursor_theme_watch cursor_theme_watches[CURSOR_THEME_WATCHES];
+    int cursor_theme_fd;
+    struct wl_event_source *cursor_theme_source;
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;

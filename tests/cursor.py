@@ -143,7 +143,8 @@ class Compositor:
         self.icons = str(self.root.parent / "icons")
         self.environment.update(
             XDG_RUNTIME_DIR=str(self.runtime), WAYLAND_DISPLAY=self.socket,
-            XCURSOR_PATH=self.icons, XCURSOR_THEME="check", TOMOE_DEBUG="1")
+            XCURSOR_PATH=str(self.root.parent / "late" / "icons") + ":" + self.icons,
+            XCURSOR_THEME="check", TOMOE_DEBUG="1")
         arguments = [tomoe, "--socket", self.socket, "--backend", "headless", "--no-watch"]
         if bare:
             arguments.append("--bare")
@@ -395,6 +396,14 @@ def main():
             if (red > blue) != (want == "red"):
                 failures.append("plain: relinking the theme to %s left the still cursor %s"
                                 % (variant, "red" if red > blue else "blue"))
+        late = root / "late" / "icons"
+        late.mkdir(parents=True)
+        (late / "check").symlink_to(root / "icons" / "check-red")
+        time.sleep(0.4)
+        red, blue = tint(plain.screenshot("theme-late.ppm"), *PARK)
+        print("theme in a directory made after start: red %d blue %d" % (red, blue))
+        if red <= blue:
+            failures.append("plain: a theme in a search directory created after start was never drawn")
     finally:
         plain.stop()
         for path in (root / "plain").glob("walk-*.ppm"):
