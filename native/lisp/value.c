@@ -180,6 +180,7 @@ static bool equal_inner(lisp_value a, lisp_value b, int depth)
         return true;
     if (depth > 1000)
         return false;
+    check_steps();
     uint8_t ta = TYPE(a), tb = TYPE(b);
     if (ta != tb) {
         if (numberp(a) && numberp(b))
@@ -276,6 +277,7 @@ int list_length(lisp_value list)
 {
     int n = 0;
     while (consp(list)) {
+        check_steps();
         n++;
         list = CDR(list);
         if (n > 1000000)
@@ -288,6 +290,7 @@ lisp_value list_reverse_copy(lisp_value list)
 {
     lisp_value out = NIL_VAL;
     while (consp(list)) {
+        check_steps();
         out = cons(CAR(list), out);
         list = CDR(list);
     }
@@ -300,6 +303,7 @@ lisp_value list_append2(lisp_value a, lisp_value b)
         return b;
     lisp_value head = NIL_VAL, tail = NIL_VAL;
     while (consp(a)) {
+        check_steps();
         lisp_value cell = cons(CAR(a), NIL_VAL);
         if (nilp(head))
             head = cell;
@@ -317,6 +321,7 @@ lisp_value list_nth(lisp_value list, int64_t n)
     while (n > 0) {
         if (!consp(list))
             return NIL_VAL;
+        check_steps();
         list = CDR(list);
         n--;
     }
@@ -330,6 +335,7 @@ lisp_value list_nthcdr(lisp_value list, int64_t n)
     while (n > 0) {
         if (!consp(list))
             return NIL_VAL;
+        check_steps();
         list = CDR(list);
         n--;
     }
@@ -340,8 +346,10 @@ lisp_value list_last(lisp_value list)
 {
     if (!consp(list))
         return NIL_VAL;
-    while (consp(CDR(list)))
+    while (consp(CDR(list))) {
+        check_steps();
         list = CDR(list);
+    }
     return list;
 }
 
@@ -349,6 +357,7 @@ int64_t list_count(lisp_value list)
 {
     int64_t n = 0;
     while (consp(list)) {
+        check_steps();
         n++;
         list = CDR(list);
     }
@@ -671,6 +680,7 @@ lisp_value keyword_get(lisp_value plist, lisp_value key, lisp_value deflt)
 {
     if (symbolp(key)) {
         while (consp(plist) && consp(CDR(plist))) {
+            check_steps();
             if (CAR(plist) == key)
                 return CAR(CDR(plist));
             plist = CDR(CDR(plist));
@@ -678,6 +688,7 @@ lisp_value keyword_get(lisp_value plist, lisp_value key, lisp_value deflt)
         return deflt;
     }
     while (consp(plist) && consp(CDR(plist))) {
+        check_steps();
         if (eql_value(CAR(plist), key))
             return CAR(CDR(plist));
         plist = CDR(CDR(plist));

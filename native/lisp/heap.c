@@ -373,9 +373,14 @@ struct lisp_region *heap_region_of(const void *ptr)
 lisp_value heap_store(const void *container, lisp_value value)
 {
     struct lisp_region *home = heap_region_of(container);
-    if (!home || home->kind != REG_PERSISTENT)
+    if (!home || home->kind == REG_ARENA)
         return value;
     struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
+    if (home->kind == REG_GENERATION) {
+        if (from && from->kind == REG_ARENA && home->package > PKG_TOMOE && lisp.watched_depth)
+            lisp_error("an event's data escapes into what %s loaded; keep what must outlast the event in the extension's state", home->name);
+        return value;
+    }
     if (!from || from->kind == REG_PERSISTENT)
         return value;
     size_t size;

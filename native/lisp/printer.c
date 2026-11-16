@@ -223,6 +223,9 @@ static void print_string(struct lisp_buf *buf, lisp_value v, bool readably)
 
 static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably);
 
+enum { PRINT_DEPTH = 512, PRINT_LENGTH = 1 << 16 };
+static uint32_t print_depth;
+
 size_t print_value(lisp_value value, bool readably, struct lisp_buf *buf)
 {
     switch (TYPE(value)) {
@@ -310,10 +313,20 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
             return;
         }
     }
+    if (print_depth >= PRINT_DEPTH) {
+        buf_puts(buf, "(...)");
+        return;
+    }
+    print_depth++;
     buf_putc(buf, '(');
     print_value(CAR(v), readably, buf);
     lisp_value rest = CDR(v);
-    while (consp(rest)) {
+    for (uint32_t count = 1; consp(rest); count++) {
+        if (count == PRINT_LENGTH) {
+            buf_puts(buf, " ...");
+            rest = NIL_VAL;
+            break;
+        }
         buf_putc(buf, ' ');
         print_value(CAR(rest), readably, buf);
         rest = CDR(rest);
@@ -323,6 +336,7 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
         print_value(rest, readably, buf);
     }
     buf_putc(buf, ')');
+    print_depth--;
 }
 
 char *lisp_print_alloc(lisp_value value, bool readably)

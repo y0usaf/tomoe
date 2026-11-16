@@ -309,6 +309,25 @@ struct lisp_frame *frame_parent(struct lisp_frame *frame)
     return frame ? frame->parent : NULL;
 }
 
+static bool dynamically_bound(struct lisp_symbol *sym)
+{
+    for (int i = lisp.ctl_top; i-- > 0;)
+        if (lisp.ctl[i].kind == CTL_DYNBIND && lisp.ctl[i].sym == sym)
+            return true;
+    return false;
+}
+
+static void check_global_store(lisp_value sym, lisp_value value)
+{
+    if (lisp_loading() || lisp.call_depth == 0)
+        return;
+    if (SYM(sym)->package != PKG_TOMOE)
+        lisp_error("cannot assign global %s while handling an event; keep what must outlast it in the extension's state", SYM(sym)->name);
+    struct lisp_region *region = heap_region_of((void *)(uintptr_t)value);
+    if (region && region->kind == REG_ARENA)
+        lisp_error("arena value escapes into %s", SYM(sym)->name);
+}
+
 static lisp_value *local_var_slot(lisp_value sym, struct lisp_frame *env, bool *found)
 {
     if (symbolp(sym) && (SYM(sym)->h.flags & SYM_SPECIAL)) {
@@ -346,19 +365,18 @@ void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env)
         lisp_error("not a variable name");
     if (SYM(sym)->h.flags & (SYM_CONSTANT | SYM_KEYWORD))
         lisp_error("cannot assign to constant %s", SYM(sym)->name);
-    bool found = false;
-    lisp_value *slot = local_var_slot(sym, env, &found);
-    if (found) {
+    if (SYM(sym)->h.flags & SYM_SPECIAL) {
+        if (!dynamically_bound(SYM(sym)))
+            check_global_store(sym, value);
+        SYM(sym)->value = value;
+        return;
+    }
+    lisp_value *slot = frame_slot(env, sym, BIND_VAR);
+    if (slot) {
         *slot = heap_store(slot, value);
         return;
     }
-    if (!lisp_loading()) {
-        if (SYM(sym)->package != PKG_TOMOE && lisp.call_depth > 0)
-            lisp_error("cannot assign global %s from an extension", SYM(sym)->name);
-        struct lisp_region *region = heap_region_of((void *)(uintptr_t)value);
-        if (region && region->kind == REG_ARENA)
-            lisp_error("arena value escapes into %s", SYM(sym)->name);
-    }
+    check_global_store(sym, value);
     SYM(sym)->value = value;
 }
 
@@ -1099,6 +1117,7 @@ lisp_value place_get(struct lisp_place *place)
     case PLACE_GETHASH: {
         lisp_value entries = PTR(place->container, lisp_hashtable)->entries;
         while (consp(entries)) {
+            check_steps();
             lisp_value pair = CAR(entries);
             if (hash_table_match(place->container, CAR(pair), place->key))
                 return CDR(pair);
@@ -1122,6 +1141,7 @@ void place_set(struct lisp_place *place, lisp_value value)
         lisp_value plist = place->container;
         lisp_value scan = plist;
         while (consp(scan) && consp(CDR(scan))) {
+            check_steps();
             if (eql_value(CAR(scan), place->key)) {
                 CAR(CDR(scan)) = heap_store(OBJ(CDR(scan)), value);
                 return;
@@ -1150,6 +1170,7 @@ void place_set(struct lisp_place *place, lisp_value value)
         struct lisp_hashtable *table = PTR(place->container, lisp_hashtable);
         lisp_value entries = table->entries;
         for (lisp_value scan = entries; consp(scan); scan = CDR(scan)) {
+            check_steps();
             lisp_value pair = CAR(scan);
             if (hash_table_match(place->container, CAR(pair), place->key)) {
                 CDR(pair) = heap_store(OBJ(pair), value);
@@ -1747,6 +1768,7 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         if (id == SF_PUSHNEW) {
             bool present = false;
             for (lisp_value scan = list; consp(scan); scan = CDR(scan)) {
+                check_steps();
                 if (equal_value(item, CAR(scan))) {
                     present = true;
                     break;

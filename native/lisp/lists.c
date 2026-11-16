@@ -127,6 +127,7 @@ lisp_value builtin_nreverse(int argc, lisp_value *argv)
     lisp_value prev = NIL_VAL;
     lisp_value list = argv[0];
     while (consp(list)) {
+        check_steps();
         lisp_value next = CDR(list);
         CDR(list) = prev;
         prev = list;
@@ -165,6 +166,7 @@ lisp_value builtin_member(int argc, lisp_value *argv)
     kw_parse(argc, argv, 2, &kw);
     lisp_value list = argv[1];
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         lisp_value key = kw.has_key ? lisp_kw_key(&kw, value) : value;
         if (lisp_kw_test(&kw, argv[0], key))
@@ -182,6 +184,7 @@ lisp_value builtin_assoc(int argc, lisp_value *argv)
     kw_parse(argc, argv, 2, &kw);
     lisp_value list = argv[1];
     while (consp(list)) {
+        check_steps();
         lisp_value pair = CAR(list);
         lisp_value key = consp(pair) ? CAR(pair) : pair;
         if (kw.has_key) {
@@ -254,6 +257,7 @@ lisp_value builtin_count_if(int argc, lisp_value *argv)
     kw_parse(argc, argv, 2, &kw);
     int64_t count = 0;
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         list = CDR(list);
         if (kw.has_key) {
@@ -271,6 +275,7 @@ static bool contains(lisp_value list, lisp_value item, struct kw *kw)
 {
     lisp_value probe = kw->has_key ? lisp_kw_key(kw, item) : item;
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         list = CDR(list);
         lisp_value key = kw->has_key ? lisp_kw_key(kw, value) : value;
@@ -334,6 +339,7 @@ lisp_value builtin_set_difference(int argc, lisp_value *argv)
     lisp_value out = NIL_VAL;
     lisp_value list = argv[0];
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         list = CDR(list);
         if (!contains(argv[1], value, &kw))
@@ -359,6 +365,7 @@ lisp_value builtin_intersection(int argc, lisp_value *argv)
     lisp_value scan = hashing ? longer : shorter;
     lisp_value other = hashing ? shorter : longer;
     while (consp(scan)) {
+        check_steps();
         lisp_value value = CAR(scan);
         scan = CDR(scan);
         if (contains(other, value, &kw))
@@ -375,6 +382,7 @@ lisp_value builtin_subsetp(int argc, lisp_value *argv)
     kw_parse(argc, argv, 2, &kw);
     lisp_value list = argv[0];
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         list = CDR(list);
         if (!contains(argv[1], value, &kw))
@@ -434,6 +442,7 @@ lisp_value builtin_remove_duplicates(int argc, lisp_value *argv)
     lisp_value out = NIL_VAL, tail = NIL_VAL;
     lisp_value list = argv[0];
     while (consp(list)) {
+        check_steps();
         lisp_value value = CAR(list);
         list = CDR(list);
         if (contains(out, value, &kw))
@@ -510,6 +519,7 @@ lisp_value builtin_union(int argc, lisp_value *argv)
     shorter_list(argv[0], argv[1], &shorter, &longer, &short_length, &long_rest);
     lisp_value out = shorter;
     while (consp(longer)) {
+        check_steps();
         lisp_value value = CAR(longer);
         longer = CDR(longer);
         if (!contains(shorter, value, &kw))

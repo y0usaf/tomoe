@@ -75,6 +75,19 @@ it wants. This one rounds the corners and widens the gaps:
           nil))
 ```
 
+An extension keeps whatever must outlast one event in its state. A reducer that
+assigns a global, or stores an event's data into a list, table or closure its
+source made when it loaded, fails like any other broken extension, because that
+data is gone once the event is handled.
+
+A config generated together with its compositor can say so with
+`(require-tomoe "/nix/store/…-tomoe-0.1.0")`, the package path `tomoe --version`
+prints as its build. Loading it into any other build stops at that form, before
+anything mounts: the session keeps the config it runs, and the toast and
+`tomoe reload` name both builds. A Nix module that writes the config from the
+same package it installs gets the pair right by construction, and a running
+session refuses the next generation's config until the next login.
+
 Change a number, save, and the windows move:
 
 <p align="center"><img src="docs/media/reload.webp" alt="Neovim changes :gaps from 12 to 40 in init.lisp; on save the tiled windows spring apart" width="100%"></p>
@@ -435,11 +448,17 @@ DRM/KMS, libinput and libseat; it can also run nested in another compositor or
 headless. Extensions never touch native state. They return effects, the runtime
 settles every extension's effects into one transaction, and only then does the
 native side apply it. A broken extension therefore can't leave the screen
-half-updated: one whose update fails (it signals, overruns its watchdog or
-returns an invalid answer such as two effects claiming one key) keeps its last
-good state and effects, isn't run again in that transaction, and is logged as
-`Extension NAME: reason`, while every other extension's answer still commits, so
-a broken bar can't take focus, tiling or input with it. A rule whose predicate
+half-updated: one whose update fails (it signals, overruns its watchdog, even
+inside a builtin walking a circular list, or returns an invalid answer) keeps
+its last good state and effects, isn't run again in that transaction, and is
+logged as `Extension NAME: reason`, while every other extension's answer still
+commits, so a broken bar can't take focus, tiling or input with it. Two effects
+of one answer under the same key are one effect, the later replacing the
+earlier, so re-arming a timer or restarting an animation never stacks. An
+extension whose answer still changes after 16 rounds of the transaction,
+because it feeds on its own output or on another's that feeds on it, is held at
+the answer it last committed and logged the same way, and the transaction
+commits everyone else. A rule whose predicate
 fails keeps the windows it matched. A live patch is still all or nothing: one
 whose extension fails is rolled back. Loading a config or a patch is not one
 event, so the per-event watchdog doesn't cut it short: its top-level forms get a

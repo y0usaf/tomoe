@@ -587,7 +587,11 @@ const char *lisp_symbol_name(lisp_value value)
 
 lisp_value lisp_getf(lisp_value plist, const char *keyword)
 {
-    return keyword_get(plist, lisp_keyword(keyword), NIL_VAL);
+    lisp_value key = lisp_keyword(keyword);
+    for (; consp(plist) && consp(CDR(plist)); plist = CDR(CDR(plist)))
+        if (CAR(plist) == key)
+            return CAR(CDR(plist));
+    return NIL_VAL;
 }
 
 bool lisp_eq_keyword(lisp_value value, const char *keyword)

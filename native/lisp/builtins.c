@@ -147,6 +147,7 @@ lisp_value builtin_apply(int argc, lisp_value *argv)
     lisp_value tail = argv[argc - 1];
     int at = count;
     while (consp(tail)) {
+        check_steps();
         args[at++] = CAR(tail);
         tail = CDR(tail);
     }
@@ -164,6 +165,7 @@ lisp_value list_to_array(lisp_value list, int *count_out)
     lisp_value *items = heap_alloc(sizeof(lisp_value) * (size_t)(n + 1));
     int i = 0;
     while (consp(list)) {
+        check_steps();
         items[i++] = CAR(list);
         list = CDR(list);
     }
@@ -266,6 +268,7 @@ lisp_value builtin_reduce(int argc, lisp_value *argv)
     lisp_value list = argv[1];
     lisp_value acc = kw.has_initial_value ? kw.initial_value : VAL(lisp.sym_unbound);
     while (consp(list)) {
+        check_steps();
         lisp_value item = kw.has_key ? lisp_kw_key(&kw, CAR(list)) : CAR(list);
         list = CDR(list);
         if (acc == VAL(lisp.sym_unbound)) {
@@ -308,6 +311,7 @@ lisp_value builtin_remove(int argc, lisp_value *argv)
     }
     lisp_value out = NIL_VAL, tail = NIL_VAL;
     while (consp(seq)) {
+        check_steps();
         lisp_value value = CAR(seq);
         seq = CDR(seq);
         lisp_value key = lisp_kw_key(&kw, value);
@@ -352,6 +356,7 @@ static lisp_value filter_list(int argc, lisp_value *argv, int mode)
     }
     lisp_value out = NIL_VAL, tail = NIL_VAL;
     while (consp(seq)) {
+        check_steps();
         lisp_value value = CAR(seq);
         seq = CDR(seq);
         lisp_value args[1] = { value };
@@ -402,6 +407,7 @@ static lisp_value sequence_search(int argc, lisp_value *argv, bool predicate, bo
     lisp_value found = NIL_VAL;
     int64_t found_at = -1;
     for (int64_t index = 0; consp(seq) && index < end; seq = CDR(seq), index++) {
+        check_steps();
         if (index < start || !search_hit(probe, predicate, &kw, CAR(seq)))
             continue;
         found = CAR(seq);
@@ -474,6 +480,7 @@ static lisp_value *hash_entries(lisp_value table, lisp_value key, bool *found)
 {
     lisp_value entries = PTR(table, lisp_hashtable)->entries;
     while (consp(entries)) {
+        check_steps();
         lisp_value pair = CAR(entries);
         if (hash_table_match(table, CAR(pair), key)) {
             *found = true;
@@ -508,6 +515,7 @@ lisp_value builtin_remhash(int argc, lisp_value *argv)
     lisp_value prev = NIL_VAL;
     lisp_value entries = table->entries;
     while (consp(entries)) {
+        check_steps();
         lisp_value pair = CAR(entries);
         if (hash_table_match(argv[1], CAR(pair), argv[0])) {
             if (nilp(prev))
@@ -546,6 +554,7 @@ lisp_value builtin_maphash(int argc, lisp_value *argv)
         lisp_error("MAPHASH needs a function and a table");
     lisp_value entries = PTR(argv[1], lisp_hashtable)->entries;
     while (consp(entries)) {
+        check_steps();
         lisp_value pair = CAR(entries);
         lisp_value args[2] = { CAR(pair), CDR(pair) };
         apply_function(argv[0], 2, args);
@@ -896,9 +905,11 @@ lisp_value builtin_string_trim(int argc, lisp_value *argv)
                 if (string_char_at(bag, i) == cp)
                     hit = true;
         } else {
-            for (lisp_value scan = bag; consp(scan); scan = CDR(scan))
+            for (lisp_value scan = bag; consp(scan); scan = CDR(scan)) {
+                check_steps();
                 if (charp(CAR(scan)) && PTR(CAR(scan), lisp_char)->code == cp)
                     hit = true;
+            }
         }
         if (!hit)
             break;
@@ -913,9 +924,11 @@ lisp_value builtin_string_trim(int argc, lisp_value *argv)
                 if (string_char_at(bag, i) == cp)
                     hit = true;
         } else {
-            for (lisp_value scan = bag; consp(scan); scan = CDR(scan))
+            for (lisp_value scan = bag; consp(scan); scan = CDR(scan)) {
+                check_steps();
                 if (charp(CAR(scan)) && PTR(CAR(scan), lisp_char)->code == cp)
                     hit = true;
+            }
         }
         if (!hit)
             break;
@@ -995,6 +1008,7 @@ lisp_value builtin_subseq(int argc, lisp_value *argv)
     int64_t index = 0;
     int64_t end = argc > 2 && !nilp(argv[2]) ? require_int(argv[2], "subseq end") : -1;
     while (consp(list) && (end < 0 || index < end)) {
+        check_steps();
         if (index >= start) {
             lisp_value cell = cons(CAR(list), NIL_VAL);
             if (nilp(out))
@@ -1037,6 +1051,7 @@ lisp_value builtin_map(int argc, lisp_value *argv)
         }
     } else {
         while (consp(seq)) {
+            check_steps();
             lisp_value args[1] = { CAR(seq) };
             seq = CDR(seq);
             lisp_value result = apply_function(fn, 1, args);
@@ -1082,6 +1097,7 @@ lisp_value builtin_substitute(int argc, lisp_value *argv)
     }
     lisp_value out = NIL_VAL, tail = NIL_VAL;
     while (consp(seq)) {
+        check_steps();
         lisp_value value = CAR(seq);
         seq = CDR(seq);
         lisp_value store = lisp_kw_test(&kw, old, lisp_kw_key(&kw, value)) ? fresh : value;
@@ -1152,8 +1168,10 @@ lisp_value builtin_listp(int argc, lisp_value *argv)
     if (argc < 1)
         return NIL_VAL;
     lisp_value v = argv[0];
-    while (consp(v))
+    while (consp(v)) {
+        check_steps();
         v = CDR(v);
+    }
     return bool_value(nilp(v));
 }
 
@@ -1756,6 +1774,7 @@ lisp_value builtin_length(int argc, lisp_value *argv)
     lisp_value list = argv[0];
     int64_t n = 0;
     while (consp(list)) {
+        check_steps();
         n++;
         list = CDR(list);
     }
@@ -2268,9 +2287,12 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     uint64_t started = saved_deadline && !ms ? lisp_now_ns() : 0;
     int limited = steps || ms;
     lisp.limited_depth += limited;
+    uint32_t saved_watched = lisp.watched_depth;
     lisp.steps = 0;
     lisp.steps_limit = steps;
     lisp.deadline_at = ms ? lisp_now_ns() + ms * 1000000ull : 0;
+    if (ms)
+        lisp.watched_depth++;
     int ctl = push_ctl(CTL_CATCH);
     if (setjmp(lisp.ctl[ctl].jb) != 0) {
         lisp.ctl_top = ctl;
@@ -2278,6 +2300,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
         lisp.steps = saved_steps;
         lisp.steps_limit = saved_limit;
         lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
+        lisp.watched_depth = saved_watched;
         throw_error_value(lisp_escape_condition());
     }
     lisp_value result = apply_function(fn, 0, NULL);
@@ -2286,6 +2309,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     lisp.steps = saved_steps;
     lisp.steps_limit = saved_limit;
     lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
+    lisp.watched_depth = saved_watched;
     return result;
 }
 
