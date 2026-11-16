@@ -1232,6 +1232,16 @@ native outputs and grab still as committed. Only dispatch counts can differ."
 
 (defvar *library-specs* :outside)
 
+(defparameter +source-steps+ 50000000
+  "The evaluation steps loading one source may take. A count, not a time, so a source
+that loads on one machine loads on every machine, however cold its first start.")
+
+(defun without-deadline (thunk)
+  "Run THUNK, runtime work that loads or withdraws code, outside the event watchdog:
+it has no deadline and its time does not count against the caller's. The source it
+evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watchdog."
+  (%with-limits nil 0 thunk))
+
 (defun load-specs (path &optional package)
   (%bump :definitions-generation)
   (let* ((*library-specs* nil)
@@ -1244,7 +1254,7 @@ native outputs and grab still as committed. Only dispatch counts can differ."
                      (error "No extension source at ~A." path)))))
     (unless (member package (runtime-source-packages) :test #'equal)
       (%r! :source-packages (cons package (runtime-source-packages))))
-    (%load-source path text package)
+    (%with-limits +source-steps+ 0 (lambda () (%load-source path text package)))
     (when *library-specs*
       (%r! :library-owners
            (append (loop for spec in *library-specs* collect (cons (spec-name spec) path))
@@ -1270,6 +1280,9 @@ native outputs and grab still as committed. Only dispatch counts can differ."
       (spec-source spec)))
 
 (defun configure (sources &optional changed-source)
+  (without-deadline (lambda () (%configure sources changed-source))))
+
+(defun %configure (sources changed-source)
   (unwind-protect
       (let* ((specs (loop for path in sources
                           when (or (null changed-source) (equal path changed-source))

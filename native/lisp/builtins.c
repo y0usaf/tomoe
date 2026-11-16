@@ -2265,22 +2265,27 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     uint64_t saved_steps = lisp.steps;
     uint64_t saved_limit = lisp.steps_limit;
     uint64_t saved_deadline = lisp.deadline_at;
+    uint64_t started = saved_deadline && !ms ? lisp_now_ns() : 0;
+    int limited = steps || ms;
+    lisp.limited_depth += limited;
     lisp.steps = 0;
     lisp.steps_limit = steps;
     lisp.deadline_at = ms ? lisp_now_ns() + ms * 1000000ull : 0;
     int ctl = push_ctl(CTL_CATCH);
     if (setjmp(lisp.ctl[ctl].jb) != 0) {
         lisp.ctl_top = ctl;
+        lisp.limited_depth -= limited;
         lisp.steps = saved_steps;
         lisp.steps_limit = saved_limit;
-        lisp.deadline_at = saved_deadline;
+        lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
         throw_error_value(lisp_escape_condition());
     }
     lisp_value result = apply_function(fn, 0, NULL);
     lisp.ctl_top = ctl;
+    lisp.limited_depth -= limited;
     lisp.steps = saved_steps;
     lisp.steps_limit = saved_limit;
-    lisp.deadline_at = saved_deadline;
+    lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
     return result;
 }
 

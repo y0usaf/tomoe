@@ -165,7 +165,8 @@ static uint32_t take_block(void)
     lisp.blocks[index].in_use = 1;
     lisp.blocks[index].mapped = 1;
     lisp.heap_used += LISP_BLOCK_SIZE;
-    if (lisp.heap_used > lisp.region_limit && lisp.ctl_top > 0) {
+    uint64_t limit = lisp.limited_depth ? lisp.region_limit - lisp.region_limit / 8 : lisp.region_limit;
+    if (lisp.heap_used > limit && lisp.ctl_top > 0) {
         lisp.heap_used -= LISP_BLOCK_SIZE;
         lisp.blocks[index].in_use = 0;
         if (resident) {

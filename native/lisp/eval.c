@@ -1959,6 +1959,7 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
         return -1;
     }
     lisp.steps = 0;
+    lisp.limited_depth = 0;
     lisp.steps_limit = lisp.pending_steps;
     lisp.deadline_at = lisp.pending_deadline_ns ? lisp_now_ns() + lisp.pending_deadline_ns : 0;
     lisp.call_depth++;

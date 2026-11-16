@@ -294,8 +294,9 @@ timers stop, supervised processes are signalled, watches, executions, shell
 surfaces, bindings and commands go, and every effect it replaced exposes its
 previous owner again. Any top-level `defun`, `defmacro`, `defvar` or
 `defparameter` the patch made is restored to what it was before the patch, and
-a patch that fails to load or whose reducer fails on mount is rejected with its
-error, leaving the session exactly as it was.
+a patch that fails to load or whose reducer fails on mount (it signals, overruns
+its watchdog or runs the Lisp heap out) is rejected with its error, leaving the
+session exactly as it was: the same extensions, effects and definitions.
 
 What a patch can change is everything the extension interface can express:
 window placement, drawing, settings, key and pointer bindings, commands,
@@ -440,7 +441,13 @@ good state and effects, isn't run again in that transaction, and is logged as
 `Extension NAME: reason`, while every other extension's answer still commits, so
 a broken bar can't take focus, tiling or input with it. A rule whose predicate
 fails keeps the windows it matched. A live patch is still all or nothing: one
-whose extension fails is rolled back. Because every effect has an owner,
+whose extension fails is rolled back. Loading a config or a patch is not one
+event, so the per-event watchdog doesn't cut it short: its top-level forms get a
+budget of evaluation steps, the same on every machine, each reducer it mounts
+keeps its own watchdog, and a slow first start on a cold GPU finishes loading
+instead of falling back to the defaults. A reducer that runs the Lisp heap out
+fails alone; the runtime keeps an eighth of the heap for itself to settle the
+rest. Because every effect has an owner,
 unmounting an extension takes its effects with it. A transaction runs on one instant: every round reads
 `get-internal-real-time` as it stood when the transaction began, so a reducer that
 animates from the clock and reads back its own effects (a focus border it fades

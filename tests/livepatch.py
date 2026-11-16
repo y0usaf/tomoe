@@ -166,6 +166,26 @@ broken = fail("command patch forms=" + quoted(
 assert "livepatch-broken" not in names(), "a rejected extension stayed mounted"
 assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0, "the compositor did not survive"
 
+before_timeout = state()
+timed_out = fail("command patch forms=" + quoted(
+    '(defun tomoe::default-keyboard-config () (list :rules "" :model "" :layout "fr" '
+    ':variant "" :options nil :repeat-rate 25 :repeat-delay 600)) '
+    '(in-package #:tomoe-user) (define-extension "livepatch-spin" (:reads () :state nil) '
+    '(snapshot state event) (declare (ignore snapshot state event)) (loop))') + " name=spin")
+assert "deadline exceeded" in timed_out, timed_out
+assert layout() == "", "a timed-out patch kept the definition it made"
+assert state() == before_timeout, "a timed-out patch changed the session"
+
+SLOW = ["livepatch-slow-a", "livepatch-slow-b", "livepatch-slow-c"]
+slow = json.loads(cli(f"command patch file={SLOW_SOURCE} name=slow"))
+assert slow["result"]["extensions"] == SLOW, slow
+cli("command undo-patch name=slow")
+cli(f"mount {SLOW_SOURCE}")
+assert set(SLOW) <= set(names()), "a source that loads for longer than one event's deadline was cut off"
+for name in SLOW:
+    cli(f"unmount {name}")
+assert state() == before_timeout, "the slow source did not leave cleanly"
+
 undone = json.loads(cli("command undo-patch"))
 assert undone["result"]["extensions"] == ["livepatch-gap"], undone
 await_state(lambda: not entries(":TIMERS") and not entries(":MANAGED-PROCESSES"), "the effects to retire")

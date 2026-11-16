@@ -320,6 +320,7 @@ struct lisp_runtime {
     uint64_t pending_deadline_ns;
     uint64_t budget_failures;
     int call_depth;
+    int limited_depth;
     int load_depth;
     int analysis_depth;
     int eval_depth;

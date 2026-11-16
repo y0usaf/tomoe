@@ -629,7 +629,6 @@ static int run_compositor(const struct cli_options *options) {
         sources = lisp_cons(lisp_cstring(options->config), lisp_nil());
     lisp_value boot_args[3] = { sources, lisp_bool(options->bare), lisp_bool(options->watch) };
     lisp_value boot_result = lisp_nil();
-    lisp_set_limits(60000000, 5000000000ULL);
     if (policy_call(POLICY_HOOK_BOOT, 3, boot_args, &boot_result, error, sizeof(error)))
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
     else if (lisp_stringp(boot_result)) {

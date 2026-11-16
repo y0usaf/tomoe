@@ -129,11 +129,18 @@ commit."
         (error "Extension ~A: ~A" (spec-name (mounted-spec failed)) (mounted-last-error failed))))
     (mapcar (lambda (spec) (spec-name spec)) specs)))
 
-(defun roll-back-patch (extensions snapshots refresh)
-  "Return to the state before a patch that did not finish applying."
-  (dolist (snapshot snapshots) (ignore-errors (restore-patch-definition snapshot)))
-  (when extensions (ignore-errors (remove-patch-mounts extensions refresh)))
-  (ignore-errors (sweep-source-packages)))
+(defun roll-back-patch (mounts packages patches sequence snapshots)
+  "Return the session to the MOUNTS, source PACKAGES, PATCHES, patch SEQUENCE and
+definitions it held before a patch that did not finish applying."
+  (dolist (snapshot snapshots) (restore-patch-definition snapshot))
+  (unless (eq mounts (runtime-mounts))
+    (transact (root-mounts mounts) (list :type :unmount) nil))
+  (dolist (package (runtime-source-packages))
+    (when (and (stringp package) (not (member package packages :test #'equal)))
+      (%drop-package package)))
+  (%r! :source-packages packages)
+  (%r! :patches patches)
+  (%r! :patch-sequence sequence))
 
 (defun load-policy (source &key name only refresh)
   "Load SOURCE, a config path or an embedded builtin name, and mount its extensions.
@@ -186,7 +193,8 @@ compositor as it was and signals its error. Returns a report plist."
         ((and (null file) (null forms)) (error "A patch needs a file or forms.")))
   (when (and name (not (patch-name-p name)))
     (error "Invalid patch name ~S: use letters, digits, hyphens and underscores." name))
-  (let* ((id (1+ (runtime-patch-sequence)))
+  (let* ((sequence (runtime-patch-sequence))
+         (id (1+ sequence))
          (name (or name (format nil "patch-~D" id))))
     (when (find name (runtime-patches) :test #'equal
                 :key (lambda (patch) (getf patch :name)))
@@ -194,42 +202,49 @@ compositor as it was and signals its error. Returns a report plist."
     (let* ((generated (null file))
            (path (if file file (write-patch-source name forms)))
            (package (format nil "TOMOE-USER/PATCH-~A" (string-upcase name)))
-           (snapshots nil) (mounted nil) (refresh nil))
-      (%r! :source-packages (cons package (runtime-source-packages)))
-      (%r! :patch-sequence id)
-      (let ((failure nil))
-        (%catch
-         (lambda ()
-           (progn
-             (patch-text path)
-             (setf snapshots (loop for symbol in (patch-defined-symbols path package)
-                                   for index from 0
-                                   collect (patch-definition-snapshot symbol name index))
-                   refresh (patch-refresh-list path package))
-             (setf mounted (mount-patch-specs (load-specs path package)))
-             (refresh-mounts refresh)
-             (let ((patch (list :id id :name name :file path :generated generated
-                                :refresh refresh :snapshots snapshots
-                                :extensions mounted
-                                :definitions (loop for snapshot in snapshots
-                                                   collect (getf snapshot :name)))))
-               (%r! :patches (append (runtime-patches) (list patch)))
-               (bump-generation)
-)))
-         (lambda (text) (setf failure text)))
-        (if failure
-            (progn
-              (roll-back-patch mounted snapshots refresh)
-              (when generated (ignore-errors (%delete-file path)))
-              (error "~A" failure))
-            (let ((patch (first (last (runtime-patches)))))
-              (list :id id :name name :file path :refresh refresh
-                    :extensions (getf patch :extensions)
-                    :definitions (getf patch :definitions))))))))
+           (mounts (runtime-mounts))
+           (packages (runtime-source-packages))
+           (patches (runtime-patches))
+           (snapshots nil) (failure nil))
+      (without-deadline
+       (lambda ()
+         (%r! :source-packages (cons package packages))
+         (%r! :patch-sequence id)
+         (%catch
+          (lambda ()
+            (patch-text path)
+            (setf snapshots (loop for symbol in (patch-defined-symbols path package)
+                                  for index from 0
+                                  collect (patch-definition-snapshot symbol name index)))
+            (let* ((refresh (patch-refresh-list path package))
+                   (mounted (mount-patch-specs (load-specs path package))))
+              (refresh-mounts refresh)
+              (%r! :patches (append patches
+                                    (list (list :id id :name name :file path :generated generated
+                                                :refresh refresh :snapshots snapshots
+                                                :extensions mounted
+                                                :definitions (loop for snapshot in snapshots
+                                                                   collect (getf snapshot :name))))))
+              (bump-generation)))
+          (lambda (text) (setf failure text)))
+         (when failure
+           (%catch (lambda () (roll-back-patch mounts packages patches sequence snapshots))
+                   (lambda (text)
+                     (setf failure (format nil "~A; restoring the session before the patch also failed: ~A"
+                                           failure text))))
+           (when generated (ignore-errors (%delete-file path))))))
+      (when failure (error "~A" failure))
+      (let ((patch (first (last (runtime-patches)))))
+        (list :id id :name name :file path :refresh (getf patch :refresh)
+              :extensions (getf patch :extensions)
+              :definitions (getf patch :definitions))))))
 
 (defun undo-patch (&key name id)
   "Withdraw the patch named NAME, numbered ID, or the most recent one."
   (when (and name id) (error "Undo a patch by name or id, not both."))
+  (without-deadline (lambda () (%undo-patch name id))))
+
+(defun %undo-patch (name id)
   (let ((patch (cond (id (or (find id (runtime-patches)
                                    :key (lambda (patch) (getf patch :id)))
                              (error "No patch ~D." id)))

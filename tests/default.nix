@@ -202,6 +202,16 @@ let
                             (service :livepatch-sleeper "sleep 3600")))
               nil))
   '';
+  livePatchSlow = pkgs.writeText "livepatch-slow.lisp" (
+    "(in-package #:tomoe-user)\n"
+    + pkgs.lib.concatMapStrings (tag: ''
+      (define-extension "livepatch-slow-${tag}" (:reads () :state nil) (snapshot state event)
+        (declare (ignore snapshot state))
+        (when (eq (getf event :type) :mount)
+          (ignore-errors (tomoe::%with-limits nil 400 (lambda () (loop)))))
+        (values nil (list (define-command "livepatch-slow-${tag}")) nil))
+    '') [ "a" "b" "c" ]
+  );
   livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
     (defun tomoe::default-keyboard-config ()
       (list :rules "" :model "" :layout "de" :variant "" :options nil
@@ -1163,6 +1173,7 @@ let
       script = ''
         GAP_PATCH = "${livePatchGap}"
         KEYBOARD_PATCH = "${livePatchKeyboard}"
+        SLOW_SOURCE = "${livePatchSlow}"
       ''
       + builtins.readFile ./livepatch.py;
     }
