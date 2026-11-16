@@ -1081,13 +1081,6 @@ let
   baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
   compositorSuites = [
     {
-      name = "seat";
-      script = ''
-        FAKE_SEATD = "${fakeSeatd}"
-      ''
-      + builtins.readFile ./seat.py;
-    }
-    {
       name = "pointer-protocols";
       script = ''
         machine.wait_for_unit("multi-user.target")
@@ -1410,6 +1403,13 @@ let
     timeout = 1800;
   };
   kmsSuites = [
+    {
+      name = "seat";
+      script = ''
+        FAKE_SEATD = "${fakeSeatd}"
+      ''
+      + builtins.readFile ./seat.py;
+    }
     {
       name = "kms-wake";
       script = ''

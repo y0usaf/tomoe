@@ -66,6 +66,7 @@ struct session {
     char *test_path;
     bool active;
     bool broken;
+    bool pong_outstanding;
     int fd;
     char seat[SEAT_NAME_MAX];
     char input[SEAT_BUFFER];
@@ -236,6 +237,7 @@ static int wait_message(struct session *session, uint16_t opcode, void *payload,
                     break_connection(session, EBADMSG);
                     return -1;
                 }
+                session->pong_outstanding = false;
                 consume(session, sizeof header);
                 continue;
             }
@@ -276,9 +278,47 @@ static int wait_message(struct session *session, uint16_t opcode, void *payload,
     }
 }
 
+static void drain_events(struct session *session) {
+    while (available(session)) {
+        struct message_header header;
+        memcpy(&header, session->input, sizeof header);
+        if (header.opcode == SERVER_ENABLE_SEAT || header.opcode == SERVER_DISABLE_SEAT) {
+            if (header.size != 0 || !push_event(session, header.opcode)) {
+                break_connection(session, EBADMSG);
+                return;
+            }
+        } else if (header.opcode == SERVER_PONG) {
+            if (header.size != 0) {
+                break_connection(session, EBADMSG);
+                return;
+            }
+            session->pong_outstanding = false;
+        } else {
+            break_connection(session, EBADMSG);
+            return;
+        }
+        consume(session, sizeof header);
+    }
+}
+
+static void wake_after_request(struct session *session) {
+    int saved = errno;
+    drain_events(session);
+    if (session->event_head != session->event_tail && !session->broken &&
+            !session->pong_outstanding &&
+            send_request(session, CLIENT_PING, NULL, 0) == 0)
+        session->pong_outstanding = true;
+    errno = saved;
+}
+
 static int acknowledge_disable(struct session *session) {
-    if (send_request(session, CLIENT_DISABLE_SEAT, NULL, 0) < 0) return -1;
-    return wait_message(session, SERVER_SEAT_DISABLED, NULL, 0, false, NULL);
+    if (send_request(session, CLIENT_DISABLE_SEAT, NULL, 0) < 0) {
+        wake_after_request(session);
+        return -1;
+    }
+    int result = wait_message(session, SERVER_SEAT_DISABLED, NULL, 0, false, NULL);
+    wake_after_request(session);
+    return result;
 }
 
 static int run_events(struct session *session) {
@@ -310,6 +350,7 @@ static int pump(struct session *session) {
                     break_connection(session, EBADMSG);
                     return -1;
                 }
+                session->pong_outstanding = false;
             } else {
                 break_connection(session, EBADMSG);
                 return -1;
@@ -320,11 +361,6 @@ static int pump(struct session *session) {
         if (filled < 0) return -1;
         if (filled == 0) return 0;
     }
-}
-
-static void wake_after_request(struct session *session) {
-    if (session->event_head == session->event_tail) return;
-    send_request(session, CLIENT_PING, NULL, 0);
 }
 
 static int dispatch(int fd, uint32_t mask, void *data) {
@@ -485,13 +521,19 @@ int session_open(struct tomoe *s, const char *path, int *device) {
     struct message_open_device message = { .path_len = (uint16_t)path_len };
     memcpy(request, &message, sizeof message);
     memcpy(request + sizeof message, path, path_len);
-    if (send_request(session, CLIENT_OPEN_DEVICE, request, sizeof message + path_len) < 0) return -1;
-    struct message_device opened;
-    if (wait_message(session, SERVER_DEVICE_OPENED, &opened, sizeof opened, false, NULL) < 0)
+    if (send_request(session, CLIENT_OPEN_DEVICE, request, sizeof message + path_len) < 0) {
+        wake_after_request(session);
         return -1;
+    }
+    struct message_device opened;
+    if (wait_message(session, SERVER_DEVICE_OPENED, &opened, sizeof opened, false, NULL) < 0) {
+        wake_after_request(session);
+        return -1;
+    }
     int fd;
     if (!pop_fd(session, &fd)) {
         break_connection(session, EBADMSG);
+        wake_after_request(session);
         return -1;
     }
     *device = opened.device;
@@ -505,8 +547,8 @@ void session_close(struct tomoe *s, int device, int fd) {
         struct message_device message = { .device = device };
         if (send_request(session, CLIENT_CLOSE_DEVICE, &message, sizeof message) == 0)
             wait_message(session, SERVER_DEVICE_CLOSED, NULL, 0, false, NULL);
-        wake_after_request(session);
     }
+    if (session) wake_after_request(session);
     close(fd);
 }
 
@@ -514,7 +556,10 @@ void session_change_vt(struct tomoe *s, int vt) {
     struct session *session = s->session;
     if (!session || session->broken) return;
     struct message_session message = { .session = vt };
-    if (send_request(session, CLIENT_SWITCH_SESSION, &message, sizeof message) < 0) return;
+    if (send_request(session, CLIENT_SWITCH_SESSION, &message, sizeof message) < 0) {
+        wake_after_request(session);
+        return;
+    }
     wait_message(session, SERVER_SESSION_SWITCHED, NULL, 0, false, NULL);
     wake_after_request(session);
 }
