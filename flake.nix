@@ -142,7 +142,6 @@
             (pkgs.libinput.override { luaSupport = false; })
             libs.libglvnd
             libs.libgbm
-            pkgs.wayland
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             libs.libxkbcommon
@@ -163,7 +162,8 @@
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
-              WP=${pkgs.wayland-protocols}/share/wayland-protocols
+              WP=${pkgs.wayland-protocols}/share/wayland-protocols \
+              WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
             runHook postBuild
           '';
           installPhase = ''

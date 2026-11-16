@@ -1005,7 +1005,8 @@ let
         runHook preBuild
         make -j"$NIX_BUILD_CORES" build/${target} \
           WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
-          WP=${pkgs.wayland-protocols}/share/wayland-protocols
+          WP=${pkgs.wayland-protocols}/share/wayland-protocols \
+          WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
         ${run}
         runHook postBuild
       '';
