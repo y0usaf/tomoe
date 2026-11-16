@@ -1035,26 +1035,31 @@ static int bus_connect_socket(const char *address, int *error) {
     }
     const char *path = NULL;
     const char *abstract = NULL;
-    while (*cursor) {
+    size_t path_length = 0, abstract_length = 0;
+    while (*cursor && *cursor != ';') {
         const char *field = cursor;
-        const char *equal = strchr(field, '=');
-        const char *comma = strchr(field, ',');
-        if (!equal || (comma && comma < equal)) {
+        const char *end = field + strcspn(field, ",;");
+        const char *equal = memchr(field, '=', (size_t)(end - field));
+        if (!equal) {
             *error = EINVAL;
             return -1;
         }
         size_t key = (size_t)(equal - field);
         const char *value = equal + 1;
-        const char *end = comma ? comma : value + strlen(value);
-        if (key == 4 && !strncmp(field, "path", 4)) path = value;
-        else if (key == 8 && !strncmp(field, "abstract", 8)) abstract = value;
-        if (!comma) break;
+        if (key == 4 && !strncmp(field, "path", 4)) {
+            path = value;
+            path_length = (size_t)(end - value);
+        } else if (key == 8 && !strncmp(field, "abstract", 8)) {
+            abstract = value;
+            abstract_length = (size_t)(end - value);
+        }
+        if (*end != ',') break;
         cursor = end + 1;
     }
     struct sockaddr_un local = { .sun_family = AF_UNIX };
     size_t length = 0;
     if (abstract) {
-        length = strlen(abstract);
+        length = abstract_length;
         if (length + 2U > sizeof(local.sun_path)) {
             *error = ENAMETOOLONG;
             return -1;
@@ -1065,8 +1070,8 @@ static int bus_connect_socket(const char *address, int *error) {
     } else {
         char decoded[sizeof(local.sun_path)];
         size_t written = 0;
-        for (const char *source = path; source && *source; source++) {
-            if (*source == '%' && source[1] && source[2]) {
+        for (const char *source = path; source && source < path + path_length; source++) {
+            if (*source == '%' && source + 2 < path + path_length) {
                 int value = 0;
                 for (int index = 0; index < 2; index++) {
                     int digit = source[1 + index];
