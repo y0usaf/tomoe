@@ -146,17 +146,6 @@ instances included, are committed as they were, without running any reducer."
   (%r! :patches patches)
   (%r! :patch-sequence sequence))
 
-(defun require-tomoe (build)
-  "Refuse the source being loaded unless this compositor is BUILD, the package
-the config was generated against. Loading stops before anything mounts, so the
-running config stays as it was."
-  (check-type build string)
-  (let ((running (%build)))
-    (unless (equal build running)
-      (error "This config is for tomoe ~A, not this session's ~A; it loads at the next login."
-             build (if (plusp (length running)) running "unpackaged build")))
-    build))
-
 (defun load-policy (source &key name only refresh)
   "Load SOURCE, a config path or an embedded builtin name, and mount its extensions.
 ONLY restricts the mount to those extension names; REFRESH re-invokes mounts."

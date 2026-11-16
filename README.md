@@ -80,14 +80,6 @@ assigns a global, or stores an event's data into a list, table or closure its
 source made when it loaded, fails like any other broken extension, because that
 data is gone once the event is handled.
 
-A config generated together with its compositor can say so with
-`(require-tomoe "/nix/store/…-tomoe-0.1.0")`, the package path `tomoe --version`
-prints as its build. Loading it into any other build stops at that form, before
-anything mounts: the session keeps the config it runs, and the toast and
-`tomoe reload` name both builds. A Nix module that writes the config from the
-same package it installs gets the pair right by construction, and a running
-session refuses the next generation's config until the next login.
-
 Change a number, save, and the windows move:
 
 <p align="center"><img src="docs/media/reload.webp" alt="Neovim changes :gaps from 12 to 40 in init.lisp; on save the tiled windows spring apart" width="100%"></p>

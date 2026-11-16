@@ -201,13 +201,14 @@ for name, prefix, reads, ignore, body, reason in [
     ("livepatch-loop", "", "(:data)", "snapshot event",
      "(values (1+ state) (list (publish-state :livepatch-loop (1+ state))) nil)",
      "still changed after 16 rounds"),
-    ("livepatch-build", '(require-tomoe "/nix/store/00000000000000000000000000000000-tomoe-other") ',
-     "()", "snapshot state event", "(values 0 nil nil)",
-     "is for tomoe /nix/store/00000000000000000000000000000000-tomoe-other"),
+    ("livepatch-half", '(define-extension "livepatch-half-first" (:reads () :state 0) (snapshot state event) '
+     '(declare (ignore snapshot state event)) (values 0 nil nil)) (livepatch-no-such-function) ',
+     "()", "snapshot state event", "(values 0 nil nil)", "undefined function"),
 ]:
     refused = fail(reducer_patch(name, body, prefix, reads, ignore))
     assert reason in refused, f"{name}: {refused}"
     assert name not in names(), f"{name} stayed mounted"
+    assert "livepatch-half-first" not in names(), f"{name} left the extension before its failing form mounted"
     for _ in range(3):
         assert state() == before_timeout, f"{name} changed the session"
 

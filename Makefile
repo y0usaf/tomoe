@@ -1,7 +1,6 @@
 CC ?= cc
 PKG_CONFIG ?= pkg-config
 VERSION ?= dev
-BUILD ?=
 OPT ?= -O2
 LTO ?=
 CPU ?=
@@ -71,7 +70,7 @@ WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/wayland-loop.o build/obj/wayland-serv
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/wayland-client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/wayland-client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_BUILD='"$(BUILD)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' 
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative

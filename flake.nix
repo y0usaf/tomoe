@@ -154,7 +154,6 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
-              BUILD=$out \
               PATH_PREFIX=$out/bin \
               FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \

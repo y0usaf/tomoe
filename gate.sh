@@ -31,10 +31,10 @@ generates against that very build, and runs the pair on a private headless
 instance with its own socket, runtime directory and home: one output at
 5120x1440@240, real test windows, dark then light, every rail theme in turn,
 rapid focus switches and moves with windows closing and opening mid-animation,
-a reload, and a config made for another build. It fails on any extension
-failure, duplicate timer, lost focus, unplaced window, or a mismatched config
-that loads. The session has no network, so services the config starts
-cannot reach a device. Nothing reaches the running desktop.
+a reload, and a config whose middle form calls an undefined function. It fails
+on any extension failure, duplicate timer, lost focus, unplaced window, or a
+broken config that loads or disturbs the running one. The session has no
+network, so services the config starts cannot reach a device. Nothing reaches the running desktop.
 
   GATE_FINIX    finix checkout whose HEAD is used (default ~/finix)
   GATE_HOST     finix host (default this machine's hostname)
@@ -80,7 +80,6 @@ CLIENTS_OUT=$(nix build --no-link --print-out-paths "$SOURCE#legacyPackages.$SYS
 CLIENT=$CLIENTS_OUT/bin/tomoe-test-client
 KEYS=$CLIENTS_OUT/bin/tomoe-pointer-script
 exec 9>&-
-grep -qF "(require-tomoe \"$PKG\")" "$INIT" || die "$INIT does not require $PKG"
 say "pair $PKG + $INIT"
 
 DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tomoe-gate.XXXXXX")
@@ -284,12 +283,15 @@ check "reload" "$WINDOWS"
 
 mounted=$(extensions)
 cp "$DIR/init.lisp" "$DIR/good.lisp"
-sed -i 's#(require-tomoe "[^"]*")#(require-tomoe "/nix/store/00000000000000000000000000000000-tomoe-other")#' "$DIR/init.lisp"
-if ctl reload >"$DIR/reload" 2>&1; then die "a config for another build loaded"; fi
-grep -q 'is for tomoe /nix/store/00000000000000000000000000000000-tomoe-other' "$DIR/reload" ||
-	die "a config for another build failed without naming it: $(cat "$DIR/reload")"
+forms=$(grep -c '^(' "$DIR/good.lisp")
+((forms >= 2)) || die "$INIT has too few top-level forms to break in the middle"
+awk -v at=$((forms / 2 + 1)) '/^\(/ && ++n == at {print "(tomoe-gate-no-such-function)"} {print}' \
+	"$DIR/good.lisp" >"$DIR/init.lisp"
+if ctl reload >"$DIR/reload" 2>&1; then die "a config with an undefined function loaded"; fi
+grep -qi 'undefined function TOMOE-GATE-NO-SUCH-FUNCTION' "$DIR/reload" ||
+	die "the broken config failed without naming its error: $(cat "$DIR/reload")"
 settle "$WINDOWS"
-check "mismatched config" "$WINDOWS"
+check "broken config" "$WINDOWS"
 [[ $(extensions) == "$mounted" ]] || die "the refused config changed the mounted extensions"
 cp "$DIR/good.lisp" "$DIR/init.lisp"
 ctl reload >"$DIR/reload" 2>&1 || die "reload after the refusal failed: $(cat "$DIR/reload")"
