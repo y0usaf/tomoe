@@ -644,21 +644,26 @@ theme's text colour."
           :mark (list :ink ink :width 3 :head 18 :size 22 :font "sans")
           :motion (list :enabled nil))))
 
-(defun screenshot-hint (selector hint)
+(defun screenshot-hint (selector hint keys)
   "The keys the open SELECTOR takes, set as HINT styles them: one line of Pango
-markup, each key on a chip of HINT's :KEY colour."
+markup, each key on a chip of HINT's :KEY colour, the tool keys named from KEYS
+so a look that changes them is not described by the old ones."
   (labels ((key (name)
              (format nil "<span background='~A'~A> ~A </span>" (getf hint :key)
                    (let ((ink (getf hint :key-ink)))
                      (if ink (format nil " foreground='~A'" ink) ""))
                    name))
+         (tool (index fallback)
+           (let ((name (nth index keys)))
+             (string-upcase (if (and (stringp name) (plusp (length name))) name fallback))))
          (keys-line ()
            (cond ((getf selector :typing)
                   (format nil "Type the label    ~A keep    ~A discard"
                           (key "Enter") (key "Esc")))
                  ((getf selector :selected)
                   (format nil "~A arrow    ~A text    ~A freehand    ~A undo    ~A reselect    ~A capture    ~A cancel"
-                          (key "A") (key "T") (key "F") (key "U") (key "R")
+                          (key (tool 0 "A")) (key (tool 1 "T")) (key (tool 2 "F"))
+                          (key (tool 3 "U")) (key (tool 4 "R"))
                           (key "Enter") (key "Esc")))
                  (t (format nil "Drag to select    ~A whole screen    ~A cancel"
                             (key "Space") (key "Esc"))))))
@@ -674,14 +679,15 @@ markup, each key on a chip of HINT's :KEY colour."
 (defun screenshot-surfaces (selector look)
   "The open SELECTOR drawn in LOOK: its shader over the whole output, reading the
 selection as iSelection and the marks through MARKED, and its key hint."
-  (let ((output (getf selector :output)) (hint (getf look :hint)))
+  (let ((output (getf selector :output)) (hint (getf look :hint))
+        (keys (getf (getf look :mark) :keys)))
     (list (shell-surface :screenshot-look (ui :stack)
                          :output output :anchors '(:top :right :bottom :left)
                          :layer :screenshot :click-through t :background
                          (list (if (getf look :glsl) :glsl :shader)
                                (or (getf look :glsl) (getf look :shader))
                                :data (getf look :data) :clock 0 :until 0))
-          (shell-surface :screenshot-hint (screenshot-hint selector hint)
+          (shell-surface :screenshot-hint (screenshot-hint selector hint keys)
                          :output output :anchors '(:bottom) :margin (getf hint :margin 32)
                          :layer :screenshot :click-through t :background "#00000000"
                          :blur (getf hint :blur)))))
