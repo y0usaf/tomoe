@@ -84,5 +84,6 @@ bool lisp_eq_keyword(lisp_value value, const char *keyword);
 int lisp_read_data(const char *text, size_t length, lisp_value *out, char *error, size_t error_size);
 size_t lisp_print(lisp_value value, bool readably, char *buffer, size_t size);
 char *lisp_print_alloc(lisp_value value, bool readably);
+char *lisp_print_signature_alloc(lisp_value value);
 
 #endif

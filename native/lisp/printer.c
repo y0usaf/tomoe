@@ -93,6 +93,20 @@ void print_double(struct lisp_buf *buf, double value)
     }
 }
 
+static bool exact_doubles;
+
+static void print_double_bits(struct lisp_buf *buf, double value)
+{
+    static const char digits[] = "0123456789abcdef";
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    char text[19] = "#d";
+    for (int i = 0; i < 16; i++)
+        text[2 + i] = digits[(bits >> (60 - 4 * i)) & 0xf];
+    text[18] = '\0';
+    buf_puts(buf, text);
+}
+
 void number_print(struct lisp_buf *buf, lisp_value v, bool readably)
 {
     (void)readably;
@@ -106,7 +120,10 @@ void number_print(struct lisp_buf *buf, lisp_value v, bool readably)
         print_integer(buf, PTR(v, lisp_ratio)->den);
         break;
     case LT_DOUBLE:
-        print_double(buf, DBLVAL(v));
+        if (exact_doubles)
+            print_double_bits(buf, DBLVAL(v));
+        else
+            print_double(buf, DBLVAL(v));
         break;
     default:
         buf_puts(buf, "#<NOT-A-NUMBER>");
@@ -319,4 +336,12 @@ char *lisp_print_alloc(lisp_value value, bool readably)
         return NULL;
     }
     return buf.data;
+}
+
+char *lisp_print_signature_alloc(lisp_value value)
+{
+    exact_doubles = true;
+    char *text = lisp_print_alloc(value, true);
+    exact_doubles = false;
+    return text;
 }

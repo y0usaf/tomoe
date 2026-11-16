@@ -910,7 +910,7 @@ static struct ui_cached_plan *plan_insert(const char *identity, const char *argu
 }
 
 static char *printed(lisp_value value) {
-    char *text = lisp_print_alloc(value, true);
+    char *text = lisp_print_signature_alloc(value);
     if (!text) lisp_error("Cannot allocate shell plan signature.");
     return text;
 }
