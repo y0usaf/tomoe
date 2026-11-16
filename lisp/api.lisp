@@ -749,6 +749,10 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:screenshot-freeze :boolean t)
     (:screenshot-motion (:group (:enabled :boolean nil) (:stiffness (:real 1 10000) 170)
                                 (:damping (:real 0.05 4) 0.45)))
+    (:screenshot-mark (:group (:ink :color "#ffffffff")
+                              (:width (:integer 1 64) 3) (:head (:integer 4 256) 18)
+                              (:size (:integer 6 256) 22) (:font :strings ("sans"))
+                              (:keys :strings ("a" "t" "f" "u" "r"))))
     (:watchdog-ms (:integer 0 60000) 1000)
     (:budgets (:group
                (:lisp-heap-mb (:integer 4 1024) 256)

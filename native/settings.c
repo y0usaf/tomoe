@@ -25,6 +25,10 @@ static const struct setting_field {
     { "screenshot-motion-enabled", offsetof(struct settings, screenshot_motion_enabled), SETTING_BOOL },
     { "screenshot-motion-stiffness", offsetof(struct settings, screenshot_motion_stiffness), SETTING_REAL },
     { "screenshot-motion-damping", offsetof(struct settings, screenshot_motion_damping), SETTING_REAL },
+    { "screenshot-mark-ink", offsetof(struct settings, screenshot_mark_ink), SETTING_COLOR },
+    { "screenshot-mark-width", offsetof(struct settings, screenshot_mark_width), SETTING_INT },
+    { "screenshot-mark-head", offsetof(struct settings, screenshot_mark_head), SETTING_INT },
+    { "screenshot-mark-size", offsetof(struct settings, screenshot_mark_size), SETTING_INT },
 #define ANIMATION_FIELDS(prefix, member) \
     { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
@@ -95,6 +99,10 @@ void settings_clear(struct settings *settings) {
     memset(settings, 0, sizeof(*settings));
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
+    settings->screenshot_mark_ink = UINT32_C(0xffffffff);
+    settings->screenshot_mark_width = 3;
+    settings->screenshot_mark_head = 18;
+    settings->screenshot_mark_size = 22;
 }
 
 int tomoe_present_settings(struct tomoe *s) {
@@ -142,6 +150,20 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         settings->cursor_trail_shape = strcmp(text, "dots") == 0 ? TRAIL_DOTS : TRAIL_CELLS;
         return 1;
     }
+    if (strcmp(key, "screenshot-mark-font") == 0) {
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        free(settings->screenshot_mark_font);
+        settings->screenshot_mark_font = copy;
+        return 1;
+    }
+    if (strcmp(key, "screenshot-mark-keys") == 0) {
+        if (settings->screenshot_mark_key_count >= 5) return 1;
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        settings->screenshot_mark_keys[settings->screenshot_mark_key_count++] = copy;
+        return 1;
+    }
     int handled = input_setting(settings, key, NAN, text);
     if (handled >= 0) return handled;
     return policy_text_key(key);
@@ -155,6 +177,9 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     s->settings = *plan->settings;
     plan->settings->device_count = 0;
     plan->settings->blur_namespace_count = 0;
+    plan->settings->screenshot_mark_font = NULL;
+    memset(plan->settings->screenshot_mark_keys, 0, sizeof(plan->settings->screenshot_mark_keys));
+    plan->settings->screenshot_mark_key_count = 0;
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
     cursor_glass_settings(s);

@@ -287,6 +287,16 @@ static PangoLayout *text_layout(const char *font, const char *text,
     return layout;
 }
 
+bool ui_text_raster(cairo_t *cr, const char *font, const char *text, double size) {
+    if (!cr || !text || !*text) return false;
+    PangoLayout *layout = text_layout(font, text, size, 0, false);
+    if (!layout) return false;
+    pango_cairo_update_layout(cr, layout);
+    pango_cairo_show_layout(cr, layout);
+    g_object_unref(layout);
+    return true;
+}
+
 static void ui_text_release(struct ui_text *entry);
 
 static void text_touch(struct ui_text *entry) {
@@ -1926,11 +1936,23 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             bool still = shader_still(o->server, surface, now);
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
-            float selection[16];
+            float selection[16], marks_box[4];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
-                windows, surface->shader_window_count, NULL, NULL };
-            if (layer == UI_LAYER_SCREENSHOT && screenshot_selection(o, area, now, selection))
-                inputs.selection = selection;
+                windows, surface->shader_window_count, NULL, NULL, NULL, NULL };
+            if (layer == UI_LAYER_SCREENSHOT) {
+                struct texture *marks;
+                struct fbox marks_at;
+                if (screenshot_selection(o, area, now, selection)) inputs.selection = selection;
+                if (screenshot_marks(o, &marks, &marks_at)) {
+                    inputs.marks = marks;
+                    marks_box[0] = (float)(o->x - area.x + marks_at.x);
+                    marks_box[1] = (float)(area.y + area.height -
+                        (o->y + marks_at.y + marks_at.height));
+                    marks_box[2] = (float)marks_at.width;
+                    marks_box[3] = (float)marks_at.height;
+                    inputs.marks_box = marks_box;
+                }
+            }
             for (int w = 0; w < surface->shader_window_count; w++) {
                 struct fbox box;
                 float *out = &windows[4 * w];

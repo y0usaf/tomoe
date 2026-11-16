@@ -685,8 +685,26 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     glUniform1i(p->window_count, window_count);
     if (window_count) glUniform4fv(p->windows, window_count, inputs->windows);
     if (selection) glUniform4fv(p->selection, 4, inputs->selection);
+    if (inputs && inputs->marks_box && p->marks_box >= 0)
+        glUniform4fv(p->marks_box, 1, inputs->marks_box);
+    if (inputs && inputs->marks && p->marks >= 0) {
+        GLenum target;
+        GLuint texture;
+        bool alpha;
+        if (render_texture_gl((struct texture *)inputs->marks, &target, &texture, &alpha)) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(target, texture);
+            glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glUniform1i(p->marks, 1);
+            glActiveTexture(GL_TEXTURE0);
+        }
+    }
     quad(f, p, drawn, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
     op_end(f->pass, &clip);
 }
 

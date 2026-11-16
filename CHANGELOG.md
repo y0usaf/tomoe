@@ -33,6 +33,16 @@ The first release.
   the dimmed output, accent frame and key hint it always was. Shell shaders can
   also be given as text with `(:glsl SOURCE ...)`, and a UI text element with
   `:markup t` sets Pango markup at its layout's own height.
+- The region screenshot takes marks before it is captured: `A`, `T` and `F`
+  pick an arrow, a text label and a freehand stroke, the pointer draws them
+  inside the selection, `U` (or Ctrl+Z) undoes the last mark, `R` goes back to
+  selecting a region, and Enter or Space captures the region with the marks in
+  the image. The core rasterises the marks into a coverage mask on the
+  `:screenshot` layer, a look's shader reads it with `marked(p)` over its own
+  ink, and the look's `:mark` plist sets that ink, the stroke width, the arrow
+  head, the label size and font, and the tool keys (`:screenshot-mark`
+  settings). A look that does not read `marked` draws the selector without
+  them.
 - Every session logs to `~/.local/state/tomoe/SOCKET.log`: why it stopped, every
   refused load, stopped extension, withdrawn surface and exited service, and a
   backtrace if the compositor itself crashes.

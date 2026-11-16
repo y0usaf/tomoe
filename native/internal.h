@@ -340,7 +340,7 @@ struct program {
     GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
-    GLint data, windows, window_count, beneath, selection;
+    GLint data, windows, window_count, beneath, selection, marks, marks_box;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {
@@ -720,6 +720,8 @@ struct shader_inputs {
     int window_count;
     const struct fbox *part;
     const float *selection;
+    const struct texture *marks;
+    const float *marks_box;
 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
@@ -882,6 +884,11 @@ struct settings {
     double blur_offset;
     bool screenshot_freeze, screenshot_motion_enabled;
     double screenshot_motion_stiffness, screenshot_motion_damping;
+    uint32_t screenshot_mark_ink;
+    int screenshot_mark_width, screenshot_mark_head, screenshot_mark_size;
+    char *screenshot_mark_font;
+    char *screenshot_mark_keys[5];
+    size_t screenshot_mark_key_count;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
         window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
@@ -1647,11 +1654,14 @@ void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 bool render_output_buffer(struct output *o, struct buffer *buffer);
 struct screenshot;
-bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, bool pressed);
+struct _cairo;
+bool ui_text_raster(struct _cairo *cr, const char *font, const char *text, double size);
+bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, uint32_t modifiers, bool pressed);
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);
 bool screenshot_render_frozen(struct output *o, struct frame *f);
 bool screenshot_on(const struct output *o);
+bool screenshot_marks(const struct output *o, struct texture **texture, struct fbox *box);
 bool screenshot_selection(const struct output *o, struct fbox area, double now, float out[16]);
 bool screenshot_animate(struct tomoe *s, double now);
 void screenshot_output_gone(struct tomoe *s, struct output *o);

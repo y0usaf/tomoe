@@ -603,10 +603,14 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
     else if (all(greaterThanEqual(p, lo - edge)) && all(lessThan(p, hi + edge)))
         color = vec4(iData[0].rgb * iData[0].a, iData[0].a);
     else color = dim;
+    float cover = marked(p) * iData[2].a;
+    if (cover > 0.0) color = vec4(iData[2].rgb * cover + color.rgb * (1.0 - cover),
+                                  cover + color.a * (1.0 - cover));
 }
 "
   "The selector every look falls back to: the output dimmed but for the
-selection, which a two-pixel accent frame rings.")
+selection, which a two-pixel accent frame rings, and the annotation marks in
+ink over it.")
 
 (defun screenshot-rgba (hex &optional (alpha 1))
   "#RRGGBB as four reals from 0 to 1, ALPHA last."
@@ -618,27 +622,46 @@ selection, which a two-pixel accent frame rings.")
   '(:base "#1c1c21" :text "#ffffff" :accent "#7aa1f7" :surface1 "#45454f")
   "The selector's colours when no :theme is published.")
 
+(defparameter +screenshot-keys+ '("a" "t" "f" "u" "r")
+  "The keys the selector takes for an arrow, a text label, a freehand stroke,
+undoing the last mark and going back to selecting a region, in order.")
+
 (defun screenshot-default-look (published)
   "Today's selector in PUBLISHED's :theme colours: +SCREENSHOT-GLSL+ over the
-output, and the key hint in a plate ringed by the accent."
-  (let ((accent (theme :accent (or published +screenshot-theme+))))
+output, the key hint in a plate ringed by the accent, and the marks in the
+theme's text colour."
+  (let* ((palette (or published +screenshot-theme+))
+         (accent (theme :accent palette))
+         (ink (theme :text palette)))
     (list :glsl +screenshot-glsl+
-          :data (append (screenshot-rgba accent) (list 2 0.4d0 0 0))
-          :hint (list :ink (theme :text (or published +screenshot-theme+))
-                      :plate (theme :base (or published +screenshot-theme+))
+          :data (append (screenshot-rgba accent) (list 2 0.4d0 0 0)
+                        (screenshot-rgba ink))
+          :hint (list :ink ink
+                      :plate (theme :base palette)
                       :rim accent :rim-width 2
-                      :key (theme :surface1 (or published +screenshot-theme+))
+                      :key (theme :surface1 palette)
                       :font "sans" :size 17 :padding 12 :margin 32 :radius 0)
+          :mark (list :ink ink :width 3 :head 18 :size 22 :font "sans")
           :motion (list :enabled nil))))
 
 (defun screenshot-hint (selector hint)
   "The keys the open SELECTOR takes, set as HINT styles them: one line of Pango
 markup, each key on a chip of HINT's :KEY colour."
-  (flet ((key (name)
-           (format nil "<span background='~A'~A> ~A </span>" (getf hint :key)
+  (labels ((key (name)
+             (format nil "<span background='~A'~A> ~A </span>" (getf hint :key)
                    (let ((ink (getf hint :key-ink)))
                      (if ink (format nil " foreground='~A'" ink) ""))
-                   name)))
+                   name))
+         (keys-line ()
+           (cond ((getf selector :typing)
+                  (format nil "Type the label    ~A keep    ~A discard"
+                          (key "Enter") (key "Esc")))
+                 ((getf selector :selected)
+                  (format nil "~A arrow    ~A text    ~A freehand    ~A undo    ~A reselect    ~A capture    ~A cancel"
+                          (key "A") (key "T") (key "F") (key "U") (key "R")
+                          (key "Enter") (key "Esc")))
+                 (t (format nil "Drag to select    ~A whole screen    ~A cancel"
+                            (key "Space") (key "Esc"))))))
     (ui :column :padding (getf hint :rim-width 0) :background (getf hint :rim)
         :radius (getf hint :radius 0)
         :children
@@ -646,16 +669,11 @@ markup, each key on a chip of HINT's :KEY colour."
                   :radius (max 0 (- (getf hint :radius 0) (getf hint :rim-width 0)))
                   :children
                   (list (ui :text :markup t :size (getf hint :size 17) :font (getf hint :font "sans")
-                            :color (getf hint :ink)
-                            :text (if (getf selector :selected)
-                                      (format nil "~A / ~A capture    Drag to reselect    ~A cancel"
-                                              (key "Enter") (key "Space") (key "Esc"))
-                                      (format nil "Drag to select    ~A whole screen    ~A cancel"
-                                              (key "Space") (key "Esc"))))))))))
+                            :color (getf hint :ink) :text (keys-line))))))))
 
 (defun screenshot-surfaces (selector look)
   "The open SELECTOR drawn in LOOK: its shader over the whole output, reading the
-selection as iSelection, and its key hint."
+selection as iSelection and the marks through MARKED, and its key hint."
   (let ((output (getf selector :output)) (hint (getf look :hint)))
     (list (shell-surface :screenshot-look (ui :stack)
                          :output output :anchors '(:top :right :bottom :left)
@@ -668,6 +686,19 @@ selection as iSelection, and its key hint."
                          :layer :screenshot :click-through t :background "#00000000"
                          :blur (getf hint :blur)))))
 
+(defun screenshot-mark-settings (mark)
+  "The compositor settings a LOOK's :MARK gives the marks: the INK they take in
+the captured image, the stroke WIDTH, the arrow HEAD, the label SIZE and FONT,
+and the KEYS that pick each tool."
+  (when mark
+    (settings :screenshot-mark
+              (list :ink (getf mark :ink "#ffffffff")
+                    :width (getf mark :width 3)
+                    :head (getf mark :head 18)
+                    :size (getf mark :size 22)
+                    :font (list (getf mark :font "sans"))
+                    :keys (copy-list (or (getf mark :keys) +screenshot-keys+))))))
+
 (define-extension "screenshot-theme" (:reads (:screenshot :data) :state nil) (snapshot state event)
   (let ((state (if (eq (getf event :type) :selector)
                    (and (getf event :open) (copy-list event))
@@ -675,8 +706,11 @@ selection as iSelection, and its key hint."
         (look (or (state-value snapshot :screenshot-look)
                   (screenshot-default-look (state-value snapshot :theme)))))
     (values state
-            (cons (settings :screenshot-motion (getf look :motion (list :enabled nil)))
-                  (when state (screenshot-surfaces state look)))
+            (remove nil
+                    (append (list (settings :screenshot-motion
+                                            (getf look :motion (list :enabled nil)))
+                                  (screenshot-mark-settings (getf look :mark)))
+                            (when state (screenshot-surfaces state look))))
             nil)))
 
 (defparameter +notification-theme+ '(:base "#1e1e2e" :text "#cdd6f4" :subtext0 "#a6adc8")

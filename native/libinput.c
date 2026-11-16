@@ -83,6 +83,12 @@ void settings_finish(struct settings *settings) {
     settings->device_count = 0;
     for (size_t i = 0; i < settings->blur_namespace_count; i++) free(settings->blur_namespaces[i]);
     settings->blur_namespace_count = 0;
+    free(settings->screenshot_mark_font);
+    settings->screenshot_mark_font = NULL;
+    for (size_t i = 0; i < settings->screenshot_mark_key_count; i++)
+        free(settings->screenshot_mark_keys[i]);
+    memset(settings->screenshot_mark_keys, 0, sizeof(settings->screenshot_mark_keys));
+    settings->screenshot_mark_key_count = 0;
 }
 
 static double pick(double class_value, double device_value) {

@@ -1900,7 +1900,7 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
     if (s->screenshot && tracked && !lock_active(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
             k->latches[input->keycode].consumed = true;
-            if (count) screenshot_key(s, syms[0], true);
+            if (count) screenshot_key(s, syms[0], mods, true);
         }
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
