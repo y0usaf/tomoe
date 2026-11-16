@@ -62,13 +62,11 @@ SPRING = """
 """
 
 TRAIL = """
-(defparameter +trail+ (list :settle +test-settle+
-                            :trail (list :cell 9d0 :life 0.35d0 :steps 4
-                                         :color "#b8e0ff")))
-
 (define-extension "test-trail" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (cursor-effect "trail" +trail+ :order 30)) nil))
+  (values nil (list (settings :cursor-trail (list :enabled t :cell 9d0 :life 0.35d0
+                                                  :steps 4 :shape :cells
+                                                  :color "#b8e0ff"))) nil))
 """
 
 

@@ -723,9 +723,10 @@ struct shader_inputs {
 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
+enum { TRAIL_CELLS = 0, TRAIL_DOTS = 1 };
 struct trail_style {
     double cell, life;
-    int steps;
+    int steps, shape;
     uint32_t rgba;
 };
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
@@ -809,8 +810,7 @@ struct cursor_motion {
     bool live;
     double target[4], target_offset[2];
     double current[4], current_offset[2];
-    struct trail_style trail;
-    bool software;
+    bool software, trail_enabled;
     struct cursor_sample history[CURSOR_HISTORY];
     int history_head, history_count;
     double history_at;
@@ -854,8 +854,6 @@ struct cursor_term {
 struct cursor_effect {
     struct cursor_term rotation, scale, stretch, stretch_angle, offset_x, offset_y;
     double settle;
-    bool trail_on;
-    struct trail_style trail;
 };
 
 struct cursor_effect_set {
@@ -877,6 +875,10 @@ struct settings {
     int blur_passes, blur_margin;
     bool cursor_glass_enabled;
     int cursor_glass_delay_ms;
+    bool cursor_trail_enabled;
+    double cursor_trail_cell, cursor_trail_life;
+    int cursor_trail_steps, cursor_trail_shape;
+    uint32_t cursor_trail_color;
     double blur_offset;
     bool screenshot_freeze, screenshot_motion_enabled;
     double screenshot_motion_stiffness, screenshot_motion_damping;
@@ -1789,12 +1791,13 @@ bool cursor_glass_holds(const struct tomoe *s, const struct screen *screen);
 void cursor_glass_finish(struct tomoe *s);
 void cursor_motion_matrix(const struct tomoe *s, double matrix[4], double offset[2]);
 void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double offset[2],
-    double settle, const struct trail_style *trail);
+    double settle);
+bool cursor_trail_style(const struct tomoe *s, struct trail_style *style);
+void cursor_trail_settings(struct tomoe *s);
 void cursor_effects_register_primitives(struct tomoe *server);
 void cursor_effects_evaluate(struct tomoe *s, double now);
 int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
-    double offset_x, double offset_y, double settle, double cell, double life,
-    int steps, uint32_t rgba);
+    double offset_x, double offset_y, double settle);
 const char *tomoe_cursor_motion(struct tomoe *s);
 const char *cursor_shape_name(uint32_t shape);
 void screens_cursor_refresh(struct tomoe *s);

@@ -665,8 +665,7 @@ static lisp_value prim_cursor_motion(int argc, lisp_value *argv) {
 
 static lisp_value prim_cursor_apply(int argc, lisp_value *argv) {
     return status(tomoe_cursor_apply(server(), real(argv[0]), real(argv[1]), real(argv[2]),
-        real(argv[3]), real(argv[4]), real(argv[5]), real(argv[6]), real(argv[7]),
-        real(argv[8]), number(argv[9]), (uint32_t)unsigned_integer(argv[10])));
+        real(argv[3]), real(argv[4]), real(argv[5]), real(argv[6])));
 }
 
 static lisp_value prim_keyboard_focus(int argc, lisp_value *argv) {
@@ -1163,7 +1162,7 @@ static const struct primitive {
     { "%activity-serial", prim_activity_serial, 0, 0 },
     { "%cursor-state", prim_cursor_state, 1, 1 },
     { "%cursor-motion", prim_cursor_motion, 0, 0 },
-    { "%cursor-apply", prim_cursor_apply, 11, 11 },
+    { "%cursor-apply", prim_cursor_apply, 7, 7 },
     { "%keyboard-focus", prim_keyboard_focus, 0, 0 },
     { "%input-stream", prim_input_stream, 1, 1 },
     { "%grab-id", prim_grab_id, 0, 0 },

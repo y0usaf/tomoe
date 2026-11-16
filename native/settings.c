@@ -16,6 +16,11 @@ static const struct setting_field {
     { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
     { "cursor-glass-enabled", offsetof(struct settings, cursor_glass_enabled), SETTING_BOOL },
     { "cursor-glass-delay-ms", offsetof(struct settings, cursor_glass_delay_ms), SETTING_INT },
+    { "cursor-trail-enabled", offsetof(struct settings, cursor_trail_enabled), SETTING_BOOL },
+    { "cursor-trail-cell", offsetof(struct settings, cursor_trail_cell), SETTING_REAL },
+    { "cursor-trail-life", offsetof(struct settings, cursor_trail_life), SETTING_REAL },
+    { "cursor-trail-steps", offsetof(struct settings, cursor_trail_steps), SETTING_INT },
+    { "cursor-trail-color", offsetof(struct settings, cursor_trail_color), SETTING_COLOR },
     { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
     { "screenshot-motion-enabled", offsetof(struct settings, screenshot_motion_enabled), SETTING_BOOL },
     { "screenshot-motion-stiffness", offsetof(struct settings, screenshot_motion_stiffness), SETTING_REAL },
@@ -133,6 +138,10 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         settings->blur_namespaces[settings->blur_namespace_count++] = copy;
         return 1;
     }
+    if (strcmp(key, "cursor-trail-shape") == 0) {
+        settings->cursor_trail_shape = strcmp(text, "dots") == 0 ? TRAIL_DOTS : TRAIL_CELLS;
+        return 1;
+    }
     int handled = input_setting(settings, key, NAN, text);
     if (handled >= 0) return handled;
     return policy_text_key(key);
@@ -149,6 +158,7 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
     cursor_glass_settings(s);
+    cursor_trail_settings(s);
     free(plan->settings);
     plan->settings = NULL;
 }

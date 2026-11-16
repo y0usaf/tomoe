@@ -574,8 +574,8 @@ the API to move.
 - The cursor is drawn by the policy. A `cursor-effect` registration is asked how
   the pointer should look for the motion the compositor measures - position,
   velocity, time, shape, and how hard the pointer is being shaken - and it
-  answers with a rotation, a scale, a stretch, an offset and optionally a fading
-  pixel trail. Registrations compose in `:order`, then mount order, and the
+  answers with a rotation, a scale, a stretch and an offset. Registrations
+  compose in `:order`, then mount order, and the
   compositor eases whatever they ask for, so the cursor is never a frame behind.
   A behaviour that answers nothing, or is unmounted, leaves no trace: the plain
   texture goes back on the cursor plane, and a still pointer draws nothing at
@@ -600,6 +600,17 @@ the API to move.
   windows on overlay planes, keep the cursor on its plane instead, and anything that
   stops the glass building leaves the plain cursor. `tomoe frames` reports
   `:cursor-plane` and `:glass` per output.
+- The pointer's trail is one setting: `(settings :cursor-trail (list :enabled t
+  :cell 9 :life 0.35 :steps 4 :shape :dots :color "#b8e0ff"))`, off by default,
+  drawn over whichever cursor is on screen, plain or glass. It lights the cells
+  of a grid `:cell` pixels wide that the pointer's last `:life` seconds of travel
+  crossed, each cell fading over `:steps` tiers and seeded so the edge breaks up
+  like grain instead of a clean line; `:shape` is `:cells` for square cells or
+  `:dots` for round ones, and `:color` is the colour each cell lights in. Only
+  the cells it lights are drawn, so it costs what the gesture covers, and once
+  the last sample is `:life` old it stops drawing and the output goes idle
+  again. `tomoe animation` reports the trail's steps and when they were drawn. A
+  look turns the trail on for its own theme by owning that setting.
 - Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,

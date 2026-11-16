@@ -78,14 +78,6 @@ static void parse_effect(lisp_value spec, struct cursor_effect *effect) {
     parse_term(cursor_plist(spec, "OFFSET-Y"), &effect->offset_y);
     lisp_value settle = cursor_plist(spec, "SETTLE");
     if (!lisp_nilp(settle)) effect->settle = lisp_get_double(settle);
-    lisp_value trail = cursor_plist(spec, "TRAIL");
-    if (lisp_consp(trail)) {
-        effect->trail_on = true;
-        effect->trail.cell = lisp_get_double(cursor_plist(trail, "CELL"));
-        effect->trail.life = lisp_get_double(cursor_plist(trail, "LIFE"));
-        effect->trail.steps = (int)lisp_get_int(cursor_plist(trail, "STEPS"));
-        effect->trail.rgba = (uint32_t)lisp_get_uint(cursor_plist(trail, "COLOR"));
-    }
 }
 
 struct cursor_fields {
@@ -161,8 +153,6 @@ void cursor_effects_evaluate(struct tomoe *s, double now) {
     double matrix[4] = { 1, 0, 0, 1 };
     double offset[2] = { 0, 0 };
     double settle = 0;
-    bool trail_on = false;
-    struct trail_style trail = { 0 };
     for (int i = 0; i < s->cursor_effects.count; i++) {
         const struct cursor_effect *effect = &s->cursor_effects.entries[i];
         double local[4], local_offset[2];
@@ -176,10 +166,9 @@ void cursor_effects_evaluate(struct tomoe *s, double now) {
         offset[0] += local_offset[0];
         offset[1] += local_offset[1];
         if (effect->settle > settle) settle = effect->settle;
-        if (effect->trail_on) { trail = effect->trail; trail_on = true; }
     }
     if (!(settle > 0)) settle = 0.08;
-    cursor_motion_apply(s, matrix, offset, settle, trail_on ? &trail : NULL);
+    cursor_motion_apply(s, matrix, offset, settle);
 }
 
 static lisp_value cursor_effects(int argc, lisp_value *argv) {
@@ -191,7 +180,6 @@ static lisp_value cursor_effects(int argc, lisp_value *argv) {
         struct cursor_effect *effect =
             &cursor_server->cursor_effects.entries[cursor_server->cursor_effects.count++];
         parse_effect(spec, effect);
-        if (effect->trail_on && !effects_admit_trail(cursor_server)) effect->trail_on = false;
     }
     cursor_effects_evaluate(cursor_server, animation_now());
     return lisp_nil();
@@ -350,11 +338,30 @@ static void cursor_schedule(struct tomoe *s) {
     if (o && output_is_active(o)) screen_schedule_frame(o->screen);
 }
 
+bool cursor_trail_style(const struct tomoe *s, struct trail_style *style) {
+    const struct settings *settings = &s->settings;
+    if (!settings->cursor_trail_enabled || settings->cursor_trail_steps < 1) return false;
+    *style = (struct trail_style){ settings->cursor_trail_cell, settings->cursor_trail_life,
+        settings->cursor_trail_steps, settings->cursor_trail_shape, settings->cursor_trail_color };
+    return true;
+}
+
+void cursor_trail_settings(struct tomoe *s) {
+    struct trail_style style;
+    bool enabled = cursor_trail_style(s, &style);
+    if (enabled == s->cursor_motion.trail_enabled) return;
+    s->cursor_motion.trail_enabled = enabled;
+    if (enabled) return;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (output_is_active(o)) screen_schedule_frame(o->screen);
+}
+
 static bool trail_alive(const struct tomoe *s, double now) {
-    const struct cursor_motion *m = &s->cursor_motion;
-    if (m->trail.steps <= 0 || !s->pointer_trail_count) return false;
+    struct trail_style style;
+    if (!cursor_trail_style(s, &style) || !s->pointer_trail_count) return false;
     int newest = (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL;
-    return now - s->pointer_trail[newest].t < m->trail.life;
+    return now - s->pointer_trail[newest].t < style.life;
 }
 
 static void update_acceleration(struct tomoe *s, double now) {
@@ -399,15 +406,13 @@ bool cursor_motion_advance(struct tomoe *s, double now) {
 }
 
 void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double offset[2],
-        double settle, const struct trail_style *trail) {
+        double settle) {
     struct cursor_motion *m = &s->cursor_motion;
     for (int i = 0; i < 4; i++) m->target[i] = matrix[i];
     for (int i = 0; i < 2; i++) m->target_offset[i] = offset[i];
     m->settle = settle < 0 ? 0 : settle > 4 ? 4 : settle;
     m->presented = animation_now();
     m->live = true;
-    m->trail = trail ? *trail : (struct trail_style){0};
-    if (m->trail.steps < 0) m->trail.steps = 0;
     if (placement_identity(m->target, m->target_offset) && m->settle == 0) {
         m->current[0] = m->current[3] = 1;
         m->current[1] = m->current[2] = 0;
@@ -451,19 +456,12 @@ const char *tomoe_cursor_motion(struct tomoe *s) {
 }
 
 int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
-        double offset_x, double offset_y, double settle, double cell, double life,
-        int steps, uint32_t rgba) {
+        double offset_x, double offset_y, double settle) {
     if (!s || !isfinite(a) || !isfinite(b) || !isfinite(c) || !isfinite(d) ||
-            !isfinite(offset_x) || !isfinite(offset_y) || !isfinite(settle) ||
-            !isfinite(cell) || !isfinite(life)) return 0;
-    struct trail_style trail = {0};
-    if (steps > 0 && effects_admit_trail(s)) {
-        trail = (struct trail_style){ cell < 1 ? 1 : cell > 256 ? 256 : cell,
-            life < 0 ? 0 : life > 4 ? 4 : life, steps > 8 ? 8 : steps, rgba };
-    }
+            !isfinite(offset_x) || !isfinite(offset_y) || !isfinite(settle)) return 0;
     double matrix[4] = { a, b, c, d };
     double offset[2] = { offset_x, offset_y };
-    cursor_motion_apply(s, matrix, offset, settle, &trail);
+    cursor_motion_apply(s, matrix, offset, settle);
     return 1;
 }
 

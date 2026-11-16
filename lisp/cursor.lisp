@@ -40,23 +40,10 @@
         ((keywordp (first value)) (%cursor-term (list value)))
         (t (loop for clause in value collect (%cursor-clause clause)))))
 
-(defun %cursor-trail (trail)
-  (%cursor-options trail '(:cell :life :steps :color))
-  (let ((cell (%double-float (getf trail :cell 9)))
-        (life (%double-float (getf trail :life 0.35d0)))
-        (steps (getf trail :steps 4))
-        (color (%ui-color (getf trail :color #xb8e0ffff))))
-    (unless (<= 1d0 cell 256d0) (error "Cursor trail :cell must be from 1 to 256 pixels."))
-    (unless (<= 0d0 life 4d0) (error "Cursor trail :life must be from 0 to 4 seconds."))
-    (unless (and (integerp steps) (<= 1 steps 8))
-      (error "Cursor trail :steps must be an integer from 1 to 8."))
-    (list :cell cell :life life :steps steps :color color)))
-
 (defun %cursor-spec (spec)
   (%cursor-options spec '(:rotation :scale :stretch :stretch-angle
-                         :offset-x :offset-y :settle :trail))
-  (let ((settle (getf spec :settle))
-        (trail (getf spec :trail)))
+                         :offset-x :offset-y :settle))
+  (let ((settle (getf spec :settle)))
     (when settle
       (unless (<= 0d0 (%double-float settle) 4d0)
         (error "Cursor :settle must be from 0 to 4 seconds.")))
@@ -66,8 +53,7 @@
           :stretch-angle (%cursor-term (getf spec :stretch-angle))
           :offset-x (%cursor-term (getf spec :offset-x))
           :offset-y (%cursor-term (getf spec :offset-y))
-          :settle (when settle (%double-float settle))
-          :trail (when trail (%cursor-trail trail)))))
+          :settle (when settle (%double-float settle)))))
 
 (defun cursor-effect (name spec &key (order 0))
   "Own a cursor behaviour as declarative data the compositor evaluates every
@@ -82,7 +68,6 @@ SPEC is a plist of transform terms and tails:
   :OFFSET-X       pixels away from the hotspot
   :OFFSET-Y       pixels away from the hotspot
   :SETTLE         seconds the answer eases over (default 0.08)
-  :TRAIL          (:CELL :LIFE :STEPS :COLOR) for the fading pixel trail
 
 A term is a real number, one clause, or a list of clauses and real constants,
 and its value is their sum. A clause is (:SPEED SCALE [:ABOVE N] [:BELOW N]) or
@@ -94,9 +79,10 @@ for the signed velocity, where :BELOW caps the magnitude. A term none of whose
 clauses contributes leaves its transform alone: :SCALE stays 1.
 
 Behaviours compose in ORDER, then mount order: rotations add, scales multiply,
-offsets add, the last :TRAIL wins and the largest :SETTLE is used. An extension
-is woken for pointer motion when it declares :POINTER in its :READS; dropping
-the CURSOR-EFFECT from its result removes its contribution entirely."
+offsets add and the largest :SETTLE is used. An extension is woken for pointer
+motion when it declares :POINTER in its :READS; dropping the CURSOR-EFFECT from
+its result removes its contribution entirely. The pointer's trail is the
+CURSOR-TRAIL setting, not a behaviour's."
   (unless (stringp name) (error "Cursor effect name must be a string."))
   (unless (<= 1 (length name) 256) (error "Cursor effect names need 1 to 256 characters."))
   (unless (integerp order) (error "Cursor effect order must be an integer."))

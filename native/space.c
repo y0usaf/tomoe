@@ -499,14 +499,14 @@ static bool render_leaf(struct tomoe *s, struct leaf *leaf, void *opaque) {
     return false;
 }
 static void draw_cursor_trail(struct tomoe *s, struct frame *data) {
-    if (s->cursor_motion.trail.steps <= 0) return;
+    struct trail_style style;
+    if (!cursor_trail_style(s, &style)) return;
     int width = data->width, height = data->height;
     if (data->transform & WL_OUTPUT_TRANSFORM_90) {
         width = data->height;
         height = data->width;
     }
-    effect_trail(data, (struct fbox){ data->x, data->y, width, height },
-        &s->cursor_motion.trail);
+    effect_trail(data, (struct fbox){ data->x, data->y, width, height }, &style);
 }
 static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
         double scale, bool glass) {
@@ -571,7 +571,9 @@ static void render_cursor(struct output *o, struct frame *data, const struct pre
         NULL;
     struct tomoe *s = o->server;
     bool sprite = s->cursor_image.texture && !o->screen->hardware_cursor;
-    if ((!sprite && s->cursor_motion.trail.steps <= 0) || (plan && !planned)) return;
+    struct trail_style style;
+    bool trail = !s->cursor_hidden && cursor_trail_style(s, &style);
+    if ((!sprite && !trail) || (plan && !planned)) return;
     draw_cursor_trail(s, data);
     bool glass = sprite && cursor_glass_holds(s, o->screen) &&
         s->cursor_glass.map_generation == s->cursor_generation;

@@ -814,13 +814,14 @@ static uint64_t mix_cell(uint64_t hash, uint64_t value) {
 
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style) {
     struct tomoe *s = f->server;
-    int count = s ? s->pointer_trail_count : 0;
-    if (!f->pass || count <= 0) return;
+    if (!f->pass || !s || s->pointer_trail_count <= 0) return;
+    int count = s->pointer_trail_count;
+    if (!effects_admit_trail(s)) return;
     struct effects *e = s->effects;
-    if (!e || !e->trail.levels) return;
     double cell = style->cell < 1 ? 1 : style->cell > 256 ? 256 : style->cell;
     double life = style->life > 0 ? style->life : 1;
     int steps = style->steps < 1 ? 1 : style->steps > TRAIL_STEPS_MAX ? TRAIL_STEPS_MAX : style->steps;
+    bool dots = style->shape == TRAIL_DOTS;
     double radius = cell * 0.75;
     double now = f->sample > 0 ? f->sample : animation_now();
     double xs[POINTER_TRAIL], ys[POINTER_TRAIL], ages[POINTER_TRAIL];
@@ -941,7 +942,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         (int)ceil((lit_bottom + 1) * cell) - top_px };
     if (!box_intersection(&covered, &covered, &bounds)) return;
     double params[] = { 13, covered.x, covered.y, covered.width, covered.height, cell, life,
-        steps, (double)style->rgba, (double)(digest & 0x1fffffffffffffull) };
+        steps, (double)style->rgba, (double)(digest & 0x1fffffffffffffull),
+        (double)style->shape };
     if (pass_record(f->pass, NULL, covered, (struct box){0}, params,
             sizeof(params) / sizeof(params[0]))) return;
     struct op_clip clip;
@@ -971,6 +973,21 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
                 double x1 = fmin((gx0 + (double)cx + 1) * cell, surface_right);
                 double y1 = fmin((gy0 + (double)cy + 1) * cell, surface_bottom);
                 if (x1 - x0 < 0.5 || y1 - y0 < 0.5) continue;
+                if (dots) {
+                    float width = (float)(x1 - x0), height = (float)(y1 - y0);
+                    scene.shader_clip = 1;
+                    scene.radius = (width < height ? width : height) * 0.42f;
+                    scene.size[0] = width;
+                    scene.size[1] = height;
+                    scene.local[0] = 0;
+                    scene.local[1] = 0;
+                    scene.local[2] = width;
+                    scene.local[3] = 0;
+                    scene.local[4] = 0;
+                    scene.local[5] = height;
+                    scene.local[6] = width;
+                    scene.local[7] = height;
+                }
                 float px0 = (float)(x0 / f->buffer->width * 2.0 - 1.0);
                 float px1 = (float)(x1 / f->buffer->width * 2.0 - 1.0);
                 float py0 = (float)(y0 / f->buffer->height * 2.0 - 1.0);
