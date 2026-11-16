@@ -559,8 +559,19 @@ static int run_compositor(const struct cli_options *options) {
         tomoe_select_drm_devices(devices);
     }
     bool drm = !strcmp(backend, "drm");
+    char runtime[PATH_MAX];
+    if (desktop_runtime_directory(runtime, sizeof(runtime), error, sizeof(error)))
+        return cli_error("%s", error);
+    int cleared = 0;
+    if (tomoe_service_run_begin(runtime, &cleared, error, sizeof(error)))
+        return cli_error("%s", error);
+    if (cleared)
+        fprintf(stderr, "tomoe: cleared %d process(es) left by an earlier session\n", cleared);
     struct tomoe *server = tomoe_create(options->name);
-    if (!server) return 1;
+    if (!server) {
+        tomoe_service_run_end();
+        return 1;
+    }
     int status = 1;
     struct control_server *control = NULL;
     struct ipc_server *ipc = NULL;
@@ -660,6 +671,7 @@ static int run_compositor(const struct cli_options *options) {
     status = loop_state.failed ? 1 : 0;
 done:
     if (resources) resources_stop(server);
+    tomoe_service_run_end();
     if (session) desktop_session_stop();
     desktop_bus_stop(bus);
     ipc_stop(ipc);

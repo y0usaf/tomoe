@@ -140,6 +140,8 @@ double loop_refresh_ms(struct tomoe *server);
 
 int resources_start(struct tomoe *server);
 void resources_stop(struct tomoe *server);
+int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size_t error_size);
+void tomoe_service_run_end(void);
 lisp_value tomoe_memory_report(struct tomoe *server);
 lisp_value resources_describe(struct tomoe *server, const char *kind);
 

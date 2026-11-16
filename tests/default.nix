@@ -1442,6 +1442,21 @@ let
   smokeSettings = compositorSettings // {
     timeout = 900;
   };
+  servicesSuite = {
+    name = "services";
+    script = ''
+      SERVICE_PROBE = "${./service-probe.py}"
+      SERVICE_PYTHON = "${pkgs.python3}/bin/python3"
+    '' + builtins.readFile ./services.py;
+  };
+  servicesCheck = vm (
+    compositorSettings
+    // {
+      name = "tomoe-services";
+      timeout = 900;
+      suites = [ servicesSuite ];
+    }
+  );
   equivalenceSettings = compositorSettings // {
     timeout = 1800;
   };
@@ -1534,9 +1549,11 @@ in
       suites = smokeSuites;
     }
   );
+  services = servicesCheck;
   suites =
     suiteTargets compositorSettings compositorSuites
     // suiteTargets equivalenceSettings equivalenceSuites
     // suiteTargets kmsSettings kmsSuites
+    // { services = servicesCheck; }
     // suiteTargets benchSettings benchSuites;
 }

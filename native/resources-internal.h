@@ -136,6 +136,7 @@ struct res_process {
     char *directory;
     char **env;
     size_t env_count;
+    char *service_directory;
     int run, restart, reload;
     bool focus, input;
     struct res_lease *lease;
@@ -265,6 +266,15 @@ int tomoe_exec_stop(struct execution *job, int sig);
 int tomoe_exec_release(struct execution *job);
 struct execution *tomoe_process_start(char *const argv[], const char *cwd, char *const envp[],
     int *error);
+struct execution *tomoe_process_start_service(char *const argv[], const char *cwd,
+    char *const envp[], int *error);
+int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size_t error_size);
+void tomoe_service_run_end(void);
+const char *tomoe_service_token(void);
+const char *tomoe_service_run_directory(void);
+char *tomoe_service_directory_create(const char *owner, const char *name, char *error,
+    size_t error_size);
+void tomoe_service_directory_remove(char *path);
 int tomoe_process_pid(struct execution *job);
 int tomoe_process_group_alive(struct execution *job);
 int tomoe_backlight_set(const char *name, unsigned value);

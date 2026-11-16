@@ -625,6 +625,7 @@ static bool process_arguments_equal(const struct res_process *process,
 }
 
 static void process_free(struct res_process *process) {
+    tomoe_service_directory_remove(process->service_directory);
     free(process->owner);
     free(process->name);
     free(process->command);
@@ -766,17 +767,38 @@ static bool overridden(const char *name, char **entries, size_t count) {
     return false;
 }
 
+static bool service_environment_entry(const char *entry) {
+    return !strncmp(entry, "TOMOE_SERVICE_TOKEN=", 20) ||
+           !strncmp(entry, "TOMOE_SERVICE_RUNTIME_DIR=", 26);
+}
+
 static char **process_environ(const struct res_process *process, const char *token,
-        char ***allocated) {
+        const char *service_token, const char *service_directory, char ***allocated) {
     size_t environment_count = 0;
     while (environ && environ[environment_count]) environment_count++;
-    size_t capacity = process->env_count + 3 + environment_count + 1;
+    size_t capacity = process->env_count + 5 + environment_count + 1;
     char **entries = calloc(capacity, sizeof(char *));
     char **owned = calloc(capacity, sizeof(char *));
+    bool service = service_token && service_directory;
     if (!entries || !owned) { free(entries); free(owned); return NULL; }
     size_t count = 0, owned_count = 0;
-    for (size_t index = 0; index < process->env_count; index++)
-        entries[count++] = process->env[index];
+    if (service) {
+        static const char *names[] = { "TOMOE_SERVICE_TOKEN", "TOMOE_SERVICE_RUNTIME_DIR" };
+        const char *values[] = { service_token, service_directory };
+        for (size_t index = 0; index < 2; index++) {
+            size_t length = strlen(names[index]) + strlen(values[index]) + 2;
+            char *entry = malloc(length);
+            if (!entry) continue;
+            snprintf(entry, length, "%s=%s", names[index], values[index]);
+            entries[count++] = entry;
+            owned[owned_count++] = entry;
+        }
+    }
+    for (size_t index = 0; index < process->env_count; index++) {
+        const char *entry = process->env[index];
+        if (service && service_environment_entry(entry)) continue;
+        entries[count++] = (char *)entry;
+    }
     if (token) {
         static const char *names[] = { "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID" };
         for (size_t index = 0; index < 2; index++) {
@@ -791,6 +813,7 @@ static char **process_environ(const struct res_process *process, const char *tok
     }
     for (size_t index = 0; index < environment_count; index++) {
         const char *entry = environ[index];
+        if (service && service_environment_entry(entry)) continue;
         const char *separator = strchr(entry, '=');
         if (!separator) continue;
         size_t name_length = (size_t)(separator - entry);
@@ -831,11 +854,29 @@ static void process_start(struct res_process *process) {
         }
         revoke = res_dup(token);
     }
+    bool service = process->kind == PROCESS_SERVICE;
+    char *service_directory = NULL;
+    if (service) {
+        char message[256];
+        service_directory = tomoe_service_directory_create(process->owner, process->name,
+            message, sizeof(message));
+        if (!service_directory) {
+            process->status = PROCESS_SPAWN_ERROR;
+            free(process->error);
+            process->error = res_dup(message);
+            free(cwd);
+            return;
+        }
+    }
     char **owned = NULL;
-    char **environment = process_environ(process, token, &owned);
+    char **environment = process_environ(process, token,
+        service ? tomoe_service_token() : NULL, service_directory, &owned);
     int error = 0;
     struct execution *job = NULL;
-    if (environment && argv) job = tomoe_process_start(argv, cwd, environment, &error);
+    if (environment && argv && service)
+        job = tomoe_process_start_service(argv, cwd, environment, &error);
+    else if (environment && argv)
+        job = tomoe_process_start(argv, cwd, environment, &error);
     if (!job) {
         if (revoke) tomoe_activation_revoke(res.server, revoke);
         process->status = PROCESS_SPAWN_ERROR;
@@ -844,7 +885,11 @@ static void process_start(struct res_process *process) {
                   argv && argv[0] ? argv[0] : "", error ? error : ENOMEM);
         free(process->error);
         process->error = rb_take(&message);
+        tomoe_service_directory_remove(service_directory);
+        service_directory = NULL;
     } else {
+        process->service_directory = service_directory;
+        service_directory = NULL;
         process->lease = res_lease_start(job, process->session, !process->focus);
         process->status = process->session ? PROCESS_LAUNCHED : PROCESS_RUNNING;
         process->deadline = res_now() + 1000;
@@ -963,6 +1008,8 @@ void res_processes_service(uint64_t now, uint64_t *next) {
                 else process->status = PROCESS_STOPPED;
                 res_lease_drop(process->lease);
                 process->lease = NULL;
+                tomoe_service_directory_remove(process->service_directory);
+                process->service_directory = NULL;
             } else {
                 process->deadline = now + 1000;
             }
