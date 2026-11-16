@@ -1,6 +1,6 @@
 #include "internal.h"
 #include <unistd.h>
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include "fractional-scale-v1-protocol.h"
 #include "linux-drm-syncobj-v1-protocol.h"
 #include "presentation-time-protocol.h"

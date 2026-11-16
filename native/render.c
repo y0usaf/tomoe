@@ -1,11 +1,11 @@
 #include "internal.h"
+#include "drm.h"
 #include "ui.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
 #include <dirent.h>
-#include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
 #include <malloc.h>
@@ -16,7 +16,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <xf86drm.h>
 
 extern char **environ;
 
@@ -2758,15 +2757,8 @@ void tomoe_select_render_node(const char *node) {
 static char *render_node_name(int backend_fd) {
     const char *chosen = selected_render_node;
     char *name = chosen && *chosen ? strdup(chosen) :
-        backend_fd >= 0 ? drmGetRenderDeviceNameFromFd(backend_fd) : NULL;
-    if (!name) {
-        drmDevicePtr devices[64];
-        int count = drmGetDevices2(0, devices, 64);
-        for (int i = 0; i < count; i++)
-            if (!name && (devices[i]->available_nodes & (1 << DRM_NODE_RENDER)))
-                name = strdup(devices[i]->nodes[DRM_NODE_RENDER]);
-        if (count > 0) drmFreeDevices(devices, count);
-    }
+        backend_fd >= 0 ? drm_render_node(backend_fd) : NULL;
+    if (!name) name = drm_first_render_node();
     if (!name) tomoe_log(LOG_ERROR, "tomoe: no DRM render node for the renderer");
     return name;
 }
@@ -2928,7 +2920,7 @@ static bool programs_ready(struct render *r) {
     }
     uint64_t timeline = 0;
     r->timeline = !r->stall_test && r->dup_fence && r->wait_sync &&
-        drmGetCap(r->fd, DRM_CAP_SYNCOBJ_TIMELINE, &timeline) == 0 && timeline;
+        drm_cap(r->fd, DRM_CAP_SYNCOBJ_TIMELINE, &timeline) && timeline;
     return true;
 }
 

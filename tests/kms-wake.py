@@ -71,6 +71,16 @@ assert any("mode 1024x768@60" in line for line in after[lit:target]), "\n".join(
 assert any("Virtual-1 probed before lighting: connected" in line for line in after[:lit]), "\n".join(after)
 assert inspect()[":LAST-ERROR"] == "NIL", inspect()[":LAST-ERROR"]
 
+machine.succeed(f"echo change > /sys/class/drm/{CARD}/uevent")
+machine.wait_until_succeeds(
+    f"{JOURNAL} | grep -qE 'connectors were rescanned|could not read the DRM resources'",
+    timeout=30)
+assert "could not read the DRM resources" not in machine.succeed(JOURNAL), "the rescan failed"
+machine.wait_until_succeeds(f"grep -qx enabled {CONNECTOR}/enabled", timeout=30)
+kernel_mode("1920x1080@60")
+assert inspect()[":LAST-ERROR"] == "NIL", inspect()[":LAST-ERROR"]
+
+
 mark = len(kms_log().splitlines())
 probe("off")
 machine.wait_until_succeeds(f"grep -qx disabled {CONNECTOR}/enabled", timeout=30)

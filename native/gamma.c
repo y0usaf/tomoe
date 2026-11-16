@@ -1,5 +1,5 @@
 #include "internal.h"
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "wlr-gamma-control-unstable-v1-protocol.h"

@@ -1,7 +1,6 @@
 #include "internal.h"
+#include "drm.h"
 #include "budget.h"
-#include <xf86drm.h>
-#include <xf86drmMode.h>
 #include "ui.h"
 #include <inttypes.h>
 #include <malloc.h>
@@ -250,7 +249,7 @@ static bool write_output_modes(FILE *out, struct output *o) {
 
 static bool write_render(FILE *out, struct output *o) {
     if (!o->ring.format.len) return fputs(" :render nil", out) >= 0;
-    char *name = drmGetFormatName(o->ring.format.formats[0].format);
+    char *name = drm_format_name(o->ring.format.formats[0].format);
     bool ok = fputs(" :render (:format ", out) >= 0;
     quote(out, name ? name : "?");
     free(name);
@@ -338,7 +337,7 @@ static lisp_value output_modes_value(struct output *o) {
 
 static lisp_value output_render_value(struct output *o) {
     if (!o->ring.format.len) return lisp_nil();
-    char *name = drmGetFormatName(o->ring.format.formats[0].format);
+    char *name = drm_format_name(o->ring.format.formats[0].format);
     lisp_value value = lisp_nil();
     value = ev_put(value, "FORMAT", lisp_cstring(name ? name : "?"));
     free(name);

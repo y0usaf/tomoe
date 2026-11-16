@@ -442,38 +442,39 @@ output baseline, while later explicit `configure-output` effects can override it
 
 ## How it fits together
 
-SBCL runs the policy. A C core linked into the same executable speaks the Wayland
-wire protocol itself, renders with EGL and GLES2 on GBM, and drives
-DRM/KMS, libinput and seatd; it can also run nested in another compositor or
-headless. Extensions never touch native state. They return effects, the runtime
-settles every extension's effects into one transaction, and only then does the
-native side apply it. A broken extension therefore can't leave the screen
-half-updated: one whose update fails (it signals, overruns its watchdog, even
-inside a builtin walking a circular list, or returns an invalid answer) keeps
-its last good state and effects, isn't run again in that transaction, and is
-logged as `Extension NAME: reason`, while every other extension's answer still
-commits, so a broken bar can't take focus, tiling or input with it. Two effects
-of one answer under the same key are one effect, the later replacing the
-earlier, so re-arming a timer or restarting an animation never stacks. An
-extension whose answer still changes after 16 rounds of the transaction,
-because it feeds on its own output or on another's that feeds on it, is held at
-the answer it last committed and logged the same way, and the transaction
-commits everyone else. A commit whose timers, watches, executions or processes
-would pass their limits is refused before anything native or recorded changes,
-so a refused reload or mount leaves the screen and the runtime agreeing. A rule whose predicate
-fails keeps the windows it matched. A live patch is still all or nothing: one
-whose extension fails is rolled back. Loading a config or a patch is not one
-event, so the per-event watchdog doesn't cut it short: its top-level forms get a
-budget of evaluation steps, the same on every machine, each reducer it mounts
-keeps its own watchdog, and a slow first start on a cold GPU finishes loading
-instead of falling back to the defaults. A reducer that runs the Lisp heap out
-fails alone; the runtime keeps an eighth of the heap for itself to settle the
-rest. Because every effect has an owner,
-unmounting an extension takes its effects with it. A transaction runs on one instant: every round reads
-`get-internal-real-time` as it stood when the transaction began, so a reducer that
-animates from the clock and reads back its own effects (a focus border it fades
-through `:layout`) returns the same effects when they wake it again, and the
-transaction settles. Settling a transaction rebuilds the context from the
+SBCL runs the policy. A C core linked into the same executable speaks the
+Wayland wire protocol itself, renders with EGL and GLES2 on GBM, and drives
+DRM/KMS through the kernel's own ioctls, libinput and seatd; it can also run
+nested in another compositor or headless. Extensions never touch native state.
+They return effects, the runtime settles every extension's effects into one
+transaction, and only then does the native side apply it. A broken extension
+therefore can't leave the screen half-updated: one whose update fails (it
+signals, overruns its watchdog, even inside a builtin walking a circular list,
+or returns an invalid answer) keeps its last good state and effects, isn't run
+again in that transaction, and is logged as `Extension NAME: reason`, while
+every other extension's answer still commits, so a broken bar can't take focus,
+tiling or input with it. Two effects of one answer under the same key are one
+effect, the later replacing the earlier, so re-arming a timer or restarting an
+animation never stacks. An extension whose answer still changes after 16 rounds
+of the transaction, because it feeds on its own output or on another's that
+feeds on it, is held at the answer it last committed and logged the same way,
+and the transaction commits everyone else. A commit whose timers, watches,
+executions or processes would pass their limits is refused before anything
+native or recorded changes, so a refused reload or mount leaves the screen and
+the runtime agreeing. A rule whose predicate fails keeps the windows it
+matched. A live patch is still all or nothing: one whose extension fails is
+rolled back. Loading a config or a patch is not one event, so the per-event
+watchdog doesn't cut it short: its top-level forms get a budget of evaluation
+steps, the same on every machine, each reducer it mounts keeps its own
+watchdog, and a slow first start on a cold GPU finishes loading instead of
+falling back to the defaults. A reducer that runs the Lisp heap out fails
+alone; the runtime keeps an eighth of the heap for itself to settle the rest.
+Because every effect has an owner, unmounting an extension takes its effects
+with it. A transaction runs on one instant: every round reads
+`get-internal-real-time` as it stood when the transaction began, so a reducer
+that animates from the clock and reads back its own effects (a focus border it
+fades through `:layout`) returns the same effects when they wake it again, and
+the transaction settles. Settling a transaction rebuilds the context from the
 current effects rather than editing the last one, but it keeps the last rebuild
 while every accepted reducer result is the same as the one already folded into
 it, and a transaction whose event changes no window, layer, output or client

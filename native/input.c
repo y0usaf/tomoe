@@ -1,7 +1,7 @@
 #include "internal.h"
 #include "budget.h"
 #include <fcntl.h>
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <sys/mman.h>
 #include "ui.h"
 #include <inttypes.h>

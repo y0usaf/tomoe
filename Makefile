@@ -9,8 +9,8 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libudev libpipewire-0.3
-PORTAL_LIBS = libpipewire-0.3 libdrm gbm
+LIBS = xkbcommon pangocairo libjpeg libinput glesv2 egl gbm libudev libpipewire-0.3
+PORTAL_LIBS = libpipewire-0.3 gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \

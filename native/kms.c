@@ -9,9 +9,8 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
-#include <drm_fourcc.h>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
+#include <drm/drm_fourcc.h>
+#include "drm.h"
 #include "presentation-time-protocol.h"
 
 enum { PROP_CRTC_ID, PROP_MODE_ID, PROP_ACTIVE, PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE,
@@ -48,7 +47,7 @@ struct crtc {
     struct props props;
     struct connector *owner;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob;
-    drmModeModeInfo mode;
+    drm_mode_info mode;
     bool active;
     size_t gamma_size, degamma_size;
 };
@@ -88,7 +87,7 @@ struct connector {
     bool redraw, flip_async;
     bool async_refused;
     struct ns_timer cursor_timer;
-    drmModeModeInfo wake_target, wake_light;
+    drm_mode_info wake_target, wake_light;
     bool waking, wake_due, unlit, relight;
     uint64_t edid_sum;
     struct wl_event_source *wake_timer, *flip_timer;
@@ -114,7 +113,7 @@ struct kms {
     struct screen_impl impl;
     struct plan *plans;
     size_t plans_capacity;
-    drmModeAtomicReq *req;
+    struct drm_atomic req;
     bool req_busy;
 };
 
@@ -138,28 +137,28 @@ static void overlay_promote(struct connector *c);
 enum { CURSOR_LEAD_NS = 1000000 };
 
 static void props_read(int fd, uint32_t object, uint32_t type, struct props *props) {
-    drmModeObjectProperties *list = drmModeObjectGetProperties(fd, object, type);
+    struct drm_object_props *list = drm_object_props_get(fd, object, type);
     if (!list) return;
-    for (uint32_t i = 0; i < list->count_props; i++) {
-        drmModePropertyRes *prop = drmModeGetProperty(fd, list->props[i]);
+    for (uint32_t i = 0; i < list->count; i++) {
+        struct drm_prop *prop = drm_prop_get(fd, list->ids[i]);
         if (!prop) continue;
         for (int p = 0; p < PROP_COUNT; p++) {
             if (strcmp(prop->name, prop_names[p])) continue;
-            props->id[p] = prop->prop_id;
-            props->value[p] = list->prop_values[i];
+            props->id[p] = prop->id;
+            props->value[p] = list->values[i];
         }
-        drmModeFreeProperty(prop);
+        drm_prop_free(prop);
     }
-    drmModeFreeObjectProperties(list);
+    drm_object_props_free(list);
 }
 
 static void plane_props_read(int fd, struct plane *plane) {
     props_read(fd, plane->id, DRM_MODE_OBJECT_PLANE, &plane->props);
-    drmModeObjectProperties *list = drmModeObjectGetProperties(fd, plane->id,
+    struct drm_object_props *list = drm_object_props_get(fd, plane->id,
         DRM_MODE_OBJECT_PLANE);
     if (!list) return;
-    for (uint32_t i = 0; i < list->count_props; i++) {
-        drmModePropertyRes *prop = drmModeGetProperty(fd, list->props[i]);
+    for (uint32_t i = 0; i < list->count; i++) {
+        struct drm_prop *prop = drm_prop_get(fd, list->ids[i]);
         if (!prop) continue;
         bool mutable_prop = !(prop->flags & DRM_MODE_PROP_IMMUTABLE);
         if (!strcmp(prop->name, "zpos")) {
@@ -168,7 +167,7 @@ static void plane_props_read(int fd, struct plane *plane) {
                 plane->zpos_min = prop->values[0];
                 plane->zpos_max = prop->values[1];
             } else {
-                plane->zpos_min = plane->zpos_max = list->prop_values[i];
+                plane->zpos_min = plane->zpos_max = list->values[i];
             }
         } else if (mutable_prop && !strcmp(prop->name, "pixel blend mode")) {
             for (int e = 0; e < prop->count_enums; e++)
@@ -189,14 +188,14 @@ static void plane_props_read(int fd, struct plane *plane) {
                     plane->has_range_limited = true;
                 }
         }
-        drmModeFreeProperty(prop);
+        drm_prop_free(prop);
     }
-    drmModeFreeObjectProperties(list);
+    drm_object_props_free(list);
 }
 
 static void fb_destroy(struct addon *addon) {
     struct fb *fb = wl_container_of(addon, fb, addon);
-    drmModeRmFB(fb->kms->fd, fb->id);
+    drm_fb_remove(fb->kms->fd, fb->id);
     addon_finish(addon);
     free(fb);
 }
@@ -213,27 +212,31 @@ static uint32_t fb_for(struct kms *kms, struct buffer *buffer) {
     uint32_t handles[4] = {0}, pitches[4] = {0}, offsets[4] = {0};
     uint64_t modifiers[4] = {0};
     for (int i = 0; i < dmabuf.n_planes; i++) {
-        if (drmPrimeFDToHandle(kms->fd, dmabuf.fd[i], &handles[i])) return 0;
+        if (!drm_prime_fd_to_handle(kms->fd, dmabuf.fd[i], &handles[i])) return 0;
         pitches[i] = dmabuf.stride[i];
         offsets[i] = dmabuf.offset[i];
         modifiers[i] = dmabuf.modifier;
     }
     uint32_t id = 0;
     bool explicit = dmabuf.modifier != DRM_FORMAT_MOD_INVALID;
-    int ret = explicit && kms->modifiers ?
-        drmModeAddFB2WithModifiers(kms->fd, dmabuf.width, dmabuf.height, dmabuf.format, handles,
-            pitches, offsets, modifiers, &id, DRM_MODE_FB_MODIFIERS) :
-        explicit && dmabuf.modifier != DRM_FORMAT_MOD_LINEAR ? -1 :
-        drmModeAddFB2(kms->fd, dmabuf.width, dmabuf.height, dmabuf.format, handles, pitches,
-            offsets, &id, 0);
+    bool added;
+    if (explicit && kms->modifiers)
+        added = drm_fb_add(kms->fd, dmabuf.width, dmabuf.height, dmabuf.format, handles,
+            pitches, offsets, modifiers, &id, true);
+    else if (explicit && dmabuf.modifier != DRM_FORMAT_MOD_LINEAR)
+        added = false;
+    else
+        added = drm_fb_add(kms->fd, dmabuf.width, dmabuf.height, dmabuf.format, handles,
+            pitches, offsets, NULL, &id, false);
     for (int i = 0; i < dmabuf.n_planes; i++) {
         bool shared = false;
         for (int j = 0; j < i; j++) shared |= handles[j] == handles[i];
-        if (!shared && handles[i]) drmCloseBufferHandle(kms->fd, handles[i]);
+        if (!shared && handles[i]) drm_prime_close_handle(kms->fd, handles[i]);
     }
-    struct fb *fb = ret ? NULL : calloc(1, sizeof(*fb));
+    if (!added) return 0;
+    struct fb *fb = calloc(1, sizeof(*fb));
     if (!fb) {
-        if (!ret) drmModeRmFB(kms->fd, id);
+        drm_fb_remove(kms->fd, id);
         return 0;
     }
     fb->kms = kms;
@@ -242,7 +245,7 @@ static uint32_t fb_for(struct kms *kms, struct buffer *buffer) {
     return id;
 }
 
-static int32_t refresh_mhz(const drmModeModeInfo *mode) {
+static int32_t refresh_mhz(const drm_mode_info *mode) {
     if (!mode->htotal || !mode->vtotal) return 0;
     int64_t refresh = ((int64_t)mode->clock * 1000000 / mode->htotal + mode->vtotal / 2) /
         mode->vtotal;
@@ -252,7 +255,7 @@ static int32_t refresh_mhz(const drmModeModeInfo *mode) {
     return (int32_t)refresh;
 }
 
-static void mode_text(char *out, size_t size, const drmModeModeInfo *mode) {
+static void mode_text(char *out, size_t size, const drm_mode_info *mode) {
     int32_t refresh = refresh_mhz(mode);
     snprintf(out, size, "%ux%u@%d.%03d Hz (%u kHz, h %u %u %u %u, v %u %u %u %u, flags 0x%x, "
         "type 0x%x%s)", mode->hdisplay, mode->vdisplay, refresh / 1000, refresh % 1000, mode->clock,
@@ -284,34 +287,36 @@ static void parse_edid(struct screen *screen, const uint8_t *edid, size_t size) 
         screen->model = NULL;
 }
 
+static void add_format(void *data, uint32_t format, uint64_t modifier) {
+    format_set_add(data, format, modifier);
+}
+
 static void read_formats(struct kms *kms, struct plane *plane) {
-    drmModePropertyBlobRes *blob = plane->props.id[PROP_IN_FORMATS] && kms->modifiers ?
-        drmModeGetPropertyBlob(kms->fd, (uint32_t)plane->props.value[PROP_IN_FORMATS]) : NULL;
+    struct drm_blob *blob = plane->props.id[PROP_IN_FORMATS] && kms->modifiers ?
+        drm_blob_get(kms->fd, (uint32_t)plane->props.value[PROP_IN_FORMATS]) : NULL;
     if (blob) {
-        drmModeFormatModifierIterator iter = {0};
-        while (drmModeFormatModifierBlobIterNext(blob, &iter))
-            format_set_add(&plane->formats, iter.fmt, iter.mod);
-        drmModeFreePropertyBlob(blob);
+        drm_formats_blob_walk(blob, add_format, &plane->formats);
+        drm_blob_free(blob);
         return;
     }
-    drmModePlane *info = drmModeGetPlane(kms->fd, plane->id);
-    for (uint32_t i = 0; info && i < info->count_formats; i++) {
+    struct drm_plane_info *info = drm_plane_get(kms->fd, plane->id);
+    for (int i = 0; info && i < info->count_formats; i++) {
         format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_INVALID);
         format_set_add(&plane->formats, info->formats[i], DRM_FORMAT_MOD_LINEAR);
     }
-    drmModeFreePlane(info);
+    drm_plane_free(info);
 }
 
 static bool read_resources(struct kms *kms) {
-    drmModeRes *res = drmModeGetResources(kms->fd);
-    drmModePlaneRes *planes = res ? drmModeGetPlaneResources(kms->fd) : NULL;
+    struct drm_res *res = drm_res_get(kms->fd);
+    struct drm_plane_res *planes = res ? drm_plane_res_get(kms->fd) : NULL;
     if (!planes) {
-        drmModeFreeResources(res);
+        drm_res_free(res);
         return false;
     }
     kms->crtc_count = (size_t)res->count_crtcs;
     kms->crtcs = calloc(kms->crtc_count, sizeof(*kms->crtcs));
-    kms->plane_count = planes->count_planes;
+    kms->plane_count = (size_t)planes->count;
     kms->planes = calloc(kms->plane_count, sizeof(*kms->planes));
     bool ok = kms->crtcs && kms->planes;
     for (size_t i = 0; ok && i < kms->crtc_count; i++) {
@@ -320,9 +325,9 @@ static bool read_resources(struct kms *kms) {
         props_read(kms->fd, crtc->id, DRM_MODE_OBJECT_CRTC, &crtc->props);
         crtc->gamma_size = (size_t)crtc->props.value[PROP_GAMMA_LUT_SIZE];
         if (!crtc->gamma_size) {
-            drmModeCrtc *info = drmModeGetCrtc(kms->fd, crtc->id);
+            struct drm_crtc *info = drm_crtc_get(kms->fd, crtc->id);
             crtc->gamma_size = info ? (size_t)info->gamma_size : 0;
-            drmModeFreeCrtc(info);
+            drm_crtc_free(info);
         }
         crtc->degamma_size = kms->atomic && crtc->props.id[PROP_GAMMA_LUT] &&
             crtc->props.id[PROP_DEGAMMA_LUT] && crtc->props.id[PROP_CTM] ?
@@ -330,11 +335,11 @@ static bool read_resources(struct kms *kms) {
     }
     for (size_t i = 0; ok && i < kms->plane_count; i++) {
         struct plane *plane = &kms->planes[i];
-        drmModePlane *info = drmModeGetPlane(kms->fd, planes->planes[i]);
+        struct drm_plane_info *info = drm_plane_get(kms->fd, planes->planes[i]);
         if (!info) continue;
-        plane->id = info->plane_id;
+        plane->id = info->id;
         plane->possible_crtcs = info->possible_crtcs;
-        drmModeFreePlane(info);
+        drm_plane_free(info);
         plane_props_read(kms->fd, plane);
         plane->type = (uint32_t)plane->props.value[PROP_TYPE];
         read_formats(kms, plane);
@@ -354,8 +359,8 @@ static bool read_resources(struct kms *kms) {
                 crtc->overlay[crtc->overlay_count++] = plane;
         }
     }
-    drmModeFreePlaneResources(planes);
-    drmModeFreeResources(res);
+    drm_plane_res_free(planes);
+    drm_res_free(res);
     return ok;
 }
 
@@ -369,18 +374,18 @@ static struct crtc *pick_crtc(struct connector *c) {
     return NULL;
 }
 
-static bool mode_for(struct connector *c, const struct screen_state *state, drmModeModeInfo *out) {
+static bool mode_for(struct connector *c, const struct screen_state *state, drm_mode_info *out) {
     if (!(state->committed & SCREEN_MODE)) {
         if (c->crtc && c->crtc->active) {
             *out = c->waking ? c->wake_target : c->crtc->mode;
             return true;
         }
         if (!c->screen.current_mode) return false;
-        *out = *(drmModeModeInfo *)c->screen.current_mode->data;
+        *out = *(drm_mode_info *)c->screen.current_mode->data;
         return true;
     }
     if (state->mode_type == SCREEN_MODE_FIXED && state->mode) {
-        *out = *(drmModeModeInfo *)state->mode->data;
+        *out = *(drm_mode_info *)state->mode->data;
         return true;
     }
     struct screen_mode *mode;
@@ -388,7 +393,7 @@ static bool mode_for(struct connector *c, const struct screen_state *state, drmM
         if (mode->width != state->custom_mode.width || mode->height != state->custom_mode.height ||
                 (state->custom_mode.refresh && abs(mode->refresh - state->custom_mode.refresh) > 1000))
             continue;
-        *out = *(drmModeModeInfo *)mode->data;
+        *out = *(drm_mode_info *)mode->data;
         return true;
     }
     return false;
@@ -411,7 +416,7 @@ static uint32_t lut_blob(struct kms *kms, const uint16_t *red, const uint16_t *g
     for (size_t i = 0; i < size; i++)
         lut[i] = (struct drm_color_lut){ .red = red[i], .green = green[i], .blue = blue[i] };
     uint32_t blob = 0;
-    drmModeCreatePropertyBlob(kms->fd, lut, size * sizeof(*lut), &blob);
+    drm_blob_create(kms->fd, lut, size * sizeof(*lut), &blob);
     free(lut);
     return blob;
 }
@@ -426,20 +431,20 @@ static uint32_t ctm_blob(struct kms *kms, const struct profile *profile) {
     struct drm_color_ctm ctm;
     memcpy(ctm.matrix, profile->ctm, sizeof(ctm.matrix));
     uint32_t blob = 0;
-    drmModeCreatePropertyBlob(kms->fd, &ctm, sizeof(ctm), &blob);
+    drm_blob_create(kms->fd, &ctm, sizeof(ctm), &blob);
     return blob;
 }
 
 static FILE *trace;
 
-static void add(drmModeAtomicReq *req, uint32_t object, const struct props *props, int prop,
+static void add(struct drm_atomic *req, uint32_t object, const struct props *props, int prop,
         uint64_t value) {
     if (!props->id[prop]) return;
-    drmModeAtomicAddProperty(req, object, props->id[prop], value);
+    drm_atomic_add(req, object, props->id[prop], value);
     if (trace) fprintf(trace, " %u.%s=%llu", object, prop_names[prop], (unsigned long long)value);
 }
 
-static void plane_set(drmModeAtomicReq *req, struct plane *plane, uint32_t crtc, uint32_t fb,
+static void plane_set(struct drm_atomic *req, struct plane *plane, uint32_t crtc, uint32_t fb,
         int x, int y, int width, int height, int src_x, int src_y, int src_width, int src_height) {
     add(req, plane->id, &plane->props, PROP_FB_ID, fb);
     add(req, plane->id, &plane->props, PROP_CRTC_ID, fb ? crtc : 0);
@@ -508,7 +513,7 @@ static bool cursor_visible(const struct connector *c) {
     return c->cursor_on && c->cursor_fb[c->cursor_front];
 }
 
-static void cursor_plane_set(drmModeAtomicReq *req, struct connector *c, struct crtc *crtc) {
+static void cursor_plane_set(struct drm_atomic *req, struct connector *c, struct crtc *crtc) {
     int width = (int)c->kms->cursor_width, height = (int)c->kms->cursor_height;
     if (cursor_visible(c))
         plane_set(req, crtc->cursor, crtc->id, c->cursor_fb[c->cursor_front], c->cursor_x,
@@ -519,7 +524,7 @@ static void cursor_plane_set(drmModeAtomicReq *req, struct connector *c, struct 
 
 struct plan {
     struct crtc *crtc;
-    drmModeModeInfo mode, target;
+    drm_mode_info mode, target;
     uint32_t mode_blob, gamma_blob, degamma_blob, ctm_blob, fb;
     int fence, overlay_fence[SCREEN_OVERLAYS];
     bool enable, modeset, gamma, profile, wake, async;
@@ -550,13 +555,13 @@ static int wake_fire(void *data) {
 }
 
 static uint64_t edid_sum(int fd, const struct props *props) {
-    drmModePropertyBlobRes *blob = props->value[PROP_EDID] ?
-        drmModeGetPropertyBlob(fd, (uint32_t)props->value[PROP_EDID]) : NULL;
+    struct drm_blob *blob = props->value[PROP_EDID] ?
+        drm_blob_get(fd, (uint32_t)props->value[PROP_EDID]) : NULL;
     if (!blob) return 0;
     uint64_t sum = 14695981039346656037ULL ^ blob->length;
     for (uint32_t i = 0; i < blob->length; i++)
         sum = (sum ^ ((const uint8_t *)blob->data)[i]) * 1099511628211ULL;
-    drmModeFreePropertyBlob(blob);
+    drm_blob_free(blob);
     return sum;
 }
 
@@ -566,9 +571,9 @@ static const char *link_status(const struct props *props) {
 }
 
 static bool probe_sink(struct connector *c) {
-    drmModeConnector *info = drmModeGetConnector(c->kms->fd, c->id);
+    struct drm_connector *info = drm_connector_get(c->kms->fd, c->id, true);
     props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
-    const drmModeModeInfo *light = info && info->count_modes ? &info->modes[0] : NULL;
+    const drm_mode_info *light = info && info->count_modes ? &info->modes[0] : NULL;
     for (int i = 0; info && i < info->count_modes; i++) {
         if (!(info->modes[i].type & DRM_MODE_TYPE_PREFERRED)) continue;
         light = &info->modes[i];
@@ -583,7 +588,7 @@ static bool probe_sink(struct connector *c) {
         "link-status %s", c->screen.name, !info ? "unreadable" :
         info->connection == DRM_MODE_CONNECTED ? "connected" : "not connected",
         info ? info->count_modes : 0, mode, link_status(&c->props));
-    drmModeFreeConnector(info);
+    drm_connector_free(info);
     return light != NULL;
 }
 
@@ -598,18 +603,18 @@ static void probe_unlit(struct screen_update *updates, size_t count) {
 static void log_kernel_state(struct connector *c, const char *label) {
     struct props connector = {0}, crtc = {0};
     props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &connector);
-    drmModeConnector *info = drmModeGetConnectorCurrent(c->kms->fd, c->id);
+    struct drm_connector *info = drm_connector_get(c->kms->fd, c->id, false);
     const char *connection = !info ? "unreadable" : info->connection == DRM_MODE_CONNECTED ?
         "connected" : info->connection == DRM_MODE_DISCONNECTED ? "disconnected" : "unknown";
-    drmModeFreeConnector(info);
+    drm_connector_free(info);
     uint32_t crtc_id = (uint32_t)connector.value[PROP_CRTC_ID];
     char mode[192] = "none";
     if (crtc_id) {
         props_read(c->kms->fd, crtc_id, DRM_MODE_OBJECT_CRTC, &crtc);
-        drmModePropertyBlobRes *blob = crtc.value[PROP_MODE_ID] ?
-            drmModeGetPropertyBlob(c->kms->fd, (uint32_t)crtc.value[PROP_MODE_ID]) : NULL;
-        if (blob && blob->length >= sizeof(drmModeModeInfo)) mode_text(mode, sizeof(mode), blob->data);
-        drmModeFreePropertyBlob(blob);
+        struct drm_blob *blob = crtc.value[PROP_MODE_ID] ?
+            drm_blob_get(c->kms->fd, (uint32_t)crtc.value[PROP_MODE_ID]) : NULL;
+        if (blob && blob->length >= sizeof(drm_mode_info)) mode_text(mode, sizeof(mode), blob->data);
+        drm_blob_free(blob);
     }
     tomoe_log(LOG_INFO, "tomoe: kms %s %s: %s, EDID blob %llu, link-status %s, CRTC_ID %u, "
         "ACTIVE %llu, VRR_ENABLED %llu, GAMMA_LUT %llu, DEGAMMA_LUT %llu, CTM %llu, mode %s",
@@ -657,19 +662,20 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     struct plan *plans = kms->plans;
     if (count) memset(plans, 0, count * sizeof(*plans));
     bool shared = !kms->req_busy;
-    drmModeAtomicReq *req;
+    struct drm_atomic local;
+    struct drm_atomic *req;
     if (shared) {
-        if (!kms->req) kms->req = drmModeAtomicAlloc();
-        else drmModeAtomicSetCursor(kms->req, 0);
-        req = kms->req;
-        kms->req_busy = req != NULL;
+        drm_atomic_reset(&kms->req);
+        req = &kms->req;
+        kms->req_busy = true;
     } else {
-        req = drmModeAtomicAlloc();
+        drm_atomic_init(&local);
+        req = &local;
     }
     char *text = NULL;
     size_t text_size = 0;
     trace = log_verbosity >= LOG_INFO ? open_memstream(&text, &text_size) : NULL;
-    bool ok = plans && req, modeset = false, flip = false, tearing = false;
+    bool ok = plans != NULL, modeset = false, flip = false, tearing = false;
     for (size_t i = 0; i < count; i++) {
         plans[i].fence = -1;
         for (size_t k = 0; k < SCREEN_OVERLAYS; k++) plans[i].overlay_fence[k] = -1;
@@ -702,7 +708,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         ok = p->fb != 0;
         if (!ok) break;
         if (wake) {
-            const drmModeModeInfo *light = NULL;
+            const drm_mode_info *light = NULL;
             if (c->waking && !c->wake_due && p->crtc->active &&
                     p->crtc->mode.hdisplay <= buffer->width && p->crtc->mode.vdisplay <= buffer->height)
                 light = &p->crtc->mode;
@@ -735,7 +741,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             fputc(':', trace);
         }
         if (p->modeset) {
-            ok = !drmModeCreatePropertyBlob(kms->fd, &p->mode, sizeof(p->mode), &p->mode_blob);
+            ok = drm_blob_create(kms->fd, &p->mode, sizeof(p->mode), &p->mode_blob);
             add(req, c->id, &c->props, PROP_CRTC_ID, p->crtc->id);
             add(req, p->crtc->id, &p->crtc->props, PROP_MODE_ID, p->mode_blob);
             add(req, p->crtc->id, &p->crtc->props, PROP_ACTIVE, 1);
@@ -953,7 +959,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         flags |= DRM_MODE_PAGE_FLIP_ASYNC;
     }
     if (modeset && !test) flags &= ~DRM_MODE_ATOMIC_NONBLOCK;
-    int ret = ok ? drmModeAtomicCommit(kms->fd, req, flags, kms) : 0;
+    int ret = ok ? drm_atomic_commit(kms->fd, req, flags, kms) : 0;
     kms->last_ret = ok ? ret : -EINVAL;
     ok = ok && ret == 0;
     if (ret == -EBUSY && !test) {
@@ -983,16 +989,16 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         struct connector *c = wl_container_of(updates[i].output, c, screen);
         const struct screen_state *state = &updates[i].base;
         if (!ok || test) {
-            if (p->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->mode_blob);
-            if (p->gamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->gamma_blob);
-            if (p->degamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->degamma_blob);
-            if (p->ctm_blob) drmModeDestroyPropertyBlob(kms->fd, p->ctm_blob);
+            if (p->mode_blob) drm_blob_destroy(kms->fd, p->mode_blob);
+            if (p->gamma_blob) drm_blob_destroy(kms->fd, p->gamma_blob);
+            if (p->degamma_blob) drm_blob_destroy(kms->fd, p->degamma_blob);
+            if (p->ctm_blob) drm_blob_destroy(kms->fd, p->ctm_blob);
             continue;
         }
         overlay_commit(c, state);
         if (!p->enable) {
             if (p->crtc) {
-                if (p->crtc->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->mode_blob);
+                if (p->crtc->mode_blob) drm_blob_destroy(kms->fd, p->crtc->mode_blob);
                 p->crtc->mode_blob = 0;
                 p->crtc->active = false;
                 p->crtc->owner = NULL;
@@ -1016,7 +1022,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         p->crtc->active = true;
         c->relight = c->unlit = false;
         if (p->modeset) {
-            if (p->crtc->mode_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->mode_blob);
+            if (p->crtc->mode_blob) drm_blob_destroy(kms->fd, p->crtc->mode_blob);
             p->crtc->mode_blob = p->mode_blob;
             p->crtc->mode = p->mode;
         }
@@ -1035,12 +1041,12 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         c->waking = p->wake;
         if (p->wake) c->wake_target = p->target;
         if (p->gamma) {
-            if (p->crtc->gamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->gamma_blob);
+            if (p->crtc->gamma_blob) drm_blob_destroy(kms->fd, p->crtc->gamma_blob);
             p->crtc->gamma_blob = p->gamma_blob;
         }
         if (p->profile) {
-            if (p->crtc->degamma_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->degamma_blob);
-            if (p->crtc->ctm_blob) drmModeDestroyPropertyBlob(kms->fd, p->crtc->ctm_blob);
+            if (p->crtc->degamma_blob) drm_blob_destroy(kms->fd, p->crtc->degamma_blob);
+            if (p->crtc->ctm_blob) drm_blob_destroy(kms->fd, p->crtc->ctm_blob);
             p->crtc->degamma_blob = p->degamma_blob;
             p->crtc->ctm_blob = p->ctm_blob;
         }
@@ -1064,7 +1070,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         if (plans[i].modeset || (!plans[i].enable && plans[i].crtc)) log_kernel_state(c, "kernel state");
     }
     if (shared) kms->req_busy = false;
-    else if (req) drmModeAtomicFree(req);
+    else drm_atomic_finish(&local);
     return ok;
 }
 
@@ -1118,7 +1124,7 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
         const struct screen_state *state = &updates[i].base;
         if (!enabled_after(c, state)) {
             if (test || !c->crtc) continue;
-            drmModeSetCrtc(kms->fd, c->crtc->id, 0, 0, 0, NULL, 0, NULL);
+            drm_set_crtc(kms->fd, c->crtc->id, 0, 0, 0, NULL, 0, NULL);
             c->crtc->active = false;
             c->crtc->owner = NULL;
             c->crtc = NULL;
@@ -1128,7 +1134,7 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
             continue;
         }
         struct crtc *crtc = pick_crtc(c);
-        drmModeModeInfo mode;
+        drm_mode_info mode;
         if (!crtc || !mode_for(c, state, &mode)) return false;
         struct buffer *buffer = (state->committed & SCREEN_BUFFER) ? state->buffer : c->current;
         uint32_t fb = buffer ? fb_for(kms, buffer) : 0;
@@ -1137,7 +1143,7 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
         wait_fence(sync_file(state));
         bool modeset = !crtc->active || crtc->owner != c || memcmp(&mode, &crtc->mode, sizeof(mode));
         if (modeset) {
-            if (drmModeSetCrtc(kms->fd, crtc->id, fb, 0, 0, &c->id, 1, &mode)) return false;
+            if (!drm_set_crtc(kms->fd, crtc->id, fb, 0, 0, &c->id, 1, &mode)) return false;
             crtc->mode = mode;
             crtc->active = true;
             crtc->owner = c;
@@ -1149,14 +1155,14 @@ static bool legacy_commit(struct kms *kms, struct screen_update *updates, size_t
             wl_event_loop_add_idle(wl_display_get_event_loop(kms->server->display),
                 legacy_modeset_done, c);
         } else if (state->committed & SCREEN_BUFFER) {
-            if (drmModePageFlip(kms->fd, crtc->id, fb, DRM_MODE_PAGE_FLIP_EVENT, kms)) return false;
+            if (!drm_page_flip(kms->fd, crtc->id, fb, DRM_MODE_PAGE_FLIP_EVENT, kms)) return false;
             buffer_unlock(c->queued);
             c->queued = buffer_lock(buffer);
             c->flip_pending = true;
             c->flip_seq = c->screen.commit_seq + 1;
         }
         if ((state->committed & SCREEN_GAMMA) && state->gamma)
-            drmModeCrtcSetGamma(kms->fd, crtc->id, (uint32_t)state->gamma_size, state->gamma,
+            drm_crtc_set_gamma(kms->fd, crtc->id, (uint32_t)state->gamma_size, state->gamma,
                 state->gamma + state->gamma_size, state->gamma + state->gamma_size * 2);
     }
     return true;
@@ -1215,9 +1221,9 @@ static size_t connector_degamma_size(struct screen *screen) {
 
 static void cursor_free(struct connector *c, int i) {
     struct dumb *bo = &c->cursor_bo[i];
-    if (c->cursor_fb[i]) drmModeRmFB(c->kms->fd, c->cursor_fb[i]);
+    if (c->cursor_fb[i]) drm_fb_remove(c->kms->fd, c->cursor_fb[i]);
     if (bo->map) munmap(bo->map, bo->size);
-    if (bo->handle) drmModeDestroyDumbBuffer(c->kms->fd, bo->handle);
+    if (bo->handle) drm_dumb_destroy(c->kms->fd, bo->handle);
     c->cursor_fb[i] = 0;
     *bo = (struct dumb){0};
 }
@@ -1312,14 +1318,14 @@ static bool cursor_upload(struct connector *c, struct buffer *buffer) {
     if (ok && !bo->map) {
         uint64_t offset = 0;
         void *map = MAP_FAILED;
-        ok = !drmModeCreateDumbBuffer(kms->fd, (uint32_t)kms->cursor_width,
-                (uint32_t)kms->cursor_height, 32, 0, &bo->handle, &bo->pitch, &bo->size) &&
-            !drmModeMapDumbBuffer(kms->fd, bo->handle, &offset) &&
+        ok = drm_dumb_create(kms->fd, (uint32_t)kms->cursor_width,
+                (uint32_t)kms->cursor_height, 32, &bo->handle, &bo->pitch, &bo->size) &&
+            drm_dumb_map(kms->fd, bo->handle, &offset) &&
             (map = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, kms->fd,
                 (off_t)offset)) != MAP_FAILED &&
-            !drmModeAddFB2(kms->fd, (uint32_t)kms->cursor_width, (uint32_t)kms->cursor_height,
+            drm_fb_add(kms->fd, (uint32_t)kms->cursor_width, (uint32_t)kms->cursor_height,
                 DRM_FORMAT_ARGB8888, (uint32_t[4]){ bo->handle }, (uint32_t[4]){ bo->pitch },
-                (uint32_t[4]){ 0 }, &c->cursor_fb[slot], 0);
+                (uint32_t[4]){ 0 }, NULL, &c->cursor_fb[slot], false);
         bo->map = map == MAP_FAILED ? NULL : map;
         if (!ok) cursor_free(c, slot);
     }
@@ -1342,10 +1348,10 @@ static bool cursor_put(struct connector *c) {
         cursor_queue(c);
         return true;
     }
-    bool ok = c->cursor_on ? !drmModeSetCursor2(c->kms->fd, c->crtc->id,
+    bool ok = c->cursor_on ? drm_set_cursor2(c->kms->fd, c->crtc->id,
             c->cursor_bo[c->cursor_front].handle, (uint32_t)c->kms->cursor_width,
             (uint32_t)c->kms->cursor_height, c->cursor_hot_x, c->cursor_hot_y) :
-        !drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
+        drm_set_cursor(c->kms->fd, c->crtc->id, 0, 0, 0);
     if (ok) {
         cursor_submitted(c, false);
         cursor_completed(c, false, 0);
@@ -1405,12 +1411,12 @@ static void cursor_commit(struct connector *c) {
             !session_active(kms->server)) return;
     input_latch(kms->server);
     if (cursor_blocked(c)) return;
-    drmModeAtomicReq *req = drmModeAtomicAlloc();
-    if (!req) return;
-    cursor_plane_set(req, c, c->crtc);
-    int ret = drmModeAtomicCommit(kms->fd, req, DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT,
-        CURSOR_EVENT(kms));
-    drmModeAtomicFree(req);
+    struct drm_atomic request;
+    drm_atomic_init(&request);
+    cursor_plane_set(&request, c, c->crtc);
+    int ret = drm_atomic_commit(kms->fd, &request,
+        DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT, CURSOR_EVENT(kms));
+    drm_atomic_finish(&request);
     if (ret == 0) {
         c->cursor_inflight = true;
         c->cursor_dirty = false;
@@ -1451,7 +1457,7 @@ static void connector_move_cursor(struct screen *screen, int x, int y) {
     }
     if (!c->crtc) return;
     if (c->kms->atomic) cursor_queue(c);
-    else drmModeMoveCursor(c->kms->fd, c->crtc->id, x, y);
+    else drm_move_cursor(c->kms->fd, c->crtc->id, x, y);
 }
 
 static void connector_destroy(struct screen *screen) {
@@ -1524,8 +1530,7 @@ static int flip_watchdog(void *data) {
     return 0;
 }
 
-static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigned crtc_id,
-        void *data) {
+static void page_flip(void *data, uint32_t seq, uint32_t sec, uint32_t usec, uint32_t crtc_id) {
     bool cursor = (uintptr_t)data & 1;
     struct kms *kms = (void *)((uintptr_t)data & ~(uintptr_t)1);
     struct connector *c;
@@ -1564,14 +1569,13 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
 }
 
 static int drm_event(int fd, uint32_t mask, void *data) {
-    drmEventContext context = { .version = 3, .page_flip_handler2 = page_flip };
-    drmHandleEvent(fd, &context);
+    drm_events(fd, page_flip);
     return 0;
 }
 
-static void add_modes(struct connector *c, drmModeConnector *info) {
+static void add_modes(struct connector *c, struct drm_connector *info) {
     for (int i = 0; i < info->count_modes; i++) {
-        drmModeModeInfo *copy = malloc(sizeof(*copy));
+        drm_mode_info *copy = malloc(sizeof(*copy));
         struct screen_mode *mode = copy ? screen_add_mode(&c->screen, info->modes[i].hdisplay,
             info->modes[i].vdisplay, refresh_mhz(&info->modes[i]),
             info->modes[i].type & DRM_MODE_TYPE_PREFERRED) : NULL;
@@ -1591,11 +1595,11 @@ static struct connector *connector_find(struct kms *kms, uint32_t id) {
     return NULL;
 }
 
-static void connector_add(struct kms *kms, drmModeConnector *info) {
+static void connector_add(struct kms *kms, struct drm_connector *info) {
     struct connector *c = calloc(1, sizeof(*c));
     if (!c) return;
     c->kms = kms;
-    c->id = info->connector_id;
+    c->id = info->id;
     props_read(kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
     if (c->props.value[PROP_NON_DESKTOP]) {
         free(c);
@@ -1608,24 +1612,24 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
     ns_timer_init(&c->cursor_timer, wl_display_get_event_loop(kms->server->display), cursor_fire, c);
     c->cursor_shown = -1;
     char name[64];
-    const char *type = drmModeGetConnectorTypeName(info->connector_type);
-    snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->connector_type_id);
+    const char *type = drm_connector_type_name(info->type);
+    snprintf(name, sizeof(name), "%s-%u", type ? type : "Unknown", info->type_id);
     screen_init(&c->screen, kms->server, &kms->impl, SCREEN_DRM, name);
     c->screen.suspended = !session_active(kms->server);
-    c->screen.phys_width = (int32_t)info->mmWidth;
-    c->screen.phys_height = (int32_t)info->mmHeight;
+    c->screen.phys_width = (int32_t)info->mm_width;
+    c->screen.phys_height = (int32_t)info->mm_height;
     c->screen.adaptive_sync_supported = c->props.value[PROP_VRR_CAPABLE] != 0;
     for (int i = 0; i < info->count_encoders; i++) {
-        drmModeEncoder *encoder = drmModeGetEncoder(kms->fd, info->encoders[i]);
+        struct drm_encoder *encoder = drm_encoder_get(kms->fd, info->encoders[i]);
         if (encoder) c->possible_crtcs |= encoder->possible_crtcs;
         for (size_t j = 0; encoder && info->encoders[i] == info->encoder_id && j < kms->crtc_count; j++)
             if (kms->crtcs[j].id == encoder->crtc_id) c->kernel_crtc = &kms->crtcs[j];
-        drmModeFreeEncoder(encoder);
+        drm_encoder_free(encoder);
     }
-    drmModePropertyBlobRes *edid = c->props.value[PROP_EDID] ?
-        drmModeGetPropertyBlob(kms->fd, (uint32_t)c->props.value[PROP_EDID]) : NULL;
+    struct drm_blob *edid = c->props.value[PROP_EDID] ?
+        drm_blob_get(kms->fd, (uint32_t)c->props.value[PROP_EDID]) : NULL;
     if (edid) parse_edid(&c->screen, edid->data, edid->length);
-    drmModeFreePropertyBlob(edid);
+    drm_blob_free(edid);
     c->edid_sum = edid_sum(kms->fd, &c->props);
     screen_describe(&c->screen);
     add_modes(c, info);
@@ -1644,15 +1648,19 @@ static void connector_add(struct kms *kms, drmModeConnector *info) {
         link_status(&c->props));
 }
 
-static void scan_connectors(struct kms *kms) {
-    drmModeRes *res = drmModeGetResources(kms->fd);
-    if (!res) return;
+static bool scan_connectors(struct kms *kms) {
+    struct drm_res *res = drm_res_get(kms->fd);
+    if (!res) {
+        tomoe_log(LOG_ERROR, "tomoe: could not read the DRM resources; the outputs were not "
+            "rescanned");
+        return false;
+    }
     struct connector *c, *next;
     wl_list_for_each_safe(c, next, &kms->connectors, link) {
-        drmModeConnector *info = drmModeGetConnector(kms->fd, c->id);
+        struct drm_connector *info = drm_connector_get(kms->fd, c->id, true);
         bool unreadable = !info;
         bool gone = !info || info->connection != DRM_MODE_CONNECTED;
-        drmModeFreeConnector(info);
+        drm_connector_free(info);
         if (!gone) props_read(kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &c->props);
         uint64_t sum = gone ? 0 : edid_sum(kms->fd, &c->props);
         if (sum && sum != c->edid_sum)
@@ -1674,12 +1682,13 @@ static void scan_connectors(struct kms *kms) {
     }
     for (int i = 0; i < res->count_connectors; i++) {
         if (connector_find(kms, res->connectors[i])) continue;
-        drmModeConnector *info = drmModeGetConnector(kms->fd, res->connectors[i]);
+        struct drm_connector *info = drm_connector_get(kms->fd, res->connectors[i], true);
         if (info && info->connection == DRM_MODE_CONNECTED && info->count_modes)
             connector_add(kms, info);
-        drmModeFreeConnector(info);
+        drm_connector_free(info);
     }
-    drmModeFreeResources(res);
+    drm_res_free(res);
+    return true;
 }
 
 static int drm_uevent(int fd, uint32_t mask, void *data) {
@@ -1709,7 +1718,8 @@ static int drm_uevent(int fd, uint32_t mask, void *data) {
     bool active = session_active(kms->server);
     tomoe_log(LOG_WARNING, "tomoe: drm change event; the seat is %s, %s", active ? "active" : "inactive",
         active ? "scanning connectors" : "leaving the scan until it returns");
-    if (active) scan_connectors(kms);
+    if (active && scan_connectors(kms))
+        tomoe_log(LOG_INFO, "tomoe: drm change event: the connectors were rescanned");
     return 0;
 }
 
@@ -1725,14 +1735,7 @@ static char *primary_path(void) {
         size_t length = strcspn(list, ":");
         return strndup(list, length);
     }
-    drmDevicePtr devices[64];
-    int count = drmGetDevices2(0, devices, 64);
-    char *path = NULL;
-    for (int i = 0; i < count; i++)
-        if (!path && (devices[i]->available_nodes & (1 << DRM_NODE_PRIMARY)))
-            path = strdup(devices[i]->nodes[DRM_NODE_PRIMARY]);
-    drmFreeDevices(devices, count);
-    return path;
+    return drm_primary_node();
 }
 
 int kms_create(struct tomoe *s) {
@@ -1748,6 +1751,7 @@ int kms_create(struct tomoe *s) {
     kms->fd = -1;
     kms->monitor_fd = -1;
     wl_list_init(&kms->connectors);
+    drm_atomic_init(&kms->req);
     s->kms = kms;
     kms->fd = session_open(s, path, &kms->device);
     struct stat st;
@@ -1759,15 +1763,15 @@ int kms_create(struct tomoe *s) {
     free(path);
     kms->devnum = st.st_rdev;
     uint64_t cap = 0;
-    drmSetClientCap(kms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+    drm_client_cap(kms->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
     kms->atomic = !tomoe_test_flag("drm-legacy") &&
-        drmSetClientCap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1) == 0;
+        drm_client_cap(kms->fd, DRM_CLIENT_CAP_ATOMIC, 1);
     kms->impl = connector_impl;
     kms->impl.late_frames = kms->atomic;
-    kms->modifiers = drmGetCap(kms->fd, DRM_CAP_ADDFB2_MODIFIERS, &cap) == 0 && cap;
-    kms->async_atomic = drmGetCap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) == 0 && cap;
-    kms->cursor_width = drmGetCap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) == 0 && cap ? cap : 64;
-    kms->cursor_height = drmGetCap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) == 0 && cap ? cap : 64;
+    kms->modifiers = drm_cap(kms->fd, DRM_CAP_ADDFB2_MODIFIERS, &cap) && cap;
+    kms->async_atomic = drm_cap(kms->fd, DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP, &cap) && cap;
+    kms->cursor_width = drm_cap(kms->fd, DRM_CAP_CURSOR_WIDTH, &cap) && cap ? cap : 64;
+    kms->cursor_height = drm_cap(kms->fd, DRM_CAP_CURSOR_HEIGHT, &cap) && cap ? cap : 64;
     const char *wake = tomoe_test_flag_value("drm-wake-ms");
     kms->wake_ms = wake && *wake ? (unsigned)strtoul(wake, NULL, 10) : 5000;
     if (!read_resources(kms)) {
@@ -1816,20 +1820,20 @@ void kms_pause(struct tomoe *s) {
 
 static struct crtc *kernel_crtc_for(struct connector *c) {
     struct crtc *found = NULL;
-    drmModeConnector *info = drmModeGetConnector(c->kms->fd, c->id);
+    struct drm_connector *info = drm_connector_get(c->kms->fd, c->id, true);
     if (info) {
         if (info->encoder_id) {
-            drmModeEncoder *encoder = drmModeGetEncoder(c->kms->fd, info->encoder_id);
+            struct drm_encoder *encoder = drm_encoder_get(c->kms->fd, info->encoder_id);
             if (encoder) {
                 for (size_t i = 0; i < c->kms->crtc_count; i++)
                     if (c->kms->crtcs[i].id == encoder->crtc_id) {
                         found = &c->kms->crtcs[i];
                         break;
                     }
-                drmModeFreeEncoder(encoder);
+                drm_encoder_free(encoder);
             }
         }
-        drmModeFreeConnector(info);
+        drm_connector_free(info);
     }
     return found ? found : c->kernel_crtc;
 }
@@ -1870,12 +1874,12 @@ void kms_destroy(struct tomoe *s) {
     if (kms->monitor_fd >= 0) close(kms->monitor_fd);
     for (size_t i = 0; i < kms->plane_count; i++) format_set_finish(&kms->planes[i].formats);
     for (size_t i = 0; i < kms->crtc_count; i++) {
-        if (kms->crtcs[i].mode_blob) drmModeDestroyPropertyBlob(kms->fd, kms->crtcs[i].mode_blob);
-        if (kms->crtcs[i].gamma_blob) drmModeDestroyPropertyBlob(kms->fd, kms->crtcs[i].gamma_blob);
+        if (kms->crtcs[i].mode_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].mode_blob);
+        if (kms->crtcs[i].gamma_blob) drm_blob_destroy(kms->fd, kms->crtcs[i].gamma_blob);
     }
     free(kms->crtcs);
     free(kms->planes);
-    if (kms->req) drmModeAtomicFree(kms->req);
+    drm_atomic_finish(&kms->req);
     free(kms->plans);
     if (kms->fd >= 0) session_close(s, kms->device, kms->fd);
     free(kms);

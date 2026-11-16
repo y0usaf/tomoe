@@ -1,6 +1,6 @@
 #include "internal.h"
 #include "xdg-output-unstable-v1-protocol.h"
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <linux/sync_file.h>
 #include <sys/ioctl.h>
 #include <sys/timerfd.h>

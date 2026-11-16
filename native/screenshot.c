@@ -1,5 +1,5 @@
 #include "internal.h"
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <pango/pangocairo.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 

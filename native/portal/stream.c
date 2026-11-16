@@ -1,6 +1,6 @@
 #include "portal.h"
 
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <linux/udmabuf.h>
 #include <sys/ioctl.h>

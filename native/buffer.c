@@ -1,10 +1,10 @@
 #include "internal.h"
+#include "drm.h"
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <drm_fourcc.h>
-#include <xf86drm.h>
 #include "linux-dmabuf-v1-protocol.h"
 #include "single-pixel-buffer-v1-protocol.h"
 
@@ -266,8 +266,8 @@ static bool importable(struct tomoe *s, const struct dmabuf_attributes *a) {
     }
     for (int i = 0; dmabuf.drm_fd >= 0 && i < a->n_planes; i++) {
         uint32_t handle = 0;
-        if (drmPrimeFDToHandle(dmabuf.drm_fd, a->fd[i], &handle) != 0) return false;
-        drmCloseBufferHandle(dmabuf.drm_fd, handle);
+        if (!drm_prime_fd_to_handle(dmabuf.drm_fd, a->fd[i], &handle)) return false;
+        drm_prime_close_handle(dmabuf.drm_fd, handle);
     }
     return true;
 }
@@ -577,20 +577,22 @@ static bool dmabuf_table(const struct format_set *formats) {
 
 static void probe_other_devices(dev_t main_dev) {
     dmabuf.other_device_count = 0;
-    drmDevicePtr devices[64];
-    int count = drmGetDevices2(0, devices, 64);
-    for (int i = 0; i < count; i++) {
-        if (!(devices[i]->available_nodes & (1 << DRM_NODE_RENDER))) continue;
+    DIR *directory = opendir("/dev/dri");
+    if (!directory) return;
+    struct dirent *entry;
+    while ((entry = readdir(directory))) {
+        if (strncmp(entry->d_name, "renderD", 7)) continue;
+        char path[sizeof("/dev/dri/") + NAME_MAX];
+        snprintf(path, sizeof(path), "/dev/dri/%s", entry->d_name);
         struct stat st;
-        if (stat(devices[i]->nodes[DRM_NODE_RENDER], &st) != 0 || st.st_rdev == main_dev)
-            continue;
+        if (stat(path, &st) != 0 || st.st_rdev == main_dev) continue;
         bool seen = false;
         for (size_t j = 0; j < dmabuf.other_device_count; j++)
             seen |= dmabuf.other_devices[j] == st.st_rdev;
         if (!seen && dmabuf.other_device_count < DMABUF_OTHER_DEVICES)
             dmabuf.other_devices[dmabuf.other_device_count++] = st.st_rdev;
     }
-    if (count > 0) drmFreeDevices(devices, count);
+    closedir(directory);
 }
 
 bool buffers_listen(struct tomoe *s) {
@@ -608,7 +610,7 @@ bool buffers_listen(struct tomoe *s) {
     int fd = render_drm_fd(s->renderer);
     struct stat st;
     if (!formats || !formats->len || fd < 0 || fstat(fd, &st) != 0) return true;
-    char *node = drmGetDeviceNameFromFd2(fd);
+    char *node = drm_device_node(fd);
     dmabuf.drm_fd = node ? open(node, O_RDWR | O_CLOEXEC) : -1;
     free(node);
     dmabuf.device = st.st_rdev;

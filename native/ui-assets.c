@@ -2,7 +2,7 @@
 #include "ui.h"
 #include "ui-assets.h"
 
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jpeglib.h>

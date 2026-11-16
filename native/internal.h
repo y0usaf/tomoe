@@ -14,7 +14,7 @@
 #include <time.h>
 #include <GLES2/gl2.h>
 #include <wayland-server-core.h>
-#include <drm_fourcc.h>
+#include <drm/drm_fourcc.h>
 #include "region.h"
 #include "policy.h"
 #include <xkbcommon/xkbcommon.h>

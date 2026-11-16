@@ -1,9 +1,9 @@
 #include "internal.h"
+#include "drm.h"
 #include <stdarg.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <xf86drm.h>
 
 #define ERRORS_KEPT 16
 #define ERROR_LINE 512
@@ -326,7 +326,7 @@ void format_set_finish(struct format_set *set) {
 static struct timeline *timeline_wrap(int drm_fd, uint32_t handle) {
     struct timeline *timeline = calloc(1, sizeof(*timeline));
     if (!timeline) {
-        drmSyncobjDestroy(drm_fd, handle);
+        drm_syncobj_destroy(drm_fd, handle);
         return NULL;
     }
     *timeline = (struct timeline){ .drm_fd = drm_fd, .handle = handle, .refs = 1 };
@@ -335,15 +335,15 @@ static struct timeline *timeline_wrap(int drm_fd, uint32_t handle) {
 
 struct timeline *timeline_create(int drm_fd) {
     uint32_t handle = 0;
-    if (drmSyncobjCreate(drm_fd, 0, &handle) == 0) return timeline_wrap(drm_fd, handle);
-    tomoe_log(LOG_ERROR, "tomoe: drmSyncobjCreate failed: %s", strerror(errno));
+    if (drm_syncobj_create(drm_fd, 0, &handle)) return timeline_wrap(drm_fd, handle);
+    tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_create failed: %s", strerror(errno));
     return NULL;
 }
 
 struct timeline *timeline_import(int drm_fd, int syncobj_fd) {
     uint32_t handle = 0;
-    if (drmSyncobjFDToHandle(drm_fd, syncobj_fd, &handle) == 0) return timeline_wrap(drm_fd, handle);
-    tomoe_log(LOG_ERROR, "tomoe: drmSyncobjFDToHandle failed: %s", strerror(errno));
+    if (drm_syncobj_fd_to_handle(drm_fd, syncobj_fd, &handle)) return timeline_wrap(drm_fd, handle);
+    tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_fd_to_handle failed: %s", strerror(errno));
     return NULL;
 }
 
@@ -354,38 +354,38 @@ struct timeline *timeline_ref(struct timeline *timeline) {
 
 void timeline_unref(struct timeline *timeline) {
     if (!timeline || --timeline->refs) return;
-    drmSyncobjDestroy(timeline->drm_fd, timeline->handle);
+    drm_syncobj_destroy(timeline->drm_fd, timeline->handle);
     free(timeline);
 }
 
 int timeline_export_sync_file(struct timeline *timeline, uint64_t point) {
     uint32_t handle;
     int fd = -1;
-    if (drmSyncobjCreate(timeline->drm_fd, 0, &handle) != 0) return -1;
-    if (drmSyncobjTransfer(timeline->drm_fd, handle, 0, timeline->handle, point, 0) != 0 ||
-            drmSyncobjExportSyncFile(timeline->drm_fd, handle, &fd) != 0) {
+    if (!drm_syncobj_create(timeline->drm_fd, 0, &handle)) return -1;
+    if (!drm_syncobj_transfer(timeline->drm_fd, handle, 0, timeline->handle, point, 0) ||
+            !drm_syncobj_export_sync_file(timeline->drm_fd, handle, &fd)) {
         tomoe_log(LOG_ERROR, "tomoe: sync file export failed: %s", strerror(errno));
         fd = -1;
     }
-    drmSyncobjDestroy(timeline->drm_fd, handle);
+    drm_syncobj_destroy(timeline->drm_fd, handle);
     return fd;
 }
 
 bool timeline_import_sync_file(struct timeline *timeline, uint64_t point, int fd) {
     uint32_t handle;
-    if (drmSyncobjCreate(timeline->drm_fd, 0, &handle) != 0) return false;
-    bool ok = drmSyncobjImportSyncFile(timeline->drm_fd, handle, fd) == 0 &&
-        drmSyncobjTransfer(timeline->drm_fd, timeline->handle, point, handle, 0, 0) == 0;
+    if (!drm_syncobj_create(timeline->drm_fd, 0, &handle)) return false;
+    bool ok = drm_syncobj_import_sync_file(timeline->drm_fd, handle, fd) &&
+        drm_syncobj_transfer(timeline->drm_fd, timeline->handle, point, handle, 0, 0);
     if (!ok) tomoe_log(LOG_ERROR, "tomoe: sync file import failed: %s", strerror(errno));
-    drmSyncobjDestroy(timeline->drm_fd, handle);
+    drm_syncobj_destroy(timeline->drm_fd, handle);
     return ok;
 }
 
 bool timeline_check(struct timeline *timeline, uint64_t point, uint32_t flags, bool *ready) {
-    int ret = drmSyncobjTimelineWait(timeline->drm_fd, &timeline->handle, &point, 1, 0, flags,
-        NULL);
+    int ret = drm_syncobj_timeline_wait(timeline->drm_fd, &timeline->handle, &point, 1, 0,
+        flags, NULL);
     if (ret != 0 && ret != -ETIME) {
-        tomoe_log(LOG_ERROR, "tomoe: drmSyncobjTimelineWait failed: %s", strerror(errno));
+        tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_timeline_wait failed: %s", strerror(errno));
         return false;
     }
     *ready = ret == 0;
@@ -393,8 +393,8 @@ bool timeline_check(struct timeline *timeline, uint64_t point, uint32_t flags, b
 }
 
 bool timeline_signal(struct timeline *timeline, uint64_t point) {
-    if (drmSyncobjTimelineSignal(timeline->drm_fd, &timeline->handle, &point, 1) == 0) return true;
-    tomoe_log(LOG_ERROR, "tomoe: drmSyncobjTimelineSignal failed");
+    if (drm_syncobj_timeline_signal(timeline->drm_fd, timeline->handle, point)) return true;
+    tomoe_log(LOG_ERROR, "tomoe: drm_syncobj_timeline_signal failed");
     return false;
 }
 
@@ -414,7 +414,7 @@ bool timeline_waiter_init(struct timeline_waiter *waiter, struct timeline *timel
     if (fd < 0) return false;
     struct drm_syncobj_eventfd request = { .handle = timeline->handle, .flags = flags,
         .point = point, .fd = fd };
-    struct wl_event_source *source = drmIoctl(timeline->drm_fd, DRM_IOCTL_SYNCOBJ_EVENTFD,
+    struct wl_event_source *source = drm_ioctl(timeline->drm_fd, DRM_IOCTL_SYNCOBJ_EVENTFD,
         &request) == 0 ? wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE, waiter_ready, waiter) :
         NULL;
     if (!source) {

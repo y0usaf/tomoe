@@ -1,8 +1,8 @@
 #include "internal.h"
+#include "drm.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <wayland-client.h>
-#include <xf86drm.h>
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
@@ -538,12 +538,11 @@ int nested_create(struct tomoe *s) {
     }
     nested->source = wl_event_loop_add_fd(wl_display_get_event_loop(s->display),
         wl_display_get_fd(nested->host), WL_EVENT_READABLE, host_event, s);
-    drmDevicePtr device = NULL;
     int fd = -1;
-    if (nested->has_main_device && drmGetDeviceFromDevId(nested->main_device, 0, &device) == 0) {
-        if (device->available_nodes & (1 << DRM_NODE_RENDER))
-            fd = open(device->nodes[DRM_NODE_RENDER], O_RDWR | O_CLOEXEC);
-        drmFreeDevice(&device);
+    if (nested->has_main_device) {
+        char *node = drm_render_node_for_device(nested->main_device);
+        if (node) fd = open(node, O_RDWR | O_CLOEXEC);
+        free(node);
     }
     return fd;
 }

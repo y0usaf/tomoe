@@ -137,8 +137,6 @@
             pkgs.wayland-scanner
           ];
           buildInputs = [
-            libs.libdrm
-            libs.libdrm.dev
             (pkgs.libinput.override { luaSupport = false; })
             libs.libglvnd
             libs.libgbm
