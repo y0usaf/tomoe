@@ -968,7 +968,12 @@ dependency cycle discards the entire candidate transaction."
          (proposal-start (mapcar #'mounted-spec candidate))
          (proposal-deliveries nil)
          (initial-event event)
-         (initial-force force))
+         (initial-force force)
+         (origins (loop for mounted in candidate
+                        collect (list (mounted-spec mounted) (mounted-state mounted)
+                                      (mounted-effects mounted))))
+         (rounds 0)
+         (restless nil))
     (labels ((baseline (mounted)
                (let* ((spec (mounted-spec mounted))
                       (entry (assoc spec proposal-baselines :test #'eq)))
@@ -983,6 +988,7 @@ dependency cycle discards the entire candidate transaction."
              (invoke (mounted delivered)
                (let ((spec (mounted-spec mounted))
                      (state (mounted-state mounted))
+                     (effects (mounted-effects mounted))
                      (issued commands))
                  (unless (member spec *transaction-failures* :test #'eq)
                    (when (admission-scope-p mounted candidate)
@@ -997,11 +1003,29 @@ dependency cycle discards the entire candidate transaction."
                        (invoke-extension mounted context delivered)
                      (if failure
                          (setf (nth 2 mounted) state commands issued)
-                         (setf commands
-                               (nconc commands
-                                      (mapcar (lambda (command) (cons spec command))
-                                              answer)))))))))
-      (loop for round below 16 do
+                         (progn
+                           (when (and (= rounds 15)
+                                      (not (and (equal (mounted-state mounted) state)
+                                                (equal (mounted-effects mounted) effects))))
+                             (pushnew spec restless))
+                           (setf commands
+                                 (nconc commands
+                                        (mapcar (lambda (command) (cons spec command))
+                                                answer)))))))))
+             (hold (spec)
+               (let ((mounted (find spec candidate :key #'mounted-spec))
+                     (origin (assoc spec origins :test #'eq)))
+                 (when (and mounted (not (member spec *transaction-failures* :test #'eq)))
+                   (setf (nth 2 mounted)
+                         (if origin
+                             (second origin)
+                             (copy-data (sixth (effect-arguments (mounted-rule-definition mounted)))))
+                         (nth 3 mounted) (third origin)
+                         commands (remove spec commands :key #'car :test #'eq))
+                   (extension-failed spec mounted
+                                     "its answer still changed after 16 rounds; it keeps its last committed answer")))))
+      (loop for round below 32 do
+        (setf rounds round restless nil)
         (let ((before context) (invoked nil))
           (dolist (mounted (root-mounts candidate))
             (when (and (not (spec-admission (mounted-spec mounted)))
@@ -1078,8 +1102,14 @@ dependency cycle discards the entire candidate transaction."
                       (%r! :pending-context nil)
                       (loop for command in live-commands
                             do (when (runtime-running) (execute-command command))))))
-              (return-from %transact t)))))
-      (error "Extension dependencies did not settle within 16 rounds."))))
+              (return-from %transact t))
+            (when (and (= round 15) restless)
+              (let ((held context))
+                (mapc #'hold restless)
+                (setf context (materialize candidate)
+                      dirty (union dirty (changed-keys held context))
+                      event (list :type :change :keys dirty)))))))
+      (error "Extension dependencies did not settle within 32 rounds."))))
 
 (defun unchanged-commit-p (mounts context)
   "Whether committing MOUNTS and CONTEXT would leave everything as it is: the same
