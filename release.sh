@@ -49,7 +49,7 @@ SOAK=${RELEASE_SOAK:-1800}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
 SWITCH_LOCK=${TOMOE_SWITCH_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/finix-switch.lock}
 LEASE_LIB=${TOMOE_LEASE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/lease.sh}
-# shellcheck source=tools/lease.sh
+# shellcheck source=/dev/null
 . "$LEASE_LIB"
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
 [[ $SOAK =~ ^[0-9]+$ ]] || fail "RELEASE_SOAK must be a number of seconds"

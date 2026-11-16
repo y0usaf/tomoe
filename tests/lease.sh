@@ -58,4 +58,18 @@ done
 lease_release
 free || fail "the lease is still held after it was released"
 
+cat >"$work/strict" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$lib"
+lease_take "\$1" -s 0
+lease_release
+lease_take "\$1" -x 0
+kill -KILL "\$LEASE_HOLDER" 2>/dev/null
+sleep 0.2
+lease_release
+EOF
+bash "$work/strict" "$lock" 2>/dev/null ||
+	fail "a shell running with set -e cannot take and release the lease"
+
 printf 'lease: held only by the process that needs it, and released with it\n'

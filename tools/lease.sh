@@ -16,7 +16,9 @@ lease_take() {
 	mkdir -p "$(dirname "$lock")" || return 1
 	LEASE_ACK=$(mktemp "${TMPDIR:-/tmp}/tomoe-lease.XXXXXX") || return 1
 	holder=(flock "$mode" -o -E 75)
-	((wait > 0)) && holder+=(-w "$wait")
+	if ((wait > 0)); then
+		holder+=(-w "$wait")
+	fi
 	holder+=("$lock" bash -c '
 		printf lease >"$1" || exit 1
 		while kill -0 "$PPID" 2>/dev/null && kill -0 "$2" 2>/dev/null; do sleep 1; done
@@ -25,8 +27,11 @@ lease_take() {
 	LEASE_HOLDER=$!
 	while [[ ! -s $LEASE_ACK ]]; do
 		if ! kill -0 "$LEASE_HOLDER" 2>/dev/null; then
-			wait "$LEASE_HOLDER" 2>/dev/null
-			rc=$?
+			if wait "$LEASE_HOLDER" 2>/dev/null; then
+				rc=0
+			else
+				rc=$?
+			fi
 			LEASE_HOLDER=""
 			rm -f "$LEASE_ACK"
 			LEASE_ACK=""
@@ -39,7 +44,7 @@ lease_take() {
 					"$(date -u +%FT%TZ)" "$mode" "$lock"
 				fuser -v "$lock" 2>&1
 				grep ":$({ stat -c '%i' "$lock"; } 2>/dev/null) " /proc/locks 2>/dev/null
-			} >>"$LEASE_LOG" 2>&1
+			} >>"$LEASE_LOG" 2>&1 || true
 		fi
 		if ((tick < 20)); then sleep 0.05; else sleep 1; fi
 		tick=$((tick + 1))
@@ -49,10 +54,12 @@ lease_take() {
 
 lease_release() {
 	[[ -n $LEASE_HOLDER ]] || return 0
-	kill -TERM "$LEASE_HOLDER" 2>/dev/null
-	wait "$LEASE_HOLDER" 2>/dev/null
+	kill -TERM "$LEASE_HOLDER" 2>/dev/null || true
+	wait "$LEASE_HOLDER" 2>/dev/null || true
 	LEASE_HOLDER=""
-	[[ -n $LEASE_ACK ]] && rm -f "$LEASE_ACK"
+	if [[ -n $LEASE_ACK ]]; then
+		rm -f "$LEASE_ACK"
+	fi
 	LEASE_ACK=""
 	return 0
 }

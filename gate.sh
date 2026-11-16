@@ -64,7 +64,7 @@ if [[ -n ${TOMOE_ISOLATED:-} ]]; then
 else
 	TOOLS=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools
 	ISOLATE=$TOOLS/isolate
-	# shellcheck source=tools/lease.sh
+	# shellcheck source=/dev/null
 	. "$TOOLS/lease.sh"
 	"$ISOLATE" --check || exit 2
 	REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside the tomoe checkout"
