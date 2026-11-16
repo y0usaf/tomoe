@@ -1163,7 +1163,11 @@ void layers_publish_presentation(struct tomoe *s) {
         if (!output->admitted) return;
     struct layer_plan *plan = s->layer_preview;
     if (!publish_layer_plan(s, plan, true)) {
-        if (!plan->published) fail(s, "layer presentation lifetime changed");
+        if (!plan->published) {
+            tomoe_log(LOG_ERROR, "tomoe: the staged layer plan no longer matches the outputs "
+                "and layer surfaces; placing the layers from the live state instead");
+            arrange_layers(s);
+        }
         return;
     }
     struct layer *layer;

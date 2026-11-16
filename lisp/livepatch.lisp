@@ -237,7 +237,9 @@ compositor as it was and signals its error. Returns a report plist."
                      (setf failure (format nil "~A; restoring the session before the patch also failed: ~A"
                                            failure text))))
            (when generated (ignore-errors (%delete-file path))))))
-      (when failure (error "~A" failure))
+      (when failure
+        (record-error (format nil "Patch ~A was refused and rolled back: ~A" name failure))
+        (error "~A" failure))
       (let ((patch (first (last (runtime-patches)))))
         (list :id id :name name :file path :refresh (getf patch :refresh)
               :extensions (getf patch :extensions)

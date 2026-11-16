@@ -351,12 +351,18 @@ int wire_send(struct wire *wire, uint32_t id, uint32_t opcode, const struct wl_m
     }
     if (fds && wire->fds_out_count + (uint32_t)fds > WIRE_FDS_OUT && wire_flush(wire) < 0) return -1;
     if (fds) {
+        uint32_t first = wire->fds_out_count;
         signature = message->signature;
         for (int i = 0; i < count; i++) {
             signature = wire_next_arg(signature, &arg);
             if (arg.type != 'h') continue;
             int fd = fcntl(args[i].h, F_DUPFD_CLOEXEC, 0);
-            if (fd < 0) abort();
+            if (fd < 0) {
+                int error = errno;
+                while (wire->fds_out_count > first) close(wire->fds_out[--wire->fds_out_count]);
+                errno = error;
+                return -1;
+            }
             wire->fds_out[wire->fds_out_count++] = fd;
         }
     }

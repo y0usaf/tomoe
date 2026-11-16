@@ -220,14 +220,15 @@ lisp_value builtin_drop_package(int argc, lisp_value *argv)
                        stringp(argv[0]) ? PTR(argv[0], lisp_string)->data : NULL;
     if (!name)
         lisp_error("%%DROP-PACKAGE needs a name");
+    uint32_t package = package_find(name);
     struct lisp_region *gen = lisp.generations;
     while (gen) {
         struct lisp_region *next = gen->next;
-        if (strcmp(gen->name, name) == 0)
+        if (strcmp(gen->name, name) == 0 ||
+                (package != UINT32_MAX && package >= 4 && gen->package == package))
             gen->dropped = true;
         gen = next;
     }
-    uint32_t package = package_find(name);
     if (package != UINT32_MAX)
         package_drop(package);
     return NIL_VAL;

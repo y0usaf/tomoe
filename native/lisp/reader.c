@@ -22,6 +22,7 @@ void reader_init(struct lisp_reader *rd, const char *file, const char *text, siz
     rd->file = file ? file : "<lisp>";
     rd->package = package;
     rd->allow_backquote = allow_backquote && package == PKG_TOMOE;
+    rd->depth = 0;
 }
 
 bool reader_done(struct lisp_reader *rd)
@@ -394,7 +395,19 @@ static lisp_value read_list(struct lisp_reader *rd, bool data_mode)
     }
 }
 
+static lisp_value read_nested_form(struct lisp_reader *rd, bool data_mode);
+
 static lisp_value read_form(struct lisp_reader *rd, bool data_mode)
+{
+    if (rd->depth >= LISP_MAX_DEPTH * 2)
+        reader_error(rd, "forms nest more than %d deep", LISP_MAX_DEPTH * 2);
+    rd->depth++;
+    lisp_value form = read_nested_form(rd, data_mode);
+    rd->depth--;
+    return form;
+}
+
+static lisp_value read_nested_form(struct lisp_reader *rd, bool data_mode)
 {
     skip_space(rd);
     int c = peek(rd);

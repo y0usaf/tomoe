@@ -67,6 +67,8 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
 int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
     const char *hover, int x, int y, int width, int height);
 int tomoe_present_ui_end(struct tomoe *s);
+int tomoe_present_ui_cancel(struct tomoe *s, const char *owner, const char *name,
+    const char *output);
 
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
     double size, double line_height);

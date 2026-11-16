@@ -922,6 +922,21 @@ static bool process_restart(const struct res_process *process, int status, int c
     return false;
 }
 
+static void process_report_exit(const struct res_process *process, int status, int code) {
+    if (status == 1 && code == 0 && process->kind != PROCESS_SERVICE) return;
+    const char *program = process->argv && process->argv[0] ? process->argv[0] :
+        process->command ? process->command : "";
+    bool again = process_restart(process, status, code);
+    if (status == 2)
+        tomoe_log(LOG_ERROR, "tomoe: %s %s of %s (%s) was killed by signal %d (%s)%s",
+            process->kind == PROCESS_SERVICE ? "service" : "process", process->name,
+            process->owner, program, code, strsignal(code), again ? "; starting it again" : "");
+    else
+        tomoe_log(LOG_ERROR, "tomoe: %s %s of %s (%s) exited with status %d%s",
+            process->kind == PROCESS_SERVICE ? "service" : "process", process->name,
+            process->owner, program, code, again ? "; starting it again" : "");
+}
+
 static void leases_service(uint64_t now, uint64_t *next) {
     for (size_t index = 0; index < res.lease_count;) {
         struct res_lease *lease = res.leases[index];
@@ -1002,6 +1017,7 @@ void res_processes_service(uint64_t now, uint64_t *next) {
             if (res_lease_reap(process->lease, stopping)) {
                 process->code = process->lease->code;
                 process->has_code = true;
+                if (!stopping) process_report_exit(process, process->lease->status, process->code);
                 if (stopping) process->status = PROCESS_SPAWN_ERROR;
                 else if (process_restart(process, process->lease->status, process->code))
                     process->status = PROCESS_WAITING;

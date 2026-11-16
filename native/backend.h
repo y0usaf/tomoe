@@ -5,6 +5,11 @@
 
 struct tomoe;
 struct ui_shape;
+
+enum { LOG_ERROR = 1, LOG_WARNING, LOG_INFO, LOG_DEBUG };
+extern int log_verbosity;
+void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
 int tomoe_abi_version(void);
 struct tomoe *tomoe_create(const char *socket_name);
 const char *tomoe_activation_token(struct tomoe *server);
@@ -95,6 +100,8 @@ int tomoe_present_ui_arc(struct tomoe *server, double cx, double cy, double radi
 int tomoe_present_ui_hit(struct tomoe *server, const char *key, const char *command,
     const char *hover, int x, int y, int width, int height);
 int tomoe_present_ui_end(struct tomoe *server);
+int tomoe_present_ui_cancel(struct tomoe *server, const char *owner, const char *name,
+    const char *output);
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
     double size, double line_height);
 const char *tomoe_ui_stats(struct tomoe *server);

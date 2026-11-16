@@ -31,6 +31,7 @@ struct loop_runtime {
     bool quit;
     bool failed;
     char xwayland_display[8];
+    char quit_reason[96];
 };
 
 struct loop_source {
@@ -465,7 +466,12 @@ static void session_signals_ready(void *data, int fd, uint32_t mask) {
     (void)data;
     (void)mask;
     struct signalfd_siginfo info;
-    while (read(fd, &info, sizeof(info)) == (ssize_t)sizeof(info)) loop_state.quit = true;
+    while (read(fd, &info, sizeof(info)) == (ssize_t)sizeof(info)) {
+        loop_state.quit = true;
+        snprintf(loop_state.quit_reason, sizeof(loop_state.quit_reason),
+            "it received %s from pid %u", info.ssi_signo == SIGTERM ? "SIGTERM" :
+            info.ssi_signo == SIGINT ? "SIGINT" : "a signal", info.ssi_pid);
+    }
 }
 
 static int session_signals_block(char *error, size_t error_size) {
@@ -550,6 +556,7 @@ static int run_compositor(const struct cli_options *options) {
     if (resolve_backend(options, backend, sizeof(backend), error, sizeof(error)))
         return cli_error("%s", error);
     tomoe_select_backend(backend);
+    tomoe_log_open(options->name, backend);
     if (options->render_node) tomoe_select_render_node(options->render_node);
     if (options->drm_device) {
         char devices[PATH_MAX];
@@ -573,6 +580,7 @@ static int run_compositor(const struct cli_options *options) {
         return 1;
     }
     int status = 1;
+    const char *stop_reason = "it could not start";
     struct control_server *control = NULL;
     struct ipc_server *ipc = NULL;
     struct desktop_bus *bus = NULL;
@@ -650,15 +658,20 @@ static int run_compositor(const struct cli_options *options) {
         if (step < 0) {
             tomoe_log(LOG_ERROR, "tomoe: native event loop failed");
             loop_state.failed = true;
+            stop_reason = "the native event loop failed";
             break;
         }
-        if (step > 0) break;
+        if (step > 0) {
+            stop_reason = "its display backend ended";
+            break;
+        }
         tomoe_test_gestures(server);
         if (policy_events_pending(server)) {
             lisp_set_limits(2000000, 25000000ULL);
             policy_drain(server);
         }
         desktop_bus_service(bus);
+        tomoe_log_tend();
         control_serve(control);
         ipc_serve(ipc);
         lisp_end_turn();
@@ -666,7 +679,10 @@ static int run_compositor(const struct cli_options *options) {
     uint64_t deadline = loop_now_ms() + 100;
     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);
     status = loop_state.failed ? 1 : 0;
+    if (loop_state.quit)
+        stop_reason = loop_state.quit_reason[0] ? loop_state.quit_reason : "it was asked to quit";
 done:
+    tomoe_log_close(stop_reason);
     if (resources) resources_stop(server);
     tomoe_service_run_end();
     if (session) desktop_session_stop();

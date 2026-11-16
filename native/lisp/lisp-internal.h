@@ -450,6 +450,7 @@ struct lisp_region *heap_region_of(const void *ptr);
 lisp_value heap_store(const void *container, lisp_value value);
 uint64_t heap_region_used(struct lisp_region *region);
 void heap_arena_reset(void);
+void heap_reclaim_dropped(void);
 void heap_reset_blocks(void);
 void heap_set_reservation(void *base);
 _Noreturn void lisp_oom(void);
@@ -603,6 +604,7 @@ struct lisp_reader {
     const char *file;
     uint32_t package;
     bool allow_backquote;
+    int depth;
 };
 
 void reader_init(struct lisp_reader *rd, const char *file, const char *text, size_t len, uint32_t package, bool allow_backquote);
@@ -818,6 +820,7 @@ lisp_value builtin_keep(int argc, lisp_value *argv);
 lisp_value builtin_release(int argc, lisp_value *argv);
 lisp_value builtin_condition_message(int argc, lisp_value *argv);
 lisp_value builtin_with_limits(int argc, lisp_value *argv);
+lisp_value builtin_budget_failures(int argc, lisp_value *argv);
 lisp_value builtin_load_source(int argc, lisp_value *argv);
 lisp_value builtin_drop_package(int argc, lisp_value *argv);
 lisp_value builtin_export(int argc, lisp_value *argv);

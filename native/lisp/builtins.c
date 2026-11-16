@@ -2284,7 +2284,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     uint64_t saved_steps = lisp.steps;
     uint64_t saved_limit = lisp.steps_limit;
     uint64_t saved_deadline = lisp.deadline_at;
-    uint64_t started = saved_deadline && !ms ? lisp_now_ns() : 0;
+    uint64_t started = saved_deadline ? lisp_now_ns() : 0;
     int limited = steps || ms;
     lisp.limited_depth += limited;
     uint32_t saved_watched = lisp.watched_depth;
@@ -2311,6 +2311,11 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
     lisp.watched_depth = saved_watched;
     return result;
+}
+
+lisp_value builtin_budget_failures(int argc, lisp_value *argv)
+{
+    return make_int((int64_t)lisp.budget_failures);
 }
 
 lisp_value builtin_eval(int argc, lisp_value *argv)

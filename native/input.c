@@ -1480,13 +1480,19 @@ static bool ui_pointer_button(struct tomoe *s, struct pointer_button *input) {
     if (!pointer) {
         for (size_t i = 0; i < UI_POINTERS && !pointer; i++)
             if (!ui_pointer_pool[i].server) pointer = &ui_pointer_pool[i];
-        if (!pointer) { fail(s, "too many pointer devices with held buttons"); return true; }
+        if (!pointer) {
+            tomoe_log(LOG_ERROR, "tomoe: %d pointer devices already hold buttons; dropping a press "
+                "of button %u", UI_POINTERS, input->button);
+            return true;
+        }
         pointer->server = s; pointer->pointer = input->device;
         pointer->next = s->ui_pointers; s->ui_pointers = pointer;
         listen(&pointer->destroy, &input->device->events.destroy, ui_pointer_destroy);
     }
     if (pointer->count == sizeof(pointer->buttons) / sizeof(pointer->buttons[0])) {
-        fail(s, "too many held pointer buttons"); return true;
+        tomoe_log(LOG_ERROR, "tomoe: a pointer already holds %zu buttons; dropping a press of "
+            "button %u", pointer->count, input->button);
+        return true;
     }
     pointer->buttons[pointer->count].button = input->button;
     pointer->buttons[pointer->count++].consumed = consumed;

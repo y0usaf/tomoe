@@ -302,6 +302,7 @@ static void shorter_list(lisp_value list1, lisp_value list2, lisp_value *shorter
             b = a;
             break;
         }
+        check_steps();
         a = CDR(a);
         b = CDR(b);
         length++;
@@ -457,17 +458,30 @@ lisp_value builtin_remove_duplicates(int argc, lisp_value *argv)
     return out;
 }
 
+static lisp_value copy_tree(lisp_value value, int depth)
+{
+    if (!consp(value))
+        return value;
+    if (depth > LISP_MAX_DEPTH)
+        lisp_error("COPY-TREE: the tree nests more than %d deep", LISP_MAX_DEPTH);
+    lisp_value out = NIL_VAL, tail = NIL_VAL;
+    while (consp(value)) {
+        check_steps();
+        lisp_value cell = cons(copy_tree(CAR(value), depth + 1), NIL_VAL);
+        if (nilp(out))
+            out = cell;
+        else
+            CDR(tail) = cell;
+        tail = cell;
+        value = CDR(value);
+    }
+    CDR(tail) = value;
+    return out;
+}
+
 lisp_value builtin_copy_tree(int argc, lisp_value *argv)
 {
-    if (argc < 1)
-        return NIL_VAL;
-    lisp_value value = argv[0];
-    if (consp(value)) {
-        lisp_value head = CAR(value);
-        lisp_value tail = CDR(value);
-        return cons(builtin_copy_tree(1, &head), builtin_copy_tree(1, &tail));
-    }
-    return value;
+    return argc < 1 ? NIL_VAL : copy_tree(argv[0], 0);
 }
 
 lisp_value builtin_copy_seq(int argc, lisp_value *argv)

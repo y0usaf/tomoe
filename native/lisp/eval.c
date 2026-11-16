@@ -85,6 +85,7 @@ _Noreturn void lisp_oom(void)
         (unsigned long long)lisp.heap_used, (unsigned long long)gen_used,
         (unsigned long long)(lisp.cur_region ? lisp.cur_region->used : 0),
         (unsigned long long)lisp.region_limit);
+    lisp.budget_failures++;
     throw_error_value(lisp.oom_condition);
 }
 
@@ -1940,9 +1941,16 @@ void lisp_set_limits(uint64_t steps, uint64_t deadline_ns)
 
 void lisp_end_turn(void)
 {
-    if (lisp.call_depth == 0)
+    if (lisp.call_depth == 0) {
         heap_arena_reset();
+        heap_reclaim_dropped();
+    }
     lisp.steps_total_last = lisp.steps;
+}
+
+const char *lisp_active_hook(void)
+{
+    return lisp.current_hook;
 }
 
 static lisp_value lookup_hook(const char *function)

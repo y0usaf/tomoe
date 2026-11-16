@@ -21,11 +21,12 @@
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg-shell-protocol.h"
 
-enum { LOG_ERROR = 1, LOG_WARNING, LOG_INFO, LOG_DEBUG };
 enum { FRAME_TRACE = 128 };
-extern int log_verbosity;
-void tomoe_log(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-void tomoe_syslog_line(int level, const char *fmt, va_list args);
+void tomoe_log_line(const char *line);
+void tomoe_log_open(const char *name, const char *backend);
+void tomoe_log_close(const char *reason);
+void tomoe_log_tend(void);
+const char *tomoe_log_path(void);
 const char *tomoe_data_dirs(void);
 
 struct box { int x, y, width, height; };

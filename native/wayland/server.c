@@ -468,13 +468,12 @@ static int client_data(int fd, uint32_t mask, void *data) {
             wire_log(true, false, resource->interface, id, m, shown, object_name, client);
         }
         void (* const *implementation)(void) = resource->implementation;
-        if (!implementation) {
-            LOG("Implementation of resource %u of %s is NULL\n", id, resource->interface->name);
-            abort();
-        }
-        if (!implementation[opcode]) {
-            LOG("listener function for opcode %u of %s is NULL\n", opcode, resource->interface->name);
-            abort();
+        if (!implementation || !implementation[opcode]) {
+            LOG("no implementation for request %s of %s#%u\n", m->name, resource->interface->name, id);
+            wire_close_fds(m, args, count);
+            wl_resource_post_error(client->display_resource, WL_DISPLAY_ERROR_INVALID_METHOD,
+                "%s#%u.%s is not implemented", resource->interface->name, id, m->name);
+            break;
         }
         wire_invoke(implementation[opcode], client, resource, m, args);
         if (client->error) break;
@@ -777,6 +776,11 @@ void wl_display_terminate(struct wl_display *display) {
 void wl_display_flush_clients(struct wl_display *display) {
     struct wl_client *client, *next;
     wl_list_for_each_safe(client, next, &display->clients, link) {
+        if (client->error) {
+            wire_flush(&client->wire);
+            destroy_client_with_error(client, "a client that could not take its events");
+            continue;
+        }
         if (!client->wire.out_len) continue;
         int ret = wire_flush(&client->wire);
         if (ret < 0 && errno == EAGAIN)

@@ -206,6 +206,19 @@ or is removed (with the reason the scan gave), and every DRM change event are
 written without `TOMOE_DEBUG`, so a screen that stops presenting names its own
 state instead of leaving a frozen counter behind.
 
+Every line Tomoe logs also goes to `$XDG_STATE_HOME/tomoe/SOCKET.log`
+(`~/.local/state/tomoe/` when it is unset), timestamped and kept across
+sessions; at 8 MiB it moves to `SOCKET.log.1`. A session started on a VT, whose
+stderr is the terminal, writes its stderr there instead, so the programs it
+starts log there too. A line already written in the last minute is counted
+rather than repeated, and a flood is cut to bursts, so an extension failing every
+frame leaves its error and a count instead of rotating the history away. The log
+records each session's start and why it stopped (a quit, the signal and the pid
+that sent it, or a failed loop), every refused or rolled-back load, every stopped
+extension and withdrawn surface, every supervised process that exits on its own
+with its status or signal, and, if the compositor itself crashes, the signal,
+the Lisp hook that was running and a backtrace to resolve with `addr2line`.
+
 
 The compositor thread asks for round-robin realtime priority once it is running,
 so a busy desktop cannot delay Tomoe's own frame. Without `CAP_SYS_NICE` (or an
@@ -463,6 +476,20 @@ steps, the same on every machine, each reducer it mounts keeps its own
 watchdog, and a slow first start on a cold GPU finishes loading instead of
 falling back to the defaults. A reducer that runs the Lisp heap out fails
 alone; the runtime keeps an eighth of the heap for itself to settle the rest.
+The time a reducer spends under its own watchdog is not charged to the event
+that ran it, so one stuck extension fails by itself instead of failing the
+transaction around it. An extension that runs past its watchdog or the heap
+twice in a row is stopped: it is unmounted with all its effects, logged with
+the reason, and comes back when the config reloads, so a hang costs two
+watchdogs once instead of one per event. A config or patch that fails to load
+gives back everything it allocated, so the next load has the whole heap. When
+the shell surfaces of every extension cannot be laid out together (one is
+larger than a canvas, or all of them pass the canvas budget), the extensions
+whose surfaces cannot join the rest, in mount order, keep their last committed
+answer, without any surface that still does not fit, and are logged under their
+names; the rest of the transaction commits. A surface the
+compositor cannot stage keeps the frame it last showed and is logged, and the
+presentation goes ahead without it.
 Because every effect has an owner, unmounting an extension takes its effects
 with it. A transaction runs on one instant: every round reads
 `get-internal-real-time` as it stood when the transaction began, so a reducer

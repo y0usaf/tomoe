@@ -31,6 +31,36 @@
               (and (null value) (not (null condition))
                    (not (null (search "budget" (%condition-message condition)))))))
 
+(unit-check "limits-spare-the-caller" 7
+            (%with-limits nil 200
+                          (lambda ()
+                            (ignore-errors (%with-limits nil 150 (lambda () (loop do nil))))
+                            (+ 3 4))))
+
+(unit-check "limits-count-failures" t
+            (let ((before (%budget-failures)))
+              (ignore-errors (%with-limits 1000 0 (lambda () (loop do nil))))
+              (> (%budget-failures) before)))
+
+(unit-check "copy-tree-long" 200000
+            (length (copy-tree (make-list 200000 :initial-element 1))))
+(unit-check "copy-tree-dotted" '(1 (2 . 3) . 4) (copy-tree '(1 (2 . 3) . 4)))
+(unit-check "copy-tree-cycle" t
+            (let ((tree (list 1 2)))
+              (setf (car tree) tree)
+              (not (null (search "nests" (handler-case (copy-tree tree)
+                                           (error (condition) (%condition-message condition))))))))
+(unit-check "union-cycle" t
+            (let ((cycle (list 1 2)))
+              (setf (cdr (cdr cycle)) cycle)
+              (not (null (search "budget" (handler-case (%with-limits 100000 0 (lambda () (union cycle cycle)))
+                                            (error (condition) (%condition-message condition))))))))
+(unit-check "reader-depth" t
+            (not (null (search "nest" (handler-case
+                                          (read-from-string (concatenate 'string (make-string 5000 :initial-element #\()
+                                                                         "1"))
+                                        (error (condition) (%condition-message condition)))))))
+
 (unit-check "read-source" 2
             (length (%read-source "(+ 1 2) foo" "TOMOE")))
 (unit-check "read-source-form" '(+ 1 2)

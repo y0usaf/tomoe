@@ -721,6 +721,11 @@ void lisp_release(lisp_value value)
         return;
     release_pins(region);
     region_destroy(region);
+    heap_reclaim_dropped();
+}
+
+void heap_reclaim_dropped(void)
+{
     struct lisp_region *gen = lisp.generations;
     while (gen) {
         struct lisp_region *next = gen->next;

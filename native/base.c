@@ -13,9 +13,9 @@ static char error_lines[ERRORS_KEPT][ERROR_LINE];
 static unsigned long error_count;
 static char *errors_text;
 
-static void keep_error(const char *fmt, va_list args) {
+static void keep_error(const char *text) {
     char *line = error_lines[error_count++ % ERRORS_KEPT];
-    if (vsnprintf(line, ERROR_LINE, fmt, args) < ERROR_LINE) return;
+    if ((size_t)snprintf(line, ERROR_LINE, "%s", text) < ERROR_LINE) return;
     size_t end = ERROR_LINE - 1;
     while (end && ((unsigned char)line[end - 1] & 0xC0) == 0x80) end--;
     if (end && (unsigned char)line[end - 1] >= 0xC0) end--;
@@ -24,21 +24,13 @@ static void keep_error(const char *fmt, va_list args) {
 
 void tomoe_log(int level, const char *fmt, ...) {
     if (level > log_verbosity) return;
+    char line[4096];
     va_list args;
     va_start(args, fmt);
-    if (level == LOG_ERROR) {
-        va_list kept;
-        va_copy(kept, args);
-        keep_error(fmt, kept);
-        va_end(kept);
-    }
-    va_list logged;
-    va_copy(logged, args);
-    vfprintf(stderr, fmt, args);
+    vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
-    fputc('\n', stderr);
-    tomoe_syslog_line(level, fmt, logged);
-    va_end(logged);
+    if (level == LOG_ERROR) keep_error(line);
+    tomoe_log_line(line);
 }
 
 const char *tomoe_data_dirs(void) {

@@ -38,7 +38,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
         :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil
-        :constructions nil :declarations-cache nil
+        :constructions nil :declarations-cache nil :refused-surfaces nil :runaways nil
         :frame-ms 16 :invocations 0 :layout-rebuilds 0 :layout-reuses 0
         :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
         :ipc-baseline-sent nil))
@@ -385,11 +385,47 @@ message when it failed, leaving MOUNTED's state and effects as they were."
                     (when (mounted-rule-parent mounted) (setf (nth 11 mounted) nil))
                     (setf (nth 4 mounted) (1+ (mounted-dispatches mounted)))
                     commands)))))
-    (let ((outcome nil) (message nil))
+    (let ((outcome nil) (message nil) (budget-failures (%budget-failures)))
       (%catch (lambda () (setf outcome (%with-limits nil (%limit :watchdog-ms) run)))
               (lambda (text) (setf message text)))
-      (when message (extension-failed (mounted-spec mounted) mounted message))
+      (let ((root (if (mounted-rule-parent mounted) (spec-name (mounted-rule-parent mounted)) name)))
+        (cond (message
+               (extension-failed (mounted-spec mounted) mounted message)
+               (when (> (%budget-failures) budget-failures) (note-runaway root message)))
+              ((assoc root (%r :runaways) :test #'equal) (forget-runaway root))))
       (values outcome message))))
+
+(defparameter +runaway-strikes+ 2
+  "How many invocations in a row may run out of their watchdog or the heap before
+WITHDRAW-RUNAWAYS stops the extension.")
+
+(defun note-runaway (name message)
+  (let ((entry (assoc name (%r :runaways) :test #'equal)))
+    (%r! :runaways (cons (list name (1+ (if entry (second entry) 0)) message)
+                         (remove name (%r :runaways) :key #'car :test #'equal)))))
+
+(defun forget-runaway (name)
+  (%r! :runaways (remove name (%r :runaways) :key #'car :test #'equal)))
+
+(defun withdraw-runaways ()
+  "Unmount every extension whose last +RUNAWAY-STRIKES+ invocations ran past their
+watchdog or the heap limit. Each one already held the compositor for its whole
+watchdog, so it is stopped instead of being given the next event: its surfaces,
+timers, processes and bindings go with it, and the rest of the desktop keeps
+running. A reload of the config mounts it again."
+  (dolist (entry (%r :runaways))
+    (destructuring-bind (name strikes message) entry
+      (when (>= strikes +runaway-strikes+)
+        (forget-runaway name)
+        (let ((failure nil))
+          (%catch (lambda () (without-deadline (lambda () (unmount name))))
+                  (lambda (text) (setf failure text)))
+          (record-error
+           (if failure
+               (format nil "Extension ~A ran out of its limits ~D times in a row (~A) and could not be stopped: ~A"
+                       name strikes message failure)
+               (format nil "Extension ~A stopped: it ran out of its limits ~D times in a row (~A). Its surfaces, timers, processes and bindings are withdrawn until the config is reloaded."
+                       name strikes message))))))))
 
 (defun resolved-grab (mounts)
   "The last owner's grab on a buffered target, and that owner."
@@ -839,10 +875,9 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
           (multiple-value-bind (surface-plans shell-workareas)
-              (resolve-shell-surfaces
-               (nreverse surfaces) output-facts workareas
-               :asset-loader nil
-               :viewport (shell-viewport output-facts (materialization-data m)))
+              (resolve-owned-surfaces
+               mounts (nreverse surfaces) output-facts workareas
+               (shell-viewport output-facts (materialization-data m)))
             (list :windows (runtime-windows)
                   :window-geometry (resolved-window-geometry layout view output-facts)
                   :rules (resolved-rule-properties mounts) :data data
@@ -877,6 +912,63 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                   (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
                                                     (and (= (getf a :modifiers) (getf b :modifiers))
                                                          (< (getf a :code) (getf b :code)))))))))))))
+
+(defvar *surface-failures* :outside
+  "Inside a transaction, (SPEC . MESSAGE) for each extension whose shell surfaces
+could not join the rest; the transaction holds each at its last committed answer.")
+
+(defun resolve-owned-surfaces (mounts declarations outputs workareas viewport)
+  "Resolve every extension's shell surfaces together. When they cannot be, find the
+extensions whose surfaces cannot join the rest, in mount order, and leave theirs
+out: each is reported in *SURFACE-FAILURES*, so the transaction holds it at its
+last committed answer, and remembered with the declarations it was refused for, so
+the next transaction leaves them out without trying again until they change."
+  (flet ((owner-of (declaration) (getf declaration :owner))
+         (resolve (subset)
+           (let ((result nil) (failure nil))
+             (%catch (lambda ()
+                       (setf result (multiple-value-list
+                                     (resolve-shell-surfaces subset outputs workareas
+                                                             :asset-loader nil :viewport viewport))))
+                     (lambda (text) (setf failure text)))
+             (values result failure))))
+    (let* ((owners (remove-duplicates (mapcar #'owner-of declarations) :test #'equal :from-end t))
+           (owned (loop for owner in owners
+                        collect (cons owner (remove-if-not (lambda (declaration)
+                                                             (equal (owner-of declaration) owner))
+                                                           declarations))))
+           (refused (loop for entry in (%r :refused-surfaces)
+                          when (equal (second entry) (cdr (assoc (first entry) owned :test #'equal)))
+                            collect entry))
+           (admitted (remove-if (lambda (owner) (assoc owner refused :test #'equal)) owners)))
+      (flet ((declared (owners)
+               (remove-if-not (lambda (declaration) (member (owner-of declaration) owners :test #'equal))
+                              declarations)))
+        (multiple-value-bind (result failure) (resolve (declared admitted))
+          (dolist (entry refused) (surface-failed mounts (first entry) (third entry)))
+          (when failure
+            (multiple-value-bind (empty none) (resolve nil)
+              (declare (ignore empty))
+              (when none (error "~A" failure)))
+            (let ((kept nil))
+              (dolist (owner admitted)
+                (multiple-value-bind (trial why) (resolve (declared (append kept (list owner))))
+                  (if why
+                      (progn
+                        (push (list owner (cdr (assoc owner owned :test #'equal)) why) refused)
+                        (surface-failed mounts owner why))
+                      (setf kept (append kept (list owner)) result trial))))
+              (unless kept (setf result (resolve nil)))))
+          (unless (equal refused (%r :refused-surfaces)) (%r! :refused-surfaces refused))
+          (values (first result) (second result)))))))
+
+(defun surface-failed (mounts owner why)
+  (let ((mounted (find owner mounts :test #'equal :key (lambda (m) (spec-name (mounted-spec m)))))
+        (message (format nil "~A It keeps its last answer, without surfaces that still do not fit." why)))
+    (if (and mounted (listp *surface-failures*))
+        (unless (assoc (mounted-spec mounted) *surface-failures* :test #'eq)
+          (push (cons (mounted-spec mounted) message) *surface-failures*))
+        (record-error (format nil "Extension ~A: ~A" owner message)))))
 
 (defun default-output-config (outputs connectors scale)
   "Fill omitted scales from SCALE, and configure every other connector at SCALE
@@ -955,6 +1047,7 @@ this transaction, and is logged under its name; everyone else still commits. A
 dependency cycle discards the entire candidate transaction."
   (let* ((*materialized* (list nil -1 nil nil))
          (*transaction-failures* nil)
+         (*surface-failures* nil)
          (candidate (prune-rule-mounts
                      (mapcar #'copy-mounted
                              (append (root-mounts mounts)
@@ -1012,7 +1105,7 @@ dependency cycle discards the entire candidate transaction."
                                  (nconc commands
                                         (mapcar (lambda (command) (cons spec command))
                                                 answer)))))))))
-             (hold (spec)
+             (hold (spec &optional (message "its answer still changed after 16 rounds; it keeps its last committed answer"))
                (let ((mounted (find spec candidate :key #'mounted-spec))
                      (origin (assoc spec origins :test #'eq)))
                  (when (and mounted (not (member spec *transaction-failures* :test #'eq)))
@@ -1022,8 +1115,13 @@ dependency cycle discards the entire candidate transaction."
                              (copy-data (sixth (effect-arguments (mounted-rule-definition mounted)))))
                          (nth 3 mounted) (third origin)
                          commands (remove spec commands :key #'car :test #'eq))
-                   (extension-failed spec mounted
-                                     "its answer still changed after 16 rounds; it keeps its last committed answer")))))
+                   (extension-failed spec mounted message)
+                   t)))
+             (hold-surface-failures ()
+               (let ((held nil))
+                 (loop for (spec . message) in *surface-failures*
+                       do (when (hold spec message) (setf held t)))
+                 held)))
       (loop for round below 32 do
         (setf rounds round restless nil)
         (let ((before context) (invoked nil))
@@ -1089,6 +1187,7 @@ dependency cycle discards the entire candidate transaction."
             (setf candidate reconciled force (union force (union new revised :test #'equal) :test #'equal)))
           (multiple-value-bind (next changes)
               (let ((materialized (materialize candidate)))
+                (when (hold-surface-failures) (setf materialized (materialize candidate)))
                 (values materialized (changed-keys before materialized)))
             (setf context next dirty changes event (list :type :change :keys changes))
             (unless (or changes force)
@@ -1722,6 +1821,7 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
                      (lambda (text) (setf failure text)))
              (when failure (report-config-error failure nil))))
           (t (dispatch-event event))))
+  (withdraw-runaways)
   (%persist-state)
   nil))
 
@@ -1735,12 +1835,23 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
              (getf event :type)))
     event))
 
+(defun refused-load (what thunk)
+  "Run THUNK, a load the control socket asked for. When it fails, the running config
+stays, and the log says what was refused and why before the caller hears it."
+  (let ((failure nil))
+    (%catch thunk (lambda (text) (setf failure text)))
+    (when failure
+      (record-error (format nil "~A was refused and the running config kept: ~A" what failure))
+      (error "~A" failure))))
+
 (defun TOMOE-CONTROL (op arguments)
   (let ((*pending-writes* nil))
   (ecase op
     (:inspect (describe-runtime))
-    (:reload (%reload-policy) (%persist-state) nil)
-    (:mount (%mount-policy (first arguments)) (%persist-state) nil)
+    (:reload (refused-load "The reload" #'%reload-policy) (%persist-state) nil)
+    (:mount (refused-load (format nil "Mounting ~A" (first arguments))
+                          (lambda () (%mount-policy (first arguments))))
+     (%persist-state) nil)
     (:unmount (unload-policy (first arguments)) (%persist-state) nil)
     (:event (dispatch-event (injected-event (first arguments))) (%persist-state) nil))))
 
@@ -1750,6 +1861,7 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
               (setf reply (ipc-request method params))
               (%json-validate-value reply))
             (lambda (text) (setf failure text)))
+    (withdraw-runaways)
     (%persist-state)
     (if failure
         (error "~A" failure)
@@ -1758,6 +1870,7 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
 (defun TOMOE-COMMAND (name arguments origin)
   (declare (ignore origin))
   (let ((*pending-writes* nil) (report (run-command name arguments)))
+    (withdraw-runaways)
     (%persist-state)
     report))
 

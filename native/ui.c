@@ -1553,6 +1553,33 @@ int tomoe_present_ui_end(struct tomoe *s) {
     return 1;
 }
 
+int tomoe_present_ui_cancel(struct tomoe *s, const char *owner, const char *name,
+        const char *output) {
+    struct ui_set *set = candidate_set(s);
+    if (!set) return 0;
+    set->current = NULL;
+    owner = string_or_empty(owner); name = string_or_empty(name);
+    output = string_or_empty(output);
+    for (size_t i = 0; i < set->count; i++) {
+        struct ui_surface *staged = set->surfaces[i];
+        if (!same_declaration(staged, owner, name, output)) continue;
+        remove_surface(set, staged);
+        surface_unref(staged);
+        break;
+    }
+    for (size_t i = 0; s->ui && i < s->ui->count; i++) {
+        struct ui_surface *live = s->ui->surfaces[i];
+        if (!live->complete || !same_declaration(live, owner, name, output)) continue;
+        surface_ref(live);
+        if (!set_append(set, live)) {
+            surface_unref(live);
+            return 0;
+        }
+        return 1;
+    }
+    return 2;
+}
+
 static void sort_surfaces(struct ui_set *set) {
     for (size_t i = 1; i < set->count; i++) {
         struct ui_surface *surface = set->surfaces[i];

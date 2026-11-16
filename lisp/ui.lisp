@@ -158,6 +158,9 @@ measurement and draw plan of every surface are computed by the compositor."
     (values (first result) (second result))))
 
 (defun stage-native-ui (plans)
-  "Hand every resolved surface plan to the compositor's retained shell scene."
-  (%ui-stage plans)
+  "Hand every resolved surface plan to the compositor's retained shell scene. A
+surface the compositor cannot take keeps the frame it last showed, or none, and is
+logged under its extension's name; the rest of the presentation goes ahead."
+  (loop for (owner message) in (%ui-stage plans)
+        do (%log :error (format nil "Extension ~A: ~A It keeps its last frame." owner message)))
   nil)

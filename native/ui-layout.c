@@ -795,6 +795,7 @@ static void collect_asset_ids(struct ui_lnode *node, uint64_t *ids, size_t *coun
 
 struct ui_cached_plan {
     bool used;
+    uint64_t touched;
     char *identity;
     char *arguments;
     uint64_t id;
@@ -809,6 +810,8 @@ struct ui_cached_plan {
 static struct ui_cached_plan plan_cache[UI_PLAN_CACHE];
 static size_t plan_cache_count;
 static uint64_t next_plan_id;
+static uint64_t plan_clock;
+static uint64_t plan_staged;
 
 static void free_draw(struct ui_draw *draw, size_t count) {
     for (size_t i = 0; i < count; i++) {
@@ -828,18 +831,27 @@ static void free_hits(struct ui_plan_hit *hits, size_t count) {
     free(hits);
 }
 
-static void clear_plan_cache(void) {
+static void forget_plan(struct ui_cached_plan *entry) {
+    free(entry->identity);
+    free(entry->arguments);
+    free(entry->measure);
+    free_draw(entry->draw, entry->draw_count);
+    free_hits(entry->hits, entry->hit_count);
+    memset(entry, 0, sizeof(*entry));
+    plan_cache_count--;
+}
+
+static bool make_plan_room(void) {
+    struct ui_cached_plan *oldest = NULL;
     for (size_t i = 0; i < UI_PLAN_CACHE; i++) {
         struct ui_cached_plan *entry = &plan_cache[i];
-        if (!entry->used) continue;
-        free(entry->identity);
-        free(entry->arguments);
-        free(entry->measure);
-        free_draw(entry->draw, entry->draw_count);
-        free_hits(entry->hits, entry->hit_count);
-        memset(entry, 0, sizeof(*entry));
+        if (entry->used && entry->touched <= plan_staged &&
+                (!oldest || entry->touched < oldest->touched))
+            oldest = entry;
     }
-    plan_cache_count = 0;
+    if (!oldest) return false;
+    forget_plan(oldest);
+    return true;
 }
 
 static struct ui_cached_plan *plan_find_identity(const char *identity) {
@@ -889,7 +901,7 @@ static void store_measurement(struct ui_cached_plan *entry, const double *measur
 }
 
 static struct ui_cached_plan *plan_insert(const char *identity, const char *arguments) {
-    if (plan_cache_count >= UI_PLAN_CACHE) clear_plan_cache();
+    if (plan_cache_count >= UI_PLAN_CACHE && !make_plan_room()) return NULL;
     for (size_t i = 0; i < UI_PLAN_CACHE; i++) {
         struct ui_cached_plan *entry = &plan_cache[i];
         if (entry->used) continue;
@@ -1265,9 +1277,16 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
             }
             if (!entry) {
                 entry = plan_insert(identity_text, arguments_text);
+                if (!entry) {
+                    free(identity_text);
+                    free(arguments_text);
+                    lisp_error("More than %d shell surface plans changed before one was presented.",
+                        (int)UI_PLAN_CACHE);
+                }
                 entry->id = ++next_plan_id;
                 store_measurement(entry, measure, nodes);
             }
+            entry->touched = ++plan_clock;
             if (!reuse || !entry->draw) {
                 struct ui_builder builder;
                 memset(&builder, 0, sizeof(builder));
@@ -1357,146 +1376,163 @@ static int attach_axes_bits(lisp_value axes) {
     return bits;
 }
 
-static lisp_value ui_stage(int argc, lisp_value *argv) {
-    lisp_value plans = argv[0];
-    for (lisp_value tail = plans; lisp_consp(tail); tail = lisp_cdr(tail)) {
-        lisp_value plan = lisp_car(tail);
-        lisp_value name = plist_get(plan, "NAME");
-        const char *owner = text_value(plist_get(plan, "OWNER"));
-        const char *output = text_value(plist_get(plan, "OUTPUT"));
-        char name_buffer[256];
-        const char *symbol = lisp_symbol_name(name);
-        size_t name_length = symbol ? strlen(symbol) : 0;
-        if (name_length >= sizeof(name_buffer)) lisp_error("Cannot prepare shell surface.");
-        for (size_t i = 0; i < name_length; i++) {
-            char letter = symbol[i];
-            name_buffer[i] = letter >= 'A' && letter <= 'Z' ? (char)(letter - 'A' + 'a') : letter;
-        }
-        name_buffer[name_length] = 0;
-        const char *name_text = name_buffer;
-        uint64_t source_id = lisp_get_uint(plist_get(plan, "SOURCE-ID"));
-        uint64_t plan_id = lisp_get_uint(plist_get(plan, "PLAN-ID"));
-        lisp_value blur = plist_get(plan, "BLUR");
-        lisp_value attach = plist_get(plan, "ATTACH");
-        struct ui_cached_plan *entry = plan_find_id(plan_id);
-        int status = tomoe_present_ui_surface(ui_server, owner, source_id, name_text,
-            output ? output : "", plan_id,
-            (int)lisp_get_int(plist_get(plan, "X")), (int)lisp_get_int(plist_get(plan, "Y")),
-            (int)lisp_get_int(plist_get(plan, "WIDTH")),
-            (int)lisp_get_int(plist_get(plan, "HEIGHT")),
-            layer_index(plist_get(plan, "LAYER")),
-            truthy(plist_get(plan, "CLICK-THROUGH")) ? 1 : 0,
-            truthy(plist_get(plan, "SLIDE")) ? 1 : 0,
-            lisp_nilp(blur) ? -1 : (int)lisp_get_int(blur),
-            lisp_nilp(attach) ? 0 : (uint32_t)lisp_get_uint(attach),
-            attach_axes_bits(plist_get(plan, "ATTACH-AXES")), entry && entry->draw_count);
-        if (status != 1 && status != 2) {
-            char buffer[512];
-            lisp_print(name, true, buffer, sizeof(buffer));
-            lisp_error("Cannot prepare shell surface %s.", buffer);
-        }
-        lisp_value inputs = plist_get(plan, "SHADER-INPUTS");
-        if (lisp_consp(inputs)) {
-            double data[192];
-            uint32_t windows[8];
-            int data_count = 0, window_count = 0;
-            for (lisp_value tail = plist_get(inputs, "DATA"); lisp_consp(tail) && data_count < 192;
-                    tail = lisp_cdr(tail))
-                data[data_count++] = lisp_get_double(lisp_car(tail));
-            for (lisp_value tail = plist_get(inputs, "WINDOWS"); lisp_consp(tail) && window_count < 8;
-                    tail = lisp_cdr(tail))
-                windows[window_count++] = (uint32_t)lisp_get_uint(lisp_car(tail));
-            lisp_value clock = plist_get(inputs, "CLOCK");
-            lisp_value until = plist_get(inputs, "UNTIL");
-            lisp_value reach = plist_get(inputs, "REACH");
-            if (!tomoe_present_ui_shader_inputs(ui_server, data, data_count, windows, window_count,
-                    !lisp_nilp(clock), lisp_nilp(clock) ? 0 : lisp_get_double(clock),
-                    lisp_nilp(until) ? -1 : lisp_get_double(until),
-                    lisp_nilp(reach) ? 0 : lisp_get_double(reach)))
-                lisp_error("Cannot prepare shell shader inputs.");
-        }
-        if (status != 1) continue;
-        if (!entry) lisp_error("Cannot prepare retained shell rendering.");
-        lisp_value assets = plist_get(plan, "ASSETS");
-        for (lisp_value asset = assets; lisp_consp(asset); asset = lisp_cdr(asset))
-            if (!tomoe_present_ui_asset_ref(ui_server, lisp_get_uint(lisp_car(asset))))
-                lisp_error("Cannot prepare retained shell rendering.");
-        lisp_value backdrop = plist_get(plan, "BACKDROP");
-        if (lisp_consp(backdrop)) {
-            lisp_value id = lisp_car(backdrop);
-            if (!lisp_nilp(id) && !tomoe_present_ui_backdrop(ui_server, lisp_get_uint(id),
-                    lisp_get_double(lisp_car(lisp_cdr(backdrop))),
-                    lisp_get_double(lisp_car(lisp_cdr(lisp_cdr(backdrop))))))
-                lisp_error("Cannot prepare retained shell rendering.");
-        }
-        lisp_value trail = plist_get(plan, "TRAIL");
-        if (lisp_consp(trail)) {
-            lisp_value idle = plist_get(trail, "IDLE");
-            if (!tomoe_present_ui_trail(ui_server, lisp_get_double(plist_get(trail, "CELL")),
-                    lisp_get_double(plist_get(trail, "LIFE")),
-                    (int)lisp_get_int(plist_get(trail, "STEPS")),
-                    (uint32_t)lisp_get_uint(plist_get(trail, "COLOR")),
-                    lisp_get_double(plist_get(trail, "FPS")),
-                    lisp_nilp(idle) ? 0 : lisp_get_double(idle)))
-                lisp_error("Cannot prepare retained shell rendering.");
-        }
-        for (size_t i = 0; i < entry->draw_count; i++) {
-            struct ui_draw *op = &entry->draw[i];
-            if (!tomoe_present_ui_clip(ui_server, op->clip[0], op->clip[1],
-                    op->clip[2], op->clip[3]))
-                lisp_error("Cannot prepare retained shell rendering.");
-            int ok = 0;
-            switch (op->kind) {
-            case UI_DRAW_SHAPE: {
-                struct ui_shape shape;
-                memset(&shape, 0, sizeof(shape));
-                shape.x = op->x;
-                shape.y = op->y;
-                shape.width = op->width;
-                shape.height = op->height;
-                shape.radius = op->radius;
-                shape.stroke = op->stroke;
-                shape.rgba = op->rgba;
-                shape.fill = op->fill;
-                shape.stop_count = op->stop_count;
-                shape.shadow_count = op->shadow_count;
-                memcpy(shape.geometry, op->geometry, sizeof(shape.geometry));
-                memcpy(shape.stop_at, op->stop_at, sizeof(op->stop_at));
-                memcpy(shape.stop_rgba, op->stop_rgba, sizeof(op->stop_rgba));
-                memcpy(shape.shadow, op->shadow, sizeof(op->shadow));
-                memcpy(shape.shadow_rgba, op->shadow_rgba, sizeof(op->shadow_rgba));
-                shape.points = op->points;
-                shape.point_count = op->point_count;
-                ok = tomoe_present_ui_shape(ui_server, &shape);
-                break;
-            }
-            case UI_DRAW_TEXT:
-                ok = tomoe_present_ui_text(ui_server, op->x, op->y, op->text, op->font,
-                    op->width, op->height, op->rgba, op->rotate);
-                break;
-            case UI_DRAW_ASSET:
-                ok = tomoe_present_ui_asset(ui_server, op->asset, op->x, op->y,
-                    op->width, op->height, op->tint, op->rgba);
-                break;
-            case UI_DRAW_ARC:
-                ok = tomoe_present_ui_arc(ui_server, op->x, op->y, op->width, op->height,
-                    op->start, op->end, op->rgba);
-                break;
-            }
-            if (!ok) lisp_error("Cannot prepare retained shell rendering.");
-        }
-        for (size_t i = 0; i < entry->hit_count; i++) {
-            struct ui_plan_hit *hit = &entry->hits[i];
-            if (!tomoe_present_ui_hit(ui_server, hit->key, hit->command,
-                    hit->hover ? hit->hover : "", hit->x, hit->y, hit->width, hit->height))
-                lisp_error("Cannot prepare retained shell rendering.");
-        }
-        if (!tomoe_present_ui_end(ui_server))
-            lisp_error("Cannot prepare retained shell rendering.");
+#define STAGE_FAILED(...) do { snprintf(message, size, __VA_ARGS__); return false; } while (0)
+
+static bool stage_surface(lisp_value plan, const char **failed_owner, char *message, size_t size) {
+    lisp_value name = plist_get(plan, "NAME");
+    const char *owner = text_value(plist_get(plan, "OWNER"));
+    *failed_owner = owner;
+    const char *output = text_value(plist_get(plan, "OUTPUT"));
+    char name_buffer[256];
+    const char *symbol = lisp_symbol_name(name);
+    size_t name_length = symbol ? strlen(symbol) : 0;
+    if (name_length >= sizeof(name_buffer)) STAGE_FAILED("Cannot prepare a shell surface of %s: its name is too long.", owner ? owner : "");
+    for (size_t i = 0; i < name_length; i++) {
+        char letter = symbol[i];
+        name_buffer[i] = letter >= 'A' && letter <= 'Z' ? (char)(letter - 'A' + 'a') : letter;
     }
-    return lisp_t();
+    name_buffer[name_length] = 0;
+    const char *name_text = name_buffer;
+    uint64_t source_id = lisp_get_uint(plist_get(plan, "SOURCE-ID"));
+    uint64_t plan_id = lisp_get_uint(plist_get(plan, "PLAN-ID"));
+    lisp_value blur = plist_get(plan, "BLUR");
+    lisp_value attach = plist_get(plan, "ATTACH");
+    struct ui_cached_plan *entry = plan_find_id(plan_id);
+    int status = tomoe_present_ui_surface(ui_server, owner, source_id, name_text,
+        output ? output : "", plan_id,
+        (int)lisp_get_int(plist_get(plan, "X")), (int)lisp_get_int(plist_get(plan, "Y")),
+        (int)lisp_get_int(plist_get(plan, "WIDTH")),
+        (int)lisp_get_int(plist_get(plan, "HEIGHT")),
+        layer_index(plist_get(plan, "LAYER")),
+        truthy(plist_get(plan, "CLICK-THROUGH")) ? 1 : 0,
+        truthy(plist_get(plan, "SLIDE")) ? 1 : 0,
+        lisp_nilp(blur) ? -1 : (int)lisp_get_int(blur),
+        lisp_nilp(attach) ? 0 : (uint32_t)lisp_get_uint(attach),
+        attach_axes_bits(plist_get(plan, "ATTACH-AXES")), entry && entry->draw_count);
+    if (status != 1 && status != 2) {
+        STAGE_FAILED("Cannot prepare shell surface %s of %s.", name_text, owner ? owner : "");
+    }
+    lisp_value inputs = plist_get(plan, "SHADER-INPUTS");
+    if (lisp_consp(inputs)) {
+        double data[192];
+        uint32_t windows[8];
+        int data_count = 0, window_count = 0;
+        for (lisp_value tail = plist_get(inputs, "DATA"); lisp_consp(tail) && data_count < 192;
+                tail = lisp_cdr(tail))
+            data[data_count++] = lisp_get_double(lisp_car(tail));
+        for (lisp_value tail = plist_get(inputs, "WINDOWS"); lisp_consp(tail) && window_count < 8;
+                tail = lisp_cdr(tail))
+            windows[window_count++] = (uint32_t)lisp_get_uint(lisp_car(tail));
+        lisp_value clock = plist_get(inputs, "CLOCK");
+        lisp_value until = plist_get(inputs, "UNTIL");
+        lisp_value reach = plist_get(inputs, "REACH");
+        if (!tomoe_present_ui_shader_inputs(ui_server, data, data_count, windows, window_count,
+                !lisp_nilp(clock), lisp_nilp(clock) ? 0 : lisp_get_double(clock),
+                lisp_nilp(until) ? -1 : lisp_get_double(until),
+                lisp_nilp(reach) ? 0 : lisp_get_double(reach)))
+            STAGE_FAILED("Cannot prepare the shader inputs of surface %s of %s.", name_text, owner ? owner : "");
+    }
+    if (status != 1) return true;
+    if (!entry) STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s has no resolved plan %llu.", name_text, owner ? owner : "", (unsigned long long)plan_id);
+    lisp_value assets = plist_get(plan, "ASSETS");
+    for (lisp_value asset = assets; lisp_consp(asset); asset = lisp_cdr(asset))
+        if (!tomoe_present_ui_asset_ref(ui_server, lisp_get_uint(lisp_car(asset))))
+            STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s lost asset %llu.", name_text, owner ? owner : "", (unsigned long long)lisp_get_uint(lisp_car(asset)));
+    lisp_value backdrop = plist_get(plan, "BACKDROP");
+    if (lisp_consp(backdrop)) {
+        lisp_value id = lisp_car(backdrop);
+        if (!lisp_nilp(id) && !tomoe_present_ui_backdrop(ui_server, lisp_get_uint(id),
+                lisp_get_double(lisp_car(lisp_cdr(backdrop))),
+                lisp_get_double(lisp_car(lisp_cdr(lisp_cdr(backdrop))))))
+            STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot take backdrop %llu.", name_text, owner ? owner : "", (unsigned long long)lisp_get_uint(id));
+    }
+    lisp_value trail = plist_get(plan, "TRAIL");
+    if (lisp_consp(trail)) {
+        lisp_value idle = plist_get(trail, "IDLE");
+        if (!tomoe_present_ui_trail(ui_server, lisp_get_double(plist_get(trail, "CELL")),
+                lisp_get_double(plist_get(trail, "LIFE")),
+                (int)lisp_get_int(plist_get(trail, "STEPS")),
+                (uint32_t)lisp_get_uint(plist_get(trail, "COLOR")),
+                lisp_get_double(plist_get(trail, "FPS")),
+                lisp_nilp(idle) ? 0 : lisp_get_double(idle)))
+            STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot take its trail.", name_text, owner ? owner : "");
+    }
+    for (size_t i = 0; i < entry->draw_count; i++) {
+        struct ui_draw *op = &entry->draw[i];
+        if (!tomoe_present_ui_clip(ui_server, op->clip[0], op->clip[1],
+                op->clip[2], op->clip[3]))
+            STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot clip draw %zu.", name_text, owner ? owner : "", i);
+        int ok = 0;
+        switch (op->kind) {
+        case UI_DRAW_SHAPE: {
+            struct ui_shape shape;
+            memset(&shape, 0, sizeof(shape));
+            shape.x = op->x;
+            shape.y = op->y;
+            shape.width = op->width;
+            shape.height = op->height;
+            shape.radius = op->radius;
+            shape.stroke = op->stroke;
+            shape.rgba = op->rgba;
+            shape.fill = op->fill;
+            shape.stop_count = op->stop_count;
+            shape.shadow_count = op->shadow_count;
+            memcpy(shape.geometry, op->geometry, sizeof(shape.geometry));
+            memcpy(shape.stop_at, op->stop_at, sizeof(op->stop_at));
+            memcpy(shape.stop_rgba, op->stop_rgba, sizeof(op->stop_rgba));
+            memcpy(shape.shadow, op->shadow, sizeof(op->shadow));
+            memcpy(shape.shadow_rgba, op->shadow_rgba, sizeof(op->shadow_rgba));
+            shape.points = op->points;
+            shape.point_count = op->point_count;
+            ok = tomoe_present_ui_shape(ui_server, &shape);
+            break;
+        }
+        case UI_DRAW_TEXT:
+            ok = tomoe_present_ui_text(ui_server, op->x, op->y, op->text, op->font,
+                op->width, op->height, op->rgba, op->rotate);
+            break;
+        case UI_DRAW_ASSET:
+            ok = tomoe_present_ui_asset(ui_server, op->asset, op->x, op->y,
+                op->width, op->height, op->tint, op->rgba);
+            break;
+        case UI_DRAW_ARC:
+            ok = tomoe_present_ui_arc(ui_server, op->x, op->y, op->width, op->height,
+                op->start, op->end, op->rgba);
+            break;
+        }
+        if (!ok) STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot take draw %zu of kind %d.", name_text, owner ? owner : "", i, (int)op->kind);
+    }
+    for (size_t i = 0; i < entry->hit_count; i++) {
+        struct ui_plan_hit *hit = &entry->hits[i];
+        if (!tomoe_present_ui_hit(ui_server, hit->key, hit->command,
+                hit->hover ? hit->hover : "", hit->x, hit->y, hit->width, hit->height))
+            STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot take hit %zu.", name_text, owner ? owner : "", i);
+    }
+    if (!tomoe_present_ui_end(ui_server))
+        STAGE_FAILED("Cannot prepare retained shell rendering: surface %s of %s cannot finish.", name_text, owner ? owner : "");
+    return true;
 }
 
+#undef STAGE_FAILED
+
+static lisp_value ui_stage(int argc, lisp_value *argv) {
+    lisp_value failures = lisp_nil();
+    for (lisp_value tail = argv[0]; lisp_consp(tail); tail = lisp_cdr(tail)) {
+        lisp_value plan = lisp_car(tail);
+        const char *owner = NULL;
+        char message[640];
+        if (stage_surface(plan, &owner, message, sizeof(message))) continue;
+        const char *symbol = lisp_symbol_name(plist_get(plan, "NAME"));
+        const char *output = text_value(plist_get(plan, "OUTPUT"));
+        char name[256] = { 0 };
+        for (size_t i = 0; symbol && symbol[i] && i + 1 < sizeof(name); i++)
+            name[i] = symbol[i] >= 'A' && symbol[i] <= 'Z' ? (char)(symbol[i] - 'A' + 'a') : symbol[i];
+        tomoe_present_ui_cancel(ui_server, owner ? owner : "", name, output ? output : "");
+        failures = lisp_cons(lisp_list(2, lisp_cstring(owner ? owner : ""), lisp_cstring(message)), failures);
+    }
+    plan_staged = plan_clock;
+    return lisp_nreverse(failures);
+}
 static lisp_value ui_shell_viewport(int argc, lisp_value *argv) {
     lisp_value outputs = argv[0], data = argv[1];
     lisp_value focal = lisp_nil();
