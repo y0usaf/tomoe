@@ -1,7 +1,7 @@
 (in-package #:tomoe-user)
 
-;;; A reducer that fails when the event carries :FAIL. The whole candidate
-;;; transaction must be discarded, and the next event must commit normally.
+;;; A reducer that fails when the event carries :FAIL. It keeps its last answer
+;;; while the other reducer's answer commits, and the next event commits normally.
 
 (defun trace--record (control &rest arguments)
   (tomoe::%write-append "/run/trace.log"

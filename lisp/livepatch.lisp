@@ -120,6 +120,13 @@ commit."
     (when mounts
       (transact (append (root-mounts (runtime-mounts)) mounts)
                 (list :type :mount) nil (mapcar #'spec-name specs)))
+    (let ((failed (find-if (lambda (mounted)
+                             (and (member (mounted-spec mounted) specs :test #'eq)
+                                  (plusp (mounted-failures mounted))))
+                           (root-mounts (runtime-mounts)))))
+      (when failed
+        (remove-patch-mounts (mapcar #'spec-name specs))
+        (error "Extension ~A: ~A" (spec-name (mounted-spec failed)) (mounted-last-error failed))))
     (mapcar (lambda (spec) (spec-name spec)) specs)))
 
 (defun roll-back-patch (extensions snapshots refresh)

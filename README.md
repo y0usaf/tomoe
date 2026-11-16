@@ -419,8 +419,14 @@ DRM/KMS, libinput and libseat; it can also run nested in another compositor or
 headless. Extensions never touch native state. They return effects, the runtime
 settles every extension's effects into one transaction, and only then does the
 native side apply it. A broken extension therefore can't leave the screen
-half-updated, and because every effect has an owner, unmounting an extension
-takes its effects with it. A transaction runs on one instant: every round reads
+half-updated: one whose update fails (it signals, overruns its watchdog or
+returns an invalid answer such as two effects claiming one key) keeps its last
+good state and effects, isn't run again in that transaction, and is logged as
+`Extension NAME: reason`, while every other extension's answer still commits, so
+a broken bar can't take focus, tiling or input with it. A rule whose predicate
+fails keeps the windows it matched. A live patch is still all or nothing: one
+whose extension fails is rolled back. Because every effect has an owner,
+unmounting an extension takes its effects with it. A transaction runs on one instant: every round reads
 `get-internal-real-time` as it stood when the transaction began, so a reducer that
 animates from the clock and reads back its own effects (a focus border it fades
 through `:layout`) returns the same effects when they wake it again, and the

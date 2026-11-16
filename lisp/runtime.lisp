@@ -310,15 +310,30 @@ resolved to themselves and nothing retires."
         (when (member key keys :test #'equal) (error "Duplicate effect: ~S" key))
         (push key keys)))))
 
+(defvar *transaction-failures* nil
+  "Within a transaction: the extensions and rules that failed in it, each logged once.")
+
 (defun record-failure (mounted message)
+  "Count MESSAGE against MOUNTED, both in the committed mounts, where a command
+caller looks for it, and in the transaction's own copy, which a commit keeps."
   (when mounted
     (let ((live (find (spec-name (mounted-spec mounted)) (runtime-mounts)
                       :test #'equal :key (lambda (m) (spec-name (mounted-spec m))))))
-      (when live
-        (setf (nth 5 live) (1+ (mounted-failures live)))
-        (setf (nth 6 live) message)))))
+      (dolist (entry (if (and live (not (eq live mounted))) (list live mounted) (list mounted)))
+        (setf (nth 5 entry) (1+ (mounted-failures entry)))
+        (setf (nth 6 entry) message)))))
+
+(defun extension-failed (key mounted message)
+  "Isolate one extension's failure: count it, log it once per transaction under the
+extension's name, and leave the transaction to commit everyone else."
+  (unless (member key *transaction-failures* :test #'equal)
+    (push key *transaction-failures*)
+    (record-failure mounted message)
+    (record-error (format nil "Extension ~A: ~A" (spec-name (mounted-spec mounted)) message))))
 
 (defun invoke-extension (mounted context event)
+  "Run MOUNTED's reducer on EVENT. Return its commands, or NIL and the failure
+message when it failed, leaving MOUNTED's state and effects as they were."
   (let* ((spec (mounted-spec mounted))
          (name (spec-name spec))
          (reads (mount-context-reads mounted))
@@ -371,11 +386,8 @@ resolved to themselves and nothing retires."
     (let ((outcome nil) (message nil))
       (%catch (lambda () (setf outcome (%with-limits nil (%limit :watchdog-ms) run)))
               (lambda (text) (setf message text)))
-      (if message
-          (progn
-            (record-failure mounted message)
-            (error "Extension ~A: ~A" name message))
-          outcome))))
+      (when message (extension-failed (mounted-spec mounted) mounted message))
+      (values outcome message))))
 
 (defun resolved-grab (mounts)
   "The last owner's grab on a buffered target, and that owner."
@@ -915,8 +927,11 @@ output when its own output wakes it again, and the dependencies can settle."
 
 (defun %transact (mounts event changed &optional force)
   "Stage reducers and dependency propagation before touching the native scene.
-A bad callback or a dependency cycle discards the entire candidate transaction."
+A reducer or rule predicate that fails keeps its last answer, is not run again in
+this transaction, and is logged under its name; everyone else still commits. A
+dependency cycle discards the entire candidate transaction."
   (let* ((*materialized* (list nil -1 nil nil))
+         (*transaction-failures* nil)
          (candidate (prune-rule-mounts
                      (mapcar #'copy-mounted
                              (append (root-mounts mounts)
@@ -943,19 +958,26 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
                              (%alist-set spec value proposal-baselines #'eq))
                        value))))
              (invoke (mounted delivered)
-               (when (admission-scope-p mounted candidate)
-                 (let ((spec (mounted-spec mounted)))
-                   (setf (nth 2 mounted) (copy-data (baseline mounted)))
-                   (let ((entry (assoc spec proposal-deliveries :test #'eq)))
-                     (if entry
-                         (setf delivered (cdr entry))
-                         (setf proposal-deliveries
-                               (%alist-set spec (copy-data delivered) proposal-deliveries #'eq))))
-                   (setf commands (remove spec commands :key #'car :test #'eq))))
-               (setf commands
-                     (nconc commands
-                            (mapcar (lambda (command) (cons (mounted-spec mounted) command))
-                                    (invoke-extension mounted context delivered))))))
+               (let ((spec (mounted-spec mounted))
+                     (state (mounted-state mounted))
+                     (issued commands))
+                 (unless (member spec *transaction-failures* :test #'eq)
+                   (when (admission-scope-p mounted candidate)
+                     (setf (nth 2 mounted) (copy-data (baseline mounted)))
+                     (let ((entry (assoc spec proposal-deliveries :test #'eq)))
+                       (if entry
+                           (setf delivered (cdr entry))
+                           (setf proposal-deliveries
+                                 (%alist-set spec (copy-data delivered) proposal-deliveries #'eq))))
+                     (setf commands (remove spec commands :key #'car :test #'eq)))
+                   (multiple-value-bind (answer failure)
+                       (invoke-extension mounted context delivered)
+                     (if failure
+                         (setf (nth 2 mounted) state commands issued)
+                         (setf commands
+                               (nconc commands
+                                      (mapcar (lambda (command) (cons spec command))
+                                              answer)))))))))
       (loop for round below 16 do
         (let ((before context) (invoked nil))
           (dolist (mounted (root-mounts candidate))

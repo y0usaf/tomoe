@@ -53,9 +53,6 @@ still release dead window scopes when a predicate or reducer has failed."
              (funcall (effect-predicate definition) (copy-data window)
                       (rule-snapshot context reads previous))))))
 
-(defun rule-evaluation-error (parent message)
-  (record-failure parent message)
-  (error "Extension ~A: ~A" (spec-name (mounted-spec parent)) message))
 
 (defun reconcile-rule-mounts (mounts context)
   "Match a bounded snapshot of declarations. New nested declarations are seen
@@ -67,10 +64,12 @@ changed callback definitions."
          (new nil) (changed nil) (count 0))
     (dolist (instance (rule-instances mounts))
       (setf previous (%alist-set (rule-instance-key instance) instance previous)))
-    (dolist (parent mounts)
+(dolist (parent mounts)
       (when (find (mounted-spec parent) result :key #'mounted-spec)
         (dolist (definition (%effects-of-kind (mounted-effects parent) :rule))
-          (let ((message nil))
+          (let ((message nil) (found nil) (found-new nil) (found-changed nil)
+                (owner (mounted-spec parent))
+                (name (first (effect-arguments definition))))
             (%catch
              (lambda ()
                (%with-limits nil 25
@@ -78,9 +77,7 @@ changed callback definitions."
                    (dolist (window (runtime-windows))
                      (when (rule-matches-p definition window context (runtime-effective))
                        (when (> (incf count) 4096) (error "More than 4096 matching rule instances."))
-                       (let* ((name (first (effect-arguments definition)))
-                              (id (getf window :id))
-                              (owner (mounted-spec parent))
+                       (let* ((id (getf window :id))
                               (key (list owner name id))
                               (entry (assoc key previous :test #'equal))
                               (old (cdr entry))
@@ -94,15 +91,27 @@ changed callback definitions."
                                      :state (copy-data (sixth (effect-arguments definition)))
                                      :rule-parent owner :rule-name name :rule-window id
                                      :rule-pending t))))
-                         (cond ((null old) (push (spec-name (mounted-spec instance)) new))
+                         (cond ((null old) (push (spec-name (mounted-spec instance)) found-new))
                                ((not (eq (mounted-rule-definition old) definition))
-                                (push (spec-name (mounted-spec instance)) changed)))
+                                (push (spec-name (mounted-spec instance)) found-changed)))
                          (unless (eq (mounted-rule-definition instance) definition)
                            (%invocations+))
                          (setf (nth 10 instance) definition)
-                         (setf result (nconc result (list instance)))))))))
+                         (push instance found)))))))
              (lambda (text) (setf message text)))
-            (when message (rule-evaluation-error parent message))))))
+            (if message
+                (progn
+                  (extension-failed (list owner name) parent message)
+                  (setf found (loop for (key . instance) in previous
+                                    when (and (eq (first key) owner) (eq (second key) name)
+                                              (find (third key) (runtime-windows)
+                                                    :key (lambda (window) (getf window :id))))
+                                      collect instance)
+                        found-new nil found-changed nil))
+                (setf found (nreverse found)))
+            (setf result (nconc result found)
+                  new (nconc found-new new)
+                  changed (nconc found-changed changed))))))
     (values result new changed)))
 
 (defun resolved-rule-properties (mounts)
