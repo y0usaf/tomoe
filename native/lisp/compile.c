@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <setjmp.h>
@@ -1308,13 +1309,46 @@ bool lisp_run_wrapper(const struct lisp_code *code, int argc, lisp_value *argv, 
     return true;
 }
 
-enum { FORM_CACHE = 1024 };
-
-static struct {
+struct compiled_form {
     lisp_value form;
     struct lisp_region *region;
     const struct cnode *node;
-} form_cache[FORM_CACHE];
+};
+
+static struct compiled_form *forms;
+static size_t forms_capacity, forms_count;
+
+static size_t form_slot(lisp_value form)
+{
+    return (size_t)((((uint64_t)form >> 4) * 0x9e3779b97f4a7c15ull) >> 32) & (forms_capacity - 1);
+}
+
+static void form_insert(struct compiled_form entry)
+{
+    size_t i = form_slot(entry.form);
+    while (forms[i].node)
+        i = (i + 1) & (forms_capacity - 1);
+    forms[i] = entry;
+    forms_count++;
+}
+
+static bool forms_rebuild(size_t capacity, const struct lisp_region *dropped)
+{
+    struct compiled_form *old = forms;
+    size_t old_capacity = forms_capacity;
+    forms = calloc(capacity, sizeof(*forms));
+    if (!forms) {
+        forms = old;
+        return false;
+    }
+    forms_capacity = capacity;
+    forms_count = 0;
+    for (size_t i = 0; i < old_capacity; i++)
+        if (old[i].node && old[i].region != dropped)
+            form_insert(old[i]);
+    free(old);
+    return true;
+}
 
 lisp_value lisp_eval_cached(lisp_value form, struct lisp_frame *env)
 {
@@ -1323,25 +1357,27 @@ lisp_value lisp_eval_cached(lisp_value form, struct lisp_frame *env)
     struct lisp_region *region = heap_region_of((void *)(uintptr_t)form);
     if (!region || region->kind != REG_GENERATION)
         return eval(form, env);
-    size_t slot = (size_t)((((uint64_t)form >> 4) * 0x9e3779b97f4a7c15ull) >> 54) & (FORM_CACHE - 1);
-    if (form_cache[slot].form != form || form_cache[slot].region != region) {
-        struct compiler cc = { region, false, 0 };
-        struct cscope opaque = { NULL, true, true, 0, NULL };
-        const struct cnode *node = compile_form(&cc, form, &opaque);
-        if (!node)
-            return eval(form, env);
-        form_cache[slot].form = form;
-        form_cache[slot].region = region;
-        form_cache[slot].node = node;
-    }
-    return form_cache[slot].node->run(form_cache[slot].node, env);
+    for (size_t i = forms_capacity ? form_slot(form) : 0; forms_capacity && forms[i].node;
+            i = (i + 1) & (forms_capacity - 1))
+        if (forms[i].form == form && forms[i].region == region)
+            return forms[i].node->run(forms[i].node, env);
+    struct compiler cc = { region, false, 0 };
+    struct cscope opaque = { NULL, true, true, 0, NULL };
+    const struct cnode *node = compile_form(&cc, form, &opaque);
+    if (!node)
+        return eval(form, env);
+    if ((forms_count + 1) * 2 <= forms_capacity ||
+            forms_rebuild(forms_capacity ? forms_capacity * 2 : 1024, NULL))
+        form_insert((struct compiled_form){ form, region, node });
+    return node->run(node, env);
 }
 
 void lisp_forget_forms(struct lisp_region *region)
 {
-    for (size_t i = 0; i < FORM_CACHE; i++)
-        if (form_cache[i].region == region)
-            form_cache[i].form = 0, form_cache[i].region = NULL, form_cache[i].node = NULL;
+    if (forms_capacity && !forms_rebuild(forms_capacity, region)) {
+        memset(forms, 0, forms_capacity * sizeof(*forms));
+        forms_count = 0;
+    }
 }
 
 lisp_value lisp_run_code(const struct lisp_code *code, struct lisp_frame *frame)
