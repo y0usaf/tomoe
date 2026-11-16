@@ -218,7 +218,9 @@
                 pkgs.gnutar
                 pkgs.util-linux
               ];
-              text = builtins.readFile ./release.sh;
+              text = ''
+                TOMOE_LEASE_LIB=${./tools/lease.sh}
+              '' + builtins.readFile ./release.sh;
             }
           );
         };

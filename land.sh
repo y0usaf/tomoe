@@ -32,6 +32,12 @@ die() {
 
 for d in "$QUEUE" "$ACTIVE" "$RESULTS" "$LOGS" "$DONE"; do mkdir -p "$d"; done
 
+LEASE_LIB=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/lease.sh
+[[ -r $LEASE_LIB ]] || die "cannot find $LEASE_LIB"
+# shellcheck source=tools/lease.sh
+. "$LEASE_LIB"
+LEASE_LOG=$ROOT/journal.log
+
 usage() {
 	cat <<'EOF'
 usage: tomoe-land <command> [args]
@@ -62,7 +68,7 @@ note_step() {
 }
 
 take_lease() {
-	local mode=$1 pendmax=${2:-$PENDINGWAIT} waited=0
+	local mode=$1 pendmax=${2:-$PENDINGWAIT} waited=0 rc=0
 	if [[ $mode == -x ]]; then
 		mkdir -p "$PENDING" || return 1
 		: >"$PENDING/$AGENT.$$" || return 1
@@ -72,16 +78,17 @@ take_lease() {
 			waited=$((waited + 2))
 		done
 	fi
-	exec 9>"$LOCK" || return 1
-	if ! flock "$mode" -w "$LEASEWAIT" 9; then
-		rm -f "$PENDING/$AGENT.$$"
+	lease_take "$LOCK" "$mode" "$LEASEWAIT" || rc=$?
+	rm -f "$PENDING/$AGENT.$$"
+	if ((rc != 0)); then
+		printf '%s lease-timeout %s after %ss\n' "$(date -u +%FT%TZ)" "$mode" "$LEASEWAIT" \
+			>>"$ROOT/journal.log"
 		return 75
 	fi
-	rm -f "$PENDING/$AGENT.$$"
 	return 0
 }
 
-release_lease() { exec 9>&-; }
+release_lease() { lease_release; }
 
 submit() {
 	local type=land ref="" suite=timing timeout=""
@@ -297,7 +304,7 @@ run_smoke() {
 	local pid
 	set -m
 	timeout --signal=TERM --kill-after="$KILLWAIT" "$SMOKE_TIMEOUT" \
-		bash -c 'exec 9>&-; cd "$1" && LOGFILE=/dev/null nice -n 10 "$2/bin/nixos-test-driver" -o "$1/out"' _ \
+		bash -c 'cd "$1" && LOGFILE=/dev/null nice -n 10 "$2/bin/nixos-test-driver" -o "$1/out"' _ \
 		"$ROOT/run/$id" "$driver" >>"$log" 2>&1 &
 	pid=$!
 	set +m
@@ -389,7 +396,7 @@ run_timing() {
 	mkdir -p "$ROOT/run/$id/out"
 	set -m
 	timeout --signal=TERM --kill-after="$KILLWAIT" "$limit" \
-		bash -c 'exec 9>&-; cd "$1" && LOGFILE=/dev/null nice -n 10 "$2/bin/nixos-test-driver" -o "$1/out"' _ \
+		bash -c 'cd "$1" && LOGFILE=/dev/null nice -n 10 "$2/bin/nixos-test-driver" -o "$1/out"' _ \
 		"$ROOT/run/$id" "$driver" >>"$log/timing.log" 2>&1 &
 	pid=$!
 	set +m

@@ -1565,6 +1565,17 @@ in
   inherit client;
   lisp-unit = lispUnit;
   event-ring = eventRing;
+  lease = pkgs.runCommand "tomoe-lease" {
+    nativeBuildInputs = [
+      pkgs.bash
+      pkgs.util-linux
+      pkgs.coreutils
+    ];
+    LEASE_LIB = "${../tools/lease.sh}";
+  } ''
+    bash ${./lease.sh}
+    touch $out
+  '';
   compositor = vm (
     compositorSettings
     // {

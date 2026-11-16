@@ -57,6 +57,15 @@ VM. Every build, eval or check on this machine takes a lease on it, Tomoe or not
 `flock -s` for builds and VMs that are not measuring anything, `flock -x` only for a
 timing measurement or a benchmark.
 
+Take a lease with `tools/lease.sh`, never with a descriptor of your own. `. tools/lease.sh`
+gives you `lease_take LOCK -s|-x [SECONDS]` and `lease_release`; the lease is held in a
+child of its own, so it goes away with the shell that took it. Open-coding it as
+`exec 9>"$LOCK"; flock -s 9` leaks the lease twice over: every child of that shell keeps a
+copy of descriptor 9, so a bot, a helper's shell or a nix build that daemonizes holds the
+VM long after the work has ended, and an omp bash tool runs its commands in the
+assistant's own long-lived process, where the descriptor outlives the script that opened
+it. `tests/lease.sh` is the regression test for exactly this.
+
 `flock` lets shared holders starve a waiting exclusive gate, so the lock also has a
 queue marker: before asking for `flock -x`, create
 `$XDG_RUNTIME_DIR/agent/tomoe-vm.pending/<your-agent-name>` and remove it as soon as

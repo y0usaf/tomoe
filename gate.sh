@@ -62,7 +62,10 @@ EOF
 if [[ -n ${TOMOE_ISOLATED:-} ]]; then
 	source "$TOMOE_ISOLATED/gate.state"
 else
-	ISOLATE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/isolate
+	TOOLS=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools
+	ISOLATE=$TOOLS/isolate
+	# shellcheck source=tools/lease.sh
+	. "$TOOLS/lease.sh"
 	"$ISOLATE" --check || exit 2
 	REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside the tomoe checkout"
 	REV=$(git -C "$REPO" rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null) || die "no commit ${1:-HEAD}"
@@ -77,8 +80,7 @@ else
 			sleep 2
 			waited=$((waited + 2))
 		done
-		mkdir -p "$(dirname "$LOCK")"
-		exec 9>"$LOCK" && flock -s 9
+		lease_take "$LOCK" -s 0
 	}
 
 	FINIXREV=$(git -C "$FINIX" rev-parse --verify "${GATE_FINIX_REV:-HEAD}^{commit}" 2>/dev/null) ||
@@ -96,7 +98,7 @@ else
 		die "cannot build the test client"
 	CLIENT=$CLIENTS_OUT/bin/tomoe-test-client
 	KEYS=$CLIENTS_OUT/bin/tomoe-pointer-script
-	exec 9>&-
+	lease_release
 	say "pair $PKG + $INIT"
 
 	DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tomoe-gate.XXXXXX")

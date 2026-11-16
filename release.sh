@@ -47,6 +47,10 @@ command=$1
 FINIX=${RELEASE_FINIX:-$HOME/finix}
 SOAK=${RELEASE_SOAK:-1800}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
+SWITCH_LOCK=${TOMOE_SWITCH_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/finix-switch.lock}
+LEASE_LIB=${TOMOE_LEASE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/lease.sh}
+# shellcheck source=tools/lease.sh
+. "$LEASE_LIB"
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
 [[ $SOAK =~ ^[0-9]+$ ]] || fail "RELEASE_SOAK must be a number of seconds"
 $dry || ((SOAK >= 1800)) || fail "a release soaks at least 1800s; a shorter RELEASE_SOAK is for --dry-run"
@@ -100,8 +104,9 @@ cut_candidate() {
     fail "v$version-rc.$last is already $rev"
   fi
   tag=v$version-rc.$((${last:-0} + 1))
-  mkdir -p "$(dirname "$LOCK")"
-  out=$(flock -s "$LOCK" nix build --no-link --print-out-paths "git+file://$REPO?rev=$rev")
+  lease_take "$LOCK" -s 0 || fail "cannot take $LOCK"
+  out=$(nix build --no-link --print-out-paths "git+file://$REPO?rev=$rev")
+  lease_release
   [[ $("$out/bin/tomoe" --version) == "tomoe $version,"* ]] || fail "$out/bin/tomoe --version does not report $version"
   if $dry; then
     git update-ref "$TAGS/$tag" "$rev"
@@ -124,7 +129,8 @@ soak_candidate() {
     fail "finix $finix is on no remote branch; tomoe-stable can only pin a pushed revision"
   gate=$(mktemp -d)
   log=$gate/soak.log
-  git archive "$rev" gate.sh tools/isolate | tar -x -C "$gate" || fail "$1 has no gate.sh and tools/isolate"
+  git archive "$rev" gate.sh tools/lease.sh tools/isolate | tar -x -C "$gate" ||
+    fail "$1 has no gate.sh, tools/lease.sh and tools/isolate"
   echo "release: soaking $1 ($rev) with finix $finix for ${SOAK}s"
   started=$(date -u +%FT%TZ)
   if GATE_FINIX=$FINIX GATE_FINIX_REV=$finix GATE_SOAK=$SOAK "$gate/gate.sh" "$rev" 2>&1 | tee "$log"; then
@@ -151,8 +157,7 @@ move_stable() {
     git -C "$tree" diff --quiet HEAD -- flake.nix flake.lock ||
       fail "$tree has uncommitted flake.nix or flake.lock changes; not touching them"
     git -C "$tree" diff --quiet --cached || fail "$tree has staged changes; not touching its index"
-    exec 8>"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/finix-switch.lock"
-    flock 8
+    lease_take "$SWITCH_LOCK" -x 0 || fail "cannot take $SWITCH_LOCK"
   fi
   [[ $(grep -c '^ *tomoe-stable\.url = "github:[^/]*/[^/]*/[0-9a-f]\{40\}";$' "$tree/flake.nix") == 1 &&
     $(grep -c '^ *tomoe-stable\.inputs\.tomoe\.url = "github:[^/]*/[^/]*/[0-9a-f]\{40\}";$' "$tree/flake.nix") == 1 ]] ||
@@ -163,7 +168,10 @@ move_stable() {
   git -C "$tree" -c user.name=tomoe-release -c user.email=tomoe-release@localhost commit -q \
     -m "tomoe-stable: $tag (${tomoe:0:7}) with finix ${finix:0:8}'s config" -- flake.nix flake.lock
   commit=$(git -C "$tree" rev-parse HEAD)
-  if ! stable=$(flock -s "$LOCK" nix build --no-link --print-out-paths "git+file://$tree?rev=$commit#packages.$SYSTEM.tomoe-stable"); then
+  lease_take "$LOCK" -s 0 || fail "cannot take $LOCK"
+  stable=$(nix build --no-link --print-out-paths "git+file://$tree?rev=$commit#packages.$SYSTEM.tomoe-stable") || stable=""
+  lease_release
+  if [[ -z $stable ]]; then
     $dry || { git -C "$tree" reset -q --soft HEAD^ && git -C "$tree" restore -q --staged --worktree -- flake.nix flake.lock; }
     fail "tomoe-stable does not build at finix $commit"
   fi
