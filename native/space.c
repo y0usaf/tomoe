@@ -696,7 +696,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
     }
     if (!locked && !frozen && !plan) ghosts_draw(o->server, data);
     if (!locked && !frozen) ui_render(o, data, plan, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY);
-    if (!locked && chrome) screenshot_render(o, data);
+    if (!locked && chrome && screenshot_on(o)) ui_render(o, data, plan, UI_LAYER_SCREENSHOT);
     if (cursors) render_cursor(o, data, plan);
 }
 static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
@@ -821,6 +821,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     if (!pre_recorded) {
         bool moving = windows_animate(o->server, data.sample);
         if (ui_animate(o->server, data.sample)) moving = true;
+        if (screenshot_animate(o->server, data.sample)) moving = true;
         if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
         o->animating = moving;
     }
@@ -948,6 +949,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
         bool locked = lock_active(s);
         bool moving = windows_animate(s, probe.sample);
         if (ui_animate(s, probe.sample)) moving = true;
+        if (screenshot_animate(s, probe.sample)) moving = true;
         if (cursor_motion_advance(s, animation_now())) moving = true;
         o->animating = moving;
         if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {

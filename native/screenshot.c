@@ -1,32 +1,39 @@
 #include "internal.h"
+#include "spring.h"
+#include <cairo.h>
 #include <drm/drm_fourcc.h>
-#include <pango/pangocairo.h>
+#include <unistd.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 
 struct screenshot {
     struct output *output;
     bool dragging, selected;
     int ax, ay, bx, by;
+    double from[4], velocity[4], to[4], since;
     struct buffer *frozen;
-    struct texture *frozen_texture, *hint;
-    bool hint_selected;
-    struct screenshot_colors hint_colors;
+    struct texture *frozen_texture;
 };
 
-static const float backdrop[4] = { 0, 0, 0, 0.4f };
-
-static void unpack(uint32_t rgba, float color[4]) {
-    for (int i = 0; i < 4; i++) color[i] = (rgba >> (24 - 8 * i) & 0xff) / 255.0f;
+static void selector_event(struct tomoe *s) {
+    struct tomoe_event *event = policy_event_push(s, EV_SELECTOR);
+    if (!event) return;
+    struct screenshot *shot = s->screenshot;
+    event->id = shot != NULL;
+    if (!shot) return;
+    event->str[0] = policy_event_cstring(s, shot->output->screen->name);
+    event->x = shot->ax; event->y = shot->ay;
+    event->dx = shot->bx; event->dy = shot->by;
+    event->state = (shot->selected ? 1u : 0) | (shot->dragging ? 2u : 0) | (shot->frozen ? 4u : 0);
 }
 
 static void screenshot_close(struct tomoe *s) {
     struct screenshot *shot = s->screenshot;
     if (!shot) return;
     if (shot->frozen_texture) texture_destroy(shot->frozen_texture);
-    if (shot->hint) texture_destroy(shot->hint);
     buffer_drop(shot->frozen);
     free(shot);
     s->screenshot = NULL;
+    selector_event(s);
     schedule_scene(s);
 }
 
@@ -39,19 +46,51 @@ static struct buffer *render_clean(struct output *o) {
     return buffer;
 }
 
+static void clamp_point(struct screenshot *shot, int *x, int *y) {
+    int width, height;
+    screen_transformed_resolution(shot->output->screen, &width, &height);
+    *x = *x < 0 ? 0 : *x > width ? width : *x;
+    *y = *y < 0 ? 0 : *y > height ? height : *y;
+}
+
 static void local_pointer(struct tomoe *s, int *x, int *y) {
     *x = pixel_round(s->pointer_x) - s->screenshot->output->x;
     *y = pixel_round(s->pointer_y) - s->screenshot->output->y;
+    clamp_point(s->screenshot, x, y);
 }
 
 static struct box selection(struct screenshot *shot) {
-    int width, height;
-    screen_transformed_resolution(shot->output->screen, &width, &height);
     int x0 = fmin(shot->ax, shot->bx), x1 = fmax(shot->ax, shot->bx);
     int y0 = fmin(shot->ay, shot->by), y1 = fmax(shot->ay, shot->by);
-    x0 = fmax(0, fmin(x0, width)); x1 = fmax(0, fmin(x1, width));
-    y0 = fmax(0, fmin(y0, height)); y1 = fmax(0, fmin(y1, height));
     return (struct box){ x0, y0, x1 - x0, y1 - y0 };
+}
+
+static void spring_state(const struct tomoe *s, const struct screenshot *shot, double now,
+        double position[4], double velocity[4]) {
+    const struct settings *st = &s->settings;
+    double elapsed = fmax(0, now - shot->since), step = 1e-4;
+    for (int i = 0; i < 4; i++) {
+        if (!st->screenshot_motion_enabled) {
+            position[i] = shot->to[i];
+            velocity[i] = 0;
+            continue;
+        }
+        position[i] = tomoe_spring_at(st->screenshot_motion_stiffness,
+            st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i], elapsed);
+        velocity[i] = (tomoe_spring_at(st->screenshot_motion_stiffness,
+            st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i],
+            elapsed + step) - position[i]) / step;
+    }
+}
+
+static void retarget(struct tomoe *s, struct screenshot *shot) {
+    double now = animation_now(), position[4], velocity[4];
+    spring_state(s, shot, now, position, velocity);
+    memcpy(shot->from, position, sizeof(position));
+    memcpy(shot->velocity, velocity, sizeof(velocity));
+    shot->to[0] = shot->ax; shot->to[1] = shot->ay;
+    shot->to[2] = shot->bx; shot->to[3] = shot->by;
+    shot->since = now;
 }
 
 static void capture(struct tomoe *s, struct output *o, struct box region) {
@@ -114,7 +153,13 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
         if (shot->frozen) shot->frozen_texture = texture_from_buffer(s->renderer, shot->frozen);
     }
     s->screenshot = shot;
+    local_pointer(s, &shot->ax, &shot->ay);
+    shot->bx = shot->ax; shot->by = shot->ay;
+    shot->from[0] = shot->to[0] = shot->ax; shot->from[1] = shot->to[1] = shot->ay;
+    shot->from[2] = shot->to[2] = shot->bx; shot->from[3] = shot->to[3] = shot->by;
+    shot->since = animation_now();
     grab_clear(s);
+    selector_event(s);
     schedule_scene(s);
 }
 
@@ -143,74 +188,37 @@ bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed) {
         shot->dragging = false;
         struct box box = selection(shot);
         shot->selected = box.width >= 2 && box.height >= 2;
+        if (!shot->selected) {
+            local_pointer(s, &shot->ax, &shot->ay);
+            shot->bx = shot->ax; shot->by = shot->ay;
+        }
+    } else {
+        return true;
     }
+    retarget(s, shot);
+    selector_event(s);
     schedule_scene(s);
     return true;
 }
 
 void screenshot_motion(struct tomoe *s) {
     struct screenshot *shot = s->screenshot;
-    if (!shot || !shot->dragging) return;
-    local_pointer(s, &shot->bx, &shot->by);
-    shot->selected = true;
+    if (!shot || (shot->selected && !shot->dragging)) return;
+    int x, y;
+    local_pointer(s, &x, &y);
+    if (shot->dragging) {
+        if (x == shot->bx && y == shot->by) return;
+        shot->bx = x; shot->by = y;
+        if (!shot->selected) {
+            shot->selected = true;
+            selector_event(s);
+        }
+    } else {
+        if (x == shot->ax && y == shot->ay) return;
+        shot->ax = shot->bx = x; shot->ay = shot->by = y;
+    }
+    retarget(s, shot);
     schedule_scene(s);
-}
-
-static struct texture *hint_texture(struct tomoe *s, bool selected) {
-    const struct screenshot_colors *colors = &s->settings.screenshot_colors;
-    char chip[8], markup[320];
-    snprintf(chip, sizeof chip, "#%06x", colors->chip >> 8);
-    if (selected)
-        snprintf(markup, sizeof markup, "<span background='%s'> Enter </span> / <span background='%s'>"
-            " Space </span> capture    Drag to reselect    <span background='%s'> Esc </span> cancel",
-            chip, chip, chip);
-    else
-        snprintf(markup, sizeof markup, "Drag to select    <span background='%s'> Space </span>"
-            " whole screen    <span background='%s'> Esc </span> cancel", chip, chip);
-    float frame[4], fill[4], ink[4];
-    unpack(colors->accent, frame);
-    unpack(colors->background, fill);
-    unpack(colors->text, ink);
-    cairo_surface_t *probe = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-    cairo_t *cairo = cairo_create(probe);
-    PangoLayout *layout = pango_cairo_create_layout(cairo);
-    PangoFontDescription *font = pango_font_description_from_string("sans");
-    double scale = snapped_scale(s->screenshot->output->screen->scale);
-    pango_font_description_set_absolute_size(font, 17 * scale * PANGO_SCALE);
-    pango_layout_set_font_description(layout, font);
-    pango_font_description_free(font);
-    pango_layout_set_markup(layout, markup, -1);
-    int text_width, text_height;
-    pango_layout_get_pixel_size(layout, &text_width, &text_height);
-    int border = pixel_round(2 * scale), padding = pixel_round(12 * scale);
-    int width = text_width + 2 * (border + padding), height = text_height + 2 * (border + padding);
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-    cairo_t *draw = cairo_create(surface);
-    cairo_set_source_rgba(draw, frame[0], frame[1], frame[2], frame[3]);
-    cairo_paint(draw);
-    cairo_set_source_rgba(draw, fill[0], fill[1], fill[2], fill[3]);
-    cairo_rectangle(draw, border, border, width - 2 * border, height - 2 * border);
-    cairo_fill(draw);
-    cairo_set_source_rgba(draw, ink[0], ink[1], ink[2], ink[3]);
-    cairo_move_to(draw, border + padding, border + padding);
-    pango_cairo_update_layout(draw, layout);
-    pango_cairo_show_layout(draw, layout);
-    cairo_surface_flush(surface);
-    struct texture *texture = texture_from_pixels(s->renderer, DRM_FORMAT_ARGB8888,
-        cairo_image_surface_get_stride(surface), width, height, cairo_image_surface_get_data(surface));
-    g_object_unref(layout);
-    cairo_destroy(draw);
-    cairo_surface_destroy(surface);
-    cairo_destroy(cairo);
-    cairo_surface_destroy(probe);
-    return texture;
-}
-
-static void rect(struct frame *f, struct box box, const float color[4]) {
-    if (box.width <= 0 || box.height <= 0) return;
-    box_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
-    pass_add_rect(f->pass, &(struct rect_options){ .box = box,
-        .color = { color[0] * color[3], color[1] * color[3], color[2] * color[3], color[3] } });
 }
 
 bool screenshot_render_frozen(struct output *o, struct frame *f) {
@@ -222,44 +230,40 @@ bool screenshot_render_frozen(struct output *o, struct frame *f) {
     return true;
 }
 
-void screenshot_render(struct output *o, struct frame *f) {
-    struct tomoe *s = o->server;
+bool screenshot_on(const struct output *o) {
+    return o && o->server->screenshot && o->server->screenshot->output == o;
+}
+
+bool screenshot_selection(const struct output *o, struct fbox area, double now, float out[16]) {
+    if (!screenshot_on(o)) return false;
+    const struct screenshot *shot = o->server->screenshot;
+    double position[4], velocity[4];
+    spring_state(o->server, shot, now, position, velocity);
+    double left = o->x - area.x, bottom = area.y + area.height - o->y;
+    const double live[4] = { shot->ax, shot->ay, shot->bx, shot->by };
+    for (int i = 0; i < 4; i += 2) {
+        out[i] = left + live[i];
+        out[i + 1] = bottom - live[i + 1];
+        out[4 + i] = left + position[i];
+        out[5 + i] = bottom - position[i + 1];
+        out[8 + i] = velocity[i];
+        out[9 + i] = -velocity[i + 1];
+    }
+    out[12] = shot->selected;
+    out[13] = shot->dragging;
+    out[14] = shot->frozen != NULL;
+    out[15] = 0;
+    return true;
+}
+
+bool screenshot_animate(struct tomoe *s, double now) {
     struct screenshot *shot = s->screenshot;
-    if (!shot || shot->output != o) return;
-    int w = f->width, h = f->height;
-    float accent[4];
-    unpack(s->settings.screenshot_colors.accent, accent);
-    if (shot->selected) {
-        struct box sel = selection(shot);
-        int x1 = sel.x + sel.width, y1 = sel.y + sel.height;
-        rect(f, (struct box){ 0, 0, w, sel.y }, backdrop);
-        rect(f, (struct box){ 0, y1, w, h - y1 }, backdrop);
-        rect(f, (struct box){ 0, sel.y, sel.x, sel.height }, backdrop);
-        rect(f, (struct box){ x1, sel.y, w - x1, sel.height }, backdrop);
-        int b = pixel_round(2 * snapped_scale(o->screen->scale));
-        int bx0 = fmax(0, sel.x - b), by0 = fmax(0, sel.y - b);
-        int bx1 = fmin(w, x1 + b), by1 = fmin(h, y1 + b);
-        rect(f, (struct box){ bx0, by0, bx1 - bx0, sel.y - by0 }, accent);
-        rect(f, (struct box){ bx0, y1, bx1 - bx0, by1 - y1 }, accent);
-        rect(f, (struct box){ bx0, sel.y, sel.x - bx0, sel.height }, accent);
-        rect(f, (struct box){ x1, sel.y, bx1 - x1, sel.height }, accent);
-    } else {
-        rect(f, (struct box){ 0, 0, w, h }, backdrop);
-    }
-    if (!shot->hint || shot->hint_selected != shot->selected ||
-        memcmp(&shot->hint_colors, &s->settings.screenshot_colors, sizeof shot->hint_colors)) {
-        if (shot->hint) texture_destroy(shot->hint);
-        shot->hint = hint_texture(s, shot->selected);
-        shot->hint_selected = shot->selected;
-        shot->hint_colors = s->settings.screenshot_colors;
-    }
-    if (!shot->hint) return;
-    struct box box = { (w - (int)shot->hint->width) / 2,
-        h - (int)shot->hint->height - pixel_round(32 * snapped_scale(o->screen->scale)),
-        shot->hint->width, shot->hint->height };
-    box_transform(&box, &box, transform_invert(f->transform), f->width, f->height);
-    pass_add_texture(f->pass, &(struct texture_options){
-        .texture = shot->hint, .dst_box = box, .transform = f->transform });
+    if (!shot || !s->settings.screenshot_motion_enabled) return false;
+    double position[4], velocity[4];
+    spring_state(s, shot, now, position, velocity);
+    for (int i = 0; i < 4; i++)
+        if (fabs(position[i] - shot->to[i]) > 0.05 || fabs(velocity[i]) > 1) return true;
+    return false;
 }
 
 void screenshot_output_gone(struct tomoe *s, struct output *o) {

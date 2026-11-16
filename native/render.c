@@ -384,6 +384,7 @@ static const char shader_prelude[] =
     "uniform vec4 iData[48];\n"
     "uniform int iWindowCount;\n"
     "uniform vec4 iWindow[8];\n"
+    "uniform vec4 iSelection[4];\n"
     "uniform sampler2D tomoe_beneath;\n"
     "uniform vec4 tomoe_beneath_box;\n"
     "vec4 beneath(vec2 at) {\n"
@@ -506,14 +507,15 @@ static void program_locations(struct program *p) {
         "lut", "iTrail", "iTrailCount", "tint", "iBox", "iMin", "iMax", "iDrag", "tex_prev",
         "tex_next", "geo_to_tex", "geo_to_tex_prev", "geo_to_tex_next", "curr_geo_to_prev_geo",
         "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed", "iPath",
-        "iPathCount", "iData", "iWindow", "iWindowCount", "tomoe_beneath_box" };
+        "iPathCount", "iData", "iWindow", "iWindowCount", "tomoe_beneath_box", "iSelection" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
         &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint,
         &p->box, &p->min_ndc, &p->max_ndc, &p->drag, &p->tex_prev, &p->tex_next,
         &p->geo_to_tex, &p->geo_to_tex_prev, &p->geo_to_tex_next, &p->curr_geo_to_prev_geo,
         &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed,
-        &p->path, &p->path_count, &p->data, &p->windows, &p->window_count, &p->beneath };
+        &p->path, &p->path_count, &p->data, &p->windows, &p->window_count, &p->beneath,
+        &p->selection };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
 }

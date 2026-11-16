@@ -25,6 +25,14 @@ The first release.
   keeps its last answer while the rest commit, a surface that cannot be staged keeps its last frame, and a
   refused load gives its memory back. A service that crashes or stops never
   stalls the compositor.
+- The region screenshot's selector is drawn by the theme: the core keeps the
+  frozen frame, the selection and the capture, and hands the selection to a
+  shader on the `:screenshot` layer as `iSelection`, the live corners beside a
+  spring-carried copy (`:screenshot-motion`) for looks that trail the drag. A
+  theme publishes its look as `:screenshot-look`; without one the selector is
+  the dimmed output, accent frame and key hint it always was. Shell shaders can
+  also be given as text with `(:glsl SOURCE ...)`, and a UI text element with
+  `:markup t` sets Pango markup at its layout's own height.
 - Every session logs to `~/.local/state/tomoe/SOCKET.log`: why it stopped, every
   refused load, stopped extension, withdrawn surface and exited service, and a
   backtrace if the compositor itself crashes.

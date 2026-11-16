@@ -216,6 +216,9 @@ static void asset_measure(const struct ui_source *source, lisp_value tree, int k
         name = backdrop_name(fit ? arena_lower(fit) : NULL,
             (int)lisp_get_double(plist_get(tree, "WIDTH")),
             (int)lisp_get_double(plist_get(tree, "HEIGHT")));
+    } else if (kind == 4 && plist_get(tree, "GLSL") && !lisp_nilp(plist_get(tree, "GLSL"))) {
+        path = text_value(plist_get(tree, "SRC"));
+        name = "glsl";
     } else if (kind == 4) {
         path = asset_path(source, tree, false);
         name = "";
@@ -288,7 +291,8 @@ static void measure_node(struct ui_lnode *node, const struct ui_source *source,
             const char *text = text_value(plist_get(tree, "TEXT"));
             const char *font = text_value(plist_get(tree, "FONT"));
             packed = tomoe_ui_text_size(text ? text : "", font ? font : "sans",
-                physical, line_height > 1 ? line_height : 1);
+                physical, line_height > 1 ? line_height : 1,
+                !lisp_nilp(plist_get(tree, "MARKUP")));
             if (packed == UINT64_MAX) lisp_error("Cannot measure UI text.");
         } else {
             double ceiling = ceil(line_height);
@@ -348,7 +352,7 @@ struct ui_draw {
     int clip[4];
     double x, y, width, height, radius, stroke, start, end;
     uint32_t rgba;
-    int rotate, tint;
+    int rotate, tint, markup;
     uint64_t asset;
     char *text, *font;
     int fill, stop_count, shadow_count;
@@ -634,7 +638,7 @@ static void add_hit(struct ui_builder *builder, struct ui_lnode *node, struct ui
 
 static void push_text(struct ui_builder *builder, int x, int y, const char *text,
         const char *font, double size, double line_height, uint32_t rgba, int rotate,
-        const struct ui_irect *clip) {
+        int markup, const struct ui_irect *clip) {
     struct ui_draw *op = push_draw(builder);
     op->kind = UI_DRAW_TEXT;
     op->x = x;
@@ -643,6 +647,7 @@ static void push_text(struct ui_builder *builder, int x, int y, const char *text
     op->height = line_height;
     op->rgba = rgba;
     op->rotate = rotate;
+    op->markup = markup;
     op->text = copy_text(text ? text : "");
     op->font = copy_text(font ? font : "sans");
     set_clip(op, clip);
@@ -683,7 +688,8 @@ static void place_node(struct ui_builder *builder, struct ui_lnode *node,
                 lisp_value rotate = plist_get(tree, "ROTATE");
                 push_text(builder, box.x, box.y, text_value(plist_get(tree, "TEXT")),
                     text_value(plist_get(tree, "FONT")), physical, line_height, rgba,
-                    lisp_nilp(rotate) ? 0 : (int)lisp_get_int(rotate), &clip);
+                    lisp_nilp(rotate) ? 0 : (int)lisp_get_int(rotate),
+                    !lisp_nilp(plist_get(tree, "MARKUP")), &clip);
             }
         } else if (kind_is(tree, "IMAGE")) {
             if (node->asset_available && box.width > 0 && box.height > 0) {
@@ -719,7 +725,8 @@ static void place_node(struct ui_builder *builder, struct ui_lnode *node,
                     lisp_value color = plist_get(tree, "COLOR");
                     push_text(builder, box.x, box.y, text_value(plist_get(tree, "NAME")), "sans",
                         0.75 * box.height, (double)box.height,
-                        lisp_nilp(color) ? UINT32_MAX : (uint32_t)lisp_get_uint(color), 0, &clip);
+                        lisp_nilp(color) ? UINT32_MAX : (uint32_t)lisp_get_uint(color), 0, 0,
+                        &clip);
                 }
             }
         } else if (kind_is(tree, "SEPARATOR"))
@@ -1228,9 +1235,11 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                 lisp_value options = lisp_cdr(lisp_cdr(background));
                 lisp_value fps = plist_get(options, "FPS");
                 lisp_value idle = plist_get(options, "IDLE");
+                lisp_value glsl = plist_get(options, "GLSL");
                 if (!image)
-                    options = lisp_list(4, lisp_keyword("FPS"), fps ? fps : lisp_double(0),
-                        lisp_keyword("IDLE"), idle ? idle : lisp_double(0));
+                    options = lisp_list(6, lisp_keyword("FPS"), fps ? fps : lisp_double(0),
+                        lisp_keyword("IDLE"), idle ? idle : lisp_double(0),
+                        lisp_keyword("GLSL"), glsl ? glsl : lisp_nil());
                 declaration_tree = list_append(declaration_tree, options);
                 uint64_t id, packed;
                 asset_measure(&source, declaration_tree, image ? 3 : 4, &id, &packed);
@@ -1362,6 +1371,7 @@ static int32_t layer_index(lisp_value layer) {
     if (keyword_is(layer, "BOTTOM")) return 1;
     if (keyword_is(layer, "TOP")) return 2;
     if (keyword_is(layer, "OVERLAY")) return 3;
+    if (keyword_is(layer, "SCREENSHOT")) return UI_LAYER_SCREENSHOT;
     lisp_error("Unsupported shell layer.");
 }
 
@@ -1489,7 +1499,7 @@ static bool stage_surface(lisp_value plan, const char **failed_owner, char *mess
         }
         case UI_DRAW_TEXT:
             ok = tomoe_present_ui_text(ui_server, op->x, op->y, op->text, op->font,
-                op->width, op->height, op->rgba, op->rotate);
+                op->width, op->height, op->rgba, op->rotate, op->markup);
             break;
         case UI_DRAW_ASSET:
             ok = tomoe_present_ui_asset(ui_server, op->asset, op->x, op->y,

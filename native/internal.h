@@ -340,7 +340,7 @@ struct program {
     GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
-    GLint data, windows, window_count, beneath;
+    GLint data, windows, window_count, beneath, selection;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {
@@ -719,6 +719,7 @@ struct shader_inputs {
     const float *windows;
     int window_count;
     const struct fbox *part;
+    const float *selection;
 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
@@ -799,9 +800,6 @@ struct named_input_config {
     char *name;
     struct input_config config;
 };
-struct screenshot_colors {
-    uint32_t accent, background, text, chip;
-};
 enum { CURSOR_HISTORY = 128 };
 struct cursor_sample { float x, y; double t; };
 struct cursor_motion {
@@ -879,8 +877,8 @@ struct settings {
     bool cursor_glass_enabled;
     int cursor_glass_delay_ms;
     double blur_offset;
-    bool screenshot_freeze;
-    struct screenshot_colors screenshot_colors;
+    bool screenshot_freeze, screenshot_motion_enabled;
+    double screenshot_motion_stiffness, screenshot_motion_damping;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
         window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
@@ -1650,7 +1648,9 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, bool pressed);
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);
 bool screenshot_render_frozen(struct output *o, struct frame *f);
-void screenshot_render(struct output *o, struct frame *f);
+bool screenshot_on(const struct output *o);
+bool screenshot_selection(const struct output *o, struct fbox area, double now, float out[16]);
+bool screenshot_animate(struct tomoe *s, double now);
 void screenshot_output_gone(struct tomoe *s, struct output *o);
 void screenshot_finish(struct tomoe *s);
 struct surface *lock_keyboard_surface(struct tomoe *s);

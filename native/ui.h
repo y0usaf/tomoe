@@ -17,6 +17,8 @@ struct ui_set;
 struct ui_surface;
 struct frame;
 
+enum { UI_LAYER_SCREENSHOT = 4 };
+
 struct ui_hit {
     const char *owner;
     const char *name;
@@ -61,7 +63,7 @@ struct ui_shape {
 int tomoe_present_ui_shape(struct tomoe *s, const struct ui_shape *shape);
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     const char *text, const char *font, double size, double line_height,
-    uint32_t rgba, int rotate);
+    uint32_t rgba, int rotate, int markup);
 int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     double thickness, double start, double end, uint32_t rgba);
 int tomoe_present_ui_hit(struct tomoe *s, const char *key, const char *command,
@@ -71,7 +73,7 @@ int tomoe_present_ui_cancel(struct tomoe *s, const char *owner, const char *name
     const char *output);
 
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
-    double size, double line_height);
+    double size, double line_height, int markup);
 const char *tomoe_ui_stats(struct tomoe *s);
 
 bool ui_hit_at(struct tomoe *s, double x, double y, struct ui_hit *out);

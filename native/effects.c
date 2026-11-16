@@ -623,7 +623,8 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
         inputs->window_count : 0;
     if (data_count > SHADER_DATA) data_count = SHADER_DATA;
     if (window_count > SHADER_WINDOWS) window_count = SHADER_WINDOWS;
-    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS];
+    bool selection = inputs && inputs->selection && p->selection >= 0;
+    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16];
     float trail[4 * POINTER_TRAIL];
     double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
         mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
@@ -649,6 +650,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     for (int i = 0; i < data_count; i++) params[used++] = inputs->data[i];
     for (int i = 0; i < 4 * window_count; i++) params[used++] = inputs->windows[i];
+    for (int i = 0; selection && i < 16; i++) params[used++] = inputs->selection[i];
     struct box covered = covering(f, drawn);
     if (p->channel < 0) {
         if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) return;
@@ -682,6 +684,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     glUniform1i(p->window_count, window_count);
     if (window_count) glUniform4fv(p->windows, window_count, inputs->windows);
+    if (selection) glUniform4fv(p->selection, 4, inputs->selection);
     quad(f, p, drawn, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
     op_end(f->pass, &clip);

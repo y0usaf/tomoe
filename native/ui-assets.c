@@ -535,7 +535,14 @@ static enum asset_status backdrop_start(struct tomoe *s, struct ui_asset *asset,
 static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
         uint64_t available) {
     struct asset_data data = {0};
-    enum asset_status status = read_asset(asset->path, SHADER_FILE_LIMIT, &data);
+    enum asset_status status = ASSET_OK;
+    if (!strcmp(asset->name, "glsl")) {
+        data.length = strlen(asset->path);
+        data.bytes = (unsigned char *)strdup(asset->path);
+        if (!data.bytes) return ASSET_HARD;
+    } else {
+        status = read_asset(asset->path, SHADER_FILE_LIMIT, &data);
+    }
     if (status != ASSET_OK) return status;
     data.bytes[data.length] = '\0';
     if (data.length > available) status = ASSET_HARD;
@@ -556,10 +563,12 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     static const char *const labels[] = { "", "image", "icon", "background", "shader" };
     uint32_t width = 0, height = 0;
     int fit = FIT_COVER;
+    bool glsl = kind == 4 && name && !strcmp(name, "glsl");
     if (!s || !source_id || !bounded_string(owner) || !*owner ||
             !bounded_string(path) || !bounded_string(name) ||
-            kind < 1 || kind > 4 || (*path && *path != '/') ||
-            ((kind == 1 || kind == 4) && (!*path || *name)) || (kind == 2 && !*name) ||
+            kind < 1 || kind > 4 || (*path && *path != '/' && !glsl) ||
+            (kind == 1 && (!*path || *name)) || (kind == 4 && (!*path || (*name && !glsl))) ||
+            (kind == 2 && !*name) ||
             (kind == 3 && (!*path || !backdrop_name(name, &width, &height, &fit)))) return 0;
     if (!s->ui_assets) {
         s->ui_assets = calloc(1, sizeof(*s->ui_assets));
@@ -606,7 +615,8 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
     if (status == ASSET_HARD) { free_asset(asset); return 0; }
     if (status == ASSET_MISSING) {
         free_content(asset);
-        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n", labels[kind], *path ? path : name);
+        fprintf(stderr, "tomoe: shell %s asset unavailable: %s\n", labels[kind],
+            glsl ? "inline GLSL" : *path ? path : name);
     }
     asset->references = 1; asset->scratch = true;
     asset->id = pool->next_id;

@@ -43,6 +43,7 @@ enum tomoe_event_type {
     EV_SCREENCAST,
     EV_SOURCE,
     EV_TEXT,
+    EV_SELECTOR,
     EV_TYPE_COUNT
 };
 

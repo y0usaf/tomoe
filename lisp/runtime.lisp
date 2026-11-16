@@ -1680,7 +1680,7 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
          (push :request changed)))
       (:button (push :button changed))
       (:pointer (push :pointer changed))
-      (:screenshot (push :screenshot changed))
+      ((:screenshot :selector) (push :screenshot changed))
       (:screencast (push :screencast changed))
       (:grab (push :grab changed))
       (:timer (deliver-owned-event (list :type :timer :name (getf event :name))

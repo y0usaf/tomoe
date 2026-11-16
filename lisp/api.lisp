@@ -743,8 +743,8 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:cursor-glass (:group (:enabled :boolean nil) (:delay-ms (:integer 0 10000) 120)))
     (:animations :animations t)
     (:screenshot-freeze :boolean t)
-    (:screenshot-colors (:group (:accent :color "#7aa1f7") (:background :color "#1c1c21")
-                                (:text :color "#ffffff") (:chip :color "#45454f")))
+    (:screenshot-motion (:group (:enabled :boolean nil) (:stiffness (:real 1 10000) 170)
+                                (:damping (:real 0.05 4) 0.45)))
     (:watchdog-ms (:integer 0 60000) 1000)
     (:budgets (:group
                (:lisp-heap-mb (:integer 4 1024) 256)

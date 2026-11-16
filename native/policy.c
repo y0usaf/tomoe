@@ -93,7 +93,8 @@ static const struct event_policy {
     [EV_SERVICES] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
     [EV_SYSTEM] = { PK_SYSTEM, PK_SYSTEM, 0 },
     [EV_SOURCE] = { POLICY_ALWAYS, POLICY_ALWAYS, 0 },
-    [EV_TEXT] = { POLICY_ALWAYS, POLICY_TRANSPORT, EVF_OPTIONAL }
+    [EV_TEXT] = { POLICY_ALWAYS, POLICY_TRANSPORT, EVF_OPTIONAL },
+    [EV_SELECTOR] = { PK_SCREENSHOT, PK_SCREENSHOT, 0 }
 };
 
 static bool key_read(struct tomoe *s, int key) {
@@ -424,6 +425,21 @@ static lisp_value convert_screenshot(struct tomoe *s, const struct tomoe_event *
     return lisp_nreverse(list);
 }
 
+static lisp_value convert_selector(struct tomoe *s, const struct tomoe_event *e) {
+    lisp_value list = lisp_nil();
+    list = put(list, "TYPE", lisp_keyword("selector"));
+    list = put(list, "OPEN", boolean(e->id != 0));
+    if (e->id) {
+        list = put(list, "OUTPUT", text_of(s, e->str[0], ""));
+        list = put(list, "ANCHOR", lisp_cons(lisp_int(e->x), lisp_cons(lisp_int(e->y), lisp_nil())));
+        list = put(list, "CORNER", lisp_cons(lisp_int(e->dx), lisp_cons(lisp_int(e->dy), lisp_nil())));
+        list = put(list, "SELECTED", boolean(e->state & 1));
+        list = put(list, "DRAGGING", boolean(e->state & 2));
+        list = put(list, "FROZEN", boolean(e->state & 4));
+    }
+    return lisp_nreverse(list);
+}
+
 static lisp_value convert_ui(struct tomoe *s, const struct tomoe_event *e) {
     lisp_value list = lisp_nil();
     list = put(list, "TYPE", lisp_keyword("ui"));
@@ -455,6 +471,7 @@ static policy_converter converters[EV_TYPE_COUNT] = {
     [EV_ACTIVITY] = convert_activity,
     [EV_REQUEST] = convert_request,
     [EV_SCREENSHOT] = convert_screenshot,
+    [EV_SELECTOR] = convert_selector,
     [EV_UI] = convert_ui
 };
 

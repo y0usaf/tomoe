@@ -94,7 +94,7 @@ int tomoe_present_ui_asset(struct tomoe *server, uint64_t id,
 int tomoe_present_ui_shape(struct tomoe *server, const struct ui_shape *shape);
 int tomoe_present_ui_text(struct tomoe *server, double x, double y,
     const char *text, const char *font, double size, double line_height, uint32_t rgba,
-    int rotate);
+    int rotate, int markup);
 int tomoe_present_ui_arc(struct tomoe *server, double cx, double cy, double radius,
     double thickness, double start, double end, uint32_t rgba);
 int tomoe_present_ui_hit(struct tomoe *server, const char *key, const char *command,
@@ -103,7 +103,7 @@ int tomoe_present_ui_end(struct tomoe *server);
 int tomoe_present_ui_cancel(struct tomoe *server, const char *owner, const char *name,
     const char *output);
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
-    double size, double line_height);
+    double size, double line_height, int markup);
 const char *tomoe_ui_stats(struct tomoe *server);
 int tomoe_present_settings(struct tomoe *server);
 int tomoe_present_setting(struct tomoe *server, const char *key, double value);

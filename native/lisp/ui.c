@@ -9,7 +9,7 @@ enum ui_key {
     UK_KIND, UK_WIDTH, UK_HEIGHT, UK_GROW, UK_BACKGROUND, UK_BORDER_COLOR, UK_RADIUS, UK_BORDER,
     UK_KEY, UK_ON_CLICK, UK_ON_HOVER, UK_CHILDREN, UK_GAP, UK_PADDING, UK_ALIGN, UK_JUSTIFY,
     UK_TEXT, UK_SIZE, UK_LINE_HEIGHT, UK_COLOR, UK_FONT, UK_ROTATE, UK_SRC, UK_NAME, UK_PATH,
-    UK_ORIENTATION, UK_THICKNESS, UK_VALUE, UK_TRACK, UK_POINTS, UK_SHADOW, UK_COUNT
+    UK_ORIENTATION, UK_THICKNESS, UK_VALUE, UK_TRACK, UK_POINTS, UK_SHADOW, UK_MARKUP, UK_COUNT
 };
 
 enum ui_kind {
@@ -25,7 +25,7 @@ static const char *const key_names[UK_COUNT] = {
     "KIND", "WIDTH", "HEIGHT", "GROW", "BACKGROUND", "BORDER-COLOR", "RADIUS", "BORDER",
     "KEY", "ON-CLICK", "ON-HOVER", "CHILDREN", "GAP", "PADDING", "ALIGN", "JUSTIFY",
     "TEXT", "SIZE", "LINE-HEIGHT", "COLOR", "FONT", "ROTATE", "SRC", "NAME", "PATH",
-    "ORIENTATION", "THICKNESS", "VALUE", "TRACK", "POINTS", "SHADOW"
+    "ORIENTATION", "THICKNESS", "VALUE", "TRACK", "POINTS", "SHADOW", "MARKUP"
 };
 
 static const char *const kind_names[UI_KIND_COUNT] = {
@@ -44,7 +44,9 @@ static const uint8_t common_keys[] = {
 
 static const uint8_t container_keys[] = { UK_CHILDREN, UK_GAP, UK_PADDING, UK_ALIGN, UK_JUSTIFY };
 static const uint8_t stack_keys[] = { UK_CHILDREN };
-static const uint8_t text_keys[] = { UK_TEXT, UK_SIZE, UK_LINE_HEIGHT, UK_COLOR, UK_FONT, UK_ROTATE };
+static const uint8_t text_keys[] = {
+    UK_TEXT, UK_SIZE, UK_LINE_HEIGHT, UK_COLOR, UK_FONT, UK_ROTATE, UK_MARKUP
+};
 static const uint8_t image_keys[] = { UK_SRC };
 static const uint8_t icon_keys[] = { UK_NAME, UK_PATH, UK_SIZE, UK_COLOR };
 static const uint8_t separator_keys[] = { UK_ORIENTATION, UK_THICKNESS, UK_COLOR };
@@ -62,7 +64,7 @@ static const struct key_set kind_keys[UI_KIND_COUNT] = {
     [UI_COLUMN] = { container_keys, 5 },
     [UI_BUTTON] = { container_keys, 5 },
     [UI_STACK] = { stack_keys, 1 },
-    [UI_TEXT] = { text_keys, 6 },
+    [UI_TEXT] = { text_keys, 7 },
     [UI_IMAGE] = { image_keys, 1 },
     [UI_ICON] = { icon_keys, 4 },
     [UI_RECT] = { NULL, 0 },
@@ -467,6 +469,8 @@ static lisp_value normalize(struct ui_walk *walk, int kind, int key, lisp_value 
         return ui_choice(value, ui.orientation_choices);
     case UK_ROTATE:
         return ui_choice(value, ui.rotate_choices);
+    case UK_MARKUP:
+        return nilp(value) ? NIL_VAL : T_VAL;
     case UK_TEXT:
         return ui_string(value, 65536, true);
     case UK_FONT:

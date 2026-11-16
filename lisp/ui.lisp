@@ -8,7 +8,8 @@
 (defun %ui-backdrop (value)
   "Normalize a shell background: a color, (:image PATH [:fit FIT]),
 (:shader PATH [:fps FPS] [:idle SECONDS] [:data REALS] [:windows IDS] [:clock SECOND]
-[:until SECONDS]) or (:trail [:cell PIXELS] [:life SECONDS]
+[:until SECONDS]), (:glsl SOURCE ...) taking the shader's text itself and the
+same options as :SHADER, or (:trail [:cell PIXELS] [:life SECONDS]
 [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."
   (%ui-list value 16 "Shell background")
   (let ((kind (first value)))
@@ -31,10 +32,10 @@
                   :color (%ui-color (getf options :color #xb8e0ffff))
                   :fps fps :idle idle)))
         (let ((options (cddr value)))
-          (unless (member kind '(:image :shader))
-            (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
-          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until :reach)))
-          (list* kind (%ui-string (second value) 65536 nil)
+          (unless (member kind '(:image :shader :glsl))
+            (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), (:glsl SOURCE [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
+          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until :reach :glsl)))
+          (list* (if (eq kind :glsl) :shader kind) (%ui-string (second value) 65536 nil)
                  (if (eq kind :image)
                      (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
                      (let ((fps (%double-float (getf options :fps 0)))
@@ -42,7 +43,9 @@
                        (unless (<= 0d0 fps 1000d0)
                          (error "Shell shader :fps must be from 0, following the display, to 1000."))
                        (unless (<= 0d0 idle 4d0) (error "Shell shader :idle must be from 0 to 4 seconds."))
-                       (append (list :fps fps :idle idle) (%ui-shader-inputs options)))))))))
+                       (append (list :fps fps :idle idle) (%ui-shader-inputs options)
+                               (when (or (eq kind :glsl) (getf options :glsl))
+                                 (list :glsl t))))))))))
 
 (defun %ui-shader-inputs (options)
   "A shader background's own inputs: :DATA, up to 192 reals the shader reads as
@@ -105,7 +108,7 @@ rings round them and nothing between."
                          when (member edge anchors) collect edge)
           :margin (%ui-edges (getf arguments :margin 0) t)
           :placement (%ui-choice (getf arguments :placement :world) '(:world :view :follow))
-          :layer (%ui-choice (getf arguments :layer :top) '(:background :bottom :top :overlay))
+          :layer (%ui-choice (getf arguments :layer :top) '(:background :bottom :top :overlay :screenshot))
           :exclusive-zone (%ui-length (getf arguments :exclusive-zone 0) nil t)
           :visible visible
           :output (let ((output (getf arguments :output)))

@@ -163,6 +163,7 @@ struct ui_text {
     size_t references;
     char *font, *text;
     double size, line_height;
+    bool markup;
     uint64_t hash;
     PangoLayout *layout;
     int width, height;
@@ -240,7 +241,7 @@ static cairo_t *text_pen(void) {
 }
 
 static PangoLayout *text_layout(const char *font, const char *text,
-        double size, double line_height) {
+        double size, double line_height, bool markup) {
     cairo_t *pen = text_pen();
     if (!pen) return NULL;
     PangoFontMap *map = pango_cairo_font_map_get_default();
@@ -268,7 +269,8 @@ static PangoLayout *text_layout(const char *font, const char *text,
     pango_font_description_set_absolute_size(description, size * PANGO_SCALE);
     pango_layout_set_font_description(layout, description);
     pango_font_description_free(description);
-    pango_layout_set_text(layout, text, -1);
+    if (markup) pango_layout_set_markup(layout, text, -1);
+    else pango_layout_set_text(layout, text, -1);
     pango_layout_set_width(layout, -1);
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
     pango_layout_set_single_paragraph_mode(layout, TRUE);
@@ -332,17 +334,18 @@ static void ui_text_release(struct ui_text *entry) {
 }
 
 static struct ui_text *text_build(const char *font, const char *text,
-        double size, double line_height, uint64_t hash) {
+        double size, double line_height, bool markup, uint64_t hash) {
     struct ui_text *entry = calloc(1, sizeof(*entry));
     if (!entry) return NULL;
     entry->references = 2;
     entry->hash = hash;
     entry->size = size;
     entry->line_height = line_height;
+    entry->markup = markup;
     entry->font = copy_string(font);
     entry->text = copy_string(text);
     entry->layout = entry->font && entry->text ?
-        text_layout(font, text, size, line_height) : NULL;
+        text_layout(font, text, size, line_height, markup) : NULL;
     if (!entry->layout) {
         free(entry->font);
         free(entry->text);
@@ -351,31 +354,33 @@ static struct ui_text *text_build(const char *font, const char *text,
     }
     PangoRectangle ink;
     pango_layout_get_pixel_extents(entry->layout, &ink, NULL);
-    pango_layout_get_pixel_size(entry->layout, &entry->width, NULL);
+    int natural = 0;
+    pango_layout_get_pixel_size(entry->layout, &entry->width, &natural);
     entry->ink = (struct rect){ ink.x, ink.y, ink.x + ink.width, ink.y + ink.height };
-    entry->height = (int)ceil(line_height);
+    if (markup) entry->line_height = natural;
+    entry->height = (int)ceil(entry->line_height);
     return entry;
 }
 
 static struct ui_text *ui_text_get(const char *font, const char *text,
-        double size, double line_height) {
+        double size, double line_height, bool markup) {
     font = string_or_empty(font);
     uint64_t hash = UINT64_C(0xcbf29ce484222325);
     hash = hash_text(hash, font);
     hash = hash_text(hash, text);
     hash = hash_double(hash, size);
-    hash = hash_double(hash, line_height);
+    hash = hash_double(hash, markup ? -1 : line_height);
     for (struct ui_text *entry = ui_text_buckets[hash % UI_TEXT_BUCKETS];
             entry; entry = entry->next) {
-        if (entry->hash != hash || entry->size != size ||
-                entry->line_height != line_height || strcmp(entry->text, text) ||
+        if (entry->hash != hash || entry->size != size || entry->markup != markup ||
+                (!markup && entry->line_height != line_height) || strcmp(entry->text, text) ||
                 strcmp(entry->font, font)) continue;
         entry->references++;
         ui_text_hits++;
         text_touch(entry);
         return entry;
     }
-    struct ui_text *entry = text_build(font, text, size, line_height, hash);
+    struct ui_text *entry = text_build(font, text, size, line_height, markup, hash);
     if (!entry) return NULL;
     while (ui_text_count >= UI_TEXT_LIMIT && text_evict()) { }
     entry->next = ui_text_buckets[hash % UI_TEXT_BUCKETS];
@@ -493,9 +498,8 @@ static struct rect padded_box(double x, double y, double width, double height, d
     return (struct rect){ (int32_t)left, (int32_t)top, (int32_t)right, (int32_t)bottom };
 }
 
-static struct rect text_reach(const struct ui_text *entry, double x, double y,
-        int rotate, double line_height) {
-    double width = entry->width, height = ceil(line_height);
+static struct rect text_reach(const struct ui_text *entry, double x, double y, int rotate) {
+    double width = entry->width, height = ceil(entry->line_height);
     double left = DBL_MAX, top = DBL_MAX, right = -DBL_MAX, bottom = -DBL_MAX;
     const double points[4][2] = { { entry->ink.x1, entry->ink.y1 },
         { entry->ink.x2, entry->ink.y1 }, { entry->ink.x1, entry->ink.y2 },
@@ -750,7 +754,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t plan_id, int x, int y, int width, int height, int layer,
         int click_through, int slide, int blur, uint32_t attach, int attach_axes, int drawn) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
-            height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
+            height > UI_MAX_DIMENSION || layer < 0 || layer > UI_LAYER_SCREENSHOT ||
             click_through < 0 || click_through > 1 || slide < 0 || slide > 1 ||
             attach_axes < 0 || attach_axes > 3 ||
             blur < -1 || blur > UI_MAX_DIMENSION) return 0;
@@ -1127,9 +1131,9 @@ static bool valid_text_args(const char *text, const char *font, double size,
 }
 
 uint64_t tomoe_ui_text_size(const char *text, const char *font,
-        double size, double line_height) {
+        double size, double line_height, int markup) {
     if (!text || !valid_text_args(text, font, size, line_height)) return UINT64_MAX;
-    struct ui_text *entry = ui_text_get(font, text, size, line_height);
+    struct ui_text *entry = ui_text_get(font, text, size, line_height, markup != 0);
     if (!entry) return UINT64_MAX;
     int width = entry->width, height = entry->height;
     ui_text_release(entry);
@@ -1139,13 +1143,13 @@ uint64_t tomoe_ui_text_size(const char *text, const char *font,
 
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
         const char *text, const char *font, double size, double line_height,
-        uint32_t rgba, int rotate) {
+        uint32_t rgba, int rotate, int markup) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface)) return 0;
     if (rotate != 0 && rotate != 90 && rotate != 180 && rotate != 270) return 0;
     if (!finite_number(x) || !finite_number(y) ||
             !valid_text_args(text, font, size, line_height)) return 0;
-    struct ui_text *entry = ui_text_get(font, text, size, line_height);
+    struct ui_text *entry = ui_text_get(font, text, size, line_height, markup != 0);
     if (!entry) return 0;
     struct ui_op *op = op_append(surface);
     if (!op) {
@@ -1157,7 +1161,7 @@ int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     op->x = x; op->y = y;
     op->rotate = rotate;
     op->u.text.text = entry;
-    op->reach = text_reach(entry, x, y, rotate, line_height);
+    op->reach = text_reach(entry, x, y, rotate);
     note_paint(surface, (rgba & 0xff) > 0 && text[0]);
     return 1;
 }
@@ -1803,6 +1807,7 @@ bool ui_on_output(struct output *o, int layer) {
     for (size_t i = 0; i < set->count; i++) {
         const struct ui_surface *surface = set->surfaces[i];
         if (surface->layer < layer || !surface_matches_output(surface, o, NULL)) continue;
+        if (surface->layer == UI_LAYER_SCREENSHOT && !screenshot_on(o)) continue;
         struct box placed = { .x = surface->x + surface->offset_x,
             .y = surface->y + surface->offset_y,
             .width = surface->width, .height = surface->height };
@@ -1921,8 +1926,11 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             bool still = shader_still(o->server, surface, now);
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
+            float selection[16];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
-                windows, surface->shader_window_count, NULL };
+                windows, surface->shader_window_count, NULL, NULL };
+            if (layer == UI_LAYER_SCREENSHOT && screenshot_selection(o, area, now, selection))
+                inputs.selection = selection;
             for (int w = 0; w < surface->shader_window_count; w++) {
                 struct fbox box;
                 float *out = &windows[4 * w];

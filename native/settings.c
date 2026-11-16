@@ -17,10 +17,9 @@ static const struct setting_field {
     { "cursor-glass-enabled", offsetof(struct settings, cursor_glass_enabled), SETTING_BOOL },
     { "cursor-glass-delay-ms", offsetof(struct settings, cursor_glass_delay_ms), SETTING_INT },
     { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
-    { "screenshot-colors-accent", offsetof(struct settings, screenshot_colors.accent), SETTING_COLOR },
-    { "screenshot-colors-background", offsetof(struct settings, screenshot_colors.background), SETTING_COLOR },
-    { "screenshot-colors-text", offsetof(struct settings, screenshot_colors.text), SETTING_COLOR },
-    { "screenshot-colors-chip", offsetof(struct settings, screenshot_colors.chip), SETTING_COLOR },
+    { "screenshot-motion-enabled", offsetof(struct settings, screenshot_motion_enabled), SETTING_BOOL },
+    { "screenshot-motion-stiffness", offsetof(struct settings, screenshot_motion_stiffness), SETTING_REAL },
+    { "screenshot-motion-damping", offsetof(struct settings, screenshot_motion_damping), SETTING_REAL },
 #define ANIMATION_FIELDS(prefix, member) \
     { prefix "-kind", offsetof(struct settings, member.kind), SETTING_INT }, \
     { prefix "-damping-ratio", offsetof(struct settings, member.damping_ratio), SETTING_REAL }, \
