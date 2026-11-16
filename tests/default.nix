@@ -853,6 +853,8 @@ let
         boot.extraModprobeConfig = extraModprobeConfig;
         hardware.graphics.enable = true;
         hardware.uinput.enable = uinput;
+        services.seatd.enable = true;
+        systemd.services.seatd.environment.SEATD_VTBOUND = "0";
         environment.systemPackages = [
           tomoe
           client

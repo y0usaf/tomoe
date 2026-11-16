@@ -177,7 +177,7 @@ class Tomoe(Compositor):
         return command + ["--config", f"{self.config}/init.lisp", "--no-watch"]
 
     def extra_environment(self):
-        return {"LIBSEAT_BACKEND": "builtin", "TOMOE_TIMINGS": "1"}
+        return {"TOMOE_TIMINGS": "1"}
 
     def sockets(self):
         listing = self.run(f"ls {self.runtime} 2>/dev/null", check=False)

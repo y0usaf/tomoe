@@ -4,7 +4,6 @@ COST = re.compile(r":COST-NS (-?\d+)", re.IGNORECASE)
 KEYS = ("count", "mean", "p50", "p90", "p99", "max")
 DRM = {
     "TOMOE_DEBUG": "1",
-    "LIBSEAT_BACKEND": "noop",
     "WLR_NO_HARDWARE_CURSORS": "1",
 }
 PHASES = (

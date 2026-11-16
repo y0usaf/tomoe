@@ -1,7 +1,6 @@
 KEYS = ("count", "mean", "p50", "p90", "p99", "max")
 DRM = {
     "TOMOE_DEBUG": "1",
-    "LIBSEAT_BACKEND": "noop",
     "WLR_NO_HARDWARE_CURSORS": "1",
 }
 PHASES = (("input", "--motion-stream 1000 3000"), ("commit", "--commit-stream 500 3000"))

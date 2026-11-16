@@ -140,7 +140,6 @@
             libs.libdrm
             libs.libdrm.dev
             (pkgs.libinput.override { luaSupport = false; })
-            (pkgs.seatd.override { systemd = pkgs.systemdLibs; })
             libs.libglvnd
             libs.libgbm
             pkgs.wayland

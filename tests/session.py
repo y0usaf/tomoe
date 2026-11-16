@@ -8,9 +8,6 @@ DEVICE = f"/dev/dri/{CARD}"
 CONNECTOR = f"/sys/class/drm/{CARD}-Virtual-1"
 STATE = "/run/tomoe-session-state"
 FRAME = re.compile(r"(?<!-):FRAME (\d+)", re.IGNORECASE)
-DRM = {
-    "LIBSEAT_BACKEND": "noop",
-}
 
 
 def session(state):
@@ -67,7 +64,7 @@ def settle(limit=60):
 
 
 machine.succeed(f"echo active > {STATE}")
-start("--bare", f"--test-session={STATE}", f"--drm_device {DEVICE}", backend="drm", env=DRM)
+start("--bare", f"--test-session={STATE}", f"--drm_device {DEVICE}", backend="drm")
 cli(f"mount {FRAMECLOCK_POLICY}")
 settle()
 machine.wait_until_succeeds(f"grep -qx enabled {CONNECTOR}/enabled", timeout=30)

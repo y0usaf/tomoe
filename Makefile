@@ -8,7 +8,7 @@ CPU ?=
 WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 
-LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client libpipewire-0.3
+LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libudev wayland-client libpipewire-0.3
 PORTAL_LIBS = wayland-client libpipewire-0.3 libdrm gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \

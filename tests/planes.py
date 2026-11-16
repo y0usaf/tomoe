@@ -2,7 +2,7 @@ CARD = machine.succeed(
     "for c in /sys/class/drm/card*-Virtual-1; do basename $c | cut -d- -f1; done"
 ).strip()
 DEVICE = f"/dev/dri/{CARD}"
-DRM = {"TOMOE_DEBUG": "1", "LIBSEAT_BACKEND": "noop"}
+DRM = {"TOMOE_DEBUG": "1"}
 PLANES = "tomoe-planes-probe"
 OUTPUT = "Virtual-1"
 COUNTERS = (":FRAME", ":DRAWN-FRAME", ":BUFFER-AGE", ":DRAWN-PIXELS", ":PIXELS", ":DRAWS",
@@ -177,7 +177,7 @@ def start_main():
         "--setenv=HOME=/root "
         "--setenv=PATH=/run/current-system/sw/bin --setenv=MESA_LOADER_DRIVER_OVERRIDE=zink "
         f"--setenv={THREADS} --setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        "--setenv=LIBSEAT_BACKEND=noop --setenv=TOMOE_DEBUG=1 "
+        "--setenv=TOMOE_DEBUG=1 "
         f"{BASELINE} --socket main --backend drm --no-watch --drm_device {DEVICE}")
     for _ in range(600):
         if machine.execute(ENV + f"{BASELINE} --socket main inspect")[0] == 0:

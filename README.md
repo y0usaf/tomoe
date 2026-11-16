@@ -444,7 +444,7 @@ output baseline, while later explicit `configure-output` effects can override it
 
 SBCL runs the policy. A C core linked into the same executable speaks Wayland
 through libwayland-server, renders with EGL and GLES2 on GBM, and drives
-DRM/KMS, libinput and libseat; it can also run nested in another compositor or
+DRM/KMS, libinput and seatd; it can also run nested in another compositor or
 headless. Extensions never touch native state. They return effects, the runtime
 settles every extension's effects into one transaction, and only then does the
 native side apply it. A broken extension therefore can't leave the screen

@@ -5,7 +5,6 @@ CONNECTOR = f"/sys/class/drm/{CARD}-Virtual-1"
 JOURNAL = "journalctl -o cat _SYSTEMD_INVOCATION_ID=$(systemctl show -P InvocationID tomoe)"
 DRM = {
     "TOMOE_DEBUG": "1",
-    "LIBSEAT_BACKEND": "noop",
 }
 
 
