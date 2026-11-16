@@ -9,13 +9,14 @@ machine.succeed(f"install -d -m 700 {RUNTIME} {DIRECTORY}")
 machine.succeed(f"cp {SERVICE_PROBE} {DIRECTORY}/probe.py")
 
 
-def policy(name, socket_path, pid_path, child_path, fork):
+def policy(name, socket_path, pid_path, child_path, fork, program=None, options=""):
+    program = program or SERVICE_PYTHON
     source = f"""(in-package #:tomoe-user)
 (define-extension "probe" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (service :probe (list "{SERVICE_PYTHON}" "{DIRECTORY}/probe.py"
+  (values nil (list (service :probe (list "{program}" "{DIRECTORY}/probe.py"
                                           "{socket_path}" "{pid_path}" "{fork}"
-                                          "{child_path}"))) nil))
+                                          "{child_path}"){options})) nil))
 """
     machine.succeed(f"cat > {DIRECTORY}/{name}.lisp <<'LISP'\n{source}LISP")
 
@@ -87,6 +88,19 @@ direct = wait_running(f"{DIRECTORY}/direct.pid")
 kill_compositor("tomoe-direct")
 assert wait_gone(direct), f"a service outlived a SIGKILLed compositor: {direct}"
 
+machine.succeed(f"mkdir -p {DIRECTORY}/project/bin && "
+                f"ln -sf {SERVICE_PYTHON} {DIRECTORY}/project/bin/worker")
+policy("path", f"{DIRECTORY}/path.sock", f"{DIRECTORY}/path.pid",
+       f"{DIRECTORY}/path.child", 0, program="worker",
+       options=f" :cwd \"{DIRECTORY}/project\" :env '((\"PATH\" . \"bin\"))")
+launch("tomoe-path", "path", f"{DIRECTORY}/path.lisp")
+path = wait_running(f"{DIRECTORY}/path.pid")
+assert running(path), f"a service did not resolve its PATH against its own cwd: {path}"
+cli("quit", "path")
+machine.wait_until_succeeds("systemctl show -P SubState tomoe-path | grep -qEx 'dead|failed'",
+                            timeout=60)
+assert wait_gone(path), f"a service outlived its compositor's quit: {path}"
+
 policy("leftover", "-", f"{DIRECTORY}/leftover.pid", f"{DIRECTORY}/leftover.child", 1)
 launch("tomoe-leftover", "leftover", f"{DIRECTORY}/leftover.lisp")
 leftover = wait_running(f"{DIRECTORY}/leftover.pid")
@@ -103,7 +117,8 @@ policy("live", f"{DIRECTORY}/live.sock", f"{DIRECTORY}/live.pid",
        f"{DIRECTORY}/live.child", 0)
 launch("tomoe-live", "live", f"{DIRECTORY}/live.lisp")
 live = wait_running(f"{DIRECTORY}/live.pid")
-machine.succeed("systemd-run --unit=decoy --property=Type=exec ""/run/current-system/sw/bin/sleep 300")
+machine.succeed("systemd-run --unit=decoy --property=Type=exec "
+                "/run/current-system/sw/bin/sleep 300")
 for _ in range(200):
     decoy = machine.succeed("systemctl show -P MainPID decoy").strip()
     if decoy not in ("", "0"):

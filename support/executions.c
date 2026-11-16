@@ -768,7 +768,28 @@ failed:
 }
 
 
-static char *executable_path(const char *file, char *const envp[]) {
+static char *path_candidate(const char *cwd, const char *component, size_t length,
+        const char *file, size_t file_length) {
+    size_t prefix = cwd && *cwd && component[0] != '/' ? strlen(cwd) + 1 : 0;
+    if (length > SIZE_MAX - file_length - prefix - 3) return NULL;
+    char *candidate = malloc(prefix + length + (length ? 1 : 0) + file_length + 1);
+    if (!candidate) return NULL;
+    size_t at = 0;
+    if (prefix) {
+        memcpy(candidate, cwd, prefix - 1);
+        at = prefix - 1;
+        candidate[at++] = '/';
+    }
+    if (length) {
+        memcpy(candidate + at, component, length);
+        at += length;
+        candidate[at++] = '/';
+    }
+    memcpy(candidate + at, file, file_length + 1);
+    return candidate;
+}
+
+static char *executable_path(const char *file, char *const envp[], const char *cwd) {
     if (strchr(file, '/')) return strdup(file);
     const char *path = environment_value(envp, "PATH");
     char *fallback = NULL;
@@ -793,18 +814,9 @@ static char *executable_path(const char *file, char *const envp[]) {
         if (components >= TOMOE_PROCESS_MAX_PATH_COMPONENTS) break;
         const char *separator = strchr(component, ':');
         size_t length = separator ? (size_t)(separator - component) : strlen(component);
-        if (length == 0) {
-            if (!access(file, X_OK)) found = realpath(file, NULL);
-        } else {
-            char *candidate = malloc(length + 1 + file_length + 1);
-            if (candidate) {
-                memcpy(candidate, component, length);
-                candidate[length] = '/';
-                memcpy(candidate + length + 1, file, file_length + 1);
-                if (!access(candidate, X_OK)) found = realpath(candidate, NULL);
-                free(candidate);
-            }
-        }
+        char *candidate = path_candidate(cwd, component, length, file, file_length);
+        if (candidate && !access(candidate, X_OK)) found = realpath(candidate, NULL);
+        free(candidate);
         if (!separator) break;
         component = separator + 1;
     }
@@ -823,7 +835,7 @@ struct execution *tomoe_process_start_service(char *const argv[], const char *cw
     if (!error) return NULL;
     result = validate_process_arguments(argv, effective_envp);
     if (result) goto failed;
-    char *path = executable_path(argv[0], effective_envp);
+    char *path = executable_path(argv[0], effective_envp, cwd);
     if (!path) { result = ENOENT; goto failed; }
     int directory = -1;
     if (cwd) {
