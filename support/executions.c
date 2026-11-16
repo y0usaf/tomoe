@@ -363,6 +363,7 @@ failed:
 static char service_token[33];
 static char service_record_path[PATH_MAX];
 static char service_run_directory[PATH_MAX];
+static unsigned long service_directory_sequence;
 
 static void set_message(char *message, size_t size, const char *format, ...) {
     if (!message || !size) return;
@@ -658,6 +659,7 @@ int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size
     int fd = open(service_record_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) {
         set_message(error, error_size, "Cannot write %s: errno %d.", service_record_path, errno);
+        remove_tree(service_run_directory, 0);
         return -1;
     }
     written = snprintf(record, sizeof(record), "%s\n", service_token);
@@ -709,7 +711,8 @@ char *tomoe_service_directory_create(const char *owner, const char *name, char *
     char owner_name[160], service_name[160], path[PATH_MAX];
     sanitize_component(owner, owner_name, sizeof(owner_name));
     sanitize_component(name, service_name, sizeof(service_name));
-    int written = snprintf(path, sizeof(path), "%s/%s--%s", root, owner_name, service_name);
+    int written = snprintf(path, sizeof(path), "%s/%s--%s--%lu", root, owner_name,
+        service_name, ++service_directory_sequence);
     if (written < 0 || (size_t)written >= sizeof(path)) {
         set_message(error, error_size, "The service directory path is too long.");
         return NULL;

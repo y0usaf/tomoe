@@ -71,9 +71,9 @@ def kill_compositor(unit):
 
 def service_sockets():
     listing = machine.execute(
-        f"find {RUNTIME}/tomoe-services -name probe.sock -print 2>/dev/null",
+        f"ls -d {RUNTIME}/tomoe-services/*/*/probe.sock 2>/dev/null",
         check_return=False)[1]
-    return [line for line in listing.split("\n") if line]
+    return [line for line in listing.split("\n") if line.strip()]
 
 
 def exists(path):
@@ -122,14 +122,14 @@ assert running(decoy), "clearing a dead session killed an unrelated process"
 assert running(next_pid)
 
 cli("quit", "next")
-machine.wait_until_succeeds("systemctl show -P SubState tomoe-next | grep -qx 'exited\\|failed'",
+machine.wait_until_succeeds("systemctl show -P SubState tomoe-next | grep -qEx 'dead|failed'",
                             timeout=60)
 assert wait_gone(next_pid), f"a service outlived its compositor's quit: {next_pid}"
 assert not service_sockets(), f"a finished session left its service's socket: {service_sockets()}"
 assert running(live)
 
 cli("quit", "live")
-machine.wait_until_succeeds("systemctl show -P SubState tomoe-live | grep -qx 'exited\\|failed'",
+machine.wait_until_succeeds("systemctl show -P SubState tomoe-live | grep -qEx 'dead|failed'",
                             timeout=60)
 assert wait_gone(live), f"a service outlived its compositor's quit: {live}"
 machine.execute("systemctl stop decoy 2>/dev/null", check_return=False)

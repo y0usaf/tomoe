@@ -26,7 +26,8 @@ can read, replace or delete.
   at all and is still a working compositor.
 - **Unmount means gone.** An extension owns what it declares: placements,
   bindings, panels, processes, watched files. Unmount it and all of that goes
-  with it.
+  with it, sockets included. A service also dies with the compositor when it is
+  killed, and the next start clears what a dead session left.
 - **One executable.** SBCL with Tomoe's own C core for Wayland, rendering and
   input; no wlroots. It has a built-in X11 bridge (Xwayland from your `PATH`),
   a notification server and a screencast portal.
@@ -295,9 +296,9 @@ tomoe command undo-patch name=gap
 
 Undo unmounts the extensions the patch mounted and, because they mount the
 ordinary way, the machinery that removes any source removes their effects too:
-timers stop, supervised processes are signalled, watches, executions, shell
-surfaces, bindings and commands go, and every effect it replaced exposes its
-previous owner again. Any top-level `defun`, `defmacro`, `defvar` or
+timers stop, supervised processes are signalled, their runtime directories,
+sockets included, are removed, watches, executions, shell surfaces, bindings
+and commands go, and every effect it replaced exposes its previous owner again. Any top-level `defun`, `defmacro`, `defvar` or
 `defparameter` the patch made is restored to what it was before the patch, and
 a patch that fails to load or whose reducer fails on mount (it signals, overruns
 its watchdog or runs the Lisp heap out) is rejected with its error, leaving the
@@ -654,6 +655,7 @@ Bug reports, questions and odd setups are welcome in the
 nix build          # the package
 nix build .#znver4 # the same code with -march/-mtune=znver4 for a Zen 4 host
 nix build .#checks.x86_64-linux.smoke      # the landing check: one VM, a few minutes
+nix build .#checks.x86_64-linux.services   # services die with the compositor, leftovers clear
 nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON

@@ -413,7 +413,11 @@ RUN is :ONCE-PER-SESSION or :ONCE-PER-CONFIG-VERSION. A started child survives u
 (defun service (name &rest arguments)
   "Own a supervised process: (service name [command] &key cwd env restart reload).
 COMMAND defaults to NAME as the program. Equal declarations can survive successful reload.
-RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART."
+RESTART is :NEVER, :ON-FAILURE or :ON-EXIT; RELOAD can also be :ALWAYS-RESTART.
+The process dies with the compositor even when it is killed, and every process it
+forks carries TOMOE_SERVICE_TOKEN, so the next start can clear what a dead session
+left. TOMOE_SERVICE_RUNTIME_DIR is the process's own directory, a place to put
+sockets, and it is removed when the process ends."
   (multiple-value-bind (command options) (%process-command name arguments)
     (destructuring-bind (&key cwd env (restart :on-exit) (reload :keep-if-unchanged)) options
       (check-type restart (member :never :on-failure :on-exit))
