@@ -75,7 +75,13 @@ struct connector {
     struct dumb cursor_bo[CURSOR_SLOTS];
     uint32_t cursor_fb[CURSOR_SLOTS];
     int64_t cursor_retire_at[CURSOR_SLOTS];
-    struct cursor_commit { uint64_t seq; int slot; bool flip; } cursor_pending[CURSOR_PENDING];
+    struct cursor_commit {
+        uint64_t seq;
+        int64_t input_oldest, input_newest;
+        int slot;
+        bool flip;
+    } cursor_pending[CURSOR_PENDING];
+    int64_t cursor_input_oldest, cursor_input_newest;
     int cursor_pending_count, cursor_front, cursor_shown, cursor_x, cursor_y, cursor_hot_x, cursor_hot_y;
     uint64_t cursor_seq, cursor_shown_seq;
     bool cursor_on, cursor_dirty, cursor_inflight, cursor_upload_pending;
@@ -124,7 +130,7 @@ static void flip_disarmed(struct connector *c);
 static int flip_watchdog(void *data);
 static void cursor_queue(struct connector *c);
 static void cursor_submitted(struct connector *c, bool flip);
-static void cursor_completed(struct connector *c, bool flip);
+static void cursor_completed(struct connector *c, bool flip, int64_t when);
 static void cursor_settle(struct connector *c, bool off);
 static void overlay_promote(struct connector *c);
 
@@ -1051,7 +1057,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         ns_timer_arm(&c->cursor_timer, 0);
         if (!p->crtc->cursor) continue;
         cursor_submitted(c, true);
-        if (!(state->committed & SCREEN_BUFFER)) cursor_completed(c, true);
+        if (!(state->committed & SCREEN_BUFFER)) cursor_completed(c, true, 0);
     }
     for (size_t i = 0; ok && !test && modeset && log_verbosity >= LOG_INFO && i < count; i++) {
         struct connector *c = wl_container_of(updates[i].output, c, screen);
@@ -1231,17 +1237,23 @@ static void cursor_retire(struct connector *c, int slot, int64_t now) {
 
 static void cursor_submitted(struct connector *c, bool flip) {
     if (c->cursor_pending_count == CURSOR_PENDING) cursor_settle(c, false);
-    c->cursor_pending[c->cursor_pending_count++] = (struct cursor_commit){ ++c->cursor_seq,
-        cursor_visible(c) ? c->cursor_front : -1, flip };
+    c->cursor_pending[c->cursor_pending_count++] = (struct cursor_commit){ .seq = ++c->cursor_seq,
+        .input_oldest = c->cursor_input_oldest, .input_newest = c->cursor_input_newest,
+        .slot = cursor_visible(c) ? c->cursor_front : -1, .flip = flip };
+    c->cursor_input_oldest = c->cursor_input_newest = 0;
 }
 
 static void cursor_reupload(struct connector *c);
 
-static void cursor_completed(struct connector *c, bool flip) {
+static void cursor_completed(struct connector *c, bool flip, int64_t when) {
     int i = 0;
     while (i < c->cursor_pending_count && c->cursor_pending[i].flip != flip) i++;
     if (i == c->cursor_pending_count) return;
     struct cursor_commit done = c->cursor_pending[i];
+    if (when && done.input_newest && when > done.input_newest) {
+        timing_add(TIMING_CURSOR_NEWEST, (uint64_t)(when - done.input_newest));
+        timing_add(TIMING_CURSOR_OLDEST, (uint64_t)(when - done.input_oldest));
+    }
     memmove(&c->cursor_pending[i], &c->cursor_pending[i + 1],
         (size_t)(c->cursor_pending_count - i - 1) * sizeof(done));
     c->cursor_pending_count--;
@@ -1258,7 +1270,7 @@ static void cursor_completed(struct connector *c, bool flip) {
 }
 
 static void cursor_settle(struct connector *c, bool off) {
-    while (c->cursor_pending_count) cursor_completed(c, c->cursor_pending[0].flip);
+    while (c->cursor_pending_count) cursor_completed(c, c->cursor_pending[0].flip, 0);
     if (!off) return;
     int shown = c->cursor_shown;
     c->cursor_shown = -1;
@@ -1336,7 +1348,7 @@ static bool cursor_put(struct connector *c) {
         !drmModeSetCursor(c->kms->fd, c->crtc->id, 0, 0, 0);
     if (ok) {
         cursor_submitted(c, false);
-        cursor_completed(c, false);
+        cursor_completed(c, false, 0);
     }
     return ok;
 }
@@ -1421,6 +1433,11 @@ static void connector_move_cursor(struct screen *screen, int x, int y) {
     struct connector *c = wl_container_of(screen, c, screen);
     c->cursor_x = x;
     c->cursor_y = y;
+    int64_t input = c->kms->server->timing.pointer_event_ns;
+    if (input) {
+        if (!c->cursor_input_oldest) c->cursor_input_oldest = input;
+        c->cursor_input_newest = input;
+    }
     if (!c->crtc) return;
     if (c->kms->atomic) cursor_queue(c);
     else drmModeMoveCursor(c->kms->fd, c->crtc->id, x, y);
@@ -1485,7 +1502,7 @@ static int flip_watchdog(void *data) {
     if (!c->flip_pending) return 0;
     tomoe_log(LOG_ERROR, "tomoe: kms %s flip event missing", c->screen.name);
     c->flip_pending = false;
-    if (!c->flip_async) cursor_completed(c, true);
+    if (!c->flip_async) cursor_completed(c, true, 0);
     buffer_unlock(c->current);
     c->current = c->queued;
     c->queued = NULL;
@@ -1508,7 +1525,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
             c->screen.vblank_ns = when;
         if (cursor) {
             c->cursor_inflight = false;
-            cursor_completed(c, false);
+            cursor_completed(c, false, when);
             if (c->redraw && !c->flip_pending) {
                 c->redraw = false;
                 screen_schedule_frame(&c->screen);
@@ -1520,7 +1537,7 @@ static void page_flip(int fd, unsigned seq, unsigned sec, unsigned usec, unsigne
         flip_disarmed(c);
         c->flip_pending = false;
         overlay_promote(c);
-        if (!c->flip_async) cursor_completed(c, true);
+        if (!c->flip_async) cursor_completed(c, true, when);
         buffer_unlock(c->current);
         c->current = c->queued;
         c->queued = NULL;

@@ -266,6 +266,8 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
         break;
     }
     case LIBINPUT_EVENT_POINTER_MOTION:
+        if (timing_enabled)
+            s->timing.pointer_event_ns = (int64_t)libinput_event_pointer_get_time_usec(pointer) * 1000;
         input_pointer_motion(&(struct pointer_motion){ .device = device,
             .time_msec = msec(libinput_event_pointer_get_time_usec(pointer)),
             .delta_x = libinput_event_pointer_get_dx(pointer),
@@ -275,6 +277,8 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
         input_pointer_frame(device);
         break;
     case LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE:
+        if (timing_enabled)
+            s->timing.pointer_event_ns = (int64_t)libinput_event_pointer_get_time_usec(pointer) * 1000;
         input_pointer_absolute(&(struct pointer_absolute){ .device = device,
             .time_msec = msec(libinput_event_pointer_get_time_usec(pointer)),
             .x = libinput_event_pointer_get_absolute_x_transformed(pointer, 1),
@@ -327,6 +331,7 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
     default:
         break;
     }
+    s->timing.pointer_event_ns = 0;
 }
 
 static int dispatch(int fd, uint32_t mask, void *data) {

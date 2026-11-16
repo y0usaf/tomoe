@@ -1163,6 +1163,7 @@ struct tomoe {
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
     struct {
         uint64_t input_at, pointer_at, drag_at, key_at, commit_at, event_at, frame_at;
+        int64_t pointer_event_ns;
         uint64_t input_ring[TOMOE_PENDING_INPUT], commit_ring[TOMOE_PENDING_INPUT];
         uint64_t input_total, commit_total;
         uint64_t scene_ns, draw_ns, raster_ns, submit_ns;

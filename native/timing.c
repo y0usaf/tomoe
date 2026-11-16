@@ -23,6 +23,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "tx-dirty", "tx-reconcile", "parse", "transaction",
     "mat-total", "mat-config",
     "latch-input", "latch-commit", "present-input", "present-commit",
+    "cursor-newest", "cursor-oldest",
 };
 
 static struct channel channels[TIMING_CHANNELS];
