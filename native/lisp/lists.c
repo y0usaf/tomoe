@@ -190,8 +190,10 @@ lisp_value builtin_assoc(int argc, lisp_value *argv)
         }
         bool hit;
         if (kw.has_test) {
-            lisp_value args[2] = { argv[0], key };
-            hit = truthy(apply_function(kw.test, 2, args));
+            if (!lisp_kw_direct_test(kw.test, argv[0], key, &hit)) {
+                lisp_value args[2] = { argv[0], key };
+                hit = truthy(apply_function(kw.test, 2, args));
+            }
         } else {
             hit = eql_value(argv[0], key);
         }
@@ -407,7 +409,7 @@ lisp_value builtin_nconc(int argc, lisp_value *argv)
         if (nilp(out))
             out = list;
         else
-            CDR(tail) = list;
+            CDR(tail) = heap_store(OBJ(tail), list);
         tail = list_last(list);
     }
     return out;

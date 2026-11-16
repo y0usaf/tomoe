@@ -2,6 +2,7 @@
 #define TOMOE_JSON_H
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "lisp.h"
 
 enum {
@@ -22,5 +23,9 @@ lisp_value json_build_array(int count, const lisp_value *values);
 int json_parse(const char *text, size_t length, bool reject_duplicate_keys, lisp_value *out,
     char *error, size_t error_size);
 char *json_write(lisp_value value, bool pretty, char *error, size_t error_size);
+lisp_value json_validate_value(lisp_value value);
+uint64_t json_output_size(lisp_value value);
+lisp_value json_object_of(int argc, const lisp_value *argv);
+lisp_value json_array_of(int argc, const lisp_value *argv);
 
 #endif

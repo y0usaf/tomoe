@@ -1,5 +1,6 @@
 #include "internal.h"
 #include "budget.h"
+#include "json.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -1089,6 +1090,26 @@ static lisp_value prim_json_broadcast(int argc, lisp_value *argv) {
     return lisp_nil();
 }
 
+static lisp_value prim_json_subscribed(int argc, lisp_value *argv) {
+    return boolean(ipc_subscribed());
+}
+
+static lisp_value prim_json_validate_value(int argc, lisp_value *argv) {
+    return json_validate_value(argv[0]);
+}
+
+static lisp_value prim_json_output_size(int argc, lisp_value *argv) {
+    return lisp_uint(json_output_size(argv[0]));
+}
+
+static lisp_value prim_json_object(int argc, lisp_value *argv) {
+    return json_object_of(argc, argv);
+}
+
+static lisp_value prim_json_array(int argc, lisp_value *argv) {
+    return json_array_of(argc, argv);
+}
+
 static const struct primitive {
     const char *name;
     lisp_primitive fn;
@@ -1170,7 +1191,12 @@ static const struct primitive {
     { "%write-patch-file", prim_write_patch_file, 2, 2 },
     { "%write-append", prim_write_append, 2, 2 },
     { "%delete-file", prim_delete_file, 1, 1 },
-    { "%json-broadcast", prim_json_broadcast, 2, 2 }
+    { "%json-broadcast", prim_json_broadcast, 2, 2 },
+    { "%json-subscribed-p", prim_json_subscribed, 0, 0 },
+    { "%json-validate-value", prim_json_validate_value, 1, 1 },
+    { "%json-output-size", prim_json_output_size, 2, 2 },
+    { "json-object", prim_json_object, 0, -1 },
+    { "json-array", prim_json_array, 0, -1 }
 };
 
 void policy_register_primitives(struct tomoe *server) {

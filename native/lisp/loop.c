@@ -614,7 +614,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             break;
         struct lisp_frame *iter = frame;
         if (!nilp(while_expr) && !while_after_for) {
-            lisp_value test = eval(while_expr, iter);
+            lisp_value test = lisp_eval_cached(while_expr, iter);
             if (nilp(test))
                 break;
         }
@@ -640,11 +640,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     then_env = previous;
                 }
                 if (first_iteration)
-                    value = eval(clause->expr, iter);
+                    value = lisp_eval_cached(clause->expr, iter);
                 else if (!nilp(clause->then_expr))
-                    value = eval(clause->then_expr, then_env);
+                    value = lisp_eval_cached(clause->then_expr, then_env);
                 else
-                    value = eval(clause->expr, then_env);
+                    value = lisp_eval_cached(clause->expr, then_env);
                 clause->state = value;
             }
             struct lisp_frame *binding = frame_new(iter, slots + 1);
@@ -652,7 +652,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             iter = binding;
         }
         if (!nilp(while_expr) && while_after_for) {
-            lisp_value test = eval(while_expr, iter);
+            lisp_value test = lisp_eval_cached(while_expr, iter);
             if (nilp(test))
                 break;
         }
@@ -660,20 +660,21 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         for (int k = 0; k < nb; k++) {
             struct loop_act *act = &acts[k];
             if (!nilp(act->guard)) {
-                lisp_value test = eval(act->guard, iter);
+                lisp_value test = lisp_eval_cached(act->guard, iter);
                 if (act->negate ? truthy(test) : nilp(test))
                     continue;
             }
             switch (act->kind) {
             case ACT_DO:
-                eval_progn(act->forms, iter);
+                for (lisp_value form = act->forms; consp(form); form = CDR(form))
+                    lisp_eval_cached(CAR(form), iter);
                 break;
             case ACT_RETURN:
-                returned = eval(act->expr, iter);
+                returned = lisp_eval_cached(act->expr, iter);
                 returning = true;
                 break;
             case ACT_THEREIS: {
-                lisp_value value = eval(act->expr, iter);
+                lisp_value value = lisp_eval_cached(act->expr, iter);
                 if (truthy(value)) {
                     returned = value;
                     returning = true;
@@ -681,7 +682,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 break;
             }
             case ACT_ALWAYS: {
-                lisp_value value = eval(act->expr, iter);
+                lisp_value value = lisp_eval_cached(act->expr, iter);
                 if (nilp(value)) {
                     returned = NIL_VAL;
                     returning = true;
@@ -690,7 +691,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             }
             default: {
                 struct loop_acc *acc = &accs[act->acc];
-                lisp_value value = eval(act->expr, iter);
+                lisp_value value = lisp_eval_cached(act->expr, iter);
                 acc->used = true;
                 switch (act->kind) {
                 case ACT_COLLECT:
@@ -705,7 +706,7 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     if (nilp(acc->value))
                         acc->value = value;
                     else
-                        CDR(acc->tail) = value;
+                        CDR(acc->tail) = heap_store(OBJ(acc->tail), value);
                     acc->tail = list_last(value);
                     break;
                 case ACT_SUM:

@@ -281,8 +281,16 @@ int init_primitives(void)
     define_builtin("MAPHASH", builtin_maphash, 2, 2);
 
     define_internal("%KEEP", builtin_keep, 1, 1);
-    define_internal("%COPY-DATA", builtin_copy_data, 3, 3);
     define_internal("%R", builtin_runtime_read, 1, 1);
+    define_internal("%LIMIT", builtin_limit, 1, 1);
+    define_internal("%COMMAND-NAME-P", builtin_command_name_p, 1, 1);
+    define_internal("%CHANGED-KEYS", builtin_changed_keys, 3, 3);
+    define_internal("%EFFECTS-OF-KIND", builtin_effects_of_kind, 2, 2);
+    define_internal("%SAME-ELEMENTS-P", builtin_same_elements_p, 2, 2);
+    define_internal("%CONSTRUCTION-HASH", builtin_construction_hash, 1, 1);
+    define_internal("%CONSTRUCTION-FIND", builtin_construction_find, 2, 2);
+    define_internal("%CONSTRUCTION-COPY", builtin_construction_copy, 1, 1);
+    define_builtin("COPY-DATA", builtin_copy_data, 1, 1);
     define_internal("%R!", builtin_runtime_write, 2, 2);
     define_internal("%PERSIST-STATE", builtin_persist_state, 0, 0);
     define_builtin("CANONICAL-UI", builtin_canonical_ui, 1, 1);
@@ -510,6 +518,7 @@ lisp_value lisp_keyword(const char *name)
 }
 
 lisp_value lisp_cons(lisp_value car, lisp_value cdr) { return cons(car, cdr); }
+void lisp_set_cdr(lisp_value cell, lisp_value value) { CDR(cell) = heap_store(OBJ(cell), value); }
 
 lisp_value lisp_list(int count, ...)
 {
@@ -528,6 +537,7 @@ lisp_value lisp_nreverse(lisp_value list) { return builtin_nreverse(1, &list); }
 bool lisp_nilp(lisp_value value) { return nilp(value); }
 bool lisp_consp(lisp_value value) { return consp(value); }
 bool lisp_intp(lisp_value value) { return intp(value); }
+bool lisp_doublep(lisp_value value) { return doublep(value); }
 bool lisp_numberp(lisp_value value) { return numberp(value); }
 bool lisp_stringp(lisp_value value) { return stringp(value); }
 bool lisp_keywordp(lisp_value value) { return symbol_is_keyword(value); }

@@ -823,3 +823,184 @@ char *json_write(lisp_value value, bool pretty, char *error, size_t error_size) 
     writer.buffer.data[writer.buffer.length] = '\0';
     return writer.buffer.data;
 }
+
+struct json_shape {
+    lisp_value object, array, json_false, t;
+    uint32_t nodes;
+};
+
+static struct json_shape json_shape(void) {
+    return (struct json_shape){ lisp_keyword("json-object"), lisp_keyword("json-array"),
+        lisp_keyword("json-false"), lisp_t(), 0 };
+}
+
+static _Noreturn void not_json(lisp_value value) {
+    char shown[512];
+    lisp_print(value, true, shown, sizeof(shown));
+    lisp_error("Not JSON data: %s", shown);
+}
+
+static size_t json_characters(const char *text, size_t length) {
+    size_t count = 0;
+    for (size_t i = 0; i < length; i++)
+        if (((unsigned char)text[i] & 0xc0) != 0x80) count++;
+    return count;
+}
+
+static void check_string(lisp_value value) {
+    size_t length = 0;
+    const char *text = lisp_get_string(value, &length);
+    if (json_characters(text, length) > JSON_MAX_STRING)
+        lisp_error("JSON string exceeds %d characters.", JSON_MAX_STRING);
+}
+
+static lisp_value container_items(lisp_value item, bool object) {
+    lisp_value rest = lisp_cdr(item);
+    if (!lisp_consp(rest) || !lisp_nilp(lisp_cdr(rest)))
+        lisp_error(object ? "Malformed JSON object container." : "Malformed JSON array container.");
+    return lisp_car(rest);
+}
+
+static void validate_node(struct json_shape *shape, lisp_value item, int depth) {
+    if (depth > JSON_MAX_DEPTH) lisp_error("JSON nesting exceeds %d levels.", JSON_MAX_DEPTH);
+    if (++shape->nodes > JSON_MAX_NODES) lisp_error("JSON value exceeds %d nodes.", JSON_MAX_NODES);
+    if (lisp_nilp(item) || item == shape->t || item == shape->json_false || lisp_intp(item)) return;
+    if (lisp_stringp(item)) {
+        check_string(item);
+        return;
+    }
+    if (lisp_doublep(item)) {
+        if (!isfinite(lisp_get_double(item))) lisp_error("JSON numbers must be finite.");
+        return;
+    }
+    if (!lisp_consp(item)) not_json(item);
+    bool object = lisp_car(item) == shape->object;
+    if (!object && lisp_car(item) != shape->array) not_json(item);
+    lisp_value tail = container_items(item, object);
+    for (; lisp_consp(tail); tail = lisp_cdr(tail)) {
+        lisp_value entry = lisp_car(tail);
+        if (object) {
+            if (!lisp_consp(entry) || !lisp_stringp(lisp_car(entry)))
+                lisp_error("JSON object members need string keys.");
+            check_string(lisp_car(entry));
+            entry = lisp_cdr(entry);
+        }
+        validate_node(shape, entry, depth + 1);
+    }
+    if (!lisp_nilp(tail))
+        lisp_error(object ? "JSON object members must form a proper list." :
+            "JSON array members must form a proper list.");
+}
+
+lisp_value json_validate_value(lisp_value value) {
+    struct json_shape shape = json_shape();
+    validate_node(&shape, value, 1);
+    return value;
+}
+
+static uint64_t string_output_size(lisp_value value) {
+    size_t length = 0;
+    const char *text = lisp_get_string(value, &length);
+    if (!text) not_json(value);
+    uint64_t size = 2;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if ((c & 0xc0) == 0x80) continue;
+        if (c == '"' || c == '\\' || c == '\b' || c == '\t' || c == '\n' || c == '\f' || c == '\r')
+            size += 2;
+        else
+            size += c < 0x20 ? 6 : 4;
+    }
+    return size;
+}
+
+static uint64_t output_size(const struct json_shape *shape, lisp_value value) {
+    uint64_t size;
+    if (lisp_nilp(value) || value == shape->t) {
+        size = 4;
+    } else if (value == shape->json_false) {
+        size = 5;
+    } else if (lisp_stringp(value)) {
+        size = string_output_size(value);
+    } else if (lisp_intp(value)) {
+        int64_t number = lisp_get_int(value);
+        uint64_t magnitude = number < 0 ? 0 - (uint64_t)number : (uint64_t)number;
+        size = number < 0 ? 2 : 1;
+        while (magnitude >= 10) {
+            magnitude /= 10;
+            size++;
+        }
+    } else if (lisp_numberp(value)) {
+        char printed[128];
+        size = lisp_print(value, true, printed, sizeof(printed));
+    } else if (lisp_consp(value) && (lisp_car(value) == shape->object ||
+                                     lisp_car(value) == shape->array)) {
+        bool object = lisp_car(value) == shape->object;
+        size = 1;
+        for (lisp_value tail = lisp_car(lisp_cdr(value)); lisp_consp(tail); tail = lisp_cdr(tail)) {
+            if (size != 1) size++;
+            lisp_value entry = lisp_car(tail);
+            if (object) {
+                size += string_output_size(lisp_car(entry)) + 1;
+                entry = lisp_cdr(entry);
+            }
+            size += output_size(shape, entry);
+        }
+        size++;
+    } else {
+        not_json(value);
+    }
+    if (size > JSON_MAX_TEXT) lisp_error("JSON text exceeds %d UTF-8 bytes.", JSON_MAX_TEXT);
+    return size;
+}
+
+uint64_t json_output_size(lisp_value value) {
+    struct json_shape shape = json_shape();
+    return output_size(&shape, value);
+}
+
+static lisp_value json_copy_value(lisp_value value) {
+    json_validate_value(value);
+    json_output_size(value);
+    return lisp_copy_data(value);
+}
+
+lisp_value json_object_of(int argc, const lisp_value *argv) {
+    bool pairs = argc > 0;
+    for (int i = 0; i < argc && pairs; i++) pairs = lisp_consp(argv[i]);
+    int count = pairs ? argc : argc / 2;
+    if (!pairs && argc % 2) lisp_error("JSON object needs alternating key/value arguments.");
+    lisp_value members = lisp_nil(), last = lisp_nil();
+    for (int i = 0; i < count; i++) {
+        lisp_value key = pairs ? lisp_car(argv[i]) : argv[2 * i];
+        lisp_value value = pairs ? lisp_cdr(argv[i]) : argv[2 * i + 1];
+        if (!lisp_stringp(key)) lisp_error("The value %s is not of type %s", "value", "type");
+        check_string(key);
+        size_t key_length = 0;
+        const char *key_text = lisp_get_string(key, &key_length);
+        lisp_value entry = lisp_nil();
+        for (lisp_value scan = members; lisp_consp(scan); scan = lisp_cdr(scan)) {
+            size_t length = 0;
+            const char *text = lisp_get_string(lisp_car(lisp_car(scan)), &length);
+            if (length == key_length && !memcmp(text, key_text, length)) {
+                entry = lisp_car(scan);
+                break;
+            }
+        }
+        if (!lisp_nilp(entry)) {
+            lisp_set_cdr(entry, value);
+            continue;
+        }
+        lisp_value cell = lisp_cons(lisp_cons(key, value), lisp_nil());
+        if (lisp_nilp(members)) members = cell;
+        else lisp_set_cdr(last, cell);
+        last = cell;
+    }
+    return json_copy_value(lisp_list(2, lisp_keyword("json-object"), members));
+}
+
+lisp_value json_array_of(int argc, const lisp_value *argv) {
+    lisp_value items = lisp_nil();
+    for (int i = argc; i-- > 0;) items = lisp_cons(argv[i], items);
+    return json_copy_value(lisp_list(2, lisp_keyword("json-array"), items));
+}

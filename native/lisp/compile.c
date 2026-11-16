@@ -7,6 +7,18 @@
 struct cnode;
 typedef lisp_value (*cnode_run)(const struct cnode *node, struct lisp_frame *env);
 
+enum { WRAPPER_ARGS = 8 };
+
+struct wrapper {
+    lisp_value closure;
+    struct lisp_symbol *callee;
+    lisp_value builtin;
+    uint32_t params;
+    uint32_t count;
+    int32_t source[WRAPPER_ARGS];
+    lisp_value constant[WRAPPER_ARGS];
+};
+
 struct cnode {
     cnode_run run;
     lisp_value form;
@@ -24,12 +36,14 @@ struct cnode {
         const struct cnode *c;
         lisp_value *syms;
         const struct lisp_code *code;
+        const struct wrapper *wrapper;
     };
     const struct cnode **kids;
 };
 
 struct lisp_code {
     const struct cnode *body;
+    const struct wrapper *wrapper;
     uint8_t info;
     uint32_t slots;
 };
@@ -180,6 +194,80 @@ static lisp_value run_call(const struct cnode *node, struct lisp_frame *env)
     return call_with(node, sym->function, env);
 }
 
+static lisp_value run_wrapper(const struct cnode *node, struct lisp_frame *env)
+{
+    const struct wrapper *w = node->wrapper;
+    struct lisp_symbol *sym = SYM(node->sym);
+    if (sym->function != w->closure || w->callee->function != w->builtin ||
+            (sym->h.flags & SYM_LOCAL_FUNC) || node->count != w->params)
+        return run_call(node, env);
+    lisp_value args[WRAPPER_ARGS];
+    for (uint32_t i = 0; i < node->count; i++)
+        args[i] = node->kids[i]->run(node->kids[i], env);
+    lisp_value argv[WRAPPER_ARGS];
+    for (uint32_t i = 0; i < w->count; i++)
+        argv[i] = w->source[i] < 0 ? w->constant[i] : args[w->source[i]];
+    check_steps();
+    return apply_fast(w->builtin, (int)w->count, argv);
+}
+
+static const struct wrapper *wrapper_for(struct lisp_region *region, lisp_value fn)
+{
+    if (TYPE(fn) != LT_FUNCTION)
+        return NULL;
+    struct lisp_function *f = PTR(fn, lisp_function);
+    if (f->kind != FN_CLOSURE || f->env || !f->gen ||
+            (f->gen != region && f->gen->package != PKG_TOMOE))
+        return NULL;
+    if (!(f->info & FNI_KNOWN))
+        lisp_closure_info(f);
+    if (!(f->info & FNI_SIMPLE) || f->slots > WRAPPER_ARGS)
+        return NULL;
+    lisp_value body = f->body;
+    if (consp(body) && stringp(CAR(body)) && consp(CDR(body)))
+        body = CDR(body);
+    if (!consp(body) || !nilp(CDR(body)) || !consp(CAR(body)))
+        return NULL;
+    lisp_value call = CAR(body);
+    if (!symbolp(CAR(call)))
+        return NULL;
+    struct lisp_symbol *callee = SYM(CAR(call));
+    if (callee->special_id || (callee->h.flags & (SYM_MACRO | SYM_LOCAL_FUNC)) ||
+            TYPE(callee->function) != LT_FUNCTION ||
+            PTR(callee->function, lisp_function)->kind != FN_BUILTIN)
+        return NULL;
+    struct wrapper *w = heap_alloc_in(region, sizeof(*w));
+    memset(w, 0, sizeof(*w));
+    w->closure = fn;
+    w->callee = callee;
+    w->builtin = callee->function;
+    w->params = f->slots;
+    for (lisp_value arg = CDR(call); consp(arg); arg = CDR(arg)) {
+        if (w->count == WRAPPER_ARGS)
+            return NULL;
+        lisp_value item = CAR(arg);
+        int32_t source = -1;
+        if (symbolp(item) && !(SYM(item)->h.flags & SYM_KEYWORD) && item != NIL_VAL && item != T_VAL) {
+            uint32_t index = 0;
+            for (lisp_value p = f->params; consp(p); p = CDR(p), index++)
+                if (CAR(p) == item)
+                    source = (int32_t)index;
+            if (source < 0 || (SYM(item)->h.flags & SYM_SPECIAL))
+                return NULL;
+        } else if (consp(item)) {
+            if (CAR(item) != VAL(lisp.sym_quote) || !consp(CDR(item)) || !nilp(CDR(CDR(item))))
+                return NULL;
+            item = CAR(CDR(item));
+        } else if (stringp(item)) {
+            return NULL;
+        }
+        w->source[w->count] = source;
+        w->constant[w->count] = source < 0 ? item : NIL_VAL;
+        w->count++;
+    }
+    return w;
+}
+
 static lisp_value run_progn(const struct cnode *node, struct lisp_frame *env)
 {
     if (!node->count)
@@ -269,6 +357,29 @@ static lisp_value run_let(const struct cnode *node, struct lisp_frame *env)
     return result;
 }
 
+static lisp_value place_read(const struct cnode *target, struct lisp_frame *env)
+{
+    if (target->run == run_lexical) {
+        lisp_value value = frame_at(env, target->depth)->entry[target->index].value;
+        if (value == VAL(lisp.sym_unbound))
+            lisp_error("unbound variable %s", SYM(target->sym)->name);
+        return value;
+    }
+    return variable_value(target->sym, env);
+}
+
+static void place_write(const struct cnode *target, lisp_value value, struct lisp_frame *env)
+{
+    if (target->run == run_lexical) {
+        if (SYM(target->sym)->h.flags & (SYM_CONSTANT | SYM_KEYWORD))
+            lisp_error("cannot assign to constant %s", SYM(target->sym)->name);
+        struct lisp_frame *frame = frame_at(env, target->depth);
+        frame->entry[target->index].value = heap_store(frame, value);
+        return;
+    }
+    set_variable(target->sym, value, env);
+}
+
 static lisp_value run_setq(const struct cnode *node, struct lisp_frame *env)
 {
     lisp_value result = NIL_VAL;
@@ -276,13 +387,7 @@ static lisp_value run_setq(const struct cnode *node, struct lisp_frame *env)
         const struct cnode *target = node->kids[2 * i];
         const struct cnode *value_node = node->kids[2 * i + 1];
         lisp_value value = value_node->run(value_node, env);
-        if (target->run == run_lexical) {
-            if (SYM(target->sym)->h.flags & (SYM_CONSTANT | SYM_KEYWORD))
-                lisp_error("cannot assign to constant %s", SYM(target->sym)->name);
-            frame_at(env, target->depth)->entry[target->index].value = value;
-        } else {
-            set_variable(target->sym, value, env);
-        }
+        place_write(target, value, env);
         result = value;
     }
     mv_return1(result);
@@ -300,13 +405,7 @@ static lisp_value run_setf_vars(const struct cnode *node, struct lisp_frame *env
         lisp_value captured[LISP_MAX_MV];
         for (int k = 0; k < count && k < LISP_MAX_MV; k++)
             captured[k] = lisp.mv[k];
-        if (target->run == run_lexical) {
-            if (SYM(target->sym)->h.flags & (SYM_CONSTANT | SYM_KEYWORD))
-                lisp_error("cannot assign to constant %s", SYM(target->sym)->name);
-            frame_at(env, target->depth)->entry[target->index].value = value;
-        } else {
-            set_variable(target->sym, value, env);
-        }
+        place_write(target, value, env);
         result = value;
         if (count > 0) {
             lisp.mv_count = count;
@@ -315,28 +414,6 @@ static lisp_value run_setf_vars(const struct cnode *node, struct lisp_frame *env
         }
     }
     return result;
-}
-
-static lisp_value place_read(const struct cnode *target, struct lisp_frame *env)
-{
-    if (target->run == run_lexical) {
-        lisp_value value = frame_at(env, target->depth)->entry[target->index].value;
-        if (value == VAL(lisp.sym_unbound))
-            lisp_error("unbound variable %s", SYM(target->sym)->name);
-        return value;
-    }
-    return variable_value(target->sym, env);
-}
-
-static void place_write(const struct cnode *target, lisp_value value, struct lisp_frame *env)
-{
-    if (target->run == run_lexical) {
-        if (SYM(target->sym)->h.flags & (SYM_CONSTANT | SYM_KEYWORD))
-            lisp_error("cannot assign to constant %s", SYM(target->sym)->name);
-        frame_at(env, target->depth)->entry[target->index].value = value;
-        return;
-    }
-    set_variable(target->sym, value, env);
 }
 
 static lisp_value run_push(const struct cnode *node, struct lisp_frame *env)
@@ -1104,20 +1181,81 @@ static const struct cnode *compile_form(struct compiler *cc, lisp_value form, st
     lisp_value head = CAR(form);
     if (symbolp(head)) {
         struct lisp_symbol *sym = SYM(head);
-        if (sym->h.flags & SYM_LOCAL_FUNC)
-            node = NULL;
-        else if (sym->special_id)
+        bool local = sym->h.flags & SYM_LOCAL_FUNC;
+        if (sym->special_id && !local)
             node = compile_special(cc, form, scope, sym->special_id);
-        else if (!(sym->h.flags & SYM_MACRO)) {
+        else if (!sym->special_id && !(sym->h.flags & SYM_MACRO)) {
             struct cnode *call = compile_list(cc, run_call, form, CDR(form), scope);
             if (call) {
                 call->sym = head;
+                const struct wrapper *wrapper = local ? NULL : wrapper_for(cc->region, sym->function);
+                if (wrapper) {
+                    call->run = run_wrapper;
+                    call->wrapper = wrapper;
+                }
                 node = call;
             }
         }
     }
     cc->depth--;
     return node ? node : fallback(cc, form);
+}
+
+static bool parameter_name(lisp_value *names, uint32_t slots, uint32_t *count, lisp_value name)
+{
+    if (!symbolp(name) || *count >= slots)
+        return false;
+    names[(*count)++] = name;
+    return true;
+}
+
+static bool lambda_slot_names(lisp_value params, lisp_value *names, uint32_t slots, uint32_t *count)
+{
+    bool optional = false, key = false, rest = false;
+    for (lisp_value spec = params; consp(spec); spec = CDR(spec)) {
+        lisp_value item = CAR(spec);
+        if (item == VAL(lisp.sym_optional)) {
+            optional = true;
+            continue;
+        }
+        if (item == VAL(lisp.sym_key)) {
+            key = true;
+            continue;
+        }
+        if (item == VAL(lisp.sym_rest) || item == VAL(lisp.sym_body)) {
+            rest = true;
+            continue;
+        }
+        if (item == VAL(lisp.sym_allow_other_keys))
+            continue;
+        if (item == VAL(lisp.sym_aux) || item == VAL(lisp.sym_whole) ||
+                item == VAL(lisp.sym_environment))
+            return false;
+        if (rest) {
+            if (!parameter_name(names, slots, count, item))
+                return false;
+            rest = false;
+            continue;
+        }
+        if (!key && !optional) {
+            if (!parameter_name(names, slots, count, item))
+                return false;
+            continue;
+        }
+        lisp_value var = item;
+        if (consp(item)) {
+            var = CAR(item);
+            if (key && consp(var))
+                var = consp(CDR(var)) ? CAR(CDR(var)) : NIL_VAL;
+        }
+        if (!parameter_name(names, slots, count, var))
+            return false;
+        if (consp(item) && consp(CDR(item)) && consp(CDR(CDR(item))) &&
+                symbolp(CAR(CDR(CDR(item)))) &&
+                !parameter_name(names, slots, count, CAR(CDR(CDR(item)))))
+            return false;
+    }
+    return true;
 }
 
 static const struct lisp_code *compile_lambda(struct compiler *cc, lisp_value params, lisp_value body,
@@ -1129,12 +1267,17 @@ static const struct lisp_code *compile_lambda(struct compiler *cc, lisp_value pa
     if (info & FNI_SIMPLE) {
         for (lisp_value p = params; consp(p) && scope.count < slots; p = CDR(p))
             names[scope.count++] = CAR(p);
+    } else if (lambda_slot_names(params, names, slots, &scope.count)) {
+        scope.barrier = false;
+    } else {
+        scope.count = 0;
     }
     const struct cnode *code = compile_body(&inner, body, &scope);
     if (!code)
         return NULL;
     struct lisp_code *out = heap_alloc_in(cc->region, sizeof(*out));
     out->body = code;
+    out->wrapper = NULL;
     out->info = info;
     out->slots = slots;
     return out;
@@ -1146,8 +1289,59 @@ void lisp_compile_closure(struct lisp_function *fn)
     if (!region || region->kind != REG_GENERATION || !region->in_use)
         return;
     struct compiler cc = { region, false, 0 };
-    fn->code = compile_lambda(&cc, fn->params, fn->body, fn->info, fn->slots, NULL);
+    const struct lisp_code *code = compile_lambda(&cc, fn->params, fn->body, fn->info, fn->slots, NULL);
+    if (code)
+        ((struct lisp_code *)code)->wrapper = wrapper_for(region, VAL(fn));
+    fn->code = code;
     fn->info |= FNI_COMPILED;
+}
+
+bool lisp_run_wrapper(const struct lisp_code *code, int argc, lisp_value *argv, lisp_value *result)
+{
+    const struct wrapper *w = code->wrapper;
+    if (!w || (uint32_t)argc != w->params || w->callee->function != w->builtin)
+        return false;
+    lisp_value args[WRAPPER_ARGS];
+    for (uint32_t i = 0; i < w->count; i++)
+        args[i] = w->source[i] < 0 ? w->constant[i] : argv[w->source[i]];
+    *result = apply_fast(w->builtin, (int)w->count, args);
+    return true;
+}
+
+enum { FORM_CACHE = 1024 };
+
+static struct {
+    lisp_value form;
+    struct lisp_region *region;
+    const struct cnode *node;
+} form_cache[FORM_CACHE];
+
+lisp_value lisp_eval_cached(lisp_value form, struct lisp_frame *env)
+{
+    if (TYPE(form) != LT_CONS)
+        return eval(form, env);
+    struct lisp_region *region = heap_region_of((void *)(uintptr_t)form);
+    if (!region || region->kind != REG_GENERATION)
+        return eval(form, env);
+    size_t slot = (size_t)((((uint64_t)form >> 4) * 0x9e3779b97f4a7c15ull) >> 54) & (FORM_CACHE - 1);
+    if (form_cache[slot].form != form || form_cache[slot].region != region) {
+        struct compiler cc = { region, false, 0 };
+        struct cscope opaque = { NULL, true, true, 0, NULL };
+        const struct cnode *node = compile_form(&cc, form, &opaque);
+        if (!node)
+            return eval(form, env);
+        form_cache[slot].form = form;
+        form_cache[slot].region = region;
+        form_cache[slot].node = node;
+    }
+    return form_cache[slot].node->run(form_cache[slot].node, env);
+}
+
+void lisp_forget_forms(struct lisp_region *region)
+{
+    for (size_t i = 0; i < FORM_CACHE; i++)
+        if (form_cache[i].region == region)
+            form_cache[i].form = 0, form_cache[i].region = NULL, form_cache[i].node = NULL;
 }
 
 lisp_value lisp_run_code(const struct lisp_code *code, struct lisp_frame *frame)

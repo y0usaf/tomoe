@@ -349,7 +349,7 @@ void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env)
     bool found = false;
     lisp_value *slot = local_var_slot(sym, env, &found);
     if (found) {
-        *slot = value;
+        *slot = heap_store(slot, value);
         return;
     }
     if (!lisp_loading()) {
@@ -378,6 +378,26 @@ lisp_value function_value(lisp_value sym, struct lisp_frame *env, bool *found)
     }
     *found = false;
     return NIL_VAL;
+}
+
+static lisp_value parameter_keyword(lisp_value var)
+{
+    static struct { lisp_value var, keyword; } cache[256];
+    if (!symbolp(var))
+        lisp_error("bad keyword parameter");
+    struct lisp_symbol *sym = SYM(var);
+    size_t length = strnlen(sym->name, 255);
+    size_t slot = ((uintptr_t)var / sizeof(struct lisp_symbol)) & 255;
+    if (cache[slot].var == var) {
+        struct lisp_symbol *keyword = SYM(cache[slot].keyword);
+        if (keyword->package == PKG_KEYWORD && keyword->name_len == length &&
+                memcmp(keyword->name, sym->name, length) == 0)
+            return cache[slot].keyword;
+    }
+    lisp_value keyword = VAL(symbol_intern(PKG_KEYWORD, sym->name, length, false));
+    cache[slot].var = var;
+    cache[slot].keyword = keyword;
+    return keyword;
 }
 
 void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lisp_value *argv)
@@ -432,13 +452,8 @@ void eval_bind_lambda(struct lisp_frame *frame, lisp_value params, int argc, lis
                 if (consp(CDR(CDR(item))))
                     supplied = CAR(CDR(CDR(item)));
             }
-            if (nilp(keyword)) {
-                char buffer[256];
-                if (!symbolp(var))
-                    lisp_error("bad keyword parameter");
-                snprintf(buffer, sizeof(buffer), "%s", SYM(var)->name);
-                keyword = VAL(symbol_intern(PKG_KEYWORD, buffer, strlen(buffer), false));
-            }
+            if (nilp(keyword))
+                keyword = parameter_keyword(var);
             lisp_value value = VAL(lisp.sym_unbound);
             bool supplied_p = false;
             for (int i = key_start; i + 1 < argc; i += 2) {
@@ -685,12 +700,16 @@ void lisp_closure_info(struct lisp_function *fn)
     fn->info = info;
 }
 
+
 __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int argc, lisp_value *argv)
 {
     if (!(fn->info & FNI_KNOWN))
         lisp_closure_info(fn);
     if (!(fn->info & FNI_COMPILED) && fn->gen && ++fn->calls >= 2)
         lisp_compile_closure(fn);
+    lisp_value direct;
+    if (fn->code && lisp_run_wrapper(fn->code, argc, argv, &direct))
+        return direct;
     uint32_t count = fn->slots;
     uint8_t info = fn->info;
     struct lisp_frame *frame;
@@ -1104,7 +1123,7 @@ void place_set(struct lisp_place *place, lisp_value value)
         lisp_value scan = plist;
         while (consp(scan) && consp(CDR(scan))) {
             if (eql_value(CAR(scan), place->key)) {
-                CAR(CDR(scan)) = value;
+                CAR(CDR(scan)) = heap_store(OBJ(CDR(scan)), value);
                 return;
             }
             scan = CDR(CDR(scan));
@@ -1118,13 +1137,13 @@ void place_set(struct lisp_place *place, lisp_value value)
     case PLACE_CDR:
         if (!consp(place->container))
             lisp_error("cdr place is not a cons");
-        CDR(place->container) = value;
+        CDR(place->container) = heap_store(OBJ(place->container), value);
         return;
     case PLACE_NTH: {
         lisp_value list = list_nthcdr(place->container, place->index);
         if (!consp(list))
             lisp_error("nth place out of range");
-        CAR(list) = value;
+        CAR(list) = heap_store(OBJ(list), value);
         return;
     }
     case PLACE_GETHASH: {
@@ -1133,11 +1152,11 @@ void place_set(struct lisp_place *place, lisp_value value)
         for (lisp_value scan = entries; consp(scan); scan = CDR(scan)) {
             lisp_value pair = CAR(scan);
             if (hash_table_match(place->container, CAR(pair), place->key)) {
-                CDR(pair) = value;
+                CDR(pair) = heap_store(OBJ(pair), value);
                 return;
             }
         }
-        table->entries = cons(cons(place->key, value), entries);
+        table->entries = heap_store(table, cons(cons(place->key, value), entries));
         table->count++;
         return;
     }

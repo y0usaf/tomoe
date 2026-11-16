@@ -57,7 +57,7 @@ void kw_parse(int argc, lisp_value *argv, int base, struct kw *kw)
     }
 }
 
-static bool kw_direct_test(lisp_value fn, lisp_value a, lisp_value b, bool *result)
+bool lisp_kw_direct_test(lisp_value fn, lisp_value a, lisp_value b, bool *result)
 {
     if (TYPE(fn) != LT_FUNCTION || PTR(fn, lisp_function)->kind != FN_BUILTIN)
         return false;
@@ -77,14 +77,14 @@ bool lisp_kw_test(struct kw *kw, lisp_value a, lisp_value b)
 {
     bool direct;
     if (kw->has_test_not && !nilp(kw->test_not)) {
-        if (kw_direct_test(kw->test_not, a, b, &direct))
+        if (lisp_kw_direct_test(kw->test_not, a, b, &direct))
             return !direct;
         lisp_value args[2] = { a, b };
         return !truthy(apply_function(kw->test_not, 2, args));
     }
     if (!kw->has_test || nilp(kw->test))
         return eql_value(a, b);
-    if (kw_direct_test(kw->test, a, b, &direct))
+    if (lisp_kw_direct_test(kw->test, a, b, &direct))
         return direct;
     lisp_value args[2] = { a, b };
     return truthy(apply_function(kw->test, 2, args));
@@ -245,7 +245,7 @@ static lisp_value builtin_map_like(int argc, lisp_value *argv, int mode)
                 if (nilp(out)) {
                     out = value;
                 } else {
-                    CDR(tail) = value;
+                    CDR(tail) = heap_store(OBJ(tail), value);
                 }
                 tail = list_last(value);
             }
@@ -1935,15 +1935,10 @@ static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int dep
     }
 }
 
-lisp_value builtin_copy_data(int argc, lisp_value *argv)
-{
-    struct copy_budget budget = {
-        0, require_int(argv[1], "node limit"), require_int(argv[2], "character limit")
-    };
-    return copy_walk(&budget, argv[0], 0);
-}
 
 static struct lisp_symbol *sym_runtime, *sym_pending_writes, *sym_retired_state, *sym_keep, *sym_release;
+static struct lisp_symbol *sym_bootstrap_limits;
+static lisp_value kw_budget_limits, kw_datum_nodes, kw_string_chars;
 
 struct runtime_cache_entry {
     lisp_value state;
@@ -1964,6 +1959,10 @@ void lisp_runtime_symbols_init(void)
     sym_retired_state = symbol_intern(PKG_TOMOE, "*RETIRED-STATE*", 15, false);
     sym_keep = symbol_intern(PKG_TOMOE, "%KEEP", 5, false);
     sym_release = symbol_intern(PKG_TOMOE, "%RELEASE", 8, false);
+    sym_bootstrap_limits = symbol_intern(PKG_TOMOE, "*BOOTSTRAP-LIMITS*", 18, false);
+    kw_budget_limits = VAL(symbol_intern(PKG_KEYWORD, "BUDGET-LIMITS", 13, false));
+    kw_datum_nodes = VAL(symbol_intern(PKG_KEYWORD, "DATUM-NODES", 11, false));
+    kw_string_chars = VAL(symbol_intern(PKG_KEYWORD, "STRING-CHARS", 12, false));
 }
 
 static lisp_value *plist_cell(lisp_value plist, lisp_value key)
@@ -1992,6 +1991,186 @@ lisp_value builtin_runtime_read(int argc, lisp_value *argv)
     return entry->cell ? *entry->cell : NIL_VAL;
 }
 
+static lisp_value limit(lisp_value key)
+{
+    if (truthy(sym_runtime->value)) {
+        lisp_value value = keyword_get(builtin_runtime_read(1, &kw_budget_limits), key, NIL_VAL);
+        if (truthy(value))
+            return value;
+    }
+    return keyword_get(variable_value(VAL(sym_bootstrap_limits), NULL), key, NIL_VAL);
+}
+
+lisp_value builtin_limit(int argc, lisp_value *argv)
+{
+    return limit(argv[0]);
+}
+
+lisp_value lisp_copy_data(lisp_value value)
+{
+    return builtin_copy_data(1, &value);
+}
+
+lisp_value builtin_copy_data(int argc, lisp_value *argv)
+{
+    struct copy_budget budget = {
+        0, require_int(limit(kw_datum_nodes), "node limit"),
+        require_int(limit(kw_string_chars), "character limit")
+    };
+    return copy_walk(&budget, argv[0], 0);
+}
+
+static uint32_t data_hash(lisp_value value, int depth, int *budget)
+{
+    if (--*budget < 0 || depth > 8)
+        return 0;
+    switch (TYPE(value)) {
+    case LT_CONS: {
+        uint32_t hash = 0x9e3779b9u;
+        for (; consp(value) && *budget > 0; value = CDR(value))
+            hash = (hash ^ data_hash(CAR(value), depth + 1, budget)) * 0x01000193u;
+        return hash ^ data_hash(value, depth + 1, budget);
+    }
+    case LT_STRING: {
+        const struct lisp_string *s = PTR(value, lisp_string);
+        uint32_t hash = 0x811c9dc5u;
+        for (uint32_t i = 0; i < s->byte_len; i++)
+            hash = (hash ^ (uint8_t)s->data[i]) * 0x01000193u;
+        return hash;
+    }
+    case LT_INT:
+        return (uint32_t)INTVAL(value) * 0x9e3779b1u;
+    case LT_SYMBOL:
+        return (uint32_t)((uintptr_t)value >> 4) * 0x85ebca6bu;
+    default:
+        return TYPE(value);
+    }
+}
+
+static lisp_value construction_hash(lisp_value key)
+{
+    int budget = 256;
+    uint32_t hash = data_hash(key, 0, &budget);
+    return make_int((int64_t)((hash ^ (hash >> 16)) & 0xffffu));
+}
+
+lisp_value builtin_construction_hash(int argc, lisp_value *argv)
+{
+    return construction_hash(argv[0]);
+}
+
+static lisp_value construction_copy(lisp_value value)
+{
+    if (!heap_region_of((void *)(uintptr_t)value))
+        return value;
+    switch (TYPE(value)) {
+    case LT_CONS: {
+        lisp_value head = NIL_VAL, last = NIL_VAL, tail = value;
+        for (; consp(tail); tail = CDR(tail)) {
+            lisp_value cell = cons(construction_copy(CAR(tail)), NIL_VAL);
+            if (nilp(head))
+                head = cell;
+            else
+                CDR(last) = cell;
+            last = cell;
+        }
+        CDR(last) = construction_copy(tail);
+        return head;
+    }
+    case LT_STRING: {
+        const struct lisp_string *s = PTR(value, lisp_string);
+        return make_string_raw(s->data, s->byte_len, s->len);
+    }
+    case LT_INT:
+        return make_int(INTVAL(value));
+    case LT_DOUBLE:
+        return make_double(DBLVAL(value));
+    case LT_SYMBOL:
+        return value;
+    default:
+        return heap_deep_copy(value, lisp.cur_region);
+    }
+}
+
+lisp_value builtin_construction_copy(int argc, lisp_value *argv)
+{
+    return construction_copy(argv[0]);
+}
+
+lisp_value builtin_construction_find(int argc, lisp_value *argv)
+{
+    int64_t hash = INTVAL(construction_hash(argv[0]));
+    for (lisp_value entries = argv[1]; consp(entries); entries = CDR(entries)) {
+        lisp_value entry = CAR(entries);
+        if (consp(entry) && intp(CAR(entry)) && INTVAL(CAR(entry)) == hash && consp(CDR(entry)) &&
+                equal_value(CAR(CDR(entry)), argv[0]))
+            return entry;
+    }
+    return NIL_VAL;
+}
+
+lisp_value builtin_same_elements_p(int argc, lisp_value *argv)
+{
+    lisp_value first = argv[0], second = argv[1];
+    if (list_length(first) != list_length(second))
+        return NIL_VAL;
+    for (; consp(first) && consp(second); first = CDR(first), second = CDR(second))
+        if (CAR(first) != CAR(second))
+            return NIL_VAL;
+    return T_VAL;
+}
+
+lisp_value builtin_effects_of_kind(int argc, lisp_value *argv)
+{
+    lisp_value head = NIL_VAL, tail = NIL_VAL;
+    for (lisp_value effects = argv[0]; consp(effects); effects = CDR(effects)) {
+        lisp_value effect = CAR(effects);
+        if (!consp(effect) || !consp(CDR(effect)) || CAR(CDR(effect)) != argv[1])
+            continue;
+        lisp_value cell = cons(effect, NIL_VAL);
+        if (nilp(head))
+            head = cell;
+        else
+            CDR(tail) = cell;
+        tail = cell;
+    }
+    return head;
+}
+
+lisp_value builtin_changed_keys(int argc, lisp_value *argv)
+{
+    lisp_value head = NIL_VAL, tail = NIL_VAL;
+    for (lisp_value keys = argv[2]; consp(keys); keys = CDR(keys)) {
+        lisp_value key = CAR(keys);
+        if (equal_value(keyword_get(argv[0], key, NIL_VAL), keyword_get(argv[1], key, NIL_VAL)))
+            continue;
+        lisp_value cell = cons(key, NIL_VAL);
+        if (nilp(head))
+            head = cell;
+        else
+            CDR(tail) = cell;
+        tail = cell;
+    }
+    return head;
+}
+
+lisp_value builtin_command_name_p(int argc, lisp_value *argv)
+{
+    if (!stringp(argv[0]))
+        return NIL_VAL;
+    const struct lisp_string *name = PTR(argv[0], lisp_string);
+    uint32_t length = name->byte_len;
+    if (length < 1 || length > 64 || name->data[0] < 'a' || name->data[0] > 'z' ||
+            name->data[length - 1] < 'a' || name->data[length - 1] > 'z')
+        return NIL_VAL;
+    for (uint32_t i = 0; i < length; i++) {
+        char c = name->data[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+            return NIL_VAL;
+    }
+    return T_VAL;
+}
+
 lisp_value builtin_runtime_write(int argc, lisp_value *argv)
 {
     struct lisp_symbol *writes = sym_pending_writes;
@@ -2003,12 +2182,40 @@ lisp_value builtin_runtime_write(int argc, lisp_value *argv)
     return argv[1];
 }
 
+static bool persists_in_place(lisp_value state, lisp_value writes)
+{
+    struct lisp_region *home = heap_region_of((void *)(uintptr_t)state);
+    if (lisp.persistent_dirty || !home || home->kind != REG_PERSISTENT)
+        return false;
+    for (lisp_value scan = writes; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
+        lisp_value *cell = plist_cell(state, CAR(scan));
+        lisp_value value = CAR(CDR(scan));
+        if (!cell)
+            return false;
+        if (*cell == value)
+            continue;
+        struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
+        if (from && from->kind != REG_PERSISTENT && !numberp(value))
+            return false;
+    }
+    return true;
+}
+
 lisp_value builtin_persist_state(int argc, lisp_value *argv)
 {
     struct lisp_symbol *runtime = sym_runtime;
     struct lisp_symbol *writes = sym_pending_writes;
     struct lisp_symbol *retired = sym_retired_state;
     lisp_value state = runtime->value;
+    if (persists_in_place(state, writes->value)) {
+        for (lisp_value scan = writes->value; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
+            lisp_value *cell = plist_cell(state, CAR(scan));
+            if (*cell != CAR(CDR(scan)))
+                *cell = heap_store(cell, CAR(CDR(scan)));
+        }
+        writes->value = NIL_VAL;
+        return state;
+    }
     for (lisp_value scan = writes->value; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
         lisp_value *cell = plist_cell(state, CAR(scan));
         if (cell)
@@ -2019,6 +2226,7 @@ lisp_value builtin_persist_state(int argc, lisp_value *argv)
     writes->value = NIL_VAL;
     lisp_value old = runtime->value;
     lisp_value kept = apply_function(VAL(sym_keep), 1, &state);
+    lisp.persistent_dirty = false;
     runtime->value = kept;
     if (truthy(retired->value))
         apply_function(VAL(sym_release), 1, &retired->value);

@@ -56,12 +56,15 @@ lisp_value lisp_string(const char *text, size_t length);
 lisp_value lisp_cstring(const char *text);
 lisp_value lisp_keyword(const char *name);
 lisp_value lisp_cons(lisp_value car, lisp_value cdr);
+void lisp_set_cdr(lisp_value cell, lisp_value value);
 lisp_value lisp_list(int count, ...);
 lisp_value lisp_nreverse(lisp_value list);
+lisp_value lisp_copy_data(lisp_value value);
 
 bool lisp_nilp(lisp_value value);
 bool lisp_consp(lisp_value value);
 bool lisp_intp(lisp_value value);
+bool lisp_doublep(lisp_value value);
 bool lisp_numberp(lisp_value value);
 bool lisp_stringp(lisp_value value);
 bool lisp_keywordp(lisp_value value);

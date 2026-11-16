@@ -7,22 +7,11 @@
         :effects 512 :commands 32 :extensions 64 :watchdog-ms 1000)
   "The compiled-in floors, used until a commit publishes the :budgets group.")
 
-(defun %limit (key)
-  (or (getf (and *runtime* (%r :budget-limits)) key)
-      (getf *bootstrap-limits* key)))
-
 (defun %round-away-positive (value)
   "Round a non-negative REAL away from zero at an exact half."
   (floor (+ (coerce value 'double-float) 0.5d0)))
 
-(defun copy-data (value)
-  (%copy-data value (%limit :datum-nodes) (%limit :string-chars)))
-
 (defparameter %nul (code-char 0))
-
-(defun %same-elements-p (first second)
-  (and (= (length first) (length second))
-       (loop for left in first for right in second always (eq left right))))
 
 (defun %boolean-p (value) (or (eq value t) (null value)))
 

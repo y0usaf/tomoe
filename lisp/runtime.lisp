@@ -38,6 +38,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
         :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil
+        :constructions nil
         :frame-ms 16 :invocations 0 :layout-rebuilds 0 :layout-reuses 0
         :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
         :ipc-baseline-sent nil))
@@ -219,7 +220,14 @@ keyboard grab's otherwise call, or NIL for a private dialog callback."
 
 (defun commit-call-resolution (context)
   "Resolve every binding in CONTEXT against the commands it declares, remembering
-command names whose owner has gone away so their bindings retire with it."
+command names whose owner has gone away so their bindings retire with it. When
+the commands, bindings and keyboard grab equal the committed ones, they already
+resolved to themselves and nothing retires."
+  (let ((effective (runtime-effective)))
+    (when (and (equal (getf context :commands) (getf effective :commands))
+               (equal (getf context :bindings) (getf effective :bindings))
+               (equal (getf context :keyboard-grab) (getf effective :keyboard-grab)))
+      (return-from commit-call-resolution context)))
   (let* ((commands (getf context :commands))
          (retired (remove-if (lambda (name) (registered-command commands name))
                              (union (runtime-retired-commands)
@@ -334,7 +342,9 @@ command names whose owner has gone away so their bindings retire with it."
                                       (and (mounted-rule-parent mounted)
                                            (eq (getf event :type) :mount)))))
                     (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
-                  (let ((effects (mapcar #'canonical-effect effects))
+                  (let ((effects (if (equal effects (mounted-effects mounted))
+                                     (mounted-effects mounted)
+                                     (mapcar #'canonical-effect effects)))
                         (commands (mapcar (lambda (command)
                                             (canonical-command command (spec-directory spec)))
                                           commands)))
@@ -347,10 +357,13 @@ command names whose owner has gone away so their bindings retire with it."
                                      (runtime-ipc-call)
                                      (eql (getf event :call) (getf (runtime-ipc-call) :token)))
                           (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
-                    (check-duplicate-effects effects)
-                    (unless (equivalent-effects (mounted-effects mounted) effects)
-                      (%invocations+))
-                    (setf (nth 2 mounted) (copy-data state)
+                    (unless (eq effects (mounted-effects mounted))
+                      (check-duplicate-effects effects)
+                      (unless (equivalent-effects (mounted-effects mounted) effects)
+                        (%invocations+)))
+                    (setf (nth 2 mounted) (if (equal state (mounted-state mounted))
+                                              (mounted-state mounted)
+                                              (copy-data state))
                           (nth 3 mounted) effects)
                     (when (mounted-rule-parent mounted) (setf (nth 11 mounted) nil))
                     (setf (nth 4 mounted) (1+ (mounted-dispatches mounted)))
@@ -368,23 +381,22 @@ command names whose owner has gone away so their bindings retire with it."
   "The last owner's grab on a buffered target, and that owner."
   (let ((grab nil) (owner nil))
     (dolist (mounted mounts (values grab owner))
-      (dolist (effect (mounted-effects mounted))
-        (when (eq (effect-kind effect) :grab)
-          (let* ((args (effect-arguments effect))
-                 (id (first args))
-                 (generation (third args))
-                 (window (find id (runtime-windows) :key (lambda (w) (getf w :id)))))
-            (when (or (eq (second args) :pointer)
-                      (and window (getf window :buffered t)
-                           (or (null generation) (eql generation (getf window :buffer-generation))))
-                      (and (null generation)
-                           (find id (runtime-layers) :key (lambda (l) (getf l :id)))))
-              (setf grab (list id (second args))
-                    owner mounted))))))))
+      (dolist (effect (%effects-of-kind (mounted-effects mounted) :grab))
+        (let* ((args (effect-arguments effect))
+               (id (first args))
+               (generation (third args))
+               (window (find id (runtime-windows) :key (lambda (w) (getf w :id)))))
+          (when (or (eq (second args) :pointer)
+                    (and window (getf window :buffered t)
+                         (or (null generation) (eql generation (getf window :buffer-generation))))
+                    (and (null generation)
+                         (find id (runtime-layers) :key (lambda (l) (getf l :id)))))
+            (setf grab (list id (second args))
+                  owner mounted)))))))
 
 (defun motion-contract-of (mounted)
   "MOUNTED's published native motion contract, or NIL."
-  (let ((effect (find :motion (mounted-effects mounted) :key #'effect-kind)))
+  (let ((effect (first (%effects-of-kind (mounted-effects mounted) :motion))))
     (and effect (effect-arguments effect))))
 
 (defun motion-reader-p (mounted)
@@ -431,17 +443,16 @@ Lisp."
   "Resolve owned fields separately from client facts."
   (let ((overrides nil))
     (dolist (mounted mounts overrides)
-      (dolist (effect (mounted-effects mounted))
-        (when (eq (effect-kind effect) :layer)
-          (destructuring-bind (id layer zone keyboard visible) (effect-arguments effect)
-            (let ((entry (assoc id overrides)))
-              (unless entry
-                (setf entry (list id nil nil nil t))
-                (push entry overrides))
-              (when layer (setf (nth 1 entry) layer))
-              (when zone (setf (nth 2 entry) zone))
-              (when keyboard (setf (nth 3 entry) keyboard))
-              (setf (nth 4 entry) visible))))))))
+      (dolist (effect (%effects-of-kind (mounted-effects mounted) :layer))
+        (destructuring-bind (id layer zone keyboard visible) (effect-arguments effect)
+          (let ((entry (assoc id overrides)))
+            (unless entry
+              (setf entry (list id nil nil nil t))
+              (push entry overrides))
+            (when layer (setf (nth 1 entry) layer))
+            (when zone (setf (nth 2 entry) zone))
+            (when keyboard (setf (nth 3 entry) keyboard))
+            (setf (nth 4 entry) visible)))))))
 
 (defun applied-grab ()
   "Read the backend's actual grab. No Lisp cache can outlive a native target."
@@ -852,7 +863,7 @@ when it is not 1."
           #'string< :key (lambda (o) (getf o :name)))))
 
 (defun changed-keys (before after)
-  (remove-if (lambda (key) (equal (getf before key) (getf after key))) +context-keys+))
+  (%changed-keys before after +context-keys+))
 
 (defun connected-output-config (context)
   (remove-if-not (lambda (config)
@@ -1015,12 +1026,47 @@ A bad callback or a dependency cycle discards the entire candidate transaction."
               (commit-call-resolution context)
               (let ((live-commands (loop for (owner . command) in commands
                                          when (find owner candidate :key #'mounted-spec) collect command)))
-                (commit-context candidate context live-commands)
-                (%r! :pending-context nil)
-                (loop for command in live-commands
-                      do (when (runtime-running) (execute-command command))))
+                (if (and (null live-commands) (unchanged-commit-p candidate context))
+                    (commit-dispatch-counts candidate)
+                    (progn
+                      (commit-context candidate context live-commands)
+                      (%r! :pending-context nil)
+                      (loop for command in live-commands
+                            do (when (runtime-running) (execute-command command))))))
               (return-from %transact t)))))
       (error "Extension dependencies did not settle within 16 rounds."))))
+
+(defun unchanged-commit-p (mounts context)
+  "Whether committing MOUNTS and CONTEXT would leave everything as it is: the same
+reducers holding equal states and effects, an equal context, nothing pending, and
+native outputs and grab still as committed. Only dispatch counts can differ."
+  (let ((committed (runtime-mounts))
+        (mounts (prune-rule-mounts mounts)))
+    (and (null (runtime-pending-context))
+         (null (runtime-output-recovery-failures))
+         (= (length mounts) (length committed))
+         (every (lambda (new old)
+                  (and (eq (mounted-spec new) (mounted-spec old))
+                       (eql (mounted-failures new) (mounted-failures old))
+                       (equal (mounted-last-error new) (mounted-last-error old))
+                       (eq (mounted-rule-parent new) (mounted-rule-parent old))
+                       (equal (mounted-rule-name new) (mounted-rule-name old))
+                       (eql (mounted-rule-window new) (mounted-rule-window old))
+                       (eq (mounted-rule-definition new) (mounted-rule-definition old))
+                       (eq (mounted-rule-pending new) (mounted-rule-pending old))
+                       (equal (mounted-effects new) (mounted-effects old))
+                       (equal (mounted-state new) (mounted-state old))))
+                mounts committed)
+         (equal context (runtime-effective))
+         (not (pending-native-outputs-p))
+         (equal (resolved-grab mounts) (applied-grab)))))
+
+(defun commit-dispatch-counts (mounts)
+  "Record the dispatches of a transaction that changed nothing else."
+  (loop for new in (prune-rule-mounts mounts)
+        for old in (runtime-mounts)
+        unless (eql (mounted-dispatches new) (mounted-dispatches old))
+          do (setf (nth 4 old) (mounted-dispatches new))))
 
 (defun execute-command (command)
   (ecase (command-kind command)

@@ -323,6 +323,7 @@ void region_destroy(struct lisp_region *region)
     if (!region->in_use)
         return;
     if (region->kind == REG_GENERATION) {
+        lisp_forget_forms(region);
         struct lisp_region **slot = &lisp.generations;
         while (*slot && *slot != region)
             slot = &(*slot)->next;
@@ -366,6 +367,32 @@ struct lisp_region *heap_region_of(const void *ptr)
     if (!lisp.blocks[index].in_use)
         return NULL;
     return lisp.blocks[index].owner;
+}
+
+lisp_value heap_store(const void *container, lisp_value value)
+{
+    struct lisp_region *home = heap_region_of(container);
+    if (!home || home->kind != REG_PERSISTENT)
+        return value;
+    struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
+    if (!from || from->kind == REG_PERSISTENT)
+        return value;
+    size_t size;
+    switch (TYPE(value)) {
+    case LT_INT: size = sizeof(struct lisp_int); break;
+    case LT_RATIO: size = sizeof(struct lisp_ratio); break;
+    case LT_DOUBLE: size = sizeof(struct lisp_double); break;
+    default:
+        lisp.persistent_dirty = true;
+        return value;
+    }
+    uint64_t before = home->used;
+    void *out = heap_alloc_in(home, size);
+    memcpy(out, OBJ(value), size);
+    lisp.persistent_used += home->used - before;
+    if (lisp.persistent_used > lisp.persistent_high_water)
+        lisp.persistent_high_water = lisp.persistent_used;
+    return VAL(out);
 }
 
 void heap_arena_reset(void)

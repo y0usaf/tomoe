@@ -513,6 +513,15 @@ void ipc_drain(struct ipc_server *server, uint64_t budget_ms) {
     }
 }
 
+bool ipc_subscribed(void) {
+    struct ipc_server *server = broadcast_server;
+    if (!server) return false;
+    struct ipc_client *client;
+    wl_list_for_each(client, &server->clients, link)
+        if (!client->dead && client->subscribed) return true;
+    return false;
+}
+
 void ipc_broadcast(const char *name, lisp_value payload) {
     struct ipc_server *server = broadcast_server;
     if (!server) return;

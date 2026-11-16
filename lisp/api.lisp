@@ -4,130 +4,13 @@
 (defvar *output-error-name* nil)
 
 (defparameter +json-false+ :json-false)
-(defparameter +json-max-text+ 1048576)
 (defparameter +json-max-string+ 65536)
-(defparameter +json-max-depth+ 64)
-(defparameter +json-max-nodes+ 32768)
 
 (defun %json-check-string (value)
   (check-type value string)
   (when (> (length value) +json-max-string+)
     (error "JSON string exceeds ~D characters." +json-max-string+))
   value)
-
-(defun %json-validate-value (value)
-  "Validate VALUE as the JSON subset before copying it."
-  (let ((nodes 0))
-    (labels ((node (item depth)
-               (when (> depth +json-max-depth+)
-                 (error "JSON nesting exceeds ~D levels." +json-max-depth+))
-               (when (> (incf nodes) +json-max-nodes+)
-                 (error "JSON value exceeds ~D nodes." +json-max-nodes+))
-               (cond
-                 ((null item) nil)
-                 ((eq item t) nil)
-                 ((eq item +json-false+) nil)
-                 ((stringp item) (%json-check-string item))
-                 ((integerp item)
-                  (unless (%in-range-p item -9223372036854775808 9223372036854775807)
-                    (error "JSON integer is outside the data range.")))
-                 ((floatp item)
-                  (unless (%finite-float-p item)
-                    (error "JSON numbers must be finite.")))
-                 ((and (consp item) (eq (car item) :json-object))
-                  (unless (and (consp (cdr item)) (null (cddr item)))
-                    (error "Malformed JSON object container."))
-                  (let ((tail (second item)))
-                    (loop while (consp tail) do
-                      (let ((entry (car tail)))
-                        (unless (and (consp entry) (stringp (car entry)))
-                          (error "JSON object members need string keys."))
-                        (%json-check-string (car entry))
-                        (node (cdr entry) (1+ depth)))
-                      (setf tail (cdr tail)))
-                    (unless (null tail)
-                      (error "JSON object members must form a proper list."))))
-                 ((and (consp item) (eq (car item) :json-array))
-                  (unless (and (consp (cdr item)) (null (cddr item)))
-                    (error "Malformed JSON array container."))
-                  (let ((tail (second item)))
-                    (loop while (consp tail) do
-                      (node (car tail) (1+ depth))
-                      (setf tail (cdr tail)))
-                    (unless (null tail)
-                      (error "JSON array members must form a proper list."))))
-                 (t (error "Not JSON data: ~S" item)))))
-      (node value 1)
-      value)))
-
-(defun %json-string-output-size (value)
-  (let ((size 2))
-    (loop for character across value do
-      (setf size
-            (+ size
-               (let ((code (char-code character)))
-                 (if (or (= code 34) (= code 92)
-                         (member code '(8 9 10 12 13)))
-                     2
-                     (if (< code #x20) 6 4))))))
-    size))
-
-(defun %json-output-size (value depth)
-  (let ((size
-          (cond
-            ((or (null value) (eq value t)) 4)
-            ((eq value +json-false+) 5)
-            ((stringp value) (%json-string-output-size value))
-            ((or (integerp value) (rationalp value) (floatp value))
-             (length (format nil "~S" value)))
-            ((and (consp value) (eq (car value) :json-array))
-             (let ((size 1) (tail (second value)))
-               (loop while (consp tail) do
-                 (unless (= size 1) (incf size))
-                 (setf size (+ size (%json-output-size (car tail) (1+ depth))))
-                 (setf tail (cdr tail)))
-               (1+ size)))
-            ((and (consp value) (eq (car value) :json-object))
-             (let ((size 1) (tail (second value)))
-               (loop while (consp tail) do
-                 (unless (= size 1) (incf size))
-                 (setf size (+ size (%json-string-output-size (caar tail)) 1
-                               (%json-output-size (cdar tail) (1+ depth))))
-                 (setf tail (cdr tail)))
-               (1+ size)))
-            (t (error "Not JSON data: ~S" value)))))
-    (when (> size +json-max-text+)
-      (error "JSON text exceeds ~D UTF-8 bytes." +json-max-text+))
-    size))
-
-(defun %json-copy-value (value)
-  (%json-validate-value value)
-  (%json-output-size value 0)
-  (copy-data value))
-
-(defun json-object (&rest pairs)
-  "Construct a JSON object from cons pairs or alternating key/value values.
-Duplicate keys are replaced by their last value."
-  (when (and pairs (every #'consp pairs))
-    (let ((flat nil))
-      (dolist (pair pairs) (push (car pair) flat) (push (cdr pair) flat))
-      (setf pairs (nreverse flat))))
-  (when (oddp (length pairs))
-    (error "JSON object needs alternating key/value arguments."))
-  (let ((members nil))
-    (loop for tail = pairs then (cddr tail) while tail do
-      (let ((key (car tail)) (value (second tail)))
-        (check-type key string)
-        (%json-check-string key)
-        (let ((entry (assoc key members :test #'string=)))
-          (if entry
-              (setf (cdr entry) value)
-              (setf members (append members (list (cons (copy-seq key) value))))))))
-    (%json-copy-value (list :json-object members))))
-
-(defun json-array (&rest values)
-  "Construct a JSON array, preserving NIL as an element through the container."
-  (%json-copy-value (list :json-array (copy-list values))))
 
 (defun %json-object-members (object)
   (unless (and (consp object) (eq (car object) :json-object)
@@ -1222,14 +1105,7 @@ pointer event on the Lisp path, exactly as before."
 
 (defun %command-name (name)
   (check-type name string)
-  (unless (and (<= 1 (length name) 64)
-               (%alpha-p (char name 0))
-               (%alpha-p (char name (1- (length name))))
-               (every (lambda (character)
-                        (or (and (%alpha-p character)
-                                 (<= 97 (char-code character) 122))
-                            (digit-char-p character) (char= character #\-)))
-                      name))
+  (unless (%command-name-p name)
     (error "Invalid command name ~S: use lowercase letters, digits and hyphens." name))
   (copy-seq name))
 
@@ -1314,6 +1190,18 @@ pointer event on the Lisp path, exactly as before."
         (push spec specs)))
     (%effect :command (list name (copy-seq description) (nreverse specs)))))
 
+(defun %constructed (key build)
+  "A copy of the value BUILD returns for KEY, the arguments of a constructor that
+depends on nothing else. A reducer declares the same bindings and commands every
+time it runs, so each distinct declaration is validated once and then copied."
+  (let ((entry (%construction-find key (%r :constructions))))
+    (if entry
+        (%construction-copy (cddr entry))
+        (let ((value (funcall build)) (cache (%r :constructions)))
+          (%r! :constructions (cons (list* (%construction-hash key) (copy-data key) (copy-data value))
+                                    (if (>= (length cache) 256) nil cache)))
+          value))))
+
 (defun define-command (name &key description arguments)
   "Own the command NAME: one name the command line, the JSON socket and key
 bindings all invoke, so nothing this extension does is reachable by a key alone.
@@ -1326,7 +1214,8 @@ MAXIMUM, 128 by default, so a window manager declares its real workspace count),
 VALUES). The declaring extension
 receives a :COMMAND event whose :NAME is NAME and whose :ARGUMENTS carry every
 supplied or defaulted argument."
-  (%define-command name (or description "") arguments))
+  (%constructed (list name description arguments :command)
+                (lambda () (%define-command name (or description "") arguments))))
 
 (%define-effect :command
   (lambda (args effect)
@@ -1347,10 +1236,16 @@ supplied or defaulted argument."
 (defun invoke (name &rest arguments)
   "A command call for BIND-KEY, BIND-BUTTON, BIND-SCROLL and KEYBOARD-GRAB:
 NAME with keyword arguments, whose declared defaults fill the rest."
-  (unless (evenp (length arguments))
-    (error "Command arguments are keyword/value pairs: ~S" arguments))
-  (loop for (key) on arguments by #'cddr do (check-type key keyword))
-  (copy-data (list* (%command-name name) arguments)))
+  (%constructed (list* name :invoke arguments)
+                (lambda ()
+                  (unless (evenp (length arguments))
+                    (error "Command arguments are keyword/value pairs: ~S" arguments))
+                  (let ((tail arguments))
+                    (dotimes (index (floor (length arguments) 2))
+                      (let ((key (car tail)))
+                        (check-type key keyword))
+                      (setf tail (cddr tail))))
+                  (copy-data (list* (%command-name name) arguments)))))
 
 (defun %callback-call (callback)
   (check-type callback keyword)
@@ -1497,7 +1392,10 @@ physical key release. MODIFIERS are :SHIFT :CONTROL :ALT :SUPER, or :MOD for the
 DESCRIPTION labels the binding in the hotkey overlay.
 Release follows the original device/key even after modifiers change. Removing
 or replacing the binding/source cancels that callback and still swallows key-up."
-  (%bind modifiers keysym (%call command) (and release (%call release)) description))
+  (%constructed (list keysym modifiers command release description :bind)
+                (lambda ()
+                  (%bind modifiers keysym (%call command) (and release (%call release))
+                         description))))
 
 (defun %bind-callback (modifiers keysym callback)
   (%bind modifiers keysym (%callback-call callback) nil nil))
@@ -1513,6 +1411,12 @@ or replacing the binding/source cancels that callback and still swallows key-up.
       (setf mask (logior mask (ecase modifier (:shift 1) (:control 4) (:alt 8) (:super 64) (:mod 128)))))
     (%bind-effect mask keysym call release description)))
 
+(defun %keyword-keys-p (plist)
+  (let ((tail plist))
+    (dotimes (index (floor (1+ (length plist)) 2) t)
+      (unless (keywordp (car tail)) (return nil))
+      (setf tail (cddr tail)))))
+
 (defun %bind-effect (mask keysym call release description)
   (check-type mask (integer 0 205))
   (unless (zerop (logandc2 mask 205)) (error "Unsupported modifier mask."))
@@ -1525,7 +1429,7 @@ or replacing the binding/source cancels that callback and still swallows key-up.
       (unless (if (eq (first item) :callback)
                   (and (= 2 (length item)) (stringp (second item)))
                   (and (stringp (first item)) (evenp (length (rest item)))
-                       (loop for (key) on (rest item) by #'cddr always (keywordp key))))
+                       (%keyword-keys-p (rest item))))
         (error "Invalid binding call: ~S" item))))
   (when (or (find %nul keysym) (zerop (keysym-code keysym))) (error "Invalid keysym name."))
   (when (and description (> (length description) 256))

@@ -69,41 +69,40 @@ changed callback definitions."
       (setf previous (%alist-set (rule-instance-key instance) instance previous)))
     (dolist (parent mounts)
       (when (find (mounted-spec parent) result :key #'mounted-spec)
-        (dolist (definition (mounted-effects parent))
-          (when (eq (effect-kind definition) :rule)
-            (let ((message nil))
-              (%catch
-               (lambda ()
-                 (%with-limits nil 25
-                   (lambda ()
-                     (dolist (window (runtime-windows))
-                       (when (rule-matches-p definition window context (runtime-effective))
-                         (when (> (incf count) 4096) (error "More than 4096 matching rule instances."))
-                         (let* ((name (first (effect-arguments definition)))
-                                (id (getf window :id))
-                                (owner (mounted-spec parent))
-                                (key (list owner name id))
-                                (entry (assoc key previous :test #'equal))
-                                (old (cdr entry))
-                                (instance
-                                  (if old
-                                      old
-                                      (make-mounted
-                                       :spec (make-spec :name (rule-instance-identity owner name id)
-                                                        :source (spec-source owner)
-                                                        :directory (spec-directory owner))
-                                       :state (copy-data (sixth (effect-arguments definition)))
-                                       :rule-parent owner :rule-name name :rule-window id
-                                       :rule-pending t))))
-                           (cond ((null old) (push (spec-name (mounted-spec instance)) new))
-                                 ((not (eq (mounted-rule-definition old) definition))
-                                  (push (spec-name (mounted-spec instance)) changed)))
-                           (unless (eq (mounted-rule-definition instance) definition)
-                             (%invocations+))
-                           (setf (nth 10 instance) definition)
-                           (setf result (nconc result (list instance)))))))))
-               (lambda (text) (setf message text)))
-              (when message (rule-evaluation-error parent message)))))))
+        (dolist (definition (%effects-of-kind (mounted-effects parent) :rule))
+          (let ((message nil))
+            (%catch
+             (lambda ()
+               (%with-limits nil 25
+                 (lambda ()
+                   (dolist (window (runtime-windows))
+                     (when (rule-matches-p definition window context (runtime-effective))
+                       (when (> (incf count) 4096) (error "More than 4096 matching rule instances."))
+                       (let* ((name (first (effect-arguments definition)))
+                              (id (getf window :id))
+                              (owner (mounted-spec parent))
+                              (key (list owner name id))
+                              (entry (assoc key previous :test #'equal))
+                              (old (cdr entry))
+                              (instance
+                                (if old
+                                    old
+                                    (make-mounted
+                                     :spec (make-spec :name (rule-instance-identity owner name id)
+                                                      :source (spec-source owner)
+                                                      :directory (spec-directory owner))
+                                     :state (copy-data (sixth (effect-arguments definition)))
+                                     :rule-parent owner :rule-name name :rule-window id
+                                     :rule-pending t))))
+                         (cond ((null old) (push (spec-name (mounted-spec instance)) new))
+                               ((not (eq (mounted-rule-definition old) definition))
+                                (push (spec-name (mounted-spec instance)) changed)))
+                         (unless (eq (mounted-rule-definition instance) definition)
+                           (%invocations+))
+                         (setf (nth 10 instance) definition)
+                         (setf result (nconc result (list instance)))))))))
+             (lambda (text) (setf message text)))
+            (when message (rule-evaluation-error parent message))))))
     (values result new changed)))
 
 (defun resolved-rule-properties (mounts)

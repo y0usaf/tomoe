@@ -237,19 +237,24 @@ report a session command returned."
      (run-command name (ipc-command-arguments (json-get params "arguments"))))))
 
 (defun publish-json-context (context mounts)
-  "Emit the events between the last published context and CONTEXT, at commit."
-  (let* ((windows (ipc-window-records context))
+  "Emit the events between the last published context and CONTEXT, at commit.
+Nothing is built while no client subscribes; the first subscriber's baseline
+starts from the present state instead."
+  (unless (%json-subscribed-p)
+    (when (%r :ipc-baseline-sent) (%r! :ipc-baseline-sent nil))
+    (return-from publish-json-context))
+  (let* ((windows (sort (copy-list (runtime-windows)) #'< :key (lambda (window) (getf window :id))))
+         (ids (mapcar (lambda (window) (getf window :id)) windows))
          (outputs (ipc-outputs context))
          (focus (focused-window))
          (old (runtime-ipc-published-context))
          (announcements (resolved-ipc-effects mounts :announce)))
-    (dolist (record windows)
-      (unless (find (getf record :id) (getf old :windows)
-                    :key (lambda (entry) (getf entry :id)))
-        (%json-broadcast "window_open" (getf record :json))))
-    (dolist (record (getf old :windows))
-      (unless (find (getf record :id) windows :key (lambda (entry) (getf entry :id)))
-        (%json-broadcast "window_close" (json-object (cons "id" (getf record :id))))))
+    (dolist (window windows)
+      (unless (member (getf window :id) (getf old :windows))
+        (%json-broadcast "window_open" (getf (ipc-window-record window context focus) :json))))
+    (dolist (id (getf old :windows))
+      (unless (member id ids)
+        (%json-broadcast "window_close" (json-object (cons "id" id)))))
     (unless (eql focus (getf old :focus))
       (%json-broadcast "focus_change" (json-object (cons "id" focus))))
     (unless (equal outputs (getf old :outputs))
@@ -262,7 +267,7 @@ report a session command returned."
     (dolist (previous (runtime-ipc-published-announcements))
       (unless (assoc (first previous) announcements :test #'equal)
         (%json-broadcast (first previous) nil)))
-    (%r! :ipc-published-context (list :windows windows :outputs outputs :focus focus))
+    (%r! :ipc-published-context (list :windows ids :outputs outputs :focus focus))
     (%r! :ipc-published-announcements announcements)))
 
 (defun ipc-publish-baseline (context mounts)
@@ -276,7 +281,9 @@ report a session command returned."
     (%json-broadcast "outputs_changed" outputs)
     (dolist (record announcements)
       (%json-broadcast (first record) (first (third record))))
-    (%r! :ipc-published-context (list :windows windows :outputs outputs :focus focus))
+    (%r! :ipc-published-context
+         (list :windows (mapcar (lambda (record) (getf record :id)) windows)
+               :outputs outputs :focus focus))
     (%r! :ipc-published-announcements announcements)))
 
 (defparameter *input-events* '("pointer_motion" "pointer_button" "key")
