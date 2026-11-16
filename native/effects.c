@@ -17,6 +17,7 @@ struct effects {
     struct chain chains[BLUR_CHAINS];
     struct result results[BLUR_RESULTS];
     struct level backdrop;
+    struct chain glass;
     uint64_t stamp, blurs, reused;
     struct { float *levels; int *spans; size_t span_rows; } trail;
 };
@@ -684,6 +685,65 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     quad(f, p, drawn, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
     op_end(f->pass, &clip);
+}
+
+enum { GLASS_FROST_PASSES = 1, GLASS_FROST_REACH = 6 };
+static const double GLASS_FROST = 1.5;
+
+bool effect_glass(struct frame *f, struct program *p, struct texture *map, struct fbox box,
+        double bend) {
+    struct effects *e = f->server->effects;
+    GLenum kind;
+    GLuint lens;
+    bool alpha;
+    if (!e || !p || !map || f->transform != WL_OUTPUT_TRANSFORM_NORMAL ||
+            !render_texture_gl(map, &kind, &lens, &alpha) || !lens) return false;
+    struct box covered = covering(f, box);
+    int margin = (int)ceil(bend * 1.12) + GLASS_FROST_REACH;
+    struct box reach = { covered.x - margin, covered.y - margin,
+        covered.width + 2 * margin, covered.height + 2 * margin };
+    struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, grown;
+    if (!box_intersection(&grown, &reach, &bounds)) return false;
+    double params[] = { OP_GLASS, box.x, box.y, box.width, box.height, bend,
+        (double)map->serial };
+    double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform, f->width,
+        f->height, f->x, f->y };
+    if (pass_record_blur(f->pass, covered, reach, (struct box){0}, params,
+            sizeof(params) / sizeof(params[0]), ++f->blurs, seed,
+            sizeof(seed) / sizeof(seed[0]))) return true;
+    struct op_clip clip;
+    if (!op_begin(f->pass, OP_GLASS, covered, &clip)) return true;
+    pass_flush(f->pass);
+    GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+    bool ok = blur_levels(f, &e->glass, grown, (struct box){ 0, 0, grown.width, grown.height },
+        GLASS_FROST_PASSES, GLASS_FROST, target);
+    pass_scene_attributes_dirty(f->pass);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, f->buffer->width, f->buffer->height);
+    if (ok) {
+        glUseProgram(p->id);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, lens);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glUniform1i(glGetUniformLocation(p->id, "tomoe_glass"), 1);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, e->glass.levels[0].texture);
+        glUniform1i(p->channel, 0);
+        glUniform4f(p->beneath, grown.x, grown.y, 1.0f / grown.width, 1.0f / grown.height);
+        glUniform3f(p->resolution, box.width, box.height, 1);
+        const float data[4] = { (float)bend, 0, 0, 0 };
+        glUniform4fv(p->data, 1, data);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        quad(f, p, box, NULL, box.x, box.y);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        pass_scene_attributes_dirty(f->pass);
+    }
+    op_end(f->pass, &clip);
+    return ok;
 }
 
 #define TRAIL_STEPS_MAX 8

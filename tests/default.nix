@@ -1434,6 +1434,13 @@ let
       + builtins.readFile ./phase.py;
     }
     {
+      name = "glass";
+      script = ''
+        SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+      ''
+      + builtins.readFile ./glass.py;
+    }
+    {
       name = "planes";
       script = ''
         SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"

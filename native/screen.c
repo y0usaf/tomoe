@@ -776,7 +776,7 @@ static bool hardware_allowed(struct screen *screen) {
     return screen->impl->cursor && !screen->software_cursor_locks && !(off && !strcmp(off, "1")) &&
         (!screen->server->cursor_surface || screen->server->cursor_surface->current.alpha == UINT32_MAX) &&
         (!image->buffer || image->scale == screen->scale) &&
-        cursor_motion_rest(screen->server);
+        cursor_motion_rest(screen->server) && !cursor_glass_holds(screen->server, screen);
 }
 
 
@@ -824,6 +824,7 @@ void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hots
     image->hotspot_x = hotspot_x;
     image->hotspot_y = hotspot_y;
     image->scale = scale > 0 ? scale : 1;
+    cursor_glass_image(s);
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) cursor_update(o->screen);
     capture_cursor_update(s);

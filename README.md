@@ -554,6 +554,18 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   texture goes back on the cursor plane, and a still pointer draws nothing at
   all. The shipped policy registers tilt, shake to find and the trail in
   `builtins/desktop.lisp`, which is also the code to copy for your own.
+- A glass cursor is one setting: `(settings :cursor-glass (list :enabled t
+  :delay-ms 120))`, off by default. While the pointer moves the cursor stays on the
+  cursor plane exactly as the theme draws it. Once it has rested for `:delay-ms`,
+  Tomoe draws it itself: the theme image over a frosted, refracted copy of what lies
+  behind its body, where the body is the image's coloured pixels (a pure black
+  shadow is not glass) shaped into a lens by its distance to the edge. It draws once
+  and then nothing while the pointer rests; a window changing beneath it redraws only
+  the cursor and the reach of its refraction. The next motion puts the plain cursor
+  straight back on its plane. A full screen window that scans out directly, or
+  windows on overlay planes, keep the cursor on its plane instead, and anything that
+  stops the glass building leaves the plain cursor. `tomoe frames` reports
+  `:cursor-plane` and `:glass` per output.
 - Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,

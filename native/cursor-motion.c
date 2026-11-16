@@ -466,3 +466,244 @@ int tomoe_cursor_apply(struct tomoe *s, double a, double b, double c, double d,
     cursor_motion_apply(s, matrix, offset, settle, &trail);
     return 1;
 }
+
+enum { GLASS_SIDE = 256 };
+static const float GLASS_FAR = 1e20f;
+
+static const char glass_source[] =
+    "uniform sampler2D tomoe_glass;\n"
+    "void mainImage(out vec4 color, in vec2 coord) {\n"
+    "    vec4 lens = texture(tomoe_glass, v_local / iResolution.xy);\n"
+    "    vec2 bend = (lens.rg * 2.0 - 1.0) * iData[0].x;\n"
+    "    vec2 at = gl_FragCoord.xy;\n"
+    "    vec3 seen = vec3(beneath(at + bend * 1.12).r, beneath(at + bend).g,\n"
+    "        beneath(at + bend * 0.88).b);\n"
+    "    color = vec4(seen * lens.a, lens.a);\n"
+    "}\n";
+
+static void distance_line(const float *f, int n, float *d, int *v, float *z) {
+    int k = 0;
+    v[0] = 0;
+    z[0] = -INFINITY;
+    z[1] = INFINITY;
+    for (int q = 1; q < n; q++) {
+        float cut = ((f[q] + (float)q * q) - (f[v[k]] + (float)v[k] * v[k])) / (2.0f * (q - v[k]));
+        while (cut <= z[k]) {
+            k--;
+            cut = ((f[q] + (float)q * q) - (f[v[k]] + (float)v[k] * v[k])) / (2.0f * (q - v[k]));
+        }
+        k++;
+        v[k] = q;
+        z[k] = cut;
+        z[k + 1] = INFINITY;
+    }
+    k = 0;
+    for (int q = 0; q < n; q++) {
+        while (z[k + 1] < q) k++;
+        float span = (float)(q - v[k]);
+        d[q] = span * span + f[v[k]];
+    }
+}
+
+static void distance_grid(float *grid, int width, int height, float *line, float *out,
+        int *v, float *z) {
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) line[y] = grid[y * width + x];
+        distance_line(line, height, out, v, z);
+        for (int y = 0; y < height; y++) grid[y * width + x] = out[y];
+    }
+    for (int y = 0; y < height; y++) {
+        distance_line(grid + y * width, width, out, v, z);
+        memcpy(grid + y * width, out, sizeof(float) * width);
+    }
+}
+
+static bool glass_lens(struct tomoe *s, const uint8_t *pixels, size_t stride, int width,
+        int height) {
+    struct cursor_glass *g = &s->cursor_glass;
+    int w = width + 2, h = height + 2, side = w > h ? w : h;
+    size_t cells = (size_t)w * h;
+    float *inner = malloc(cells * sizeof(float)), *outer = malloc(cells * sizeof(float));
+    float *field = malloc((size_t)width * height * sizeof(float) * 4);
+    float *line = malloc(((size_t)side * 3 + 1) * sizeof(float));
+    int *v = malloc((size_t)side * sizeof(int));
+    uint8_t *lens = malloc((size_t)width * height * 4);
+    bool body = false, ok = inner && outer && field && line && v && lens;
+    for (int y = 0; ok && y < h; y++)
+        for (int x = 0; x < w; x++) {
+            const uint8_t *px = x > 0 && y > 0 && x <= width && y <= height ?
+                pixels + (size_t)(y - 1) * stride + (size_t)(x - 1) * 4 : NULL;
+            bool in = px && px[3] && (px[0] > 2 || px[1] > 2 || px[2] > 2);
+            body |= in;
+            inner[y * w + x] = in ? GLASS_FAR : 0;
+            outer[y * w + x] = in ? 0 : GLASS_FAR;
+        }
+    ok = ok && body;
+    if (ok) {
+        distance_grid(inner, w, h, line, line + side, v, line + 2 * side);
+        distance_grid(outer, w, h, line, line + side, v, line + 2 * side);
+    }
+    double unit = (width > height ? width : height) / 32.0, reach = 0;
+    float *edge = field, *rise = field + (size_t)width * height;
+    for (int y = 0; ok && y < height; y++)
+        for (int x = 0; x < width; x++) {
+            size_t at = (size_t)(y + 1) * w + x + 1;
+            double signed_distance = inner[at] > 0 ? 0.5 - sqrt(inner[at]) : sqrt(outer[at]) - 0.5;
+            double depth = fmin(fmax(-signed_distance / (4 * unit), 0), 1);
+            edge[y * width + x] = (float)signed_distance;
+            rise[y * width + x] = (float)sqrt(fmax(1 - (1 - depth) * (1 - depth), 0));
+        }
+    float *bend = field + (size_t)width * height * 2;
+    for (int y = 0; ok && y < height; y++)
+        for (int x = 0; x < width; x++) {
+            int x0 = x > 0 ? x - 1 : x, x1 = x < width - 1 ? x + 1 : x;
+            int y0 = y > 0 ? y - 1 : y, y1 = y < height - 1 ? y + 1 : y;
+            double gx = x1 > x0 ? (rise[y * width + x1] - rise[y * width + x0]) / (x1 - x0) : 0;
+            double gy = y1 > y0 ? (rise[y1 * width + x] - rise[y0 * width + x]) / (y1 - y0) : 0;
+            double cover = fmin(fmax(0.5 - edge[y * width + x], 0), 1);
+            bend[2 * (y * width + x)] = (float)(-gx * 36 * unit);
+            bend[2 * (y * width + x) + 1] = (float)(-gy * 36 * unit);
+            if (cover > 0) reach = fmax(reach, fmax(fabs(gx), fabs(gy)) * 36 * unit);
+        }
+    for (int i = 0; ok && i < width * height; i++) {
+        double cover = fmin(fmax(0.5 - edge[i], 0), 1);
+        double bx = reach > 0 ? bend[2 * i] / reach : 0, by = reach > 0 ? bend[2 * i + 1] / reach : 0;
+        lens[4 * i] = (uint8_t)lround((fmin(fmax(bx, -1), 1) * 0.5 + 0.5) * 255);
+        lens[4 * i + 1] = (uint8_t)lround((fmin(fmax(by, -1), 1) * 0.5 + 0.5) * 255);
+        lens[4 * i + 2] = 0;
+        lens[4 * i + 3] = (uint8_t)lround(cover * 255);
+    }
+    struct texture *map = ok ? texture_from_pixels(s->renderer, DRM_FORMAT_ABGR8888,
+        (uint32_t)width * 4, (uint32_t)width, (uint32_t)height, lens) : NULL;
+    free(inner);
+    free(outer);
+    free(field);
+    free(line);
+    free(v);
+    free(lens);
+    if (!map) return false;
+    texture_destroy(g->map);
+    g->map = map;
+    g->bend = reach;
+    g->map_generation = s->cursor_generation;
+    return true;
+}
+
+static bool glass_map(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    struct cursor_image *image = &s->cursor_image;
+    if (g->map && g->map_generation == s->cursor_generation) return true;
+    struct buffer *buffer = image->buffer;
+    if (!buffer || buffer->width <= 0 || buffer->height <= 0 || buffer->width > GLASS_SIDE ||
+            buffer->height > GLASS_SIDE) return false;
+    void *pixels = NULL;
+    uint32_t format = 0;
+    size_t stride = 0;
+    if (!buffer_begin_access(buffer, BUFFER_READ, &pixels, &format, &stride)) return false;
+    bool ok = pixels && stride >= (size_t)buffer->width * 4 &&
+        (format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_ABGR8888) &&
+        glass_lens(s, pixels, stride, buffer->width, buffer->height);
+    buffer_end_access(buffer);
+    return ok;
+}
+
+static bool glass_ready(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (g->broken || !s->renderer || !s->effects) return false;
+    if (!g->program && !(g->program = render_shader_compile(s->renderer, glass_source))) {
+        g->broken = true;
+        tomoe_log(LOG_ERROR, "tomoe: the glass cursor shader did not build; the cursor stays plain");
+        return false;
+    }
+    return glass_map(s);
+}
+
+static bool glass_admits(struct tomoe *s, const struct output *o) {
+    const struct cursor_image *image = &s->cursor_image;
+    return s->settings.cursor_glass_enabled && o && output_is_active(o) &&
+        o->screen->transform == WL_OUTPUT_TRANSFORM_NORMAL && !o->scanout &&
+        !o->planes.count && (o->screen->hardware_cursor || !o->screen->impl->cursor) &&
+        !s->cursor_hidden && image->buffer && image->texture &&
+        (!s->cursor_surface || s->cursor_surface->current.alpha == UINT32_MAX) &&
+        cursor_motion_rest(s);
+}
+
+static void glass_redraw(struct tomoe *s, const struct screen *screen) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (o->screen == screen && output_is_active(o)) screen_schedule_frame(o->screen);
+}
+
+static int glass_rest(void *data);
+
+static void glass_arm(struct tomoe *s, int64_t ms) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (!g->timer) g->timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display),
+        glass_rest, s);
+    if (!g->timer) return;
+    wl_event_source_timer_update(g->timer, ms < 1 ? 1 : ms > INT_MAX ? INT_MAX : (int)ms);
+    g->armed = true;
+}
+
+static int glass_rest(void *data) {
+    struct tomoe *s = data;
+    struct cursor_glass *g = &s->cursor_glass;
+    g->armed = false;
+    if (!s->settings.cursor_glass_enabled || g->engaged || g->broken || s->stopping) return 0;
+    int64_t delay = (int64_t)s->settings.cursor_glass_delay_ms * 1000000;
+    int64_t still = monotonic_ns() - g->moved_ns;
+    if (still < delay) {
+        glass_arm(s, (delay - still + 999999) / 1000000);
+        return 0;
+    }
+    struct output *o = output_at_physical(s, s->pointer_x, s->pointer_y);
+    if (!glass_admits(s, o) || !glass_ready(s)) return 0;
+    g->engaged = true;
+    g->screen = o->screen;
+    screens_cursor_refresh(s);
+    glass_redraw(s, o->screen);
+    return 0;
+}
+
+void cursor_glass_release(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (!g->engaged) return;
+    const struct screen *screen = g->screen;
+    g->engaged = false;
+    g->screen = NULL;
+    screens_cursor_refresh(s);
+    glass_redraw(s, screen);
+}
+
+void cursor_glass_track(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (g->x == s->pointer_x && g->y == s->pointer_y) return;
+    g->x = s->pointer_x;
+    g->y = s->pointer_y;
+    g->moved_ns = monotonic_ns();
+    cursor_glass_release(s);
+    if (!g->armed && s->settings.cursor_glass_enabled && !g->broken)
+        glass_arm(s, s->settings.cursor_glass_delay_ms);
+}
+
+void cursor_glass_image(struct tomoe *s) {
+    if (s->cursor_glass.engaged && !glass_map(s)) cursor_glass_release(s);
+}
+
+void cursor_glass_settings(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (!s->settings.cursor_glass_enabled) cursor_glass_release(s);
+    else if (!g->armed && !g->engaged && !g->broken) glass_arm(s, s->settings.cursor_glass_delay_ms);
+}
+
+bool cursor_glass_holds(const struct tomoe *s, const struct screen *screen) {
+    return s->cursor_glass.engaged && s->cursor_glass.screen == screen;
+}
+
+void cursor_glass_finish(struct tomoe *s) {
+    struct cursor_glass *g = &s->cursor_glass;
+    if (g->timer) wl_event_source_remove(g->timer);
+    texture_destroy(g->map);
+    render_shader_destroy(g->program);
+    *g = (struct cursor_glass){0};
+}

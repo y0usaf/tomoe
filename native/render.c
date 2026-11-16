@@ -579,7 +579,7 @@ static void compile_end(struct render *r, EGLContext scratch) {
     malloc_trim(0);
 }
 
-struct program *render_shader_create(struct render *r, const char *source) {
+static struct program *shader_create(struct render *r, const char *source, bool helper) {
     struct shader *shader = calloc(1, sizeof(*shader));
     if (!shader) return NULL;
     const char *vertex[] = { shader_vertex_source };
@@ -590,7 +590,7 @@ struct program *render_shader_create(struct render *r, const char *source) {
     current(r);
     EGLContext scratch = compile_begin(r);
     bool linked = warm_load(r, name, &shader->program) ||
-        (warm_run(r, name) && warm_load(r, name, &shader->program)) ||
+        (helper && warm_run(r, name) && warm_load(r, name, &shader->program)) ||
         link_sources(&shader->program, vertex, 1, fragment, 3);
     compile_end(r, scratch);
     if (linked) {
@@ -599,6 +599,14 @@ struct program *render_shader_create(struct render *r, const char *source) {
     }
     free(shader);
     return NULL;
+}
+
+struct program *render_shader_create(struct render *r, const char *source) {
+    return shader_create(r, source, true);
+}
+
+struct program *render_shader_compile(struct render *r, const char *source) {
+    return shader_create(r, source, false);
 }
 
 void render_shader_destroy(struct program *program) {

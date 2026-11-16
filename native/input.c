@@ -779,6 +779,7 @@ void cursor_default(struct tomoe *s) {
 
 void pointer_sync_cursors(struct tomoe *s) {
     if (s->stopping) return;
+    cursor_glass_track(s);
     double scale = 1.0;
     struct output *o;
     wl_list_for_each(o, &s->outputs, link) {

@@ -187,7 +187,7 @@ struct read_options {
     struct box src_box;
 };
 enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
-    OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14 };
+    OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
 struct pass;
 struct op {
     uint64_t hash, seq, backdrop, key;
@@ -356,6 +356,7 @@ void pass_scene(struct pass *pass, const struct scene_quad *quad);
 void pass_flush(struct pass *pass);
 void pass_scene_attributes_dirty(struct pass *pass);
 struct program *render_shader_create(struct render *r, const char *source);
+struct program *render_shader_compile(struct render *r, const char *source);
 void render_shader_destroy(struct program *program);
 struct window_shader {
     struct program *program;
@@ -730,6 +731,8 @@ struct trail_style {
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style);
 bool effect_cursor(struct frame *f, const struct texture_options *options,
     const struct fbox corners[4], const float texcoords[8]);
+bool effect_glass(struct frame *f, struct program *p, struct texture *map, struct fbox area,
+    double bend);
 void effects_plan(struct tomoe *s, struct oplist *list);
 void effects_forget(struct tomoe *s);
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused);
@@ -817,6 +820,16 @@ struct cursor_motion {
     double shake, shake_distance;
     double velocity[2], acceleration[2], velocity_at;
 };
+struct cursor_glass {
+    struct wl_event_source *timer;
+    struct program *program;
+    struct texture *map;
+    const struct screen *screen;
+    uint64_t map_generation;
+    int64_t moved_ns;
+    double x, y, bend;
+    bool armed, engaged, broken;
+};
 
 enum cursor_term_field {
     CURSOR_FIELD_SPEED,
@@ -864,6 +877,8 @@ struct settings {
     double shadow_power;
     bool blur_enabled;
     int blur_passes, blur_margin;
+    bool cursor_glass_enabled;
+    int cursor_glass_delay_ms;
     double blur_offset;
     bool screenshot_freeze;
     struct screenshot_colors screenshot_colors;
@@ -1118,6 +1133,7 @@ struct tomoe {
     struct node *window_tree, *layer_tree[4], *fullscreen_tree, *popup_tree;
     struct cursor_image cursor_image;
     struct cursor_motion cursor_motion;
+    struct cursor_glass cursor_glass;
     struct cursor_effect_set cursor_effects;
     struct buffer *default_cursor;
     float default_cursor_scale;
@@ -1763,6 +1779,12 @@ void cursor_finish(struct tomoe *s);
 void cursor_theme_unwatch(struct tomoe *s);
 bool cursor_motion_advance(struct tomoe *s, double now);
 bool cursor_motion_rest(const struct tomoe *s);
+void cursor_glass_track(struct tomoe *s);
+void cursor_glass_image(struct tomoe *s);
+void cursor_glass_settings(struct tomoe *s);
+void cursor_glass_release(struct tomoe *s);
+bool cursor_glass_holds(const struct tomoe *s, const struct screen *screen);
+void cursor_glass_finish(struct tomoe *s);
 void cursor_motion_matrix(const struct tomoe *s, double matrix[4], double offset[2]);
 void cursor_motion_apply(struct tomoe *s, const double matrix[4], const double offset[2],
     double settle, const struct trail_style *trail);

@@ -509,7 +509,7 @@ static void draw_cursor_trail(struct tomoe *s, struct frame *data) {
         &s->cursor_motion.trail);
 }
 static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
-        double scale) {
+        double scale, bool glass) {
     const struct cursor_image *image = &s->cursor_image;
     double matrix[4], offset[2];
     cursor_motion_matrix(s, matrix, offset);
@@ -526,6 +526,9 @@ static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
         };
         struct box bounds = { .width = data->width, .height = data->height }, overlap;
         if (!box_intersection(&overlap, &box, &bounds)) return;
+        if (glass)
+            effect_glass(data, s->cursor_glass.program, s->cursor_glass.map,
+                (struct fbox){ box.x, box.y, box.width, box.height }, s->cursor_glass.bend * ratio);
         box_transform(&box, &box, transform_invert(data->transform),
             data->width, data->height);
         pass_add_texture(data->pass, &(struct texture_options){
@@ -566,9 +569,11 @@ static void render_cursor(struct output *o, struct frame *data, const struct pre
     bool sprite = s->cursor_image.texture && !o->screen->hardware_cursor;
     if ((!sprite && s->cursor_motion.trail.steps <= 0) || (plan && !planned)) return;
     draw_cursor_trail(s, data);
+    bool glass = sprite && cursor_glass_holds(s, o->screen) &&
+        s->cursor_glass.map_generation == s->cursor_generation;
     if (sprite)
         draw_cursor(s, data, s->pointer_x - data->x, s->pointer_y - data->y,
-            planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale));
+            planned ? planned->scale_120 / 120.0 : snapped_scale(o->screen->scale), glass);
 }
 
 void finish_output_capture(struct output *o) {
@@ -742,6 +747,14 @@ static bool scene_record_ops(struct output *o, const struct frame *data, bool lo
     *complete = whole;
     return true;
 }
+static int64_t region_area(const struct region *region) {
+    int count = 0;
+    const struct rect *rects = region_rectangles(region, &count);
+    int64_t area = 0;
+    for (int i = 0; i < count; i++)
+        area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
+    return area;
+}
 static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
         const struct region *changed, struct region *clip, bool complete, size_t ops_len) {
     size_t history = sizeof(o->damage) / sizeof(o->damage[0]);
@@ -762,7 +775,11 @@ static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
     if (!complete || !rendered || seq - rendered > history) return false;
     for (uint64_t f = rendered + 1; f <= seq; f++)
         region_union(clip, clip, &o->damage[f % history]);
-    oplist_expand(&o->ops, clip);
+    for (int64_t area = -1; area != region_area(clip);) {
+        area = region_area(clip);
+        oplist_expand(&o->ops, clip);
+        oplist_expand(&o->cursor_ops, clip);
+    }
     region_intersect_rect(clip, clip, 0, 0, buffer->width, buffer->height);
     int count = 0;
     region_rectangles(clip, &count);
@@ -780,14 +797,6 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     *recorded = complete;
     return scene_commit_damage(o, data->buffer, changed, clip, complete,
         o->ops.len + o->cursor_ops.len);
-}
-static int64_t region_area(const struct region *region) {
-    int count = 0;
-    const struct rect *rects = region_rectangles(region, &count);
-    int64_t area = 0;
-    for (int i = 0; i < count; i++)
-        area += (int64_t)(rects[i].x2 - rects[i].x1) * (rects[i].y2 - rects[i].y1);
-    return area;
 }
 static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         const struct screen_state *state, const struct presentation *plan,
@@ -1018,7 +1027,7 @@ bool render_window_buffer(struct tomoe *s, uint32_t id, struct buffer *buffer, b
         x -= root.target.x;
         y -= root.target.y;
         if (x >= 0 && y >= 0 && x < buffer->width && y < buffer->height)
-            draw_cursor(s, &f, x, y, root.target.scale);
+            draw_cursor(s, &f, x, y, root.target.scale, false);
     }
     if (!fence) return pass_submit(pass);
     *fence = pass_submit_fence(pass);
@@ -1165,12 +1174,13 @@ struct surface *scanout_surface(struct output *o) {
         s->pointer_y >= data.output.y && s->pointer_x < data.output.x + data.output.width &&
         s->pointer_y < data.output.y + data.output.height;
     if (!surface || (!data.window && ui_on_output(o, 0)) ||
-            (cursor_here && !o->screen->hardware_cursor) ||
             surface->current.transform != o->screen->transform) return NULL;
     struct dmabuf_attributes dmabuf;
     if (!surface->buffer || !buffer_get_dmabuf(surface->buffer, &dmabuf) ||
             surface->current.buffer_width != o->screen->width ||
             surface->current.buffer_height != o->screen->height) return NULL;
+    if (cursor_here && cursor_glass_holds(s, o->screen)) cursor_glass_release(s);
+    if (cursor_here && !o->screen->hardware_cursor) return NULL;
     if (o->screen->kind == SCREEN_DRM) dmabuf_surface_feedback(surface, o->screen, 2);
     return surface;
 }
@@ -1403,7 +1413,8 @@ size_t planes_assign(struct output *o) {
         bool cursor_here = !s->cursor_hidden && s->pointer_x >= scan.output.x &&
             s->pointer_y >= scan.output.y && s->pointer_x < scan.output.x + scan.output.width &&
             s->pointer_y < scan.output.y + scan.output.height;
-        bool allow_overlay = !cursor_here || o->screen->hardware_cursor;
+        bool glass = cursor_here && cursor_glass_holds(s, o->screen);
+        bool allow_overlay = !cursor_here || o->screen->hardware_cursor || glass;
         if (!box_empty(&scan.output) && (allow_overlay || primary_alpha)) {
             plane_collect(&scan);
             struct region claimed, blur_above, planes_taken;
@@ -1532,6 +1543,7 @@ size_t planes_assign(struct output *o) {
         planes->changed = previous_count != 0;
         region_clear(&planes->excluded);
     }
+    if (planes->count && cursor_glass_holds(s, o->screen)) cursor_glass_release(s);
     return planes->count;
 }
 
