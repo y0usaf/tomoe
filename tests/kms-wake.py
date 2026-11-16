@@ -44,22 +44,20 @@ def dark():
     )
 
 
-start("--bare", "--test-drm-wake-ms=1500", f"--drm_device /dev/dri/{CARD}", backend="drm", env=DRM)
-cli(f"mount {WAKE_PROBE}")
-wait_log("Virtual-1 lit at its preferred 1024x768@60", 1)
+start(f"--config {WAKE_PROBE}", "--test-drm-wake-ms=1500", f"--drm_device /dev/dri/{CARD}", backend="drm", env=DRM)
 kernel_mode("1920x1080@60")
 before = kms_log().splitlines()
 assert any("Virtual-1 state before Tomoe: connected" in line and "ACTIVE 1" in line
            for line in before), "\n".join(before)
-lit = next(i for i, line in enumerate(before) if "at its preferred" in line)
-target = next(i for i, line in enumerate(before) if i > lit and "kernel state" in line and "mode 1920x1080@60" in line)
-assert any("kernel state" in line and "mode 1024x768@60" in line for line in before[:target]), "\n".join(before)
+states = [line for line in before if "Virtual-1 kernel state" in line]
+assert states and "mode 1920x1080@60" in states[0], "\n".join(before)
+assert "at its preferred" not in "\n".join(before), "\n".join(before)
 
 dark()
 mark = len(kms_log().splitlines())
 probe("light")
 machine.wait_until_succeeds(f"grep -qx enabled {CONNECTOR}/enabled", timeout=30)
-wait_log("Virtual-1 lit at its preferred 1024x768@60", 2)
+wait_log("Virtual-1 was dark; lit at its preferred 1024x768@60", 1)
 kernel_mode("1024x768@60")
 woke = output()
 assert (woke[":WIDTH"], woke[":HEIGHT"]) == ("1920", "1080"), woke
@@ -85,7 +83,7 @@ mark = len(kms_log().splitlines())
 probe("off")
 machine.wait_until_succeeds(f"grep -qx disabled {CONNECTOR}/enabled", timeout=30)
 probe("on")
-wait_log("Virtual-1 lit at its preferred 1024x768@60", 3)
+wait_log("Virtual-1 was dark; lit at its preferred 1024x768@60", 2)
 machine.wait_until_succeeds(f"grep -qx enabled {CONNECTOR}/enabled", timeout=30)
 kernel_mode("1920x1080@60")
 after = kms_log().splitlines()[mark:]

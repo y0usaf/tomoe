@@ -88,7 +88,7 @@ struct connector {
     bool async_refused;
     struct ns_timer cursor_timer;
     drm_mode_info wake_target, wake_light;
-    bool waking, wake_due, unlit, relight;
+    bool waking, wake_due, dark, relight;
     uint64_t edid_sum;
     struct wl_event_source *wake_timer, *flip_timer;
     struct wl_list link;
@@ -592,11 +592,19 @@ static bool probe_sink(struct connector *c) {
     return light != NULL;
 }
 
-static void probe_unlit(struct screen_update *updates, size_t count) {
+static bool sink_lit(struct connector *c) {
+    struct props connector = {0}, crtc = {0};
+    props_read(c->kms->fd, c->id, DRM_MODE_OBJECT_CONNECTOR, &connector);
+    if (!connector.value[PROP_CRTC_ID]) return false;
+    props_read(c->kms->fd, (uint32_t)connector.value[PROP_CRTC_ID], DRM_MODE_OBJECT_CRTC, &crtc);
+    return crtc.value[PROP_ACTIVE] != 0;
+}
+
+static void probe_dark(struct screen_update *updates, size_t count) {
     for (size_t i = 0; i < count; i++) {
         struct connector *c = wl_container_of(updates[i].output, c, screen);
-        c->unlit = enabled_after(c, &updates[i].base) && !c->waking &&
-            (c->relight || !c->crtc) && probe_sink(c);
+        c->dark = enabled_after(c, &updates[i].base) && !c->waking &&
+            (c->relight || (!c->crtc && !sink_lit(c))) && probe_sink(c);
     }
 }
 
@@ -712,7 +720,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             if (c->waking && !c->wake_due && p->crtc->active &&
                     p->crtc->mode.hdisplay <= buffer->width && p->crtc->mode.vdisplay <= buffer->height)
                 light = &p->crtc->mode;
-            else if (!c->waking && c->unlit && kms->wake_ms && c->wake_timer &&
+            else if (!c->waking && c->dark && kms->wake_ms && c->wake_timer &&
+                    memcmp(&c->wake_light, &p->mode, sizeof(p->mode)) &&
                     c->wake_light.hdisplay <= buffer->width &&
                     c->wake_light.vdisplay <= buffer->height)
                 light = &c->wake_light;
@@ -1020,7 +1029,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         c->crtc = p->crtc;
         p->crtc->owner = c;
         p->crtc->active = true;
-        c->relight = c->unlit = false;
+        c->relight = c->dark = false;
         if (p->modeset) {
             if (p->crtc->mode_blob) drm_blob_destroy(kms->fd, p->crtc->mode_blob);
             p->crtc->mode_blob = p->mode_blob;
@@ -1030,7 +1039,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
             char lit[192], target[192];
             mode_text(lit, sizeof(lit), &p->mode);
             mode_text(target, sizeof(target), &p->target);
-            tomoe_log(LOG_INFO, "tomoe: kms %s lit at its preferred %s first, %s in %u ms",
+            tomoe_log(LOG_INFO, "tomoe: kms %s was dark; lit at its preferred %s first, %s in %u ms",
                 c->screen.name, lit, target, kms->wake_ms);
             c->wake_due = false;
             wake_arm(c, kms->wake_ms);
@@ -1077,7 +1086,7 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
 static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t count, bool test) {
     if (!test) {
         drain_flips(kms, updates, count);
-        probe_unlit(updates, count);
+        probe_dark(updates, count);
     }
     bool woke = false;
     bool ok = atomic_try(kms, updates, count, test, !test, true, &woke);
@@ -1093,7 +1102,7 @@ static bool atomic_commit(struct kms *kms, struct screen_update *updates, size_t
         break;
     }
     if (ok || !woke) return ok;
-    tomoe_log(LOG_INFO, "tomoe: kms lighting a sink at its preferred mode first failed; "
+    tomoe_log(LOG_INFO, "tomoe: kms lighting a dark sink at its preferred mode first failed; "
         "setting the requested mode directly");
     return atomic_try(kms, updates, count, test, false, false, &woke);
 }
@@ -1792,8 +1801,8 @@ int kms_create(struct tomoe *s) {
             kms->monitor_fd = -1;
         }
     }
-    tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s, sinks Tomoe lights shown "
-        "their preferred mode for %u ms first", kms->atomic ? "atomic" : "legacy",
+    tomoe_log(LOG_INFO, "tomoe: DRM %s, modifiers %s, async flips %s, dark sinks lit at their "
+        "preferred mode for %u ms first", kms->atomic ? "atomic" : "legacy",
         kms->modifiers ? "yes" : "no", kms->async_atomic ? "yes" : "no", kms->wake_ms);
     return kms->fd;
 }

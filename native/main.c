@@ -621,9 +621,6 @@ static int run_compositor(const struct cli_options *options) {
     if (resources_start(server))
         tomoe_log(LOG_ERROR, "tomoe: cannot start the native resources");
     resources = true;
-    const char *outputs_error = tomoe_outputs_apply(server);
-    if (outputs_error)
-        tomoe_log(LOG_ERROR, "tomoe: %s", outputs_error);
     lisp_value sources = lisp_nil();
     if (options->config)
         sources = lisp_cons(lisp_cstring(options->config), lisp_nil());
