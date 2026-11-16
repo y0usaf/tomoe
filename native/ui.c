@@ -1214,7 +1214,7 @@ static void shape_shadow(cairo_t *cairo, const struct ui_op *op, int index) {
         }
         cairo_fill(cairo);
     } else {
-        const int bands = 16;
+        const int bands = 8;
         double outer = 0.0;
         for (int band = bands; band > 0; band--) {
             double reach = (double)band / bands;
