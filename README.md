@@ -116,9 +116,9 @@ from windows and outputs to each extension's state and last error.
 (`:cost-ns`), the vblanks it missed (`:missed`) and its frame clock, and
 `tomoe memory` the heap and buffer use. `:fragments` is how many pixels the frame's
 scene draws covered, so a change that stops painting what something else hides
-shows up there directly: a draw a window above it covers opaquely is not issued
-at all, every other draw is scissored to the part of it that nothing hides and to
-the damage that needs it, unless that part needs more than the sixteen rectangles
+shows up there directly: a draw a window above it covers opaquely or that misses
+the damage is not issued at all, every other draw is scissored to the part of it
+that nothing hides and to the damage that needs it, unless that part needs more than the sixteen rectangles
 the damage clip already allows, a rounded window claims the cross its radius leaves
 opaque back as the region it hides, a window that is opaque all over draws no
 blur behind it (its rounding cuts the blur away with its corners, so nothing under
@@ -127,7 +127,13 @@ the window it decorates does not cover it, so it becomes the ring its shader
 fills. `tests/overdraw.py` mounts a shader
 wallpaper with one, ten and fifty rounded windows, compares the presented pixels
 against the ones it recorded and fails if a repaint submits more fragments than
-it did when that record was taken. A quiet scene collects the Lisp heap and
+it did when that record was taken. A blur keeps only the texels its draw samples,
+for up to 64 blurred backdrops, and restores them while nothing beneath changes,
+so a repaint over many frosted windows recomputes only the blurs whose backdrop
+moved; a recomputed blur runs each pass only over the texels those samples depend
+on, which gives the same bytes as blurring the whole margin. `tests/draw.py` holds
+fifty translucent blurred windows to one 240 Hz refresh at the 99th percentile and
+compares their bytes with main's. A quiet scene collects the Lisp heap and
 hands the dead generations and the free pages of the native heap back to the
 system, so an idle desktop keeps only what it is using; `tests/memory.py` mounts
 the shipping policy and a tiled scene at one, ten and fifty windows and fails if

@@ -216,9 +216,15 @@ static void parse_drag(const char *text, int drag[4]) {
 
 static uint32_t parse_color(const char *text) {
     char *end = NULL;
+    size_t length = strlen(text);
     unsigned long value = strtoul(text, &end, 16);
-    if (strlen(text) != 6 || end != text + 6) fail("--color needs six hex digits, got \"%s\"", text);
-    return 0xff000000u | (uint32_t)value;
+    if ((length != 6 && length != 8) || end != text + length)
+        fail("--color needs RRGGBB or AARRGGBB, got \"%s\"", text);
+    if (length == 6) return 0xff000000u | (uint32_t)value;
+    uint32_t alpha = (uint32_t)(value >> 24), color = alpha << 24;
+    for (int shift = 0; shift < 24; shift += 8)
+        color |= ((((uint32_t)value >> shift & 255) * alpha + 127) / 255) << shift;
+    return color;
 }
 
 static uint32_t parse_layer(const char *text) {
@@ -265,7 +271,7 @@ static void usage(void) {
            "  --keyboard MODE      layer only: none, exclusive, on-demand\n"
            "  --size WxH           buffer size, or the drag's pointer extent (default 320x240)\n"
            "  --drag X,Y,X,Y       drag only: press at the first point, release at the second\n"
-           "  --color RRGGBB       buffer fill (default 336699)\n"
+           "  --color [AA]RRGGBB   buffer fill (default 336699); an alpha makes it translucent\n"
            "  --image PATH         binary P6 PPM to fill the buffer instead (exact size)\n"
            "  --seconds N          run time (default 30)\n"
            "  --activate           ask for activation with $XDG_ACTIVATION_TOKEN once mapped\n"
@@ -435,7 +441,7 @@ static void create_buffer(struct client *state, int width, int height) {
     if (state->image) fill_from_ppm(state->image, words, width, height);
     struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
     struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride,
-                                                        WL_SHM_FORMAT_XRGB8888);
+        color >> 24 == 0xff ? WL_SHM_FORMAT_XRGB8888 : WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
     close(fd);
     wl_buffer_add_listener(buffer, &buffer_listener, state);

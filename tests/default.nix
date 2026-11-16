@@ -445,7 +445,7 @@ let
     '';
   drawPolicy = gridPolicy "draw-policy.lisp" false;
   blurPolicy = gridPolicy "blur-policy.lisp" true;
-  blurGolden = "a6cbe2fdb1c5b325,a79cb1327e0373b7,18e1efa7ff253aa3,34e42ac601137034,bd0e11b051776992,198afdb7f6badf2f";
+  blurGolden = "d2a3a62d11732227,04054e63f417ee38,193f78fdccd45f13,645f8e4b2bc7c567,63883fda131aaaba,02e7d909f5df0e72";
   blurBackdrop = pkgs.writeText "blur-backdrop.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "draw-backdrop" (:reads () :state nil) (snapshot state event)

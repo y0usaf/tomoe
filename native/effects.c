@@ -4,14 +4,18 @@
 #include <GLES3/gl3.h>
 
 #define BLUR_CHAINS 8
+#define BLUR_RESULTS 64
 #define BLUR_IDLE_NS 1000000000LL
 
 struct level { GLuint texture, framebuffer; int width, height; };
 
 struct chain { struct level levels[32]; int width, height; int64_t used; uint64_t key, pinned; };
 
+struct result { struct level level; struct box area; int64_t used; uint64_t key, pinned; };
+
 struct effects {
     struct chain chains[BLUR_CHAINS];
+    struct result results[BLUR_RESULTS];
     struct level backdrop;
     uint64_t stamp, blurs, reused;
     struct { float *levels; int *spans; size_t span_rows; } trail;
@@ -291,29 +295,53 @@ static void chain_release(struct chain *chain) {
     *chain = (struct chain){0};
 }
 
-static struct chain *chain_cached(struct effects *e, uint64_t key) {
+static struct chain *chain_spare(struct effects *e, int width, int height, uint64_t key,
+        int64_t now) {
+    struct chain *same = NULL, *empty = NULL, *spare = NULL, *oldest = NULL;
+    for (size_t i = 0; i < BLUR_CHAINS; i++) {
+        struct chain *chain = &e->chains[i];
+        bool fits = chain->width == width && chain->height == height;
+        if (chain->used && fits && key && chain->key == key) return chain;
+        if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
+        if (!chain->used) {
+            if (!empty) empty = chain;
+            continue;
+        }
+        bool needed = e->stamp && chain->pinned == e->stamp;
+        if (!needed && fits && (!same || chain->used < same->used)) same = chain;
+        if (!needed && (!spare || chain->used < spare->used)) spare = chain;
+        if (!oldest || chain->used < oldest->used) oldest = chain;
+    }
+    struct chain *found = same ? same : empty ? empty : spare ? spare : oldest;
+    found->width = width;
+    found->height = height;
+    found->key = 0;
+    return found;
+}
+
+static struct result *result_cached(struct effects *e, uint64_t key) {
     if (!key) return NULL;
-    for (size_t i = 0; i < BLUR_CHAINS; i++)
-        if (e->chains[i].used && e->chains[i].key == key) return &e->chains[i];
+    for (size_t i = 0; i < BLUR_RESULTS; i++)
+        if (e->results[i].used && e->results[i].key == key) return &e->results[i];
     return NULL;
 }
 
-static struct chain *chain_spare(struct effects *e, int width, int height, int64_t now) {
-    struct chain *found = NULL, *oldest = NULL;
-    for (size_t i = 0; i < BLUR_CHAINS; i++) {
-        struct chain *chain = &e->chains[i];
-        if (e->stamp && chain->used && chain->pinned == e->stamp) continue;
-        if (chain->used && chain->width == width && chain->height == height) {
-            if (!found || chain->used < found->used) found = chain;
-        } else if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
-        if (!oldest || chain->used < oldest->used) oldest = chain;
+static struct result *result_spare(struct effects *e, struct box area, int64_t now) {
+    struct result *found = NULL, *oldest = NULL;
+    for (size_t i = 0; i < BLUR_RESULTS; i++) {
+        struct result *result = &e->results[i];
+        if (e->stamp && result->pinned == e->stamp) continue;
+        if (result->used && result->level.width == area.width &&
+                result->level.height == area.height) {
+            if (!found || result->used < found->used) found = result;
+        } else if (result->used && now - result->used > BLUR_IDLE_NS) {
+            level_release(&result->level);
+            *result = (struct result){0};
+        }
+        if (!oldest || result->used < oldest->used) oldest = result;
     }
-    if (!found) {
-        found = oldest;
-        found->width = width;
-        found->height = height;
-    }
-    found->key = 0;
+    if (!found) found = oldest;
+    if (found) found->key = 0;
     return found;
 }
 
@@ -325,11 +353,13 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
     for (size_t i = 0; i < list->len; i++) {
         struct op *op = &list->ops[i];
         if (!op->blur || op->hidden) continue;
-        struct chain *chain = chain_cached(e, op->key);
-        if (!chain) continue;
-        if (chain->pinned != e->stamp) {
-            if (pinned == BLUR_CHAINS - 1) continue;
-            chain->pinned = e->stamp;
+        for (size_t c = 0; op->key && c < BLUR_CHAINS; c++)
+            if (e->chains[c].used && e->chains[c].key == op->key) e->chains[c].pinned = e->stamp;
+        struct result *result = result_cached(e, op->key);
+        if (!result) continue;
+        if (result->pinned != e->stamp) {
+            if (pinned == BLUR_RESULTS - 1) continue;
+            result->pinned = e->stamp;
             pinned++;
         }
         op->cached = true;
@@ -339,6 +369,7 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
 void effects_forget(struct tomoe *s) {
     if (!s->effects) return;
     for (size_t i = 0; i < BLUR_CHAINS; i++) s->effects->chains[i].key = 0;
+    for (size_t i = 0; i < BLUR_RESULTS; i++) s->effects->results[i].key = 0;
 }
 
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused) {
@@ -374,6 +405,56 @@ static void sample_pass(struct program *p, struct level *from, struct level *to,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glDisableVertexAttribArray(p->pos);
     glDisableVertexAttribArray(p->texcoord);
+}
+
+static void cone(int lo, int hi, int to, int from, double reach, int *out_lo, int *out_hi) {
+    double ratio = (double)from / to, spread = reach * fabs(ratio);
+    int a = (int)floor((lo + 0.5) * ratio - spread - 0.5) - 1;
+    int b = (int)floor((hi + 0.5) * ratio + spread - 0.5) + 2;
+    *out_lo = a < 0 ? 0 : a;
+    *out_hi = b > from - 1 ? from - 1 : b;
+}
+
+static struct box cone_box(struct box need, const struct level *to, const struct level *from,
+        double reach) {
+    int x0, x1, y0, y1;
+    cone(need.x, need.x + need.width - 1, to->width, from->width, reach, &x0, &x1);
+    cone(need.y, need.y + need.height - 1, to->height, from->height, reach, &y0, &y1);
+    return (struct box){ x0, y0, x1 - x0 + 1, y1 - y0 + 1 };
+}
+
+static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
+        struct box sampled, int passes, double offset, GLuint target) {
+    struct level *levels = chain->levels;
+    bool ok = level_ensure(&levels[0], grown.width, grown.height);
+    for (int i = 1; ok && i <= passes; i++)
+        ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
+            grown.height >> i > 0 ? grown.height >> i : 1);
+    if (!ok) return false;
+    struct box up[32], down[32];
+    up[0] = sampled;
+    for (int i = 1; i < passes; i++)
+        up[i] = cone_box(up[i - 1], &levels[i - 1], &levels[i], fabs(offset));
+    down[passes] = cone_box(up[passes - 1], &levels[passes - 1], &levels[passes], fabs(offset));
+    for (int i = passes; i >= 1; i--)
+        down[i - 1] = cone_box(down[i], &levels[i], &levels[i - 1], 0.5 * fabs(offset));
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, levels[0].texture);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, down[0].x, down[0].y, grown.x + down[0].x,
+        grown.y + down[0].y, down[0].width, down[0].height);
+    glDisable(GL_BLEND);
+    glEnable(GL_SCISSOR_TEST);
+    for (int i = 1; i <= passes; i++) {
+        glScissor(down[i].x, down[i].y, down[i].width, down[i].height);
+        sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
+    }
+    for (int i = passes - 1; i >= 0; i--) {
+        glScissor(up[i].x, up[i].y, up[i].width, up[i].height);
+        sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
+    }
+    glDisable(GL_SCISSOR_TEST);
+    return true;
 }
 
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
@@ -419,31 +500,45 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     }
     int64_t now = monotonic_ns();
     uint64_t key = clip.op ? clip.op->key : 0;
-    struct chain *chain = chain_cached(e, key);
-    if (chain) {
-        chain->used = now;
-        e->reused++;
-    } else {
+    struct box sampled = { covered.x - 1 - grown.x, covered.y - 1 - grown.y,
+        covered.width + 2, covered.height + 2 };
+    struct box whole = { 0, 0, grown.width, grown.height };
+    if (!box_intersection(&sampled, &sampled, &whole)) {
+        op_end(f->pass, &clip);
+        return;
+    }
+    struct result *result = result_cached(e, key);
+    struct chain *chain = chain_spare(e, grown.width, grown.height, key, now);
+    chain->used = now;
+    if (key && chain->key == key) e->reused++;
+    else {
         pass_flush(f->pass);
-        chain = chain_spare(e, grown.width, grown.height, now);
-        chain->used = now;
-        struct level *levels = chain->levels;
-        bool ok = level_ensure(&levels[0], grown.width, grown.height);
-        for (int i = 1; ok && i <= passes; i++)
-            ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
-                grown.height >> i > 0 ? grown.height >> i : 1);
         GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
+        bool ok = result && box_equal(&result->area, &sampled) &&
+            level_ensure(&chain->levels[0], grown.width, grown.height);
         if (ok) {
-            glBindFramebuffer(GL_FRAMEBUFFER, target);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, levels[0].texture);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, grown.x, grown.y, grown.width,
-                grown.height);
-            glDisable(GL_BLEND);
-            for (int i = 1; i <= passes; i++)
-                sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
-            for (int i = passes - 1; i >= 0; i--)
-                sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, result->level.framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->levels[0].framebuffer);
+            glBlitFramebuffer(0, 0, sampled.width, sampled.height, sampled.x, sampled.y,
+                sampled.x + sampled.width, sampled.y + sampled.height, GL_COLOR_BUFFER_BIT,
+                GL_NEAREST);
+            result->used = now;
+            e->reused++;
+        } else {
+            ok = blur_levels(f, chain, grown, sampled, passes, offset, target);
+            if (ok) e->blurs++;
+            if (ok && key && (result = result_spare(e, sampled, now)) &&
+                    level_ensure(&result->level, sampled.width, sampled.height)) {
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
+                glBlitFramebuffer(sampled.x, sampled.y, sampled.x + sampled.width,
+                    sampled.y + sampled.height, 0, 0, sampled.width, sampled.height,
+                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                result->area = sampled;
+                result->key = key;
+                result->used = now;
+            }
+            pass_scene_attributes_dirty(f->pass);
         }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
         glViewport(0, 0, f->buffer->width, f->buffer->height);
@@ -454,8 +549,6 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
             return;
         }
         chain->key = key;
-        e->blurs++;
-        pass_scene_attributes_dirty(f->pass);
     }
     float texcoords[8];
     double xs[] = { box.x, box.x + box.width, box.x, box.x + box.width };
@@ -768,7 +861,6 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
             sizeof(params) / sizeof(params[0]))) return;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_TRAIL, covered, &clip)) return;
-    if (!pass_touches(f->pass, covered)) goto done;
     size_t total = 0;
     for (int step = 1; step <= steps; step++) total += (size_t)steps_used[step];
     if (!total) goto done;

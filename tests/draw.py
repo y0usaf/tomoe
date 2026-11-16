@@ -1,5 +1,7 @@
 COUNTS = [int(value) for value in DRAW_COUNTS.split(",")]
 IDLE_BUDGET_NS = 10_000_000
+REFRESH_240_MS = 1000 / 240
+TRANSLUCENT = "b0"
 GOLDEN = [value for value in DRAW_GOLDEN.split(",") if value]
 BLUR_DIGESTS = [value for value in BLUR_GOLDEN.split(",") if value]
 COLOURS = ["3c5a78", "7a4a2c", "2c7a4a", "6a2c7a", "7a7a2c", "2c6a7a",
@@ -87,12 +89,12 @@ def alive(unit):
         f"journalctl -u {unit} -o cat | tail -20")[1]
 
 
-def spawn(socket, first, count, repaint=False, unit=None):
+def spawn(socket, first, count, repaint=False, unit=None, alpha=""):
     for index in range(first, count):
         if unit:
             alive(unit)
         client(f"{socket}-{index}", f"--mode xdg --app-id draw-{index} --size 320x200 "
-            f"--color {COLOURS[index % len(COLOURS)]}"
+            f"--color {alpha}{COLOURS[index % len(COLOURS)]}"
             + (" --commit-rate 60" + (" --repaint" if repaint else "") if index == 0 else ""),
             socket=socket)
 
@@ -106,7 +108,10 @@ def measure(unit, socket, seconds=3):
     spent = ticks(unit) - before_ticks
     after = counters(socket)
     total = channel(socket, "frame-total")
+    draw, raster = channel(socket, "frame-draw"), channel(socket, "frame-raster")
     return {"frames": drawn, "samples": total.get("count", 0), "cpu": spent * 10 / drawn,
+            "draw": (draw.get("p50", 0) / 1e6, draw.get("p99", 0) / 1e6),
+            "raster": (raster.get("p50", 0) / 1e6, raster.get("p99", 0) / 1e6),
             "counted": "blurs" in before,
             "blurs": (after.get("blurs", 0) - before.get("blurs", 0)) / drawn,
             "reused": (after.get("blurs-reused", 0) - before.get("blurs-reused", 0)) / drawn,
@@ -116,7 +121,9 @@ def measure(unit, socket, seconds=3):
 
 def describe(cost):
     return (f"{cost['frames']} frames in 3 s, {cost['cpu']:.2f} ms process CPU/frame, "
-            f"frame {cost['p50']:.2f}/{cost['p99']:.2f}/{cost['max']:.2f} ms p50/p99/max, "
+            f"frame {cost['p50']:.2f}/{cost['p99']:.2f}/{cost['max']:.2f} ms p50/p99/max "
+            f"(draw {cost['draw'][0]:.2f}/{cost['draw'][1]:.2f}, "
+            f"raster {cost['raster'][0]:.2f}/{cost['raster'][1]:.2f}), "
             f"{cost['blurs']:.2f} blurs and {cost['reused']:.2f} reused blurs/frame")
 
 
@@ -193,7 +200,7 @@ for count in COUNTS:
     cli(f"mount {BLUR_BACKDROP}", shot_socket)
     state = inspect(shot_socket)
     assert state[":LAST-ERROR"] == "NIL", state[":LAST-ERROR"]
-    spawn(shot_socket, 0, count, repaint=True, unit=shot_unit)
+    spawn(shot_socket, 0, count, repaint=True, unit=shot_unit, alpha=TRANSLUCENT)
     time.sleep(1.5)
     blur_digests += [shot(shot_socket), shot(shot_socket, cursors=True)]
     print(f"blur windows {count}: screenshot {blur_digests[-2]} presented {blur_digests[-1]}")
@@ -205,7 +212,7 @@ assert inspect("blur")[":LAST-ERROR"] == "NIL", inspect("blur")[":LAST-ERROR"]
 blur_costs = {}
 seen = 0
 for count in COUNTS:
-    spawn("blur", seen, count, repaint=True, unit="tomoe-blur")
+    spawn("blur", seen, count, repaint=True, unit="tomoe-blur", alpha=TRANSLUCENT)
     seen = count
     time.sleep(2.5)
     still = measure("tomoe-blur", "blur")
@@ -239,6 +246,10 @@ quit("tomoe-blur", "blur")
 
 assert blur_cpu <= IDLE_BUDGET_NS, f"blurred idle cost {blur_cpu / 1e6:.3f} ms over 2 s"
 assert blur_idle_frames == 0, f"blurred idle drew {blur_idle_frames} frames"
+for name, cost in zip(("static", "changing"), blur_costs[COUNTS[-1]]):
+    assert cost["p99"] <= REFRESH_240_MS, \
+        f"{COUNTS[-1]} translucent blurred windows over a {name} backdrop miss a 240 Hz " \
+        f"refresh: {describe(cost)}"
 if BLUR_DIGESTS:
     assert blur_digests == BLUR_DIGESTS, \
         f"the blurred composited bytes changed: {blur_digests} != {BLUR_DIGESTS}"

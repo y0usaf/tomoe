@@ -1958,7 +1958,6 @@ void pass_add_mesh(struct pass *pass, const struct mesh_options *options) {
     }
     struct op_clip clip;
     if (!op_begin(pass, OP_MESH, dst, &clip)) return;
-    if (!pass_touches(pass, dst)) goto done;
     pass_flush(pass);
     pass_scene_attributes_dirty(pass);
     if (options->wait_timeline &&
@@ -2293,6 +2292,7 @@ bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip)
     clip->saved = NULL;
     region_init(&clip->region);
     clip->op = next_op(pass, kind, box);
+    if (!pass_touches(pass, box)) return false;
     if (!clip->op) return true;
     if (clip->op->hidden) return false;
     struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
