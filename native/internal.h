@@ -551,7 +551,7 @@ struct screen {
     bool frame_pending, needs_frame, animation_only, power_off, frame_replaced, deferred;
     bool suspended;
     int lx, ly, software_cursor_locks;
-    uint64_t deferrals;
+    uint64_t deferrals, warps;
     uint64_t plane_tests, plane_refusals;
     unsigned underlay_plan;
     double cursor_x, cursor_y;
@@ -878,6 +878,7 @@ int input_setting(struct settings *settings, const char *key, double value, cons
 void input_devices_apply(struct tomoe *s);
 bool libinput_listen(struct tomoe *s);
 void libinput_finish(struct tomoe *s);
+void input_latch(struct tomoe *s);
 struct input_device *input_device_create(struct tomoe *s, const char *name, uint32_t caps);
 void input_device_destroy(struct input_device *device);
 void input_device_leds(struct input_device *device, uint32_t leds);
@@ -1130,7 +1131,8 @@ struct tomoe {
     size_t activation_pending_count;
     struct wl_listener new_input;
     struct libinput *libinput;
-    struct wl_event_source *libinput_source;
+    struct libinput_event *libinput_held;
+    struct wl_event_source *libinput_source, *libinput_idle;
     struct wl_list libinput_fds;
 
     uint32_t next_id, focused, grab_id;
@@ -1163,6 +1165,7 @@ struct tomoe {
     struct animation view_x_anim, view_y_anim, view_zoom_anim;
     struct {
         uint64_t input_at, pointer_at, drag_at, key_at, commit_at, event_at, frame_at;
+        uint64_t pointer_drawn, drag_drawn;
         int64_t pointer_event_ns;
         uint64_t input_ring[TOMOE_PENDING_INPUT], commit_ring[TOMOE_PENDING_INPUT];
         uint64_t input_total, commit_total;

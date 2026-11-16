@@ -117,6 +117,8 @@ void timing_commit(struct tomoe *s) {
 void timing_frame_start(struct tomoe *s) {
     if (!timing_enabled) return;
     s->timing.frame_at = timing_now();
+    s->timing.pointer_drawn = s->timing.pointer ? s->timing.pointer_at : 0;
+    s->timing.drag_drawn = s->timing.drag ? s->timing.drag_at : 0;
     if ((s->timing.pointer || s->timing.drag) && s->timing.input_at &&
             s->timing.frame_at > s->timing.input_at)
         timing_add(TIMING_FRAME_WAIT, s->timing.frame_at - s->timing.input_at);
@@ -196,13 +198,13 @@ void timing_frame_end(struct tomoe *s, bool committed) {
     s->timing.frame_at = 0;
     s->timing.scene_ns = s->timing.draw_ns = s->timing.raster_ns = s->timing.submit_ns = 0;
     if (!committed) return;
-    if (s->timing.pointer) {
-        timing_add(TIMING_POINTER, now - s->timing.pointer_at);
+    if (s->timing.pointer_drawn) {
+        timing_add(TIMING_POINTER, now - s->timing.pointer_drawn);
         s->timing.pointer = false;
     }
-    if (s->timing.drag) {
-        timing_add(TIMING_DRAG, now - s->timing.drag_at);
-        s->timing.drag = false;
+    if (s->timing.drag_drawn) {
+        timing_add(TIMING_DRAG, now - s->timing.drag_drawn);
+        s->timing.drag = s->timing.drag_at != s->timing.drag_drawn;
     }
     if (s->timing.commit) {
         timing_add(TIMING_COMMIT_FRAME, now - s->timing.commit_at);

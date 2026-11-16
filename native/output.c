@@ -453,7 +453,7 @@ const char *tomoe_frames(struct tomoe *s) {
         fprintf(out, " :frame %" PRIu64 " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
             " :suspended %s :pending %s"
-            " :planes %zu :deferrals %" PRIu64 " :plane-tests %" PRIu64
+            " :planes %zu :deferrals %" PRIu64 " :warps %" PRIu64 " :plane-tests %" PRIu64
             " :plane-refusals %" PRIu64 " :underlay-plan %u"
             " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
             " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
@@ -461,7 +461,7 @@ const char *tomoe_frames(struct tomoe *s) {
             o->frames, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
             o->screen->suspended ? "t" : "nil", o->screen->frame_pending ? "t" : "nil",
-            o->planes.count, o->screen->deferrals,
+            o->planes.count, o->screen->deferrals, o->screen->warps,
             o->screen->plane_tests, o->screen->plane_refusals, o->screen->underlay_plan,
             o->timing.ns,
             o->screen->frame_cost_ns, o->screen->missed_frames,
@@ -1324,8 +1324,16 @@ static void output_frame_build(struct output *o) {
     }
     if (success && !scanout && o->screen->tearing && o->screen->kind == SCREEN_DRM)
         state.tearing_page_flip = true;
+    bool warped = false;
+    if (success && o->screen->hardware_cursor && cursor_motion_rest(o->server) &&
+            !o->server->cursor_effects.count) {
+        double x = o->screen->cursor_x, y = o->screen->cursor_y;
+        input_latch(o->server);
+        warped = x != o->screen->cursor_x || y != o->screen->cursor_y;
+    }
     uint64_t phase = timing_enabled ? timing_now() : 0;
     success = success && screen_commit(o->screen, &state);
+    if (success && warped && o->screen->hardware_cursor) o->screen->warps++;
     if (success) surfaces_fifo_commit(o->screen);
     if (phase) timing_frame_submit(o->server, timing_now() - phase);
     if (success && (state.committed & SCREEN_BUFFER))

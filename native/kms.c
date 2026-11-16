@@ -1388,12 +1388,23 @@ static bool cursor_early(void) {
     return early;
 }
 
+static bool cursor_blocked(const struct connector *c) {
+    bool early = cursor_early();
+    return !c->crtc || !c->crtc->cursor || (c->flip_pending && !early) || c->cursor_inflight ||
+        (compose_carries_cursor(c) && !early);
+}
+
+static int64_t cursor_lead(const struct connector *c) {
+    int64_t lead = c->screen.refresh > 0 ? 250000000000LL / c->screen.refresh : 0;
+    return lead > CURSOR_LEAD_NS ? CURSOR_LEAD_NS : lead;
+}
+
 static void cursor_commit(struct connector *c) {
     struct kms *kms = c->kms;
-    bool early = cursor_early();
-    if (!c->cursor_dirty || !c->crtc || !c->crtc->active || !c->crtc->cursor ||
-            (c->flip_pending && !early) || c->cursor_inflight ||
-            (compose_carries_cursor(c) && !early) || !session_active(kms->server)) return;
+    if (!c->cursor_dirty || cursor_blocked(c) || !c->crtc->active ||
+            !session_active(kms->server)) return;
+    input_latch(kms->server);
+    if (cursor_blocked(c)) return;
     drmModeAtomicReq *req = drmModeAtomicAlloc();
     if (!req) return;
     cursor_plane_set(req, c, c->crtc);
@@ -1403,9 +1414,13 @@ static void cursor_commit(struct connector *c) {
     if (ret == 0) {
         c->cursor_inflight = true;
         c->cursor_dirty = false;
+        ns_timer_arm(&c->cursor_timer, 0);
         cursor_submitted(c, false);
     } else if (ret == -EBUSY) {
         c->screen.deferrals++;
+        if (c->flip_pending) return;
+        int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now + cursor_lead(c));
+        ns_timer_arm(&c->cursor_timer, vblank ? vblank - cursor_lead(c) : now + CURSOR_LEAD_NS);
     } else {
         screen_schedule_frame(&c->screen);
     }
@@ -1418,15 +1433,11 @@ static void cursor_fire(void *data) {
 }
 
 static void cursor_queue(struct connector *c) {
-    bool early = cursor_early();
     c->cursor_dirty = true;
-    if (!c->crtc || !c->crtc->cursor || (c->flip_pending && !early) || c->cursor_inflight ||
-            (compose_carries_cursor(c) && !early)) return;
+    if (cursor_blocked(c)) return;
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
-    int64_t lead = c->screen.refresh > 0 ? 250000000000LL / c->screen.refresh : 0;
-    if (lead > CURSOR_LEAD_NS) lead = CURSOR_LEAD_NS;
-    if (!vblank || vblank - lead <= now) cursor_commit(c);
-    else ns_timer_arm(&c->cursor_timer, vblank - lead);
+    int64_t at = vblank - cursor_lead(c);
+    ns_timer_arm(&c->cursor_timer, vblank && at > now ? at : now);
 }
 
 static void connector_move_cursor(struct screen *screen, int x, int y) {

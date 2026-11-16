@@ -336,18 +336,49 @@ static void handle(struct tomoe *s, struct libinput_event *event) {
 
 static int dispatch(int fd, uint32_t mask, void *data) {
     struct tomoe *s = data;
+    if (!s->libinput) return 0;
+    struct libinput_event *event = s->libinput_held;
+    s->libinput_held = NULL;
+    budget_hot_enter("libinput");
+    if (event) {
+        handle(s, event);
+        libinput_event_destroy(event);
+    }
     if (libinput_dispatch(s->libinput) != 0) {
+        budget_hot_leave();
         fail(s, "libinput dispatch failed");
         return 0;
     }
-    struct libinput_event *event;
-    budget_hot_enter("libinput");
     while ((event = libinput_get_event(s->libinput))) {
         handle(s, event);
         libinput_event_destroy(event);
     }
     budget_hot_leave();
     return 0;
+}
+
+static void dispatch_held(void *data) {
+    struct tomoe *s = data;
+    s->libinput_idle = NULL;
+    dispatch(0, 0, s);
+}
+
+void input_latch(struct tomoe *s) {
+    if (!s->libinput || s->libinput_held || libinput_dispatch(s->libinput) != 0) return;
+    struct libinput_event *event;
+    budget_hot_enter("libinput");
+    while ((event = libinput_get_event(s->libinput))) {
+        enum libinput_event_type type = libinput_event_get_type(event);
+        if (type != LIBINPUT_EVENT_POINTER_MOTION && type != LIBINPUT_EVENT_POINTER_MOTION_ABSOLUTE) {
+            s->libinput_held = event;
+            s->libinput_idle = wl_event_loop_add_idle(wl_display_get_event_loop(s->display),
+                dispatch_held, s);
+            break;
+        }
+        handle(s, event);
+        libinput_event_destroy(event);
+    }
+    budget_hot_leave();
 }
 
 static int open_restricted(const char *path, int flags, void *data) {
@@ -408,6 +439,10 @@ bool libinput_listen(struct tomoe *s) {
 void libinput_finish(struct tomoe *s) {
     if (s->libinput_source) wl_event_source_remove(s->libinput_source);
     s->libinput_source = NULL;
+    if (s->libinput_idle) wl_event_source_remove(s->libinput_idle);
+    s->libinput_idle = NULL;
+    if (s->libinput_held) libinput_event_destroy(s->libinput_held);
+    s->libinput_held = NULL;
     struct input_device *device, *next;
     wl_list_for_each_safe(device, next, &s->input_devices, link)
         if (device->libinput) input_device_destroy(device);

@@ -548,6 +548,16 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   compositing the whole output; the frame is identical either way. The `planes`
   field of `tomoe frames` counts the windows on overlay planes and `deferrals`
   counts commits the kernel refused because a flip was still outstanding.
+- Right before each commit, a frame's or the cursor's own, Tomoe reads the
+  pointer motion libinput has queued since composition began and puts the newest
+  position on the cursor plane, so the cursor shows motion that arrived while the
+  frame was being drawn; the frame itself still shows the composed scene, and a
+  dragged window follows on the next frame. Only motion is read that early: the
+  first button, key or other event stops it and waits, with everything after it,
+  for the normal input pass. A refused commit keeps the cursor pending and retries
+  after the flip in its way, or at the next vblank when none of Tomoe's is. The
+  `warps` field of `tomoe frames` counts frame commits whose cursor moved that way,
+  and the `pointer` and `drag` timings count an input toward the frame that drew it.
 - A window that a bar, border or notification paints over keeps its plane: when
   the output has a plane the window itself can go on and another above it for the
   chrome, the window goes underneath and the compositor punches the covering
