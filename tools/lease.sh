@@ -55,6 +55,7 @@ lease_take() {
 		if ((tick < 20)); then sleep 0.05; else sleep 1; fi
 		tick=$((tick + 1))
 	done
+	rm -f "$ack"
 	return 0
 }
 
