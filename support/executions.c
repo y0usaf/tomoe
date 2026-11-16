@@ -381,7 +381,7 @@ const char *tomoe_service_run_directory(void) {
     return service_run_directory[0] ? service_run_directory : NULL;
 }
 
-static int read_start_time(pid_t pid, unsigned long long *start) {
+static int read_start_time(pid_t pid, unsigned long long *start, char *state) {
     char path[64], text[4096];
     snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -394,6 +394,7 @@ static int read_start_time(pid_t pid, unsigned long long *start) {
     if (!cursor) return -1;
     cursor++;
     while (*cursor == ' ') cursor++;
+    if (state) *state = *cursor;
     while (*cursor && *cursor != ' ') cursor++;
     for (int field = 4; field <= 22; field++) {
         while (*cursor == ' ') cursor++;
@@ -412,7 +413,9 @@ static int read_start_time(pid_t pid, unsigned long long *start) {
 
 static bool process_running(pid_t pid, unsigned long long start) {
     unsigned long long current = 0;
-    return read_start_time(pid, &current) == 0 && current == start;
+    char state = 0;
+    if (read_start_time(pid, &current, &state)) return false;
+    return current == start && state != 'Z' && state != 'X';
 }
 
 static bool token_text(const char *text, size_t length) {
@@ -634,7 +637,7 @@ int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size
         return -1;
     }
     unsigned long long start = 0;
-    if (read_start_time(getpid(), &start)) {
+    if (read_start_time(getpid(), &start, NULL)) {
         set_message(error, error_size, "Cannot read the compositor's start time.");
         return -1;
     }
@@ -658,17 +661,25 @@ int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size
         set_message(error, error_size, "Cannot create %s: errno %d.", service_run_directory, errno);
         return -1;
     }
-    int fd = open(service_record_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    char temporary[PATH_MAX + 8];
+    written = snprintf(temporary, sizeof(temporary), "%s.tmp", service_record_path);
+    if (written < 0 || (size_t)written >= sizeof(temporary)) {
+        set_message(error, error_size, "The service record path is too long.");
+        remove_tree(service_run_directory, 0);
+        return -1;
+    }
+    int fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
     if (fd < 0) {
-        set_message(error, error_size, "Cannot write %s: errno %d.", service_record_path, errno);
+        set_message(error, error_size, "Cannot write %s: errno %d.", temporary, errno);
         remove_tree(service_run_directory, 0);
         return -1;
     }
     written = snprintf(record, sizeof(record), "%s\n", service_token);
     bool saved = write(fd, record, (size_t)written) == written;
     close(fd);
-    if (!saved) {
-        unlink(service_record_path);
+    if (!saved || rename(temporary, service_record_path) < 0) {
+        unlink(temporary);
+        remove_tree(service_run_directory, 0);
         set_message(error, error_size, "Cannot write %s.", service_record_path);
         return -1;
     }
