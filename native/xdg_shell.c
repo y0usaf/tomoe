@@ -69,12 +69,22 @@ struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface) {
     return xdg && xdg->role == ROLE_TOPLEVEL ? xdg->toplevel : NULL;
 }
 
-static void scene_place(struct xdg_surface *xdg) {
-    if (!xdg->scene) return;
-    node_set_position(xdg->scene_surface, -xdg->geometry.x, -xdg->geometry.y);
-    if (xdg->role == ROLE_POPUP && xdg->popup)
-        node_set_position(xdg->scene, xdg->popup->current.geometry.x,
-            xdg->popup->current.geometry.y);
+static bool scene_place(struct xdg_surface *xdg) {
+    if (!xdg->scene || !xdg->scene_surface) return false;
+    bool changed = false;
+    int x = -xdg->geometry.x, y = -xdg->geometry.y;
+    if (xdg->scene_surface->x != x || xdg->scene_surface->y != y) {
+        node_set_position(xdg->scene_surface, x, y);
+        changed = true;
+    }
+    if (xdg->role == ROLE_POPUP && xdg->popup) {
+        int px = xdg->popup->current.geometry.x, py = xdg->popup->current.geometry.y;
+        if (xdg->scene->x != px || xdg->scene->y != py) {
+            node_set_position(xdg->scene, px, py);
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 static void scene_destroyed(struct wl_listener *listener, void *data) {
@@ -409,7 +419,7 @@ static void role_commit(struct surface *surface) {
         return;
     if (!surface->mapped && surface_has_buffer(surface)) surface_map(surface);
     else update_geometry(xdg);
-    scene_place(xdg);
+    if (scene_place(xdg)) schedule_scene(surface->server);
 }
 
 static void role_map(struct surface *surface) {

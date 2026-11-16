@@ -451,7 +451,8 @@ static void subsurface_consider_map(struct subsurface *sub);
 static void surface_unlock(struct surface *surface, struct surface_state *state);
 
 static void apply_state(struct surface *surface, struct surface_state *next) {
-    bool buffer = next->committed & STATE_BUFFER;
+    uint32_t committed = next->committed;
+    bool buffer = committed & STATE_BUFFER;
     if (buffer && !next->buffer) surface_unmap(surface);
     feedbacks_discard(&surface->current.feedbacks);
     if (!surface->primary) {
@@ -511,7 +512,21 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
     if (surface->role && surface->role->commit && (surface->role_resource || surface->role->no_object))
         surface->role->commit(surface);
     wl_signal_emit_mutable(&surface->events.commit, surface);
-    schedule_scene(surface->server);
+    bool scene_changed = committed & (STATE_BUFFER | STATE_SURFACE_DAMAGE |
+        STATE_BUFFER_DAMAGE | STATE_VIEWPORT | STATE_OFFSET | STATE_INPUT |
+        STATE_OPAQUE | STATE_SCALE | STATE_TRANSFORM | STATE_ALPHA |
+        STATE_CONTENT_TYPE);
+    if (scene_changed) {
+        schedule_scene(surface->server);
+    } else if (committed) {
+        struct tomoe *server = surface->server;
+        if (!server->stopping) {
+            server->activity_serial++;
+            struct output *o;
+            wl_list_for_each(o, &server->outputs, link)
+                if (output_is_active(o)) screen_schedule_frame(o->screen);
+        }
+    }
     buffer_unlock(surface->current.buffer);
     surface->current.buffer = NULL;
 }

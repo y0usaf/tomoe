@@ -1375,6 +1375,8 @@ static void output_frame(struct wl_listener *listener, void *data) {
     if (ring_grow(o->server, &o->ring)) screen_schedule_frame(o->screen);
     oplist_reserve(&o->ops, o->ops.len);
     oplist_reserve(&o->spare_ops, o->ops.len);
+    oplist_reserve(&o->cursor_ops, o->cursor_ops.len);
+    oplist_reserve(&o->cursor_spare_ops, o->cursor_ops.len);
 }
 
 static void output_presented(struct wl_listener *listener, void *data) {
@@ -1414,6 +1416,8 @@ static void output_destroy(struct wl_listener *listener, void *data) {
     ring_finish(&o->ring);
     oplist_finish(&o->ops);
     oplist_finish(&o->spare_ops);
+    oplist_finish(&o->cursor_ops);
+    oplist_finish(&o->cursor_spare_ops);
     for (size_t i = 0; i < sizeof(o->damage) / sizeof(o->damage[0]); i++)
         region_fini(&o->damage[i]);
     planes_finish(&o->planes);
@@ -1454,6 +1458,8 @@ void output_added(struct tomoe *s, struct screen *wlr) {
     region_init(&o->planes.excluded);
     oplist_reserve(&o->ops, 0);
     oplist_reserve(&o->spare_ops, 0);
+    oplist_reserve(&o->cursor_ops, 0);
+    oplist_reserve(&o->cursor_spare_ops, 0);
     snapshot_output_baseline(wlr, &o->initial);
     screen_state_init(&o->deferred);
     if (!copy_output_state(&o->pending, &o->initial)) {

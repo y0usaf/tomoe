@@ -642,7 +642,7 @@ struct output {
     double tick_at;
     double sample;
     bool animating;
-    struct oplist ops, spare_ops;
+    struct oplist ops, spare_ops, cursor_ops, cursor_spare_ops;
     uint64_t frames;
     uint64_t damage_seq;
     struct region damage[8];

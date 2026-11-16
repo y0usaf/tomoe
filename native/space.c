@@ -638,6 +638,24 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
         decorate(s, target, f);
     } else {
         x += node->x; y += node->y;
+        if (node->surface && !target && f->pass && wl_list_empty(&node->children)) {
+            const struct settings *st = &s->settings;
+            struct surface *surface = node->surface;
+            double sx = x + surface->current.dx, sy = y + surface->current.dy;
+            world_to_screen(s, &sx, &sy);
+            int width = surface->current.buffer_width > 0 ? surface->current.buffer_width :
+                surface->current.width;
+            int height = surface->current.buffer_height > 0 ? surface->current.buffer_height :
+                surface->current.height;
+            if (surface->current.transform % 2) {
+                int swap = width; width = height; height = swap;
+            }
+            int pad = (int)ceil((st->shadow_range + st->border_width + st->border_radius +
+                st->blur_margin + 64) * (f->zoom > 1 ? f->zoom : 1));
+            struct box reach = { (int)floor(sx) - pad, (int)floor(sy) - pad,
+                (int)ceil(width * f->zoom) + 2 * pad, (int)ceil(height * f->zoom) + 2 * pad };
+            if (!pass_touches(f->pass, reach)) return;
+        }
     }
     if (node->surface) {
         struct surface_walk walk = { .server = s, .target = target, .x = x, .y = y,
@@ -650,6 +668,17 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
 bool fenced(struct screen *output) {
     return render_has_timeline(output->server->renderer) &&
         (output->kind == SCREEN_DRM || output->kind == SCREEN_HEADLESS);
+}
+static bool target_touches(struct frame *f, const struct target *t) {
+    if (t->kind != TARGET_WINDOW || t->shader || t->mesh || t->visual.rotation != 0 ||
+            t->visual.scale != 1 || t->visual.closing) return true;
+    const struct settings *st = &f->server->settings;
+    struct fbox b = window_box(t, f);
+    int pad = (int)ceil((st->shadow_range + st->border_width + st->border_radius +
+        st->blur_margin + 64) * (f->zoom > 1 ? f->zoom : 1));
+    struct box reach = { (int)floor(b.x) - pad, (int)floor(b.y) - pad,
+        (int)ceil(b.width) + 2 * pad, (int)ceil(b.height) + 2 * pad };
+    return pass_touches(f->pass, reach);
 }
 static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
         bool locked, bool cursors, bool chrome) {
@@ -668,7 +697,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
             for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
-            if (!root->visible) continue;
+            if (!root->visible || !target_touches(data, &root->target)) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
             decorate(o->server, &target, data);
@@ -697,6 +726,22 @@ static size_t ring_slot(const struct ring *ring, const struct buffer *buffer) {
     while (slot < RING_SLOTS && ring->slots[slot] != buffer) slot++;
     return slot;
 }
+static bool cursor_record_ops(struct output *o, const struct frame *data,
+        struct region *changed, bool *complete) {
+    struct frame record = *data;
+    record.pass = render_record(o->server->renderer, data->buffer, &o->cursor_spare_ops);
+    if (!record.pass) {
+        *complete = false;
+        return false;
+    }
+    render_cursor(o, &record, NULL);
+    *complete = pass_submit(record.pass) &&
+        oplist_damage(&o->cursor_ops, &o->cursor_spare_ops, changed);
+    struct oplist old = o->cursor_ops;
+    o->cursor_ops = o->cursor_spare_ops;
+    o->cursor_spare_ops = old;
+    return true;
+}
 static bool scene_record_ops(struct output *o, const struct frame *data, bool locked,
         struct region *changed, bool *complete) {
     struct frame record = *data;
@@ -706,13 +751,22 @@ static bool scene_record_ops(struct output *o, const struct frame *data, bool lo
         *complete = false;
         return false;
     }
-    draw_scene(o, &record, NULL, locked, true, true);
-    *complete = pass_submit(record.pass) && oplist_damage(&o->ops, &o->spare_ops, changed);
-    if (!*complete || region_not_empty(changed)) o->damaged = true;
+    draw_scene(o, &record, NULL, locked, false, true);
+    bool scene_complete = pass_submit(record.pass) &&
+        oplist_damage(&o->ops, &o->spare_ops, changed);
     struct oplist old = o->ops;
     o->ops = o->spare_ops;
     o->spare_ops = old;
-    if (*complete) effects_plan(o->server, &o->ops);
+    if (scene_complete) effects_plan(o->server, &o->ops);
+    struct region cursor;
+    region_init(&cursor);
+    bool cursor_complete = false;
+    bool cursor_recorded = cursor_record_ops(o, data, &cursor, &cursor_complete);
+    bool whole = scene_complete && cursor_recorded && cursor_complete;
+    if (whole) region_union(changed, changed, &cursor);
+    region_fini(&cursor);
+    if (!whole || region_not_empty(changed)) o->damaged = true;
+    *complete = whole;
     return true;
 }
 static bool scene_commit_damage(struct output *o, const struct buffer *buffer,
@@ -751,7 +805,8 @@ static bool scene_damage(struct output *o, const struct frame *data, bool locked
     bool complete = false;
     if (!scene_record_ops(o, data, locked, changed, &complete)) return false;
     *recorded = complete;
-    return scene_commit_damage(o, data->buffer, changed, clip, complete, o->ops.len);
+    return scene_commit_damage(o, data->buffer, changed, clip, complete,
+        o->ops.len + o->cursor_ops.len);
 }
 static int64_t region_area(const struct region *region) {
     int count = 0;
@@ -795,7 +850,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         if (pre_changed) region_copy(&changed, pre_changed);
         recorded = pre_complete;
         partial = track && scene_commit_damage(o, buffer, &changed, &clip, pre_complete,
-            o->ops.len);
+            o->ops.len + o->cursor_ops.len);
     } else {
         partial = track && scene_damage(o, &data, locked, &changed, &clip, &recorded);
     }

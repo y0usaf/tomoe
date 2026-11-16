@@ -156,6 +156,7 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
     idle_refresh(s);
     foreign_toplevels_refresh(s);
     lock_refresh(s);
+    screens_idle_frames(s);
     wl_display_flush_clients(s->display);
     return s->failed ? -1 : (s->running ? 0 : 1);
 }
