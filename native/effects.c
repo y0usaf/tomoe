@@ -568,29 +568,43 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     op_end(f->pass, &clip);
 }
 
-static bool backdrop(struct frame *f, struct fbox box) {
+enum { BENEATH_REACH = 32 };
+
+static bool backdrop(struct frame *f, struct program *p, struct fbox box, struct box covered) {
     struct effects *e = f->server->effects;
-    struct box region = { pixel_round(box.x), pixel_round(box.y),
-        pixel_round(box.x + box.width) - pixel_round(box.x),
-        pixel_round(box.y + box.height) - pixel_round(box.y) };
-    if (!e || region.width < 1 || region.height < 1 ||
-            !level_ensure(&e->backdrop, region.width, region.height)) return false;
+    struct box need = { covered.x - BENEATH_REACH, covered.y - BENEATH_REACH,
+        covered.width + 2 * BENEATH_REACH, covered.height + 2 * BENEATH_REACH };
+    if (!e || need.width < 1 || need.height < 1) return false;
+    if ((e->backdrop.width < need.width || e->backdrop.height < need.height) &&
+            !level_ensure(&e->backdrop, need.width > e->backdrop.width ? need.width :
+                e->backdrop.width, need.height > e->backdrop.height ? need.height :
+                e->backdrop.height)) return false;
     pass_flush(f->pass);
     GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
     struct box bounds = { 0, 0, f->buffer->width, f->buffer->height }, shown;
+    bool inside = f->transform == WL_OUTPUT_TRANSFORM_NORMAL &&
+        box_intersection(&shown, &need, &bounds);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    if (f->transform == WL_OUTPUT_TRANSFORM_NORMAL && box_intersection(&shown, &region, &bounds)) {
-        int x = shown.x - region.x, y = region.height - (shown.y - region.y);
+    if (!inside || !box_equal(&shown, &need)) {
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, need.width, need.height);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+    }
+    if (inside) {
+        int x = shown.x - need.x, y = shown.y - need.y;
         glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
         glBlitFramebuffer(shown.x, shown.y, shown.x + shown.width, shown.y + shown.height,
-            x, y, x + shown.width, y - shown.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            x, y, x + shown.width, y + shown.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     glViewport(0, 0, f->buffer->width, f->buffer->height);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, e->backdrop.texture);
+    glUseProgram(p->id);
+    glUniform4f(p->beneath, need.x - box.x, box.y + box.height - need.y,
+        1.0 / e->backdrop.width, -1.0 / e->backdrop.height);
     return true;
 }
 
@@ -635,12 +649,20 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     for (int i = 0; i < data_count; i++) params[used++] = inputs->data[i];
     for (int i = 0; i < 4 * window_count; i++) params[used++] = inputs->windows[i];
     struct box covered = covering(f, drawn);
-    if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
-            used)) return;
+    if (p->channel < 0) {
+        if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) return;
+    } else {
+        struct box reach = { covered.x - BENEATH_REACH, covered.y - BENEATH_REACH,
+            covered.width + 2 * BENEATH_REACH, covered.height + 2 * BENEATH_REACH };
+        double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform,
+            f->width, f->height, f->x, f->y };
+        if (pass_record_blur(f->pass, covered, reach, (struct box){0}, params, used, ++f->blurs,
+                seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
+    }
     struct op_clip clip;
     if (!op_begin(f->pass, OP_SHADER, covered, &clip)) return;
     pass_flush(f->pass);
-    if (p->channel >= 0 && !backdrop(f, box)) {
+    if (p->channel >= 0 && !backdrop(f, p, box, covered)) {
         op_end(f->pass, &clip);
         return;
     }

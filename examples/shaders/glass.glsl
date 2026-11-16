@@ -19,7 +19,7 @@ vec3 behind(vec2 at) {
     for (int i = 0; i < TAPS; i++) {
         float r = FROST * sqrt((float(i) + 0.5) / float(TAPS));
         float a = float(i) * 2.39996;
-        sum += texture(iChannel0, (at + r * vec2(cos(a), sin(a))) / iResolution.xy).rgb;
+        sum += beneath(at + r * vec2(cos(a), sin(a))).rgb;
     }
     return sum / float(TAPS);
 }

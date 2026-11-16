@@ -338,7 +338,7 @@ struct program {
     GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
-    GLint data, windows, window_count;
+    GLint data, windows, window_count, beneath;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {

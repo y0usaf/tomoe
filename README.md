@@ -364,6 +364,13 @@ PIXELS` confines the shader to that many pixels round the named windows' edges
 them rather than the output they sit on. Changing the data or a window's box redraws
 the surface; neither recompiles the shader.
 
+A shader that calls `beneath(at)` reads what is composited under it: the colour
+the output already holds at `at`, in the shader's own pixels like `fragCoord`,
+for any point within 32 pixels of what the shader draws, so it can bend, blur or
+tint its backdrop the way glass does. The compositor copies only that much of the
+backdrop, once per piece it draws, and repaints the whole piece whenever anything
+under those 32 pixels changes; a shader that never calls it costs no copy.
+
 A bare `(:trail ...)` background draws that path itself, as squares of `:cell`
 pixels lit for `:life` seconds and dimmed in `:steps` levels of `:color`,
 stopping `:idle` seconds after the pointer rests. The compositor walks the cells
