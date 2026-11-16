@@ -88,7 +88,7 @@ take_lease() {
 	return 0
 }
 
-release_lease() { lease_release; }
+release_lease() { lease_release "$LOCK"; }
 
 submit() {
 	local type=land ref="" suite=timing timeout=""

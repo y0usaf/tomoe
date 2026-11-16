@@ -98,7 +98,7 @@ else
 		die "cannot build the test client"
 	CLIENT=$CLIENTS_OUT/bin/tomoe-test-client
 	KEYS=$CLIENTS_OUT/bin/tomoe-pointer-script
-	lease_release
+	lease_release "$LOCK"
 	say "pair $PKG + $INIT"
 
 	DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tomoe-gate.XXXXXX")

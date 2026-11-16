@@ -58,6 +58,17 @@ done
 lease_release
 free || fail "the lease is still held after it was released"
 
+switch=$work/finix-switch.lock
+lease_take "$switch" -x 0 || fail "the test could not take the switch lock"
+lease_take "$lock" -s 0 || fail "the test could not take the lease beside it"
+flock -n -x "$switch" true && fail "taking the VM lease released the switch lock"
+flock -n -x "$lock" true && fail "the VM lease is not held"
+lease_release "$lock"
+flock -n -x "$lock" true || fail "releasing the VM lease left it held"
+flock -n -x "$switch" true && fail "releasing the VM lease released the switch lock"
+lease_release
+flock -n -x "$switch" true || fail "releasing every lease left the switch lock held"
+
 cat >"$work/strict" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -65,7 +76,7 @@ set -euo pipefail
 lease_take "\$1" -s 0
 lease_release
 lease_take "\$1" -x 0
-kill -KILL "\$LEASE_HOLDER" 2>/dev/null
+kill -KILL "\$(lease_holder "\$1")" 2>/dev/null
 sleep 0.2
 lease_release
 EOF
