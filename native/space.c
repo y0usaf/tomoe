@@ -638,24 +638,6 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
         decorate(s, target, f);
     } else {
         x += node->x; y += node->y;
-        if (node->surface && !target && f->pass && wl_list_empty(&node->children)) {
-            const struct settings *st = &s->settings;
-            struct surface *surface = node->surface;
-            double sx = x + surface->current.dx, sy = y + surface->current.dy;
-            world_to_screen(s, &sx, &sy);
-            int width = surface->current.buffer_width > 0 ? surface->current.buffer_width :
-                surface->current.width;
-            int height = surface->current.buffer_height > 0 ? surface->current.buffer_height :
-                surface->current.height;
-            if (surface->current.transform % 2) {
-                int swap = width; width = height; height = swap;
-            }
-            int pad = (int)ceil((st->shadow_range + st->border_width + st->border_radius +
-                st->blur_margin + 64) * (f->zoom > 1 ? f->zoom : 1));
-            struct box reach = { (int)floor(sx) - pad, (int)floor(sy) - pad,
-                (int)ceil(width * f->zoom) + 2 * pad, (int)ceil(height * f->zoom) + 2 * pad };
-            if (!pass_touches(f->pass, reach)) return;
-        }
     }
     if (node->surface) {
         struct surface_walk walk = { .server = s, .target = target, .x = x, .y = y,
@@ -668,17 +650,6 @@ static void render_walk(struct tomoe *s, struct node *node, struct target *targe
 bool fenced(struct screen *output) {
     return render_has_timeline(output->server->renderer) &&
         (output->kind == SCREEN_DRM || output->kind == SCREEN_HEADLESS);
-}
-static bool target_touches(struct frame *f, const struct target *t) {
-    if (t->kind != TARGET_WINDOW || t->shader || t->mesh || t->visual.rotation != 0 ||
-            t->visual.scale != 1 || t->visual.closing) return true;
-    const struct settings *st = &f->server->settings;
-    struct fbox b = window_box(t, f);
-    int pad = (int)ceil((st->shadow_range + st->border_width + st->border_radius +
-        st->blur_margin + 64) * (f->zoom > 1 ? f->zoom : 1));
-    struct box reach = { (int)floor(b.x) - pad, (int)floor(b.y) - pad,
-        (int)ceil(b.width) + 2 * pad, (int)ceil(b.height) + 2 * pad };
-    return pass_touches(f->pass, reach);
 }
 static void draw_scene(struct output *o, struct frame *data, const struct presentation *plan,
         bool locked, bool cursors, bool chrome) {
@@ -697,7 +668,7 @@ static void draw_scene(struct output *o, struct frame *data, const struct presen
         for (size_t i = 0; i < plan->target_count; i++) {
             const struct presentation_target *root = &plan->targets[i];
             for (; layer < 3 && root->band >= ui_band[layer]; layer++) ui_render(o, data, plan, layer);
-            if (!root->visible || !target_touches(data, &root->target)) continue;
+            if (!root->visible) continue;
             struct target target = root->target;
             target.fullscreen = root->fullscreen;
             decorate(o->server, &target, data);
