@@ -6,10 +6,13 @@
 #include <signal.h>
 #include <unistd.h>
 
-static const char *selected_backend;
+static char *selected_backend;
 
 void tomoe_select_backend(const char *kind) {
-    selected_backend = kind;
+    char *copy = strdup(kind);
+    if (!copy) return;
+    free(selected_backend);
+    selected_backend = copy;
 }
 
 static int backend_open(struct tomoe *s) {

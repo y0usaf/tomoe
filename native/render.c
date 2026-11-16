@@ -2748,10 +2748,13 @@ uint32_t render_read_format(struct render *renderer) {
     return renderer->read_bgra ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_XBGR8888;
 }
 
-static const char *selected_render_node;
+static char *selected_render_node;
 
 void tomoe_select_render_node(const char *node) {
-    selected_render_node = node;
+    char *copy = strdup(node);
+    if (!copy) return;
+    free(selected_render_node);
+    selected_render_node = copy;
 }
 
 static char *render_node_name(int backend_fd) {

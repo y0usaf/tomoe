@@ -1723,10 +1723,13 @@ static int drm_uevent(int fd, uint32_t mask, void *data) {
     return 0;
 }
 
-static const char *selected_drm_devices;
+static char *selected_drm_devices;
 
 void tomoe_select_drm_devices(const char *devices) {
-    selected_drm_devices = devices;
+    char *copy = strdup(devices);
+    if (!copy) return;
+    free(selected_drm_devices);
+    selected_drm_devices = copy;
 }
 
 static char *primary_path(void) {
@@ -1760,6 +1763,7 @@ int kms_create(struct tomoe *s) {
         free(path);
         return -1;
     }
+    tomoe_log(LOG_INFO, "tomoe: opened DRM device %s", path);
     free(path);
     kms->devnum = st.st_rdev;
     uint64_t cap = 0;

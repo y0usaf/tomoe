@@ -45,6 +45,8 @@ def dark():
 
 
 start("--bare", "--test-drm-wake-ms=1500", f"--drm_device /dev/dri/{CARD}", backend="drm", env=DRM)
+opened = machine.succeed(f"{JOURNAL} | grep -F 'tomoe: ' || true")
+assert f"tomoe: opened DRM device /dev/dri/{CARD}" in opened, opened
 cli(f"mount {WAKE_PROBE}")
 wait_log("Virtual-1 lit at its preferred 1024x768@60", 1)
 kernel_mode("1920x1080@60")
