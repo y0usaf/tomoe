@@ -71,4 +71,19 @@ for _ in range(100):
     time.sleep(0.1)
 assert "check-first" not in windows(), windows()
 assert "check-second" in windows(), windows()
+
+
+def power():
+    return {text(entry[":NAME"]): entry[":POWER"]
+            for entry in map(plist, items(inspect()[":CONNECTORS"]))}
+
+
+quit()
+
+start("--config", POWER_POLICY)
+assert power() and set(power().values()) == {"T"}, power()
+cli("command power")
+assert set(power().values()) == {"NIL"}, power()
+cli("command power")
+assert set(power().values()) == {"T"}, power()
 quit()

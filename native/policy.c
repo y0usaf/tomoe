@@ -546,6 +546,10 @@ static const char *string(lisp_value value) {
     return text ? text : "";
 }
 
+static const char *nullable_string(lisp_value value) {
+    return lisp_nilp(value) ? NULL : string(value);
+}
+
 static lisp_value status(int value) {
     return lisp_int(value);
 }
@@ -689,7 +693,7 @@ static lisp_value prim_outputs_pending(int argc, lisp_value *argv) {
 }
 
 static lisp_value prim_output_power(int argc, lisp_value *argv) {
-    return status(tomoe_output_power(server(), string(argv[0]), number(argv[1])));
+    return status(tomoe_output_power(server(), nullable_string(argv[0]), number(argv[1])));
 }
 
 static lisp_value prim_virtual_output(int argc, lisp_value *argv) {

@@ -1082,7 +1082,10 @@ let
     }
     {
       name = "commands";
-      script = builtins.readFile ./commands.py;
+      script = ''
+        POWER_POLICY = "${./power-policy.lisp}"
+      ''
+      + builtins.readFile ./commands.py;
     }
     {
       name = "nofocus";
