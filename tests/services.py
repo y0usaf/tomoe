@@ -103,7 +103,7 @@ policy("live", f"{DIRECTORY}/live.sock", f"{DIRECTORY}/live.pid",
        f"{DIRECTORY}/live.child", 0)
 launch("tomoe-live", "live", f"{DIRECTORY}/live.lisp")
 live = wait_running(f"{DIRECTORY}/live.pid")
-machine.succeed("systemd-run --unit=decoy --property=Type=exec sleep 300")
+machine.succeed("systemd-run --unit=decoy --property=Type=exec ""/run/current-system/sw/bin/sleep 300")
 for _ in range(200):
     decoy = machine.succeed("systemctl show -P MainPID decoy").strip()
     if decoy not in ("", "0"):
