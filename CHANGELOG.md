@@ -20,3 +20,11 @@ The first release.
 - Built-in X11 bridge (Xwayland), notification server, screencast portal, session
   services (media, battery, backlight, sounds, network, tray) and a session bus
   that is replaced when it dies; services die with the compositor.
+- A broken extension, theme or config loses only itself: one that hangs or runs
+  the heap out twice in a row is unmounted, one whose surfaces pass the canvas
+  keeps its last answer while the rest commit, a surface that cannot be staged keeps its last frame, and a
+  refused load gives its memory back. A service that crashes or stops never
+  stalls the compositor.
+- Every session logs to `~/.local/state/tomoe/SOCKET.log`: why it stopped, every
+  refused load, stopped extension, withdrawn surface and exited service, and a
+  backtrace if the compositor itself crashes.
