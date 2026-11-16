@@ -459,6 +459,8 @@ static int kill_token_holders(const char *token) {
             if (!end || *end || pid <= 0 || pid == getpid()) continue;
             snprintf(path, sizeof(path), "/proc/%ld/environ", pid);
             if (!file_holds_token(path, needle, (size_t)length)) continue;
+            pid_t group = getpgid((pid_t)pid);
+            if (group > 1 && group != getpgrp()) kill(-group, SIGKILL);
             if (kill((pid_t)pid, SIGKILL) == 0 || errno == ESRCH) {
                 killed++;
                 found++;
