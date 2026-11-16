@@ -1901,8 +1901,10 @@ void input_modifiers(struct input_device *device, const struct keyboard_modifier
 }
 
 static void capabilities(struct tomoe *s) {
+    bool keyboard = !wl_list_empty(&s->keyboards);
     seat_set_capabilities(s->seat, WL_SEAT_CAPABILITY_POINTER |
-        (wl_list_empty(&s->keyboards) ? 0 : WL_SEAT_CAPABILITY_KEYBOARD));
+        (keyboard ? WL_SEAT_CAPABILITY_KEYBOARD : 0));
+    if (keyboard) update_keyboard_focus(s);
 }
 static void keyboard_latches_finish(struct keyboard *keyboard) {
     struct tomoe *s = keyboard->server;
