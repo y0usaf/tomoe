@@ -861,105 +861,118 @@ static void res_apply_timers(struct want_timer *wanted, size_t count) {
     res_schedule(next);
 }
 
-static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
-    char error[512];
+struct res_plan {
+    struct want_timer *timers;
+    struct want_watch *watches;
+    struct want_exec *execs;
+    struct want_process *processes;
+    size_t timer_count, watch_count, exec_count, process_count;
+};
+
+static void res_plan_free(struct res_plan *plan) {
+    for (size_t index = 0; index < plan->timer_count; index++) want_timer_free(&plan->timers[index]);
+    for (size_t index = 0; index < plan->watch_count; index++) want_watch_free(&plan->watches[index]);
+    for (size_t index = 0; index < plan->exec_count; index++) want_exec_free(&plan->execs[index]);
+    for (size_t index = 0; index < plan->process_count; index++) want_process_free(&plan->processes[index]);
+    free(plan->timers); free(plan->watches); free(plan->execs); free(plan->processes);
+    memset(plan, 0, sizeof(*plan));
+}
+
+static const char *res_plan_make(lisp_value wanted, struct res_plan *plan, char *error, size_t size) {
+    memset(plan, 0, sizeof(*plan));
     error[0] = 0;
     if (!res.started && res.server) resources_start(res.server);
-    if (!res.started) return lisp_cstring("Resource ownership is not running.");
-    struct want_timer *timers = NULL;
-    struct want_watch *watches = NULL;
-    struct want_exec *execs = NULL;
-    struct want_process *processes = NULL;
-    size_t timer_count = 0, watch_count = 0, exec_count = 0, process_count = 0;
+    if (!res.started) return "Resource ownership is not running.";
     size_t length = 0;
-    for (lisp_value cursor = argv[0]; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
-    timers = res_alloc((length + 1) * sizeof(*timers));
-    watches = res_alloc((length + 1) * sizeof(*watches));
-    execs = res_alloc((length + 1) * sizeof(*execs));
-    processes = res_alloc((length + 1) * sizeof(*processes));
-    bool ok = timers && watches && execs && processes;
-    for (lisp_value cursor = argv[0]; ok && lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
+    for (lisp_value cursor = wanted; lisp_consp(cursor); cursor = lisp_cdr(cursor)) length++;
+    plan->timers = res_alloc((length + 1) * sizeof(*plan->timers));
+    plan->watches = res_alloc((length + 1) * sizeof(*plan->watches));
+    plan->execs = res_alloc((length + 1) * sizeof(*plan->execs));
+    plan->processes = res_alloc((length + 1) * sizeof(*plan->processes));
+    bool ok = plan->timers && plan->watches && plan->execs && plan->processes;
+    for (lisp_value cursor = wanted; ok && lisp_consp(cursor); cursor = lisp_cdr(cursor)) {
         lisp_value entry = lisp_car(cursor);
         const char *kind = NULL;
         if (!lisp_consp(entry) || !res_get_keyword(entry, "KIND", &kind)) {
-            res_error(error, sizeof(error), "Resource entry without a kind.");
+            res_error(error, size, "Resource entry without a kind.");
             ok = false;
             break;
         }
         if (!strcmp(kind, "TIMER")) {
-            if (++timer_count > 4096) {
-                res_error(error, sizeof(error), "More than 4096 owned timers.");
+            if (++plan->timer_count > 4096) {
+                res_error(error, size, "More than 4096 owned timers.");
                 ok = false;
                 break;
             }
-            ok = res_parse_timer(entry, &timers[timer_count - 1], error, sizeof(error));
+            ok = res_parse_timer(entry, &plan->timers[plan->timer_count - 1], error, size);
         } else if (!strcmp(kind, "WATCH")) {
-            if (++watch_count > 256) {
-                res_error(error, sizeof(error), "More than 256 owned file watches.");
+            if (++plan->watch_count > 256) {
+                res_error(error, size, "More than 256 owned file watches.");
                 ok = false;
                 break;
             }
-            ok = res_parse_watch(entry, &watches[watch_count - 1], error, sizeof(error));
-            for (size_t index = 0; ok && index + 1 < watch_count; index++) {
-                if (!strcmp(watches[index].owner, watches[watch_count - 1].owner) &&
-                        !strcmp(watches[index].name, watches[watch_count - 1].name)) {
-                    res_error(error, sizeof(error), "Duplicate file watch: %s",
-                              watches[watch_count - 1].name);
+            ok = res_parse_watch(entry, &plan->watches[plan->watch_count - 1], error, size);
+            for (size_t index = 0; ok && index + 1 < plan->watch_count; index++) {
+                if (!strcmp(plan->watches[index].owner, plan->watches[plan->watch_count - 1].owner) &&
+                        !strcmp(plan->watches[index].name, plan->watches[plan->watch_count - 1].name)) {
+                    res_error(error, size, "Duplicate file watch: %s",
+                              plan->watches[plan->watch_count - 1].name);
                     ok = false;
                 }
             }
         } else if (!strcmp(kind, "EXEC")) {
-            if (++exec_count > 64) {
-                res_error(error, sizeof(error), "More than 64 owned executions.");
+            if (++plan->exec_count > 64) {
+                res_error(error, size, "More than 64 owned executions.");
                 ok = false;
                 break;
             }
-            ok = res_parse_exec(entry, &execs[exec_count - 1], error, sizeof(error));
+            ok = res_parse_exec(entry, &plan->execs[plan->exec_count - 1], error, size);
         } else if (!strcmp(kind, "PROCESS")) {
-            if (++process_count > 64) {
-                res_error(error, sizeof(error), "More than 64 process declarations.");
+            if (++plan->process_count > 64) {
+                res_error(error, size, "More than 64 process declarations.");
                 ok = false;
                 break;
             }
-            ok = res_parse_process(entry, &processes[process_count - 1], error, sizeof(error));
+            ok = res_parse_process(entry, &plan->processes[plan->process_count - 1], error, size);
         } else {
-            res_error(error, sizeof(error), "Unknown resource kind.");
+            res_error(error, size, "Unknown resource kind.");
             ok = false;
         }
     }
-    if (!ok) {
-        for (size_t index = 0; index < timer_count; index++) want_timer_free(&timers[index]);
-        for (size_t index = 0; index < watch_count; index++) want_watch_free(&watches[index]);
-        for (size_t index = 0; index < exec_count; index++) want_exec_free(&execs[index]);
-        for (size_t index = 0; index < process_count; index++) want_process_free(&processes[index]);
-        free(timers); free(watches); free(execs); free(processes);
-        lisp_value value = lisp_cstring(error[0] ? error : "Invalid resource declaration.");
-        return value;
-    }
     const char *rejection = NULL;
-    if (watch_count + res.watch_count > 512) rejection = "More than 512 live or candidate file watches.";
-    else if (exec_count + res.retired_exec_count > 128) rejection = "More than 128 active or retiring executions.";
-    else if (process_count + res_process_reservations() > 128)
+    if (!ok) rejection = error[0] ? error : "Invalid resource declaration.";
+    else if (plan->watch_count + res.watch_count > 512) rejection = "More than 512 live or candidate file watches.";
+    else if (plan->exec_count + res.retired_exec_count > 128) rejection = "More than 128 active or retiring executions.";
+    else if (plan->process_count + res_process_reservations() > 128)
         rejection = "More than 128 live or reserved managed processes.";
-    if (rejection) {
-        for (size_t index = 0; index < watch_count; index++) want_watch_free(&watches[index]);
-        for (size_t index = 0; index < exec_count; index++) want_exec_free(&execs[index]);
-        for (size_t index = 0; index < process_count; index++) want_process_free(&processes[index]);
-        for (size_t index = 0; index < timer_count; index++) want_timer_free(&timers[index]);
-        free(timers); free(watches); free(execs); free(processes);
-        return lisp_cstring(rejection);
-    }
+    if (rejection) res_plan_free(plan);
+    return rejection;
+}
+
+static lisp_value prim_resources_check(int argc, lisp_value *argv) {
+    char error[512];
+    struct res_plan plan;
+    const char *rejection = res_plan_make(argv[0], &plan, error, sizeof(error));
+    if (rejection) return lisp_cstring(rejection);
+    res_plan_free(&plan);
+    return lisp_nil();
+}
+
+static lisp_value prim_resources_commit(int argc, lisp_value *argv) {
+    char error[512];
+    struct res_plan plan;
+    const char *rejection = res_plan_make(argv[0], &plan, error, sizeof(error));
+    if (rejection) return lisp_cstring(rejection);
     res.commit_sequence++;
-    res_apply_timers(timers, timer_count);
-    free(timers);
-    res_execs_apply(execs, exec_count);
-    free(execs);
-    res_processes_apply(processes, process_count);
-    free(processes);
-    res_watches_apply(watches, watch_count);
-    free(watches);
-    uint64_t now = res_now();
-    res_schedule(now);
+    res_apply_timers(plan.timers, plan.timer_count);
+    free(plan.timers);
+    res_execs_apply(plan.execs, plan.exec_count);
+    free(plan.execs);
+    res_processes_apply(plan.processes, plan.process_count);
+    free(plan.processes);
+    res_watches_apply(plan.watches, plan.watch_count);
+    free(plan.watches);
+    res_schedule(res_now());
     return lisp_nil();
 }
 
@@ -1021,6 +1034,7 @@ static lisp_value prim_sources(int argc, lisp_value *argv) {
 
 void resources_register_primitives(struct tomoe *server) {
     res.server = server;
+    lisp_define_primitive("%resources-check", prim_resources_check, 1, 1);
     lisp_define_primitive("%resources-commit", prim_resources_commit, 1, 1);
     lisp_define_primitive("%spawn", prim_spawn, 1, 1);
     lisp_define_primitive("%launch", prim_launch, 1, 1);

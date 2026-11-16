@@ -212,6 +212,21 @@ let
         (values nil (list (define-command "livepatch-slow-${tag}")) nil))
     '') [ "a" "b" "c" ]
   );
+  livePatchFlood = pkgs.writeText "livepatch-flood.lisp" (
+    "(in-package #:tomoe-user)\n"
+    + ''
+      (define-extension "livepatch-flood-place" (:reads (:windows) :state nil) (snapshot state event)
+        (declare (ignore state event))
+        (values nil (loop for window in (context snapshot :windows)
+                          collect (place (getf window :id) 900 500 320 200))
+                nil))
+    ''
+    + pkgs.lib.concatMapStrings (tag: ''
+      (define-extension "livepatch-flood-${toString tag}" (:reads () :state nil) (snapshot state event)
+        (declare (ignore snapshot state event))
+        (values nil (loop for i below 512 collect (interval (intern (format nil "T~D" i) :keyword) 600000)) nil))
+    '') (pkgs.lib.range 1 9)
+  );
   livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
     (defun tomoe::default-keyboard-config ()
       (list :rules "" :model "" :layout "de" :variant "" :options nil
@@ -1176,6 +1191,7 @@ let
         GAP_PATCH = "${livePatchGap}"
         KEYBOARD_PATCH = "${livePatchKeyboard}"
         SLOW_SOURCE = "${livePatchSlow}"
+        FLOOD_SOURCE = "${livePatchFlood}"
       ''
       + builtins.readFile ./livepatch.py;
     }

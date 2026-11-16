@@ -89,6 +89,7 @@
 (defun %motion-edge (&rest arguments) (declare (ignore arguments)) 1)
 (defun %motion-drag (&rest arguments) (declare (ignore arguments)) 1)
 
+(defun %resources-check (wanted) (stub-record '%resources-check wanted) nil)
 (defun %resources-commit (wanted) (stub-record '%resources-commit wanted) nil)
 (defun %sources (sources) (stub-record '%sources sources) nil)
 (defun %cursor-motion () (list :x 0 :y 0 :vx 0d0 :vy 0d0 :time 0d0 :shape "left_ptr"))

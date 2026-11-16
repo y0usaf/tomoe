@@ -458,7 +458,9 @@ earlier, so re-arming a timer or restarting an animation never stacks. An
 extension whose answer still changes after 16 rounds of the transaction,
 because it feeds on its own output or on another's that feeds on it, is held at
 the answer it last committed and logged the same way, and the transaction
-commits everyone else. A rule whose predicate
+commits everyone else. A commit whose timers, watches, executions or processes
+would pass their limits is refused before anything native or recorded changes,
+so a refused reload or mount leaves the screen and the runtime agreeing. A rule whose predicate
 fails keeps the windows it matched. A live patch is still all or nothing: one
 whose extension fails is rolled back. Loading a config or a patch is not one
 event, so the per-event watchdog doesn't cut it short: its top-level forms get a

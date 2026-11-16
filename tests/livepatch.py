@@ -217,6 +217,12 @@ assert len(hops) == 1 and hops[0].get(":MILLISECONDS") == "90000", hops
 cli("command undo-patch name=livepatch-rearm")
 assert state() == before_timeout, "the re-armed timer outlived its patch"
 
+held = stable()
+refused = fail(f"mount {FLOOD_SOURCE}")
+assert "More than 4096 owned timers" in refused, refused
+assert stable() == held, "a mount the resource limits refused still moved the window"
+assert state() == before_timeout, "a mount the resource limits refused changed the session"
+
 SLOW = ["livepatch-slow-a", "livepatch-slow-b", "livepatch-slow-c"]
 slow = json.loads(cli(f"command patch file={SLOW_SOURCE} name=slow"))
 assert slow["result"]["extensions"] == SLOW, slow
