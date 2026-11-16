@@ -58,6 +58,11 @@ struct xdg_surface *xdg_surface_from_surface(struct surface *surface) {
     return xdg_surface_from_resource(surface->role_resource);
 }
 
+bool xdg_surface_is_popup(struct surface *surface) {
+    struct xdg_surface *xdg = surface ? xdg_surface_from_surface(surface) : NULL;
+    return xdg && xdg->role == ROLE_POPUP;
+}
+
 struct xdg_toplevel *xdg_toplevel_from_surface(struct surface *surface) {
     if (surface && surface->external_toplevel) return surface->external_toplevel;
     struct xdg_surface *xdg = xdg_surface_from_surface(surface);
