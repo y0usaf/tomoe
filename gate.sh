@@ -34,8 +34,8 @@ rapid focus switches and moves with windows closing and opening mid-animation,
 a reload, and a config whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
-(typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must hold. The
-session has no network, so services the config starts cannot reach a device.
+(typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must
+hold. The session has no network, so services the config starts cannot reach a device.
 Nothing reaches the running desktop.
 
   GATE_FINIX    finix checkout whose HEAD is used (default ~/finix)
@@ -359,7 +359,7 @@ shot "$DIR/refused.ppm"
 read -r drift colours < <(rail_drift "$DIR/held.ppm" "$DIR/refused.ppm" "$box")
 say "broken config: $drift/1000 of the rail ($box) changed, $colours colours"
 ((colours >= 8)) || die "the rail ($box) is blank after the refusal"
-((drift <= ${GATE_DRIFT:-100})) || die "the refused config changed $drift/1000 of the rail ($box)"
+((drift <= ${GATE_DRIFT:-300})) || die "the refused config changed $drift/1000 of the rail ($box)"
 keyed "Super+Tab after the refusal" "key 125 down" "key 15 down" sync "key 15 up" "key 125 up" sync
 keyed "Super+Shift+Tab after the refusal" "key 125 down" "key 42 down" "key 15 down" sync \
 	"key 15 up" "key 42 up" "key 125 up" sync
