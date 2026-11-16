@@ -515,6 +515,7 @@ let
                 (list (interval :stall-churn 20))
                 nil)))
   '';
+  fakeSeatd = pkgs.writeText "fake-seatd.py" (builtins.readFile ./fake-seatd.py);
   frameclockPolicy = ./frameclock-policy.lisp;
   phasePolicy = ./phase-policy.lisp;
   phaseShader = "${tomoe}/share/tomoe/examples/shaders/aurora.glsl";
@@ -1043,6 +1044,13 @@ let
   ];
   baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
   compositorSuites = [
+    {
+      name = "seat";
+      script = ''
+        FAKE_SEATD = "${fakeSeatd}"
+      ''
+      + builtins.readFile ./seat.py;
+    }
     {
       name = "pointer-protocols";
       script = ''

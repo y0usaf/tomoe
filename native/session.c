@@ -25,7 +25,7 @@
 #define SERVER_PONG ((1 << 15) + 7)
 #define SERVER_SESSION_SWITCHED ((1 << 15) + 8)
 #define SERVER_SEAT_DISABLED ((1 << 15) + 9)
-#define SERVER_ERROR 0x7fff
+#define SERVER_ERROR 0xffff
 
 #define SEAT_PATH "/run/seatd.sock"
 #define SEAT_NAME_MAX 64
