@@ -33,8 +33,10 @@ instance with its own socket, runtime directory and home: one output at
 rapid focus switches and moves with windows closing and opening mid-animation,
 a reload, and a config whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
-broken config that loads or disturbs the running one. The session has no
-network, so services the config starts cannot reach a device. Nothing reaches the running desktop.
+broken config that loads or disturbs the running one: its windows, binds
+(typed Super+Tab and Alt+Shift+T), rail theme and picture must hold. The
+session has no network, so services the config starts cannot reach a device.
+Nothing reaches the running desktop.
 
   GATE_FINIX    finix checkout whose HEAD is used (default ~/finix)
   GATE_HOST     finix host (default this machine's hostname)
@@ -281,7 +283,61 @@ ctl reload >"$DIR/reload" 2>&1 || die "reload failed: $(cat "$DIR/reload")"
 settle "$WINDOWS"
 check "reload" "$WINDOWS"
 
+binds() { grep -oE ':MODIFIERS [0-9]+ :CODE [0-9]+ :KEYSYM "[^"]*" :OWNER "[^"]*" :CALL \([^)]*\)' "$DIR/inspect" | sort; }
+shot() {
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" grim -t ppm "$1" 2>"$DIR/grim" || die "cannot capture the screen: $(cat "$DIR/grim")"
+}
+band_drift() {
+	python3 - "$1" "$2" <<'PY'
+import sys
+def ppm(path):
+    data = open(path, "rb").read()
+    fields, at = [], 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace():
+            at += 1
+        start = at
+        while not data[at:at + 1].isspace():
+            at += 1
+        fields.append(data[start:at])
+    return (int(fields[1]), int(fields[2])), data[at + 1:]
+(size, a), (other, b) = ppm(sys.argv[1]), ppm(sys.argv[2])
+if size != other:
+    print(1000)
+    sys.exit()
+width, height = size
+bands = [0] * ((width + 127) // 128)
+for row in range(height):
+    base = row * width * 3
+    if a[base:base + width * 3] == b[base:base + width * 3]:
+        continue
+    for x in range(width):
+        at = base + x * 3
+        if a[at:at + 3] != b[at:at + 3]:
+            bands[x // 128] += 1
+print(max(count * 1000 // (min(128, width - band * 128) * height) for band, count in enumerate(bands)))
+PY
+PY
+}
+keyed() {
+	local label=$1 start
+	shift
+	start=$(focused)
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" "$@" >"$DIR/keys" 2>&1 || die "$label: cannot type: $(cat "$DIR/keys")"
+	for _ in $(seq 60); do
+		[[ $(focused) != "$start" ]] && return 0
+		sleep 0.05
+	done
+	die "$label: the key left window $start focused"
+}
+
+[[ -n $(command -v grim) && -n $(command -v python3) ]] || die "the refusal check needs grim and python3"
 mounted=$(extensions)
+ctl inspect >"$DIR/inspect" || die "the session stopped answering"
+held_binds=$(binds) held_theme=$(theme_of) held_focus=$(focused)
+[[ -n $held_binds && -n $held_theme ]] || die "no binds or rail theme before the refusal"
+sleep 0.6
+shot "$DIR/held.ppm"
 cp "$DIR/init.lisp" "$DIR/good.lisp"
 forms=$(grep -c '^(' "$DIR/good.lisp")
 ((forms >= 2)) || die "$INIT has too few top-level forms to break in the middle"
@@ -293,6 +349,33 @@ grep -qi 'undefined function TOMOE-GATE-NO-SUCH-FUNCTION' "$DIR/reload" ||
 settle "$WINDOWS"
 check "broken config" "$WINDOWS"
 [[ $(extensions) == "$mounted" ]] || die "the refused config changed the mounted extensions"
+[[ $(binds) == "$held_binds" ]] || die "the refused config changed the binds"
+[[ $(theme_of) == "$held_theme" ]] || die "the refused config moved the rail off $held_theme"
+[[ $(focused) == "$held_focus" ]] || die "the refused config moved focus off $held_focus"
+shot "$DIR/refused.ppm"
+drift=$(band_drift "$DIR/held.ppm" "$DIR/refused.ppm")
+say "broken config: at most $drift/1000 of a screen band changed"
+((drift <= ${GATE_DRIFT:-100})) || die "the refused config changed $drift/1000 of a screen band"
+keyed "Super+Tab after the refusal" "key 125 down" "key 15 down" sync "key 15 up" "key 125 up" sync
+keyed "Super+Shift+Tab after the refusal" "key 125 down" "key 42 down" "key 15 down" sync \
+	"key 15 up" "key 42 up" "key 125 up" sync
+await_focus "$held_focus" || die "Super+Shift+Tab after Super+Tab left $(focused) focused, not $held_focus"
+seen=""
+while :; do
+	theme=$(theme_of)
+	seen="$seen $theme"
+	chord
+	for _ in $(seq 60); do
+		ctl inspect >"$DIR/inspect"
+		[[ $(theme_of) != "$theme" ]] && break
+		sleep 0.05
+	done
+	[[ $(theme_of) != "$theme" ]] || die "Alt+Shift+T after the refusal left the rail on $theme"
+	[[ $(theme_of) == "$held_theme" ]] && break
+done
+[[ $(tr ' ' '\n' <<<"$seen" | sed '/^$/d' | sort | tr '\n' ' ') == "$THEMES" ]] ||
+	die "Alt+Shift+T after the refusal visited$seen, the config has $THEMES"
+hammer "broken config"
 cp "$DIR/good.lisp" "$DIR/init.lisp"
 ctl reload >"$DIR/reload" 2>&1 || die "reload after the refusal failed: $(cat "$DIR/reload")"
 hammer "after reload"
