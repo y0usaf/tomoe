@@ -28,7 +28,7 @@ int tomoe_grab_mode(struct tomoe *server);
 void tomoe_window_state(struct tomoe *server, uint32_t id, int fullscreen,
     int maximize);
 uint32_t tomoe_keysym(const char *name);
-int tomoe_warm_shaders(const char *node, const char *directory);
+int tomoe_warm_shaders(const char *node, const char *directory, const char *name);
 void tomoe_clear_bindings(struct tomoe *server);
 int tomoe_outputs_begin(struct tomoe *server);
 int tomoe_outputs_pending(struct tomoe *server);

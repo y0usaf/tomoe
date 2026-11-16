@@ -674,8 +674,8 @@ done:
 
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--warm-shaders")) {
-        if (argc != 4) return 1;
-        return tomoe_warm_shaders(argv[2], argv[3]);
+        if (argc != 4 && argc != 5) return 1;
+        return tomoe_warm_shaders(argv[2], argv[3], argc == 5 ? argv[4] : NULL);
     }
     return run_cli(argc - 1, argv + 1);
 }

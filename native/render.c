@@ -3,6 +3,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
+#include <GLES3/gl3.h>
 #include <dirent.h>
 #include <drm_fourcc.h>
 #include <fcntl.h>
@@ -25,6 +26,7 @@ enum {
     WARM_SIZE = 16,
     WARM_TIMEOUT_MS = 5000,
     WARM_SOURCE_LIMIT = 1 << 20,
+    WARM_NAME = sizeof("0123456789abcdef.glsl"),
 };
 
 struct held_frame {
@@ -95,6 +97,7 @@ struct render {
     float *mesh;
     size_t mesh_cap;
     char *node, *exe, *warm_dir, *driver;
+    bool binaries;
 };
 
 #define GL(r, statement) ((r)->gl_calls++, (void)(statement))
@@ -461,6 +464,8 @@ static GLuint compile(GLenum type, const char *const *sources, int count, bool r
     return 0;
 }
 
+static void program_locations(struct program *p);
+
 static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
     p->id = glCreateProgram();
     glAttachShader(p->id, vs);
@@ -489,6 +494,11 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
         p->id = 0;
         return false;
     }
+    program_locations(p);
+    return true;
+}
+
+static void program_locations(struct program *p) {
     p->pos = glGetAttribLocation(p->id, "pos");
     p->local = glGetAttribLocation(p->id, "local");
     p->texcoord = glGetAttribLocation(p->id, "texcoord");
@@ -507,7 +517,6 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
         &p->path, &p->path_count, &p->data, &p->windows, &p->window_count, &p->beneath };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
-    return true;
 }
 
 static bool link_sources(struct program *p, const char *const *vertex, int vertex_count,
@@ -555,7 +564,10 @@ static const struct builtin {
     { PROGRAM_UP, false, "", up_source },
 };
 
-static void warm_remember(struct render *r, const char *source);
+static void warm_name(const char *source, char name[WARM_NAME]);
+static void warm_remember(struct render *r, const char *source, const char *name);
+static bool warm_run(struct render *r, char *name);
+static bool warm_load(struct render *r, const char *name, struct program *p);
 
 static EGLContext compile_begin(struct render *r) {
     current(r);
@@ -573,10 +585,14 @@ struct program *render_shader_create(struct render *r, const char *source) {
     if (!shader) return NULL;
     const char *vertex[] = { shader_vertex_source };
     const char *fragment[] = { shader_prelude, source, shader_main };
-    warm_remember(r, source);
+    char name[WARM_NAME];
+    warm_name(source, name);
+    warm_remember(r, source, name);
     current(r);
     EGLContext scratch = compile_begin(r);
-    bool linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    bool linked = warm_load(r, name, &shader->program) ||
+        (warm_run(r, name) && warm_load(r, name, &shader->program)) ||
+        link_sources(&shader->program, vertex, 1, fragment, 3);
     compile_end(r, scratch);
     if (linked) {
         shader->r = r;
@@ -2943,6 +2959,9 @@ static void warm_setup(struct render *r) {
                 slash ? slash + 1 : exe) >= 0 && (r->exe = strdup(exe))) {
             r->warm_dir = dir;
             dir = NULL;
+            GLint formats = 0;
+            glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
+            r->binaries = formats > 0;
         } else {
             free(r->driver);
             r->driver = NULL;
@@ -2958,11 +2977,21 @@ static int shader_file(const struct dirent *entry) {
     return length > 5 && !strcmp(entry->d_name + length - 5, ".glsl");
 }
 
-static void warm_remember(struct render *r, const char *source) {
+static void warm_name(const char *source, char name[WARM_NAME]) {
+    snprintf(name, WARM_NAME, "%016llx.glsl",
+        (unsigned long long)fnv(0xcbf29ce484222325ull, source));
+}
+
+static char *warm_binary_path(const char *dir, const char *name) {
+    char *path = NULL;
+    int stem = (int)(strlen(name) - strlen(".glsl"));
+    return asprintf(&path, "%s/%.*s.bin", dir, stem, name) < 0 ? NULL : path;
+}
+
+static void warm_remember(struct render *r, const char *source, const char *name) {
     char *path = NULL, *temp = NULL;
     if (!r->warm_dir || strlen(source) > WARM_SOURCE_LIMIT ||
-            asprintf(&path, "%s/%016llx.glsl", r->warm_dir,
-                (unsigned long long)fnv(0xcbf29ce484222325ull, source)) < 0) return;
+            asprintf(&path, "%s/%s", r->warm_dir, name) < 0) return;
     if (access(path, F_OK) != 0 && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
         FILE *out = fopen(temp, "we");
         bool ok = out && fputs(source, out) >= 0;
@@ -3006,20 +3035,74 @@ static void warm(struct render *r) {
     free(entries);
     char *marker = NULL;
     if (asprintf(&marker, "%s/%016llx.warm", r->warm_dir, (unsigned long long)hash) < 0) return;
-    char flag[] = "--warm-shaders";
-    char *argv[] = { r->exe, flag, r->node, r->warm_dir, NULL };
-    posix_spawn_file_actions_t actions;
-    pid_t child;
-    if (access(marker, F_OK) != 0 && posix_spawn_file_actions_init(&actions) == 0) {
-        posix_spawn_file_actions_addclosefrom_np(&actions, 3);
-        int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
-        posix_spawn_file_actions_destroy(&actions);
-        if (spawned == 0 && warm_wait(child)) {
-            int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
-            if (fd >= 0) close(fd);
-        }
+    if (access(marker, F_OK) != 0 && warm_run(r, NULL)) {
+        int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+        if (fd >= 0) close(fd);
     }
     free(marker);
+}
+
+static bool warm_run(struct render *r, char *name) {
+    if (!r->warm_dir || (name && !r->binaries)) return false;
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, name, NULL };
+    posix_spawn_file_actions_t actions;
+    pid_t child;
+    if (posix_spawn_file_actions_init(&actions) != 0) return false;
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    return spawned == 0 && warm_wait(child);
+}
+
+static void warm_save(const char *dir, const char *name, const struct program *p) {
+    GLint length = 0;
+    glGetProgramiv(p->id, GL_PROGRAM_BINARY_LENGTH, &length);
+    char *path = length > 0 ? warm_binary_path(dir, name) : NULL, *temp = NULL;
+    uint8_t *data = path ? malloc(sizeof(GLenum) + (size_t)length) : NULL;
+    GLenum format = 0;
+    if (data && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
+        glGetProgramBinary(p->id, length, &length, &format, data + sizeof(format));
+        memcpy(data, &format, sizeof(format));
+        size_t size = sizeof(format) + (size_t)length;
+        FILE *out = fopen(temp, "we");
+        bool ok = out && fwrite(data, 1, size, out) == size;
+        if (out && fclose(out) != 0) ok = false;
+        if (!ok || rename(temp, path) != 0) unlink(temp);
+    }
+    free(temp);
+    free(data);
+    free(path);
+}
+
+static bool warm_load(struct render *r, const char *name, struct program *p) {
+    char *path = r->warm_dir && r->binaries ? warm_binary_path(r->warm_dir, name) : NULL;
+    FILE *in = path ? fopen(path, "re") : NULL;
+    free(path);
+    if (!in) return false;
+    struct stat st;
+    uint8_t *data = fstat(fileno(in), &st) == 0 && st.st_size > (off_t)sizeof(GLenum) ?
+        malloc((size_t)st.st_size) : NULL;
+    bool loaded = data && fread(data, 1, (size_t)st.st_size, in) == (size_t)st.st_size;
+    fclose(in);
+    if (loaded) {
+        GLenum format;
+        memcpy(&format, data, sizeof(format));
+        p->id = glCreateProgram();
+        glProgramBinary(p->id, format, data + sizeof(format),
+            (GLsizei)(st.st_size - (off_t)sizeof(format)));
+        GLint ok = 0;
+        glGetProgramiv(p->id, GL_LINK_STATUS, &ok);
+        loaded = ok;
+        if (loaded) program_locations(p);
+        else {
+            glDeleteProgram(p->id);
+            p->id = 0;
+            while (glGetError() != GL_NO_ERROR) {}
+        }
+    }
+    free(data);
+    return loaded;
 }
 
 static void warm_draws(struct render *r, struct program **shaders, int count) {
@@ -3075,21 +3158,25 @@ static char *read_source(const char *dir, const char *name) {
     return source;
 }
 
-int tomoe_warm_shaders(const char *node, const char *dir) {
+int tomoe_warm_shaders(const char *node, const char *dir, const char *name) {
     struct render *r = render_open(strdup(node));
     if (!r || !programs_init(r)) {
         if (r) render_free(r);
         return 1;
     }
     struct dirent **entries = NULL;
-    int count = scandir(dir, &entries, shader_file, alphasort), linked = 0;
+    int count = name ? 1 : scandir(dir, &entries, shader_file, alphasort), linked = 0;
     struct program **shaders = calloc(count > 0 ? (size_t)count : 1, sizeof(*shaders));
     for (int i = 0; i < count; i++) {
-        char *source = shaders ? read_source(dir, entries[i]->d_name) : NULL;
+        const char *file = name ? name : entries[i]->d_name;
+        char *source = shaders ? read_source(dir, file) : NULL;
         struct program *shader = source ? render_shader_create(r, source) : NULL;
-        if (shader) shaders[linked++] = shader;
+        if (shader) {
+            warm_save(dir, file, shader);
+            shaders[linked++] = shader;
+        }
         free(source);
-        free(entries[i]);
+        if (!name) free(entries[i]);
     }
     free(entries);
     warm_draws(r, shaders, linked);
