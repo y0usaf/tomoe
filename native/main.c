@@ -611,7 +611,7 @@ static int run_compositor(const struct cli_options *options) {
             loop_state.xwayland_display);
         goto done;
     }
-    bus = desktop_bus_start(options->name, error, sizeof(error));
+    bus = desktop_bus_start(server, options->name, error, sizeof(error));
     if (!bus && error[0])
         fprintf(stderr, "tomoe: session bus unavailable: %s\n", error);
     if (drm) {
@@ -651,6 +651,7 @@ static int run_compositor(const struct cli_options *options) {
             lisp_set_limits(2000000, 25000000ULL);
             policy_drain(server);
         }
+        desktop_bus_service(bus);
         control_serve(control);
         ipc_serve(ipc);
         lisp_end_turn();
@@ -661,7 +662,7 @@ static int run_compositor(const struct cli_options *options) {
 done:
     if (resources) resources_stop(server);
     if (session) desktop_session_stop();
-    desktop_bus_stop(bus, options->name);
+    desktop_bus_stop(bus);
     ipc_stop(ipc);
     control_stop(control);
     if (signal_watch) loop_remove(signal_watch);

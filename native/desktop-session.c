@@ -1,5 +1,7 @@
 #include "desktop-session.h"
 
+#include "policy.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -18,9 +20,11 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <wayland-server-core.h>
 
 struct execution;
 struct execution *tomoe_process_start_dependent(char *const argv[], char *const envp[], int *error);
+int tomoe_exec_fd(struct execution *job, int which);
 int tomoe_exec_poll(struct execution *job);
 int tomoe_exec_code(struct execution *job);
 int tomoe_exec_stop(struct execution *job, int signal);
@@ -29,8 +33,13 @@ int tomoe_exec_release(struct execution *job);
 extern char **environ;
 
 struct desktop_bus {
+    struct tomoe *server;
     struct execution *job;
+    struct loop_source *watch;
+    char *path;
+    char *own;
     char *transient;
+    bool exited;
 };
 
 static void set_error(char *error, size_t size, const char *format, ...) {
@@ -507,7 +516,81 @@ static char **environment_with(const char *name, const char *value, char **entry
     return result;
 }
 
-struct desktop_bus *desktop_bus_start(const char *name, char *error, size_t error_size) {
+static void bus_ready(void *data, int fd, uint32_t mask) {
+    struct desktop_bus *bus = data;
+    (void)fd;
+    if (mask & (WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR)) bus->exited = true;
+}
+
+static void bus_watch(struct desktop_bus *bus) {
+    if (!bus->server || !bus->job) return;
+    if (bus->watch) loop_remove(bus->watch);
+    int fd = tomoe_exec_fd(bus->job, 0);
+    bus->watch = fd >= 0 ? loop_watch_fd(bus->server, fd, WL_EVENT_READABLE, bus_ready, bus)
+        : NULL;
+}
+
+static void bus_reap(struct execution *job) {
+    tomoe_exec_stop(job, SIGTERM);
+    for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
+        struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
+        nanosleep(&pause, NULL);
+    }
+    if (!tomoe_exec_poll(job)) {
+        tomoe_exec_stop(job, SIGKILL);
+        for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
+            struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
+            nanosleep(&pause, NULL);
+        }
+    }
+    if (tomoe_exec_poll(job) > 0) tomoe_exec_release(job);
+}
+
+static bool bus_await(struct execution *job, const char *path, char *error, size_t error_size) {
+    for (int i = 0; i < 400; i++) {
+        if (desktop_socket_answering(path)) return true;
+        int status = tomoe_exec_poll(job);
+        if (status > 0) {
+            set_error(error, error_size, "dbus-daemon exited with code %d.",
+                tomoe_exec_code(job));
+            return false;
+        }
+        struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
+        nanosleep(&pause, NULL);
+    }
+    set_error(error, error_size, "dbus-daemon is not listening after 2 s.");
+    return false;
+}
+
+static struct execution *bus_launch(const char *path, const char *own, char *error,
+        size_t error_size) {
+    char address_argument[PATH_MAX + 192];
+    snprintf(address_argument, sizeof(address_argument), "--address=unix:path=%s", path);
+    char *argv[] = { "dbus-daemon", "--session", "--nofork", address_argument, NULL };
+    char *environment_entry = NULL;
+    char **environment = environment_with("DBUS_SESSION_BUS_ADDRESS", own, &environment_entry);
+    if (!environment) {
+        set_error(error, error_size, "Cannot prepare the bus environment.");
+        return NULL;
+    }
+    int start_error = 0;
+    struct execution *job = tomoe_process_start_dependent(argv, environment, &start_error);
+    free(environment_entry);
+    free(environment);
+    if (!job) {
+        set_error(error, error_size, "Cannot start dbus-daemon: errno %d.", start_error);
+        return NULL;
+    }
+    if (!bus_await(job, path, error, error_size)) {
+        bus_reap(job);
+        unlink(path);
+        return NULL;
+    }
+    return job;
+}
+
+struct desktop_bus *desktop_bus_start(struct tomoe *server, const char *name, char *error,
+        size_t error_size) {
     if (error && error_size) error[0] = '\0';
     char socket_path[PATH_MAX + 128], transient[PATH_MAX + 128], own[PATH_MAX + 192];
     bus_paths(name, socket_path, sizeof(socket_path), transient, sizeof(transient),
@@ -544,96 +627,81 @@ struct desktop_bus *desktop_bus_start(const char *name, char *error, size_t erro
         orphan = true;
     }
     unlink(socket_path);
-    char address_argument[PATH_MAX + 192];
-    snprintf(address_argument, sizeof(address_argument), "--address=unix:path=%s", socket_path);
-    char *argv[] = { "dbus-daemon", "--session", "--nofork", address_argument, NULL };
-    char *environment_entry = NULL;
-    char **environment = environment_with("DBUS_SESSION_BUS_ADDRESS", own, &environment_entry);
-    if (!environment) {
-        set_error(error, error_size, "Cannot prepare the bus environment.");
-        return NULL;
-    }
-    int start_error = 0;
-    struct execution *job = tomoe_process_start_dependent(argv, environment, &start_error);
-    free(environment_entry);
-    free(environment);
+    struct execution *job = bus_launch(socket_path, own, error, error_size);
     if (!job) {
-        set_error(error, error_size, "Cannot start dbus-daemon: errno %d.", start_error);
-        return NULL;
-    }
-    bool ready = false;
-    for (int i = 0; i < 400; i++) {
-        if (desktop_socket_answering(socket_path)) {
-            ready = true;
-            break;
-        }
-        int status = tomoe_exec_poll(job);
-        if (status > 0) {
-            set_error(error, error_size, "dbus-daemon exited with code %d.",
-                tomoe_exec_code(job));
-            break;
-        }
-        struct timespec pause = { .tv_sec = 0, .tv_nsec = 5000000 };
-        nanosleep(&pause, NULL);
-    }
-    if (!ready) {
-        if (!error || !error_size || !error[0])
-            set_error(error, error_size, "dbus-daemon is not listening after 2 s.");
-        tomoe_exec_stop(job, SIGTERM);
-        for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
-            struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
-            nanosleep(&pause, NULL);
-        }
-        if (!tomoe_exec_poll(job)) {
-            tomoe_exec_stop(job, SIGKILL);
-            for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
-                struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
-                nanosleep(&pause, NULL);
-            }
-        }
-        if (tomoe_exec_poll(job) > 0) tomoe_exec_release(job);
-        unlink(socket_path);
         unsetenv("DBUS_SESSION_BUS_ADDRESS");
         return NULL;
     }
     setenv("DBUS_SESSION_BUS_ADDRESS", own, 1);
     struct desktop_bus *bus = calloc(1, sizeof(*bus));
     if (!bus) {
-        tomoe_exec_stop(job, SIGKILL);
-        for (int i = 0; i < 100 && !tomoe_exec_poll(job); i++) {
-            struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
-            nanosleep(&pause, NULL);
-        }
-        if (tomoe_exec_poll(job) > 0) tomoe_exec_release(job);
+        bus_reap(job);
         unlink(socket_path);
         unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        set_error(error, error_size, "Cannot allocate the session bus.");
         return NULL;
     }
+    bus->server = server;
     bus->job = job;
+    bus->path = strdup(socket_path);
+    bus->own = strdup(own);
     bus->transient = (fresh || orphan) ? strdup(transient) : NULL;
+    if (!bus->path || !bus->own) {
+        bus_reap(job);
+        unlink(socket_path);
+        unsetenv("DBUS_SESSION_BUS_ADDRESS");
+        set_error(error, error_size, "Cannot allocate the session bus.");
+        free(bus->path);
+        free(bus->own);
+        free(bus->transient);
+        free(bus);
+        return NULL;
+    }
+    bus_watch(bus);
     return bus;
 }
 
-void desktop_bus_stop(struct desktop_bus *bus, const char *name) {
+void desktop_bus_service(struct desktop_bus *bus) {
+    if (!bus || !bus->job || !bus->exited) return;
+    bus->exited = false;
+    int status = tomoe_exec_poll(bus->job);
+    if (status <= 0) return;
+    int code = tomoe_exec_code(bus->job);
+    tomoe_exec_release(bus->job);
+    bus->job = NULL;
+    if (bus->watch) {
+        loop_remove(bus->watch);
+        bus->watch = NULL;
+    }
+    unlink(bus->path);
+    if (status == 2)
+        fprintf(stderr,
+            "tomoe: session bus daemon was killed by signal %d; starting a replacement\n",
+            code);
+    else
+        fprintf(stderr,
+            "tomoe: session bus daemon exited with status %d; starting a replacement\n",
+            code);
+    char error[1024];
+    struct execution *job = bus_launch(bus->path, bus->own, error, sizeof(error));
+    if (!job) {
+        fprintf(stderr, "tomoe: session bus unavailable: %s\n", error);
+        return;
+    }
+    bus->job = job;
+    bus_watch(bus);
+}
+
+void desktop_bus_stop(struct desktop_bus *bus) {
     if (!bus) return;
-    char socket_path[PATH_MAX + 128], transient[PATH_MAX + 128], own[PATH_MAX + 192];
-    bus_paths(name, socket_path, sizeof(socket_path), transient, sizeof(transient),
-        own, sizeof(own));
+    if (bus->watch) {
+        loop_remove(bus->watch);
+        bus->watch = NULL;
+    }
     if (bus->job) {
-        tomoe_exec_stop(bus->job, SIGTERM);
-        for (int i = 0; i < 100 && !tomoe_exec_poll(bus->job); i++) {
-            struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
-            nanosleep(&pause, NULL);
-        }
-        if (!tomoe_exec_poll(bus->job)) {
-            tomoe_exec_stop(bus->job, SIGKILL);
-            for (int i = 0; i < 100 && !tomoe_exec_poll(bus->job); i++) {
-                struct timespec pause = { .tv_sec = 0, .tv_nsec = 10000000 };
-                nanosleep(&pause, NULL);
-            }
-        }
-        if (tomoe_exec_poll(bus->job) > 0) tomoe_exec_release(bus->job);
-        if (socket_path[0]) unlink(socket_path);
+        bus_reap(bus->job);
+        bus->job = NULL;
+        if (bus->path) unlink(bus->path);
         if (bus->transient) {
             char services[PATH_MAX + 16];
             int written = snprintf(services, sizeof(services), "%s/services", bus->transient);
@@ -641,6 +709,8 @@ void desktop_bus_stop(struct desktop_bus *bus, const char *name) {
             rmdir(bus->transient);
         }
     }
+    free(bus->path);
+    free(bus->own);
     free(bus->transient);
     free(bus);
 }
