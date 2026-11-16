@@ -38,7 +38,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
         :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil
-        :constructions nil
+        :constructions nil :declarations-cache nil
         :frame-ms 16 :invocations 0 :layout-rebuilds 0 :layout-reuses 0
         :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
         :ipc-baseline-sent nil))
@@ -84,6 +84,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
 (defun runtime-patch-sequence () (%r :patch-sequence))
 (defun runtime-motion-plan () (%r :motion-plan))
 (defun runtime-layers-cache () (%r :layers-cache))
+(defun runtime-declarations-cache () (%r :declarations-cache))
 (defun runtime-socket () (%r :socket))
 (defun %keysym-codes () (%r :keysym-codes))
 (defun bump-generation ()
@@ -770,15 +771,36 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              :keyboard (default-keyboard-config)
              :settings (%settings-defaults +settings+)
              :view (list :x 0 :y 0 :zoom 1d0))))
-    (dolist (phase '(0 1))
-      (when (= phase 1)
-        (setf (getf m :mod-bit)
-              (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64))))
-      (dolist (mounted mounts)
-        (dolist (effect (mounted-effects mounted))
-          (let ((definition (%effect-definition (effect-kind effect))))
-            (when (and (fourth definition) (= phase (fifth definition)))
-              (funcall (fourth definition) m (effect-arguments effect) mounted))))))
+    (let ((declarations (loop for mounted in mounts
+                              for effects = (mounted-effects mounted)
+                              collect (list (spec-name (mounted-spec mounted))
+                                            (spec-id (mounted-spec mounted))
+                                            (%effects-of-kind effects :bind)
+                                            (%effects-of-kind effects :command))))
+          (cache (runtime-declarations-cache))
+          (reuse nil))
+      (dolist (phase '(0 1))
+        (when (= phase 1)
+          (setf (getf m :mod-bit)
+                (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64)))
+          (when (and cache (eql (first cache) (getf m :mod-bit))
+                     (equal (second cache) declarations))
+            (setf reuse t
+                  (getf m :bindings) (copy-list (third cache))
+                  (getf m :commands) (copy-list (fourth cache))
+                  (getf m :binding-order) (fifth cache))))
+        (dolist (mounted mounts)
+          (dolist (effect (mounted-effects mounted))
+            (let ((kind (effect-kind effect)))
+              (unless (and reuse (or (eq kind :bind) (eq kind :command)))
+                (let ((definition (%effect-definition kind)))
+                  (when (and (fourth definition) (= phase (fifth definition)))
+                    (funcall (fourth definition) m (effect-arguments effect) mounted))))))))
+      (unless reuse
+        (%r! :declarations-cache
+             (list (getf m :mod-bit) declarations
+                   (copy-list (materialization-bindings m)) (copy-list (materialization-commands m))
+                   (materialization-binding-order m)))))
     (let* ((layout (materialization-layout m))
            (stacking (materialization-stacking m))
            (layers (materialization-layers m))

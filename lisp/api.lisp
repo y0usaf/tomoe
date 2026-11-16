@@ -84,7 +84,7 @@ the materialization M. Reducers run in PHASE order, then mount order."
   kind)
 
 (defun %effect-definition (kind)
-  (or (first (member kind *effect-definitions* :key #'first :test #'eq))
+  (or (assoc kind *effect-definitions* :test #'eq)
       (error "Unknown effect kind: ~S" kind)))
 
 (defun make-materialization (&key layout stacking layers focused data surfaces keyboard-grab
