@@ -34,6 +34,16 @@
         (define-command "toggle-hotkeys"
           :description "Show or hide the sheet of bound hotkeys.")))
 
+(defun hotkey-rows (bindings)
+  "The described BINDINGS as hotkey sheet rows, in +HOTKEY-ORDER+, then declaration order."
+  (loop for binding in (stable-sort (sort (copy-list bindings) #'< :key (lambda (b) (getf b :order)))
+                                    #'< :key (lambda (b)
+                                               (or (position (getf b :description) +hotkey-order+
+                                                             :test #'equal)
+                                                   (length +hotkey-order+))))
+        when (getf binding :description)
+          collect (list (hotkey-label binding) (getf binding :description))))
+
 (define-extension "commands" (:reads (:command :ui :focus :bindings :settings :data)
                                :state '(:exit nil :overlay nil))
     (snapshot state event)
@@ -47,15 +57,7 @@
                      (t (getf state :exit))))
          (overlay (cond ((equal command "toggle-hotkeys") (not (getf state :overlay)))
                         ((equal command "hotkeys-dismiss") nil)
-                        (t (getf state :overlay))))
-         (rows (loop for binding in (stable-sort (sort (copy-list (context snapshot :bindings)) #'<
-                                                       :key (lambda (b) (getf b :order)))
-                                                 #'< :key (lambda (b)
-                                                            (or (position (getf b :description) +hotkey-order+
-                                                                          :test #'equal)
-                                                                (length +hotkey-order+))))
-                     when (getf binding :description)
-                       collect (list (hotkey-label binding) (getf binding :description)))))
+                        (t (getf state :overlay)))))
     (values (list :exit exit :overlay overlay)
             (append +session-commands+
                     (list (bind-key '(:mod) "q" "close-window" :description "Close Window")
@@ -68,7 +70,8 @@
                                       :confirm :exit-confirm :cancel :exit-cancel
                                       :theme (state-value snapshot :theme)))
                     (when (and overlay (not exit))
-                      (sheet-dialog :hotkeys rows :title "Important Hotkeys" :dismiss :hotkeys-dismiss
+                      (sheet-dialog :hotkeys (hotkey-rows (context snapshot :bindings))
+                                    :title "Important Hotkeys" :dismiss :hotkeys-dismiss
                                     :theme (state-value snapshot :theme))))
             (cond ((equal command "launch") (list (apply #'launch (getf arguments :argv))))
                   ((equal command "reload") (list (reload)))
