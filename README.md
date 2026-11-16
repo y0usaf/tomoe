@@ -540,7 +540,10 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   atomically needs shared readiness for synchronized parent/child transactions;
   the current queue applies parent state before releasing child caches.
 - Applications can select themed cursor shapes, including text, resize and drag
-  cursors, through `wp_cursor_shape_manager_v1`.
+  cursors, through `wp_cursor_shape_manager_v1`. Themed cursors come from
+  `XCURSOR_THEME` on `XCURSOR_PATH`, and Tomoe watches that theme's entry in every
+  search directory: relinking it (a light/dark switch) redraws the cursor on screen
+  at once, even while the pointer holds still or an application has picked a shape.
 - The cursor is drawn by the policy. A `cursor-effect` registration is asked how
   the pointer should look for the motion the compositor measures - position,
   velocity, time, shape, and how hard the pointer is being shaken - and it

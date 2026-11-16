@@ -577,7 +577,7 @@ static struct buffer *xcursor_file(const char *path, int size, int *hotspot_x, i
     return buffer;
 }
 
-static char *xcursor_path(void) {
+char *xcursor_path(void) {
     const char *env = getenv("XCURSOR_PATH");
     if (env) return strdup(env);
     const char *home = getenv("HOME"), *data = getenv("XDG_DATA_HOME");

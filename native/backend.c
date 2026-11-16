@@ -180,6 +180,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->scene) node_destroy(s->scene);
     cursor_finish(s);
     if (s->default_cursor) buffer_drop(s->default_cursor);
+    cursor_theme_unwatch(s);
     libinput_finish(s);
     headless_finish(s);
     nested_finish(s);

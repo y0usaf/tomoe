@@ -149,6 +149,7 @@ void positioner_geometry(const struct positioner_rules *rules, struct box *box);
 void positioner_unconstrain(const struct positioner_rules *rules, const struct box *constraint,
     struct box *box);
 struct buffer *xcursor_load(const char *name, float scale, int *hotspot_x, int *hotspot_y);
+char *xcursor_path(void);
 
 struct render;
 struct ui_surface;
@@ -440,6 +441,13 @@ bool fenced(struct screen *output);
 struct screen;
 struct session;
 struct kms;
+#define CURSOR_THEME_WATCHES 8
+struct file_watch;
+struct cursor_theme_watch {
+    struct tomoe *server;
+    struct file_watch *watch;
+    struct wl_event_source *source;
+};
 struct cursor_image {
     struct buffer *buffer;
     struct texture *texture;
@@ -1115,6 +1123,7 @@ struct tomoe {
     float default_cursor_scale;
     uint32_t default_cursor_shape;
     int default_hotspot_x, default_hotspot_y;
+    struct cursor_theme_watch cursor_theme_watches[CURSOR_THEME_WATCHES];
     struct seat *seat;
     struct logical_keyboard *logical_keyboard;
     struct keyboard_profile *keyboard_profile;
@@ -1751,6 +1760,7 @@ bool screens_listen(struct tomoe *s);
 void cursor_show(struct tomoe *s, struct buffer *buffer, int hotspot_x, int hotspot_y,
     float scale);
 void cursor_finish(struct tomoe *s);
+void cursor_theme_unwatch(struct tomoe *s);
 bool cursor_motion_advance(struct tomoe *s, double now);
 bool cursor_motion_rest(const struct tomoe *s);
 void cursor_motion_matrix(const struct tomoe *s, double matrix[4], double offset[2]);

@@ -88,12 +88,26 @@ def theme_cursor(color):
     return header + struct.pack("<%dI" % (ARROW_WIDTH * ARROW_HEIGHT), *pixels)
 
 
+BLUE, RED = 0xff0000ff, 0xffff0000
+
+
 def write_theme(root):
-    theme = root / "icons" / "check" / "cursors"
-    theme.mkdir(parents=True, exist_ok=True)
-    for index, name in enumerate(SHAPES, 1):
-        (theme / name).write_bytes(theme_cursor((0xff000000 | (index << 8)) | 0xff0000ff))
+    for variant, base in (("check-blue", BLUE), ("check-red", RED)):
+        theme = root / "icons" / variant / "cursors"
+        theme.mkdir(parents=True, exist_ok=True)
+        for index, name in enumerate(SHAPES, 1):
+            (theme / name).write_bytes(theme_cursor(base | (index << 8)))
+    relink_theme(root / "icons", "check-blue")
     return str(root / "icons")
+
+
+def relink_theme(icons, variant):
+    link = icons / "check"
+    staged = icons / ".check-relink"
+    if staged.is_symlink():
+        staged.unlink()
+    staged.symlink_to(variant)
+    os.replace(staged, link)
 
 
 CONFIGURE = """
@@ -267,6 +281,16 @@ def signature(path):
     return (len(points), tuple(sorted((point[0] - left, point[1] - top) for point in points)))
 
 
+def tint(path, x, y, radius=24):
+    width, _, pixels = read_ppm(path)
+    red = blue = 0
+    for px, py in near(lit_points(path), x, y, radius):
+        at = (py * width + px) * 3
+        red += pixels[at]
+        blue += pixels[at + 2]
+    return red, blue
+
+
 def near(points, x, y, radius):
     return [point for point in points
             if abs(point[0] - x) <= radius and abs(point[1] - y) <= radius]
@@ -363,6 +387,14 @@ def main():
         if drawn:
             failures.append("plain drew %d frames while idle" % drawn)
         plain_wakeups = wakeups
+        for variant, want in (("check-red", "red"), ("check-blue", "blue")):
+            relink_theme(root / "icons", variant)
+            time.sleep(0.4)
+            red, blue = tint(plain.screenshot("theme-%s.ppm" % want), *PARK)
+            print("theme %s: red %d blue %d at the still pointer" % (variant, red, blue))
+            if (red > blue) != (want == "red"):
+                failures.append("plain: relinking the theme to %s left the still cursor %s"
+                                % (variant, "red" if red > blue else "blue"))
     finally:
         plain.stop()
         for path in (root / "plain").glob("walk-*.ppm"):
