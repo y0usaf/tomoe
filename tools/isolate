@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PROG=tomoe-isolate
+
+usage() {
+	cat <<'EOF'
+usage: tools/isolate DIR COMMAND [ARG...]
+       tools/isolate --check
+
+Runs COMMAND with DIR as its whole world, so a private Tomoe and the clients a
+test starts cannot touch the session you are sitting in:
+
+  HOME=DIR/home and XDG_RUNTIME_DIR=DIR/run; every other variable is dropped
+  your real home is read-only (DIR stays writable), so no config, palette or
+  theme file the live session watches can change
+  the rest of /run/user/UID is hidden, so no live Wayland, Tomoe, PipeWire or
+  bus socket can be found or named
+  /tmp/.X11-unix is empty and there is no network, so DISPLAY=:0 (or any other
+  number) reaches only an X server the command starts itself
+  /dev/uinput, /dev/uhid and /dev/input are gone, so no fake kernel input
+  device can be made and no real one read or written
+  every process lives in its own pid namespace and is killed when COMMAND
+  exits, fails or is killed
+
+It refuses to start while DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET or
+TOMOE_SOCKET is set, because a script that inherited them meant the live
+session; unset them (env -u ...) and let the command start its own. It also
+refuses while a fake kernel input device (one made through uinput) exists,
+because something is already typing or pointing at the live session.
+--check only makes those two refusals, for a script that wants to refuse
+before a long build. Pass the command's own variables with env:
+tools/isolate DIR env A=1 COMMAND.
+EOF
+}
+
+die() {
+	printf '%s: refused: %s\n' "$PROG" "$*" >&2
+	exit 2
+}
+
+if [[ ${1:-} == --inside ]]; then
+	shift
+	dir=$1 uid=$2 gid=$3 path=$4 lang=$5 home=$6
+	shift 6
+	set -e
+	exec 3<"$dir"
+	mount -t tmpfs -o mode=0700 tomoe-isolate "/run/user/$uid"
+	if [[ -d $home ]]; then
+		mount --rbind -o ro=recursive "$home" "$home"
+	fi
+	mount -t tmpfs -o mode=1777 tomoe-isolate /tmp/.X11-unix
+	mount -t tmpfs -o mode=0755 tomoe-isolate /dev/input
+	for node in /dev/uinput /dev/uhid; do
+		[[ -e $node ]] && mount --bind /dev/null "$node"
+	done
+	mkdir -p "$dir"
+	mount --no-canonicalize --bind /proc/self/fd/3 "$dir"
+	exec 3<&-
+	set +e
+	exec unshare --user --map-user="$uid" --map-group="$gid" -- \
+		env -i "HOME=$dir/home" "USER=$(id -un "$uid" 2>/dev/null || echo "$uid")" "PATH=$path" \
+		"XDG_RUNTIME_DIR=$dir/run" "LANG=$lang" "TOMOE_ISOLATED=$dir" "$@"
+fi
+
+[[ ${1:-} == -h || ${1:-} == --help ]] && {
+	usage
+	exit 0
+}
+check=false
+[[ ${1:-} == --check ]] && check=true
+$check || (($# >= 2)) || {
+	usage >&2
+	exit 2
+}
+
+for name in DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET TOMOE_SOCKET; do
+	[[ -n ${!name:-} ]] && die "$name=${!name} is set; it names the live session. Run it as env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET $0 ..."
+done
+fake=()
+for dev in /sys/devices/virtual/input/input*; do
+	[[ -r $dev/name ]] && fake+=("$(<"$dev/name") (${dev##*/})")
+done
+if ((${#fake[@]})); then
+	holders=$(for fd in /proc/[0-9]*/fd/*; do
+		[[ $(readlink "$fd" 2>/dev/null) == /dev/uinput ]] || continue
+		pid=${fd#/proc/} pid=${pid%%/*}
+		printf '%s:%s\n' "$pid" "$(<"/proc/$pid/comm")"
+	done | sort -u | tr '\n' ' ')
+	die "fake kernel input devices exist and reach the live session: ${fake[*]}; /dev/uinput is held by ${holders:-nothing now}"
+fi
+$check && exit 0
+
+dir=$(realpath -m "$1")
+shift
+mkdir -p "$dir/home" "$dir/run" || die "cannot make $dir"
+chmod 0700 "$dir/run"
+uid=$(id -u) gid=$(id -g)
+[[ $dir == "/run/user/$uid" || $dir == "/run/user/$uid/"* || $dir != /run/user/* ]] || die "$dir is another user's runtime directory"
+[[ $dir != "/run/user/$uid" && $dir != /tmp/.X11-unix* && $dir != /dev/* ]] || die "$dir would be hidden by the isolation itself"
+
+exec unshare --map-root-user --mount --net --pid --fork --kill-child --mount-proc -- \
+	bash "$(realpath "$0")" --inside "$dir" "$uid" "$gid" "$PATH" "${LANG:-C.UTF-8}" "$(getent passwd "$uid" | cut -d: -f6)" "$@"

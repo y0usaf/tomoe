@@ -11,6 +11,7 @@ MODE=${GATE_MODE:-5120x1440@240}
 WINDOWS=${GATE_WINDOWS:-4}
 SWITCHES=${GATE_SWITCHES:-48}
 PALETTE=${GATE_PALETTE:-$HOME/.cache/theme/gtk.css}
+SOAK=${GATE_SOAK:-0}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
 PENDING=${TOMOE_PENDING:-$(dirname "$LOCK")/tomoe-vm.pending}
 
@@ -38,11 +39,18 @@ broken config that loads or disturbs the running one: its windows, binds
 hold. The session has no network, so services the config starts cannot reach a device.
 Nothing reaches the running desktop.
 
-  GATE_FINIX    finix checkout whose HEAD is used (default ~/finix)
+  GATE_FINIX    finix checkout (default ~/finix)
+  GATE_FINIX_REV  finix revision whose config is used (default its HEAD)
   GATE_HOST     finix host (default this machine's hostname)
   GATE_OUTPUT   output name the config arranges (default DP-4)
   GATE_MODE     WxH@HZ of that output (default 5120x1440@240)
   GATE_PALETTE  palette the theme reads, copied in (default ~/.cache/theme/gtk.css)
+  GATE_SOAK     after the run, keep cycling palettes, themes, focus storms and
+                reloads for this many seconds (default 0); a soak fails the same
+                way, and on the compositor exiting or logging a fatal error
+
+It refuses to start while DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET or
+TOMOE_SOCKET is set or a fake kernel input device exists (see tools/isolate).
 EOF
 }
 
@@ -51,54 +59,71 @@ EOF
 	exit 0
 }
 
-REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside the tomoe checkout"
-REV=$(git -C "$REPO" rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null) || die "no commit ${1:-HEAD}"
-[[ $MODE =~ ^([0-9]+)x([0-9]+)@([0-9]+)$ ]] || die "GATE_MODE must be WxH@HZ"
-WIDTH=${BASH_REMATCH[1]} HEIGHT=${BASH_REMATCH[2]} HZ=${BASH_REMATCH[3]}
-[[ -r $PALETTE ]] || die "no palette at $PALETTE"
+if [[ -n ${TOMOE_ISOLATED:-} ]]; then
+	source "$TOMOE_ISOLATED/gate.state"
+else
+	ISOLATE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/isolate
+	"$ISOLATE" --check || exit 2
+	REPO=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside the tomoe checkout"
+	REV=$(git -C "$REPO" rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null) || die "no commit ${1:-HEAD}"
+	[[ $SOAK =~ ^[0-9]+$ ]] || die "GATE_SOAK must be a number of seconds"
+	[[ $MODE =~ ^([0-9]+)x([0-9]+)@([0-9]+)$ ]] || die "GATE_MODE must be WxH@HZ"
+	WIDTH=${BASH_REMATCH[1]} HEIGHT=${BASH_REMATCH[2]} HZ=${BASH_REMATCH[3]}
+	[[ -r $PALETTE ]] || die "no palette at $PALETTE"
 
-lease() {
-	local waited=0
-	while [[ -n $(ls -A "$PENDING" 2>/dev/null) ]] && ((waited < 600)); do
-		sleep 2
-		waited=$((waited + 2))
-	done
-	mkdir -p "$(dirname "$LOCK")"
-	exec 9>"$LOCK" && flock -s 9
-}
+	lease() {
+		local waited=0
+		while [[ -n $(ls -A "$PENDING" 2>/dev/null) ]] && ((waited < 600)); do
+			sleep 2
+			waited=$((waited + 2))
+		done
+		mkdir -p "$(dirname "$LOCK")"
+		exec 9>"$LOCK" && flock -s 9
+	}
 
-FINIXREV=$(git -C "$FINIX" rev-parse --verify HEAD 2>/dev/null) || die "no finix checkout at $FINIX"
-say "building $REV with the config finix $FINIXREV generates for $HOST"
-lease || die "cannot take $LOCK"
-SOURCE="git+file://$REPO?rev=$REV"
-CONFIG="git+file://$FINIX?rev=$FINIXREV"
-PKG=$(nix build --no-link --print-out-paths --override-input tomoe "$SOURCE" \
-	"$CONFIG#packages.$SYSTEM.tomoe") || die "finix cannot build tomoe $REV"
-INIT=$(nix build --no-link --print-out-paths --override-input tomoe "$SOURCE" \
-	"$CONFIG#nixosConfigurations.$HOST.config.manzil.users.$ACCOUNT.files.\".config/tomoe/init.lisp\".source") ||
-	die "finix cannot generate the config"
-CLIENTS_OUT=$(nix build --no-link --print-out-paths "$SOURCE#legacyPackages.$SYSTEM.client") ||
-	die "cannot build the test client"
-CLIENT=$CLIENTS_OUT/bin/tomoe-test-client
-KEYS=$CLIENTS_OUT/bin/tomoe-pointer-script
-exec 9>&-
-say "pair $PKG + $INIT"
+	FINIXREV=$(git -C "$FINIX" rev-parse --verify "${GATE_FINIX_REV:-HEAD}^{commit}" 2>/dev/null) ||
+		die "no finix ${GATE_FINIX_REV:-HEAD} at $FINIX"
+	say "building $REV with the config finix $FINIXREV generates for $HOST"
+	lease || die "cannot take $LOCK"
+	SOURCE="git+file://$REPO?rev=$REV"
+	CONFIG="git+file://$FINIX?rev=$FINIXREV"
+	PKG=$(nix build --no-link --print-out-paths --override-input tomoe "$SOURCE" \
+		"$CONFIG#packages.$SYSTEM.tomoe") || die "finix cannot build tomoe $REV"
+	INIT=$(nix build --no-link --print-out-paths --override-input tomoe "$SOURCE" \
+		"$CONFIG#nixosConfigurations.$HOST.config.manzil.users.$ACCOUNT.files.\".config/tomoe/init.lisp\".source") ||
+		die "finix cannot generate the config"
+	CLIENTS_OUT=$(nix build --no-link --print-out-paths "$SOURCE#legacyPackages.$SYSTEM.client") ||
+		die "cannot build the test client"
+	CLIENT=$CLIENTS_OUT/bin/tomoe-test-client
+	KEYS=$CLIENTS_OUT/bin/tomoe-pointer-script
+	exec 9>&-
+	say "pair $PKG + $INIT"
 
-DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tomoe-gate.XXXXXX")
+	DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tomoe-gate.XXXXXX")
+	KEEP=0
+	SOCKET=gate-$$
+	mkdir -m 700 "$DIR/run"
+	mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
+	cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
+	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
+	cp "$INIT" "$DIR/paired.lisp"
+	sed "s#$HOME/#$DIR/home/#g" "$PALETTE" >"$DIR/first.css"
+	BG=$(awk '$1 == "@define-color" && $2 == "bg" {print $3}' "$DIR/first.css" | tr -d ';')
+	FG=$(awk '$1 == "@define-color" && $2 == "fg" {print $3}' "$DIR/first.css" | tr -d ';')
+	[[ -n $BG && -n $FG && $BG != "$FG" ]] || die "$PALETTE defines no distinct bg and fg"
+	sed "s/$BG/@BG@/g; s/$FG/$BG/g; s/@BG@/$FG/g" "$DIR/first.css" >"$DIR/second.css"
+	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
+	cp "$DIR/first.css" "$THEME_FILE"
+	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK \
+		ACCOUNT PALETTE THEME_FILE DIR >"$DIR/gate.state"
+	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
+	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
+	rc=$?
+	if ((rc == 0)); then rm -rf "$DIR"; else say "kept $DIR"; fi
+	exit "$rc"
+fi
 KEEP=0
-SOCKET=gate-$$
-mkdir -m 700 "$DIR/run"
-mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
-cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
-sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
-cp "$INIT" "$DIR/paired.lisp"
-sed "s#$HOME/#$DIR/home/#g" "$PALETTE" >"$DIR/first.css"
-BG=$(awk '$1 == "@define-color" && $2 == "bg" {print $3}' "$DIR/first.css" | tr -d ';')
-FG=$(awk '$1 == "@define-color" && $2 == "fg" {print $3}' "$DIR/first.css" | tr -d ';')
-[[ -n $BG && -n $FG && $BG != "$FG" ]] || die "$PALETTE defines no distinct bg and fg"
-sed "s/$BG/@BG@/g; s/$FG/$BG/g; s/@BG@/$FG/g" "$DIR/first.css" >"$DIR/second.css"
-cp "$DIR/first.css" "${PALETTE/#$HOME\//$DIR/home/}"
-ENV=(env -i "HOME=$DIR/home" "USER=$ACCOUNT" "PATH=$PATH" "XDG_RUNTIME_DIR=$DIR/run" "LANG=${LANG:-C.UTF-8}")
+ENV=(env)
 SERVER=""
 CLIENTS=()
 
@@ -109,13 +134,12 @@ cleanup() {
 		kill -TERM -- "-$SERVER" 2>/dev/null
 	fi
 	for pid in "${CLIENTS[@]}"; do kill -TERM -- "-$pid" 2>/dev/null; done
-	((KEEP)) || rm -rf "$DIR"
 }
 trap cleanup EXIT
 
 ctl() { "${ENV[@]}" "$PKG/bin/tomoe" --socket "$SOCKET" "$@"; }
 
-"${ENV[@]}" unshare --user --map-current-user --net setsid "$PKG/bin/tomoe" --socket "$SOCKET" --backend headless --no-watch \
+setsid "$PKG/bin/tomoe" --socket "$SOCKET" --backend headless --no-watch \
 	--config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
 SERVER=$!
 for _ in $(seq 300); do ctl inspect >/dev/null 2>&1 && break; sleep 0.1; done
@@ -156,7 +180,12 @@ settle() {
 extensions() { grep -o ':DISPATCHES [0-9]*' "$DIR/inspect" | wc -l; }
 
 check() {
-	local label=$1 want=$2
+	local label=$1 want=$2 fatal
+	kill -0 "$SERVER" 2>/dev/null || die "$label: the compositor exited:
+$(tail -5 "$DIR/log")"
+	fatal=$(grep -E 'stopping the compositor|native event loop failed|Segmentation fault|Aborted|core dumped' "$DIR/log" | head -3)
+	[[ -z $fatal ]] || die "$label: the compositor logged a fatal error:
+$fatal"
 	ctl inspect >"$DIR/inspect" 2>&1 || die "$label: the session stopped answering"
 	local failed dup count focused unplaced visible
 	failed=$(grep -E '^Extension |Duplicate effect|did not settle' "$DIR/log" | sort | uniq -c)
@@ -247,37 +276,42 @@ for ((i = 0; i < WINDOWS; i++)); do open_window; done
 settle "$WINDOWS"
 check "open $WINDOWS windows" "$WINDOWS"
 
-for palette in first second; do
-	before=$(mode_of)
-	cp "$DIR/$palette.css" "$DIR/palette.new" && mv "$DIR/palette.new" "${PALETTE/#$HOME\//$DIR/home/}"
-	for _ in $(seq 100); do
-		ctl inspect >"$DIR/inspect"
-		[[ $palette == first || $(mode_of) != "$before" ]] && break
-		sleep 0.05
-	done
-	mode=$(mode_of)
-	[[ -n $mode && ($palette == first || $mode != "$before") ]] || die "the theme did not follow the $palette palette"
-	first=$(theme_of) seen=""
-	[[ -n $first ]] || die "$mode: the rail names no theme"
-	while :; do
-		theme=$(theme_of)
-		[[ " $seen " == *" $theme "* ]] && die "$mode: Alt+Shift+T came back to $theme before $first"
-		say "$mode $theme"
-		hammer "$mode $theme"
-		seen="$seen $theme"
-		chord
-		for _ in $(seq 60); do
+cycle() {
+	local palette before same mode first seen theme
+	for palette in first second; do
+		before=$(mode_of) same=false
+		[[ $(<"$DIR/$palette.css") == "$(<"$THEME_FILE")" ]] && same=true
+		cp "$DIR/$palette.css" "$DIR/palette.new" && mv "$DIR/palette.new" "$THEME_FILE"
+		for _ in $(seq 100); do
 			ctl inspect >"$DIR/inspect"
-			[[ $(theme_of) != "$theme" ]] && break
+			{ $same || [[ $(mode_of) != "$before" ]]; } && break
 			sleep 0.05
 		done
-		[[ $(theme_of) != "$theme" ]] || die "$mode: Alt+Shift+T left the rail on $theme"
-		[[ $(theme_of) == "$first" ]] && break
+		mode=$(mode_of)
+		[[ -n $mode ]] && { $same || [[ $mode != "$before" ]]; } || die "the theme did not follow the $palette palette"
+		first=$(theme_of) seen=""
+		[[ -n $first ]] || die "$mode: the rail names no theme"
+		while :; do
+			theme=$(theme_of)
+			[[ " $seen " == *" $theme "* ]] && die "$mode: Alt+Shift+T came back to $theme before $first"
+			say "$mode $theme"
+			hammer "$mode $theme"
+			seen="$seen $theme"
+			chord
+			for _ in $(seq 60); do
+				ctl inspect >"$DIR/inspect"
+				[[ $(theme_of) != "$theme" ]] && break
+				sleep 0.05
+			done
+			[[ $(theme_of) != "$theme" ]] || die "$mode: Alt+Shift+T left the rail on $theme"
+			[[ $(theme_of) == "$first" ]] && break
+		done
+		[[ $(tr ' ' '\n' <<<"$seen" | sed '/^$/d' | sort | tr '\n' ' ') == "$THEMES" ]] ||
+			die "$mode: Alt+Shift+T visited$seen, the config has $THEMES"
+		say "$mode themes:$seen"
 	done
-	[[ $(tr ' ' '\n' <<<"$seen" | sed '/^$/d' | sort | tr '\n' ' ') == "$THEMES" ]] ||
-		die "$mode: Alt+Shift+T visited$seen, the config has $THEMES"
-	say "$mode themes:$seen"
-done
+}
+cycle
 
 ctl reload >"$DIR/reload" 2>&1 || die "reload failed: $(cat "$DIR/reload")"
 settle "$WINDOWS"
@@ -383,5 +417,18 @@ hammer "broken config"
 cp "$DIR/good.lisp" "$DIR/init.lisp"
 ctl reload >"$DIR/reload" 2>&1 || die "reload after the refusal failed: $(cat "$DIR/reload")"
 hammer "after reload"
+
+if ((SOAK > 0)); then
+	soak_end=$((SECONDS + SOAK)) rounds=0
+	say "soaking for ${SOAK}s"
+	while ((SECONDS < soak_end)); do
+		rounds=$((rounds + 1))
+		cycle
+		ctl reload >"$DIR/reload" 2>&1 || die "soak round $rounds: reload failed: $(cat "$DIR/reload")"
+		settle "$WINDOWS"
+		check "soak round $rounds" "$WINDOWS"
+	done
+	say "soaked ${SOAK}s in $rounds rounds"
+fi
 
 say "PASS $REV $PKG"
