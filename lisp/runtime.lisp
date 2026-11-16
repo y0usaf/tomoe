@@ -833,7 +833,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                      (equal (second cache) layers) (equal (third cache) overrides))
                 (values (fourth cache) (fifth cache))
                 (multiple-value-bind (resolved areas)
-                    (preview-native-layers output-facts layers overrides)
+                    (preview-native-layers output-facts layers overrides t)
                   (%r! :layers-cache (list output-facts layers overrides resolved areas))
                   (values resolved areas)))
           (unless (find focused layout :key (lambda (w) (getf w :id)))

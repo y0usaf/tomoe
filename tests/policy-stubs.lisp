@@ -64,7 +64,7 @@
 (defun %output-icc (&rest arguments) (declare (ignore arguments)) 1)
 (defun %virtual-output (&rest arguments) (declare (ignore arguments)) nil)
 (defun %output-power (&rest arguments) (declare (ignore arguments)) 1)
-(defun %layers-begin () 1)
+(defun %layers-begin (pending) (declare (ignore pending)) 1)
 (defun %layers-output (&rest arguments) (declare (ignore arguments)) 1)
 (defun %layers-surface (&rest arguments) (declare (ignore arguments)) 1)
 (defun %present-begin (&rest arguments) (declare (ignore arguments)) 1)

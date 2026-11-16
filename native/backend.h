@@ -1,5 +1,6 @@
 #ifndef TOMOE_BACKEND_H
 #define TOMOE_BACKEND_H
+#include <stdbool.h>
 #include <stdint.h>
 
 struct tomoe;
@@ -45,7 +46,7 @@ const char *tomoe_outputs_apply(struct tomoe *server);
 const char *tomoe_outputs_preview(struct tomoe *server);
 uint64_t tomoe_outputs_revision(struct tomoe *server);
 const char *tomoe_outputs_current(struct tomoe *server);
-int tomoe_layers_begin(struct tomoe *server);
+int tomoe_layers_begin(struct tomoe *server, bool pending);
 int tomoe_layers_output(struct tomoe *server, const char *name,
     int x, int y, int width, int height, int scale_120);
 int tomoe_layers_surface(struct tomoe *server, uint32_t id,

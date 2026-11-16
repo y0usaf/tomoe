@@ -745,7 +745,7 @@ static lisp_value prim_outputs_current(int argc, lisp_value *argv) {
 }
 
 static lisp_value prim_layers_begin(int argc, lisp_value *argv) {
-    return status(tomoe_layers_begin(server()));
+    return status(tomoe_layers_begin(server(), truth(argv[0])));
 }
 
 static lisp_value prim_layers_output(int argc, lisp_value *argv) {
@@ -1168,7 +1168,7 @@ static const struct primitive {
     { "%outputs-preview", prim_outputs_preview, 0, 0 },
     { "%outputs-revision", prim_outputs_revision, 0, 0 },
     { "%outputs-current", prim_outputs_current, 0, 0 },
-    { "%layers-begin", prim_layers_begin, 0, 0 },
+    { "%layers-begin", prim_layers_begin, 1, 1 },
     { "%layers-output", prim_layers_output, 6, 6 },
     { "%layers-surface", prim_layers_surface, 5, 5 },
     { "%layers-preview", prim_layers_preview, 0, 0 },

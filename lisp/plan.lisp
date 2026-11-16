@@ -3,9 +3,10 @@
     (list :name (getf output :name) :x (getf output :x) :y (getf output :y)
           :width (getf output :width) :height (getf output :height))))
 
-(defun preview-native-layers (outputs layers overrides)
-  "Resolve layer placement and usable output areas without sending configures."
-  (unless (= 1 (%layers-begin)) (error "Cannot allocate layer preview."))
+(defun preview-native-layers (outputs layers overrides pending)
+  "Resolve layer placement and usable output areas without sending configures, on the
+staged outputs when PENDING and on the committed ones otherwise."
+  (unless (= 1 (%layers-begin pending)) (error "Cannot allocate layer preview."))
   (dolist (output outputs)
     (unless (= 1 (%layers-output (getf output :name)
                                  (getf output :x) (getf output :y)
@@ -237,7 +238,7 @@
     (%catch
      (lambda ()
        (when outputs-changed (stage-native-outputs (resolved-native-output-config context)))
-       (preview-native-layers (getf context :outputs) (getf context :layers) overrides)
+       (preview-native-layers (getf context :outputs) (getf context :layers) overrides outputs-changed)
        (let ((view (getf context :view)))
          (unless (= 1 (%present-begin (getf view :x) (getf view :y) (getf view :zoom)
                                       (or (getf context :focus) 0)

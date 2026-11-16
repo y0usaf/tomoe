@@ -611,7 +611,7 @@ bool layers_prepare_presentation(struct tomoe *s, struct presentation *plan) {
     candidate->published = false;
     if ((plan->target_count && !plan->targets) ||
             (plan->output_count && !plan->outputs)) return false;
-    if (!plan_lifetime_valid(s, candidate, false) ||
+    if (!plan_lifetime_valid(s, candidate, !plan->outputs_changed) ||
             !layers_plan_arithmetic_valid(candidate)) return false;
 
     for (size_t i = 0; i < candidate->output_count; i++) {
@@ -752,7 +752,7 @@ static bool plan_init_live(struct tomoe *s, struct layer_plan *plan) {
     return true;
 }
 
-int tomoe_layers_begin(struct tomoe *s) {
+int tomoe_layers_begin(struct tomoe *s, bool pending) {
     if (!s) return 0;
     layers_preview_finish(s);
     struct layer_plan *plan = calloc(1, sizeof(*plan));
@@ -764,10 +764,10 @@ int tomoe_layers_begin(struct tomoe *s) {
         return 0;
     }
     plan->server = s;
-    plan->pending_outputs = true;
+    plan->pending_outputs = pending;
     struct output_location *locations = NULL;
     size_t location_count = 0;
-    if (!output_locations(s, true, &locations, &location_count) ||
+    if (!output_locations(s, pending, &locations, &location_count) ||
             location_count != outputs) {
         free(locations);
         plan_free_arrays(plan);
