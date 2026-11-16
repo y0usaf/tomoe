@@ -34,7 +34,7 @@ rapid focus switches and moves with windows closing and opening mid-animation,
 a reload, and a config whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
-(typed Super+Tab and Alt+Shift+T), rail theme and picture must hold. The
+(typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must hold. The
 session has no network, so services the config starts cannot reach a device.
 Nothing reaches the running desktop.
 
@@ -287,8 +287,8 @@ binds() { grep -oE ':MODIFIERS [0-9]+ :CODE [0-9]+ :KEYSYM "[^"]*" :OWNER "[^"]*
 shot() {
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" grim -t ppm "$1" 2>"$DIR/grim" || die "cannot capture the screen: $(cat "$DIR/grim")"
 }
-band_drift() {
-	python3 - "$1" "$2" <<'PY'
+rail_drift() {
+	python3 - "$1" "$2" "$3" <<'PY'
 import sys
 def ppm(path):
     data = open(path, "rb").read()
@@ -300,24 +300,25 @@ def ppm(path):
         while not data[at:at + 1].isspace():
             at += 1
         fields.append(data[start:at])
-    return (int(fields[1]), int(fields[2])), data[at + 1:]
-(size, a), (other, b) = ppm(sys.argv[1]), ppm(sys.argv[2])
-if size != other:
-    print(1000)
-    sys.exit()
-width, height = size
-bands = [0] * ((width + 127) // 128)
-for row in range(height):
-    base = row * width * 3
-    if a[base:base + width * 3] == b[base:base + width * 3]:
-        continue
-    for x in range(width):
-        at = base + x * 3
-        if a[at:at + 3] != b[at:at + 3]:
-            bands[x // 128] += 1
-print(max(count * 1000 // (min(128, width - band * 128) * height) for band, count in enumerate(bands)))
+    return int(fields[1]), data[at + 1:]
+(width, a), (other, b) = ppm(sys.argv[1]), ppm(sys.argv[2])
+x, y, w, h = map(int, sys.argv[3].split())
+changed, colours = 0, set()
+for row in range(y, y + h):
+    for column in range(x, x + w):
+        at = (row * width + column) * 3
+        colours.add(b[at:at + 3])
+        changed += a[at:at + 3] != b[at:at + 3]
+print(changed * 1000 // (w * h), len(colours))
 PY
-PY
+}
+rail_box() {
+	grep -o ':NAME :RAIL-TYPE :OUTPUT "[^"]*" :X [0-9]* :Y [0-9]* :WIDTH [0-9]* :HEIGHT [0-9]*' "$DIR/inspect" |
+		head -1 | awk '{print $6, $8, $10, $12}'
+}
+surfaces() {
+	grep -oE '\(:OWNER "[^"]*" :SOURCE-ID [0-9]+ :NAME :[A-Z-]+ :OUTPUT "[^"]*" :X -?[0-9]+ :Y -?[0-9]+ :WIDTH [0-9]+ :HEIGHT [0-9]+' \
+		"$DIR/inspect" | grep -v 'CURSOR' | sort
 }
 keyed() {
 	local label=$1 start
@@ -334,8 +335,8 @@ keyed() {
 [[ -n $(command -v grim) && -n $(command -v python3) ]] || die "the refusal check needs grim and python3"
 mounted=$(extensions)
 ctl inspect >"$DIR/inspect" || die "the session stopped answering"
-held_binds=$(binds) held_theme=$(theme_of) held_focus=$(focused)
-[[ -n $held_binds && -n $held_theme ]] || die "no binds or rail theme before the refusal"
+held_binds=$(binds) held_theme=$(theme_of) held_focus=$(focused) held_surfaces=$(surfaces) box=$(rail_box)
+[[ -n $held_binds && -n $held_theme && -n $box ]] || die "no binds, rail theme or rail surface before the refusal"
 sleep 0.6
 shot "$DIR/held.ppm"
 cp "$DIR/init.lisp" "$DIR/good.lisp"
@@ -352,10 +353,13 @@ check "broken config" "$WINDOWS"
 [[ $(binds) == "$held_binds" ]] || die "the refused config changed the binds"
 [[ $(theme_of) == "$held_theme" ]] || die "the refused config moved the rail off $held_theme"
 [[ $(focused) == "$held_focus" ]] || die "the refused config moved focus off $held_focus"
+[[ $(surfaces) == "$held_surfaces" ]] || die "the refused config changed the rail and overlay surfaces:
+$(diff <(echo "$held_surfaces") <(surfaces))"
 shot "$DIR/refused.ppm"
-drift=$(band_drift "$DIR/held.ppm" "$DIR/refused.ppm")
-say "broken config: at most $drift/1000 of a screen band changed"
-((drift <= ${GATE_DRIFT:-100})) || die "the refused config changed $drift/1000 of a screen band"
+read -r drift colours < <(rail_drift "$DIR/held.ppm" "$DIR/refused.ppm" "$box")
+say "broken config: $drift/1000 of the rail ($box) changed, $colours colours"
+((colours >= 8)) || die "the rail ($box) is blank after the refusal"
+((drift <= ${GATE_DRIFT:-100})) || die "the refused config changed $drift/1000 of the rail ($box)"
 keyed "Super+Tab after the refusal" "key 125 down" "key 15 down" sync "key 15 up" "key 125 up" sync
 keyed "Super+Shift+Tab after the refusal" "key 125 down" "key 42 down" "key 15 down" sync \
 	"key 15 up" "key 42 up" "key 125 up" sync
