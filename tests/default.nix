@@ -1468,6 +1468,7 @@ let
   ];
 in
 {
+  inherit client;
   lisp-unit = lispUnit;
   event-ring = eventRing;
   compositor = vm (

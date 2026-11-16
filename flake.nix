@@ -244,15 +244,18 @@
           inherit pkgs;
           tomoe = package pkgs { };
           baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
-        }) [ "suites" ]
+        }) [ "suites" "client" ]
       ) pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
-        suites =
+        inherit
           (import ./tests {
             inherit pkgs;
             tomoe = package pkgs { };
             baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
-          }).suites;
+          })
+          suites
+          client
+          ;
         bench = import ./bench {
           inherit pkgs;
           tomoe = package pkgs { };

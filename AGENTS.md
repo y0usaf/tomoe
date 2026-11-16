@@ -17,8 +17,16 @@ conflicts or the smoke check fails, nothing is pushed.
 
 The smoke check is one VM, a few minutes: it builds the compositor, starts it,
 draws windows, takes keyboard and pointer input, and survives a policy reload
-(`integration`, `pointer-protocols` and `livepatch` in `tests/default.nix`). That is
-the whole landing gate. Everything slower is for a speed claim, not for landing:
+(`integration`, `pointer-protocols` and `livepatch` in `tests/default.nix`).
+
+Before a commit is pinned in finix, `./gate.sh REV` runs it with the config finix
+generates against that exact build: a private headless instance on its own socket,
+runtime directory and home, at 5120x1440@240, with test windows, dark then light,
+every rail theme, rapid focus switches and moves while windows close and open
+mid-animation, a reload, and a config made for another build, which must be
+refused. It fails on any extension failure, duplicate timer, lost focus or
+unplaced window. Pin only a revision it passed. Nothing it does reaches the
+running desktop. Everything slower is for a speed claim, not for landing:
 
 ```sh
 nix flake check            # every aggregate VM, ~30 min
