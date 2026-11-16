@@ -145,6 +145,14 @@ x, y, w, h = box["x"], box["y"], box["w"], box["h"]
 middle, corner = (x + w // 2, y + h // 2), (x + w // 8, y + h // 8)
 hint = lambda: row(screen["y"] + screen["h"] - 40, overlays=True)
 themed = ["#203040", "#c06030"]
+cli(f"mount {SCREEN_CLIPBOARD_PROBE}")
+cli("command shoot-screen")
+machine.wait_until_succeeds(ENV + "WAYLAND_DISPLAY=check wl-paste --list-types | grep -qx image/png", timeout=10)
+for attempt in range(2):
+    status, _ = machine.execute(ENV + "WAYLAND_DISPLAY=check timeout 10 wl-paste -t image/png > /run/screen-paste.png")
+    assert status == 0, f"pasting the screenshot tomoe owns never reached end of file (paste {attempt + 1}, status {status})"
+    machine.succeed("head -c 8 /run/screen-paste.png | od -An -tx1 | tr -d ' \\n' | grep -qx 89504e470d0a1a0a")
+cli("unmount screen-clipboard-probe")
 cli(f"mount {SCREENSHOT_PROBE}")
 cli(f"mount {THEME_PROBE}")
 cli("command select")

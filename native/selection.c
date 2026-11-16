@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "ext-data-control-v1-protocol.h"
+#include "loop.h"
 #include "primary-selection-unstable-v1-protocol.h"
 #include "wlr-data-control-unstable-v1-protocol.h"
 
@@ -106,7 +107,6 @@ static int transfer_write(int fd, uint32_t mask, void *data) {
         t->offset += (size_t)written;
     }
     wl_event_source_remove(t->event);
-    close(fd);
     free(t->data);
     free(t);
     return 0;
@@ -129,7 +129,7 @@ static void source_send(struct source *src, const char *mime, int fd) {
     if (t && t->data && fcntl(fd, F_SETFL, O_NONBLOCK) == 0) {
         memcpy(t->data, src->data, src->length);
         t->length = src->length;
-        t->event = wl_event_loop_add_fd(wl_display_get_event_loop(src->server->display), fd,
+        t->event = loop_add_owned_fd(wl_display_get_event_loop(src->server->display), fd,
             WL_EVENT_WRITABLE, transfer_write, t);
         if (t->event) return;
     }

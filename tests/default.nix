@@ -251,6 +251,14 @@ let
                     (bind-key '(:super) "F12" "select"))
               (when (eq (getf event :type) :command) (list (screenshot)))))
   '';
+  screenClipboardProbe = pkgs.writeText "screen-clipboard-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "screen-clipboard-probe" (:reads (:command) :state nil) (snapshot state event)
+      (declare (ignore snapshot))
+      (values state
+              (list (define-command "shoot-screen"))
+              (when (eq (getf event :type) :command) (list (screenshot :screen)))))
+  '';
   blurProbe = pkgs.writeText "blur-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "blur-probe" (:reads () :state nil) (snapshot state event)
@@ -1108,6 +1116,7 @@ let
       script = ''
         ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
         SCREENSHOT_PROBE = "${screenshotProbe}"
+        SCREEN_CLIPBOARD_PROBE = "${screenClipboardProbe}"
         OFFSCREEN_PROBE = "${offscreenProbe}"
         BLUR_PROBE = "${blurProbe}"
         THEME_PROBE = "${themeProbe}"
