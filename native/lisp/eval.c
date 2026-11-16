@@ -1502,6 +1502,8 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
     case SF_DEFPARAMETER: {
         lisp_value name = CAR(args);
         lisp_value init = eval(CAR(CDR(args)), env);
+        if (!dynamically_bound(SYM(name)))
+            check_global_store(name, init);
         symbol_make_special(SYM(name));
         SYM(name)->value = init;
         mv_return1(name);
@@ -1509,8 +1511,12 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
     }
     case SF_DEFVAR: {
         lisp_value name = CAR(args);
-        if (SYM(name)->value == VAL(lisp.sym_unbound) && consp(CDR(args)))
-            SYM(name)->value = eval(CAR(CDR(args)), env);
+        if (SYM(name)->value == VAL(lisp.sym_unbound) && consp(CDR(args))) {
+            lisp_value init = eval(CAR(CDR(args)), env);
+            if (!dynamically_bound(SYM(name)))
+                check_global_store(name, init);
+            SYM(name)->value = init;
+        }
         symbol_make_special(SYM(name));
         mv_return1(name);
         return name;
