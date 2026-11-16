@@ -379,7 +379,7 @@ class Niri(Compositor):
     name = "niri"
     process = "niri"
     version_command = "niri --version"
-    focus_binding = "Mod+Tab -> focus-window-down (config.kdl)"
+    focus_binding = "Mod+Tab -> focus-column-right-or-first (config.kdl)"
     drag_binding = "Mod+LMB -> interactive move (built in)"
     drag_setup = "niri msg action toggle-window-floating on the bench window"
 
@@ -398,7 +398,7 @@ class Niri(Compositor):
                 "    }\n"
                 "}\n"
                 "binds {\n"
-                "    Mod+Tab { focus-window-down; }\n"
+                "    Mod+Tab { focus-column-right-or-first; }\n"
                 "}\n"
                 + (f"debug {{\n    render-drm-device \"{self.paths['drm_device']}\"\n}}\n"
                    if self.paths.get("drm_device") else "")
@@ -721,6 +721,9 @@ def merge_runs(runs):
         merged["presented"]["status"] = "unsupported"
     if merged["redraw_abandoned"]:
         merged["redraw"]["status"] = "unreliable"
+    expected = merged["presented"].get("samples", 0)
+    if merged["event"]["status"] == "ok" and merged["event"]["samples"] < 0.9 * expected:
+        merged["event"]["status"] = "partial"
     return merged
 
 
@@ -1063,7 +1066,7 @@ def run_compositor(machine, paths, name, hz):
 def formatted(value, noise=None):
     if isinstance(value, dict):
         if value.get("status") != "ok":
-            return "none"
+            return "partial" if value.get("status") == "partial" else "none"
         field = "p50"
         return f"{value[field]:.2f}"
     if isinstance(value, float):
