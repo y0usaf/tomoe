@@ -86,7 +86,7 @@ build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(HEADERS)
 
 build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) \
-		-lresvg -ldl -lpthread -lzstd -lm
+		-lresvg -ldl -lpthread -lm
 
 build/embed: tools/embed.c | build
 	$(CC) $(CFLAGS_CODE) -o $@ $<

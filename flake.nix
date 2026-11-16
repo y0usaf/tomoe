@@ -152,7 +152,6 @@
             pkgs.libjpeg
             (resvg pkgs)
             pkgs.systemdLibs
-            pkgs.zstd
             (pipewire pkgs)
           ];
           strictDeps = true;
