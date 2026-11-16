@@ -149,11 +149,22 @@ static lisp_value primitive_xwayland_display(int count, lisp_value *arguments) {
     return lisp_cstring(loop_state.xwayland_display);
 }
 
+#ifndef TOMOE_BUILD
+#define TOMOE_BUILD ""
+#endif
+
+static lisp_value primitive_build(int count, lisp_value *arguments) {
+    (void)count;
+    (void)arguments;
+    return lisp_cstring(TOMOE_BUILD);
+}
+
 void loop_register_primitives(struct tomoe *server) {
     (void)server;
     lisp_define_primitive("%QUIT", primitive_quit, 0, 0);
     lisp_define_primitive("%RELOAD-REQUESTED", primitive_reload_requested, 0, 0);
     lisp_define_primitive("%XWAYLAND-DISPLAY", primitive_xwayland_display, 0, 0);
+    lisp_define_primitive("%BUILD", primitive_build, 0, 0);
 }
 
 #ifndef TOMOE_PATH_PREFIX
@@ -316,8 +327,9 @@ static int run_cli(int argc, char **argv) {
             return 0;
         }
         if (!strcmp(option, "-V") || !strcmp(option, "--version")) {
-            printf("tomoe %s, JSON wire %d, control wire %d, native ABI %d\n", version_string(),
-                JSON_WIRE_VERSION, CONTROL_WIRE_VERSION, tomoe_abi_version());
+            printf("tomoe %s, JSON wire %d, control wire %d, native ABI %d, build %s\n", version_string(),
+                JSON_WIRE_VERSION, CONTROL_WIRE_VERSION, tomoe_abi_version(),
+                *TOMOE_BUILD ? TOMOE_BUILD : "unpackaged");
             return 0;
         }
         if (!strcmp(option, "--socket")) {

@@ -1337,9 +1337,9 @@ evaluates is held to +SOURCE-STEPS+ and every reducer it invokes to its own watc
   (record-error message)
   (%r! :config-error
        (list :serial (1+ (getf (runtime-config-error) :serial 0))
-             :message (if fallback
-                          "Failed to load the config file. Running with defaults; check the log for details."
-                          "Failed to load the config file. Keeping the running config; check the log for details.")))
+             :message (format nil "Failed to load the config file. ~A: ~A"
+                              (if fallback "Running with defaults" "Keeping the running config")
+                              (subseq message 0 (min 200 (length message))))))
   (let ((failure nil))
     (%catch (lambda ()
               (transact (runtime-mounts) '(:type :change :keys (:config-error))
