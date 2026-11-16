@@ -1,6 +1,8 @@
 { pkgs, tomoe, compositors ? "tomoe,sway,niri,hyprland" }:
 let
   client = pkgs.callPackage ./client.nix { };
+  closure = package: pkgs.closureInfo { rootPaths = [ package ]; };
+  niri = pkgs.callPackage ./niri.nix { };
 in
 pkgs.testers.runNixOSTest {
   name = "tomoe-bench";
@@ -17,12 +19,14 @@ pkgs.testers.runNixOSTest {
     ];
     hardware.graphics.enable = true;
     hardware.uinput.enable = true;
+    services.seatd.enable = true;
+    systemd.services.seatd.environment.SEATD_VTBOUND = "0";
     environment.systemPackages = [
       tomoe
       client
       pkgs.python3
       pkgs.sway
-      pkgs.niri
+      niri
       pkgs.hyprland
       pkgs.wayland-utils
       pkgs.procps
@@ -39,6 +43,12 @@ pkgs.testers.runNixOSTest {
         "compositors": "${compositors}",
         "cores": "4",
         "memory": "4096",
+        "closures": {
+            "tomoe": "${closure tomoe}",
+            "sway": "${closure pkgs.sway}",
+            "niri": "${closure niri}",
+            "hyprland": "${closure pkgs.hyprland}",
+        },
     }
     exec(compile(open(BENCH + "/driver.py").read()
                  + "\nmain(machine, PATHS)\n", "bench", "exec"))

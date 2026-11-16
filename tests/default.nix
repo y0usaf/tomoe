@@ -1444,6 +1444,8 @@ let
   equivalenceSettings = compositorSettings // {
     timeout = 1800;
   };
+  benchClosure = package: pkgs.closureInfo { rootPaths = [ package ]; };
+  benchNiri = pkgs.callPackage ../bench/niri.nix { };
   benchScript =
     compositors:
     ''
@@ -1453,6 +1455,12 @@ let
           "compositors": "${compositors}",
           "cores": "4",
           "memory": "4096",
+          "closures": {
+              "tomoe": "${benchClosure tomoe}",
+              "sway": "${benchClosure pkgs.sway}",
+              "niri": "${benchClosure benchNiri}",
+              "hyprland": "${benchClosure pkgs.hyprland}",
+          },
       }
       exec(compile(open(BENCH + "/driver.py").read()
                    + "\nmain(machine, PATHS)\n", "bench", "exec"))
@@ -1466,7 +1474,7 @@ let
     packages = [
       benchClient
       pkgs.sway
-      pkgs.niri
+      benchNiri
       pkgs.hyprland
       pkgs.procps
     ];

@@ -258,6 +258,31 @@ static void redraw_done(void *data, struct wl_callback *callback, uint32_t time)
 
 static const struct wl_callback_listener redraw_listener = { redraw_done };
 
+static int64_t motion_presented[MAX_SAMPLES];
+static size_t motion_count;
+static unsigned motion_discarded, motion_stalls;
+static uint32_t motion_refresh_ns;
+
+static void motion_shown(void *data, struct wp_presentation_feedback *feedback, uint32_t hi,
+        uint32_t lo, uint32_t nsec, uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo,
+        uint32_t flags) {
+    (void)data; (void)seq_hi; (void)seq_lo; (void)flags;
+    if (motion_count < MAX_SAMPLES)
+        motion_presented[motion_count++] =
+            (int64_t)((((uint64_t)hi << 32) | lo) * 1000000000ULL + nsec);
+    motion_refresh_ns = refresh;
+    wp_presentation_feedback_destroy(feedback);
+}
+
+static void motion_dropped(void *data, struct wp_presentation_feedback *feedback) {
+    (void)data;
+    motion_discarded++;
+    wp_presentation_feedback_destroy(feedback);
+}
+
+static const struct wp_presentation_feedback_listener motion_listener = {
+    .sync_output = sync_output, .presented = motion_shown, .discarded = motion_dropped };
+
 static unsigned pointer_events, keyboard_events;
 
 static void event_observed(void) {
@@ -671,8 +696,11 @@ static void pointer_park(void) {
     usleep(30000);
 }
 
+static int pointer_x = -1, pointer_y = -1;
+
 static void pointer_centre(void) {
-    inject_delta(output_width / 2, output_height / 2);
+    inject_delta(pointer_x >= 0 ? pointer_x : output_width / 2,
+        pointer_y >= 0 ? pointer_y : output_height / 2);
     if (uinput_pointer < 0) flush();
     usleep(30000);
 }
@@ -749,6 +777,62 @@ static void emit(const char *name, const int64_t *values, size_t count, bool las
     printf("}%s\n", last ? "" : ",");
 }
 
+static void motion_frame(void) {
+    paint(&windows[0]);
+    redraw_seen = false;
+    redraw_callback = wl_surface_frame(windows[0].surface);
+    wl_callback_add_listener(redraw_callback, &redraw_listener, NULL);
+    if (presentation)
+        wp_presentation_feedback_add_listener(
+            wp_presentation_feedback(presentation, windows[0].surface), &motion_listener, NULL);
+    wl_surface_commit(windows[0].surface);
+    flush();
+}
+
+static void phase_motion(double seconds) {
+    const uint64_t input_period = 4000000ULL;
+    begin_drag();
+    uint64_t started = now_ns();
+    uint64_t end = started + (uint64_t)(seconds * 1e9);
+    uint64_t next_input = started;
+    uint64_t sent = started;
+    unsigned steps = 0;
+    motion_frame();
+    for (uint64_t now = now_ns(); now < end; now = now_ns()) {
+        if (now >= next_input) {
+            int direction = (steps / 50) % 2 ? -1 : 1;
+            inject_delta(direction * 4, direction * 2);
+            steps++;
+            next_input += input_period;
+            if (next_input <= now) next_input = now + input_period;
+        }
+        uint64_t wait = next_input > now ? next_input - now : 0;
+        pump(wait >= 1000000ULL ? (int)(wait / 1000000ULL) : 1);
+        now = now_ns();
+        if (redraw_seen || now - sent > SAMPLE_TIMEOUT_NS) {
+            if (!redraw_seen) motion_stalls++;
+            motion_frame();
+            sent = now;
+        }
+    }
+    uint64_t elapsed = now_ns() - started;
+    end_drag();
+    uint64_t drain = now_ns() + 200000000ULL;
+    while (now_ns() < drain) pump(20);
+    qsort(motion_presented, motion_count, sizeof(*motion_presented), compare_ints);
+    static int64_t intervals[MAX_SAMPLES];
+    size_t interval_count = 0;
+    for (size_t i = 1; i < motion_count; i++)
+        intervals[interval_count++] = (motion_presented[i] - motion_presented[i - 1]) / 1000;
+    printf("{\"phase\": \"motion\", \"windows\": %d, \"presented\": %zu,"
+           " \"discarded\": %u, \"stalls\": %u, \"inputs\": %u, \"seconds\": %.3f,"
+           " \"refresh_us\": %.3f,\n",
+        window_count, motion_count, motion_discarded, motion_stalls, steps, elapsed / 1e9,
+        motion_refresh_ns / 1000.0);
+    emit("interval_us", intervals, interval_count, true);
+    printf("}\n");
+}
+
 static void report(const char *phase) {
     int64_t presented[MAX_SAMPLES], events[MAX_SAMPLES], redraws[MAX_SAMPLES];
     size_t presented_count = 0, events_count = 0, redraws_count = 0;
@@ -796,6 +880,7 @@ int main(int argc, char **argv) {
         } else fail("unknown argument \"%s\"", argv[i]);
     }
     if (window_count < 1 || window_count > MAX_WINDOWS) fail("--windows wants 1..%d", MAX_WINDOWS);
+    setvbuf(stdout, NULL, _IOLBF, 0);
     display = wl_display_connect(NULL);
     if (!display) fail("cannot connect to the display named by $WAYLAND_DISPLAY");
     struct wl_registry *registry = wl_display_get_registry(display);
@@ -840,6 +925,7 @@ int main(int argc, char **argv) {
     }
     flush();
     settle();
+    printf("bench-client ready\n");
     if (ready) {
         FILE *file = fopen(ready, "w");
         if (!file) fail("cannot open %s: %s", ready, strerror(errno));
@@ -850,6 +936,11 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 600; i++) {
             if (access(wait_path, F_OK) == 0) break;
             usleep(50000);
+        }
+        FILE *file = fopen(wait_path, "r");
+        if (file) {
+            if (fscanf(file, "%d %d", &pointer_x, &pointer_y) != 2) pointer_x = pointer_y = -1;
+            fclose(file);
         }
     }
     if (!strcmp(phase, "move") || !strcmp(phase, "key")) {
@@ -872,6 +963,8 @@ int main(int argc, char **argv) {
         for (int i = 0; i < count; i++) sample_drag(i);
         end_drag();
         report(phase);
+    } else if (!strcmp(phase, "motion")) {
+        phase_motion(seconds);
     } else if (!strcmp(phase, "frames")) {
         phase_frames(seconds);
     } else if (!strcmp(phase, "idle")) {

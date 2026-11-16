@@ -676,12 +676,17 @@ can be iterated on without the whole VM.
 `nix flake check`. It boots every compositor that runs in the VM on the same
 vkms output at the same mode, drives them all with the neutral
 `bench/bench-client.c` client over uinput evdev devices (so input takes the real
-libinput path), and prints a table plus one JSON document with latency (input to
-presented frame, to the client's frame callback, and to the compositor's input
-event), CPU per frame at 1, 10 and 50 windows, idle CPU and wakeups, and RSS/PSS.
-Every number carries the spread across its repeats. vkms is a software display,
+libinput path, flat 1:1), and prints a table plus one JSON document with latency
+(input to presented frame, to the client's frame callback, and to the compositor's
+input event), CPU per frame at 1, 10 and 50 windows, presented frame times and CPU
+per frame while a window is dragged, idle CPU and wakeups, RSS/PSS at 0, 1, 10 and
+50 windows, and the size of each executable and of its runtime closure. Every
+number carries the spread across its repeats. All four composite with Mesa
+llvmpipe; niri is rebuilt without its refusal of software renderers
+(`bench/niri.nix`), and Tomoe goes through zink. vkms is a 60 Hz software display,
 so these are compositor pipeline costs: nothing here measures input-to-photon
-latency or power draw.
+latency, GPU cost or power draw. The landing queue runs the same script as
+`tomoe-land submit --timing -s bench`.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that

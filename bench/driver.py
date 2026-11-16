@@ -11,7 +11,6 @@ ENVIRONMENT = {
     "HOME": "/root",
     "PATH": "/run/current-system/sw/bin",
     "LIBGL_ALWAYS_SOFTWARE": "1",
-    "MESA_LOADER_DRIVER_OVERRIDE": "zink",
     "GALLIUM_DRIVER": "llvmpipe",
     "LP_NUM_THREADS": "4",
     "XDG_CACHE_HOME": "/run/bench/cache",
@@ -38,6 +37,7 @@ def unit_environment(values):
 
 class Compositor:
     name = ""
+    process = ""
     version_command = ""
     presentation = "wp_presentation"
     focus_binding = ""
@@ -85,7 +85,39 @@ class Compositor:
         )
         self.pid = self.wait_pid()
         self.wait_display()
+        self.pid = self.resolve(self.pid)
         return self.pid
+
+    def processes(self):
+        rows = {}
+        for line in self.run("ps -e -o pid=,ppid=,comm=", check=False).splitlines():
+            fields = line.split(None, 2)
+            if len(fields) == 3:
+                rows[int(fields[0])] = (int(fields[1]), fields[2].strip())
+        return rows
+
+    def descendants(self, pid, rows=None):
+        rows = rows if rows is not None else self.processes()
+        found = [pid]
+        for current in found:
+            found.extend(child for child, (parent, _) in sorted(rows.items())
+                         if parent == current and child not in found)
+        return found
+
+    def resolve(self, pid):
+        rows = self.processes()
+        names = (self.process, f".{self.process}-wrapped"[:15])
+        matches = [candidate for candidate in self.descendants(pid, rows)
+                   if rows.get(candidate, (0, ""))[1] in names]
+        if matches:
+            return max(matches, key=lambda candidate: int(
+                self.run(f"ps -o rss= -p {candidate}", check=False).strip() or 0))
+        raise AssertionError(f"no {self.process} process under {pid}: "
+                             + ", ".join(f"{key}:{value[1]}" for key, value in rows.items()
+                                         if key in self.descendants(pid, rows)))
+
+    def tree(self):
+        return self.descendants(self.pid)
 
     def wait_pid(self):
         for _ in range(1200):
@@ -140,6 +172,9 @@ class Compositor:
     def prepare_drag(self):
         return self.drag_setup
 
+    def motion_signature(self):
+        return placement(self.windows())
+
     def memory(self):
         return {}
 
@@ -155,6 +190,7 @@ class Compositor:
 
 class Tomoe(Compositor):
     name = "tomoe"
+    process = "tomoe"
     version_command = "tomoe --version"
     focus_binding = "super+Tab -> focus-next-window (init.lisp)"
     drag_binding = "super+LMB -> move window (builtin drag extension)"
@@ -165,9 +201,13 @@ class Tomoe(Compositor):
             f"{self.config}/init.lisp":
                 '(in-package #:tomoe-user)\n'
                 '\n'
+                '(load-policy "desktop")\n'
+                '\n'
                 '(define-extension "bench-bindings" (:reads () :state nil) (snapshot state event)\n'
                 '  (declare (ignore snapshot state event))\n'
-                '  (values nil (list (bind-key \'(:mod) "Tab" "focus-next-window") nil)))\n'
+                '  (values nil (list (bind-key \'(:mod) "Tab" "focus-next-window")\n'
+                '                    (settings :mouse (list :accel-profile :flat :accel-speed 0)))\n'
+                '          nil))\n'
         }
 
     def command(self):
@@ -177,7 +217,7 @@ class Tomoe(Compositor):
         return command + ["--config", f"{self.config}/init.lisp", "--no-watch"]
 
     def extra_environment(self):
-        return {"TOMOE_TIMINGS": "1"}
+        return {"MESA_LOADER_DRIVER_OVERRIDE": "zink"}
 
     def sockets(self):
         listing = self.run(f"ls {self.runtime} 2>/dev/null", check=False)
@@ -186,9 +226,13 @@ class Tomoe(Compositor):
     def wait_first_frame(self):
         envs = shell_environment(dict(ENVIRONMENT) | {"XDG_RUNTIME_DIR": self.runtime})
         for _ in range(600):
-            if self.run(f"{envs}tomoe --socket bench inspect", check=False).strip():
+            inspect = self.run(f"{envs}tomoe --socket bench inspect", check=False)
+            if inspect.strip():
                 break
             time.sleep(0.1)
+        error = re.search(r":CONFIG-ERROR \((.{0,300})", inspect)
+        if error:
+            raise AssertionError(f"tomoe rejected the bench config: {error.group(1)}")
         self.run(f"{envs}tomoe --socket bench frames", check=False)
 
     def windows(self):
@@ -207,6 +251,19 @@ class Tomoe(Compositor):
                 "focused": bool(entry.get("focused")),
             })
         return rows
+
+    def motion_signature(self):
+        envs = shell_environment(dict(ENVIRONMENT) | {"XDG_RUNTIME_DIR": self.runtime})
+        hits = []
+        for row in self.windows():
+            if not str(row.get("app_id", "")).startswith("bench-") or row.get("w") is None:
+                continue
+            middle = row["y"] + row["h"] // 2
+            for x in (row["x"] + 2, row["x"] + row["w"] + 2):
+                reply = self.run(f"{envs}tomoe --socket bench hit-test {x} {middle}", check=False)
+                found = re.search(r":ID (\d+)", reply)
+                hits.append(found.group(1) if found else None)
+        return hits
 
     def output(self):
         envs = shell_environment(dict(ENVIRONMENT) | {"XDG_RUNTIME_DIR": self.runtime})
@@ -233,6 +290,7 @@ class Tomoe(Compositor):
 
 class Sway(Compositor):
     name = "sway"
+    process = "sway"
     version_command = "sway --version"
     focus_binding = "Mod4+Tab -> focus next (bindsym)"
     drag_binding = "Mod4+LMB -> floating move (floating_modifier)"
@@ -241,6 +299,10 @@ class Sway(Compositor):
     def files(self):
         return {
             f"{self.config}/sway.conf":
+                "input type:pointer {\n"
+                "    accel_profile flat\n"
+                "    pointer_accel 0\n"
+                "}\n"
                 "floating_modifier Mod4\n"
                 "bindsym Mod4+Tab focus next\n"
                 "default_border pixel 1\n"
@@ -254,9 +316,10 @@ class Sway(Compositor):
     def extra_environment(self):
         values = {
             "WLR_BACKENDS": "drm,libinput",
-            "WLR_RENDERER": "pixman",
+            "WLR_RENDERER": "gles2",
+            "WLR_RENDERER_ALLOW_SOFTWARE": "1",
             "WLR_NO_HARDWARE_CURSORS": "1",
-            "LIBSEAT_BACKEND": "builtin",
+            "LIBSEAT_BACKEND": "seatd",
         }
         if self.paths.get("drm_device"):
             values["WLR_DRM_DEVICES"] = self.paths["drm_device"]
@@ -314,10 +377,11 @@ class Sway(Compositor):
 
 class Niri(Compositor):
     name = "niri"
+    process = "niri"
     version_command = "niri --version"
     focus_binding = "Mod+Tab -> focus-window-down (config.kdl)"
-    drag_binding = "none: niri 26.04 has no interactive window move on a pointer bind"
-    drag_setup = "none"
+    drag_binding = "Mod+LMB -> interactive move (built in)"
+    drag_setup = "niri msg action toggle-window-floating on the bench window"
 
     def files(self):
         return {
@@ -328,20 +392,29 @@ class Niri(Compositor):
                 "            layout \"us\"\n"
                 "        }\n"
                 "    }\n"
+                "    mouse {\n"
+                "        accel-profile \"flat\"\n"
+                "        accel-speed 0.0\n"
+                "    }\n"
                 "}\n"
                 "binds {\n"
                 "    Mod+Tab { focus-window-down; }\n"
                 "}\n"
+                + (f"debug {{\n    render-drm-device \"{self.paths['drm_device']}\"\n}}\n"
+                   if self.paths.get("drm_device") else "")
         }
 
     def command(self):
         return ["niri", "--config", f"{self.config}/config.kdl"]
 
     def extra_environment(self):
-        return {"LIBSEAT_BACKEND": "builtin"}
+        return {"LIBSEAT_BACKEND": "seatd"}
 
     def niri(self, arguments):
-        values = environment(self.name)
+        sockets = self.run(f"ls {self.runtime}/niri.*.sock 2>/dev/null", check=False).split()
+        if not sockets:
+            return ""
+        values = environment(self.name, NIRI_SOCKET=sockets[0])
         return self.run(f"{shell_environment(values)}niri msg {arguments}", check=False)
 
     def wait_first_frame(self):
@@ -364,7 +437,8 @@ class Niri(Compositor):
             return rows
         for entry in entries:
             layout = entry.get("layout") or {}
-            position = layout.get("pos_in_scrolling_layout") or [0, 0]
+            position = (layout.get("tile_pos_in_workspace_view")
+                        or layout.get("pos_in_scrolling_layout") or [0, 0])
             size = layout.get("window_size") or [0, 0]
             rows.append({
                 "app_id": entry.get("app_id", ""),
@@ -380,11 +454,18 @@ class Niri(Compositor):
         except ValueError:
             return {}
         for name, entry in entries.items():
-            mode = entry.get("current_mode") or {}
+            modes = entry.get("modes") or []
+            index = entry.get("current_mode")
+            mode = modes[index] if isinstance(index, int) and index < len(modes) else {}
             if mode.get("width"):
                 return {"name": name, "width": mode["width"], "height": mode["height"],
                         "refresh": mode.get("refresh_rate")}
         return {}
+
+    def prepare_drag(self):
+        self.niri("action toggle-window-floating")
+        time.sleep(0.4)
+        return self.drag_setup
 
     def memory(self):
         return {}
@@ -392,6 +473,7 @@ class Niri(Compositor):
 
 class Hyprland(Compositor):
     name = "hyprland"
+    process = "Hyprland"
     version_command = "Hyprland --version"
     focus_binding = "SUPER+Tab -> cyclenext (hyprland.conf)"
     drag_binding = "SUPER+LMB -> movewindow (bindm)"
@@ -404,6 +486,8 @@ class Hyprland(Compositor):
                 "bind = SUPER, Tab, cyclenext\n"
                 "bindm = SUPER, mouse:272, movewindow\n"
                 "input {\n"
+                "    accel_profile = flat\n"
+                "    sensitivity = 0\n"
                 "    follow_mouse = 0\n"
                 "    kb_layout = us\n"
                 "}\n"
@@ -414,7 +498,6 @@ class Hyprland(Compositor):
                 "}\n"
                 "misc {\n"
                 "    disable_hyprland_logo = true\n"
-                "    disable_splash_override = true\n"
                 "    force_default_wallpaper = 0\n"
                 "}\n"
                 "debug {\n"
@@ -428,7 +511,7 @@ class Hyprland(Compositor):
 
     def extra_environment(self):
         values = {
-            "LIBSEAT_BACKEND": "builtin",
+            "LIBSEAT_BACKEND": "seatd",
             "HYPRLAND_NO_SD_NOTIFY": "1",
         }
         if self.paths.get("drm_device"):
@@ -450,8 +533,11 @@ class Hyprland(Compositor):
     def wait_first_frame(self):
         for _ in range(1200):
             if self.hyprctl("-j monitors").strip().startswith("["):
-                return
+                break
             time.sleep(0.1)
+        errors = self.hyprctl("configerrors").strip()
+        if errors:
+            raise AssertionError(f"Hyprland rejected the bench config: {errors}")
 
     def windows(self):
         try:
@@ -503,8 +589,10 @@ REPEATS = 3
 IDLE_REPEATS = 2
 SAMPLES = 200
 FRAME_SECONDS = 8
+MOTION_SECONDS = 10
 IDLE_SECONDS = 60
 WINDOW_COUNTS = (1, 10, 50)
+MEMORY_COUNTS = (10, 50)
 IDLE_UNIT = "bench-idle"
 READY = "/run/bench/ready"
 WAIT = "/run/bench/go"
@@ -520,9 +608,10 @@ def cpu_ticks(machine, pid):
 
 
 def context_switches(machine, pid):
-    status = machine.succeed(f"cat /proc/{pid}/status")
-    return tuple(int(value) for value in
-                 re.findall(r"^(?:non)voluntary_ctxt_switches:\s+(\d+)", status, re.MULTILINE))
+    status = machine.succeed(f"cat /proc/{pid}/task/*/status")
+    voluntary = re.findall(r"^voluntary_ctxt_switches:\s+(\d+)", status, re.MULTILINE)
+    involuntary = re.findall(r"^nonvoluntary_ctxt_switches:\s+(\d+)", status, re.MULTILINE)
+    return sum(map(int, voluntary)), sum(map(int, involuntary))
 
 
 def rollup(machine, pid):
@@ -544,19 +633,30 @@ def megabytes(memory):
     return converted
 
 
-def smaps(machine, pid, samples=3, gap=0.3):
+def noise(values):
+    middle = statistics.median(values)
+    return round((max(values) - min(values)) / middle * 100, 1) if middle else 0.0
+
+
+def smaps(machine, runner, samples=3, gap=0.3):
     rows = []
+    trees = []
     for index in range(samples):
         if index:
             time.sleep(gap)
-        rows.append(rollup(machine, pid))
-    result = {}
+        rows.append(rollup(machine, runner.pid))
+        total = 0
+        for pid in runner.tree():
+            if machine.execute(f"test -r /proc/{pid}/smaps_rollup", )[0] == 0:
+                total += rollup(machine, pid).get("Pss", 0)
+        trees.append(total)
+    result = {"tree_pss_mb": round(statistics.median(trees) / 1024, 1),
+              "tree_processes": len(runner.tree())}
     for key, name in (("Rss", "rss"), ("Pss", "pss"), ("Pss_Anon", "pss_anon"),
                       ("Pss_File", "pss_file"), ("Private_Dirty", "private_dirty")):
         values = [row.get(key, 0) for row in rows]
         result[f"{name}_mb"] = round(statistics.median(values) / 1024, 1)
-        result[f"{name}_noise_pct"] = round((max(values) - min(values)) / statistics.median(values)
-                                            * 100, 1) if statistics.median(values) else 0.0
+        result[f"{name}_noise_pct"] = noise(values)
     result["samples"] = samples
     return result
 
@@ -624,6 +724,16 @@ def merge_runs(runs):
     return merged
 
 
+def release(machine, runner):
+    rows = [row for row in runner.windows() if str(row.get("app_id", "")).startswith("bench-")
+            and row.get("w")]
+    rows.sort(key=lambda row: row["app_id"])
+    target = (f"{round(rows[0]['x'] + rows[0]['w'] / 2)} {round(rows[0]['y'] + rows[0]['h'] / 2)}"
+              if rows else "")
+    machine.succeed(f"echo {target} > {WAIT}.next && mv {WAIT}.next {WAIT}")
+    return target
+
+
 def placement(rows):
     return sorted((row.get("app_id"), row.get("x"), row.get("y"), row.get("w"), row.get("h"))
                   for row in rows if str(row.get("app_id", "")).startswith("bench-"))
@@ -640,10 +750,10 @@ def async_client(machine, runner, arguments, unit):
         f"{runner.paths['client']} {arguments} --ready {READY}"
     )
     for _ in range(600):
-        if machine.execute(f"test -s {READY}", check_return=False)[0] == 0:
+        if machine.execute(f"test -s {READY}", )[0] == 0:
             break
         log = machine.execute(f"journalctl -u {unit} -o cat | tail -6", check_return=False)[1]
-        if "globals presentation" in log:
+        if "bench-client ready" in log:
             break
         time.sleep(0.1)
     else:
@@ -653,8 +763,8 @@ def async_client(machine, runner, arguments, unit):
 
 
 def unit_alive(machine, unit):
-    state = machine.execute(f"systemctl is-active {unit}", check_return=False)[1].strip()
-    return state in ("active", "activating", "reloading")
+    state = machine.execute(f"systemctl show -P SubState {unit}", check_return=False)[1].strip()
+    return state in ("running", "start")
 
 
 def async_stop(machine, unit):
@@ -673,18 +783,18 @@ def gated_latency(machine, runner, scenario, geometry, windows):
         async_client(machine, runner, f"--windows {windows} --phase {scenario} "
                      f"--count {SAMPLES} --output {geometry['width']}x{geometry['height']} "
                      f"--wait {WAIT}", IDLE_UNIT)
-        before = placement(runner.windows())
         if scenario == "drag":
             setup = runner.prepare_drag()
         time.sleep(0.4)
         rows = runner.windows()
-        visible = len(before)
+        visible = len(placement(rows))
         focused = [row["app_id"] for row in rows if row.get("focused")]
-        machine.succeed(f"touch {WAIT}")
+        signature = runner.motion_signature() if scenario == "drag" else None
+        pointer = release(machine, runner)
         started = time.monotonic()
         time.sleep(1.5)
         if scenario == "drag":
-            moved = placement(runner.windows()) != before
+            moved = runner.motion_signature() != signature
         while unit_alive(machine, IDLE_UNIT):
             if time.monotonic() - started > 240:
                 raise AssertionError(f"the {scenario} phase did not finish")
@@ -698,6 +808,7 @@ def gated_latency(machine, runner, scenario, geometry, windows):
         time.sleep(0.3)
     merged = merge_runs(runs)
     merged["windows"] = windows
+    merged["pointer"] = pointer
     merged["visible_windows"] = visible
     merged["focused"] = focused
     if scenario == "drag":
@@ -743,9 +854,9 @@ def render(machine, runner, windows, geometry, hz, repeats=2):
         "windows": windows,
         "frames": runs[-1]["frames"],
         "fps": round(statistics.median(fps), 2),
-        "fps_noise_pct": round((max(fps) - min(fps)) / statistics.median(fps) * 100, 1),
+        "fps_noise_pct": noise(fps),
         "cpu_ms_per_frame": round(statistics.median(cpu), 3),
-        "cpu_ms_per_frame_noise_pct": round((max(cpu) - min(cpu)) / statistics.median(cpu) * 100, 1),
+        "cpu_ms_per_frame_noise_pct": noise(cpu),
         "cpu_pct_of_one_core": runs[-1]["cpu_pct_of_one_core"],
         "runs": runs,
     }
@@ -764,7 +875,7 @@ def idle(machine, runner, geometry, hz):
         elapsed = time.monotonic() - started
         cpu_after = cpu_ticks(machine, runner.pid)
         switches_after = context_switches(machine, runner.pid)
-        memory = smaps(machine, runner.pid)
+        memory = smaps(machine, runner)
         breakdown = runner.memory()
         async_stop(machine, IDLE_UNIT)
         cpu_ms = (cpu_after - cpu_before) * 1000.0 / hz
@@ -784,23 +895,100 @@ def idle(machine, runner, geometry, hz):
     return {
         "seconds": runs[-1]["seconds"],
         "cpu_ms_per_s": round(statistics.median(cpu), 2),
-        "cpu_ms_per_s_noise_pct": round((max(cpu) - min(cpu)) / statistics.median(cpu) * 100, 1)
-        if statistics.median(cpu) else 0.0,
+        "cpu_ms_per_s_noise_pct": noise(cpu),
         "wakeups_per_s": round(statistics.median(wakeups), 2),
-        "wakeups_per_s_noise_pct": round((max(wakeups) - min(wakeups))
-                                         / statistics.median(wakeups) * 100, 1)
-        if statistics.median(wakeups) else 0.0,
+        "wakeups_per_s_noise_pct": noise(wakeups),
         "runs": runs,
         "memory": runs[-1]["memory"],
         "breakdown": runs[-1]["breakdown"],
     }
 
 
+def motion(machine, runner, geometry, hz):
+    runs = []
+    moved = []
+    setup = None
+    pointer = None
+    for _ in range(REPEATS):
+        machine.execute(f"rm -f {WAIT}", check_return=False)
+        async_client(machine, runner, f"--windows 1 --phase motion --seconds {MOTION_SECONDS} "
+                     f"--output {geometry['width']}x{geometry['height']} --wait {WAIT}",
+                     IDLE_UNIT)
+        setup = runner.prepare_drag()
+        time.sleep(0.4)
+        before = runner.motion_signature()
+        pointer = release(machine, runner)
+        time.sleep(2)
+        during = []
+        for _ in range(5):
+            during.append(runner.motion_signature())
+            time.sleep(0.13)
+        cpu_before = cpu_ticks(machine, runner.pid)
+        started = time.monotonic()
+        while unit_alive(machine, IDLE_UNIT):
+            if time.monotonic() - started > MOTION_SECONDS + 120:
+                raise AssertionError("the motion phase did not finish")
+            time.sleep(0.1)
+        cpu_after = cpu_ticks(machine, runner.pid)
+        log = machine.succeed(f"journalctl -u {IDLE_UNIT} -o cat")
+        async_stop(machine, IDLE_UNIT)
+        parsed = parse(log)
+        if not parsed or not parsed.get("presented"):
+            raise AssertionError(f"{runner.name} motion produced no presented frames:\n"
+                                 f"{log[-2000:]}")
+        window_seconds = max(time.monotonic() - started, 0.001)
+        presented_rate = parsed["presented"] / parsed["seconds"]
+        cpu_ms = (cpu_after - cpu_before) * 1000.0 / hz
+        parsed["cpu_ms_per_frame"] = round(cpu_ms / max(presented_rate * window_seconds, 1), 3)
+        parsed["fps"] = round(presented_rate, 2)
+        runs.append(parsed)
+        moved.append(any(sample != before for sample in during))
+        time.sleep(0.5)
+    intervals = [run["interval_us"] for run in runs if run["interval_us"].get("n")]
+    p99 = [value["p99"] for value in intervals]
+    cpu = [run["cpu_ms_per_frame"] for run in runs]
+    return {
+        "status": "ok" if intervals else "unsupported",
+        "setup": setup,
+        "pointer": pointer,
+        "windows_moved": all(moved),
+        "refresh_ms": round(runs[-1]["refresh_us"] / 1000, 3),
+        "frame_p50_ms": round(statistics.median(value["p50"] for value in intervals), 3)
+        if intervals else None,
+        "frame_p99_ms": round(statistics.median(p99), 3) if intervals else None,
+        "frame_p99_noise_pct": noise(p99) if intervals else None,
+        "frame_max_ms": round(max(value["max"] for value in intervals), 3) if intervals else None,
+        "fps": round(statistics.median(run["fps"] for run in runs), 2),
+        "cpu_ms_per_frame": round(statistics.median(cpu), 3),
+        "cpu_ms_per_frame_noise_pct": noise(cpu),
+        "runs": runs,
+    }
+
+
+def sizes(machine, runner):
+    binary = machine.execute(f"stat -Lc %s /proc/{runner.pid}/exe", check_return=False)[1].strip()
+    closure = runner.paths.get("closures", {}).get(runner.name)
+    result = {"binary_mb": round(int(binary) / 1048576, 2) if binary.isdigit() else None}
+    maps = machine.execute(f"cat /proc/{runner.pid}/maps", check_return=False)[1]
+    result["render_libraries"] = sorted({
+        os.path.basename(path) for path in re.findall(r"(/nix/store/\S+\.so[.\d]*)", maps)
+        if re.search(r"gallium|vulkan_lvp|libvulkan|libEGL|libGLESv2|pixman|zink",
+                     os.path.basename(path))})
+    result["shared_libraries"] = len({path for path in re.findall(r"(/nix/store/\S+\.so[.\d]*)",
+                                                                   maps)})
+    if closure:
+        with open(closure + "/total-nar-size") as handle:
+            result["closure_mb"] = round(int(handle.read().strip()) / 1048576, 1)
+        with open(closure + "/store-paths") as handle:
+            result["closure_paths"] = len(handle.read().split())
+    return result
+
+
 def windows_memory(machine, runner, geometry, windows):
     async_client(machine, runner, f"--windows {windows} --size 200x140 --phase idle --seconds 120 "
                  f"--output {geometry['width']}x{geometry['height']}", IDLE_UNIT)
     time.sleep(3)
-    memory = smaps(machine, runner.pid)
+    memory = smaps(machine, runner)
     rows = runner.windows()
     breakdown = runner.memory()
     async_stop(machine, IDLE_UNIT)
@@ -817,7 +1005,7 @@ def windows_memory(machine, runner, geometry, windows):
 def run_compositor(machine, paths, name, hz):
     runner = create(machine, paths, name)
     result = {"name": name, "started": False, "latency": {}, "render": {}, "idle": {},
-              "memory": {}, "failures": []}
+              "memory": {}, "motion": {}, "size": {}, "failures": []}
     began = time.monotonic()
     runner.start()
     result["started"] = True
@@ -826,6 +1014,10 @@ def run_compositor(machine, paths, name, hz):
     result["version"] = runner.version()
     geometry = runner.output()
     result["output"] = geometry
+    result["size"] = sizes(machine, runner)
+    time.sleep(3)
+    result["memory"]["windows_0"] = {"windows": 0, "memory": smaps(machine, runner),
+                                     "breakdown": runner.memory()}
     result["bindings"] = {"focus": runner.focus_binding, "drag": runner.drag_binding}
     if not geometry.get("width"):
         raise AssertionError(f"{name} reported no output geometry")
@@ -845,11 +1037,18 @@ def run_compositor(machine, paths, name, hz):
         except Exception as error:
             result["failures"].append({"phase": f"render {windows}", "error": str(error)})
             result["render"][str(windows)] = {"status": "failed"}
+    for windows in MEMORY_COUNTS:
+        try:
+            result["memory"][f"windows_{windows}"] = windows_memory(machine, runner, geometry,
+                                                                   windows)
+        except Exception as error:
+            result["failures"].append({"phase": f"memory {windows}", "error": str(error)})
+            result["memory"][f"windows_{windows}"] = {"status": "failed"}
     try:
-        result["memory"]["windows_50"] = windows_memory(machine, runner, geometry, 50)
+        result["motion"] = motion(machine, runner, geometry, hz)
     except Exception as error:
-        result["failures"].append({"phase": "memory 50", "error": str(error)})
-        result["memory"]["windows_50"] = {"status": "failed"}
+        result["failures"].append({"phase": "motion", "error": str(error)})
+        result["motion"] = {"status": "failed"}
     try:
         result["idle"] = idle(machine, runner, geometry, hz)
     except Exception as error:
@@ -887,11 +1086,23 @@ ROWS = (
     ("cpu/frame 10 windows ms", ("render", "10", "cpu_ms_per_frame"), None),
     ("cpu/frame 50 windows ms", ("render", "50", "cpu_ms_per_frame"), None),
     ("fps 50 windows", ("render", "50", "fps"), None),
+    ("motion frame p50 ms", ("motion", "frame_p50_ms"), None),
+    ("motion frame p99 ms", ("motion", "frame_p99_ms"), None),
+    ("motion frame max ms", ("motion", "frame_max_ms"), None),
+    ("motion cpu/frame ms", ("motion", "cpu_ms_per_frame"), None),
     ("idle cpu ms/s", ("idle", "cpu_ms_per_s"), None),
     ("idle wakeups/s", ("idle", "wakeups_per_s"), None),
     ("rss 1 window MB", ("memory", "windows_1", "memory", "rss_mb"), None),
+    ("pss 0 windows MB", ("memory", "windows_0", "memory", "pss_mb"), None),
     ("pss 1 window MB", ("memory", "windows_1", "memory", "pss_mb"), None),
+    ("pss 10 windows MB", ("memory", "windows_10", "memory", "pss_mb"), None),
     ("pss 50 windows MB", ("memory", "windows_50", "memory", "pss_mb"), None),
+    ("pss anon 10 windows MB", ("memory", "windows_10", "memory", "pss_anon_mb"), None),
+    ("private dirty 10 windows MB", ("memory", "windows_10", "memory", "private_dirty_mb"), None),
+    ("tree pss 10 windows MB", ("memory", "windows_10", "memory", "tree_pss_mb"), None),
+    ("binary MB", ("size", "binary_mb"), None),
+    ("closure MB", ("size", "closure_mb"), None),
+    ("shared libraries", ("size", "shared_libraries"), None),
 )
 
 
@@ -903,6 +1114,10 @@ def noise_for(path, entry):
             return entry["render"][path[1]].get(f"{path[2]}_noise_pct")
         if path[0] == "idle":
             return entry["idle"].get(f"{path[1]}_noise_pct")
+        if path[0] == "motion":
+            return entry["motion"].get({"frame_p99_ms": "frame_p99_noise_pct",
+                                        "cpu_ms_per_frame": "cpu_ms_per_frame_noise_pct"}
+                                       .get(path[1], ""))
         if path[0] == "memory":
             memory = entry["memory"][path[1]]["memory"]
             key = path[-1].replace("_mb", "_noise_pct")
@@ -981,11 +1196,14 @@ def main(machine, paths):
             "drm_device": paths.get("drm_device", ""),
             "drm_devices": drm_outputs,
             "clock_ticks_per_second": hz,
-            "renderer": "Mesa llvmpipe through zink, compositing to a vkms virtual KMS output",
+            "renderer": "Mesa llvmpipe (GLES through EGL on GBM) compositing to a vkms virtual "
+                        "KMS output; Tomoe alone runs it through zink on lavapipe, because under "
+                        "plain kms_swrast its GBM device cannot create dumb buffers here",
             "input": "uinput evdev pointer and keyboard devices (real libinput path)",
             "repeat_runs": REPEATS,
             "samples_per_run": SAMPLES,
             "frame_seconds": FRAME_SECONDS,
+            "motion_seconds": MOTION_SECONDS,
             "idle_seconds": IDLE_SECONDS,
             "idle_repeats": IDLE_REPEATS,
         },
@@ -995,6 +1213,14 @@ def main(machine, paths):
                          "wp_presentation timestamp of the frame that carried that commit",
             "redraw": "input injection to the client's frame callback for a repaint it commits "
                       "immediately after the injection, which is the frame-callback endpoint",
+            "motion": "a window held under Super/Mod+LMB is dragged by 250 Hz pointer steps while "
+                      "its client redraws on every frame callback; frame time is the gap between "
+                      "consecutive wp_presentation timestamps, cpu is compositor CPU per "
+                      "presented frame",
+            "memory": "PSS from smaps_rollup of the compositor process alone, 3 s after start "
+                      "(0 windows), during the 60 s idle (1 window) and with 10 and 50 clients",
+            "size": "binary is the running executable (/proc/pid/exe); closure is the NAR size "
+                    "of the package's full runtime closure",
             "ranking": "compositors are compared on presented against presented only; event and "
                        "redraw are reported separately and never mixed into it",
         },
@@ -1008,6 +1234,18 @@ def main(machine, paths):
             "time and excludes any real application's own work",
             "a compositor that reports no wp_presentation feedback for a phase is listed as "
             "none for that phase instead of falling back to another endpoint",
+            "vkms runs at 60 Hz with a 1024x768 output, so frame-time percentiles only show "
+            "whole missed vblanks; high refresh, large or multiple outputs, real GPU drivers, "
+            "direct scanout, VRR and tearing are not exercised",
+            "every compositor runs its stock defaults plus the one focus binding, a pointer drag "
+            "and a flat 1:1 pointer profile; desktop configs (bars, wallpapers, effects) and "
+            "Xwayland are absent",
+            "Tomoe's GLES stack is zink on lavapipe, so its file-backed PSS includes Vulkan "
+            "driver mappings the others do not load; pss_anon and private_dirty compare cleaner",
+            "niri is built with its software-renderer refusal removed (bench/niri.nix) and is "
+            "pointed at the vkms node, since otherwise it will not composite on llvmpipe",
+            "memory and CPU are the compositor process alone; tree_pss_mb adds every process "
+            "it forked; all four take their seat from the same seatd daemon",
         ],
         "compositors": {entry["name"]: entry for entry in scoreboard},
         "failures": failures,
