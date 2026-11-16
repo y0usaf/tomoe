@@ -3,17 +3,18 @@
 #include <string.h>
 
 #include "lisp-internal.h"
+#include "../ui-shape.h"
 
 enum ui_key {
     UK_KIND, UK_WIDTH, UK_HEIGHT, UK_GROW, UK_BACKGROUND, UK_BORDER_COLOR, UK_RADIUS, UK_BORDER,
     UK_KEY, UK_ON_CLICK, UK_ON_HOVER, UK_CHILDREN, UK_GAP, UK_PADDING, UK_ALIGN, UK_JUSTIFY,
     UK_TEXT, UK_SIZE, UK_LINE_HEIGHT, UK_COLOR, UK_FONT, UK_ROTATE, UK_SRC, UK_NAME, UK_PATH,
-    UK_ORIENTATION, UK_THICKNESS, UK_VALUE, UK_TRACK, UK_COUNT
+    UK_ORIENTATION, UK_THICKNESS, UK_VALUE, UK_TRACK, UK_POINTS, UK_SHADOW, UK_COUNT
 };
 
 enum ui_kind {
     UI_ROW, UI_COLUMN, UI_BUTTON, UI_STACK, UI_TEXT, UI_IMAGE, UI_ICON, UI_RECT, UI_SPACER,
-    UI_SEPARATOR, UI_PROGRESS, UI_CIRCULAR_PROGRESS, UI_KIND_COUNT
+    UI_SEPARATOR, UI_PROGRESS, UI_CIRCULAR_PROGRESS, UI_SHAPE, UI_KIND_COUNT
 };
 
 enum ui_word {
@@ -24,12 +25,12 @@ static const char *const key_names[UK_COUNT] = {
     "KIND", "WIDTH", "HEIGHT", "GROW", "BACKGROUND", "BORDER-COLOR", "RADIUS", "BORDER",
     "KEY", "ON-CLICK", "ON-HOVER", "CHILDREN", "GAP", "PADDING", "ALIGN", "JUSTIFY",
     "TEXT", "SIZE", "LINE-HEIGHT", "COLOR", "FONT", "ROTATE", "SRC", "NAME", "PATH",
-    "ORIENTATION", "THICKNESS", "VALUE", "TRACK"
+    "ORIENTATION", "THICKNESS", "VALUE", "TRACK", "POINTS", "SHADOW"
 };
 
 static const char *const kind_names[UI_KIND_COUNT] = {
     "ROW", "COLUMN", "BUTTON", "STACK", "TEXT", "IMAGE", "ICON", "RECT", "SPACER",
-    "SEPARATOR", "PROGRESS", "CIRCULAR-PROGRESS"
+    "SEPARATOR", "PROGRESS", "CIRCULAR-PROGRESS", "SHAPE"
 };
 
 static const char *const word_names[UW_COUNT] = {
@@ -38,7 +39,7 @@ static const char *const word_names[UW_COUNT] = {
 
 static const uint8_t common_keys[] = {
     UK_WIDTH, UK_HEIGHT, UK_GROW, UK_BACKGROUND, UK_BORDER_COLOR, UK_RADIUS, UK_BORDER,
-    UK_KEY, UK_ON_CLICK, UK_ON_HOVER
+    UK_KEY, UK_ON_CLICK, UK_ON_HOVER, UK_SHADOW
 };
 
 static const uint8_t container_keys[] = { UK_CHILDREN, UK_GAP, UK_PADDING, UK_ALIGN, UK_JUSTIFY };
@@ -49,6 +50,7 @@ static const uint8_t icon_keys[] = { UK_NAME, UK_PATH, UK_SIZE, UK_COLOR };
 static const uint8_t separator_keys[] = { UK_ORIENTATION, UK_THICKNESS, UK_COLOR };
 static const uint8_t progress_keys[] = { UK_VALUE, UK_COLOR, UK_TRACK };
 static const uint8_t circular_keys[] = { UK_SIZE, UK_THICKNESS, UK_VALUE, UK_COLOR, UK_TRACK };
+static const uint8_t shape_keys[] = { UK_POINTS };
 
 struct key_set {
     const uint8_t *keys;
@@ -68,6 +70,7 @@ static const struct key_set kind_keys[UI_KIND_COUNT] = {
     [UI_SEPARATOR] = { separator_keys, 3 },
     [UI_PROGRESS] = { progress_keys, 3 },
     [UI_CIRCULAR_PROGRESS] = { circular_keys, 5 },
+    [UI_SHAPE] = { shape_keys, 1 },
 };
 
 static struct {
@@ -79,6 +82,7 @@ static struct {
     lisp_value separator_color, progress_color, track_color;
     lisp_value align_choices, justify_choices, orientation_choices, rotate_choices;
     lisp_value node_text, children_text, edges_text, properties_text;
+    lisp_value points_text, shadow_text, stops_text;
 } ui;
 
 static lisp_value keyword(const char *name)
@@ -113,6 +117,9 @@ void lisp_ui_init(void)
     ui.children_text = make_string_len("UI children", 11);
     ui.edges_text = make_string_len("UI edges", 8);
     ui.properties_text = make_string_len("UI properties", 13);
+    ui.points_text = make_string_len("UI shape points", 15);
+    ui.shadow_text = make_string_len("UI shape shadow", 15);
+    ui.stops_text = make_string_len("UI gradient stops", 17);
 }
 
 static bool finite_double(double v)
@@ -253,6 +260,110 @@ static lisp_value ui_color(lisp_value value, bool nullable)
     lisp_fail_format("UI color must be RRGGBBAA or #rgb/#rrggbb/#rrggbbaa.", 0, NULL);
 }
 
+static lisp_value ui_gradient(lisp_value value)
+{
+    ui_list(value, 14, ui.stops_text);
+    lisp_value kind = CAR(value);
+    bool linear = eql_value(kind, keyword("LINEAR"));
+    if (!linear && !eql_value(kind, keyword("RADIAL")))
+        lisp_fail_format("UI background must be a color, (:linear ANGLE (POS COLOR)...) or (:radial CX CY RX RY (POS COLOR)...).", 0, NULL);
+    int axes = linear ? 1 : 4;
+    lisp_value scan = CDR(value);
+    lisp_value head = NIL_VAL, last = NIL_VAL;
+#define UI_CONS(value) do { lisp_value cell_ = cons((value), NIL_VAL); \
+        if (nilp(head)) head = cell_; else CDR(last) = cell_; last = cell_; } while (0)
+    UI_CONS(kind);
+    for (int i = 0; i < axes; i++) {
+        if (!consp(scan))
+            lisp_fail_format("UI gradient is missing its axis.", 0, NULL);
+        UI_CONS(as_double(CAR(scan)));
+        scan = CDR(scan);
+    }
+    int stops = 0;
+    double previous = -1.0;
+    while (consp(scan)) {
+        if (++stops > UI_SHAPE_STOPS)
+            lisp_fail_format("UI gradients take at most 6 stops.", 0, NULL);
+        lisp_value stop = CAR(scan), at_value, color_value;
+        if (consp(stop)) {
+            ui_list(stop, 2, ui.stops_text);
+            if (list_length(stop) != 2)
+                lisp_fail_format("UI gradient stops are (POSITION COLOR).", 0, NULL);
+            at_value = CAR(stop);
+            color_value = CAR(CDR(stop));
+            scan = CDR(scan);
+        } else {
+            if (!consp(CDR(scan)))
+                lisp_fail_format("UI gradient stops are (POSITION COLOR).", 0, NULL);
+            at_value = stop;
+            color_value = CAR(CDR(scan));
+            scan = CDR(CDR(scan));
+        }
+        double at = DBLVAL(as_double(at_value));
+        if (!(at >= 0.0 && at <= 1.0))
+            lisp_fail_format("UI gradient stop positions are fractions from 0 to 1.", 0, NULL);
+        if (at < previous)
+            lisp_fail_format("UI gradient stop positions must not decrease.", 0, NULL);
+        previous = at;
+        UI_CONS(make_double(at));
+        UI_CONS(ui_color(color_value, false));
+    }
+    if (!nilp(scan) || stops < 2)
+        lisp_fail_format("UI gradients take at least 2 stops.", 0, NULL);
+    return head;
+#undef UI_CONS
+}
+
+static lisp_value ui_points(lisp_value value)
+{
+    int64_t count = 0;
+    lisp_value tail = value;
+    for (; consp(tail); tail = CDR(tail)) {
+        if (++count > 2 * UI_SHAPE_POINTS)
+            lisp_fail_format("A UI shape takes at most 1024 points.", 0, NULL);
+        if (!finite_real(CAR(tail)))
+            lisp_fail_format("UI shape points are finite real numbers.", 1, &tail);
+    }
+    if (!nilp(tail) || count % 2 != 0 || count < 6)
+        lisp_fail_format("UI shape points are x/y pairs, at least three of them, in a proper list.", 0, NULL);
+    lisp_value head = NIL_VAL, last = NIL_VAL;
+    for (lisp_value scan = value; consp(scan); scan = CDR(scan)) {
+        lisp_value cell = cons(as_double(CAR(scan)), NIL_VAL);
+        if (nilp(head)) head = cell; else CDR(last) = cell;
+        last = cell;
+    }
+    return head;
+}
+
+static lisp_value ui_shadow(lisp_value value)
+{
+    ui_list(value, UI_SHAPE_SHADOWS, ui.shadow_text);
+    lisp_value head = NIL_VAL, last = NIL_VAL;
+    for (lisp_value scan = value; consp(scan); scan = CDR(scan)) {
+        lisp_value entry = CAR(scan);
+        ui_list(entry, 5, ui.shadow_text);
+        if (list_length(entry) != 5)
+            lisp_fail_format("UI shadows are (X Y BLUR SPREAD COLOR).", 0, NULL);
+        lisp_value shadow = NIL_VAL, tail = NIL_VAL;
+        lisp_value numbers = entry;
+        for (int i = 0; i < 4; i++) {
+            lisp_value number = as_double(CAR(numbers));
+            if (i >= 2 && DBLVAL(number) < 0.0)
+                lisp_fail_format("UI shadow blur and spread are not negative.", 1, &number);
+            lisp_value cell = cons(number, NIL_VAL);
+            if (nilp(shadow)) shadow = cell; else CDR(tail) = cell;
+            tail = cell;
+            numbers = CDR(numbers);
+        }
+        lisp_value color = cons(ui_color(CAR(numbers), false), NIL_VAL);
+        CDR(tail) = color;
+        lisp_value wrapper = cons(shadow, NIL_VAL);
+        if (nilp(head)) head = wrapper; else CDR(last) = wrapper;
+        last = wrapper;
+    }
+    return head;
+}
+
 static int kind_index(lisp_value kind)
 {
     for (int i = 0; i < UI_KIND_COUNT; i++)
@@ -332,9 +443,14 @@ static lisp_value normalize(struct ui_walk *walk, int kind, int key, lisp_value 
     case UK_THICKNESS:
         return ui_length(value, false, false);
     case UK_BACKGROUND:
+        return consp(value) ? ui_gradient(value) : ui_color(value, true);
     case UK_BORDER_COLOR:
     case UK_COLOR:
         return ui_color(value, true);
+    case UK_POINTS:
+        return ui_points(value);
+    case UK_SHADOW:
+        return ui_shadow(value);
     case UK_TRACK:
         return ui_color(value, false);
     case UK_KEY:

@@ -341,7 +341,7 @@ static void measure_node(struct ui_lnode *node, const struct ui_source *source,
 struct ui_irect { int x, y, width, height; };
 struct ui_rect { double x, y, width, height; };
 
-enum ui_draw_kind { UI_DRAW_RECT, UI_DRAW_TEXT, UI_DRAW_ASSET, UI_DRAW_ARC };
+enum ui_draw_kind { UI_DRAW_SHAPE, UI_DRAW_TEXT, UI_DRAW_ASSET, UI_DRAW_ARC };
 
 struct ui_draw {
     int kind;
@@ -351,6 +351,13 @@ struct ui_draw {
     int rotate, tint;
     uint64_t asset;
     char *text, *font;
+    int fill, stop_count, shadow_count;
+    double geometry[4], stop_at[UI_SHAPE_STOPS];
+    uint32_t stop_rgba[UI_SHAPE_STOPS];
+    double shadow[UI_SHAPE_SHADOWS][4];
+    uint32_t shadow_rgba[UI_SHAPE_SHADOWS];
+    double *points;
+    long point_count;
 };
 
 struct ui_plan_hit {
@@ -435,21 +442,104 @@ static struct ui_irect intersect(struct ui_irect a, struct ui_irect b) {
     return result;
 }
 
-static void fill_rect(struct ui_builder *builder, struct ui_irect box, lisp_value color,
-        double radius, double stroke, const struct ui_irect *clip) {
-    if (lisp_nilp(color)) return;
-    uint32_t rgba = (uint32_t)lisp_get_uint(color);
-    if (!(rgba & 0xff) || box.width <= 0 || box.height <= 0) return;
+static bool fill_gradient(struct ui_draw *op, lisp_value background) {
+    bool linear = keyword_is(lisp_car(background), "LINEAR");
+    op->fill = linear ? UI_FILL_LINEAR : UI_FILL_RADIAL;
+    lisp_value scan = lisp_cdr(background);
+    for (int i = 0; i < (linear ? 1 : 4); i++) {
+        if (!lisp_consp(scan)) return false;
+        op->geometry[i] = linear && i == 0 ? lisp_get_double(lisp_car(scan)) * ui_pi / 180.0
+                                          : lisp_get_double(lisp_car(scan));
+        scan = lisp_cdr(scan);
+    }
+    while (lisp_consp(scan)) {
+        if (op->stop_count >= UI_SHAPE_STOPS) return false;
+        op->stop_at[op->stop_count] = lisp_get_double(lisp_car(scan));
+        scan = lisp_cdr(scan);
+        if (!lisp_consp(scan)) return false;
+        op->stop_rgba[op->stop_count] = (uint32_t)lisp_get_uint(lisp_car(scan));
+        op->stop_count++;
+        scan = lisp_cdr(scan);
+    }
+    return true;
+}
+
+static void fill_shadows(struct ui_draw *op, lisp_value shadow) {
+    for (lisp_value entry = shadow; lisp_consp(entry); entry = lisp_cdr(entry)) {
+        if (op->shadow_count >= UI_SHAPE_SHADOWS) break;
+        lisp_value field = lisp_car(entry);
+        double *box = op->shadow[op->shadow_count];
+        for (int i = 0; i < 4 && lisp_consp(field); i++) {
+            box[i] = lisp_get_double(lisp_car(field));
+            field = lisp_cdr(field);
+        }
+        if (!lisp_consp(field)) break;
+        op->shadow_rgba[op->shadow_count] = (uint32_t)lisp_get_uint(lisp_car(field));
+        op->shadow_count++;
+    }
+}
+
+static struct ui_draw *fill_shape(struct ui_builder *builder, double x, double y,
+        double width, double height, lisp_value background, lisp_value shadow,
+        double radius, double stroke, const struct ui_irect *clip, bool shapes) {
+    if (lisp_nilp(background) && lisp_nilp(shadow)) return NULL;
     struct ui_draw *op = push_draw(builder);
-    op->kind = UI_DRAW_RECT;
-    op->x = box.x;
-    op->y = box.y;
-    op->width = box.width;
-    op->height = box.height;
-    op->rgba = rgba;
+    op->kind = UI_DRAW_SHAPE;
+    op->x = x;
+    op->y = y;
+    op->width = width;
+    op->height = height;
     op->radius = radius;
     op->stroke = stroke;
+    if (lisp_consp(background)) {
+        if (!fill_gradient(op, background)) {
+            builder->draw_count--;
+            return NULL;
+        }
+        if (op->stop_count < 2) {
+            builder->draw_count--;
+            return NULL;
+        }
+    } else if (!lisp_nilp(background)) {
+        op->rgba = (uint32_t)lisp_get_uint(background);
+    }
+    if (lisp_consp(shadow)) fill_shadows(op, shadow);
+    if (!(op->rgba & 0xff) && op->stop_count == 0 && op->shadow_count == 0) {
+        builder->draw_count--;
+        return NULL;
+    }
+    (void)shapes;
     set_clip(op, clip);
+    return op;
+}
+
+static struct ui_draw *fill_rect(struct ui_builder *builder, struct ui_irect box,
+        lisp_value color, lisp_value shadow, double radius, double stroke,
+        const struct ui_irect *clip) {
+    if (lisp_nilp(color) && lisp_nilp(shadow)) return NULL;
+    return fill_shape(builder, box.x, box.y, box.width, box.height, color, shadow,
+        radius, stroke, clip, false);
+}
+
+static void place_shape(struct ui_builder *builder, struct ui_lnode *node,
+        struct ui_rect rect, struct ui_irect clip) {
+    lisp_value points = plist_get(node->tree, "POINTS");
+    long count = 0;
+    for (lisp_value scan = points; lisp_consp(scan); scan = lisp_cdr(scan)) count++;
+    if (count < 6 || count % 2 || count > 2 * UI_SHAPE_POINTS) return;
+    struct ui_draw *op = fill_shape(builder, rect.x, rect.y, rect.width, rect.height,
+        plist_get(node->tree, "BACKGROUND"), plist_get(node->tree, "SHADOW"),
+        0, 0, &clip, true);
+    if (!op) return;
+    op->points = malloc((size_t)count * sizeof(double));
+    if (!op->points) {
+        builder->draw_count--;
+        return;
+    }
+    long index = 0;
+    for (lisp_value scan = points; lisp_consp(scan) && index < count; scan = lisp_cdr(scan))
+        op->points[index++] = builder->scale * lisp_get_double(lisp_car(scan));
+    op->point_count = count;
 }
 
 static void place_node(struct ui_builder *builder, struct ui_lnode *node,
@@ -566,10 +656,20 @@ static void place_node(struct ui_builder *builder, struct ui_lnode *node,
     double radius = builder->scale * prop_double(tree, "RADIUS",
         kind_is(tree, "PROGRESS") ? 2 : 0);
     double border = builder->scale * prop_double(tree, "BORDER", 0);
+    if (kind_is(tree, "SHAPE")) {
+        if (inherited.width > 0 && inherited.height > 0) {
+            add_hit(builder, node, clip);
+            place_shape(builder, node, rect, inherited);
+        }
+        return;
+    }
     if (clip.width > 0 && clip.height > 0) {
         add_hit(builder, node, clip);
-        fill_rect(builder, box, plist_get(tree, "BACKGROUND"), radius, 0, &clip);
-        if (border > 0) fill_rect(builder, box, plist_get(tree, "BORDER-COLOR"), radius, border, &clip);
+        fill_rect(builder, box, plist_get(tree, "BACKGROUND"), plist_get(tree, "SHADOW"),
+                  radius, 0, &clip);
+        if (border > 0)
+            fill_rect(builder, box, plist_get(tree, "BORDER-COLOR"), lisp_nil(),
+                      radius, border, &clip);
         if (kind_is(tree, "ROW") || kind_is(tree, "COLUMN") || kind_is(tree, "BUTTON"))
             place_flex(builder, node, rect, clip, !kind_is(tree, "COLUMN"));
         else if (kind_is(tree, "STACK"))
@@ -623,14 +723,14 @@ static void place_node(struct ui_builder *builder, struct ui_lnode *node,
                 }
             }
         } else if (kind_is(tree, "SEPARATOR"))
-            fill_rect(builder, box, node_color(tree, "COLOR"), 0, 0, &clip);
+            fill_rect(builder, box, node_color(tree, "COLOR"), lisp_nil(), 0, 0, &clip);
         else if (kind_is(tree, "PROGRESS")) {
-            fill_rect(builder, box, node_color(tree, "TRACK"), radius, 0, &clip);
+            fill_rect(builder, box, node_color(tree, "TRACK"), lisp_nil(), radius, 0, &clip);
             lisp_value value = plist_get(tree, "VALUE");
             double fraction = lisp_nilp(value) ? 0 : lisp_get_double(value);
             struct ui_irect bar = box;
             bar.width = (int)round_value((double)box.width * fraction);
-            fill_rect(builder, bar, node_color(tree, "COLOR"), radius, 0, &clip);
+            fill_rect(builder, bar, node_color(tree, "COLOR"), lisp_nil(), radius, 0, &clip);
         } else if (kind_is(tree, "CIRCULAR-PROGRESS")) {
             double thickness = builder->scale * prop_double(tree, "THICKNESS", 2);
             double inner = box.width < box.height ? box.width : box.height;
@@ -714,6 +814,7 @@ static void free_draw(struct ui_draw *draw, size_t count) {
     for (size_t i = 0; i < count; i++) {
         free(draw[i].text);
         free(draw[i].font);
+        free(draw[i].points);
     }
     free(draw);
 }
@@ -820,7 +921,7 @@ static void draw_plan(struct ui_cached_plan *entry, struct ui_lnode *measured,
     int serial = 0;
     index_tree(measured, &serial);
     struct ui_irect canvas = { 0, 0, width, height };
-    fill_rect(&local, canvas, background, 0, 0, &canvas);
+    fill_rect(&local, canvas, background, lisp_nil(), 0, 0, &canvas);
     struct ui_rect root = { 0, 0, (double)width, (double)height };
     place_node(&local, measured, root, canvas);
     entry->draw = local.draw;
@@ -1309,10 +1410,29 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
                 lisp_error("Cannot prepare retained shell rendering.");
             int ok = 0;
             switch (op->kind) {
-            case UI_DRAW_RECT:
-                ok = tomoe_present_ui_rect(ui_server, op->x, op->y, op->width, op->height,
-                    op->rgba, op->radius, op->stroke);
+            case UI_DRAW_SHAPE: {
+                struct ui_shape shape;
+                memset(&shape, 0, sizeof(shape));
+                shape.x = op->x;
+                shape.y = op->y;
+                shape.width = op->width;
+                shape.height = op->height;
+                shape.radius = op->radius;
+                shape.stroke = op->stroke;
+                shape.rgba = op->rgba;
+                shape.fill = op->fill;
+                shape.stop_count = op->stop_count;
+                shape.shadow_count = op->shadow_count;
+                memcpy(shape.geometry, op->geometry, sizeof(shape.geometry));
+                memcpy(shape.stop_at, op->stop_at, sizeof(op->stop_at));
+                memcpy(shape.stop_rgba, op->stop_rgba, sizeof(op->stop_rgba));
+                memcpy(shape.shadow, op->shadow, sizeof(op->shadow));
+                memcpy(shape.shadow_rgba, op->shadow_rgba, sizeof(op->shadow_rgba));
+                shape.points = op->points;
+                shape.point_count = op->point_count;
+                ok = tomoe_present_ui_shape(ui_server, &shape);
                 break;
+            }
             case UI_DRAW_TEXT:
                 ok = tomoe_present_ui_text(ui_server, op->x, op->y, op->text, op->font,
                     op->width, op->height, op->rgba, op->rotate);

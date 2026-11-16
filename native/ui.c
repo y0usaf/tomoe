@@ -150,7 +150,7 @@ static uint64_t union_bytes(const struct ui_set *left, const struct ui_set *righ
     return bytes;
 }
 
-enum ui_op_kind { UI_OP_RECT, UI_OP_ARC, UI_OP_ASSET, UI_OP_TEXT };
+enum ui_op_kind { UI_OP_SHAPE, UI_OP_ARC, UI_OP_ASSET, UI_OP_TEXT };
 
 struct ui_text {
     size_t references;
@@ -171,6 +171,13 @@ struct ui_op {
     struct rect clip;
     struct rect reach;
     double x, y, width, height, radius, stroke;
+    int fill, stop_count, shadow_count;
+    double geometry[4], stop_at[UI_SHAPE_STOPS];
+    uint32_t stop_rgba[UI_SHAPE_STOPS];
+    double shadow[UI_SHAPE_SHADOWS][4];
+    uint32_t shadow_rgba[UI_SHAPE_SHADOWS];
+    double *points;
+    long point_count;
     union {
         struct { uint64_t id; int tint; } asset;
         struct { struct ui_text *text; } text;
@@ -439,6 +446,7 @@ static bool canvas_ready(struct ui_canvas *canvas) {
 
 static void op_release(struct ui_op *op) {
     if (op->kind == UI_OP_TEXT) ui_text_release(op->u.text.text);
+    free(op->points);
     memset(op, 0, sizeof(*op));
 }
 
@@ -530,10 +538,21 @@ static bool op_same(const struct ui_op *left, const struct ui_op *right) {
             left->clip.y1 != right->clip.y1 || left->clip.x2 != right->clip.x2 ||
             left->clip.y2 != right->clip.y2)) return false;
     switch (left->kind) {
-    case UI_OP_RECT:
-        return left->x == right->x && left->y == right->y &&
-            left->width == right->width && left->height == right->height &&
-            left->radius == right->radius && left->stroke == right->stroke;
+    case UI_OP_SHAPE:
+        if (left->x != right->x || left->y != right->y ||
+                left->width != right->width || left->height != right->height ||
+                left->radius != right->radius || left->stroke != right->stroke ||
+                left->fill != right->fill || left->stop_count != right->stop_count ||
+                left->shadow_count != right->shadow_count ||
+                memcmp(left->geometry, right->geometry, sizeof(left->geometry)) ||
+                memcmp(left->stop_at, right->stop_at, (size_t)left->stop_count * sizeof(double)) ||
+                memcmp(left->stop_rgba, right->stop_rgba, (size_t)left->stop_count * sizeof(uint32_t)) ||
+                memcmp(left->shadow, right->shadow, (size_t)left->shadow_count * 4 * sizeof(double)) ||
+                memcmp(left->shadow_rgba, right->shadow_rgba, (size_t)left->shadow_count * sizeof(uint32_t)))
+            return false;
+        return left->point_count == right->point_count &&
+            (!left->point_count || !memcmp(left->points, right->points,
+                (size_t)left->point_count * sizeof(double)));
     case UI_OP_ARC:
         return left->u.arc.cx == right->u.arc.cx && left->u.arc.cy == right->u.arc.cy &&
             left->u.arc.radius == right->u.arc.radius &&
@@ -983,24 +1002,86 @@ int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
     return 1;
 }
 
-int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
-        double height, uint32_t rgba, double radius, double stroke) {
+static bool finite_shape(const struct ui_shape *shape) {
+    if (!finite_number(shape->x) || !finite_number(shape->y) ||
+            !finite_nonnegative(shape->width) || !finite_nonnegative(shape->height) ||
+            !finite_nonnegative(shape->radius) || !finite_nonnegative(shape->stroke))
+        return false;
+    if (shape->stop_count < 0 || shape->stop_count > UI_SHAPE_STOPS) return false;
+    if (shape->shadow_count < 0 || shape->shadow_count > UI_SHAPE_SHADOWS) return false;
+    if (shape->fill < UI_FILL_SOLID || shape->fill > UI_FILL_RADIAL) return false;
+    if (shape->point_count < 0 || shape->point_count > UI_SHAPE_POINTS) return false;
+    if (shape->point_count && !shape->points) return false;
+    if (shape->point_count % 2) return false;
+    for (int i = 0; i < shape->stop_count; i++)
+        if (!finite_number(shape->stop_at[i])) return false;
+    for (int i = 0; i < shape->shadow_count; i++)
+        for (int k = 0; k < 4; k++)
+            if (!finite_number(shape->shadow[i][k])) return false;
+    return true;
+}
+
+int tomoe_present_ui_shape(struct tomoe *s, const struct ui_shape *shape) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface)) return 0;
-    if (!finite_number(x) || !finite_number(y) ||
-            !finite_nonnegative(width) || !finite_nonnegative(height) ||
-            !finite_nonnegative(radius) || !finite_nonnegative(stroke)) return 0;
-    double alpha = (rgba & 0xff) / 255.0;
-    note_paint(surface, alpha > 0.0 && (stroke > 0.0 ?
-        (width > stroke && height > stroke) : (width > 0.0 && height > 0.0)));
+    if (!finite_shape(shape)) return 0;
+    double alpha = (shape->rgba & 0xff) / 255.0;
+    bool paint = shape->point_count ? shape->point_count >= 6 && alpha > 0.0
+        : alpha > 0.0 && (shape->stroke > 0.0 ?
+            (shape->width > shape->stroke && shape->height > shape->stroke)
+            : (shape->width > 0.0 && shape->height > 0.0));
+    for (int i = 0; i < shape->shadow_count && !paint; i++)
+        paint = (shape->shadow_rgba[i] & 0xff) != 0;
+    if (paint) note_paint(surface, true);
     struct ui_op *op = op_append(surface);
     if (!op) return 0;
-    op->kind = UI_OP_RECT;
-    op->rgba = rgba;
-    op->x = x; op->y = y; op->width = width; op->height = height;
-    op->radius = radius; op->stroke = stroke;
-    op->reach = padded_box(x, y, width, height,
-        stroke > 0.0 ? stroke / 2.0 + 2.0 : 2.0);
+    op->kind = UI_OP_SHAPE;
+    op->rgba = shape->rgba;
+    op->x = shape->x; op->y = shape->y;
+    op->width = shape->width; op->height = shape->height;
+    op->radius = shape->radius; op->stroke = shape->stroke;
+    op->fill = shape->fill;
+    op->stop_count = shape->stop_count;
+    op->shadow_count = shape->shadow_count;
+    memcpy(op->geometry, shape->geometry, sizeof(op->geometry));
+    memcpy(op->stop_at, shape->stop_at, sizeof(op->stop_at));
+    memcpy(op->stop_rgba, shape->stop_rgba, sizeof(op->stop_rgba));
+    memcpy(op->shadow, shape->shadow, sizeof(op->shadow));
+    memcpy(op->shadow_rgba, shape->shadow_rgba, sizeof(op->shadow_rgba));
+    if (shape->point_count) {
+        size_t bytes = (size_t)shape->point_count * sizeof(double);
+        op->points = malloc(bytes);
+        if (!op->points) return 0;
+        memcpy(op->points, shape->points, bytes);
+        op->point_count = shape->point_count;
+    }
+    double pad = shape->stroke > 0.0 ? shape->stroke / 2.0 + 2.0 : 2.0;
+    if (shape->point_count) {
+        double left = shape->x, top = shape->y, right = shape->x, bottom = shape->y;
+        left = shape->x + shape->points[0];
+        top = shape->y + shape->points[1];
+        right = left; bottom = top;
+        for (long i = 2; i + 1 < shape->point_count; i += 2) {
+            double px = shape->x + shape->points[i], py = shape->y + shape->points[i + 1];
+            if (px < left) left = px;
+            if (px > right) right = px;
+            if (py < top) top = py;
+            if (py > bottom) bottom = py;
+        }
+        for (int i = 0; i < shape->shadow_count; i++)
+            pad = fmax(pad, fabs(shape->shadow[i][0]) + shape->shadow[i][2] +
+                shape->shadow[i][3] + 2.0);
+        for (int i = 0; i < shape->shadow_count; i++)
+            if (fabs(shape->shadow[i][1]) + shape->shadow[i][2] + shape->shadow[i][3] > pad)
+                pad = fabs(shape->shadow[i][1]) + shape->shadow[i][2] +
+                    shape->shadow[i][3] + 2.0;
+        op->reach = (struct rect){ left - pad, top - pad, right + pad, bottom + pad };
+    } else {
+        for (int i = 0; i < shape->shadow_count; i++)
+            pad = fmax(pad, fabs(shape->shadow[i][0]) + shape->shadow[i][2] +
+                shape->shadow[i][3] + 2.0);
+        op->reach = padded_box(shape->x, shape->y, shape->width, shape->height, pad);
+    }
     return 1;
 }
 
@@ -1074,6 +1155,82 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     return 1;
 }
 
+static void shape_path(cairo_t *cairo, const struct ui_op *op) {
+    if (op->point_count >= 6) {
+        cairo_move_to(cairo, op->x + op->points[0], op->y + op->points[1]);
+        for (long i = 2; i + 1 < op->point_count; i += 2)
+            cairo_line_to(cairo, op->x + op->points[i], op->y + op->points[i + 1]);
+        cairo_close_path(cairo);
+    } else {
+        rounded_path(cairo, op->x, op->y, op->width, op->height, op->radius);
+    }
+}
+
+static cairo_pattern_t *shape_pattern(const struct ui_op *op) {
+    if (op->fill == UI_FILL_SOLID || op->stop_count < 2) return NULL;
+    cairo_pattern_t *pattern;
+    if (op->fill == UI_FILL_LINEAR) {
+        double angle = op->geometry[0];
+        double dx = cos(angle), dy = sin(angle);
+        double centre_x = op->x + op->width / 2.0, centre_y = op->y + op->height / 2.0;
+        double half = 0.5 * (fabs(dx) * op->width + fabs(dy) * op->height);
+        pattern = cairo_pattern_create_linear(centre_x - dx * half, centre_y - dy * half,
+            centre_x + dx * half, centre_y + dy * half);
+    } else {
+        pattern = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
+        cairo_matrix_t matrix;
+        cairo_matrix_init_translate(&matrix, op->x + op->geometry[0] * op->width,
+            op->y + op->geometry[1] * op->height);
+        cairo_matrix_scale(&matrix,
+            op->geometry[2] * op->width > 0.001 ? op->geometry[2] * op->width : 0.001,
+            op->geometry[3] * op->height > 0.001 ? op->geometry[3] * op->height : 0.001);
+        cairo_pattern_set_matrix(pattern, &matrix);
+    }
+    for (int i = 0; i < op->stop_count; i++) {
+        double red, green, blue, alpha;
+        color_components(op->stop_rgba[i], &red, &green, &blue, &alpha);
+        cairo_pattern_add_color_stop_rgba(pattern, op->stop_at[i], red, green, blue, alpha);
+    }
+    return pattern;
+}
+
+static void shape_shadow(cairo_t *cairo, const struct ui_op *op, int index) {
+    const double *shadow = op->shadow[index];
+    double red, green, blue, alpha;
+    color_components(op->shadow_rgba[index], &red, &green, &blue, &alpha);
+    if (!(alpha > 0.0)) return;
+    double blur = shadow[2] > 0.0 ? shadow[2] : 0.0;
+    double spread = shadow[3] > 0.0 ? shadow[3] : 0.0;
+    cairo_save(cairo);
+    cairo_translate(cairo, shadow[0], shadow[1]);
+    cairo_set_line_join(cairo, CAIRO_LINE_JOIN_ROUND);
+    cairo_set_line_cap(cairo, CAIRO_LINE_CAP_ROUND);
+    if (blur <= 0.0) {
+        cairo_set_source_rgba(cairo, red, green, blue, alpha);
+        shape_path(cairo, op);
+        if (spread > 0.0) {
+            cairo_set_line_width(cairo, 2.0 * spread);
+            cairo_stroke_preserve(cairo);
+        }
+        cairo_fill(cairo);
+    } else {
+        const int bands = 16;
+        double outer = 0.0;
+        for (int band = bands; band > 0; band--) {
+            double reach = (double)band / bands;
+            double here = alpha * exp(-2.4 * reach);
+            double step = 1.0 - (1.0 - here) / (1.0 - outer);
+            outer = here;
+            if (!(step > 0.0)) continue;
+            cairo_set_source_rgba(cairo, red, green, blue, step);
+            cairo_set_line_width(cairo, 2.0 * (spread + blur * reach));
+            shape_path(cairo, op);
+            cairo_stroke(cairo);
+        }
+    }
+    cairo_restore(cairo);
+}
+
 static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         const struct rect *clip) {
     cairo_t *cairo = surface->canvas->cairo;
@@ -1083,20 +1240,33 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
     cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
     cairo_clip(cairo);
     switch (op->kind) {
-    case UI_OP_RECT:
-        cairo_set_source_rgba(cairo, red, green, blue, alpha);
-        if (op->stroke <= 0.0) {
-            rounded_path(cairo, op->x, op->y, op->width, op->height, op->radius);
-            cairo_fill(cairo);
-        } else if (op->width > op->stroke && op->height > op->stroke) {
-            double inset = op->stroke / 2.0;
-            rounded_path(cairo, op->x + inset, op->y + inset,
-                op->width - op->stroke, op->height - op->stroke,
-                fmax(0.0, op->radius - inset));
-            cairo_set_line_width(cairo, op->stroke);
-            cairo_stroke(cairo);
+    case UI_OP_SHAPE: {
+        for (int i = 0; i < op->shadow_count; i++) shape_shadow(cairo, op, i);
+        cairo_pattern_t *pattern = shape_pattern(op);
+        if (pattern) {
+            cairo_set_source(cairo, pattern);
+        } else {
+            cairo_set_source_rgba(cairo, red, green, blue, alpha);
         }
+        if (op->stroke > 0.0) {
+            if (op->width > op->stroke && op->height > op->stroke) {
+                double inset = op->stroke / 2.0;
+                rounded_path(cairo, op->x + inset, op->y + inset,
+                    op->width - op->stroke, op->height - op->stroke,
+                    fmax(0.0, op->radius - inset));
+                double stroke_red, stroke_green, stroke_blue, stroke_alpha;
+                color_components(op->rgba, &stroke_red, &stroke_green, &stroke_blue, &stroke_alpha);
+                cairo_set_source_rgba(cairo, stroke_red, stroke_green, stroke_blue, stroke_alpha);
+                cairo_set_line_width(cairo, op->stroke);
+                cairo_stroke(cairo);
+            }
+        } else {
+            shape_path(cairo, op);
+            cairo_fill(cairo);
+        }
+        if (pattern) cairo_pattern_destroy(pattern);
         break;
+    }
     case UI_OP_ARC:
         cairo_set_source_rgba(cairo, red, green, blue, alpha);
         cairo_set_line_width(cairo, op->u.arc.thickness);

@@ -7,6 +7,8 @@
 
 #include <wayland-server-protocol.h>
 
+#include "ui-shape.h"
+
 struct box;
 struct output;
 struct presentation;
@@ -38,8 +40,22 @@ int tomoe_present_ui_trail(struct tomoe *s, double cell, double life, int steps,
     uint32_t rgba, double fps, double idle);
 int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,
     double x, double y, double width, double height, int tint, uint32_t rgba);
-int tomoe_present_ui_rect(struct tomoe *s, double x, double y, double width,
-    double height, uint32_t rgba, double radius, double stroke);
+struct ui_shape {
+    double x, y, width, height, radius, stroke;
+    uint32_t rgba;
+    int fill;
+    double geometry[4];
+    int stop_count;
+    double stop_at[UI_SHAPE_STOPS];
+    uint32_t stop_rgba[UI_SHAPE_STOPS];
+    int shadow_count;
+    double shadow[UI_SHAPE_SHADOWS][4];
+    uint32_t shadow_rgba[UI_SHAPE_SHADOWS];
+    const double *points;
+    long point_count;
+};
+
+int tomoe_present_ui_shape(struct tomoe *s, const struct ui_shape *shape);
 int tomoe_present_ui_text(struct tomoe *s, double x, double y,
     const char *text, const char *font, double size, double line_height,
     uint32_t rgba, int rotate);

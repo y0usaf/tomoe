@@ -1006,6 +1006,29 @@ preceding owner or the default."
             else
               do (unless (null spec) (error "Unknown animation: ~S" key)))))
 
+(defun spring (spec elapsed &optional v0)
+  "A spring's progress from 0 to 1 at ELAPSED seconds, as any property that a
+configuration springs on its own interval reads it. SPEC takes :STIFFNESS,
+:DAMPING-RATIO and :LAUNCH exactly as the animations setting does (and may be a
+normalized animation spec); V0 is the speed the motion begins at, in steps per
+second, LAUNCH times the distance by default. Zero before ELAPSED zero, so a
+call after the motion has passed 1 is the settled value and a call before it
+starts is the value it left."
+  (unless (listp spec) (error "A spring spec is a property list: ~S" spec))
+  (let ((stiffness (getf spec :stiffness 4000))
+        (damping-ratio (getf spec :damping-ratio 1))
+        (launch (getf spec :launch 63)))
+    (unless (and (%finite-real-p stiffness) (<= 0 stiffness 100000))
+      (error "Invalid spring stiffness: ~S" stiffness))
+    (unless (and (%finite-real-p damping-ratio) (<= 0 damping-ratio 1000))
+      (error "Invalid spring damping ratio: ~S" damping-ratio))
+    (unless (and (%finite-real-p launch) (<= 0 launch 100000))
+      (error "Invalid spring launch: ~S" launch))
+    (if (or (null elapsed) (<= elapsed 0d0))
+        0d0
+        (%spring (%double-float stiffness) (%double-float damping-ratio)
+                 0d0 1d0 (%double-float (if v0 v0 launch)) (%double-float elapsed)))))
+
 (defun settings (&rest plist)
   "Own compositor settings. Later owners replace individual keys; grouped keys
 merge field by field. Omission restores the preceding owner or the default."

@@ -213,6 +213,7 @@ int init_primitives(void)
     define_builtin("FLOAT", builtin_float, 1, 2);
     define_builtin("COERCE", builtin_coerce, 2, 2);
     define_builtin("SQRT", builtin_sqrt, 1, 1);
+    define_internal("%SPRING", builtin_spring, 6, 6);
     define_builtin("SIN", builtin_sin, 1, 1);
     define_builtin("COS", builtin_cos, 1, 1);
     define_builtin("TANH", builtin_tanh, 1, 1);

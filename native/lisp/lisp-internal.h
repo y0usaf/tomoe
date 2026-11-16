@@ -756,6 +756,7 @@ lisp_value builtin_logtest(int argc, lisp_value *argv);
 lisp_value builtin_ash(int argc, lisp_value *argv);
 lisp_value builtin_float(int argc, lisp_value *argv);
 lisp_value builtin_sqrt(int argc, lisp_value *argv);
+lisp_value builtin_spring(int argc, lisp_value *argv);
 lisp_value builtin_sin(int argc, lisp_value *argv);
 lisp_value builtin_cos(int argc, lisp_value *argv);
 lisp_value builtin_tanh(int argc, lisp_value *argv);

@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 struct tomoe;
+struct ui_shape;
 int tomoe_abi_version(void);
 struct tomoe *tomoe_create(const char *socket_name);
 const char *tomoe_activation_token(struct tomoe *server);
@@ -84,8 +85,7 @@ void tomoe_ui_assets_discard(struct tomoe *server);
 int tomoe_present_ui_asset_ref(struct tomoe *server, uint64_t id);
 int tomoe_present_ui_asset(struct tomoe *server, uint64_t id,
     double x, double y, double width, double height, int tint, uint32_t rgba);
-int tomoe_present_ui_rect(struct tomoe *server, double x, double y, double width,
-    double height, uint32_t rgba, double radius, double stroke);
+int tomoe_present_ui_shape(struct tomoe *server, const struct ui_shape *shape);
 int tomoe_present_ui_text(struct tomoe *server, double x, double y,
     const char *text, const char *font, double size, double line_height, uint32_t rgba,
     int rotate);

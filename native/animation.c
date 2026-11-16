@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "spring.h"
 #include <float.h>
 
 static double bezier_at(double a, double b, double t) {
@@ -25,21 +26,8 @@ static double curve_y(const struct animation_config *c, double x) {
 }
 
 static double spring_at(const struct animation *a, double t) {
-    double stiffness = fmax(a->config.stiffness, 0);
-    double beta = fmax(a->config.damping_ratio, 0) * sqrt(stiffness);
-    double omega0 = sqrt(stiffness);
-    double x0 = a->from - a->to, v0 = a->v0;
-    double envelope = exp(-beta * t);
-    if (fabs(beta - omega0) <= FLT_EPSILON)
-        return a->to + envelope * (x0 + (v0 + beta * x0) * t);
-    if (beta < omega0) {
-        double omega1 = sqrt(omega0 * omega0 - beta * beta);
-        return a->to + envelope * (x0 * cos(omega1 * t) +
-            ((beta * x0 + v0) / omega1) * sin(omega1 * t));
-    }
-    double omega2 = sqrt(beta * beta - omega0 * omega0);
-    return a->to + envelope * (x0 * cosh(omega2 * t) +
-        ((beta * x0 + v0) / omega2) * sinh(omega2 * t));
+    return tomoe_spring_at(a->config.stiffness, a->config.damping_ratio,
+        a->from, a->to, a->v0, t);
 }
 
 static double spring_duration(const struct animation *a) {
