@@ -27,6 +27,17 @@ which must be refused without disturbing the running one. It fails on any
 extension failure, duplicate timer, lost focus, unplaced window, the compositor
 exiting or a fatal log line. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
+
+`./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same
+kind of isolated instance and breaks things above the core on purpose: surfaces
+past the canvas, a reducer that never returns or allocates without bound, one
+that fails mid-animation or keeps event data, configs that loop or allocate, a
+service and the config's own mado-send that segfault, a client that stops
+reading, a pointer holding 41 buttons, and headset mode in and out while
+surfaces churn. Each must leave the session answering, drawing on every output,
+taking typed input, and a line in its log file naming what failed. `CLIENTS` is
+the `bin` of `.#legacyPackages.x86_64-linux.client`.
+
 Everything slower is for a speed claim, not for landing:
 
 ```sh

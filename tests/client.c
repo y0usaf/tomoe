@@ -45,6 +45,7 @@ static struct xdg_toplevel_tag_manager_v1 *tag_manager;
 static struct xdg_wm_dialog_v1 *dialog_manager;
 static struct xdg_system_bell_v1 *bell_manager;
 static struct xdg_activation_v1 *activation;
+static struct wl_seat *key_seat;
 static volatile sig_atomic_t advance;
 
 static volatile sig_atomic_t running = 1;
@@ -58,7 +59,7 @@ struct client {
     int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
-    bool single_pixel, repaint;
+    bool single_pixel, repaint, keys;
     unsigned change_step, change_count;
     struct wp_viewport *viewport;
     bool alpha_probe;
@@ -282,6 +283,7 @@ static void usage(void) {
            "                       differs by committing a twice-as-large buffer cropped to\n"
            "                       that size with a viewport source, as Chromium does\n"
            "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n"
+           "  --keys               print \"TITLE key CODE STATE\" for every key this window receives\n"
            "  --change-to [AA]RRGGBB  with --repaint, each SIGUSR1 steps the fill through\n"
            "                       alternating with --color every commit, holding this colour,\n"
            "                       alternating again and holding --color\n",
@@ -320,6 +322,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--commit-rate") == 0)
         { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
         else if (strcmp(option, "--repaint") == 0) state->repaint = true;
+        else if (strcmp(option, "--keys") == 0) state->keys = true;
         else if (strcmp(option, "--change-to") == 0) { state->change_to = option_value(option, value); i++; }
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
@@ -337,9 +340,52 @@ static void parse_options(int count, char **arguments, struct client *state) {
     }
 }
 
+static void keys_keymap(void *data, struct wl_keyboard *keyboard, uint32_t format,
+        int32_t fd, uint32_t size) {
+    close(fd);
+}
+
+static void keys_enter(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+        struct wl_surface *surface, struct wl_array *keys) {}
+
+static void keys_leave(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+        struct wl_surface *surface) {}
+
+static void keys_key(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+        uint32_t time, uint32_t key, uint32_t key_state) {
+    const struct client *state = data;
+    printf("%s key %u %u\n", state->title, key, key_state);
+    fflush(stdout);
+}
+
+static void keys_modifiers(void *data, struct wl_keyboard *keyboard, uint32_t serial,
+        uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {}
+
+static const struct wl_keyboard_listener keys_listener = {
+    .keymap = keys_keymap,
+    .enter = keys_enter,
+    .leave = keys_leave,
+    .key = keys_key,
+    .modifiers = keys_modifiers,
+};
+
+static struct wl_keyboard *keys_keyboard;
+
+static void keys_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+    bool present = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
+    if (present && !keys_keyboard) {
+        keys_keyboard = wl_seat_get_keyboard(wl_seat);
+        wl_keyboard_add_listener(keys_keyboard, &keys_listener, data);
+    } else if (!present && keys_keyboard) {
+        wl_keyboard_destroy(keys_keyboard);
+        keys_keyboard = NULL;
+    }
+}
+
+static const struct wl_seat_listener keys_seat_listener = { .capabilities = keys_capabilities };
+
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
                             const char *interface, uint32_t version) {
-    (void)data;
     if (strcmp(interface, wl_compositor_interface.name) == 0) {
         compositor = wl_registry_bind(registry, name, &wl_compositor_interface, version < 4 ? version : 4);
     } else if (strcmp(interface, wl_shm_interface.name) == 0) {
@@ -367,6 +413,10 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         bell_manager = wl_registry_bind(registry, name, &xdg_system_bell_v1_interface, 1);
     } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
         activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
+    } else if (strcmp(interface, wl_seat_interface.name) == 0 && !key_seat && data &&
+            ((struct client *)data)->keys) {
+        key_seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
+        wl_seat_add_listener(key_seat, &keys_seat_listener, data);
     }
 }
 
@@ -875,6 +925,7 @@ int main(int count, char **arguments) {
     if (!shm) fail("the compositor does not advertise wl_shm");
     if (wm_base) xdg_wm_base_add_listener(wm_base, &xdg_wm_base_listener, &state);
     if (state.protocol_error) protocol_error(state.protocol_error);
+    if (state.keys && !key_seat) fail("the compositor does not advertise wl_seat");
     if (state.resize_probe && !viewporter)
         fail("the compositor does not advertise wp_viewporter");
     if (strcmp(state.mode, "drag") == 0) {

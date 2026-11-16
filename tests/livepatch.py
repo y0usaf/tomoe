@@ -258,7 +258,8 @@ cli(f"mount {CANVAS_SOURCE}")
 await_state(lambda: "CANVAS-2" in outputs(), "the canvas outputs")
 held = outputs()
 assert "CANVAS-1" not in held, held
-cli("command canvas-both")
+refused = fail("command canvas-both")
+assert "canvas budget" in refused and "keeps its last answer" in refused, refused
 time.sleep(1)
 assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0, \
     "a refused shell surface set stopped the compositor"
