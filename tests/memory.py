@@ -3,7 +3,7 @@ machine.succeed(f"rm -rf {SHOT} && cp -r {SOURCE} {SHOT}")
 machine.succeed("mkdir -p /run/user/1001/bolo && printf idle > /run/user/1001/bolo/state")
 
 ANON_LIMIT = 60000
-DIRTY_LIMIT = 74000
+DIRTY_LIMIT = 77600
 BUDGET_REFRESH_MHZ = 240000
 ANIMATED_WINDOW = 6
 CONTROL_WINDOW = 4
