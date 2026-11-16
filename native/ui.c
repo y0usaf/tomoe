@@ -748,7 +748,7 @@ failed:
 int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
         uint64_t source_id, const char *name, const char *output,
         uint64_t plan_id, int x, int y, int width, int height, int layer,
-        int click_through, int slide, int blur, uint32_t attach, int attach_axes) {
+        int click_through, int slide, int blur, uint32_t attach, int attach_axes, int drawn) {
     if (!s || !s->presentation || width < 1 || width > UI_MAX_DIMENSION || height < 1 ||
             height > UI_MAX_DIMENSION || layer < 0 || layer > 3 ||
             click_through < 0 || click_through > 1 || slide < 0 || slide > 1 ||
@@ -773,6 +773,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     if (stride == 0) return 0;
     uint64_t bytes;
     if (!checked_surface_bytes(width, height, stride, &bytes)) return 0;
+    if (!drawn) bytes = 0;
     struct ui_surface *cached = NULL;
     if (s->ui) {
         for (size_t i = 0; i < s->ui->count; i++) {

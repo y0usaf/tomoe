@@ -227,6 +227,33 @@ let
         (values nil (loop for i below 512 collect (interval (intern (format nil "T~D" i) :keyword) 600000)) nil))
     '') (pkgs.lib.range 1 9)
   );
+  livePatchCanvas = pkgs.writeText "livepatch-canvas.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "canvas-check" (:reads (:command) :state nil) (snapshot state event)
+      (declare (ignore snapshot))
+      (let ((name (and (eq (getf event :type) :command) (getf event :name))))
+        (cond ((equal name "canvas-both") (setf (getf state :both) (not (getf state :both))))
+              ((equal name "canvas-bare") (setf (getf state :bare) (not (getf state :bare)))))
+        (values state
+                (append (list (define-command "canvas-both") (define-command "canvas-bare")
+                              (virtual-output "CANVAS-1" :mode '(5120 1440 60))
+                              (virtual-output "CANVAS-2" :mode '(3840 2160 60)))
+                        (unless (getf state :both) (list (configure-output "CANVAS-1" :disabled t)))
+                        (loop for name in '(:canvas-a :canvas-b :canvas-c)
+                              collect (shell-surface name (ui :stack) :anchors '(:top :right :bottom :left)
+                                                     :layer :background :click-through t
+                                                     :background (if (getf state :bare)
+                                                                     '(:trail :cell 9 :life 0.35 :steps 4 :idle 0.5)
+                                                                     "#203040"))))
+                nil)))
+    (define-extension "canvas-tick" (:reads () :state 0) (snapshot state event)
+      (declare (ignore snapshot))
+      (let ((n (if (eq (getf event :type) :timer) (1+ state) state)))
+        (values n (list (interval :tick 50)
+                        (shell-surface :canvas-tick (ui :text :text (princ-to-string n)) :anchors '(:top :left)
+                                       :layer :overlay :click-through t))
+                nil)))
+  '';
   livePatchKeyboard = pkgs.writeText "livepatch-keyboard.lisp" ''
     (defun tomoe::default-keyboard-config ()
       (list :rules "" :model "" :layout "de" :variant "" :options nil
@@ -1210,6 +1237,7 @@ let
         KEYBOARD_PATCH = "${livePatchKeyboard}"
         SLOW_SOURCE = "${livePatchSlow}"
         FLOOD_SOURCE = "${livePatchFlood}"
+        CANVAS_SOURCE = "${livePatchCanvas}"
       ''
       + builtins.readFile ./livepatch.py;
     }

@@ -249,4 +249,24 @@ assert {"patch", "undo-patch"} <= {entry["name"] for entry in json.loads(cli("co
 assert not machine.succeed(f"ls -A {RUNTIME}/tomoe-patches 2>/dev/null || true").split(), \
     "generated patch sources remain"
 
+
+def outputs():
+    return sorted(output["name"] for output in json.loads(cli("msg outputs")))
+
+
+cli(f"mount {CANVAS_SOURCE}")
+await_state(lambda: "CANVAS-2" in outputs(), "the canvas outputs")
+held = outputs()
+assert "CANVAS-1" not in held, held
+cli("command canvas-both")
+time.sleep(1)
+assert machine.execute(ENV + "tomoe --socket check inspect")[0] == 0, \
+    "a refused shell surface set stopped the compositor"
+assert outputs() == held, "a refused shell surface set changed the outputs"
+cli("command canvas-bare")
+cli("command canvas-both")
+await_state(lambda: "CANVAS-1" in outputs(), "full-screen surfaces that draw nothing to fit the canvas budget")
+cli("unmount canvas-check")
+cli("unmount canvas-tick")
+
 quit()

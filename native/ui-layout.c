@@ -1187,9 +1187,6 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                     (int64_t)round_value(8 * scale);
                 stack_count++;
             }
-            pixels += width * height;
-            if (plan_count >= UI_MAX_PLANS || pixels > UI_MAX_TOTAL_BYTES)
-                lisp_error("Shell surface set exceeds its canvas budget.");
             lisp_value background = plist_get(declaration, "BACKGROUND");
             lisp_value trail = lisp_nil();
             lisp_value backdrop = lisp_nil();
@@ -1279,6 +1276,9 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                 builder.size = lisp_nilp(font_size) ? 13.0 : lisp_get_double(font_size);
                 draw_plan(entry, &measured, (int)width, (int)height, &builder, draw_background);
             }
+            if (entry->draw_count) pixels += width * height;
+            if (plan_count >= UI_MAX_PLANS || pixels > UI_MAX_TOTAL_BYTES)
+                lisp_error("Shell surface set exceeds its canvas budget.");
             lisp_value assets = lisp_nil();
             uint64_t asset_ids[512];
             size_t asset_count = 0;
@@ -1378,6 +1378,7 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
         uint64_t plan_id = lisp_get_uint(plist_get(plan, "PLAN-ID"));
         lisp_value blur = plist_get(plan, "BLUR");
         lisp_value attach = plist_get(plan, "ATTACH");
+        struct ui_cached_plan *entry = plan_find_id(plan_id);
         int status = tomoe_present_ui_surface(ui_server, owner, source_id, name_text,
             output ? output : "", plan_id,
             (int)lisp_get_int(plist_get(plan, "X")), (int)lisp_get_int(plist_get(plan, "Y")),
@@ -1388,7 +1389,7 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
             truthy(plist_get(plan, "SLIDE")) ? 1 : 0,
             lisp_nilp(blur) ? -1 : (int)lisp_get_int(blur),
             lisp_nilp(attach) ? 0 : (uint32_t)lisp_get_uint(attach),
-            attach_axes_bits(plist_get(plan, "ATTACH-AXES")));
+            attach_axes_bits(plist_get(plan, "ATTACH-AXES")), entry && entry->draw_count);
         if (status != 1 && status != 2) {
             char buffer[512];
             lisp_print(name, true, buffer, sizeof(buffer));
@@ -1415,7 +1416,6 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
                 lisp_error("Cannot prepare shell shader inputs.");
         }
         if (status != 1) continue;
-        struct ui_cached_plan *entry = plan_find_id(plan_id);
         if (!entry) lisp_error("Cannot prepare retained shell rendering.");
         lisp_value assets = plist_get(plan, "ASSETS");
         for (lisp_value asset = assets; lisp_consp(asset); asset = lisp_cdr(asset))
