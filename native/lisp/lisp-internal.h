@@ -369,7 +369,10 @@ struct lisp_runtime {
     struct lisp_symbol *sym_keyword_test_not;
 };
 
-extern struct lisp_runtime lisp;
+struct tomoe_state_abi;
+void lisp_attach(const struct tomoe_state_abi *abi);
+extern struct lisp_runtime *lisp_ptr;
+#define lisp (*lisp_ptr)
 
 #define OBJ(v) ((struct lisp_obj *)(uintptr_t)(v))
 #define TYPE(v) (OBJ(v)->type)

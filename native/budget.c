@@ -42,9 +42,15 @@ static struct budget budgets[BUDGET_COUNT] = {
 
 extern char __executable_start[], etext[];
 
+#if defined(TOMOE_SHARED_CORE)
+static const char *hot_tag;
+static int hot_depth;
+static bool hot_logging;
+#else
 static __thread const char *hot_tag;
 static __thread int hot_depth;
 static __thread bool hot_logging;
+#endif
 static uint64_t hot_allocs, hot_allocs_all;
 static time_t hot_logged;
 static uintptr_t hot_callers[64];

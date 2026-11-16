@@ -7,8 +7,15 @@
 #include <errno.h>
 
 #include "lisp-internal.h"
+#include "state.h"
 
-struct lisp_runtime lisp;
+struct lisp_runtime *lisp_ptr;
+
+void lisp_attach(const struct tomoe_state_abi *abi) {
+    static struct lisp_runtime private_runtime;
+    lisp_ptr = tomoe_state("lisp", sizeof(*lisp_ptr));
+    if (!lisp_ptr) lisp_ptr = &private_runtime;
+}
 
 static char *reservation;
 static uint32_t free_block = UINT32_MAX;

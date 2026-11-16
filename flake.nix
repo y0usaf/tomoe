@@ -101,6 +101,7 @@
           opt ? "-O2",
           lto ? false,
           portal ? true,
+          coreStamp ? null,
         }:
         let
           cairo = pkgs.cairo.override {
@@ -154,18 +155,21 @@
           buildPhase = ''
             runHook preBuild
             make -j"$NIX_BUILD_CORES" VERSION=${version} \
+              CORE_STAMP='${if coreStamp == null then version else coreStamp}' \
               PATH_PREFIX=$out/bin \
               FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
               WP=${pkgs.wayland-protocols}/share/wayland-protocols \
-              WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
+              WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml \
+              build/tomoe build/tomoe-portal build/tomoe-core.so
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
             install -Dm755 build/tomoe $out/bin/tomoe
+            install -Dm755 build/tomoe-core.so $out/lib/tomoe/core.so
             install -d $out/share/tomoe/lisp
             install -m 644 lisp/*.lisp $out/share/tomoe/lisp/
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
@@ -226,6 +230,32 @@
         };
       };
     in
+    let
+      coreBadSource =
+        pkgs:
+        pkgs.runCommand "tomoe-src-layout-drift" { } ''
+          mkdir -p $out
+          cp -r ${./native} $out/native
+          cp -r ${./lisp} $out/lisp
+          cp -r ${./support} $out/support
+          cp -r ${./tools} $out/tools
+          cp -r ${./examples} $out/examples
+          cp -r ${./share} $out/share
+          cp ${./Makefile} $out/Makefile
+          substituteInPlace $out/native/backend.c --replace-fail \
+            'int tomoe_abi_version(void) { return 45; }' \
+            'int tomoe_abi_version(void) { return 46; }'
+        '';
+      testsFor =
+        pkgs:
+        import ./tests {
+          inherit pkgs;
+          tomoe = package pkgs { };
+          baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          coreB = package pkgs { coreStamp = "core-b"; };
+          coreBad = packageFrom (coreBadSource pkgs) pkgs { coreStamp = "core-bad"; };
+        };
+    in
     {
       packages = nixpkgs.lib.mapAttrs (_: pkgs: {
         default = package pkgs { };
@@ -238,21 +268,11 @@
       devShells = nixpkgs.lib.mapAttrs (_: pkgs: {
         default = devShell pkgs;
       }) pkgsFor;
-      checks = nixpkgs.lib.mapAttrs (
-        _: pkgs:
-        removeAttrs (import ./tests {
-          inherit pkgs;
-          tomoe = package pkgs { };
-          baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
-        }) [ "suites" "client" ]
-      ) pkgsFor;
+      checks = nixpkgs.lib.mapAttrs (_: pkgs: removeAttrs (testsFor pkgs) [ "suites" "client" ])
+        pkgsFor;
       legacyPackages = nixpkgs.lib.mapAttrs (_: pkgs: {
         inherit
-          (import ./tests {
-            inherit pkgs;
-            tomoe = package pkgs { };
-            baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
-          })
+          (testsFor pkgs)
           suites
           client
           ;

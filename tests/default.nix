@@ -2,6 +2,8 @@
   pkgs,
   tomoe,
   baseline ? null,
+  coreB ? null,
+  coreBad ? null,
 }:
 let
   imeClient = pkgs.stdenv.mkDerivation {
@@ -1081,6 +1083,17 @@ let
   baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
   compositorSuites = [
     {
+      name = "livecore";
+      script = ''
+        machine.wait_for_unit("multi-user.target")
+        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./livecore.py} "
+          + "${tomoe}/bin/tomoe ${tomoe}/lib/tomoe/core.so "
+          + "${coreB}/lib/tomoe/core.so ${coreBad}/lib/tomoe/core.so "
+          + "${client}/bin/tomoe-test-client ${client}/bin/tomoe-pointer-script "
+          + "${client}/bin/tomoe-test-pointer-client ${./livecore-policy.lisp} core-b")
+      '';
+    }
+    {
       name = "pointer-protocols";
       script = ''
         machine.wait_for_unit("multi-user.target")
@@ -1481,6 +1494,7 @@ let
       "integration"
       "pointer-protocols"
       "livepatch"
+      "livecore"
     ]
   ) compositorSuites;
   smokeSettings = compositorSettings // {

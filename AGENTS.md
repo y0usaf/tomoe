@@ -87,6 +87,39 @@ TOMOE_SOCKET tools/isolate ...`, and while a fake kernel input device exists.
 Never use kernel fake input devices, `DISPLAY=:0` or the live sockets; Tomoe's
 own `tomoe-pointer-script` and `tomoe event` inject input into one instance.
 
+## The core and a running session
+
+`make core` builds `build/tomoe-core.so` from the same sources, and
+`tomoe command swap-core file=PATH` queues it: the driver checks the image in
+that call (layout through `tomoe_core_abi`, function set, data sizes, every entry
+patchable) and commits at the next frame boundary, where no call of the running
+image is on the stack. The commit copies the writable data into the new image,
+normalises every table pointer the heap holds (`wl_resource_instance_of` compares
+implementations, `surface->role` decides the role, `screen->impl` the backend),
+and patches the running image's function entries to the new image's bodies
+through trampolines within reach of that image. Both images are built with
+`-fpatchable-function-entry=5,0` and `tools/entries` widens the five one-byte
+nops into one five-byte nop after each link, so an entry is one eight-byte store
+while other threads run. The driver's own functions (`main.c`, listed by `nm` into
+`build/main-functions.h`) and the loader's (`livecore_*`) are never patched.
+
+A static object whose *address* another object remembers has to be shared, not
+copied: `native/state.c` is retained state the driver owns by name, each image
+points its statics at it when loaded through `tomoe_core_attach`, and both then
+address the same object. That covers the rect pool (`region.c`) and the Lisp
+runtime with its symbol table (`heap.c`). Everything else is a copy per image,
+which is why the commit has to normalise the table pointers above and why
+`selection.c` compares a `wl_interface` by name rather than by address; a new
+static whose address is compared across images will break a swap.
+
+`nix build .#legacyPackages.x86_64-linux.suites.livecore`, and the smoke check,
+swap a core in and out of a session with three drawing clients: the windows, the
+frames they keep committing, a key bound in the session and the pointer all have
+to hold, a client that connects after the swap has to map, a client that dies
+after one or two swaps must leave the session drawing and answering, a second
+swap must return to the first core, and a core built for another layout must be
+refused with the session still running.
+
 ## Releasing
 
 `nix run .#release -- rc|soak|promote` (README, Releases). A candidate is a commit

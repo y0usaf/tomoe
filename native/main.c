@@ -7,6 +7,7 @@
 #include "ipc.h"
 #include "json.h"
 #include "lisp.h"
+#include "livecore.h"
 #include "policy.h"
 
 #include <errno.h>
@@ -588,6 +589,7 @@ static int run_compositor(const struct cli_options *options) {
     bool session = false;
     int signal_fd = -1;
     struct loop_source *signal_watch = NULL;
+    livecore_attach_state();
     if (lisp_init(budget_lisp_region_bootstrap)) {
         tomoe_log(LOG_ERROR, "tomoe: cannot initialise the Lisp runtime");
         goto done;
@@ -596,6 +598,7 @@ static int run_compositor(const struct cli_options *options) {
     resources_register_primitives(server);
     ui_layout_register_primitives(server);
     loop_register_primitives(server);
+    (void)livecore_init(server, error, sizeof(error));
     if (lisp_load_builtins(tomoe_builtin_sources, tomoe_builtin_source_count, error,
             sizeof(error))) {
         tomoe_log(LOG_ERROR, "tomoe: %s", error);
@@ -675,6 +678,7 @@ static int run_compositor(const struct cli_options *options) {
         control_serve(control);
         ipc_serve(ipc);
         lisp_end_turn();
+        livecore_service();
     }
     uint64_t deadline = loop_now_ms() + 100;
     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);

@@ -1,6 +1,8 @@
 CC ?= cc
+NM ?= nm
 PKG_CONFIG ?= pkg-config
 VERSION ?= dev
+CORE_STAMP ?= $(VERSION)
 OPT ?= -O2
 LTO ?=
 CPU ?=
@@ -70,8 +72,9 @@ WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/wayland-loop.o build/obj/wayland-serv
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/wayland-client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/wayland-client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' 
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative
 
@@ -88,9 +91,41 @@ build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAY
 build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h native/wayland/*.h) support/bus.h $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
-	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS)) \
+CORE_SOURCES = $(wildcard native/*.c) $(wildcard native/lisp/*.c) $(wildcard native/wayland/*.c)
+CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(CORE_SOURCES)) \
+	$(NAMES:%=build/core/obj/protocol-%-protocol.o) $(SUPPORT:%=build/core/obj/support-%.o) \
+	build/core/obj/wayland-protocol.o
+
+build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) | build/entries
+	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS)) \
 		-lresvg -ldl -lpthread -lm
+	build/entries $@
+
+build/tomoe-core.so: $(CORE_OBJECTS) | build/entries
+	$(CC) $(LTO) -shared -Wl,-Bsymbolic $(CORE_OBJECTS) -o $@ \
+		$(shell $(PKG_CONFIG) --libs $(LIBS)) -lresvg -ldl -lpthread -lm
+	build/entries $@
+
+core: build/tomoe-core.so
+
+build/entries: tools/entries.c | build
+	$(CC) $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -o $@ $<
+
+build/core/obj/support-%.o: support/%.c $(wildcard support/*.h) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_SUPPORT) -fPIC -DTOMOE_SHARED_CORE -c $< -o $@
+
+build/core/obj/wayland-protocol.o: build/wayland-protocol.c build/wayland-server-protocol.h build/wayland-client-protocol.h | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_CORE) -c $< -o $@
+
+build/core/obj/protocol-%-protocol.o: build/%-protocol.c $(HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_CORE) -c $< -o $@
+
+build/core/obj/%.o: native/%.c $(wildcard native/*.h native/lisp/*.h native/wayland/*.h) $(HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_CORE) -c $< -o $@
 
 build/embed: tools/embed.c | build
 	$(CC) $(CFLAGS_CODE) -o $@ $<
@@ -99,6 +134,15 @@ build/lisp-sources.h: build/embed $(LISP_EMBED) FORCE
 	sh -c 'set --; for n in $(LISP_SOURCES); do if [ -f lisp/$$n.lisp ]; then set -- "$$@" "$$n" "lisp/$$n.lisp"; fi; done; exec build/embed build/lisp-sources.h "$$@"'
 
 build/obj/main.o: build/lisp-sources.h
+build/core/obj/main.o: build/lisp-sources.h
+build/obj/livecore.o: build/main-functions.h
+build/core/obj/livecore.o: build/main-functions.h
+
+build/main-functions.h: build/obj/main.o | build
+	{ echo 'static const char *const livecore_driver[] = {'; \
+	  $(NM) --defined-only --format=posix build/obj/main.o | \
+	    awk '$$2 == "T" || $$2 == "t" { printf "    \"%s\",\n", $$1 }'; \
+	  echo '};'; } > $@
 
 build/test-client: tests/client.c $(HEADERS)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild tests/client.c $(NAMES:%=build/%-protocol.c) \
@@ -137,9 +181,10 @@ build/obj/wayland-%.o: native/wayland/%.c $(wildcard native/wayland/*.h) build/w
 build/obj/lisp-%.o: native/lisp/%.c $(wildcard native/lisp/*.h) $(wildcard native/*.h native/wayland/*.h) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
-build/lisp-unit: $(wildcard native/lisp/*.c) $(wildcard native/lisp/*.h) native/lisp.h tests/lisp-unit.c | build
-	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard native/lisp/*.c) tests/lisp-unit.c -lm \
-		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc
+build/lisp-unit: $(wildcard native/lisp/*.c) $(wildcard native/lisp/*.h) native/lisp.h \
+		native/state.c native/state.h native/region.c native/region.h tests/lisp-unit.c | build
+	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard native/lisp/*.c) native/state.c native/region.c \
+		tests/lisp-unit.c -lm -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc
 
 UNIT_SOURCES = tomoe:tests/lisp-api-stub.lisp user:lisp/desktop.lisp \
 	$(patsubst %,user:%,$(sort $(wildcard examples/*.lisp))) \
@@ -177,7 +222,7 @@ build/%-protocol.c: %.xml | build
 build build/obj:
 	mkdir -p $@
 
-.PHONY: FORCE
+.PHONY: FORCE core
 FORCE:
 
 .SECONDARY:

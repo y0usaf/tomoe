@@ -334,7 +334,8 @@ static struct offer *offer_create(struct wl_resource *device, struct source *src
     o->resource = resource;
     o->source = src;
     o->drag = drag_offers != NULL;
-    wl_resource_set_implementation(resource, interface == &wl_data_offer_interface ?
+    wl_resource_set_implementation(resource,
+        interface && !strcmp(interface->name, wl_data_offer_interface.name) ?
         (const void *)&data_offer_impl : (const void *)&simple_offer_impl, o, offer_resource_destroy);
     listen(&o->source_destroy, &src->destroy, offer_source_destroyed);
     if (drag_offers) wl_list_insert(drag_offers, &o->link);

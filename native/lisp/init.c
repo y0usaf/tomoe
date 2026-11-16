@@ -381,6 +381,7 @@ int init_primitives(void)
 
 int lisp_init(size_t region_bytes)
 {
+    if (!lisp_ptr) lisp_attach(NULL);
     if (lisp.initialised)
         return 0;
     memset(&lisp, 0, sizeof(lisp));

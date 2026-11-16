@@ -337,6 +337,23 @@ int wl_resource_instance_of(struct wl_resource *resource, const struct wl_interf
     return interface_equal(resource->interface, interface) && resource->implementation == implementation;
 }
 
+static void repoint_resource(struct wl_resource *resource, wl_implementation_map map, void *data) {
+    if (!resource || !resource->implementation) return;
+    const void *moved = map(resource->implementation, data);
+    if (moved) resource->implementation = moved;
+}
+
+void wl_display_repoint(struct wl_display *display, wl_implementation_map map, void *data) {
+    if (!display || !map) return;
+    struct wl_client *client;
+    wl_list_for_each(client, &display->clients, link) {
+        for (uint32_t i = 0; i < client->object_count; i++)
+            repoint_resource(client->objects[i], map, data);
+        for (uint32_t i = 0; i < client->server_count; i++)
+            repoint_resource(client->server_objects[i], map, data);
+    }
+}
+
 void wl_resource_add_destroy_listener(struct wl_resource *resource, struct wl_listener *listener) {
     wl_list_insert(resource->destroy_listeners.prev, &listener->link);
 }

@@ -1,4 +1,5 @@
 #include "region.h"
+#include "state.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,11 +14,33 @@ struct build {
     int count, capacity;
 };
 
-static struct rect pool[POOL_RECTS];
-static size_t pool_used;
-static struct rect *pool_free[POOL_CLASSES];
-static struct rect scratch_rects[SCRATCH_RECTS];
-static struct build scratch = { scratch_rects, 0, SCRATCH_RECTS };
+struct region_state {
+    struct rect pool[POOL_RECTS];
+    size_t pool_used;
+    struct rect *pool_free[POOL_CLASSES];
+    struct rect scratch_rects[SCRATCH_RECTS];
+    struct build scratch;
+};
+
+static struct region_state *regions;
+
+void region_attach(const struct tomoe_state_abi *abi) {
+    static struct region_state private_regions;
+    regions = tomoe_state("region", sizeof(*regions));
+    if (!regions) regions = &private_regions;
+    if (!regions->scratch.rects)
+        regions->scratch = (struct build){ regions->scratch_rects, 0, SCRATCH_RECTS };
+}
+
+static void region_ready(void) {
+    if (!regions) region_attach(NULL);
+}
+
+#define pool (regions->pool)
+#define pool_used (regions->pool_used)
+#define pool_free (regions->pool_free)
+#define scratch_rects (regions->scratch_rects)
+#define scratch (regions->scratch)
 
 static int pool_class(int count) {
     int class = 0;
@@ -337,6 +360,7 @@ out:
 }
 
 void region_init(struct region *region) {
+    region_ready();
     *region = (struct region){ { 0, 0, 0, 0 }, NULL, 0, 0 };
 }
 
