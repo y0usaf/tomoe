@@ -89,6 +89,7 @@ struct connector {
     struct wl_list link;
 };
 
+struct plan;
 struct kms {
     struct tomoe *server;
     int fd, device;
@@ -105,6 +106,8 @@ struct kms {
     size_t plane_count;
     struct wl_list connectors;
     struct screen_impl impl;
+    struct plan *plans;
+    size_t plans_capacity;
 };
 
 struct fb {
@@ -633,7 +636,18 @@ static bool plane_zpos(const struct plane *plane, size_t index, int64_t *zpos) {
 
 static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t count, bool test,
         bool wake, bool async, bool *woke) {
-    struct plan *plans = calloc(count, sizeof(*plans));
+    if (count > kms->plans_capacity) {
+        size_t capacity = count * 2 > 4 ? count * 2 : 4;
+        struct plan *grown = realloc(kms->plans, capacity * sizeof(*grown));
+        if (!grown) {
+            kms->last_ret = -ENOMEM;
+            return false;
+        }
+        kms->plans = grown;
+        kms->plans_capacity = capacity;
+    }
+    struct plan *plans = kms->plans;
+    if (count) memset(plans, 0, count * sizeof(*plans));
     drmModeAtomicReq *req = drmModeAtomicAlloc();
     char *text = NULL;
     size_t text_size = 0;
@@ -1033,7 +1047,6 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         if (plans[i].modeset || (!plans[i].enable && plans[i].crtc)) log_kernel_state(c, "kernel state");
     }
     if (req) drmModeAtomicFree(req);
-    free(plans);
     return ok;
 }
 
@@ -1822,6 +1835,7 @@ void kms_destroy(struct tomoe *s) {
     }
     free(kms->crtcs);
     free(kms->planes);
+    free(kms->plans);
     if (kms->fd >= 0) session_close(s, kms->device, kms->fd);
     free(kms);
     s->kms = NULL;
