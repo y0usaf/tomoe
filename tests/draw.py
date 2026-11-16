@@ -2,24 +2,32 @@ COUNTS = [int(value) for value in DRAW_COUNTS.split(",")]
 IDLE_BUDGET_NS = 10_000_000
 REFRESH_240_MS = 1000 / 240
 TRANSLUCENT = "b0"
+CHANGED = "e0b040"
 GOLDEN = [value for value in DRAW_GOLDEN.split(",") if value]
 BLUR_DIGESTS = [value for value in BLUR_GOLDEN.split(",") if value]
 COLOURS = ["3c5a78", "7a4a2c", "2c7a4a", "6a2c7a", "7a7a2c", "2c6a7a",
            "7a2c4a", "4a7a2c", "2c4a7a", "5a3c6a"]
 
 
-def shot(socket, limit=12, cursors=False):
+def shot(socket, limit=12, cursors=False, keep=None):
     previous = None
     for _ in range(limit):
         digest = machine.succeed(
             ENV + f"WAYLAND_DISPLAY={socket} grim {'-c ' if cursors else ''}-t ppm /run/draw.ppm"
             " && sha256sum /run/draw.ppm"
-        ).split()[0][:16]
+        ).split()[0]
         if digest == previous:
-            return digest
+            break
         previous = digest
         time.sleep(0.4)
-    return previous
+    if keep:
+        machine.copy_from_vm("/run/draw.ppm", keep)
+    return previous[:16] if keep is None else previous
+
+
+def step(unit, settle=1.0):
+    machine.succeed(f"systemctl kill -s USR1 {unit}")
+    time.sleep(settle)
 
 
 def tiles(socket):
@@ -95,7 +103,8 @@ def spawn(socket, first, count, repaint=False, unit=None, alpha=""):
             alive(unit)
         client(f"{socket}-{index}", f"--mode xdg --app-id draw-{index} --size 320x200 "
             f"--color {alpha}{COLOURS[index % len(COLOURS)]}"
-            + (" --commit-rate 60" + (" --repaint" if repaint else "") if index == 0 else ""),
+            + (" --commit-rate 60" + (f" --repaint --change-to {alpha}{CHANGED}" if repaint
+                                      else "") if index == 0 else ""),
             socket=socket)
 
 
@@ -202,8 +211,19 @@ for count in COUNTS:
     assert state[":LAST-ERROR"] == "NIL", state[":LAST-ERROR"]
     spawn(shot_socket, 0, count, repaint=True, unit=shot_unit, alpha=TRANSLUCENT)
     time.sleep(1.5)
-    blur_digests += [shot(shot_socket), shot(shot_socket, cursors=True)]
-    print(f"blur windows {count}: screenshot {blur_digests[-2]} presented {blur_digests[-1]}")
+    before = shot(shot_socket, keep=f"blur-{count}-before")
+    presented = shot(shot_socket, cursors=True)
+    step(f"{shot_socket}-0")
+    step(f"{shot_socket}-0")
+    changed = shot(shot_socket, keep=f"blur-{count}-changed")
+    step(f"{shot_socket}-0")
+    step(f"{shot_socket}-0")
+    after = shot(shot_socket, keep=f"blur-{count}-after")
+    assert after == before, \
+        f"{count} blurred windows drew {after} once their backdrop changed back, not {before}"
+    blur_digests += [before[:16], presented, changed[:16]]
+    print(f"blur windows {count}: screenshot {before[:16]} presented {presented} "
+          f"changed {changed[:16]}")
     quit(shot_unit, shot_socket)
 
 start("--test-timings", unit="tomoe-blur", socket="blur")
@@ -217,8 +237,9 @@ for count in COUNTS:
     time.sleep(2.5)
     still = measure("tomoe-blur", "blur")
     cli(f"mount {BLUR_BACKDROP}", "blur")
-    time.sleep(1)
+    step("blur-0")
     moving = measure("tomoe-blur", "blur")
+    step("blur-0", 0)
     cli("unmount draw-backdrop", "blur")
     time.sleep(1)
     blur_costs[count] = (still, moving)

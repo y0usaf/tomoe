@@ -50,7 +50,7 @@ static volatile sig_atomic_t advance;
 static volatile sig_atomic_t running = 1;
 
 struct client {
-    const char *mode, *app_id, *title, *layer_namespace, *color, *image;
+    const char *mode, *app_id, *title, *layer_namespace, *color, *image, *change_to;
     const char *protocol_error;
     int width, height, seconds, commit_rate;
     uint32_t layer, anchor, exclusive_zone, keyboard;
@@ -59,6 +59,7 @@ struct client {
     int buffer_width, buffer_height;
     bool mapped;
     bool single_pixel, repaint;
+    unsigned change_step, change_count;
     struct wp_viewport *viewport;
     bool alpha_probe;
     unsigned alpha_step;
@@ -280,7 +281,10 @@ static void usage(void) {
            "  --resize-probe       map at --size, then answer the first configure that\n"
            "                       differs by committing a twice-as-large buffer cropped to\n"
            "                       that size with a viewport source, as Chromium does\n"
-           "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n",
+           "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n"
+           "  --change-to [AA]RRGGBB  with --repaint, each SIGUSR1 steps the fill through\n"
+           "                       alternating with --color every commit, holding this colour,\n"
+           "                       alternating again and holding --color\n",
            program);
 }
 
@@ -316,6 +320,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         else if (strcmp(option, "--commit-rate") == 0)
         { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
         else if (strcmp(option, "--repaint") == 0) state->repaint = true;
+        else if (strcmp(option, "--change-to") == 0) { state->change_to = option_value(option, value); i++; }
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
     }
@@ -326,6 +331,10 @@ static void parse_options(int count, char **arguments, struct client *state) {
     if (!*state->app_id) fail("--app-id needs a name");
     if (!*state->layer_namespace) fail("--namespace needs a name");
     parse_color(state->color);
+    if (state->change_to) {
+        parse_color(state->change_to);
+        if (!state->repaint) fail("--change-to needs --repaint");
+    }
 }
 
 static void registry_global(void *data, struct wl_registry *registry, uint32_t name,
@@ -750,6 +759,18 @@ static void run(struct client *state) {
     finish(0);
 }
 
+static void change_step(struct client *state) {
+    if (advance) {
+        advance = 0;
+        state->change_step = (state->change_step + 1) % 4;
+    }
+    uint32_t colors[] = { parse_color(state->color), parse_color(state->change_to) };
+    unsigned step = state->change_step;
+    uint32_t color = step % 2 ? colors[++state->change_count % 2] : colors[step == 2];
+    uint32_t *words = state->pixels;
+    for (size_t i = 0; words && i < state->pixels_size / sizeof(uint32_t); i++) words[i] = color;
+}
+
 static void flood(struct client *state) {
     while (!state->mapped)
         if (wl_display_dispatch(display) < 0) fail_display("map the surface");
@@ -759,6 +780,7 @@ static void flood(struct client *state) {
     while (running && elapsed(&start) < (double)state->seconds) {
         wl_callback_destroy(wl_surface_frame(state->surface));
         if (state->repaint) {
+            if (state->change_to) change_step(state);
             wl_surface_attach(state->surface, state->buffer, 0, 0);
             wl_surface_damage(state->surface, 0, 0, state->buffer_width, state->buffer_height);
         }
