@@ -506,6 +506,7 @@ enum { SHADER_DATA = 192, SHADER_WINDOWS = 8 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
         const struct shader_inputs *inputs) {
     struct fbox box = local_box(f, area);
+    struct fbox drawn = inputs && inputs->part ? local_box(f, *inputs->part) : box;
     double mouse_x = p->mouse < 0 ? 0 : f->server->pointer_x - f->x - box.x;
     double mouse_y = p->mouse < 0 ? 0 : f->y + box.y + box.height - f->server->pointer_y;
     int count = p->trail >= 0 || p->trail_count >= 0 ? f->server->pointer_trail_count : 0;
@@ -514,10 +515,10 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
         inputs->window_count : 0;
     if (data_count > SHADER_DATA) data_count = SHADER_DATA;
     if (window_count > SHADER_WINDOWS) window_count = SHADER_WINDOWS;
-    double params[11 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS];
+    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS];
     float trail[4 * POINTER_TRAIL];
     double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
-        mouse_x, mouse_y, count, window_count };
+        mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
     memcpy(params, fields, sizeof(fields));
     size_t used = sizeof(fields) / sizeof(fields[0]);
     if (count) {
@@ -540,7 +541,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     for (int i = 0; i < data_count; i++) params[used++] = inputs->data[i];
     for (int i = 0; i < 4 * window_count; i++) params[used++] = inputs->windows[i];
-    struct box covered = covering(f, box);
+    struct box covered = covering(f, drawn);
     if (pass_record(f->pass, NULL, covered, p->channel < 0 ? (struct box){0} : covered, params,
             used)) return;
     struct op_clip clip;
@@ -565,7 +566,7 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     glUniform1i(p->window_count, window_count);
     if (window_count) glUniform4fv(p->windows, window_count, inputs->windows);
-    quad(f, p, box, NULL, box.x, box.y);
+    quad(f, p, drawn, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
     op_end(f->pass, &clip);
 }

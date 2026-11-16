@@ -120,7 +120,9 @@ shows up there directly: a draw a window above it covers opaquely is not issued
 at all, every other draw is scissored to the part of it that nothing hides and to
 the damage that needs it, unless that part needs more than the sixteen rectangles
 the damage clip already allows, a rounded window claims the cross its radius leaves
-opaque back as the region it hides, and a border or a shadow is only drawn where
+opaque back as the region it hides, a window that is opaque all over draws no
+blur behind it (its rounding cuts the blur away with its corners, so nothing under
+those corners rebuilds it), and a border or a shadow is only drawn where
 the window it decorates does not cover it, so it becomes the ring its shader
 fills. `tests/overdraw.py` mounts a shader
 wallpaper with one, ten and fifty rounded windows, compares the presented pixels
@@ -348,8 +350,11 @@ while it is still sliding. `:clock` is the monotonic second `iTime` counts from
 (the clock `get-internal-real-time` reads), so a policy can hand the shader the
 times of its own events, and `:until` is the `iTime` past which the shader stops
 drawing every refresh and holds the picture it draws at that time: a shader that
-animates an event and then rests costs nothing once it has settled. Changing the
-data or a window's box redraws the surface; neither recompiles the shader.
+animates an event and then rests costs nothing once it has settled. `:reach
+PIXELS` confines the shader to that many pixels round the named windows' edges
+(and four inside them), so a shader that decorates windows repaints the rings round
+them rather than the output they sit on. Changing the data or a window's box redraws
+the surface; neither recompiles the shader.
 
 A bare `(:trail ...)` background draws that path itself, as squares of `:cell`
 pixels lit for `:life` seconds and dimmed in `:steps` levels of `:color`,

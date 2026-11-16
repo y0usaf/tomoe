@@ -33,7 +33,7 @@
         (let ((options (cddr value)))
           (unless (member kind '(:image :shader))
             (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
-          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until)))
+          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until :reach)))
           (list* kind (%ui-string (second value) 65536 nil)
                  (if (eq kind :image)
                      (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
@@ -47,9 +47,12 @@
 (defun %ui-shader-inputs (options)
   "A shader background's own inputs: :DATA, up to 192 reals the shader reads as
 iData; :WINDOWS, up to 8 window ids whose drawn boxes it reads as iWindow;
-:CLOCK, the monotonic second its iTime counts from; and :UNTIL, the iTime past
-which it holds its last picture instead of drawing every refresh."
+:CLOCK, the monotonic second its iTime counts from; :UNTIL, the iTime past
+which it holds its last picture instead of drawing every refresh; and :REACH,
+the pixels round the named windows' edges it is confined to, so it repaints the
+rings round them and nothing between."
   (let ((data (getf options :data))
+        (reach (getf options :reach))
         (windows (getf options :windows))
         (clock (getf options :clock))
         (until (getf options :until)))
@@ -61,12 +64,15 @@ which it holds its last picture instead of drawing every refresh."
       (unless (and (integerp id) (<= 1 id 4294967295))
         (error "Shell shader :windows must be a list of window ids.")))
     (unless (or (null clock) (realp clock)) (error "Shell shader :clock must be a real."))
+    (unless (or (null reach) (and (realp reach) (< 0 reach 4096)))
+      (error "Shell shader :reach must be a real from 0 to 4096 pixels."))
     (unless (or (null until) (and clock (realp until) (<= 0 until)))
       (error "Shell shader :until must be a nonnegative real, counted from its :clock."))
     (append (when data (list :data (mapcar #'%double-float data)))
             (when windows (list :windows windows))
             (when clock (list :clock (%double-float clock)))
-            (when until (list :until (%double-float until))))))
+            (when until (list :until (%double-float until)))
+            (when reach (list :reach (%double-float reach))))))
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer

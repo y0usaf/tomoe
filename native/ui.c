@@ -72,7 +72,7 @@ struct ui_surface {
     float shader_data[UI_SHADER_DATA];
     uint32_t shader_windows[UI_SHADER_WINDOWS];
     int shader_data_count, shader_window_count;
-    double shader_clock, shader_until;
+    double shader_clock, shader_until, shader_reach;
     bool shader_clocked;
     bool building;
     bool complete;
@@ -956,11 +956,13 @@ int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double i
 }
 
 int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data_count,
-        const uint32_t *windows, int window_count, int clocked, double clock, double until) {
+        const uint32_t *windows, int window_count, int clocked, double clock, double until,
+        double reach) {
     struct ui_set *set = s && s->presentation ? s->presentation->ui : NULL;
     if (!set || !set->count || data_count < 0 || data_count > UI_SHADER_DATA ||
             window_count < 0 || window_count > UI_SHADER_WINDOWS ||
-            (clocked && (!isfinite(clock) || !isfinite(until)))) return 0;
+            (clocked && (!isfinite(clock) || !isfinite(until))) ||
+            !isfinite(reach) || reach < 0 || reach > UI_MAX_DIMENSION) return 0;
     struct ui_surface *surface = set->surfaces[set->count - 1];
     for (int i = 0; i < data_count; i++) {
         if (!isfinite(data[i])) return 0;
@@ -972,6 +974,7 @@ int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data
     surface->shader_clocked = clocked != 0;
     surface->shader_clock = clock;
     surface->shader_until = until;
+    surface->shader_reach = reach;
     return 1;
 }
 
@@ -1834,6 +1837,37 @@ static void draw_texture(struct frame *f, struct texture *texture, int x, int y,
         .ui = surface, .content_seq = surface ? surface->content_seq : 0 });
 }
 
+static void shader_reach(struct frame *f, struct program *shader, struct fbox area,
+        double time, int frame, struct shader_inputs *inputs, double reach) {
+    struct region ring;
+    region_init(&ring);
+    int r = (int)ceil(reach), inside = 4;
+    for (int w = 0; w < inputs->window_count; w++) {
+        const float *b = &inputs->windows[4 * w];
+        if (b[2] <= 0 || b[3] <= 0) continue;
+        int x = (int)floor(b[0]), width = (int)ceil(b[2]), height = (int)ceil(b[3]);
+        int y = (int)floor(area.height - b[1] - b[3]);
+        region_union_rect(&ring, &ring, x - r, y - r, width + 2 * r, r + inside);
+        region_union_rect(&ring, &ring, x - r, y + height - inside, width + 2 * r, r + inside);
+        if (height > 2 * inside)
+            region_union_rect(&ring, &ring, x - r, y + inside, r + inside, height - 2 * inside);
+        if (height > 2 * inside)
+            region_union_rect(&ring, &ring, x + width - inside, y + inside, r + inside,
+                height - 2 * inside);
+    }
+    region_intersect_rect(&ring, &ring, 0, 0, (uint32_t)area.width, (uint32_t)area.height);
+    int count = 0;
+    const struct rect *rects = region_rectangles(&ring, &count);
+    for (int i = 0; i < count; i++) {
+        struct fbox part = { area.x + rects[i].x1, area.y + rects[i].y1,
+            rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1 };
+        inputs->part = &part;
+        effect_shader(f, shader, area, time, frame, inputs);
+    }
+    inputs->part = NULL;
+    region_fini(&ring);
+}
+
 void ui_render(struct output *o, struct frame *f, const struct presentation *plan, int layer) {
     if (!o || !o->server || !o->screen || !f->pass) return;
     if (plan ? !presentation_output_for(plan, o->screen) :
@@ -1860,7 +1894,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
-                windows, surface->shader_window_count };
+                windows, surface->shader_window_count, NULL };
             for (int w = 0; w < surface->shader_window_count; w++) {
                 struct fbox box;
                 float *out = &windows[4 * w];
@@ -1874,17 +1908,22 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                 out[3] = box.height;
             }
             if (surface->shader_clocked) epoch = surface->shader_clock;
-            if (!still && shader && shader_settled(surface, now)) {
-                effect_shader(f, shader, area, surface->shader_until,
-                    (int)fmin((double)o->frames, (double)INT_MAX), &inputs);
-            } else if (!still && shader && surface->fps > 0) {
-                double tick = floor((now - epoch) * surface->fps);
-                effect_shader(f, shader, area, tick / surface->fps, (int)fmin(tick, INT_MAX),
-                    &inputs);
-                schedule_step(o, epoch + (tick + 1) / surface->fps, now);
-            } else if (!still && shader) {
-                effect_shader(f, shader, area, now - epoch,
-                    (int)fmin((double)o->frames, (double)INT_MAX), &inputs);
+            if (!still && shader) {
+                double time;
+                int frame = (int)fmin((double)o->frames, (double)INT_MAX);
+                if (shader_settled(surface, now)) {
+                    time = surface->shader_until;
+                } else if (surface->fps > 0) {
+                    double tick = floor((now - epoch) * surface->fps);
+                    time = tick / surface->fps;
+                    frame = (int)fmin(tick, INT_MAX);
+                    schedule_step(o, epoch + (tick + 1) / surface->fps, now);
+                } else {
+                    time = now - epoch;
+                }
+                if (surface->shader_reach > 0) shader_reach(f, shader, area, time, frame, &inputs,
+                    surface->shader_reach);
+                else effect_shader(f, shader, area, time, frame, &inputs);
             }
             if (!still && surface->trail_on) {
                 effect_trail(f, area, &surface->trail);

@@ -710,6 +710,7 @@ struct shader_inputs {
     int data_count;
     const float *windows;
     int window_count;
+    const struct fbox *part;
 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
@@ -1493,6 +1494,7 @@ bool scene_covers(struct tomoe *s, double x, double y, int layer);
 struct surface *surface_of(struct window *w);
 struct window *find_window(struct tomoe *s, uint32_t id);
 const struct target *window_shown_target(struct tomoe *s, uint32_t id);
+bool window_opaque(struct tomoe *s, uint32_t id);
 bool window_drawn_box(struct tomoe *s, const struct presentation *plan, const struct frame *f,
     uint32_t id, struct fbox *out);
 struct window *find_window_registered(struct tomoe *s, uint32_t id);

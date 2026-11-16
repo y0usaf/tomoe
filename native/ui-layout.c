@@ -1229,11 +1229,14 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                     fps ? fps : lisp_double(0), idle ? idle : lisp_double(0));
                 if (!image) {
                     lisp_value given = lisp_cdr(lisp_cdr(background));
-                    shader_inputs = lisp_list(8,
+                    lisp_value reach = plist_get(given, "REACH");
+                    shader_inputs = lisp_list(10,
                         lisp_keyword("DATA"), plist_get(given, "DATA"),
                         lisp_keyword("WINDOWS"), plist_get(given, "WINDOWS"),
                         lisp_keyword("CLOCK"), plist_get(given, "CLOCK"),
-                        lisp_keyword("UNTIL"), plist_get(given, "UNTIL"));
+                        lisp_keyword("UNTIL"), plist_get(given, "UNTIL"),
+                        lisp_keyword("REACH"), lisp_nilp(reach) ? lisp_nil() :
+                            lisp_double(lisp_get_double(reach) * scale));
                 }
             }
             lisp_value draw_background = (is_trail || !lisp_nilp(backdrop)) ? lisp_nil() : background;
@@ -1404,9 +1407,11 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
                 windows[window_count++] = (uint32_t)lisp_get_uint(lisp_car(tail));
             lisp_value clock = plist_get(inputs, "CLOCK");
             lisp_value until = plist_get(inputs, "UNTIL");
+            lisp_value reach = plist_get(inputs, "REACH");
             if (!tomoe_present_ui_shader_inputs(ui_server, data, data_count, windows, window_count,
                     !lisp_nilp(clock), lisp_nilp(clock) ? 0 : lisp_get_double(clock),
-                    lisp_nilp(until) ? -1 : lisp_get_double(until)))
+                    lisp_nilp(until) ? -1 : lisp_get_double(until),
+                    lisp_nilp(reach) ? 0 : lisp_get_double(reach)))
                 lisp_error("Cannot prepare shell shader inputs.");
         }
         if (status != 1) continue;

@@ -276,6 +276,14 @@ void window_move_offset(struct tomoe *s, uint32_t id, double *x, double *y) {
     *x = w ? w->target.offset_x : 0.0;
     *y = w ? w->target.offset_y : 0.0;
 }
+bool window_opaque(struct tomoe *s, uint32_t id) {
+    struct window *w = find_window(s, id);
+    struct surface *surface = w ? surface_of(w) : NULL;
+    if (!surface || surface->current.width <= 0 || surface->current.height <= 0 ||
+            surface->current.alpha != UINT32_MAX) return false;
+    struct rect whole = { 0, 0, surface->current.width, surface->current.height };
+    return region_contains_rectangle(&surface->current.opaque, &whole) == REGION_IN;
+}
 const struct target *window_shown_target(struct tomoe *s, uint32_t id) {
     struct window *w = find_window(s, id);
     return w && w->mapped && w->tree && w->tree->enabled ? &w->target : NULL;
