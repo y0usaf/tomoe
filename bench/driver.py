@@ -861,6 +861,8 @@ def render(machine, runner, windows, geometry, hz, repeats=2):
         "cpu_ms_per_frame": round(statistics.median(cpu), 3),
         "cpu_ms_per_frame_noise_pct": noise(cpu),
         "cpu_pct_of_one_core": runs[-1]["cpu_pct_of_one_core"],
+        "status": "unreliable" if sum(run["presented_lost"] or 0 for run in runs)
+        > sum(run["frames"] for run in runs) / 2 else "ok",
         "runs": runs,
     }
 
@@ -1146,7 +1148,9 @@ def table(scoreboard, names):
                 value = entry
                 for key in path:
                     value = value[key]
-                if isinstance(value, dict) and value.get("status") == "ok":
+                if path[0] == "render" and entry["render"][path[1]].get("status") == "unreliable":
+                    cells.append("lost")
+                elif isinstance(value, dict) and value.get("status") == "ok":
                     cells.append(f"{value[field]:.2f}")
                 else:
                     cells.append(formatted(value, noise_for(path, entry)))
