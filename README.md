@@ -448,7 +448,9 @@ the edge and a dragged or resized window are then carried natively, and it is
 woken with a `:state :motion` pointer event when a region, an edge or the
 distance fires, at the end of a drag, or the moment anything else needs policy.
 The shipped window manager and drag publish contracts; everything else keeps the
-old path.
+old path. Native work also goes first in time: the loop hands queued events to
+the policy one call at a time while input, a finished page flip or a client is
+waiting, so a frame never waits behind more than one policy call.
 
 Sandbox launchers can register private Wayland listening sockets with
 `wp_security_context_manager_v1`, attaching sandbox engine, application and
