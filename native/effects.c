@@ -635,6 +635,11 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
             (s->pointer_trail_head - count + i + POINTER_TRAIL) % POINTER_TRAIL];
         to_buffer(f, sample->x, sample->y, &xs[i], &ys[i]);
         ages[i] = now - sample->t;
+    }
+    for (int i = 0; i < count; i++) {
+        bool lit = ages[i] <= life || (i + 1 < count && ages[i + 1] <= life) ||
+            (count == 1);
+        if (!lit) continue;
         reach_left = fmin(reach_left, xs[i] - radius);
         reach_top = fmin(reach_top, ys[i] - radius);
         reach_right = fmax(reach_right, xs[i] + radius);
