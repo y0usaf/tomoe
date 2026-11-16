@@ -304,6 +304,7 @@ int init_primitives(void)
     define_internal("%RELEASE", builtin_release, 1, 1);
     define_internal("%CONDITION-MESSAGE", builtin_condition_message, 1, 1);
     define_internal("%WITH-LIMITS", builtin_with_limits, 3, 3);
+    define_internal("%WITH-HELD-CLOCK", builtin_with_held_clock, 1, 1);
     define_internal("%LOAD-SOURCE", builtin_load_source, 3, 3);
     define_internal("%DROP-PACKAGE", builtin_drop_package, 1, 1);
     define_internal("%EXPORT", builtin_export, 1, 1);

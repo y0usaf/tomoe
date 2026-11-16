@@ -895,8 +895,11 @@ when it is not 1."
             thereis (mounted-rule-pending mounted))))
 
 (defun transact (mounts event changed &optional force)
+  "Run one transaction on one instant: every round reads the clock as it stood when
+the transaction began, so a reducer that draws from the time returns the same
+output when its own output wakes it again, and the dependencies can settle."
   (let ((*command-input* (and (getf event :input) t)))
-    (unwind-protect (%transact mounts event changed force)
+    (unwind-protect (%with-held-clock (lambda () (%transact mounts event changed force)))
       (%ui-assets-discard))))
 
 (defun %transact (mounts event changed &optional force)

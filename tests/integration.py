@@ -28,6 +28,10 @@ assert zoom() > before, f"a pointer binding's command did not run: {zoom()}"
 zoomer = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)[":NAME"]) == "zoomer")
 assert zoomer[":LAST-ERROR"] == "NIL", zoomer[":LAST-ERROR"]
 cli("unmount zoomer")
+cli(f"mount {CLOCK_PROBE}")
+probe = next(plist(e) for e in items(inspect()[":EXTENSIONS"]) if text(plist(e)[":NAME"]) == "clock-probe")
+assert probe[":LAST-ERROR"] == "NIL", f"a reducer drawing from the clock never settled: {probe[':LAST-ERROR']}"
+cli("unmount clock-probe")
 screen = json.loads(cli("msg outputs"))[0]["geometry"]
 
 

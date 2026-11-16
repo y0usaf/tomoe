@@ -264,6 +264,16 @@ let
                                    :anchors '(:top :left) :layer :overlay))
               nil))
   '';
+  clockProbe = pkgs.writeText "clock-probe.lisp" ''
+    (in-package #:tomoe-user)
+    (define-extension "clock-probe" (:reads (:layout) :state nil) (snapshot state event)
+      (declare (ignore event))
+      (values state
+              (loop with colour = (format nil "#~6,'0X" (mod (get-internal-real-time) #x1000000))
+                    for entry in (context snapshot :layout)
+                    collect (window-properties (getf entry :id) :border (list :focused colour)))
+              nil))
+  '';
   themeProbe = pkgs.writeText "theme-probe.lisp" ''
     (in-package #:tomoe-user)
     (define-extension "theme-probe" (:reads () :state nil) (snapshot state event)
@@ -1065,6 +1075,7 @@ let
         OFFSCREEN_PROBE = "${offscreenProbe}"
         BLUR_PROBE = "${blurProbe}"
         THEME_PROBE = "${themeProbe}"
+        CLOCK_PROBE = "${clockProbe}"
         VIEWPORT_PROBE = "${viewportProbe}"
       ''
       + builtins.readFile ./integration.py;

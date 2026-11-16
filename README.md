@@ -402,7 +402,11 @@ headless. Extensions never touch native state. They return effects, the runtime
 settles every extension's effects into one transaction, and only then does the
 native side apply it. A broken extension therefore can't leave the screen
 half-updated, and because every effect has an owner, unmounting an extension
-takes its effects with it. Settling a transaction rebuilds the context from the
+takes its effects with it. A transaction runs on one instant: every round reads
+`get-internal-real-time` as it stood when the transaction began, so a reducer that
+animates from the clock and reads back its own effects (a focus border it fades
+through `:layout`) returns the same effects when they wake it again, and the
+transaction settles. Settling a transaction rebuilds the context from the
 current effects rather than editing the last one, but it keeps the last rebuild
 while every accepted reducer result is the same as the one already folded into
 it, and a transaction whose event changes no window, layer, output or client

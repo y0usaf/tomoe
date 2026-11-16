@@ -314,6 +314,7 @@ struct lisp_runtime {
     uint64_t steps_limit;
     uint64_t steps_total_last;
     uint64_t deadline_at;
+    uint64_t held_clock_ns;
     uint64_t pending_steps;
     uint64_t pending_deadline_ns;
     uint64_t budget_failures;
@@ -765,6 +766,7 @@ lisp_value builtin_acosh(int argc, lisp_value *argv);
 lisp_value builtin_expt(int argc, lisp_value *argv);
 lisp_value builtin_random(int argc, lisp_value *argv);
 lisp_value builtin_get_internal_time(int argc, lisp_value *argv);
+lisp_value builtin_with_held_clock(int argc, lisp_value *argv);
 lisp_value builtin_finite_p(int argc, lisp_value *argv);
 lisp_value builtin_length(int argc, lisp_value *argv);
 lisp_value builtin_char_pred(int argc, lisp_value *argv);

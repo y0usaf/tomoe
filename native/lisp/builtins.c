@@ -1718,7 +1718,26 @@ lisp_value builtin_get_internal_time(int argc, lisp_value *argv)
 {
     (void)argc;
     (void)argv;
-    return make_int((int64_t)(lisp_now_ns() / 1000ull));
+    return make_int((int64_t)((lisp.held_clock_ns ? lisp.held_clock_ns : lisp_now_ns()) / 1000ull));
+}
+
+lisp_value builtin_with_held_clock(int argc, lisp_value *argv)
+{
+    if (argc < 1)
+        lisp_error("%%WITH-HELD-CLOCK needs a function");
+    uint64_t saved = lisp.held_clock_ns;
+    if (!saved)
+        lisp.held_clock_ns = lisp_now_ns();
+    int ctl = push_ctl(CTL_CATCH);
+    if (setjmp(lisp.ctl[ctl].jb) != 0) {
+        lisp.ctl_top = ctl;
+        lisp.held_clock_ns = saved;
+        throw_error_value(lisp_escape_condition());
+    }
+    lisp_value result = apply_function(argv[0], 0, NULL);
+    lisp.ctl_top = ctl;
+    lisp.held_clock_ns = saved;
+    return result;
 }
 
 lisp_value builtin_finite_p(int argc, lisp_value *argv)
