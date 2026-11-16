@@ -588,7 +588,12 @@ the API to move.
   cursor plane exactly as the theme draws it. Once it has rested for `:delay-ms`,
   Tomoe draws it itself: the theme image over a frosted, refracted copy of what lies
   behind its body, where the body is the image's coloured pixels (a pure black
-  shadow is not glass) shaped into a lens by its distance to the edge. It draws once
+  shadow is not glass) shaped into a lens by its distance to the edge. The lens
+  carries its own edge too: a dark hairline against the silhouette and a light one
+  just outside it, so the resting cursor keeps its shape on a light, a dark or a
+  busy backdrop -- one line reads on the backdrop the other does not -- and both are
+  baked into the lens the moment the glass builds, so they cost nothing while the
+  pointer moves or rests. It draws once
   and then nothing while the pointer rests; a window changing beneath it redraws only
   the cursor and the reach of its refraction. The next motion puts the plain cursor
   straight back on its plane. A full screen window that scans out directly, or

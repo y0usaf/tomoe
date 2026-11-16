@@ -817,6 +817,7 @@ struct cursor_motion {
     double shake, shake_distance;
     double velocity[2], acceleration[2], velocity_at;
 };
+enum { CURSOR_GLASS_EDGE = 2 };
 struct cursor_glass {
     struct wl_event_source *timer;
     struct program *program;

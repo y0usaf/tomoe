@@ -526,9 +526,13 @@ static void draw_cursor(struct tomoe *s, struct frame *data, double x, double y,
         };
         struct box bounds = { .width = data->width, .height = data->height }, overlap;
         if (!box_intersection(&overlap, &box, &bounds)) return;
-        if (glass)
+        if (glass) {
+            double edge = CURSOR_GLASS_EDGE * ratio;
             effect_glass(data, s->cursor_glass.program, s->cursor_glass.map,
-                (struct fbox){ box.x, box.y, box.width, box.height }, s->cursor_glass.bend * ratio);
+                (struct fbox){ box.x - edge, box.y - edge, box.width + 2 * edge,
+                    box.height + 2 * edge },
+                s->cursor_glass.bend * ratio);
+        }
         box_transform(&box, &box, transform_invert(data->transform),
             data->width, data->height);
         pass_add_texture(data->pass, &(struct texture_options){

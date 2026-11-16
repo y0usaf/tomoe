@@ -478,8 +478,24 @@ static const char glass_source[] =
     "    vec2 at = gl_FragCoord.xy;\n"
     "    vec3 seen = vec3(beneath(at + bend * 1.12).r, beneath(at + bend).g,\n"
     "        beneath(at + bend * 0.88).b);\n"
-    "    color = vec4(seen * lens.a, lens.a);\n"
+    "    float ink = lens.b * 2.0 - 1.0;\n"
+    "    vec3 rim = ink < 0.0 ? vec3(0.0) : vec3(1.0);\n"
+    "    color = vec4(seen * lens.a + rim * abs(ink), lens.a + abs(ink));\n"
     "}\n";
+
+static const double GLASS_EDGE_INK = 0.7;
+
+static double glass_line(double distance, double low, double high) {
+    double from = distance - 0.5 > low ? distance - 0.5 : low;
+    double to = distance + 0.5 < high ? distance + 0.5 : high;
+    return to > from ? (to - from) * GLASS_EDGE_INK : 0;
+}
+
+static double glass_edge(double distance, double cover) {
+    double dark = glass_line(distance, 0, 1) * (1 - cover);
+    double light = glass_line(distance, 1, 2);
+    return light - dark;
+}
 
 static void distance_line(const float *f, int n, float *d, int *v, float *z) {
     int k = 0;
@@ -521,18 +537,20 @@ static void distance_grid(float *grid, int width, int height, float *line, float
 static bool glass_lens(struct tomoe *s, const uint8_t *pixels, size_t stride, int width,
         int height) {
     struct cursor_glass *g = &s->cursor_glass;
-    int w = width + 2, h = height + 2, side = w > h ? w : h;
+    int pad = CURSOR_GLASS_EDGE, lw = width + 2 * pad, lh = height + 2 * pad;
+    int w = lw + 2, h = lh + 2, side = w > h ? w : h;
     size_t cells = (size_t)w * h;
     float *inner = malloc(cells * sizeof(float)), *outer = malloc(cells * sizeof(float));
-    float *field = malloc((size_t)width * height * sizeof(float) * 4);
+    float *field = malloc((size_t)lw * lh * sizeof(float) * 4);
     float *line = malloc(((size_t)side * 3 + 1) * sizeof(float));
     int *v = malloc((size_t)side * sizeof(int));
-    uint8_t *lens = malloc((size_t)width * height * 4);
+    uint8_t *lens = malloc((size_t)lw * lh * 4);
     bool body = false, ok = inner && outer && field && line && v && lens;
     for (int y = 0; ok && y < h; y++)
         for (int x = 0; x < w; x++) {
-            const uint8_t *px = x > 0 && y > 0 && x <= width && y <= height ?
-                pixels + (size_t)(y - 1) * stride + (size_t)(x - 1) * 4 : NULL;
+            int ix = x - pad - 1, iy = y - pad - 1;
+            const uint8_t *px = ix >= 0 && iy >= 0 && ix < width && iy < height ?
+                pixels + (size_t)iy * stride + (size_t)ix * 4 : NULL;
             bool in = px && px[3] && (px[0] > 2 || px[1] > 2 || px[2] > 2);
             body |= in;
             inner[y * w + x] = in ? GLASS_FAR : 0;
@@ -544,37 +562,38 @@ static bool glass_lens(struct tomoe *s, const uint8_t *pixels, size_t stride, in
         distance_grid(outer, w, h, line, line + side, v, line + 2 * side);
     }
     double unit = (width > height ? width : height) / 32.0, reach = 0;
-    float *edge = field, *rise = field + (size_t)width * height;
-    for (int y = 0; ok && y < height; y++)
-        for (int x = 0; x < width; x++) {
+    float *edge = field, *rise = field + (size_t)lw * lh;
+    for (int y = 0; ok && y < lh; y++)
+        for (int x = 0; x < lw; x++) {
             size_t at = (size_t)(y + 1) * w + x + 1;
             double signed_distance = inner[at] > 0 ? 0.5 - sqrt(inner[at]) : sqrt(outer[at]) - 0.5;
             double depth = fmin(fmax(-signed_distance / (4 * unit), 0), 1);
-            edge[y * width + x] = (float)signed_distance;
-            rise[y * width + x] = (float)sqrt(fmax(1 - (1 - depth) * (1 - depth), 0));
+            edge[y * lw + x] = (float)signed_distance;
+            rise[y * lw + x] = (float)sqrt(fmax(1 - (1 - depth) * (1 - depth), 0));
         }
-    float *bend = field + (size_t)width * height * 2;
-    for (int y = 0; ok && y < height; y++)
-        for (int x = 0; x < width; x++) {
-            int x0 = x > 0 ? x - 1 : x, x1 = x < width - 1 ? x + 1 : x;
-            int y0 = y > 0 ? y - 1 : y, y1 = y < height - 1 ? y + 1 : y;
-            double gx = x1 > x0 ? (rise[y * width + x1] - rise[y * width + x0]) / (x1 - x0) : 0;
-            double gy = y1 > y0 ? (rise[y1 * width + x] - rise[y0 * width + x]) / (y1 - y0) : 0;
-            double cover = fmin(fmax(0.5 - edge[y * width + x], 0), 1);
-            bend[2 * (y * width + x)] = (float)(-gx * 36 * unit);
-            bend[2 * (y * width + x) + 1] = (float)(-gy * 36 * unit);
+    float *bend = field + (size_t)lw * lh * 2;
+    for (int y = 0; ok && y < lh; y++)
+        for (int x = 0; x < lw; x++) {
+            int x0 = x > 0 ? x - 1 : x, x1 = x < lw - 1 ? x + 1 : x;
+            int y0 = y > 0 ? y - 1 : y, y1 = y < lh - 1 ? y + 1 : y;
+            double gx = x1 > x0 ? (rise[y * lw + x1] - rise[y * lw + x0]) / (x1 - x0) : 0;
+            double gy = y1 > y0 ? (rise[y1 * lw + x] - rise[y0 * lw + x]) / (y1 - y0) : 0;
+            double cover = fmin(fmax(0.5 - edge[y * lw + x], 0), 1);
+            bend[2 * (y * lw + x)] = (float)(-gx * 36 * unit);
+            bend[2 * (y * lw + x) + 1] = (float)(-gy * 36 * unit);
             if (cover > 0) reach = fmax(reach, fmax(fabs(gx), fabs(gy)) * 36 * unit);
         }
-    for (int i = 0; ok && i < width * height; i++) {
+    for (int i = 0; ok && i < lw * lh; i++) {
         double cover = fmin(fmax(0.5 - edge[i], 0), 1);
         double bx = reach > 0 ? bend[2 * i] / reach : 0, by = reach > 0 ? bend[2 * i + 1] / reach : 0;
+        double ink = glass_edge(edge[i], cover);
         lens[4 * i] = (uint8_t)lround((fmin(fmax(bx, -1), 1) * 0.5 + 0.5) * 255);
         lens[4 * i + 1] = (uint8_t)lround((fmin(fmax(by, -1), 1) * 0.5 + 0.5) * 255);
-        lens[4 * i + 2] = 0;
+        lens[4 * i + 2] = (uint8_t)lround((fmin(fmax(ink, -1), 1) * 0.5 + 0.5) * 255);
         lens[4 * i + 3] = (uint8_t)lround(cover * 255);
     }
     struct texture *map = ok ? texture_from_pixels(s->renderer, DRM_FORMAT_ABGR8888,
-        (uint32_t)width * 4, (uint32_t)width, (uint32_t)height, lens) : NULL;
+        (uint32_t)lw * 4, (uint32_t)lw, (uint32_t)lh, lens) : NULL;
     free(inner);
     free(outer);
     free(field);

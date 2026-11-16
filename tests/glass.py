@@ -126,6 +126,24 @@ glass = region(390, 290, 48, 48, "glass")
 changed = sum(1 for a, b in zip(pixels(plain), pixels(glass)) if a != b)
 print(f"glass changed {changed} of {48 * 48} pixels under the cursor")
 assert changed > 40, "the glass draws nothing different from the plain cursor"
+def crop(values, column, row):
+    at = (row * 48 + column) * 3
+    return values[at:at + 3]
+
+
+def misses(rows, test):
+    return [(row, test(row)) for row in rows if not test(row)]
+
+
+dark_miss = misses(range(12, 21), lambda row: crop(glass, 9, row)[0] * 2 <=
+                   crop(plain, 9, row)[0] + 6)
+light_miss = misses(range(12, 21), lambda row: crop(glass, 8, row)[0] >= 150 and
+                    crop(glass, 8, row)[0] >= crop(plain, 8, row)[0] + 6)
+for row in (12, 16, 20):
+    print(f"edge row {row}: light {crop(plain, 8, row)} -> {crop(glass, 8, row)}, "
+          f"dark {crop(plain, 9, row)} -> {crop(glass, 9, row)}")
+assert not dark_miss, f"the glass has no dark line against the silhouette: {dark_miss[:3]}"
+assert not light_miss, f"the glass has no light line outside the silhouette: {light_miss[:3]}"
 outside = region(300, 200, 40, 40, "outside")
 assert region(300, 200, 40, 40, "outside-again") == outside
 
