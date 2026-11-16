@@ -303,13 +303,15 @@ resolved to themselves and nothing retires."
                      (equal (effect-arguments old) (effect-arguments new))))
               before after)))
 
-(defun check-duplicate-effects (effects)
-  "Reject two effects of one reducer that claim the same key."
-  (let ((keys nil))
-    (dolist (effect effects)
+(defun latest-effects (effects)
+  "EFFECTS with each key claimed once: an effect declared again under the key of an
+earlier one replaces it, so re-arming a timer or restarting a motion never stacks."
+  (let ((keys nil) (kept nil))
+    (dolist (effect (reverse effects) kept)
       (let ((key (effect-key effect)))
-        (when (member key keys :test #'equal) (error "Duplicate effect: ~S" key))
-        (push key keys)))))
+        (unless (member key keys :test #'equal)
+          (push key keys)
+          (push effect kept))))))
 
 (defvar *transaction-failures* nil
   "Within a transaction: the extensions and rules that failed in it, each logged once.")
@@ -360,7 +362,7 @@ message when it failed, leaving MOUNTED's state and effects as they were."
                     (error "One-shot commands require a command, button, timer, watch, exec, request, screenshot, screencast, IPC, or UI event."))
                   (let ((effects (if (equal effects (mounted-effects mounted))
                                      (mounted-effects mounted)
-                                     (mapcar #'canonical-effect effects)))
+                                     (latest-effects (mapcar #'canonical-effect effects))))
                         (commands (mapcar (lambda (command)
                                             (canonical-command command (spec-directory spec)))
                                           commands)))
@@ -373,10 +375,9 @@ message when it failed, leaving MOUNTED's state and effects as they were."
                                      (runtime-ipc-call)
                                      (eql (getf event :call) (getf (runtime-ipc-call) :token)))
                           (error "IPC-REPLY requires this scope's current IPC request and permits one answer."))))
-                    (unless (eq effects (mounted-effects mounted))
-                      (check-duplicate-effects effects)
-                      (unless (equivalent-effects (mounted-effects mounted) effects)
-                        (%invocations+)))
+                    (unless (or (eq effects (mounted-effects mounted))
+                                (equivalent-effects (mounted-effects mounted) effects))
+                      (%invocations+))
                     (setf (nth 2 mounted) (if (equal state (mounted-state mounted))
                                               (mounted-state mounted)
                                               (copy-data state))
