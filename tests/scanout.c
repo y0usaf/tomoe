@@ -45,7 +45,7 @@ static struct wl_buffer *buffer;
 
 static uint32_t color = 0x336699;
 static int width = 320, height = 240;
-static int pending_commit, mapped, hidden;
+static int pending_commit, mapped, hidden, keep_cursor;
 static int pointer_x = -1, pointer_y = -1, pointer_ms;
 static int move_x, move_y, wiggle_ms;
 static int have_xrgb, have_xrgb_linear;
@@ -220,7 +220,7 @@ static const struct xdg_wm_base_listener wm_listener = { .ping = wm_ping };
 static void pointer_enter(void *data, struct wl_pointer *handle, uint32_t serial,
         struct wl_surface *surface_handle, wl_fixed_t x, wl_fixed_t y) {
     (void)data; (void)surface_handle; (void)x; (void)y;
-    if (hidden || !handle) return;
+    if (hidden || keep_cursor || !handle) return;
     wl_pointer_set_cursor(handle, serial, NULL, 0, 0);
     hidden = 1;
     printf("hidden\n");
@@ -326,7 +326,7 @@ static void parse_size(const char *value, int *w, int *h) {
 }
 
 static void usage(const char *program) {
-    fprintf(stderr, "usage: %s [--size WxH] [--color RRGGBB] [--pointer X,Y,MS] "
+    fprintf(stderr, "usage: %s [--size WxH] [--color RRGGBB] [--keep-cursor] [--pointer X,Y,MS] "
         "[--move DX,DY] [--wiggle MS]\n", program);
 }
 
@@ -335,6 +335,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--size") && i + 1 < argc) parse_size(argv[++i], &width, &height);
         else if (!strcmp(argv[i], "--color") && i + 1 < argc) color = parse_colour(argv[++i]);
         else if (!strcmp(argv[i], "--wiggle") && i + 1 < argc) wiggle_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--keep-cursor")) keep_cursor = 1;
         else if (!strcmp(argv[i], "--move") && i + 1 < argc) {
             char *comma = strchr(argv[i + 1], ',');
             if (!comma) {

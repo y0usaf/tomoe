@@ -181,6 +181,7 @@ void tomoe_destroy(struct tomoe *s) {
     if (s->display) surfaces_finish(s);
     detach(&s->cursor_surface_destroy);
     if (s->scene) node_destroy(s->scene);
+    cursor_glass_finish(s);
     cursor_finish(s);
     if (s->default_cursor) buffer_drop(s->default_cursor);
     cursor_theme_unwatch(s);

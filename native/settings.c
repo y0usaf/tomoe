@@ -14,6 +14,8 @@ static const struct setting_field {
     { "border-width", offsetof(struct settings, border_width), SETTING_INT },
     { "shadow-range", offsetof(struct settings, shadow_range), SETTING_INT },
     { "blur-enabled", offsetof(struct settings, blur_enabled), SETTING_BOOL },
+    { "cursor-glass-enabled", offsetof(struct settings, cursor_glass_enabled), SETTING_BOOL },
+    { "cursor-glass-delay-ms", offsetof(struct settings, cursor_glass_delay_ms), SETTING_INT },
     { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
     { "screenshot-colors-accent", offsetof(struct settings, screenshot_colors.accent), SETTING_COLOR },
     { "screenshot-colors-background", offsetof(struct settings, screenshot_colors.background), SETTING_COLOR },
@@ -147,6 +149,7 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     plan->settings->blur_namespace_count = 0;
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
+    cursor_glass_settings(s);
     free(plan->settings);
     plan->settings = NULL;
 }

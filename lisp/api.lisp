@@ -740,6 +740,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
     (:shadow (:group (:range (:integer 0 4096) 12) (:color :color "#00000099") (:power (:real 1 4) 3)))
     (:blur (:group (:enabled :boolean nil) (:passes (:integer 1 31) 3) (:offset (:real 0 1000) 1)
                    (:anti-artifact-margin (:integer 0 4096) 96) (:layer-namespaces :strings nil)))
+    (:cursor-glass (:group (:enabled :boolean nil) (:delay-ms (:integer 0 10000) 120)))
     (:animations :animations t)
     (:screenshot-freeze :boolean t)
     (:screenshot-colors (:group (:accent :color "#7aa1f7") (:background :color "#1c1c21")
