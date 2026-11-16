@@ -1193,6 +1193,7 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
             lisp_value background = plist_get(declaration, "BACKGROUND");
             lisp_value trail = lisp_nil();
             lisp_value backdrop = lisp_nil();
+            lisp_value shader_inputs = lisp_nil();
             bool is_trail = lisp_consp(background) && keyword_is(lisp_car(background), "TRAIL");
             if (is_trail) {
                 lisp_value options = lisp_cdr(background);
@@ -1215,14 +1216,25 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                     lisp_keyword("SRC"), lisp_car(lisp_cdr(background)),
                     lisp_keyword("WIDTH"), lisp_int(width),
                     lisp_keyword("HEIGHT"), lisp_int(height));
-                declaration_tree = list_append(declaration_tree,
-                    lisp_cdr(lisp_cdr(background)));
+                lisp_value options = lisp_cdr(lisp_cdr(background));
+                lisp_value fps = plist_get(options, "FPS");
+                lisp_value idle = plist_get(options, "IDLE");
+                if (!image)
+                    options = lisp_list(4, lisp_keyword("FPS"), fps ? fps : lisp_double(0),
+                        lisp_keyword("IDLE"), idle ? idle : lisp_double(0));
+                declaration_tree = list_append(declaration_tree, options);
                 uint64_t id, packed;
                 asset_measure(&source, declaration_tree, image ? 3 : 4, &id, &packed);
-                lisp_value fps = plist_get(lisp_cdr(lisp_cdr(background)), "FPS");
-                lisp_value idle = plist_get(lisp_cdr(lisp_cdr(background)), "IDLE");
                 backdrop = lisp_list(3, lisp_uint(id),
                     fps ? fps : lisp_double(0), idle ? idle : lisp_double(0));
+                if (!image) {
+                    lisp_value given = lisp_cdr(lisp_cdr(background));
+                    shader_inputs = lisp_list(8,
+                        lisp_keyword("DATA"), plist_get(given, "DATA"),
+                        lisp_keyword("WINDOWS"), plist_get(given, "WINDOWS"),
+                        lisp_keyword("CLOCK"), plist_get(given, "CLOCK"),
+                        lisp_keyword("UNTIL"), plist_get(given, "UNTIL"));
+                }
             }
             lisp_value draw_background = (is_trail || !lisp_nilp(backdrop)) ? lisp_nil() : background;
             lisp_value identity_value = lisp_list(5,
@@ -1284,6 +1296,8 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                 lisp_list(2, lisp_keyword("ASSETS"), assets));
             if (!lisp_nilp(backdrop)) plan = list_append(plan,
                 lisp_list(2, lisp_keyword("BACKDROP"), backdrop));
+            if (!lisp_nilp(shader_inputs)) plan = list_append(plan,
+                lisp_list(2, lisp_keyword("SHADER-INPUTS"), shader_inputs));
             if (!lisp_nilp(trail)) plan = list_append(plan,
                 lisp_list(2, lisp_keyword("TRAIL"), trail));
             free(identity_text);
@@ -1376,6 +1390,24 @@ static lisp_value ui_stage(int argc, lisp_value *argv) {
             char buffer[512];
             lisp_print(name, true, buffer, sizeof(buffer));
             lisp_error("Cannot prepare shell surface %s.", buffer);
+        }
+        lisp_value inputs = plist_get(plan, "SHADER-INPUTS");
+        if (lisp_consp(inputs)) {
+            double data[192];
+            uint32_t windows[8];
+            int data_count = 0, window_count = 0;
+            for (lisp_value tail = plist_get(inputs, "DATA"); lisp_consp(tail) && data_count < 192;
+                    tail = lisp_cdr(tail))
+                data[data_count++] = lisp_get_double(lisp_car(tail));
+            for (lisp_value tail = plist_get(inputs, "WINDOWS"); lisp_consp(tail) && window_count < 8;
+                    tail = lisp_cdr(tail))
+                windows[window_count++] = (uint32_t)lisp_get_uint(lisp_car(tail));
+            lisp_value clock = plist_get(inputs, "CLOCK");
+            lisp_value until = plist_get(inputs, "UNTIL");
+            if (!tomoe_present_ui_shader_inputs(ui_server, data, data_count, windows, window_count,
+                    !lisp_nilp(clock), lisp_nilp(clock) ? 0 : lisp_get_double(clock),
+                    lisp_nilp(until) ? -1 : lisp_get_double(until)))
+                lisp_error("Cannot prepare shell shader inputs.");
         }
         if (status != 1) continue;
         struct ui_cached_plan *entry = plan_find_id(plan_id);

@@ -338,6 +338,7 @@ struct program {
     GLint geo_to_tex, geo_to_tex_prev, geo_to_tex_next;
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
+    GLint data, windows, window_count;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {
@@ -704,7 +705,14 @@ bool effect_texture(struct frame *f, const struct texture_options *options,
 void effect_cutout(struct frame *f, struct fbox dst, struct fbox clip, double radius);
 void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     double offset, int margin, double alpha);
-void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame);
+struct shader_inputs {
+    const float *data;
+    int data_count;
+    const float *windows;
+    int window_count;
+};
+void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
+    const struct shader_inputs *inputs);
 struct trail_style {
     double cell, life;
     int steps;
@@ -1484,6 +1492,9 @@ bool scene_covers(struct tomoe *s, double x, double y, int layer);
 
 struct surface *surface_of(struct window *w);
 struct window *find_window(struct tomoe *s, uint32_t id);
+const struct target *window_shown_target(struct tomoe *s, uint32_t id);
+bool window_drawn_box(struct tomoe *s, const struct presentation *plan, const struct frame *f,
+    uint32_t id, struct fbox *out);
 struct window *find_window_registered(struct tomoe *s, uint32_t id);
 struct window *find_window_any(struct tomoe *s, uint32_t id);
 void window_move_offset(struct tomoe *s, uint32_t id, double *x, double *y);

@@ -10,6 +10,8 @@
 #include <stdint.h>
 
 #define UI_MAX_SURFACES 64
+#define UI_SHADER_DATA 192
+#define UI_SHADER_WINDOWS 8
 #define UI_MAX_DIMENSION 16384
 #define UI_MAX_OPS 8192
 #define UI_TEXT_LIMIT 256
@@ -67,6 +69,11 @@ struct ui_surface {
     struct trail_style trail;
     bool trail_on;
     double fps, idle;
+    float shader_data[UI_SHADER_DATA];
+    uint32_t shader_windows[UI_SHADER_WINDOWS];
+    int shader_data_count, shader_window_count;
+    double shader_clock, shader_until;
+    bool shader_clocked;
     bool building;
     bool complete;
     bool drawn;
@@ -948,6 +955,26 @@ int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double i
     return 1;
 }
 
+int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data_count,
+        const uint32_t *windows, int window_count, int clocked, double clock, double until) {
+    struct ui_set *set = s && s->presentation ? s->presentation->ui : NULL;
+    if (!set || !set->count || data_count < 0 || data_count > UI_SHADER_DATA ||
+            window_count < 0 || window_count > UI_SHADER_WINDOWS ||
+            (clocked && (!isfinite(clock) || !isfinite(until)))) return 0;
+    struct ui_surface *surface = set->surfaces[set->count - 1];
+    for (int i = 0; i < data_count; i++) {
+        if (!isfinite(data[i])) return 0;
+        surface->shader_data[i] = (float)data[i];
+    }
+    surface->shader_data_count = data_count;
+    memcpy(surface->shader_windows, windows, window_count * sizeof(*windows));
+    surface->shader_window_count = window_count;
+    surface->shader_clocked = clocked != 0;
+    surface->shader_clock = clock;
+    surface->shader_until = until;
+    return 1;
+}
+
 int tomoe_present_ui_trail(struct tomoe *s, double cell, double life, int steps,
         uint32_t rgba, double fps, double idle) {
     struct ui_surface *surface = NULL;
@@ -1581,8 +1608,13 @@ static void slide_from(struct tomoe *s, const struct ui_set *old, struct ui_set 
     }
 }
 
+static bool shader_settled(const struct ui_surface *surface, double now) {
+    return surface->shader_clocked && surface->shader_until >= 0 &&
+        now - surface->shader_clock >= surface->shader_until;
+}
+
 static bool background_moving(struct tomoe *s, const struct ui_surface *surface, double now) {
-    if (!s || !surface) return false;
+    if (!s || !surface || shader_settled(surface, now)) return false;
     if (!surface->trail_on) {
         struct ui_asset *shown = shown_backdrop(surface);
         if (!shown || !ui_asset_shader(shown, NULL)) return false;
@@ -1826,13 +1858,33 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         if (shader || surface->trail_on) {
             bool still = shader_still(o->server, surface, now);
             struct fbox area = { left, top, surface->width, surface->height };
-            if (!still && shader && surface->fps > 0) {
+            float windows[4 * UI_SHADER_WINDOWS];
+            struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
+                windows, surface->shader_window_count };
+            for (int w = 0; w < surface->shader_window_count; w++) {
+                struct fbox box;
+                float *out = &windows[4 * w];
+                if (!window_drawn_box(o->server, plan, f, surface->shader_windows[w], &box)) {
+                    out[0] = out[1] = out[2] = out[3] = 0;
+                    continue;
+                }
+                out[0] = box.x - area.x;
+                out[1] = area.y + area.height - (box.y + box.height);
+                out[2] = box.width;
+                out[3] = box.height;
+            }
+            if (surface->shader_clocked) epoch = surface->shader_clock;
+            if (!still && shader && shader_settled(surface, now)) {
+                effect_shader(f, shader, area, surface->shader_until,
+                    (int)fmin((double)o->frames, (double)INT_MAX), &inputs);
+            } else if (!still && shader && surface->fps > 0) {
                 double tick = floor((now - epoch) * surface->fps);
-                effect_shader(f, shader, area, tick / surface->fps, (int)fmin(tick, INT_MAX));
+                effect_shader(f, shader, area, tick / surface->fps, (int)fmin(tick, INT_MAX),
+                    &inputs);
                 schedule_step(o, epoch + (tick + 1) / surface->fps, now);
             } else if (!still && shader) {
                 effect_shader(f, shader, area, now - epoch,
-                    (int)fmin((double)o->frames, (double)INT_MAX));
+                    (int)fmin((double)o->frames, (double)INT_MAX), &inputs);
             }
             if (!still && surface->trail_on) {
                 effect_trail(f, area, &surface->trail);

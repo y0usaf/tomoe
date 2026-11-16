@@ -276,6 +276,10 @@ void window_move_offset(struct tomoe *s, uint32_t id, double *x, double *y) {
     *x = w ? w->target.offset_x : 0.0;
     *y = w ? w->target.offset_y : 0.0;
 }
+const struct target *window_shown_target(struct tomoe *s, uint32_t id) {
+    struct window *w = find_window(s, id);
+    return w && w->mapped && w->tree && w->tree->enabled ? &w->target : NULL;
+}
 struct window *find_window_any(struct tomoe *s, uint32_t id) {
     return find_window_registered(s, id);
 }

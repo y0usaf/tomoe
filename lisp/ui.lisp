@@ -7,7 +7,8 @@
 
 (defun %ui-backdrop (value)
   "Normalize a shell background: a color, (:image PATH [:fit FIT]),
-(:shader PATH [:fps FPS] [:idle SECONDS]) or (:trail [:cell PIXELS] [:life SECONDS]
+(:shader PATH [:fps FPS] [:idle SECONDS] [:data REALS] [:windows IDS] [:clock SECOND]
+[:until SECONDS]) or (:trail [:cell PIXELS] [:life SECONDS]
 [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."
   (%ui-list value 16 "Shell background")
   (let ((kind (first value)))
@@ -32,7 +33,7 @@
         (let ((options (cddr value)))
           (unless (member kind '(:image :shader))
             (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
-          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle)))
+          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until)))
           (list* kind (%ui-string (second value) 65536 nil)
                  (if (eq kind :image)
                      (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
@@ -41,7 +42,31 @@
                        (unless (<= 0d0 fps 1000d0)
                          (error "Shell shader :fps must be from 0, following the display, to 1000."))
                        (unless (<= 0d0 idle 4d0) (error "Shell shader :idle must be from 0 to 4 seconds."))
-                       (list :fps fps :idle idle))))))))
+                       (append (list :fps fps :idle idle) (%ui-shader-inputs options)))))))))
+
+(defun %ui-shader-inputs (options)
+  "A shader background's own inputs: :DATA, up to 192 reals the shader reads as
+iData; :WINDOWS, up to 8 window ids whose drawn boxes it reads as iWindow;
+:CLOCK, the monotonic second its iTime counts from; and :UNTIL, the iTime past
+which it holds its last picture instead of drawing every refresh."
+  (let ((data (getf options :data))
+        (windows (getf options :windows))
+        (clock (getf options :clock))
+        (until (getf options :until)))
+    (%ui-list data 192 "Shell shader :data")
+    (dolist (value data)
+      (unless (realp value) (error "Shell shader :data must be a list of reals.")))
+    (%ui-list windows 8 "Shell shader :windows")
+    (dolist (id windows)
+      (unless (and (integerp id) (<= 1 id 4294967295))
+        (error "Shell shader :windows must be a list of window ids.")))
+    (unless (or (null clock) (realp clock)) (error "Shell shader :clock must be a real."))
+    (unless (or (null until) (and clock (realp until) (<= 0 until)))
+      (error "Shell shader :until must be a nonnegative real, counted from its :clock."))
+    (append (when data (list :data (mapcar #'%double-float data)))
+            (when windows (list :windows windows))
+            (when clock (list :clock (%double-float clock)))
+            (when until (list :until (%double-float until))))))
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer

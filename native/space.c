@@ -305,6 +305,20 @@ static struct fbox window_box(const struct target *t, const struct frame *f) {
     }
     return (struct fbox){ x, y, width, height };
 }
+bool window_drawn_box(struct tomoe *s, const struct presentation *plan, const struct frame *f,
+        uint32_t id, struct fbox *out) {
+    const struct target *t = NULL;
+    if (plan) {
+        const struct presentation_target *shown =
+            presentation_target_for((struct presentation *)plan, id);
+        if (shown && shown->visible) t = &shown->target;
+    } else {
+        t = window_shown_target(s, id);
+    }
+    if (!t || t->kind != TARGET_WINDOW || t->client_width <= 0) return false;
+    *out = window_box(t, f);
+    return true;
+}
 static double window_radius(struct tomoe *s, const struct target *t, const struct frame *f) {
     return (t->style.radius >= 0 ? t->style.radius : s->settings.border_radius) * f->zoom;
 }

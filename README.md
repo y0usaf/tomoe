@@ -338,6 +338,19 @@ that rate. `:idle SECONDS` stops drawing and ticking once the pointer has been
 still for `SECONDS`, and pointer motion starts it again, so an idle overlay
 costs no frames.
 
+A shader background can also be driven by the policy that declares it.
+`(:shader PATH :data REALS :windows IDS :clock SECOND :until SECONDS)` hands the
+shader up to 192 numbers as `uniform vec4 iData[48]`, and the boxes of up to eight
+windows as `iWindow[8]` (x, y, width, height in the shader's own pixels, y up like
+`iMouse`; zero for a window that is not shown) with `iWindowCount`. The boxes are
+the ones the compositor draws that frame, so a frame drawn round a window rides it
+while it is still sliding. `:clock` is the monotonic second `iTime` counts from
+(the clock `get-internal-real-time` reads), so a policy can hand the shader the
+times of its own events, and `:until` is the `iTime` past which the shader stops
+drawing every refresh and holds the picture it draws at that time: a shader that
+animates an event and then rests costs nothing once it has settled. Changing the
+data or a window's box redraws the surface; neither recompiles the shader.
+
 A bare `(:trail ...)` background draws that path itself, as squares of `:cell`
 pixels lit for `:life` seconds and dimmed in `:steps` levels of `:color`,
 stopping `:idle` seconds after the pointer rests. The compositor walks the cells
