@@ -176,6 +176,47 @@ assert "deadline exceeded" in timed_out, timed_out
 assert layout() == "", "a timed-out patch kept the definition it made"
 assert state() == before_timeout, "a timed-out patch changed the session"
 
+
+
+def reducer_patch(name, body, prefix="", reads="()", ignore="snapshot state event"):
+    return ("command patch forms=" + quoted(
+        prefix + '(in-package #:tomoe-user) (define-extension "' + name + '" (:reads ' + reads
+        + ' :state 0) (snapshot state event) (declare (ignore ' + ignore + ')) ' + body + ')')
+        + " name=" + name)
+
+
+for name, prefix, reads, ignore, body, reason in [
+    ("livepatch-late", "", "()", "snapshot state event",
+     "(defvar *livepatch-late* (list :cpu 1)) (values 0 nil nil)", "while handling an event"),
+    ("livepatch-kept", "(defvar *livepatch-kept* nil) ", "()", "snapshot state event",
+     "(setf *livepatch-kept* (list :cpu 1)) (values 0 nil nil)", "while handling an event"),
+    ("livepatch-table", "(defvar *livepatch-table* (make-hash-table)) ", "()", "snapshot state event",
+     "(setf (gethash :k *livepatch-table*) (list :cpu 1)) (values 0 nil nil)", "escapes into what its source made"),
+    ("livepatch-cycle", "", "()", "snapshot state event",
+     "(let ((cells (list :a 1 :b 2))) (setf (cdr (cdr (cdr cells))) cells) (getf cells :c)) "
+     "(values 0 nil nil)", "deadline exceeded"),
+    ("livepatch-cycle-set", "", "()", "snapshot state event",
+     "(let ((cells (list :a 1))) (setf (cdr (cdr cells)) cells) (setf (getf cells :missing) 2)) "
+     "(values 0 nil nil)", "deadline exceeded"),
+    ("livepatch-loop", "", "(:data)", "snapshot event",
+     "(values (1+ state) (list (publish-state :livepatch-loop (1+ state))) nil)",
+     "still changed after 16 rounds"),
+    ("livepatch-build", '(require-tomoe "/nix/store/00000000000000000000000000000000-tomoe-other") ',
+     "()", "snapshot state event", "(values 0 nil nil)",
+     "is for tomoe /nix/store/00000000000000000000000000000000-tomoe-other"),
+]:
+    refused = fail(reducer_patch(name, body, prefix, reads, ignore))
+    assert reason in refused, f"{name}: {refused}"
+    assert name not in names(), f"{name} stayed mounted"
+    for _ in range(3):
+        assert state() == before_timeout, f"{name} changed the session"
+
+cli(reducer_patch("livepatch-rearm", "(values 0 (list (interval :hop 60000) (interval :hop 90000)) nil)"))
+hops = [entry for entry in entries(":TIMERS") if entry.get(":OWNER") == '"livepatch-rearm"']
+assert len(hops) == 1 and hops[0].get(":MILLISECONDS") == "90000", hops
+cli("command undo-patch name=livepatch-rearm")
+assert state() == before_timeout, "the re-armed timer outlived its patch"
+
 SLOW = ["livepatch-slow-a", "livepatch-slow-b", "livepatch-slow-c"]
 slow = json.loads(cli(f"command patch file={SLOW_SOURCE} name=slow"))
 assert slow["result"]["extensions"] == SLOW, slow
