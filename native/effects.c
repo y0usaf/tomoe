@@ -14,7 +14,7 @@ struct effects {
     struct chain chains[BLUR_CHAINS];
     struct level backdrop;
     uint64_t stamp, blurs, reused;
-    struct { float *levels; } trail;
+    struct { float *levels; int *spans; size_t span_rows; } trail;
 };
 
 static struct program *program(struct frame *f, int kind) {
@@ -602,6 +602,23 @@ static bool near_segment(double px, double py, double ax, double ay, double bx, 
     return ex * ex + ey * ey < radius * radius;
 }
 
+static bool segment_row_span(double ax, double ay, double bx, double by, double radius,
+        double cell, int gx0, int cy_cell, int *first, int *last) {
+    double run_x = bx - ax, run_y = by - ay, centre_y = (cy_cell + 0.5) * cell;
+    if (fabs(run_y) <= 1e-9) return *first <= *last;
+    double t0 = (centre_y - radius - ay) / run_y, t1 = (centre_y + radius - ay) / run_y;
+    if (t0 > t1) { double swap = t0; t0 = t1; t1 = swap; }
+    t0 = t0 < 0 ? 0 : t0;
+    t1 = t1 > 1 ? 1 : t1;
+    if (t0 > t1) return false;
+    double from = ax + run_x * t0, to = ax + run_x * t1;
+    int lo = (int)floor((fmin(from, to) - radius) / cell) - gx0 - 1;
+    int hi = (int)floor((fmax(from, to) + radius) / cell) - gx0 + 1;
+    if (lo > *first) *first = lo;
+    if (hi < *last) *last = hi;
+    return *first <= *last;
+}
+
 static int trail_step(float lit, int cx, int cy, int steps) {
     float grain = sinf((float)cx * 12.9898f + (float)cy * 78.233f) * 43758.5453f;
     grain -= floorf(grain);
@@ -666,29 +683,54 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         return;
     }
     float *levels = e->trail.levels;
-    memset(levels, 0, gw * gh * sizeof(float));
-    for (int i = 0; i < count; i++) {
-        if (count > 1 && i == 0) continue;
-        if (count > 1 && ages[i - 1] > life && ages[i] > life) continue;
-        double ax = xs[i > 0 ? i - 1 : 0], ay = ys[i > 0 ? i - 1 : 0];
-        double age = count > 1 ? 0.5 * (ages[i - 1] + ages[i]) : ages[0];
-        double lit = 1.0 - age / life;
-        if (lit <= 0) continue;
-        int cx0 = (int)floor((fmin(ax, xs[i]) - radius) / cell) - gx0;
-        int cx1 = (int)floor((fmax(ax, xs[i]) + radius) / cell) - gx0;
-        int cy0 = (int)floor((fmin(ay, ys[i]) - radius) / cell) - gy0;
-        int cy1 = (int)floor((fmax(ay, ys[i]) + radius) / cell) - gy0;
-        if (cx0 < 0) cx0 = 0;
-        if (cy0 < 0) cy0 = 0;
-        if (cx1 > gx1 - gx0) cx1 = (int)gw - 1;
-        if (cy1 > gy1 - gy0) cy1 = (int)gh - 1;
-        for (int cy = cy0; cy <= cy1; cy++) {
-            double centre_y = (gy0 + cy + 0.5) * cell;
-            for (int cx = cx0; cx <= cx1; cx++) {
-                double centre_x = (gx0 + cx + 0.5) * cell;
-                if (!near_segment(centre_x, centre_y, ax, ay, xs[i], ys[i], radius)) continue;
-                float *slot = &levels[(size_t)cy * gw + (size_t)cx];
-                if (*slot < (float)lit) *slot = (float)lit;
+    if (e->trail.span_rows < gh) {
+        int *spans = realloc(e->trail.spans, gh * 2 * sizeof(int));
+        if (!spans) return;
+        e->trail.spans = spans;
+        e->trail.span_rows = gh;
+    }
+    int *spans = e->trail.spans;
+    for (size_t cy = 0; cy < gh; cy++) {
+        spans[2 * cy] = INT_MAX;
+        spans[2 * cy + 1] = -1;
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1)
+            for (size_t cy = 0; cy < gh; cy++)
+                if (spans[2 * cy] <= spans[2 * cy + 1])
+                    memset(&levels[cy * gw + (size_t)spans[2 * cy]], 0,
+                        (size_t)(spans[2 * cy + 1] - spans[2 * cy] + 1) * sizeof(float));
+        for (int i = 0; i < count; i++) {
+            if (count > 1 && i == 0) continue;
+            if (count > 1 && ages[i - 1] > life && ages[i] > life) continue;
+            double ax = xs[i > 0 ? i - 1 : 0], ay = ys[i > 0 ? i - 1 : 0];
+            double age = count > 1 ? 0.5 * (ages[i - 1] + ages[i]) : ages[0];
+            double lit = 1.0 - age / life;
+            if (lit <= 0) continue;
+            int cx0 = (int)floor((fmin(ax, xs[i]) - radius) / cell) - gx0;
+            int cx1 = (int)floor((fmax(ax, xs[i]) + radius) / cell) - gx0;
+            int cy0 = (int)floor((fmin(ay, ys[i]) - radius) / cell) - gy0;
+            int cy1 = (int)floor((fmax(ay, ys[i]) + radius) / cell) - gy0;
+            if (cx0 < 0) cx0 = 0;
+            if (cy0 < 0) cy0 = 0;
+            if (cx1 > gx1 - gx0) cx1 = (int)gw - 1;
+            if (cy1 > gy1 - gy0) cy1 = (int)gh - 1;
+            for (int cy = cy0; cy <= cy1; cy++) {
+                int first = cx0, last = cx1;
+                if (!segment_row_span(ax, ay, xs[i], ys[i], radius, cell, gx0, gy0 + cy,
+                        &first, &last)) continue;
+                if (pass == 0) {
+                    if (first < spans[2 * cy]) spans[2 * cy] = first;
+                    if (last > spans[2 * cy + 1]) spans[2 * cy + 1] = last;
+                    continue;
+                }
+                double centre_y = (gy0 + cy + 0.5) * cell;
+                for (int cx = first; cx <= last; cx++) {
+                    double centre_x = (gx0 + cx + 0.5) * cell;
+                    if (!near_segment(centre_x, centre_y, ax, ay, xs[i], ys[i], radius)) continue;
+                    float *slot = &levels[(size_t)cy * gw + (size_t)cx];
+                    if (*slot < (float)lit) *slot = (float)lit;
+                }
             }
         }
     }
@@ -696,7 +738,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
     uint64_t digest = 0xcbf29ce484222325ull;
     int lit_left = INT_MAX, lit_top = INT_MAX, lit_right = INT_MIN, lit_bottom = INT_MIN;
     for (size_t cy = 0; cy < gh; cy++) {
-        for (size_t cx = 0; cx < gw; cx++) {
+        if (spans[2 * cy] > spans[2 * cy + 1]) continue;
+        for (size_t cx = (size_t)spans[2 * cy]; cx <= (size_t)spans[2 * cy + 1]; cx++) {
             float *slot = &levels[cy * gw + cx];
             float lit = *slot;
             if (lit <= 0) continue;
@@ -743,7 +786,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         scene.color[2] = ((style->rgba >> 8) & 0xff) / 255.0f * alpha;
         scene.color[3] = alpha;
         for (size_t cy = 0; cy < gh; cy++) {
-            for (size_t cx = 0; cx < gw; cx++) {
+            if (spans[2 * cy] > spans[2 * cy + 1]) continue;
+            for (size_t cx = (size_t)spans[2 * cy]; cx <= (size_t)spans[2 * cy + 1]; cx++) {
                 if (levels[cy * gw + cx] != (float)step) continue;
                 double x0 = fmax((gx0 + (double)cx) * cell, surface_left);
                 double y0 = fmax((gy0 + (double)cy) * cell, surface_top);
@@ -812,7 +856,10 @@ bool effect_cursor(struct frame *f, const struct texture_options *options,
 }
 
 void effects_finish(struct tomoe *s) {
-    if (s->effects) free(s->effects->trail.levels);
+    if (s->effects) {
+        free(s->effects->trail.levels);
+        free(s->effects->trail.spans);
+    }
     free(s->effects);
     s->effects = NULL;
 }
