@@ -108,6 +108,8 @@ struct kms {
     struct screen_impl impl;
     struct plan *plans;
     size_t plans_capacity;
+    drmModeAtomicReq *req;
+    bool req_busy;
 };
 
 struct fb {
@@ -648,7 +650,16 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
     }
     struct plan *plans = kms->plans;
     if (count) memset(plans, 0, count * sizeof(*plans));
-    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    bool shared = !kms->req_busy;
+    drmModeAtomicReq *req;
+    if (shared) {
+        if (!kms->req) kms->req = drmModeAtomicAlloc();
+        else drmModeAtomicSetCursor(kms->req, 0);
+        req = kms->req;
+        kms->req_busy = req != NULL;
+    } else {
+        req = drmModeAtomicAlloc();
+    }
     char *text = NULL;
     size_t text_size = 0;
     trace = log_verbosity >= LOG_INFO ? open_memstream(&text, &text_size) : NULL;
@@ -1046,7 +1057,8 @@ static bool atomic_try(struct kms *kms, struct screen_update *updates, size_t co
         struct connector *c = wl_container_of(updates[i].output, c, screen);
         if (plans[i].modeset || (!plans[i].enable && plans[i].crtc)) log_kernel_state(c, "kernel state");
     }
-    if (req) drmModeAtomicFree(req);
+    if (shared) kms->req_busy = false;
+    else if (req) drmModeAtomicFree(req);
     return ok;
 }
 
@@ -1835,6 +1847,7 @@ void kms_destroy(struct tomoe *s) {
     }
     free(kms->crtcs);
     free(kms->planes);
+    if (kms->req) drmModeAtomicFree(kms->req);
     free(kms->plans);
     if (kms->fd >= 0) session_close(s, kms->device, kms->fd);
     free(kms);
