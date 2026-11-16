@@ -223,8 +223,8 @@ static void print_string(struct lisp_buf *buf, lisp_value v, bool readably)
 
 static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably);
 
-enum { PRINT_DEPTH = 512, PRINT_LENGTH = 1 << 16 };
-static uint32_t print_depth;
+enum { PRINT_DEPTH = 512, PRINT_NODES = 1 << 16 };
+static uint32_t print_depth, print_nodes;
 
 size_t print_value(lisp_value value, bool readably, struct lisp_buf *buf)
 {
@@ -283,7 +283,7 @@ size_t print_value(lisp_value value, bool readably, struct lisp_buf *buf)
     return buf->len;
 }
 
-static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
+static void print_cons_body(struct lisp_buf *buf, lisp_value v, bool readably)
 {
     if (consp(v) && consp(CDR(v)) && nilp(CDR(CDR(v)))) {
         lisp_value head = CAR(v);
@@ -313,16 +313,11 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
             return;
         }
     }
-    if (print_depth >= PRINT_DEPTH) {
-        buf_puts(buf, "(...)");
-        return;
-    }
-    print_depth++;
     buf_putc(buf, '(');
     print_value(CAR(v), readably, buf);
     lisp_value rest = CDR(v);
-    for (uint32_t count = 1; consp(rest); count++) {
-        if (count == PRINT_LENGTH) {
+    while (consp(rest)) {
+        if (++print_nodes >= PRINT_NODES) {
             buf_puts(buf, " ...");
             rest = NIL_VAL;
             break;
@@ -336,6 +331,18 @@ static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
         print_value(rest, readably, buf);
     }
     buf_putc(buf, ')');
+}
+
+static void print_cons(struct lisp_buf *buf, lisp_value v, bool readably)
+{
+    if (print_depth == 0)
+        print_nodes = 0;
+    if (print_depth >= PRINT_DEPTH || ++print_nodes >= PRINT_NODES) {
+        buf_puts(buf, "...");
+        return;
+    }
+    print_depth++;
+    print_cons_body(buf, v, readably);
     print_depth--;
 }
 
