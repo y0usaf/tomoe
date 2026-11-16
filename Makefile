@@ -8,8 +8,8 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 
 LIBS = wayland-server xkbcommon pangocairo libjpeg libdrm libinput glesv2 egl gbm libseat libudev wayland-client libpipewire-0.3
-PORTAL_LIBS = wayland-client libpipewire-0.3 libsystemd libdrm gbm
-SUPPORT = executions watches notifications mpris backlight battery network tray system
+PORTAL_LIBS = wayland-client libpipewire-0.3 libdrm gbm
+SUPPORT = bus executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
 	$(WLR)/wlr-screencopy-unstable-v1.xml \
@@ -67,11 +67,11 @@ LISP_NATIVE = $(patsubst native/lisp/%.c,build/obj/lisp-%.o,$(wildcard native/li
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o)
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
 CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(shell $(PKG_CONFIG) --cflags $(LIBS))
-CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' $(shell $(PKG_CONFIG) --cflags libsystemd)
-CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
+CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -DTOMOE_VERSION='"$(VERSION)"' 
+CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative
 
-PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c))
+PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c)) build/bus.o
 PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
@@ -81,11 +81,11 @@ all: build/tomoe build/tomoe-portal
 build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))
 
-build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(HEADERS) | build/obj
+build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) support/bus.h $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
 build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o)
-	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS) libsystemd) \
+	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS)) \
 		-lresvg -ldl -lpthread -lm
 
 build/embed: tools/embed.c | build

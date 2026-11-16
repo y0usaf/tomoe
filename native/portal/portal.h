@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <systemd/sd-bus.h>
+#include "bus.h"
 #include <time.h>
 #include <wayland-client.h>
 
@@ -87,8 +87,8 @@ struct choice {
 struct session {
     struct wl_list link;
     struct portal *portal;
-    struct sd_bus_slot *object;
-    struct sd_bus_slot *owner;
+    tomoe_bus_slot *object;
+    tomoe_bus_slot *owner;
     char *path;
     char *owner_name;
     char *app_id;
@@ -98,8 +98,8 @@ struct session {
     struct choice choice;
     bool chosen;
     struct stream *stream;
-    sd_bus_message *select_call;
-    sd_bus_message *start_call;
+    tomoe_bus_message *select_call;
+    tomoe_bus_message *start_call;
     struct spa_source *start_timer;
     void *selection;
     bool doomed;
@@ -127,8 +127,8 @@ struct portal {
     struct pw_loop *loop;
     struct pw_context *context;
     struct pw_core *core;
-    struct sd_bus *bus;
-    struct sd_bus_slot *bus_slot;
+    tomoe_bus *bus;
+    tomoe_bus_slot *bus_slot;
     struct spa_source *display_source;
     struct spa_source *bus_source;
     struct spa_source *deferred;

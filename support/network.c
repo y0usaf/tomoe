@@ -16,7 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <systemd/sd-bus.h>
+#include "bus.h"
 
 #define NETWORK_NM "org.freedesktop.NetworkManager"
 #define NETWORK_ROOT_PATH "/org/freedesktop/NetworkManager"
@@ -85,7 +85,7 @@ struct network_call {
     enum network_scope scope;
     struct tomoe_network *network;
     struct network_call *next;
-    sd_bus_slot *slot;
+    tomoe_bus_slot *slot;
     uint64_t owner_epoch;
     uint64_t primary_chain_epoch;
     uint64_t primary_signal_epoch;
@@ -124,8 +124,8 @@ struct text_buffer {
 };
 
 struct tomoe_network {
-    sd_bus *bus;
-    sd_bus_slot *matches[3];
+    struct tomoe_bus *bus;
+    tomoe_bus_slot *matches[3];
     struct network_call *calls;
     size_t pending_count;
 
@@ -618,52 +618,52 @@ static void clear_nm(struct tomoe_network *network) {
     public_from_source(network);
 }
 
-static int read_string_value(sd_bus_message *message, char *destination,
+static int read_string_value(tomoe_bus_message *message, char *destination,
                              size_t capacity, size_t limit) {
     const char *value = NULL;
-    int result = sd_bus_message_read(message, "s", &value);
+    int result = tomoe_message_read(message, "s", &value);
     if (result < 0) return result;
     return copy_bounded(destination, capacity, value, limit);
 }
 
-static int read_path_value(sd_bus_message *message, char *destination,
+static int read_path_value(tomoe_bus_message *message, char *destination,
                            size_t capacity) {
     const char *value = NULL;
-    int result = sd_bus_message_read(message, "o", &value);
+    int result = tomoe_message_read(message, "o", &value);
     if (result < 0) return result;
     if (!valid_object_path(value)) return -EBADMSG;
     return copy_bounded(destination, capacity, value, NETWORK_MAX_PATH);
 }
 
-static int read_property_dict(sd_bus_message *message,
+static int read_property_dict(tomoe_bus_message *message,
                               struct network_props *props) {
-    int result = sd_bus_message_enter_container(message, 'a', "{sv}");
+    int result = tomoe_message_enter_container(message, 'a', "{sv}");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t entries = 0;
     for (;;) {
-        result = sd_bus_message_enter_container(message, 'e', "sv");
+        result = tomoe_message_enter_container(message, 'e', "sv");
         if (result < 0) return result;
         if (!result) break;
         if (++entries > NETWORK_MAX_DICT) return -E2BIG;
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0 || !bounded_string(key, NETWORK_MAX_TEXT))
             return result < 0 ? result : -EBADMSG;
         char type = 0;
         const char *contents = NULL;
-        result = sd_bus_message_peek_type(message, &type, &contents);
+        result = tomoe_message_peek_type(message, &type, &contents);
         if (result <= 0 || type != 'v' || !contents)
             return result < 0 ? result : -EBADMSG;
-        result = sd_bus_message_enter_container(message, 'v', contents);
+        result = tomoe_message_enter_container(message, 'v', contents);
         if (result < 0) return result;
         char value_type = 0;
         const char *value_contents = NULL;
-        result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+        result = tomoe_message_peek_type(message, &value_type, &value_contents);
         if (result <= 0) return result < 0 ? result : -EBADMSG;
         if (!strcmp(key, "State")) {
             if (value_type != 'u') return -EBADMSG;
-            result = sd_bus_message_read(message, "u", &props->state_value);
+            result = tomoe_message_read(message, "u", &props->state_value);
             if (result < 0) return result;
             props->state = 1;
         } else if (!strcmp(key, "PrimaryConnection")) {
@@ -690,7 +690,7 @@ static int read_property_dict(sd_bus_message *message,
                 strcmp(value_contents, "y")) return -EBADMSG;
             const void *data = NULL;
             size_t length = 0;
-            result = sd_bus_message_read_array(message, 'y', &data, &length);
+            result = tomoe_message_read_array(message, 'y', &data, &length);
             if (result < 0) return result;
             if (length > NETWORK_MAX_SSID) return -E2BIG;
             if (length) memcpy(props->ssid_value, data, length);
@@ -698,30 +698,30 @@ static int read_property_dict(sd_bus_message *message,
             props->ssid = 1;
         } else if (!strcmp(key, "Strength")) {
             if (value_type != 'y') return -EBADMSG;
-            result = sd_bus_message_read(message, "y", &props->strength_value);
+            result = tomoe_message_read(message, "y", &props->strength_value);
             if (result < 0) return result;
             props->strength = 1;
         } else {
-            result = sd_bus_message_skip(message, NULL);
+            result = tomoe_message_skip(message, NULL);
             if (result < 0) return result;
         }
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int read_invalidated(sd_bus_message *message,
+static int read_invalidated(tomoe_bus_message *message,
                             struct network_invalidated *invalidated) {
-    int result = sd_bus_message_enter_container(message, 'a', "s");
+    int result = tomoe_message_enter_container(message, 'a', "s");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t count = 0;
     for (;;) {
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0) return result;
         if (!result) break;
         if (++count > NETWORK_MAX_DICT ||
@@ -734,21 +734,21 @@ static int read_invalidated(sd_bus_message *message,
         else if (!strcmp(key, "Ssid")) invalidated->ssid = 1;
         else if (!strcmp(key, "Strength")) invalidated->strength = 1;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int reply_is_error(sd_bus_message *message) {
-    return !message || sd_bus_message_get_error(message) != NULL;
+static int reply_is_error(tomoe_bus_message *message) {
+    return !message || tomoe_message_error(message) != NULL;
 }
 
-static int message_path_is(sd_bus_message *message, const char *path) {
-    const char *actual = sd_bus_message_get_path(message);
+static int message_path_is(tomoe_bus_message *message, const char *path) {
+    const char *actual = tomoe_message_path(message);
     return actual && !strcmp(actual, path);
 }
 
 static int sender_matches(const struct tomoe_network *network,
-                          sd_bus_message *message, const char *well_known) {
-    const char *sender = sd_bus_message_get_sender(message);
+                          tomoe_bus_message *message, const char *well_known) {
+    const char *sender = tomoe_message_sender(message);
     (void)well_known;
     if (!sender || !valid_unique_name(sender)) return 0;
     return network->owner[0] &&
@@ -950,7 +950,7 @@ static void clear_pending(struct tomoe_network *network) {
     struct network_call *call = network->calls;
     while (call) {
         struct network_call *next = call->next;
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
         call = next;
     }
@@ -982,7 +982,7 @@ static void cancel_stale_calls(struct tomoe_network *network) {
         }
         *cursor = call->next;
         if (network->pending_count) network->pending_count--;
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
     }
 }
@@ -1013,8 +1013,7 @@ static int pending_scope(const struct tomoe_network *network,
     return 0;
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error);
+static int async_reply(tomoe_bus_message *message, void *userdata);
 
 static int queue_call(struct tomoe_network *network, struct network_call *call,
                       const char *destination, const char *path,
@@ -1033,13 +1032,13 @@ static int queue_call(struct tomoe_network *network, struct network_call *call,
     network->pending_count++;
     va_list ap;
     va_start(ap, types);
-    int result = sd_bus_call_method_asyncv(
+    int result = tomoe_bus_call_asyncv(
         network->bus, &call->slot, destination, path, interface, member,
         async_reply, call, types, ap);
     va_end(ap);
     if (result < 0) {
         pending_remove(network, call);
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
         return result;
     }
@@ -1140,7 +1139,7 @@ static void fallback_to_sysfs_keep_owner(struct tomoe_network *network) {
 }
 
 static void handle_owner_reply(struct network_call *call,
-                               sd_bus_message *message) {
+                               tomoe_bus_message *message) {
     struct tomoe_network *network = call->network;
     if (call->owner_epoch != network->owner_epoch) return;
     if (reply_is_error(message)) {
@@ -1148,7 +1147,7 @@ static void handle_owner_reply(struct network_call *call,
         return;
     }
     const char *owner = NULL;
-    if (sd_bus_message_read(message, "s", &owner) < 0 ||
+    if (tomoe_message_read(message, "s", &owner) < 0 ||
         !valid_unique_name(owner)) {
         fallback_to_sysfs(network);
         return;
@@ -1164,7 +1163,7 @@ static void handle_owner_reply(struct network_call *call,
 }
 
 static void handle_get_all_reply(struct network_call *call,
-                                 sd_bus_message *message) {
+                                 tomoe_bus_message *message) {
     struct tomoe_network *network = call->network;
     if (!call_is_current(network, call)) return;
     if (reply_is_error(message)) {
@@ -1174,7 +1173,7 @@ static void handle_get_all_reply(struct network_call *call,
             fallback_to_sysfs_keep_owner(network);
         return;
     }
-    const char *sender = sd_bus_message_get_sender(message);
+    const char *sender = tomoe_message_sender(message);
     if (!sender || !valid_unique_name(sender)) return;
     if (network->owner[0] && strcmp(network->owner, sender)) return;
     if (!network->owner[0]) {
@@ -1213,17 +1212,15 @@ static int scope_for(const struct tomoe_network *network, const char *iface,
     return 0;
 }
 
-static int owner_changed_signal(sd_bus_message *message, void *userdata,
-                                sd_bus_error *ret_error) {
+static int owner_changed_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_network *network = userdata;
-    (void)ret_error;
     if (!message_path_is(message, NETWORK_DBUS_PATH)) return 1;
-    const char *sender = sd_bus_message_get_sender(message);
+    const char *sender = tomoe_message_sender(message);
     if (!sender || strcmp(sender, NETWORK_DBUS)) return 1;
     const char *name = NULL;
     const char *old_owner = NULL;
     const char *new_owner = NULL;
-    int result = sd_bus_message_read(message, "sss", &name, &old_owner,
+    int result = tomoe_message_read(message, "sss", &name, &old_owner,
                                      &new_owner);
     if (result < 0 || !name || strcmp(name, NETWORK_NM) ||
         (old_owner && *old_owner && !valid_unique_name(old_owner)) ||
@@ -1247,14 +1244,12 @@ static int owner_changed_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int properties_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static int properties_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_network *network = userdata;
-    (void)ret_error;
     if (!sender_matches(network, message, NETWORK_NM)) return 1;
-    const char *path = sd_bus_message_get_path(message);
+    const char *path = tomoe_message_path(message);
     const char *interface = NULL;
-    if (!path || sd_bus_message_read(message, "s", &interface) < 0 ||
+    if (!path || tomoe_message_read(message, "s", &interface) < 0 ||
         !interface)
         return 1;
     enum network_scope scope;
@@ -1268,14 +1263,12 @@ static int properties_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int legacy_state_signal(sd_bus_message *message, void *userdata,
-                               sd_bus_error *ret_error) {
+static int legacy_state_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_network *network = userdata;
-    (void)ret_error;
     if (!message_path_is(message, NETWORK_ROOT_PATH) ||
         !sender_matches(network, message, NETWORK_NM)) return 1;
     uint32_t state = 0;
-    if (sd_bus_message_read(message, "u", &state) < 0) return 1;
+    if (tomoe_message_read(message, "u", &state) < 0) return 1;
     network->raw.state = state;
     network->raw.state_known = 1;
     network->state_epoch++;
@@ -1283,20 +1276,18 @@ static int legacy_state_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error) {
+static int async_reply(tomoe_bus_message *message, void *userdata) {
     struct network_call *call = userdata;
-    (void)ret_error;
     if (!call || !call->network) return 1;
     struct tomoe_network *network = call->network;
-    sd_bus_slot *slot = call->slot;
+    tomoe_bus_slot *slot = call->slot;
     call->slot = NULL;
     pending_remove(network, call);
     if (call->kind == NETWORK_CALL_OWNER)
         handle_owner_reply(call, message);
     else
         handle_get_all_reply(call, message);
-    if (slot) sd_bus_slot_unref(slot);
+    if (slot) tomoe_bus_slot_unref(slot);
     free(call);
     return 1;
 }
@@ -1306,40 +1297,16 @@ static void close_bus(struct tomoe_network *network) {
     for (size_t index = 0; index < sizeof(network->matches) /
                                       sizeof(network->matches[0]); index++) {
         if (network->matches[index]) {
-            sd_bus_slot_unref(network->matches[index]);
+            tomoe_bus_slot_unref(network->matches[index]);
             network->matches[index] = NULL;
         }
     }
     clear_pending(network);
     if (network->bus) {
-        sd_bus_close(network->bus);
-        sd_bus_unref(network->bus);
+        tomoe_bus_close(network->bus);
+        tomoe_bus_unref(network->bus);
         network->bus = NULL;
     }
-}
-
-static int setup_ready(sd_bus *bus, uint64_t deadline) {
-    for (;;) {
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        uint64_t now = monotonic_usec();
-        if (now >= deadline) return -ETIMEDOUT;
-        int result = sd_bus_process(bus, NULL);
-        if (result < 0 && result != -EAGAIN && result != -EINTR)
-            return result;
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        if (!result) {
-            now = monotonic_usec();
-            if (now >= deadline) return -ETIMEDOUT;
-            result = sd_bus_wait(bus, deadline - now);
-            if (result < 0 && result != -EINTR) return result;
-        }
-    }
-}
-
-static int set_remaining_timeout(sd_bus *bus, uint64_t deadline) {
-    uint64_t now = monotonic_usec();
-    if (now >= deadline) return -ETIMEDOUT;
-    return sd_bus_set_method_call_timeout(bus, deadline - now);
 }
 
 static void disconnect_bus(struct tomoe_network *network) {
@@ -1367,41 +1334,22 @@ struct tomoe_network *tomoe_network_open(const char *sysfs_root, int *error) {
     public_default(network);
     network->revision = 1;
 
-    sd_bus *bus = NULL;
-    int result = sd_bus_new(&bus);
-    if (result < 0) goto fallback;
-    result = sd_bus_set_bus_client(bus, 1);
-    if (result < 0) goto fallback_bus;
-    const char *address = getenv("DBUS_SYSTEM_BUS_ADDRESS");
-    if (!address || !*address) address = NETWORK_SYSTEM_ADDRESS;
-    result = sd_bus_set_address(bus, address);
-    if (result < 0) goto fallback_bus;
-    result = sd_bus_set_method_call_timeout(bus, NETWORK_SETUP_USEC);
-    if (result < 0) goto fallback_bus;
-    result = sd_bus_start(bus);
-    if (result < 0) goto fallback_bus;
-    uint64_t deadline = deadline_after(monotonic_usec(), NETWORK_SETUP_USEC);
-    result = setup_ready(bus, deadline);
+    struct tomoe_bus *bus = NULL;
+    int result = tomoe_bus_open_system(&bus, NETWORK_SETUP_USEC);
     if (result < 0) goto fallback_bus;
     network->bus = bus;
     bus = NULL;
-    result = set_remaining_timeout(network->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_add_match(
+    result = tomoe_bus_add_match(
         network->bus, &network->matches[0],
         "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/freedesktop/NetworkManager'",
         properties_signal, network);
     if (result < 0) goto fallback_bus_handle;
-    result = set_remaining_timeout(network->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_add_match(
+    result = tomoe_bus_add_match(
         network->bus, &network->matches[1],
         "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager',interface='org.freedesktop.NetworkManager',member='StateChanged'",
         legacy_state_signal, network);
     if (result < 0) goto fallback_bus_handle;
-    result = set_remaining_timeout(network->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_add_match(
+    result = tomoe_bus_add_match(
         network->bus, &network->matches[2],
         "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.NetworkManager'",
         owner_changed_signal, network);
@@ -1409,7 +1357,7 @@ struct tomoe_network *tomoe_network_open(const char *sysfs_root, int *error) {
     network->need_owner = 1;
     result = queue_owner(network);
     if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_set_method_call_timeout(network->bus, NETWORK_REQUEST_USEC);
+    result = tomoe_bus_set_timeout(network->bus, NETWORK_REQUEST_USEC);
     if (result < 0) goto fallback_bus_handle;
     *error = 0;
     return network;
@@ -1420,8 +1368,8 @@ fallback_bus_handle:
     goto fallback;
 fallback_bus:
     if (bus) {
-        sd_bus_close(bus);
-        sd_bus_unref(bus);
+        tomoe_bus_close(bus);
+        tomoe_bus_unref(bus);
         bus = NULL;
     }
 fallback:
@@ -1440,7 +1388,7 @@ int tomoe_network_poll(struct tomoe_network *network) {
     while (network->bus && processed < NETWORK_POLL_MESSAGES) {
         uint64_t now = monotonic_usec();
         if (now >= start && now - start >= NETWORK_POLL_BUDGET_USEC) break;
-        int result = sd_bus_process(network->bus, NULL);
+        int result = tomoe_bus_process(network->bus);
         if (result < 0) {
             if (result == -EAGAIN || result == -EINTR) break;
             disconnect_bus(network);
@@ -1463,12 +1411,12 @@ int tomoe_network_poll(struct tomoe_network *network) {
 }
 
 int tomoe_network_fd(const struct tomoe_network *network) {
-    return network && network->bus ? sd_bus_get_fd(network->bus) : -1;
+    return network && network->bus ? tomoe_bus_fd(network->bus) : -1;
 }
 
 unsigned tomoe_network_mask(const struct tomoe_network *network) {
     if (!network || !network->bus) return 1;
-    int events = sd_bus_get_events(network->bus);
+    int events = tomoe_bus_events(network->bus);
     return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
 }
 

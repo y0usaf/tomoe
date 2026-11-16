@@ -1,12 +1,12 @@
-#include <systemd/sd-bus.h>
+#include "bus.h"
 
 int tomoe_backlight_set(const char *name, unsigned value) {
-    sd_bus *bus = NULL;
-    int result = sd_bus_open_system(&bus);
+    struct tomoe_bus *bus = NULL;
+    int result = tomoe_bus_open_system(&bus, 2000000ULL);
     if (result >= 0)
-        result = sd_bus_call_method(bus, "org.freedesktop.login1",
+        result = tomoe_bus_call(bus, "org.freedesktop.login1",
             "/org/freedesktop/login1/session/auto", "org.freedesktop.login1.Session",
-            "SetBrightness", NULL, NULL, "ssu", "backlight", name, value);
-    sd_bus_flush_close_unref(bus);
+            "SetBrightness", "ssu", "backlight", name, value);
+    tomoe_bus_flush_close_unref(bus);
     return result < 0 ? result : 0;
 }

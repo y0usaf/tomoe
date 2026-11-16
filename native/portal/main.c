@@ -244,7 +244,7 @@ static void bus_readable(void *data, int fd, uint32_t mask) {
         return;
     }
     int result;
-    while ((result = sd_bus_process(p->bus, NULL)) > 0) {
+    while ((result = tomoe_bus_process(p->bus)) > 0) {
     }
     if (result < 0) {
         portal_log("the session bus failed: %s", strerror(-result));
@@ -252,8 +252,8 @@ static void bus_readable(void *data, int fd, uint32_t mask) {
         pw_main_loop_quit(p->main_loop);
         return;
     }
-    sd_bus_flush(p->bus);
-    p->bus_fd = sd_bus_get_fd(p->bus);
+    tomoe_bus_flush(p->bus);
+    p->bus_fd = tomoe_bus_fd(p->bus);
 }
 
 struct deferred {
@@ -360,7 +360,7 @@ int main(int argc, char **argv) {
     if (p->core) pw_core_disconnect(p->core);
     pw_context_destroy(p->context);
     pw_main_loop_destroy(p->main_loop);
-    sd_bus_flush_close_unref(p->bus);
+    tomoe_bus_flush_close_unref(p->bus);
     wl_display_disconnect(p->display);
     free(p->ipc_socket);
     pw_deinit();

@@ -14,7 +14,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <systemd/sd-bus.h>
+#include "bus.h"
 
 #define MPRIS_PREFIX "org.mpris.MediaPlayer2."
 #define MPRIS_DBUS "org.freedesktop.DBus"
@@ -35,7 +35,6 @@
 #define MPRIS_REQUEST_USEC 2000000ULL
 #define MPRIS_POLL_MESSAGES 64U
 #define MPRIS_POLL_BUDGET_USEC 4000ULL
-#define MPRIS_MAX_RUNTIME_PATH 4096U
 
 enum pending_kind {
     PENDING_LIST_NAMES,
@@ -133,8 +132,8 @@ struct public_values {
 };
 
 struct tomoe_mpris {
-    sd_bus *bus;
-    sd_bus_slot *matches[3];
+    struct tomoe_bus *bus;
+    tomoe_bus_slot *matches[3];
     struct mpris_alias aliases[MPRIS_MAX_ALIASES];
     struct mpris_player players[MPRIS_MAX_PLAYERS];
     struct mpris_call *calls;
@@ -349,27 +348,6 @@ const char *tomoe_mpris_snapshot(struct tomoe_mpris *mpris) {
     return snapshot;
 }
 
-static int make_fallback_address(char *destination, size_t capacity,
-                                 const char *runtime) {
-    static const char hex[] = "0123456789ABCDEF";
-    size_t length = strnlen(runtime, MPRIS_MAX_RUNTIME_PATH + 1U);
-    if (length > MPRIS_MAX_RUNTIME_PATH) return -ENAMETOOLONG;
-    const char prefix[] = "unix:path=";
-    if (sizeof(prefix) - 1U > capacity) return -ENAMETOOLONG;
-    memcpy(destination, prefix, sizeof(prefix) - 1U);
-    size_t offset = sizeof(prefix) - 1U;
-    for (size_t index = 0; index < length; index++) {
-        if (offset > capacity - 3U) return -ENAMETOOLONG;
-        unsigned char value = (unsigned char)runtime[index];
-        destination[offset++] = '%';
-        destination[offset++] = hex[value >> 4U];
-        destination[offset++] = hex[value & 0x0fU];
-    }
-    if (offset >= capacity) return -ENAMETOOLONG;
-    destination[offset] = '\0';
-    return 0;
-}
-
 static struct mpris_alias *find_alias(struct tomoe_mpris *mpris,
                                       const char *name) {
     for (size_t index = 0; index < MPRIS_MAX_ALIASES; index++)
@@ -578,9 +556,9 @@ static int parse_length(char type, const void *value, uint64_t *result) {
     return 0;
 }
 
-static int read_metadata_value(sd_bus_message *message,
+static int read_metadata_value(tomoe_bus_message *message,
                                struct mpris_values *values) {
-    int result = sd_bus_message_enter_container(message, 'a', "{sv}");
+    int result = tomoe_message_enter_container(message, 'a', "{sv}");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t artist_count = 0;
@@ -592,60 +570,60 @@ static int read_metadata_value(sd_bus_message *message,
     values->art_url[0] = '\0';
     values->length = 0;
     for (;;) {
-        result = sd_bus_message_enter_container(message, 'e', "sv");
+        result = tomoe_message_enter_container(message, 'e', "sv");
         if (result < 0) return result;
         if (!result) break;
         if (++entries > MPRIS_MAX_DICT) return -E2BIG;
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0 || !bounded_string(key, MPRIS_MAX_TEXT)) return -EBADMSG;
         char value_type = 0;
         const char *value_contents = NULL;
-        result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+        result = tomoe_message_peek_type(message, &value_type, &value_contents);
         if (result <= 0 || value_type != 'v' || !value_contents)
             return result < 0 ? result : -EBADMSG;
-        result = sd_bus_message_enter_container(message, 'v', value_contents);
+        result = tomoe_message_enter_container(message, 'v', value_contents);
         if (result < 0) return result;
         char basic_type = 0;
         const char *basic_contents = NULL;
-        result = sd_bus_message_peek_type(message, &basic_type, &basic_contents);
+        result = tomoe_message_peek_type(message, &basic_type, &basic_contents);
         if (result <= 0) return result < 0 ? result : -EBADMSG;
         if (!strcmp(key, "xesam:title") && basic_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_string(values->title,
                                                sizeof(values->title), value) < 0)
                 return -EBADMSG;
         } else if (!strcmp(key, "xesam:album") && basic_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_string(values->album,
                                                sizeof(values->album), value) < 0)
                 return -EBADMSG;
         } else if (!strcmp(key, "mpris:artUrl") && basic_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_string(values->art_url,
                                                sizeof(values->art_url), value) < 0)
                 return -EBADMSG;
         } else if (!strcmp(key, "xesam:artist") && basic_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 ||
                 append_artist(values->artist, sizeof(values->artist),
                               &artist_length, &artist_count, value) < 0)
                 return -EBADMSG;
         } else if (!strcmp(key, "xesam:artist") && basic_type == 'a') {
-            result = sd_bus_message_enter_container(message, 'a', "s");
+            result = tomoe_message_enter_container(message, 'a', "s");
             if (result < 0) return result;
             const char *value = NULL;
-            while ((result = sd_bus_message_read(message, "s", &value)) > 0) {
+            while ((result = tomoe_message_read(message, "s", &value)) > 0) {
                 if (artist_count >= MPRIS_MAX_ARTISTS ||
                     append_artist(values->artist, sizeof(values->artist),
                                   &artist_length, &artist_count, value) < 0)
                     return -EBADMSG;
             }
-            if (result < 0 || sd_bus_message_exit_container(message) < 0)
+            if (result < 0 || tomoe_message_exit_container(message) < 0)
                 return result < 0 ? result : -EBADMSG;
         } else if (!strcmp(key, "mpris:length") &&
                    (basic_type == 'x' || basic_type == 't' ||
@@ -654,11 +632,11 @@ static int read_metadata_value(sd_bus_message *message,
             uint64_t unsigned_value = 0;
             double double_value = 0.0;
             if (basic_type == 'x')
-                result = sd_bus_message_read(message, "x", &signed_value);
+                result = tomoe_message_read(message, "x", &signed_value);
             else if (basic_type == 't')
-                result = sd_bus_message_read(message, "t", &unsigned_value);
+                result = tomoe_message_read(message, "t", &unsigned_value);
             else
-                result = sd_bus_message_read(message, "d", &double_value);
+                result = tomoe_message_read(message, "d", &double_value);
             if (result < 0) return result;
             if (basic_type == 'x')
                 result = parse_length('x', &signed_value, &values->length);
@@ -668,15 +646,15 @@ static int read_metadata_value(sd_bus_message *message,
                 result = parse_length('d', &double_value, &values->length);
             if (result < 0) return -EBADMSG;
         } else {
-            result = sd_bus_message_skip(message, NULL);
+            result = tomoe_message_skip(message, NULL);
             if (result < 0) return result;
         }
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
     }
-    if (sd_bus_message_exit_container(message) < 0) return -EBADMSG;
+    if (tomoe_message_exit_container(message) < 0) return -EBADMSG;
     values->metadata = 1;
     return 0;
 }
@@ -688,73 +666,73 @@ struct invalidated_values {
     int position;
 };
 
-static int read_property_dict(sd_bus_message *message,
+static int read_property_dict(tomoe_bus_message *message,
                               struct mpris_values *values) {
-    int result = sd_bus_message_enter_container(message, 'a', "{sv}");
+    int result = tomoe_message_enter_container(message, 'a', "{sv}");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t entries = 0;
     for (;;) {
-        result = sd_bus_message_enter_container(message, 'e', "sv");
+        result = tomoe_message_enter_container(message, 'e', "sv");
         if (result < 0) return result;
         if (!result) break;
         if (++entries > MPRIS_MAX_DICT) return -E2BIG;
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0 || !bounded_string(key, MPRIS_MAX_TEXT))
             return -EBADMSG;
         char value_type = 0;
         const char *value_contents = NULL;
-        result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+        result = tomoe_message_peek_type(message, &value_type, &value_contents);
         if (result <= 0 || value_type != 'v' || !value_contents)
             return result < 0 ? result : -EBADMSG;
-        result = sd_bus_message_enter_container(message, 'v', value_contents);
+        result = tomoe_message_enter_container(message, 'v', value_contents);
         if (result < 0) return result;
         char basic_type = 0;
         const char *basic_contents = NULL;
-        result = sd_bus_message_peek_type(message, &basic_type, &basic_contents);
+        result = tomoe_message_peek_type(message, &basic_type, &basic_contents);
         if (result <= 0) return result < 0 ? result : -EBADMSG;
         if (!strcmp(key, "PlaybackStatus") && basic_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 ||
                 copy_bus_string(values->status_text,
                                 sizeof(values->status_text), value) < 0)
                 return -EBADMSG;
             values->status = 1;
         } else if (!strcmp(key, "Volume") && basic_type == 'd') {
-            result = sd_bus_message_read(message, "d", &values->volume_value);
+            result = tomoe_message_read(message, "d", &values->volume_value);
             if (result < 0 || !isfinite(values->volume_value))
                 return -EBADMSG;
             values->volume = 1;
         } else if (!strcmp(key, "Position") && basic_type == 'x') {
-            result = sd_bus_message_read(message, "x", &values->position_value);
+            result = tomoe_message_read(message, "x", &values->position_value);
             if (result < 0) return result;
             values->position = 1;
         } else if (!strcmp(key, "Metadata") && basic_type == 'a') {
             result = read_metadata_value(message, values);
             if (result < 0) return result;
         } else {
-            result = sd_bus_message_skip(message, NULL);
+            result = tomoe_message_skip(message, NULL);
             if (result < 0) return result;
         }
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int read_invalidated(sd_bus_message *message,
+static int read_invalidated(tomoe_bus_message *message,
                             struct invalidated_values *invalidated) {
-    int result = sd_bus_message_enter_container(message, 'a', "s");
+    int result = tomoe_message_enter_container(message, 'a', "s");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t count = 0;
     for (;;) {
         const char *property = NULL;
-        result = sd_bus_message_read(message, "s", &property);
+        result = tomoe_message_read(message, "s", &property);
         if (result < 0) return result;
         if (!result) break;
         if (++count > 16U || !bounded_string(property, MPRIS_MAX_TEXT))
@@ -764,7 +742,7 @@ static int read_invalidated(sd_bus_message *message,
         else if (!strcmp(property, "Metadata")) invalidated->metadata = 1;
         else if (!strcmp(property, "Position")) invalidated->position = 1;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
 static void clear_metadata(struct mpris_player *player) {
@@ -784,8 +762,7 @@ static void apply_metadata(struct mpris_player *player,
     player->length = values->length;
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error);
+static int async_reply(tomoe_bus_message *message, void *userdata);
 
 static int queue_call(struct tomoe_mpris *mpris, struct mpris_call *call,
                       const char *destination, const char *interface,
@@ -805,7 +782,7 @@ static int queue_call(struct tomoe_mpris *mpris, struct mpris_call *call,
     mpris->pending_count++;
     va_list ap;
     va_start(ap, types);
-    int result = sd_bus_call_method_asyncv(
+    int result = tomoe_bus_call_asyncv(
         mpris->bus, NULL, destination,
         !strcmp(interface, MPRIS_DBUS) ? MPRIS_DBUS_PATH : MPRIS_PATH,
         interface, member,
@@ -888,33 +865,33 @@ static void touch_player(struct tomoe_mpris *mpris,
     if (!player->activity) player->activity = ++mpris->clock;
 }
 
-static int parse_position_variant(sd_bus_message *message, int64_t *position) {
+static int parse_position_variant(tomoe_bus_message *message, int64_t *position) {
     char type = 0;
     const char *contents = NULL;
-    int result = sd_bus_message_peek_type(message, &type, &contents);
+    int result = tomoe_message_peek_type(message, &type, &contents);
     if (result <= 0 || type != 'v' || !contents)
         return result < 0 ? result : -EBADMSG;
-    result = sd_bus_message_enter_container(message, 'v', contents);
+    result = tomoe_message_enter_container(message, 'v', contents);
     if (result < 0) return result;
     char value_type = 0;
     const char *value_contents = NULL;
-    result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+    result = tomoe_message_peek_type(message, &value_type, &value_contents);
     if (result <= 0 || value_type != 'x')
         return result < 0 ? result : -EBADMSG;
-    result = sd_bus_message_read(message, "x", position);
+    result = tomoe_message_read(message, "x", position);
     if (result < 0) return result;
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int parse_list_names(sd_bus_message *message,
+static int parse_list_names(tomoe_bus_message *message,
                             struct tomoe_mpris *mpris) {
-    int result = sd_bus_message_enter_container(message, 'a', "s");
+    int result = tomoe_message_enter_container(message, 'a', "s");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t count = 0;
     for (;;) {
         const char *name = NULL;
-        result = sd_bus_message_read(message, "s", &name);
+        result = tomoe_message_read(message, "s", &name);
         if (result < 0) return result;
         if (!result) break;
         if (++count > 1024U) return -E2BIG;
@@ -923,7 +900,7 @@ static int parse_list_names(sd_bus_message *message,
         if (!alias) continue;
         (void)queue_get_owner(mpris, alias);
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
 static struct mpris_player *selected_player(struct tomoe_mpris *mpris) {
@@ -985,13 +962,13 @@ static void refresh_public(struct tomoe_mpris *mpris) {
     }
 }
 
-static int message_path_is(sd_bus_message *message, const char *path) {
-    const char *actual = sd_bus_message_get_path(message);
+static int message_path_is(tomoe_bus_message *message, const char *path) {
+    const char *actual = tomoe_message_path(message);
     return actual && !strcmp(actual, path);
 }
 
-static int message_sender_is(sd_bus_message *message, const char *sender) {
-    const char *actual = sd_bus_message_get_sender(message);
+static int message_sender_is(tomoe_bus_message *message, const char *sender) {
+    const char *actual = tomoe_message_sender(message);
     return actual && !strcmp(actual, sender);
 }
 
@@ -1009,17 +986,15 @@ static void retire_alias(struct tomoe_mpris *mpris,
     if (mpris->alias_count) mpris->alias_count--;
 }
 
-static int name_owner_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static int name_owner_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_mpris *mpris = userdata;
-    (void)ret_error;
     if (!message_path_is(message, MPRIS_DBUS_PATH) ||
         !message_sender_is(message, MPRIS_DBUS))
         return 1;
     const char *name = NULL;
     const char *old_owner = NULL;
     const char *new_owner = NULL;
-    int result = sd_bus_message_read(message, "sss", &name, &old_owner,
+    int result = tomoe_message_read(message, "sss", &name, &old_owner,
                                      &new_owner);
     if (result < 0 || !valid_alias_name(name) ||
         (old_owner && *old_owner && !valid_unique_name(old_owner)) ||
@@ -1079,16 +1054,14 @@ static void apply_signal_values(struct tomoe_mpris *mpris,
     if (player->need_position) (void)queue_position(mpris, player);
 }
 
-static int properties_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static int properties_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_mpris *mpris = userdata;
-    (void)ret_error;
     if (!message_path_is(message, MPRIS_PATH)) return 1;
     struct mpris_player *player =
-        find_player_sender(mpris, sd_bus_message_get_sender(message));
+        find_player_sender(mpris, tomoe_message_sender(message));
     if (!player) return 1;
     const char *interface = NULL;
-    int result = sd_bus_message_read(message, "s", &interface);
+    int result = tomoe_message_read(message, "s", &interface);
     if (result < 0 || !interface || strcmp(interface, MPRIS_PLAYER)) return 1;
     struct mpris_values values = {0};
     struct invalidated_values invalidated = {0};
@@ -1107,16 +1080,14 @@ static int properties_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int seeked_signal(sd_bus_message *message, void *userdata,
-                         sd_bus_error *ret_error) {
+static int seeked_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_mpris *mpris = userdata;
-    (void)ret_error;
     if (!message_path_is(message, MPRIS_PATH)) return 1;
     struct mpris_player *player =
-        find_player_sender(mpris, sd_bus_message_get_sender(message));
+        find_player_sender(mpris, tomoe_message_sender(message));
     if (!player) return 1;
     int64_t position = 0;
-    int result = sd_bus_message_read(message, "x", &position);
+    int result = tomoe_message_read(message, "x", &position);
     if (result < 0) return 1;
     player->position_epoch++;
     player->signal_serial++;
@@ -1126,24 +1097,23 @@ static int seeked_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int reply_is_error(sd_bus_message *message) {
-    return !message || sd_bus_message_get_error(message) != NULL;
+static int reply_is_error(tomoe_bus_message *message) {
+    return !message || tomoe_message_error(message) != NULL;
 }
 
 static void handle_get_owner(struct mpris_call *call,
-                             sd_bus_message *message) {
+                             tomoe_bus_message *message) {
     struct tomoe_mpris *mpris = call->mpris;
     struct mpris_alias *alias = find_alias(mpris, call->alias);
     if (!alias || alias->epoch != call->alias_epoch) return;
-    const sd_bus_error *error = message ? sd_bus_message_get_error(message) : NULL;
+    const char *error = message ? tomoe_message_error(message) : NULL;
     if (error) {
-        if (error->name &&
-            !strcmp(error->name, "org.freedesktop.DBus.Error.NameHasNoOwner"))
+        if (!strcmp(error, "org.freedesktop.DBus.Error.NameHasNoOwner"))
             retire_alias(mpris, alias);
         return;
     }
     const char *owner = NULL;
-    if (sd_bus_message_read(message, "s", &owner) < 0 ||
+    if (tomoe_message_read(message, "s", &owner) < 0 ||
         !valid_unique_name(owner))
         return;
     struct mpris_player *player = find_player_owner(mpris, owner);
@@ -1154,7 +1124,7 @@ static void handle_get_owner(struct mpris_call *call,
 }
 
 static void handle_get_all(struct mpris_call *call,
-                           sd_bus_message *message) {
+                           tomoe_bus_message *message) {
     struct tomoe_mpris *mpris = call->mpris;
     if (reply_is_error(message)) return;
     struct mpris_player *player = find_player_owner(mpris, call->owner);
@@ -1191,7 +1161,7 @@ static void handle_get_all(struct mpris_call *call,
 }
 
 static void handle_get_position(struct mpris_call *call,
-                                sd_bus_message *message) {
+                                tomoe_bus_message *message) {
     struct tomoe_mpris *mpris = call->mpris;
     if (reply_is_error(message)) return;
     struct mpris_player *player = find_player_owner(mpris, call->owner);
@@ -1209,16 +1179,14 @@ static void handle_get_position(struct mpris_call *call,
 }
 
 static void handle_list_names(struct mpris_call *call,
-                              sd_bus_message *message) {
+                              tomoe_bus_message *message) {
     if (reply_is_error(message)) return;
     (void)parse_list_names(message, call->mpris);
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error) {
+static int async_reply(tomoe_bus_message *message, void *userdata) {
     struct mpris_call *call = userdata;
     struct tomoe_mpris *mpris = call ? call->mpris : NULL;
-    (void)ret_error;
     if (!call || !mpris) return 1;
     pending_remove(mpris, call);
     switch (call->kind) {
@@ -1260,41 +1228,16 @@ static void close_bus(struct tomoe_mpris *mpris) {
     for (size_t index = 0; index < sizeof(mpris->matches) /
                                       sizeof(mpris->matches[0]); index++) {
         if (mpris->matches[index]) {
-            sd_bus_slot_unref(mpris->matches[index]);
+            tomoe_bus_slot_unref(mpris->matches[index]);
             mpris->matches[index] = NULL;
         }
     }
     if (mpris->bus) {
-        sd_bus_close(mpris->bus);
-        sd_bus_unref(mpris->bus);
+        tomoe_bus_close(mpris->bus);
+        tomoe_bus_unref(mpris->bus);
         mpris->bus = NULL;
     }
     clear_pending(mpris);
-}
-
-static int setup_ready(sd_bus *bus, uint64_t deadline) {
-    for (;;) {
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        uint64_t now = monotonic_usec();
-        if (now >= deadline) return -ETIMEDOUT;
-        int result = sd_bus_process(bus, NULL);
-        if (result < 0 && result != -EAGAIN && result != -EINTR)
-            return result;
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        if (!result) {
-            now = monotonic_usec();
-            if (now >= deadline) return -ETIMEDOUT;
-            result = sd_bus_wait(bus, deadline - now);
-            if (result < 0 && result != -EINTR) return result;
-        }
-    }
-}
-
-static int remaining_timeout(sd_bus *bus, uint64_t deadline) {
-    uint64_t now = monotonic_usec();
-    if (now >= deadline) return -ETIMEDOUT;
-    int result = sd_bus_set_method_call_timeout(bus, deadline - now);
-    return result < 0 ? result : 0;
 }
 
 struct tomoe_mpris *tomoe_mpris_open(int *error) {
@@ -1311,68 +1254,26 @@ struct tomoe_mpris *tomoe_mpris_open(int *error) {
     mpris->last.volume = 1.0;
     mpris->last_valid = 1;
 
-    sd_bus *bus = NULL;
-    int result = sd_bus_new(&bus);
+    struct tomoe_bus *bus = NULL;
+    int result = tomoe_bus_open_session(&bus, MPRIS_SETUP_USEC);
     if (result < 0) goto failed;
-    result = sd_bus_set_bus_client(bus, 1);
-    if (result < 0) goto failed;
-    const char *address = getenv("DBUS_SESSION_BUS_ADDRESS");
-    char address_buffer[MPRIS_MAX_RUNTIME_PATH * 3U + 32U];
-    if (!address || !*address) {
-        const char *runtime = getenv("XDG_RUNTIME_DIR");
-        if (!runtime || !*runtime) {
-            result = -ENOMEDIUM;
-            goto failed;
-        }
-        size_t length = strnlen(runtime, MPRIS_MAX_RUNTIME_PATH + 1U);
-        if (length > MPRIS_MAX_RUNTIME_PATH ||
-            length > SIZE_MAX - 5U) {
-            result = -ENAMETOOLONG;
-            goto failed;
-        }
-        char runtime_bus[MPRIS_MAX_RUNTIME_PATH + 5U];
-        memcpy(runtime_bus, runtime, length);
-        memcpy(runtime_bus + length, "/bus", 5U);
-        result = make_fallback_address(address_buffer, sizeof(address_buffer),
-                                       runtime_bus);
-        if (result < 0) goto failed;
-        address = address_buffer;
-    }
-    result = sd_bus_set_address(bus, address);
-    if (result < 0) goto failed;
-    result = sd_bus_set_method_call_timeout(bus, MPRIS_SETUP_USEC);
-    if (result < 0) goto failed;
-    result = sd_bus_start(bus);
-    if (result < 0) goto failed;
-    uint64_t deadline = deadline_after(monotonic_usec(), MPRIS_SETUP_USEC);
-    result = setup_ready(bus, deadline);
-    if (result < 0) goto failed;
-
     mpris->bus = bus;
     bus = NULL;
-    result = remaining_timeout(mpris->bus, deadline);
-    if (result < 0) goto failed_mpris;
-    result = sd_bus_add_match(mpris->bus, &mpris->matches[0],
+    result = tomoe_bus_add_match(mpris->bus, &mpris->matches[0],
         "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0namespace='org.mpris.MediaPlayer2'",
         name_owner_signal, mpris);
     if (result < 0) goto failed_mpris;
-    result = remaining_timeout(mpris->bus, deadline);
-    if (result < 0) goto failed_mpris;
-    result = sd_bus_add_match(mpris->bus, &mpris->matches[1],
+    result = tomoe_bus_add_match(mpris->bus, &mpris->matches[1],
         "type='signal',path='/org/mpris/MediaPlayer2',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
         properties_signal, mpris);
     if (result < 0) goto failed_mpris;
-    result = remaining_timeout(mpris->bus, deadline);
-    if (result < 0) goto failed_mpris;
-    result = sd_bus_add_match(mpris->bus, &mpris->matches[2],
+    result = tomoe_bus_add_match(mpris->bus, &mpris->matches[2],
         "type='signal',path='/org/mpris/MediaPlayer2',interface='org.mpris.MediaPlayer2.Player',member='Seeked'",
         seeked_signal, mpris);
     if (result < 0) goto failed_mpris;
-    result = remaining_timeout(mpris->bus, deadline);
-    if (result < 0) goto failed_mpris;
     result = queue_list_names(mpris);
     if (result < 0) goto failed_mpris;
-    result = sd_bus_set_method_call_timeout(mpris->bus, MPRIS_REQUEST_USEC);
+    result = tomoe_bus_set_timeout(mpris->bus, MPRIS_REQUEST_USEC);
     if (result < 0) goto failed_mpris;
     *error = 0;
     return mpris;
@@ -1382,8 +1283,8 @@ failed_mpris:
     goto failed_allocated;
 failed:
     if (bus) {
-        sd_bus_close(bus);
-        sd_bus_unref(bus);
+        tomoe_bus_close(bus);
+        tomoe_bus_unref(bus);
     }
 failed_allocated:
     free(mpris);
@@ -1405,7 +1306,7 @@ int tomoe_mpris_poll(struct tomoe_mpris *mpris) {
     while (mpris->bus && processed < MPRIS_POLL_MESSAGES) {
         uint64_t now = monotonic_usec();
         if (now >= start && now - start >= MPRIS_POLL_BUDGET_USEC) break;
-        int result = sd_bus_process(mpris->bus, NULL);
+        int result = tomoe_bus_process(mpris->bus);
         if (result < 0) {
             if (result == -EAGAIN || result == -EINTR) break;
             mark_failed(mpris, result);
@@ -1428,12 +1329,12 @@ int tomoe_mpris_poll(struct tomoe_mpris *mpris) {
 }
 
 int tomoe_mpris_fd(const struct tomoe_mpris *mpris) {
-    return mpris && mpris->bus ? sd_bus_get_fd(mpris->bus) : -1;
+    return mpris && mpris->bus ? tomoe_bus_fd(mpris->bus) : -1;
 }
 
 unsigned tomoe_mpris_mask(const struct tomoe_mpris *mpris) {
     if (!mpris || !mpris->bus) return 1;
-    int events = sd_bus_get_events(mpris->bus);
+    int events = tomoe_bus_events(mpris->bus);
     return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
 }
 
@@ -1453,9 +1354,9 @@ int tomoe_mpris_timeout(const struct tomoe_mpris *mpris, int max_ms) {
 int tomoe_mpris_control(struct tomoe_mpris *mpris, const char *method) {
     struct mpris_player *player = mpris && mpris->bus ? selected_player(mpris) : NULL;
     if (!player) return 0;
-    if (sd_bus_call_method_async(mpris->bus, NULL, player->owner, MPRIS_PATH, MPRIS_PLAYER,
+    if (tomoe_bus_call_async(mpris->bus, NULL, player->owner, MPRIS_PATH, MPRIS_PLAYER,
             method, NULL, NULL, "") < 0) return -1;
-    return sd_bus_flush(mpris->bus) < 0 ? -1 : 1;
+    return tomoe_bus_flush(mpris->bus) < 0 ? -1 : 1;
 }
 
 void tomoe_mpris_close(struct tomoe_mpris *mpris) {

@@ -18,7 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <systemd/sd-bus.h>
+#include "bus.h"
 
 #define BATTERY_UPOWER "org.freedesktop.UPower"
 #define BATTERY_PATH "/org/freedesktop/UPower/devices/DisplayDevice"
@@ -64,7 +64,7 @@ struct battery_call {
     enum battery_call_kind kind;
     struct tomoe_battery *battery;
     struct battery_call *next;
-    sd_bus_slot *slot;
+    tomoe_bus_slot *slot;
     uint64_t owner_epoch;
     uint64_t present_epoch;
     uint64_t percentage_epoch;
@@ -80,8 +80,8 @@ struct text_buffer {
 };
 
 struct tomoe_battery {
-    sd_bus *bus;
-    sd_bus_slot *matches[2];
+    struct tomoe_bus *bus;
+    tomoe_bus_slot *matches[2];
     struct battery_call *calls;
     size_t pending_count;
     char sysfs_root[BATTERY_MAX_ROOT + 1U];
@@ -435,70 +435,70 @@ static void start_sysfs(struct tomoe_battery *battery) {
             deadline_after(monotonic_usec(), BATTERY_SYSFS_INTERVAL_USEC);
 }
 
-static int read_property_dict(sd_bus_message *message,
+static int read_property_dict(tomoe_bus_message *message,
                               struct battery_values *values) {
-    int result = sd_bus_message_enter_container(message, 'a', "{sv}");
+    int result = tomoe_message_enter_container(message, 'a', "{sv}");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t entries = 0;
     for (;;) {
-        result = sd_bus_message_enter_container(message, 'e', "sv");
+        result = tomoe_message_enter_container(message, 'e', "sv");
         if (result < 0) return result;
         if (!result) break;
         if (++entries > BATTERY_MAX_DICT) return -E2BIG;
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0 || !bounded_string(key, BATTERY_MAX_TEXT))
             return -EBADMSG;
         char type = 0;
         const char *contents = NULL;
-        result = sd_bus_message_peek_type(message, &type, &contents);
+        result = tomoe_message_peek_type(message, &type, &contents);
         if (result <= 0 || type != 'v' || !contents)
             return result < 0 ? result : -EBADMSG;
-        result = sd_bus_message_enter_container(message, 'v', contents);
+        result = tomoe_message_enter_container(message, 'v', contents);
         if (result < 0) return result;
         char value_type = 0;
         const char *value_contents = NULL;
-        result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+        result = tomoe_message_peek_type(message, &value_type, &value_contents);
         if (result <= 0) return result < 0 ? result : -EBADMSG;
         if (!strcmp(key, "IsPresent")) {
             if (value_type != 'b') return -EBADMSG;
-            result = sd_bus_message_read(message, "b", &values->present_value);
+            result = tomoe_message_read(message, "b", &values->present_value);
             if (result < 0) return result;
             values->present = 1;
         } else if (!strcmp(key, "Percentage")) {
             if (value_type != 'd') return -EBADMSG;
-            result = sd_bus_message_read(message, "d",
+            result = tomoe_message_read(message, "d",
                                          &values->percentage_value);
             if (result < 0 || !isfinite(values->percentage_value))
                 return -EBADMSG;
             values->percentage = 1;
         } else if (!strcmp(key, "State")) {
             if (value_type != 'u') return -EBADMSG;
-            result = sd_bus_message_read(message, "u", &values->state_value);
+            result = tomoe_message_read(message, "u", &values->state_value);
             if (result < 0) return result;
             values->state = 1;
         } else {
-            result = sd_bus_message_skip(message, NULL);
+            result = tomoe_message_skip(message, NULL);
             if (result < 0) return result;
         }
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
-        result = sd_bus_message_exit_container(message);
+        result = tomoe_message_exit_container(message);
         if (result < 0) return result;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int read_invalidated(sd_bus_message *message,
+static int read_invalidated(tomoe_bus_message *message,
                             struct battery_invalidated *invalidated) {
-    int result = sd_bus_message_enter_container(message, 'a', "s");
+    int result = tomoe_message_enter_container(message, 'a', "s");
     if (result < 0) return result;
     if (!result) return -EBADMSG;
     size_t count = 0;
     for (;;) {
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0) return result;
         if (!result) break;
         if (++count > BATTERY_MAX_DICT ||
@@ -508,7 +508,7 @@ static int read_invalidated(sd_bus_message *message,
         else if (!strcmp(key, "Percentage")) invalidated->percentage = 1;
         else if (!strcmp(key, "State")) invalidated->state = 1;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
 static void clear_upower(struct tomoe_battery *battery) {
@@ -559,8 +559,7 @@ static void apply_signal_values(struct tomoe_battery *battery,
     refresh_public(battery);
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error);
+static int async_reply(tomoe_bus_message *message, void *userdata);
 
 static void pending_remove(struct tomoe_battery *battery,
                            struct battery_call *call) {
@@ -577,7 +576,7 @@ static void clear_pending(struct tomoe_battery *battery) {
     while (call) {
         struct battery_call *next = call->next;
         if (call->slot) {
-            sd_bus_slot_unref(call->slot);
+            tomoe_bus_slot_unref(call->slot);
             call->slot = NULL;
         }
         free(call);
@@ -597,7 +596,7 @@ static void cancel_stale_calls(struct tomoe_battery *battery) {
         }
         *cursor = call->next;
         if (battery->pending_count) battery->pending_count--;
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
     }
 }
@@ -625,14 +624,14 @@ static int queue_call(struct tomoe_battery *battery, struct battery_call *call,
     battery->pending_count++;
     va_list ap;
     va_start(ap, types);
-    int result = sd_bus_call_method_asyncv(
+    int result = tomoe_bus_call_asyncv(
         battery->bus, &call->slot, destination,
         !strcmp(interface, BATTERY_DBUS) ? BATTERY_DBUS_PATH : BATTERY_PATH,
         interface, member, async_reply, call, types, ap);
     va_end(ap);
     if (result < 0) {
         pending_remove(battery, call);
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
         return result;
     }
@@ -674,18 +673,18 @@ static int queue_get_all(struct tomoe_battery *battery) {
     return result;
 }
 
-static int reply_is_error(sd_bus_message *message) {
-    return !message || sd_bus_message_get_error(message) != NULL;
+static int reply_is_error(tomoe_bus_message *message) {
+    return !message || tomoe_message_error(message) != NULL;
 }
 
-static int message_path_is(sd_bus_message *message, const char *path) {
-    const char *actual = sd_bus_message_get_path(message);
+static int message_path_is(tomoe_bus_message *message, const char *path) {
+    const char *actual = tomoe_message_path(message);
     return actual && !strcmp(actual, path);
 }
 
 static int message_sender_matches(struct tomoe_battery *battery,
-                                  sd_bus_message *message) {
-    const char *sender = sd_bus_message_get_sender(message);
+                                  tomoe_bus_message *message) {
+    const char *sender = tomoe_message_sender(message);
     if (!sender) return 0;
     if (!strcmp(sender, BATTERY_UPOWER)) return battery->owner[0] != '\0';
     return battery->owner[0] && valid_unique_name(sender) &&
@@ -698,17 +697,17 @@ static void fallback_to_sysfs(struct tomoe_battery *battery) {
 }
 
 static void handle_owner_reply(struct battery_call *call,
-                               sd_bus_message *message) {
+                               tomoe_bus_message *message) {
     struct tomoe_battery *battery = call->battery;
     if (call->owner_epoch != battery->owner_epoch) return;
-    const sd_bus_error *error = message ? sd_bus_message_get_error(message) : NULL;
+    const char *error = message ? tomoe_message_error(message) : NULL;
     if (error) {
         battery->need_get_all = 1;
         (void)queue_get_all(battery);
         return;
     }
     const char *owner = NULL;
-    if (sd_bus_message_read(message, "s", &owner) < 0 ||
+    if (tomoe_message_read(message, "s", &owner) < 0 ||
         !valid_unique_name(owner))
         return;
     if (battery->owner[0] && strcmp(battery->owner, owner)) return;
@@ -723,14 +722,14 @@ static void handle_owner_reply(struct battery_call *call,
 }
 
 static void handle_get_all_reply(struct battery_call *call,
-                                 sd_bus_message *message) {
+                                 tomoe_bus_message *message) {
     struct tomoe_battery *battery = call->battery;
     if (call->owner_epoch != battery->owner_epoch) return;
     if (reply_is_error(message)) {
         if (!battery->upower_authoritative) start_sysfs(battery);
         return;
     }
-    const char *sender = sd_bus_message_get_sender(message);
+    const char *sender = tomoe_message_sender(message);
     if (!sender || !valid_unique_name(sender)) return;
     if (battery->owner[0] && strcmp(battery->owner, sender)) return;
     if (!battery->owner[0]) {
@@ -766,17 +765,15 @@ static void handle_get_all_reply(struct battery_call *call,
     if (battery->need_get_all) (void)queue_get_all(battery);
 }
 
-static int owner_changed_signal(sd_bus_message *message, void *userdata,
-                                sd_bus_error *ret_error) {
+static int owner_changed_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_battery *battery = userdata;
-    (void)ret_error;
     if (!message_path_is(message, BATTERY_DBUS_PATH)) return 1;
-    const char *sender = sd_bus_message_get_sender(message);
+    const char *sender = tomoe_message_sender(message);
     if (!sender || strcmp(sender, BATTERY_DBUS)) return 1;
     const char *name = NULL;
     const char *old_owner = NULL;
     const char *new_owner = NULL;
-    int result = sd_bus_message_read(message, "sss", &name, &old_owner,
+    int result = tomoe_message_read(message, "sss", &name, &old_owner,
                                      &new_owner);
     if (result < 0 || !name || strcmp(name, BATTERY_UPOWER) ||
         (old_owner && *old_owner && !valid_unique_name(old_owner)) ||
@@ -801,15 +798,13 @@ static int owner_changed_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int properties_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static int properties_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_battery *battery = userdata;
-    (void)ret_error;
     if (!message_path_is(message, BATTERY_PATH) ||
         !message_sender_matches(battery, message))
         return 1;
     const char *interface = NULL;
-    int result = sd_bus_message_read(message, "s", &interface);
+    int result = tomoe_message_read(message, "s", &interface);
     if (result < 0 || !interface || strcmp(interface, BATTERY_IFACE))
         return 1;
     struct battery_values values = {0};
@@ -823,20 +818,18 @@ static int properties_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error) {
+static int async_reply(tomoe_bus_message *message, void *userdata) {
     struct battery_call *call = userdata;
-    (void)ret_error;
     if (!call || !call->battery) return 1;
     struct tomoe_battery *battery = call->battery;
-    sd_bus_slot *slot = call->slot;
+    tomoe_bus_slot *slot = call->slot;
     call->slot = NULL;
     pending_remove(battery, call);
     if (call->kind == BATTERY_CALL_OWNER)
         handle_owner_reply(call, message);
     else
         handle_get_all_reply(call, message);
-    if (slot) sd_bus_slot_unref(slot);
+    if (slot) tomoe_bus_slot_unref(slot);
     free(call);
     return 1;
 }
@@ -846,40 +839,16 @@ static void close_bus(struct tomoe_battery *battery) {
     for (size_t index = 0; index < sizeof(battery->matches) /
                                       sizeof(battery->matches[0]); index++) {
         if (battery->matches[index]) {
-            sd_bus_slot_unref(battery->matches[index]);
+            tomoe_bus_slot_unref(battery->matches[index]);
             battery->matches[index] = NULL;
         }
     }
     clear_pending(battery);
     if (battery->bus) {
-        sd_bus_close(battery->bus);
-        sd_bus_unref(battery->bus);
+        tomoe_bus_close(battery->bus);
+        tomoe_bus_unref(battery->bus);
         battery->bus = NULL;
     }
-}
-
-static int setup_ready(sd_bus *bus, uint64_t deadline) {
-    for (;;) {
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        uint64_t now = monotonic_usec();
-        if (now >= deadline) return -ETIMEDOUT;
-        int result = sd_bus_process(bus, NULL);
-        if (result < 0 && result != -EAGAIN && result != -EINTR)
-            return result;
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        if (!result) {
-            now = monotonic_usec();
-            if (now >= deadline) return -ETIMEDOUT;
-            result = sd_bus_wait(bus, deadline - now);
-            if (result < 0 && result != -EINTR) return result;
-        }
-    }
-}
-
-static int set_remaining_timeout(sd_bus *bus, uint64_t deadline) {
-    uint64_t now = monotonic_usec();
-    if (now >= deadline) return -ETIMEDOUT;
-    return sd_bus_set_method_call_timeout(bus, deadline - now);
 }
 
 static void disconnect_bus(struct tomoe_battery *battery) {
@@ -907,43 +876,24 @@ struct tomoe_battery *tomoe_battery_open(const char *sysfs_root, int *error) {
     public_default(battery);
     battery->revision = 1;
 
-    sd_bus *bus = NULL;
-    int result = sd_bus_new(&bus);
-    if (result < 0) goto fallback;
-    result = sd_bus_set_bus_client(bus, 1);
-    if (result < 0) goto fallback_bus;
-    const char *address = getenv("DBUS_SYSTEM_BUS_ADDRESS");
-    if (!address || !*address) address = BATTERY_SYSTEM_ADDRESS;
-    result = sd_bus_set_address(bus, address);
-    if (result < 0) goto fallback_bus;
-    result = sd_bus_set_method_call_timeout(bus, BATTERY_SETUP_USEC);
-    if (result < 0) goto fallback_bus;
-    result = sd_bus_start(bus);
-    if (result < 0) goto fallback_bus;
-    uint64_t deadline = deadline_after(monotonic_usec(), BATTERY_SETUP_USEC);
-    result = setup_ready(bus, deadline);
+    struct tomoe_bus *bus = NULL;
+    int result = tomoe_bus_open_system(&bus, BATTERY_SETUP_USEC);
     if (result < 0) goto fallback_bus;
     battery->bus = bus;
     bus = NULL;
-    result = set_remaining_timeout(battery->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_add_match(
+    result = tomoe_bus_add_match(
         battery->bus, &battery->matches[0],
         "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.UPower'",
         owner_changed_signal, battery);
     if (result < 0) goto fallback_bus_handle;
-    result = set_remaining_timeout(battery->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_add_match(
+    result = tomoe_bus_add_match(
         battery->bus, &battery->matches[1],
         "type='signal',sender='org.freedesktop.UPower',path='/org/freedesktop/UPower/devices/DisplayDevice',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
         properties_signal, battery);
     if (result < 0) goto fallback_bus_handle;
-    result = set_remaining_timeout(battery->bus, deadline);
-    if (result < 0) goto fallback_bus_handle;
     result = queue_owner(battery);
     if (result < 0) goto fallback_bus_handle;
-    result = sd_bus_set_method_call_timeout(battery->bus, BATTERY_REQUEST_USEC);
+    result = tomoe_bus_set_timeout(battery->bus, BATTERY_REQUEST_USEC);
     if (result < 0) goto fallback_bus_handle;
     *error = 0;
     return battery;
@@ -954,8 +904,8 @@ fallback_bus_handle:
     goto fallback;
 fallback_bus:
     if (bus) {
-        sd_bus_close(bus);
-        sd_bus_unref(bus);
+        tomoe_bus_close(bus);
+        tomoe_bus_unref(bus);
         bus = NULL;
     }
 fallback:
@@ -980,7 +930,7 @@ int tomoe_battery_poll(struct tomoe_battery *battery) {
     while (battery->bus && processed < BATTERY_POLL_MESSAGES) {
         uint64_t now = monotonic_usec();
         if (now >= start && now - start >= BATTERY_POLL_BUDGET_USEC) break;
-        int result = sd_bus_process(battery->bus, NULL);
+        int result = tomoe_bus_process(battery->bus);
         if (result < 0) {
             if (result == -EAGAIN || result == -EINTR) break;
             disconnect_bus(battery);
@@ -1004,12 +954,12 @@ int tomoe_battery_poll(struct tomoe_battery *battery) {
 }
 
 int tomoe_battery_fd(const struct tomoe_battery *battery) {
-    return battery && battery->bus ? sd_bus_get_fd(battery->bus) : -1;
+    return battery && battery->bus ? tomoe_bus_fd(battery->bus) : -1;
 }
 
 unsigned tomoe_battery_mask(const struct tomoe_battery *battery) {
     if (!battery || !battery->bus) return 1;
-    int events = sd_bus_get_events(battery->bus);
+    int events = tomoe_bus_events(battery->bus);
     return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
 }
 

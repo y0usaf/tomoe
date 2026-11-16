@@ -151,7 +151,6 @@
             pango
             pkgs.libjpeg
             (resvg pkgs)
-            pkgs.systemdLibs
             (pipewire pkgs)
           ];
           strictDeps = true;

@@ -13,7 +13,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <systemd/sd-bus.h>
+#include "bus.h"
 
 #define TRAY_WATCHER_NAME "org.kde.StatusNotifierWatcher"
 #define TRAY_WATCHER_PATH "/StatusNotifierWatcher"
@@ -35,7 +35,6 @@
 #define TRAY_REQUEST_USEC 2000000ULL
 #define TRAY_POLL_MESSAGES 64U
 #define TRAY_POLL_BUDGET_USEC 4000ULL
-#define TRAY_MAX_RUNTIME_PATH 4096U
 
 struct text_buffer {
     char *data;
@@ -77,7 +76,7 @@ struct tray_call {
     enum tray_call_kind kind;
     struct tomoe_tray *tray;
     struct tray_call *next;
-    sd_bus_slot *slot;
+    tomoe_bus_slot *slot;
     struct tray_item *item;
     uint64_t incarnation;
     uint64_t signal_serial;
@@ -110,9 +109,9 @@ struct invalidated_fields {
 };
 
 struct tomoe_tray {
-    sd_bus *bus;
-    sd_bus_slot *object_slot;
-    sd_bus_slot *matches[3];
+    struct tomoe_bus *bus;
+    tomoe_bus_slot *object_slot;
+    tomoe_bus_slot *matches[3];
     struct tray_item items[TRAY_MAX_ITEMS];
     size_t order[TRAY_MAX_ITEMS];
     size_t count;
@@ -151,7 +150,7 @@ static int bounded_string(const char *value, size_t limit) {
 
 static int valid_bus_name(const char *name) {
     return bounded_string(name, TRAY_MAX_NAME) &&
-           sd_bus_service_name_is_valid(name) > 0;
+           tomoe_bus_name_is_valid(name) > 0;
 }
 
 static int valid_unique_name(const char *name) {
@@ -160,7 +159,7 @@ static int valid_unique_name(const char *name) {
 
 static int valid_object_path(const char *path) {
     return bounded_string(path, TRAY_MAX_TEXT) &&
-           sd_bus_object_path_is_valid(path) > 0;
+           tomoe_bus_path_is_valid(path) > 0;
 }
 
 static void revision_bump(struct tomoe_tray *tray) {
@@ -241,78 +240,78 @@ static int copy_bus_text(char *destination, size_t capacity, const char *source)
     return 0;
 }
 
-static int read_item_dict(sd_bus_message *message, struct parsed_fields *fields) {
+static int read_item_dict(tomoe_bus_message *message, struct parsed_fields *fields) {
     memset(fields, 0, sizeof(*fields));
-    int result = sd_bus_message_enter_container(message, 'a', "{sv}");
+    int result = tomoe_message_enter_container(message, 'a', "{sv}");
     if (result <= 0) return result < 0 ? result : -EBADMSG;
     size_t entries = 0;
     for (;;) {
-        result = sd_bus_message_enter_container(message, 'e', "sv");
+        result = tomoe_message_enter_container(message, 'e', "sv");
         if (result < 0) return result;
         if (!result) break;
         if (++entries > TRAY_MAX_DICT) return -E2BIG;
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0 || !bounded_string(key, TRAY_MAX_TEXT)) return -EBADMSG;
         char variant_type = 0;
         const char *variant_contents = NULL;
-        result = sd_bus_message_peek_type(message, &variant_type, &variant_contents);
+        result = tomoe_message_peek_type(message, &variant_type, &variant_contents);
         if (result <= 0 || variant_type != 'v' || !variant_contents)
             return result < 0 ? result : -EBADMSG;
-        result = sd_bus_message_enter_container(message, 'v', variant_contents);
+        result = tomoe_message_enter_container(message, 'v', variant_contents);
         if (result < 0) return result;
         char value_type = 0;
         const char *value_contents = NULL;
-        result = sd_bus_message_peek_type(message, &value_type, &value_contents);
+        result = tomoe_message_peek_type(message, &value_type, &value_contents);
         if (result <= 0) return result < 0 ? result : -EBADMSG;
         if (!strcmp(key, "Id") && value_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_text(fields->id_value,
                                            sizeof(fields->id_value), value) < 0)
                 return -EBADMSG;
             fields->id = 1;
         } else if (!strcmp(key, "Title") && value_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_text(fields->title_value,
                                            sizeof(fields->title_value), value) < 0)
                 return -EBADMSG;
             fields->title = 1;
         } else if (!strcmp(key, "Status") && value_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_text(fields->status_value,
                                            sizeof(fields->status_value), value) < 0)
                 return -EBADMSG;
             fields->status = 1;
         } else if (!strcmp(key, "IconName") && value_type == 's') {
             const char *value = NULL;
-            result = sd_bus_message_read(message, "s", &value);
+            result = tomoe_message_read(message, "s", &value);
             if (result < 0 || copy_bus_text(fields->icon_name_value,
                                            sizeof(fields->icon_name_value), value) < 0)
                 return -EBADMSG;
             fields->icon_name = 1;
         } else {
-            result = sd_bus_message_skip(message, NULL);
+            result = tomoe_message_skip(message, NULL);
             if (result < 0) return result;
         }
-        if (sd_bus_message_exit_container(message) < 0 ||
-            sd_bus_message_exit_container(message) < 0)
+        if (tomoe_message_exit_container(message) < 0 ||
+            tomoe_message_exit_container(message) < 0)
             return -EBADMSG;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
-static int read_invalidated(sd_bus_message *message,
+static int read_invalidated(tomoe_bus_message *message,
                             struct invalidated_fields *fields) {
     memset(fields, 0, sizeof(*fields));
-    int result = sd_bus_message_enter_container(message, 'a', "s");
+    int result = tomoe_message_enter_container(message, 'a', "s");
     if (result <= 0) return result < 0 ? result : -EBADMSG;
     size_t count = 0;
     for (;;) {
         const char *key = NULL;
-        result = sd_bus_message_read(message, "s", &key);
+        result = tomoe_message_read(message, "s", &key);
         if (result < 0) return result;
         if (!result) break;
         if (++count > TRAY_MAX_INVALIDATED || !bounded_string(key, TRAY_MAX_TEXT))
@@ -322,7 +321,7 @@ static int read_invalidated(sd_bus_message *message,
         else if (!strcmp(key, "Status")) fields->status = 1;
         else if (!strcmp(key, "IconName")) fields->icon_name = 1;
     }
-    return sd_bus_message_exit_container(message);
+    return tomoe_message_exit_container(message);
 }
 
 static struct tray_item *find_item(const struct tomoe_tray *tray,
@@ -341,11 +340,11 @@ static int item_matches_signal(const struct tray_item *item,
            !strcmp(item->path, path);
 }
 
-static int reply_error(struct tomoe_tray *tray, sd_bus_message *message,
+static int reply_error(struct tomoe_tray *tray, tomoe_bus_message *message,
                        const char *name, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
-    int result = sd_bus_reply_method_errorfv(message, name, format, ap);
+    int result = tomoe_reply_method_errorv(message, name, format, ap);
     va_end(ap);
     if (result < 0) {
         tray->failed = 1;
@@ -355,22 +354,22 @@ static int reply_error(struct tomoe_tray *tray, sd_bus_message *message,
     return 1;
 }
 
-static int reply_invalid(struct tomoe_tray *tray, sd_bus_message *message,
+static int reply_invalid(struct tomoe_tray *tray, tomoe_bus_message *message,
                          const char *what) {
     return reply_error(tray, message,
                        "org.kde.StatusNotifierWatcher.Error.InvalidArgs",
                        "%s", what);
 }
 
-static int reply_failed(struct tomoe_tray *tray, sd_bus_message *message,
+static int reply_failed(struct tomoe_tray *tray, tomoe_bus_message *message,
                         const char *what) {
     return reply_error(tray, message,
                        "org.kde.StatusNotifierWatcher.Error.Failed",
                        "%s", what);
 }
 
-static int reply_empty(struct tomoe_tray *tray, sd_bus_message *message) {
-    int result = sd_bus_reply_method_return(message, "");
+static int reply_empty(struct tomoe_tray *tray, tomoe_bus_message *message) {
+    int result = tomoe_reply_method_return(message, "");
     if (result < 0) {
         tray->failed = 1;
         tray->failure = positive_error(result);
@@ -396,7 +395,7 @@ static void cancel_item_calls(struct tomoe_tray *tray,
         if (call->item == item) {
             pending_remove(tray, call);
             if (call->slot) {
-                sd_bus_slot_unref(call->slot);
+                tomoe_bus_slot_unref(call->slot);
                 call->slot = NULL;
             }
             free(call);
@@ -441,11 +440,11 @@ static int emit_item_signal(struct tomoe_tray *tray, const char *member,
     char registration[TRAY_MAX_NAME + TRAY_MAX_TEXT + 1U];
     int length = snprintf(registration, sizeof(registration), "%s%s", service, path);
     if (length < 0 || (size_t)length >= sizeof(registration)) return -E2BIG;
-    int result = sd_bus_emit_signal(tray->bus, TRAY_WATCHER_PATH,
+    int result = tomoe_bus_emit_signal(tray->bus, TRAY_WATCHER_PATH,
                                     TRAY_WATCHER_IFACE, member, "s",
                                     registration);
     if (result >= 0)
-        result = sd_bus_emit_properties_changed(tray->bus, TRAY_WATCHER_PATH,
+        result = tomoe_bus_emit_properties_changed(tray->bus, TRAY_WATCHER_PATH,
                     TRAY_WATCHER_IFACE, "RegisteredStatusNotifierItems", NULL);
     if (result < 0) {
         tray->failed = 1;
@@ -524,8 +523,7 @@ static int pending_duplicate(const struct tomoe_tray *tray,
     return 0;
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error);
+static int async_reply(tomoe_bus_message *message, void *userdata);
 
 static int queue_call(struct tomoe_tray *tray, struct tray_call *call,
                       const char *destination, const char *path,
@@ -544,13 +542,13 @@ static int queue_call(struct tomoe_tray *tray, struct tray_call *call,
     tray->pending_count++;
     va_list ap;
     va_start(ap, types);
-    int result = sd_bus_call_method_asyncv(
+    int result = tomoe_bus_call_asyncv(
         tray->bus, &call->slot, destination, path, interface, member,
         async_reply, call, types, ap);
     va_end(ap);
     if (result < 0) {
         pending_remove(tray, call);
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
         return result;
     }
@@ -621,32 +619,32 @@ static void close_bus(struct tomoe_tray *tray) {
     if (!tray) return;
     for (size_t index = 0; index < sizeof(tray->matches) / sizeof(tray->matches[0]); index++) {
         if (tray->matches[index]) {
-            sd_bus_slot_unref(tray->matches[index]);
+            tomoe_bus_slot_unref(tray->matches[index]);
             tray->matches[index] = NULL;
         }
     }
     if (tray->object_slot) {
-        sd_bus_slot_unref(tray->object_slot);
+        tomoe_bus_slot_unref(tray->object_slot);
         tray->object_slot = NULL;
     }
     struct tray_call *call = tray->calls;
     while (call) {
         struct tray_call *next = call->next;
-        if (call->slot) sd_bus_slot_unref(call->slot);
+        if (call->slot) tomoe_bus_slot_unref(call->slot);
         free(call);
         call = next;
     }
     tray->calls = NULL;
     tray->pending_count = 0;
     if (tray->bus) {
-        sd_bus_close(tray->bus);
-        sd_bus_unref(tray->bus);
+        tomoe_bus_close(tray->bus);
+        tomoe_bus_unref(tray->bus);
         tray->bus = NULL;
     }
 }
 
-static int reply_is_error(sd_bus_message *message) {
-    return sd_bus_message_is_method_error(message, NULL) > 0;
+static int reply_is_error(tomoe_bus_message *message) {
+    return tomoe_message_error(message) != NULL;
 }
 
 static void apply_fields(struct tomoe_tray *tray, struct tray_item *item,
@@ -717,7 +715,7 @@ static void apply_fields(struct tomoe_tray *tray, struct tray_item *item,
     if (changed) revision_bump(tray);
 }
 
-static void handle_owner_reply(struct tray_call *call, sd_bus_message *message) {
+static void handle_owner_reply(struct tray_call *call, tomoe_bus_message *message) {
     struct tomoe_tray *tray = call->tray;
     struct tray_item *item = call->item;
     if (!item || !item->used || item->incarnation != call->incarnation ||
@@ -727,7 +725,7 @@ static void handle_owner_reply(struct tray_call *call, sd_bus_message *message) 
         return;
     }
     const char *owner = NULL;
-    if (sd_bus_message_read(message, "s", &owner) < 0 ||
+    if (tomoe_message_read(message, "s", &owner) < 0 ||
         !valid_unique_name(owner)) {
         remove_item(tray, item, 1);
         return;
@@ -736,7 +734,7 @@ static void handle_owner_reply(struct tray_call *call, sd_bus_message *message) 
 }
 
 static void handle_get_all_reply(struct tray_call *call,
-                                 sd_bus_message *message) {
+                                 tomoe_bus_message *message) {
     struct tomoe_tray *tray = call->tray;
     struct tray_item *item = call->item;
     if (!item || !item->used || item->incarnation != call->incarnation ||
@@ -752,37 +750,32 @@ static void handle_get_all_reply(struct tray_call *call,
     apply_fields(tray, item, &fields, NULL, call);
 }
 
-static int async_reply(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error) {
+static int async_reply(tomoe_bus_message *message, void *userdata) {
     struct tray_call *call = userdata;
     if (!call || !call->tray) return 1;
     struct tomoe_tray *tray = call->tray;
     pending_remove(tray, call);
-    (void)ret_error;
     if (call->kind == TRAY_CALL_OWNER)
         handle_owner_reply(call, message);
     else
         handle_get_all_reply(call, message);
     if (call->slot) {
-        sd_bus_slot_unref(call->slot);
+        tomoe_bus_slot_unref(call->slot);
         call->slot = NULL;
     }
     free(call);
     return 1;
 }
 
-static int watcher_properties(sd_bus *bus, const char *path,
-                              const char *interface, const char *property,
-                              sd_bus_message *reply, void *userdata,
-                              sd_bus_error *ret_error) {
+static int watcher_properties(tomoe_bus_message *reply, const char *property,
+                              void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)bus; (void)path; (void)interface; (void)ret_error;
     if (!strcmp(property, "IsStatusNotifierHostRegistered"))
-        return sd_bus_message_append(reply, "b", 1);
+        return tomoe_message_append(reply, "b", 1);
     if (!strcmp(property, "ProtocolVersion"))
-        return sd_bus_message_append(reply, "i", 0);
+        return tomoe_message_append(reply, "i", 0);
     if (!strcmp(property, "RegisteredStatusNotifierItems")) {
-        int result = sd_bus_message_open_container(reply, 'a', "s");
+        int result = tomoe_message_open_container(reply, 'a', "s");
         if (result < 0) return result;
         for (size_t position = 0; position < tray->count; position++) {
             const struct tray_item *item = &tray->items[tray->order[position]];
@@ -791,24 +784,22 @@ static int watcher_properties(sd_bus *bus, const char *path,
             int length = snprintf(registration, sizeof(registration), "%s%s",
                                   item->service, item->path);
             if (length < 0 || (size_t)length >= sizeof(registration)) return -E2BIG;
-            result = sd_bus_message_append(reply, "s", registration);
+            result = tomoe_message_append(reply, "s", registration);
             if (result < 0) return result;
         }
-        return sd_bus_message_close_container(reply);
+        return tomoe_message_close_container(reply);
     }
     return -ENOENT;
 }
 
-static int method_register_host(sd_bus_message *message, void *userdata,
-                                sd_bus_error *ret_error) {
+static int method_register_host(tomoe_bus_message *message, void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)ret_error;
     const char *host = NULL;
-    if (sd_bus_message_read(message, "s", &host) < 0 ||
-        sd_bus_message_at_end(message, 1) <= 0)
+    if (tomoe_message_read(message, "s", &host) < 0 ||
+        tomoe_message_at_end(message, 1) <= 0)
         return reply_invalid(tray, message, "invalid host registration");
     (void)host;
-    int result = sd_bus_emit_signal(tray->bus, TRAY_WATCHER_PATH,
+    int result = tomoe_bus_emit_signal(tray->bus, TRAY_WATCHER_PATH,
                                     TRAY_WATCHER_IFACE,
                                     "StatusNotifierHostRegistered", "");
     if (result < 0) {
@@ -851,15 +842,13 @@ static int parse_registration(const char *argument, const char *sender,
     return 0;
 }
 
-static int method_register_item(sd_bus_message *message, void *userdata,
-                                sd_bus_error *ret_error) {
+static int method_register_item(tomoe_bus_message *message, void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)ret_error;
     const char *argument = NULL;
-    if (sd_bus_message_read(message, "s", &argument) < 0 ||
-        sd_bus_message_at_end(message, 1) <= 0)
+    if (tomoe_message_read(message, "s", &argument) < 0 ||
+        tomoe_message_at_end(message, 1) <= 0)
         return reply_invalid(tray, message, "invalid item registration");
-    const char *sender = sd_bus_message_get_sender(message);
+    const char *sender = tomoe_message_sender(message);
     char service[TRAY_MAX_NAME + 1U];
     char path[TRAY_MAX_TEXT + 1U];
     if (parse_registration(argument, sender, service, sizeof(service), path,
@@ -892,35 +881,34 @@ static int method_register_item(sd_bus_message *message, void *userdata,
     return reply_empty(tray, message);
 }
 
-static const sd_bus_vtable tray_vtable[] = {
-    SD_BUS_VTABLE_START(0),
-    SD_BUS_METHOD("RegisterStatusNotifierItem", "s", "", method_register_item, 0),
-    SD_BUS_METHOD("RegisterStatusNotifierHost", "s", "", method_register_host, 0),
-    SD_BUS_PROPERTY("IsStatusNotifierHostRegistered", "b", watcher_properties,
-                    0, SD_BUS_VTABLE_PROPERTY_CONST),
-    SD_BUS_PROPERTY("ProtocolVersion", "i", watcher_properties,
-                    0, SD_BUS_VTABLE_PROPERTY_CONST),
-    SD_BUS_PROPERTY("RegisteredStatusNotifierItems", "as", watcher_properties,
-                    0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-    SD_BUS_SIGNAL("StatusNotifierItemRegistered", "s", 0),
-    SD_BUS_SIGNAL("StatusNotifierItemUnregistered", "s", 0),
-    SD_BUS_SIGNAL("StatusNotifierHostRegistered", "", 0),
-    SD_BUS_SIGNAL("StatusNotifierHostUnregistered", "", 0),
-    SD_BUS_VTABLE_END,
+static const struct tomoe_bus_method tray_methods[] = {
+    { "RegisterStatusNotifierItem", "s", "", method_register_item },
+    { "RegisterStatusNotifierHost", "s", "", method_register_host },
 };
 
-static int name_owner_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static const struct tomoe_bus_property tray_properties[] = {
+    { "IsStatusNotifierHostRegistered", "b", watcher_properties, 0, 0 },
+    { "ProtocolVersion", "i", watcher_properties, 0, 0 },
+    { "RegisteredStatusNotifierItems", "as", watcher_properties, 0, 1 },
+};
+
+static const struct tomoe_bus_signal tray_signals[] = {
+    { "StatusNotifierItemRegistered", "s" },
+    { "StatusNotifierItemUnregistered", "s" },
+    { "StatusNotifierHostRegistered", "" },
+    { "StatusNotifierHostUnregistered", "" },
+};
+
+static int name_owner_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)ret_error;
-    const char *sender = sd_bus_message_get_sender(message);
-    const char *path = sd_bus_message_get_path(message);
-    const char *interface = sd_bus_message_get_interface(message);
+    const char *sender = tomoe_message_sender(message);
+    const char *path = tomoe_message_path(message);
+    const char *interface = tomoe_message_interface(message);
     if (!sender || strcmp(sender, TRAY_DBUS) || !path ||
         strcmp(path, TRAY_DBUS_PATH) || !interface ||
         strcmp(interface, TRAY_DBUS)) return 1;
     const char *name = NULL, *old_owner = NULL, *new_owner = NULL;
-    if (sd_bus_message_read(message, "sss", &name, &old_owner, &new_owner) < 0 ||
+    if (tomoe_message_read(message, "sss", &name, &old_owner, &new_owner) < 0 ||
         !valid_bus_name(name) ||
         (old_owner && *old_owner && !valid_unique_name(old_owner)) ||
         (new_owner && *new_owner && !valid_unique_name(new_owner))) return 1;
@@ -969,24 +957,22 @@ static void queue_signal_refresh(struct tomoe_tray *tray, struct tray_item *item
     item->need_get_all = 1;
 }
 
-static int item_signal(sd_bus_message *message, void *userdata,
-                       sd_bus_error *ret_error) {
+static int item_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)ret_error;
-    const char *interface = sd_bus_message_get_interface(message);
-    const char *sender = sd_bus_message_get_sender(message);
-    const char *path = sd_bus_message_get_path(message);
-    const char *member = sd_bus_message_get_member(message);
+    const char *interface = tomoe_message_interface(message);
+    const char *sender = tomoe_message_sender(message);
+    const char *path = tomoe_message_path(message);
+    const char *member = tomoe_message_member(message);
     if (!interface || strcmp(interface, TRAY_ITEM_IFACE) || !sender ||
         !path || !member) return 1;
     if (!valid_unique_name(sender) || !valid_object_path(path)) return 1;
     if (!strcmp(member, "NewIcon") || !strcmp(member, "NewTitle") ||
         !strcmp(member, "NewToolTip")) {
-        if (sd_bus_message_at_end(message, 1) <= 0) return 1;
+        if (tomoe_message_at_end(message, 1) <= 0) return 1;
     } else if (!strcmp(member, "NewStatus")) {
         const char *status = NULL;
-        if (sd_bus_message_read(message, "s", &status) < 0 ||
-            sd_bus_message_at_end(message, 1) <= 0) return 1;
+        if (tomoe_message_read(message, "s", &status) < 0 ||
+            tomoe_message_at_end(message, 1) <= 0) return 1;
     } else return 1;
     for (size_t index = 0; index < TRAY_MAX_ITEMS; index++) {
         struct tray_item *item = &tray->items[index];
@@ -1003,18 +989,16 @@ static int item_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int properties_signal(sd_bus_message *message, void *userdata,
-                             sd_bus_error *ret_error) {
+static int properties_signal(tomoe_bus_message *message, void *userdata) {
     struct tomoe_tray *tray = userdata;
-    (void)ret_error;
-    const char *interface = sd_bus_message_get_interface(message);
-    const char *sender = sd_bus_message_get_sender(message);
-    const char *path = sd_bus_message_get_path(message);
+    const char *interface = tomoe_message_interface(message);
+    const char *sender = tomoe_message_sender(message);
+    const char *path = tomoe_message_path(message);
     if (!interface || strcmp(interface, TRAY_PROPERTIES_IFACE) || !sender ||
         !path) return 1;
     if (!valid_unique_name(sender) || !valid_object_path(path)) return 1;
     const char *changed_interface = NULL;
-    if (sd_bus_message_read(message, "s", &changed_interface) < 0 ||
+    if (tomoe_message_read(message, "s", &changed_interface) < 0 ||
         !changed_interface || strcmp(changed_interface, TRAY_ITEM_IFACE)) return 1;
     struct parsed_fields fields;
     struct invalidated_fields invalidated;
@@ -1042,118 +1026,44 @@ static int properties_signal(sd_bus_message *message, void *userdata,
     return 1;
 }
 
-static int make_fallback_address(char *destination, size_t capacity,
-                                 const char *runtime) {
-    static const char hex[] = "0123456789ABCDEF";
-    size_t length = strnlen(runtime, TRAY_MAX_RUNTIME_PATH + 1U);
-    if (length > TRAY_MAX_RUNTIME_PATH) return -ENAMETOOLONG;
-    const char prefix[] = "unix:path=";
-    if (length > (capacity - (sizeof(prefix) - 1U)) / 3U) return -ENAMETOOLONG;
-    memcpy(destination, prefix, sizeof(prefix) - 1U);
-    size_t offset = sizeof(prefix) - 1U;
-    for (size_t index = 0; index < length; index++) {
-        unsigned char value = (unsigned char)runtime[index];
-        destination[offset++] = '%';
-        destination[offset++] = hex[value >> 4U];
-        destination[offset++] = hex[value & 0x0fU];
-    }
-    destination[offset] = '\0';
-    return 0;
-}
-
-static int setup_ready(sd_bus *bus, uint64_t deadline) {
-    for (;;) {
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        uint64_t now = monotonic_usec();
-        if (now >= deadline) return -ETIMEDOUT;
-        int result = sd_bus_process(bus, NULL);
-        if (result < 0 && result != -EAGAIN && result != -EINTR) return result;
-        if (sd_bus_is_ready(bus) > 0) return 0;
-        if (!result) {
-            now = monotonic_usec();
-            if (now >= deadline) return -ETIMEDOUT;
-            result = sd_bus_wait(bus, deadline - now);
-            if (result < 0 && result != -EINTR) return result;
-        }
-    }
-}
-
-static int remaining_timeout(sd_bus *bus, uint64_t deadline) {
-    uint64_t now = monotonic_usec();
-    if (now >= deadline) return -ETIMEDOUT;
-    return sd_bus_set_method_call_timeout(bus, deadline - now);
-}
-
 struct tomoe_tray *tomoe_tray_open(int *error) {
     if (!error) return NULL;
     *error = EINVAL;
     struct tomoe_tray *tray = calloc(1, sizeof(*tray));
     if (!tray) { *error = ENOMEM; return NULL; }
-    sd_bus *bus = NULL;
-    int result = sd_bus_new(&bus);
-    if (result < 0) goto failed;
-    result = sd_bus_set_bus_client(bus, 1);
-    if (result < 0) goto failed;
-    result = sd_bus_set_method_call_timeout(bus, TRAY_SETUP_USEC);
-    if (result < 0) goto failed;
-    const char *address = getenv("DBUS_SESSION_BUS_ADDRESS");
-    char address_buffer[TRAY_MAX_RUNTIME_PATH * 3U + 32U];
-    if (!address || !*address) {
-        const char *runtime = getenv("XDG_RUNTIME_DIR");
-        if (!runtime || !*runtime) { result = -ENOMEDIUM; goto failed; }
-        size_t length = strnlen(runtime, TRAY_MAX_RUNTIME_PATH + 1U);
-        if (length > TRAY_MAX_RUNTIME_PATH || length > SIZE_MAX - 5U) {
-            result = -ENAMETOOLONG; goto failed;
-        }
-        char runtime_bus[TRAY_MAX_RUNTIME_PATH + 5U];
-        memcpy(runtime_bus, runtime, length);
-        memcpy(runtime_bus + length, "/bus", 5U);
-        result = make_fallback_address(address_buffer, sizeof(address_buffer),
-                                       runtime_bus);
-        if (result < 0) goto failed;
-        address = address_buffer;
-    }
-    result = sd_bus_set_address(bus, address);
-    if (result < 0) goto failed;
-    result = sd_bus_start(bus);
-    if (result < 0) goto failed;
-    uint64_t deadline = deadline_after(monotonic_usec(), TRAY_SETUP_USEC);
-    result = setup_ready(bus, deadline);
+    struct tomoe_bus *bus = NULL;
+    int result = tomoe_bus_open_session(&bus, TRAY_SETUP_USEC);
     if (result < 0) goto failed;
     tray->bus = bus;
     bus = NULL;
-    result = remaining_timeout(tray->bus, deadline);
-    if (result < 0) goto failed_tray;
-    result = sd_bus_add_match(tray->bus, &tray->matches[0],
+    result = tomoe_bus_add_match(tray->bus, &tray->matches[0],
         "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
         name_owner_signal, tray);
     if (result < 0) goto failed_tray;
-    result = remaining_timeout(tray->bus, deadline);
-    if (result < 0) goto failed_tray;
-    result = sd_bus_add_match(tray->bus, &tray->matches[1],
+    result = tomoe_bus_add_match(tray->bus, &tray->matches[1],
         "type='signal',interface='org.kde.StatusNotifierItem'",
         item_signal, tray);
     if (result < 0) goto failed_tray;
-    result = remaining_timeout(tray->bus, deadline);
-    if (result < 0) goto failed_tray;
-    result = sd_bus_add_match(tray->bus, &tray->matches[2],
+    result = tomoe_bus_add_match(tray->bus, &tray->matches[2],
         "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
         properties_signal, tray);
     if (result < 0) goto failed_tray;
-    result = remaining_timeout(tray->bus, deadline);
+    result = tomoe_bus_add_object(tray->bus, &tray->object_slot,
+                                  TRAY_WATCHER_PATH, TRAY_WATCHER_IFACE,
+                                  tray_methods,
+                                  sizeof(tray_methods) / sizeof(tray_methods[0]),
+                                  tray_properties,
+                                  sizeof(tray_properties) / sizeof(tray_properties[0]),
+                                  tray_signals,
+                                  sizeof(tray_signals) / sizeof(tray_signals[0]),
+                                  tray);
     if (result < 0) goto failed_tray;
-    result = sd_bus_add_object_vtable(tray->bus, &tray->object_slot,
-                                      TRAY_WATCHER_PATH, TRAY_WATCHER_IFACE,
-                                      tray_vtable, tray);
-    if (result < 0) goto failed_tray;
-    result = remaining_timeout(tray->bus, deadline);
-    if (result < 0) goto failed_tray;
-    result = sd_bus_request_name(tray->bus, TRAY_WATCHER_NAME, 0);
+    result = tomoe_bus_request_name(tray->bus, TRAY_WATCHER_NAME);
     if (result <= 0) {
         if (!result) result = -EEXIST;
         goto failed_tray;
     }
-    result = sd_bus_set_method_call_timeout(tray->bus, TRAY_REQUEST_USEC);
+    result = tomoe_bus_set_timeout(tray->bus, TRAY_REQUEST_USEC);
     if (result < 0) goto failed_tray;
     tray->revision = 1;
     *error = 0;
@@ -1163,7 +1073,7 @@ failed_tray:
     close_bus(tray);
     goto failed_allocated;
 failed:
-    if (bus) { sd_bus_close(bus); sd_bus_unref(bus); }
+    if (bus) { tomoe_bus_close(bus); tomoe_bus_unref(bus); }
 failed_allocated:
     free(tray);
     *error = positive_error(result);
@@ -1177,7 +1087,7 @@ static void expire_calls(struct tomoe_tray *tray, uint64_t now) {
         if (call->deadline_usec <= now) {
             struct tray_item *item = call->item;
             pending_remove(tray, call);
-            if (call->slot) { sd_bus_slot_unref(call->slot); call->slot = NULL; }
+            if (call->slot) { tomoe_bus_slot_unref(call->slot); call->slot = NULL; }
             if (call->kind == TRAY_CALL_OWNER && item && item->used &&
                 item->incarnation == call->incarnation && !item->owner_known)
                 remove_item(tray, item, 0);
@@ -1203,7 +1113,7 @@ int tomoe_tray_poll(struct tomoe_tray *tray) {
     while (tray->bus && processed < TRAY_POLL_MESSAGES) {
         uint64_t now = monotonic_usec();
         if (now >= start && now - start >= TRAY_POLL_BUDGET_USEC) break;
-        int result = sd_bus_process(tray->bus, NULL);
+        int result = tomoe_bus_process(tray->bus);
         if (result < 0) {
             if (result == -EAGAIN || result == -EINTR) break;
             mark_failed(tray, result);
@@ -1267,12 +1177,12 @@ const char *tomoe_tray_snapshot(struct tomoe_tray *tray) {
 }
 
 int tomoe_tray_fd(const struct tomoe_tray *tray) {
-    return tray && tray->bus ? sd_bus_get_fd(tray->bus) : -1;
+    return tray && tray->bus ? tomoe_bus_fd(tray->bus) : -1;
 }
 
 unsigned tomoe_tray_mask(const struct tomoe_tray *tray) {
     if (!tray || !tray->bus) return 1;
-    int events = sd_bus_get_events(tray->bus);
+    int events = tomoe_bus_events(tray->bus);
     return (unsigned)((events & POLLIN ? 1U : 0U) | (events & POLLOUT ? 2U : 0U) | 1U);
 }
 
