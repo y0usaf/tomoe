@@ -215,6 +215,8 @@
                 pkgs.gh
                 pkgs.gnused
                 pkgs.gawk
+                pkgs.gnutar
+                pkgs.util-linux
               ];
               text = builtins.readFile ./release.sh;
             }

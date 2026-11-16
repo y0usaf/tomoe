@@ -20,13 +20,14 @@ draws windows, takes keyboard and pointer input, and survives a policy reload
 (`integration`, `pointer-protocols` and `livepatch` in `tests/default.nix`).
 
 Before a commit is pinned in finix, `./gate.sh REV` runs it with the config finix
-generates against that exact build: a private headless instance on its own socket,
-runtime directory and home, at 5120x1440@240, with test windows, dark then light,
-every rail theme, rapid focus switches and moves while windows close and open
-mid-animation, a reload, and a config made for another build, which must be
-refused. It fails on any extension failure, duplicate timer, lost focus or
-unplaced window. Pin only a revision it passed. Nothing it does reaches the
-running desktop. Everything slower is for a speed claim, not for landing:
+generates against that exact build: a private headless instance at 5120x1440@240,
+with test windows, dark then light, every rail theme, rapid focus switches and
+moves while windows close and open mid-animation, a reload, and a broken config,
+which must be refused without disturbing the running one. It fails on any
+extension failure, duplicate timer, lost focus, unplaced window, the compositor
+exiting or a fatal log line. Pin only a revision it passed, and deploy the pin
+commit the gate ran (or gate that commit itself): `tomoe-land` does both.
+Everything slower is for a speed claim, not for landing:
 
 ```sh
 nix flake check            # every aggregate VM, ~30 min
@@ -52,6 +53,26 @@ the lock is granted (and on any exit); before each new `flock -s`, wait until th
 directory is empty — for at most `LAND_PENDING_WAIT` (10 minutes), because a steady
 stream of exclusive gates must not starve shared work forever. `land.sh` does all of
 this for you.
+
+## Never touch the live desktop
+
+The session you are working in is someone's desktop. Run a private Tomoe, a test
+client, Xwayland, xeyes or anything that injects input only through
+`tools/isolate DIR COMMAND` (the gate does): it hides the live runtime directory,
+X11 sockets and network, removes `/dev/uinput`, `/dev/uhid` and `/dev/input`, makes
+your real home read-only and kills everything when the command ends. It refuses
+to start while `DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` or `TOMOE_SOCKET` is
+set, so start it as `env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u
+TOMOE_SOCKET tools/isolate ...`, and while a fake kernel input device exists.
+Never use kernel fake input devices, `DISPLAY=:0` or the live sockets; Tomoe's
+own `tomoe-pointer-script` and `tomoe event` inject input into one instance.
+
+## Releasing
+
+`nix run .#release -- rc|soak|promote` (README, Releases). A candidate is a commit
+on `main`; it is soaked with its own `gate.sh` for 30 minutes and promoted on the
+same commit, which also moves `tomoe-stable` in finix to it and the finix revision
+it soaked with. Try the whole path with `--dry-run` and a short `RELEASE_SOAK`.
 
 ## Rules
 

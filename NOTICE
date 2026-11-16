@@ -1,0 +1,25 @@
+Tomoe is licensed under the GNU Affero General Public License, version 3 (LICENSE).
+
+These files come from other projects and keep their own licenses; the full
+copyright and permission text is in each file's <copyright> element, and
+wayland-scanner copies it into the code generated from them.
+
+native/input-method-unstable-v2.xml
+  The input-method-unstable-v2 protocol. Copyright 2008-2011 Kristian
+  Høgsberg, 2010-2013 Intel Corporation, 2012-2013 Collabora, Ltd., 2015-2016
+  Jan Arne Petersen, 2017-2018 Red Hat, Inc., 2018 Purism SPC. MIT (Expat)
+  license.
+
+native/virtual-keyboard-unstable-v1.xml
+bench/virtual-keyboard-unstable-v1.xml
+  The virtual-keyboard-unstable-v1 protocol. Copyright 2008-2011 Kristian
+  Høgsberg, 2010-2013 Intel Corporation, 2012-2013 Collabora, Ltd., 2018 Purism
+  SPC. MIT (Expat) license.
+
+native/server-decoration.xml
+  The org_kde_kwin_server_decoration protocol, from KDE.
+  Copyright 2015 Martin Gräßlin. LGPL-2.1-or-later; Tomoe combines it under the
+  LGPL's option to apply the GNU GPL, and so the AGPL-3.0.
+
+The other protocols Tomoe implements (wayland, wayland-protocols, wlr-protocols)
+are read at build time from those packages and are not part of this repository.

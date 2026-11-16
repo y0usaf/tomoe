@@ -4,7 +4,8 @@
 <br clear="both">
 
 **Tomoe** (巴, after Tomoe, my beloved cat) is a Wayland compositor whose
-window manager, bar and wallpaper are Common Lisp you can rewrite while it runs.
+window manager, bar and wallpaper are Lisp you can rewrite while it runs, in a
+Common Lisp dialect that Tomoe's own C core carries.
 
 It is not a desktop environment. It won't log you in, start your system
 services or hide its decisions behind a settings app. You start it from a
@@ -28,8 +29,8 @@ can read, replace or delete.
   bindings, panels, processes, watched files. Unmount it and all of that goes
   with it, sockets included. A service also dies with the compositor when it is
   killed, and the next start clears what a dead session left.
-- **One executable.** SBCL with Tomoe's own C core for Wayland, rendering and
-  input; no wlroots. It has a built-in X11 bridge (Xwayland from your `PATH`),
+- **One executable.** Tomoe's own C core for Wayland, rendering and input, with
+  its Lisp built in; no wlroots and no separate Lisp implementation. It has a built-in X11 bridge (Xwayland from your `PATH`),
   a notification server and a screencast portal.
 
 ## Try it
@@ -307,8 +308,8 @@ session exactly as it was: the same extensions, effects and definitions.
 What a patch can change is everything the extension interface can express:
 window placement, drawing, settings, key and pointer bindings, commands,
 published state, timers, processes and layer surfaces, plus the definitions it
-replaces. What it cannot: the C core, the SBCL image, defstruct types,
-classes, defconstants and other global state; arrays, hashes and files it
+replaces. What it cannot: the C core, the Lisp runtime itself and other
+global state; arrays, hashes and files it
 touches; symbols it interns into another package stay interned. Names are
 unique per patch, so apply a corrected patch after undoing the old one, and a
 patch that replaced definitions is undone before the patches applied after it,
@@ -336,7 +337,7 @@ Each file in [`examples/`](examples) mounts on its own.
 | [`headset.lisp`](examples/headset.lisp) | Two virtual outputs in place of every monitor, for a headset that streams them |
 | [`shader-wallpaper.lisp`](examples/shader-wallpaper.lisp) | Seven animated GLSL wallpapers; Super+Shift+b cycles them |
 | [`cursor-trail.lisp`](examples/cursor-trail.lisp) | A fading pixel-grid cursor trail that costs only the cells it lights |
-| [`cursor-wave.lisp`](examples/cursor-wave.lisp) | A cursor behaviour of your own: the cursor leans further with the pointer's speed, stacked on the built-in tilt |
+| [`cursor-wave.lisp`](examples/cursor-wave.lisp) | A cursor behaviour of your own: the cursor leans further with the pointer's speed |
 | [`drag-smear.lisp`](examples/drag-smear.lisp) | A moving window leaves a quantized smear of its own pixels and collapses once it stops |
 | [`horosphere.lisp`](examples/horosphere.lisp) | Windows tiled on the squares of a hyperbolic {4,5} tiling in a Poincare disk, warped onto their curved tiles; a middle-button drag pans the plane |
 | [`bar.lisp`](examples/bar.lisp) | A top bar with a clock and media and volume panels |
@@ -435,7 +436,7 @@ output baseline, while later explicit `configure-output` effects can override it
 
 ## How it fits together
 
-SBCL runs the policy. A C core linked into the same executable speaks the
+A Lisp runtime in Tomoe's C core runs the policy, and the same core speaks the
 Wayland wire protocol itself, renders with EGL and GLES2 on GBM, and drives
 DRM/KMS through the kernel's own ioctls, libinput and seatd; it can also run
 nested in another compositor or headless. Extensions never touch native state.
@@ -512,18 +513,17 @@ window through its move spring and its drag. An attached axis never slides;
 
 ## Documentation
 
-- [Running Tomoe](docs/running.md): backends, flags, the default desktop, X11 and D-Bus
-- [Outputs](docs/outputs.md): modes, scale, placement, mirroring, VRR, colour profiles and virtual outputs
-- [Writing extensions](docs/extensions.md): the API, settings, lifecycle and live reload
-- [Shell surfaces](docs/shell.md): bars, panels, menus and wallpapers drawn by Tomoe
-- [Session services](docs/services.md): notifications, media, battery, backlight, sounds, network and tray
-- [Window rules](docs/rules.md): properties for windows that match
-- [Control and IPC](docs/control.md): the `tomoe` command and the JSON IPC
-- [Internals](docs/internals.md): architecture, source map, protocols and limits
+This README is the reference: the API sections above, the effects and
+settings each example in [`examples/`](examples) uses, and the shipped policy in
+[`lisp/`](lisp), which is written against the same API as your config.
+`tomoe --help` lists the flags and control commands, `tomoe commands` every
+command a binding or the socket can run, and `tomoe inspect` what the running
+session holds.
 
 ## Status
 
-Tomoe is young, and 0.1 is its first release. Expect the API to move.
+Tomoe is young and has not had a release yet; 0.1.0 will be the first. Expect
+the API to move.
 
 - It is my daily desktop on an NVIDIA RTX 4090, running on DRM from a TTY,
   and it runs on an AMD Framework laptop too. Other GPUs get less testing.
@@ -552,8 +552,10 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
   compositor eases whatever they ask for, so the cursor is never a frame behind.
   A behaviour that answers nothing, or is unmounted, leaves no trace: the plain
   texture goes back on the cursor plane, and a still pointer draws nothing at
-  all. The shipped policy registers tilt, shake to find and the trail in
-  `builtins/desktop.lisp`, which is also the code to copy for your own.
+  all. `cursor-effect` lives in [`lisp/cursor.lisp`](lisp/cursor.lisp); the
+  shipped policy registers no behaviour, and
+  [`cursor-trail.lisp`](examples/cursor-trail.lisp) and
+  [`cursor-wave.lisp`](examples/cursor-wave.lisp) are ones to copy.
 - Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,
@@ -652,6 +654,37 @@ Tomoe is young, and 0.1 is its first release. Expect the API to move.
 Bug reports, questions and odd setups are welcome in the
 [issues](https://github.com/y0usaf/tomoe/issues).
 
+## Releases
+
+`main` is what I run every day, and it breaks. Releases are for everyone else:
+
+| Channel | Tag | Try it |
+| --- | --- | --- |
+| Latest | `main` | `nix run github:y0usaf/tomoe` |
+| Release candidate | `vX.Y.Z-rc.N`, a GitHub prerelease | `nix run github:y0usaf/tomoe/vX.Y.Z-rc.N` |
+| Stable | `vX.Y.Z` | `nix run github:y0usaf/tomoe/vX.Y.Z` |
+
+A candidate is a commit already on `main`. Before it becomes stable it runs its
+own `gate.sh` against a real config on a private instance and is then kept busy
+(palette flips, every rail theme, focus storms with windows closing
+mid-animation, reloads) for half an hour; one crash, fatal log line, extension
+failure or lost focus rules it out, and the fix ships as the next candidate.
+The stable tag goes on the exact commit that soaked, and its soak record is a
+git note under `refs/notes/soak` (`git fetch origin refs/notes/soak:refs/notes/soak`,
+then `git notes --ref soak show vX.Y.Z`). [`CHANGELOG.md`](CHANGELOG.md) lists what
+each release changes.
+
+```sh
+nix run .#release -- rc 0.1.0             # tag origin/main v0.1.0-rc.N
+nix run .#release -- soak v0.1.0-rc.1     # gate + 30-minute soak, recorded as a note
+nix run .#release -- promote v0.1.0-rc.1  # tag v0.1.0 on that commit
+```
+
+Each takes `--dry-run`, which keeps its tags and notes under `refs/dry-run/` and
+`refs/notes/soak-dry-run`, pushes and publishes nothing, and makes the finix change
+`promote` would make in a throwaway worktree. `RELEASE_SOAK=SECONDS` shortens a dry
+soak; a real promote refuses a soak shorter than 1800 seconds.
+
 ## Development
 
 ```sh
@@ -663,6 +696,8 @@ nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
 ./land.sh --push BRANCH                    # smoke check, then land it on main
+./gate.sh REV                              # REV with finix's real config, privately
+tools/isolate DIR COMMAND                  # run anything that must not reach your desktop
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
 
@@ -690,6 +725,15 @@ The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built 
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
 one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.
 
+Anything that starts a private Tomoe or a test client on this machine goes
+through `tools/isolate`, as `gate.sh` does: the command gets its own runtime
+directory and home, no X11 sockets, network, uinput or evdev nodes, a read-only
+real home, and a pid namespace that dies with it. It refuses to start while
+`DISPLAY`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` or `TOMOE_SOCKET` is set or while a
+fake kernel input device exists, so a test cannot type into, point at, open
+windows on or restyle the session you are using.
+
 ## License
 
-[AGPL-3.0](LICENSE).
+[AGPL-3.0](LICENSE). Four Wayland protocol files are vendored from other projects
+under their own licenses, listed in [`NOTICE`](NOTICE).
