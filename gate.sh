@@ -844,9 +844,10 @@ for line in open(log):
         fail("%d ms into the reversals the window was not on the row its motion was read "
              "from, so it could not be followed" % ((when - samples[0][0]) // 1000000 if samples else 0))
     samples.append((when, left))
+if not samples:
+    fail("the screen was read no times while the window was reversed, so nothing shows the window moved")
 if len(samples) < 20:
     advisory("the screen was read %d times while the window was reversed, too few to judge" % len(samples))
-    sys.exit(0)
 travel = max(left for _, left in samples) - min(left for _, left in samples)
 if travel < width // 4:
     fail("the window was drawn %d px apart at most while it was sent to the other column "
