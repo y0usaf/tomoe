@@ -4825,11 +4825,15 @@ static void svg_filter_scan_kernel(struct svg_conv *c, struct xml_node *node,
         values[count++] = (float)v;
     }
     if (!count) { free(values); return; }
-    p->kcols = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 0, 0);
-    p->krows = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 1, 0);
-    if (p->kcols <= 0 || p->krows <= 0 || p->kcols * p->krows != count) {
-        p->kcols = count;
-        p->krows = 1;
+    p->kcols = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 0, 3);
+    p->krows = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 1, p->kcols);
+    if (p->kcols <= 0 || p->krows <= 0) { p->kcols = 3; p->krows = 3; }
+    if (p->kcols * p->krows != count) {
+        free(values);
+        p->kernel = NULL;
+        p->kcols = 0;
+        p->krows = 0;
+        return;
     }
     p->kernel = values;
 }
@@ -5021,10 +5025,18 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             else if (edge && !strcmp(edge, "wrap")) p->kedge = 2;
             const char *pa = svg_filter_attr(c->doc, child, "preserveAlpha");
             p->kpreserve = pa && !strcmp(pa, "true");
-            p->kdiv = svg_filter_list_number(svg_filter_attr(c->doc, child, "divisor"), 0, 1);
             p->kbias = svg_filter_list_number(svg_filter_attr(c->doc, child, "bias"), 0, 0);
             svg_filter_scan_kernel(c, child, p);
-            if (!p->kernel) { free(prims); return 0; }
+            if (!p->kernel) continue;
+            float sum = 0.0f;
+            for (int k = 0; k < p->kcols * p->krows; k++) sum += p->kernel[k];
+            sum = roundf(sum * 1000000.0f) / 1000000.0f;
+            if (fabsf(sum) <= 1.0f / 65536.0f) sum = 1.0f;
+            p->kdiv = svg_filter_list_number(svg_filter_attr(c->doc, child, "divisor"), 0, sum);
+            if (fabsf(p->kdiv) <= 1.0f / 65536.0f) { free(prims); return 0; }
+            if (p->ktarget_x < 0) p->ktarget_x = p->kcols / 2;
+            if (p->ktarget_y < 0) p->ktarget_y = p->krows / 2;
+            if (p->ktarget_x >= p->kcols || p->ktarget_y >= p->krows) { free(prims); return 0; }
         } else if (!strcmp(tag, "feMorphology")) {
             p->kind = SVG_FE_MORPHOLOGY;
             const char *op = svg_filter_attr(c->doc, child, "operator");
@@ -9791,6 +9803,103 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         }
         memcpy(res->pix.pixels, buf, (size_t)res->pix.width * res->pix.height * 4);
         free(buf);
+        return;
+    }
+    case SVG_FE_CONVOLVE: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in);
+        if (!in.valid) return;
+        svg_fimg_into_cs(&in, p->cs);
+        *res = in;
+        int w = res->pix.width, h = res->pix.height;
+        unsigned char *buf = svg_alloc((size_t)w * h * 4);
+        if (!buf) return;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const unsigned char *inp = res->pix.pixels + ((size_t)y * w + x) * 4;
+                float nr = 0, ng = 0, nb = 0, na = 0;
+                for (int oy = 0; oy < p->krows; oy++) {
+                    for (int ox = 0; ox < p->kcols; ox++) {
+                        int tx = x - p->ktarget_x + ox;
+                        int ty = y - p->ktarget_y + oy;
+                        if (p->kedge == 0) {
+                            if (tx < 0 || tx >= w || ty < 0 || ty >= h) continue;
+                        } else if (p->kedge == 1) {
+                            if (tx < 0) tx = 0;
+                            if (tx >= w) tx = w - 1;
+                            if (ty < 0) ty = 0;
+                            if (ty >= h) ty = h - 1;
+                        } else {
+                            while (tx < 0) tx += w;
+                            tx %= w;
+                            while (ty < 0) ty += h;
+                            ty %= h;
+                        }
+                        float k = p->kernel[(p->krows - oy - 1) * p->kcols +
+                            (p->kcols - ox - 1)];
+                        const unsigned char *sp = res->pix.pixels + ((size_t)ty * w + tx) * 4;
+                        nr += (float)sp[0] / 255.0f * k;
+                        ng += (float)sp[1] / 255.0f * k;
+                        nb += (float)sp[2] / 255.0f * k;
+                        if (!p->kpreserve) na += (float)sp[3] / 255.0f * k;
+                    }
+                }
+                if (p->kpreserve) na = (float)inp[3] / 255.0f;
+                else na = na / p->kdiv + p->kbias;
+                float bounded = na;
+                if (!(bounded > 0.0f)) bounded = 0.0f;
+                if (bounded > 1.0f) bounded = 1.0f;
+                unsigned char *out = buf + ((size_t)y * w + x) * 4;
+                float vals[3] = { nr, ng, nb };
+                for (int k = 0; k < 3; k++) {
+                    float v = vals[k] / p->kdiv + p->kbias * na;
+                    if (p->kpreserve) {
+                        if (!(v > 0.0f)) v = 0.0f;
+                        if (v > 1.0f) v = 1.0f;
+                        v *= bounded;
+                    } else {
+                        if (!(v > 0.0f)) v = 0.0f;
+                        if (v > bounded) v = bounded;
+                    }
+                    out[k] = (unsigned char)(v * 255.0f + 0.5f);
+                }
+                out[3] = (unsigned char)(bounded * 255.0f + 0.5f);
+            }
+        }
+        memcpy(res->pix.pixels, buf, (size_t)w * h * 4);
+        free(buf);
+        return;
+    }
+    case SVG_FE_DISPLACEMENT: {
+        struct svg_fimg in1, in2;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in1);
+        svg_filter_get_input(prims, results, count, p->input2, source, region_left,
+            region_top, &in2);
+        if (!in1.valid || !in2.valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
+        svg_fimg_into_cs(&in2, p->cs);
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
+        int w = region_w, h = region_h;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                const unsigned char *mp = in2.pix.pixels + (size_t)idx * 4;
+                float dx = (float)mp[p->op == 0 ? 0 : p->op == 1 ? 1 : p->op == 2 ? 2 : 3] /
+                    255.0f - 0.5f;
+                float dy = (float)mp[p->mode == 0 ? 0 : p->mode == 1 ? 1 : p->mode == 2 ? 2 : 3] /
+                    255.0f - 0.5f;
+                int ox = (int)lrintf((float)x + dx * scale_x * p->f[0]);
+                int oy = (int)lrintf((float)y + dy * scale_y * p->f[0]);
+                if (ox < 0 || ox >= w || oy < 0 || oy >= h) continue;
+                if (x >= in1.pix.width || y >= in1.pix.height) continue;
+                memcpy(res->pix.pixels + (size_t)idx * 4,
+                    in1.pix.pixels + ((size_t)oy * in1.pix.width + ox) * 4, 4);
+            }
+        }
+        svg_fimg_free(&in1);
+        svg_fimg_free(&in2);
         return;
     }
     default:
