@@ -6501,6 +6501,20 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         break;
     case 6: {
         float br = (dr == da) ? (dr + sr * ida) :
+            (sr == sa ? (sr + dr * isa) :
+                sa * fminf(da, (dr * sa) * (1.0f / (sa - sr))) + sr * ida + dr * isa);
+        float bg = (dg == da) ? (dg + sg * ida) :
+            (sg == sa ? (sg + dg * isa) :
+                sa * fminf(da, (dg * sa) * (1.0f / (sa - sg))) + sg * ida + dg * isa);
+        float bb = (db == da) ? (db + sb * ida) :
+            (sb == sa ? (sb + db * isa) :
+                sa * fminf(da, (db * sa) * (1.0f / (sa - sb))) + sb * ida + db * isa);
+        r = br; g = bg; b = bb;
+        a = sa + da - sa * da;
+        break;
+    }
+    case 7: {
+        float br = (dr == da) ? (dr + sr * ida) :
             (sr == 0.0f ? dr * isa :
                 sa * fminf(da, (da - fminf(da, (da - dr) * sa * (1.0f / sr)))) +
                 sr * ida + dr * isa);
@@ -6512,20 +6526,6 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
             (sb == 0.0f ? db * isa :
                 sa * fminf(da, (da - fminf(da, (da - db) * sa * (1.0f / sb)))) +
                 sb * ida + db * isa);
-        r = br; g = bg; b = bb;
-        a = sa + da - sa * da;
-        break;
-    }
-    case 7: {
-        float br = (dr == 0.0f) ? (sr * ida) :
-            (sr == sa ? (sr + dr * isa) :
-                sa * fminf(da, (dr * sa) * (1.0f / (sa - sr))) + sr * ida + dr * isa);
-        float bg = (dg == 0.0f) ? (sg * ida) :
-            (sg == sa ? (sg + dg * isa) :
-                sa * fminf(da, (dg * sa) * (1.0f / (sa - sg))) + sg * ida + dg * isa);
-        float bb = (db == 0.0f) ? (sb * ida) :
-            (sb == sa ? (sb + db * isa) :
-                sa * fminf(da, (db * sa) * (1.0f / (sa - sb))) + sb * ida + db * isa);
         r = br; g = bg; b = bb;
         a = sa + da - sa * da;
         break;
@@ -6544,10 +6544,10 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         float m = da > 0.0f ? dr / da : 0.0f;
         float mg = da > 0.0f ? dg / da : 0.0f;
         float mb = da > 0.0f ? db / da : 0.0f;
-        float s2 = sa + sa, s2g = sg + sg, s2b = sb + sb;
+        float s2r = sr + sr, s2g = sg + sg, s2b = sb + sb;
         float m2 = m + m, m2g = mg + mg, m2b = mb + mb;
         float m4 = m2 + m2, m4g = m2g + m2g, m4b = m2b + m2b;
-        float dark_src_r = dr * (sa + (s2 - sa) * (1.0f - m));
+        float dark_src_r = dr * (sa + (s2r - sa) * (1.0f - m));
         float dark_src_g = dg * (sa + (s2g - sa) * (1.0f - mg));
         float dark_src_b = db * (sa + (s2b - sa) * (1.0f - mb));
         float dark_dst = (m4 * m4 + m4) * (m - 1.0f) + 7.0f * m;
@@ -6557,10 +6557,10 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         float lite_dst_g = sqrtf(mg) - mg;
         float lite_dst_b = sqrtf(mb) - mb;
         float d4r = dr + dr + dr + dr, d4g = dg + dg + dg + dg, d4b = db + db + db + db;
-        float lite_src_r = dr * sa + da * (s2 - sa) * (d4r <= da ? dark_dst : lite_dst);
+        float lite_src_r = dr * sa + da * (s2r - sa) * (d4r <= da ? dark_dst : lite_dst);
         float lite_src_g = dg * sa + da * (s2g - sa) * (d4g <= da ? dark_dst_g : lite_dst_g);
         float lite_src_b = db * sa + da * (s2b - sa) * (d4b <= da ? dark_dst_b : lite_dst_b);
-        float br = (s2 <= sa) ? dark_src_r : lite_src_r;
+        float br = (s2r <= sa) ? dark_src_r : lite_src_r;
         float bg = (s2g <= sa) ? dark_src_g : lite_src_g;
         float bb = (s2b <= sa) ? dark_src_b : lite_src_b;
         r = sr * ida + dr * isa + br;
