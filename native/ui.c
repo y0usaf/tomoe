@@ -1957,6 +1957,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             struct tomoe *server = o->server;
             bool held = server->shader_holding && !surface->shader_clocked;
             double clock = surface_clock(server, surface, now);
+            double shift = surface->shader_clocked ? 0 : server->shader_shift;
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
             float selection[16], marks_box[4];
@@ -1999,7 +2000,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                     time = tick / surface->fps;
                     frame = (int)fmin(tick, INT_MAX);
                     if (!held)
-                        schedule_step(o, epoch + (tick + 1) / surface->fps + server->shader_shift, now);
+                        schedule_step(o, epoch + (tick + 1) / surface->fps + shift, now);
                 } else {
                     time = clock - epoch;
                 }
@@ -2012,7 +2013,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
                 if (surface->fps > 0) {
                     double tick = floor(clock * surface->fps);
                     if (!held)
-                        schedule_step(o, (tick + 1) / surface->fps + server->shader_shift, now);
+                        schedule_step(o, (tick + 1) / surface->fps + shift, now);
                 }
             }
         }
