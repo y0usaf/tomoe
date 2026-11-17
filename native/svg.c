@@ -1359,10 +1359,18 @@ static char *svg_strndup(const char *s, size_t n) {
     return p;
 }
 
-struct svg_buf { char *data; size_t length, capacity; int failed; };
+#define ENTITY_DEPTH 10
+#define ENTITY_LIMIT 255
+#define EXPAND_LIMIT (64u << 20)
+
+struct svg_buf { char *data; size_t length, capacity; size_t *expanded; int failed; };
 
 static void svg_buf_put(struct svg_buf *b, char c) {
     if (b->failed) return;
+    if (b->expanded) {
+        if (*b->expanded >= EXPAND_LIMIT) { b->failed = 1; return; }
+        (*b->expanded)++;
+    }
     if (b->length + 2 > b->capacity) {
         size_t next = b->capacity ? b->capacity * 2 : 64;
         char *p = svg_realloc(b->data, next);
@@ -1372,6 +1380,11 @@ static void svg_buf_put(struct svg_buf *b, char c) {
     }
     b->data[b->length++] = c;
     b->data[b->length] = 0;
+}
+
+static char *svg_buf_take(struct svg_buf *b) {
+    if (b->failed) { free(b->data); return NULL; }
+    return b->data ? b->data : svg_strdup("");
 }
 
 static void svg_buf_put_utf8(struct svg_buf *b, unsigned cp) {
@@ -1401,6 +1414,8 @@ struct xml_parser {
     struct xml_entity_def *entities;
     int nentities, centities;
     int attr_mode;
+    unsigned entity_depth, entity_refs;
+    size_t expanded;
 };
 
 static int xml_space(char c) {
@@ -1437,30 +1452,49 @@ static int xml_skip_until(struct xml_parser *p, const char *text) {
 static int xml_entity(struct xml_parser *p, struct svg_buf *b);
 
 static int xml_entity_expand(struct xml_parser *p, const char *text, size_t length,
-        struct svg_buf *b, int attr, int depth);
+        struct svg_buf *b, int attr);
+
+static int xml_entity_enter(struct xml_parser *p) {
+    if (p->entity_depth) {
+        if (p->entity_refs >= ENTITY_LIMIT) return 0;
+        p->entity_refs++;
+    }
+    if (p->entity_depth >= ENTITY_DEPTH) return 0;
+    p->entity_depth++;
+    return 1;
+}
+
+static void xml_entity_leave(struct xml_parser *p) {
+    if (p->entity_depth) p->entity_depth--;
+    if (!p->entity_depth) p->entity_refs = 0;
+}
 
 static int xml_entity_named(struct xml_parser *p, const char *name, size_t n,
-        struct svg_buf *b, int attr, int depth) {
+        struct svg_buf *b, int attr) {
     if (n == 3 && !memcmp(name, "amp", 3)) svg_buf_put(b, '&');
     else if (n == 2 && !memcmp(name, "lt", 2)) svg_buf_put(b, '<');
     else if (n == 2 && !memcmp(name, "gt", 2)) svg_buf_put(b, '>');
     else if (n == 4 && !memcmp(name, "quot", 4)) svg_buf_put(b, '"');
     else if (n == 4 && !memcmp(name, "apos", 4)) svg_buf_put(b, '\'');
     else {
-        if (depth > 32) return 0;
         for (int i = 0; i < p->nentities; i++) {
-            if (strlen(p->entities[i].name) == n && !memcmp(p->entities[i].name, name, n))
-                return xml_entity_expand(p, p->entities[i].value,
-                    strlen(p->entities[i].value), b, attr, depth + 1);
+            if (strlen(p->entities[i].name) == n && !memcmp(p->entities[i].name, name, n)) {
+                if (!xml_entity_enter(p)) return 0;
+                int ok = xml_entity_expand(p, p->entities[i].value,
+                    strlen(p->entities[i].value), b, attr);
+                xml_entity_leave(p);
+                return ok;
+            }
         }
         return 0;
     }
-    return 1;
+    return !b->failed;
 }
 
 static int xml_entity_expand(struct xml_parser *p, const char *text, size_t length,
-        struct svg_buf *b, int attr, int depth) {
+        struct svg_buf *b, int attr) {
     for (size_t i = 0; i < length; i++) {
+        if (b->failed) return 0;
         char c = text[i];
         if (c == '&') {
             if (i + 1 < length && text[i + 1] == '#') {
@@ -1475,22 +1509,22 @@ static int xml_entity_expand(struct xml_parser *p, const char *text, size_t leng
             size_t start = ++i;
             while (i < length && text[i] != ';') i++;
             if (i >= length) return 0;
-            if (!xml_entity_named(p, text + start, i - start, b, attr, depth)) return 0;
+            if (!xml_entity_named(p, text + start, i - start, b, attr)) return 0;
             continue;
         }
         if (attr && (c == '\n' || c == '\t' || c == '\r')) { svg_buf_put(b, ' '); continue; }
         svg_buf_put(b, c);
     }
-    return 1;
+    return !b->failed;
 }
 
 static int xml_entity(struct xml_parser *p, struct svg_buf *b) {
     p->pos++;
     if (p->pos < p->length && p->data[p->pos] == '#') {
         p->pos++;
-        unsigned v = 0;
+        unsigned long v = 0;
         int hex = 0, any = 0;
-        if (p->pos < p->length && (p->data[p->pos] == 'x' || p->data[p->pos] == 'X')) { hex = 1; p->pos++; }
+        if (p->pos < p->length && p->data[p->pos] == 'x') { hex = 1; p->pos++; }
         while (p->pos < p->length && p->data[p->pos] != ';') {
             char c = p->data[p->pos++];
             unsigned d;
@@ -1499,29 +1533,33 @@ static int xml_entity(struct xml_parser *p, struct svg_buf *b) {
             else if (hex && c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
             else return 0;
             v = v * (hex ? 16u : 10u) + d;
-            if (v > 0x10ffff) return 0;
+            if (v > 0xffffffffu) return 0;
             any = 1;
         }
         if (p->pos >= p->length || p->data[p->pos] != ';' || !any) return 0;
         p->pos++;
-        if (v == 0 || (v >= 0xd800 && v <= 0xdfff) || v > 0x10ffff) return 0;
-        svg_buf_put_utf8(b, v);
-        return 1;
+        unsigned cp = (v > 0x10ffffu || (v >= 0xd800 && v <= 0xdfff)) ? 0xfffdu : (unsigned)v;
+        if (!(cp == 0x9 || cp == 0xa || cp == 0xd ||
+                (cp >= 0x20 && cp <= 0xd7ff) || (cp >= 0xe000 && cp <= 0xfffd) ||
+                (cp >= 0x10000 && cp <= 0x10ffff))) return 0;
+        svg_buf_put_utf8(b, cp);
+        return !b->failed;
     }
     size_t start = p->pos;
     while (p->pos < p->length && xml_name_char(p->data[p->pos])) p->pos++;
     size_t n = p->pos - start;
     if (p->pos >= p->length || p->data[p->pos] != ';') return 0;
     p->pos++;
-    return xml_entity_named(p, p->data + start, n, b, p->attr_mode, 0);
+    return xml_entity_named(p, p->data + start, n, b, p->attr_mode);
 }
 
 static char *xml_text(struct xml_parser *p, char quote) {
     struct svg_buf b = { 0 };
+    b.expanded = &p->expanded;
     while (p->pos < p->length) {
         char c = p->data[p->pos];
         if (quote) {
-            if (c == quote) { p->pos++; return b.data ? b.data : svg_strdup(""); }
+            if (c == quote) { p->pos++; return svg_buf_take(&b); }
             if (c == '&') {
                 p->attr_mode = 1;
                 int ok = xml_entity(p, &b);
@@ -1539,7 +1577,7 @@ static char *xml_text(struct xml_parser *p, char quote) {
             p->pos++;
             svg_buf_put(&b, c);
         } else {
-            if (c == '<') return b.data ? b.data : svg_strdup("");
+            if (c == '<') return svg_buf_take(&b);
             if (c == '&') {
                 if (!xml_entity(p, &b)) { free(b.data); return NULL; }
                 continue;
