@@ -2257,7 +2257,7 @@ static void svg_arc_to(struct svg_path *path, double from_x, double from_y, doub
         return;
     }
     const double pi = 3.14159265358979323846;
-    double xr = fmod(rotation_degrees, 2.0 * pi);
+    double xr = fmod(rotation_degrees * pi / 180.0, 2.0 * pi);
     double sin_phi = sin(xr), cos_phi = cos(xr);
     double hd_x = (from_x - to_x) * 0.5;
     double hd_y = (from_y - to_y) * 0.5;
