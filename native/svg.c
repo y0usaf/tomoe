@@ -4343,8 +4343,7 @@ static const char *svg_gradient_attr(struct svg_doc *doc, struct xml_node *node,
 }
 
 static struct svg_matrix svg_gradient_transform(struct svg_conv *c, struct xml_node *node) {
-    struct xml_node *n = svg_resolve_gradient_attr(c->doc, node, "gradientTransform");
-    const char *text = svg_xml_attr(n, "gradientTransform");
+    const char *text = svg_xml_attr(node, "gradientTransform");
     struct svg_matrix ts = svg_matrix_identity();
     if (text) svg_transform_valid(text, &ts);
     int idx = node->style_index;
