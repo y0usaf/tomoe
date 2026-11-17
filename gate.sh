@@ -30,9 +30,10 @@ usage: gate.sh [REV]
 Builds REV (default HEAD) the way finix would pin it, with the config finix
 generates against that very build, and runs the pair on a private headless
 instance with its own socket, runtime directory and home: one output at
-5120x1440@240, real test windows, dark then light, every rail theme in turn,
-rapid focus switches and moves with windows closing and opening mid-animation,
-a reload, and a config whose middle form calls an undefined function. It fails
+5120x1440@240, real test windows, dark then light, every rail theme in turn
+with the output's frame counter read at rest in each, rapid focus switches and
+moves with windows closing and opening mid-animation, a reload, and a config
+whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
 (typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must
@@ -108,6 +109,20 @@ else
 	mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
 	cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
 	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
+	sed -i "s/:background (list :shader (first shown) :fps (second shown)))))/:background (list :shader (first shown) :fps (second shown) :clock 0d0 :until 0d0))))/" \
+		"$DIR/init.lisp"
+	grep -q ":clock 0d0 :until 0d0" "$DIR/init.lisp" ||
+		die "the config no longer publishes the wallpaper the way the still fixture holds it"
+	cat >>"$DIR/init.lisp" <<'LISP'
+
+(in-package #:tomoe-user)
+(defun probe--sample (probe previous system)
+  "The gate's still fixture: a reading that never moves, so a sample that draws
+no new number draws nothing."
+  (declare (ignore probe system))
+  (or previous
+      (list :percent 0 :used 0 :total 1 :failures 0)))
+LISP
 	cp "$INIT" "$DIR/paired.lisp"
 	sed "s#$HOME/#$DIR/home/#g" "$PALETTE" >"$DIR/first.css"
 	BG=$(awk '$1 == "@define-color" && $2 == "bg" {print $3}' "$DIR/first.css" | tr -d ';')
@@ -213,6 +228,28 @@ mode_of() { grep -o ':THEME-MODE :[A-Z]*' "$DIR/inspect" | tail -1 | cut -d: -f3
 theme_of() { grep -o ':RAIL-THEME :[A-Z-]*' "$DIR/inspect" | tail -1 | cut -d: -f3; }
 focused() { ctl msg windows | awk '/^    "id":/ {gsub(/[^0-9]/, ""); id = $0} /"focused": true/ {print id}'; }
 
+frames_on() {
+	ctl frames | tr ')' '\n' | awk -v want=":NAME \"$OUTPUT\"" '
+		index(toupper($0), toupper(want)) {
+			for (i = 1; i <= NF; i++) if (toupper($i) == ":FRAME") print $(i + 1)
+		}'
+}
+
+at_rest() {
+	local label=$1 attempt before after drawn
+	for attempt in 1 2 3; do
+		sleep 1.2
+		before=$(frames_on)
+		[[ -n $before ]] || die "$label: $OUTPUT has no frame counter"
+		sleep 2
+		after=$(frames_on)
+		[[ -n $after ]] || die "$label: $OUTPUT has no frame counter after the window"
+		drawn=$((after - before))
+		((drawn == 0)) && { say "$label at rest: 0 frames in 2 s"; return 0; }
+	done
+	die "$label: $OUTPUT drew $drawn frames in 2 s at rest"
+}
+
 run() {
 	ctl command "$@" >"$DIR/command" 2>&1 || die "command $*: $(cat "$DIR/command")"
 }
@@ -306,6 +343,7 @@ cycle() {
 				sleep 0.05
 			done
 			[[ $(theme_of) != "$theme" ]] || die "$mode: Alt+Shift+T left the rail on $theme"
+			at_rest "$mode $theme"
 			[[ $(theme_of) == "$first" ]] && break
 		done
 		[[ $(tr ' ' '\n' <<<"$seen" | sed '/^$/d' | sort | tr '\n' ' ') == "$THEMES" ]] ||

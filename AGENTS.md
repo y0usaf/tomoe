@@ -25,7 +25,10 @@ with test windows, dark then light, every rail theme, rapid focus switches and
 moves while windows close and open mid-animation, a reload, and a broken config,
 which must be refused without disturbing the running one. It fails on any
 extension failure, duplicate timer, lost focus, unplaced window, the compositor
-exiting or a fatal log line. Pin only a revision it passed, and deploy the pin
+exiting or a fatal log line. It also reads the configured output's own frame
+counter at rest in every theme and mode, with the config's shader wallpaper and
+meter readings held still, and fails if it moves: nothing may redraw when
+nothing it displays has changed. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
 
 `./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same
