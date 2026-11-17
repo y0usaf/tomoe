@@ -1671,8 +1671,8 @@ void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 bool render_output_buffer(struct output *o, struct buffer *buffer);
 struct screenshot;
-struct _cairo;
-bool ui_text_raster(struct _cairo *cr, const char *font, const char *text, double size);
+bool ui_text_raster(uint32_t *pixels, int stride, int width, int height, struct rect clip,
+    double x, double y, const char *font, const char *text, double size, uint32_t rgba);
 void screenshot_key_up(struct tomoe *s, uint32_t keycode);
 bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
     uint32_t modifiers, bool pressed, uint32_t keycode);

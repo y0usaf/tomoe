@@ -2,10 +2,10 @@
 #include "ui.h"
 #include "ui-assets.h"
 #include "draw.h"
+#include "fttext.h"
 
 #include <cairo.h>
 #include <inttypes.h>
-#include <pango/pangocairo.h>
 
 #include <float.h>
 #include <stdint.h>
@@ -214,7 +214,6 @@ static struct ui_text *ui_text_buckets[UI_TEXT_BUCKETS];
 static struct ui_text *ui_text_head;
 static size_t ui_text_count;
 static uint64_t ui_text_builds, ui_text_hits;
-static cairo_t *ui_text_pen;
 static uint64_t ui_commits, ui_updates, ui_upload_bytes, ui_redraws;
 
 static uint64_t hash_text(uint64_t hash, const char *value) {
@@ -229,40 +228,10 @@ static uint64_t hash_double(uint64_t hash, double value) {
     return (hash ^ bits) * UINT64_C(0x100000001b3);
 }
 
-static cairo_t *text_pen(void) {
-    if (ui_text_pen) return ui_text_pen;
-    cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-    if (!surface) return NULL;
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-        return NULL;
-    }
-    ui_text_pen = cairo_create(surface);
-    cairo_surface_destroy(surface);
-    if (cairo_status(ui_text_pen) != CAIRO_STATUS_SUCCESS) {
-        cairo_destroy(ui_text_pen);
-        ui_text_pen = NULL;
-    }
-    return ui_text_pen;
-}
-
 static PangoLayout *text_layout(const char *font, const char *text,
         double size, double line_height, bool markup) {
-    cairo_t *pen = text_pen();
-    if (!pen) return NULL;
-    PangoFontMap *map = pango_cairo_font_map_get_default();
-    PangoContext *context = map ? pango_font_map_create_context(map) : NULL;
+    PangoContext *context = fte_context_new();
     if (!context) return NULL;
-    cairo_font_options_t *options = cairo_font_options_create();
-    if (!options) {
-        g_object_unref(context);
-        return NULL;
-    }
-    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
-    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
-    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
-    pango_cairo_context_set_font_options(context, options);
-    cairo_font_options_destroy(options);
     PangoLayout *layout = pango_layout_new(context);
     g_object_unref(context);
     if (!layout) return NULL;
@@ -289,18 +258,14 @@ static PangoLayout *text_layout(const char *font, const char *text,
         if (spacing > 0.0) pango_layout_set_spacing(layout, spacing * PANGO_SCALE);
         pango_font_metrics_unref(metrics);
     }
-    pango_cairo_update_layout(pen, layout);
     return layout;
 }
 
-bool ui_text_raster(cairo_t *cr, const char *font, const char *text, double size) {
-    if (!cr || !text || !*text) return false;
-    PangoLayout *layout = text_layout(font, text, size, 0, false);
-    if (!layout) return false;
-    pango_cairo_update_layout(cr, layout);
-    pango_cairo_show_layout(cr, layout);
-    g_object_unref(layout);
-    return true;
+bool ui_text_raster(uint32_t *pixels, int stride, int width, int height, struct rect clip,
+        double x, double y, const char *font, const char *text, double size, uint32_t rgba) {
+    if (!text || !*text) return false;
+    struct fte_rect box = { clip.x1, clip.y1, clip.x2, clip.y2 };
+    return fte_text_draw(font, text, size, pixels, stride, width, height, box, x, y, rgba);
 }
 
 static void ui_text_release(struct ui_text *entry);
@@ -415,8 +380,6 @@ static void ui_texts_finish(void) {
         entry->references--;
         if (!entry->references) text_destroy(entry);
     }
-    if (ui_text_pen) cairo_destroy(ui_text_pen);
-    ui_text_pen = NULL;
 }
 
 static void canvas_destroy(struct ui_canvas *canvas) {
@@ -1460,25 +1423,16 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         return true;
     }
     case UI_OP_TEXT: {
-        cairo_t *cairo = canvas->cairo;
         const struct ui_text *entry = op->u.text.text;
-        double red, green, blue, alpha;
-        color_components(op->rgba, &red, &green, &blue, &alpha);
-        double height = ceil(entry->line_height);
-        int width = entry->width;
-        cairo_save(cairo);
-        cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
-        cairo_clip(cairo);
-        cairo_set_source_rgba(cairo, red, green, blue, alpha);
-        cairo_translate(cairo,
-            op->x + (op->rotate == 90 ? height : op->rotate == 180 ? width : 0),
-            op->y + (op->rotate == 180 ? height : op->rotate == 270 ? width : 0));
-        cairo_rotate(cairo, op->rotate * G_PI / 180.0);
-        pango_cairo_update_layout(cairo, entry->layout);
-        cairo_move_to(cairo, 0, 0);
-        pango_cairo_show_layout(cairo, entry->layout);
-        cairo_restore(cairo);
-        return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+        struct fte_rect box = { clip->x1, clip->y1, clip->x2, clip->y2 };
+        struct ui_canvas *canvas = surface->canvas;
+        cairo_surface_flush(canvas->cairo_surface);
+        fte_layout_draw(entry->layout, (double)entry->width, ceil(entry->line_height),
+            (uint32_t *)canvas->pixels, (int)(canvas->stride / 4), canvas->width,
+            canvas->height, box,
+            op->x, op->y, op->rotate, op->rgba);
+        cairo_surface_mark_dirty(canvas->cairo_surface);
+        break;
     }
     }
     return true;

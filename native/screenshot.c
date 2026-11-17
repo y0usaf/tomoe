@@ -2,7 +2,6 @@
 #include "draw.h"
 #include "spring.h"
 #include "png.h"
-#include <cairo.h>
 #include <fcntl.h>
 #include <drm/drm_fourcc.h>
 #include <unistd.h>
@@ -278,18 +277,8 @@ static bool draw_free(uint32_t *pixels, int stride, struct drect area,
     return ok;
 }
 
-static void draw_text(cairo_t *cr, const struct settings *st, const struct mark *mark) {
-    if (!mark->length) return;
-    char text[LABEL_BYTES];
-    memcpy(text, mark->text, mark->length);
-    text[mark->length] = '\0';
-    cairo_move_to(cr, mark->x0, mark->y0);
-    ui_text_raster(cr, st->screenshot_mark_font, text, mark->size);
-}
-
-static bool draw_mark(cairo_t *cr, uint32_t *pixels, int stride, struct drect area,
+static bool draw_mark(uint32_t *pixels, int stride, struct drect area,
         const struct settings *st, const struct mark *mark, int ox, int oy) {
-    (void)cr;
     (void)st;
     if (mark->kind == MARK_ARROW) return draw_arrow(pixels, stride, area, mark, ox, oy);
     if (mark->kind == MARK_FREE) return draw_free(pixels, stride, area, mark, ox, oy);
@@ -346,37 +335,33 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
     if (width <= 0 || height <= 0) return;
     uint32_t *pixels = (uint32_t *)shot->mask;
     int stride = shot->mask_width;
+    struct rect clip = { x, y, x + width, y + height };
     for (int row = y; row < y + height; row++)
         memset(pixels + (size_t)row * stride + x, 0, (size_t)width * 4);
     struct drect area = { x, y, x + width, y + height };
-    bool labels = false;
     for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
         const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
         struct box box = mark_box(mark);
         if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
-        if (mark->kind == MARK_TEXT) { labels = true; continue; }
-        if (!draw_mark(NULL, pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
+        if (mark->kind == MARK_TEXT) continue;
+        if (!draw_mark(pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
             break;
     }
     if (labels) {
-        cairo_surface_t *surface = cairo_image_surface_create_for_data(shot->mask,
-            CAIRO_FORMAT_ARGB32, shot->mask_width, shot->mask_height, shot->mask_width * 4);
-        if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
-            cairo_t *cr = cairo_create(surface);
-            cairo_rectangle(cr, x, y, width, height);
-            cairo_clip(cr);
-            cairo_translate(cr, -shot->mask_x, -shot->mask_y);
-            cairo_set_source_rgba(cr, 1, 1, 1, 1);
-            for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
-                const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
-                if (mark->kind != MARK_TEXT) continue;
-                struct box box = mark_box(mark);
-                if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
-                draw_text(cr, st, mark);
-            }
-            cairo_destroy(cr);
+        struct rect clip = { x, y, x + width, y + height };
+        for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
+            const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
+            if (mark->kind != MARK_TEXT || !mark->length) continue;
+            struct box box = mark_box(mark);
+            if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
+            char text[LABEL_BYTES];
+            memcpy(text, mark->text, mark->length);
+            text[mark->length] = '\0';
+            ui_text_raster(pixels, stride, shot->mask_width, shot->mask_height, clip,
+                mark->x0 - shot->mask_x, mark->y0 - shot->mask_y,
+                st->screenshot_mark_font, text, mark->size, 0xffffffffu);
         }
-        cairo_surface_destroy(surface);
+    }
     }
     struct rect rect = { x, y, x + width, y + height };
     texture_upload(shot->mask_texture, shot->mask, DRM_FORMAT_ARGB8888,
