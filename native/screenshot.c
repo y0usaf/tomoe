@@ -335,15 +335,15 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
     if (width <= 0 || height <= 0) return;
     uint32_t *pixels = (uint32_t *)shot->mask;
     int stride = shot->mask_width;
-    struct rect clip = { x, y, x + width, y + height };
     for (int row = y; row < y + height; row++)
         memset(pixels + (size_t)row * stride + x, 0, (size_t)width * 4);
     struct drect area = { x, y, x + width, y + height };
+    bool labels = false;
     for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
         const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
         struct box box = mark_box(mark);
         if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
-        if (mark->kind == MARK_TEXT) continue;
+        if (mark->kind == MARK_TEXT) { labels = true; continue; }
         if (!draw_mark(pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
             break;
     }
@@ -361,7 +361,6 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
                 mark->x0 - shot->mask_x, mark->y0 - shot->mask_y,
                 st->screenshot_mark_font, text, mark->size, 0xffffffffu);
         }
-    }
     }
     struct rect rect = { x, y, x + width, y + height };
     texture_upload(shot->mask_texture, shot->mask, DRM_FORMAT_ARGB8888,
