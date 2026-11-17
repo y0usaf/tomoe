@@ -899,12 +899,13 @@ static uint64_t animate_last, animate_interval, animate_commit_ns;
 static void animate_presented(void *data, struct wp_presentation_feedback *feedback,
         uint32_t hi, uint32_t lo, uint32_t nsec, uint32_t refresh, uint32_t seq_hi,
         uint32_t seq_lo, uint32_t flags) {
-    (void)refresh; (void)seq_hi; (void)seq_lo; (void)flags;
+    (void)refresh; (void)flags;
     struct animate_record *record = data;
     uint64_t when = (((uint64_t)hi << 32) | lo) * 1000000000ULL + nsec;
-    printf("animate-present %u %lld %lld %lld\n", record->id,
+    printf("animate-present %u %lld %lld %lld %llu %llu\n", record->id,
         (long long)(when - record->callback_ns), (long long)(when - record->commit_ns),
-        (long long)animate_now());
+        (long long)animate_now(), (unsigned long long)(((uint64_t)seq_hi << 32) | seq_lo),
+        (unsigned long long)when);
     fflush(stdout);
     free(record);
     wp_presentation_feedback_destroy(feedback);
@@ -925,7 +926,6 @@ static uint64_t animate_now(void) {
 }
 
 static void animate_done(void *data, struct wl_callback *callback, uint32_t time) {
-    (void)time;
     uint64_t at = animate_now();
     uint64_t interval = animate_last ? at - animate_last : 0;
     animate_last = at;
@@ -937,8 +937,8 @@ static void animate_done(void *data, struct wl_callback *callback, uint32_t time
     animate_committed_ns = animate_now();
     animate_interval = interval;
     animate_commit_ns = spent;
-    printf("animate %llu %llu\n", (unsigned long long)(interval / 1000),
-        (unsigned long long)(spent / 1000));
+    printf("animate %llu %llu %lld %u\n", (unsigned long long)(interval / 1000),
+        (unsigned long long)(spent / 1000), (long long)at, time);
     fflush(stdout);
 }
 
@@ -963,6 +963,8 @@ static void run(struct client *state) {
         if (state->animate && state->buffer && !state->animating) {
             state->animating = true;
             animate_commit(state);
+            printf("animate-start %lld\n", (long long)animate_now());
+            fflush(stdout);
         }
         alpha_step(state);
         repaint_step(state);
