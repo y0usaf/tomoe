@@ -2284,13 +2284,13 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     uint64_t saved_steps = lisp.steps;
     uint64_t saved_limit = lisp.steps_limit;
     uint64_t saved_deadline = lisp.deadline_at;
-    uint64_t started = saved_deadline ? lisp_now_ns() : 0;
+    uint64_t started = saved_deadline ? lisp_cpu_ns() : 0;
     int limited = steps || ms;
     lisp.limited_depth += limited;
     uint32_t saved_watched = lisp.watched_depth;
     lisp.steps = 0;
     lisp.steps_limit = steps;
-    lisp.deadline_at = ms ? lisp_now_ns() + ms * 1000000ull : 0;
+    lisp.deadline_at = ms ? lisp_cpu_ns() + ms * 1000000ull : 0;
     if (ms)
         lisp.watched_depth++;
     int ctl = push_ctl(CTL_CATCH);
@@ -2299,7 +2299,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
         lisp.limited_depth -= limited;
         lisp.steps = saved_steps;
         lisp.steps_limit = saved_limit;
-        lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
+        lisp.deadline_at = started ? saved_deadline + (lisp_cpu_ns() - started) : saved_deadline;
         lisp.watched_depth = saved_watched;
         throw_error_value(lisp_escape_condition());
     }
@@ -2308,7 +2308,7 @@ lisp_value builtin_with_limits(int argc, lisp_value *argv)
     lisp.limited_depth -= limited;
     lisp.steps = saved_steps;
     lisp.steps_limit = saved_limit;
-    lisp.deadline_at = started ? saved_deadline + (lisp_now_ns() - started) : saved_deadline;
+    lisp.deadline_at = started ? saved_deadline + (lisp_cpu_ns() - started) : saved_deadline;
     lisp.watched_depth = saved_watched;
     return result;
 }

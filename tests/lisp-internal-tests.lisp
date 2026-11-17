@@ -37,6 +37,14 @@
                             (ignore-errors (%with-limits nil 150 (lambda () (loop do nil))))
                             (+ 3 4))))
 
+(unit-check "limits-charge-the-evaluation-not-the-wall" 7
+            (ignore-errors
+             (%with-limits nil 50
+                           (lambda ()
+                             (dotimes (i 3) (unit-sleep 60))
+                             (let ((sum 0)) (dotimes (i 5000) (incf sum)))
+                             7))))
+
 (unit-check "limits-count-failures" t
             (let ((before (%budget-failures)))
               (ignore-errors (%with-limits 1000 0 (lambda () (loop do nil))))

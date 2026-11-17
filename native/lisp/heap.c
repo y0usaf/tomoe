@@ -38,6 +38,13 @@ uint64_t lisp_now_ns(void)
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+uint64_t lisp_cpu_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 static void *block_base(uint32_t index)
 {
     return reservation + (size_t)index * LISP_BLOCK_SIZE;

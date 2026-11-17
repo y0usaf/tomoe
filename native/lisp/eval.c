@@ -220,7 +220,7 @@ void check_steps_slow(void)
         snprintf(g_error, sizeof(g_error), "evaluation budget exceeded");
         throw_error_value(make_condition(g_error));
     }
-    if ((lisp.steps & 1023u) == 0 && lisp.deadline_at && lisp_now_ns() > lisp.deadline_at) {
+    if ((lisp.steps & 1023u) == 0 && lisp.deadline_at && lisp_cpu_ns() > lisp.deadline_at) {
         lisp.budget_failures++;
         snprintf(g_error, sizeof(g_error), "evaluation deadline exceeded");
         throw_error_value(make_condition(g_error));
@@ -229,7 +229,7 @@ void check_steps_slow(void)
 
 void lisp_check_deadline(void)
 {
-    if (lisp.deadline_at && lisp_now_ns() > lisp.deadline_at) {
+    if (lisp.deadline_at && lisp_cpu_ns() > lisp.deadline_at) {
         lisp.budget_failures++;
         snprintf(g_error, sizeof(g_error), "evaluation deadline exceeded");
         throw_error_value(make_condition(g_error));
@@ -1997,7 +1997,7 @@ int lisp_call(const char *function, int argc, const lisp_value *argv, lisp_value
     lisp.steps = 0;
     lisp.limited_depth = 0;
     lisp.steps_limit = lisp.pending_steps;
-    lisp.deadline_at = lisp.pending_deadline_ns ? lisp_now_ns() + lisp.pending_deadline_ns : 0;
+    lisp.deadline_at = lisp.pending_deadline_ns ? lisp_cpu_ns() + lisp.pending_deadline_ns : 0;
     lisp.call_depth++;
     struct lisp_region *saved_region = lisp.cur_region;
     lisp.cur_region = &lisp.arena;

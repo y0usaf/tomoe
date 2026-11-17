@@ -461,6 +461,7 @@ lisp_value lisp_keep(lisp_value value);
 void lisp_release(lisp_value value);
 lisp_value lisp_frame_alloc(struct lisp_frame *parent, uint32_t count);
 uint64_t lisp_now_ns(void);
+uint64_t lisp_cpu_ns(void);
 
 struct lisp_symbol *symbol_intern(uint32_t package, const char *name, size_t len, bool uninterned);
 struct lisp_symbol *symbol_find(uint32_t package, const char *name, size_t len);

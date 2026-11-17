@@ -486,8 +486,11 @@ falling back to the defaults. A reducer that runs the Lisp heap out fails
 alone; the runtime keeps an eighth of the heap for itself to settle the rest.
 The time a reducer spends under its own watchdog is not charged to the event
 that ran it, so one stuck extension fails by itself instead of failing the
-transaction around it. An extension that runs past its watchdog or the heap
-twice in a row is stopped: it is unmounted with all its effects, logged with
+transaction around it. A watchdog counts the CPU time the evaluation itself
+spends, not the clock on the wall: a loop that never ends is stopped just as
+fast, but a busy machine holding the CPU, or the shader helper compiling a new
+theme's program, never makes a short evaluation look stuck. An extension that
+runs past its watchdog or the heap twice in a row is stopped: it is unmounted with all its effects, logged with
 the reason, and comes back when the config reloads, so a hang costs two
 watchdogs once instead of one per event. A config or patch that fails to load
 gives back everything it allocated, so the next load has the whole heap. When

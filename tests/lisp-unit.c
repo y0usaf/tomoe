@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "lisp.h"
 
@@ -85,6 +86,16 @@ static lisp_value unit_check_error(int argc, lisp_value *argv)
     return lisp_nil();
 }
 
+static lisp_value unit_sleep(int argc, lisp_value *argv)
+{
+    if (argc < 1 || !lisp_intp(argv[0]))
+        lisp_error("UNIT-SLEEP needs milliseconds");
+    int64_t ms = lisp_get_int(argv[0]);
+    struct timespec rest = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    while (nanosleep(&rest, &rest) != 0) {}
+    return lisp_nil();
+}
+
 static char *read_file(const char *path)
 {
     FILE *file = fopen(path, "rb");
@@ -126,6 +137,7 @@ int main(int argc, char **argv)
     lisp_define_primitive("UNIT-CHECK", unit_check, 3, 3);
     lisp_define_primitive("UNIT-CHECK-TRUE", unit_check_true, 2, 2);
     lisp_define_primitive("UNIT-CHECK-ERROR", unit_check_error, 2, 2);
+    lisp_define_primitive("UNIT-SLEEP", unit_sleep, 1, 1);
 
     for (int i = 1; i < argc; i++) {
         const char *spec = argv[i];
