@@ -107,20 +107,20 @@ static bool pointer_trail_corner(struct tomoe *s, const struct pointer_sample *l
     return dot <= 0 || dot * dot < sharpest * was_step * step;
 }
 
-void pointer_trail_record(struct tomoe *s, uint32_t time_msec) {
+bool pointer_trail_record(struct tomoe *s, uint32_t time_msec) {
     double t = pointer_sample_time(time_msec);
     if (s->pointer_trail_count) {
         struct pointer_sample *last = &s->pointer_trail[
             (s->pointer_trail_head + POINTER_TRAIL - 1) % POINTER_TRAIL];
         double dx = s->pointer_x - last->x, dy = s->pointer_y - last->y;
         double step = dx * dx + dy * dy;
-        if (step < 1.0) return;
+        if (step < 1.0) return false;
         if (t < last->t) t = last->t;
         if (t < s->pointer_trail_next && !pointer_trail_corner(s, last, dx, dy, step)) {
             last->x = s->pointer_x;
             last->y = s->pointer_y;
             last->t = t;
-            return;
+            return true;
         }
     }
     s->pointer_trail[s->pointer_trail_head] =
@@ -128,6 +128,7 @@ void pointer_trail_record(struct tomoe *s, uint32_t time_msec) {
     s->pointer_trail_head = (s->pointer_trail_head + 1) % POINTER_TRAIL;
     s->pointer_trail_next = t + 0.008;
     if (s->pointer_trail_count < POINTER_TRAIL) s->pointer_trail_count++;
+    return true;
 }
 
 bool constraint_allows(struct tomoe *s, double x, double y) {

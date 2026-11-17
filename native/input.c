@@ -1319,10 +1319,11 @@ void pointer_refresh(struct tomoe *s) {
     if (x != s->pointer_x || y != s->pointer_y) {
         s->grab_x = s->pointer_x; s->grab_y = s->pointer_y;
     }
+    bool moved = x != s->pointer_x || y != s->pointer_y;
     pointer_sync_cursors(s);
-    pointer_trail_record(s, 0);
+    moved = pointer_trail_record(s, 0) || moved;
     cursor_motion_advance(s, animation_now());
-    ui_pointer_moved(s);
+    if (moved) ui_pointer_moved(s);
     if (s->grab_mode != 0) return;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
