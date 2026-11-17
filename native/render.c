@@ -1140,6 +1140,7 @@ void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count,
     }
     if (clip) GL(r, glDisable(GL_SCISSOR_TEST));
     GL(r, glBindVertexArray(0));
+    GL(r, glBindBuffer(GL_ARRAY_BUFFER, 0));
     r->quads += count;
     r->fragments += pixels;
 }

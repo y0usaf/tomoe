@@ -27,13 +27,28 @@ POLICY = """(in-package #:tomoe-user)
                                        :scale 1 :position '(0 0))))
              (list (shell-surface :cursor-trail (ui :stack)
                                   :anchors '(:top :right :bottom :left)
-                                  :layer :overlay
+                                  :layer {layer}
                                   :click-through t
                                   :background '(:trail :cell {cell} :life {life}
                                                 :steps {steps} :color #xb8e0ffff
-                                                :fps {fps} :idle {idle}))))
+                                                :fps {fps} :idle {idle}))
+                   {marker}))
             nil)))
 """
+
+MARKER = """(shell-surface :marker (ui :stack)
+                             :anchors '(:left :top)
+                             :layer :overlay
+                             :click-through t
+                             :width 240 :height 160 :margin '(40 40 0 0)
+                             :background (list :shader "{shader}" :fps 0 :idle 0.5))"""
+
+MARKER_SHADER = """void mainImage(out vec4 color, vec2 at) {
+    color = vec4(1.0, 0.0, 1.0, 1.0);
+}
+"""
+
+MARKER_INK = (255, 0, 255)
 
 TOLERANCE = 6.0
 MAXIMUM = 20.0
@@ -64,18 +79,26 @@ def parse_frames(text):
 
 
 class Compositor:
-    def __init__(self, work, tomoe, trail=True, fps=0, idle=0.5, cell=9, life=0.35, steps=4, hz=60):
+    def __init__(self, work, tomoe, trail=True, fps=0, idle=0.5, cell=9, life=0.35, steps=4,
+                 hz=60, marker=False):
         self.tomoe = tomoe
         self.socket = "trail"
         self.runtime = os.path.join(work, "run")
         os.makedirs(self.runtime, mode=0o700, exist_ok=True)
         self.log_path = os.path.join(work, "tomoe.log")
         self.log = open(self.log_path, "w")
+        shader = os.path.join(work, "marker.glsl")
+        with open(shader, "w") as handle:
+            handle.write(MARKER_SHADER)
         policy = os.path.join(work, "policy.lisp")
         with open(policy, "w") as handle:
-            handle.write(POLICY.format(cell=cell, life=life, steps=steps, fps=fps, idle=idle,
-                                       hz=hz)
-                         if trail else "(in-package #:tomoe-user)\n")
+            if trail or marker:
+                handle.write(POLICY.format(
+                    cell=cell, life=life, steps=steps, fps=fps, idle=idle, hz=hz,
+                    layer=":top" if marker else ":overlay",
+                    marker=MARKER.format(shader=shader) if marker else ""))
+            else:
+                handle.write("(in-package #:tomoe-user)\n")
         self.environment = dict(os.environ)
         self.environment.update({"XDG_RUNTIME_DIR": self.runtime, "WAYLAND_DISPLAY": self.socket,
                                  "TOMOE_DEBUG": "1"})
@@ -177,6 +200,53 @@ def lit_pixels(path, threshold=20, step=2):
             if row[at] > threshold or row[at + 1] > threshold or row[at + 2] > threshold:
                 points.append((x, y))
     return points
+
+
+def marker_pixels(path):
+    width, height, pixels = read_ppm(path)
+    span = width * 3
+    ink = bytes(MARKER_INK)
+    count = 0
+    for y in range(height):
+        row = pixels[y * span:(y + 1) * span]
+        for x in range(width):
+            at = x * 3
+            if row[at:at + 3] == ink:
+                count += 1
+    return count
+
+
+def marker_after_trail(work, tomoe, pointer, failures, report):
+    zigzag = [(280, 520), (440, 200), (600, 520), (760, 200), (920, 520)]
+    painted = {}
+    for trail in (False, True):
+        tag = "with-trail" if trail else "without-trail"
+        directory = os.path.join(work, "marker-" + tag)
+        os.makedirs(directory, exist_ok=True)
+        compositor = Compositor(directory, tomoe, trail, marker=True)
+        compositor.pointer = pointer
+        compositor.work = directory
+        try:
+            time.sleep(1.0)
+            arguments = [pointer, "--path", encode_path(zigzag), "--steps", "48",
+                         "--interval-ms", "8", "--hold-ms", "0", "--delay-ms", "50",
+                         "--extent", "1280x720"]
+            process = subprocess.Popen(arguments, env=compositor.environment,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.35)
+            frame = os.path.join(directory, "marker.ppm")
+            compositor.screenshot(frame)
+            process.wait(timeout=30)
+            painted[tag] = marker_pixels(frame)
+        finally:
+            compositor.stop()
+    report["marker"] = painted
+    if painted["without-trail"] < 1000:
+        failures.append(f"marker: the surface drawn after the trail painted "
+                        f"{painted['without-trail']} pixels on its own, not a solid block")
+    elif painted["with-trail"] != painted["without-trail"]:
+        failures.append(f"marker: the trail moved the surface drawn after it "
+                        f"({painted['with-trail']} of {painted['without-trail']} pixels)")
 
 
 def write_png(source, target):
@@ -506,6 +576,8 @@ def main():
         report["idle"] = {"seconds": 2.0, "drawn": compositor.drawn(before, after), "wakes": wakes}
         if report["idle"]["drawn"]:
             failures.append(f"idle: the overlay drew {report['idle']['drawn']} frames while the pointer was still")
+
+        marker_after_trail(work, arguments.tomoe, arguments.pointer, failures, report)
 
         motions = [
             ("arc", arc, 2, 6, False),
