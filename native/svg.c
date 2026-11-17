@@ -827,6 +827,14 @@ struct svg_shader {
     int two_stop;
     int radial;
     int radial_bias;
+    int highp;
+    int conical_kind;
+    int focal_swapped;
+    int focal_on_circle;
+    int focal_well_behaved;
+    int focal_native;
+    int focal_negate;
+    float conical_p0, conical_p1;
     float radial_p0, radial_p1;
     float factor[4], bias[4];
     int len;
@@ -849,6 +857,7 @@ struct svg_super {
 };
 
 static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned out[4]);
+static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]);
 
 static void svg_super_flush(struct svg_super *sb) {
     if (sb->curr_iy >= (int)sb->top && sb->width > 0) {
@@ -857,6 +866,29 @@ static void svg_super_flush(struct svg_super *sb) {
             if (!a) continue;
             unsigned char *px = sb->target->pixels +
                 ((size_t)sb->curr_iy * (size_t)sb->target->width + sb->left + (size_t)i) * 4;
+            if (sb->shader->highp) {
+                float color[4], d[4];
+                svg_shader_color_highp(sb->shader, (int)sb->left + i, sb->curr_iy, color);
+                for (int k = 0; k < 4; k++) d[k] = (float)px[k] * (1.0f / 255.0f);
+                float pr = d[0] * (1.0f - color[3]) + color[0];
+                float pg = d[1] * (1.0f - color[3]) + color[1];
+                float pb = d[2] * (1.0f - color[3]) + color[2];
+                float pa = d[3] * (1.0f - color[3]) + color[3];
+                float cov = (float)a * (1.0f / 255.0f);
+                float fr = (pr - d[0]) * cov + d[0];
+                float fg = (pg - d[1]) * cov + d[1];
+                float fb = (pb - d[2]) * cov + d[2];
+                float fa = (pa - d[3]) * cov + d[3];
+                float vals[4] = { fr, fg, fb, fa };
+                for (int k = 0; k < 4; k++) {
+                    float v = vals[k];
+                    if (!(v > 0.0f)) v = 0.0f;
+                    if (v > 1.0f) v = 1.0f;
+                    long rv = lrintf(v * 255.0f);
+                    px[k] = (unsigned char)rv;
+                }
+                continue;
+            }
             unsigned color[4];
             svg_shader_color(sb->shader, (int)sb->left + i, sb->curr_iy, color);
             unsigned sr = color[0], sg = color[1], sbv = color[2], sa = color[3];
@@ -6655,6 +6687,66 @@ static int svg_nearly_zero(float v, float tolerance) {
     return fabsf(v) <= tolerance;
 }
 
+static struct svg_matrix svg_from_poly2(struct svg_point p0, struct svg_point p1) {
+    return (struct svg_matrix){ p1.y - p0.y, p0.x - p1.x, p1.x - p0.x, p1.y - p0.y,
+        p0.x, p0.y };
+}
+
+static int svg_ts_from_poly(struct svg_point src1, struct svg_point src2,
+        struct svg_point dst1, struct svg_point dst2, struct svg_matrix *out) {
+    struct svg_matrix a = svg_from_poly2(src1, src2);
+    int ok;
+    struct svg_matrix inv = svg_matrix_invert(a, &ok);
+    if (!ok) return 0;
+    struct svg_matrix b = svg_from_poly2(dst1, dst2);
+    *out = svg_matrix_concat(b, inv);
+    return 1;
+}
+
+static int svg_radial_map_to_unit_x(struct svg_point o, struct svg_point x1,
+        struct svg_matrix *out) {
+    return svg_ts_from_poly(o, x1, (struct svg_point){ 0.0f, 0.0f }, (struct svg_point){ 1.0f, 0.0f }, out);
+}
+
+static int svg_focal_set(struct svg_shader *shader, float r0, float r1,
+        struct svg_matrix *matrix) {
+    shader->focal_swapped = 0;
+    float focal_x = r0 / (r0 - r1);
+    if (fabsf(focal_x - 1.0f) <= 1.0f / 4096.0f) {
+        struct svg_matrix m = svg_matrix_concat((struct svg_matrix){ 1, 0, 0, 1, -1, 0 },
+            *matrix);
+        m = svg_matrix_concat((struct svg_matrix){ -1, 0, 0, 1, 0, 0 }, m);
+        *matrix = m;
+        float t = r0; r0 = r1; r1 = t;
+        focal_x = 0.0f;
+        shader->focal_swapped = 1;
+    }
+    struct svg_point from[2] = { { focal_x, 0.0f }, { 1.0f, 0.0f } };
+    struct svg_point to[2] = { { 0.0f, 0.0f }, { 1.0f, 0.0f } };
+    struct svg_matrix focal_matrix;
+    if (!svg_ts_from_poly(from[0], from[1], to[0], to[1], &focal_matrix)) return 0;
+    *matrix = svg_matrix_concat(focal_matrix, *matrix);
+    r1 = r1 / fabsf(1.0f - focal_x);
+    float radial_r1 = r1;
+    shader->focal_on_circle = fabsf(1.0f - radial_r1) <= 1.0f / 4096.0f;
+    if (shader->focal_on_circle) {
+        *matrix = svg_matrix_concat((struct svg_matrix){ 0.5f, 0, 0, 0.5f, 0, 0 }, *matrix);
+    } else {
+        float denom = radial_r1 * radial_r1 - 1.0f;
+        struct svg_matrix scale = { radial_r1 / denom, 0, 0,
+            1.0f / sqrtf(fabsf(denom)), 0, 0 };
+        *matrix = svg_matrix_concat(scale, *matrix);
+    }
+    float fscale = fabsf(1.0f - focal_x);
+    *matrix = svg_matrix_concat((struct svg_matrix){ fscale, 0, 0, fscale, 0, 0 }, *matrix);
+    shader->conical_p0 = 1.0f / radial_r1;
+    shader->conical_p1 = focal_x;
+    shader->focal_well_behaved = !shader->focal_on_circle && radial_r1 > 1.0f;
+    shader->focal_native = fabsf(focal_x) <= 1.0f / 4096.0f;
+    shader->focal_negate = (1.0f - focal_x) < 0.0f;
+    return 1;
+}
+
 static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *paint, float opacity,
         struct svg_matrix device_ts, float path_bbox[4], int has_bbox) {
     memset(shader, 0, sizeof(*shader));
@@ -6687,35 +6779,79 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     }
     float sx = 0, sy = 0, ex = 0, ey = 0;
     float vx = 0, vy = 0, mag = 0;
+    struct svg_matrix highp_matrix = svg_matrix_identity();
+    int highp_ready = 0;
     if (paint->type == 10) {
         sx = g->x1; sy = g->y1; ex = g->x2; ey = g->y2;
         vx = ex - sx; vy = ey - sy;
         mag = sqrtf(vx * vx + vy * vy);
         if (!isfinite(mag)) { shader->type = -1; return; }
     } else {
-        sx = g->fx; sy = g->fy; ex = g->cx; ey = g->cy;
-        vx = ex - sx; vy = ey - sy;
-        mag = sqrtf(vx * vx + vy * vy);
-        if (!isfinite(mag)) { shader->type = -1; return; }
-        if (!(mag <= 1.0f / 32768.0f)) {
-            shader->type = -1;
-            return;
-        }
         float r0 = g->fr, r1 = g->r;
-        if (!(r0 >= 0.0f) || !(r1 > 0.0f)) { shader->type = -1; return; }
-        if (r0 > 1.0f / 32768.0f) {
-            float rmax = r0 > r1 ? r0 : r1;
-            shader->radial = 1;
-            shader->radial_p0 = rmax / (r1 - r0);
-            shader->radial_p1 = -r0 / (r1 - r0);
-            shader->radial_bias = 1;
-            mag = rmax;
+        if (!(r0 >= 0.0f) || !(r1 >= 0.0f)) { shader->type = -1; return; }
+        float c0x = g->fx, c0y = g->fy, c1x = g->cx, c1y = g->cy;
+        float dx = c1x - c0x, dy = c1y - c0y;
+        float length = sqrtf(dx * dx + dy * dy);
+        if (!isfinite(length)) { shader->type = -1; return; }
+        const float deg = 1.0f / 32768.0f;
+        struct svg_matrix radial_matrix = svg_matrix_identity();
+        int radial_matrix_set = 0;
+        shader->radial = 0;
+        shader->highp = 0;
+        shader->conical_kind = 0;
+        if (length <= deg) {
+            if (!(fmaxf(r0, r1) > deg) || fabsf(r0 - r1) <= deg) {
+                if (g->spread == 0 && r1 > deg) {
+                    if (n + 1 > 64) { shader->type = -1; return; }
+                    struct svg_stop first_stop = stops[0];
+                    struct svg_stop last_stop = stops[n - 1];
+                    stops[0] = first_stop; stops[0].offset = 0.0f;
+                    stops[1] = first_stop; stops[1].offset = 1.0f;
+                    stops[2] = last_stop; stops[2].offset = 1.0f;
+                    n = 3;
+                    shader->radial = 1;
+                    shader->radial_bias = 0;
+                    mag = r1;
+                    sx = c0x; sy = c0y;
+                } else { shader->type = -1; return; }
+            } else if (r0 <= deg) {
+                shader->radial = 1;
+                shader->radial_bias = 0;
+                mag = r1;
+                sx = c0x; sy = c0y;
+            } else {
+                float rmax = fmaxf(r0, r1);
+                shader->radial = 1;
+                shader->radial_bias = 1;
+                shader->radial_p0 = rmax / (r1 - r0);
+                shader->radial_p1 = -r0 / (r1 - r0);
+                mag = rmax;
+                sx = c1x; sy = c1y;
+            }
         } else {
-            shader->radial = 1;
-            shader->radial_bias = 0;
-            mag = r1;
+            if (!svg_radial_map_to_unit_x((struct svg_point){ c0x, c0y }, (struct svg_point){ c1x, c1y },
+                    &radial_matrix)) { shader->type = -1; return; }
+            radial_matrix_set = 1;
+            if (fabsf(r0 - r1) <= deg) {
+                shader->highp = 1;
+                shader->conical_kind = 2;
+                float scaled = r0 / length;
+                shader->conical_p0 = scaled * scaled;
+                shader->conical_p1 = 0.0f;
+            } else {
+                shader->highp = 1;
+                shader->conical_kind = 1;
+                if (!svg_focal_set(shader, r0 / length, r1 / length, &radial_matrix)) {
+                    shader->type = -1;
+                    return;
+                }
+            }
         }
-        sx = ex; sy = ey;
+        if (shader->highp) {
+            highp_matrix = radial_matrix;
+            highp_ready = 1;
+        }
+        (void)radial_matrix_set;
     }
     if (paint->type == 10 && svg_nearly_zero(mag, 1.0f / 32768.0f)) {
         if (g->spread == 0) {
@@ -6773,30 +6909,39 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     int ok;
     struct svg_matrix inv = svg_matrix_invert(m, &ok);
     if (!ok) { shader->type = -1; return; }
-    float inv_mag = 1.0f / mag;
-    struct svg_matrix p;
-    if (shader->radial) {
-        p = svg_matrix_concat((struct svg_matrix){ 1, 0, 0, 1, -sx, -sy },
-            (struct svg_matrix){ 1, 0, 0, 1, 0, 0 });
-        p = svg_matrix_concat((struct svg_matrix){ inv_mag, 0, 0, inv_mag, 0, 0 }, p);
-    } else {
-        vx *= inv_mag;
-        vy *= inv_mag;
-        float sinv = -vy, cosv = vx;
-        float cos_inv = 1.0f - cosv;
-        struct svg_matrix rot = { cosv, sinv, -sinv, cosv,
-            sinv * sy + cos_inv * sx, -sinv * sx + cos_inv * sy };
-        p = rot;
-        p = svg_matrix_concat((struct svg_matrix){ 1, 0, 0, 1, -sx, -sy }, p);
-        p = svg_matrix_concat((struct svg_matrix){ inv_mag, 0, 0, inv_mag, 0, 0 }, p);
+    if (shader->highp && highp_ready) {
+        shader->type = 1;
+        shader->ts = svg_matrix_concat(highp_matrix, inv);
+        shader->spread = g->spread;
+        shader->opacity = alpha_f;
     }
-    shader->type = 1;
-    shader->ts = svg_matrix_concat(p, inv);
-    shader->spread = g->spread;
-    shader->opacity = alpha_f;
+    if (!shader->highp) {
+        float inv_mag = 1.0f / mag;
+        struct svg_matrix p;
+        if (shader->radial) {
+            p = svg_matrix_concat((struct svg_matrix){ 1, 0, 0, 1, -sx, -sy },
+                (struct svg_matrix){ 1, 0, 0, 1, 0, 0 });
+            p = svg_matrix_concat((struct svg_matrix){ inv_mag, 0, 0, inv_mag, 0, 0 }, p);
+        } else {
+            vx *= inv_mag;
+            vy *= inv_mag;
+            float sinv = -vy, cosv = vx;
+            float cos_inv = 1.0f - cosv;
+            struct svg_matrix rot = { cosv, sinv, -sinv, cosv,
+                sinv * sy + cos_inv * sx, -sinv * sx + cos_inv * sy };
+            p = rot;
+            p = svg_matrix_concat((struct svg_matrix){ 1, 0, 0, 1, -sx, -sy }, p);
+            p = svg_matrix_concat((struct svg_matrix){ inv_mag, 0, 0, inv_mag, 0, 0 }, p);
+        }
+        shader->type = 1;
+        shader->ts = svg_matrix_concat(p, inv);
+        shader->spread = g->spread;
+        shader->opacity = alpha_f;
+    }
     int dummy_first = stops[0].offset != 0.0f;
     int dummy_last = stops[n - 1].offset != 1.0f;
-    struct svg_stop full[26];
+    struct svg_stop full[66];
+    memset(full, 0, sizeof(full));
     int count = 0;
     if (dummy_first) {
         full[count] = stops[0];
@@ -6873,6 +7018,70 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     fi++;
     shader->len = fi;
     if (shader->len >= 20) shader->len = 19;
+}
+
+static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
+    if (!shader || shader->type < 0) return;
+    if (shader->type == 0) {
+        out[0] = (float)shader->sr / 255.0f;
+        out[1] = (float)shader->sg / 255.0f;
+        out[2] = (float)shader->sb / 255.0f;
+        out[3] = (float)shader->sa / 255.0f;
+        return;
+    }
+    struct svg_matrix *ts = &shader->ts;
+    float px = (float)x + 0.5f, py = (float)y + 0.5f;
+    float nx = px * ts->sx + (py * ts->kx + ts->tx);
+    float ny = px * ts->ky + (py * ts->sy + ts->ty);
+    float t;
+    int mask = 1;
+    if (shader->conical_kind == 2) {
+        t = nx + sqrtf(shader->conical_p0 - ny * ny);
+        if (t != t) { t = 0.0f; mask = 0; }
+    } else {
+        float xx = nx, yy = ny;
+        if (shader->focal_on_circle) {
+            t = xx + yy * yy / xx;
+        } else if (shader->focal_well_behaved) {
+            t = sqrtf(xx * xx + yy * yy) - xx * shader->conical_p0;
+        } else {
+            float sq = sqrtf(xx * xx - yy * yy);
+            if (shader->focal_swapped || shader->focal_negate)
+                t = -sq - xx * shader->conical_p0;
+            else
+                t = sq - xx * shader->conical_p0;
+        }
+        if (!shader->focal_well_behaved && (t <= 0.0f || t != t)) { t = 0.0f; mask = 0; }
+        if (shader->focal_negate) t = -t;
+        if (!shader->focal_native) t = t + shader->conical_p1;
+        if (shader->focal_swapped) t = 1.0f - t;
+    }
+    if (shader->spread == 1) {
+        float u = t - 1.0f;
+        float f = floorf(u * 0.5f);
+        float v = fabsf((u - (f + f)) - 1.0f);
+        t = fmaxf(0.0f, fminf(v, 1.0f));
+    } else if (shader->spread == 2) {
+        float v = t - floorf(t);
+        t = fmaxf(0.0f, fminf(v, 1.0f));
+    }
+    float color[4];
+    if (shader->two_stop) {
+        for (int k = 0; k < 4; k++) color[k] = t * shader->factor[k] + shader->bias[k];
+    } else {
+        int idx = 0;
+        for (int i = 1; i < shader->len; i++) idx += (t >= shader->t_values[i]);
+        if (idx >= 20) idx = 19;
+        for (int k = 0; k < 4; k++) color[k] = t * shader->factors[idx][k] + shader->biases[idx][k];
+    }
+    if (!shader->opaque) {
+        color[0] *= color[3];
+        color[1] *= color[3];
+        color[2] *= color[3];
+    }
+    if (!mask) color[0] = color[1] = color[2] = color[3] = 0.0f;
+    out[0] = color[0]; out[1] = color[1]; out[2] = color[2]; out[3] = color[3];
 }
 
 static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned out[4]) {
