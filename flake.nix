@@ -111,7 +111,7 @@
             }).overrideAttrs
               (old: {
                 buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
-                propagatedBuildInputs = [ freetype fontconfig ] ++ old.propagatedBuildInputs;
+                propagatedBuildInputs = [ freetype fontconfig ] ++ pkgs.lib.remove pkgs.cairo old.propagatedBuildInputs;
                 mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
               });
           libs = lean pkgs;
