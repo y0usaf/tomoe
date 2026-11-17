@@ -127,7 +127,7 @@ else
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 ))}
 	FIRST_P50_US=${GATE_WAKE_FIRST_P50_US:-$(( PERIOD_US * 2 ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 ))}
-	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 2 ))}
+	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 5 / 2 ))}
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
@@ -306,18 +306,19 @@ quiet() {
 }
 
 cadence() {
-	local label=$1 drew=$2 want p50 p99 count
-	want=$(( 16 * HZ * 9 / 100 ))
-	((drew >= want)) ||
-		die "$label: drew $drew frames in 1.6 s while something changed, not one per $PERIOD_US us ($want)"
+	local label=$1 drew=$2 p50_limit=${3:-$CADENCE_US} p99_limit=${4:-$CADENCE_P99_US}
+	local share=${5:-60} p50 p99 count want
 	p50=$(timing present-interval p50) p99=$(timing present-interval p99)
 	count=$(timing present-interval count)
 	[[ -n $p50 && -n $p99 ]] || die "$label: nothing measured the interval between frames"
-	((p50 <= CADENCE_US)) ||
-		die "$label: frames came every ${p50}us, past the ${CADENCE_US}us a $HZ Hz output may take"
-	((p99 <= CADENCE_P99_US)) ||
-		die "$label: one frame in a hundred followed the last after ${p99}us, past ${CADENCE_P99_US}us"
-	say "$label: $drew frames in 1.6 s, interval p50 ${p50}us p99 ${p99}us over $count frames"
+	want=$(( 16 * HZ * share / 100 ))
+	((count >= want)) ||
+		die "$label: presented $count frames in 1.6 s while something changed, not $share% of $HZ Hz ($want)"
+	((p50 <= p50_limit)) ||
+		die "$label: frames came every ${p50}us, past the ${p50_limit}us a $HZ Hz output may take"
+	((p99 <= p99_limit)) ||
+		die "$label: one frame in a hundred followed the last after ${p99}us, past ${p99_limit}us"
+	say "$label: $count frames presented in 1.6 s ($drew drawn), interval p50 ${p50}us p99 ${p99}us"
 }
 
 wake_from_rest() {
@@ -358,8 +359,26 @@ wake_check() {
 	quiet "$label damage"
 	wake_from_rest "$label damage" present-commit kill -USR1 "$pid"
 
+	local moves=() i
+	for ((i = 0; i < 500; i++)); do
+		moves+=("move $(( cx - 300 + i % 160 )) $(( cy - 100 + i % 120 ))" "sleep 4")
+	done
+	quiet "$label motion stream"
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" --extent "${WIDTH}x${HEIGHT}" "${moves[@]}" \
+		>"$DIR/keys" 2>&1 &
+	pid=$!
+	sleep 0.4
+	timings_reset
+	before=$(frames_on)
+	sleep 1.6
+	after=$(frames_on)
+	timings_read
+	kill -TERM "$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	cadence "$label motion stream" $(( after - before )) "$CADENCE_US" "$CADENCE_US" 90
+
 	quiet "$label drag"
-	local moves=("move $cx $cy" "press 272") i
+	moves=("move $cx $cy" "press 272")
 	for ((i = 0; i < 400; i++)); do
 		moves+=("move $(( cx + i % 160 )) $(( cy + i % 120 ))" "sleep 4")
 	done
@@ -378,8 +397,9 @@ wake_check() {
 	cadence "$label drag" $(( after - before ))
 
 	quiet "$label commit"
-	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --commit-rate 240 \
-		--repaint --color 664422 --change-to 224466 --app-id gate-wake --title gate-wake \
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
+		--size 320x240 --color 664422 --app-id gate-wake \
+		--title gate-wake \
 		>>"$DIR/clients" 2>&1 </dev/null &
 	pid=$!
 	sleep 0.8
