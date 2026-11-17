@@ -943,3 +943,37 @@ void dp_polygon_intersect(struct dp_polygon *a, struct dp_polygon *b)
     free(events);
     free(event_ptrs);
 }
+
+void dp_polygon_intersect_with_boxes(struct dp_polygon *polygon, const px_box_t *boxes,
+    int num_boxes)
+{
+    struct dp_polygon b;
+    int n;
+
+    if (num_boxes == 0) {
+        polygon->count = 0;
+        return;
+    }
+
+    for (n = 0; n < num_boxes; n++) {
+        if (polygon->extents.p1.x >= boxes[n].p1.x &&
+                polygon->extents.p2.x <= boxes[n].p2.x &&
+                polygon->extents.p1.y >= boxes[n].p1.y &&
+                polygon->extents.p2.y <= boxes[n].p2.y)
+            return;
+    }
+
+    dp_polygon_init(&b);
+    for (n = 0; n < num_boxes; n++) {
+        if (boxes[n].p2.x > polygon->extents.p1.x && boxes[n].p1.x < polygon->extents.p2.x &&
+                boxes[n].p2.y > polygon->extents.p1.y && boxes[n].p1.y < polygon->extents.p2.y) {
+            dp_polygon_add_edge(&b, (px_point_t){ boxes[n].p1.x, boxes[n].p1.y },
+                (px_point_t){ boxes[n].p1.x, boxes[n].p2.y }, 1);
+            dp_polygon_add_edge(&b, (px_point_t){ boxes[n].p2.x, boxes[n].p1.y },
+                (px_point_t){ boxes[n].p2.x, boxes[n].p2.y }, -1);
+        }
+    }
+
+    dp_polygon_intersect(polygon, &b);
+    dp_polygon_fini(&b);
+}

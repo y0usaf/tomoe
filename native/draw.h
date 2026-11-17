@@ -34,6 +34,9 @@ struct dpath {
 
 struct drect { int x0, y0, x1, y1; };
 
+int32_t dp_fixed_from_double(double d);
+double dp_fixed_to_double(int32_t f);
+
 struct dp_span_entry { int x; unsigned char coverage; };
 
 struct dp_span_band { int y, height, first, count, end; };
@@ -64,14 +67,20 @@ struct dp_polygon {
 };
 
 void dp_polygon_init(struct dp_polygon *polygon);
-void dp_polygon_set_limit(struct dp_polygon *polygon, struct drect clip);
+void dp_polygon_set_limit(struct dp_polygon *polygon, px_box_t limit);
+void dp_polygon_intersect_with_boxes(struct dp_polygon *polygon, const px_box_t *boxes,
+    int num_boxes);
 void dp_polygon_add_edge(struct dp_polygon *polygon, px_point_t p1, px_point_t p2, int dir);
 void dp_polygon_add_line(struct dp_polygon *polygon, px_point_t p1, px_point_t p2,
     int32_t top, int32_t bottom, int dir);
 void dp_polygon_fini(struct dp_polygon *polygon);
-bool dp_path_fill_to_polygon(const struct dpath *path, struct dp_polygon *polygon);
+bool dp_path_fill_to_polygon(const struct dpath *path, const px_box_t *limit,
+    struct dp_polygon *polygon);
+int dp_path_rect_boxes(const struct dpath *path, px_box_t *boxes, int max);
 bool dp_polygon_fill_mask(const struct dp_polygon *polygon, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y);
+bool dp_box_mask(px_box_t box, struct drect clip, unsigned char *mask, int stride,
+    int mask_x, int mask_y);
 
 void dpath_init(struct dpath *path);
 void dpath_fini(struct dpath *path);

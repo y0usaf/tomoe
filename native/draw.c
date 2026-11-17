@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 and pixman 0.46.4, see NOTICE */
 #include "draw.h"
 #include "stroke.h"
 
@@ -21,12 +22,9 @@ void dp_polygon_init(struct dp_polygon *polygon)
     polygon->extents.p2.y = INT32_MIN;
 }
 
-void dp_polygon_set_limit(struct dp_polygon *polygon, struct drect clip)
+void dp_polygon_set_limit(struct dp_polygon *polygon, px_box_t limit)
 {
-    polygon->limit.p1.x = (px_fixed_t)clip.x0 * FIXED_ONE;
-    polygon->limit.p1.y = (px_fixed_t)clip.y0 * FIXED_ONE;
-    polygon->limit.p2.x = (px_fixed_t)clip.x1 * FIXED_ONE;
-    polygon->limit.p2.y = (px_fixed_t)clip.y1 * FIXED_ONE;
+    polygon->limit = limit;
     polygon->has_limit = 1;
     polygon->limits = &polygon->limit;
     polygon->num_limits = 1;
@@ -56,14 +54,14 @@ static int fixed_ceil(int32_t f)
     return -((int32_t)(-((uint32_t)f) >> 8));
 }
 
-static int32_t fixed_from_double(double d)
+int32_t dp_fixed_from_double(double d)
 {
     union { double d; int32_t i[2]; } u;
     u.d = d + MAGIC_FIXED;
     return u.i[0];
 }
 
-static double fixed_to_double(int32_t f)
+double dp_fixed_to_double(int32_t f)
 {
     return (double)f / FIXED_ONE;
 }
@@ -326,14 +324,14 @@ static void de_casteljau(struct spline_knots *s1, struct spline_knots *s2)
 
 static double spline_error_squared(const struct spline_knots *knots)
 {
-    double bdx = fixed_to_double(knots->b.x - knots->a.x);
-    double bdy = fixed_to_double(knots->b.y - knots->a.y);
-    double cdx = fixed_to_double(knots->c.x - knots->a.x);
-    double cdy = fixed_to_double(knots->c.y - knots->a.y);
+    double bdx = dp_fixed_to_double(knots->b.x - knots->a.x);
+    double bdy = dp_fixed_to_double(knots->b.y - knots->a.y);
+    double cdx = dp_fixed_to_double(knots->c.x - knots->a.x);
+    double cdy = dp_fixed_to_double(knots->c.y - knots->a.y);
 
     if (knots->a.x != knots->d.x || knots->a.y != knots->d.y) {
-        double dx = fixed_to_double(knots->d.x - knots->a.x);
-        double dy = fixed_to_double(knots->d.y - knots->a.y);
+        double dx = dp_fixed_to_double(knots->d.x - knots->a.x);
+        double dy = dp_fixed_to_double(knots->d.y - knots->a.y);
         double v = dx * dx + dy * dy;
         double u = bdx * dx + bdy * dy;
         if (u <= 0) {
@@ -435,10 +433,10 @@ static void extents_add(struct dpath *path, int32_t x, int32_t y)
 static void extents_add_curve(struct dpath *path, const struct dpoint *p0,
     const struct dpoint *p1, const struct dpoint *p2, const struct dpoint *p3)
 {
-    double x0 = fixed_to_double(p0->x), y0 = fixed_to_double(p0->y);
-    double x1 = fixed_to_double(p1->x), y1 = fixed_to_double(p1->y);
-    double x2 = fixed_to_double(p2->x), y2 = fixed_to_double(p2->y);
-    double x3 = fixed_to_double(p3->x), y3 = fixed_to_double(p3->y);
+    double x0 = dp_fixed_to_double(p0->x), y0 = dp_fixed_to_double(p0->y);
+    double x1 = dp_fixed_to_double(p1->x), y1 = dp_fixed_to_double(p1->y);
+    double x2 = dp_fixed_to_double(p2->x), y2 = dp_fixed_to_double(p2->y);
+    double x3 = dp_fixed_to_double(p3->x), y3 = dp_fixed_to_double(p3->y);
     double t[4];
     int count = 0;
     double a, b, c;
@@ -473,7 +471,7 @@ static void extents_add_curve(struct dpath *path, const struct dpoint *p0,
         double tt = t[i], u = 1 - tt;
         double x = x0 * u * u * u + 3 * x1 * tt * u * u + 3 * x2 * tt * tt * u + x3 * tt * tt * tt;
         double y = y0 * u * u * u + 3 * y1 * tt * u * u + 3 * y2 * tt * tt * u + y3 * tt * tt * tt;
-        extents_add(path, fixed_from_double(x), fixed_from_double(y));
+        extents_add(path, dp_fixed_from_double(x), dp_fixed_from_double(y));
     }
 }
 
@@ -548,13 +546,13 @@ void dp_new_sub_path(struct dpath *path)
 void dp_move_to(struct dpath *path, double x, double y)
 {
     if (path->failed) return;
-    path_move_to(path, fixed_from_double(x), fixed_from_double(y));
+    path_move_to(path, dp_fixed_from_double(x), dp_fixed_from_double(y));
 }
 
 void dp_line_to(struct dpath *path, double x, double y)
 {
     if (path->failed) return;
-    path_line_to_fixed(path, fixed_from_double(x), fixed_from_double(y));
+    path_line_to_fixed(path, dp_fixed_from_double(x), dp_fixed_from_double(y));
 }
 
 static int32_t penultimate_x(const struct dpath *path, int32_t fallback)
@@ -609,9 +607,9 @@ void dp_curve_to(struct dpath *path, double x0, double y0, double x1, double y1,
     double x2, double y2)
 {
     if (path->failed) return;
-    path_curve_to_fixed(path, fixed_from_double(x0), fixed_from_double(y0),
-        fixed_from_double(x1), fixed_from_double(y1),
-        fixed_from_double(x2), fixed_from_double(y2));
+    path_curve_to_fixed(path, dp_fixed_from_double(x0), dp_fixed_from_double(y0),
+        dp_fixed_from_double(x1), dp_fixed_from_double(y1),
+        dp_fixed_from_double(x2), dp_fixed_from_double(y2));
 }
 
 void dp_close_path(struct dpath *path)
@@ -628,8 +626,8 @@ void dp_close_path(struct dpath *path)
 static void path_rel_line_to(struct dpath *path, double dx, double dy)
 {
     if (!path->has_current) return;
-    path_line_to_fixed(path, path->current.x + fixed_from_double(dx),
-        path->current.y + fixed_from_double(dy));
+    path_line_to_fixed(path, path->current.x + dp_fixed_from_double(dx),
+        path->current.y + dp_fixed_from_double(dy));
 }
 
 struct drect dp_path_extents(const struct dpath *path)
@@ -851,6 +849,30 @@ static px_status_t span_rows(void *closure, int y, int height,
     return PX_STATUS_SUCCESS;
 }
 
+static bool points_rect_box(const px_point_t *p, int count, px_box_t *box)
+{
+    int n = count;
+    if (n == 5 && p[4].x == p[0].x && p[4].y == p[0].y) n = 4;
+    if (n != 4) return false;
+    for (int i = 0; i < 4; i++) {
+        const px_point_t *a = &p[i], *c = &p[(i + 1) & 3];
+        if (a->x != c->x && a->y != c->y) return false;
+    }
+    px_fixed_t minx = p[0].x, maxx = p[0].x, miny = p[0].y, maxy = p[0].y;
+    for (int i = 1; i < 4; i++) {
+        if (p[i].x < minx) minx = p[i].x;
+        if (p[i].x > maxx) maxx = p[i].x;
+        if (p[i].y < miny) miny = p[i].y;
+        if (p[i].y > maxy) maxy = p[i].y;
+    }
+    if (minx == maxx || miny == maxy) return false;
+    box->p1.x = minx;
+    box->p1.y = miny;
+    box->p2.x = maxx;
+    box->p2.y = maxy;
+    return true;
+}
+
 static bool path_is_rect_box(const struct dpath *path, int32_t *l, int32_t *t,
     int32_t *r, int32_t *b)
 {
@@ -865,20 +887,42 @@ static bool path_is_rect_box(const struct dpath *path, int32_t *l, int32_t *t,
         return false;
     px_point_t p[4] = { { ops[0].p[0].x, ops[0].p[0].y }, { ops[1].p[0].x, ops[1].p[0].y },
         { ops[2].p[0].x, ops[2].p[0].y }, { ops[3].p[0].x, ops[3].p[0].y } };
-    for (int i = 0; i < 4; i++) {
-        const px_point_t *a = &p[i], *c = &p[(i + 1) & 3];
-        if (a->x != c->x && a->y != c->y) return false;
-    }
-    int32_t minx = p[0].x, maxx = p[0].x, miny = p[0].y, maxy = p[0].y;
-    for (int i = 1; i < 4; i++) {
-        if (p[i].x < minx) minx = p[i].x;
-        if (p[i].x > maxx) maxx = p[i].x;
-        if (p[i].y < miny) miny = p[i].y;
-        if (p[i].y > maxy) maxy = p[i].y;
-    }
-    if (minx == maxx || miny == maxy) return false;
-    *l = minx; *t = miny; *r = maxx; *b = maxy;
+    px_box_t box;
+    if (!points_rect_box(p, 4, &box)) return false;
+    *l = box.p1.x; *t = box.p1.y; *r = box.p2.x; *b = box.p2.y;
     return true;
+}
+
+int dp_path_rect_boxes(const struct dpath *path, px_box_t *boxes, int max)
+{
+    if (path->failed || !path->fill_is_rectilinear || path->has_curve_to) return -1;
+    int count = 0, n = 0;
+    px_point_t p[5];
+    for (int i = 0; i < path->count; i++) {
+        const struct dpath_op_entry *op = &path->ops[i];
+        if (op->op == DP_MOVE) {
+            if (n > 0) {
+                if (!points_rect_box(p, n, &boxes[count])) return -1;
+                if (++count == max) return -1;
+                n = 0;
+            }
+            p[n++] = (px_point_t){ op->p[0].x, op->p[0].y };
+        } else if (op->op == DP_LINE) {
+            if (n == 0 || n == 5) return -1;
+            p[n++] = (px_point_t){ op->p[0].x, op->p[0].y };
+        } else if (op->op == DP_CLOSE) {
+            if (n == 0 || !points_rect_box(p, n, &boxes[count])) return -1;
+            if (++count == max) return -1;
+            n = 0;
+        } else {
+            return -1;
+        }
+    }
+    if (n > 0) {
+        if (!points_rect_box(p, n, &boxes[count])) return -1;
+        count++;
+    }
+    return count;
 }
 
 static void box_row_deltas(int32_t l, int32_t t, int32_t r, int32_t b, int y,
@@ -1034,11 +1078,27 @@ static bool path_polygon(const struct dpath *path, struct dp_polygon *polygon)
     return polygon->status == PX_STATUS_SUCCESS;
 }
 
-bool dp_path_fill_to_polygon(const struct dpath *path, struct dp_polygon *polygon)
+bool dp_path_fill_to_polygon(const struct dpath *path, const px_box_t *limit,
+    struct dp_polygon *polygon)
 {
     if (path->failed) return false;
     dp_polygon_init(polygon);
+    if (limit) dp_polygon_set_limit(polygon, *limit);
     return path_polygon(path, polygon);
+}
+
+bool dp_box_mask(px_box_t box, struct drect clip, unsigned char *mask, int stride,
+    int mask_x, int mask_y)
+{
+    int32_t l = box.p1.x, t = box.p1.y, r = box.p2.x, b = box.p2.y;
+    int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
+    int32_t limit_r = (int32_t)clip.x1 * FIXED_ONE, limit_b = (int32_t)clip.y1 * FIXED_ONE;
+    if (l < limit_l) l = limit_l;
+    if (t < limit_t) t = limit_t;
+    if (r > limit_r) r = limit_r;
+    if (b > limit_b) b = limit_b;
+    if (l >= r || t >= b) return true;
+    return fill_box_mask(l, t, r, b, clip, mask, stride, mask_x, mask_y, NULL);
 }
 
 bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
@@ -1062,7 +1122,8 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
     }
     struct dp_polygon polygon;
     dp_polygon_init(&polygon);
-    dp_polygon_set_limit(&polygon, clip);
+    dp_polygon_set_limit(&polygon, (px_box_t){ { clip.x0 * FIXED_ONE, clip.y0 * FIXED_ONE },
+        { clip.x1 * FIXED_ONE, clip.y1 * FIXED_ONE } });
     if (!path_polygon(path, &polygon)) {
         dp_polygon_fini(&polygon);
         return false;
@@ -1264,7 +1325,8 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     }
     struct dp_polygon polygon;
     dp_polygon_init(&polygon);
-    dp_polygon_set_limit(&polygon, clip);
+    dp_polygon_set_limit(&polygon, (px_box_t){ { clip.x0 * FIXED_ONE, clip.y0 * FIXED_ONE },
+        { clip.x1 * FIXED_ONE, clip.y1 * FIXED_ONE } });
     cairo_status_t status = _cairo_path_fixed_stroke_to_polygon(path, &style,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;

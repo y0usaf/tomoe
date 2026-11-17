@@ -30,7 +30,9 @@ struct colr_ctx {
     bool clip_extent_unbounded;
     struct dp_polygon clip_polygon;
     bool has_clip_polygon;
-    bool clip_sweep;
+    px_box_t *clip_boxes;
+    int clip_box_count, clip_box_capacity;
+    bool clipped;
     struct drect box;
     struct drect ink;
     bool ink_unbounded;
@@ -440,88 +442,249 @@ static bool rect_mask(const struct dpath *path, struct drect area, unsigned char
     return true;
 }
 
+static void clip_boxes_clear(struct colr_ctx *ctx)
+{
+    free(ctx->clip_boxes);
+    ctx->clip_boxes = NULL;
+    ctx->clip_box_count = 0;
+    ctx->clip_box_capacity = 0;
+}
+
+static bool clip_boxes_intersect(struct colr_ctx *ctx, const px_box_t *boxes, int count)
+{
+    if (count <= 0) {
+        clip_boxes_clear(ctx);
+        return false;
+    }
+    if (ctx->clip_box_count == 0) {
+        px_box_t *adopted = malloc((size_t)count * sizeof(*adopted));
+        if (!adopted) return false;
+        memcpy(adopted, boxes, (size_t)count * sizeof(*boxes));
+        clip_boxes_clear(ctx);
+        ctx->clip_boxes = adopted;
+        ctx->clip_box_count = count;
+        ctx->clip_box_capacity = count;
+        return true;
+    }
+    int capacity = ctx->clip_box_count * count;
+    px_box_t *out = malloc((size_t)capacity * sizeof(*out));
+    if (!out) {
+        clip_boxes_clear(ctx);
+        return false;
+    }
+    int n = 0;
+    for (int i = 0; i < ctx->clip_box_count; i++) {
+        for (int j = 0; j < count; j++) {
+            px_box_t box;
+            box.p1.x = ctx->clip_boxes[i].p1.x > boxes[j].p1.x ?
+                ctx->clip_boxes[i].p1.x : boxes[j].p1.x;
+            box.p1.y = ctx->clip_boxes[i].p1.y > boxes[j].p1.y ?
+                ctx->clip_boxes[i].p1.y : boxes[j].p1.y;
+            box.p2.x = ctx->clip_boxes[i].p2.x < boxes[j].p2.x ?
+                ctx->clip_boxes[i].p2.x : boxes[j].p2.x;
+            box.p2.y = ctx->clip_boxes[i].p2.y < boxes[j].p2.y ?
+                ctx->clip_boxes[i].p2.y : boxes[j].p2.y;
+            if (box.p1.x >= box.p2.x || box.p1.y >= box.p2.y) continue;
+            out[n++] = box;
+        }
+    }
+    clip_boxes_clear(ctx);
+    ctx->clip_boxes = out;
+    ctx->clip_box_count = n;
+    ctx->clip_box_capacity = capacity;
+    return n > 0;
+}
+
+static bool clip_empty(struct colr_ctx *ctx)
+{
+    ctx->clip = NULL;
+    ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+    ctx->clip_stride = 0;
+    ctx->clipped = true;
+    return false;
+}
+
 static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drect box)
 {
+    if (ctx->clipped) return false;
     struct drect extents = dp_path_extents(path);
     if (!ctx->clip_extent_unbounded)
         extents = intersected(extents, ctx->clip_extent);
     ctx->clip_extent = extents;
     ctx->clip_extent_unbounded = false;
-    bool intersect = ctx->has_clip_polygon && ctx->clip_sweep;
+
+    bool rectilinear = !path->failed && path->fill_is_rectilinear && !path->has_curve_to;
+    px_box_t *path_boxes = NULL;
+    int box_count = -1;
+    if (rectilinear) {
+        int max = path->count + 1;
+        path_boxes = malloc((size_t)max * sizeof(*path_boxes));
+        if (path_boxes) box_count = dp_path_rect_boxes(path, path_boxes, max);
+        if (box_count < 0) {
+            free(path_boxes);
+            path_boxes = NULL;
+        }
+    }
+
+    if (!ctx->has_clip_polygon && rectilinear) {
+        if (box_count > 0 && !clip_boxes_intersect(ctx, path_boxes, box_count)) {
+            free(path_boxes);
+            return clip_empty(ctx);
+        }
+        free(path_boxes);
+        struct drect area = intersected(box, image_box(ctx));
+        if (area.x0 >= area.x1 || area.y0 >= area.y1) return clip_empty(ctx);
+        int w = area.x1 - area.x0, h = area.y1 - area.y0;
+        unsigned char *pixels = calloc((size_t)w, (size_t)h);
+        if (!pixels) return clip_empty(ctx);
+        if (box_count == 1) {
+            if (!dp_box_mask(ctx->clip_boxes[0], area, pixels, w, area.x0, area.y0)) {
+                free(pixels);
+                return clip_empty(ctx);
+            }
+        } else {
+            if (!rect_mask(path, area, pixels, w, area.x0, area.y0)) {
+                if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0,
+                        PX_ANTIALIAS_GRAY, NULL)) {
+                    free(pixels);
+                    return clip_empty(ctx);
+                }
+            }
+            if (ctx->clip) {
+                const unsigned char *old = ctx->clip +
+                    (size_t)(area.y0 - ctx->clip_box.y0) * (size_t)ctx->clip_stride +
+                    (size_t)(area.x0 - ctx->clip_box.x0);
+                for (int y = 0; y < h; y++) {
+                    unsigned char *row = pixels + (size_t)y * (size_t)w;
+                    const unsigned char *src = old + (size_t)y * (size_t)ctx->clip_stride;
+                    for (int x = 0; x < w; x++)
+                        row[x] = (unsigned char)mul8(row[x], src[x]);
+                }
+            }
+            if (box_count <= 0) {
+                struct dp_polygon polygon;
+                if (!dp_path_fill_to_polygon(path, NULL, &polygon))
+                    dp_polygon_init(&polygon);
+                ctx->clip_polygon = polygon;
+                ctx->has_clip_polygon = true;
+            }
+        }
+        ctx->clip = pixels;
+        ctx->clip_box = area;
+        ctx->clip_stride = w;
+        return true;
+    }
+    free(path_boxes);
+
     struct dp_polygon polygon;
-    if (!dp_path_fill_to_polygon(path, &polygon))
+    const px_box_t *limit = ctx->clip_box_count == 1 ? &ctx->clip_boxes[0] : NULL;
+    if (!dp_path_fill_to_polygon(path, limit, &polygon))
         dp_polygon_init(&polygon);
-    if (!path->fill_is_rectilinear || polygon.count > 2)
-        ctx->clip_sweep = true;
-    if (ctx->has_clip_polygon)
+    if (ctx->has_clip_polygon) {
         dp_polygon_intersect(&polygon, &ctx->clip_polygon);
+        dp_polygon_fini(&ctx->clip_polygon);
+    } else if (ctx->clip_box_count > 1) {
+        dp_polygon_intersect_with_boxes(&polygon, ctx->clip_boxes, ctx->clip_box_count);
+    }
     ctx->clip_polygon = polygon;
     ctx->has_clip_polygon = true;
-    if (intersect && (polygon.status != PX_STATUS_SUCCESS || polygon.count == 0)) {
-        ctx->clip = NULL;
-        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-        ctx->clip_stride = 0;
-        return false;
-    }
+    if (polygon.status != PX_STATUS_SUCCESS || polygon.count == 0)
+        return clip_empty(ctx);
     struct drect area = intersected(box, image_box(ctx));
-    if (area.x0 >= area.x1 || area.y0 >= area.y1) {
-        ctx->clip = NULL;
-        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-        ctx->clip_stride = 0;
-        return false;
-    }
+    if (area.x0 >= area.x1 || area.y0 >= area.y1) return clip_empty(ctx);
     int w = area.x1 - area.x0, h = area.y1 - area.y0;
     unsigned char *pixels = calloc((size_t)w, (size_t)h);
-    if (!pixels) {
-        ctx->clip = NULL;
-        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-        ctx->clip_stride = 0;
-        return false;
-    }
-    bool filled = false;
-    if (intersect) {
-        filled = dp_polygon_fill_mask(&ctx->clip_polygon, area, pixels, w,
-            area.x0, area.y0);
-        if (!filled) {
-            free(pixels);
-            ctx->clip = NULL;
-            ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-            ctx->clip_stride = 0;
-            return false;
-        }
-    } else {
-        filled = path->fill_is_rectilinear &&
-            rect_mask(path, area, pixels, w, area.x0, area.y0);
-        if (!filled) {
-            struct dp_spans spans;
-            memset(&spans, 0, sizeof(spans));
-            if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0,
-                    PX_ANTIALIAS_GRAY, &spans)) {
-                free(pixels);
-                dp_spans_fini(&spans);
-                ctx->clip = NULL;
-                ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-                ctx->clip_stride = 0;
-                return false;
-            }
-            dp_spans_fini(&spans);
-        }
-    }
-    if (!intersect && ctx->clip) {
-        const unsigned char *old = ctx->clip +
-            (size_t)(area.y0 - ctx->clip_box.y0) * (size_t)ctx->clip_stride +
-            (size_t)(area.x0 - ctx->clip_box.x0);
-        for (int y = 0; y < h; y++) {
-            unsigned char *row = pixels + (size_t)y * (size_t)w;
-            const unsigned char *src = old + (size_t)y * (size_t)ctx->clip_stride;
-            for (int x = 0; x < w; x++)
-                row[x] = (unsigned char)mul8(row[x], src[x]);
-        }
+    if (!pixels) return clip_empty(ctx);
+    if (!dp_polygon_fill_mask(&ctx->clip_polygon, area, pixels, w, area.x0, area.y0)) {
+        free(pixels);
+        return clip_empty(ctx);
     }
     ctx->clip = pixels;
     ctx->clip_box = area;
     ctx->clip_stride = w;
     return true;
+}
+
+struct clip_state {
+    unsigned char *clip;
+    struct drect clip_box;
+    int clip_stride;
+    struct drect clip_extent;
+    bool unbounded;
+    struct drect box;
+    struct dp_polygon polygon;
+    bool has_polygon;
+    px_box_t *boxes;
+    int box_count, box_capacity;
+    bool clipped;
+};
+
+static void polygon_copy(struct dp_polygon *out, const struct dp_polygon *in)
+{
+    *out = *in;
+    out->edges = NULL;
+    out->capacity = 0;
+    out->limits = out->has_limit ? &out->limit : NULL;
+    if (in->count > 0) {
+        out->edges = malloc((size_t)in->count * sizeof(*out->edges));
+        if (!out->edges) {
+            out->count = 0;
+            out->status = PX_STATUS_NO_MEMORY;
+            return;
+        }
+        memcpy(out->edges, in->edges, (size_t)in->count * sizeof(*out->edges));
+        out->capacity = in->count;
+    }
+}
+
+static void clip_state_save(struct colr_ctx *ctx, struct clip_state *state)
+{
+    state->clip = ctx->clip;
+    state->clip_box = ctx->clip_box;
+    state->clip_stride = ctx->clip_stride;
+    state->clip_extent = ctx->clip_extent;
+    state->unbounded = ctx->clip_extent_unbounded;
+    state->box = ctx->box;
+    state->polygon = ctx->clip_polygon;
+    state->has_polygon = ctx->has_clip_polygon;
+    state->boxes = ctx->clip_boxes;
+    state->box_count = ctx->clip_box_count;
+    state->box_capacity = ctx->clip_box_capacity;
+    state->clipped = ctx->clipped;
+    ctx->clip_boxes = NULL;
+    ctx->clip_box_count = 0;
+    ctx->clip_box_capacity = 0;
+    if (state->box_count > 0) {
+        px_box_t *copy = malloc((size_t)state->box_count * sizeof(*copy));
+        if (copy) {
+            memcpy(copy, state->boxes, (size_t)state->box_count * sizeof(*copy));
+            ctx->clip_boxes = copy;
+            ctx->clip_box_count = state->box_count;
+            ctx->clip_box_capacity = state->box_count;
+        }
+    }
+    ctx->clip_polygon = (struct dp_polygon){ 0 };
+    if (state->has_polygon)
+        polygon_copy(&ctx->clip_polygon, &state->polygon);
+}
+
+static void clip_state_restore(struct colr_ctx *ctx, struct clip_state *state)
+{
+    free(ctx->clip);
+    dp_polygon_fini(&ctx->clip_polygon);
+    clip_boxes_clear(ctx);
+    ctx->clip = state->clip;
+    ctx->clip_box = state->clip_box;
+    ctx->clip_stride = state->clip_stride;
+    ctx->clip_extent = state->clip_extent;
+    ctx->clip_extent_unbounded = state->unbounded;
+    ctx->box = state->box;
+    ctx->clip_polygon = state->polygon;
+    ctx->has_clip_polygon = state->has_polygon;
+    ctx->clip_boxes = state->boxes;
+    ctx->clip_box_count = state->box_count;
+    ctx->clip_box_capacity = state->box_capacity;
+    ctx->clipped = state->clipped;
 }
 
 static struct drect mask_bounds(const struct colr_ctx *ctx)
@@ -1220,7 +1383,10 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->box = (struct drect){ 0, 0, w, h };
     memset(&child->clip_polygon, 0, sizeof(child->clip_polygon));
     child->has_clip_polygon = false;
-    child->clip_sweep = false;
+    child->clip_boxes = NULL;
+    child->clip_box_count = 0;
+    child->clip_box_capacity = 0;
+    child->clipped = false;
     return true;
 }
 
@@ -1228,6 +1394,7 @@ static void group_end(struct colr_ctx *ctx, struct colr_ctx *child, uint32_t *pi
     struct drect box, int op)
 {
     dp_polygon_fini(&child->clip_polygon);
+    clip_boxes_clear(child);
     free(child->clip);
     composite_image(ctx, pixels, child->width, box, op);
     free(pixels);
@@ -1247,33 +1414,46 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
         dpath_fini(&path);
         return;
     }
-    unsigned char *saved_clip = ctx->clip;
-    struct drect saved_clip_box = ctx->clip_box;
-    int saved_clip_stride = ctx->clip_stride;
-    struct drect saved_extent = ctx->clip_extent;
-    bool saved_unbounded = ctx->clip_extent_unbounded;
-    struct drect saved_box = ctx->box;
-    struct dp_polygon saved_polygon = ctx->clip_polygon;
-    bool saved_has_polygon = ctx->has_clip_polygon;
-    bool saved_sweep = ctx->clip_sweep;
-    clip_set(ctx, &path, intersected(box, saved_clip_box));
+    struct clip_state saved;
+    clip_state_save(ctx, &saved);
+    clip_set(ctx, &path, intersected(box, saved.clip_box));
     ctx->box = box;
     int saved_level = ctx->level;
     ctx->level++;
     play(ctx, &paint->paint);
     ctx->level = saved_level;
-    free(ctx->clip);
-    ctx->clip = saved_clip;
-    ctx->clip_box = saved_clip_box;
-    ctx->clip_stride = saved_clip_stride;
-    ctx->clip_extent = saved_extent;
-    ctx->clip_extent_unbounded = saved_unbounded;
-    ctx->box = saved_box;
-    dp_polygon_fini(&ctx->clip_polygon);
-    ctx->clip_polygon = saved_polygon;
-    ctx->has_clip_polygon = saved_has_polygon;
-    ctx->clip_sweep = saved_sweep;
+    clip_state_restore(ctx, &saved);
     dpath_fini(&path);
+}
+
+static void rect_corners(const struct colr_matrix *matrix, double sx0, double sy0,
+    double sx1, double sy1, double ox, double oy, double corners[4][2], struct drect *box)
+{
+    double x = matrix->xx * sx0 + matrix->xy * sy0 + matrix->x0 - ox;
+    double y = matrix->yx * sx0 + matrix->yy * sy0 + matrix->y0 - oy;
+    double dx = matrix->xx * (sx1 - sx0);
+    double dy = matrix->yx * (sx1 - sx0);
+    double ex = matrix->xy * (sy1 - sy0);
+    double ey = matrix->yy * (sy1 - sy0);
+    int32_t px = dp_fixed_from_double(x), py = dp_fixed_from_double(y);
+    int32_t ax = dp_fixed_from_double(dx), ay = dp_fixed_from_double(dy);
+    int32_t bx = dp_fixed_from_double(ex), by = dp_fixed_from_double(ey);
+    int32_t fx[4] = { px, px + ax, px + ax + bx, px + bx };
+    int32_t fy[4] = { py, py + ay, py + ay + by, py + by };
+    for (int i = 0; i < 4; i++) {
+        corners[i][0] = dp_fixed_to_double(fx[i]);
+        corners[i][1] = dp_fixed_to_double(fy[i]);
+    }
+    box->x0 = box->y0 = INT32_MAX;
+    box->x1 = box->y1 = INT32_MIN;
+    for (int i = 0; i < 4; i++) {
+        int l = (int)floor(corners[i][0]), t = (int)floor(corners[i][1]);
+        int r = (int)ceil(corners[i][0]), b = (int)ceil(corners[i][1]);
+        if (l < box->x0) box->x0 = l;
+        if (t < box->y0) box->y0 = t;
+        if (r > box->x1) box->x1 = r;
+        if (b > box->y1) box->y1 = b;
+    }
 }
 
 static bool glyph_clip(struct colr_ctx *ctx, unsigned glyph, double corners[4][2],
@@ -1281,28 +1461,8 @@ static bool glyph_clip(struct colr_ctx *ctx, unsigned glyph, double corners[4][2
 {
     FT_ClipBox clip;
     if (!FT_Get_Color_Glyph_ClipBox(ctx->face, glyph, &clip)) return false;
-    double source[4][2] = {
-        { clip.bottom_left.x / 64.0, clip.bottom_left.y / 64.0 },
-        { clip.top_right.x / 64.0, clip.bottom_left.y / 64.0 },
-        { clip.top_right.x / 64.0, clip.top_right.y / 64.0 },
-        { clip.bottom_left.x / 64.0, clip.top_right.y / 64.0 },
-    };
-    box->x0 = box->y0 = INT32_MAX;
-    box->x1 = box->y1 = INT32_MIN;
-    for (int i = 0; i < 4; i++) {
-        double x = ctx->matrix.xx * source[i][0] + ctx->matrix.xy * source[i][1] +
-            ctx->matrix.x0 - ctx->ox;
-        double y = ctx->matrix.yx * source[i][0] + ctx->matrix.yy * source[i][1] +
-            ctx->matrix.y0 - ctx->oy;
-        corners[i][0] = x;
-        corners[i][1] = y;
-        int fx = (int)floor(x), fy = (int)floor(y);
-        int cx = (int)ceil(x), cy = (int)ceil(y);
-        if (fx < box->x0) box->x0 = fx;
-        if (fy < box->y0) box->y0 = fy;
-        if (cx > box->x1) box->x1 = cx;
-        if (cy > box->y1) box->y1 = cy;
-    }
+    rect_corners(&ctx->matrix, clip.bottom_left.x / 64.0, clip.bottom_left.y / 64.0,
+        clip.top_right.x / 64.0, clip.top_right.y / 64.0, ctx->ox, ctx->oy, corners, box);
     return true;
 }
 
@@ -1333,27 +1493,11 @@ static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
         ctx->level = saved_level;
         return;
     }
-    unsigned char *saved_clip = ctx->clip;
-    struct drect saved_clip_box = ctx->clip_box;
-    int saved_clip_stride = ctx->clip_stride;
-    struct drect saved_extent = ctx->clip_extent;
-    bool saved_unbounded = ctx->clip_extent_unbounded;
-    struct dp_polygon saved_polygon = ctx->clip_polygon;
-    bool saved_has_polygon = ctx->has_clip_polygon;
-    bool saved_sweep = ctx->clip_sweep;
-    ctx->clip = saved_clip;
+    struct clip_state saved;
+    clip_state_save(ctx, &saved);
     clip_quad_push(ctx, corners, box);
     play(ctx, &child);
-    free(ctx->clip);
-    ctx->clip = saved_clip;
-    ctx->clip_box = saved_clip_box;
-    ctx->clip_stride = saved_clip_stride;
-    ctx->clip_extent = saved_extent;
-    ctx->clip_extent_unbounded = saved_unbounded;
-    dp_polygon_fini(&ctx->clip_polygon);
-    ctx->clip_polygon = saved_polygon;
-    ctx->has_clip_polygon = saved_has_polygon;
-    ctx->clip_sweep = saved_sweep;
+    clip_state_restore(ctx, &saved);
     ctx->level = saved_level;
 }
 
@@ -1729,27 +1873,10 @@ static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
     }
 }
 
-static void clip_corners(const struct colr_clip *clip, double corners[4][2],
-    struct drect *box)
+static void clip_corners(const struct colr_clip *clip, double corners[4][2], struct drect *box)
 {
-    corners[0][0] = clip->x0;
-    corners[0][1] = clip->y0;
-    corners[1][0] = clip->x1;
-    corners[1][1] = clip->y0;
-    corners[2][0] = clip->x1;
-    corners[2][1] = clip->y1;
-    corners[3][0] = clip->x0;
-    corners[3][1] = clip->y1;
-    box->x0 = box->y0 = INT32_MAX;
-    box->x1 = box->y1 = INT32_MIN;
-    for (int i = 0; i < 4; i++) {
-        int fx = (int)floor(corners[i][0]), fy = (int)floor(corners[i][1]);
-        int cx = (int)ceil(corners[i][0]), cy = (int)ceil(corners[i][1]);
-        if (fx < box->x0) box->x0 = fx;
-        if (fy < box->y0) box->y0 = fy;
-        if (cx > box->x1) box->x1 = cx;
-        if (cy > box->y1) box->y1 = cy;
-    }
+    static const struct colr_matrix identity = { 1, 0, 0, 1, 0, 0 };
+    rect_corners(&identity, clip->x0, clip->y0, clip->x1, clip->y1, 0, 0, corners, box);
 }
 
 static void clip_path_build(struct dpath *path, bool have_box, double corners[4][2],
