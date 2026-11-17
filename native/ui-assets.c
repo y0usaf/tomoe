@@ -775,7 +775,7 @@ bool ui_asset_paint(struct ui_asset *asset, uint32_t *dst, int dst_width, int ds
             if (ok) {
                 struct dp_pattern pattern = dp_surface_pattern(x, y,
                     width / image.width, height / image.height, 0, 0);
-                struct dp_coverage mask = { coverage, span, clip.x0, clip.y0, NULL, 0 };
+                struct dp_coverage mask = { coverage, span, clip.x0, clip.y0, NULL };
                 dp_paint_surface(dst, dst_stride, clip, &image, &pattern, DP_FILTER_BILINEAR,
                     DP_EXTEND_PAD, DP_OP_OVER, &mask, dst_width, dst_height,
                     clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0);

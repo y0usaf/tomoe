@@ -1337,34 +1337,30 @@ static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
             sy > 0.001 ? sy : 0.001, op->x + op->geometry[0] * op->width,
             op->y + op->geometry[1] * op->height };
     }
-    int max_bands = area.y1 - area.y0;
-    unsigned char *coverage = calloc((size_t)span * (size_t)max_bands, 1);
-    struct dp_span_band *bands = calloc((size_t)max_bands, sizeof(*bands));
-    if (!coverage || !bands) {
-        free(coverage);
-        free(bands);
-        return false;
-    }
+    int max_rows = area.y1 - area.y0;
+    unsigned char *coverage = calloc((size_t)span * (size_t)max_rows, 1);
+    if (!coverage) return false;
+    struct dp_spans spans;
+    memset(&spans, 0, sizeof(spans));
     struct dpath path;
     dpath_init(&path);
     shape_path(&path, op, 0.0, 0.0);
-    int band_count = dp_fill_mask_bands(&path, area, coverage, span, area.x0, area.y0,
-        bands, max_bands);
-    struct drect bounds = dp_path_extents(&path);
+    bool ok = dp_fill_mask_spans(&path, area, coverage, span, area.x0, area.y0, &spans);
     dpath_fini(&path);
+    struct drect bounds = spans.extents;
     if (bounds.x0 < area.x0) bounds.x0 = area.x0;
     if (bounds.y0 < area.y0) bounds.y0 = area.y0;
     if (bounds.x1 > area.x1) bounds.x1 = area.x1;
     if (bounds.y1 > area.y1) bounds.y1 = area.y1;
-    if (band_count >= 0 && bounds.x0 < bounds.x1 && bounds.y0 < bounds.y1) {
-        struct dp_coverage mask = { coverage, span, area.x0, area.y0, bands, band_count };
+    if (ok && bounds.x0 < bounds.x1 && bounds.y0 < bounds.y1) {
+        struct dp_coverage mask = { coverage, span, area.x0, area.y0, &spans };
         dp_paint_gradient((uint32_t *)canvas->pixels, (int)(canvas->stride / 4), area,
             &gradient, &mask, canvas->width, canvas->height,
             bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
     }
+    dp_spans_fini(&spans);
     free(coverage);
-    free(bands);
-    return band_count >= 0;
+    return ok;
 }
 
 static bool shape_shadow(struct ui_canvas *canvas, const struct ui_op *op, int index,

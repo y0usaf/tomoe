@@ -761,44 +761,77 @@ struct span_ctx {
     int stride;
     struct drect clip;
     int mask_x, mask_y;
-    struct dp_span_band *bands;
-    int band_count, max_bands;
+    struct dp_spans *spans;
 };
 
-static void span_band(struct span_ctx *ctx, int y, int height, int x0, int x1)
+static bool spans_entry(struct dp_spans *spans, int x, unsigned char coverage)
 {
-    if (!ctx->bands || ctx->band_count >= ctx->max_bands) return;
-    if (y < ctx->clip.y0) { height -= ctx->clip.y0 - y; y = ctx->clip.y0; }
-    if (y + height > ctx->clip.y1) height = ctx->clip.y1 - y;
-    if (x0 < ctx->clip.x0) x0 = ctx->clip.x0;
-    if (x1 > ctx->clip.x1) x1 = ctx->clip.x1;
-    if (height <= 0 || x0 >= x1) return;
-    ctx->bands[ctx->band_count++] = (struct dp_span_band){ y, height, x0, x1 };
+    if (spans->entry_count == spans->entry_capacity) {
+        int capacity = spans->entry_capacity ? spans->entry_capacity * 2 : 256;
+        struct dp_span_entry *grown = realloc(spans->entries,
+            (size_t)capacity * sizeof(*grown));
+        if (!grown) return false;
+        spans->entries = grown;
+        spans->entry_capacity = capacity;
+    }
+    spans->entries[spans->entry_count++] = (struct dp_span_entry){ x, coverage };
+    return true;
+}
+
+static bool spans_band(struct dp_spans *spans, int y, int height,
+    int first, int count, int end)
+{
+    if (spans->band_count == spans->band_capacity) {
+        int capacity = spans->band_capacity ? spans->band_capacity * 2 : 64;
+        struct dp_span_band *grown = realloc(spans->bands,
+            (size_t)capacity * sizeof(*grown));
+        if (!grown) return false;
+        spans->bands = grown;
+        spans->band_capacity = capacity;
+    }
+    spans->bands[spans->band_count++] =
+        (struct dp_span_band){ y, height, first, count, end };
+    return true;
+}
+
+void dp_spans_fini(struct dp_spans *spans)
+{
+    if (!spans) return;
+    free(spans->bands);
+    free(spans->entries);
+    memset(spans, 0, sizeof(*spans));
 }
 
 static px_status_t span_rows(void *closure, int y, int height,
     const px_half_open_span_t *spans, unsigned num_spans)
 {
     struct span_ctx *ctx = closure;
+    int y1 = y + height;
+    int first = 0, count = 0, end = 0;
     if (num_spans == 0) return PX_STATUS_SUCCESS;
-    {
-        int ux0 = spans[0].x, ux1 = spans[0].x;
-        for (unsigned i = 0; i + 1 < num_spans; i++) {
-            if (spans[i].x < ux0) ux0 = spans[i].x;
-            if (spans[i + 1].x > ux1) ux1 = spans[i + 1].x;
-        }
-        span_band(ctx, y, height, ux0, ux1);
-    }
+    if (y < ctx->clip.y0) y = ctx->clip.y0;
+    if (y1 > ctx->clip.y1) y1 = ctx->clip.y1;
+    if (y1 <= y) return PX_STATUS_SUCCESS;
+    if (ctx->spans) first = ctx->spans->entry_count;
     for (unsigned i = 0; i + 1 < num_spans; i++) {
         int x0 = spans[i].x;
         int x1 = spans[i + 1].x;
-        uint8_t coverage = spans[i].coverage;
+        unsigned char coverage = spans[i].coverage;
+        if (x0 < ctx->clip.x0) x0 = ctx->clip.x0;
+        if (x1 > ctx->clip.x1) x1 = ctx->clip.x1;
+        if (x1 <= x0) continue;
+        if (ctx->spans && !spans_entry(ctx->spans, x0, coverage))
+            return PX_STATUS_NO_MEMORY;
+        count++;
+        end = x1;
         if (coverage == 0) continue;
-        for (int row = y; row < y + height; row++) {
-            if (row < ctx->clip.y0 || row >= ctx->clip.y1) continue;
+        for (int row = y; row < y1; row++)
             memset(ctx->mask + (size_t)(row - ctx->mask_y) * ctx->stride +
                 (x0 - ctx->mask_x), coverage, (size_t)(x1 - x0));
-        }
+    }
+    if (count && ctx->spans && !spans_band(ctx->spans, y, y1 - y, first, count, end)) {
+        ctx->spans->entry_count = first;
+        return PX_STATUS_NO_MEMORY;
     }
     return PX_STATUS_SUCCESS;
 }
@@ -857,40 +890,34 @@ static void box_row_deltas(int32_t l, int32_t t, int32_t r, int32_t b, int y,
 }
 
 static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y,
-    struct dp_span_band *bands, int *band_count, int max_bands)
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans)
 {
-    int width = clip.x1 - clip.x0;
+    int bx0 = fixed_floor(l), bx1 = fixed_ceil(r);
+    if (bx0 < clip.x0) bx0 = clip.x0;
+    if (bx1 > clip.x1) bx1 = clip.x1;
+    int width = bx1 - bx0;
     if (width <= 0) return true;
     int *dl = calloc((size_t)width, sizeof(int));
     int *du = calloc((size_t)width, sizeof(int));
     unsigned char *alphas = malloc((size_t)width);
-    if (!dl || !du || !alphas) {
-        free(dl);
-        free(du);
-        free(alphas);
-        return false;
-    }
+    unsigned char *previous = spans ? malloc((size_t)width) : NULL;
+    int band_y = 0, band_height = 0, band_first = 0, band_count = 0;
+    bool ok = false;
+    if (!dl || !du || !alphas || (spans && !previous)) goto out;
     int32_t top_y = t >> 8, bottom_y = b >> 8;
     for (int32_t y = top_y; y <= bottom_y; y++) {
         if (y < clip.y0 || y >= clip.y1) continue;
-        if (bands && *band_count < max_bands) {
-            int bx0 = fixed_floor(l), bx1 = fixed_ceil(r);
-            if (bx0 < clip.x0) bx0 = clip.x0;
-            if (bx1 > clip.x1) bx1 = clip.x1;
-            if (bx0 < bx1) bands[(*band_count)++] = (struct dp_span_band){ (int)y, 1, bx0, bx1 };
-        }
         memset(dl, 0, (size_t)width * sizeof(int));
         memset(du, 0, (size_t)width * sizeof(int));
-        box_row_deltas(l, t, r, b, y, dl, du, width, clip.x0);
+        box_row_deltas(l, t, r, b, y, dl, du, width, bx0);
         int coverage = 0, prev = 0, prev_x = INT_MIN;
         int span_start = 0, span_alpha = 0;
         for (int i = 0; i < width; i++) {
-            int x = clip.x0 + i;
+            int x = bx0 + i;
             if (x != prev_x && coverage != prev) {
                 int c = coverage >> 8;
                 int alpha = c - (c >> 8);
-                int at = prev_x - clip.x0;
+                int at = prev_x - bx0;
                 if (at < 0) at = 0;
                 if (at > width) at = width;
                 for (int k = span_start; k < at; k++) alphas[k] = (unsigned char)span_alpha;
@@ -912,33 +939,54 @@ static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct dre
         }
         int c = coverage >> 8;
         int alpha = c - (c >> 8);
-        if (prev_x <= clip.x1 || span_alpha != alpha) {
+        if (prev_x <= bx1 || span_alpha != alpha) {
             for (int k = span_start; k < width; k++) alphas[k] = (unsigned char)span_alpha;
         } else {
             for (int k = span_start; k < width; k++) alphas[k] = (unsigned char)alpha;
         }
-        unsigned char *row = mask + (size_t)(y - mask_y) * (size_t)stride +
-            (size_t)(clip.x0 - mask_x);
-        memcpy(row, alphas, (size_t)width);
+        memcpy(mask + (size_t)(y - mask_y) * (size_t)stride + (size_t)(bx0 - mask_x),
+            alphas, (size_t)width);
+        if (!spans) continue;
+        if (band_height && memcmp(previous, alphas, (size_t)width) == 0) {
+            band_height++;
+            continue;
+        }
+        if (band_height && !spans_band(spans, band_y, band_height, band_first, band_count, bx1))
+            goto out;
+        band_y = (int)y;
+        band_first = spans->entry_count;
+        band_count = 0;
+        band_height = 1;
+        for (int start = 0; start < width; ) {
+            int stop = start + 1;
+            while (stop < width && alphas[stop] == alphas[start]) stop++;
+            if (!spans_entry(spans, bx0 + start, alphas[start])) goto out;
+            band_count++;
+            start = stop;
+        }
+        memcpy(previous, alphas, (size_t)width);
     }
+    if (band_height && !spans_band(spans, band_y, band_height, band_first, band_count, bx1))
+        goto out;
+    ok = true;
+out:
     free(dl);
     free(du);
     free(alphas);
-    return true;
+    free(previous);
+    return ok;
 }
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
-    return dp_fill_mask_bands(path, clip, mask, stride, mask_x, mask_y, NULL, 0) >= 0;
+    return dp_fill_mask_spans(path, clip, mask, stride, mask_x, mask_y, NULL);
 }
 
-int dp_fill_mask_bands(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y,
-    struct dp_span_band *bands, int max_bands)
+bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans)
 {
-    int band_count = 0;
-    if (path->failed) return -1;
+    if (path->failed) return false;
     int32_t bl, bt, br, bb;
     if (path_is_rect_box(path, &bl, &bt, &br, &bb)) {
         int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
@@ -947,10 +995,11 @@ int dp_fill_mask_bands(const struct dpath *path, struct drect clip,
         if (bt < limit_t) bt = limit_t;
         if (br > limit_r) br = limit_r;
         if (bb > limit_b) bb = limit_b;
-        if (bl < br && bt < bb)
-            return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y,
-                bands, &band_count, max_bands) ? band_count : -1;
-        return true;
+        if (bl >= br || bt >= bb) return true;
+        if (spans)
+            spans->extents = (struct drect){ fixed_floor(bl), fixed_floor(bt),
+                fixed_ceil(br), fixed_ceil(bb) };
+        return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y, spans);
     }
     struct dp_polygon polygon;
     dp_polygon_init(&polygon);
@@ -998,10 +1047,14 @@ int dp_fill_mask_bands(const struct dpath *path, struct drect clip,
         if (bx1 < cx1) cx1 = bx1;
         if (by1 < cy1) cy1 = by1;
     }
-    if (cx0 >= cx1 || cy0 >= cy1) {
+    if (cx0 >= cx1 || cy0 >= cy1 || polygon.count == 0) {
         dp_polygon_fini(&polygon);
         return true;
     }
+    if (spans)
+        spans->extents = (struct drect){ fixed_floor(polygon.extents.p1.x),
+            fixed_floor(polygon.extents.p1.y), fixed_ceil(polygon.extents.p2.x),
+            fixed_ceil(polygon.extents.p2.y) };
     px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
         PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
     if (!converter) {
@@ -1021,14 +1074,12 @@ int dp_fill_mask_bands(const struct dpath *path, struct drect clip,
     ctx.clip = clip;
     ctx.mask_x = mask_x;
     ctx.mask_y = mask_y;
-    ctx.bands = bands;
-    ctx.max_bands = max_bands;
+    ctx.spans = spans;
     ctx.base.render_rows = span_rows;
     px_status_t status = converter->generate(converter, &ctx.base);
-    band_count = ctx.band_count;
     converter->destroy(converter);
     dp_polygon_fini(&polygon);
-    return status == PX_STATUS_SUCCESS ? band_count : -1;
+    return status == PX_STATUS_SUCCESS;
 }
 
 static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,

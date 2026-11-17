@@ -31,7 +31,17 @@ struct dpath {
 
 struct drect { int x0, y0, x1, y1; };
 
-struct dp_span_band { int y, height, x0, x1; };
+struct dp_span_entry { int x; unsigned char coverage; };
+
+struct dp_span_band { int y, height, first, count, end; };
+
+struct dp_spans {
+    struct dp_span_band *bands;
+    int band_count, band_capacity;
+    struct dp_span_entry *entries;
+    int entry_count, entry_capacity;
+    struct drect extents;
+};
 
 struct dp_edge {
     px_point_t p1, p2;
@@ -71,9 +81,9 @@ uint32_t dp_masked_over(uint32_t dst, uint32_t src, uint8_t mask);
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y);
-int dp_fill_mask_bands(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y,
-    struct dp_span_band *bands, int max_bands);
+bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans);
+void dp_spans_fini(struct dp_spans *spans);
 
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
@@ -101,8 +111,7 @@ struct dp_image {
 struct dp_coverage {
     const unsigned char *pixels;
     int stride, x, y;
-    const struct dp_span_band *bands;
-    int band_count;
+    const struct dp_spans *spans;
 };
 
 void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,

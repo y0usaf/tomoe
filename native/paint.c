@@ -3,6 +3,7 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PAINT_FIXED_ONE 65536.0
@@ -62,16 +63,17 @@ static int matrix_invert(struct dp_pattern *matrix)
         }
         return 1;
     }
-    double det = matrix->xx * matrix->yy - matrix->xy * matrix->yx;
+    double det = matrix->xx * matrix->yy - matrix->yx * matrix->xy;
     if (!isfinite(det) || det == 0.) return 0;
-    double xx = matrix->yy / det;
-    double xy = -matrix->xy / det;
-    double yx = -matrix->yx / det;
-    double yy = matrix->xx / det;
-    double x0 = (matrix->xy * matrix->y0 - matrix->x0 * matrix->yy) / det;
-    double y0 = (matrix->x0 * matrix->yx - matrix->xy * matrix->y0) / det;
-    matrix->xx = xx; matrix->xy = xy; matrix->yx = yx; matrix->yy = yy;
-    matrix->x0 = x0; matrix->y0 = y0;
+    double a = matrix->xx, b = matrix->yx, c = matrix->xy, d = matrix->yy;
+    double tx = matrix->x0, ty = matrix->y0;
+    double scalar = 1 / det;
+    matrix->xx = d * scalar;
+    matrix->yx = -b * scalar;
+    matrix->xy = -c * scalar;
+    matrix->yy = a * scalar;
+    matrix->x0 = (c * ty - d * tx) * scalar;
+    matrix->y0 = (b * tx - a * ty) * scalar;
     return 1;
 }
 
@@ -661,7 +663,6 @@ struct dp_gradient_built {
     struct gradient_stop16 *stops;
     struct fixed_matrix transform;
     int ix, iy;
-    int horizontal;
 };
 
 static void gradient_walker_reset(struct gradient_walker *walker, int64_t pos)
@@ -852,10 +853,10 @@ static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradie
 static int gradient_extents_fit(const struct fixed_matrix *t, int x1, int y1, int x2, int y2)
 {
     int64_t xs[2], ys[2];
-    xs[0] = ((int64_t)x1 << 16) + 0x8000;
-    xs[1] = ((int64_t)x2 << 16) - 0x8000;
-    ys[0] = ((int64_t)y1 << 16) + 0x8000;
-    ys[1] = ((int64_t)y2 << 16) - 0x8000;
+    xs[0] = ((int64_t)(x1 - 1) << 16) + 0x8000;
+    xs[1] = ((int64_t)(x2 + 1) << 16) - 0x8000;
+    ys[0] = ((int64_t)(y1 - 1) << 16) + 0x8000;
+    ys[1] = ((int64_t)(y2 + 1) << 16) - 0x8000;
     for (int i = 0; i < 4; i++) {
         int64_t v[3];
         v[0] = (i & 1) ? xs[0] : xs[1];
@@ -920,20 +921,73 @@ static void gradient_span(const struct dp_gradient_built *g, struct gradient_wal
     }
 }
 
-static void gradient_flush(const struct dp_gradient_built *g, struct gradient_walker *walker,
-    uint32_t *row, uint32_t *dst, int dst_stride, const unsigned char *mask,
-    int origin, int x0, int len, int y0, int y1, int opaque)
+static int gradient_horizontal(const struct dp_gradient_built *g, int height)
 {
-    if (len <= 0 || y1 <= y0) return;
-    if (!gradient_extents_fit(&g->transform, origin + x0, y0, origin + x0 + len, y1)) return;
+    double inc = height * (double)(1 << 16) * (double)(1 << 16) *
+        (double)(g->dx * g->transform.m[0][1] + g->dy * g->transform.m[1][1]) /
+        ((double)g->transform.m[2][2] * (double)g->l);
+    return -1 < inc && inc < 1;
+}
+
+static void gradient_flush(const struct dp_gradient_built *g, struct gradient_walker *walker,
+    uint32_t *row, uint32_t *dst, int dst_stride, const struct dp_coverage *coverage,
+    int x0, int width, int y0, int y1, int opaque)
+{
+    int horizontal;
+    if (width <= 0 || y1 <= y0) return;
+    if (!gradient_extents_fit(&g->transform, x0 + g->ix, y0 + g->iy,
+            x0 + width + g->ix, y1 + g->iy))
+        return;
+    horizontal = !g->radial && gradient_horizontal(g, y1 - y0);
     for (int y = y0; y < y1; y++) {
-        gradient_span(g, walker, row, origin + x0, len, y);
-        for (int i = 0; i < len; i++) {
-            uint32_t *d = &dst[(size_t)y * (size_t)dst_stride + origin + x0 + i];
-            unsigned m = opaque ? 0xffu : mask[x0 + i];
+        if (y == y0 || !horizontal)
+            gradient_span(g, walker, row, x0, width, y);
+        for (int i = 0; i < width; i++) {
+            uint32_t *d = &dst[(size_t)y * (size_t)dst_stride + x0 + i];
+            unsigned m = 0xffu;
+            if (!opaque)
+                m = coverage->pixels[(size_t)(y - coverage->y) * (size_t)coverage->stride +
+                    (size_t)(x0 + i - coverage->x)];
             *d = dp_masked_over(*d, row[i], (uint8_t)m);
         }
     }
+}
+
+static void gradient_band(const struct dp_gradient_built *g, struct gradient_walker *walker,
+    uint32_t *row, uint32_t *dst, int dst_stride, const struct dp_coverage *coverage,
+    const struct dp_span_band *band)
+{
+    const struct dp_span_entry *entries = coverage->spans->entries + band->first;
+    int y0 = band->y, y1 = band->y + band->height;
+    int x0, x1;
+    if (band->count <= 0) return;
+    if (band->count == 1 && entries[0].coverage == 0xff) {
+        gradient_flush(g, walker, row, dst, dst_stride, coverage,
+            entries[0].x, band->end - entries[0].x, y0, y1, 1);
+        return;
+    }
+    x0 = x1 = entries[0].x;
+    for (int i = 0; i < band->count; i++) {
+        int next = i + 1 < band->count ? entries[i + 1].x : band->end;
+        int len = next - entries[i].x;
+        if (len > 1) {
+            if (len >= 256 && entries[i].coverage == 0xff) {
+                if (x1 != x0)
+                    gradient_flush(g, walker, row, dst, dst_stride, coverage,
+                        x0, x1 - x0, y0, y1, 0);
+                gradient_flush(g, walker, row, dst, dst_stride, coverage,
+                    entries[i].x, len, y0, y1, 1);
+                x0 = next;
+            } else if (entries[i].coverage == 0 && x1 - x0 > 256) {
+                gradient_flush(g, walker, row, dst, dst_stride, coverage,
+                    x0, x1 - x0, y0, y1, 0);
+                x0 = next;
+            }
+        }
+        x1 = next;
+    }
+    if (x1 != x0)
+        gradient_flush(g, walker, row, dst, dst_stride, coverage, x0, x1 - x0, y0, y1, 0);
 }
 
 void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
@@ -941,10 +995,6 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h)
 {
     struct dp_gradient_built built;
-    int bx0 = extents_x < 0 ? 0 : extents_x;
-    int by0 = extents_y < 0 ? 0 : extents_y;
-    int bxe = extents_x + extents_w > dst_w ? dst_w : extents_x + extents_w;
-    int bye = extents_y + extents_h > dst_h ? dst_h : extents_y + extents_h;
     int cx0 = clip.x0 < 0 ? 0 : clip.x0;
     int cy0 = clip.y0 < 0 ? 0 : clip.y0;
     int cx1 = clip.x1 > dst_w ? dst_w : clip.x1;
@@ -952,7 +1002,8 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     int width = cx1 - cx0;
     uint32_t *row = NULL;
     if (cx0 >= cx1 || cy0 >= cy1) return;
-    if (!gradient_build(&built, gradient, bx0 + (bxe - bx0) / 2.0, by0 + (bye - by0) / 2.0))
+    if (!gradient_build(&built, gradient, extents_x + extents_w / 2.0,
+            extents_y + extents_h / 2.0))
         return;
     row = malloc((size_t)width * sizeof(*row));
     if (!row) {
@@ -965,48 +1016,13 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
         walker.count = built.count;
         walker.stops = built.stops;
         walker.need_reset = 1;
-        int bands = coverage && coverage->bands ? coverage->band_count : 1;
-        for (int b = 0; b < bands; b++) {
-            int y0 = cy0, y1 = cy1, start = 0, end = width;
-            int x0, x1, x;
-            const unsigned char *mask;
-            if (coverage && coverage->bands) {
-                y0 = coverage->bands[b].y;
-                y1 = coverage->bands[b].y + coverage->bands[b].height;
-                start = coverage->bands[b].x0 - cx0;
-                end = coverage->bands[b].x1 - cx0;
-            }
-            if (y0 < cy0) y0 = cy0;
-            if (y1 > cy1) y1 = cy1;
-            if (start < 0) start = 0;
-            if (end > width) end = width;
-            if (y1 <= y0 || end <= start) continue;
-            mask = coverage ? coverage->pixels +
-                (size_t)(y0 - coverage->y) * (size_t)coverage->stride +
-                (size_t)(cx0 - coverage->x) : NULL;
-            x0 = x1 = x = start;
-            while (x < end) {
-                unsigned char here = mask ? mask[x] : 0xff;
-                int xe = x + 1;
-                while (xe < end && (mask ? mask[xe] : 0xff) == here) xe++;
-                if (xe - x > 1) {
-                    if (xe - x >= 256 && here == 0xff) {
-                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
-                            x1 - x0, y0, y1, 0);
-                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x,
-                            xe - x, y0, y1, 1);
-                        x0 = xe;
-                    } else if (here == 0 && x1 - x0 > 256) {
-                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
-                            x1 - x0, y0, y1, 0);
-                        x0 = xe;
-                    }
-                }
-                x1 = xe;
-                x = xe;
-            }
-            gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0, x1 - x0,
-                y0, y1, 0);
+        if (coverage && coverage->spans && coverage->spans->band_count) {
+            for (int b = 0; b < coverage->spans->band_count; b++)
+                gradient_band(&built, &walker, row, dst, dst_stride, coverage,
+                    &coverage->spans->bands[b]);
+        } else {
+            gradient_flush(&built, &walker, row, dst, dst_stride, coverage,
+                cx0, width, cy0, cy1, coverage ? 0 : 1);
         }
     }
     free(row);
