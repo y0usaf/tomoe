@@ -4206,9 +4206,22 @@ static struct svg_matrix svg_viewbox_transform(float rect[4], struct svg_aspect 
     return (struct svg_matrix){ sx, 0.0f, 0.0f, sy, tx, ty };
 }
 
+struct svg_dmatrix { double sx, ky, kx, sy, tx, ty; };
+
+static struct svg_dmatrix svg_dmatrix_multiply(struct svg_dmatrix t1, struct svg_dmatrix t2) {
+    struct svg_dmatrix r;
+    r.sx = t1.sx * t2.sx + t1.kx * t2.ky;
+    r.ky = t1.ky * t2.sx + t1.sy * t2.ky;
+    r.kx = t1.sx * t2.kx + t1.kx * t2.sy;
+    r.sy = t1.ky * t2.kx + t1.sy * t2.sy;
+    r.tx = t1.sx * t2.tx + t1.kx * t2.ty + t1.tx;
+    r.ty = t1.ky * t2.tx + t1.sy * t2.ty + t1.ty;
+    return r;
+}
+
 static int svg_transform_parse(const char *text, struct svg_matrix *out) {
     struct svg_stream s = { text, strlen(text), 0 };
-    struct svg_matrix ts = svg_matrix_identity();
+    struct svg_dmatrix ts = { 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
     for (;;) {
         svg_stream_skip(&s);
         if (svg_stream_end(&s)) break;
@@ -4229,25 +4242,24 @@ static int svg_transform_parse(const char *text, struct svg_matrix *out) {
         if (strcmp(name, "matrix") && strcmp(name, "translate") && strcmp(name, "scale") &&
                 strcmp(name, "rotate") && strcmp(name, "skewX") && strcmp(name, "skewY"))
             return 0;
-        struct svg_matrix token = svg_matrix_identity();
+        struct svg_dmatrix token = { 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
         if (!strcmp(name, "matrix")) {
             for (int i = 0; i < 6; i++) if (!svg_stream_list_number(&s, &vals[i])) return 0;
-            token = (struct svg_matrix){ (float)vals[0], (float)vals[1], (float)vals[2],
-                (float)vals[3], (float)vals[4], (float)vals[5] };
+            token = (struct svg_dmatrix){ vals[0], vals[1], vals[2], vals[3], vals[4], vals[5] };
         } else if (!strcmp(name, "translate")) {
             if (!svg_stream_list_number(&s, &vals[0])) return 0;
             svg_stream_skip(&s);
             if (!svg_stream_end(&s) && s.text[s.pos] != ')') {
                 if (!svg_stream_list_number(&s, &vals[1])) return 0;
             } else vals[1] = 0.0;
-            token = (struct svg_matrix){ 1, 0, 0, 1, (float)vals[0], (float)vals[1] };
+            token = (struct svg_dmatrix){ 1.0, 0.0, 0.0, 1.0, vals[0], vals[1] };
         } else if (!strcmp(name, "scale")) {
             if (!svg_stream_list_number(&s, &vals[0])) return 0;
             svg_stream_skip(&s);
             if (!svg_stream_end(&s) && s.text[s.pos] != ')') {
                 if (!svg_stream_list_number(&s, &vals[1])) return 0;
             } else vals[1] = vals[0];
-            token = (struct svg_matrix){ (float)vals[0], 0, 0, (float)vals[1], 0, 0 };
+            token = (struct svg_dmatrix){ vals[0], 0.0, 0.0, vals[1], 0.0, 0.0 };
         } else if (!strcmp(name, "rotate")) {
             if (!svg_stream_list_number(&s, &vals[0])) return 0;
             pending_angle = vals[0];
@@ -4257,14 +4269,14 @@ static int svg_transform_parse(const char *text, struct svg_matrix *out) {
                 rotate_center = 1;
             }
             double v = pending_angle * (3.14159265358979323846 / 180.0);
-            float a = (float)cos(v), b = (float)sin(v);
-            token = (struct svg_matrix){ a, b, -b, a, 0, 0 };
+            double a = cos(v), b = sin(v);
+            token = (struct svg_dmatrix){ a, b, -b, a, 0.0, 0.0 };
             if (rotate_center) {
-                struct svg_matrix t1 = { 1, 0, 0, 1, (float)cx, (float)cy };
-                struct svg_matrix t2 = { 1, 0, 0, 1, (float)-cx, (float)-cy };
-                ts = svg_matrix_concat(ts, t1);
-                ts = svg_matrix_concat(ts, token);
-                ts = svg_matrix_concat(ts, t2);
+                struct svg_dmatrix t1 = { 1.0, 0.0, 0.0, 1.0, cx, cy };
+                struct svg_dmatrix t2 = { 1.0, 0.0, 0.0, 1.0, -cx, -cy };
+                ts = svg_dmatrix_multiply(ts, t1);
+                ts = svg_dmatrix_multiply(ts, token);
+                ts = svg_dmatrix_multiply(ts, t2);
                 svg_stream_skip(&s);
                 if (svg_stream_end(&s) || s.text[s.pos] != ')') return 0;
                 s.pos++;
@@ -4274,23 +4286,25 @@ static int svg_transform_parse(const char *text, struct svg_matrix *out) {
             }
         } else if (!strcmp(name, "skewX")) {
             if (!svg_stream_list_number(&s, &vals[0])) return 0;
-            float c = (float)tan(vals[0] * (3.14159265358979323846 / 180.0));
-            token = (struct svg_matrix){ 1, 0, c, 1, 0, 0 };
+            double c = tan(vals[0] * (3.14159265358979323846 / 180.0));
+            token = (struct svg_dmatrix){ 1.0, 0.0, c, 1.0, 0.0, 0.0 };
         } else {
             if (!svg_stream_list_number(&s, &vals[0])) return 0;
-            float b = (float)tan(vals[0] * (3.14159265358979323846 / 180.0));
-            token = (struct svg_matrix){ 1, b, 0, 1, 0, 0 };
+            double b = tan(vals[0] * (3.14159265358979323846 / 180.0));
+            token = (struct svg_dmatrix){ 1.0, b, 0.0, 1.0, 0.0, 0.0 };
         }
         svg_stream_skip(&s);
         if (svg_stream_end(&s) || s.text[s.pos] != ')') return 0;
         s.pos++;
         svg_stream_skip(&s);
         if (!svg_stream_end(&s) && s.text[s.pos] == ',') s.pos++;
-        ts = svg_matrix_concat(ts, token);
+        ts = svg_dmatrix_multiply(ts, token);
     }
-    if (!(isfinite(ts.sx) && isfinite(ts.ky) && isfinite(ts.kx) && isfinite(ts.sy) &&
-            isfinite(ts.tx) && isfinite(ts.ty))) return 0;
-    *out = ts;
+    struct svg_matrix m = { (float)ts.sx, (float)ts.ky, (float)ts.kx, (float)ts.sy,
+        (float)ts.tx, (float)ts.ty };
+    if (!(isfinite(m.sx) && isfinite(m.ky) && isfinite(m.kx) && isfinite(m.sy) &&
+            isfinite(m.tx) && isfinite(m.ty))) return 0;
+    *out = m;
     return 1;
 }
 
