@@ -282,8 +282,9 @@ static uint32_t image_pixel_argb(const struct dp_image *src, int x, int y, int e
         if (y < 0) y = 0;
         if (y >= src->height) y = src->height - 1;
     }
-    return *(const uint32_t *)((const unsigned char *)src->pixels +
+    uint32_t pixel = *(const uint32_t *)((const unsigned char *)src->pixels +
         (size_t)y * (size_t)src->stride + (size_t)x * 4);
+    return src->format == DP_IMAGE_RGB24 ? pixel | UINT32_C(0xff000000) : pixel;
 }
 
 static uint32_t bilinear_sample(const struct dp_image *src, int32_t x, int32_t y, int extend)
@@ -594,7 +595,7 @@ void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,
         v[2] = 1 << 16;
         if (!transform_point_3d(&t, v)) continue;
         int32_t sx = (int32_t)v[0], sy = (int32_t)v[1];
-        if (src->format == DP_IMAGE_ARGB32) {
+        if (src->format == DP_IMAGE_ARGB32 || src->format == DP_IMAGE_RGB24) {
             for (int X = cx0; X < cx1; X++) {
                 uint32_t sample;
                 if (params)

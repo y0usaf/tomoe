@@ -2045,11 +2045,8 @@ static enum png_status decode(struct png_reader *png) {
         int alpha = source_alpha(png);
         if (!alpha) png->output = png->depth == 16 ? OUT_RGB96F : OUT_RGB24;
         else png->output = png->depth == 16 ? OUT_RGBA128F : OUT_ARGB32;
-        png->stride = (uint32_t)cairo_format_stride_for_width(
-            png->output == OUT_RGB24 ? CAIRO_FORMAT_RGB24 :
-            png->output == OUT_RGB96F ? CAIRO_FORMAT_RGB96F :
-            png->output == OUT_RGBA128F ? CAIRO_FORMAT_RGBA128F : CAIRO_FORMAT_ARGB32,
-            (int)png->width);
+        png->stride = (uint32_t)png->width *
+            (png->output == OUT_RGB96F ? 12u : png->output == OUT_RGBA128F ? 16u : 4u);
         if (!png->stride) return PNG_BAD;
         png->pixels = malloc((size_t)png->stride * png->height);
         if (!png->pixels) return PNG_HARD;
@@ -2078,9 +2075,9 @@ enum png_status tomoe_png_decode(const unsigned char *bytes, size_t length,
     image->width = reader.width;
     image->height = reader.height;
     image->stride = reader.stride;
-    image->format = reader.output == OUT_RGB24 ? CAIRO_FORMAT_RGB24 :
-        reader.output == OUT_RGB96F ? CAIRO_FORMAT_RGB96F :
-        reader.output == OUT_RGBA128F ? CAIRO_FORMAT_RGBA128F : CAIRO_FORMAT_ARGB32;
+    image->format = reader.output == OUT_RGB24 ? PNG_FORMAT_RGB24 :
+        reader.output == OUT_RGB96F ? PNG_FORMAT_RGB96F :
+        reader.output == OUT_RGBA128F ? PNG_FORMAT_RGBA128F : PNG_FORMAT_ARGB32;
     image->pixels = reader.pixels;
     return PNG_OK;
 }

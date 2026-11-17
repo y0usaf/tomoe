@@ -45,7 +45,7 @@ struct screenshot {
     struct mark **marks;
     size_t count, capacity;
     struct mark *live;
-    cairo_surface_t *mask;
+    unsigned char *mask;
     struct texture *mask_texture;
     int mask_x, mask_y, mask_width, mask_height;
     double brush_width, brush_head, brush_size;
@@ -103,7 +103,7 @@ static void mark_freehand_add(struct mark *mark, int x, int y) {
 static void mask_drop(struct screenshot *shot) {
     if (shot->mask_texture) texture_destroy(shot->mask_texture);
     shot->mask_texture = NULL;
-    if (shot->mask) cairo_surface_destroy(shot->mask);
+    free(shot->mask);
     shot->mask = NULL;
     shot->mask_x = shot->mask_y = shot->mask_width = shot->mask_height = 0;
 }
@@ -289,9 +289,10 @@ static void draw_text(cairo_t *cr, const struct settings *st, const struct mark 
 
 static bool draw_mark(cairo_t *cr, uint32_t *pixels, int stride, struct drect area,
         const struct settings *st, const struct mark *mark, int ox, int oy) {
+    (void)cr;
+    (void)st;
     if (mark->kind == MARK_ARROW) return draw_arrow(pixels, stride, area, mark, ox, oy);
     if (mark->kind == MARK_FREE) return draw_free(pixels, stride, area, mark, ox, oy);
-    draw_text(cr, st, mark);
     return true;
 }
 
@@ -311,16 +312,13 @@ static bool mask_prepare(struct tomoe *s, struct screenshot *shot) {
             region.y == shot->mask_y && region.width == shot->mask_width &&
             region.height == shot->mask_height) return true;
     mask_drop(shot);
-    cairo_surface_t *mask = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
-        region.width, region.height);
-    if (cairo_surface_status(mask) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(mask);
-        return false;
-    }
-    struct texture *texture = texture_new(s->renderer, DRM_FORMAT_ARGB8888,
-        (uint32_t)region.width, (uint32_t)region.height);
+    unsigned char *mask = calloc((size_t)region.width * (size_t)region.height, 4);
+    struct texture *texture = mask
+        ? texture_new(s->renderer, DRM_FORMAT_ARGB8888, (uint32_t)region.width,
+            (uint32_t)region.height)
+        : NULL;
     if (!texture) {
-        cairo_surface_destroy(mask);
+        free(mask);
         return false;
     }
     shot->mask = mask;
@@ -346,32 +344,43 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
     if (x + width > shot->mask_width) width = shot->mask_width - x;
     if (y + height > shot->mask_height) height = shot->mask_height - y;
     if (width <= 0 || height <= 0) return;
-    cairo_surface_flush(shot->mask);
-    uint32_t *pixels = (uint32_t *)cairo_image_surface_get_data(shot->mask);
-    int stride = cairo_image_surface_get_stride(shot->mask) / 4;
+    uint32_t *pixels = (uint32_t *)shot->mask;
+    int stride = shot->mask_width;
     for (int row = y; row < y + height; row++)
         memset(pixels + (size_t)row * stride + x, 0, (size_t)width * 4);
-    cairo_surface_mark_dirty(shot->mask);
-    cairo_t *cr = cairo_create(shot->mask);
-    cairo_rectangle(cr, x, y, width, height);
-    cairo_clip(cr);
-    cairo_translate(cr, -shot->mask_x, -shot->mask_y);
-    cairo_set_source_rgba(cr, 1, 1, 1, 1);
     struct drect area = { x, y, x + width, y + height };
+    bool labels = false;
     for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
         const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
         struct box box = mark_box(mark);
         if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
-        if (!draw_mark(cr, pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
+        if (mark->kind == MARK_TEXT) { labels = true; continue; }
+        if (!draw_mark(NULL, pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
             break;
     }
-    cairo_destroy(cr);
-    cairo_surface_flush(shot->mask);
-    unsigned char *data = cairo_image_surface_get_data(shot->mask);
-    int upload_stride = cairo_image_surface_get_stride(shot->mask);
+    if (labels) {
+        cairo_surface_t *surface = cairo_image_surface_create_for_data(shot->mask,
+            CAIRO_FORMAT_ARGB32, shot->mask_width, shot->mask_height, shot->mask_width * 4);
+        if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
+            cairo_t *cr = cairo_create(surface);
+            cairo_rectangle(cr, x, y, width, height);
+            cairo_clip(cr);
+            cairo_translate(cr, -shot->mask_x, -shot->mask_y);
+            cairo_set_source_rgba(cr, 1, 1, 1, 1);
+            for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
+                const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
+                if (mark->kind != MARK_TEXT) continue;
+                struct box box = mark_box(mark);
+                if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
+                draw_text(cr, st, mark);
+            }
+            cairo_destroy(cr);
+        }
+        cairo_surface_destroy(surface);
+    }
     struct rect rect = { x, y, x + width, y + height };
-    texture_upload(shot->mask_texture, data, DRM_FORMAT_ARGB8888, (uint32_t)upload_stride,
-        &rect, 1);
+    texture_upload(shot->mask_texture, shot->mask, DRM_FORMAT_ARGB8888,
+        (uint32_t)(shot->mask_width * 4), &rect, 1);
 }
 
 static void marks_changed(struct tomoe *s, struct box damage) {
@@ -525,8 +534,9 @@ static void paint_marks(struct tomoe *s, struct output *o, uint32_t *dst, int st
     uint32_t ink = s->settings.screenshot_mark_ink;
     struct dmatrix matrix;
     mark_matrix(&matrix, transform, width, height);
-    cairo_surface_flush(shot->mask);
-    const uint32_t *mask = (const uint32_t *)cairo_image_surface_get_data(shot->mask);
+    matrix.x0 -= matrix.xx * origin->x + matrix.xy * origin->y;
+    matrix.y0 -= matrix.yx * origin->x + matrix.yy * origin->y;
+    const uint32_t *mask = (const uint32_t *)shot->mask;
     if (!mask) return;
     double alpha = (ink & 0xff) / 255.0;
     double red = ((ink >> 24) & 0xff) / 255.0;
@@ -538,8 +548,8 @@ static void paint_marks(struct tomoe *s, struct output *o, uint32_t *dst, int st
     unsigned b = (unsigned)(blue * alpha * 65535.0 + 0.5);
     uint32_t color = ((a >> 8) << 24) | ((r >> 8) << 16) | (g & 0xff00) | (b >> 8);
     dp_mask_surface(dst, stride, (struct drect){ 0, 0, dst_width, dst_height }, mask,
-        cairo_image_surface_get_stride(shot->mask), shot->mask_width, shot->mask_height,
-        shot->mask_x, shot->mask_y, &matrix, -origin->x, -origin->y, color);
+        shot->mask_width, shot->mask_width, shot->mask_height,
+        shot->mask_x, shot->mask_y, &matrix, 0, 0, color);
 }
 
 static void capture(struct tomoe *s, struct output *o, struct box region) {

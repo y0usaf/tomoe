@@ -83,7 +83,7 @@ struct dp_pattern dp_surface_pattern(double tx, double ty, double sx, double sy,
 
 struct drect dp_path_extents(const struct dpath *path);
 
-enum { DP_IMAGE_ARGB32, DP_IMAGE_RGBA_FLOAT, DP_IMAGE_RGB_FLOAT };
+enum { DP_IMAGE_ARGB32, DP_IMAGE_RGB24, DP_IMAGE_RGBA_FLOAT, DP_IMAGE_RGB_FLOAT };
 enum { DP_FILTER_NEAREST, DP_FILTER_BILINEAR, DP_FILTER_GOOD };
 enum { DP_EXTEND_NONE, DP_EXTEND_PAD };
 enum { DP_OP_OVER, DP_OP_SOURCE };

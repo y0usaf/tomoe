@@ -1,16 +1,17 @@
 #ifndef TOMOE_PNG_H
 #define TOMOE_PNG_H
 
-#include <cairo.h>
 #include <stddef.h>
 #include <stdint.h>
 
 enum png_status { PNG_OK, PNG_BAD, PNG_HARD };
 
+enum png_format { PNG_FORMAT_ARGB32, PNG_FORMAT_RGB24, PNG_FORMAT_RGBA128F, PNG_FORMAT_RGB96F };
+
 struct png_image {
     uint32_t width, height;
     unsigned stride;
-    cairo_format_t format;
+    enum png_format format;
     unsigned char *pixels;
 };
 
