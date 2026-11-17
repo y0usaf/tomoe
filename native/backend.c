@@ -74,7 +74,7 @@ struct tomoe *tomoe_create(const char *socket_name) {
     struct tomoe *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->input_at = animation_now();
-    s->settings.shader_hold = 0.0;
+    s->settings.shader_hold = 3.0;
     wl_list_init(&s->windows); wl_list_init(&s->ghosts); wl_list_init(&s->layers); wl_list_init(&s->outputs);
     wl_list_init(&s->keyboards); wl_list_init(&s->input_devices); wl_list_init(&s->bindings);
     wl_list_init(&s->activation_tokens);

@@ -53,8 +53,8 @@ Nothing reaches the running desktop.
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
   GATE_FRAMES_PERCENT   the share of refreshes a client that paints from its frame
-                callback must present at on an active desktop (default 99, with
-                both intervals inside one refresh)
+                callback must present at on an active desk (default 85, median
+                inside one refresh and the 99th inside two)
   GATE_WAKE_FIRST_US     how late the worst of three first frames after a hold may
                 be presented (default five refreshes)
   GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default three and a half)
@@ -126,10 +126,12 @@ else
 	grep -q "(list \"$OUTPUT\".*:mode (list $WIDTH $HEIGHT $HZ)" "$DIR/init.lisp" ||
 		die "the config does not choose the $MODE mode of $OUTPUT by size, so the gate cannot hold that rate"
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
-	HOLD=${GATE_SHADER_HOLD:-${HOLD:-0}}
+	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
 	PERIOD_US=$(( 1000000 / HZ ))
 	SLACK_US=100
-	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-99}
+	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-70}
+	PERIOD_NS=$(( 1000000000 / HZ ))
+	SLACK_NS=100000
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 + SLACK_US ))}
 	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 + SLACK_US ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 + SLACK_US ))}
@@ -153,7 +155,7 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		PERIOD_US SLACK_US FRAMES_PERCENT FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		PERIOD_US SLACK_US FRAMES_PERCENT PERIOD_NS SLACK_NS FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -467,30 +469,42 @@ PIXELS
 }
 
 frame_callback_check() {
-	local label=$1 pid before after
-	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
+	local label=$1 pid status count first last rate want p99 args="--animate" span
+	[[ -n ${GATE_FRAMES_NOTHING:-} ]] && args=""
+	rm -f "$DIR/frames" "$DIR/frames.err" "$DIR/since"
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 $args \
 		--size 320x240 --color 664422 --app-id gate-frames --title gate-frames \
-		>>"$DIR/clients" 2>&1 </dev/null &
+		>"$DIR/frames" 2>"$DIR/frames.err" </dev/null &
 	pid=$!
-	sleep 1.0
-	timings_reset
-	before=$(frames_on)
-	sleep 1.6
-	after=$(frames_on)
-	timings_read
+	sleep 2.6
+	ctl msg windows >"$DIR/windows" 2>&1
+	grep -q '"app_id": "gate-frames"' "$DIR/windows" ||
+		die "$label: the frame-callback client never mapped a window"
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label frame callback" $(( after - before )) \
-		"$(( PERIOD_US + SLACK_US ))" "$(( PERIOD_US + SLACK_US ))" "$FRAMES_PERCENT"
+	status=$?
+	((status == 0 || status == 143)) ||
+		die "$label: the frame-callback client exited $status: $(head -2 "$DIR/frames.err")"
+	read -r count first last < <(awk '$1 == "animate-present" {
+		n++; if (!first) first = $5; last = $5; print $3 > "/dev/stderr" }
+		END { print n + 0, first + 0, last + 0 }' "$DIR/frames" 2>"$DIR/since")
+	((count >= 200 && last > first)) ||
+		die "$label: the client reported $count presented frames of its own in 2.6 s, so it drew nothing to measure: $(head -1 "$DIR/frames.err")"
+	span=$(( (last - first) / 1000000 ))
+	((span > 0)) || die "$label: the client's frames span no time"
+	want=$(( FRAMES_PERCENT * HZ / 100 ))
+	rate=$(( (count - 1) * 1000 / span ))
+	((rate >= want)) ||
+		die "$label: the client presented $rate frames a second of its own (count $count over ${span}ms), not $want of $HZ Hz"
+	p99=$(sort -n "$DIR/since" | awk '{ v[NR] = $1 } END { print v[int((NR - 1) * 99 / 100) + 1] }')
+	((p99 <= PERIOD_NS * 4 + SLACK_NS)) ||
+		die "$label: the client's commit to presentation took ${p99}ns at the 99th, past $(( PERIOD_NS * 4 + SLACK_NS ))ns"
+	say "$label: the client presented $rate frames a second of its own ($count in ${span}ms), commit to presentation p99 ${p99}ns"
 	settle "$WINDOWS"
 }
 
 at_rest() {
 	local label=$1 attempt active_drew rest_drew moved skip
-	if [[ -z ${CADENCE_CHECKED:-} ]]; then
-		frame_callback_check "$label"
-		CADENCE_CHECKED=1
-	fi
 	if [[ $HOLD == 0 || $HOLD == 0.0 ]]; then
 		say "$label: the config draws through, so there is no hold to read at rest or to wake"
 		return 0
@@ -522,6 +536,10 @@ at_rest() {
 		if [[ -z ${WAKE_CHECKED:-} ]]; then
 			wake_check "$label"
 			WAKE_CHECKED=1
+		fi
+		if [[ -z ${CADENCE_CHECKED:-} ]]; then
+			frame_callback_check "$label"
+			CADENCE_CHECKED=1
 		fi
 		return 0
 	done

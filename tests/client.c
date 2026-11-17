@@ -902,8 +902,9 @@ static void animate_presented(void *data, struct wp_presentation_feedback *feedb
     (void)refresh; (void)seq_hi; (void)seq_lo; (void)flags;
     struct animate_record *record = data;
     uint64_t when = (((uint64_t)hi << 32) | lo) * 1000000000ULL + nsec;
-    printf("animate-present %u %lld %lld\n", record->id,
-        (long long)(when - record->callback_ns), (long long)(when - record->commit_ns));
+    printf("animate-present %u %lld %lld %lld\n", record->id,
+        (long long)(when - record->callback_ns), (long long)(when - record->commit_ns),
+        (long long)animate_now());
     fflush(stdout);
     free(record);
     wp_presentation_feedback_destroy(feedback);
