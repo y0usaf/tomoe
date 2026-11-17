@@ -1766,3 +1766,20 @@ native/svg.c
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 
+  The arc and path-data conversion in the same file are ported from kurbo
+  0.13.0 and svgtypes 0.16.1.
+
+  kurbo files carry:
+
+    Copyright 2018 the Kurbo Authors
+    Copyright 2019 The Kurbo Authors
+    SPDX-License-Identifier: Apache-2.0 OR MIT
+
+  svgtypes files carry:
+
+    Copyright 2018 the SVG Types Authors
+    Copyright 2021 the SVG Types Authors
+    SPDX-License-Identifier: Apache-2.0 OR MIT
+
+  The MIT permission text above applies to both.
+

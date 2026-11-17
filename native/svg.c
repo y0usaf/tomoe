@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-only AND BSD-3-Clause AND MIT
-   Parts ported from tiny-skia 0.12.0 (BSD-3-Clause) and resvg 0.47.0
-   (Apache-2.0 OR MIT); see NOTICE. */
+   Parts ported from tiny-skia 0.12.0 (BSD-3-Clause), resvg 0.47.0, kurbo
+   0.13.0 and svgtypes 0.16.1 (Apache-2.0 OR MIT); see NOTICE. */
 #include "svg.h"
 
 #include <math.h>
