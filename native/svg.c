@@ -8123,6 +8123,15 @@ static void svg_doc_calculate_root_bboxes(struct svg_node *root) {
     root->abs_lbbox = svg_bbox_transform(root->lbbox, root->abs_transform);
 }
 
+static void svg_style_set_none(struct svg_style *st, const char *name) {
+    struct svg_prop *p = svg_style_find(st, name);
+    if (!p) return;
+    char *value = svg_strdup("none");
+    if (!value) return;
+    free(p->value);
+    p->value = value;
+}
+
 static void svg_style_remove(struct svg_style *st, const char *name) {
     for (int i = 0; i < st->count; i++) {
         if (!strcmp(st->props[i].name, name)) {
@@ -8158,7 +8167,14 @@ static void svg_fix_recursive_links(struct svg_doc *doc, const char *tag, const 
                 if (!svg_parse_funciri(p->value, id, sizeof(id))) continue;
                 struct xml_node *link = svg_id_last(doc, id);
                 if (!link) continue;
-                if (link == st->node) { svg_style_remove(child, prop); changed = 1; continue; }
+                if (link == st->node) {
+                    if (!strcmp(prop, "fill") || !strcmp(prop, "stroke"))
+                        svg_style_set_none(child, prop);
+                    else
+                        svg_style_remove(child, prop);
+                    changed = 1;
+                    continue;
+                }
                 int link_index = link->style_index;
                 if (link_index < 0) continue;
                 struct svg_style *lst = &doc->styles[link_index];
@@ -8170,10 +8186,42 @@ static void svg_fix_recursive_links(struct svg_doc *doc, const char *tag, const 
                     char id2[256];
                     if (!svg_parse_funciri(p2->value, id2, sizeof(id2))) continue;
                     struct xml_node *link2 = svg_id_last(doc, id2);
-                    if (link2 == st->node) { svg_style_remove(node2, prop); changed = 1; }
+                    if (link2 == st->node) {
+                        if (!strcmp(prop, "fill") || !strcmp(prop, "stroke"))
+                            svg_style_set_none(node2, prop);
+                        else
+                            svg_style_remove(node2, prop);
+                        changed = 1;
+                    }
                 }
                 (void)lst;
             }
+        }
+    }
+}
+
+static void svg_fix_recursive_fe_image(struct svg_doc *doc) {
+    for (int si = 0; si < doc->nstyles; si++) {
+        struct svg_style *st = &doc->styles[si];
+        struct xml_node *node = st->node;
+        if (!node || strcmp(svg_local_name(node->name), "feImage")) continue;
+        const char *href = svg_style_get(doc, st, "href");
+        if (!href) href = svg_xml_attr(node, "xlink:href");
+        if (!href) href = svg_xml_attr(node, "href");
+        if (!href || href[0] != '#') continue;
+        struct xml_node *link = svg_id_last(doc, href + 1);
+        if (!link || link->style_index < 0) continue;
+        struct xml_node *parent = node->parent;
+        if (!parent || strcmp(svg_local_name(parent->name), "filter")) continue;
+        if (parent->style_index < 0) continue;
+        for (int di = link->style_index; di < doc->nstyles; di++) {
+            struct svg_style *child = &doc->styles[di];
+            if (!svg_is_descendant_of(child->node, link)) break;
+            struct svg_prop *p = svg_style_find(child, "filter");
+            if (!p) continue;
+            char id[256];
+            if (!svg_parse_funciri(p->value, id, sizeof(id))) continue;
+            if (svg_id_last(doc, id) == parent) svg_style_remove(child, "filter");
         }
     }
 }
@@ -8195,6 +8243,10 @@ struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     svg_doc_styles(&svg->doc, root);
     svg_fix_recursive_links(&svg->doc, "clipPath", "clip-path");
     svg_fix_recursive_links(&svg->doc, "mask", "mask");
+    svg_fix_recursive_links(&svg->doc, "filter", "filter");
+    svg_fix_recursive_links(&svg->doc, "pattern", "fill");
+    svg_fix_recursive_links(&svg->doc, "pattern", "stroke");
+    svg_fix_recursive_fe_image(&svg->doc);
     if (root->style_index < 0) { tomoe_svg_destroy(svg); return NULL; }
     struct svg_style *root_style = &svg->doc.styles[root->style_index];
     struct svg_conv conv;
