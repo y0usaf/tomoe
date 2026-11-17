@@ -4,12 +4,12 @@
 #include "jpeg.h"
 #include "png.h"
 #include "draw.h"
+#include "svg.h"
 
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
-#include <resvg.h>
 #include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
@@ -54,7 +54,7 @@ struct ui_asset {
     uint32_t width, height;
     unsigned char *pixels;
     int raster_format;
-    resvg_render_tree *svg;
+    struct tomoe_svg *svg;
     double svg_width, svg_height;
     struct backdrop_job *job;
     struct texture *texture;
@@ -235,13 +235,10 @@ static enum asset_status decode_jpeg(struct ui_asset *asset,
 static enum asset_status decode_svg(struct ui_asset *asset,
         const struct asset_data *data, uint64_t available) {
     if (data->length > available) return ASSET_HARD;
-    resvg_options *options = resvg_options_create();
-    int32_t error = resvg_parse_tree_from_data((const char *)data->bytes, data->length, options, &asset->svg);
-    resvg_options_destroy(options);
-    if (error != RESVG_OK) return ASSET_MISSING;
-    resvg_size size = resvg_get_image_size(asset->svg);
-    asset->svg_width = size.width;
-    asset->svg_height = size.height;
+    asset->svg = tomoe_svg_parse(data->bytes, data->length);
+    if (!asset->svg) return ASSET_MISSING;
+    if (!tomoe_svg_size(asset->svg, &asset->svg_width, &asset->svg_height))
+        return ASSET_MISSING;
     if (!isfinite(asset->svg_width) || !isfinite(asset->svg_height) ||
             asset->svg_width <= 0 || asset->svg_height <= 0) return ASSET_MISSING;
     if (asset->svg_width > UINT32_MAX || asset->svg_height > UINT32_MAX) return ASSET_HARD;
@@ -275,7 +272,7 @@ static void free_content(struct ui_asset *asset) {
     if (asset->job) backdrop_cancel(asset);
     if (asset->texture) texture_destroy(asset->texture);
     render_shader_destroy(asset->shader);
-    if (asset->svg) resvg_tree_destroy(asset->svg);
+    if (asset->svg) tomoe_svg_destroy(asset->svg);
     free(asset->pixels);
     asset->texture = NULL; asset->shader = NULL;
     asset->raster_format = 0; asset->svg = NULL; asset->pixels = NULL;
@@ -706,8 +703,7 @@ void tomoe_ui_assets_discard(struct tomoe *s) {
 static unsigned char *render_svg(const struct ui_asset *asset, int width, int height) {
     unsigned char *pixels = calloc((size_t)width * (size_t)height, 4);
     if (!pixels) return NULL;
-    resvg_render(asset->svg, (resvg_transform){ width / asset->svg_width, 0, 0,
-        height / asset->svg_height, 0, 0 }, width, height, (char *)pixels);
+    tomoe_svg_render(asset->svg, width, height, pixels);
     for (int i = 0; i < width * height * 4; i += 4) {
         uint32_t pixel = (uint32_t)pixels[i + 3] << 24 | (uint32_t)pixels[i] << 16 |
             (uint32_t)pixels[i + 1] << 8 | pixels[i + 2];

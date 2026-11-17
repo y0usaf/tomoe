@@ -98,14 +98,14 @@ CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(CORE_SOURCES)) \
 	build/core/obj/wayland-protocol.o
 
 build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) | build/entries
-	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) \
-		-lresvg -lm -Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
+	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) -lm \
+		-Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
 		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
 	build/entries $@
 
 build/tomoe-core.so: $(CORE_OBJECTS) | build/entries
 	$(CC) $(LTO) -shared -Wl,-Bsymbolic $(CORE_OBJECTS) -o $@ \
-		$(LINK) -lresvg -lm
+		$(LINK) -lm
 	build/entries $@
 
 core: build/tomoe-core.so

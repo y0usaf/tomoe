@@ -12,13 +12,6 @@
       ];
       pkgsFor = nixpkgs.lib.genAttrs systems (system: import nixpkgs { inherit system; });
       version = "0.1.0";
-      resvg =
-        pkgs:
-        pkgs.runCommand "resvg-${pkgs.resvg.version}-lib" { } ''
-          mkdir -p $out/lib
-          cp -r ${pkgs.resvg}/include $out
-          cp ${pkgs.resvg}/lib/libresvg.so $out/lib
-        '';
       lean =
         pkgs:
         let
@@ -154,7 +147,6 @@
             pkgs.wlr-protocols
             libs.libxkbcommon
             pango
-            (resvg pkgs)
           ];
           strictDeps = true;
           dontStrip = true;
