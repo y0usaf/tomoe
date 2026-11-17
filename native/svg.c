@@ -887,22 +887,32 @@ static unsigned svg_round_u8(float v) {
     return (unsigned)lrintf(v * 255.0f);
 }
 
+static int svg_shader_opaque(struct svg_shader *shader) {
+    if (shader->type == 0) return shader->sa == 255u;
+    return shader->opaque;
+}
+
 static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x, int y,
         unsigned a, int blend) {
     if (shader->highp) {
         float color[4], d[4];
         svg_shader_color_highp(shader, x, y, color);
         for (int k = 0; k < 4; k++) d[k] = (float)px[k] * (1.0f / 255.0f);
-        float pr = d[0] * (1.0f - color[3]) + color[0];
-        float pg = d[1] * (1.0f - color[3]) + color[1];
-        float pb = d[2] * (1.0f - color[3]) + color[2];
-        float pa = d[3] * (1.0f - color[3]) + color[3];
         float cov = (float)a * (1.0f / 255.0f);
-        float fr = (pr - d[0]) * cov + d[0];
-        float fg = (pg - d[1]) * cov + d[1];
-        float fb = (pb - d[2]) * cov + d[2];
-        float fa = (pa - d[3]) * cov + d[3];
-        float vals[4] = { fr, fg, fb, fa };
+        float vals[4];
+        if (blend == 2) {
+            for (int k = 0; k < 4; k++) vals[k] = d[k] * (1.0f - cov);
+        } else if (blend == 0 && !svg_shader_opaque(shader)) {
+            float q[4];
+            for (int k = 0; k < 4; k++) q[k] = color[k] * cov;
+            for (int k = 0; k < 4; k++) vals[k] = q[k] + d[k] * (1.0f - q[3]);
+        } else {
+            float p[4];
+            for (int k = 0; k < 3; k++)
+                p[k] = blend == 1 ? color[k] : color[k] + d[k] * (1.0f - color[3]);
+            p[3] = blend == 1 ? color[3] : color[3] + d[3] * (1.0f - color[3]);
+            for (int k = 0; k < 4; k++) vals[k] = (p[k] - d[k]) * cov + d[k];
+        }
         for (int k = 0; k < 4; k++) px[k] = (unsigned char)svg_round_u8(vals[k]);
         return;
     }
@@ -910,10 +920,23 @@ static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x,
     svg_shader_color(shader, x, y, color);
     unsigned sr = color[0], sg = color[1], sbv = color[2], sa = color[3];
     unsigned dr = px[0], dg = px[1], db = px[2], da = px[3];
-    unsigned pr = 0, pg = 0, pb = 0, pa = 0;
     if (blend == 2) {
-        pr = pg = pb = pa = 0;
-    } else if (blend == 1) {
+        px[0] = (unsigned char)svg_div255(dr * (255u - a));
+        px[1] = (unsigned char)svg_div255(dg * (255u - a));
+        px[2] = (unsigned char)svg_div255(db * (255u - a));
+        px[3] = (unsigned char)svg_div255(da * (255u - a));
+        return;
+    }
+    if (blend == 0 && !svg_shader_opaque(shader)) {
+        unsigned qa = svg_div255(sa * a);
+        px[0] = (unsigned char)(svg_div255(sr * a) + svg_div255(dr * (255u - qa)));
+        px[1] = (unsigned char)(svg_div255(sg * a) + svg_div255(dg * (255u - qa)));
+        px[2] = (unsigned char)(svg_div255(sbv * a) + svg_div255(db * (255u - qa)));
+        px[3] = (unsigned char)(qa + svg_div255(da * (255u - qa)));
+        return;
+    }
+    unsigned pr = 0, pg = 0, pb = 0, pa = 0;
+    if (blend == 1) {
         pr = sr; pg = sg; pb = sbv; pa = sa;
     } else {
         pr = sr + svg_div255(dr * (255u - sa));
@@ -9419,7 +9442,7 @@ static float svg_pt_length(struct svg_point a);
 static struct svg_path *svg_stroke_path(struct svg_path *path, struct svg_stroke *stroke,
         float res_scale);
 static void svg_stroke_hairline(struct svg_pixmap *pixmap, struct svg_path *path,
-        struct svg_stroke *stroke, struct svg_shader *shader);
+        struct svg_stroke *stroke, struct svg_shader *shader, int blend);
 static struct svg_path *svg_dash_path(struct svg_path *src, float *array, int count,
         float offset, float res_scale);
 
@@ -9526,7 +9549,8 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         float bbox[4] = { hbx, hby, w, h };
         svg_prepare_shader(&hshader, &node->stroke.paint, node->stroke.opacity * factor, ts,
             bbox, 1);
-        if (hshader.type >= 0) svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader);
+        if (hshader.type >= 0)
+            svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader, blend);
         if (hshader.has_pattern_pixmap) svg_pixmap_free(&hshader.pattern_pixmap);
         svg_path_free(hpath);
         return;
@@ -12527,6 +12551,7 @@ static struct svg_path *svg_stroke_path(struct svg_path *path, struct svg_stroke
 struct svg_hairctx {
     struct svg_pixmap *pixmap;
     struct svg_shader *shader;
+    int blend;
     int clip_valid;
     int clip[4];
 };
@@ -12606,20 +12631,9 @@ static void svg_hair_pixel(struct svg_hairctx *ctx, int x, int y, unsigned alpha
         if (x < ctx->clip[0] || y < ctx->clip[1] || x >= ctx->clip[0] + ctx->clip[2] ||
                 y >= ctx->clip[1] + ctx->clip[3]) return;
     }
-    unsigned color[4];
-    svg_shader_color(ctx->shader, x, y, color);
     unsigned char *px = ctx->pixmap->pixels +
         ((size_t)y * (size_t)ctx->pixmap->width + (size_t)x) * 4;
-    unsigned dr = px[0], dg = px[1], db = px[2], da = px[3];
-    unsigned sr = color[0], sg = color[1], sb = color[2], sa = color[3];
-    unsigned pr = sr + svg_div255(dr * (255u - sa));
-    unsigned pg = sg + svg_div255(dg * (255u - sa));
-    unsigned pb = sb + svg_div255(db * (255u - sa));
-    unsigned pa = sa + svg_div255(da * (255u - sa));
-    px[0] = (unsigned char)svg_div255(dr * (255u - alpha) + pr * alpha);
-    px[1] = (unsigned char)svg_div255(dg * (255u - alpha) + pg * alpha);
-    px[2] = (unsigned char)svg_div255(db * (255u - alpha) + pb * alpha);
-    px[3] = (unsigned char)svg_div255(da * (255u - alpha) + pa * alpha);
+    svg_blend_pixel(px, ctx->shader, x, y, alpha, ctx->blend);
 }
 
 static void svg_hair_blit_v(struct svg_hairctx *ctx, unsigned x, unsigned y, unsigned height,
@@ -13213,7 +13227,7 @@ static int svg_rect_intersect_p(int a[4], int b[4], int out[4]) {
 }
 
 static void svg_stroke_hairline(struct svg_pixmap *pixmap, struct svg_path *path,
-        struct svg_stroke *stroke, struct svg_shader *shader) {
+        struct svg_stroke *stroke, struct svg_shader *shader, int blend) {
     int clip[4] = { 0, 0, pixmap->width, pixmap->height };
     float cap_out = stroke->cap == 0 ? 1.0f : 2.0f;
     int l = (int)floorf(path->left - cap_out);
@@ -13240,6 +13254,7 @@ static void svg_stroke_hairline(struct svg_pixmap *pixmap, struct svg_path *path
     memset(&ctx, 0, sizeof(ctx));
     ctx.pixmap = pixmap;
     ctx.shader = shader;
+    ctx.blend = blend;
     ctx.clip_valid = 0;
     int prev_verb = SVG_MOVE;
     struct svg_point first_pt = { 0, 0 }, last_pt = { 0, 0 };
