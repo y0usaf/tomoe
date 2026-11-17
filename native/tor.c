@@ -1450,7 +1450,11 @@ px_status_t
 tor_add_edges (void *converter, const px_edge_t *edges, int count)
 {
     cairo_tor_scan_converter_t *self = converter;
+    px_status_t status;
     int i;
+
+    if ((status = setjmp (self->jmp)))
+	return px_scan_converter_set_error (self, status);
 
     for (i = 0; i < count; i++)
 	 glitter_scan_converter_add_edge (self->converter, &edges[i]);
@@ -1509,5 +1513,5 @@ tor_create (int			xmin,
  bail:
     self->base.destroy(&self->base);
  bail_nomem:
-    return px_scan_converter_create_in_error (status);
+    return NULL;
 }

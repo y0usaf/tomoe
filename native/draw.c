@@ -389,27 +389,6 @@ static void filler_curve_to(struct filler *filler, const px_point_t *p1,
     filler->current = (struct dpoint){ p3->x, p3->y };
 }
 
-static void error_converter_destroy(void *converter)
-{
-    (void)converter;
-}
-
-static px_status_t error_converter_generate(void *converter, px_span_renderer_t *renderer)
-{
-    (void)renderer;
-    return ((px_scan_converter_t *)converter)->status;
-}
-
-static px_scan_converter_t error_converter = {
-    error_converter_destroy, error_converter_generate, PX_STATUS_NO_MEMORY
-};
-
-px_scan_converter_t *px_scan_converter_create_in_error(px_status_t status)
-{
-    error_converter.status = status;
-    return &error_converter;
-}
-
 void dpath_init(struct dpath *path)
 {
     memset(path, 0, sizeof(*path));
@@ -521,12 +500,14 @@ static void path_move_to(struct dpath *path, int32_t x, int32_t y)
 
 static void path_line_to_fixed(struct dpath *path, int32_t x, int32_t y)
 {
+    if (path->failed) return;
     if (!path->has_current) {
         path_move_to(path, x, y);
         return;
     }
     path_move_to_apply(path);
-    if (path->ops[path->count - 1].op != DP_MOVE &&
+    if (path->failed) return;
+    if (path->count > 0 && path->ops[path->count - 1].op != DP_MOVE &&
         x == path->current.x && y == path->current.y)
         return;
     if (path->stroke_is_rectilinear)
@@ -585,6 +566,7 @@ static void path_drop_line(struct dpath *path)
 static void path_curve_to_fixed(struct dpath *path, int32_t x0, int32_t y0,
     int32_t x1, int32_t y1, int32_t x2, int32_t y2)
 {
+    if (path->failed) return;
     if (path->current.x == x2 && path->current.y == y2) {
         if (x1 == x2 && x0 == x2 && y1 == y2 && y0 == y2) {
             path_line_to_fixed(path, x2, y2);
@@ -593,6 +575,7 @@ static void path_curve_to_fixed(struct dpath *path, int32_t x0, int32_t y0,
     }
     if (!path->has_current) path_move_to(path, x0, y0);
     path_move_to_apply(path);
+    if (path->failed) return;
     if (path->count > 0 && path->ops[path->count - 1].op == DP_LINE) {
         if (penultimate_x(path, path->current.x) == path->current.x &&
             penultimate_y(path, path->current.y) == path->current.y)
@@ -621,6 +604,7 @@ void dp_close_path(struct dpath *path)
     if (path->failed) return;
     if (!path->has_current) return;
     path_line_to_fixed(path, path->last_move.x, path->last_move.y);
+    if (path->failed) return;
     path_drop_line(path);
     path->needs_move = true;
     path_append(path, DP_CLOSE, NULL, 0);
@@ -792,6 +776,7 @@ static px_status_t span_rows(void *closure, int y, int height,
 static bool path_is_rect_box(const struct dpath *path, int32_t *l, int32_t *t,
     int32_t *r, int32_t *b)
 {
+    if (path->failed) return false;
     if (path->count != 5) return false;
     const struct dpath_op_entry *ops = path->ops;
     if (ops[0].op != DP_MOVE || ops[1].op != DP_LINE || ops[2].op != DP_LINE ||
@@ -977,7 +962,12 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
         dp_polygon_fini(&polygon);
         return false;
     }
-    tor_add_edges(converter, (const px_edge_t *)polygon.edges, polygon.count);
+    if (tor_add_edges(converter, (const px_edge_t *)polygon.edges, polygon.count) !=
+            PX_STATUS_SUCCESS) {
+        converter->destroy(converter);
+        dp_polygon_fini(&polygon);
+        return false;
+    }
     struct span_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.mask = mask;
@@ -1010,7 +1000,11 @@ static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
     px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
         PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
     if (!converter) return false;
-    tor_add_edges(converter, (const px_edge_t *)polygon->edges, polygon->count);
+    if (tor_add_edges(converter, (const px_edge_t *)polygon->edges, polygon->count) !=
+            PX_STATUS_SUCCESS) {
+        converter->destroy(converter);
+        return false;
+    }
     struct span_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.mask = mask;

@@ -80,7 +80,6 @@ px_scan_converter_set_error(void *abstract_converter, px_status_t status)
     return status;
 }
 
-px_scan_converter_t *px_scan_converter_create_in_error(px_status_t status);
 
 #define px_malloc_ab(n, s) malloc((size_t)(n) * (s))
 #define px_malloc(n) malloc(n)
