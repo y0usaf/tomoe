@@ -13,8 +13,8 @@ WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayl
 LIBS = xkbcommon pangocairo libinput glesv2 egl gbm libudev
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS)) -lz
 ZLIB_CFLAGS = $(shell $(PKG_CONFIG) --cflags zlib)
-PORTAL_LIBS = libpipewire-0.3 gbm
-SUPPORT = bus executions watches notifications mpris backlight battery network tray system pipewire
+PORTAL_LIBS = gbm
+SUPPORT = bus executions watches notifications mpris backlight battery network tray system pipewire pwwire
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
 	$(WLR)/wlr-screencopy-unstable-v1.xml \
@@ -80,7 +80,7 @@ CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-funct
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative
 
-PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c)) build/bus.o
+PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c)) build/bus.o build/pwwire.o
 PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
@@ -90,7 +90,7 @@ all: build/tomoe build/tomoe-portal
 build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAYLAND_CLIENT)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))
 
-build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h native/wayland/*.h) support/bus.h $(HEADERS) | build/obj
+build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h native/wayland/*.h) $(wildcard support/*.h) support/bus.h $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
 CORE_SOURCES = $(wildcard native/*.c) $(wildcard native/lisp/*.c) $(wildcard native/wayland/*.c)
@@ -146,6 +146,11 @@ build/main-functions.h: build/obj/main.o | build
 	  $(NM) --defined-only --format=posix build/obj/main.o | \
 	    awk '$$2 == "T" || $$2 == "t" { printf "    \"%s\",\n", $$1 }'; \
 	  echo '};'; } > $@
+
+build/portal-format: tests/portal-format.c native/portal/format.c support/pwwire.c \
+		$(wildcard native/portal/*.h support/*.h) | build
+	$(CC) $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -Ibuild -Isupport \
+		-Inative/portal tests/portal-format.c native/portal/format.c support/pwwire.c -o $@
 
 build/test-client: tests/client.c $(HEADERS)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild tests/client.c $(NAMES:%=build/%-protocol.c) \

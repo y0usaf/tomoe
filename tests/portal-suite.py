@@ -101,9 +101,10 @@ def node_of(unit):
     return int(match.group(1))
 
 
-def consume(node, mode, milliseconds):
+def consume(node, mode, milliseconds, probe=None):
     out = machine.execute(
-        f"XDG_RUNTIME_DIR={RUNTIME} {CONSUMER} {node} {mode} {milliseconds}", check_return=False)[1]
+        f"XDG_RUNTIME_DIR={RUNTIME} {CONSUMER} {node} {mode} {milliseconds}"
+        + (f" {probe}" if probe else ""), check_return=False)[1]
     print("consumer " + mode + ": " + out.replace("\n", " | "), flush=True)
     return out
 
@@ -146,6 +147,39 @@ def portal_cast(unit, types=1, close=False, cursor_mode=None):
         raise
 
 
+portal_cast("viewer-resize")
+node = node_of("viewer-resize")
+machine.succeed(
+    f"systemd-run --unit=consumer-resize --property=Type=exec "
+    f"--setenv=XDG_RUNTIME_DIR={RUNTIME} {CONSUMER} {node} dmabuf 8000")
+
+
+def consumer_text():
+    return machine.execute("journalctl -u consumer-resize -o cat")[1]
+
+
+def consumer_says(pattern, what, timeout=30):
+    for _ in range(timeout * 10):
+        match = re.search(pattern, consumer_text(), re.M)
+        if match:
+            return match
+        time.sleep(0.1)
+    raise AssertionError(what + ": " + consumer_text().replace("\n", " | "))
+
+
+consumer_says(r"^format \d+ modifier (?:0x[0-9a-f]+|none) 1280x720 frames \d+$",
+              "the consumer never received the output at 1280x720")
+machine.succeed(ENV + "WAYLAND_DISPLAY=check wlr-randr --output HEADLESS-1 "
+                      "--custom-mode 960x540@60Hz")
+changed = consumer_says(r"^format \d+ modifier (?:0x[0-9a-f]+|none) 960x540 frames (\d+)$",
+                        "the share never renegotiated the stream to 960x540")
+done = consumer_says(r"^frames (\d+) ", "the consumer never finished counting frames", timeout=40)
+assert int(done.group(1)) > int(changed.group(1)), (done.group(0), changed.group(0))
+print(f"renegotiation: frames before={changed.group(1)} after={done.group(1)}", flush=True)
+machine.succeed("systemctl stop viewer-resize")
+until(gone, "the resized share kept its node")
+machine.succeed("systemctl stop consumer-resize || true")
+
 machine.succeed(
     f"systemd-run --unit=portal-cursor --property=Type=exec "
     f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check tomoe-cursor-client")
@@ -175,12 +209,46 @@ machine.execute("systemctl stop pointer-portal", check_return=False)
 
 machine.succeed("systemctl stop viewer-metadata")
 until(gone, "the metadata share kept its node")
-portal_cast("viewer-memory", cursor_mode=2)
-memory = consume(node_of("viewer-memory"), "shm", 1500)
-assert "alloc memfd" in memory, memory
-assert re.search(r"^frames [1-9]", memory, re.M), memory
-machine.succeed("systemctl stop viewer-memory")
-until(gone, "the memory share kept its node")
+machine.succeed(
+    f"systemd-run --unit=pointer-hold --property=Type=exec "
+    f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check "
+    f"{POINTER} --path '300,300;300,300' --steps 1 --interval-ms 16 --hold-ms 30000 "
+    f"--delay-ms 100 --extent 960x540")
+machine.wait_until_succeeds("journalctl -u pointer-hold -o cat | grep -qx pressed", timeout=30)
+portal_cast("viewer-embed", cursor_mode=2)
+node = node_of("viewer-embed")
+machine.succeed(
+    f"systemd-run --unit=consumer-embed --property=Type=exec "
+    f"--setenv=XDG_RUNTIME_DIR={RUNTIME} {CONSUMER} {node} shm 9000 300 300 600 300")
+
+
+def consumer_text(unit):
+    return machine.execute(f"journalctl -u {unit} -o cat")[1]
+
+
+def probes(unit):
+    return [line.split()[1:3] for line in consumer_text(unit).splitlines()
+            if line.startswith("probe ")]
+
+
+until(lambda: len(probes("consumer-embed")) >= 1, "the embedded share delivered no frame")
+machine.succeed(
+    f"systemd-run --unit=pointer-move --property=Type=exec "
+    f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check "
+    f"{POINTER} --path '600,300;600,300' --steps 1 --interval-ms 16 --hold-ms 3000 "
+    f"--delay-ms 100 --extent 960x540")
+machine.wait_until_succeeds("journalctl -u pointer-move -o cat | grep -qx released", timeout=30)
+until(lambda: len(probes("consumer-embed")) >= 2,
+      "the embedded share delivered no frame after the pointer moved")
+seen = probes("consumer-embed")
+first, last = seen[0], seen[-1]
+assert first[0] != last[0], consumer_text("consumer-embed")
+assert first[1] != last[1], consumer_text("consumer-embed")
+assert "alloc memfd" in consumer_text("consumer-embed"), consumer_text("consumer-embed")
+print(f"embedded cursor block {first[0]} then {last[0]}, control {first[1]} then {last[1]}",
+      flush=True)
+machine.succeed("systemctl stop pointer-hold pointer-move viewer-embed consumer-embed || true")
+until(gone, "the embedded-cursor share kept its node")
 portal_cast("viewer-idle", cursor_mode=4)
 node = node_of("viewer-idle")
 

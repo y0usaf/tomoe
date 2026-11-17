@@ -203,7 +203,7 @@ void portal_session_free(struct session *session, bool announce) {
     }
     portal_select_cancel(session);
     if (session->start_timer) {
-        pw_loop_destroy_source(p->loop, session->start_timer);
+        loop_del_timer(p->loop, session->start_timer);
         session->start_timer = NULL;
     }
     if (session->select_call) {
@@ -235,7 +235,7 @@ void portal_start_reply(struct session *session, uint32_t code, uint32_t node_id
         uint32_t height) {
     struct portal *p = session->portal;
     if (session->start_timer) {
-        pw_loop_destroy_source(p->loop, session->start_timer);
+        loop_del_timer(p->loop, session->start_timer);
         session->start_timer = NULL;
     }
     if (code != 0 && session->stream) {
@@ -273,7 +273,7 @@ void portal_session_selected(struct session *session, const struct choice *choic
 
 static void start_timed_out(void *data, uint64_t expirations) {
     struct session *session = data;
-    pw_loop_destroy_source(session->portal->loop, session->start_timer);
+    loop_del_timer(session->portal->loop, session->start_timer);
     session->start_timer = NULL;
     portal_log("start timed out");
     portal_start_reply(session, 2, 0, 0, 0);
@@ -325,11 +325,11 @@ static int method_start(tomoe_bus_message *m, void *userdata) {
     if (!session || session->doomed) return reply_code(m, 2);
     if (!session->chosen || session->stream) return reply_code(m, 1);
     session->start_call = tomoe_message_ref(m);
-    session->start_timer = pw_loop_add_timer(p->loop, start_timed_out, session);
+    session->start_timer = loop_add_timer(p->loop, start_timed_out, session);
     if (session->start_timer) {
         struct timespec timeout = { .tv_sec = START_TIMEOUT_MS / 1000,
             .tv_nsec = (long)(START_TIMEOUT_MS % 1000) * 1000000 };
-        pw_loop_update_timer(p->loop, session->start_timer, &timeout, NULL, false);
+        loop_update_timer(p->loop, session->start_timer, &timeout, NULL, false);
     }
     session->stream = stream_start(session);
     if (!session->stream) {

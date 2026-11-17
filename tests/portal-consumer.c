@@ -6,6 +6,7 @@
 #include <spa/param/video/raw.h>
 #include <spa/pod/builder.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,12 +36,34 @@ struct consumer {
     int mode;
     int frames;
     bool reported_alloc;
-    bool reported_format;
+    uint32_t last_format;
+    uint32_t last_modifier;
+    uint32_t last_width;
+    uint32_t last_height;
     uint64_t started;
     uint64_t duration;
     char last_cursor[256];
     bool bitmap;
+    struct { int x, y; } probe[2];
+    int probes;
 };
+
+static uint64_t block_hash(const struct spa_buffer *buffer, int x, int y) {
+    if (!buffer || buffer->n_datas == 0) return 0;
+    const struct spa_data *data = &buffer->datas[0];
+    if (!data->data || !data->chunk || data->chunk->stride <= 0 || x < 0 || y < 0) return 0;
+    int32_t stride = data->chunk->stride;
+    uint64_t hash = 1469598103934665603ull;
+    for (int row = 0; row < 16; row++) {
+        size_t offset = (size_t)(y + row) * (size_t)stride + (size_t)x * 4;
+        if (offset + 64 > data->maxsize) return 0;
+        for (int column = 0; column < 64; column++) {
+            hash ^= ((const uint8_t *)data->data)[offset + column];
+            hash *= 1099511628211ull;
+        }
+    }
+    return hash;
+}
 
 static uint64_t now_ms(void) {
     struct timespec now;
@@ -142,22 +165,35 @@ static void on_process(void *data) {
         }
         report_cursor(consumer, spa);
     }
+    if (consumer->probes == 2)
+        printf("probe %llx %llx\n",
+            (unsigned long long)block_hash(spa, consumer->probe[0].x, consumer->probe[0].y),
+            (unsigned long long)block_hash(spa, consumer->probe[1].x, consumer->probe[1].y));
     consumer->frames++;
+    fflush(stdout);
     pw_stream_queue_buffer(consumer->stream, buffer);
 }
 
 static void on_param_changed(void *data, uint32_t id, const struct spa_pod *param) {
     struct consumer *consumer = data;
-    if (id != SPA_PARAM_Format || !param || consumer->reported_format) return;
+    if (id != SPA_PARAM_Format || !param) return;
     struct spa_video_info_raw raw;
     if (spa_format_video_raw_parse(param, &raw) < 0) return;
-    if (raw.flags & SPA_VIDEO_FLAG_MODIFIER)
-        printf("format %u modifier 0x%llx %ux%u\n", raw.format,
-            (unsigned long long)raw.modifier, raw.size.width, raw.size.height);
+    bool modifier = (raw.flags & SPA_VIDEO_FLAG_MODIFIER) != 0;
+    if (consumer->last_format == raw.format && consumer->last_width == raw.size.width &&
+            consumer->last_height == raw.size.height &&
+            consumer->last_modifier == (modifier ? 1u : 0u)) return;
+    consumer->last_format = raw.format;
+    consumer->last_width = raw.size.width;
+    consumer->last_height = raw.size.height;
+    consumer->last_modifier = modifier ? 1u : 0u;
+    if (modifier)
+        printf("format %u modifier 0x%llx %ux%u frames %d\n", raw.format,
+            (unsigned long long)raw.modifier, raw.size.width, raw.size.height, consumer->frames);
     else
-        printf("format %u modifier none %ux%u\n", raw.format, raw.size.width, raw.size.height);
+        printf("format %u modifier none %ux%u frames %d\n", raw.format, raw.size.width,
+            raw.size.height, consumer->frames);
     fflush(stdout);
-    consumer->reported_format = true;
 }
 
 static void on_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state,
@@ -201,13 +237,20 @@ static void on_deadline(void *data, uint64_t expirations) {
 
 int main(int argc, char **argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <node-id> <dmabuf|shm> <duration-ms>\n", argv[0]);
+        fprintf(stderr, "usage: %s <node-id> <dmabuf|shm> <duration-ms> [x y x y]\n", argv[0]);
         return 2;
     }
     struct consumer consumer = {0};
     consumer.target = (unsigned)strtoul(argv[1], NULL, 10);
     consumer.mode = strcmp(argv[2], "shm") == 0 ? MODE_SHM : MODE_DMABUF;
     consumer.duration = (uint64_t)strtoul(argv[3], NULL, 10);
+    if (argc >= 8) {
+        consumer.probe[0].x = (int)strtoul(argv[4], NULL, 10);
+        consumer.probe[0].y = (int)strtoul(argv[5], NULL, 10);
+        consumer.probe[1].x = (int)strtoul(argv[6], NULL, 10);
+        consumer.probe[1].y = (int)strtoul(argv[7], NULL, 10);
+        consumer.probes = 2;
+    }
     signal(SIGALRM, on_alarm);
     pw_init(NULL, NULL);
     consumer.main_loop = pw_main_loop_new(NULL);

@@ -20,6 +20,9 @@ The first release.
 - Built-in X11 bridge (Xwayland), notification server, screencast portal, session
   services (media, battery, backlight, sounds, network, tray) and a session bus
   that is replaced when it dies; services die with the compositor.
+- The screencast portal speaks PipeWire's native protocol itself: it creates and
+  drives its own video node, allocates the buffers it hands out and writes the
+  cursor metadata the client reads, so the portal links no PipeWire library.
 - A broken extension, theme or config loses only itself: one that hangs or runs
   the heap out twice in a row is unmounted, one whose surfaces pass the canvas
   keeps its last answer while the rest commit, a surface that cannot be staged keeps its last frame, and a

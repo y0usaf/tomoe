@@ -19,8 +19,8 @@ struct selection {
     struct session *session;
     struct portal *portal;
     int fd;
-    struct spa_source *io;
-    struct spa_source *timer;
+    struct loop_source *io;
+    struct loop_timer *timer;
     char buffer[SELECT_REPLY_MAX];
     size_t length;
     uint32_t types;
@@ -237,8 +237,8 @@ static struct choice fallback_pick(struct portal *p, uint32_t types) {
 
 static void selection_free_deferred(void *data) {
     struct selection *selection = data;
-    if (selection->io) pw_loop_destroy_source(selection->portal->loop, selection->io);
-    if (selection->timer) pw_loop_destroy_source(selection->portal->loop, selection->timer);
+    if (selection->io) loop_del_io(selection->portal->loop, selection->io);
+    if (selection->timer) loop_del_timer(selection->portal->loop, selection->timer);
     if (selection->fd >= 0) close(selection->fd);
     free(selection);
 }
@@ -302,11 +302,11 @@ static void selection_resolve(struct selection *selection, const char *reply) {
 
 static void selection_readable(void *data, int fd, uint32_t mask) {
     struct selection *selection = data;
-    if (mask & (SPA_IO_ERR | SPA_IO_HUP)) {
+    if (mask & (LOOP_IO_ERR | LOOP_IO_HUP)) {
         selection_finish(selection, NULL, 2);
         return;
     }
-    if (!(mask & SPA_IO_IN)) return;
+    if (!(mask & LOOP_IO_IN)) return;
     ssize_t amount = read(fd, selection->buffer + selection->length,
         sizeof(selection->buffer) - 1 - selection->length);
     if (amount < 0) {
@@ -340,8 +340,8 @@ void portal_select_cancel(struct session *session) {
     struct selection *selection = session->selection;
     if (!selection) return;
     session->selection = NULL;
-    if (selection->io) pw_loop_destroy_source(session->portal->loop, selection->io);
-    if (selection->timer) pw_loop_destroy_source(session->portal->loop, selection->timer);
+    if (selection->io) loop_del_io(session->portal->loop, selection->io);
+    if (selection->timer) loop_del_timer(session->portal->loop, selection->timer);
     if (selection->fd >= 0) close(selection->fd);
     free(selection);
 }
@@ -392,13 +392,13 @@ void portal_select(struct session *session, uint32_t types) {
     }
     selection->fd = fd;
     session->selection = selection;
-    selection->io = pw_loop_add_io(p->loop, fd, SPA_IO_IN | SPA_IO_HUP | SPA_IO_ERR, false,
+    selection->io = loop_add_io(p->loop, fd, LOOP_IO_IN | LOOP_IO_HUP | LOOP_IO_ERR,
         selection_readable, selection);
-    selection->timer = pw_loop_add_timer(p->loop, selection_timed_out, selection);
+    selection->timer = loop_add_timer(p->loop, selection_timed_out, selection);
     if (selection->timer) {
         struct timespec timeout = { .tv_sec = SELECT_TIMEOUT_MS / 1000,
             .tv_nsec = (long)(SELECT_TIMEOUT_MS % 1000) * 1000000 };
-        pw_loop_update_timer(p->loop, selection->timer, &timeout, NULL, false);
+        loop_update_timer(p->loop, selection->timer, &timeout, NULL, false);
     }
     return;
 

@@ -2,15 +2,12 @@
 #define TOMOE_PORTAL_H
 
 #include <gbm.h>
-#include <pipewire/pipewire.h>
-#include <spa/buffer/buffer.h>
-#include <spa/buffer/meta.h>
-#include <spa/param/buffers.h>
-#include <spa/param/video/raw.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "bus.h"
+#include "loop.h"
+#include "spa.h"
 #include <time.h>
 #include <wayland-client.h>
 
@@ -100,7 +97,7 @@ struct session {
     struct stream *stream;
     tomoe_bus_message *select_call;
     tomoe_bus_message *start_call;
-    struct spa_source *start_timer;
+    struct loop_timer *start_timer;
     void *selection;
     bool doomed;
     bool announce;
@@ -123,18 +120,13 @@ struct portal {
     struct wl_list outputs;
     struct wl_list toplevel_list;
     struct wl_list sessions;
-    struct pw_main_loop *main_loop;
-    struct pw_loop *loop;
-    struct pw_context *context;
-    struct pw_core *core;
+    struct loop *loop;
     tomoe_bus *bus;
     tomoe_bus_slot *bus_slot;
-    struct spa_source *display_source;
-    struct spa_source *bus_source;
-    struct spa_source *deferred;
+    struct loop_source *display_source;
+    struct loop_source *bus_source;
+    struct loop_source *deferred;
     struct wl_list deferred_list;
-    struct spa_source *interrupt_source;
-    struct spa_source *terminate_source;
     int bus_fd;
     bool running;
     char *ipc_socket;
@@ -144,7 +136,6 @@ void portal_log(const char *fmt, ...);
 
 struct output_info *portal_output_by_name(struct portal *p, const char *name);
 struct toplevel_info *portal_toplevel_by_identifier(struct portal *p, const char *identifier);
-struct pw_core *portal_core(struct portal *p);
 
 int portal_dbus_init(struct portal *p);
 void portal_defer(struct portal *p, void (*run)(void *), void *data);

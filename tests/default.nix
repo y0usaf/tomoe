@@ -1046,10 +1046,12 @@ let
     });
   lispUnit = hostUnit "lisp-unit" "lisp-unit" "make lisp-unit";
   eventRing = hostUnit "event-ring" "event-ring" "build/event-ring";
+  portalFormat = hostUnit "portal-format" "portal-format" "build/portal-format";
   compositorPackages = [
     animationUnit
     lispUnit
     eventRing
+    portalFormat
     pkgs.python3
     pkgs.gdb
     pkgs.wayland-utils

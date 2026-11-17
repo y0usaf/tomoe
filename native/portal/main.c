@@ -206,28 +206,22 @@ struct toplevel_info *portal_toplevel_by_identifier(struct portal *p, const char
     return NULL;
 }
 
-struct pw_core *portal_core(struct portal *p) {
-    if (!p->core)
-        p->core = pw_context_connect(p->context, NULL, 0);
-    return p->core;
-}
-
 static void display_readable(void *data, int fd, uint32_t mask) {
     struct portal *p = data;
-    if (mask & (SPA_IO_ERR | SPA_IO_HUP)) {
+    if (mask & (LOOP_IO_ERR | LOOP_IO_HUP)) {
         portal_log("the compositor closed the connection");
         p->running = false;
-        pw_main_loop_quit(p->main_loop);
+        loop_quit(p->loop);
         return;
     }
-    if (!(mask & SPA_IO_IN)) return;
+    if (!(mask & LOOP_IO_IN)) return;
     if (wl_display_prepare_read(p->display) != 0) {
         wl_display_dispatch_pending(p->display);
     } else if (wl_display_read_events(p->display) < 0) {
         wl_display_cancel_read(p->display);
         portal_log("reading from the compositor failed");
         p->running = false;
-        pw_main_loop_quit(p->main_loop);
+        loop_quit(p->loop);
         return;
     } else {
         wl_display_dispatch_pending(p->display);
@@ -237,10 +231,10 @@ static void display_readable(void *data, int fd, uint32_t mask) {
 
 static void bus_readable(void *data, int fd, uint32_t mask) {
     struct portal *p = data;
-    if (mask & (SPA_IO_ERR | SPA_IO_HUP)) {
+    if (mask & (LOOP_IO_ERR | LOOP_IO_HUP)) {
         portal_log("the session bus closed the connection");
         p->running = false;
-        pw_main_loop_quit(p->main_loop);
+        loop_quit(p->loop);
         return;
     }
     int result;
@@ -249,7 +243,7 @@ static void bus_readable(void *data, int fd, uint32_t mask) {
     if (result < 0) {
         portal_log("the session bus failed: %s", strerror(-result));
         p->running = false;
-        pw_main_loop_quit(p->main_loop);
+        loop_quit(p->loop);
         return;
     }
     tomoe_bus_flush(p->bus);
@@ -271,7 +265,7 @@ void portal_defer(struct portal *p, void (*run)(void *), void *data) {
     entry->run = run;
     entry->data = data;
     wl_list_insert(p->deferred_list.prev, &entry->link);
-    pw_loop_signal_event(p->loop, p->deferred);
+    loop_signal(p->loop);
 }
 
 void portal_defer_drain(struct portal *p) {
@@ -283,14 +277,14 @@ void portal_defer_drain(struct portal *p) {
     }
 }
 
-static void deferred_event(void *data, uint64_t count) {
+static void deferred_event(void *data) {
     portal_defer_drain(data);
 }
 
 static void interrupted(void *data, int signal_number) {
     struct portal *p = data;
     p->running = false;
-    pw_main_loop_quit(p->main_loop);
+    loop_quit(p->loop);
 }
 
 static char *ipc_socket_path(void) {
@@ -308,7 +302,6 @@ static char *ipc_socket_path(void) {
 int main(int argc, char **argv) {
     static struct portal portal;
     struct portal *p = &portal;
-    pw_init(NULL, NULL);
     p->version = 4;
     p->cursor_modes = CURSOR_HIDDEN | CURSOR_EMBEDDED | CURSOR_METADATA;
     wl_list_init(&p->outputs);
@@ -335,34 +328,30 @@ int main(int argc, char **argv) {
     } else {
         p->source_types = SOURCE_MONITOR | (p->window_sources ? SOURCE_WINDOW : 0);
     }
-    p->main_loop = pw_main_loop_new(NULL);
-    p->loop = pw_main_loop_get_loop(p->main_loop);
-    p->context = pw_context_new(p->loop, NULL, 0);
-    if (!p->context) {
-        portal_log("cannot create a PipeWire context");
+    p->loop = loop_new();
+    if (!p->loop) {
+        portal_log("cannot create an event loop");
         return 1;
     }
-    if (!portal_core(p)) portal_log("no PipeWire daemon yet; started shares will wait for one");
     if (portal_dbus_init(p) < 0) return 1;
-    p->display_source = pw_loop_add_io(p->loop, wl_display_get_fd(p->display), SPA_IO_IN, false,
+    p->display_source = loop_add_io(p->loop, wl_display_get_fd(p->display), LOOP_IO_IN,
         display_readable, p);
-    p->bus_source = pw_loop_add_io(p->loop, p->bus_fd, SPA_IO_IN | SPA_IO_HUP | SPA_IO_ERR,
-        false, bus_readable, p);
-    p->deferred = pw_loop_add_event(p->loop, deferred_event, p);
-    p->interrupt_source = pw_loop_add_signal(p->loop, SIGINT, interrupted, p);
-    p->terminate_source = pw_loop_add_signal(p->loop, SIGTERM, interrupted, p);
+    p->bus_source = loop_add_io(p->loop, p->bus_fd, LOOP_IO_IN | LOOP_IO_HUP | LOOP_IO_ERR,
+        bus_readable, p);
+    loop_on_iterate(p->loop, deferred_event, p);
+    if (loop_add_signals(p->loop, interrupted, p) < 0) {
+        portal_log("cannot watch the session signals");
+        return 1;
+    }
     p->running = true;
     wl_display_flush(p->display);
-    pw_main_loop_run(p->main_loop);
+    loop_run(p->loop);
     portal_defer_drain(p);
     struct session *session, *next;
     wl_list_for_each_safe(session, next, &p->sessions, link) portal_session_free(session, false);
-    if (p->core) pw_core_disconnect(p->core);
-    pw_context_destroy(p->context);
-    pw_main_loop_destroy(p->main_loop);
     tomoe_bus_flush_close_unref(p->bus);
     wl_display_disconnect(p->display);
+    loop_free(p->loop);
     free(p->ipc_socket);
-    pw_deinit();
     return 0;
 }

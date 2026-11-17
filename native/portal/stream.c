@@ -1,11 +1,11 @@
 #include "portal.h"
+#include "pw.h"
 
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <linux/udmabuf.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
-#include <spa/param/video/raw-utils.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +44,7 @@ struct stream {
     struct ext_image_copy_capture_cursor_session_v1 *cursor;
     struct ext_image_copy_capture_session_v1 *cursor_capture;
     struct ext_image_copy_capture_frame_v1 *cursor_frame;
-    struct spa_source *cursor_retry;
+    struct loop_timer *cursor_retry;
     int cursor_failures;
     struct wl_shm_pool *cursor_pool;
     struct wl_buffer *cursor_buffer;
@@ -63,16 +63,14 @@ struct stream {
     int cursor_hotspot_x;
     int cursor_hotspot_y;
     struct ext_image_copy_capture_frame_v1 *frame;
-    struct pw_buffer *frame_pw;
-    struct pw_stream *pw;
-    struct spa_hook pw_listener;
+    struct pwv_buffer *frame_pw;
+    struct pwv *pw;
     uint32_t node_id;
     struct slot *slots[SLOTS_MAX];
     int slot_count;
-    uint32_t spa_format;
     uint64_t submitted_at;
     int rejections;
-    struct spa_source *retry;
+    struct loop_timer *retry;
     bool started;
     bool arming;
     bool noted_meta;
@@ -80,27 +78,27 @@ struct stream {
 };
 
 static void stream_arm(struct stream *s);
-static int stream_push_formats(struct stream *s);
+static void stream_republish(struct stream *s);
 static void cursor_arm(struct stream *s);
 static void stream_fail(struct stream *s, const char *why);
 
 static uint32_t spa_format_of(uint32_t fourcc) {
     switch (fourcc) {
     case DRM_FORMAT_ARGB8888: return SPA_VIDEO_FORMAT_BGRA;
-    case DRM_FORMAT_XRGB8888: return SPA_VIDEO_FORMAT_BGRx;
+    case DRM_FORMAT_XRGB8888: return SPA_VIDEO_FORMAT_BGRX;
     case DRM_FORMAT_ABGR8888: return SPA_VIDEO_FORMAT_RGBA;
-    case DRM_FORMAT_XBGR8888: return SPA_VIDEO_FORMAT_RGBx;
-    default: return SPA_VIDEO_FORMAT_UNKNOWN;
+    case DRM_FORMAT_XBGR8888: return SPA_VIDEO_FORMAT_RGBX;
+    default: return 0;
     }
 }
 
 static uint32_t spa_format_of_shm(uint32_t format) {
     switch (format) {
     case WL_SHM_FORMAT_ARGB8888: return SPA_VIDEO_FORMAT_BGRA;
-    case WL_SHM_FORMAT_XRGB8888: return SPA_VIDEO_FORMAT_BGRx;
+    case WL_SHM_FORMAT_XRGB8888: return SPA_VIDEO_FORMAT_BGRX;
     case WL_SHM_FORMAT_ABGR8888: return SPA_VIDEO_FORMAT_RGBA;
-    case WL_SHM_FORMAT_XBGR8888: return SPA_VIDEO_FORMAT_RGBx;
-    default: return SPA_VIDEO_FORMAT_UNKNOWN;
+    case WL_SHM_FORMAT_XBGR8888: return SPA_VIDEO_FORMAT_RGBX;
+    default: return 0;
     }
 }
 
@@ -253,7 +251,7 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
         slot->offset[0] = 0;
         slot->stride[0] = (uint32_t)stride;
         slot->size[0] = (uint32_t)size;
-        slot->kind = SPA_DATA_DmaBuf;
+        slot->kind = SPA_DATA_DMABUF;
         return slot;
     }
     if (s->alloc == ALLOC_GBM) {
@@ -285,7 +283,7 @@ static struct slot *slot_create(struct stream *s, bool want_dmabuf) {
         if (!slot->buffer) goto failed;
         slot->bo = bo;
         slot->planes = planes;
-        slot->kind = SPA_DATA_DmaBuf;
+        slot->kind = SPA_DATA_DMABUF;
         return slot;
     }
 memory:
@@ -303,7 +301,7 @@ memory:
     slot->fds[0] = slot->memfd;
     slot->stride[0] = (uint32_t)stride;
     slot->size[0] = (uint32_t)size;
-    slot->kind = SPA_DATA_MemFd;
+    slot->kind = SPA_DATA_MEMFD;
     return slot;
 
 failed:
@@ -315,9 +313,9 @@ static bool slot_matches(struct stream *s, const struct slot *slot) {
     return slot->buffer && slot->width == s->width && slot->height == s->height;
 }
 
-static void write_cursor_meta(struct stream *s, struct pw_buffer *buffer) {
+static void write_cursor_meta(struct stream *s, struct pwv_buffer *buffer) {
     if (!buffer || !buffer->buffer) return;
-    struct spa_meta *meta = spa_buffer_find_meta(buffer->buffer, SPA_META_Cursor);
+    struct spa_meta *meta = spa_buffer_find_meta(buffer->buffer, SPA_META_CURSOR);
     if (!meta || !meta->data || meta->size < sizeof(struct spa_meta_cursor)) {
         if (!s->noted_meta) {
             portal_log("the PipeWire buffer carries no cursor metadata");
@@ -354,10 +352,10 @@ static void frame_ready(void *data, struct ext_image_copy_capture_frame_v1 *fram
     if (s->dying) return;
     s->rejections = 0;
     s->submitted_at = 0;
-    struct pw_buffer *buffer = s->frame_pw;
+    struct pwv_buffer *buffer = s->frame_pw;
     if (buffer && s->pw) {
         write_cursor_meta(s, buffer);
-        pw_stream_queue_buffer(s->pw, buffer);
+        pwv_queue(s->pw, buffer);
     }
     s->frame_pw = NULL;
     if (s->frame) ext_image_copy_capture_frame_v1_destroy(s->frame);
@@ -367,7 +365,7 @@ static void frame_ready(void *data, struct ext_image_copy_capture_frame_v1 *fram
 
 static void frame_retry(void *data, uint64_t expirations) {
     struct stream *s = data;
-    pw_loop_destroy_source(s->portal->loop, s->retry);
+    loop_del_timer(s->portal->loop, s->retry);
     s->retry = NULL;
     stream_arm(s);
 }
@@ -378,7 +376,7 @@ static void frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *fra
     if (s->dying) return;
     if (s->frame) ext_image_copy_capture_frame_v1_destroy(s->frame);
     s->frame = NULL;
-    if (s->frame_pw && s->pw) pw_stream_queue_buffer(s->pw, s->frame_pw);
+    if (s->frame_pw && s->pw) pwv_queue(s->pw, s->frame_pw);
     s->frame_pw = NULL;
     uint64_t elapsed = s->submitted_at ? monotonic_ms() - s->submitted_at : 0;
     s->submitted_at = 0;
@@ -394,17 +392,17 @@ static void frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *fra
             s->alloc = ALLOC_SHM;
             s->dmabuf = false;
             s->renegotiating = true;
-            if (s->pw) stream_push_formats(s);
+            if (s->pw) stream_republish(s);
             return;
         }
         stream_fail(s, "the compositor keeps refusing capture buffers");
         return;
     }
     if (!s->retry) {
-        s->retry = pw_loop_add_timer(s->portal->loop, frame_retry, s);
+        s->retry = loop_add_timer(s->portal->loop, frame_retry, s);
         if (s->retry) {
             struct timespec retry = { .tv_sec = 0, .tv_nsec = FRAME_RETRY_MS * 1000000L };
-            pw_loop_update_timer(s->portal->loop, s->retry, &retry, NULL, false);
+            loop_update_timer(s->portal->loop, s->retry, &retry, NULL, false);
         }
     }
 }
@@ -433,17 +431,17 @@ static void stream_arm(struct stream *s) {
     if (!s->pw || !s->constrained || s->dying || s->frame || s->stopped) return;
     if (s->renegotiating) return;
     if (s->slot_count == 0) return;
-    struct pw_buffer *buffer = pw_stream_dequeue_buffer(s->pw);
+    struct pwv_buffer *buffer = pwv_dequeue(s->pw);
     if (!buffer) return;
     struct slot *slot = buffer->user_data;
     if (!slot || !slot_matches(s, slot)) {
-        pw_stream_queue_buffer(s->pw, buffer);
+        pwv_queue(s->pw, buffer);
         return;
     }
     struct ext_image_copy_capture_frame_v1 *frame =
         ext_image_copy_capture_session_v1_create_frame(s->capture);
     if (!frame) {
-        pw_stream_queue_buffer(s->pw, buffer);
+        pwv_queue(s->pw, buffer);
         return;
     }
     ext_image_copy_capture_frame_v1_add_listener(frame, &frame_listener, s);
@@ -455,33 +453,26 @@ static void stream_arm(struct stream *s) {
     wl_display_flush(s->portal->display);
 }
 
-static void stream_push_buffers(struct stream *s);
-
-static void stream_state_changed(void *data, enum pw_stream_state old, enum pw_stream_state state,
-        const char *error) {
+static void stream_state(void *data, int state, const char *error) {
     struct stream *s = data;
     if (s->dying) return;
-    if (state == PW_STREAM_STATE_PAUSED || state == PW_STREAM_STATE_STREAMING) {
-        s->node_id = pw_stream_get_node_id(s->pw);
+    if (state == PWV_BOUND) {
+        s->node_id = pwv_node_id(s->pw);
         if (!s->started) {
             s->started = true;
             portal_start_reply(s->session, 0, s->node_id, (uint32_t)s->width, (uint32_t)s->height);
         }
-        stream_arm(s);
-    } else if (state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED) {
+    } else if (state == PWV_FAILED) {
         stream_fail(s, error ? error : "the PipeWire stream disconnected");
     }
 }
 
-static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *param) {
+static void stream_format(void *data, const struct pwv_video *video) {
     struct stream *s = data;
-    if (s->dying || id != SPA_PARAM_Format || !param) return;
-    struct spa_video_info_raw raw;
-    if (spa_format_video_raw_parse(param, &raw) < 0) return;
-    bool dmabuf = (raw.flags & SPA_VIDEO_FLAG_MODIFIER) && (s->gbm || s->udmabuf >= 0);
+    if (s->dying) return;
+    bool dmabuf = video->modifier_set && (s->gbm || s->udmabuf >= 0);
     s->dmabuf = dmabuf;
-    if (dmabuf) s->modifier = raw.modifier;
-    stream_push_buffers(s);
+    if (dmabuf) s->modifier = video->modifier;
 }
 
 static void stream_process(void *data) {
@@ -492,11 +483,11 @@ static void arm_deferred(void *data) {
     stream_arm(data);
 }
 
-static void stream_add_buffer(void *data, struct pw_buffer *buffer) {
+static bool stream_add_buffer(void *data, struct pwv_buffer *buffer) {
     struct stream *s = data;
-    if (s->dying || s->slot_count >= SLOTS_MAX || !buffer->buffer) return;
+    if (s->dying || s->slot_count >= SLOTS_MAX || !buffer->buffer) return false;
     uint32_t negotiated = buffer->buffer->n_datas ? buffer->buffer->datas[0].type : 0;
-    bool want_dmabuf = s->alloc != ALLOC_SHM && (negotiated & (1u << SPA_DATA_DmaBuf));
+    bool want_dmabuf = s->alloc != ALLOC_SHM && (negotiated & (1u << SPA_DATA_DMABUF));
     struct slot *slot = slot_create(s, want_dmabuf);
     if (!slot) {
         if (s->alloc != ALLOC_SHM) {
@@ -504,13 +495,13 @@ static void stream_add_buffer(void *data, struct pw_buffer *buffer) {
             s->alloc = ALLOC_SHM;
             s->dmabuf = false;
             s->renegotiating = true;
-            stream_push_formats(s);
+            stream_republish(s);
         }
-        return;
+        return false;
     }
     if ((int)buffer->buffer->n_datas < slot->planes) {
         slot_free(s, slot);
-        return;
+        return false;
     }
     for (int plane = 0; plane < slot->planes; plane++) {
         struct spa_data *spa = &buffer->buffer->datas[plane];
@@ -528,12 +519,13 @@ static void stream_add_buffer(void *data, struct pw_buffer *buffer) {
     }
     buffer->user_data = slot;
     s->slots[s->slot_count++] = slot;
-    s->dmabuf = slot->kind == SPA_DATA_DmaBuf;
+    s->dmabuf = slot->kind == SPA_DATA_DMABUF;
     s->renegotiating = false;
     portal_defer(s->portal, arm_deferred, s);
+    return true;
 }
 
-static void stream_remove_buffer(void *data, struct pw_buffer *buffer) {
+static void stream_remove_buffer(void *data, struct pwv_buffer *buffer) {
     struct stream *s = data;
     struct slot *slot = buffer->user_data;
     buffer->user_data = NULL;
@@ -553,120 +545,43 @@ static void stream_remove_buffer(void *data, struct pw_buffer *buffer) {
     slot_free(s, slot);
 }
 
-static const struct pw_stream_events stream_events = {
-    PW_VERSION_STREAM_EVENTS,
-    .state_changed = stream_state_changed,
-    .param_changed = stream_param_changed,
+static const struct pwv_events stream_events = {
+    .state = stream_state,
+    .format = stream_format,
     .add_buffer = stream_add_buffer,
     .remove_buffer = stream_remove_buffer,
     .process = stream_process,
 };
 
-static int build_formats(struct stream *s, struct spa_pod_builder *builder,
-        const struct spa_pod **params) {
-    int count = 0;
-    struct spa_rectangle size = SPA_RECTANGLE((uint32_t)s->width, (uint32_t)s->height);
-    struct spa_fraction rate = SPA_FRACTION(0, 1);
-    struct spa_fraction limit = SPA_FRACTION(s->refresh ? (uint32_t)s->refresh : 60u, 1);
-    struct spa_fraction zero = SPA_FRACTION(0, 1);
-    if (s->alloc != ALLOC_SHM)
-        params[count++] = spa_pod_builder_add_object(builder,
-            SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-            SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
-            SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-            SPA_FORMAT_VIDEO_format, SPA_POD_Id(s->spa_format),
-            SPA_FORMAT_VIDEO_modifier, SPA_POD_Long((long long)s->modifier),
-            SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size),
-            SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&rate),
-            SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(&limit, &zero, &limit));
-    params[count++] = spa_pod_builder_add_object(builder,
-        SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-        SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
-        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        SPA_FORMAT_VIDEO_format, SPA_POD_Id(s->spa_format),
-        SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size),
-        SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&rate),
-        SPA_FORMAT_VIDEO_maxFramerate, SPA_POD_CHOICE_RANGE_Fraction(&limit, &zero, &limit));
-    return count;
-}
-
-static int stream_push_formats(struct stream *s) {
-    if (!s->pw) return -1;
-    uint8_t buffer[1024];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    const struct spa_pod *params[2];
-    int count = build_formats(s, &builder, params);
-    return pw_stream_update_params(s->pw, params, (uint32_t)count);
-}
-
-static void stream_push_buffers(struct stream *s) {
-    if (!s->pw || s->dying) return;
-    uint8_t buffer[512];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-    const struct spa_pod *params[1];
-    size_t stride = (size_t)s->width * 4;
-    size_t size = stride * (size_t)s->height;
-    int types = 1 << SPA_DATA_MemFd;
-    if (s->alloc != ALLOC_SHM && s->planes == 1) types |= 1 << SPA_DATA_DmaBuf;
-    if (s->alloc != ALLOC_SHM && s->planes > 1)
-        params[0] = spa_pod_builder_add_object(&builder,
-            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-            SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, 16),
-            SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(s->planes),
-            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_DmaBuf));
-    else if (s->alloc != ALLOC_SHM)
-        params[0] = spa_pod_builder_add_object(&builder,
-            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-            SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, 16),
-            SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1),
-            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(types));
-    else
-        params[0] = spa_pod_builder_add_object(&builder,
-            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-            SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, 16),
-            SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1),
-            SPA_PARAM_BUFFERS_size, SPA_POD_Int((int)size),
-            SPA_PARAM_BUFFERS_stride, SPA_POD_Int((int)stride),
-            SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_MemFd));
-    if (pw_stream_update_params(s->pw, params, 1) < 0)
-        portal_log("cannot publish the capture buffer shape");
-}
-
-static size_t cursor_meta_size(void) {
-    return sizeof(struct spa_meta_cursor) + sizeof(struct spa_meta_bitmap) +
-        (size_t)CURSOR_EDGE * CURSOR_EDGE * 4;
+static void stream_republish(struct stream *s) {
+    struct pwv_video video = {
+        .format = s->format,
+        .modifier = s->modifier,
+        .modifier_set = s->dmabuf,
+        .width = s->width,
+        .height = s->height,
+        .planes = s->planes,
+        .refresh = (uint32_t)(s->refresh ? s->refresh : 60),
+    };
+    pwv_publish(s->pw, &video, s->alloc == ALLOC_SHM ? PWV_ALLOC_MEMORY : PWV_ALLOC_DMABUF);
 }
 
 static int stream_connect(struct stream *s) {
-    struct portal *p = s->portal;
-    struct pw_core *core = portal_core(p);
-    if (!core) {
-        portal_log("no PipeWire daemon");
-        return -1;
-    }
+    struct pwv_video video = {
+        .format = s->format,
+        .modifier = s->modifier,
+        .modifier_set = s->dmabuf,
+        .width = s->width,
+        .height = s->height,
+        .planes = s->planes,
+        .refresh = (uint32_t)(s->refresh ? s->refresh : 60),
+    };
     const char *name = s->source_type == SOURCE_WINDOW ? "tomoe-portal-toplevel-stream"
                                                       : "tomoe-portal-stream";
-    struct pw_properties *properties = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Video",
-        PW_KEY_MEDIA_CATEGORY, "Source",
-        PW_KEY_MEDIA_ROLE, "Screen",
-        PW_KEY_NODE_NAME, name,
-        PW_KEY_NODE_DESCRIPTION, "tomoe portal screencast",
-        NULL);
-    s->pw = pw_stream_new(core, "tomoe-screencast", properties);
-    if (!s->pw) return -1;
-    pw_stream_add_listener(s->pw, &s->pw_listener, &stream_events, s);
-    uint8_t pod_buffer[2048];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(pod_buffer, sizeof(pod_buffer));
-    const struct spa_pod *params[3];
-    int count = build_formats(s, &builder, params);
-    if (s->wants_cursor)
-        params[count++] = spa_pod_builder_add_object(&builder,
-            SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
-            SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
-            SPA_PARAM_META_size, SPA_POD_Int((int)cursor_meta_size()));
-    return pw_stream_connect(s->pw, PW_DIRECTION_OUTPUT, PW_ID_ANY,
-        PW_STREAM_FLAG_DRIVER | PW_STREAM_FLAG_ALLOC_BUFFERS, params, (uint32_t)count);
+    s->pw = pwv_start(s->portal->loop, name, "tomoe portal screencast", &video,
+        s->alloc == ALLOC_SHM ? PWV_ALLOC_MEMORY : PWV_ALLOC_DMABUF, s->wants_cursor,
+        &stream_events, s);
+    return s->pw ? 0 : -1;
 }
 
 static void cursor_ensure_buffer(struct stream *s) {
@@ -739,7 +654,7 @@ static void cursor_frame_ready(void *data, struct ext_image_copy_capture_frame_v
 
 static void cursor_retry(void *data, uint64_t expirations) {
     struct stream *s = data;
-    pw_loop_destroy_source(s->portal->loop, s->cursor_retry);
+    loop_del_timer(s->portal->loop, s->cursor_retry);
     s->cursor_retry = NULL;
     cursor_arm(s);
 }
@@ -752,10 +667,10 @@ static void cursor_frame_failed(void *data, struct ext_image_copy_capture_frame_
     if (++s->cursor_failures <= 3)
         portal_log("cursor frame failed with reason %u", reason);
     if (!s->cursor_retry) {
-        s->cursor_retry = pw_loop_add_timer(s->portal->loop, cursor_retry, s);
+        s->cursor_retry = loop_add_timer(s->portal->loop, cursor_retry, s);
         if (s->cursor_retry) {
             struct timespec retry = { .tv_sec = 0, .tv_nsec = 100000000L };
-            pw_loop_update_timer(s->portal->loop, s->cursor_retry, &retry, NULL, false);
+            loop_update_timer(s->portal->loop, s->cursor_retry, &retry, NULL, false);
         }
     }
 }
@@ -876,7 +791,7 @@ static void capture_buffer_size(void *data, struct ext_image_copy_capture_sessio
         s->width = (int)width;
         s->height = (int)height;
         s->renegotiating = true;
-        if (s->pw) stream_push_formats(s);
+        if (s->pw) stream_republish(s);
         return;
     }
     s->width = (int)width;
@@ -960,11 +875,11 @@ void stream_free(struct stream *s) {
     if (!s) return;
     s->dying = true;
     struct portal *p = s->portal;
-    struct pw_stream *pw = s->pw;
+    struct pwv *pw = s->pw;
     s->pw = NULL;
-    if (s->retry) pw_loop_destroy_source(p->loop, s->retry);
-    if (s->cursor_retry) pw_loop_destroy_source(p->loop, s->cursor_retry);
-    if (pw) pw_stream_destroy(pw);
+    if (s->retry) loop_del_timer(p->loop, s->retry);
+    if (s->cursor_retry) loop_del_timer(p->loop, s->cursor_retry);
+    if (pw) pwv_stop(pw);
     for (int index = 0; index < s->slot_count; index++)
         if (s->slots[index]) slot_free(s, s->slots[index]);
     s->slot_count = 0;
@@ -1049,9 +964,7 @@ struct stream *stream_start(struct session *session) {
         return NULL;
     }
     if (!spa_format_of(s->format)) s->format = s->shm_format;
-    s->spa_format = spa_format_of(s->format);
-    if (!s->spa_format) s->spa_format = spa_format_of_shm(s->shm_format);
-    if (!s->spa_format) {
+    if (!spa_format_of(s->format)) {
         portal_log("the compositor offers no streamable pixel format");
         stream_free(s);
         return NULL;

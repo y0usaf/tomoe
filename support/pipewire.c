@@ -1,6 +1,12 @@
 #define _GNU_SOURCE
 
 #include "pipewire.h"
+#include "pwwire.h"
+
+#define PWN_MAX_BUFFERS 32
+#define PWN_MAX_TARGETS 16
+#define PWN_MAX_PARAM 4096
+#define PWN_RING 65536u
 
 #include <errno.h>
 #include <fcntl.h>
@@ -18,241 +24,6 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
-
-enum {
-    SPA_TYPE_NONE = 1,
-    SPA_TYPE_BOOL,
-    SPA_TYPE_ID,
-    SPA_TYPE_INT,
-    SPA_TYPE_LONG,
-    SPA_TYPE_FLOAT,
-    SPA_TYPE_DOUBLE,
-    SPA_TYPE_STRING,
-    SPA_TYPE_BYTES,
-    SPA_TYPE_RECTANGLE,
-    SPA_TYPE_FRACTION,
-    SPA_TYPE_BITMAP,
-    SPA_TYPE_ARRAY,
-    SPA_TYPE_STRUCT,
-    SPA_TYPE_OBJECT,
-    SPA_TYPE_SEQUENCE,
-    SPA_TYPE_POINTER,
-    SPA_TYPE_FD,
-    SPA_TYPE_CHOICE,
-    SPA_TYPE_POD,
-};
-
-enum {
-    SPA_TYPE_OBJECT_PROPINFO = 0x40000 + 1,
-    SPA_TYPE_OBJECT_PROPS = 0x40000 + 2,
-    SPA_TYPE_OBJECT_FORMAT = 0x40000 + 3,
-    SPA_TYPE_OBJECT_PARAMBUFFERS = 0x40000 + 4,
-    SPA_TYPE_OBJECT_PARAMMETA = 0x40000 + 5,
-    SPA_TYPE_OBJECT_PARAMIO = 0x40000 + 6,
-    SPA_TYPE_OBJECT_PARAMPORTCONFIG = 0x40000 + 8,
-    SPA_TYPE_OBJECT_PARAMLATENCY = 0x40000 + 11,
-    SPA_TYPE_OBJECT_PARAMPROCESSLATENCY = 0x40000 + 12,
-    SPA_TYPE_OBJECT_PARAMTAG = 0x40000 + 13,
-    SPA_TYPE_OBJECT_PEERPARAM = 0x40000 + 14,
-};
-
-enum {
-    SPA_PARAM_INVALID = 0,
-    SPA_PARAM_PROPINFO = 1,
-    SPA_PARAM_PROPS = 2,
-    SPA_PARAM_ENUMFORMAT = 3,
-    SPA_PARAM_FORMAT = 4,
-    SPA_PARAM_BUFFERS = 5,
-    SPA_PARAM_META = 6,
-    SPA_PARAM_IO = 7,
-    SPA_PARAM_ENUMPORTCONFIG = 10,
-    SPA_PARAM_PORTCONFIG = 11,
-    SPA_PARAM_LATENCY = 15,
-    SPA_PARAM_PROCESSLATENCY = 16,
-    SPA_PARAM_TAG = 17,
-    SPA_PARAM_CAPABILITY = 19,
-    SPA_PARAM_PEERCAPABILITY = 20,
-};
-
-enum {
-    SPA_PARAM_INFO_SERIAL = 1,
-    SPA_PARAM_INFO_READ = 2,
-    SPA_PARAM_INFO_WRITE = 4,
-};
-
-enum {
-    SPA_PROP_VOLUME = 65539,
-    SPA_PROP_MUTE = 65540,
-    SPA_PROP_CHANNELVOLUMES = 65544,
-    SPA_PROP_SOFTMUTE = 65551,
-    SPA_PROP_SOFTVOLUMES = 65552,
-};
-
-enum {
-    SPA_FORMAT_MEDIATYPE = 1,
-    SPA_FORMAT_MEDIASUBTYPE = 2,
-    SPA_FORMAT_AUDIO_FORMAT = 65537,
-    SPA_FORMAT_AUDIO_RATE = 65539,
-    SPA_FORMAT_AUDIO_CHANNELS = 65540,
-    SPA_FORMAT_AUDIO_POSITION = 65541,
-};
-
-enum {
-    SPA_MEDIA_TYPE_AUDIO = 1,
-    SPA_MEDIA_SUBTYPE_RAW = 1,
-    SPA_MEDIA_SUBTYPE_DSP = 2,
-    SPA_AUDIO_FORMAT_F32 = 283,
-    SPA_AUDIO_FORMAT_F32P = 518,
-    SPA_AUDIO_CHANNEL_FL = 3,
-    SPA_AUDIO_CHANNEL_FR = 4,
-};
-
-enum {
-    SPA_PARAM_IO_ID = 1,
-    SPA_PARAM_IO_SIZE = 2,
-    SPA_PARAM_META_TYPE = 1,
-    SPA_PARAM_META_SIZE = 2,
-    SPA_PARAM_BUFFERS_BUFFERS = 1,
-    SPA_PARAM_BUFFERS_BLOCKS = 2,
-    SPA_PARAM_BUFFERS_SIZE = 3,
-    SPA_PARAM_BUFFERS_STRIDE = 4,
-};
-
-enum {
-    SPA_IO_BUFFERS = 1,
-    SPA_IO_CLOCK = 3,
-    SPA_IO_POSITION = 7,
-    SPA_IO_RATEMATCH = 8,
-    SPA_META_HEADER = 1,
-};
-
-enum {
-    SPA_STATUS_OK = 0,
-    SPA_STATUS_NEED_DATA = 1,
-    SPA_STATUS_HAVE_DATA = 2,
-};
-
-enum {
-    SPA_NODE_COMMAND_SUSPEND = 0,
-    SPA_NODE_COMMAND_PAUSE = 1,
-    SPA_NODE_COMMAND_START = 2,
-    SPA_NODE_COMMAND_FLUSH = 5,
-};
-
-enum {
-    SPA_NODE_CHANGE_MASK_FLAGS = 1,
-    SPA_NODE_CHANGE_MASK_PROPS = 2,
-    SPA_NODE_CHANGE_MASK_PARAMS = 4,
-    SPA_NODE_FLAG_RT = 1,
-};
-
-enum {
-    SPA_PORT_CHANGE_MASK_FLAGS = 1,
-    SPA_PORT_CHANGE_MASK_RATE = 2,
-    SPA_PORT_CHANGE_MASK_PROPS = 4,
-    SPA_PORT_CHANGE_MASK_PARAMS = 8,
-};
-
-enum {
-    SPA_DATA_INVALID = 0,
-    SPA_DATA_MEMPTR = 1,
-    SPA_DATA_MEMID = 4,
-};
-
-enum {
-    SPA_DIRECTION_INPUT = 0,
-    SPA_DIRECTION_OUTPUT = 1,
-    SPA_ID_INVALID = 0xffffffffu,
-};
-
-enum {
-    PW_CORE_METHOD_HELLO = 1,
-    PW_CORE_METHOD_SYNC = 2,
-    PW_CORE_METHOD_PONG = 3,
-    PW_CORE_METHOD_CREATE_OBJECT = 6,
-    PW_CORE_METHOD_DESTROY = 7,
-};
-
-enum {
-    PW_CORE_EVENT_INFO = 0,
-    PW_CORE_EVENT_DONE = 1,
-    PW_CORE_EVENT_PING = 2,
-    PW_CORE_EVENT_ERROR = 3,
-    PW_CORE_EVENT_REMOVE_ID = 4,
-    PW_CORE_EVENT_BOUND_ID = 5,
-    PW_CORE_EVENT_ADD_MEM = 6,
-    PW_CORE_EVENT_REMOVE_MEM = 7,
-    PW_CORE_EVENT_BOUND_PROPS = 8,
-};
-
-enum {
-    PW_CLIENT_METHOD_UPDATE_PROPERTIES = 2,
-};
-
-enum {
-    PW_CLIENT_NODE_METHOD_UPDATE = 2,
-    PW_CLIENT_NODE_METHOD_PORT_UPDATE = 3,
-    PW_CLIENT_NODE_METHOD_SET_ACTIVE = 4,
-};
-
-enum {
-    PW_CLIENT_NODE_EVENT_TRANSPORT = 0,
-    PW_CLIENT_NODE_EVENT_SET_PARAM = 1,
-    PW_CLIENT_NODE_EVENT_SET_IO = 2,
-    PW_CLIENT_NODE_EVENT_EVENT = 3,
-    PW_CLIENT_NODE_EVENT_COMMAND = 4,
-    PW_CLIENT_NODE_EVENT_ADD_PORT = 5,
-    PW_CLIENT_NODE_EVENT_REMOVE_PORT = 6,
-    PW_CLIENT_NODE_EVENT_PORT_SET_PARAM = 7,
-    PW_CLIENT_NODE_EVENT_PORT_USE_BUFFERS = 8,
-    PW_CLIENT_NODE_EVENT_PORT_SET_IO = 9,
-    PW_CLIENT_NODE_EVENT_SET_ACTIVATION = 10,
-    PW_CLIENT_NODE_EVENT_PORT_SET_MIX_INFO = 11,
-};
-
-enum {
-    PW_NODE_ACTIVATION_NOT_TRIGGERED = 0,
-    PW_NODE_ACTIVATION_TRIGGERED = 1,
-    PW_NODE_ACTIVATION_AWAKE = 2,
-    PW_NODE_ACTIVATION_FINISHED = 3,
-    PW_NODE_ACTIVATION_INACTIVE = 4,
-};
-
-enum {
-    PW_ACT_STATUS = 0,
-    PW_ACT_STATE = 8,
-    PW_ACT_SIGNAL_TIME = 32,
-    PW_ACT_AWAKE_TIME = 40,
-    PW_ACT_FINISH_TIME = 48,
-    PW_ACT_SERVER_VERSION = 544,
-    PW_ACT_MINIMUM = 20,
-};
-
-enum { PW_STATE_STATUS = 0, PW_STATE_REQUIRED = 4, PW_STATE_PENDING = 8 };
-enum { SPA_CLOCK_RATE = 80, SPA_CLOCK_DURATION = 96 };
-
-#define PWN_HEADER 16u
-#define PWN_MAX_MEM 128
-#define PWN_MAX_MAPS 256
-#define PWN_MAX_BUFFERS 32
-#define PWN_MAX_TARGETS 16
-#define PWN_MAX_FDS 64
-#define PWN_MAX_MESSAGE (1u << 20)
-#define PWN_MAX_PARAM 4096
-#define PWN_RING 65536u
-#define PWN_BUILD (64u * 1024u)
-
-struct pwn_mem {
-    uint32_t id;
-    int fd;
-};
-
-struct pwn_map {
-    void *ptr;
-    size_t len;
-    int keep;
-    int owner;
-};
 
 struct pwn_target {
     uint32_t id;
@@ -311,16 +82,7 @@ struct pwn_client {
     const char *node_name;
     uint32_t rate;
     uint32_t channels;
-    int fd;
-    uint32_t seq;
-    uint8_t *in;
-    size_t in_len, in_cap;
-    int fds[PWN_MAX_FDS];
-    size_t n_fds;
-    struct pwn_mem mem[PWN_MAX_MEM];
-    size_t n_mem;
-    struct pwn_map maps[PWN_MAX_MAPS];
-    size_t n_maps;
+    struct pww wire;
     uint32_t node_proxy;
     uint32_t node_global;
     int bound;
@@ -367,274 +129,10 @@ struct pwn_client {
     struct pwn_chunk src_chunk[2];
 };
 
-struct build {
-    uint8_t *data;
-    uint32_t cap;
-    uint32_t off;
-    int fail;
-};
-
-struct frame {
-    uint32_t off;
-};
-
-static void build_init(struct build *b, uint8_t *data, uint32_t cap) {
-    b->data = data;
-    b->cap = cap;
-    b->off = 0;
-    b->fail = 0;
-}
-
-static void build_bytes(struct build *b, const void *data, uint32_t size) {
-    if (b->fail) return;
-    if ((uint64_t)b->off + size > b->cap) {
-        b->fail = 1;
-        return;
-    }
-    memcpy(b->data + b->off, data, size);
-    b->off += size;
-}
-
-static void build_zero(struct build *b, uint32_t size) {
-    if (b->fail) return;
-    if ((uint64_t)b->off + size > b->cap) {
-        b->fail = 1;
-        return;
-    }
-    memset(b->data + b->off, 0, size);
-    b->off += size;
-}
-
-static void build_u32(struct build *b, uint32_t v) { build_bytes(b, &v, 4); }
-static void build_u64(struct build *b, uint64_t v) { build_bytes(b, &v, 8); }
-
-static void build_align(struct build *b) {
-    if (b->fail) return;
-    uint32_t pad = (8 - (b->off & 7)) & 7u;
-    build_zero(b, pad);
-}
-
-static void pod_begin(struct build *b, struct frame *f) {
-    f->off = b->off;
-    build_zero(b, 8);
-}
-
-static void pod_end(struct build *b, struct frame *f, uint32_t type) {
-    if (b->fail) return;
-    uint32_t size = b->off - f->off - 8;
-    memcpy(b->data + f->off, &size, 4);
-    memcpy(b->data + f->off + 4, &type, 4);
-    build_align(b);
-}
-
-static void pod_bool(struct build *b, int v) {
-    struct frame f;
-    uint32_t value = v ? 1 : 0;
-    pod_begin(b, &f);
-    build_u32(b, value);
-    pod_end(b, &f, SPA_TYPE_BOOL);
-}
-
-static void pod_id(struct build *b, uint32_t v) {
-    struct frame f;
-    pod_begin(b, &f);
-    build_u32(b, v);
-    pod_end(b, &f, SPA_TYPE_ID);
-}
-
-static void pod_int(struct build *b, int32_t v) {
-    struct frame f;
-    pod_begin(b, &f);
-    build_u32(b, (uint32_t)v);
-    pod_end(b, &f, SPA_TYPE_INT);
-}
-
-static void pod_long(struct build *b, int64_t v) {
-    struct frame f;
-    uint64_t value = (uint64_t)v;
-    pod_begin(b, &f);
-    build_u64(b, value);
-    pod_end(b, &f, SPA_TYPE_LONG);
-}
-
-static void pod_float(struct build *b, float v) {
-    struct frame f;
-    pod_begin(b, &f);
-    build_bytes(b, &v, sizeof(v));
-    pod_end(b, &f, SPA_TYPE_FLOAT);
-}
-static void pod_array_floats(struct build *b, const float *values, uint32_t n) {
-    struct frame f;
-    pod_begin(b, &f);
-    build_u32(b, 4);
-    build_u32(b, SPA_TYPE_FLOAT);
-    build_bytes(b, values, n * (uint32_t)sizeof(float));
-    pod_end(b, &f, SPA_TYPE_ARRAY);
-}
 
 
-static void pod_string(struct build *b, const char *s) {
-    struct frame f;
-    pod_begin(b, &f);
-    if (s) build_bytes(b, s, (uint32_t)strlen(s));
-    build_zero(b, 1);
-    pod_end(b, &f, SPA_TYPE_STRING);
-}
-
-static void pod_struct_begin(struct build *b, struct frame *f) { pod_begin(b, f); }
-
-static void pod_struct_end(struct build *b, struct frame *f) {
-    pod_end(b, f, SPA_TYPE_STRUCT);
-}
-
-static void pod_object_begin(struct build *b, struct frame *f, uint32_t type, uint32_t id) {
-    pod_begin(b, f);
-    build_u32(b, type);
-    build_u32(b, id);
-}
-
-static void pod_object_end(struct build *b, struct frame *f) {
-    pod_end(b, f, SPA_TYPE_OBJECT);
-}
-
-static void pod_prop(struct build *b, uint32_t key, uint32_t flags) {
-    build_u32(b, key);
-    build_u32(b, flags);
-}
-
-static void pod_prop_id(struct build *b, uint32_t key, uint32_t v) {
-    pod_prop(b, key, 0);
-    pod_id(b, v);
-}
-
-static void pod_prop_int(struct build *b, uint32_t key, int32_t v) {
-    pod_prop(b, key, 0);
-    pod_int(b, v);
-}
-
-static void pod_array_ids(struct build *b, const uint32_t *ids, uint32_t n) {
-    struct frame f;
-    pod_begin(b, &f);
-    build_u32(b, 4);
-    build_u32(b, SPA_TYPE_ID);
-    for (uint32_t i = 0; i < n; i++) build_u32(b, ids[i]);
-    pod_end(b, &f, SPA_TYPE_ARRAY);
-}
-
-static void pod_prop_array_ids(struct build *b, uint32_t key, const uint32_t *ids, uint32_t n) {
-    pod_prop(b, key, 0);
-    pod_array_ids(b, ids, n);
-}
-static void pod_prop_float(struct build *b, uint32_t key, float v) {
-    pod_prop(b, key, 0);
-    pod_float(b, v);
-}
-
-static void pod_prop_bool(struct build *b, uint32_t key, int v) {
-    pod_prop(b, key, 0);
-    pod_bool(b, v);
-}
-
-static void pod_prop_array_floats(struct build *b, uint32_t key, const float *values, uint32_t n) {
-    pod_prop(b, key, 0);
-    pod_array_floats(b, values, n);
-}
 
 
-static void build_raw_pod(struct build *b, const void *pod, size_t len) {
-    build_bytes(b, pod, (uint32_t)len);
-    build_align(b);
-}
-
-struct parse {
-    const uint8_t *data;
-    size_t size;
-    size_t off;
-    int fail;
-};
-
-static void parse_init(struct parse *p, const void *data, size_t size) {
-    p->data = data;
-    p->size = size;
-    p->off = 0;
-    p->fail = 0;
-}
-
-static void parse_align(struct parse *p) {
-    p->off = (p->off + 7) & ~(size_t)7;
-}
-
-static const uint8_t *parse_pod(struct parse *p, uint32_t *type, uint32_t *body) {
-    if (p->fail) return NULL;
-    if (p->off + 8 > p->size) {
-        p->fail = 1;
-        return NULL;
-    }
-    const uint8_t *pod = p->data + p->off;
-    uint32_t size;
-    memcpy(&size, pod, 4);
-    if (p->off + 8 + size > p->size) {
-        p->fail = 1;
-        return NULL;
-    }
-    if (type) memcpy(type, pod + 4, 4);
-    if (body) *body = size;
-    p->off += 8 + size;
-    parse_align(p);
-    return pod;
-}
-
-static int parse_typed(struct parse *p, uint32_t want, void *out, size_t n) {
-    uint32_t type, body;
-    const uint8_t *pod = parse_pod(p, &type, &body);
-    if (!pod || type != want || body < n) return -1;
-    memcpy(out, pod + 8, n);
-    return 0;
-}
-
-static int parse_int(struct parse *p, uint32_t *v) { return parse_typed(p, SPA_TYPE_INT, v, 4); }
-static int parse_id(struct parse *p, uint32_t *v) { return parse_typed(p, SPA_TYPE_ID, v, 4); }
-static int parse_fd(struct parse *p, int64_t *v) { return parse_typed(p, SPA_TYPE_FD, v, 8); }
-
-static int parse_string(struct parse *p, const char **s, uint32_t *len) {
-    uint32_t type, body;
-    const uint8_t *pod = parse_pod(p, &type, &body);
-    if (!pod || type != SPA_TYPE_STRING || body == 0) return -1;
-    *s = (const char *)(pod + 8);
-    *len = body;
-    return 0;
-}
-
-static int parse_dict(struct parse *p) {
-    uint32_t n;
-    if (parse_int(p, &n) || n > 256) return -1;
-    for (uint32_t i = 0; i < n; i++) {
-        const char *key, *value;
-        uint32_t len;
-        if (parse_string(p, &key, &len)) return -1;
-        if (parse_string(p, &value, &len)) return -1;
-    }
-    return 0;
-}
-
-static int parse_nested_dict(struct parse *p) {
-    uint32_t type, body;
-    const uint8_t *pod = parse_pod(p, &type, &body);
-    if (!pod || type != SPA_TYPE_STRUCT) return -1;
-    struct parse q;
-    parse_init(&q, pod + 8, body);
-    if (parse_dict(&q) || q.fail) return -1;
-    return 0;
-}
-
-static int parse_pod_object(struct parse *p, uint32_t *type, uint32_t *id) {
-    uint32_t ptype, body;
-    const uint8_t *pod = parse_pod(p, &ptype, &body);
-    if (!pod || ptype != SPA_TYPE_OBJECT || body < 8) return -1;
-    memcpy(type, pod + 8, 4);
-    memcpy(id, pod + 12, 4);
-    return 0;
-}
 
 static void report(struct pwn_client *c, int state, int error) {
     if (c->ops.state) c->ops.state(c->data, state, error);
@@ -662,173 +160,21 @@ static int eventfd_read1(int fd) {
     return (int)read(fd, &count, sizeof(count));
 }
 
-static int socket_path(char *path, size_t size) {
-    const char *remote = getenv("PIPEWIRE_REMOTE");
-    if (!remote || !*remote) remote = "pipewire-0";
-    if (remote[0] == '/') {
-        if (strlen(remote) >= size) return -ENAMETOOLONG;
-        strcpy(path, remote);
-        return 0;
-    }
-    const char *runtime = getenv("PIPEWIRE_RUNTIME_DIR");
-    if (!runtime || !*runtime) runtime = getenv("XDG_RUNTIME_DIR");
-    if (!runtime || !*runtime) return -EINVAL;
-    if ((size_t)snprintf(path, size, "%s/%s", runtime, remote) >= size) return -ENAMETOOLONG;
-    return 0;
-}
-
-static int pwn_connect(struct pwn_client *c) {
-    char path[PATH_MAX];
-    int res = socket_path(path, sizeof(path));
-    if (res < 0) return res;
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return -errno;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    if (strlen(path) >= sizeof(addr.sun_path)) {
-        close(fd);
-        return -ENAMETOOLONG;
-    }
-    strcpy(addr.sun_path, path);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        int error = errno;
-        close(fd);
-        return error == ENOENT ? -EHOSTDOWN : -error;
-    }
-    int flags = fcntl(fd, F_GETFL);
-    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    c->fd = fd;
-    return 0;
-}
-
-static void unmap_all(struct pwn_client *c) {
-    for (size_t i = 0; i < c->n_maps; i++) munmap(c->maps[i].ptr, c->maps[i].len);
-    c->n_maps = 0;
-}
-
-static void mem_clear(struct pwn_client *c) {
-    for (size_t i = 0; i < c->n_mem; i++)
-        if (c->mem[i].fd >= 0) close(c->mem[i].fd);
-    c->n_mem = 0;
-}
-
-static int mem_add(struct pwn_client *c, uint32_t id, int fd) {
-    for (size_t i = 0; i < c->n_mem; i++) {
-        if (c->mem[i].id != id) continue;
-        if (c->mem[i].fd >= 0) close(c->mem[i].fd);
-        c->mem[i].fd = fd;
-        return 0;
-    }
-    if (c->n_mem >= PWN_MAX_MEM) return -ENOSPC;
-    c->mem[c->n_mem].id = id;
-    c->mem[c->n_mem].fd = fd;
-    c->n_mem++;
-    return 0;
-}
-
-static int mem_fd(struct pwn_client *c, uint32_t id) {
-    for (size_t i = 0; i < c->n_mem; i++)
-        if (c->mem[i].id == id) return c->mem[i].fd;
-    return -1;
-}
-
-static int mem_remove(struct pwn_client *c, uint32_t id) {
-    for (size_t i = 0; i < c->n_mem; i++) {
-        if (c->mem[i].id != id) continue;
-        if (c->mem[i].fd >= 0) close(c->mem[i].fd);
-        c->mem[i] = c->mem[c->n_mem - 1];
-        c->n_mem--;
-        return 0;
-    }
-    return -ENOENT;
-}
-
-static void *map_fd(struct pwn_client *c, int fd, uint32_t offset, uint32_t size, int keep,
-        int owner) {
-    if (fd < 0 || size == 0) return NULL;
-    size_t page = (size_t)sysconf(_SC_PAGESIZE);
-    if (page == 0) page = 4096;
-    size_t start = offset & ~(page - 1);
-    size_t delta = offset - start;
-    size_t len = delta + size;
-    len = (len + page - 1) & ~(page - 1);
-    void *ptr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)start);
-    if (ptr == MAP_FAILED) return NULL;
-    if (c->n_maps >= PWN_MAX_MAPS) {
-        munmap(ptr, len);
-        return NULL;
-    }
-    c->maps[c->n_maps].ptr = ptr;
-    c->maps[c->n_maps].len = len;
-    c->maps[c->n_maps].keep = keep;
-    c->maps[c->n_maps].owner = owner;
-    c->n_maps++;
-    return (uint8_t *)ptr + delta;
-}
-
-static int map_mem(struct pwn_client *c, uint32_t id, uint32_t offset, uint32_t size, int keep,
-        int owner, void **out, size_t *outsize) {
-    int fd = mem_fd(c, id);
-    if (fd < 0) return -ENODEV;
-    void *ptr = map_fd(c, fd, offset, size, keep, owner);
-    if (!ptr) return -ENOMEM;
-    *out = ptr;
-    if (outsize) *outsize = size;
-    return 0;
-}
 
 static void port_clear(struct pwn_client *c, unsigned port_id) {
-    for (size_t i = 0; i < c->n_maps;) {
-        if (c->maps[i].keep || c->maps[i].owner != (int)port_id) {
+    for (size_t i = 0; i < c->wire.n_maps;) {
+        if (c->wire.maps[i].keep || c->wire.maps[i].owner != (int)port_id) {
             i++;
             continue;
         }
-        munmap(c->maps[i].ptr, c->maps[i].len);
-        c->maps[i] = c->maps[c->n_maps - 1];
-        c->n_maps--;
+        munmap(c->wire.maps[i].ptr, c->wire.maps[i].len);
+        c->wire.maps[i] = c->wire.maps[c->wire.n_maps - 1];
+        c->wire.n_maps--;
     }
     c->ports[port_id].n_slots = 0;
     c->ports[port_id].n_free = 0;
 }
 
-static int send_message(struct pwn_client *c, uint32_t id, uint32_t opcode, struct build *b) {
-    if (b->fail) return -ENOSPC;
-    uint32_t size = b->off;
-    if (size > 0xffffffu) return -ENOSPC;
-    uint8_t storage[PWN_HEADER + PWN_BUILD];
-    if (size > PWN_BUILD) return -ENOSPC;
-    uint32_t header[4] = { id, (opcode << 24) | size, c->seq, 0 };
-    memcpy(storage, header, sizeof(header));
-    memcpy(storage + sizeof(header), b->data, size);
-    size_t total = sizeof(header) + size, sent = 0;
-    while (sent < total) {
-        ssize_t n = send(c->fd, storage + sent, total - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd p = { .fd = c->fd, .events = POLLOUT };
-                if (poll(&p, 1, 1000) <= 0) return -ETIMEDOUT;
-                continue;
-            }
-            return -errno;
-        }
-        sent += (size_t)n;
-    }
-    c->seq = (c->seq + 1) & 0x3fffffffu;
-    return 0;
-}
-
-static void message_begin(struct build *b, struct frame *root, uint8_t *storage) {
-    build_init(b, storage, PWN_BUILD);
-    pod_struct_begin(b, root);
-}
-
-static int message_send(struct pwn_client *c, struct build *b, struct frame *root, uint32_t id,
-        uint32_t opcode) {
-    pod_struct_end(b, root);
-    return send_message(c, id, opcode, b);
-}
 
 static void param_toggle_serial(struct pwn_param *params, size_t count) {
     for (size_t i = 0; i < count; i++) {
@@ -863,65 +209,65 @@ static struct pwn_param *find_param(struct pwn_param *params, size_t count, uint
 }
 
 static void build_dsp_format(uint8_t *storage, size_t *len) {
-    struct build b;
-    struct frame f;
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_FORMAT, SPA_PARAM_ENUMFORMAT);
-    pod_prop_id(&b, SPA_FORMAT_MEDIATYPE, SPA_MEDIA_TYPE_AUDIO);
-    pod_prop_id(&b, SPA_FORMAT_MEDIASUBTYPE, SPA_MEDIA_SUBTYPE_DSP);
-    pod_prop_id(&b, SPA_FORMAT_AUDIO_FORMAT, SPA_AUDIO_FORMAT_F32P);
-    pod_object_end(&b, &f);
+    struct pww_build b;
+    struct pww_frame f;
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_FORMAT, SPA_PARAM_ENUMFORMAT);
+    pww_pod_prop_id(&b, SPA_FORMAT_MEDIATYPE, SPA_MEDIA_TYPE_AUDIO);
+    pww_pod_prop_id(&b, SPA_FORMAT_MEDIASUBTYPE, SPA_MEDIA_SUBTYPE_DSP);
+    pww_pod_prop_id(&b, SPA_FORMAT_AUDIO_FORMAT, SPA_AUDIO_FORMAT_F32P);
+    pww_pod_object_end(&b, &f);
     *len = b.fail ? 0 : b.off;
 }
 
 static void build_raw_format(struct pwn_client *c, uint8_t *storage, size_t *len) {
-    struct build b;
-    struct frame f;
+    struct pww_build b;
+    struct pww_frame f;
     uint32_t positions[2] = { SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR };
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_FORMAT, SPA_PARAM_ENUMFORMAT);
-    pod_prop_id(&b, SPA_FORMAT_MEDIATYPE, SPA_MEDIA_TYPE_AUDIO);
-    pod_prop_id(&b, SPA_FORMAT_MEDIASUBTYPE, SPA_MEDIA_SUBTYPE_RAW);
-    pod_prop_id(&b, SPA_FORMAT_AUDIO_FORMAT, SPA_AUDIO_FORMAT_F32);
-    pod_prop_int(&b, SPA_FORMAT_AUDIO_RATE, (int32_t)c->rate);
-    pod_prop_int(&b, SPA_FORMAT_AUDIO_CHANNELS, 2);
-    pod_prop_array_ids(&b, SPA_FORMAT_AUDIO_POSITION, positions, 2);
-    pod_object_end(&b, &f);
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_FORMAT, SPA_PARAM_ENUMFORMAT);
+    pww_pod_prop_id(&b, SPA_FORMAT_MEDIATYPE, SPA_MEDIA_TYPE_AUDIO);
+    pww_pod_prop_id(&b, SPA_FORMAT_MEDIASUBTYPE, SPA_MEDIA_SUBTYPE_RAW);
+    pww_pod_prop_id(&b, SPA_FORMAT_AUDIO_FORMAT, SPA_AUDIO_FORMAT_F32);
+    pww_pod_prop_int(&b, SPA_FORMAT_AUDIO_RATE, (int32_t)c->rate);
+    pww_pod_prop_int(&b, SPA_FORMAT_AUDIO_CHANNELS, 2);
+    pww_pod_prop_array_ids(&b, SPA_FORMAT_AUDIO_POSITION, positions, 2);
+    pww_pod_object_end(&b, &f);
     *len = b.fail ? 0 : b.off;
 }
 
 static void build_io_param(uint8_t *storage, size_t *len) {
-    struct build b;
-    struct frame f;
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMIO, SPA_PARAM_IO);
-    pod_prop_id(&b, SPA_PARAM_IO_ID, SPA_IO_BUFFERS);
-    pod_prop_int(&b, SPA_PARAM_IO_SIZE, 8);
-    pod_object_end(&b, &f);
+    struct pww_build b;
+    struct pww_frame f;
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMIO, SPA_PARAM_IO);
+    pww_pod_prop_id(&b, SPA_PARAM_IO_ID, SPA_IO_BUFFERS);
+    pww_pod_prop_int(&b, SPA_PARAM_IO_SIZE, 8);
+    pww_pod_object_end(&b, &f);
     *len = b.fail ? 0 : b.off;
 }
 
 static void build_meta_param(uint8_t *storage, size_t *len) {
-    struct build b;
-    struct frame f;
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMMETA, SPA_PARAM_META);
-    pod_prop_id(&b, SPA_PARAM_META_TYPE, SPA_META_HEADER);
-    pod_prop_int(&b, SPA_PARAM_META_SIZE, 32);
-    pod_object_end(&b, &f);
+    struct pww_build b;
+    struct pww_frame f;
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMMETA, SPA_PARAM_META);
+    pww_pod_prop_id(&b, SPA_PARAM_META_TYPE, SPA_META_HEADER);
+    pww_pod_prop_int(&b, SPA_PARAM_META_SIZE, 32);
+    pww_pod_object_end(&b, &f);
     *len = b.fail ? 0 : b.off;
 }
 
 static void build_buffers_param(uint8_t *storage, size_t *len) {
-    struct build b;
-    struct frame f;
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMBUFFERS, SPA_PARAM_BUFFERS);
-    pod_prop_int(&b, SPA_PARAM_BUFFERS_BUFFERS, 8);
-    pod_prop_int(&b, SPA_PARAM_BUFFERS_BLOCKS, 1);
-    pod_prop_int(&b, SPA_PARAM_BUFFERS_SIZE, 32768);
-    pod_prop_int(&b, SPA_PARAM_BUFFERS_STRIDE, 4);
-    pod_object_end(&b, &f);
+    struct pww_build b;
+    struct pww_frame f;
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PARAMBUFFERS, SPA_PARAM_BUFFERS);
+    pww_pod_prop_int(&b, SPA_PARAM_BUFFERS_BUFFERS, 8);
+    pww_pod_prop_int(&b, SPA_PARAM_BUFFERS_BLOCKS, 1);
+    pww_pod_prop_int(&b, SPA_PARAM_BUFFERS_SIZE, 32768);
+    pww_pod_prop_int(&b, SPA_PARAM_BUFFERS_STRIDE, 4);
+    pww_pod_object_end(&b, &f);
     *len = b.fail ? 0 : b.off;
 }
 
@@ -953,16 +299,16 @@ static void apply_gain(float *frames, uint32_t count, float gain) {
 }
 
 static size_t build_props(struct pwn_client *c, uint8_t *storage) {
-    struct build b;
-    struct frame f;
-    build_init(&b, storage, PWN_MAX_PARAM);
-    pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PROPS, SPA_PARAM_PROPS);
-    pod_prop_float(&b, SPA_PROP_VOLUME, c->volume);
-    pod_prop_bool(&b, SPA_PROP_MUTE, c->mute);
-    pod_prop_array_floats(&b, SPA_PROP_CHANNELVOLUMES, c->channel_volumes, 2);
-    pod_prop_bool(&b, SPA_PROP_SOFTMUTE, c->soft_mute);
-    pod_prop_array_floats(&b, SPA_PROP_SOFTVOLUMES, c->soft_volumes, 2);
-    pod_object_end(&b, &f);
+    struct pww_build b;
+    struct pww_frame f;
+    pww_build_init(&b, storage, PWN_MAX_PARAM);
+    pww_pod_object_begin(&b, &f, SPA_TYPE_OBJECT_PROPS, SPA_PARAM_PROPS);
+    pww_pod_prop_float(&b, SPA_PROP_VOLUME, c->volume);
+    pww_pod_prop_bool(&b, SPA_PROP_MUTE, c->mute);
+    pww_pod_prop_array_floats(&b, SPA_PROP_CHANNELVOLUMES, c->channel_volumes, 2);
+    pww_pod_prop_bool(&b, SPA_PROP_SOFTMUTE, c->soft_mute);
+    pww_pod_prop_array_floats(&b, SPA_PROP_SOFTVOLUMES, c->soft_volumes, 2);
+    pww_pod_object_end(&b, &f);
     return b.fail ? 0 : b.off;
 }
 
@@ -1040,18 +386,18 @@ static void apply_props(struct pwn_client *c, const uint8_t *pod, uint32_t body)
     update_gains(c);
 }
 
-static void push_dict_item(struct build *b, const char *key, const char *value) {
-    pod_string(b, key);
-    pod_string(b, value);
+static void push_dict_item(struct pww_build *b, const char *key, const char *value) {
+    pww_pod_string(b, key);
+    pww_pod_string(b, value);
 }
 
-static void push_dict_begin(struct build *b, struct frame *f, uint32_t n) {
-    pod_struct_begin(b, f);
-    pod_int(b, (int32_t)n);
+static void push_dict_begin(struct pww_build *b, struct pww_frame *f, uint32_t n) {
+    pww_pod_struct_begin(b, f);
+    pww_pod_int(b, (int32_t)n);
 }
 
-static void push_dict_end(struct build *b, struct frame *f) {
-    pod_struct_end(b, f);
+static void push_dict_end(struct pww_build *b, struct pww_frame *f) {
+    pww_pod_struct_end(b, f);
 }
 
 static uint32_t node_flag(struct pwn_client *c, uint32_t id, uint32_t flags) {
@@ -1066,27 +412,27 @@ static uint32_t port_flag(struct pwn_client *c, unsigned port_id, uint32_t id, u
 }
 
 static int send_update(struct pwn_client *c) {
-    uint8_t storage[PWN_BUILD];
-    struct build b;
-    struct frame root, info;
+    uint8_t storage[PWW_BUILD];
+    struct pww_build b;
+    struct pww_frame root, info;
     param_toggle_serial(c->node_params, c->n_node_params);
-    message_begin(&b, &root, storage);
-    pod_int(&b, SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
+    pww_message_begin(&b, &root, storage);
+    pww_pod_int(&b, SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
             SPA_NODE_CHANGE_MASK_PARAMS);
     uint32_t n = 0;
     for (size_t i = 0; i < c->n_node_params; i++)
         if (c->node_params[i].len) n++;
-    pod_int(&b, (int32_t)n);
+    pww_pod_int(&b, (int32_t)n);
     for (size_t i = 0; i < c->n_node_params; i++)
         if (c->node_params[i].len)
-            build_raw_pod(&b, c->node_params[i].pod, c->node_params[i].len);
-    pod_struct_begin(&b, &info);
-    pod_int(&b, 0);
-    pod_int(&b, 2);
-    pod_long(&b, SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
+            pww_build_raw_pod(&b, c->node_params[i].pod, c->node_params[i].len);
+    pww_pod_struct_begin(&b, &info);
+    pww_pod_int(&b, 0);
+    pww_pod_int(&b, 2);
+    pww_pod_long(&b, SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PROPS |
             SPA_NODE_CHANGE_MASK_PARAMS);
-    pod_long(&b, SPA_NODE_FLAG_RT);
-    pod_int(&b, 10);
+    pww_pod_long(&b, SPA_NODE_FLAG_RT);
+    pww_pod_int(&b, 10);
     push_dict_item(&b, "media.type", "Audio");
     push_dict_item(&b, "media.category", "Playback");
     push_dict_item(&b, "media.role", "Music");
@@ -1097,83 +443,83 @@ static int send_update(struct pwn_client *c) {
     push_dict_item(&b, "node.autoconnect", "true");
     push_dict_item(&b, "node.want-driver", "true");
     push_dict_item(&b, "stream.is-live", "true");
-    pod_int(&b, 5);
-    pod_id(&b, SPA_PARAM_PROPINFO);
-    pod_int(&b, 0);
-    pod_id(&b, SPA_PARAM_PROPS);
-    pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_PROPS, SPA_PARAM_INFO_WRITE));
-    pod_id(&b, SPA_PARAM_ENUMFORMAT);
-    pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_ENUMFORMAT, SPA_PARAM_INFO_READ));
-    pod_id(&b, SPA_PARAM_FORMAT);
-    pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_FORMAT, SPA_PARAM_INFO_WRITE));
-    pod_id(&b, SPA_PARAM_PROCESSLATENCY);
-    pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_PROCESSLATENCY, SPA_PARAM_INFO_WRITE));
-    pod_struct_end(&b, &info);
-    return message_send(c, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_UPDATE);
+    pww_pod_int(&b, 5);
+    pww_pod_id(&b, SPA_PARAM_PROPINFO);
+    pww_pod_int(&b, 0);
+    pww_pod_id(&b, SPA_PARAM_PROPS);
+    pww_pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_PROPS, SPA_PARAM_INFO_WRITE));
+    pww_pod_id(&b, SPA_PARAM_ENUMFORMAT);
+    pww_pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_ENUMFORMAT, SPA_PARAM_INFO_READ));
+    pww_pod_id(&b, SPA_PARAM_FORMAT);
+    pww_pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_FORMAT, SPA_PARAM_INFO_WRITE));
+    pww_pod_id(&b, SPA_PARAM_PROCESSLATENCY);
+    pww_pod_int(&b, (int32_t)node_flag(c, SPA_PARAM_PROCESSLATENCY, SPA_PARAM_INFO_WRITE));
+    pww_pod_struct_end(&b, &info);
+    return pww_message_send(&c->wire, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_UPDATE);
 }
 
 static int send_port_update(struct pwn_client *c, unsigned port_id) {
-    uint8_t storage[PWN_BUILD];
-    struct build b;
-    struct frame root, info;
+    uint8_t storage[PWW_BUILD];
+    struct pww_build b;
+    struct pww_frame root, info;
     struct pwn_port *port = &c->ports[port_id];
     param_toggle_serial(port->params, port->n_params);
-    message_begin(&b, &root, storage);
-    pod_int(&b, SPA_DIRECTION_OUTPUT);
-    pod_int(&b, (int32_t)port_id);
-    pod_int(&b, SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE |
+    pww_message_begin(&b, &root, storage);
+    pww_pod_int(&b, SPA_DIRECTION_OUTPUT);
+    pww_pod_int(&b, (int32_t)port_id);
+    pww_pod_int(&b, SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE |
             SPA_PORT_CHANGE_MASK_PROPS | SPA_PORT_CHANGE_MASK_PARAMS);
     uint32_t n = 0;
     for (size_t i = 0; i < port->n_params; i++)
         if (port->params[i].len) n++;
-    pod_int(&b, (int32_t)n);
+    pww_pod_int(&b, (int32_t)n);
     for (size_t i = 0; i < port->n_params; i++)
         if (port->params[i].len)
-            build_raw_pod(&b, port->params[i].pod, port->params[i].len);
-    pod_struct_begin(&b, &info);
-    pod_long(&b, SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE |
+            pww_build_raw_pod(&b, port->params[i].pod, port->params[i].len);
+    pww_pod_struct_begin(&b, &info);
+    pww_pod_long(&b, SPA_PORT_CHANGE_MASK_FLAGS | SPA_PORT_CHANGE_MASK_RATE |
             SPA_PORT_CHANGE_MASK_PROPS | SPA_PORT_CHANGE_MASK_PARAMS);
-    pod_long(&b, 0);
-    pod_int(&b, 0);
-    pod_int(&b, 1);
-    pod_int(&b, 3);
+    pww_pod_long(&b, 0);
+    pww_pod_int(&b, 0);
+    pww_pod_int(&b, 1);
+    pww_pod_int(&b, 3);
     push_dict_item(&b, "port.group", "stream.0");
     push_dict_item(&b, "format.dsp", "32 bit float mono audio");
     push_dict_item(&b, "audio.channel", port_id == 0 ? "FL" : "FR");
-    pod_int(&b, 9);
-    pod_id(&b, SPA_PARAM_ENUMFORMAT);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_ENUMFORMAT, SPA_PARAM_INFO_READ));
-    pod_id(&b, SPA_PARAM_META);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_META, SPA_PARAM_INFO_READ));
-    pod_id(&b, SPA_PARAM_IO);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_IO, SPA_PARAM_INFO_READ));
-    pod_id(&b, SPA_PARAM_FORMAT);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_FORMAT, SPA_PARAM_INFO_WRITE));
-    pod_id(&b, SPA_PARAM_BUFFERS);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_BUFFERS, SPA_PARAM_INFO_READ));
-    pod_id(&b, SPA_PARAM_LATENCY);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_LATENCY, SPA_PARAM_INFO_WRITE));
-    pod_id(&b, SPA_PARAM_TAG);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_TAG, SPA_PARAM_INFO_WRITE));
-    pod_id(&b, SPA_PARAM_CAPABILITY);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_CAPABILITY, 0));
-    pod_id(&b, SPA_PARAM_PEERCAPABILITY);
-    pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_PEERCAPABILITY,
+    pww_pod_int(&b, 9);
+    pww_pod_id(&b, SPA_PARAM_ENUMFORMAT);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_ENUMFORMAT, SPA_PARAM_INFO_READ));
+    pww_pod_id(&b, SPA_PARAM_META);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_META, SPA_PARAM_INFO_READ));
+    pww_pod_id(&b, SPA_PARAM_IO);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_IO, SPA_PARAM_INFO_READ));
+    pww_pod_id(&b, SPA_PARAM_FORMAT);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_FORMAT, SPA_PARAM_INFO_WRITE));
+    pww_pod_id(&b, SPA_PARAM_BUFFERS);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_BUFFERS, SPA_PARAM_INFO_READ));
+    pww_pod_id(&b, SPA_PARAM_LATENCY);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_LATENCY, SPA_PARAM_INFO_WRITE));
+    pww_pod_id(&b, SPA_PARAM_TAG);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_TAG, SPA_PARAM_INFO_WRITE));
+    pww_pod_id(&b, SPA_PARAM_CAPABILITY);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_CAPABILITY, 0));
+    pww_pod_id(&b, SPA_PARAM_PEERCAPABILITY);
+    pww_pod_int(&b, (int32_t)port_flag(c, port_id, SPA_PARAM_PEERCAPABILITY,
             SPA_PARAM_INFO_WRITE | SPA_PARAM_INFO_READ));
-    pod_struct_end(&b, &info);
-    return message_send(c, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_PORT_UPDATE);
+    pww_pod_struct_end(&b, &info);
+    return pww_message_send(&c->wire, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_PORT_UPDATE);
 }
 
 static int send_set_active(struct pwn_client *c) {
     uint8_t storage[256];
-    struct build b;
-    struct frame root;
-    message_begin(&b, &root, storage);
-    pod_bool(&b, 1);
-    return message_send(c, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_SET_ACTIVE);
+    struct pww_build b;
+    struct pww_frame root;
+    pww_message_begin(&b, &root, storage);
+    pww_pod_bool(&b, 1);
+    return pww_message_send(&c->wire, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_SET_ACTIVE);
 }
 
-static void push_node_props(struct build *b, struct pwn_client *c) {
+static void push_node_props(struct pww_build *b, struct pwn_client *c) {
     push_dict_item(b, "media.type", "Audio");
     push_dict_item(b, "media.category", "Playback");
     push_dict_item(b, "media.role", "Music");
@@ -1187,59 +533,59 @@ static void push_node_props(struct build *b, struct pwn_client *c) {
 }
 
 static int send_create_object(struct pwn_client *c) {
-    uint8_t storage[PWN_BUILD];
-    struct build b;
-    struct frame root, dict;
-    message_begin(&b, &root, storage);
-    pod_string(&b, "client-node");
-    pod_string(&b, "PipeWire:Interface:ClientNode");
-    pod_int(&b, 6);
+    uint8_t storage[PWW_BUILD];
+    struct pww_build b;
+    struct pww_frame root, dict;
+    pww_message_begin(&b, &root, storage);
+    pww_pod_string(&b, "client-node");
+    pww_pod_string(&b, "PipeWire:Interface:ClientNode");
+    pww_pod_int(&b, 6);
     push_dict_begin(&b, &dict, 10);
     push_node_props(&b, c);
     push_dict_end(&b, &dict);
-    pod_int(&b, (int32_t)c->node_proxy);
-    return message_send(c, &b, &root, 0, PW_CORE_METHOD_CREATE_OBJECT);
+    pww_pod_int(&b, (int32_t)c->node_proxy);
+    return pww_message_send(&c->wire, &b, &root, 0, PW_CORE_METHOD_CREATE_OBJECT);
 }
 
 static int send_hello(struct pwn_client *c) {
     uint8_t storage[256];
-    struct build b;
-    struct frame root;
-    message_begin(&b, &root, storage);
-    pod_int(&b, 4);
-    return message_send(c, &b, &root, 0, PW_CORE_METHOD_HELLO);
+    struct pww_build b;
+    struct pww_frame root;
+    pww_message_begin(&b, &root, storage);
+    pww_pod_int(&b, 4);
+    return pww_message_send(&c->wire, &b, &root, 0, PW_CORE_METHOD_HELLO);
 }
 
 static int send_client_props(struct pwn_client *c) {
     uint8_t storage[1024];
-    struct build b;
-    struct frame root, dict;
-    message_begin(&b, &root, storage);
+    struct pww_build b;
+    struct pww_frame root, dict;
+    pww_message_begin(&b, &root, storage);
     push_dict_begin(&b, &dict, 2);
     push_dict_item(&b, "application.name", c->app_name);
     push_dict_item(&b, "application.process.binary", "tomoe");
     push_dict_end(&b, &dict);
-    return message_send(c, &b, &root, 1, PW_CLIENT_METHOD_UPDATE_PROPERTIES);
+    return pww_message_send(&c->wire, &b, &root, 1, PW_CLIENT_METHOD_UPDATE_PROPERTIES);
 }
 
 static int send_sync(struct pwn_client *c) {
     uint8_t storage[256];
-    struct build b;
-    struct frame root;
-    message_begin(&b, &root, storage);
-    pod_int(&b, 0);
-    pod_int(&b, (int32_t)(0x40000000u | (c->seq & 0x3fffffffu)));
-    return message_send(c, &b, &root, 0, PW_CORE_METHOD_SYNC);
+    struct pww_build b;
+    struct pww_frame root;
+    pww_message_begin(&b, &root, storage);
+    pww_pod_int(&b, 0);
+    pww_pod_int(&b, (int32_t)(0x40000000u | (c->wire.seq & 0x3fffffffu)));
+    return pww_message_send(&c->wire, &b, &root, 0, PW_CORE_METHOD_SYNC);
 }
 
 static int send_pong(struct pwn_client *c, uint32_t id, uint32_t seq) {
     uint8_t storage[256];
-    struct build b;
-    struct frame root;
-    message_begin(&b, &root, storage);
-    pod_int(&b, (int32_t)id);
-    pod_int(&b, (int32_t)seq);
-    return message_send(c, &b, &root, 0, PW_CORE_METHOD_PONG);
+    struct pww_build b;
+    struct pww_frame root;
+    pww_message_begin(&b, &root, storage);
+    pww_pod_int(&b, (int32_t)id);
+    pww_pod_int(&b, (int32_t)seq);
+    return pww_message_send(&c->wire, &b, &root, 0, PW_CORE_METHOD_PONG);
 }
 
 static void trigger_targets(struct pwn_client *c, uint64_t nsec) {
@@ -1469,21 +815,21 @@ static void process_cycle(struct pwn_client *c) {
     trigger_targets(c, nsec);
 }
 
-static int handle_transport(struct pwn_client *c, struct parse *p) {
+static int handle_transport(struct pwn_client *c, struct pww_parse *p) {
     int64_t ridx, widx;
     uint32_t mem_id, offset, size;
-    if (parse_fd(p, &ridx) || parse_fd(p, &widx)) return -EPROTO;
-    if (parse_int(p, &mem_id) || parse_int(p, &offset) || parse_int(p, &size)) return -EPROTO;
-    if (ridx < 0 || ridx >= (int64_t)c->n_fds) return -EPROTO;
-    if (widx < 0 || widx >= (int64_t)c->n_fds) return -EPROTO;
-    c->process_fd = c->fds[ridx];
-    c->fds[ridx] = -1;
-    c->complete_fd = c->fds[widx];
-    c->fds[widx] = -1;
+    if (pww_parse_fd(p, &ridx) || pww_parse_fd(p, &widx)) return -EPROTO;
+    if (pww_parse_int(p, &mem_id) || pww_parse_int(p, &offset) || pww_parse_int(p, &size)) return -EPROTO;
+    if (ridx < 0 || ridx >= (int64_t)c->wire.n_fds) return -EPROTO;
+    if (widx < 0 || widx >= (int64_t)c->wire.n_fds) return -EPROTO;
+    c->process_fd = c->wire.fds[ridx];
+    c->wire.fds[ridx] = -1;
+    c->complete_fd = c->wire.fds[widx];
+    c->wire.fds[widx] = -1;
     void *activation = NULL;
     size_t activation_size = 0;
     if (mem_id != SPA_ID_INVALID) {
-        int res = map_mem(c, mem_id, offset, size, 1, -1, &activation, &activation_size);
+        int res = pww_map_mem(&c->wire, mem_id, offset, size, 1, -1, &activation, &activation_size);
         if (res < 0) return res;
     }
     c->activation = activation;
@@ -1494,13 +840,13 @@ static int handle_transport(struct pwn_client *c, struct parse *p) {
     return 0;
 }
 
-static int handle_set_io(struct pwn_client *c, struct parse *p) {
+static int handle_set_io(struct pwn_client *c, struct pww_parse *p) {
     uint32_t id, memid, offset, size;
-    if (parse_id(p, &id) || parse_int(p, &memid) || parse_int(p, &offset) ||
-        parse_int(p, &size)) return -EPROTO;
+    if (pww_parse_id(p, &id) || pww_parse_int(p, &memid) || pww_parse_int(p, &offset) ||
+        pww_parse_int(p, &size)) return -EPROTO;
     void *ptr = NULL;
     if (memid != SPA_ID_INVALID) {
-        int res = map_mem(c, memid, offset, size, 1, -1, &ptr, NULL);
+        int res = pww_map_mem(&c->wire, memid, offset, size, 1, -1, &ptr, NULL);
         if (res < 0) return res;
     }
     if (id == SPA_IO_POSITION) {
@@ -1517,11 +863,11 @@ static int handle_set_io(struct pwn_client *c, struct parse *p) {
     return 0;
 }
 
-static int handle_set_activation(struct pwn_client *c, struct parse *p) {
+static int handle_set_activation(struct pwn_client *c, struct pww_parse *p) {
     uint32_t node_id, memid, offset, size;
     int64_t idx;
-    if (parse_int(p, &node_id) || parse_fd(p, &idx) || parse_int(p, &memid) ||
-        parse_int(p, &offset) || parse_int(p, &size)) return -EPROTO;
+    if (pww_parse_int(p, &node_id) || pww_parse_fd(p, &idx) || pww_parse_int(p, &memid) ||
+        pww_parse_int(p, &offset) || pww_parse_int(p, &size)) return -EPROTO;
     struct pwn_target *t = NULL;
     for (size_t i = 0; i < c->n_targets; i++)
         if (c->targets[i].id == node_id) t = &c->targets[i];
@@ -1533,7 +879,7 @@ static int handle_set_activation(struct pwn_client *c, struct parse *p) {
         }
         return 0;
     }
-    if (idx < 0 || idx >= (int64_t)c->n_fds) return -EPROTO;
+    if (idx < 0 || idx >= (int64_t)c->wire.n_fds) return -EPROTO;
     if (!t) {
         if (c->n_targets >= PWN_MAX_TARGETS) return -ENOSPC;
         t = &c->targets[c->n_targets++];
@@ -1542,20 +888,20 @@ static int handle_set_activation(struct pwn_client *c, struct parse *p) {
     }
     void *ptr = NULL;
     size_t mapped = 0;
-    int res = map_mem(c, memid, offset, size, 1, -1, &ptr, &mapped);
+    int res = pww_map_mem(&c->wire, memid, offset, size, 1, -1, &ptr, &mapped);
     if (res < 0) return res;
     t->activation = ptr;
     t->size = mapped;
-    t->fd = c->fds[idx];
-    c->fds[idx] = -1;
+    t->fd = c->wire.fds[idx];
+    c->wire.fds[idx] = -1;
     t->active = 1;
     return 0;
 }
 
-static int handle_use_buffers(struct pwn_client *c, struct parse *p) {
+static int handle_use_buffers(struct pwn_client *c, struct pww_parse *p) {
     uint32_t direction, port_id, mix_id, flags, n;
-    if (parse_int(p, &direction) || parse_int(p, &port_id) || parse_int(p, &mix_id) ||
-        parse_int(p, &flags) || parse_int(p, &n)) return -EPROTO;
+    if (pww_parse_int(p, &direction) || pww_parse_int(p, &port_id) || pww_parse_int(p, &mix_id) ||
+        pww_parse_int(p, &flags) || pww_parse_int(p, &n)) return -EPROTO;
     (void)mix_id;
     if (direction != SPA_DIRECTION_OUTPUT || port_id >= 2) return -ENOTSUP;
     if (n > PWN_MAX_BUFFERS) return -ENOSPC;
@@ -1563,23 +909,23 @@ static int handle_use_buffers(struct pwn_client *c, struct parse *p) {
     port_clear(c, port_id);
     for (uint32_t i = 0; i < n; i++) {
         uint32_t mem_id, offset, size, n_metas, n_datas;
-        if (parse_int(p, &mem_id) || parse_int(p, &offset) || parse_int(p, &size) ||
-            parse_int(p, &n_metas)) return -EPROTO;
+        if (pww_parse_int(p, &mem_id) || pww_parse_int(p, &offset) || pww_parse_int(p, &size) ||
+            pww_parse_int(p, &n_metas)) return -EPROTO;
         if (n_metas > 8) return -ENOSPC;
         uint32_t meta_size[8];
         for (uint32_t j = 0; j < n_metas; j++) {
             uint32_t type;
-            if (parse_id(p, &type) || parse_int(p, &meta_size[j])) return -EPROTO;
+            if (pww_parse_id(p, &type) || pww_parse_int(p, &meta_size[j])) return -EPROTO;
         }
-        if (parse_int(p, &n_datas)) return -EPROTO;
+        if (pww_parse_int(p, &n_datas)) return -EPROTO;
         if (n_datas != 1) return -ENOTSUP;
         uint32_t type, data, data_flags, mapoffset, maxsize;
-        if (parse_id(p, &type) || parse_int(p, &data) || parse_int(p, &data_flags) ||
-            parse_int(p, &mapoffset) || parse_int(p, &maxsize)) return -EPROTO;
+        if (pww_parse_id(p, &type) || pww_parse_int(p, &data) || pww_parse_int(p, &data_flags) ||
+            pww_parse_int(p, &mapoffset) || pww_parse_int(p, &maxsize)) return -EPROTO;
         (void)data_flags;
         void *base = NULL;
         if (mem_id == SPA_ID_INVALID) return -EPROTO;
-        int res = map_mem(c, mem_id, offset, size, 0, (int)port_id, &base, NULL);
+        int res = pww_map_mem(&c->wire, mem_id, offset, size, 0, (int)port_id, &base, NULL);
         if (res < 0) return res;
         size_t meta_offset = 0;
         for (uint32_t j = 0; j < n_metas; j++)
@@ -1589,9 +935,9 @@ static int handle_use_buffers(struct pwn_client *c, struct parse *p) {
         b->n_datas = 1;
         b->datas[0].chunk = (struct pwn_chunk *)((uint8_t *)base + meta_offset);
         if (type == SPA_DATA_MEMID) {
-            int fd = mem_fd(c, data);
+            int fd = pww_mem_fd(&c->wire, data);
             if (fd < 0) return -ENODEV;
-            b->datas[0].frames = map_fd(c, fd, mapoffset, maxsize, 0, (int)port_id);
+            b->datas[0].frames = pww_map_fd(&c->wire, fd, mapoffset, maxsize, 0, (int)port_id);
             if (!b->datas[0].frames) return -ENOMEM;
         } else if (type == SPA_DATA_MEMPTR) {
             b->datas[0].frames = (float *)((uint8_t *)base + data);
@@ -1606,9 +952,9 @@ static int handle_use_buffers(struct pwn_client *c, struct parse *p) {
     return 0;
 }
 
-static int handle_command(struct pwn_client *c, struct parse *p) {
+static int handle_command(struct pwn_client *c, struct pww_parse *p) {
     uint32_t type, id;
-    if (parse_pod_object(p, &type, &id)) return -EPROTO;
+    if (pww_parse_pod_object(p, &type, &id)) return -EPROTO;
     if (type != 0x30002) return 0;
     switch (id) {
     case SPA_NODE_COMMAND_START:
@@ -1636,11 +982,11 @@ static int handle_command(struct pwn_client *c, struct parse *p) {
     return 0;
 }
 
-static int node_param_changed(struct pwn_client *c, struct parse *p) {
+static int node_param_changed(struct pwn_client *c, struct pww_parse *p) {
     uint32_t id, flags, type, body;
     const uint8_t *pod;
-    if (parse_id(p, &id) || parse_int(p, &flags)) return -EPROTO;
-    pod = parse_pod(p, &type, &body);
+    if (pww_parse_id(p, &id) || pww_parse_int(p, &flags)) return -EPROTO;
+    pod = pww_parse_pod(p, &type, &body);
     if (!pod || type != SPA_TYPE_OBJECT) return 0;
     if (id == SPA_PARAM_PROPS) {
         apply_props(c, pod, body);
@@ -1655,8 +1001,8 @@ static int node_param_changed(struct pwn_client *c, struct parse *p) {
     if (res < 0) return res;
     if (id == SPA_PARAM_PORTCONFIG) {
         uint8_t storage[256];
-        struct build props;
-        struct frame object;
+        struct pww_build props;
+        struct pww_frame object;
         (void)props;
         (void)object;
         size_t len = build_props(c, storage);
@@ -1670,12 +1016,12 @@ static int node_param_changed(struct pwn_client *c, struct parse *p) {
     return 0;
 }
 
-static int port_param_changed(struct pwn_client *c, struct parse *p) {
+static int port_param_changed(struct pwn_client *c, struct pww_parse *p) {
     uint32_t direction, port_id, id, flags, type, body;
     const uint8_t *pod;
-    if (parse_int(p, &direction) || parse_int(p, &port_id) || parse_id(p, &id) ||
-        parse_int(p, &flags)) return -EPROTO;
-    pod = parse_pod(p, &type, &body);
+    if (pww_parse_int(p, &direction) || pww_parse_int(p, &port_id) || pww_parse_id(p, &id) ||
+        pww_parse_int(p, &flags)) return -EPROTO;
+    pod = pww_parse_pod(p, &type, &body);
     if (!pod || type != SPA_TYPE_OBJECT) return 0;
     if (direction != SPA_DIRECTION_OUTPUT || port_id >= 2) return 0;
     struct pwn_port *port = &c->ports[port_id];
@@ -1683,43 +1029,43 @@ static int port_param_changed(struct pwn_client *c, struct parse *p) {
     return send_port_update(c, port_id);
 }
 
-static int handle_core_event(struct pwn_client *c, uint32_t opcode, struct parse *p) {
+static int handle_core_event(struct pwn_client *c, uint32_t opcode, struct pww_parse *p) {
     switch (opcode) {
     case PW_CORE_EVENT_PING: {
         uint32_t id, seq;
-        if (parse_int(p, &id) || parse_int(p, &seq)) return -EPROTO;
+        if (pww_parse_int(p, &id) || pww_parse_int(p, &seq)) return -EPROTO;
         return send_pong(c, id, seq);
     }
     case PW_CORE_EVENT_ERROR: {
         uint32_t id, seq, res;
         const char *message;
         uint32_t len;
-        if (parse_int(p, &id) || parse_int(p, &seq) || parse_int(p, &res) ||
-            parse_string(p, &message, &len)) return -EPROTO;
+        if (pww_parse_int(p, &id) || pww_parse_int(p, &seq) || pww_parse_int(p, &res) ||
+            pww_parse_string(p, &message, &len)) return -EPROTO;
         if (id == 0) return fault(c, (int)(int32_t)res);
         return fault(c, -EIO);
     }
     case PW_CORE_EVENT_ADD_MEM: {
         uint32_t id, type, flags;
         int64_t idx;
-        if (parse_int(p, &id) || parse_id(p, &type) || parse_fd(p, &idx) ||
-            parse_int(p, &flags)) return -EPROTO;
-        if (idx < 0 || idx >= (int64_t)c->n_fds) return -EPROTO;
-        int fd = c->fds[idx];
-        c->fds[idx] = -1;
-        return mem_add(c, id, fd);
+        if (pww_parse_int(p, &id) || pww_parse_id(p, &type) || pww_parse_fd(p, &idx) ||
+            pww_parse_int(p, &flags)) return -EPROTO;
+        if (idx < 0 || idx >= (int64_t)c->wire.n_fds) return -EPROTO;
+        int fd = c->wire.fds[idx];
+        c->wire.fds[idx] = -1;
+        return pww_mem_add(&c->wire, id, fd);
     }
     case PW_CORE_EVENT_REMOVE_MEM: {
         uint32_t id;
-        if (parse_int(p, &id)) return -EPROTO;
-        mem_remove(c, id);
+        if (pww_parse_int(p, &id)) return -EPROTO;
+        pww_mem_remove(&c->wire, id);
         return 0;
     }
     case PW_CORE_EVENT_BOUND_ID:
     case PW_CORE_EVENT_BOUND_PROPS: {
         uint32_t id, global_id;
-        if (parse_int(p, &id) || parse_int(p, &global_id)) return -EPROTO;
-        if (opcode == PW_CORE_EVENT_BOUND_PROPS && parse_nested_dict(p)) return -EPROTO;
+        if (pww_parse_int(p, &id) || pww_parse_int(p, &global_id)) return -EPROTO;
+        if (opcode == PW_CORE_EVENT_BOUND_PROPS && pww_parse_nested_dict(p)) return -EPROTO;
         if (id == c->node_proxy) {
             c->node_global = global_id;
             c->bound = 1;
@@ -1735,7 +1081,7 @@ static int handle_core_event(struct pwn_client *c, uint32_t opcode, struct parse
     }
 }
 
-static int handle_node_event(struct pwn_client *c, uint32_t opcode, struct parse *p) {
+static int handle_node_event(struct pwn_client *c, uint32_t opcode, struct pww_parse *p) {
     switch (opcode) {
     case PW_CLIENT_NODE_EVENT_TRANSPORT:
         return handle_transport(c, p);
@@ -1747,14 +1093,14 @@ static int handle_node_event(struct pwn_client *c, uint32_t opcode, struct parse
         return handle_use_buffers(c, p);
     case PW_CLIENT_NODE_EVENT_PORT_SET_IO: {
         uint32_t direction, port_id, mix_id, id, memid, offset, size;
-        if (parse_int(p, &direction) || parse_int(p, &port_id) || parse_int(p, &mix_id) ||
-            parse_id(p, &id) || parse_int(p, &memid) || parse_int(p, &offset) ||
-            parse_int(p, &size)) return -EPROTO;
+        if (pww_parse_int(p, &direction) || pww_parse_int(p, &port_id) || pww_parse_int(p, &mix_id) ||
+            pww_parse_id(p, &id) || pww_parse_int(p, &memid) || pww_parse_int(p, &offset) ||
+            pww_parse_int(p, &size)) return -EPROTO;
         (void)mix_id;
         if (direction != SPA_DIRECTION_OUTPUT || port_id >= 2) return 0;
         void *ptr = NULL;
         if (memid != SPA_ID_INVALID) {
-            int res = map_mem(c, memid, offset, size, 1, -1, &ptr, NULL);
+            int res = pww_map_mem(&c->wire, memid, offset, size, 1, -1, &ptr, NULL);
             if (res < 0) return res;
         }
         if (id == SPA_IO_BUFFERS) c->ports[port_id].io = ptr;
@@ -1772,98 +1118,20 @@ static int handle_node_event(struct pwn_client *c, uint32_t opcode, struct parse
     }
 }
 
-static int parse_messages(struct pwn_client *c) {
-    while (c->in_len >= PWN_HEADER) {
-        uint32_t id, op, size, nfds;
-        memcpy(&id, c->in, 4);
-        memcpy(&op, c->in + 4, 4);
-        memcpy(&nfds, c->in + 12, 4);
-        size = op & 0xffffffu;
-        if (size > PWN_MAX_MESSAGE) return -EPROTO;
-        if (c->in_len < PWN_HEADER + size) return 0;
-        if (nfds > c->n_fds) return 0;
-        uint32_t opcode = op >> 24;
-        struct parse outer;
-        parse_init(&outer, c->in + PWN_HEADER, size);
-        uint32_t outer_type = 0, outer_body = 0;
-        const uint8_t *outer_pod = parse_pod(&outer, &outer_type, &outer_body);
-        if (!outer_pod || outer_type != SPA_TYPE_STRUCT) return -EPROTO;
-        struct parse p;
-        parse_init(&p, outer_pod + 8, outer_body);
-        int res = 0;
-        if (id == 0) res = handle_core_event(c, opcode, &p);
-        else if (id == c->node_proxy) res = handle_node_event(c, opcode, &p);
-        for (uint32_t i = 0; i < nfds; i++) {
-            if (c->fds[i] >= 0) close(c->fds[i]);
-        }
-        memmove(c->fds, c->fds + nfds, (c->n_fds - nfds) * sizeof(int));
-        c->n_fds -= nfds;
-        memmove(c->in, c->in + PWN_HEADER + size, c->in_len - PWN_HEADER - size);
-        c->in_len -= PWN_HEADER + size;
-        if (res < 0) return res;
-    }
-    return 0;
-}
-
-static int recv_messages(struct pwn_client *c) {
-    for (;;) {
-        uint8_t buf[65536];
-        char control[CMSG_SPACE(PWN_MAX_FDS * sizeof(int))];
-        struct iovec iov = { buf, sizeof(buf) };
-        struct msghdr msg;
-        memset(&msg, 0, sizeof(msg));
-        msg.msg_iov = &iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control;
-        msg.msg_controllen = sizeof(control);
-        ssize_t n = recvmsg(c->fd, &msg, MSG_DONTWAIT);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
-            return -errno;
-        }
-        if (n == 0) return -EPIPE;
-        for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
-            if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
-            size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-            int *fds = (int *)CMSG_DATA(cm);
-            for (size_t i = 0; i < count; i++) {
-                if (c->n_fds >= PWN_MAX_FDS) {
-                    close(fds[i]);
-                    continue;
-                }
-                c->fds[c->n_fds++] = fds[i];
-            }
-        }
-        if (msg.msg_flags & MSG_CTRUNC) return -EMSGSIZE;
-        if (c->in_len + (size_t)n > c->in_cap) {
-            size_t cap = c->in_cap ? c->in_cap : 65536;
-            while (cap < c->in_len + (size_t)n) cap *= 2;
-            uint8_t *in = realloc(c->in, cap);
-            if (!in) return -ENOMEM;
-            c->in = in;
-            c->in_cap = cap;
-        }
-        memcpy(c->in + c->in_len, buf, (size_t)n);
-        c->in_len += (size_t)n;
-        int res = parse_messages(c);
-        if (res < 0) return res;
-    }
-}
 
 static void client_reset(struct pwn_client *c) {
-    if (c->fd >= 0) close(c->fd);
-    c->fd = -1;
+    if (c->wire.fd >= 0) close(c->wire.fd);
+    c->wire.fd = -1;
     if (c->process_fd >= 0) close(c->process_fd);
     if (c->complete_fd >= 0) close(c->complete_fd);
     c->process_fd = -1;
     c->complete_fd = -1;
-    for (size_t i = 0; i < c->n_fds; i++)
-        if (c->fds[i] >= 0) close(c->fds[i]);
-    c->n_fds = 0;
-    unmap_all(c);
-    mem_clear(c);
-    c->in_len = 0;
+    for (size_t i = 0; i < c->wire.n_fds; i++)
+        if (c->wire.fds[i] >= 0) close(c->wire.fds[i]);
+    c->wire.n_fds = 0;
+    pww_unmap_all(&c->wire);
+    pww_mem_clear(&c->wire);
+    c->wire.in_len = 0;
     c->activation = NULL;
     c->activation_size = 0;
     c->position = NULL;
@@ -1891,7 +1159,7 @@ static void client_reset(struct pwn_client *c) {
     c->faulted = 0;
     c->node_global = SPA_ID_INVALID;
     c->n_node_params = 0;
-    c->seq = 0;
+    c->wire.seq = 0;
 }
 
 static void prepare_params(struct pwn_client *c) {
@@ -1920,7 +1188,7 @@ static void prepare_params(struct pwn_client *c) {
 }
 
 static int client_setup(struct pwn_client *c) {
-    int res = pwn_connect(c);
+    int res = pww_connect(&c->wire);
     if (res < 0) return res;
     c->node_proxy = 2;
     c->node_global = SPA_ID_INVALID;
@@ -1933,6 +1201,13 @@ static int client_setup(struct pwn_client *c) {
     if ((res = send_port_update(c, 1)) < 0) return res;
     if ((res = send_set_active(c)) < 0) return res;
     return send_sync(c);
+}
+
+static int dispatch_client(void *data, uint32_t id, uint32_t opcode, struct pww_parse *p) {
+    struct pwn_client *c = data;
+    if (id == 0) return handle_core_event(c, opcode, p);
+    if (id == c->node_proxy) return handle_node_event(c, opcode, p);
+    return 0;
 }
 
 static void *client_thread(void *arg) {
@@ -1956,7 +1231,7 @@ static void *client_thread(void *arg) {
             int wake_index = n;
             p[n++] = (struct pollfd){ .fd = c->wake, .events = POLLIN };
             int fd_index = n;
-            p[n++] = (struct pollfd){ .fd = c->fd, .events = POLLIN };
+            p[n++] = (struct pollfd){ .fd = c->wire.fd, .events = POLLIN };
             int process_index = -1;
             if (c->process_fd >= 0) {
                 process_index = n;
@@ -1970,7 +1245,7 @@ static void *client_thread(void *arg) {
             }
             if (p[wake_index].revents & POLLIN) eventfd_read1(c->wake);
             if (p[fd_index].revents & (POLLIN | POLLHUP | POLLERR)) {
-                res = recv_messages(c);
+                res = pww_recv(&c->wire, dispatch_client, c);
                 if (res < 0) break;
             }
             if (process_index >= 0 && (p[process_index].revents & POLLIN)) {
@@ -1999,7 +1274,7 @@ struct pwn_client *pwn_start(const char *app_name, const char *node_name,
     c->node_name = node_name;
     c->rate = rate;
     c->channels = channels;
-    c->fd = -1;
+    c->wire.fd = -1;
     c->process_fd = -1;
     c->complete_fd = -1;
     c->volume = 1.0f;
@@ -2038,7 +1313,7 @@ void pwn_stop(struct pwn_client *c) {
     pthread_join(c->thread, NULL);
     client_reset(c);
     close(c->wake);
-    free(c->in);
+    free(c->wire.in);
     free(c->src[0]);
     free(c->src[1]);
     free(c);
