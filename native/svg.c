@@ -3688,6 +3688,8 @@ struct svg_conv {
     const char *context_fill;
     const char *context_stroke;
     int in_context;
+    float use_w, use_h;
+    int use_w_set, use_h_set;
 };
 
 static struct svg_node *svg_node_new(int type) {
@@ -6384,6 +6386,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
     translate.tx = x; translate.ty = y;
     int linked_symbol = !strcmp(child_tag, "symbol");
+    int linked_svg = !strcmp(child_tag, "svg");
     struct svg_conv nested = *c;
     struct svg_matrix symbol_ts = translate;
     struct svg_matrix content_ts = svg_matrix_concat(orig, translate);
@@ -6479,6 +6482,15 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : translate;
     inner->abs_transform = svg_matrix_concat(outer->abs_transform, inner->transform);
     struct svg_conv inner_conv = linked_symbol ? nested : *c;
+    inner_conv.use_w_set = inner_conv.use_h_set = 0;
+    if (linked_svg) {
+        inner_conv.use_w_set = svg_style_get(c->doc, st, "width") != NULL;
+        if (inner_conv.use_w_set)
+            svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, &inner_conv.use_w);
+        inner_conv.use_h_set = svg_style_get(c->doc, st, "height") != NULL;
+        if (inner_conv.use_h_set)
+            svg_convert_length(c, st, "height", 1, 100, SVG_UNIT_PERCENT, &inner_conv.use_h);
+    }
     inner_conv.context_style = st;
     inner_conv.context_fill = svg_find_paint_attr(c->doc, st, "fill");
     if (!inner_conv.context_fill) inner_conv.context_fill = "black";
@@ -7192,6 +7204,8 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
         svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, &w);
         svg_convert_length(c, st, "height", 1, 100, SVG_UNIT_PERCENT, &h);
+        if (c->use_w_set) w = c->use_w;
+        if (c->use_h_set) h = c->use_h;
         struct svg_matrix new_ts = svg_matrix_identity();
         new_ts.tx = x; new_ts.ty = y;
         struct svg_conv nested = *c;
