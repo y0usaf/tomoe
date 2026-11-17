@@ -9446,6 +9446,12 @@ static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out
     } else {
         svg_pattern_sample(shader, nx, ny, out);
     }
+    if (shader->pattern_quality == 2) {
+        for (int k = 0; k < 4; k++) {
+            if (!(out[k] > 0.0f)) out[k] = 0.0f;
+            else if (out[k] > 1.0f) out[k] = 1.0f;
+        }
+    }
     float o = shader->opacity;
     out[0] *= o;
     out[1] *= o;
