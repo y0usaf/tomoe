@@ -138,7 +138,10 @@
             pkgs.wayland-scanner
           ];
           buildInputs = [
-            (pkgs.libinput.override { luaSupport = false; })
+            (pkgs.libinput.override {
+              luaSupport = false;
+              wacomSupport = false;
+            })
             libs.libglvnd
             libs.libgbm
             pkgs.wayland-protocols
