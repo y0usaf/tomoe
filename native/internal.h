@@ -1229,7 +1229,7 @@ struct tomoe {
     uint64_t outputs_revision;
     uint64_t activity_serial;
     double input_at, shader_shift, shader_hold_at;
-    bool shader_holding;
+    bool shader_holding, shader_lifting;
     struct layer_plan *layer_preview;
     char *layer_preview_text;
     struct presentation *presentation;

@@ -941,9 +941,15 @@ static void shader_hold_advance(struct tomoe *s, double now) {
     if (idle && !s->shader_holding) {
         s->shader_holding = true;
         s->shader_hold_at = now;
+        s->shader_lifting = false;
     } else if (!idle && s->shader_holding) {
-        s->shader_holding = false;
-        s->shader_shift += now - s->shader_hold_at;
+        if (!s->shader_lifting) {
+            s->shader_lifting = true;
+        } else {
+            s->shader_holding = false;
+            s->shader_lifting = false;
+            s->shader_shift += now - s->shader_hold_at;
+        }
     }
 }
 
@@ -1719,6 +1725,7 @@ bool ui_animate(struct tomoe *s, double now) {
         active |= surface->move.active || attached_x != 0 || attached_y != 0;
         if (surface->fps <= 0 && background_moving(s, surface, now)) active = true;
     }
+    if (s->shader_lifting) active = true;
     return active;
 }
 
