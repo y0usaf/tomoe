@@ -1779,10 +1779,19 @@ static struct xml_node *xml_parse_element(struct xml_parser *p, struct xml_node 
             p->pos += 9;
             size_t cstart = p->pos;
             if (!xml_skip_until(p, "]]>")) { xml_node_free(node); return NULL; }
-            if (!node->text) {
-                size_t len = p->pos - cstart - 3;
-                node->text = svg_strndup(p->data + cstart, len);
-                if (!node->text) { xml_node_free(node); return NULL; }
+            size_t len = p->pos - cstart - 3;
+            char *chunk = svg_strndup(p->data + cstart, len);
+            if (!chunk) { xml_node_free(node); return NULL; }
+            if (!node->text) node->text = chunk;
+            else {
+                size_t old_length = strlen(node->text);
+                char *joined = svg_alloc(old_length + len + 1);
+                if (!joined) { free(chunk); xml_node_free(node); return NULL; }
+                memcpy(joined, node->text, old_length);
+                memcpy(joined + old_length, chunk, len + 1);
+                free(node->text);
+                free(chunk);
+                node->text = joined;
             }
             continue;
         }
@@ -3019,8 +3028,29 @@ static int svg_css_add_rule(struct css_sheet *sheet, const char *selector,
     return r->selector != NULL;
 }
 
+static char *svg_css_strip_comments(const char *text, size_t length, size_t *out_length) {
+    char *out = svg_alloc(length + 1);
+    if (!out) return NULL;
+    size_t n = 0, i = 0;
+    while (i < length) {
+        if (text[i] == '/' && i + 1 < length && text[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < length && !(text[i] == '*' && text[i + 1] == '/')) i++;
+            i += 2;
+            continue;
+        }
+        out[n++] = text[i++];
+    }
+    out[n] = 0;
+    *out_length = n;
+    return out;
+}
+
 static void svg_css_parse_declarations(const char *text, size_t length,
         struct css_decl **out, int *out_count) {
+    char *stripped = svg_css_strip_comments(text, length, &length);
+    if (!stripped) { *out = NULL; *out_count = 0; return; }
+    text = stripped;
     struct css_decl *decls = NULL;
     int count = 0, capacity = 0;
     size_t i = 0;
@@ -3071,6 +3101,7 @@ static void svg_css_parse_declarations(const char *text, size_t length,
     }
     *out = decls;
     *out_count = count;
+    free(stripped);
 }
 
 static void svg_css_parse(struct css_sheet *sheet, const char *text) {
