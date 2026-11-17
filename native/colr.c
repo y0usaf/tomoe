@@ -290,6 +290,152 @@ static unsigned mul8(unsigned a, unsigned b)
     return (t + (t >> 8)) >> 8;
 }
 
+
+struct rect_edge { int x, y0, y1, dir; };
+
+static void rect_edge_add(struct rect_edge *edges, int *count, struct dpoint from, struct dpoint to)
+{
+    if (from.x != to.x || from.y == to.y) return;
+    struct rect_edge *edge = &edges[*count];
+    edge->x = from.x;
+    if (from.y < to.y) {
+        edge->y0 = from.y;
+        edge->y1 = to.y;
+        edge->dir = 1;
+    } else {
+        edge->y0 = to.y;
+        edge->y1 = from.y;
+        edge->dir = -1;
+    }
+    (*count)++;
+}
+
+static int rect_collect(const struct dpath *path, struct rect_edge *edges)
+{
+    int count = 0;
+    struct dpoint start = { 0, 0 }, current = { 0, 0 };
+    bool open = false;
+    for (int i = 0; i < path->count; i++) {
+        const struct dpath_op_entry *op = &path->ops[i];
+        switch (op->op) {
+        case DP_MOVE:
+            if (open) rect_edge_add(edges, &count, current, start);
+            start = current = op->p[0];
+            open = true;
+            break;
+        case DP_LINE:
+            if (!open) {
+                start = current = op->p[0];
+                open = true;
+                break;
+            }
+            rect_edge_add(edges, &count, current, op->p[0]);
+            current = op->p[0];
+            break;
+        case DP_CLOSE:
+            if (open) {
+                rect_edge_add(edges, &count, current, start);
+                current = start;
+            }
+            break;
+        default:
+            return -1;
+        }
+    }
+    if (open) rect_edge_add(edges, &count, current, start);
+    return count;
+}
+
+static int int_compare(const void *a, const void *b)
+{
+    int x = *(const int *)a, y = *(const int *)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static bool rect_mask(const struct dpath *path, struct drect area, unsigned char *mask,
+    int stride, int mask_x, int mask_y)
+{
+    int capacity = path->count + 1;
+    struct rect_edge *edges = malloc(sizeof(*edges) * (size_t)capacity);
+    int *ys = malloc(sizeof(*ys) * (size_t)(2 * capacity));
+    int *spanning = malloc(sizeof(*spanning) * (size_t)capacity);
+    long long *cover = calloc((size_t)(area.x1 - area.x0), sizeof(*cover));
+    if (!edges || !ys || !spanning || !cover) {
+        free(edges);
+        free(ys);
+        free(spanning);
+        free(cover);
+        return false;
+    }
+    int count = rect_collect(path, edges);
+    if (count < 0) {
+        free(edges);
+        free(ys);
+        free(spanning);
+        free(cover);
+        return false;
+    }
+    int ny = 0;
+    for (int i = 0; i < count; i++) {
+        ys[ny++] = edges[i].y0;
+        ys[ny++] = edges[i].y1;
+    }
+    qsort(ys, (size_t)ny, sizeof(*ys), int_compare);
+    int width = area.x1 - area.x0;
+    for (int y = area.y0; y < area.y1; y++) {
+        int row_top = y << 8, row_bottom = (y + 1) << 8;
+        memset(cover, 0, (size_t)width * sizeof(*cover));
+        for (int b = 0; b + 1 < ny; b++) {
+            int ya = ys[b], yb = ys[b + 1];
+            if (yb <= row_top) continue;
+            if (ya >= row_bottom) break;
+            if (ya == yb) continue;
+            int top = ya > row_top ? ya : row_top;
+            int bottom = yb < row_bottom ? yb : row_bottom;
+            if (bottom <= top) continue;
+            int ns = 0;
+            for (int i = 0; i < count; i++) {
+                if (edges[i].y0 > ya || edges[i].y1 < yb) continue;
+                int j = ns++;
+                while (j > 0 && edges[spanning[j - 1]].x > edges[i].x) {
+                    spanning[j] = spanning[j - 1];
+                    j--;
+                }
+                spanning[j] = i;
+            }
+            int winding = 0, xstart = 0;
+            for (int i = 0; i < ns; ) {
+                int x = edges[spanning[i]].x;
+                if (winding == 0) xstart = x;
+                while (i < ns && edges[spanning[i]].x == x) {
+                    winding += edges[spanning[i]].dir;
+                    i++;
+                }
+                if (winding != 0) continue;
+                int xa = xstart > (area.x0 << 8) ? xstart : area.x0 << 8;
+                int xb = x < (area.x1 << 8) ? x : area.x1 << 8;
+                for (int cx = xa >> 8; cx << 8 < xb; cx++) {
+                    int left = cx << 8 > xa ? cx << 8 : xa;
+                    int right = (cx + 1) << 8 < xb ? (cx + 1) << 8 : xb;
+                    cover[cx - area.x0] += (long long)(bottom - top) * (long long)(right - left);
+                }
+            }
+        }
+        unsigned char *row = mask + (size_t)(y - mask_y) * (size_t)stride +
+            (size_t)(area.x0 - mask_x);
+        for (int x = 0; x < width; x++) {
+            int c = (int)(cover[x] >> 8);
+            int alpha = c - (c >> 8);
+            row[x] = (unsigned char)(alpha > 255 ? 255 : alpha);
+        }
+    }
+    free(edges);
+    free(ys);
+    free(spanning);
+    free(cover);
+    return true;
+}
+
 static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drect box)
 {
     struct drect extents = dp_path_extents(path);
@@ -312,18 +458,22 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
         ctx->clip_stride = 0;
         return false;
     }
-    struct dp_spans spans;
-    memset(&spans, 0, sizeof(spans));
-    if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0, PX_ANTIALIAS_GRAY,
-            &spans)) {
-        free(pixels);
+    bool filled = path->fill_is_rectilinear &&
+        rect_mask(path, area, pixels, w, area.x0, area.y0);
+    if (!filled) {
+        struct dp_spans spans;
+        memset(&spans, 0, sizeof(spans));
+        if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0,
+                PX_ANTIALIAS_GRAY, &spans)) {
+            free(pixels);
+            dp_spans_fini(&spans);
+            ctx->clip = NULL;
+            ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+            ctx->clip_stride = 0;
+            return false;
+        }
         dp_spans_fini(&spans);
-        ctx->clip = NULL;
-        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
-        ctx->clip_stride = 0;
-        return false;
     }
-    dp_spans_fini(&spans);
     if (ctx->clip) {
         const unsigned char *old = ctx->clip +
             (size_t)(area.y0 - ctx->clip_box.y0) * (size_t)ctx->clip_stride +
