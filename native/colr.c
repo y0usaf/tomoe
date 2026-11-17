@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 cairo-colr-glyph-render.c, see NOTICE */
 #include "colr.h"
 #include "draw.h"
+#include "mesh.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -10,7 +11,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 struct colr_ctx {
     FT_Face face;
@@ -25,6 +25,8 @@ struct colr_ctx {
     unsigned char *clip;
     struct drect clip_box;
     int clip_stride;
+    struct drect clip_extent;
+    bool clip_extent_unbounded;
     struct drect box;
     struct drect ink;
     bool ink_unbounded;
@@ -282,44 +284,6 @@ static struct drect image_box(const struct colr_ctx *ctx)
     return box;
 }
 
-struct colr_coverage {
-    unsigned char *pixels;
-    struct dp_spans spans;
-    struct drect box;
-    int width, height;
-    bool valid;
-};
-
-static bool coverage_build(struct colr_ctx *ctx, const struct dpath *path, struct drect box,
-    struct colr_coverage *coverage)
-{
-    memset(coverage, 0, sizeof(*coverage));
-    coverage->box = intersected(box, image_box(ctx));
-    if (coverage->box.x0 >= coverage->box.x1 || coverage->box.y0 >= coverage->box.y1)
-        return false;
-    int w = coverage->box.x1 - coverage->box.x0;
-    int h = coverage->box.y1 - coverage->box.y0;
-    coverage->pixels = calloc((size_t)w, (size_t)h);
-    if (!coverage->pixels) return false;
-    coverage->width = w;
-    coverage->height = h;
-    if (!dp_fill_mask_spans(path, coverage->box, coverage->pixels, w, coverage->box.x0,
-            coverage->box.y0, PX_ANTIALIAS_GRAY, &coverage->spans)) {
-        free(coverage->pixels);
-        coverage->pixels = NULL;
-        return false;
-    }
-    coverage->valid = true;
-    return true;
-}
-
-static void coverage_fini(struct colr_coverage *coverage)
-{
-    dp_spans_fini(&coverage->spans);
-    free(coverage->pixels);
-    coverage->pixels = NULL;
-}
-
 static unsigned mul8(unsigned a, unsigned b)
 {
     unsigned t = a * b + 0x80u;
@@ -328,6 +292,11 @@ static unsigned mul8(unsigned a, unsigned b)
 
 static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drect box)
 {
+    struct drect extents = dp_path_extents(path);
+    if (!ctx->clip_extent_unbounded)
+        extents = intersected(extents, ctx->clip_extent);
+    ctx->clip_extent = extents;
+    ctx->clip_extent_unbounded = false;
     struct drect area = intersected(box, image_box(ctx));
     if (area.x0 >= area.x1 || area.y0 >= area.y1) {
         ctx->clip = NULL;
@@ -427,14 +396,6 @@ static struct dp_gradient_stop16 colr_stop16(double offset, double red, double g
     return stop;
 }
 
-static uint32_t colr_stop_rgba(double red, double green, double blue, double alpha)
-{
-    uint32_t r = (uint32_t)(red * 255.0 + 0.5);
-    uint32_t g = (uint32_t)(green * 255.0 + 0.5);
-    uint32_t b = (uint32_t)(blue * 255.0 + 0.5);
-    uint32_t a = (uint32_t)(alpha * 255.0 + 0.5);
-    return r << 24 | g << 16 | b << 8 | a;
-}
 
 static void paint_gradient(struct colr_ctx *ctx, struct dp_gradient16 *gradient)
 {
@@ -690,92 +651,291 @@ static void paint_radial_gradient(struct colr_ctx *ctx, FT_PaintRadialGradient *
     paint_gradient(ctx, &gradient);
 }
 
-struct colr_patch {
+struct sweep_builder {
+    struct dp_mesh_patch *patches;
+    int count, capacity;
     double center_x, center_y;
-    double p0x, p0y, c0x, c0y, c1x, c1y, p1x, p1y;
-    struct colr_color color0, color1;
+    bool failed;
 };
 
-static void patch_triangle(struct colr_ctx *ctx,
-    double ax, double ay, uint32_t ca, double bx, double by, uint32_t cb, double cx, double cy,
-    uint32_t cc)
+struct colr_vec {
+    double x, y;
+};
+
+static double vec_dot(struct colr_vec p, struct colr_vec q)
 {
-    struct dpath path;
-    dpath_init(&path);
-    dp_move_to(&path, ax, ay);
-    dp_line_to(&path, bx, by);
-    dp_line_to(&path, cx, cy);
-    dp_close_path(&path);
-    struct colr_coverage coverage;
-    struct drect box = intersected(dp_path_extents(&path), ctx->clip_box);
-    if (!ctx->clip) {
-        dpath_fini(&path);
+    return p.x * q.x + p.y * q.y;
+}
+
+static struct colr_vec vec_sum(struct colr_vec p, struct colr_vec q)
+{
+    return (struct colr_vec){ p.x + q.x, p.y + q.y };
+}
+
+static struct colr_vec vec_difference(struct colr_vec p, struct colr_vec q)
+{
+    return (struct colr_vec){ p.x - q.x, p.y - q.y };
+}
+
+static struct colr_vec vec_scale(struct colr_vec p, double f)
+{
+    return (struct colr_vec){ p.x * f, p.y * f };
+}
+
+static struct colr_vec vec_normalize(struct colr_vec p)
+{
+    double len = sqrt(vec_dot(p, p));
+    return (struct colr_vec){ p.x / len, p.y / len };
+}
+
+static void mesh_node(const struct colr_ctx *ctx, double px, double py, double node[2])
+{
+    double x = ctx->matrix.xx * px + ctx->matrix.xy * py - ctx->ox;
+    double y = ctx->matrix.yx * px + ctx->matrix.yy * py - ctx->oy;
+    node[0] = x - ctx->clip_box.x0;
+    node[1] = y - ctx->clip_box.y0;
+}
+
+static void sweep_push(struct colr_ctx *ctx, struct sweep_builder *b, double cx, double cy,
+    double p0x, double p0y, double c0x, double c0y, double c1x, double c1y, double p1x,
+    double p1y, const struct colr_color *color0, const struct colr_color *color1)
+{
+    if (b->failed) return;
+    if (b->count == b->capacity) {
+        int next = b->capacity ? b->capacity * 2 : 32;
+        void *grown = realloc(b->patches, (size_t)next * sizeof(*b->patches));
+        if (!grown) {
+            b->failed = true;
+            return;
+        }
+        b->patches = grown;
+        b->capacity = next;
+    }
+    struct dp_mesh_patch *patch = &b->patches[b->count++];
+    memset(patch, 0, sizeof(*patch));
+    double grid[4][4][2] = {
+        { { cx, cy }, { 0, 0 }, { 0, 0 }, { p0x, p0y } },
+        { { cx, cy }, { 0, 0 }, { 0, 0 }, { c0x, c0y } },
+        { { cx, cy }, { 0, 0 }, { 0, 0 }, { c1x, c1y } },
+        { { cx, cy }, { 0, 0 }, { 0, 0 }, { p1x, p1y } },
+    };
+    grid[0][1][0] = (2 * cx + p0x) / 3;
+    grid[0][1][1] = (2 * cy + p0y) / 3;
+    grid[0][2][0] = (cx + 2 * p0x) / 3;
+    grid[0][2][1] = (cy + 2 * p0y) / 3;
+    grid[3][2][0] = (2 * p1x + cx) / 3;
+    grid[3][2][1] = (2 * p1y + cy) / 3;
+    grid[3][1][0] = (p1x + 2 * cx) / 3;
+    grid[3][1][1] = (p1y + 2 * cy) / 3;
+    static const int cp_i[4] = { 1, 1, 2, 2 };
+    static const int cp_j[4] = { 1, 2, 2, 1 };
+    for (int cp = 0; cp < 4; cp++) {
+        int ci = cp_i[cp], cj = cp_j[cp];
+        double *pp[3][3];
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                pp[i][j] = grid[(ci ^ i)][(cj ^ j)];
+        pp[0][0][0] = (-4 * pp[1][1][0] + 6 * (pp[1][0][0] + pp[0][1][0])
+            - 2 * (pp[1][2][0] + pp[2][1][0]) + 3 * (pp[2][0][0] + pp[0][2][0])
+            - pp[2][2][0]) / 9;
+        pp[0][0][1] = (-4 * pp[1][1][1] + 6 * (pp[1][0][1] + pp[0][1][1])
+            - 2 * (pp[1][2][1] + pp[2][1][1]) + 3 * (pp[2][0][1] + pp[0][2][1])
+            - pp[2][2][1]) / 9;
+    }
+    for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+            mesh_node(ctx, grid[i][j][0], grid[i][j][1], patch->points[i][j]);
+    const struct colr_color *corners[4] = { color0, color0, color1, color1 };
+    for (int i = 0; i < 4; i++) {
+        patch->colors[i][0] = corners[i]->red;
+        patch->colors[i][1] = corners[i]->green;
+        patch->colors[i][2] = corners[i]->blue;
+        patch->colors[i][3] = corners[i]->alpha;
+    }
+}
+
+#define COLR_MAX_ANGLE (M_PI / 8.0)
+
+static void sweep_add1(struct colr_ctx *ctx, struct sweep_builder *b, double radius, double a0,
+    const struct colr_color *c0, double a1, const struct colr_color *c1)
+{
+    int num_splits = (int)ceilf(fabs(a1 - a0) / COLR_MAX_ANGLE);
+    struct colr_vec p0 = { cosf(a0), sinf(a0) };
+    struct colr_color color0 = *c0;
+    struct colr_vec center = { b->center_x, b->center_y };
+    for (int a = 0; a < num_splits; a++) {
+        double k = (a + 1.0) / num_splits;
+        double angle1 = a0 + k * (a1 - a0);
+        struct colr_vec p1 = { cosf(angle1), sinf(angle1) };
+        struct colr_color color1;
+        interpolate_color(c0, c1, k, &color1);
+        struct colr_vec P0 = vec_sum(center, vec_scale(p0, radius));
+        struct colr_vec P1 = vec_sum(center, vec_scale(p1, radius));
+        struct colr_vec A = vec_normalize(vec_sum(p0, p1));
+        struct colr_vec U = { -A.y, A.x };
+        struct colr_vec C0 = vec_sum(A, vec_scale(U,
+            vec_dot(vec_difference(p0, A), p0) / vec_dot(U, p0)));
+        struct colr_vec C1 = vec_sum(A, vec_scale(U,
+            vec_dot(vec_difference(p1, A), p1) / vec_dot(U, p1)));
+        struct colr_vec ctrl0 = vec_sum(center, vec_scale(
+            vec_sum(C0, vec_scale(vec_difference(C0, p0), 0.33333)), radius));
+        struct colr_vec ctrl1 = vec_sum(center, vec_scale(
+            vec_sum(C1, vec_scale(vec_difference(C1, p1), 0.33333)), radius));
+        sweep_push(ctx, b, center.x, center.y, P0.x, P0.y, ctrl0.x, ctrl0.y, ctrl1.x,
+            ctrl1.y, P1.x, P1.y, &color0, &color1);
+        p0 = p1;
+        color0 = color1;
+    }
+}
+
+static void sweep_add(struct colr_ctx *ctx, struct sweep_builder *b, int extend, double radius,
+    double start_angle, double end_angle, struct colr_color_line *cl)
+{
+    if (start_angle == end_angle) {
+        if (extend == DP_EXTEND_PAD) {
+            if (start_angle > 0)
+                sweep_add1(ctx, b, radius, 0, &cl->stops[0].color, start_angle,
+                    &cl->stops[0].color);
+            if (end_angle < 2 * M_PI)
+                sweep_add1(ctx, b, radius, end_angle, &cl->stops[cl->count - 1].color,
+                    2 * M_PI, &cl->stops[cl->count - 1].color);
+        }
         return;
     }
-    if (coverage_build(ctx, &path, box, &coverage)) {
-        for (int y = coverage.box.y0; y < coverage.box.y1; y++) {
-            const unsigned char *row = coverage.pixels +
-                (size_t)(y - coverage.box.y0) * coverage.width;
-            uint32_t *dst = ctx->pixels + (size_t)y * (size_t)ctx->stride;
-            for (int x = coverage.box.x0; x < coverage.box.x1; x++) {
-                uint32_t m = row[x - coverage.box.x0];
-                if (!m) continue;
-                m = mul8(m, ctx->clip[(size_t)(y - ctx->clip_box.y0) *
-                    (size_t)ctx->clip_stride + (size_t)(x - ctx->clip_box.x0)]);
-                if (!m) continue;
-                double px = x + 0.5, py = y + 0.5;
-                double d0 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
-                double d1 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
-                double d2 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
-                double sum = fabs(d0) + fabs(d1) + fabs(d2);
-                uint32_t color;
-                if (sum == 0) {
-                    color = ca;
-                } else {
-                    uint32_t r = (uint32_t)((fabs(d0) * ((ca >> 16) & 0xff) +
-                        fabs(d1) * ((cb >> 16) & 0xff) + fabs(d2) * ((cc >> 16) & 0xff)) / sum);
-                    uint32_t g = (uint32_t)((fabs(d0) * ((ca >> 8) & 0xff) +
-                        fabs(d1) * ((cb >> 8) & 0xff) + fabs(d2) * ((cc >> 8) & 0xff)) / sum);
-                    uint32_t b = (uint32_t)((fabs(d0) * (ca & 0xff) +
-                        fabs(d1) * (cb & 0xff) + fabs(d2) * (cc & 0xff)) / sum);
-                    uint32_t a = (uint32_t)((fabs(d0) * ((ca >> 24) & 0xff) +
-                        fabs(d1) * ((cb >> 24) & 0xff) + fabs(d2) * ((cc >> 24) & 0xff)) / sum);
-                    color = a << 24 | r << 16 | g << 8 | b;
+    double angles[32];
+    for (int i = 0; i < cl->count; i++)
+        angles[i] = start_angle + cl->stops[i].offset * (end_angle - start_angle);
+    if (end_angle < start_angle) {
+        for (int i = 0; i < cl->count - 1 - i; i++) {
+            struct colr_stop stop = cl->stops[i];
+            double a = angles[i];
+            cl->stops[i] = cl->stops[cl->count - 1 - i];
+            cl->stops[cl->count - 1 - i] = stop;
+            angles[i] = angles[cl->count - 1 - i];
+            angles[cl->count - 1 - i] = a;
+        }
+    }
+    if (extend == DP_EXTEND_PAD) {
+        int pos;
+        struct colr_color color0 = cl->stops[0].color;
+        for (pos = 0; pos < cl->count; pos++) {
+            if (angles[pos] >= 0) {
+                if (pos > 0) {
+                    double k = (0 - angles[pos - 1]) / (angles[pos] - angles[pos - 1]);
+                    interpolate_color(&cl->stops[pos - 1].color, &cl->stops[pos].color, k,
+                        &color0);
                 }
-                dst[x] = dp_composite(dst[x], color, m, DP_COMP_OVER);
+                break;
             }
         }
-        coverage_fini(&coverage);
+        if (pos == cl->count) {
+            color0 = cl->stops[cl->count - 1].color;
+            sweep_add1(ctx, b, radius, 0, &color0, 2 * M_PI, &color0);
+            return;
+        }
+        sweep_add1(ctx, b, radius, 0, &color0, angles[pos], &cl->stops[pos].color);
+        for (pos++; pos < cl->count; pos++) {
+            if (angles[pos] <= 2 * M_PI) {
+                sweep_add1(ctx, b, radius, angles[pos - 1], &cl->stops[pos - 1].color,
+                    angles[pos], &cl->stops[pos].color);
+            } else {
+                struct colr_color color1;
+                double k = (2 * M_PI - angles[pos - 1]) / (angles[pos] - angles[pos - 1]);
+                interpolate_color(&cl->stops[pos - 1].color, &cl->stops[pos].color, k, &color1);
+                sweep_add1(ctx, b, radius, angles[pos - 1], &cl->stops[pos - 1].color,
+                    2 * M_PI, &color1);
+                break;
+            }
+        }
+        if (pos == cl->count) {
+            color0 = cl->stops[cl->count - 1].color;
+            sweep_add1(ctx, b, radius, angles[cl->count - 1], &color0, 2 * M_PI, &color0);
+            return;
+        }
+    } else {
+        double span = angles[cl->count - 1] - angles[0];
+        int k = 0;
+        if (angles[0] >= 0) {
+            double ss = angles[0];
+            while (ss > 0) {
+                if (span > 0) {
+                    ss -= span;
+                    k--;
+                } else {
+                    ss += span;
+                    k++;
+                }
+            }
+        } else {
+            double ee = angles[cl->count - 1];
+            while (ee < 0) {
+                if (span > 0) {
+                    ee += span;
+                    k++;
+                } else {
+                    ee -= span;
+                    k--;
+                }
+            }
+        }
+        for (int l = k;; l++) {
+            for (int i = 1; i < cl->count; i++) {
+                double a0, a1;
+                struct colr_color *c0, *c1;
+                if ((l % 2 != 0) && (extend == DP_EXTEND_REFLECT)) {
+                    a0 = angles[0] + angles[cl->count - 1] -
+                        angles[cl->count - 1 - (i - 1)] + l * span;
+                    a1 = angles[0] + angles[cl->count - 1] -
+                        angles[cl->count - 1 - i] + l * span;
+                    c0 = &cl->stops[cl->count - 1 - (i - 1)].color;
+                    c1 = &cl->stops[cl->count - 1 - i].color;
+                } else {
+                    a0 = angles[i - 1] + l * span;
+                    a1 = angles[i] + l * span;
+                    c0 = &cl->stops[i - 1].color;
+                    c1 = &cl->stops[i].color;
+                }
+                if (a1 < 0) continue;
+                if (a0 < 0) {
+                    struct colr_color color;
+                    double f = (0 - a0) / (a1 - a0);
+                    interpolate_color(c0, c1, f, &color);
+                    sweep_add1(ctx, b, radius, 0, &color, a1, c1);
+                } else if (a1 >= 2 * M_PI) {
+                    struct colr_color color;
+                    double f = (2 * M_PI - a0) / (a1 - a0);
+                    interpolate_color(c0, c1, f, &color);
+                    sweep_add1(ctx, b, radius, a0, c0, 2 * M_PI, &color);
+                    return;
+                } else {
+                    sweep_add1(ctx, b, radius, a0, c0, a1, c1);
+                }
+            }
+        }
     }
-    dpath_fini(&path);
 }
 
-static void patch_draw(struct colr_ctx *ctx, const struct colr_patch *patch)
+static void paint_mesh(struct colr_ctx *ctx, const struct dp_mesh_patch *patches, int count)
 {
-    uint32_t c0 = colr_stop_rgba(patch->color0.red, patch->color0.green, patch->color0.blue,
-        patch->color0.alpha);
-    uint32_t c1 = colr_stop_rgba(patch->color1.red, patch->color1.green, patch->color1.blue,
-        patch->color1.alpha);
-    int segments = 16;
-    double prev_x = patch->center_x, prev_y = patch->center_y;
-    for (int i = 1; i <= segments; i++) {
-        double t = (double)i / segments;
-        double x = (1 - t) * (1 - t) * (1 - t) * patch->center_x +
-            3 * (1 - t) * (1 - t) * t * patch->p0x +
-            3 * (1 - t) * t * t * patch->c1x + t * t * t * patch->p1x;
-        double y = (1 - t) * (1 - t) * (1 - t) * patch->center_y +
-            3 * (1 - t) * (1 - t) * t * patch->p0y +
-            3 * (1 - t) * t * t * patch->c1y + t * t * t * patch->p1y;
-        uint32_t mid = (i & 1) ? c0 : c1;
-        patch_triangle(ctx, patch->center_x, patch->center_y, c0, prev_x, prev_y, mid, x, y,
-            mid);
-        prev_x = x;
-        prev_y = y;
+    if (count <= 0 || !ctx->clip) return;
+    int w = ctx->clip_box.x1 - ctx->clip_box.x0;
+    int h = ctx->clip_box.y1 - ctx->clip_box.y0;
+    if (w <= 0 || h <= 0) return;
+    unsigned char *pixels = calloc((size_t)w * (size_t)h, 4);
+    if (!pixels) return;
+    dp_mesh_rasterize(patches, count, pixels, w, h, w * 4);
+    const uint32_t *src = (const uint32_t *)pixels;
+    for (int y = 0; y < h; y++) {
+        uint32_t *dst = ctx->pixels +
+            (size_t)(y + ctx->clip_box.y0) * (size_t)ctx->stride + (size_t)ctx->clip_box.x0;
+        const unsigned char *row = ctx->clip + (size_t)y * (size_t)ctx->clip_stride;
+        for (int x = 0; x < w; x++)
+            dst[x] = dp_composite(dst[x], src[(size_t)y * (size_t)w + (size_t)x], row[x],
+                DP_COMP_OVER);
     }
+    free(pixels);
+    ctx->is_clear = false;
 }
-
-static void sweep_patches(struct colr_ctx *ctx, struct colr_color_line *line, int extend,
-    double center_x, double center_y, double radius, double start, double end);
 
 static void paint_sweep_gradient(struct colr_ctx *ctx, FT_PaintSweepGradient *paint)
 {
@@ -784,171 +944,40 @@ static void paint_sweep_gradient(struct colr_ctx *ctx, FT_PaintSweepGradient *pa
     double cx = from_16_16(paint->center.x), cy = from_16_16(paint->center.y);
     double start = (from_16_16(paint->start_angle) + 1) * M_PI;
     double end = (from_16_16(paint->end_angle) + 1) * M_PI;
-    double x0 = -ctx->ox, y0 = -ctx->oy, x1 = ctx->width - ctx->ox, y1 = ctx->height - ctx->oy;
-    double dx = fmax(fabs(x0 - cx), fabs(x1 - cx));
-    double dy = fmax(fabs(y0 - cy), fabs(y1 - cy));
-    double radius = sqrt(dx * dx + dy * dy);
-    sweep_patches(ctx, &line, extend_value(paint->colorline.extend), cx, cy, radius, start, end);
-}
-
-#define COLR_MAX_ANGLE (M_PI / 8.0)
-
-static void sweep_segment(struct colr_ctx *ctx, double center_x, double center_y, double radius,
-    double a0, const struct colr_color *c0, double a1, const struct colr_color *c1)
-{
-    int splits = (int)ceil(fabs(a1 - a0) / COLR_MAX_ANGLE);
-    if (splits < 1) splits = 1;
-    double p0x = cos(a0), p0y = sin(a0);
-    struct colr_color color0 = *c0;
-    for (int i = 0; i < splits; i++) {
-        double k = (double)(i + 1) / splits;
-        double angle = a0 + k * (a1 - a0);
-        struct colr_patch patch;
-        memset(&patch, 0, sizeof(patch));
-        patch.center_x = center_x;
-        patch.center_y = center_y;
-        patch.p0x = center_x + p0x * radius;
-        patch.p0y = center_y + p0y * radius;
-        patch.p1x = center_x + cos(angle) * radius;
-        patch.p1y = center_y + sin(angle) * radius;
-        patch.c0x = patch.p0x;
-        patch.c0y = patch.p0y;
-        patch.c1x = patch.p1x;
-        patch.c1y = patch.p1y;
-        patch.color0 = color0;
-        interpolate_color(c0, c1, k, &patch.color1);
-        patch_draw(ctx, &patch);
-        p0x = cos(angle);
-        p0y = sin(angle);
-        color0 = patch.color1;
-    }
-}
-
-static void sweep_patches(struct colr_ctx *ctx, struct colr_color_line *line, int extend,
-    double center_x, double center_y, double radius, double start, double end)
-{
-    double angles[32];
-    if (start == end) {
-        if (extend == DP_EXTEND_PAD) {
-            if (start > 0)
-                sweep_segment(ctx, center_x, center_y, radius, 0, &line->stops[0].color,
-                    start, &line->stops[0].color);
-            if (end < 2 * M_PI)
-                sweep_segment(ctx, center_x, center_y, radius, end,
-                    &line->stops[line->count - 1].color, 2 * M_PI,
-                    &line->stops[line->count - 1].color);
-        }
-        return;
-    }
-    for (int i = 0; i < line->count; i++)
-        angles[i] = start + line->stops[i].offset * (end - start);
-    if (end < start) {
-        for (int i = 0; i < line->count - 1 - i; i++) {
-            struct colr_stop stop = line->stops[i];
-            double a = angles[i];
-            line->stops[i] = line->stops[line->count - 1 - i];
-            line->stops[line->count - 1 - i] = stop;
-            angles[i] = angles[line->count - 1 - i];
-            angles[line->count - 1 - i] = a;
-        }
-    }
-    if (extend == DP_EXTEND_PAD) {
-        struct colr_color color0 = line->stops[0].color;
-        struct colr_color color1;
-        int pos;
-        for (pos = 0; pos < line->count; pos++) {
-            if (angles[pos] >= 0) {
-                if (pos > 0) {
-                    double k = (0 - angles[pos - 1]) / (angles[pos] - angles[pos - 1]);
-                    interpolate_color(&line->stops[pos - 1].color, &line->stops[pos].color, k,
-                        &color0);
-                }
-                break;
-            }
-        }
-        if (pos == line->count) {
-            color0 = line->stops[line->count - 1].color;
-            sweep_segment(ctx, center_x, center_y, radius, 0, &color0, 2 * M_PI, &color0);
-            return;
-        }
-        sweep_segment(ctx, center_x, center_y, radius, 0, &color0, angles[pos],
-            &line->stops[pos].color);
-        for (pos++; pos < line->count; pos++) {
-            if (angles[pos] <= 2 * M_PI) {
-                sweep_segment(ctx, center_x, center_y, radius, angles[pos - 1],
-                    &line->stops[pos - 1].color, angles[pos], &line->stops[pos].color);
-            } else {
-                double k = (2 * M_PI - angles[pos - 1]) / (angles[pos] - angles[pos - 1]);
-                interpolate_color(&line->stops[pos - 1].color, &line->stops[pos].color, k,
-                    &color1);
-                sweep_segment(ctx, center_x, center_y, radius, angles[pos - 1],
-                    &line->stops[pos - 1].color, 2 * M_PI, &color1);
-                break;
-            }
-        }
-        if (pos == line->count) {
-            color0 = line->stops[line->count - 1].color;
-            sweep_segment(ctx, center_x, center_y, radius, angles[line->count - 1], &color0,
-                2 * M_PI, &color0);
-        }
-        return;
-    }
-    {
-        int k = 0;
-        double span = angles[line->count - 1] - angles[0];
-        if (span == 0) {
-            sweep_segment(ctx, center_x, center_y, radius, 0, &line->stops[0].color,
-                2 * M_PI, &line->stops[0].color);
-            return;
-        }
-        if (angles[0] >= 0) {
-            double ss = angles[0];
-            while (ss > 0) {
-                if (span > 0) { ss -= span; k--; }
-                else { ss += span; k++; }
-            }
+    struct colr_matrix inverse = ctx->matrix;
+    if (!matrix_invert_cairo(&inverse, &ctx->matrix)) return;
+    struct drect extent = ctx->clip_extent_unbounded ? ctx->box : ctx->clip_extent;
+    double corners[4][2] = {
+        { extent.x0 + ctx->ox, extent.y0 + ctx->oy },
+        { extent.x1 + ctx->ox, extent.y0 + ctx->oy },
+        { extent.x1 + ctx->ox, extent.y1 + ctx->oy },
+        { extent.x0 + ctx->ox, extent.y1 + ctx->oy },
+    };
+    double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    for (int i = 0; i < 4; i++) {
+        double ux = inverse.xx * corners[i][0] + inverse.xy * corners[i][1] + inverse.x0;
+        double uy = inverse.yx * corners[i][0] + inverse.yy * corners[i][1] + inverse.y0;
+        if (i == 0) {
+            x1 = x2 = ux;
+            y1 = y2 = uy;
         } else {
-            double ee = angles[line->count - 1];
-            while (ee < 0) {
-                if (span > 0) { ee += span; k++; }
-                else { ee -= span; k--; }
-            }
-        }
-        for (int l = k; ; l++) {
-            for (int i = 1; i < line->count; i++) {
-                double a0, a1;
-                struct colr_color *c0, *c1;
-                if ((l % 2 != 0) && extend == DP_EXTEND_REFLECT) {
-                    a0 = angles[0] + angles[line->count - 1] -
-                        angles[line->count - 1 - (i - 1)] + l * span;
-                    a1 = angles[0] + angles[line->count - 1] -
-                        angles[line->count - 1 - i] + l * span;
-                    c0 = &line->stops[line->count - 1 - (i - 1)].color;
-                    c1 = &line->stops[line->count - 1 - i].color;
-                } else {
-                    a0 = angles[i - 1] + l * span;
-                    a1 = angles[i] + l * span;
-                    c0 = &line->stops[i - 1].color;
-                    c1 = &line->stops[i].color;
-                }
-                if (a1 < 0) continue;
-                if (a0 < 0) {
-                    struct colr_color color;
-                    double f = (0 - a0) / (a1 - a0);
-                    interpolate_color(c0, c1, f, &color);
-                    sweep_segment(ctx, center_x, center_y, radius, 0, &color, a1, c1);
-                } else if (a1 >= 2 * M_PI) {
-                    struct colr_color color;
-                    double f = (2 * M_PI - a0) / (a1 - a0);
-                    interpolate_color(c0, c1, f, &color);
-                    sweep_segment(ctx, center_x, center_y, radius, a0, c0, 2 * M_PI, &color);
-                    return;
-                } else {
-                    sweep_segment(ctx, center_x, center_y, radius, a0, c0, a1, c1);
-                }
-            }
+            if (ux < x1) x1 = ux;
+            if (ux > x2) x2 = ux;
+            if (uy < y1) y1 = uy;
+            if (uy > y2) y2 = uy;
         }
     }
+    double max_x = fmax((x1 - cx) * (x1 - cx), (x2 - cx) * (x2 - cx));
+    double max_y = fmax((y1 - cy) * (y1 - cy), (y2 - cy) * (y2 - cy));
+    double radius = sqrt(max_x + max_y);
+    struct sweep_builder builder;
+    memset(&builder, 0, sizeof(builder));
+    builder.center_x = cx;
+    builder.center_y = cy;
+    sweep_add(ctx, &builder, extend_value(paint->colorline.extend), radius, start, end, &line);
+    if (!builder.failed)
+        paint_mesh(ctx, builder.patches, builder.count);
+    free(builder.patches);
 }
 
 static void composite_image(struct colr_ctx *ctx, const uint32_t *src, int src_stride,
@@ -1029,6 +1058,8 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
     unsigned char *saved_clip = ctx->clip;
     struct drect saved_clip_box = ctx->clip_box;
     int saved_clip_stride = ctx->clip_stride;
+    struct drect saved_extent = ctx->clip_extent;
+    bool saved_unbounded = ctx->clip_extent_unbounded;
     struct drect saved_box = ctx->box;
     clip_set(ctx, &path, intersected(box, saved_clip_box));
     ctx->box = box;
@@ -1040,7 +1071,51 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
     ctx->clip = saved_clip;
     ctx->clip_box = saved_clip_box;
     ctx->clip_stride = saved_clip_stride;
+    ctx->clip_extent = saved_extent;
+    ctx->clip_extent_unbounded = saved_unbounded;
     ctx->box = saved_box;
+    dpath_fini(&path);
+}
+
+static bool glyph_clip(struct colr_ctx *ctx, unsigned glyph, double corners[4][2],
+    struct drect *box)
+{
+    FT_ClipBox clip;
+    if (!FT_Get_Color_Glyph_ClipBox(ctx->face, glyph, &clip)) return false;
+    double source[4][2] = {
+        { clip.bottom_left.x / 64.0, clip.bottom_left.y / 64.0 },
+        { clip.top_right.x / 64.0, clip.bottom_left.y / 64.0 },
+        { clip.top_right.x / 64.0, clip.top_right.y / 64.0 },
+        { clip.bottom_left.x / 64.0, clip.top_right.y / 64.0 },
+    };
+    box->x0 = box->y0 = INT32_MAX;
+    box->x1 = box->y1 = INT32_MIN;
+    for (int i = 0; i < 4; i++) {
+        double x = ctx->matrix.xx * source[i][0] + ctx->matrix.xy * source[i][1] +
+            ctx->matrix.x0 - ctx->ox;
+        double y = ctx->matrix.yx * source[i][0] + ctx->matrix.yy * source[i][1] +
+            ctx->matrix.y0 - ctx->oy;
+        corners[i][0] = x;
+        corners[i][1] = y;
+        int fx = (int)floor(x), fy = (int)floor(y);
+        int cx = (int)ceil(x), cy = (int)ceil(y);
+        if (fx < box->x0) box->x0 = fx;
+        if (fy < box->y0) box->y0 = fy;
+        if (cx > box->x1) box->x1 = cx;
+        if (cy > box->y1) box->y1 = cy;
+    }
+    return true;
+}
+
+static void clip_quad_push(struct colr_ctx *ctx, double corners[4][2], struct drect box)
+{
+    struct dpath path;
+    dpath_init(&path);
+    dp_move_to(&path, corners[0][0], corners[0][1]);
+    for (int i = 1; i < 4; i++)
+        dp_line_to(&path, corners[i][0], corners[i][1]);
+    dp_close_path(&path);
+    clip_set(ctx, &path, intersected(box, ctx->clip_box));
     dpath_fini(&path);
 }
 
@@ -1049,7 +1124,26 @@ static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
     FT_OpaquePaint child = { NULL, 0 };
     if (!FT_Get_Color_Glyph_Paint(ctx->face, paint->glyphID, FT_COLOR_NO_ROOT_TRANSFORM, &child))
         return;
+    double corners[4][2];
+    struct drect box;
+    if (!glyph_clip(ctx, paint->glyphID, corners, &box)) {
+        play(ctx, &child);
+        return;
+    }
+    unsigned char *saved_clip = ctx->clip;
+    struct drect saved_clip_box = ctx->clip_box;
+    int saved_clip_stride = ctx->clip_stride;
+    struct drect saved_extent = ctx->clip_extent;
+    bool saved_unbounded = ctx->clip_extent_unbounded;
+    ctx->clip = saved_clip;
+    clip_quad_push(ctx, corners, box);
     play(ctx, &child);
+    free(ctx->clip);
+    ctx->clip = saved_clip;
+    ctx->clip_box = saved_clip_box;
+    ctx->clip_stride = saved_clip_stride;
+    ctx->clip_extent = saved_extent;
+    ctx->clip_extent_unbounded = saved_unbounded;
 }
 
 static void play_layers(struct colr_ctx *ctx, FT_PaintColrLayers *layers)
@@ -1319,9 +1413,26 @@ static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
         break;
     case FT_COLR_PAINTFORMAT_COLR_GLYPH: {
         FT_OpaquePaint child = { NULL, 0 };
-        if (FT_Get_Color_Glyph_Paint(ctx->face, paint.u.colr_glyph.glyphID,
+        if (!FT_Get_Color_Glyph_Paint(ctx->face, paint.u.colr_glyph.glyphID,
                 FT_COLOR_NO_ROOT_TRANSFORM, &child))
+            break;
+        double corners[4][2];
+        struct drect box;
+        if (!glyph_clip(ctx, paint.u.colr_glyph.glyphID, corners, &box)) {
             analyze(ctx, &child);
+            break;
+        }
+        bool saved_unbounded = ctx->aclip_unbounded;
+        struct drect saved_clip = ctx->aclip;
+        if (ctx->aclip_unbounded)
+            ctx->aclip = box;
+        else
+            ctx->aclip = intersected(ctx->aclip, box);
+        ctx->aclip_unbounded = false;
+        if (ctx->aclip.x0 < ctx->aclip.x1 && ctx->aclip.y0 < ctx->aclip.y1)
+            analyze(ctx, &child);
+        ctx->aclip_unbounded = saved_unbounded;
+        ctx->aclip = saved_clip;
         break;
     }
     case FT_COLR_PAINTFORMAT_TRANSFORM: {
@@ -1515,6 +1626,10 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     ctx.level = 0;
     ctx.is_clear = true;
     ctx.box = (struct drect){ 0, 0, ctx.width, ctx.height };
+    ctx.clip_extent_unbounded = !have_box;
+    if (have_box)
+        ctx.clip_extent = (struct drect){ box.x0 - ctx.ox, box.y0 - ctx.oy,
+            box.x1 - ctx.ox, box.y1 - ctx.oy };
     if (have_box) {
         struct dpath clip;
         clip_path_build(&clip, true, corners, ctx.ox, ctx.oy, ctx.box);
