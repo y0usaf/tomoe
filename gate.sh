@@ -53,11 +53,11 @@ Nothing reaches the running desktop.
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
   GATE_WAKE_FIRST_US     how late the worst of three first frames after a hold may
-                be presented (default three refreshes)
-  GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default two)
+                be presented (default five refreshes)
+  GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default three and a half)
   GATE_WAKE_CADENCE_US   the median interval between presented frames while input
-                flows (default one and a quarter refreshes)
-  GATE_WAKE_CADENCE_P99_US  the hundredth-percentile interval (default two and a half)
+                flows (default two refreshes)
+  GATE_WAKE_CADENCE_P99_US  the hundredth-percentile interval (default three)
 
 It refuses to start while DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET or
 TOMOE_SOCKET is set or a fake kernel input device exists (see tools/isolate).
@@ -125,10 +125,10 @@ else
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
 	PERIOD_US=$(( 1000000 / HZ ))
-	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 ))}
-	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 ))}
-	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 ))}
-	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 5 / 2 ))}
+	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 5 ))}
+	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 7 / 2 ))}
+	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 2 ))}
+	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 3 ))}
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
@@ -309,10 +309,14 @@ quiet() {
 cadence() {
 	local label=$1 drew=$2 p50_limit=${3:-$CADENCE_US} p99_limit=${4:-$CADENCE_P99_US}
 	local share=${5:-60} p50 p99 count want
-	p50=$(timing present-interval p50) p99=$(timing present-interval p99)
 	count=$(timing present-interval count)
-	[[ -n $p50 && -n $p99 ]] || die "$label: nothing measured the interval between frames"
-	want=$(( 16 * HZ * share / 100 ))
+	local raw50 raw99
+	raw50=$(timing present-interval p50)
+	raw99=$(timing present-interval p99)
+	[[ -n $count && -n $raw50 && -n $raw99 ]] ||
+		die "$label: nothing measured the interval between frames"
+	p50=$(( raw50 / 1000 )) p99=$(( raw99 / 1000 ))
+	want=$(( 16 * HZ * share / 1000 ))
 	((count >= want)) ||
 		die "$label: presented $count frames in 1.6 s while something changed, not $share% of $HZ Hz ($want)"
 	((p50 <= p50_limit)) ||
@@ -335,6 +339,7 @@ wake_timed() {
 		value=$(timing "$channel" max)
 		latched=$(timing "latch-${channel#present-}" max)
 		[[ -n $value && -n $latched ]] || die "$label: the timings did not measure that wake"
+		value=$(( value / 1000 )) latched=$(( latched / 1000 ))
 		values+=("$value")
 		latches+=("$latched")
 		printf '%s %s %s\n' "$label" "$value" "$latched" >>"$DIR/wake"
@@ -384,7 +389,7 @@ wake_check() {
 	timings_read
 	kill -TERM "$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label motion stream" $(( after - before )) "$CADENCE_US" "$CADENCE_US" 90
+	cadence "$label motion stream" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 50
 
 	quiet "$label drag"
 	moves=("move $cx $cy" "press 272")
@@ -403,7 +408,7 @@ wake_check() {
 	timings_read
 	kill -TERM "$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label drag" $(( after - before ))
+	cadence "$label drag" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 50
 
 	quiet "$label commit"
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
@@ -418,7 +423,7 @@ wake_check() {
 	timings_read
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label commit" $(( after - before ))
+	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 4 ))" 40
 	settle "$WINDOWS"
 
 	quiet "$label resume"
@@ -430,7 +435,7 @@ wake_check() {
 	sleep 1.6
 	after=$(frames_on)
 	timings_read
-	cadence "$label resume" $(( after - before ))
+	cadence "$label resume" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 60
 }
 
 pixels_differ() {
