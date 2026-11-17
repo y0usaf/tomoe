@@ -3329,7 +3329,7 @@ static void svg_expand_use_children(struct svg_doc *doc, struct xml_node *node, 
 }
 
 static void svg_expand_uses(struct svg_doc *doc, struct xml_node *node, int depth) {
-    if (depth > 1024) return;
+    if (depth > 1024 || node->foreign) return;
     if (!strcmp(svg_local_name(node->name), "use")) {
         const char *href = svg_xml_attr(node, "xlink:href");
         if (!href) href = svg_xml_attr(node, "href");
@@ -4448,7 +4448,7 @@ static int svg_convert_stops(struct svg_doc *doc, struct xml_node *grad, struct 
     float prev = 0.0f;
     for (int i = 0; i < grad->nchildren; i++) {
         struct xml_node *stop = grad->children[i];
-        if (!svg_tag_is(stop, "stop")) continue;
+        if (stop->foreign || !svg_tag_is(stop, "stop")) continue;
         int idx = stop->style_index;
         struct svg_style *st = idx >= 0 ? &doc->styles[idx] : NULL;
         const char *offset_text = st ? svg_style_get(doc, st, "offset") : NULL;
@@ -4511,7 +4511,7 @@ static struct xml_node *svg_gradient_stop_source(struct svg_doc *doc, struct xml
     int guard = 0;
     for (;;) {
         for (int i = 0; i < cur->nchildren; i++)
-            if (svg_tag_is(cur->children[i], "stop")) return cur;
+            if (!cur->children[i]->foreign && svg_tag_is(cur->children[i], "stop")) return cur;
         struct xml_node *link = svg_href_link(doc, cur);
         if (!link || ++guard > 32) return NULL;
         const char *tag = svg_local_name(link->name);
@@ -5700,7 +5700,8 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
     for (struct xml_node *cur = node; cur; ) {
         int elements = 0;
         for (int i = 0; i < cur->nchildren; i++)
-            if (svg_local_name(cur->children[i]->name)[0] == 'f' &&
+            if (!cur->children[i]->foreign &&
+                    svg_local_name(cur->children[i]->name)[0] == 'f' &&
                     svg_local_name(cur->children[i]->name)[1] == 'e') elements++;
         if (elements) { primitives_node = cur; break; }
         struct xml_node *next = svg_href_link(c->doc, cur);
@@ -5711,7 +5712,8 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
     node = primitives_node;
     int nchildren = 0;
     for (int i = 0; i < node->nchildren; i++)
-        if (svg_local_name(node->children[i]->name)[0] == 'f' &&
+        if (!node->children[i]->foreign &&
+                svg_local_name(node->children[i]->name)[0] == 'f' &&
                 svg_local_name(node->children[i]->name)[1] == 'e') nchildren++;
     if (!nchildren) return 0;
     struct svg_filter_prim *prims = svg_alloc(sizeof(*prims) * (size_t)nchildren);
@@ -5721,7 +5723,7 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
     for (int i = 0; i < node->nchildren; i++) {
         struct xml_node *child = node->children[i];
         const char *tag = svg_local_name(child->name);
-        if (tag[0] != 'f' || tag[1] != 'e') continue;
+        if (child->foreign || tag[0] != 'f' || tag[1] != 'e') continue;
         struct svg_filter_prim *p = &prims[count];
         p->cs = 1;
         for (struct xml_node *n = child; n; n = n->parent) {
@@ -6915,6 +6917,7 @@ static void svg_convert_switch(struct svg_conv *c, struct xml_node *node, struct
     struct xml_node *chosen = NULL;
     for (int i = 0; i < node->nchildren; i++) {
         struct xml_node *child = node->children[i];
+        if (child->foreign) continue;
         int idx = child->style_index;
         if (idx < 0) continue;
         struct svg_style *cst = &c->doc->styles[idx];
