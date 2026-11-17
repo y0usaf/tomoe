@@ -100,7 +100,7 @@ struct drect dp_path_extents(const struct dpath *path);
 
 enum { DP_IMAGE_ARGB32, DP_IMAGE_RGB24, DP_IMAGE_RGBA_FLOAT, DP_IMAGE_RGB_FLOAT };
 enum { DP_FILTER_NEAREST, DP_FILTER_BILINEAR, DP_FILTER_GOOD };
-enum { DP_EXTEND_NONE, DP_EXTEND_PAD };
+enum { DP_EXTEND_NONE, DP_EXTEND_PAD, DP_EXTEND_REPEAT, DP_EXTEND_REFLECT };
 enum { DP_OP_OVER, DP_OP_SOURCE };
 
 struct dp_image {
@@ -125,11 +125,13 @@ enum { DP_GRADIENT_STOPS = 16 };
 struct dp_gradient_stop { double offset; uint32_t rgba; };
 
 struct dp_gradient {
-    int radial, stop_count;
+    int radial, stop_count, extend;
     double p1x, p1y, p2x, p2y, r1, r2;
     struct dp_pattern matrix;
     struct dp_gradient_stop stops[DP_GRADIENT_STOPS];
 };
+
+bool dp_gradient_extents(const struct dp_gradient *gradient, struct drect *extents);
 
 void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient *gradient, const struct dp_coverage *coverage,

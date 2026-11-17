@@ -7,6 +7,8 @@
 #include <string.h>
 
 #define PAINT_FIXED_ONE 65536.0
+#define PIXMAN_MAX_DIM 1073741823.0
+#define PIXMAN_MAX_RECT 8388607
 #define PAINT_MAGIC_16_16 103079215104.0
 
 static int box_width(double r);
@@ -646,11 +648,11 @@ struct gradient_walker {
     struct gradient_stop16 *stops;
     int64_t left_x, right_x;
     float a_s, a_b, r_s, r_b, g_s, g_b, b_s, b_b;
-    int need_reset;
+    int need_reset, extend;
 };
 
 struct dp_gradient_built {
-    int radial;
+    int radial, extend;
     int32_t p1x, p1y, p2x, p2y, r1, r2;
     int64_t dx, dy;
     int64_t l;
@@ -674,12 +676,38 @@ static void gradient_walker_reset(struct gradient_walker *walker, int64_t pos)
     int64_t left_x, right_x;
     float la, lr, lg, lb, ra, rr, rg, rb, lx, rx;
 
+    if (walker->extend == DP_EXTEND_REPEAT) {
+        x = (int32_t)pos & 0xffff;
+    } else if (walker->extend == DP_EXTEND_REFLECT) {
+        x = (int32_t)pos & 0xffff;
+        if ((int32_t)pos & 0x10000) x = 0x10000 - x;
+    }
     for (n = 0; n < count; n++)
         if (x < stops[n].x) break;
     left_x = stops[n - 1].x;
     left_c = &stops[n - 1];
     right_x = stops[n].x;
     right_c = &stops[n];
+
+    if (walker->extend == DP_EXTEND_REPEAT) {
+        left_x += (pos - x);
+        right_x += (pos - x);
+    } else if (walker->extend == DP_EXTEND_REFLECT) {
+        if ((int32_t)pos & 0x10000) {
+            struct gradient_stop16 *swap_c = right_c;
+            int64_t swap_x = 0x10000 - right_x;
+            right_x = 0x10000 - left_x;
+            left_x = swap_x;
+            right_c = left_c;
+            left_c = swap_c;
+            x = 0x10000 - x;
+        }
+        left_x += (pos - x);
+        right_x += (pos - x);
+    } else if (walker->extend == DP_EXTEND_NONE) {
+        if (n == 0) right_c = left_c;
+        else if (n == count) left_c = right_c;
+    }
 
     la = (left_c->a * (1.0f / 257.0f));
     lr = (left_c->r * (1.0f / 257.0f));
@@ -744,8 +772,14 @@ static uint32_t gradient_radial_pixel(const struct dp_gradient_built *g,
     if (g->radial_a == 0) {
         double t;
         if (b == 0) return 0;
-        t = ((1 << 16) / 2 * c) / b;
-        return (double)t * g->dr >= g->mindr ? gradient_walker_pixel(walker, (int64_t)t) : 0;
+        t = ((1 << 16) / 2 * (double)c) / (double)b;
+        if (g->extend == DP_EXTEND_NONE) {
+            if (0 <= t && t <= (1 << 16))
+                return gradient_walker_pixel(walker, (int64_t)t);
+        } else if (t * g->dr >= g->mindr) {
+            return gradient_walker_pixel(walker, (int64_t)t);
+        }
+        return 0;
     }
     {
         double discr = (double)b * (double)b - (double)g->radial_a * (double)c;
@@ -753,10 +787,17 @@ static uint32_t gradient_radial_pixel(const struct dp_gradient_built *g,
             double sqrtdiscr = sqrt(discr);
             double t0 = ((double)b + sqrtdiscr) * g->inva;
             double t1 = ((double)b - sqrtdiscr) * g->inva;
-            if (t0 * g->dr >= g->mindr)
-                return gradient_walker_pixel(walker, (int64_t)t0);
-            if (t1 * g->dr >= g->mindr)
-                return gradient_walker_pixel(walker, (int64_t)t1);
+            if (g->extend == DP_EXTEND_NONE) {
+                if (0 <= t0 && t0 <= (1 << 16))
+                    return gradient_walker_pixel(walker, (int64_t)t0);
+                if (0 <= t1 && t1 <= (1 << 16))
+                    return gradient_walker_pixel(walker, (int64_t)t1);
+            } else {
+                if (t0 * g->dr >= g->mindr)
+                    return gradient_walker_pixel(walker, (int64_t)t0);
+                if (t1 * g->dr >= g->mindr)
+                    return gradient_walker_pixel(walker, (int64_t)t1);
+            }
         }
     }
     return 0;
@@ -797,15 +838,17 @@ static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradie
     dim = fmax(dim, fabs(matrix.yx));
     dim = fmax(dim, fabs(matrix.yy));
     dim = fmax(dim, fabs(matrix.y0));
-    if (dim > 16383.0) {
-        double scale = 16383.0 / dim;
+    if (dim > PIXMAN_MAX_DIM) {
+        double scale = PIXMAN_MAX_DIM / dim;
         c1x *= scale; c1y *= scale; c1r *= scale;
         c2x *= scale; c2y *= scale; c2r *= scale;
         matrix.xx *= scale; matrix.xy *= scale;
         matrix.yx *= scale; matrix.yy *= scale;
+        matrix.x0 *= scale; matrix.y0 *= scale;
     }
     memset(out, 0, sizeof(*out));
     out->radial = gradient->radial;
+    out->extend = gradient->extend;
     out->p1x = fixed_16_16(c1x);
     out->p1y = fixed_16_16(c1y);
     out->p2x = fixed_16_16(c2x);
@@ -828,9 +871,30 @@ static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradie
         out->stops[i + 1].b = (uint16_t)(blue * 65535.0 + 0.5);
     }
     out->stops[0] = out->stops[1];
-    out->stops[0].x = INT32_MIN;
     out->stops[out->count + 1] = out->stops[out->count];
-    out->stops[out->count + 1].x = INT32_MAX;
+    switch (gradient->extend) {
+    case DP_EXTEND_REPEAT:
+        out->stops[0] = out->stops[out->count];
+        out->stops[0].x = out->stops[out->count].x - (1 << 16);
+        out->stops[out->count + 1] = out->stops[1];
+        out->stops[out->count + 1].x = out->stops[1].x + (1 << 16);
+        break;
+    case DP_EXTEND_REFLECT:
+        out->stops[0].x = -out->stops[1].x;
+        out->stops[out->count + 1].x = (2 << 16) - out->stops[out->count].x;
+        break;
+    case DP_EXTEND_NONE:
+        out->stops[0].a = out->stops[0].r = out->stops[0].g = out->stops[0].b = 0;
+        out->stops[out->count + 1].a = out->stops[out->count + 1].r =
+            out->stops[out->count + 1].g = out->stops[out->count + 1].b = 0;
+        out->stops[0].x = INT32_MIN;
+        out->stops[out->count + 1].x = INT32_MAX;
+        break;
+    default:
+        out->stops[0].x = INT32_MIN;
+        out->stops[out->count + 1].x = INT32_MAX;
+        break;
+    }
     if (gradient->radial) {
         out->c1x = out->p1x; out->c1y = out->p1y; out->c1r = out->r1;
         out->rdx = (int64_t)out->p2x - out->p1x;
@@ -865,6 +929,107 @@ static int gradient_extents_fit(const struct fixed_matrix *t, int x1, int y1, in
         if (!transform_point_3d(t, v)) return 0;
     }
     return 1;
+}
+
+
+static int matrix_is_translation(const struct dp_pattern *m)
+{
+    return m->xx == 1. && m->yx == 0. && m->xy == 0. && m->yy == 1.;
+}
+
+static void pattern_extents_box(const struct dp_pattern *m, double *x1, double *y1,
+    double *x2, double *y2)
+{
+    double qx[2], qy[2];
+    if (m->xy == 0. && m->yx == 0.) {
+        if (m->xx != 1.) {
+            qx[0] = *x1 * m->xx;
+            qx[1] = *x2 * m->xx;
+            if (qx[0] < qx[1]) { *x1 = qx[0]; *x2 = qx[1]; }
+            else { *x1 = qx[1]; *x2 = qx[0]; }
+        }
+        if (m->x0 != 0.) { *x1 += m->x0; *x2 += m->x0; }
+        if (m->yy != 1.) {
+            qy[0] = *y1 * m->yy;
+            qy[1] = *y2 * m->yy;
+            if (qy[0] < qy[1]) { *y1 = qy[0]; *y2 = qy[1]; }
+            else { *y1 = qy[1]; *y2 = qy[0]; }
+        }
+        if (m->y0 != 0.) { *y1 += m->y0; *y2 += m->y0; }
+        return;
+    }
+    {
+        double min_x = HUGE_VAL, max_x = -HUGE_VAL, min_y = HUGE_VAL, max_y = -HUGE_VAL;
+        for (int i = 0; i < 4; i++) {
+            double px = (i & 1) ? *x1 : *x2;
+            double py = (i & 2) ? *y1 : *y2;
+            matrix_transform_point(m, &px, &py);
+            if (px < min_x) min_x = px;
+            if (px > max_x) max_x = px;
+            if (py < min_y) min_y = py;
+            if (py > max_y) max_y = py;
+        }
+        *x1 = min_x; *x2 = max_x;
+        *y1 = min_y; *y2 = max_y;
+    }
+}
+
+static int extents_round(double v, int upper)
+{
+    if (upper ? (v > PIXMAN_MAX_RECT) : (v < -PIXMAN_MAX_RECT - 1))
+        return upper ? PIXMAN_MAX_RECT : -PIXMAN_MAX_RECT - 1;
+    return (int)lround(v);
+}
+
+bool dp_gradient_extents(const struct dp_gradient *gradient, struct drect *extents)
+{
+    double x1, y1, x2, y2;
+    int round_x = 0, round_y = 0;
+    if (gradient->extend != DP_EXTEND_NONE) return false;
+    if (gradient->radial) {
+        double r1 = gradient->r1, r2 = gradient->r2;
+        if (fabs(r1 - r2) < DBL_EPSILON && r1 < DBL_EPSILON) {
+            *extents = (struct drect){ 0, 0, 0, 0 };
+            return true;
+        }
+        x1 = fmin(gradient->p1x - r1, gradient->p2x - r2);
+        y1 = fmin(gradient->p1y - r1, gradient->p2y - r2);
+        x2 = fmax(gradient->p1x + r1, gradient->p2x + r2);
+        y2 = fmax(gradient->p1y + r1, gradient->p2y + r2);
+    } else {
+        if (gradient->matrix.xy != 0. || gradient->matrix.yx != 0.) return false;
+        if (fabs(gradient->p1x - gradient->p2x) < DBL_EPSILON &&
+                fabs(gradient->p1y - gradient->p2y) < DBL_EPSILON) {
+            *extents = (struct drect){ 0, 0, 0, 0 };
+            return true;
+        }
+        if (gradient->p1x == gradient->p2x) {
+            x1 = -HUGE_VAL; x2 = HUGE_VAL;
+            y1 = fmin(gradient->p1y, gradient->p2y);
+            y2 = fmax(gradient->p1y, gradient->p2y);
+        } else if (gradient->p1y == gradient->p2y) {
+            x1 = fmin(gradient->p1x, gradient->p2x);
+            x2 = fmax(gradient->p1x, gradient->p2x);
+            y1 = -HUGE_VAL; y2 = HUGE_VAL;
+        } else {
+            return false;
+        }
+        round_x = round_y = 1;
+    }
+    if (matrix_is_translation(&gradient->matrix)) {
+        x1 -= gradient->matrix.x0; x2 -= gradient->matrix.x0;
+        y1 -= gradient->matrix.y0; y2 -= gradient->matrix.y0;
+    } else {
+        struct dp_pattern inverse = gradient->matrix;
+        if (!matrix_invert(&inverse)) return false;
+        pattern_extents_box(&inverse, &x1, &y1, &x2, &y2);
+    }
+    if (!round_x) { x1 -= 0.5; x2 += 0.5; }
+    if (!round_y) { y1 -= 0.5; y2 += 0.5; }
+    int ix1 = extents_round(x1, 0), ix2 = extents_round(x2, 1);
+    int iy1 = extents_round(y1, 0), iy2 = extents_round(y2, 1);
+    *extents = (struct drect){ ix1, iy1, ix2, iy2 };
+    return true;
 }
 
 static void gradient_span(const struct dp_gradient_built *g, struct gradient_walker *walker,
@@ -1016,6 +1181,7 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
         walker.count = built.count;
         walker.stops = built.stops;
         walker.need_reset = 1;
+        walker.extend = built.extend;
         if (coverage && coverage->spans && coverage->spans->band_count) {
             for (int b = 0; b < coverage->spans->band_count; b++)
                 gradient_band(&built, &walker, row, dst, dst_stride, coverage,

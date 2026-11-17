@@ -1311,10 +1311,10 @@ static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
     struct ui_canvas *canvas = surface->canvas;
     struct dp_gradient gradient;
     struct drect area = { clip->x1, clip->y1, clip->x2, clip->y2 };
-    int span = area.x1 - area.x0;
-    if (span <= 0 || area.y1 <= area.y0 || op->stop_count < 2) return true;
+    if (area.x1 <= area.x0 || area.y1 <= area.y0 || op->stop_count < 2) return true;
     memset(&gradient, 0, sizeof(gradient));
     gradient.stop_count = op->stop_count;
+    gradient.extend = DP_EXTEND_PAD;
     for (int i = 0; i < op->stop_count; i++) {
         gradient.stops[i].offset = op->stop_at[i];
         gradient.stops[i].rgba = op->stop_rgba[i];
@@ -1337,6 +1337,15 @@ static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
             sy > 0.001 ? sy : 0.001, op->x + op->geometry[0] * op->width,
             op->y + op->geometry[1] * op->height };
     }
+    struct drect pattern_extents;
+    if (dp_gradient_extents(&gradient, &pattern_extents)) {
+        if (pattern_extents.x0 > area.x0) area.x0 = pattern_extents.x0;
+        if (pattern_extents.y0 > area.y0) area.y0 = pattern_extents.y0;
+        if (pattern_extents.x1 < area.x1) area.x1 = pattern_extents.x1;
+        if (pattern_extents.y1 < area.y1) area.y1 = pattern_extents.y1;
+        if (area.x0 >= area.x1 || area.y0 >= area.y1) return true;
+    }
+    int span = area.x1 - area.x0;
     int max_rows = area.y1 - area.y0;
     unsigned char *coverage = calloc((size_t)span * (size_t)max_rows, 1);
     if (!coverage) return false;
