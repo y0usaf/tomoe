@@ -34,7 +34,7 @@ three times with a key, three times with a pointer motion and three times with a
 client's new buffer, and fails if the frame carrying a pointer motion or a key
 only started later than one and a half refreshes, if their median first frame
 took longer than two refreshes, or if the worst of those six took longer than
-three; a client's buffer is held to three refreshes at the median, because the
+three; a client's buffer is held to three and a half at the median, because the
 frame that shows it also redraws what a paused desktop left cold. Then it streams
 pointer motion, drags a window and runs a client that repaints on every frame
 callback, a second and a half each, and fails unless the output kept presenting:

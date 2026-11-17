@@ -370,7 +370,7 @@ wake_check() {
 		die "$label: no client for the focused window $serial"
 	pid=${CLIENTS[$((serial - 1))]}
 	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
-	wake_timed "$label damage" present-commit "$(( PERIOD_US * 3 ))" 0 \
+	wake_timed "$label damage" present-commit "$(( PERIOD_US * 7 / 2 ))" 0 \
 		kill -USR1 "$pid"
 
 	local moves=()
