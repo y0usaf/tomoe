@@ -98,12 +98,12 @@ CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(CORE_SOURCES)) \
 
 build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) | build/entries
 	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS)) \
-		-lresvg -ldl -lpthread -lm
+		-lresvg -lm
 	build/entries $@
 
 build/tomoe-core.so: $(CORE_OBJECTS) | build/entries
 	$(CC) $(LTO) -shared -Wl,-Bsymbolic $(CORE_OBJECTS) -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(LIBS)) -lresvg -ldl -lpthread -lm
+		$(shell $(PKG_CONFIG) --libs $(LIBS)) -lresvg -lm
 	build/entries $@
 
 core: build/tomoe-core.so
