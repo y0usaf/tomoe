@@ -1649,19 +1649,30 @@ static struct xml_node *xml_parse_element(struct xml_parser *p, struct xml_node 
     }
 }
 
+static void xml_parser_free_entities(struct xml_parser *p) {
+    for (int i = 0; i < p->nentities; i++) {
+        free(p->entities[i].name);
+        free(p->entities[i].value);
+    }
+    free(p->entities);
+    p->entities = NULL;
+    p->nentities = p->centities = 0;
+}
+
 static struct xml_node *xml_parse_document(const void *data, size_t length) {
     struct xml_parser p; memset(&p, 0, sizeof(p)); p.data = data; p.length = length;
+    struct xml_node *root = NULL;
     if (length >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) p.pos = 3;
-    if (!xml_skip_misc(&p)) return NULL;
-    if (p.pos >= p.length || p.data[p.pos] != '<') return NULL;
-    struct xml_node *root = xml_parse_element(&p, NULL);
-    for (int i = 0; i < p.nentities; i++) {
-        free(p.entities[i].name);
-        free(p.entities[i].value);
+    if (!xml_skip_misc(&p)) goto done;
+    if (p.pos >= p.length || p.data[p.pos] != '<') goto done;
+    root = xml_parse_element(&p, NULL);
+    if (!root) goto done;
+    if (!xml_skip_misc(&p) || p.pos != p.length) {
+        xml_node_free(root);
+        root = NULL;
     }
-    free(p.entities);
-    if (!root) return NULL;
-    if (!xml_skip_misc(&p) || p.pos != p.length) { xml_node_free(root); return NULL; }
+done:
+    xml_parser_free_entities(&p);
     return root;
 }
 
@@ -4693,9 +4704,17 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     const char *filter_value = svg_style_get(c->doc, st, "filter");
     if (!clip_context && filter_value && strcmp(filter_value, "none")) {
         char id[256];
-        if (!svg_parse_funciri(filter_value, id, sizeof(id))) return 0;
+        if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
+            svg_free_clip(clip);
+            svg_free_mask(mask);
+            return 0;
+        }
         struct xml_node *link = svg_id_last(c->doc, id);
-        if (!link || !svg_tag_is(link, "filter")) return 0;
+        if (!link || !svg_tag_is(link, "filter")) {
+            svg_free_clip(clip);
+            svg_free_mask(mask);
+            return 0;
+        }
         filtered = 1;
         c->unsupported = 1;
     }
@@ -5111,6 +5130,7 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
                 holder->transform = orig;
                 holder->abs_transform = svg_matrix_concat(abs, orig);
                 svg_node_add(holder, inner);
+                if (outer) svg_node_destroy(outer);
                 target = holder;
             } else {
                 svg_path_free(rect);
