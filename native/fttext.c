@@ -1375,6 +1375,12 @@ static bool fte_glyph_has_layers(FT_Face face, unsigned glyph)
     return FT_Get_Color_Glyph_Layer(face, glyph, &layer_glyph, &layer_colour, &iterator) != 0;
 }
 
+static FT_Fixed fte_mul_fix(FT_Fixed a, FT_Fixed b)
+{
+    int64_t ab = (int64_t)a * (int64_t)b;
+    return (FT_Fixed)((ab + 0x8000 + (ab >> 63)) >> 16);
+}
+
 static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry)
 {
     FT_Face face = scaled->face->face;
@@ -1386,14 +1392,23 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
         FT_OpaquePaint paint = { NULL, 0 };
         if (face->units_per_EM > 0 &&
                 FT_Get_Color_Glyph_Paint(face, glyph, FT_COLOR_NO_ROOT_TRANSFORM, &paint)) {
-            struct colr_matrix matrix = { scaled->scale.xx, scaled->scale.yx, scaled->scale.xy,
-                scaled->scale.yy, 0, 0 };
+            struct colr_matrix matrix;
             struct colr_image image;
+            FT_Matrix transform;
+            FT_Vector delta;
+            FT_Get_Transform(face, &transform, &delta);
+            FT_Fixed rsx = (face->size->metrics.x_scale + 32) >> 6;
+            FT_Fixed rsy = (face->size->metrics.y_scale + 32) >> 6;
+            matrix.xx = fte_mul_fix(transform.xx, rsx) / 65536.0;
+            matrix.yx = fte_mul_fix(transform.yx, rsx) / 65536.0;
+            matrix.xy = fte_mul_fix(transform.xy, rsy) / 65536.0;
+            matrix.yy = fte_mul_fix(transform.yy, rsy) / 65536.0;
+            matrix.x0 = 0;
+            matrix.y0 = 0;
             FT_Set_Transform(face, NULL, NULL);
             FT_Set_Char_Size(face, face->units_per_EM << 6, 0, 0, 0);
             scaled->face->have_scale = false;
-            bool ok = colr_render(face, glyph, &matrix, (double)face->units_per_EM,
-                UINT32_C(0xff000000), &image);
+            bool ok = colr_render(face, glyph, &matrix, UINT32_C(0xff000000), &image);
             fte_face_scale(scaled->face, &scaled->scale);
             if (ok) {
                 entry->data = image.pixels;

@@ -17,6 +17,7 @@ struct colr_ctx {
     unsigned palette_count;
     uint32_t foreground;
     struct colr_matrix matrix;
+    struct colr_matrix ctm_inverse;
     uint32_t *pixels;
     int width, height, stride;
     double ox, oy;
@@ -29,36 +30,65 @@ struct colr_ctx {
 static double from_16_16(int32_t v) { return (double)v / 65536.0; }
 static double from_2_14(int16_t v) { return (double)v / 16384.0; }
 
-static bool matrix_inverse(struct colr_matrix *out, const struct colr_matrix *m)
-{
-    double det = m->xx * m->yy - m->xy * m->yx;
-    if (det == 0) return false;
-    double xx = m->yy / det, xy = -m->xy / det;
-    double yx = -m->yx / det, yy = m->xx / det;
-    out->xx = xx;
-    out->xy = xy;
-    out->yx = yx;
-    out->yy = yy;
-    out->x0 = -(xx * m->x0 + xy * m->y0);
-    out->y0 = -(yx * m->x0 + yy * m->y0);
-    return true;
-}
+static void matrix_multiply(struct colr_matrix *out, const struct colr_matrix *a,
+    const struct colr_matrix *b);
 
 static void gradient_matrix(const struct colr_ctx *ctx, struct dp_pattern *pattern)
 {
-    struct colr_matrix m = ctx->matrix;
-    struct colr_matrix inv;
-    m.x0 -= ctx->ox;
-    m.y0 -= ctx->oy;
-    if (!matrix_inverse(&inv, &m)) {
-        inv.xx = 1; inv.yx = 0; inv.xy = 0; inv.yy = 1; inv.x0 = 0; inv.y0 = 0;
+    struct colr_matrix flip = { 1, 0, 0, -1, 0, 0 };
+    struct colr_matrix translate = { 1, 0, 0, 1, ctx->ox, ctx->oy };
+    struct colr_matrix m1, m2;
+    matrix_multiply(&m1, &ctx->ctm_inverse, &flip);
+    matrix_multiply(&m2, &m1, &translate);
+    pattern->xx = m2.xx;
+    pattern->yx = m2.yx;
+    pattern->xy = m2.xy;
+    pattern->yy = m2.yy;
+    pattern->x0 = m2.x0;
+    pattern->y0 = m2.y0;
+}
+
+static bool matrix_invert_cairo(struct colr_matrix *out, const struct colr_matrix *m)
+{
+    double a = m->xx, b = m->yx, c = m->xy, d = m->yy, tx = m->x0, ty = m->y0;
+    out->xx = d;
+    out->yx = -b;
+    out->xy = -c;
+    out->yy = a;
+    out->x0 = c * ty - d * tx;
+    out->y0 = b * tx - a * ty;
+    double det = a * d - b * c;
+    if (det == 0) return false;
+    double s = 1.0 / det;
+    out->xx *= s;
+    out->yx *= s;
+    out->xy *= s;
+    out->yy *= s;
+    out->x0 *= s;
+    out->y0 *= s;
+    return true;
+}
+
+static void matrix_init_identity(struct colr_matrix *m)
+{
+    m->xx = 1; m->yx = 0; m->xy = 0; m->yy = 1; m->x0 = 0; m->y0 = 0;
+}
+
+static void ctx_apply(struct colr_ctx *ctx, const struct colr_matrix *t)
+{
+    struct colr_matrix saved = ctx->matrix;
+    matrix_multiply(&ctx->matrix, &saved, t);
+    struct colr_matrix t_inv = *t;
+    if (matrix_invert_cairo(&t_inv, t)) {
+        struct colr_matrix ctm_saved = ctx->ctm_inverse;
+        matrix_multiply(&ctx->ctm_inverse, &t_inv, &ctm_saved);
     }
-    pattern->xx = inv.xx;
-    pattern->yx = inv.yx;
-    pattern->xy = inv.xy;
-    pattern->yy = inv.yy;
-    pattern->x0 = inv.x0;
-    pattern->y0 = inv.y0;
+}
+
+static void ctx_translate(struct colr_ctx *ctx, double dx, double dy)
+{
+    struct colr_matrix t = { 1, 0, 0, 1, dx, dy };
+    ctx_apply(ctx, &t);
 }
 
 static void matrix_multiply(struct colr_matrix *out, const struct colr_matrix *a,
@@ -72,32 +102,6 @@ static void matrix_multiply(struct colr_matrix *out, const struct colr_matrix *a
     r.x0 = a->xx * b->x0 + a->xy * b->y0 + a->x0;
     r.y0 = a->yx * b->x0 + a->yy * b->y0 + a->y0;
     *out = r;
-}
-
-static void matrix_translate(struct colr_matrix *out, double dx, double dy)
-{
-    struct colr_matrix t = { 1, 0, 0, 1, dx, dy };
-    struct colr_matrix saved = *out;
-    matrix_multiply(out, &saved, &t);
-}
-
-static void matrix_scale(struct colr_matrix *out, double sx, double sy, double cx, double cy)
-{
-    struct colr_matrix t = { sx, 0, 0, sy, 0, 0 };
-    matrix_translate(out, cx, cy);
-    struct colr_matrix saved = *out;
-    matrix_multiply(out, &saved, &t);
-    matrix_translate(out, -cx, -cy);
-}
-
-static void matrix_rotate(struct colr_matrix *out, double angle, double cx, double cy)
-{
-    double c = cos(angle), s = sin(angle);
-    struct colr_matrix t = { c, s, -s, c, 0, 0 };
-    matrix_translate(out, cx, cy);
-    struct colr_matrix saved = *out;
-    matrix_multiply(out, &saved, &t);
-    matrix_translate(out, -cx, -cy);
 }
 
 static uint32_t solid_pixel(double red, double green, double blue, double alpha)
@@ -1024,55 +1028,73 @@ static void play(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
         play_colr_glyph(ctx, &paint.u.colr_glyph);
         break;
     case FT_COLR_PAINTFORMAT_TRANSFORM: {
-        struct colr_matrix saved = ctx->matrix;
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
         struct colr_matrix t = { from_16_16(paint.u.transform.affine.xx),
             from_16_16(paint.u.transform.affine.yx),
             from_16_16(paint.u.transform.affine.xy),
             from_16_16(paint.u.transform.affine.yy),
             from_16_16(paint.u.transform.affine.dx),
             from_16_16(paint.u.transform.affine.dy) };
-        matrix_multiply(&ctx->matrix, &saved, &t);
+        ctx_apply(ctx, &t);
         play(ctx, &paint.u.transform.paint);
-        ctx->matrix = saved;
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
         break;
     }
     case FT_COLR_PAINTFORMAT_TRANSLATE: {
-        struct colr_matrix saved = ctx->matrix;
-        matrix_translate(&ctx->matrix, from_16_16(paint.u.translate.dx),
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        ctx_translate(ctx, from_16_16(paint.u.translate.dx),
             from_16_16(paint.u.translate.dy));
         play(ctx, &paint.u.translate.paint);
-        ctx->matrix = saved;
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
         break;
     }
     case FT_COLR_PAINTFORMAT_ROTATE: {
-        struct colr_matrix saved = ctx->matrix;
-        matrix_rotate(&ctx->matrix, from_16_16(paint.u.rotate.angle) * M_PI,
-            from_16_16(paint.u.rotate.center_x), from_16_16(paint.u.rotate.center_y));
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double c = from_16_16(paint.u.rotate.angle) * M_PI;
+        double cx = from_16_16(paint.u.rotate.center_x);
+        double cy = from_16_16(paint.u.rotate.center_y);
+        struct colr_matrix r = { cos(c), sin(c), -sin(c), cos(c), 0, 0 };
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &r);
+        ctx_translate(ctx, -cx, -cy);
         play(ctx, &paint.u.rotate.paint);
-        ctx->matrix = saved;
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
         break;
     }
     case FT_COLR_PAINTFORMAT_SCALE: {
-        struct colr_matrix saved = ctx->matrix;
-        matrix_scale(&ctx->matrix, from_16_16(paint.u.scale.scale_x),
-            from_16_16(paint.u.scale.scale_y), from_16_16(paint.u.scale.center_x),
-            from_16_16(paint.u.scale.center_y));
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double cx = from_16_16(paint.u.scale.center_x);
+        double cy = from_16_16(paint.u.scale.center_y);
+        struct colr_matrix sc = { from_16_16(paint.u.scale.scale_x), 0, 0,
+            from_16_16(paint.u.scale.scale_y), 0, 0 };
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &sc);
+        ctx_translate(ctx, -cx, -cy);
         play(ctx, &paint.u.scale.paint);
-        ctx->matrix = saved;
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
         break;
     }
     case FT_COLR_PAINTFORMAT_SKEW: {
-        struct colr_matrix saved = ctx->matrix;
-        struct colr_matrix t = { 1, tan(from_16_16(paint.u.skew.y_skew_angle) * M_PI),
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double cx = from_16_16(paint.u.skew.center_x);
+        double cy = from_16_16(paint.u.skew.center_y);
+        struct colr_matrix sk = { 1, tan(from_16_16(paint.u.skew.y_skew_angle) * M_PI),
             -tan(from_16_16(paint.u.skew.x_skew_angle) * M_PI), 1, 0, 0 };
-        matrix_translate(&ctx->matrix, from_16_16(paint.u.skew.center_x),
-            from_16_16(paint.u.skew.center_y));
-        struct colr_matrix skew_saved = ctx->matrix;
-        matrix_multiply(&ctx->matrix, &skew_saved, &t);
-        matrix_translate(&ctx->matrix, -from_16_16(paint.u.skew.center_x),
-            -from_16_16(paint.u.skew.center_y));
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &sk);
+        ctx_translate(ctx, -cx, -cy);
         play(ctx, &paint.u.skew.paint);
-        ctx->matrix = saved;
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
         break;
     }
     case FT_COLR_PAINTFORMAT_COMPOSITE:
@@ -1111,8 +1133,8 @@ static bool colr_box(FT_Face face, unsigned glyph, const struct colr_matrix *mat
     return true;
 }
 
-bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *scale,
-    double upem, uint32_t foreground, struct colr_image *out)
+bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *root,
+    uint32_t foreground, struct colr_image *out)
 {
     FT_Face face = abstract_face;
     FT_OpaquePaint paint = { NULL, 0 };
@@ -1126,12 +1148,14 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     if (FT_Palette_Data_Get(face, &palette_data) == 0 && palette_data.num_palettes > 0 &&
             FT_Palette_Select(face, 0, &ctx.palette) == 0)
         ctx.palette_count = palette_data.num_palette_entries;
-    ctx.matrix.xx = scale->xx / upem;
-    ctx.matrix.xy = -scale->xy / upem;
-    ctx.matrix.yx = scale->yx / upem;
-    ctx.matrix.yy = -scale->yy / upem;
-    ctx.matrix.x0 = 0;
-    ctx.matrix.y0 = 0;
+    ctx.ctm_inverse = *root;
+    if (!matrix_invert_cairo(&ctx.ctm_inverse, root)) {
+        matrix_init_identity(&ctx.ctm_inverse);
+    }
+    {
+        struct colr_matrix flip = { 1, 0, 0, -1, 0, 0 };
+        matrix_multiply(&ctx.matrix, &flip, root);
+    }
     struct drect box;
     double corners[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
     bool have_box = colr_box(face, glyph, &ctx.matrix, 0, 0, &box, corners);

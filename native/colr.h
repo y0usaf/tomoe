@@ -12,7 +12,7 @@ struct colr_image {
     int off_x, off_y;
 };
 
-bool colr_render(void *face, unsigned glyph, const struct colr_matrix *scale, double upem,
+bool colr_render(void *face, unsigned glyph, const struct colr_matrix *root,
     uint32_t foreground, struct colr_image *out);
 void colr_image_fini(struct colr_image *image);
 
