@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: AGPL-3.0-only AND BSD-3-Clause AND MIT
+   Parts ported from tiny-skia 0.12.0 (BSD-3-Clause) and resvg 0.47.0
+   (Apache-2.0 OR MIT); see NOTICE. */
 #include "svg.h"
 
 #include <math.h>
@@ -4783,9 +4786,8 @@ static const char *svg_filter_attr(struct svg_doc *doc, struct xml_node *node, c
     return svg_xml_attr(node, name);
 }
 
-static float svg_filter_number(struct svg_conv *c, struct xml_node *node, const char *name,
-        int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
-    const char *text = svg_filter_attr(c->doc, node, name);
+static float svg_filter_length_number(struct svg_conv *c, const char *text, int units_bbox,
+        int axis, double def_number, enum svg_length_unit def_unit) {
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
     float n = (float)l.number;
@@ -4806,6 +4808,29 @@ static float svg_filter_number(struct svg_conv *c, struct xml_node *node, const 
     case SVG_UNIT_PC: return n * c->dpi / 6.0f;
     default: return n;
     }
+}
+
+static float svg_filter_number(struct svg_conv *c, struct xml_node *node, const char *name,
+        int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
+    return svg_filter_length_number(c, svg_filter_attr(c->doc, node, name), units_bbox, axis,
+        def_number, def_unit);
+}
+
+static struct xml_node *svg_resolve_filter_attr(struct svg_doc *doc, struct xml_node *node,
+        const char *name) {
+    struct xml_node *cur = node;
+    for (int guard = 0; cur && guard < 32; guard++) {
+        if (svg_filter_attr(doc, cur, name)) return cur;
+        struct xml_node *next = svg_href_link(doc, cur);
+        if (!next || !svg_tag_is(next, "filter")) break;
+        cur = next;
+    }
+    return node;
+}
+
+static const char *svg_filter_attr_resolved(struct svg_doc *doc, struct xml_node *node,
+        const char *name) {
+    return svg_filter_attr(doc, svg_resolve_filter_attr(doc, node, name), name);
 }
 
 static float svg_filter_list_number(const char *text, int index, float def) {
@@ -5202,17 +5227,21 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
         int have_object_bbox, struct svg_filter *out) {
     if (!svg_tag_is(node, "filter")) return 0;
     int units_bbox = 1;
-    const char *units = svg_filter_attr(c->doc, node, "filterUnits");
+    const char *units = svg_filter_attr_resolved(c->doc, node, "filterUnits");
     if (units && !strcmp(units, "userSpaceOnUse")) units_bbox = 0;
     int primitive_bbox = 0;
-    const char *prim_units = svg_filter_attr(c->doc, node, "primitiveUnits");
+    const char *prim_units = svg_filter_attr_resolved(c->doc, node, "primitiveUnits");
     if (prim_units && !strcmp(prim_units, "objectBoundingBox")) primitive_bbox = 1;
     if (units_bbox && !have_object_bbox) return 0;
     memset(out, 0, sizeof(*out));
-    out->rect[0] = svg_filter_number(c, node, "x", units_bbox, 0, -10, SVG_UNIT_PERCENT);
-    out->rect[1] = svg_filter_number(c, node, "y", units_bbox, 1, -10, SVG_UNIT_PERCENT);
-    out->rect[2] = svg_filter_number(c, node, "width", units_bbox, 0, 120, SVG_UNIT_PERCENT);
-    out->rect[3] = svg_filter_number(c, node, "height", units_bbox, 1, 120, SVG_UNIT_PERCENT);
+    out->rect[0] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "x"),
+        units_bbox, 0, -10, SVG_UNIT_PERCENT);
+    out->rect[1] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "y"),
+        units_bbox, 1, -10, SVG_UNIT_PERCENT);
+    out->rect[2] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "width"),
+        units_bbox, 0, 120, SVG_UNIT_PERCENT);
+    out->rect[3] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "height"),
+        units_bbox, 1, 120, SVG_UNIT_PERCENT);
     if (units_bbox) {
         out->rect[0] = out->rect[0] * object_bbox[2] + object_bbox[0];
         out->rect[1] = out->rect[1] * object_bbox[3] + object_bbox[1];
@@ -5220,6 +5249,19 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
         out->rect[3] = out->rect[3] * object_bbox[3];
     }
     if (!(out->rect[2] > 0.0f) || !(out->rect[3] > 0.0f)) return 0;
+    struct xml_node *primitives_node = NULL;
+    for (struct xml_node *cur = node; cur; ) {
+        int elements = 0;
+        for (int i = 0; i < cur->nchildren; i++)
+            if (svg_local_name(cur->children[i]->name)[0] == 'f' &&
+                    svg_local_name(cur->children[i]->name)[1] == 'e') elements++;
+        if (elements) { primitives_node = cur; break; }
+        struct xml_node *next = svg_href_link(c->doc, cur);
+        if (!next || !svg_tag_is(next, "filter")) break;
+        cur = next;
+    }
+    if (!primitives_node) return 0;
+    node = primitives_node;
     int nchildren = 0;
     for (int i = 0; i < node->nchildren; i++)
         if (svg_local_name(node->children[i]->name)[0] == 'f' &&
@@ -12761,7 +12803,7 @@ static void svg_do_anti_hairline(struct svg_hairctx *ctx, int32_t x0, int32_t y0
         if (y0 == y1) { slope = 0; kind = 0; }
         else {
             slope = svg_fdot16_fast_div(y1 - y0, x1 - x0);
-            fstart += (int32_t)((uint32_t)slope * (uint32_t)(32 - (x0 & 63)) + 32u) >> 6;
+            fstart += (slope * (32 - (x0 & 63)) + 32) >> 6;
             kind = 1;
         }
         if (istop - istart == 1) {
@@ -12808,7 +12850,7 @@ static void svg_do_anti_hairline(struct svg_hairctx *ctx, int32_t x0, int32_t y0
             slope = 0; kind = 2;
         } else {
             slope = svg_fdot16_fast_div(x1 - x0, y1 - y0);
-            fstart += (int32_t)((uint32_t)slope * (uint32_t)(32 - (y0 & 63)) + 32u) >> 6;
+            fstart += (slope * (32 - (y0 & 63)) + 32) >> 6;
             kind = 3;
         }
         if (istop - istart == 1) {

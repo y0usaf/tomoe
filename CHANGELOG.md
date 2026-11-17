@@ -11,6 +11,10 @@ The first release.
   its event loop itself, drives KMS through the kernel's ioctls, renders with EGL
   and GLES2 on GBM, and runs on DRM from a TTY, nested in another compositor, or
   headless. No wlroots.
+- Images and icons are decoded and rendered in-tree: PNG and JPEG without
+  libpng, libjpeg or cairo, and SVG icons and assets without resvg, with the
+  same antialiasing, gradients, patterns, markers, images, masks, clips and
+  filters.
 - The window manager, bar and wallpaper are Lisp extensions, in a Common Lisp
   dialect the C core carries, loaded from `~/.config/tomoe/init.lisp`, reloaded
   on save and live-patchable with `tomoe command patch`. A config that fails to
