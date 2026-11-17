@@ -9168,13 +9168,13 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         a = da * isa + sa;
         break;
     case 6: {
-        float br = (dr == da) ? (dr + sr * ida) :
+        float br = (dr == 0.0f) ? (sr * ida) :
             (sr == sa ? (sr + dr * isa) :
                 sa * fminf(da, (dr * sa) * (1.0f / (sa - sr))) + sr * ida + dr * isa);
-        float bg = (dg == da) ? (dg + sg * ida) :
+        float bg = (dg == 0.0f) ? (sg * ida) :
             (sg == sa ? (sg + dg * isa) :
                 sa * fminf(da, (dg * sa) * (1.0f / (sa - sg))) + sg * ida + dg * isa);
-        float bb = (db == da) ? (db + sb * ida) :
+        float bb = (db == 0.0f) ? (sb * ida) :
             (sb == sa ? (sb + db * isa) :
                 sa * fminf(da, (db * sa) * (1.0f / (sa - sb))) + sb * ida + db * isa);
         r = br; g = bg; b = bb;
@@ -9272,7 +9272,7 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         break;
     }
     case 14: {
-        float rr = sr * sa, gg = sg * sa, bb = sb * sa;
+        float rr = sr * da, gg = sg * da, bb = sb * da;
         svg_hq_set_lum(&rr, &gg, &bb, svg_hq_lum(dr, dg, db) * sa);
         svg_hq_clip_color(&rr, &gg, &bb, sa * da);
         r = sr * ida + dr * isa + rr;
