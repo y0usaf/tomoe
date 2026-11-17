@@ -9840,14 +9840,16 @@ static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
         svg_filter_prim(p, ts, rw, rh, rl, rt, scale_x, scale_y, pixmap, f->prims, results,
             i, &res);
         if (!res.valid) continue;
+        res.left = rl;
+        res.top = rt;
         if (have_sub && !(sub[0] == rl && sub[1] == rt && sub[2] == rl + rw &&
                 sub[3] == rt + rh)) {
-            int x0 = sub[0] - rl, y0 = sub[1] - rt;
-            int x1 = sub[2] - rl, y1 = sub[3] - rt;
-            for (int y = 0; y < rh; y++) {
-                for (int x = 0; x < rw; x++) {
-                    if (x >= x0 && x < x1 && y >= y0 && y < y1) continue;
-                    memset(res.pix.pixels + ((size_t)y * rw + x) * 4, 0, 4);
+            for (int y = 0; y < res.pix.height; y++) {
+                int gy = res.top + y;
+                for (int x = 0; x < res.pix.width; x++) {
+                    int gx = res.left + x;
+                    if (gx >= sub[0] && gx < sub[2] && gy >= sub[1] && gy < sub[3]) continue;
+                    memset(res.pix.pixels + ((size_t)y * res.pix.width + x) * 4, 0, 4);
                 }
             }
         }
