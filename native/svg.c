@@ -5992,6 +5992,7 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             }
             p->has_rect = 1;
         }
+        if (!(p->rect[2] > 0.0f) || !(p->rect[3] > 0.0f)) break;
         if (!strcmp(tag, "feFlood")) {
             p->kind = SVG_FE_FLOOD;
             unsigned char r = 0, g = 0, b = 0, a = 255;
@@ -12041,19 +12042,24 @@ static int svg_filter_subrect(struct svg_filter_prim *p, struct svg_matrix ts, i
         r[1] + r[3], 1 }, ts);
     out[0] = (int)floorf(b.left);
     out[1] = (int)floorf(b.top);
-    out[2] = (int)ceilf(b.right);
-    out[3] = (int)ceilf(b.bottom);
-    return out[2] > out[0] && out[3] > out[1];
+    out[2] = out[0] + (int)ceilf(b.right - b.left);
+    out[3] = out[1] + (int)ceilf(b.bottom - b.top);
+    if (out[2] <= out[0]) out[2] = out[0] + 1;
+    if (out[3] <= out[1]) out[3] = out[1] + 1;
+    return 1;
 }
 
 static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
         struct svg_pixmap *pixmap) {
-    if (!f || !f->nprims) return;
+    if (!f) return;
+    if (!f->nprims) { svg_pixmap_fill(pixmap, 0, 0, 0, 0); return; }
     float r[4] = { f->rect[0], f->rect[1], f->rect[2], f->rect[3] };
     struct svg_bbox rb = svg_bbox_transform((struct svg_bbox){ r[0], r[1], r[0] + r[2],
         r[1] + r[3], 1 }, ts);
     int rl = (int)floorf(rb.left), rt = (int)floorf(rb.top);
-    int rw = (int)ceilf(rb.right) - rl, rh = (int)ceilf(rb.bottom) - rt;
+    int rw = (int)ceilf(rb.right - rb.left), rh = (int)ceilf(rb.bottom - rb.top);
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
     if (rw > pixmap->width) rw = pixmap->width;
     if (rh > pixmap->height) rh = pixmap->height;
     if (rw <= 0 || rh <= 0 || (int64_t)rw * rh > 268435456) return;
