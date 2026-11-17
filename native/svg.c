@@ -3584,6 +3584,11 @@ struct svg_filter_prim {
     int tnodes;
     char nodes[16][64];
     int light;
+    float light_x, light_y, light_z;
+    float pat_x, pat_y, pat_z;
+    float light_exp;
+    float light_cone;
+    int has_cone;
 };
 
 struct svg_filter {
@@ -5177,8 +5182,18 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
         if (tag[0] != 'f' || tag[1] != 'e') continue;
         struct svg_filter_prim *p = &prims[count];
         p->cs = 1;
-        const char *csi = svg_filter_attr(c->doc, child, "color-interpolation-filters");
-        if (csi && !strcmp(csi, "sRGB")) p->cs = 0;
+        for (struct xml_node *n = child; n; n = n->parent) {
+            const char *csi = NULL;
+            if (n->style_index >= 0)
+                csi = svg_style_get(c->doc, &c->doc->styles[n->style_index],
+                    "color-interpolation-filters");
+            if (!csi) csi = svg_xml_attr(n, "color-interpolation-filters");
+            if (csi) {
+                if (!strcmp(csi, "sRGB")) p->cs = 0;
+                else if (!strcmp(csi, "linearRGB")) p->cs = 1;
+                break;
+            }
+        }
         const char *res = svg_filter_attr(c->doc, child, "result");
         if (res) { strncpy(p->result, res, sizeof(p->result) - 1); }
         const char *in1 = svg_filter_attr(c->doc, child, "in");
@@ -5298,10 +5313,13 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             }
         } else if (!strcmp(tag, "feConvolveMatrix")) {
             p->kind = SVG_FE_CONVOLVE;
-            p->ktarget_x = (int)svg_filter_list_number(
-                svg_filter_attr(c->doc, child, "targetX"), 0, -1);
-            p->ktarget_y = (int)svg_filter_list_number(
-                svg_filter_attr(c->doc, child, "targetY"), 0, -1);
+            float target = 0.0f;
+            int have_target_x = svg_filter_single_number(
+                svg_filter_attr(c->doc, child, "targetX"), &target);
+            p->ktarget_x = have_target_x ? (int)target : -1;
+            int have_target_y = svg_filter_single_number(
+                svg_filter_attr(c->doc, child, "targetY"), &target);
+            p->ktarget_y = have_target_y ? (int)target : -1;
             const char *edge = svg_filter_attr(c->doc, child, "edgeMode");
             p->kedge = 0;
             if (edge && !strcmp(edge, "duplicate")) p->kedge = 1;
@@ -5321,13 +5339,14 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
                 free(prims);
                 return 0;
             }
+            if ((have_target_x && (p->ktarget_x < 0 || p->ktarget_x >= p->kcols)) ||
+                    (have_target_y && (p->ktarget_y < 0 || p->ktarget_y >= p->krows))) {
+                p->kind = SVG_FE_FLOOD;
+                memset(p->color, 0, sizeof(p->color));
+                p->opacity = 0.0f;
+            }
             if (p->ktarget_x < 0) p->ktarget_x = p->kcols / 2;
             if (p->ktarget_y < 0) p->ktarget_y = p->krows / 2;
-            if (p->ktarget_x >= p->kcols || p->ktarget_y >= p->krows) {
-                for (int k = 0; k <= count; k++) free(prims[k].kernel);
-                free(prims);
-                return 0;
-            }
         } else if (!strcmp(tag, "feMorphology")) {
             p->kind = SVG_FE_MORPHOLOGY;
             const char *op = svg_filter_attr(c->doc, child, "operator");
@@ -5361,55 +5380,102 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->mode = chy ? (chy[0] == 'R' ? 0 : chy[0] == 'G' ? 1 : chy[0] == 'B' ? 2 : 3) : 3;
         } else if (!strcmp(tag, "feTurbulence")) {
             p->kind = SVG_FE_TURBULENCE;
-            p->f[0] = svg_filter_number(c, child, "baseFrequency", primitive_bbox, 0, 0,
-                SVG_UNIT_NONE);
-            p->f[1] = svg_filter_number(c, child, "baseFrequency", primitive_bbox, 1, 0,
-                SVG_UNIT_NONE);
-            p->f[2] = (float)svg_filter_list_number(
-                svg_filter_attr(c->doc, child, "numOctaves"), 0, 1);
-            p->f[3] = (float)svg_filter_list_number(svg_filter_attr(c->doc, child, "seed"), 0, 0);
+            float bf[2];
+            float fx = 0.0f, fy = 0.0f;
+            int n = svg_filter_number_list(svg_filter_attr(c->doc, child, "baseFrequency"),
+                bf, 2);
+            if (n >= 0) {
+                if (n == 2) { fx = bf[0]; fy = bf[1]; }
+                else if (n == 1) { fx = bf[0]; fy = bf[0]; }
+                if (!(fx >= 0.0f) || !(fy >= 0.0f)) { fx = 0.0f; fy = 0.0f; }
+            }
+            p->f[0] = fx;
+            p->f[1] = fy;
+            float octaves = 1.0f, seed = 0.0f;
+            svg_filter_single_number(svg_filter_attr(c->doc, child, "numOctaves"), &octaves);
+            if (!(octaves >= 0.0f)) octaves = 0.0f;
+            svg_filter_single_number(svg_filter_attr(c->doc, child, "seed"), &seed);
+            p->f[2] = roundf(octaves);
+            p->f[3] = truncf(seed);
             const char *stitch = svg_filter_attr(c->doc, child, "stitchTiles");
             p->op = stitch && !strcmp(stitch, "stitch") ? 1 : 0;
             const char *type = svg_filter_attr(c->doc, child, "type");
             p->mode = type && !strcmp(type, "fractalNoise") ? 1 : 0;
         } else if (!strcmp(tag, "feDiffuseLighting") || !strcmp(tag, "feSpecularLighting")) {
             p->kind = !strcmp(tag, "feDiffuseLighting") ? SVG_FE_DIFFUSE : SVG_FE_SPECULAR;
-            p->f[0] = svg_filter_number(c, child, "surfaceScale", primitive_bbox, 2, 1,
-                SVG_UNIT_NONE);
-            p->f[1] = !strcmp(tag, "feDiffuseLighting") ?
-                svg_filter_number(c, child, "diffuseConstant", primitive_bbox, 2, 1,
-                    SVG_UNIT_NONE) :
-                svg_filter_number(c, child, "specularConstant", primitive_bbox, 2, 1,
-                    SVG_UNIT_NONE);
-            p->f[2] = svg_filter_number(c, child, "specularExponent", primitive_bbox, 2, 1,
-                SVG_UNIT_NONE);
+            p->f[0] = 1.0f;
+            p->f[1] = 1.0f;
+            p->f[2] = 1.0f;
+            svg_filter_single_number(svg_filter_attr(c->doc, child, "surfaceScale"), &p->f[0]);
+            svg_filter_single_number(svg_filter_attr(c->doc, child,
+                !strcmp(tag, "feDiffuseLighting") ? "diffuseConstant" : "specularConstant"),
+                &p->f[1]);
+            if (p->kind == SVG_FE_SPECULAR)
+                svg_filter_single_number(svg_filter_attr(c->doc, child, "specularExponent"),
+                    &p->f[2]);
             unsigned char r = 255, g = 255, b = 255, a = 255;
             const char *col = svg_filter_attr(c->doc, child, "lighting-color");
-            if (col) svg_parse_color(col, &r, &g, &b, &a);
+            if (col) {
+                if (!strcmp(col, "currentColor")) {
+                    const char *cur = svg_style_find_inherited(c->doc, &c->doc->styles[child->style_index], "color");
+                    if (!cur || !svg_parse_color(cur, &r, &g, &b, &a)) { r = g = b = 0; }
+                } else if (!svg_parse_color(col, &r, &g, &b, &a)) {
+                    r = g = b = 255;
+                }
+            }
             p->color[0] = r; p->color[1] = g; p->color[2] = b;
             p->light = 0;
+            p->has_cone = 0;
+            p->light_cone = 0.0f;
+            p->light_exp = 1.0f;
             for (int j = 0; j < child->nchildren; j++) {
                 struct xml_node *ln = child->children[j];
                 const char *lt = svg_local_name(ln->name);
+                float vx = 0.0f, vy = 0.0f, vz = 0.0f;
                 if (!strcmp(lt, "feDistantLight")) {
                     p->light = 1;
                     p->f[3] = svg_filter_list_number(
                         svg_filter_attr(c->doc, ln, "azimuth"), 0, 0);
                     p->f[4] = svg_filter_list_number(
                         svg_filter_attr(c->doc, ln, "elevation"), 0, 0);
+                    break;
                 } else if (!strcmp(lt, "fePointLight")) {
                     p->light = 2;
-                    p->f[3] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "x"), 0, 0);
-                    p->f[4] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "y"), 0, 0);
-                    p->f[5] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "z"), 0, 0);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "x"), &vx);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "y"), &vy);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "z"), &vz);
+                    p->light_x = vx; p->light_y = vy; p->light_z = vz;
+                    break;
                 } else if (!strcmp(lt, "feSpotLight")) {
                     p->light = 3;
-                    p->f[3] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "x"), 0, 0);
-                    p->f[4] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "y"), 0, 0);
-                    p->f[5] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "z"), 0, 0);
-                    p->f[6] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "pointsAtX"), 0, 0);
-                    p->f[7] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "pointsAtY"), 0, 0);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "x"), &vx);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "y"), &vy);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "z"), &vz);
+                    p->light_x = vx; p->light_y = vy; p->light_z = vz;
+                    vx = vy = vz = 0.0f;
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "pointsAtX"), &vx);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "pointsAtY"), &vy);
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "pointsAtZ"), &vz);
+                    p->pat_x = vx; p->pat_y = vy; p->pat_z = vz;
+                    p->light_exp = 1.0f;
+                    svg_filter_single_number(svg_filter_attr(c->doc, ln, "specularExponent"),
+                        &p->light_exp);
+                    if (!(p->light_exp > 0.0f)) p->light_exp = 1.0f;
+                    if (svg_filter_single_number(
+                            svg_filter_attr(c->doc, ln, "limitingConeAngle"), &p->light_cone))
+                        p->has_cone = 1;
+                    break;
                 }
+            }
+            if (!p->light) {
+                p->kind = SVG_FE_FLOOD;
+                memset(p->color, 0, sizeof(p->color));
+                p->opacity = 0.0f;
+            } else if (p->kind == SVG_FE_SPECULAR &&
+                    (!(p->f[2] >= 1.0f) || !(p->f[2] <= 128.0f))) {
+                p->kind = SVG_FE_FLOOD;
+                memset(p->color, 0, sizeof(p->color));
+                p->opacity = 0.0f;
             }
         } else if (!strcmp(tag, "feGaussianBlur")) {
             p->kind = SVG_FE_GAUSSIAN_BLUR;
@@ -9841,6 +9907,365 @@ static void svg_filter_get_input(struct svg_filter_prim *prims, struct svg_fimg 
     }
 }
 
+struct svg_lvec { float x, y, z; };
+
+static struct svg_lvec svg_lvec(float x, float y, float z) {
+    struct svg_lvec v = { x, y, z };
+    return v;
+}
+
+static float svg_lvec_dot(struct svg_lvec a, struct svg_lvec b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static struct svg_lvec svg_lvec_normalized(struct svg_lvec v) {
+    float len = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len != 0.0f) {
+        v.x /= len;
+        v.y /= len;
+        v.z /= len;
+    }
+    return v;
+}
+
+static unsigned char svg_light_alpha(struct svg_fimg *img, int x, int y) {
+    return img->pix.pixels[((size_t)y * (size_t)img->pix.width + (size_t)x) * 4 + 3];
+}
+
+struct svg_light_normal { float fx, fy, nx, ny; };
+
+static struct svg_light_normal svg_light_normal_at(struct svg_fimg *img, int x, int y) {
+    float fx = 0.25f, fy = 0.25f, nx = 0.0f, ny = 0.0f;
+    int w = img->pix.width, h = img->pix.height;
+    int left = x == 0, right = x == w - 1, top = y == 0, bottom = y == h - 1;
+    float tl = left || top ? 0.0f : (float)svg_light_alpha(img, x - 1, y - 1);
+    float tc = top ? 0.0f : (float)svg_light_alpha(img, x, y - 1);
+    float tr = right || top ? 0.0f : (float)svg_light_alpha(img, x + 1, y - 1);
+    float ml = left ? 0.0f : (float)svg_light_alpha(img, x - 1, y);
+    float mr = right ? 0.0f : (float)svg_light_alpha(img, x + 1, y);
+    float bl = left || bottom ? 0.0f : (float)svg_light_alpha(img, x - 1, y + 1);
+    float bc = bottom ? 0.0f : (float)svg_light_alpha(img, x, y + 1);
+    float br = right || bottom ? 0.0f : (float)svg_light_alpha(img, x + 1, y + 1);
+    float c = (float)svg_light_alpha(img, x, y);
+    if (left && top) {
+        fx = fy = 2.0f / 3.0f;
+        nx = -2.0f * c + 2.0f * mr - bc + br;
+        ny = -2.0f * c - mr + 2.0f * bc + br;
+    } else if (right && top) {
+        fx = fy = 2.0f / 3.0f;
+        nx = -2.0f * ml + 2.0f * c - bl + bc;
+        ny = -ml - 2.0f * c + bl + 2.0f * bc;
+    } else if (left && bottom) {
+        fx = fy = 2.0f / 3.0f;
+        nx = -tc + tr - 2.0f * c + 2.0f * mr;
+        ny = -2.0f * tc - tr + 2.0f * c + mr;
+    } else if (right && bottom) {
+        fx = fy = 2.0f / 3.0f;
+        nx = -tl + tc - 2.0f * ml + 2.0f * c;
+        ny = -tl - 2.0f * tc + ml + 2.0f * c;
+    } else if (top) {
+        fx = 1.0f / 3.0f; fy = 0.5f;
+        nx = -2.0f * ml + 2.0f * mr - bl + br;
+        ny = -ml - 2.0f * c - mr + bl + 2.0f * bc + br;
+    } else if (bottom) {
+        fx = 1.0f / 3.0f; fy = 0.5f;
+        nx = -tl + tr - 2.0f * ml + 2.0f * mr;
+        ny = -tl - 2.0f * tc - tr + ml + 2.0f * c + mr;
+    } else if (left) {
+        fx = 0.5f; fy = 1.0f / 3.0f;
+        nx = -tc + tr - 2.0f * c + 2.0f * mr - bc + br;
+        ny = -2.0f * tc - tr + 2.0f * bc + br;
+    } else if (right) {
+        fx = 0.5f; fy = 1.0f / 3.0f;
+        nx = -tl + tc - 2.0f * ml + 2.0f * c - bl + bc;
+        ny = -tl - 2.0f * tc + bl + 2.0f * bc;
+    } else {
+        nx = -tl + tr - 2.0f * ml + 2.0f * mr - bl + br;
+        ny = -tl - 2.0f * tc - tr + bl + 2.0f * bc + br;
+    }
+    struct svg_light_normal n = { fx, fy, nx, ny };
+    return n;
+}
+
+static unsigned char svg_light_round(float v) {
+    if (!(v > 0.0f)) v = 0.0f;
+    if (v > 255.0f) v = 255.0f;
+    return (unsigned char)(v + 0.5f);
+}
+
+static void svg_light_paint(struct svg_filter_prim *p, struct svg_matrix ts,
+        int region_w, int region_h, int region_left, int region_top, struct svg_fimg *in,
+        struct svg_fimg *res) {
+    float lx = p->light_x, ly = p->light_y, lz = p->light_z;
+    float pax = p->pat_x, pay = p->pat_y, paz = p->pat_z;
+    struct svg_lvec light_vector = svg_lvec(1.0f, 1.0f, 1.0f);
+    if (p->light >= 2) {
+        float sz = sqrtf(ts.sx * ts.sx + ts.sy * ts.sy) / 1.4142135623730951f;
+        struct svg_point pt = { lx, ly };
+        svg_matrix_map(ts, &pt);
+        lx = pt.x - (float)region_left;
+        ly = pt.y - (float)region_top;
+        lz *= sz;
+        if (p->light == 3) {
+            struct svg_point pat = { pax, pay };
+            svg_matrix_map(ts, &pat);
+            pax = pat.x - (float)region_left;
+            pay = pat.y - (float)region_top;
+            paz *= sz;
+        }
+    } else if (p->light == 1) {
+        float azimuth = p->f[3] * (3.14159265358979323846f / 180.0f);
+        float elevation = p->f[4] * (3.14159265358979323846f / 180.0f);
+        light_vector = svg_lvec(cosf(azimuth) * cosf(elevation), sinf(azimuth) * cosf(elevation),
+            sinf(elevation));
+    }
+    if (in->pix.width < 3 || in->pix.height < 3) return;
+    int width = res->pix.width, height = res->pix.height;
+    float scale = p->f[0];
+    int specular = p->kind == SVG_FE_SPECULAR;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            struct svg_light_normal normal = svg_light_normal_at(in, x, y);
+            if (p->light >= 2) {
+                float nz = (float)svg_light_alpha(in, x, y) / 255.0f * scale;
+                struct svg_lvec v = svg_lvec(lx - (float)x, ly - (float)y, lz - nz);
+                light_vector = svg_lvec_normalized(v);
+            }
+            float cr = (float)p->color[0], cg = (float)p->color[1], cb = (float)p->color[2];
+            if (p->light == 3) {
+                struct svg_lvec origin = svg_lvec(lx, ly, lz);
+                struct svg_lvec direction = svg_lvec_normalized(
+                    svg_lvec(pax - origin.x, pay - origin.y, paz - origin.z));
+                float minus = -svg_lvec_dot(light_vector, direction);
+                if (minus <= 0.0f) { cr = cg = cb = 0.0f; }
+                else if (p->has_cone &&
+                        minus < cosf(p->light_cone * (3.14159265358979323846f / 180.0f))) {
+                    cr = cg = cb = 0.0f;
+                } else {
+                    float factor = powf(minus, p->light_exp);
+                    cr = (float)svg_light_round(cr * factor);
+                    cg = (float)svg_light_round(cg * factor);
+                    cb = (float)svg_light_round(cb * factor);
+                }
+            }
+            float k;
+            if (normal.nx == 0.0f && normal.ny == 0.0f) {
+                if (!specular) {
+                    k = light_vector.z;
+                } else {
+                    struct svg_lvec h = svg_lvec(light_vector.x, light_vector.y, light_vector.z + 1.0f);
+                    float hlen = sqrtf(h.x * h.x + h.y * h.y + h.z * h.z);
+                    if (hlen == 0.0f) k = 0.0f;
+                    else {
+                        float ndoth = h.z / hlen;
+                        if (p->f[2] == 1.0f) k = ndoth;
+                        else k = powf(ndoth, p->f[2]);
+                    }
+                }
+            } else {
+                float nx = -normal.nx * (scale / 255.0f) * normal.fx;
+                float ny = -normal.ny * (scale / 255.0f) * normal.fy;
+                struct svg_lvec n = svg_lvec(nx, ny, 1.0f);
+                if (!specular) {
+                    k = svg_lvec_dot(n, light_vector) / sqrtf(n.x * n.x + n.y * n.y + 1.0f);
+                } else {
+                    struct svg_lvec h = svg_lvec(light_vector.x, light_vector.y, light_vector.z + 1.0f);
+                    float hlen = sqrtf(h.x * h.x + h.y * h.y + h.z * h.z);
+                    if (hlen == 0.0f) k = 0.0f;
+                    else {
+                        float ndoth = svg_lvec_dot(n, h) /
+                            sqrtf(n.x * n.x + n.y * n.y + 1.0f) / hlen;
+                        if (p->f[2] == 1.0f) k = ndoth;
+                        else k = powf(ndoth, p->f[2]);
+                    }
+                }
+            }
+            float factor = p->f[1] * k;
+            unsigned char r = svg_light_round(cr * factor);
+            unsigned char g = svg_light_round(cg * factor);
+            unsigned char b = svg_light_round(cb * factor);
+            unsigned char a = specular ? (r > g ? (r > b ? r : b) : (g > b ? g : b)) : 255;
+            unsigned char *px = res->pix.pixels + ((size_t)y * (size_t)width + (size_t)x) * 4;
+            px[0] = r; px[1] = g; px[2] = b; px[3] = a;
+        }
+    }
+    (void)region_w;
+}
+
+#define SVG_RAND_M 2147483647
+#define SVG_RAND_A 16807
+#define SVG_RAND_Q 127773
+#define SVG_RAND_R 2836
+#define SVG_B_SIZE 0x100
+#define SVG_B_LEN (SVG_B_SIZE + SVG_B_SIZE + 2)
+#define SVG_BM 0xff
+#define SVG_PERLIN_N 0x1000
+
+struct svg_stitch { int width, height, wrap_x, wrap_y; };
+
+static int svg_turb_random(int seed) {
+    int result = SVG_RAND_A * (seed % SVG_RAND_Q) - SVG_RAND_R * (seed / SVG_RAND_Q);
+    if (result <= 0) result += SVG_RAND_M;
+    return result;
+}
+
+static double svg_turb_s_curve(double t) {
+    return t * t * (3.0 - 2.0 * t);
+}
+
+static double svg_turb_lerp(double t, double a, double b) {
+    return a + t * (b - a);
+}
+
+static void svg_turb_init(int seed, int *lattice, double (*gradient)[2]) {
+    if (seed <= 0) seed = -seed % (SVG_RAND_M - 1) + 1;
+    if (seed > SVG_RAND_M - 1) seed = SVG_RAND_M - 1;
+    for (int k = 0; k < 4; k++) {
+        for (int i = 0; i < SVG_B_SIZE; i++) {
+            lattice[i] = i;
+            for (int j = 0; j < 2; j++) {
+                seed = svg_turb_random(seed);
+                gradient[k * SVG_B_LEN + i][j] =
+                    ((double)(seed % (SVG_B_SIZE + SVG_B_SIZE)) - (double)SVG_B_SIZE) /
+                    (double)SVG_B_SIZE;
+            }
+            double sx = gradient[k * SVG_B_LEN + i][0];
+            double sy = gradient[k * SVG_B_LEN + i][1];
+            double len = sqrt(sx * sx + sy * sy);
+            gradient[k * SVG_B_LEN + i][0] /= len;
+            gradient[k * SVG_B_LEN + i][1] /= len;
+        }
+    }
+    for (int i = SVG_B_SIZE - 1; i >= 1; i--) {
+        int k = lattice[i];
+        seed = svg_turb_random(seed);
+        int j = seed % SVG_B_SIZE;
+        lattice[i] = lattice[j];
+        lattice[j] = k;
+    }
+    for (int i = 0; i < SVG_B_SIZE + 2; i++) {
+        lattice[SVG_B_SIZE + i] = lattice[i];
+        for (int g = 0; g < 4; g++)
+            for (int j = 0; j < 2; j++)
+                gradient[g * SVG_B_LEN + SVG_B_SIZE + i][j] = gradient[g * SVG_B_LEN + i][j];
+    }
+}
+
+static double svg_turb_noise2(int channel, double x, double y, const int *lattice,
+        const double (*gradient)[2], int has_stitch, struct svg_stitch info) {
+    double t = x + (double)SVG_PERLIN_N;
+    int bx0 = (int)t, bx1 = bx0 + 1;
+    double rx0 = t - (double)(long long)t;
+    double rx1 = rx0 - 1.0;
+    t = y + (double)SVG_PERLIN_N;
+    int by0 = (int)t, by1 = by0 + 1;
+    double ry0 = t - (double)(long long)t;
+    double ry1 = ry0 - 1.0;
+    if (has_stitch) {
+        if (bx0 >= info.wrap_x) bx0 -= info.width;
+        if (bx1 >= info.wrap_x) bx1 -= info.width;
+        if (by0 >= info.wrap_y) by0 -= info.height;
+        if (by1 >= info.wrap_y) by1 -= info.height;
+    }
+    bx0 &= SVG_BM; bx1 &= SVG_BM; by0 &= SVG_BM; by1 &= SVG_BM;
+    int i = lattice[bx0], j = lattice[bx1];
+    int b00 = lattice[i + by0], b10 = lattice[j + by0];
+    int b01 = lattice[i + by1], b11 = lattice[j + by1];
+    double sx = svg_turb_s_curve(rx0), sy = svg_turb_s_curve(ry0);
+    const double (*g)[2] = gradient + channel * SVG_B_LEN;
+    double u = rx0 * g[b00][0] + ry0 * g[b00][1];
+    double v = rx1 * g[b10][0] + ry0 * g[b10][1];
+    double a = svg_turb_lerp(sx, u, v);
+    u = rx0 * g[b01][0] + ry1 * g[b01][1];
+    v = rx1 * g[b11][0] + ry1 * g[b11][1];
+    double b = svg_turb_lerp(sx, u, v);
+    return svg_turb_lerp(sy, a, b);
+}
+
+static double svg_turbulence(int channel, double x, double y, double tile_x, double tile_y,
+        double tile_w, double tile_h, double bfx, double bfy, int octaves, int fractal,
+        int stitching, const int *lattice, const double (*gradient)[2]) {
+    struct svg_stitch stitch;
+    int has_stitch = 0;
+    if (stitching) {
+        if (!(bfx == 0.0)) {
+            double lo = floor(tile_w * bfx) / tile_w;
+            double hi = ceil(tile_w * bfx) / tile_w;
+            bfx = (bfx / lo < hi / bfx) ? lo : hi;
+        }
+        if (!(bfy == 0.0)) {
+            double lo = floor(tile_h * bfy) / tile_h;
+            double hi = ceil(tile_h * bfy) / tile_h;
+            bfy = (bfy / lo < hi / bfy) ? lo : hi;
+        }
+        stitch.width = (int)(tile_w * bfx + 0.5);
+        stitch.height = (int)(tile_h * bfy + 0.5);
+        stitch.wrap_x = (int)(tile_x * bfx + (double)SVG_PERLIN_N + (double)stitch.width);
+        stitch.wrap_y = (int)(tile_y * bfy + (double)SVG_PERLIN_N + (double)stitch.height);
+        has_stitch = 1;
+    }
+    double sum = 0.0;
+    x *= bfx;
+    y *= bfy;
+    double ratio = 1.0;
+    for (int i = 0; i < octaves; i++) {
+        double n = svg_turb_noise2(channel, x, y, lattice, gradient, has_stitch, stitch);
+        sum += (fractal ? n : fabs(n)) / ratio;
+        x *= 2.0;
+        y *= 2.0;
+        ratio *= 2.0;
+        if (has_stitch) {
+            stitch.width *= 2;
+            stitch.wrap_x = 2 * stitch.wrap_x - SVG_PERLIN_N;
+            stitch.height *= 2;
+            stitch.wrap_y = 2 * stitch.wrap_y - SVG_PERLIN_N;
+        }
+    }
+    return sum;
+}
+
+static void svg_turbulence_paint(struct svg_filter_prim *p, struct svg_matrix ts, int region_w,
+        int region_h, int region_left, int region_top, struct svg_fimg *res) {
+    double sx = sqrt((double)ts.sx * (double)ts.sx + (double)ts.kx * (double)ts.kx);
+    double sy = sqrt((double)ts.ky * (double)ts.ky + (double)ts.sy * (double)ts.sy);
+    if (sx == 0.0 || sy == 0.0) return;
+    double offset_x = (double)region_left - (double)ts.tx;
+    double offset_y = (double)region_top - (double)ts.ty;
+    int *lattice = svg_alloc(sizeof(int) * SVG_B_LEN);
+    double (*gradient)[2] = svg_alloc(sizeof(double) * 2 * 4 * SVG_B_LEN);
+    if (!lattice || !gradient) { free(lattice); free(gradient); return; }
+    svg_turb_init((int)p->f[3], lattice, gradient);
+    int octaves = (int)p->f[2];
+    int fractal = p->mode;
+    for (int y = 0; y < region_h && y < res->pix.height; y++) {
+        for (int x = 0; x < region_w && x < res->pix.width; x++) {
+            double tx = ((double)x + offset_x) / sx;
+            double ty = ((double)y + offset_y) / sy;
+            unsigned char px[4];
+            for (int c = 0; c < 4; c++) {
+                double n = svg_turbulence(c, tx, ty, (double)x, (double)y, (double)region_w,
+                    (double)region_h, (double)p->f[0], (double)p->f[1], octaves, fractal,
+                    p->op, lattice, gradient);
+                if (fractal) n = (n * 255.0 + 255.0) / 2.0;
+                else n = n * 255.0;
+                float v = (float)n;
+                if (!(v > 0.0f)) v = 0.0f;
+                if (v > 255.0f) v = 255.0f;
+                px[c] = (unsigned char)(v + 0.5f);
+            }
+            float a = (float)px[3] / 255.0f;
+            unsigned char *dst = res->pix.pixels + ((size_t)y * (size_t)res->pix.width +
+                (size_t)x) * 4;
+            dst[0] = (unsigned char)((float)px[0] * a + 0.5f);
+            dst[1] = (unsigned char)((float)px[1] * a + 0.5f);
+            dst[2] = (unsigned char)((float)px[2] * a + 0.5f);
+            dst[3] = px[3];
+        }
+    }
+    free(lattice);
+    free(gradient);
+}
+
 static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int region_w,
         int region_h, int region_left, int region_top, float scale_x, float scale_y,
         struct svg_pixmap *source, struct svg_filter_prim *prims, struct svg_fimg *results,
@@ -10136,6 +10561,24 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         free(buf);
         return;
     }
+    case SVG_FE_DIFFUSE:
+    case SVG_FE_SPECULAR: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, region_w, region_h, &in);
+        if (!in.valid) return;
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) { svg_fimg_free(&in); return; }
+        svg_light_paint(p, ts, region_w, region_h, region_left, region_top, &in, res);
+        svg_fimg_free(&in);
+        return;
+    }
+    case SVG_FE_TURBULENCE: {
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) return;
+        svg_turbulence_paint(p, ts, region_w, region_h, region_left, region_top, res);
+        return;
+    }
     case SVG_FE_TILE: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
@@ -10181,6 +10624,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
         int w = res->pix.width, h = res->pix.height;
+        if (p->kpreserve) svg_fimg_demultiply(res->pix.pixels, (size_t)w * (size_t)h);
         unsigned char *buf = svg_alloc((size_t)w * h * 4);
         if (!buf) return;
         for (int y = 0; y < h; y++) {
