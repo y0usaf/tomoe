@@ -643,174 +643,738 @@ enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
     }
 }
 
-struct png_bitwriter {
-    unsigned char *buf;
-    size_t pos;
-    uint64_t bitbuf;
-    unsigned bitcnt;
+#define DEF_MIN_MATCH 3u
+#define DEF_MAX_MATCH 258u
+#define DEF_MIN_LOOKAHEAD 262u
+#define DEF_WIN_INIT 258u
+#define DEF_LENGTH_CODES 29
+#define DEF_LITERALS 256
+#define DEF_L_CODES 286
+#define DEF_D_CODES 30
+#define DEF_BL_CODES 19
+#define DEF_HEAP_SIZE 573
+#define DEF_MAX_BITS 15
+#define DEF_MAX_BL_BITS 7
+#define DEF_END_BLOCK 256
+#define DEF_LIT_BUFSIZE 16384u
+#define DEF_HASH_SIZE 32768u
+#define DEF_HASH_MASK 32767u
+#define DEF_HASH_SHIFT 5u
+#define DEF_TOO_FAR 4096u
+
+struct def_ct {
+    union { uint16_t freq, code; } fc;
+    union { uint16_t dad, len; } dl;
 };
 
-static void bw_put(struct png_bitwriter *bw, uint32_t bits, unsigned count) {
-    bw->bitbuf |= (uint64_t)bits << bw->bitcnt;
-    bw->bitcnt += count;
-    while (bw->bitcnt >= 8) {
-        bw->buf[bw->pos++] = (unsigned char)(bw->bitbuf & 0xffu);
-        bw->bitbuf >>= 8;
-        bw->bitcnt -= 8;
+struct def_static_desc {
+    const struct def_ct *static_tree;
+    const int *extra_bits;
+    int extra_base;
+    int elems;
+    int max_length;
+};
+
+struct def_tree_desc {
+    struct def_ct *dyn_tree;
+    int max_code;
+    const struct def_static_desc *stat_desc;
+};
+
+struct png_deflate {
+    const unsigned char *in;
+    size_t in_len, in_pos;
+    unsigned char *out;
+    size_t out_len, out_cap;
+    unsigned w_bits, w_size, w_mask;
+    size_t window_size, high_water;
+    unsigned char *window;
+    uint16_t *prev, *head;
+    unsigned ins_h;
+    int64_t block_start;
+    unsigned strstart, match_start, lookahead, insert;
+    unsigned match_length, prev_length, prev_match;
+    int match_available, filtered;
+    unsigned char *pending_buf, *sym_buf;
+    size_t pending;
+    unsigned sym_next, sym_end;
+    uint16_t bi_buf;
+    int bi_valid;
+    struct def_ct dyn_ltree[DEF_HEAP_SIZE];
+    struct def_ct dyn_dtree[2 * DEF_D_CODES + 1];
+    struct def_ct bl_tree[2 * DEF_BL_CODES + 1];
+    struct def_ct static_ltree[DEF_L_CODES + 2];
+    struct def_ct static_dtree[DEF_D_CODES];
+    unsigned char dist_code[512];
+    unsigned char length_code[DEF_MAX_MATCH - DEF_MIN_MATCH + 1];
+    int base_length[DEF_LENGTH_CODES];
+    int base_dist[DEF_D_CODES];
+    struct def_static_desc static_l_desc, static_d_desc, static_bl_desc;
+    struct def_tree_desc l_desc, d_desc, bl_desc;
+    uint16_t bl_count[DEF_MAX_BITS + 1];
+    int heap[DEF_HEAP_SIZE];
+    int heap_len, heap_max;
+    unsigned char depth[DEF_HEAP_SIZE];
+    unsigned long opt_len, static_len;
+    uint32_t adler;
+};
+
+static const int def_extra_lbits[DEF_LENGTH_CODES] = {
+    0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
+};
+
+static const int def_extra_dbits[DEF_D_CODES] = {
+    0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13
+};
+
+static const int def_extra_blbits[DEF_BL_CODES] = {
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,3,7
+};
+
+static const unsigned char def_bl_order[DEF_BL_CODES] = {
+    16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
+};
+
+static void def_put_byte(struct png_deflate *s, unsigned char c) {
+    s->pending_buf[s->pending++] = c;
+}
+
+static void def_put_short(struct png_deflate *s, uint16_t w) {
+    def_put_byte(s, (unsigned char)(w & 0xffu));
+    def_put_byte(s, (unsigned char)(w >> 8));
+}
+
+static void def_put_short_msb(struct png_deflate *s, uint16_t w) {
+    def_put_byte(s, (unsigned char)(w >> 8));
+    def_put_byte(s, (unsigned char)(w & 0xffu));
+}
+
+static unsigned def_bi_reverse(unsigned code, int len) {
+    unsigned res = 0;
+    do {
+        res |= code & 1u;
+        code >>= 1;
+        res <<= 1;
+    } while (--len > 0);
+    return res >> 1;
+}
+
+static void def_send_bits(struct png_deflate *s, int value, int length) {
+    unsigned uval = (unsigned)value;
+    if (s->bi_valid > 16 - length) {
+        s->bi_buf |= (uint16_t)(uval << s->bi_valid);
+        def_put_short(s, s->bi_buf);
+        s->bi_buf = (uint16_t)(uval >> (16 - s->bi_valid));
+        s->bi_valid += length - 16;
+    } else {
+        s->bi_buf |= (uint16_t)(uval << s->bi_valid);
+        s->bi_valid += length;
     }
 }
 
-static void bw_align(struct png_bitwriter *bw) {
-    if (bw->bitcnt) {
-        bw->buf[bw->pos++] = (unsigned char)(bw->bitbuf & 0xffu);
-        bw->bitbuf = 0;
-        bw->bitcnt = 0;
+static void def_bi_windup(struct png_deflate *s) {
+    if (s->bi_valid > 8) {
+        def_put_short(s, s->bi_buf);
+    } else if (s->bi_valid > 0) {
+        def_put_byte(s, (unsigned char)s->bi_buf);
+    }
+    s->bi_buf = 0;
+    s->bi_valid = 0;
+}
+
+static void def_gen_codes(struct def_ct *tree, int max_code, const uint16_t *bl_count) {
+    uint16_t next_code[DEF_MAX_BITS + 1];
+    unsigned code = 0;
+    for (int bits = 1; bits <= DEF_MAX_BITS; bits++) {
+        code = (code + bl_count[bits - 1]) << 1;
+        next_code[bits] = (uint16_t)code;
+    }
+    for (int n = 0; n <= max_code; n++) {
+        int len = tree[n].dl.len;
+        if (len == 0) continue;
+        tree[n].fc.code = (uint16_t)def_bi_reverse(next_code[len]++, len);
     }
 }
 
-static unsigned rev_bits(unsigned val, unsigned len) {
-    unsigned r = 0;
-    for (unsigned i = 0; i < len; i++)
-        if (val & (1u << (len - 1u - i))) r |= 1u << i;
-    return r;
+static void def_init_block(struct png_deflate *s) {
+    for (int n = 0; n < DEF_L_CODES; n++) s->dyn_ltree[n].fc.freq = 0;
+    for (int n = 0; n < DEF_D_CODES; n++) s->dyn_dtree[n].fc.freq = 0;
+    for (int n = 0; n < DEF_BL_CODES; n++) s->bl_tree[n].fc.freq = 0;
+    s->dyn_ltree[DEF_END_BLOCK].fc.freq = 1;
+    s->opt_len = s->static_len = 0;
+    s->sym_next = 0;
 }
 
-static void bw_lit(struct png_bitwriter *bw, unsigned sym) {
-    unsigned code, len;
-    if (sym < 144) { code = 0x30u + sym; len = 8; }
-    else if (sym < 256) { code = 0x190u + (sym - 144u); len = 9; }
-    else if (sym < 280) { code = sym - 256u; len = 7; }
-    else { code = 0xc0u + (sym - 280u); len = 8; }
-    bw_put(bw, rev_bits(code, len), len);
+static void def_tr_init(struct png_deflate *s) {
+    uint16_t bl_count[DEF_MAX_BITS + 1];
+    int length = 0;
+    int code = 0;
+    for (; code < DEF_LENGTH_CODES - 1; code++) {
+        s->base_length[code] = length;
+        for (int n = 0; n < (1 << def_extra_lbits[code]); n++)
+            s->length_code[length++] = (unsigned char)code;
+    }
+    s->length_code[length - 1] = (unsigned char)code;
+    int dist = 0;
+    for (code = 0; code < 16; code++) {
+        s->base_dist[code] = dist;
+        for (int n = 0; n < (1 << def_extra_dbits[code]); n++)
+            s->dist_code[dist++] = (unsigned char)code;
+    }
+    dist >>= 7;
+    for (; code < DEF_D_CODES; code++) {
+        s->base_dist[code] = dist << 7;
+        for (int n = 0; n < (1 << (def_extra_dbits[code] - 7)); n++)
+            s->dist_code[256 + dist++] = (unsigned char)code;
+    }
+    for (int bits = 0; bits <= DEF_MAX_BITS; bits++) bl_count[bits] = 0;
+    int n = 0;
+    while (n <= 143) s->static_ltree[n++].dl.len = 8, bl_count[8]++;
+    while (n <= 255) s->static_ltree[n++].dl.len = 9, bl_count[9]++;
+    while (n <= 279) s->static_ltree[n++].dl.len = 7, bl_count[7]++;
+    while (n <= 287) s->static_ltree[n++].dl.len = 8, bl_count[8]++;
+    def_gen_codes(s->static_ltree, DEF_L_CODES + 1, bl_count);
+    for (n = 0; n < DEF_D_CODES; n++) {
+        s->static_dtree[n].dl.len = 5;
+        s->static_dtree[n].fc.code = (uint16_t)def_bi_reverse((unsigned)n, 5);
+    }
+    s->static_l_desc = (struct def_static_desc){
+        s->static_ltree, def_extra_lbits, DEF_LITERALS + 1, DEF_L_CODES, DEF_MAX_BITS
+    };
+    s->static_d_desc = (struct def_static_desc){
+        s->static_dtree, def_extra_dbits, 0, DEF_D_CODES, DEF_MAX_BITS
+    };
+    s->static_bl_desc = (struct def_static_desc){
+        NULL, def_extra_blbits, 0, DEF_BL_CODES, DEF_MAX_BL_BITS
+    };
+    s->l_desc.dyn_tree = s->dyn_ltree;
+    s->l_desc.stat_desc = &s->static_l_desc;
+    s->d_desc.dyn_tree = s->dyn_dtree;
+    s->d_desc.stat_desc = &s->static_d_desc;
+    s->bl_desc.dyn_tree = s->bl_tree;
+    s->bl_desc.stat_desc = &s->static_bl_desc;
+    s->bi_buf = 0;
+    s->bi_valid = 0;
+    def_init_block(s);
+}
+
+static int def_smaller(const struct def_ct *tree, int n, int m, const unsigned char *depth) {
+    return tree[n].fc.freq < tree[m].fc.freq ||
+        (tree[n].fc.freq == tree[m].fc.freq && depth[n] <= depth[m]);
+}
+
+static void def_pqdownheap(struct png_deflate *s, const struct def_ct *tree, int k) {
+    int v = s->heap[k];
+    int j = k << 1;
+    while (j <= s->heap_len) {
+        if (j < s->heap_len && def_smaller(tree, s->heap[j + 1], s->heap[j], s->depth))
+            j++;
+        if (def_smaller(tree, v, s->heap[j], s->depth)) break;
+        s->heap[k] = s->heap[j];
+        k = j;
+        j <<= 1;
+    }
+    s->heap[k] = v;
+}
+
+static void def_gen_bitlen(struct png_deflate *s, struct def_tree_desc *desc) {
+    struct def_ct *tree = desc->dyn_tree;
+    int max_code = desc->max_code;
+    const struct def_ct *stree = desc->stat_desc->static_tree;
+    const int *extra = desc->stat_desc->extra_bits;
+    int base = desc->stat_desc->extra_base;
+    int max_length = desc->stat_desc->max_length;
+    int overflow = 0;
+    for (int bits = 0; bits <= DEF_MAX_BITS; bits++) s->bl_count[bits] = 0;
+    tree[s->heap[s->heap_max]].dl.len = 0;
+    int h;
+    for (h = s->heap_max + 1; h < DEF_HEAP_SIZE; h++) {
+        int n = s->heap[h];
+        int bits = tree[tree[n].dl.dad].dl.len + 1;
+        if (bits > max_length) bits = max_length, overflow++;
+        tree[n].dl.len = (uint16_t)bits;
+        if (n > max_code) continue;
+        s->bl_count[bits]++;
+        int xbits = n >= base ? extra[n - base] : 0;
+        uint16_t f = tree[n].fc.freq;
+        s->opt_len += (unsigned long)f * (unsigned)(bits + xbits);
+        if (stree) s->static_len += (unsigned long)f * (unsigned)(stree[n].dl.len + xbits);
+    }
+    if (overflow == 0) return;
+    do {
+        int bits = max_length - 1;
+        while (s->bl_count[bits] == 0) bits--;
+        s->bl_count[bits]--;
+        s->bl_count[bits + 1] += 2;
+        s->bl_count[max_length]--;
+        overflow -= 2;
+    } while (overflow > 0);
+    for (int bits = max_length; bits != 0; bits--) {
+        int n = s->bl_count[bits];
+        while (n != 0) {
+            int m = s->heap[--h];
+            if (m > max_code) continue;
+            if ((unsigned)tree[m].dl.len != (unsigned)bits) {
+                s->opt_len += ((unsigned long)bits - tree[m].dl.len) * tree[m].fc.freq;
+                tree[m].dl.len = (uint16_t)bits;
+            }
+            n--;
+        }
+    }
+}
+
+static void def_build_tree(struct png_deflate *s, struct def_tree_desc *desc) {
+    struct def_ct *tree = desc->dyn_tree;
+    const struct def_ct *stree = desc->stat_desc->static_tree;
+    int elems = desc->stat_desc->elems;
+    int max_code = -1;
+    s->heap_len = 0;
+    s->heap_max = DEF_HEAP_SIZE;
+    for (int n = 0; n < elems; n++) {
+        if (tree[n].fc.freq != 0) {
+            s->heap[++(s->heap_len)] = max_code = n;
+            s->depth[n] = 0;
+        } else {
+            tree[n].dl.len = 0;
+        }
+    }
+    while (s->heap_len < 2) {
+        int node = s->heap[++(s->heap_len)] = (max_code < 2 ? ++max_code : 0);
+        tree[node].fc.freq = 1;
+        s->depth[node] = 0;
+        s->opt_len--;
+        if (stree) s->static_len -= stree[node].dl.len;
+    }
+    desc->max_code = max_code;
+    for (int n = s->heap_len / 2; n >= 1; n--) def_pqdownheap(s, tree, n);
+    int node = elems;
+    do {
+        int n = s->heap[1];
+        s->heap[1] = s->heap[s->heap_len--];
+        def_pqdownheap(s, tree, 1);
+        int m = s->heap[1];
+        s->heap[--(s->heap_max)] = n;
+        s->heap[--(s->heap_max)] = m;
+        tree[node].fc.freq = (uint16_t)(tree[n].fc.freq + tree[m].fc.freq);
+        s->depth[node] = (unsigned char)((s->depth[n] >= s->depth[m] ? s->depth[n] : s->depth[m]) + 1);
+        tree[n].dl.dad = tree[m].dl.dad = (uint16_t)node;
+        s->heap[1] = node++;
+        def_pqdownheap(s, tree, 1);
+    } while (s->heap_len >= 2);
+    s->heap[--(s->heap_max)] = s->heap[1];
+    def_gen_bitlen(s, desc);
+    def_gen_codes(tree, max_code, s->bl_count);
+}
+
+static void def_scan_tree(struct png_deflate *s, struct def_ct *tree, int max_code) {
+    int prevlen = -1;
+    int nextlen = tree[0].dl.len;
+    int count = 0;
+    int max_count = 7;
+    int min_count = 4;
+    if (nextlen == 0) max_count = 138, min_count = 3;
+    tree[max_code + 1].dl.len = 0xffffu;
+    for (int n = 0; n <= max_code; n++) {
+        int curlen = nextlen;
+        nextlen = tree[n + 1].dl.len;
+        if (++count < max_count && curlen == nextlen) {
+            continue;
+        } else if (count < min_count) {
+            s->bl_tree[curlen].fc.freq += (uint16_t)count;
+        } else if (curlen != 0) {
+            if (curlen != prevlen) s->bl_tree[curlen].fc.freq++;
+            s->bl_tree[16].fc.freq++;
+        } else if (count <= 10) {
+            s->bl_tree[17].fc.freq++;
+        } else {
+            s->bl_tree[18].fc.freq++;
+        }
+        count = 0;
+        prevlen = curlen;
+        if (nextlen == 0) {
+            max_count = 138, min_count = 3;
+        } else if (curlen == nextlen) {
+            max_count = 6, min_count = 3;
+        } else {
+            max_count = 7, min_count = 4;
+        }
+    }
+}
+
+static void def_send_tree(struct png_deflate *s, const struct def_ct *tree, int max_code) {
+    int prevlen = -1;
+    int nextlen = tree[0].dl.len;
+    int count = 0;
+    int max_count = 7;
+    int min_count = 4;
+    if (nextlen == 0) max_count = 138, min_count = 3;
+    for (int n = 0; n <= max_code; n++) {
+        int curlen = nextlen;
+        nextlen = tree[n + 1].dl.len;
+        if (++count < max_count && curlen == nextlen) {
+            continue;
+        } else if (count < min_count) {
+            do {
+                def_send_bits(s, s->bl_tree[curlen].fc.code, s->bl_tree[curlen].dl.len);
+            } while (--count != 0);
+        } else if (curlen != 0) {
+            if (curlen != prevlen) {
+                def_send_bits(s, s->bl_tree[curlen].fc.code, s->bl_tree[curlen].dl.len);
+                count--;
+            }
+            def_send_bits(s, s->bl_tree[16].fc.code, s->bl_tree[16].dl.len);
+            def_send_bits(s, count - 3, 2);
+        } else if (count <= 10) {
+            def_send_bits(s, s->bl_tree[17].fc.code, s->bl_tree[17].dl.len);
+            def_send_bits(s, count - 3, 3);
+        } else {
+            def_send_bits(s, s->bl_tree[18].fc.code, s->bl_tree[18].dl.len);
+            def_send_bits(s, count - 11, 7);
+        }
+        count = 0;
+        prevlen = curlen;
+        if (nextlen == 0) {
+            max_count = 138, min_count = 3;
+        } else if (curlen == nextlen) {
+            max_count = 6, min_count = 3;
+        } else {
+            max_count = 7, min_count = 4;
+        }
+    }
+}
+
+static int def_build_bl_tree(struct png_deflate *s) {
+    def_scan_tree(s, s->dyn_ltree, s->l_desc.max_code);
+    def_scan_tree(s, s->dyn_dtree, s->d_desc.max_code);
+    def_build_tree(s, &s->bl_desc);
+    int max_blindex;
+    for (max_blindex = DEF_BL_CODES - 1; max_blindex >= 3; max_blindex--) {
+        if (s->bl_tree[def_bl_order[max_blindex]].dl.len != 0) break;
+    }
+    s->opt_len += 3UL * ((unsigned long)max_blindex + 1UL) + 5UL + 5UL + 4UL;
+    return max_blindex;
+}
+
+static void def_send_all_trees(struct png_deflate *s, int lcodes, int dcodes, int blcodes) {
+    def_send_bits(s, lcodes - 257, 5);
+    def_send_bits(s, dcodes - 1, 5);
+    def_send_bits(s, blcodes - 4, 4);
+    for (int rank = 0; rank < blcodes; rank++)
+        def_send_bits(s, s->bl_tree[def_bl_order[rank]].dl.len, 3);
+    def_send_tree(s, s->dyn_ltree, lcodes - 1);
+    def_send_tree(s, s->dyn_dtree, dcodes - 1);
+}
+
+static void def_compress_block(struct png_deflate *s, const struct def_ct *ltree,
+        const struct def_ct *dtree) {
+    unsigned sx = 0;
+    if (s->sym_next != 0) do {
+        unsigned dist = s->sym_buf[sx++];
+        dist += (unsigned)s->sym_buf[sx++] << 8;
+        int lc = s->sym_buf[sx++];
+        if (dist == 0) {
+            def_send_bits(s, ltree[lc].fc.code, ltree[lc].dl.len);
+        } else {
+            unsigned code = s->length_code[lc];
+            def_send_bits(s, ltree[code + DEF_LITERALS + 1].fc.code,
+                ltree[code + DEF_LITERALS + 1].dl.len);
+            int extra = def_extra_lbits[code];
+            if (extra != 0) {
+                lc -= s->base_length[code];
+                def_send_bits(s, lc, extra);
+            }
+            dist--;
+            code = dist < 256 ? s->dist_code[dist] : s->dist_code[256 + (dist >> 7)];
+            def_send_bits(s, dtree[code].fc.code, dtree[code].dl.len);
+            extra = def_extra_dbits[code];
+            if (extra != 0) {
+                dist -= (unsigned)s->base_dist[code];
+                def_send_bits(s, (int)dist, extra);
+            }
+        }
+    } while (sx < s->sym_next);
+    def_send_bits(s, ltree[DEF_END_BLOCK].fc.code, ltree[DEF_END_BLOCK].dl.len);
+}
+
+static int def_flush_pending(struct png_deflate *s) {
+    if (!s->pending) return 1;
+    if (s->out_len + s->pending > s->out_cap) {
+        size_t ncap = s->out_cap ? s->out_cap * 2 : 8192;
+        while (ncap < s->out_len + s->pending) {
+            if (ncap > SIZE_MAX / 2) { ncap = s->out_len + s->pending; break; }
+            ncap *= 2;
+        }
+        unsigned char *nb = realloc(s->out, ncap);
+        if (!nb) return 0;
+        s->out = nb;
+        s->out_cap = ncap;
+    }
+    memcpy(s->out + s->out_len, s->pending_buf, s->pending);
+    s->out_len += s->pending;
+    s->pending = 0;
+    return 1;
+}
+
+static int def_flush_block(struct png_deflate *s, int last) {
+    const unsigned char *buf = s->block_start >= 0 ?
+        s->window + (unsigned)s->block_start : NULL;
+    unsigned long stored_len = (unsigned long)((int64_t)s->strstart - s->block_start);
+    def_build_tree(s, &s->l_desc);
+    def_build_tree(s, &s->d_desc);
+    int max_blindex = def_build_bl_tree(s);
+    unsigned long opt_lenb = (s->opt_len + 3UL + 7UL) >> 3;
+    unsigned long static_lenb = (s->static_len + 3UL + 7UL) >> 3;
+    if (static_lenb <= opt_lenb) opt_lenb = static_lenb;
+    if (stored_len + 4UL <= opt_lenb && buf != NULL) {
+        def_send_bits(s, last, 3);
+        def_bi_windup(s);
+        def_put_short(s, (uint16_t)stored_len);
+        def_put_short(s, (uint16_t)~stored_len);
+        if (stored_len) {
+            memcpy(s->pending_buf + s->pending, buf, stored_len);
+            s->pending += stored_len;
+        }
+    } else if (static_lenb == opt_lenb) {
+        def_send_bits(s, 2 + last, 3);
+        def_compress_block(s, s->static_ltree, s->static_dtree);
+    } else {
+        def_send_bits(s, 4 + last, 3);
+        def_send_all_trees(s, s->l_desc.max_code + 1, s->d_desc.max_code + 1, max_blindex + 1);
+        def_compress_block(s, s->dyn_ltree, s->dyn_dtree);
+    }
+    def_init_block(s);
+    if (last) def_bi_windup(s);
+    s->block_start = (int64_t)s->strstart;
+    return def_flush_pending(s);
+}
+
+static int def_tally_lit(struct png_deflate *s, unsigned char c) {
+    s->sym_buf[s->sym_next++] = 0;
+    s->sym_buf[s->sym_next++] = 0;
+    s->sym_buf[s->sym_next++] = c;
+    s->dyn_ltree[c].fc.freq++;
+    return s->sym_next == s->sym_end;
+}
+
+static int def_tally_dist(struct png_deflate *s, unsigned dist, unsigned lc) {
+    s->sym_buf[s->sym_next++] = (unsigned char)dist;
+    s->sym_buf[s->sym_next++] = (unsigned char)(dist >> 8);
+    s->sym_buf[s->sym_next++] = (unsigned char)lc;
+    dist--;
+    s->dyn_ltree[s->length_code[lc] + DEF_LITERALS + 1].fc.freq++;
+    unsigned dcode = dist < 256 ? s->dist_code[dist] : s->dist_code[256 + (dist >> 7)];
+    s->dyn_dtree[dcode].fc.freq++;
+    return s->sym_next == s->sym_end;
+}
+
+static void def_insert_string(struct png_deflate *s, unsigned str, unsigned *match_head) {
+    s->ins_h = ((s->ins_h << DEF_HASH_SHIFT) ^ s->window[str + 2u]) & DEF_HASH_MASK;
+    *match_head = s->prev[str & s->w_mask] = s->head[s->ins_h];
+    s->head[s->ins_h] = (uint16_t)str;
+}
+
+static void def_slide_hash(struct png_deflate *s) {
+    unsigned wsize = s->w_size;
+    for (unsigned i = 0; i < DEF_HASH_SIZE; i++) {
+        unsigned m = s->head[i];
+        s->head[i] = (uint16_t)(m >= wsize ? m - wsize : 0);
+    }
+    for (unsigned i = 0; i < wsize; i++) {
+        unsigned m = s->prev[i];
+        s->prev[i] = (uint16_t)(m >= wsize ? m - wsize : 0);
+    }
+}
+
+static void def_fill_window(struct png_deflate *s) {
+    unsigned wsize = s->w_size;
+    unsigned max_dist = wsize - DEF_MIN_LOOKAHEAD;
+    do {
+        unsigned more = (unsigned)(s->window_size - (size_t)s->lookahead - (size_t)s->strstart);
+        if (s->strstart >= wsize + max_dist) {
+            memcpy(s->window, s->window + wsize, wsize - more);
+            s->match_start -= wsize;
+            s->strstart -= wsize;
+            s->block_start -= (int64_t)wsize;
+            if (s->insert > s->strstart) s->insert = s->strstart;
+            def_slide_hash(s);
+            more += wsize;
+        }
+        if (s->in_pos == s->in_len) break;
+        size_t avail = s->in_len - s->in_pos;
+        unsigned n = avail > more ? more : (unsigned)avail;
+        memcpy(s->window + s->strstart + s->lookahead, s->in + s->in_pos, n);
+        s->adler = png_adler32(s->adler, s->window + s->strstart + s->lookahead, n);
+        s->in_pos += n;
+        s->lookahead += n;
+        if (s->lookahead + s->insert >= DEF_MIN_MATCH) {
+            unsigned str = s->strstart - s->insert;
+            s->ins_h = s->window[str];
+            s->ins_h = ((s->ins_h << DEF_HASH_SHIFT) ^ s->window[str + 1u]) & DEF_HASH_MASK;
+            while (s->insert) {
+                s->ins_h = ((s->ins_h << DEF_HASH_SHIFT) ^ s->window[str + 2u]) & DEF_HASH_MASK;
+                s->prev[str & s->w_mask] = s->head[s->ins_h];
+                s->head[s->ins_h] = (uint16_t)str;
+                str++;
+                s->insert--;
+                if (s->lookahead + s->insert < DEF_MIN_MATCH) break;
+            }
+        }
+    } while (s->lookahead < DEF_MIN_LOOKAHEAD && s->in_pos < s->in_len);
+    if (s->high_water < s->window_size) {
+        size_t curr = (size_t)s->strstart + s->lookahead;
+        if (s->high_water < curr) {
+            size_t init = s->window_size - curr;
+            if (init > DEF_WIN_INIT) init = DEF_WIN_INIT;
+            memset(s->window + curr, 0, init);
+            s->high_water = curr + init;
+        } else if (s->high_water < curr + DEF_WIN_INIT) {
+            size_t init = curr + DEF_WIN_INIT - s->high_water;
+            if (init > s->window_size - s->high_water) init = s->window_size - s->high_water;
+            memset(s->window + s->high_water, 0, init);
+            s->high_water += init;
+        }
+    }
+}
+
+static unsigned def_longest_match(struct png_deflate *s, unsigned cur_match) {
+    unsigned chain_length = 128u;
+    const unsigned char *scan = s->window + s->strstart;
+    int best_len = (int)s->prev_length;
+    int nice_match = 128;
+    unsigned max_dist = s->w_size - DEF_MIN_LOOKAHEAD;
+    unsigned limit = s->strstart > max_dist ? s->strstart - max_dist : 0u;
+    const uint16_t *prev = s->prev;
+    unsigned wmask = s->w_mask;
+    const unsigned char *strend = s->window + s->strstart + DEF_MAX_MATCH;
+    unsigned char scan_end1 = scan[best_len - 1];
+    unsigned char scan_end = scan[best_len];
+    if (s->prev_length >= 8u) chain_length >>= 2;
+    if ((unsigned)nice_match > s->lookahead) nice_match = (int)s->lookahead;
+    do {
+        const unsigned char *match = s->window + cur_match;
+        if (match[best_len] != scan_end ||
+            match[best_len - 1] != scan_end1 ||
+            *match != *scan ||
+            *++match != scan[1]) continue;
+        scan += 2;
+        match++;
+        do {
+        } while (*++scan == *++match && *++scan == *++match &&
+                 *++scan == *++match && *++scan == *++match &&
+                 *++scan == *++match && *++scan == *++match &&
+                 *++scan == *++match && *++scan == *++match &&
+                 scan < strend);
+        int len = (int)DEF_MAX_MATCH - (int)(strend - scan);
+        scan = strend - DEF_MAX_MATCH;
+        if (len > best_len) {
+            s->match_start = cur_match;
+            best_len = len;
+            if (len >= nice_match) break;
+            scan_end1 = scan[best_len - 1];
+            scan_end = scan[best_len];
+        }
+    } while ((cur_match = prev[cur_match & wmask]) > limit && --chain_length != 0u);
+    return (unsigned)best_len <= s->lookahead ? (unsigned)best_len : s->lookahead;
 }
 
 static int png_deflate(const unsigned char *in, size_t in_len, int window,
-        unsigned char **out, size_t *out_len) {
-    static const uint16_t len_base[30] = {
-        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
-        35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 259
-    };
-    static const unsigned char len_extra[29] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
-        3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
-    };
-    static const uint16_t dist_base[31] = {
-        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
-        257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577, 32769
-    };
-    static const unsigned char dist_extra[30] = {
-        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
-        7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
-    };
-    size_t max_out = in_len + (in_len >> 2) + (in_len / 32768u + 1u) * 16u + 64u;
-    unsigned char *buf = malloc(max_out);
-    int32_t *head = malloc(4096 * sizeof(int32_t));
-    int32_t *prev = malloc(32768 * sizeof(int32_t));
-    if (!buf || !head || !prev) {
-        free(buf);
-        free(head);
-        free(prev);
-        return 0;
+        int filtered, unsigned char **out, size_t *out_len) {
+    if (window == 8) window = 9;
+    struct png_deflate *s = calloc(1, sizeof(*s));
+    if (!s) return 0;
+    s->in = in;
+    s->in_len = in_len;
+    s->w_bits = (unsigned)window;
+    s->w_size = 1u << s->w_bits;
+    s->w_mask = s->w_size - 1u;
+    s->window_size = 2u * (size_t)s->w_size;
+    s->filtered = filtered;
+    s->adler = 1u;
+    s->match_length = s->prev_length = DEF_MIN_MATCH - 1u;
+    s->window = calloc(1, s->window_size);
+    s->prev = malloc(s->w_size * sizeof(uint16_t));
+    s->head = calloc(DEF_HASH_SIZE, sizeof(uint16_t));
+    s->pending_buf = malloc(DEF_LIT_BUFSIZE * 4u);
+    if (!s->window || !s->prev || !s->head || !s->pending_buf) goto fail;
+    s->sym_buf = s->pending_buf + DEF_LIT_BUFSIZE;
+    s->sym_end = (DEF_LIT_BUFSIZE - 1u) * 3u;
+    def_tr_init(s);
+    unsigned header = (8u + ((s->w_bits - 8u) << 4)) << 8;
+    header |= (2u << 6);
+    header += 31u - (header % 31u);
+    def_put_short_msb(s, (uint16_t)header);
+    if (!def_flush_pending(s)) goto fail;
+    unsigned max_dist = s->w_size - DEF_MIN_LOOKAHEAD;
+    for (;;) {
+        if (s->lookahead < DEF_MIN_LOOKAHEAD) {
+            def_fill_window(s);
+            if (s->lookahead == 0) break;
+        }
+        unsigned hash_head = 0;
+        if (s->lookahead >= DEF_MIN_MATCH)
+            def_insert_string(s, s->strstart, &hash_head);
+        s->prev_length = s->match_length;
+        s->prev_match = s->match_start;
+        s->match_length = DEF_MIN_MATCH - 1u;
+        if (hash_head != 0 && s->prev_length < 16u && s->strstart - hash_head <= max_dist) {
+            s->match_length = def_longest_match(s, hash_head);
+            if (s->match_length <= 5u && (s->filtered ||
+                    (s->match_length == DEF_MIN_MATCH &&
+                    s->strstart - s->match_start > DEF_TOO_FAR))) {
+                s->match_length = DEF_MIN_MATCH - 1u;
+            }
+        }
+        if (s->prev_length >= DEF_MIN_MATCH && s->match_length <= s->prev_length) {
+            unsigned max_insert = s->strstart + s->lookahead - DEF_MIN_MATCH;
+            int bflush = def_tally_dist(s, s->strstart - 1u - s->prev_match,
+                s->prev_length - DEF_MIN_MATCH);
+            s->lookahead -= s->prev_length - 1u;
+            s->prev_length -= 2u;
+            do {
+                if (++s->strstart <= max_insert) {
+                    unsigned dummy;
+                    def_insert_string(s, s->strstart, &dummy);
+                }
+            } while (--s->prev_length != 0u);
+            s->match_available = 0;
+            s->match_length = DEF_MIN_MATCH - 1u;
+            s->strstart++;
+            if (bflush && !def_flush_block(s, 0)) goto fail;
+        } else if (s->match_available) {
+            int bflush = def_tally_lit(s, s->window[s->strstart - 1u]);
+            if (bflush && !def_flush_block(s, 0)) goto fail;
+            s->strstart++;
+            s->lookahead--;
+        } else {
+            s->match_available = 1;
+            s->strstart++;
+            s->lookahead--;
+        }
     }
-    for (size_t i = 0; i < 4096; i++) head[i] = -1;
-    unsigned cmf = (unsigned)((window - 8) << 4) | 8u;
-    unsigned flg = 0x80u;
-    flg += 31u - ((cmf << 8) + flg) % 31u;
-    buf[0] = (unsigned char)cmf;
-    buf[1] = (unsigned char)flg;
-    struct png_bitwriter bw = { buf, 2, 0, 0 };
-    size_t max_dist = ((size_t)1 << window) > 262 ? ((size_t)1 << window) - 262 : ((size_t)1 << window);
-    if (max_dist > 32768) max_dist = 32768;
-    size_t block_start = 0;
-    do {
-        size_t chunk = in_len - block_start;
-        if (chunk > 32768) chunk = 32768;
-        size_t block_end = block_start + chunk;
-        unsigned bfinal = block_end == in_len ? 1u : 0u;
-        size_t saved_pos = bw.pos;
-        uint64_t saved_bitbuf = bw.bitbuf;
-        unsigned saved_bitcnt = bw.bitcnt;
-        bw_put(&bw, bfinal | 2u, 3);
-        size_t pos = block_start;
-        while (pos < block_end) {
-            size_t best_len = 0, best_dist = 0;
-            if (pos + 3 <= block_end) {
-                unsigned h = (((unsigned)in[pos] << 4) ^ ((unsigned)in[pos + 1] << 2) ^
-                    (unsigned)in[pos + 2]) & 4095u;
-                int32_t match = head[h];
-                head[h] = (int32_t)pos;
-                prev[pos & 32767u] = match;
-                unsigned steps = 16;
-                while (match >= 0 && steps--) {
-                    size_t dist = pos - (size_t)match;
-                    if (dist > max_dist) break;
-                    size_t max_m = block_end - pos;
-                    if (max_m > 258) max_m = 258;
-                    if (in[match] == in[pos] && in[match + 1] == in[pos + 1] &&
-                            in[match + 2] == in[pos + 2]) {
-                        size_t mlen = 3;
-                        while (mlen < max_m && in[match + mlen] == in[pos + mlen]) mlen++;
-                        if (mlen > best_len) {
-                            best_len = mlen;
-                            best_dist = dist;
-                            if (mlen == 258) break;
-                        }
-                    }
-                    match = prev[(size_t)match & 32767u];
-                }
-            }
-            if (best_len >= 3) {
-                unsigned li = 0;
-                while (best_len >= len_base[li + 1]) li++;
-                bw_lit(&bw, 257u + li);
-                if (len_extra[li]) bw_put(&bw, (uint32_t)(best_len - len_base[li]), len_extra[li]);
-                unsigned di = 0;
-                while (best_dist >= dist_base[di + 1]) di++;
-                bw_put(&bw, rev_bits(di, 5), 5);
-                if (dist_extra[di]) bw_put(&bw, (uint32_t)(best_dist - dist_base[di]), dist_extra[di]);
-                for (size_t k = 1; k < best_len; k++) {
-                    size_t p = pos + k;
-                    if (p + 3 <= block_end) {
-                        unsigned h = (((unsigned)in[p] << 4) ^ ((unsigned)in[p + 1] << 2) ^
-                            (unsigned)in[p + 2]) & 4095u;
-                        prev[p & 32767u] = head[h];
-                        head[h] = (int32_t)p;
-                    }
-                }
-                pos += best_len;
-            } else {
-                bw_lit(&bw, in[pos]);
-                pos++;
-            }
-        }
-        bw_lit(&bw, 256);
-        size_t used_bytes = bw.pos + (bw.bitcnt ? 1u : 0u) - saved_pos;
-        if (used_bytes > chunk + 5u) {
-            bw.pos = saved_pos;
-            bw.bitbuf = saved_bitbuf;
-            bw.bitcnt = saved_bitcnt;
-            bw_put(&bw, bfinal, 3);
-            bw_align(&bw);
-            bw.buf[bw.pos++] = (unsigned char)(chunk & 0xffu);
-            bw.buf[bw.pos++] = (unsigned char)((chunk >> 8) & 0xffu);
-            bw.buf[bw.pos++] = (unsigned char)(~chunk & 0xffu);
-            bw.buf[bw.pos++] = (unsigned char)((~chunk >> 8) & 0xffu);
-            if (chunk) {
-                memcpy(bw.buf + bw.pos, in + block_start, chunk);
-                bw.pos += chunk;
-            }
-        }
-        block_start = block_end;
-    } while (block_start < in_len);
-    bw_align(&bw);
-    uint32_t adler = png_adler32(1u, in, in_len);
-    put32(bw.buf + bw.pos, adler);
-    bw.pos += 4;
-    free(head);
-    free(prev);
-    *out = buf;
-    *out_len = bw.pos;
+    if (s->match_available) {
+        def_tally_lit(s, s->window[s->strstart - 1u]);
+        s->match_available = 0;
+    }
+    if (!def_flush_block(s, 1)) goto fail;
+    def_put_short_msb(s, (uint16_t)(s->adler >> 16));
+    def_put_short_msb(s, (uint16_t)(s->adler & 0xffffu));
+    if (!def_flush_pending(s)) goto fail;
+    *out = s->out;
+    *out_len = s->out_len;
+    free(s->window);
+    free(s->prev);
+    free(s->head);
+    free(s->pending_buf);
+    free(s);
     return 1;
+fail:
+    free(s->out);
+    free(s->window);
+    free(s->prev);
+    free(s->head);
+    free(s->pending_buf);
+    free(s);
+    return 0;
 }
 
 struct png_reader {
@@ -1705,7 +2269,7 @@ enum png_status tomoe_png_encode(const unsigned char *argb32, uint32_t width,
             unsigned half = 1u << (window - 1);
             while (uncompressed + 262 <= half) { half >>= 1; window--; }
         }
-        if (!png_deflate(filtered, total, window, &compressed, &compressed_length)) goto done;
+        if (!png_deflate(filtered, total, window, filters != 0x08u, &compressed, &compressed_length)) goto done;
         optimize_cmf(compressed, uncompressed);
     }
     put32(header, width);
