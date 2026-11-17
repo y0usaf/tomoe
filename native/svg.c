@@ -3702,6 +3702,11 @@ enum {
 
 struct svg_node;
 
+struct svg_aspect {
+    int align;
+    int slice;
+};
+
 struct svg_filter_prim {
     int kind;
     char result[64];
@@ -3731,6 +3736,8 @@ struct svg_filter_prim {
     float light_cone;
     int has_cone;
     struct svg_node *img_root;
+    struct svg_image *rimg;
+    struct svg_aspect rimg_aspect;
 };
 
 struct svg_filter {
@@ -3851,6 +3858,7 @@ static void svg_node_destroy(struct svg_node *n) {
         for (int i = 0; i < f->nprims; i++) {
             free(f->prims[i].kernel);
             svg_node_destroy(f->prims[i].img_root);
+            svg_free_image(f->prims[i].rimg);
         }
         free(f->prims);
         free(f);
@@ -3892,11 +3900,6 @@ static int svg_parse_viewbox(const char *text, float out[4]) {
     for (int i = 0; i < 4; i++) out[i] = (float)v[i];
     return 1;
 }
-
-struct svg_aspect {
-    int align;
-    int slice;
-};
 
 static int svg_parse_aspect(const char *text, struct svg_aspect *out) {
     out->align = 5;
@@ -5107,11 +5110,15 @@ static int svg_filter_single_number(const char *text, float *out) {
 }
 
 static void svg_filter_rect(struct svg_conv *c, struct xml_node *node, int units_bbox,
-        float out[4]) {
-    out[0] = svg_filter_number(c, node, "x", units_bbox, 0, 0, SVG_UNIT_NONE);
-    out[1] = svg_filter_number(c, node, "y", units_bbox, 1, 0, SVG_UNIT_NONE);
-    out[2] = svg_filter_number(c, node, "width", units_bbox, 0, 100, SVG_UNIT_PERCENT);
-    out[3] = svg_filter_number(c, node, "height", units_bbox, 1, 100, SVG_UNIT_PERCENT);
+        const float region[4], float out[4]) {
+    out[0] = svg_filter_number(c, node, "x", units_bbox, 0, units_bbox ? 0.0 : region[0],
+        SVG_UNIT_NONE);
+    out[1] = svg_filter_number(c, node, "y", units_bbox, 1, units_bbox ? 0.0 : region[1],
+        SVG_UNIT_NONE);
+    out[2] = svg_filter_number(c, node, "width", units_bbox, 0, units_bbox ? 1.0 : region[2],
+        SVG_UNIT_NONE);
+    out[3] = svg_filter_number(c, node, "height", units_bbox, 1, units_bbox ? 1.0 : region[3],
+        SVG_UNIT_NONE);
 }
 
 static int svg_filter_parse_transfer(struct svg_conv *c, struct xml_node *parent,
@@ -5561,6 +5568,8 @@ static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const 
     return 1;
 }
 
+static struct svg_image *svg_load_data_url(const char *href);
+
 static size_t svg_filter_item_length(const char *text) {
     const char *p = text;
     while (*p && (svg_is_ident(*p) || *p == '-')) p++;
@@ -5647,21 +5656,24 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
         if (in1) { strncpy(p->input1, in1, sizeof(p->input1) - 1); }
         const char *in2 = svg_filter_attr(c->doc, child, "in2");
         if (in2) { strncpy(p->input2, in2, sizeof(p->input2) - 1); }
-        if (svg_xml_attr(child, "x") || svg_xml_attr(child, "y") ||
-                svg_xml_attr(child, "width") || svg_xml_attr(child, "height")) {
-            svg_filter_rect(c, child, primitive_bbox, p->rect);
+        {
+            float region[4] = { out->rect[0], out->rect[1], out->rect[2], out->rect[3] };
+            svg_filter_rect(c, child, primitive_bbox, region, p->rect);
             if (primitive_bbox) {
-                p->rect[0] = p->rect[0] * object_bbox[2] + object_bbox[0];
-                p->rect[1] = p->rect[1] * object_bbox[3] + object_bbox[1];
-                p->rect[2] = p->rect[2] * object_bbox[2];
-                p->rect[3] = p->rect[3] * object_bbox[3];
+                float fx = p->rect[0], fy = p->rect[1], fw = p->rect[2], fh = p->rect[3];
+                if (!strcmp(tag, "feImage") || !strcmp(tag, "feFlood")) {
+                    p->rect[0] = fx * object_bbox[2] + object_bbox[0];
+                    p->rect[1] = fy * object_bbox[3] + object_bbox[1];
+                    p->rect[2] = fw * object_bbox[2];
+                    p->rect[3] = fh * object_bbox[3];
+                } else {
+                    p->rect[0] = region[0] * fw + fx;
+                    p->rect[1] = region[1] * fh + fy;
+                    p->rect[2] = region[2] * fw;
+                    p->rect[3] = region[3] * fh;
+                }
             }
             p->has_rect = 1;
-        } else {
-            p->rect[0] = out->rect[0];
-            p->rect[1] = out->rect[1];
-            p->rect[2] = out->rect[2];
-            p->rect[3] = out->rect[3];
         }
         if (!strcmp(tag, "feFlood")) {
             p->kind = SVG_FE_FLOOD;
@@ -5750,6 +5762,23 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
                         else svg_node_destroy(root);
                     }
                 }
+            }
+            if (!p->img_root && href && href[0] != '#') {
+                p->rimg = svg_load_data_url(href);
+                if (!p->rimg) continue;
+                if (!svg_parse_aspect(svg_filter_attr(c->doc, child,
+                        "preserveAspectRatio"), &p->rimg_aspect)) {
+                    p->rimg_aspect.align = 5;
+                    p->rimg_aspect.slice = 0;
+                }
+                const char *render = child->style_index >= 0 ?
+                    svg_style_find_inherited(c->doc,
+                        &c->doc->styles[child->style_index], "image-rendering") : NULL;
+                if (render && (!strcmp(render, "optimizeSpeed") ||
+                        !strcmp(render, "pixelated") || !strcmp(render, "crisp-edges")))
+                    p->rimg->quality = 0;
+                else if (render && !strcmp(render, "smooth"))
+                    p->rimg->quality = 1;
             }
         } else if (!strcmp(tag, "feComponentTransfer")) {
             p->kind = SVG_FE_COMPONENT_TRANSFER;
@@ -6414,6 +6443,7 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
                 for (int i = 0; i < head->nprims; i++) {
                     free(head->prims[i].kernel);
                     svg_node_destroy(head->prims[i].img_root);
+                    svg_free_image(head->prims[i].rimg);
                 }
                 free(head->prims);
                 free(head);
@@ -6982,6 +7012,31 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
     return 0;
 }
 
+static struct svg_image *svg_load_data_url(const char *href) {
+    if (!href || strncmp(href, "data:", 5)) return NULL;
+    const char *comma = strchr(href, ',');
+    if (!comma) return NULL;
+    int hint = svg_data_mime_hint(href);
+    int base64 = 0;
+    for (const char *p = href + 5; p + 7 <= comma; p++)
+        if (!memcmp(p, ";base64", 7)) base64 = 1;
+    size_t length = 0;
+    unsigned char *bytes = base64 ? svg_base64_decode(comma + 1, strlen(comma + 1), &length) :
+        svg_percent_decode(comma + 1, strlen(comma + 1), &length);
+    if (!bytes) return NULL;
+    struct svg_image *im = svg_alloc(sizeof(*im));
+    if (!im) { free(bytes); return NULL; }
+    memset(im, 0, sizeof(*im));
+    im->quality = 2;
+    if (!svg_image_decode(im, bytes, length, hint)) {
+        free(bytes);
+        svg_free_image(im);
+        return NULL;
+    }
+    free(bytes);
+    return im;
+}
+
 static int svg_image_length(struct svg_conv *c, struct xml_node *node, const char *name,
         int axis, float def, float *out) {
     *out = def;
@@ -7008,34 +7063,8 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     const char *href = svg_style_get(c->doc, st, "href");
     if (!href) href = svg_xml_attr(node, "xlink:href");
     if (!href) { c->unsupported = 1; return; }
-    unsigned char *bytes = NULL;
-    size_t length = 0;
-    int hint = 0;
-    if (!strncmp(href, "data:", 5)) {
-        const char *comma = strchr(href, ',');
-        if (!comma) { c->unsupported = 1; return; }
-        hint = svg_data_mime_hint(href);
-        int base64 = 0;
-        for (const char *p = href + 5; p + 7 <= comma; p++)
-            if (!memcmp(p, ";base64", 7)) base64 = 1;
-        length = 0;
-        if (base64) bytes = svg_base64_decode(comma + 1, strlen(comma + 1), &length);
-        else bytes = svg_percent_decode(comma + 1, strlen(comma + 1), &length);
-        if (!bytes) { c->unsupported = 1; return; }
-    } else {
-        c->unsupported = 1;
-        return;
-    }
-    struct svg_image *im = svg_alloc(sizeof(*im));
-    if (!im) { free(bytes); return; }
-    memset(im, 0, sizeof(*im));
-    if (!svg_image_decode(im, bytes, length, hint)) {
-        free(bytes);
-        svg_free_image(im);
-        c->unsupported = 1;
-        return;
-    }
-    free(bytes);
+    struct svg_image *im = svg_load_data_url(href);
+    if (!im) { c->unsupported = 1; return; }
     float aw = im->base_width > 0.0f ? im->base_width : (float)im->pix.width;
     float ah = im->base_height > 0.0f ? im->base_height : (float)im->pix.height;
     const char *render = svg_style_get(c->doc, st, "image-rendering");
@@ -10316,21 +10345,8 @@ static void svg_apply_mask(struct svg_mask *mask, struct svg_matrix ts,
     svg_pixmap_free(&scratch);
 }
 
-static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
+static void svg_draw_raster(struct svg_image *im, struct svg_matrix dev,
         struct svg_pixmap *pixmap, int blend) {
-    struct svg_image *im = node->image;
-    if (!node->visible || !im) return;
-    struct svg_matrix dev = svg_matrix_concat(ts, node->transform);
-    if (im->svg) {
-        struct svg_pixmap sub;
-        svg_pixmap_init(&sub, pixmap->width, pixmap->height);
-        if (!sub.pixels) return;
-        if (im->svg->root) svg_render_nodes(im->svg->root, dev, &sub);
-        svg_draw_pixmap(pixmap, 0, 0, &sub, 1.0f, blend);
-        svg_pixmap_free(&sub);
-        return;
-    }
-    if (!im->pix.pixels || im->pix.width <= 0 || im->pix.height <= 0) return;
     struct svg_path *rect = svg_path_new();
     if (!rect) return;
     svg_path_move(rect, 0.0f, 0.0f);
@@ -10353,6 +10369,24 @@ static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
     if (ok && svg_matrix_translate_p(&shader.ts)) shader.pattern_quality = 0;
     if (ok) svg_fill_path(rect, 0, pixmap, &shader, blend, 1);
     svg_path_free(rect);
+}
+
+static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
+        struct svg_pixmap *pixmap, int blend) {
+    struct svg_image *im = node->image;
+    if (!node->visible || !im) return;
+    struct svg_matrix dev = svg_matrix_concat(ts, node->transform);
+    if (im->svg) {
+        struct svg_pixmap sub;
+        svg_pixmap_init(&sub, pixmap->width, pixmap->height);
+        if (!sub.pixels) return;
+        if (im->svg->root) svg_render_nodes(im->svg->root, dev, &sub);
+        svg_draw_pixmap(pixmap, 0, 0, &sub, 1.0f, blend);
+        svg_pixmap_free(&sub);
+        return;
+    }
+    if (!im->pix.pixels || im->pix.width <= 0 || im->pix.height <= 0) return;
+    svg_draw_raster(im, dev, pixmap, blend);
 }
 
 struct svg_fimg {
@@ -11379,6 +11413,42 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_IMAGE: {
         *res = svg_fimg_new(region_w, region_h, 0);
         if (!res->valid) return;
+        if (p->rimg) {
+            float aw = p->rimg->base_width > 0.0f ? p->rimg->base_width :
+                (float)p->rimg->pix.width;
+            float ah = p->rimg->base_height > 0.0f ? p->rimg->base_height :
+                (float)p->rimg->pix.height;
+            float rw = p->rect[2], rh = p->rect[3];
+            if (!(aw > 0.0f) || !(ah > 0.0f) || !(rw > 0.0f) || !(rh > 0.0f)) return;
+            int sub[4];
+            if (!svg_filter_subrect(p, ts, sub)) return;
+            float sx = sqrtf(ts.sx * ts.sx + ts.kx * ts.kx);
+            float sy = sqrtf(ts.ky * ts.ky + ts.sy * ts.sy);
+            if (!(sx > 0.0f) || !(sy > 0.0f)) return;
+            float fit_w = rw, fit_h = rh;
+            if (p->rimg_aspect.align != 0 && !svg_fit_size(p->rimg_aspect.slice, aw, ah,
+                    rw, rh, &fit_w, &fit_h)) {
+                fit_w = rw;
+                fit_h = rh;
+            }
+            float ax = 0.0f, ay = 0.0f;
+            int align = p->rimg_aspect.align;
+            if (align > 0) {
+                float extra_w = rw - fit_w, extra_h = rh - fit_h;
+                if (align == 2 || align == 5 || align == 8) ax = extra_w * 0.5f;
+                else if (align == 3 || align == 6 || align == 9) ax = extra_w;
+                if (align == 4 || align == 5 || align == 6) ay = extra_h * 0.5f;
+                else if (align == 7 || align == 8 || align == 9) ay = extra_h;
+            }
+            struct svg_matrix dev = { sx * (fit_w / aw), 0.0f, 0.0f, sy * (fit_h / ah),
+                (float)sub[0] + sx * ax, (float)sub[1] + sy * ay };
+            if (p->rimg->svg) {
+                if (p->rimg->svg->root) svg_render_nodes(p->rimg->svg->root, dev, &res->pix);
+            } else {
+                svg_draw_raster(p->rimg, dev, &res->pix, 0);
+            }
+            return;
+        }
         if (!p->img_root) return;
         int sub[4];
         if (!svg_filter_subrect(p, ts, sub)) return;
