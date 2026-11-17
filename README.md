@@ -388,8 +388,10 @@ drawing every refresh and holds the picture it draws at that time: a shader that
 animates an event and then rests costs nothing once it has settled. `:reach
 PIXELS` confines the shader to that many pixels round the named windows' edges
 (and four inside them), so a shader that decorates windows repaints the rings round
-them rather than the output they sit on. Changing the data or a window's box redraws
-the surface; neither recompiles the shader.
+them rather than the output they sit on. `:opaque t` promises that every pixel the
+shader draws has alpha 1, so nothing beneath it is drawn at all: a full-screen
+wallpaper saves the clear under it on every frame it animates. Changing the data or
+a window's box redraws the surface; neither recompiles the shader.
 
 A shader that calls `beneath(at)` reads what is composited under it: the colour
 the output already holds at `at`, in the shader's own pixels like `fragCoord`,

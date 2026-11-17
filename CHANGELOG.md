@@ -55,3 +55,6 @@ The first release.
   corners its rounding shows, and only what those corners read beneath it is
   drawn, so a moving wallpaper under such windows redraws their corners rather
   than every window it frosts, with the same pixels.
+- A shader background declared `:opaque t` hides what lies beneath it, so a
+  full-screen animated wallpaper no longer repaints the clear under it every
+  frame.

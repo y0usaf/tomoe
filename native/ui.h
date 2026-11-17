@@ -40,7 +40,7 @@ int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id);
 int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double idle);
 int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data_count,
     const uint32_t *windows, int window_count, int clocked, double clock, double until,
-    double reach);
+    double reach, int opaque);
 int tomoe_present_ui_trail(struct tomoe *s, double cell, double life, int steps,
     uint32_t rgba, double fps, double idle);
 int tomoe_present_ui_asset(struct tomoe *s, uint64_t id,

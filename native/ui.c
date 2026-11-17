@@ -73,7 +73,7 @@ struct ui_surface {
     uint32_t shader_windows[UI_SHADER_WINDOWS];
     int shader_data_count, shader_window_count;
     double shader_clock, shader_until, shader_reach;
-    bool shader_clocked;
+    bool shader_clocked, shader_opaque;
     bool building;
     bool complete;
     bool drawn;
@@ -1001,7 +1001,7 @@ int tomoe_present_ui_backdrop(struct tomoe *s, uint64_t id, double fps, double i
 
 int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data_count,
         const uint32_t *windows, int window_count, int clocked, double clock, double until,
-        double reach) {
+        double reach, int opaque) {
     struct ui_set *set = s && s->presentation ? s->presentation->ui : NULL;
     if (!set || !set->count || data_count < 0 || data_count > UI_SHADER_DATA ||
             window_count < 0 || window_count > UI_SHADER_WINDOWS ||
@@ -1019,6 +1019,7 @@ int tomoe_present_ui_shader_inputs(struct tomoe *s, const double *data, int data
     surface->shader_clock = clock;
     surface->shader_until = until;
     surface->shader_reach = reach;
+    surface->shader_opaque = opaque != 0;
     return 1;
 }
 
@@ -1973,7 +1974,8 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             float windows[4 * UI_SHADER_WINDOWS];
             float selection[16], marks_box[4];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
-                windows, surface->shader_window_count, NULL, NULL, NULL, NULL };
+                windows, surface->shader_window_count, NULL, NULL, NULL, NULL,
+                surface->shader_opaque };
             if (layer == UI_LAYER_SCREENSHOT) {
                 struct texture *marks;
                 struct fbox marks_at;

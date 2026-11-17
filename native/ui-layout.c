@@ -1248,7 +1248,8 @@ static lisp_value ui_resolve(int argc, lisp_value *argv) {
                 if (!image) {
                     lisp_value given = lisp_cdr(lisp_cdr(background));
                     lisp_value reach = plist_get(given, "REACH");
-                    shader_inputs = lisp_list(10,
+                    shader_inputs = lisp_list(12,
+                        lisp_keyword("OPAQUE"), plist_get(given, "OPAQUE"),
                         lisp_keyword("DATA"), plist_get(given, "DATA"),
                         lisp_keyword("WINDOWS"), plist_get(given, "WINDOWS"),
                         lisp_keyword("CLOCK"), plist_get(given, "CLOCK"),
@@ -1439,7 +1440,8 @@ static bool stage_surface(lisp_value plan, const char **failed_owner, char *mess
         if (!tomoe_present_ui_shader_inputs(ui_server, data, data_count, windows, window_count,
                 !lisp_nilp(clock), lisp_nilp(clock) ? 0 : lisp_get_double(clock),
                 lisp_nilp(until) ? -1 : lisp_get_double(until),
-                lisp_nilp(reach) ? 0 : lisp_get_double(reach)))
+                lisp_nilp(reach) ? 0 : lisp_get_double(reach),
+                truthy(plist_get(inputs, "OPAQUE"))))
             STAGE_FAILED("Cannot prepare the shader inputs of surface %s of %s.", name_text, owner ? owner : "");
     }
     if (status != 1) return true;

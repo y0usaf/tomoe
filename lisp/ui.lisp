@@ -5,10 +5,14 @@
       (and (not (member (first values) (rest values)))
            (%ui-unique (rest values)))))
 
+(defparameter +shell-shader-options+
+  '(:fps :idle :data :windows :clock :until :reach :glsl :opaque)
+  "The options a shell shader background takes after its source.")
+
 (defun %ui-backdrop (value)
   "Normalize a shell background: a color, (:image PATH [:fit FIT]),
 (:shader PATH [:fps FPS] [:idle SECONDS] [:data REALS] [:windows IDS] [:clock SECOND]
-[:until SECONDS]), (:glsl SOURCE ...) taking the shader's text itself and the
+[:until SECONDS] [:opaque BOOLEAN]), (:glsl SOURCE ...) taking the shader's text itself and the
 same options as :SHADER, or (:trail [:cell PIXELS] [:life SECONDS]
 [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."
   (%ui-list value 16 "Shell background")
@@ -34,7 +38,7 @@ same options as :SHADER, or (:trail [:cell PIXELS] [:life SECONDS]
         (let ((options (cddr value)))
           (unless (member kind '(:image :shader :glsl))
             (error "Shell background must be a color, (:image PATH [:fit FIT]), (:shader PATH [:fps FPS] [:idle SECONDS]), (:glsl SOURCE [:fps FPS] [:idle SECONDS]), or (:trail [:cell PIXELS] [:life SECONDS] [:steps N] [:color RGBA] [:fps FPS] [:idle SECONDS])."))
-          (%ui-properties options (if (eq kind :image) '(:fit) '(:fps :idle :data :windows :clock :until :reach :glsl)))
+          (%ui-properties options (if (eq kind :image) '(:fit) +shell-shader-options+))
           (list* (if (eq kind :glsl) :shader kind) (%ui-string (second value) 65536 nil)
                  (if (eq kind :image)
                      (list :fit (%ui-choice (getf options :fit :cover) '(:cover :contain :fill)))
@@ -53,12 +57,14 @@ iData; :WINDOWS, up to 8 window ids whose drawn boxes it reads as iWindow;
 :CLOCK, the monotonic second its iTime counts from; :UNTIL, the iTime past
 which it holds its last picture instead of drawing every refresh; and :REACH,
 the pixels round the named windows' edges it is confined to, so it repaints the
-rings round them and nothing between."
+rings round them and nothing between; and :OPAQUE, a promise that every pixel
+it draws has alpha 1, so whatever lies beneath it is never drawn."
   (let ((data (getf options :data))
         (reach (getf options :reach))
         (windows (getf options :windows))
         (clock (getf options :clock))
-        (until (getf options :until)))
+        (until (getf options :until))
+        (opaque (getf options :opaque)))
     (%ui-list data 192 "Shell shader :data")
     (dolist (value data)
       (unless (realp value) (error "Shell shader :data must be a list of reals.")))
@@ -71,11 +77,13 @@ rings round them and nothing between."
       (error "Shell shader :reach must be a real from 0 to 4096 pixels."))
     (unless (or (null until) (and clock (realp until) (<= 0 until)))
       (error "Shell shader :until must be a nonnegative real, counted from its :clock."))
+    (unless (member opaque '(nil t)) (error "Shell shader :opaque must be t or nil."))
     (append (when data (list :data (mapcar #'%double-float data)))
             (when windows (list :windows windows))
             (when clock (list :clock (%double-float clock)))
             (when until (list :until (%double-float until)))
-            (when reach (list :reach (%double-float reach))))))
+            (when reach (list :reach (%double-float reach)))
+            (when opaque (list :opaque t)))))
 
 (defun canonical-shell-surface (arguments)
   (%ui-properties arguments '(:name :tree :width :height :anchors :margin :layer

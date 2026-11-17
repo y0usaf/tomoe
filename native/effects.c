@@ -744,7 +744,16 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     for (int i = 0; selection && i < 16; i++) params[used++] = inputs->selection[i];
     struct box covered = covering(f, drawn);
     if (p->channel < 0) {
-        if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) return;
+        size_t before = pass_record_count(f->pass);
+        if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) {
+            struct op *op = inputs && inputs->opaque ? pass_recorded(f->pass, before) : NULL;
+            if (op) {
+                int x0 = (int)ceil(drawn.x), y0 = (int)ceil(drawn.y);
+                cover_rect(f, op, x0, y0, (int)floor(drawn.x + drawn.width) - x0,
+                    (int)floor(drawn.y + drawn.height) - y0);
+            }
+            return;
+        }
     } else {
         struct box reach = { covered.x - BENEATH_REACH, covered.y - BENEATH_REACH,
             covered.width + 2 * BENEATH_REACH, covered.height + 2 * BENEATH_REACH };

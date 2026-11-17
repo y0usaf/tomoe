@@ -734,6 +734,7 @@ struct shader_inputs {
     const float *selection;
     const struct texture *marks;
     const float *marks_box;
+    bool opaque;
 };
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
