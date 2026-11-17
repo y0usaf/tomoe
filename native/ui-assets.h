@@ -21,8 +21,8 @@ struct texture *ui_asset_backdrop(const struct ui_asset *asset, int *x, int *y);
 struct program *ui_asset_shader(const struct ui_asset *asset, double *epoch);
 bool ui_asset_owned_by(const struct ui_asset *asset, const char *owner, uint64_t source_id);
 void ui_asset_release(struct ui_asset *asset);
-bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
-    double x, double y, double width, double height, bool tint, uint32_t rgba);
+bool ui_asset_paint(struct ui_asset *asset, uint32_t *dst, int dst_width, int dst_height,
+    int dst_stride, double x, double y, double width, double height, bool tint, uint32_t rgba);
 uint64_t ui_assets_count(struct tomoe *s);
 uint64_t ui_assets_bytes(struct tomoe *s);
 uint64_t ui_assets_loads(struct tomoe *s);

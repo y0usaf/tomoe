@@ -1171,6 +1171,32 @@ void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
     }
 }
 
+bool dp_fill_color(uint32_t *dst, int stride, struct drect clip, const struct dpath *path,
+    uint32_t color, int source_opaque)
+{
+    int width = clip.x1 - clip.x0;
+    if (path->failed || width <= 0 || clip.y1 <= clip.y0) return !path->failed;
+    unsigned char *mask = calloc((size_t)width * (size_t)(clip.y1 - clip.y0), 1);
+    if (!mask) return false;
+    bool ok = dp_fill_mask(path, clip, mask, width, clip.x0, clip.y0);
+    if (ok) dp_composite_over(dst, stride, clip, mask, width, clip.x0, clip.y0, color, source_opaque);
+    free(mask);
+    return ok;
+}
+
+bool dp_stroke_color(uint32_t *dst, int stride, struct drect clip, const struct dpath *path,
+    double width, int cap, int join, uint32_t color, int source_opaque)
+{
+    int span = clip.x1 - clip.x0;
+    if (path->failed || span <= 0 || clip.y1 <= clip.y0) return !path->failed;
+    unsigned char *mask = calloc((size_t)span * (size_t)(clip.y1 - clip.y0), 1);
+    if (!mask) return false;
+    bool ok = dp_stroke_mask(path, width, cap, join, 10.0, clip, mask, span, clip.x0, clip.y0);
+    if (ok) dp_composite_over(dst, stride, clip, mask, span, clip.x0, clip.y0, color, source_opaque);
+    free(mask);
+    return ok;
+}
+
 void dp_composite_over(uint32_t *dst, int stride, struct drect rect,
     const unsigned char *mask, int mask_stride, int mask_x, int mask_y, uint32_t color,
     int source_opaque)

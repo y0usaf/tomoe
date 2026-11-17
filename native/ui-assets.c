@@ -3,6 +3,7 @@
 #include "ui-assets.h"
 #include "jpeg.h"
 #include "png.h"
+#include "draw.h"
 
 #include <drm/drm_fourcc.h>
 #include <errno.h>
@@ -168,6 +169,21 @@ done:
     return result;
 }
 
+static bool png_image_dp(const struct png_image *image, struct dp_image *out) {
+    switch (image->format) {
+    case CAIRO_FORMAT_ARGB32: out->format = DP_IMAGE_ARGB32; break;
+    case CAIRO_FORMAT_RGB24: out->format = DP_IMAGE_RGB24; break;
+    case CAIRO_FORMAT_RGBA128F: out->format = DP_IMAGE_RGBA_FLOAT; break;
+    case CAIRO_FORMAT_RGB96F: out->format = DP_IMAGE_RGB_FLOAT; break;
+    default: return false;
+    }
+    out->pixels = image->pixels;
+    out->width = (int)image->width;
+    out->height = (int)image->height;
+    out->stride = (int)image->stride;
+    return out->pixels != NULL && out->width > 0 && out->height > 0;
+}
+
 static uint32_t big_endian(const unsigned char *bytes) {
     return (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 | (uint32_t)bytes[2] << 8 | bytes[3];
 }
@@ -187,19 +203,16 @@ static enum asset_status decode_png(struct ui_asset *asset,
     if (decoded == PNG_OK && image.width == asset->width && image.height == asset->height)
         result = (asset->pixels = malloc((size_t)asset->bytes)) ? ASSET_OK : ASSET_HARD;
     if (result == ASSET_OK) {
-        cairo_surface_t *source = cairo_image_surface_create_for_data(image.pixels, image.format,
-            (int)image.width, (int)image.height, (int)image.stride);
-        cairo_surface_t *target = cairo_image_surface_create_for_data(asset->pixels, CAIRO_FORMAT_ARGB32,
-            (int)asset->width, (int)asset->height, (int)asset->width * 4);
-        cairo_t *cairo = cairo_create(target);
-        cairo_set_source_surface(cairo, source, 0, 0);
-        cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-        cairo_paint(cairo);
-        if (cairo_status(cairo) != CAIRO_STATUS_SUCCESS ||
-                cairo_surface_status(source) != CAIRO_STATUS_SUCCESS) result = ASSET_HARD;
-        cairo_destroy(cairo);
-        cairo_surface_destroy(target);
-        cairo_surface_destroy(source);
+        struct dp_image decoded;
+        if (!png_image_dp(&image, &decoded)) result = ASSET_HARD;
+        else {
+            struct dp_pattern pattern = dp_surface_pattern(0, 0, 1, 1, 0, 0);
+            dp_paint_surface((uint32_t *)asset->pixels, (int)asset->width,
+                (struct drect){ 0, 0, (int)asset->width, (int)asset->height }, &decoded,
+                &pattern, DP_FILTER_NEAREST, DP_EXTEND_PAD, DP_OP_SOURCE, NULL,
+                (int)asset->width, (int)asset->height, 0, 0, (int)asset->width,
+                (int)asset->height);
+        }
     }
     free(image.pixels);
     return result;
@@ -285,27 +298,29 @@ static struct ui_asset *find_asset(struct tomoe *s, uint64_t id) {
 
 static cairo_surface_t *backdrop_scale(cairo_surface_t *source, uint32_t width,
         uint32_t height, int fit) {
-    double iw = cairo_image_surface_get_width(source), ih = cairo_image_surface_get_height(source);
+    struct dp_image image;
+    if (!surface_image(source, &image)) return NULL;
+    double iw = image.width, ih = image.height;
     double sx = width / iw, sy = height / ih;
     if (fit == FIT_COVER) sx = sy = fmax(sx, sy);
     else if (fit == FIT_CONTAIN) sx = sy = fmin(sx, sy);
     int w = fit == FIT_CONTAIN ? (int)fmax(1, round(iw * sx)) : (int)width;
     int h = fit == FIT_CONTAIN ? (int)fmax(1, round(ih * sy)) : (int)height;
     cairo_surface_t *target = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-    cairo_t *cairo = cairo_create(target);
-    cairo_translate(cairo, (w - iw * sx) / 2, (h - ih * sy) / 2);
-    cairo_scale(cairo, sx, sy);
-    cairo_set_source_surface(cairo, source, 0, 0);
-    cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_GOOD);
-    cairo_pattern_set_extend(cairo_get_source(cairo), CAIRO_EXTEND_PAD);
-    cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-    cairo_paint(cairo);
-    bool ok = cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
-    cairo_destroy(cairo);
+    if (cairo_surface_status(target) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(target);
+        return NULL;
+    }
+    cairo_surface_flush(source);
+    struct dp_pattern pattern = dp_surface_pattern((w - iw * sx) / 2, (h - ih * sy) / 2,
+        sx, sy, 0, 0);
     cairo_surface_flush(target);
-    if (ok && cairo_surface_status(target) == CAIRO_STATUS_SUCCESS) return target;
-    cairo_surface_destroy(target);
-    return NULL;
+    dp_paint_surface((uint32_t *)cairo_image_surface_get_data(target), w,
+        (struct drect){ 0, 0, w, h }, &image, &pattern, DP_FILTER_GOOD, DP_EXTEND_PAD,
+        DP_OP_SOURCE, NULL, w, h, 0, 0, w, h);
+    cairo_surface_mark_dirty(target);
+    cairo_surface_flush(target);
+    return target;
 }
 
 static void backdrop_decode(struct backdrop_job *job) {
@@ -715,11 +730,12 @@ static cairo_surface_t *render_svg(const struct ui_asset *asset, int width, int 
     return surface;
 }
 
-bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
-        double x, double y, double width, double height, bool tint, uint32_t rgba) {
-    if (!asset || !cairo || cairo_status(cairo) != CAIRO_STATUS_SUCCESS ||
-            !isfinite(x) || !isfinite(y) || !isfinite(width) || !isfinite(height) ||
-            width < 0 || height < 0 || width > ASSET_DIMENSION_LIMIT || height > ASSET_DIMENSION_LIMIT) return false;
+bool ui_asset_paint(struct ui_asset *asset, uint32_t *dst, int dst_width, int dst_height,
+        int dst_stride, double x, double y, double width, double height, bool tint,
+        uint32_t rgba) {
+    if (!asset || !dst || !isfinite(x) || !isfinite(y) || !isfinite(width) ||
+            !isfinite(height) || width < 0 || height < 0 ||
+            width > ASSET_DIMENSION_LIMIT || height > ASSET_DIMENSION_LIMIT) return false;
     if (!width || !height || (!asset->raster && !asset->svg)) return true;
     uint64_t bytes;
     if (!raster_bytes((uint32_t)ceil(width), (uint32_t)ceil(height), ASSET_DIMENSION_LIMIT,
@@ -729,19 +745,20 @@ bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
     if (asset->svg && !temporary) return false;
     if (tint) {
         if (!temporary) {
+            struct dp_image image;
+            if (!surface_image(asset->raster, &image)) return false;
             temporary = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
             if (cairo_surface_status(temporary) != CAIRO_STATUS_SUCCESS) {
                 cairo_surface_destroy(temporary);
                 return false;
             }
-            cairo_t *scratch = cairo_create(temporary);
-            cairo_scale(scratch, (double)w / asset->width, (double)h / asset->height);
-            cairo_set_source_surface(scratch, asset->raster, 0, 0);
-            cairo_pattern_set_filter(cairo_get_source(scratch), CAIRO_FILTER_BILINEAR);
-            cairo_paint(scratch);
-            bool ok = cairo_status(scratch) == CAIRO_STATUS_SUCCESS;
-            cairo_destroy(scratch);
-            if (!ok) { cairo_surface_destroy(temporary); return false; }
+            cairo_surface_flush(temporary);
+            struct dp_pattern pattern = dp_surface_pattern(0, 0,
+                (double)w / image.width, (double)h / image.height, 0, 0);
+            dp_paint_surface((uint32_t *)cairo_image_surface_get_data(temporary), w,
+                (struct drect){ 0, 0, w, h }, &image, &pattern, DP_FILTER_BILINEAR,
+                DP_EXTEND_PAD, DP_OP_SOURCE, NULL, w, h, 0, 0, w, h);
+            cairo_surface_mark_dirty(temporary);
         }
         cairo_surface_flush(temporary);
         unsigned char *pixels = cairo_image_surface_get_data(temporary);
@@ -758,20 +775,42 @@ bool ui_asset_paint(struct ui_asset *asset, cairo_t *cairo,
         }
         cairo_surface_mark_dirty(temporary);
     }
-    cairo_surface_t *source = temporary ? temporary : asset->raster;
-    cairo_save(cairo);
-    cairo_translate(cairo, x, y);
-    cairo_rectangle(cairo, 0, 0, width, height);
-    cairo_clip(cairo);
-    cairo_scale(cairo, width / cairo_image_surface_get_width(source),
-        height / cairo_image_surface_get_height(source));
-    cairo_set_source_surface(cairo, source, 0, 0);
-    cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_BILINEAR);
-    cairo_pattern_set_extend(cairo_get_source(cairo), CAIRO_EXTEND_PAD);
-    cairo_paint(cairo);
-    cairo_restore(cairo);
+    cairo_surface_t *surface = temporary ? temporary : asset->raster;
+    struct dp_image image;
+    if (!surface_image(surface, &image)) {
+        if (temporary) cairo_surface_destroy(temporary);
+        return false;
+    }
+    cairo_surface_flush(surface);
+    struct dpath path;
+    dpath_init(&path);
+    dp_rectangle(&path, x, y, width, height);
+    struct drect clip = dp_path_extents(&path);
+    if (clip.x0 < 0) clip.x0 = 0;
+    if (clip.y0 < 0) clip.y0 = 0;
+    if (clip.x1 > dst_width) clip.x1 = dst_width;
+    if (clip.y1 > dst_height) clip.y1 = dst_height;
+    bool ok = true;
+    if (clip.x0 < clip.x1 && clip.y0 < clip.y1) {
+        int span = clip.x1 - clip.x0;
+        unsigned char *coverage = calloc((size_t)span * (size_t)(clip.y1 - clip.y0), 1);
+        if (!coverage) ok = false;
+        else {
+            ok = dp_fill_mask(&path, clip, coverage, span, clip.x0, clip.y0);
+            if (ok) {
+                struct dp_pattern pattern = dp_surface_pattern(x, y,
+                    width / image.width, height / image.height, 0, 0);
+                struct dp_coverage mask = { coverage, span, clip.x0, clip.y0 };
+                dp_paint_surface(dst, dst_stride, clip, &image, &pattern, DP_FILTER_BILINEAR,
+                    DP_EXTEND_PAD, DP_OP_OVER, &mask, dst_width, dst_height,
+                    clip.x0, clip.y0, clip.x1 - clip.x0, clip.y1 - clip.y0);
+            }
+            free(coverage);
+        }
+    }
+    dpath_fini(&path);
     if (temporary) cairo_surface_destroy(temporary);
-    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    return ok;
 }
 
 uint64_t ui_assets_count(struct tomoe *s) { return s && s->ui_assets ? s->ui_assets->count : 0; }

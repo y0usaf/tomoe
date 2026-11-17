@@ -114,4 +114,9 @@ void dp_composite_over(uint32_t *dst, int stride, struct drect rect,
     const unsigned char *mask, int mask_stride, int mask_x, int mask_y, uint32_t color,
     int source_opaque);
 
+bool dp_fill_color(uint32_t *dst, int stride, struct drect clip, const struct dpath *path,
+    uint32_t color, int source_opaque);
+bool dp_stroke_color(uint32_t *dst, int stride, struct drect clip, const struct dpath *path,
+    double width, int cap, int join, uint32_t color, int source_opaque);
+
 #endif

@@ -1,6 +1,7 @@
 #include "internal.h"
 #include "ui.h"
 #include "ui-assets.h"
+#include "draw.h"
 
 #include <cairo.h>
 #include <inttypes.h>
@@ -883,7 +884,35 @@ static void color_components(uint32_t rgba, double *red, double *green,
     *alpha = (rgba & 0xff) / 255.0;
 }
 
-static void rounded_path(cairo_t *cairo, double x, double y, double width,
+static void color_pixel(uint32_t rgba, double alpha, uint32_t *color, int *opaque) {
+    double red = ((rgba >> 24) & 0xff) / 255.0;
+    double green = ((rgba >> 16) & 0xff) / 255.0;
+    double blue = ((rgba >> 8) & 0xff) / 255.0;
+    unsigned a = (unsigned)(alpha * 65535.0 + 0.5);
+    unsigned r = (unsigned)(red * alpha * 65535.0 + 0.5);
+    unsigned g = (unsigned)(green * alpha * 65535.0 + 0.5);
+    unsigned b = (unsigned)(blue * alpha * 65535.0 + 0.5);
+    *opaque = (a >> 8) == 0xff;
+    *color = ((a >> 8) << 24) | ((r >> 8) << 16) | (g & 0xff00) | (b >> 8);
+}
+
+static void rounded_path(struct dpath *path, double x, double y, double width,
+        double height, double radius) {
+    radius = fmin(radius, fmin(width, height) / 2.0);
+    if (radius <= 0.0) {
+        dp_rectangle(path, x, y, width, height);
+        return;
+    }
+    const double pi = 3.14159265358979323846;
+    dp_new_sub_path(path);
+    dp_arc(path, x + width - radius, y + radius, radius, -pi / 2, 0, false);
+    dp_arc(path, x + width - radius, y + height - radius, radius, 0, pi / 2, false);
+    dp_arc(path, x + radius, y + height - radius, radius, pi / 2, pi, false);
+    dp_arc(path, x + radius, y + radius, radius, pi, 3 * pi / 2, false);
+    dp_close_path(path);
+}
+
+static void rounded_path_cairo(cairo_t *cairo, double x, double y, double width,
         double height, double radius) {
     radius = fmin(radius, fmin(width, height) / 2.0);
     if (radius <= 0.0) {
@@ -897,6 +926,67 @@ static void rounded_path(cairo_t *cairo, double x, double y, double width,
     cairo_arc(cairo, x + radius, y + height - radius, radius, pi / 2, pi);
     cairo_arc(cairo, x + radius, y + radius, radius, pi, 3 * pi / 2);
     cairo_close_path(cairo);
+}
+
+static void shape_path(struct dpath *path, const struct ui_op *op, double dx, double dy) {
+    if (op->point_count >= 6) {
+        dp_move_to(path, op->x + dx + op->points[0], op->y + dy + op->points[1]);
+        for (long i = 2; i + 1 < op->point_count; i += 2)
+            dp_line_to(path, op->x + dx + op->points[i], op->y + dy + op->points[i + 1]);
+        dp_close_path(path);
+    } else {
+        rounded_path(path, op->x + dx, op->y + dy, op->width, op->height, op->radius);
+    }
+}
+
+static void shape_path_cairo(cairo_t *cairo, const struct ui_op *op) {
+    if (op->point_count >= 6) {
+        cairo_move_to(cairo, op->x + op->points[0], op->y + op->points[1]);
+        for (long i = 2; i + 1 < op->point_count; i += 2)
+            cairo_line_to(cairo, op->x + op->points[i], op->y + op->points[i + 1]);
+        cairo_close_path(cairo);
+    } else {
+        rounded_path_cairo(cairo, op->x, op->y, op->width, op->height, op->radius);
+    }
+}
+
+static bool fill_path_color(struct ui_canvas *canvas, struct drect area,
+        const struct dpath *path, double red, double green, double blue, double alpha) {
+    uint32_t rgba = ((uint32_t)(red * 255.0 + 0.5) << 24) |
+        ((uint32_t)(green * 255.0 + 0.5) << 16) |
+        ((uint32_t)(blue * 255.0 + 0.5) << 8) | (uint32_t)(alpha * 255.0 + 0.5);
+    uint32_t color;
+    int opaque;
+    color_pixel(rgba, alpha, &color, &opaque);
+    return dp_fill_color((uint32_t *)canvas->pixels, (int)(canvas->stride / 4), area,
+        path, color, opaque);
+}
+
+static bool stroke_path_color(struct ui_canvas *canvas, struct drect area,
+        const struct dpath *path, double width, int cap, int join,
+        double red, double green, double blue, double alpha) {
+    uint32_t rgba = ((uint32_t)(red * 255.0 + 0.5) << 24) |
+        ((uint32_t)(green * 255.0 + 0.5) << 16) |
+        ((uint32_t)(blue * 255.0 + 0.5) << 8) | (uint32_t)(alpha * 255.0 + 0.5);
+    uint32_t color;
+    int opaque;
+    color_pixel(rgba, alpha, &color, &opaque);
+    return dp_stroke_color((uint32_t *)canvas->pixels, (int)(canvas->stride / 4), area,
+        path, width, cap, join, color, opaque);
+}
+
+static bool fill_path(struct ui_canvas *canvas, struct drect area, const struct dpath *path,
+        uint32_t rgba) {
+    double red, green, blue, alpha;
+    color_components(rgba, &red, &green, &blue, &alpha);
+    return fill_path_color(canvas, area, path, red, green, blue, alpha);
+}
+
+static bool stroke_path(struct ui_canvas *canvas, struct drect area, const struct dpath *path,
+        double width, int cap, int join, uint32_t rgba) {
+    double red, green, blue, alpha;
+    color_components(rgba, &red, &green, &blue, &alpha);
+    return stroke_path_color(canvas, area, path, width, cap, join, red, green, blue, alpha);
 }
 
 static bool clip_paints(const struct ui_surface *surface) {
@@ -1236,17 +1326,6 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     return 1;
 }
 
-static void shape_path(cairo_t *cairo, const struct ui_op *op) {
-    if (op->point_count >= 6) {
-        cairo_move_to(cairo, op->x + op->points[0], op->y + op->points[1]);
-        for (long i = 2; i + 1 < op->point_count; i += 2)
-            cairo_line_to(cairo, op->x + op->points[i], op->y + op->points[i + 1]);
-        cairo_close_path(cairo);
-    } else {
-        rounded_path(cairo, op->x, op->y, op->width, op->height, op->radius);
-    }
-}
-
 static cairo_pattern_t *shape_pattern(const struct ui_op *op) {
     if (op->fill == UI_FILL_SOLID || op->stop_count < 2) return NULL;
     cairo_pattern_t *pattern;
@@ -1275,102 +1354,119 @@ static cairo_pattern_t *shape_pattern(const struct ui_op *op) {
     return pattern;
 }
 
-static void shape_shadow(cairo_t *cairo, const struct ui_op *op, int index) {
+static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
+        const struct rect *clip) {
+    cairo_t *cairo = surface->canvas->cairo;
+    cairo_pattern_t *pattern = shape_pattern(op);
+    if (!pattern) return true;
+    cairo_save(cairo);
+    cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
+    cairo_clip(cairo);
+    cairo_set_source(cairo, pattern);
+    shape_path_cairo(cairo, op);
+    cairo_fill(cairo);
+    cairo_restore(cairo);
+    cairo_pattern_destroy(pattern);
+    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+}
+
+static bool shape_shadow(struct ui_canvas *canvas, const struct ui_op *op, int index,
+        struct drect area) {
     const double *shadow = op->shadow[index];
     double red, green, blue, alpha;
     color_components(op->shadow_rgba[index], &red, &green, &blue, &alpha);
-    if (!(alpha > 0.0)) return;
+    if (!(alpha > 0.0)) return true;
     double blur = shadow[2] > 0.0 ? shadow[2] : 0.0;
     double spread = shadow[3] > 0.0 ? shadow[3] : 0.0;
-    cairo_save(cairo);
-    cairo_translate(cairo, shadow[0], shadow[1]);
-    cairo_set_line_join(cairo, CAIRO_LINE_JOIN_ROUND);
-    cairo_set_line_cap(cairo, CAIRO_LINE_CAP_ROUND);
+    struct dpath path;
+    dpath_init(&path);
     if (blur <= 0.0) {
-        cairo_set_source_rgba(cairo, red, green, blue, alpha);
-        shape_path(cairo, op);
-        if (spread > 0.0) {
-            cairo_set_line_width(cairo, 2.0 * spread);
-            cairo_stroke_preserve(cairo);
-        }
-        cairo_fill(cairo);
-    } else {
-        const int bands = 8;
-        double outer = 0.0;
-        for (int band = bands; band > 0; band--) {
-            double reach = (double)band / bands;
-            double here = alpha * exp(-2.4 * reach);
-            double step = 1.0 - (1.0 - here) / (1.0 - outer);
-            outer = here;
-            if (!(step > 0.0)) continue;
-            cairo_set_source_rgba(cairo, red, green, blue, step);
-            cairo_set_line_width(cairo, 2.0 * (spread + blur * reach));
-            shape_path(cairo, op);
-            cairo_stroke(cairo);
-        }
+        shape_path(&path, op, shadow[0], shadow[1]);
+        bool ok = true;
+        if (spread > 0.0)
+            ok = stroke_path(canvas, area, &path, 2.0 * spread,
+                CAIRO_LINE_CAP_ROUND, CAIRO_LINE_JOIN_ROUND, op->shadow_rgba[index]);
+        if (ok) ok = fill_path(canvas, area, &path, op->shadow_rgba[index]);
+        dpath_fini(&path);
+        return ok;
     }
-    cairo_restore(cairo);
+    const int bands = 8;
+    double outer = 0.0;
+    bool ok = true;
+    for (int band = bands; band > 0 && ok; band--) {
+        double reach = (double)band / bands;
+        double here = alpha * exp(-2.4 * reach);
+        double step = 1.0 - (1.0 - here) / (1.0 - outer);
+        outer = here;
+        if (!(step > 0.0)) continue;
+        shape_path(&path, op, shadow[0], shadow[1]);
+        ok = stroke_path_color(canvas, area, &path, 2.0 * (spread + blur * reach),
+            CAIRO_LINE_CAP_ROUND, CAIRO_LINE_JOIN_ROUND, red, green, blue, step);
+        dpath_fini(&path);
+        dpath_init(&path);
+    }
+    dpath_fini(&path);
+    return ok;
 }
 
 static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         const struct rect *clip) {
-    cairo_t *cairo = surface->canvas->cairo;
-    double red, green, blue, alpha;
-    color_components(op->rgba, &red, &green, &blue, &alpha);
-    cairo_save(cairo);
-    cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
-    cairo_clip(cairo);
+    struct ui_canvas *canvas = surface->canvas;
+    struct drect area = { clip->x1, clip->y1, clip->x2, clip->y2 };
     switch (op->kind) {
     case UI_OP_SHAPE: {
-        for (int i = 0; i < op->shadow_count; i++) shape_shadow(cairo, op, i);
-        cairo_pattern_t *pattern = shape_pattern(op);
-        if (pattern) {
-            cairo_set_source(cairo, pattern);
-        } else {
-            cairo_set_source_rgba(cairo, red, green, blue, alpha);
-        }
+        for (int i = 0; i < op->shadow_count; i++)
+            if (!shape_shadow(canvas, op, i, area)) return false;
         if (op->stroke > 0.0) {
-            if (op->width > op->stroke && op->height > op->stroke) {
-                double inset = op->stroke / 2.0;
-                rounded_path(cairo, op->x + inset, op->y + inset,
-                    op->width - op->stroke, op->height - op->stroke,
-                    fmax(0.0, op->radius - inset));
-                double stroke_red, stroke_green, stroke_blue, stroke_alpha;
-                color_components(op->rgba, &stroke_red, &stroke_green, &stroke_blue, &stroke_alpha);
-                cairo_set_source_rgba(cairo, stroke_red, stroke_green, stroke_blue, stroke_alpha);
-                cairo_set_line_width(cairo, op->stroke);
-                cairo_stroke(cairo);
-            }
-        } else {
-            shape_path(cairo, op);
-            cairo_fill(cairo);
+            if (!(op->width > op->stroke && op->height > op->stroke)) return true;
+            double inset = op->stroke / 2.0;
+            struct dpath path;
+            dpath_init(&path);
+            rounded_path(&path, op->x + inset, op->y + inset,
+                op->width - op->stroke, op->height - op->stroke,
+                fmax(0.0, op->radius - inset));
+            bool ok = stroke_path(canvas, area, &path, op->stroke,
+                CAIRO_LINE_CAP_BUTT, CAIRO_LINE_JOIN_MITER, op->rgba);
+            dpath_fini(&path);
+            return ok;
         }
-        if (pattern) cairo_pattern_destroy(pattern);
-        break;
+        if (op->fill != UI_FILL_SOLID && op->stop_count >= 2)
+            return shape_gradient(surface, op, clip);
+        struct dpath path;
+        dpath_init(&path);
+        shape_path(&path, op, 0.0, 0.0);
+        bool ok = fill_path(canvas, area, &path, op->rgba);
+        dpath_fini(&path);
+        return ok;
     }
-    case UI_OP_ARC:
-        cairo_set_source_rgba(cairo, red, green, blue, alpha);
-        cairo_set_line_width(cairo, op->u.arc.thickness);
-        cairo_set_line_cap(cairo, CAIRO_LINE_CAP_BUTT);
-        if (op->u.arc.end >= op->u.arc.start)
-            cairo_arc(cairo, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
-                op->u.arc.start, op->u.arc.end);
-        else
-            cairo_arc_negative(cairo, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
-                op->u.arc.start, op->u.arc.end);
-        cairo_stroke(cairo);
-        break;
+    case UI_OP_ARC: {
+        struct dpath path;
+        dpath_init(&path);
+        dp_arc(&path, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
+            op->u.arc.start, op->u.arc.end, op->u.arc.end < op->u.arc.start);
+        bool ok = stroke_path(canvas, area, &path, op->u.arc.thickness,
+            CAIRO_LINE_CAP_BUTT, CAIRO_LINE_JOIN_MITER, op->rgba);
+        dpath_fini(&path);
+        return ok;
+    }
     case UI_OP_ASSET: {
         struct ui_asset *asset = surface_asset(surface, op->u.asset.id);
         if (asset)
-            ui_asset_paint(asset, cairo, op->x, op->y, op->width, op->height,
-                op->u.asset.tint != 0, op->rgba);
-        break;
+            return ui_asset_paint(asset, (uint32_t *)canvas->pixels, canvas->width,
+                canvas->height, (int)(canvas->stride / 4), op->x, op->y, op->width,
+                op->height, op->u.asset.tint != 0, op->rgba);
+        return true;
     }
     case UI_OP_TEXT: {
+        cairo_t *cairo = canvas->cairo;
         const struct ui_text *entry = op->u.text.text;
+        double red, green, blue, alpha;
+        color_components(op->rgba, &red, &green, &blue, &alpha);
         double height = ceil(entry->line_height);
         int width = entry->width;
+        cairo_save(cairo);
+        cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
+        cairo_clip(cairo);
         cairo_set_source_rgba(cairo, red, green, blue, alpha);
         cairo_translate(cairo,
             op->x + (op->rotate == 90 ? height : op->rotate == 180 ? width : 0),
@@ -1379,11 +1475,11 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         pango_cairo_update_layout(cairo, entry->layout);
         cairo_move_to(cairo, 0, 0);
         pango_cairo_show_layout(cairo, entry->layout);
-        break;
+        cairo_restore(cairo);
+        return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
     }
     }
-    cairo_restore(cairo);
-    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    return true;
 }
 
 static bool canvas_replay(struct ui_surface *surface, const struct region *damage) {
@@ -1394,13 +1490,10 @@ static bool canvas_replay(struct ui_surface *surface, const struct region *damag
     const struct rect *rects = region_rectangles(damage, &count);
     for (int i = 0; i < count; i++) {
         const struct rect *dirty = &rects[i];
-        cairo_save(cairo);
-        cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-        cairo_set_source_rgba(cairo, 0, 0, 0, 0);
-        cairo_rectangle(cairo, dirty->x1, dirty->y1,
-            dirty->x2 - dirty->x1, dirty->y2 - dirty->y1);
-        cairo_fill(cairo);
-        cairo_restore(cairo);
+        int dirty_width = dirty->x2 - dirty->x1;
+        for (int y = dirty->y1; y < dirty->y2; y++)
+            memset((uint32_t *)canvas->pixels + (size_t)y * (canvas->stride / 4) + dirty->x1,
+                0, (size_t)dirty_width * 4);
         for (size_t k = 0; k < surface->build_count; k++) {
             const struct ui_op *op = &surface->build[k];
             struct rect probe, clip = *dirty;

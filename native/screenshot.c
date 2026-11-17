@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "draw.h"
 #include "spring.h"
 #include "png.h"
 #include <cairo.h>
@@ -225,45 +226,56 @@ static bool intersects(const struct box *a, const struct box *b) {
     return box_intersection(&out, a, b);
 }
 
-static void draw_arrow(cairo_t *cr, const struct mark *mark) {
+static bool draw_arrow(uint32_t *pixels, int stride, struct drect area,
+        const struct mark *mark, int ox, int oy) {
     double dx = mark->x1 - mark->x0, dy = mark->y1 - mark->y0;
     double length = hypot(dx, dy), width = mark->width, head = mark->head;
-    if (length < 1) return;
+    if (length < 1) return true;
     double ux = dx / length, uy = dy / length;
     double base = length > head ? length - head : 0;
-    cairo_set_line_width(cr, width);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_move_to(cr, mark->x0, mark->y0);
-    cairo_line_to(cr, mark->x0 + ux * base, mark->y0 + uy * base);
-    cairo_stroke(cr);
+    struct dpath path;
+    dpath_init(&path);
+    dp_move_to(&path, ox + mark->x0, oy + mark->y0);
+    dp_line_to(&path, ox + mark->x0 + ux * base, oy + mark->y0 + uy * base);
+    bool ok = dp_stroke_color(pixels, stride, area, &path, width,
+        DP_CAP_ROUND, DP_JOIN_MITER, UINT32_C(0xffffffff), 1);
+    dpath_fini(&path);
+    if (!ok) return false;
     double half = head * 0.5;
     double lx = mark->x0 + ux * base - uy * half, ly = mark->y0 + uy * base + ux * half;
     double rx = mark->x0 + ux * base + uy * half, ry = mark->y0 + uy * base - ux * half;
+    dpath_init(&path);
     if (mark->head_style == HEAD_OPEN) {
         double rim = width * 0.5 < 1 ? 1 : width * 0.5;
-        cairo_set_line_width(cr, rim);
-        cairo_move_to(cr, lx, ly);
-        cairo_line_to(cr, mark->x1, mark->y1);
-        cairo_line_to(cr, rx, ry);
-        cairo_stroke(cr);
-        return;
+        dp_move_to(&path, ox + lx, oy + ly);
+        dp_line_to(&path, ox + mark->x1, oy + mark->y1);
+        dp_line_to(&path, ox + rx, oy + ry);
+        ok = dp_stroke_color(pixels, stride, area, &path, rim,
+            DP_CAP_BUTT, DP_JOIN_MITER, UINT32_C(0xffffffff), 1);
+        dpath_fini(&path);
+        return ok;
     }
-    cairo_move_to(cr, mark->x1, mark->y1);
-    cairo_line_to(cr, lx, ly);
-    cairo_line_to(cr, rx, ry);
-    cairo_close_path(cr);
-    cairo_fill(cr);
+    dp_move_to(&path, ox + mark->x1, oy + mark->y1);
+    dp_line_to(&path, ox + lx, oy + ly);
+    dp_line_to(&path, ox + rx, oy + ry);
+    dp_close_path(&path);
+    ok = dp_fill_color(pixels, stride, area, &path, UINT32_C(0xffffffff), 1);
+    dpath_fini(&path);
+    return ok;
 }
 
-static void draw_free(cairo_t *cr, const struct mark *mark) {
-    if (mark->count < 2) return;
-    cairo_set_line_width(cr, mark->width);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-    cairo_move_to(cr, mark->points[0], mark->points[1]);
+static bool draw_free(uint32_t *pixels, int stride, struct drect area,
+        const struct mark *mark, int ox, int oy) {
+    if (mark->count < 2) return true;
+    struct dpath path;
+    dpath_init(&path);
+    dp_move_to(&path, ox + mark->points[0], oy + mark->points[1]);
     for (size_t i = 1; i < mark->count; i++)
-        cairo_line_to(cr, mark->points[2 * i], mark->points[2 * i + 1]);
-    cairo_stroke(cr);
+        dp_line_to(&path, ox + mark->points[2 * i], oy + mark->points[2 * i + 1]);
+    bool ok = dp_stroke_color(pixels, stride, area, &path, mark->width,
+        DP_CAP_ROUND, DP_JOIN_ROUND, UINT32_C(0xffffffff), 1);
+    dpath_fini(&path);
+    return ok;
 }
 
 static void draw_text(cairo_t *cr, const struct settings *st, const struct mark *mark) {
@@ -275,11 +287,12 @@ static void draw_text(cairo_t *cr, const struct settings *st, const struct mark 
     ui_text_raster(cr, st->screenshot_mark_font, text, mark->size);
 }
 
-static void draw_mark(cairo_t *cr, const struct settings *st, const struct mark *mark) {
-    cairo_set_source_rgba(cr, 1, 1, 1, 1);
-    if (mark->kind == MARK_ARROW) draw_arrow(cr, mark);
-    else if (mark->kind == MARK_FREE) draw_free(cr, mark);
-    else draw_text(cr, st, mark);
+static bool draw_mark(cairo_t *cr, uint32_t *pixels, int stride, struct drect area,
+        const struct settings *st, const struct mark *mark, int ox, int oy) {
+    if (mark->kind == MARK_ARROW) return draw_arrow(pixels, stride, area, mark, ox, oy);
+    if (mark->kind == MARK_FREE) return draw_free(pixels, stride, area, mark, ox, oy);
+    draw_text(cr, st, mark);
+    return true;
 }
 
 static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box damage);
@@ -333,25 +346,32 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
     if (x + width > shot->mask_width) width = shot->mask_width - x;
     if (y + height > shot->mask_height) height = shot->mask_height - y;
     if (width <= 0 || height <= 0) return;
+    cairo_surface_flush(shot->mask);
+    uint32_t *pixels = (uint32_t *)cairo_image_surface_get_data(shot->mask);
+    int stride = cairo_image_surface_get_stride(shot->mask) / 4;
+    for (int row = y; row < y + height; row++)
+        memset(pixels + (size_t)row * stride + x, 0, (size_t)width * 4);
+    cairo_surface_mark_dirty(shot->mask);
     cairo_t *cr = cairo_create(shot->mask);
     cairo_rectangle(cr, x, y, width, height);
     cairo_clip(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-    cairo_paint(cr);
-    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
     cairo_translate(cr, -shot->mask_x, -shot->mask_y);
+    cairo_set_source_rgba(cr, 1, 1, 1, 1);
+    struct drect area = { x, y, x + width, y + height };
     for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
         const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
         struct box box = mark_box(mark);
         if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
-        draw_mark(cr, st, mark);
+        if (!draw_mark(cr, pixels, stride, area, st, mark, -shot->mask_x, -shot->mask_y))
+            break;
     }
     cairo_destroy(cr);
     cairo_surface_flush(shot->mask);
     unsigned char *data = cairo_image_surface_get_data(shot->mask);
-    int stride = cairo_image_surface_get_stride(shot->mask);
+    int upload_stride = cairo_image_surface_get_stride(shot->mask);
     struct rect rect = { x, y, x + width, y + height };
-    texture_upload(shot->mask_texture, data, DRM_FORMAT_ARGB8888, (uint32_t)stride, &rect, 1);
+    texture_upload(shot->mask_texture, data, DRM_FORMAT_ARGB8888, (uint32_t)upload_stride,
+        &rect, 1);
 }
 
 static void marks_changed(struct tomoe *s, struct box damage) {
@@ -483,34 +503,45 @@ static bool typing_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed) {
     return true;
 }
 
-static void mark_matrix(cairo_matrix_t *matrix, enum wl_output_transform transform,
+static void mark_matrix(struct dmatrix *matrix, enum wl_output_transform transform,
         double width, double height) {
     switch (transform) {
-    case WL_OUTPUT_TRANSFORM_90: cairo_matrix_init(matrix, 0, 1, -1, 0, height, 0); break;
-    case WL_OUTPUT_TRANSFORM_180: cairo_matrix_init(matrix, -1, 0, 0, -1, width, height); break;
-    case WL_OUTPUT_TRANSFORM_270: cairo_matrix_init(matrix, 0, -1, 1, 0, 0, width); break;
-    case WL_OUTPUT_TRANSFORM_FLIPPED: cairo_matrix_init(matrix, -1, 0, 0, 1, width, 0); break;
-    case WL_OUTPUT_TRANSFORM_FLIPPED_90: cairo_matrix_init(matrix, 0, 1, 1, 0, 0, 0); break;
-    case WL_OUTPUT_TRANSFORM_FLIPPED_180: cairo_matrix_init(matrix, 1, 0, 0, -1, 0, height); break;
-    case WL_OUTPUT_TRANSFORM_FLIPPED_270: cairo_matrix_init(matrix, 0, -1, -1, 0, height, width); break;
-    default: cairo_matrix_init_identity(matrix); break;
+    case WL_OUTPUT_TRANSFORM_90: *matrix = (struct dmatrix){ 0, 1, -1, 0, height, 0 }; break;
+    case WL_OUTPUT_TRANSFORM_180: *matrix = (struct dmatrix){ -1, 0, 0, -1, width, height }; break;
+    case WL_OUTPUT_TRANSFORM_270: *matrix = (struct dmatrix){ 0, -1, 1, 0, 0, width }; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED: *matrix = (struct dmatrix){ -1, 0, 0, 1, width, 0 }; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_90: *matrix = (struct dmatrix){ 0, 1, 1, 0, 0, 0 }; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_180: *matrix = (struct dmatrix){ 1, 0, 0, -1, 0, height }; break;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_270: *matrix = (struct dmatrix){ 0, -1, -1, 0, height, width }; break;
+    default: *matrix = (struct dmatrix){ 1, 0, 0, 1, 0, 0 }; break;
     }
 }
 
-static void paint_marks(struct tomoe *s, struct output *o, cairo_surface_t *surface,
-        const struct box *origin, enum wl_output_transform transform, int width, int height) {
+static void paint_marks(struct tomoe *s, struct output *o, uint32_t *dst, int stride,
+        int dst_width, int dst_height, const struct box *origin,
+        enum wl_output_transform transform, int width, int height) {
     struct screenshot *shot = s->screenshot;
     if (!shot || shot->output != o || !shot->mask) return;
     uint32_t ink = s->settings.screenshot_mark_ink;
-    cairo_matrix_t matrix;
+    struct dmatrix matrix;
     mark_matrix(&matrix, transform, width, height);
-    cairo_t *cr = cairo_create(surface);
-    cairo_translate(cr, -origin->x, -origin->y);
-    cairo_transform(cr, &matrix);
-    cairo_set_source_rgba(cr, ((ink >> 24) & 0xff) / 255.0, ((ink >> 16) & 0xff) / 255.0,
-        ((ink >> 8) & 0xff) / 255.0, (ink & 0xff) / 255.0);
-    cairo_mask_surface(cr, shot->mask, shot->mask_x, shot->mask_y);
-    cairo_destroy(cr);
+    matrix.x0 -= matrix.xx * origin->x + matrix.xy * origin->y;
+    matrix.y0 -= matrix.yx * origin->x + matrix.yy * origin->y;
+    cairo_surface_flush(shot->mask);
+    const uint32_t *mask = (const uint32_t *)cairo_image_surface_get_data(shot->mask);
+    if (!mask) return;
+    double alpha = (ink & 0xff) / 255.0;
+    double red = ((ink >> 24) & 0xff) / 255.0;
+    double green = ((ink >> 16) & 0xff) / 255.0;
+    double blue = ((ink >> 8) & 0xff) / 255.0;
+    unsigned a = (unsigned)(alpha * 65535.0 + 0.5);
+    unsigned r = (unsigned)(red * alpha * 65535.0 + 0.5);
+    unsigned g = (unsigned)(green * alpha * 65535.0 + 0.5);
+    unsigned b = (unsigned)(blue * alpha * 65535.0 + 0.5);
+    uint32_t color = ((a >> 8) << 24) | ((r >> 8) << 16) | (g & 0xff00) | (b >> 8);
+    dp_mask_surface(dst, stride, (struct drect){ 0, 0, dst_width, dst_height }, mask,
+        cairo_image_surface_get_stride(shot->mask) / 4, shot->mask_width, shot->mask_height,
+        shot->mask_x, shot->mask_y, &matrix, 0, 0, color);
 }
 
 static void capture(struct tomoe *s, struct output *o, struct box region) {
@@ -540,12 +571,8 @@ static void capture(struct tomoe *s, struct output *o, struct box region) {
                 (uint32_t)pixels[i + 1] << 8 | pixels[i + 2];
             memcpy(pixels + i, &value, sizeof(value));
         }
-        cairo_surface_t *surface = cairo_image_surface_create_for_data(pixels, CAIRO_FORMAT_ARGB32,
-            region.width, region.height, stride);
-        paint_marks(s, o, surface, &origin, transform_invert(o->screen->transform),
-            logical_width, logical_height);
-        cairo_surface_flush(surface);
-        cairo_surface_destroy(surface);
+        paint_marks(s, o, (uint32_t *)pixels, stride / 4, region.width, region.height,
+            &origin, transform_invert(o->screen->transform), logical_width, logical_height);
         unsigned char *encoded = NULL;
         size_t encoded_length = 0;
         bool written = tomoe_png_encode(pixels, (uint32_t)region.width,
