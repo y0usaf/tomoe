@@ -361,6 +361,7 @@ struct jpeg {
     int smooth_prev[MAX_COMPONENTS][SAVED_COEFS];
 
     int conversion;
+    int zune;
     unsigned char *pixels;
 };
 
@@ -1834,6 +1835,126 @@ static void idct_islow(const int16_t *block, const int16_t *quant,
     }
 }
 
+#define ZSCALE_BITS 512 + 65536 + (128 << 17)
+#define ZADD(a, b) ((int32_t)((uint32_t)(a) + (uint32_t)(b)))
+#define ZSUB(a, b) ((int32_t)((uint32_t)(a) - (uint32_t)(b)))
+#define ZMUL(a, b) ((int32_t)((uint32_t)(a) * (uint32_t)(b)))
+#define ZSHL(a) ((int32_t)((uint32_t)(a) << 12))
+
+static int16_t zune_clamp(int32_t a) {
+    if (a < 0) return 0;
+    if (a > 255) return 255;
+    return (int16_t)a;
+}
+
+static void zune_idct_int(int32_t *v, uint8_t *out, uint32_t stride) {
+    for (int ptr = 0; ptr < 8; ptr++) {
+        int32_t p2 = v[ptr + 16], p3 = v[ptr + 48];
+        int32_t p1 = ZMUL(ZADD(p2, p3), 2217);
+        int32_t t2 = ZADD(p1, ZMUL(p3, -7567));
+        int32_t t3 = ZADD(p1, ZMUL(p2, 3135));
+        p2 = v[ptr];
+        p3 = v[ptr + 32];
+        int32_t t0 = ZSHL(ZADD(p2, p3));
+        int32_t t1 = ZSHL(ZSUB(p2, p3));
+        int32_t x0 = ZADD(ZADD(t0, t3), 512);
+        int32_t x3 = ZADD(ZSUB(t0, t3), 512);
+        int32_t x1 = ZADD(ZADD(t1, t2), 512);
+        int32_t x2 = ZADD(ZSUB(t1, t2), 512);
+        t0 = v[ptr + 56];
+        t1 = v[ptr + 40];
+        t2 = v[ptr + 24];
+        t3 = v[ptr + 8];
+        p3 = ZADD(t0, t2);
+        int32_t p4 = ZADD(t1, t3);
+        p1 = ZADD(t0, t3);
+        p2 = ZADD(t1, t2);
+        int32_t p5 = ZMUL(ZADD(p3, p4), 4816);
+        t0 = ZMUL(t0, 1223);
+        t1 = ZMUL(t1, 8410);
+        t2 = ZMUL(t2, 12586);
+        t3 = ZMUL(t3, 6149);
+        p1 = ZADD(p5, ZMUL(p1, -3685));
+        p2 = ZADD(p5, ZMUL(p2, -10497));
+        p3 = ZMUL(p3, -8034);
+        p4 = ZMUL(p4, -1597);
+        t3 = ZADD(t3, ZADD(p1, p4));
+        t2 = ZADD(t2, ZADD(p2, p3));
+        t1 = ZADD(t1, ZADD(p2, p4));
+        t0 = ZADD(t0, ZADD(p1, p3));
+        v[ptr] = ZSUB(ZADD(x0, t3), 0) >> 10;
+        v[ptr + 8] = ZSUB(ZADD(x1, t2), 0) >> 10;
+        v[ptr + 16] = ZSUB(ZADD(x2, t1), 0) >> 10;
+        v[ptr + 24] = ZSUB(ZADD(x3, t0), 0) >> 10;
+        v[ptr + 32] = ZSUB(ZSUB(x3, t0), 0) >> 10;
+        v[ptr + 40] = ZSUB(ZSUB(x2, t1), 0) >> 10;
+        v[ptr + 48] = ZSUB(ZSUB(x1, t2), 0) >> 10;
+        v[ptr + 56] = ZSUB(ZSUB(x0, t3), 0) >> 10;
+    }
+    for (int i = 0, pos = 0; i < 64; i += 8, pos += (int)stride) {
+        int32_t p2 = v[i + 2], p3 = v[i + 6];
+        int32_t p1 = ZMUL(ZADD(p2, p3), 2217);
+        int32_t t2 = ZADD(p1, ZMUL(p3, -7567));
+        int32_t t3 = ZADD(p1, ZMUL(p2, 3135));
+        p2 = v[i];
+        p3 = v[i + 4];
+        int32_t t0 = ZADD(ZSHL(ZADD(p2, p3)), ZSCALE_BITS);
+        int32_t t1 = ZADD(ZSHL(ZSUB(p2, p3)), ZSCALE_BITS);
+        int32_t x0 = ZADD(ZADD(t0, t3), 0);
+        int32_t x3 = ZADD(ZSUB(t0, t3), 0);
+        int32_t x1 = ZADD(ZADD(t1, t2), 0);
+        int32_t x2 = ZADD(ZSUB(t1, t2), 0);
+        t0 = v[i + 7];
+        t1 = v[i + 5];
+        t2 = v[i + 3];
+        t3 = v[i + 1];
+        p3 = ZADD(t0, t2);
+        int32_t p4 = ZADD(t1, t3);
+        p1 = ZADD(t0, t3);
+        p2 = ZADD(t1, t2);
+        int32_t p5 = ZMUL(ZADD(p3, p4), 4816);
+        t0 = ZMUL(t0, 1223);
+        t1 = ZMUL(t1, 8410);
+        t2 = ZMUL(t2, 12586);
+        t3 = ZMUL(t3, 6149);
+        p1 = ZADD(p5, ZMUL(p1, -3685));
+        p2 = ZADD(p5, ZMUL(p2, -10497));
+        p3 = ZMUL(p3, -8034);
+        p4 = ZMUL(p4, -1597);
+        t3 = ZADD(t3, ZADD(p1, p4));
+        t2 = ZADD(t2, ZADD(p2, p3));
+        t1 = ZADD(t1, ZADD(p2, p4));
+        t0 = ZADD(t0, ZADD(p1, p3));
+        uint8_t *row = out + (size_t)pos;
+        row[0] = (uint8_t)zune_clamp(ZADD(x0, t3) >> 17);
+        row[1] = (uint8_t)zune_clamp(ZADD(x1, t2) >> 17);
+        row[2] = (uint8_t)zune_clamp(ZADD(x2, t1) >> 17);
+        row[3] = (uint8_t)zune_clamp(ZADD(x3, t0) >> 17);
+        row[4] = (uint8_t)zune_clamp(ZSUB(x3, t0) >> 17);
+        row[5] = (uint8_t)zune_clamp(ZSUB(x2, t1) >> 17);
+        row[6] = (uint8_t)zune_clamp(ZSUB(x1, t2) >> 17);
+        row[7] = (uint8_t)zune_clamp(ZSUB(x0, t3) >> 17);
+    }
+}
+
+static void zune_idct_block(const int16_t *block, const int16_t *quant,
+        uint8_t *out, uint32_t stride) {
+    int32_t v[64];
+    int nonzero = 0;
+    for (int i = 0; i < 64; i++) {
+        v[i] = (int32_t)block[i] * (int32_t)quant[i];
+        if (i) nonzero |= v[i];
+    }
+    if (!nonzero) {
+        int32_t coeff = (v[0] + 4 + 1024) >> 3;
+        coeff = zune_clamp(coeff);
+        for (int r = 0; r < 8; r++)
+            for (int c = 0; c < 8; c++) out[(size_t)r * stride + (size_t)c] = (uint8_t)coeff;
+        return;
+    }
+    zune_idct_int(v, out, stride);
+}
+
 static uint32_t round_up(uint32_t value, uint32_t multiple) {
     return (value + multiple - 1) / multiple * multiple;
 }
@@ -1865,6 +1986,17 @@ static void idct_component(struct jpeg *j, int ci) {
     uint32_t stride = comp->coeff_stride * DCTSIZE;
     uint8_t *out = comp->samples;
     const int16_t *quant = comp->multiplier;
+    if (j->zune && !j->smooth) {
+        for (uint32_t y = 0; y < comp->height_in_blocks; y++) {
+            for (uint32_t x = 0; x < comp->width_in_blocks; x++) {
+                const int16_t *block = comp->coeff +
+                        ((size_t)y * comp->coeff_stride + x) * DCTSIZE2;
+                zune_idct_block(block, quant, out + (size_t)y * DCTSIZE * stride +
+                        (size_t)x * DCTSIZE, stride);
+            }
+        }
+        return;
+    }
     if (!j->smooth) {
         for (uint32_t y = 0; y < comp->height_in_blocks; y++) {
             for (uint32_t x = 0; x < comp->width_in_blocks; x++) {
@@ -2258,10 +2390,21 @@ static void convert_row(struct jpeg *j, uint32_t image_row, uint32_t buffer_row)
         } else if (j->conversion == CONV_GRAY_RGB) {
             red = green = blue = in0[x];
         } else if (j->conversion == CONV_YCC_RGB) {
-            int y = in0[x], cb = in1[x], cr = in2[x];
-            red = range[y + j->cr_r[cr]];
-            green = range[y + (int)((j->cb_g[cb] + j->cr_g[cr]) >> 16)];
-            blue = range[y + j->cb_b[cb]];
+            if (j->zune) {
+                int yy = in0[x] * 16384 + 8191;
+                int cbd = in1[x] - 128, crd = in2[x] - 128;
+                int r = (yy + crd * 22970) >> 14;
+                int g = (yy - crd * 11700 - cbd * 5638) >> 14;
+                int b = (yy + cbd * 29032) >> 14;
+                red = (unsigned)(r < 0 ? 0 : r > 255 ? 255 : r);
+                green = (unsigned)(g < 0 ? 0 : g > 255 ? 255 : g);
+                blue = (unsigned)(b < 0 ? 0 : b > 255 ? 255 : b);
+            } else {
+                int y = in0[x], cb = in1[x], cr = in2[x];
+                red = range[y + j->cr_r[cr]];
+                green = range[y + (int)((j->cb_g[cb] + j->cr_g[cr]) >> 16)];
+                blue = range[y + j->cb_b[cb]];
+            }
         } else {
             unsigned c, m, yy, k;
             if (j->conversion == CONV_NULL4) {
@@ -2472,10 +2615,11 @@ static enum jpeg_decode_status run(struct jpeg *j, uint32_t dimension, uint64_t 
     return JPEG_DECODE_OK;
 }
 
-enum jpeg_decode_status tomoe_jpeg_decode(const unsigned char *data, size_t length,
-        uint32_t dimension, uint64_t available, struct jpeg_decoded *image) {
+static enum jpeg_decode_status jpeg_decode_with(const unsigned char *data, size_t length,
+        uint32_t dimension, uint64_t available, struct jpeg_decoded *image, int zune) {
     struct jpeg *j = calloc(1, sizeof(*j));
     if (!j) return JPEG_DECODE_HARD;
+    j->zune = zune;
     j->data = data;
     j->length = length;
     j->fake[0] = 0xff;
@@ -2496,4 +2640,14 @@ enum jpeg_decode_status tomoe_jpeg_decode(const unsigned char *data, size_t leng
     release(j);
     free(j);
     return status;
+}
+
+enum jpeg_decode_status tomoe_jpeg_decode(const unsigned char *data, size_t length,
+        uint32_t dimension, uint64_t available, struct jpeg_decoded *image) {
+    return jpeg_decode_with(data, length, dimension, available, image, 0);
+}
+
+enum jpeg_decode_status tomoe_jpeg_decode_zune(const unsigned char *data, size_t length,
+        uint32_t dimension, uint64_t available, struct jpeg_decoded *image) {
+    return jpeg_decode_with(data, length, dimension, available, image, 1);
 }

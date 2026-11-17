@@ -7389,7 +7389,7 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
     }
     if (length >= 2 && data[0] == 0xff && data[1] == 0xd8) {
         struct jpeg_decoded jpg;
-        if (tomoe_jpeg_decode(data, length, 32767, UINT64_MAX, &jpg) != JPEG_DECODE_OK) return 0;
+        if (tomoe_jpeg_decode_zune(data, length, 32767, UINT64_MAX, &jpg) != JPEG_DECODE_OK) return 0;
         for (size_t i = 0; i < (size_t)jpg.width * jpg.height; i++) {
             unsigned char t = jpg.pixels[i * 4];
             jpg.pixels[i * 4] = jpg.pixels[i * 4 + 2];

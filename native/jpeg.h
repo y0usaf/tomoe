@@ -15,4 +15,7 @@ struct jpeg_decoded {
 enum jpeg_decode_status tomoe_jpeg_decode(const unsigned char *data, size_t length,
         uint32_t dimension, uint64_t available, struct jpeg_decoded *image);
 
+enum jpeg_decode_status tomoe_jpeg_decode_zune(const unsigned char *data, size_t length,
+        uint32_t dimension, uint64_t available, struct jpeg_decoded *image);
+
 #endif
