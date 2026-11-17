@@ -3882,7 +3882,6 @@ static int svg_transform_valid(const char *text, struct svg_matrix *out) {
     }
     if (!(isfinite(ts.sx) && isfinite(ts.ky) && isfinite(ts.kx) && isfinite(ts.sy) &&
             isfinite(ts.tx) && isfinite(ts.ty))) return 0;
-    if (ts.sx == 0.0f || ts.sy == 0.0f) return 0;
     *out = ts;
     return 1;
 }
@@ -4148,7 +4147,7 @@ static void svg_convert_children(struct svg_conv *c, struct xml_node *parent,
 static void svg_group_bboxes(struct svg_node *g);
 
 static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const char *value,
-        int has_bbox, struct svg_paint *paint, float *opacity, int *unsupported) {
+        int has_bbox, struct svg_paint *paint, float *opacity, int *unsupported, int black_fallback) {
     memset(paint, 0, sizeof(*paint));
     *opacity = 1.0f;
     if (!value) value = "black";
@@ -4320,6 +4319,9 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
         if (svg_parse_color(trimmed, &r, &g, &b, &a)) {
             paint->type = 1; paint->r = r; paint->g = g; paint->b = b;
             *opacity = a / 255.0f;
+        } else if (black_fallback) {
+            paint->type = 1; paint->r = paint->g = paint->b = 0;
+            *opacity = 1.0f;
         }
         result = 1;
     }
@@ -4345,7 +4347,7 @@ static void svg_convert_fill(struct svg_conv *c, struct svg_style *st, int clip_
     struct svg_paint paint;
     float sub_opacity = 1.0f;
     int unsupported = 0;
-    svg_convert_paint(c, st, value, has_bbox, &paint, &sub_opacity, &unsupported);
+    svg_convert_paint(c, st, value, has_bbox, &paint, &sub_opacity, &unsupported, 1);
     if (unsupported) c->unsupported = 1;
     if (!paint.type) return;
     const char *op = svg_style_find_inherited(c->doc, st, "fill-opacity");
@@ -4380,7 +4382,7 @@ static void svg_convert_stroke(struct svg_conv *c, struct svg_style *st, int cli
     struct svg_paint paint;
     float sub_opacity = 1.0f;
     int unsupported = 0;
-    svg_convert_paint(c, st, value, has_bbox, &paint, &sub_opacity, &unsupported);
+    svg_convert_paint(c, st, value, has_bbox, &paint, &sub_opacity, &unsupported, 0);
     if (unsupported) c->unsupported = 1;
     if (!paint.type) return;
     struct svg_style *width_style = st;
