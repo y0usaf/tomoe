@@ -761,6 +761,7 @@ struct span_ctx {
     int stride;
     struct drect clip;
     int mask_x, mask_y;
+    struct dp_row_span *rows;
 };
 
 static px_status_t span_rows(void *closure, int y, int height,
@@ -771,6 +772,22 @@ static px_status_t span_rows(void *closure, int y, int height,
     for (unsigned i = 0; i + 1 < num_spans; i++) {
         int x0 = spans[i].x;
         int x1 = spans[i + 1].x;
+        if (ctx->rows) {
+            int a = x0 < ctx->clip.x0 ? ctx->clip.x0 : x0;
+            int b = x1 > ctx->clip.x1 ? ctx->clip.x1 : x1;
+            if (a < b) {
+                for (int row = y; row < y + height; row++) {
+                    struct dp_row_span *span;
+                    if (row < ctx->clip.y0 || row >= ctx->clip.y1) continue;
+                    span = &ctx->rows[row - ctx->clip.y0];
+                    if (span->x0 == span->x1) { span->x0 = a; span->x1 = b; }
+                    else {
+                        if (a < span->x0) span->x0 = a;
+                        if (b > span->x1) span->x1 = b;
+                    }
+                }
+            }
+        }
         if (x0 < ctx->clip.x0) x0 = ctx->clip.x0;
         if (x1 > ctx->clip.x1) x1 = ctx->clip.x1;
         if (x1 <= x0) continue;
@@ -839,7 +856,7 @@ static void box_row_deltas(int32_t l, int32_t t, int32_t r, int32_t b, int y,
 }
 
 static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y)
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_row_span *rows)
 {
     int width = clip.x1 - clip.x0;
     if (width <= 0) return true;
@@ -855,6 +872,12 @@ static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct dre
     int32_t top_y = t >> 8, bottom_y = b >> 8;
     for (int32_t y = top_y; y <= bottom_y; y++) {
         if (y < clip.y0 || y >= clip.y1) continue;
+        if (rows) {
+            int bx0 = fixed_floor(l), bx1 = fixed_ceil(r);
+            if (bx0 < clip.x0) bx0 = clip.x0;
+            if (bx1 > clip.x1) bx1 = clip.x1;
+            if (bx0 < bx1) rows[y - clip.y0] = (struct dp_row_span){ bx0, bx1 };
+        }
         memset(dl, 0, (size_t)width * sizeof(int));
         memset(du, 0, (size_t)width * sizeof(int));
         box_row_deltas(l, t, r, b, y, dl, du, width, clip.x0);
@@ -905,7 +928,15 @@ static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct dre
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
+    return dp_fill_mask_rows(path, clip, mask, stride, mask_x, mask_y, NULL);
+}
+
+bool dp_fill_mask_rows(const struct dpath *path, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_row_span *rows)
+{
     if (path->failed) return false;
+    if (rows && clip.y1 > clip.y0)
+        memset(rows, 0, sizeof(*rows) * (size_t)(clip.y1 - clip.y0));
     int32_t bl, bt, br, bb;
     if (path_is_rect_box(path, &bl, &bt, &br, &bb)) {
         int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
@@ -915,7 +946,7 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
         if (br > limit_r) br = limit_r;
         if (bb > limit_b) bb = limit_b;
         if (bl < br && bt < bb)
-            return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y);
+            return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y, rows);
         return true;
     }
     struct dp_polygon polygon;
@@ -987,6 +1018,7 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
     ctx.clip = clip;
     ctx.mask_x = mask_x;
     ctx.mask_y = mask_y;
+    ctx.rows = rows;
     ctx.base.render_rows = span_rows;
     px_status_t status = converter->generate(converter, &ctx.base);
     converter->destroy(converter);

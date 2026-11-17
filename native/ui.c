@@ -1338,19 +1338,30 @@ static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
             op->y + op->geometry[1] * op->height };
     }
     unsigned char *coverage = calloc((size_t)span * (size_t)(area.y1 - area.y0), 1);
-    if (!coverage) return false;
+    struct dp_row_span *rows = calloc((size_t)(area.y1 - area.y0), sizeof(*rows));
+    if (!coverage || !rows) {
+        free(coverage);
+        free(rows);
+        return false;
+    }
     struct dpath path;
     dpath_init(&path);
     shape_path(&path, op, 0.0, 0.0);
-    bool ok = dp_fill_mask(&path, area, coverage, span, area.x0, area.y0);
+    bool ok = dp_fill_mask_rows(&path, area, coverage, span, area.x0, area.y0, rows);
+    struct drect bounds = dp_path_extents(&path);
     dpath_fini(&path);
-    if (ok) {
-        struct dp_coverage mask = { coverage, span, area.x0, area.y0 };
+    if (bounds.x0 < area.x0) bounds.x0 = area.x0;
+    if (bounds.y0 < area.y0) bounds.y0 = area.y0;
+    if (bounds.x1 > area.x1) bounds.x1 = area.x1;
+    if (bounds.y1 > area.y1) bounds.y1 = area.y1;
+    if (ok && bounds.x0 < bounds.x1 && bounds.y0 < bounds.y1) {
+        struct dp_coverage mask = { coverage, span, area.x0, area.y0, rows };
         dp_paint_gradient((uint32_t *)canvas->pixels, (int)(canvas->stride / 4), area,
             &gradient, &mask, canvas->width, canvas->height,
-            area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
+            bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
     }
     free(coverage);
+    free(rows);
     return ok;
 }
 

@@ -31,6 +31,8 @@ struct dpath {
 
 struct drect { int x0, y0, x1, y1; };
 
+struct dp_row_span { int x0, x1; };
+
 struct dp_edge {
     px_point_t p1, p2;
     px_fixed_t top, bottom;
@@ -69,6 +71,8 @@ uint32_t dp_masked_over(uint32_t dst, uint32_t src, uint8_t mask);
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y);
+bool dp_fill_mask_rows(const struct dpath *path, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_row_span *rows);
 
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
@@ -96,6 +100,7 @@ struct dp_image {
 struct dp_coverage {
     const unsigned char *pixels;
     int stride, x, y;
+    const struct dp_row_span *rows;
 };
 
 void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,
