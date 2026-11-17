@@ -148,7 +148,6 @@ struct dp_gradient16 {
     struct dp_gradient_stop16 stops[DP_GRADIENT_STOPS];
 };
 
-bool dp_gradient16_extents(const struct dp_gradient16 *gradient, struct drect *extents);
 void dp_paint_gradient16(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient16 *gradient, const struct dp_coverage *coverage,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);

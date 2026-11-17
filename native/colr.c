@@ -802,6 +802,11 @@ static void sweep_patches(struct colr_ctx *ctx, struct colr_color_line *line, in
     {
         int k = 0;
         double span = angles[line->count - 1] - angles[0];
+        if (span == 0) {
+            sweep_segment(ctx, center_x, center_y, radius, 0, &line->stops[0].color,
+                2 * M_PI, &line->stops[0].color);
+            return;
+        }
         if (angles[0] >= 0) {
             double ss = angles[0];
             while (ss > 0) {
@@ -1117,10 +1122,24 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     ctx.matrix.y0 = 0;
     struct drect box;
     if (!colr_box(face, glyph, &ctx.matrix, 0, 0, &box)) {
-        box.x0 = (int)floor(-upem * fabs(scale->xx) / upem);
-        box.y0 = (int)floor(-upem * fabs(scale->yy) / upem);
-        box.x1 = (int)ceil(upem * fabs(scale->xx) / upem);
-        box.y1 = (int)ceil(upem * fabs(scale->yy) / upem);
+        double xs[4] = { (double)face->bbox.xMin, (double)face->bbox.xMax,
+            (double)face->bbox.xMin, (double)face->bbox.xMax };
+        double ys[4] = { (double)face->bbox.yMin, (double)face->bbox.yMin,
+            (double)face->bbox.yMax, (double)face->bbox.yMax };
+        for (int i = 0; i < 4; i++) {
+            int fx = (int)floor(ctx.matrix.xx * xs[i] + ctx.matrix.xy * ys[i]);
+            int fy = (int)floor(ctx.matrix.yx * xs[i] + ctx.matrix.yy * ys[i]);
+            int cx = (int)ceil(ctx.matrix.xx * xs[i] + ctx.matrix.xy * ys[i]);
+            int cy = (int)ceil(ctx.matrix.yx * xs[i] + ctx.matrix.yy * ys[i]);
+            if (i == 0) {
+                box = (struct drect){ fx, fy, cx, cy };
+            } else {
+                if (fx < box.x0) box.x0 = fx;
+                if (fy < box.y0) box.y0 = fy;
+                if (cx > box.x1) box.x1 = cx;
+                if (cy > box.y1) box.y1 = cy;
+            }
+        }
     }
     double pad = 2.0;
     ctx.ox = floor(box.x0 - pad);
