@@ -9213,6 +9213,16 @@ static void svg_doc_calculate_root_bboxes(struct svg_node *root) {
         root->lbbox = svg_bbox_from_rect(0, 0, 1, 1);
         root->has_lbbox = 1;
     }
+    if (root->filter) {
+        struct svg_bbox fb = svg_bbox_empty();
+        for (struct svg_filter *f = root->filter; f; f = f->next) {
+            struct svg_bbox r = { f->rect[0], f->rect[1], f->rect[0] + f->rect[2],
+                f->rect[1] + f->rect[3], 1 };
+            fb = svg_bbox_expand(fb, r);
+        }
+        root->lbbox = fb;
+        root->has_lbbox = 1;
+    }
     root->abs_lbbox = svg_bbox_transform(root->lbbox, root->abs_transform);
 }
 
