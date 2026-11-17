@@ -1125,7 +1125,7 @@ static int def_flush_block(struct png_deflate *s, int last) {
     unsigned long opt_lenb = (s->opt_len + 3UL + 7UL) >> 3;
     unsigned long static_lenb = (s->static_len + 3UL + 7UL) >> 3;
     if (static_lenb <= opt_lenb) opt_lenb = static_lenb;
-    if (stored_len + 4UL <= opt_lenb && buf != NULL) {
+    if (stored_len <= 65535UL && stored_len + 4UL <= opt_lenb && buf != NULL) {
         def_send_bits(s, last, 3);
         def_bi_windup(s);
         def_put_short(s, (uint16_t)stored_len);
@@ -1291,7 +1291,7 @@ static int png_deflate(const unsigned char *in, size_t in_len, int window,
     s->filtered = filtered;
     s->adler = 1u;
     s->match_length = s->prev_length = DEF_MIN_MATCH - 1u;
-    s->window = calloc(1, s->window_size);
+    s->window = calloc(1, s->window_size + 8u);
     s->prev = malloc(s->w_size * sizeof(uint16_t));
     s->head = calloc(DEF_HASH_SIZE, sizeof(uint16_t));
     s->pending_buf = malloc(DEF_LIT_BUFSIZE * 4u);
