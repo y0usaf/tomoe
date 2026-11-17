@@ -896,6 +896,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     if (phase) timing_frame_raster(o->server, timing_now() - phase);
     region_fini(&changed);
     region_fini(&clip);
+    int64_t wait_at = timing_enabled ? timing_now() : 0;
     if (success && s->settings.wait_frame && signal) {
         int fd = timeline_export_sync_file(signal, s->render_point);
         if (fd >= 0) {
@@ -905,6 +906,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
             close(fd);
         }
     }
+    if (wait_at) timing_add(TIMING_FRAME_WAIT_RENDER, (uint64_t)(timing_now() - wait_at));
     return success;
 }
 static bool render_scene_buffer(struct output *o, struct buffer *buffer,

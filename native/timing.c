@@ -24,6 +24,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "mat-total", "mat-config",
     "latch-input", "latch-commit", "present-input", "present-commit", "present-interval",
     "frame-tail",
+    "frame-wait-render",
     "cursor-newest", "cursor-oldest",
 };
 
