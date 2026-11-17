@@ -74,6 +74,13 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y);
 
+struct dmatrix { double xx, yx, xy, yy, x0, y0; };
+
+void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
+    const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
+    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,
+    uint32_t ink);
+
 uint32_t dp_lerp8x4(uint32_t src, uint8_t a, uint32_t dst);
 
 void dp_composite_over(uint32_t *dst, int stride, struct drect rect,

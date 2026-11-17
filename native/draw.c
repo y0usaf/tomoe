@@ -1143,6 +1143,28 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     return ok;
 }
 
+void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
+    const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
+    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,
+    uint32_t ink)
+{
+    for (int v = 0; v < mask_h; v++) {
+        double y = mask_y + v + 0.5;
+        for (int u = 0; u < mask_w; u++) {
+            double x = mask_x + u + 0.5;
+            double sx = matrix->xx * x + matrix->xy * y + matrix->x0 + tx;
+            double sy = matrix->yx * x + matrix->yy * y + matrix->y0 + ty;
+            int dx = (int)floor (sx - 0.5 + 1e-7);
+            int dy = (int)floor (sy - 0.5 + 1e-7);
+            if (dx < clip.x0 || dx >= clip.x1 || dy < clip.y0 || dy >= clip.y1) continue;
+            uint8_t coverage = (uint8_t)(mask[(size_t)v * (mask_stride / 4) + u] >> 24);
+            if (!coverage) continue;
+            dst[(size_t)dy * dst_stride + dx] = dp_masked_over(dst[(size_t)dy * dst_stride + dx],
+                ink, coverage);
+        }
+    }
+}
+
 void dp_composite_over(uint32_t *dst, int stride, struct drect rect,
     const unsigned char *mask, int mask_stride, int mask_x, int mask_y, uint32_t color,
     int source_opaque)
