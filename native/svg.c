@@ -733,9 +733,9 @@ static int svg_combine_vertical(struct svg_line_edge *edge, struct svg_line_edge
 }
 
 static int svg_edges_push_line(struct svg_edges *edges, struct svg_point p0,
-        struct svg_point p1) {
+        struct svg_point p1, int shift) {
     struct svg_edge e;
-    if (!svg_line_edge_init(&e, p0, p1, 2)) return 1;
+    if (!svg_line_edge_init(&e, p0, p1, shift)) return 1;
     int combine = SVG_COMBINE_NO;
     if (edges->count) {
         struct svg_edge *last = &edges->items[edges->count - 1];
@@ -749,19 +749,19 @@ static int svg_edges_push_line(struct svg_edges *edges, struct svg_point p0,
     return 1;
 }
 
-static int svg_edges_push_quad(struct svg_edges *edges, struct svg_point *points) {
+static int svg_edges_push_quad(struct svg_edges *edges, struct svg_point *points, int shift) {
     struct svg_edge e;
-    if (!svg_quad_edge_init(&e, points, 2)) return 1;
+    if (!svg_quad_edge_init(&e, points, shift)) return 1;
     return svg_edges_push(edges, &e);
 }
 
-static int svg_edges_push_cubic(struct svg_edges *edges, struct svg_point *points) {
+static int svg_edges_push_cubic(struct svg_edges *edges, struct svg_point *points, int shift) {
     struct svg_edge e;
-    if (!svg_cubic_edge_init(&e, points, 2)) return 1;
+    if (!svg_cubic_edge_init(&e, points, shift)) return 1;
     return svg_edges_push(edges, &e);
 }
 
-static int svg_edges_build(struct svg_edges *edges, struct svg_path *path) {
+static int svg_edges_build(struct svg_edges *edges, struct svg_path *path, int shift) {
     struct svg_point move_to = { 0, 0 };
     int needs_close = 0;
     int point_index = 0;
@@ -771,14 +771,14 @@ static int svg_edges_build(struct svg_edges *edges, struct svg_path *path) {
             if (needs_close) {
                 needs_close = 0;
                 struct svg_point a = path->points[point_index - 1];
-                if (!svg_edges_push_line(edges, a, move_to)) return 0;
+                if (!svg_edges_push_line(edges, a, move_to, shift)) return 0;
             }
             move_to = path->points[point_index++];
         } else if (verb == SVG_CLOSE) {
             if (needs_close) {
                 needs_close = 0;
                 struct svg_point a = path->points[point_index - 1];
-                if (!svg_edges_push_line(edges, a, move_to)) return 0;
+                if (!svg_edges_push_line(edges, a, move_to, shift)) return 0;
             }
         } else {
             needs_close = 1;
@@ -786,7 +786,7 @@ static int svg_edges_build(struct svg_edges *edges, struct svg_path *path) {
                 struct svg_point a = path->points[point_index - 1];
                 struct svg_point b = path->points[point_index];
                 point_index += 1;
-                if (!svg_edges_push_line(edges, a, b)) return 0;
+                if (!svg_edges_push_line(edges, a, b, shift)) return 0;
             } else if (verb == SVG_QUAD) {
                 struct svg_point points[3];
                 points[0] = path->points[point_index - 1];
@@ -796,7 +796,7 @@ static int svg_edges_build(struct svg_edges *edges, struct svg_path *path) {
                 struct svg_point mono[5];
                 int n = svg_chop_quad_at_y_extrema(points, mono);
                 for (int i = 0; i <= n; i++)
-                    if (!svg_edges_push_quad(edges, &mono[i * 2])) return 0;
+                    if (!svg_edges_push_quad(edges, &mono[i * 2], shift)) return 0;
             } else if (verb == SVG_CUBIC) {
                 struct svg_point points[4];
                 points[0] = path->points[point_index - 1];
@@ -807,13 +807,13 @@ static int svg_edges_build(struct svg_edges *edges, struct svg_path *path) {
                 struct svg_point mono[10];
                 int n = svg_chop_cubic_at_y_extrema(points, mono);
                 for (int i = 0; i <= n; i++)
-                    if (!svg_edges_push_cubic(edges, &mono[i * 3])) return 0;
+                    if (!svg_edges_push_cubic(edges, &mono[i * 3], shift)) return 0;
             }
         }
     }
     if (needs_close) {
         struct svg_point a = path->points[point_index - 1];
-        if (!svg_edges_push_line(edges, a, move_to)) return 0;
+        if (!svg_edges_push_line(edges, a, move_to, shift)) return 0;
     }
     return 1;
 }
@@ -861,6 +861,7 @@ struct svg_super {
     struct svg_pixmap *target;
     struct svg_shader *shader;
     int blend;
+    int shift;
     uint8_t *cov;
     int width;
     uint32_t left;
@@ -881,6 +882,46 @@ static unsigned svg_round_u8(float v) {
     return (unsigned)lrintf(v * 255.0f);
 }
 
+static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x, int y,
+        unsigned a, int blend) {
+    if (shader->highp) {
+        float color[4], d[4];
+        svg_shader_color_highp(shader, x, y, color);
+        for (int k = 0; k < 4; k++) d[k] = (float)px[k] * (1.0f / 255.0f);
+        float pr = d[0] * (1.0f - color[3]) + color[0];
+        float pg = d[1] * (1.0f - color[3]) + color[1];
+        float pb = d[2] * (1.0f - color[3]) + color[2];
+        float pa = d[3] * (1.0f - color[3]) + color[3];
+        float cov = (float)a * (1.0f / 255.0f);
+        float fr = (pr - d[0]) * cov + d[0];
+        float fg = (pg - d[1]) * cov + d[1];
+        float fb = (pb - d[2]) * cov + d[2];
+        float fa = (pa - d[3]) * cov + d[3];
+        float vals[4] = { fr, fg, fb, fa };
+        for (int k = 0; k < 4; k++) px[k] = (unsigned char)svg_round_u8(vals[k]);
+        return;
+    }
+    unsigned color[4];
+    svg_shader_color(shader, x, y, color);
+    unsigned sr = color[0], sg = color[1], sbv = color[2], sa = color[3];
+    unsigned dr = px[0], dg = px[1], db = px[2], da = px[3];
+    unsigned pr = 0, pg = 0, pb = 0, pa = 0;
+    if (blend == 2) {
+        pr = pg = pb = pa = 0;
+    } else if (blend == 1) {
+        pr = sr; pg = sg; pb = sbv; pa = sa;
+    } else {
+        pr = sr + svg_div255(dr * (255u - sa));
+        pg = sg + svg_div255(dg * (255u - sa));
+        pb = sbv + svg_div255(db * (255u - sa));
+        pa = sa + svg_div255(da * (255u - sa));
+    }
+    px[0] = (unsigned char)svg_div255(dr * (255u - a) + pr * a);
+    px[1] = (unsigned char)svg_div255(dg * (255u - a) + pg * a);
+    px[2] = (unsigned char)svg_div255(db * (255u - a) + pb * a);
+    px[3] = (unsigned char)svg_div255(da * (255u - a) + pa * a);
+}
+
 static void svg_super_flush(struct svg_super *sb) {
     if (sb->curr_iy >= (int)sb->top && sb->width > 0) {
         for (int i = 0; i < sb->width; i++) {
@@ -888,42 +929,7 @@ static void svg_super_flush(struct svg_super *sb) {
             if (!a) continue;
             unsigned char *px = sb->target->pixels +
                 ((size_t)sb->curr_iy * (size_t)sb->target->width + sb->left + (size_t)i) * 4;
-            if (sb->shader->highp) {
-                float color[4], d[4];
-                svg_shader_color_highp(sb->shader, (int)sb->left + i, sb->curr_iy, color);
-                for (int k = 0; k < 4; k++) d[k] = (float)px[k] * (1.0f / 255.0f);
-                float pr = d[0] * (1.0f - color[3]) + color[0];
-                float pg = d[1] * (1.0f - color[3]) + color[1];
-                float pb = d[2] * (1.0f - color[3]) + color[2];
-                float pa = d[3] * (1.0f - color[3]) + color[3];
-                float cov = (float)a * (1.0f / 255.0f);
-                float fr = (pr - d[0]) * cov + d[0];
-                float fg = (pg - d[1]) * cov + d[1];
-                float fb = (pb - d[2]) * cov + d[2];
-                float fa = (pa - d[3]) * cov + d[3];
-                float vals[4] = { fr, fg, fb, fa };
-                for (int k = 0; k < 4; k++) px[k] = (unsigned char)svg_round_u8(vals[k]);
-                continue;
-            }
-            unsigned color[4];
-            svg_shader_color(sb->shader, (int)sb->left + i, sb->curr_iy, color);
-            unsigned sr = color[0], sg = color[1], sbv = color[2], sa = color[3];
-            unsigned dr = px[0], dg = px[1], db = px[2], da = px[3];
-            unsigned pr = 0, pg = 0, pb = 0, pa = 0;
-            if (sb->blend == 2) {
-                pr = pg = pb = pa = 0;
-            } else if (sb->blend == 1) {
-                pr = sr; pg = sg; pb = sbv; pa = sa;
-            } else {
-                pr = sr + svg_div255(dr * (255u - sa));
-                pg = sg + svg_div255(dg * (255u - sa));
-                pb = sbv + svg_div255(db * (255u - sa));
-                pa = sa + svg_div255(da * (255u - sa));
-            }
-            px[0] = (unsigned char)svg_div255(dr * (255u - a) + pr * a);
-            px[1] = (unsigned char)svg_div255(dg * (255u - a) + pg * a);
-            px[2] = (unsigned char)svg_div255(db * (255u - a) + pb * a);
-            px[3] = (unsigned char)svg_div255(da * (255u - a) + pa * a);
+            svg_blend_pixel(px, sb->shader, (int)sb->left + i, sb->curr_iy, a, sb->blend);
         }
         memset(sb->cov, 0, (size_t)sb->width);
     }
@@ -1127,8 +1133,26 @@ static void svg_edges_sort(struct svg_edges *edges) {
     }
 }
 
+typedef void (*svg_span_fn)(struct svg_super *sb, uint32_t left, uint32_t y, uint32_t width);
+
+static void svg_super_span(struct svg_super *sb, uint32_t left, uint32_t y, uint32_t width) {
+    svg_super_blit_h(sb, left, y, width);
+}
+
+static void svg_solid_span(struct svg_super *sb, uint32_t left, uint32_t y, uint32_t width) {
+    if ((int)y < 0 || y >= (uint32_t)sb->target->height) return;
+    if (left >= (uint32_t)sb->target->width) return;
+    if (left + width > (uint32_t)sb->target->width) width = (uint32_t)sb->target->width - left;
+    if (!width) return;
+    unsigned char *row = sb->target->pixels + (size_t)y * (size_t)sb->target->width * 4;
+    for (uint32_t i = 0; i < width; i++)
+        svg_blend_pixel(row + ((size_t)left + i) * 4, sb->shader, (int)left + i, (int)y, 255,
+            sb->blend);
+}
+
 static void svg_walk_edges(int fill_rule, uint32_t start_y, uint32_t stop_y,
-        uint32_t right_clip, struct svg_edge *edges, int count, struct svg_super *sb) {
+        uint32_t right_clip, struct svg_edge *edges, int count, struct svg_super *sb,
+        svg_span_fn span) {
     uint32_t curr_y = start_y;
     int32_t winding_mask = fill_rule ? 1 : -1;
     for (;;) {
@@ -1142,7 +1166,7 @@ static void svg_walk_edges(int fill_rule, uint32_t start_y, uint32_t stop_y,
             if ((w & winding_mask) == 0) left = ux;
             w += edges[curr_idx].line.winding;
             if ((w & winding_mask) == 0) {
-                if (ux - left > 0) svg_super_blit_h(sb, left, curr_y, ux - left);
+                if (ux - left > 0) span(sb, left, curr_y, ux - left);
             }
             int32_t next_idx = edges[curr_idx].line.next;
             int32_t new_x;
@@ -1171,7 +1195,7 @@ static void svg_walk_edges(int fill_rule, uint32_t start_y, uint32_t stop_y,
         }
         if ((w & winding_mask) != 0) {
             uint32_t width = right_clip - left;
-            if (width > 0) svg_super_blit_h(sb, left, curr_y, width);
+            if (width > 0) span(sb, left, curr_y, width);
         }
         curr_y += 1;
         if (curr_y >= stop_y) break;
@@ -1181,10 +1205,11 @@ static void svg_walk_edges(int fill_rule, uint32_t start_y, uint32_t stop_y,
 }
 
 static int svg_edges_build_clipped(struct svg_edges *edges, struct svg_path *path,
-        float left, float top, float right, float bottom);
+        float left, float top, float right, float bottom, int shift);
 
 static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap *target,
-        struct svg_shader *shader, int blend) {
+        struct svg_shader *shader, int blend, int aa) {
+    int shift = aa ? 2 : 0;
     if (!path->npoints || !path->valid_bounds) return 1;
     int32_t ir_left = svg_i32_from_f32(floorf(path->left));
     int32_t ir_top = svg_i32_from_f32(floorf(path->top));
@@ -1196,16 +1221,26 @@ static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap
     struct svg_rect clip = { 0, 0, target->width, target->height, 1 };
     struct svg_rect clipped = svg_rect_intersect(ir, clip);
     if (!clipped.valid) return 1;
-    if ((int64_t)clipped.left << 2 < INT32_MIN || (int64_t)clipped.right << 2 > INT32_MAX ||
-            (int64_t)clipped.top << 2 < INT32_MIN || (int64_t)clipped.bottom << 2 > INT32_MAX)
+    if (aa) {
+        int s = 16 + shift;
+        int over = ((((int32_t)(((uint32_t)clipped.left) << s) >> s) - clipped.left) |
+                    ((((int32_t)(((uint32_t)clipped.top) << s) >> s) - clipped.top)) |
+                    ((((int32_t)(((uint32_t)clipped.right) << s) >> s) - clipped.right)) |
+                    ((((int32_t)(((uint32_t)clipped.bottom) << s) >> s) - clipped.bottom)));
+        if (over) return svg_fill_path(path, fill_rule, target, shader, blend, 0);
+    }
+    if ((int64_t)clipped.left << shift < INT32_MIN ||
+            (int64_t)clipped.right << shift > INT32_MAX ||
+            (int64_t)clipped.top << shift < INT32_MIN ||
+            (int64_t)clipped.bottom << shift > INT32_MAX)
         return 1;
     if (target->width > 32767 || target->height > 32767) return 1;
     int contained = ir_left >= 0 && ir_top >= 0 && ir_right <= target->width &&
         ir_bottom <= target->height;
     struct svg_edges edges = { 0 };
-    int built = contained ? svg_edges_build(&edges, path) :
+    int built = contained ? svg_edges_build(&edges, path, shift) :
         svg_edges_build_clipped(&edges, path, (float)clip.left, (float)clip.top,
-            (float)clip.right, (float)clip.bottom);
+            (float)clip.right, (float)clip.bottom, shift);
     if (!built) { free(edges.items); return 0; }
     if (edges.count < 2) { free(edges.items); return 1; }
     svg_edges_sort(&edges);
@@ -1231,10 +1266,10 @@ static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap
     edges.items[tail].line.next = -1;
     edges.items[tail].line.first_y = INT32_MAX;
     int total = edges.count + 2;
-    uint32_t top = (uint32_t)clipped.top << 2;
-    uint32_t bottom = (uint32_t)clipped.bottom << 2;
-    int32_t start_y = (int32_t)((uint32_t)ir_top << 2);
-    int32_t stop_y = (int32_t)((uint32_t)ir_bottom << 2);
+    uint32_t top = (uint32_t)clipped.top << shift;
+    uint32_t bottom = (uint32_t)clipped.bottom << shift;
+    int32_t start_y = (int32_t)((uint32_t)ir_top << shift);
+    int32_t stop_y = (int32_t)((uint32_t)ir_bottom << shift);
     if (!contained) {
         if (start_y < (int32_t)top) start_y = (int32_t)top;
         if (stop_y > (int32_t)bottom) stop_y = (int32_t)bottom;
@@ -1242,20 +1277,26 @@ static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap
     if (start_y < 0 || stop_y < 0) { free(edges.items); return 1; }
     struct svg_super super = { 0 };
     super.target = target;
-    super.left = (uint32_t)clipped.left;
-    super.super_left = (uint32_t)clipped.left << 2;
-    super.width = clipped.right - clipped.left;
-    super.cov = calloc((size_t)super.width, 1);
-    if (!super.cov) { free(edges.items); return 0; }
-    super.curr_iy = clipped.top - 1;
-    super.curr_y = (int32_t)((uint32_t)clipped.top << 2) - 1;
-    super.top = (uint32_t)clipped.top;
     super.shader = shader;
     super.blend = blend;
-    svg_walk_edges(fill_rule, (uint32_t)start_y, (uint32_t)stop_y,
-        (uint32_t)clipped.right << 2, edges.items, total, &super);
-    svg_super_flush(&super);
-    free(super.cov);
+    super.shift = shift;
+    if (aa) {
+        super.left = (uint32_t)clipped.left;
+        super.super_left = (uint32_t)clipped.left << 2;
+        super.width = clipped.right - clipped.left;
+        super.cov = calloc((size_t)super.width, 1);
+        if (!super.cov) { free(edges.items); return 0; }
+        super.curr_iy = clipped.top - 1;
+        super.curr_y = (int32_t)((uint32_t)clipped.top << 2) - 1;
+        super.top = (uint32_t)clipped.top;
+        svg_walk_edges(fill_rule, (uint32_t)start_y, (uint32_t)stop_y,
+            (uint32_t)clipped.right << 2, edges.items, total, &super, svg_super_span);
+        svg_super_flush(&super);
+        free(super.cov);
+    } else {
+        svg_walk_edges(fill_rule, (uint32_t)start_y, (uint32_t)stop_y,
+            (uint32_t)clipped.right, edges.items, total, &super, svg_solid_span);
+    }
     free(edges.items);
     return 1;
 }
@@ -3526,6 +3567,7 @@ struct svg_node {
     struct svg_stroke stroke;
     int visible;
     int paint_order;
+    int aa;
     struct svg_node **children;
     int nchildren, cchildren;
     struct svg_bbox bbox, sbbox, lbbox;
@@ -4740,12 +4782,9 @@ static void svg_add_path_node(struct svg_conv *c, struct svg_style *st, struct s
     path->abs_transform = abs;
     path->paint_order = svg_paint_order_stroke_first(svg_style_find_inherited(c->doc, st,
         "paint-order"));
+    const char *shape = svg_style_find_inherited(c->doc, st, "shape-rendering");
+    path->aa = !(shape && (!strcmp(shape, "optimizeSpeed") || !strcmp(shape, "crispEdges")));
     if (fill.present && fill.paint.type >= 10) c->unsupported = c->unsupported;
-    if (stroke.present) {
-        const char *shape = svg_style_find_inherited(c->doc, st, "shape-rendering");
-        if (shape && (!strcmp(shape, "optimizeSpeed") || !strcmp(shape, "crispEdges")))
-            c->unsupported = 1;
-    }
     if (have_bbox) { path->bbox = bbox; path->has_bbox = 1; }
     path->abs_bbox = svg_path_abs_bbox(geom, abs);
     path->has_bbox = path->has_bbox;
@@ -6416,14 +6455,14 @@ static void svg_clip_cubic_p(struct svg_edgeclipper *ec, struct svg_point p0,
     }
 }
 
-static int svg_edges_push_pedge(struct svg_edges *edges, struct svg_pedge *e) {
-    if (e->kind == SVG_PE_LINE) return svg_edges_push_line(edges, e->p[0], e->p[1]);
-    if (e->kind == SVG_PE_QUAD) return svg_edges_push_quad(edges, e->p);
-    return svg_edges_push_cubic(edges, e->p);
+static int svg_edges_push_pedge(struct svg_edges *edges, struct svg_pedge *e, int shift) {
+    if (e->kind == SVG_PE_LINE) return svg_edges_push_line(edges, e->p[0], e->p[1], shift);
+    if (e->kind == SVG_PE_QUAD) return svg_edges_push_quad(edges, e->p, shift);
+    return svg_edges_push_cubic(edges, e->p, shift);
 }
 
 static int svg_edges_build_clipped(struct svg_edges *edges, struct svg_path *path,
-        float left, float top, float right, float bottom) {
+        float left, float top, float right, float bottom, int shift) {
     struct svg_edgeclipper ec;
     memset(&ec, 0, sizeof(ec));
     ec.clip.left = left;
@@ -6470,7 +6509,7 @@ static int svg_edges_build_clipped(struct svg_edges *edges, struct svg_path *pat
             }
         }
         for (int i = 0; i < ec.edges.count; i++)
-            if (!svg_edges_push_pedge(edges, &ec.edges.items[i])) {
+            if (!svg_edges_push_pedge(edges, &ec.edges.items[i], shift)) {
                 free(ec.edges.items);
                 return 0;
             }
@@ -6478,7 +6517,7 @@ static int svg_edges_build_clipped(struct svg_edges *edges, struct svg_path *pat
     }
     if (needs_close) svg_clip_line_p(&ec, path->points[point_index - 1], move_to);
     for (int i = 0; i < ec.edges.count; i++)
-        if (!svg_edges_push_pedge(edges, &ec.edges.items[i])) {
+        if (!svg_edges_push_pedge(edges, &ec.edges.items[i], shift)) {
             free(ec.edges.items);
             return 0;
         }
@@ -7759,7 +7798,7 @@ static void svg_render_path_fill(struct svg_node *node, struct svg_matrix ts,
     struct svg_path *path = svg_path_copy(node->path);
     if (!path) return;
     svg_path_transform(path, ts);
-    svg_fill_path(path, node->fill.rule, pixmap, &shader, blend);
+    svg_fill_path(path, node->fill.rule, pixmap, &shader, blend, node->aa);
     svg_path_free(path);
     if (shader.has_pattern_pixmap) svg_pixmap_free(&shader.pattern_pixmap);
 }
@@ -7795,7 +7834,7 @@ static int svg_treat_as_hairline(struct svg_stroke *stroke, struct svg_matrix ts
 static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         struct svg_pixmap *pixmap, int blend) {
     if (!node->stroke.present) return;
-    if (svg_treat_as_hairline(&node->stroke, ts)) {
+    if (node->aa && svg_treat_as_hairline(&node->stroke, ts)) {
         float coverage = 1.0f;
         if (node->stroke.width > 0.0f) {
             struct svg_matrix m = ts;
@@ -7865,7 +7904,7 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
     float bbox[4] = { sbx, sby, w, h };
     svg_prepare_shader(&shader, &node->stroke.paint, node->stroke.opacity, ts, bbox, 1);
     if (shader.type >= 0)
-        svg_fill_path(stroked, 0, pixmap, &shader, blend);
+        svg_fill_path(stroked, 0, pixmap, &shader, blend, node->aa);
     if (shader.has_pattern_pixmap) svg_pixmap_free(&shader.pattern_pixmap);
     svg_path_free(stroked);
 }
@@ -7995,7 +8034,7 @@ static void svg_mask_fill_rect(struct svg_pixmap *pixmap, float rect[4],
     struct svg_path *copy = svg_path_copy(path);
     if (copy) {
         svg_path_transform(copy, ts);
-        svg_fill_path(copy, 0, pixmap, &shader, 0);
+        svg_fill_path(copy, 0, pixmap, &shader, 0, 1);
         svg_path_free(copy);
     }
     svg_path_free(path);
@@ -8077,7 +8116,7 @@ static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
     int ok = 0;
     shader.ts = svg_matrix_invert(dev, &ok);
     if (ok && svg_matrix_translate_p(&shader.ts)) shader.pattern_quality = 0;
-    if (ok) svg_fill_path(rect, 0, pixmap, &shader, blend);
+    if (ok) svg_fill_path(rect, 0, pixmap, &shader, blend, 1);
     svg_path_free(rect);
 }
 
