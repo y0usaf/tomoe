@@ -5256,27 +5256,30 @@ static unsigned char *svg_base64_decode(const char *text, size_t length, size_t 
 
 static int svg_image_decode(struct svg_image *im, const unsigned char *data, size_t length) {
     if (length >= 8 && !memcmp(data, "\x89PNG\r\n\x1a\n", 8)) {
-        struct png_image png;
-        if (tomoe_png_decode(data, length, &png) != PNG_OK) return 0;
-        if (png.format != CAIRO_FORMAT_ARGB32 || png.width == 0 || png.height == 0 ||
-                png.width > 32767 || png.height > 32767) {
-            free(png.pixels);
-            return 0;
+        struct png_geometry geo;
+        if (tomoe_png_geometry(data, length, &geo) != PNG_OK) return 0;
+        if (geo.width == 0 || geo.height == 0 || geo.width > 32767 || geo.height > 32767) return 0;
+        size_t rowbytes = (size_t)geo.width * 4;
+        unsigned char *pixels = svg_alloc(rowbytes * geo.height);
+        unsigned char **rows = svg_alloc(sizeof(*rows) * geo.height);
+        if (!pixels || !rows) { free(pixels); free(rows); return 0; }
+        for (uint32_t y = 0; y < geo.height; y++) rows[y] = pixels + rowbytes * y;
+        enum png_status status = tomoe_png_rgba8(data, length, rows, rowbytes);
+        free(rows);
+        if (status != PNG_OK) { free(pixels); return 0; }
+        for (size_t i = 0; i < (size_t)geo.width * geo.height; i++) {
+            unsigned a = pixels[i * 4 + 3];
+            for (int k = 0; k < 3; k++) {
+                unsigned v = pixels[i * 4 + k];
+                if (a != 255) {
+                    unsigned t = v * a + 0x80;
+                    v = (t + (t >> 8)) >> 8;
+                }
+                pixels[i * 4 + k] = (unsigned char)v;
+            }
         }
-        size_t count = (size_t)png.width * (size_t)png.height;
-        unsigned char *pixels = svg_alloc(count * 4);
-        if (!pixels) { free(png.pixels); return 0; }
-        for (size_t i = 0; i < count; i++) {
-            const unsigned char *sp = png.pixels + (i / png.width) * png.stride +
-                (i % png.width) * 4;
-            pixels[i * 4 + 0] = sp[2];
-            pixels[i * 4 + 1] = sp[1];
-            pixels[i * 4 + 2] = sp[0];
-            pixels[i * 4 + 3] = sp[3];
-        }
-        free(png.pixels);
-        im->pix.width = (int)png.width;
-        im->pix.height = (int)png.height;
+        im->pix.width = (int)geo.width;
+        im->pix.height = (int)geo.height;
         im->pix.pixels = pixels;
         return 1;
     }
