@@ -8560,46 +8560,53 @@ static float svg_pattern_tile(float v, int spread, float limit, float inv_limit)
     return v;
 }
 
-static void svg_pattern_sample(struct svg_shader *shader, float x, float y, float out[4]) {
-    struct svg_pixmap *pm = &shader->pattern_pixmap;
+static void svg_pix_sample(const struct svg_pixmap *pm, int spread, float x, float y,
+        float out[4]) {
     float w = (float)pm->width, h = (float)pm->height;
-    x = svg_pattern_tile(x, shader->spread, w, 1.0f / w);
-    y = svg_pattern_tile(y, shader->spread, h, 1.0f / h);
+    x = svg_pattern_tile(x, spread, w, 1.0f / w);
+    y = svg_pattern_tile(y, spread, h, 1.0f / h);
     float xmax = svg_ulp_sub(w), ymax = svg_ulp_sub(h);
     if (!(x > 0.0f)) x = 0.0f;
     if (x > xmax) x = xmax;
     if (!(y > 0.0f)) y = 0.0f;
     if (y > ymax) y = ymax;
     int ix = (int)x, iy = (int)y;
-    unsigned char *p = pm->pixels + ((size_t)iy * (size_t)pm->width + (size_t)ix) * 4;
+    const unsigned char *p = pm->pixels + ((size_t)iy * (size_t)pm->width + (size_t)ix) * 4;
     for (int k = 0; k < 4; k++) out[k] = (float)p[k] * (1.0f / 255.0f);
 }
 
-static void svg_pattern_sampler_2x2(struct svg_shader *shader, float cx, float cy,
+static void svg_pattern_sample(struct svg_shader *shader, float x, float y, float out[4]) {
+    svg_pix_sample(&shader->pattern_pixmap, shader->spread, x, y, out);
+}
+
+static void svg_pattern_sampler_2x2(const struct svg_pixmap *pm, int spread, float cx, float cy,
         const float wx[2], const float wy[2], float out[4]) {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 2; i++) {
             float s[4];
-            svg_pattern_sample(shader, cx + ((float)i - 0.5f), cy + ((float)j - 0.5f), s);
+            svg_pix_sample(pm, spread, cx + ((float)i - 0.5f), cy + ((float)j - 0.5f), s);
             float w = wx[i] * wy[j];
             for (int k = 0; k < 4; k++) out[k] = svg_mad(w, s[k], out[k]);
         }
     }
 }
 
-static void svg_pattern_sampler_4x4(struct svg_shader *shader, float cx, float cy,
+static void svg_pattern_sampler_4x4(const struct svg_pixmap *pm, int spread, float cx, float cy,
         const float wx[4], const float wy[4], float out[4]) {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     for (int j = 0; j < 4; j++) {
         for (int i = 0; i < 4; i++) {
             float s[4];
-            svg_pattern_sample(shader, cx + ((float)i - 1.5f), cy + ((float)j - 1.5f), s);
+            svg_pix_sample(pm, spread, cx + ((float)i - 1.5f), cy + ((float)j - 1.5f), s);
             float w = wx[i] * wy[j];
             for (int k = 0; k < 4; k++) out[k] = svg_mad(w, s[k], out[k]);
         }
     }
 }
+
+static void svg_pix_bicubic(const struct svg_pixmap *pm, int spread, float cx, float cy,
+        float out[4]);
 
 static float svg_bicubic_near(float t) {
     return svg_mad(t, svg_mad(t, svg_mad(-21.0f / 18.0f, t, 27.0f / 18.0f), 9.0f / 18.0f),
@@ -8608,6 +8615,17 @@ static float svg_bicubic_near(float t) {
 
 static float svg_bicubic_far(float t) {
     return (t * t) * svg_mad(7.0f / 18.0f, t, -6.0f / 18.0f);
+}
+
+static void svg_pix_bicubic(const struct svg_pixmap *pm, int spread, float cx, float cy,
+        float out[4]) {
+    float fx = (cx + 0.5f) - floorf(cx + 0.5f);
+    float fy = (cy + 0.5f) - floorf(cy + 0.5f);
+    float wx[4] = { svg_bicubic_far(1.0f - fx), svg_bicubic_near(1.0f - fx),
+        svg_bicubic_near(fx), svg_bicubic_far(fx) };
+    float wy[4] = { svg_bicubic_far(1.0f - fy), svg_bicubic_near(1.0f - fy),
+        svg_bicubic_near(fy), svg_bicubic_far(fy) };
+    svg_pattern_sampler_4x4(pm, spread, cx, cy, wx, wy, out);
 }
 
 static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out[4]) {
@@ -8622,13 +8640,15 @@ static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out
             svg_bicubic_near(fx), svg_bicubic_far(fx) };
         float wy[4] = { svg_bicubic_far(1.0f - fy), svg_bicubic_near(1.0f - fy),
             svg_bicubic_near(fy), svg_bicubic_far(fy) };
-        svg_pattern_sampler_4x4(shader, nx, ny, wx, wy, out);
+        svg_pattern_sampler_4x4(&shader->pattern_pixmap, shader->spread, nx, ny, wx, wy,
+            out);
     } else if (shader->pattern_quality == 1) {
         float fx = (nx + 0.5f) - floorf(nx + 0.5f);
         float fy = (ny + 0.5f) - floorf(ny + 0.5f);
         float wx[2] = { 1.0f - fx, fx };
         float wy[2] = { 1.0f - fy, fy };
-        svg_pattern_sampler_2x2(shader, nx, ny, wx, wy, out);
+        svg_pattern_sampler_2x2(&shader->pattern_pixmap, shader->spread, nx, ny, wx, wy,
+            out);
     } else {
         svg_pattern_sample(shader, nx, ny, out);
     }
@@ -9180,6 +9200,7 @@ static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
 struct svg_fimg {
     struct svg_pixmap pix;
     int left, top;
+    int rect[4];
     int cs;
     int valid;
 };
@@ -9492,7 +9513,7 @@ static void svg_filter_blur(struct svg_pixmap *pixmap, float sdx, float sdy) {
 
 static void svg_filter_get_input(struct svg_filter_prim *prims, struct svg_fimg *results,
         int count, const char *name, struct svg_pixmap *source, int region_left,
-        int region_top, struct svg_fimg *out) {
+        int region_top, int region_w, int region_h, struct svg_fimg *out) {
     memset(out, 0, sizeof(*out));
     if (!name || !name[0] || !strcmp(name, "SourceGraphic") || !strcmp(name, "SourceAlpha")) {
         out->pix.width = source->width;
@@ -9510,12 +9531,19 @@ static void svg_filter_get_input(struct svg_filter_prim *prims, struct svg_fimg 
         out->cs = 0;
         out->left = region_left;
         out->top = region_top;
+        out->rect[0] = region_left;
+        out->rect[1] = region_top;
+        out->rect[2] = region_left + region_w;
+        out->rect[3] = region_top + region_h;
         out->valid = 1;
         return;
     }
     for (int i = count - 1; i >= 0; i--) {
         if (strcmp(prims[i].result, name)) continue;
-        if (results[i].valid) *out = svg_fimg_clone(&results[i]);
+        if (results[i].valid) {
+            *out = svg_fimg_clone(&results[i]);
+            memcpy(out->rect, results[i].rect, sizeof(out->rect));
+        }
         return;
     }
 }
@@ -9550,7 +9578,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_OFFSET: {
         struct svg_fimg input;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &input);
+            region_top, region_w, region_h, &input);
         if (!input.valid) return;
         *res = svg_fimg_new(region_w, region_h, input.cs);
         if (!res->valid) { svg_fimg_free(&input); return; }
@@ -9564,9 +9592,9 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_COMPOSITE: {
         struct svg_fimg in1, in2;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in1);
+            region_top, region_w, region_h, &in1);
         svg_filter_get_input(prims, results, count, p->input2, source, region_left,
-            region_top, &in2);
+            region_top, region_w, region_h, &in2);
         if (!in1.valid || !in2.valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
         svg_fimg_into_cs(&in1, p->cs);
         svg_fimg_into_cs(&in2, p->cs);
@@ -9615,7 +9643,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         for (int i = 0; i < p->tnodes; i++) {
             struct svg_fimg in;
             svg_filter_get_input(prims, results, count, p->nodes[i], source,
-                region_left, region_top, &in);
+                region_left, region_top, region_w, region_h, &in);
             if (!in.valid) continue;
             svg_fimg_into_cs(&in, p->cs);
             svg_fimg_draw(&res->pix, 0, 0, &in, 0);
@@ -9627,7 +9655,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_COMPONENT_TRANSFER: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in);
+            region_top, region_w, region_h, &in);
         if (!in.valid) return;
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
@@ -9729,7 +9757,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_GAUSSIAN_BLUR: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in);
+            region_top, region_w, region_h, &in);
         if (!in.valid) return;
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
@@ -9739,7 +9767,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_DROP_SHADOW: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in);
+            region_top, region_w, region_h, &in);
         if (!in.valid) return;
         svg_fimg_into_cs(&in, p->cs);
         struct svg_fimg shadow = svg_fimg_clone(&in);
@@ -9775,7 +9803,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_MORPHOLOGY: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in);
+            region_top, region_w, region_h, &in);
         if (!in.valid) return;
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
@@ -9813,10 +9841,47 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         free(buf);
         return;
     }
+    case SVG_FE_TILE: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, region_w, region_h, &in);
+        if (!in.valid) return;
+        int cx0 = in.rect[0] - in.left, cy0 = in.rect[1] - in.top;
+        int cw = in.rect[2] - in.rect[0], ch = in.rect[3] - in.rect[1];
+        if (cx0 < 0) { cw += cx0; cx0 = 0; }
+        if (cy0 < 0) { ch += cy0; cy0 = 0; }
+        if (cx0 + cw > in.pix.width) cw = in.pix.width - cx0;
+        if (cy0 + ch > in.pix.height) ch = in.pix.height - cy0;
+        if (cw <= 0 || ch <= 0) { svg_fimg_free(&in); return; }
+        struct svg_pixmap tile;
+        svg_pixmap_init(&tile, cw, ch);
+        if (!tile.pixels) { svg_fimg_free(&in); return; }
+        for (int y = 0; y < ch; y++)
+            memcpy(tile.pixels + (size_t)y * (size_t)cw * 4,
+                in.pix.pixels + ((size_t)(cy0 + y) * (size_t)in.pix.width + (size_t)cx0) * 4,
+                (size_t)cw * 4);
+        *res = svg_fimg_new(region_w, region_h, 0);
+        if (!res->valid) { svg_pixmap_free(&tile); svg_fimg_free(&in); return; }
+        float sub_x = (float)(in.rect[0] - region_left);
+        float sub_y = (float)(in.rect[1] - region_top);
+        for (int y = 0; y < region_h; y++) {
+            for (int x = 0; x < region_w; x++) {
+                float o[4];
+                svg_pix_bicubic(&tile, 2, (float)x + 0.5f - sub_x,
+                    (float)y + 0.5f - sub_y, o);
+                unsigned char *dp = res->pix.pixels + ((size_t)y * (size_t)region_w +
+                    (size_t)x) * 4;
+                for (int k = 0; k < 4; k++) dp[k] = (unsigned char)svg_round_u8(o[k]);
+            }
+        }
+        svg_pixmap_free(&tile);
+        svg_fimg_free(&in);
+        return;
+    }
     case SVG_FE_CONVOLVE: {
         struct svg_fimg in;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in);
+            region_top, region_w, region_h, &in);
         if (!in.valid) return;
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
@@ -9882,9 +9947,9 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
     case SVG_FE_DISPLACEMENT: {
         struct svg_fimg in1, in2;
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
-            region_top, &in1);
+            region_top, region_w, region_h, &in1);
         svg_filter_get_input(prims, results, count, p->input2, source, region_left,
-            region_top, &in2);
+            region_top, region_w, region_h, &in2);
         if (!in1.valid || !in2.valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
         svg_fimg_into_cs(&in2, p->cs);
         *res = svg_fimg_new(region_w, region_h, p->cs);
@@ -9957,13 +10022,31 @@ static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
         int sub[4];
         int have_sub = svg_filter_subrect(p, ts, sub);
         if (!have_sub) continue;
+        int offset_region = 0;
+        if (p->kind == SVG_FE_OFFSET) {
+            struct svg_fimg src;
+            svg_filter_get_input(f->prims, results, i, p->input1, pixmap, rl, rt, rw, rh, &src);
+            if (src.valid) {
+                memcpy(sub, src.rect, sizeof(sub));
+                offset_region = 1;
+            }
+            svg_fimg_free(&src);
+        }
         struct svg_fimg res;
         svg_filter_prim(p, ts, rw, rh, rl, rt, scale_x, scale_y, pixmap, f->prims, results,
             i, &res);
         if (!res.valid) continue;
         res.left = rl;
         res.top = rt;
-        if (have_sub && !(sub[0] == rl && sub[1] == rt && sub[2] == rl + rw &&
+        if (have_sub) {
+            memcpy(res.rect, sub, sizeof(res.rect));
+        } else {
+            res.rect[0] = rl;
+            res.rect[1] = rt;
+            res.rect[2] = rl + rw;
+            res.rect[3] = rt + rh;
+        }
+        if (have_sub && !offset_region && !(sub[0] == rl && sub[1] == rt && sub[2] == rl + rw &&
                 sub[3] == rt + rh)) {
             for (int y = 0; y < res.pix.height; y++) {
                 int gy = res.top + y;
