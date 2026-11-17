@@ -3356,10 +3356,18 @@ static void svg_doc_style_node(struct svg_doc *doc, struct xml_node *child) {
             if (!svg_selector_matches(origin, doc->sheet.rules[r].selector)) continue;
             struct css_rule *rule = &doc->sheet.rules[r];
             for (int d = 0; d < rule->ndecls; d++) {
-                const struct svg_prop_def *def = svg_prop_def(rule->decls[d].name);
+                const char *name = rule->decls[d].name;
+                const char *value = rule->decls[d].value;
+                int important = rule->decls[d].important;
+                if (!strcmp(name, "marker")) {
+                    svg_style_set(doc, st, "marker-start", value, important);
+                    svg_style_set(doc, st, "marker-mid", value, important);
+                    svg_style_set(doc, st, "marker-end", value, important);
+                    continue;
+                }
+                const struct svg_prop_def *def = svg_prop_def(name);
                 if (!def || !def->presentation) continue;
-                svg_style_set(doc, st, rule->decls[d].name, rule->decls[d].value,
-                    rule->decls[d].important);
+                svg_style_set(doc, st, name, value, important);
             }
         }
         const char *style_text = svg_xml_attr(child, "style");
@@ -3368,9 +3376,18 @@ static void svg_doc_style_node(struct svg_doc *doc, struct xml_node *child) {
             int ndecls;
             svg_css_parse_declarations(style_text, strlen(style_text), &decls, &ndecls);
             for (int d = 0; d < ndecls; d++) {
-                const struct svg_prop_def *def = svg_prop_def(decls[d].name);
+                const char *name = decls[d].name;
+                const char *value = decls[d].value;
+                int important = decls[d].important;
+                if (!strcmp(name, "marker")) {
+                    svg_style_set(doc, st, "marker-start", value, important);
+                    svg_style_set(doc, st, "marker-mid", value, important);
+                    svg_style_set(doc, st, "marker-end", value, important);
+                    continue;
+                }
+                const struct svg_prop_def *def = svg_prop_def(name);
                 if (!def || !def->presentation) continue;
-                svg_style_set(doc, st, decls[d].name, decls[d].value, decls[d].important);
+                svg_style_set(doc, st, name, value, important);
             }
             for (int d = 0; d < ndecls; d++) { free(decls[d].name); free(decls[d].value); }
             free(decls);
@@ -3641,6 +3658,7 @@ struct svg_conv {
     int marker_depth;
     struct xml_node *filter_stack[16];
     int filter_depth;
+    struct xml_node *marker_stack[16];
     struct svg_style *context_style;
     const char *context_fill;
     const char *context_stroke;
@@ -5792,6 +5810,7 @@ static int svg_shape_has_markers(struct svg_doc *doc, struct svg_style *st) {
     static const char *attrs[3] = { "marker-start", "marker-mid", "marker-end" };
     for (int i = 0; i < 3; i++) {
         const char *text = svg_style_find_inherited(doc, st, attrs[i]);
+        if (!text) text = svg_style_find_inherited(doc, st, "marker");
         char id[256];
         if (!text || !svg_parse_funciri(text, id, sizeof(id))) continue;
         struct xml_node *marker = svg_id_last(doc, id);
@@ -6322,10 +6341,16 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     if (!inner) { svg_node_destroy(outer); return; }
     inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : translate;
     inner->abs_transform = svg_matrix_concat(outer->abs_transform, inner->transform);
+    struct svg_conv inner_conv = *c;
+    inner_conv.context_style = st;
+    inner_conv.context_fill = svg_find_paint_attr(c->doc, st, "fill");
+    if (!inner_conv.context_fill) inner_conv.context_fill = "black";
+    inner_conv.context_stroke = svg_find_paint_attr(c->doc, st, "stroke");
+    inner_conv.in_context = 0;
     if (linked_symbol) {
-        svg_convert_children(c, child, inner, inner->abs_transform, clip_context);
+        svg_convert_children(&inner_conv, child, inner, inner->abs_transform, clip_context);
     } else {
-        svg_convert_element(c, child, inner, inner->abs_transform, clip_context);
+        svg_convert_element(&inner_conv, child, inner, inner->abs_transform, clip_context);
     }
     if (!inner->nchildren) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
     if (linked_symbol) {
@@ -6822,13 +6847,14 @@ static float svg_marker_orientation(struct svg_doc *doc, struct xml_node *node, 
     if (!strcmp(text, "auto")) return 0.0f;
     if (!strcmp(text, "auto-start-reverse")) { *auto_reverse = 1; return 0.0f; }
     *is_auto = 0;
-    struct svg_length l;
-    if (!svg_parse_length(text, &l)) return 0.0f;
-    float deg = (float)l.number;
-    switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return deg;
-    default: return deg;
-    }
+    char *end = NULL;
+    double v = strtod(text, &end);
+    if (!end || end == text) return 0.0f;
+    while (*end && svg_is_space(*end)) end++;
+    if (!strncmp(end, "rad", 3)) v = v * (180.0 / 3.14159265358979323846);
+    else if (!strncmp(end, "grad", 4)) v = v * 0.9;
+    else if (!strncmp(end, "turn", 4)) v = v * 360.0;
+    return (float)v;
 }
 
 static struct svg_matrix svg_marker_rotation(float degrees) {
@@ -6847,6 +6873,7 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
         char id[256];
         windows[i] = NULL;
         const char *text = svg_style_find_inherited(c->doc, st, attrs[i]);
+        if (!text) text = svg_style_find_inherited(c->doc, st, "marker");
         if (text && svg_parse_funciri(text, id, sizeof(id))) {
             windows[i] = text;
             any = 1;
@@ -6865,7 +6892,10 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
         if (!svg_parse_funciri(windows[kind], id, sizeof(id))) continue;
         struct xml_node *marker = svg_id_last(c->doc, id);
         if (!marker || !svg_tag_is(marker, "marker")) continue;
-        if (c->marker_depth > 8) continue;
+        int seen = 0;
+        for (int k = 0; k < c->marker_depth && k < 16; k++)
+            if (c->marker_stack[k] == marker) seen = 1;
+        if (seen || c->marker_depth >= 16) continue;
         float ref_x = 0.0f, ref_y = 0.0f, mw = 3.0f, mh = 3.0f;
         svg_marker_length(c, marker, "refX", 0, 0.0f, &ref_x);
         svg_marker_length(c, marker, "refY", 1, 0.0f, &ref_y);
@@ -6971,6 +7001,7 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
                 }
             }
             struct svg_conv nested = *c;
+            nested.marker_stack[c->marker_depth] = marker;
             nested.marker_depth = c->marker_depth + 1;
             nested.clip_depth = 0;
             nested.mask_depth = 0;
@@ -6978,6 +7009,19 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
             nested.context_fill = svg_find_paint_attr(c->doc, st, "fill");
             if (!nested.context_fill) nested.context_fill = "black";
             nested.context_stroke = svg_find_paint_attr(c->doc, st, "stroke");
+            for (int guard = 0; guard < 8; guard++) {
+                if (nested.context_fill && !strcmp(nested.context_fill, "context-fill")) {
+                    nested.context_fill = c->context_fill;
+                } else if (nested.context_fill && !strcmp(nested.context_fill, "context-stroke")) {
+                    nested.context_fill = c->context_stroke;
+                } else if (nested.context_stroke && !strcmp(nested.context_stroke, "context-fill")) {
+                    nested.context_stroke = c->context_fill;
+                } else if (nested.context_stroke && !strcmp(nested.context_stroke, "context-stroke")) {
+                    nested.context_stroke = c->context_stroke;
+                } else {
+                    break;
+                }
+            }
             nested.in_context = 0;
             svg_convert_children(&nested, marker, g, g->abs_transform, 0);
             svg_group_bboxes(g);
