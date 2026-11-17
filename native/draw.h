@@ -26,6 +26,7 @@ struct dpath {
     int fill_is_rectilinear;
     struct dpoint min, max;
     bool has_extents;
+    bool failed;
 };
 
 struct drect { int x0, y0, x1, y1; };

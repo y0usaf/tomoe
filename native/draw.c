@@ -122,19 +122,23 @@ static bool spline_intersects(const px_point_t *a, const px_point_t *b,
     return true;
 }
 
-static void polygon_grow(struct dp_polygon *polygon)
+static bool polygon_grow(struct dp_polygon *polygon)
 {
     int capacity = polygon->capacity ? polygon->capacity * 2 : 64;
     struct dp_edge *edges = realloc(polygon->edges, (size_t)capacity * sizeof(*edges));
-    if (!edges) abort();
+    if (!edges) {
+        polygon->status = PX_STATUS_NO_MEMORY;
+        return false;
+    }
     polygon->edges = edges;
     polygon->capacity = capacity;
+    return true;
 }
 
 static void polygon_add_edges(struct dp_polygon *polygon, px_point_t p1, px_point_t p2,
     int32_t top, int32_t bottom, int dir)
 {
-    if (polygon->count == polygon->capacity) polygon_grow(polygon);
+    if (polygon->count == polygon->capacity && !polygon_grow(polygon)) return;
     struct dp_edge *edge = &polygon->edges[polygon->count++];
     edge->p1 = p1;
     edge->p2 = p2;
@@ -230,6 +234,7 @@ static void polygon_add_clipped_edge(struct dp_polygon *polygon,
 
 void dp_polygon_add_edge(struct dp_polygon *polygon, px_point_t p1, px_point_t p2, int dir)
 {
+    if (polygon->status != PX_STATUS_SUCCESS) return;
     if (p1.y == p2.y) return;
     if (p1.y > p2.y) {
         px_point_t t = p1;
@@ -480,10 +485,14 @@ static void extents_add_curve(struct dpath *path, const struct dpoint *p0,
 
 static void path_append(struct dpath *path, int op, const struct dpoint *points, int count)
 {
+    if (path->failed) return;
     if (path->count == path->capacity) {
         int capacity = path->capacity ? path->capacity * 2 : 64;
         struct dpath_op_entry *ops = realloc(path->ops, (size_t)capacity * sizeof(*ops));
-        if (!ops) abort();
+        if (!ops) {
+            path->failed = true;
+            return;
+        }
         path->ops = ops;
         path->capacity = capacity;
     }
@@ -531,6 +540,7 @@ static void path_line_to_fixed(struct dpath *path, int32_t x, int32_t y)
 
 void dp_new_sub_path(struct dpath *path)
 {
+    if (path->failed) return;
     if (!path->needs_move) {
         path->fill_is_rectilinear = path->current.x == path->last_move.x ||
             path->current.y == path->last_move.y;
@@ -541,11 +551,13 @@ void dp_new_sub_path(struct dpath *path)
 
 void dp_move_to(struct dpath *path, double x, double y)
 {
+    if (path->failed) return;
     path_move_to(path, fixed_from_double(x), fixed_from_double(y));
 }
 
 void dp_line_to(struct dpath *path, double x, double y)
 {
+    if (path->failed) return;
     path_line_to_fixed(path, fixed_from_double(x), fixed_from_double(y));
 }
 
@@ -598,6 +610,7 @@ static void path_curve_to_fixed(struct dpath *path, int32_t x0, int32_t y0,
 void dp_curve_to(struct dpath *path, double x0, double y0, double x1, double y1,
     double x2, double y2)
 {
+    if (path->failed) return;
     path_curve_to_fixed(path, fixed_from_double(x0), fixed_from_double(y0),
         fixed_from_double(x1), fixed_from_double(y1),
         fixed_from_double(x2), fixed_from_double(y2));
@@ -605,6 +618,7 @@ void dp_curve_to(struct dpath *path, double x0, double y0, double x1, double y1,
 
 void dp_close_path(struct dpath *path)
 {
+    if (path->failed) return;
     if (!path->has_current) return;
     path_line_to_fixed(path, path->last_move.x, path->last_move.y);
     path_drop_line(path);
@@ -621,6 +635,7 @@ static void path_rel_line_to(struct dpath *path, double dx, double dy)
 
 void dp_rectangle(struct dpath *path, double x, double y, double width, double height)
 {
+    if (path->failed) return;
     dp_move_to(path, x, y);
     path_rel_line_to(path, width, 0);
     path_rel_line_to(path, 0, height);
@@ -826,15 +841,20 @@ static void box_row_deltas(int32_t l, int32_t t, int32_t r, int32_t b, int y,
     }
 }
 
-static void fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct drect clip,
+static bool fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
     int width = clip.x1 - clip.x0;
-    if (width <= 0) return;
+    if (width <= 0) return true;
     int *dl = calloc((size_t)width, sizeof(int));
     int *du = calloc((size_t)width, sizeof(int));
     unsigned char *alphas = malloc((size_t)width);
-    if (!dl || !du || !alphas) abort();
+    if (!dl || !du || !alphas) {
+        free(dl);
+        free(du);
+        free(alphas);
+        return false;
+    }
     int32_t top_y = t >> 8, bottom_y = b >> 8;
     for (int32_t y = top_y; y <= bottom_y; y++) {
         if (y < clip.y0 || y >= clip.y1) continue;
@@ -882,11 +902,13 @@ static void fill_box_mask(int32_t l, int32_t t, int32_t r, int32_t b, struct dre
     free(dl);
     free(du);
     free(alphas);
+    return true;
 }
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
+    if (path->failed) return false;
     int32_t bl, bt, br, bb;
     if (path_is_rect_box(path, &bl, &bt, &br, &bb)) {
         int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
@@ -896,16 +918,12 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
         if (br > limit_r) br = limit_r;
         if (bb > limit_b) bb = limit_b;
         if (bl < br && bt < bb)
-            fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y);
+            return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y);
         return true;
     }
     struct dp_polygon polygon;
-    memset(&polygon, 0, sizeof(polygon));
-    polygon.limit.p1.x = (int32_t)clip.x0 * FIXED_ONE;
-    polygon.limit.p1.y = (int32_t)clip.y0 * FIXED_ONE;
-    polygon.limit.p2.x = (int32_t)clip.x1 * FIXED_ONE;
-    polygon.limit.p2.y = (int32_t)clip.y1 * FIXED_ONE;
-    polygon.has_limit = 1;
+    dp_polygon_init(&polygon);
+    dp_polygon_set_limit(&polygon, clip);
 
     struct filler filler;
     memset(&filler, 0, sizeof(filler));
@@ -935,6 +953,10 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
     if (path->needs_move && path->has_current)
         filler_move_to(&filler, (struct dpoint){ path->current.x, path->current.y });
     filler_close(&filler);
+    if (polygon.status != PX_STATUS_SUCCESS) {
+        dp_polygon_fini(&polygon);
+        return false;
+    }
 
     int cx0 = clip.x0, cy0 = clip.y0, cx1 = clip.x1, cy1 = clip.y1;
     if (path->has_extents) {
@@ -946,13 +968,13 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
         if (by1 < cy1) cy1 = by1;
     }
     if (cx0 >= cx1 || cy0 >= cy1) {
-        free(polygon.edges);
+        dp_polygon_fini(&polygon);
         return true;
     }
     px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
         PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
     if (!converter) {
-        free(polygon.edges);
+        dp_polygon_fini(&polygon);
         return false;
     }
     tor_add_edges(converter, (const px_edge_t *)polygon.edges, polygon.count);
@@ -966,9 +988,7 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
     ctx.base.render_rows = span_rows;
     px_status_t status = converter->generate(converter, &ctx.base);
     converter->destroy(converter);
-    free(polygon.edges);
-    (void)mask_x;
-    (void)mask_y;
+    dp_polygon_fini(&polygon);
     return status == PX_STATUS_SUCCESS;
 }
 
@@ -1004,15 +1024,20 @@ static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
     return status == PX_STATUS_SUCCESS;
 }
 
-static void fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
+static bool fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
     int width = clip.x1 - clip.x0;
-    if (width <= 0 || boxes->num_boxes == 0) return;
+    if (width <= 0 || boxes->num_boxes == 0) return true;
     int *dl = calloc((size_t)width, sizeof(int));
     int *du = calloc((size_t)width, sizeof(int));
     unsigned char *alphas = malloc((size_t)width);
-    if (!dl || !du || !alphas) abort();
+    if (!dl || !du || !alphas) {
+        free(dl);
+        free(du);
+        free(alphas);
+        return false;
+    }
     int32_t top = INT32_MAX, bottom = INT32_MIN;
     for (const struct _cairo_boxes_chunk *chunk = &boxes->chunks; chunk; chunk = chunk->next) {
         for (int i = 0; i < chunk->count; i++) {
@@ -1021,7 +1046,7 @@ static void fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
             if (b > bottom) bottom = b;
         }
     }
-    if (top > bottom) { free(dl); free(du); free(alphas); return; }
+    if (top > bottom) { free(dl); free(du); free(alphas); return true; }
     int32_t top_y = top >> 8, bottom_y = bottom >> 8;
     for (int32_t y = top_y; y <= bottom_y; y++) {
         if (y < clip.y0 || y >= clip.y1) continue;
@@ -1072,6 +1097,7 @@ static void fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
         memcpy(row, alphas, (size_t)width);
     }
     free(dl); free(du); free(alphas);
+    return true;
 }
 
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
@@ -1085,6 +1111,7 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     style.line_join = (cairo_line_join_t)join;
     style.miter_limit = miter_limit;
     cairo_matrix_t identity = { 1, 0, 0, 1, 0, 0 };
+    if (path->failed) return false;
     if (path->stroke_is_rectilinear) {
         cairo_boxes_t boxes;
         _cairo_boxes_init(&boxes);
@@ -1097,9 +1124,10 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
         cairo_int_status_t st = _cairo_path_fixed_stroke_rectilinear_to_boxes(
             path, &style, &identity, CAIRO_ANTIALIAS_GRAY, &boxes);
         if (st == CAIRO_INT_STATUS_SUCCESS) {
-            fill_boxes_mask(&boxes, clip, mask, stride, mask_x, mask_y);
+            bool ok = boxes.status == CAIRO_STATUS_SUCCESS &&
+                fill_boxes_mask(&boxes, clip, mask, stride, mask_x, mask_y);
             _cairo_boxes_fini(&boxes);
-            return true;
+            return ok;
         }
         _cairo_boxes_fini(&boxes);
     }
@@ -1109,7 +1137,7 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     cairo_status_t status = _cairo_path_fixed_stroke_to_polygon(path, &style,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;
-    if (status == CAIRO_STATUS_SUCCESS)
+    if (status == CAIRO_STATUS_SUCCESS && polygon.status == PX_STATUS_SUCCESS)
         ok = raster_stroke_polygon(&polygon, clip, mask, stride, mask_x, mask_y);
     dp_polygon_fini(&polygon);
     return ok;
