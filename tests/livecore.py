@@ -10,6 +10,7 @@ import time
 
 TOMOE, CORE_A, CORE_B, CORE_BAD, CLIENT, SCRIPT, POINTER, POLICY, STAMP_B = sys.argv[1:10]
 SOCKET = "livecore"
+PHASES = (("pre", 183), ("swapped", 184), ("refused", 185), ("second", 186))
 
 
 def note(message):
@@ -23,7 +24,7 @@ class Windows:
         self.processes = []
         self.killed = []
 
-    def start(self, name, directory, environment, *options):
+    def start(self, name, environment, *options):
         process = subprocess.Popen([CLIENT, "--seconds", "3600", *options], env=environment,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.processes.append((name, process))
@@ -60,14 +61,66 @@ class Windows:
             process.kill()
             process.wait(timeout=20)
             self.killed.append(name)
-            with self.lock:
-                self.lines.append(name + ": killed")
             return True
         return False
 
     def output(self):
         with self.lock:
             return "\n".join(self.lines[-40:])
+
+
+class Driver:
+    def __init__(self, directory, environment):
+        self.directory = pathlib.Path(directory)
+        commands = ["sync", "signal " + str(self.directory / "driver-ready")]
+        for name, code in PHASES:
+            commands += [
+                "wait " + str(self.directory / ("go-" + name)),
+                "move 20 20", "sync", "move 40 40", "sync",
+                "move 232 182", "sync", "move 256 206", "sync", "sleep 80",
+                "key 30 down", "sync", "sleep 60", "key 30 up", "sync", "sleep 100",
+                "key " + str(code) + " down", "sync", "sleep 60",
+                "key " + str(code) + " up", "sync", "sleep 150",
+                "signal " + str(self.directory / ("done-" + name)),
+            ]
+        commands += ["wait " + str(self.directory / "driver-stop")]
+        self.process = subprocess.Popen([SCRIPT, *commands], env=environment, text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.output = []
+
+        def read():
+            for line in self.process.stdout:
+                self.output.append(line.strip())
+
+        threading.Thread(target=read, daemon=True).start()
+
+    def ready(self, seconds=30):
+        deadline = time.monotonic() + seconds
+        ready = self.directory / "driver-ready"
+        while time.monotonic() < deadline:
+            if ready.exists():
+                return True
+            if self.process.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
+    def run(self, name, seconds=60):
+        (self.directory / ("go-" + name)).touch()
+        done = self.directory / ("done-" + name)
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if done.exists():
+                return True
+            if self.process.poll() is not None:
+                return False
+            time.sleep(0.05)
+        return False
+
+    def stop(self):
+        (self.directory / "driver-stop").touch()
+        self.process.kill()
+        self.process.wait(timeout=20)
 
 
 with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("TMPDIR")) as root:
@@ -79,7 +132,7 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
                    ("PATH", "MESA_LOADER_DRIVER_OVERRIDE", "LIBGL_DRIVERS_PATH",
                     "__EGL_VENDOR_LIBRARY_FILENAMES", "LD_LIBRARY_PATH") if key in os.environ}
     environment.update(HOME=str(home), XDG_RUNTIME_DIR=str(runtime), WAYLAND_DISPLAY=SOCKET,
-                       LIBGL_ALWAYS_SOFTWARE="1")
+                       LIBGL_ALWAYS_SOFTWARE="1", TMPDIR=root)
     log_path = pathlib.Path(root) / "compositor.log"
     log = open(log_path, "w+")
     compositor = subprocess.Popen([TOMOE, "--backend", "headless", "--socket", SOCKET,
@@ -100,9 +153,14 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
     def identities():
         return {window["id"]: window["app_id"] for window in windows()}
 
+    def focused_app():
+        for window in windows():
+            if window.get("focused"):
+                return window["app_id"]
+        return None
+
     def frames():
-        reply = cli("frames").stdout
-        counted = re.findall(r':frame (\d+)', reply, re.IGNORECASE)
+        counted = re.findall(r":frame (\d+)", cli("frames").stdout, re.IGNORECASE)
         return [int(value) for value in counted] or [0]
 
     def stamp():
@@ -110,28 +168,11 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         found = re.search(r'"stamp"\s*:\s*"([^"]*)"', reply)
         if not found:
             found = re.search(r':stamp\s+"([^"]*)"', reply, re.IGNORECASE)
-        if not found:
-            print("livecore: core-report replied:\n" + reply, flush=True)
         return found.group(1) if found else None
 
-    def offset():
-        return min(window["geometry"]["y"] for window in windows())
-
-    def gone(name, seconds=15):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if name not in identities().values():
-                return True
-            time.sleep(0.05)
-        return False
-
-    def swapped(wanted, seconds=15):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if stamp() == wanted:
-                return True
-            time.sleep(0.05)
-        return False
+    def steps():
+        found = re.search(r":LIVECORE-STEPS\s+(\d+)", cli("inspect").stdout)
+        return int(found.group(1)) if found else None
 
     def drawing(seconds=5):
         before = frames()
@@ -144,13 +185,18 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
             before = after
         return False
 
-    def step():
-        before = offset()
-        subprocess.run([SCRIPT, "move 100 100", "sync", "sleep 40", "key 30 down", "key 30 up",
-                        "sync", "sleep 200"], env=environment, check=True, timeout=60)
-        deadline = time.monotonic() + 20
+    def swapped(wanted, seconds=15):
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if offset() > before:
+            if stamp() == wanted:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def gone(name, seconds=15):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if name not in identities().values():
                 return True
             time.sleep(0.05)
         return False
@@ -177,15 +223,34 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
             return word in lines
 
         try:
-            assert wait_for("ready"), "the pointer never reached a client: " + repr(lines[-6:])
+            assert wait_for("ready"), "the pointer never reached a new client: " + repr(lines[-6:])
             pointer.stdin.write("shape 4\n")
             pointer.stdin.flush()
-            assert wait_for("ok"), "a client's pointer request was not answered: " + repr(lines[-6:])
+            assert wait_for("ok"), "a new client's pointer request was not answered: " + repr(lines[-6:])
         finally:
             pointer.kill()
             pointer.wait()
 
+    def input_round(driver, clients, phase, code):
+        target = focused_app()
+        assert target, "no window is focused"
+        before_steps = steps()
+        key_pattern = target + r": .* key " + str(code) + " [01]"
+        motion_pattern = target + r": .* pointer (motion|enter) "
+        before_keys = clients.count(key_pattern)
+        before_motion = clients.count(motion_pattern)
+        assert driver.run(phase), "the input driver for " + phase + " stopped: " \
+            + "\n".join(driver.output[-6:])
+        assert clients.wait(key_pattern, before_keys + 1, 20), \
+            "the window focused in " + phase + " received no key event: " + clients.output()
+        assert clients.wait(motion_pattern, before_motion + 1, 20), \
+            "the window focused in " + phase + " received no pointer event: " + clients.output()
+        if before_steps is not None:
+            assert steps() == before_steps + 1, \
+                "the session's own key binding did not fire in " + phase
+
     clients = Windows()
+    driver = None
     try:
         for _ in range(600):
             if compositor.poll() is not None:
@@ -197,10 +262,13 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         else:
             raise AssertionError("the compositor did not answer")
 
+        driver = Driver(root, environment)
+        assert driver.ready(), "the input driver never took the seat: " + "\n".join(driver.output)
+
         for index in range(3):
             name = "core-" + str(index + 1)
-            clients.start(name, root, environment, "--mode", "xdg", "--commit-rate", "60",
-                          "--repaint", "--app-id", name, "--title", name,
+            clients.start(name, environment, "--mode", "xdg", "--commit-rate", "60",
+                          "--repaint", "--keys", "--pointer", "--app-id", name, "--title", name,
                           "--size", "320x200")
             assert clients.wait(name + r": mapped", 1, 60), "client " + name + " did not map"
         stamp_a = stamp()
@@ -208,35 +276,38 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         mapped = identities()
         assert sorted(mapped.values()) == ["core-1", "core-2", "core-3"], mapped
         assert drawing(), "the windows were not drawing before the swap"
-        assert step(), "a key did not reach the running core before the swap"
-        assert drawing(), "the windows stopped drawing after a key before the swap"
+        input_round(driver, clients, "pre", 183)
+        assert drawing(), "the windows stopped drawing after the first input round"
         pointer_round()
-        note("three windows mapped, drawing and taking keys and the pointer on " + str(stamp_a))
+        note("three windows mapped, drawing, and taking a bound key, a key event and the pointer on "
+             + str(stamp_a))
 
         cli("command", "swap-core", "file=" + CORE_B)
         assert swapped(STAMP_B), "the swapped core reports " + str(stamp())
         assert not clients.exited(), "a client exited during the swap: " + str(clients.exited())
-        after = windows()
-        assert {window["id"]: window["app_id"] for window in after} == mapped, after
-        assert all(window["mapped"] for window in after), after
+        assert {window["id"]: window["app_id"] for window in windows()} == mapped, windows()
+        assert all(window["mapped"] for window in windows()), windows()
         assert drawing(), "the windows stopped drawing after the swap"
-        assert step(), "a key did not reach the swapped core"
-        clients.start("core-4", root, environment, "--mode", "xdg", "--commit-rate", "60",
-                      "--repaint", "--app-id", "core-4", "--title", "core-4",
+        input_round(driver, clients, "swapped", 184)
+        assert drawing(), "the windows stopped drawing after input on the swapped core"
+        assert not clients.exited(), "a client exited while the swapped core took input"
+        note("the same three windows stay mapped, keep drawing, and take a bound key, a key event "
+             "and the pointer after the swap")
+
+        clients.start("core-4", environment, "--mode", "xdg", "--commit-rate", "60", "--repaint",
+                      "--keys", "--pointer", "--app-id", "core-4", "--title", "core-4",
                       "--size", "320x200")
         assert clients.wait(r"core-4: mapped", 1, 60), "a client could not connect to the swapped core"
         assert "core-4" in identities().values(), "a client that connected after the swap is missing"
         mapped = identities()
-        assert drawing(), "the windows stopped drawing after a key on the swapped core"
         pointer_round()
         assert clients.kill("core-1"), "the first client could not be killed"
         assert gone("core-1"), "a window whose client died after the swap is still listed"
         mapped = identities()
         assert drawing(), "the session stopped drawing after a client died post-swap"
-        assert step(), "a key stopped reaching the core after a client died post-swap"
         assert len(cli("msg", "version").stdout) > 0, "the session stopped answering"
-        note("the same windows stay mapped, keep drawing and take keys and the pointer after the swap; "
-             "a client that dies afterwards leaves the session drawing and answering")
+        note("a client that connects after the swap maps; a client that dies afterwards leaves the "
+             "session drawing and answering")
 
         bad = cli("command", "swap-core", "file=" + CORE_BAD, check=False)
         assert bad.returncode != 0, "an incompatible core was accepted:\n" + bad.stdout
@@ -244,22 +315,21 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         assert stamp() == STAMP_B, "a refused core changed the running core"
         assert identities() == mapped, "a refused core lost the windows"
         assert drawing(), "the windows stopped drawing after a refused swap"
-        assert step(), "a key stopped reaching the core after a refused swap"
-        pointer_round()
-        note("an incompatible core is refused and the session keeps running")
+        input_round(driver, clients, "refused", 185)
+        note("an incompatible core is refused and the session keeps drawing and taking input")
 
         cli("command", "swap-core", "file=" + CORE_A)
         assert swapped(stamp_a), "the second swap reports " + str(stamp())
         assert identities() == mapped, "the second swap lost the windows"
         assert drawing(), "the windows stopped drawing after the second swap"
-        assert step(), "a key stopped reaching the core after a second swap"
+        input_round(driver, clients, "second", 186)
         assert clients.kill("core-2"), "the second client could not be killed"
         assert gone("core-2"), "a window whose client died after two swaps is still listed"
         mapped = identities()
         assert drawing(), "the session stopped drawing after a client died after two swaps"
-        assert step(), "a key stopped reaching the core after a client died after two swaps"
         assert not clients.exited(), "a client exited during a swap"
-        note("a second swap reaches the same core again with the same windows")
+        note("a second swap returns to the first core, and a client that dies after it leaves the "
+             "session drawing")
     except Exception:
         log.seek(0)
         print("livecore: compositor log:\n" + log.read(), flush=True)
@@ -267,8 +337,12 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         if session.exists():
             print("livecore: session log:\n" + session.read_text()[-4000:], flush=True)
         print("livecore: client output:\n" + clients.output(), flush=True)
+        if driver:
+            print("livecore: driver output:\n" + "\n".join(driver.output[-10:]), flush=True)
         raise
     finally:
+        if driver:
+            driver.stop()
         for name, process in clients.processes:
             process.kill()
         compositor.terminate()

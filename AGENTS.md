@@ -113,12 +113,22 @@ which is why the commit has to normalise the table pointers above and why
 static whose address is compared across images will break a swap.
 
 `nix build .#legacyPackages.x86_64-linux.suites.livecore`, and the smoke check,
-swap a core in and out of a session with three drawing clients: the windows, the
-frames they keep committing, a key bound in the session and the pointer all have
-to hold, a client that connects after the swap has to map, a client that dies
-after one or two swaps must leave the session drawing and answering, a second
-swap must return to the first core, and a core built for another layout must be
-refused with the session still running.
+swap a core in and out of a session with three drawing clients and assert it from
+both ends. The clients themselves report what they received: the focused window
+has to log a key event and a pointer motion after each swap, after a refused swap
+and after the second swap, while the session's own binding has to fire for the
+same key press. On the session's side the windows stay mapped, keep committing
+frames, a client that connects after a swap maps, a client that dies after one or
+two swaps leaves the session drawing and answering, a second swap returns to the
+first core, and a core built for another layout is refused with the session still
+running.
+
+All of that input comes from one `tomoe-pointer-script` for the whole run, driven
+by `wait`/`signal` files. Starting a second one flaps the seat's capabilities
+(each virtual keyboard device comes and goes), and a client that then asks for a
+new keyboard is handed one that never gets its keymap, so its keys stop arriving:
+a pre-existing seat bug the test does not trip over because the device it types
+with is the same for the whole run.
 
 ## Releasing
 

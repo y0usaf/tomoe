@@ -59,7 +59,7 @@ struct client {
     int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
-    bool single_pixel, repaint, keys;
+    bool single_pixel, repaint, keys, pointer;
     unsigned change_step, change_count;
     struct wp_viewport *viewport;
     bool alpha_probe;
@@ -284,6 +284,8 @@ static void usage(void) {
            "                       that size with a viewport source, as Chromium does\n"
            "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n"
            "  --keys               print \"TITLE key CODE STATE\" for every key this window receives\n"
+           "  --pointer            print \"TITLE pointer enter|leave|motion|button ...\" for every pointer\n"
+           "                       event this window receives\n"
            "  --change-to [AA]RRGGBB  with --repaint, each SIGUSR1 steps the fill through\n"
            "                       alternating with --color every commit, holding this colour,\n"
            "                       alternating again and holding --color\n",
@@ -323,6 +325,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
         else if (strcmp(option, "--repaint") == 0) state->repaint = true;
         else if (strcmp(option, "--keys") == 0) state->keys = true;
+        else if (strcmp(option, "--pointer") == 0) state->pointer = true;
         else if (strcmp(option, "--change-to") == 0) { state->change_to = option_value(option, value); i++; }
         else if (strcmp(option, "--help") == 0) { usage(); exit(0); }
         else fail("unknown argument \"%s\"", option);
@@ -370,8 +373,79 @@ static const struct wl_keyboard_listener keys_listener = {
 };
 
 static struct wl_keyboard *keys_keyboard;
+static struct wl_pointer *keys_pointer;
+
+static void keys_pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial,
+        struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {
+    const struct client *state = data;
+    printf("%s pointer enter %.0f %.0f\n", state->title, wl_fixed_to_double(x),
+        wl_fixed_to_double(y));
+    fflush(stdout);
+}
+
+static void keys_pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial,
+        struct wl_surface *surface) {
+    const struct client *state = data;
+    printf("%s pointer leave\n", state->title);
+    fflush(stdout);
+}
+
+static void keys_pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time,
+        wl_fixed_t x, wl_fixed_t y) {
+    const struct client *state = data;
+    printf("%s pointer motion %.0f %.0f\n", state->title, wl_fixed_to_double(x),
+        wl_fixed_to_double(y));
+    fflush(stdout);
+}
+
+static void keys_pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial,
+        uint32_t time, uint32_t button, uint32_t state_value) {
+    const struct client *state = data;
+    printf("%s pointer button %u %u\n", state->title, button, state_value);
+    fflush(stdout);
+}
+
+static void keys_pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time,
+        uint32_t axis, wl_fixed_t value) {}
+
+static void keys_pointer_frame(void *data, struct wl_pointer *pointer) {}
+
+static void keys_pointer_axis_source(void *data, struct wl_pointer *pointer, uint32_t source) {}
+
+static void keys_pointer_axis_stop(void *data, struct wl_pointer *pointer, uint32_t time,
+        uint32_t axis) {}
+
+static void keys_pointer_axis_discrete(void *data, struct wl_pointer *pointer, uint32_t axis,
+        int32_t discrete) {}
+
+static void keys_pointer_axis_value120(void *data, struct wl_pointer *pointer, uint32_t axis,
+        int32_t value) {}
+
+static const struct wl_pointer_listener keys_pointer_listener = {
+    .enter = keys_pointer_enter,
+    .leave = keys_pointer_leave,
+    .motion = keys_pointer_motion,
+    .button = keys_pointer_button,
+    .axis = keys_pointer_axis,
+    .frame = keys_pointer_frame,
+    .axis_source = keys_pointer_axis_source,
+    .axis_stop = keys_pointer_axis_stop,
+    .axis_discrete = keys_pointer_axis_discrete,
+    .axis_value120 = keys_pointer_axis_value120,
+};
 
 static void keys_capabilities(void *data, struct wl_seat *wl_seat, uint32_t capabilities) {
+    const struct client *state = data;
+    bool pointer = capabilities & WL_SEAT_CAPABILITY_POINTER;
+    if (state && state->pointer) {
+        if (pointer && !keys_pointer) {
+            keys_pointer = wl_seat_get_pointer(wl_seat);
+            wl_pointer_add_listener(keys_pointer, &keys_pointer_listener, data);
+        } else if (!pointer && keys_pointer) {
+            wl_pointer_destroy(keys_pointer);
+            keys_pointer = NULL;
+        }
+    }
     bool present = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
     if (present && !keys_keyboard) {
         keys_keyboard = wl_seat_get_keyboard(wl_seat);
@@ -414,7 +488,7 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
     } else if (strcmp(interface, xdg_activation_v1_interface.name) == 0) {
         activation = wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1);
     } else if (strcmp(interface, wl_seat_interface.name) == 0 && !key_seat && data &&
-            ((struct client *)data)->keys) {
+            (((struct client *)data)->keys || ((struct client *)data)->pointer)) {
         key_seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
         wl_seat_add_listener(key_seat, &keys_seat_listener, data);
     }
