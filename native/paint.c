@@ -922,15 +922,17 @@ static void gradient_span(const struct dp_gradient_built *g, struct gradient_wal
 
 static void gradient_flush(const struct dp_gradient_built *g, struct gradient_walker *walker,
     uint32_t *row, uint32_t *dst, int dst_stride, const unsigned char *mask,
-    int origin, int x0, int len, int y, int opaque)
+    int origin, int x0, int len, int y0, int y1, int opaque)
 {
-    if (len <= 0) return;
-    if (!gradient_extents_fit(&g->transform, origin + x0, y, origin + x0 + len, y + 1)) return;
-    gradient_span(g, walker, row, origin + x0, len, y);
-    for (int i = 0; i < len; i++) {
-        uint32_t *d = &dst[(size_t)y * (size_t)dst_stride + origin + x0 + i];
-        unsigned m = opaque ? 0xffu : mask[x0 + i];
-        *d = dp_masked_over(*d, row[i], (uint8_t)m);
+    if (len <= 0 || y1 <= y0) return;
+    if (!gradient_extents_fit(&g->transform, origin + x0, y0, origin + x0 + len, y1)) return;
+    for (int y = y0; y < y1; y++) {
+        gradient_span(g, walker, row, origin + x0, len, y);
+        for (int i = 0; i < len; i++) {
+            uint32_t *d = &dst[(size_t)y * (size_t)dst_stride + origin + x0 + i];
+            unsigned m = opaque ? 0xffu : mask[x0 + i];
+            *d = dp_masked_over(*d, row[i], (uint8_t)m);
+        }
     }
 }
 
@@ -963,25 +965,25 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
         walker.count = built.count;
         walker.stops = built.stops;
         walker.need_reset = 1;
-        for (int Y = cy0; Y < cy1; Y++) {
-            const unsigned char *mask = coverage ? coverage->pixels +
-                (size_t)(Y - coverage->y) * (size_t)coverage->stride +
-                (size_t)(cx0 - coverage->x) : NULL;
-            const struct dp_row_span *span = coverage && coverage->rows
-                ? &coverage->rows[Y - cy0] : NULL;
-            int start = 0, end = width;
+        int bands = coverage && coverage->bands ? coverage->band_count : 1;
+        for (int b = 0; b < bands; b++) {
+            int y0 = cy0, y1 = cy1, start = 0, end = width;
             int x0, x1, x;
-            if (span) {
-                start = span->x0 - cx0;
-                end = span->x1 - cx0;
-                if (start < 0) start = 0;
-                if (end > width) end = width;
-                if (end <= start) continue;
-            } else if (mask) {
-                while (start < width && mask[start] == 0) start++;
-                if (start >= width) continue;
-                while (end > start && mask[end - 1] == 0) end--;
+            const unsigned char *mask;
+            if (coverage && coverage->bands) {
+                y0 = coverage->bands[b].y;
+                y1 = coverage->bands[b].y + coverage->bands[b].height;
+                start = coverage->bands[b].x0 - cx0;
+                end = coverage->bands[b].x1 - cx0;
             }
+            if (y0 < cy0) y0 = cy0;
+            if (y1 > cy1) y1 = cy1;
+            if (start < 0) start = 0;
+            if (end > width) end = width;
+            if (y1 <= y0 || end <= start) continue;
+            mask = coverage ? coverage->pixels +
+                (size_t)(y0 - coverage->y) * (size_t)coverage->stride +
+                (size_t)(cx0 - coverage->x) : NULL;
             x0 = x1 = x = start;
             while (x < end) {
                 unsigned char here = mask ? mask[x] : 0xff;
@@ -990,20 +992,21 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
                 if (xe - x > 1) {
                     if (xe - x >= 256 && here == 0xff) {
                         gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
-                            x1 - x0, Y, 0);
+                            x1 - x0, y0, y1, 0);
                         gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x,
-                            xe - x, Y, 1);
+                            xe - x, y0, y1, 1);
                         x0 = xe;
                     } else if (here == 0 && x1 - x0 > 256) {
                         gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
-                            x1 - x0, Y, 0);
+                            x1 - x0, y0, y1, 0);
                         x0 = xe;
                     }
                 }
                 x1 = xe;
                 x = xe;
             }
-            gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0, x1 - x0, Y, 0);
+            gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0, x1 - x0,
+                y0, y1, 0);
         }
     }
     free(row);
