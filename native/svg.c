@@ -5033,10 +5033,18 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             sum = roundf(sum * 1000000.0f) / 1000000.0f;
             if (fabsf(sum) <= 1.0f / 65536.0f) sum = 1.0f;
             p->kdiv = svg_filter_list_number(svg_filter_attr(c->doc, child, "divisor"), 0, sum);
-            if (fabsf(p->kdiv) <= 1.0f / 65536.0f) { free(prims); return 0; }
+            if (fabsf(p->kdiv) <= 1.0f / 65536.0f) {
+                for (int k = 0; k <= count; k++) free(prims[k].kernel);
+                free(prims);
+                return 0;
+            }
             if (p->ktarget_x < 0) p->ktarget_x = p->kcols / 2;
             if (p->ktarget_y < 0) p->ktarget_y = p->krows / 2;
-            if (p->ktarget_x >= p->kcols || p->ktarget_y >= p->krows) { free(prims); return 0; }
+            if (p->ktarget_x >= p->kcols || p->ktarget_y >= p->krows) {
+                for (int k = 0; k <= count; k++) free(prims[k].kernel);
+                free(prims);
+                return 0;
+            }
         } else if (!strcmp(tag, "feMorphology")) {
             p->kind = SVG_FE_MORPHOLOGY;
             const char *op = svg_filter_attr(c->doc, child, "operator");
