@@ -1069,32 +1069,29 @@ static void play(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
 }
 
 static bool colr_box(FT_Face face, unsigned glyph, const struct colr_matrix *matrix,
-    double ox, double oy, struct drect *box)
+    double ox, double oy, struct drect *box, double corners[4][2])
 {
     FT_ClipBox clip;
     if (!FT_Get_Color_Glyph_ClipBox(face, glyph, &clip)) return false;
-    double corners[4][2] = {
+    double source[4][2] = {
         { (double)clip.bottom_left.x / 64.0, (double)clip.bottom_left.y / 64.0 },
         { (double)clip.top_right.x / 64.0, (double)clip.bottom_left.y / 64.0 },
-        { (double)clip.bottom_left.x / 64.0, (double)clip.top_right.y / 64.0 },
         { (double)clip.top_right.x / 64.0, (double)clip.top_right.y / 64.0 },
+        { (double)clip.bottom_left.x / 64.0, (double)clip.top_right.y / 64.0 },
     };
+    box->x0 = box->y0 = INT32_MAX;
+    box->x1 = box->y1 = INT32_MIN;
     for (int i = 0; i < 4; i++) {
-        double x = matrix->xx * corners[i][0] + matrix->xy * corners[i][1] - ox;
-        double y = matrix->yx * corners[i][0] + matrix->yy * corners[i][1] - oy;
+        double x = matrix->xx * source[i][0] + matrix->xy * source[i][1] - ox;
+        double y = matrix->yx * source[i][0] + matrix->yy * source[i][1] - oy;
+        corners[i][0] = x;
+        corners[i][1] = y;
         int fx = (int)floor(x), fy = (int)floor(y);
         int cx = (int)ceil(x), cy = (int)ceil(y);
-        if (i == 0) {
-            box->x0 = fx;
-            box->y0 = fy;
-            box->x1 = cx;
-            box->y1 = cy;
-        } else {
-            if (fx < box->x0) box->x0 = fx;
-            if (fy < box->y0) box->y0 = fy;
-            if (cx > box->x1) box->x1 = cx;
-            if (cy > box->y1) box->y1 = cy;
-        }
+        if (fx < box->x0) box->x0 = fx;
+        if (fy < box->y0) box->y0 = fy;
+        if (cx > box->x1) box->x1 = cx;
+        if (cy > box->y1) box->y1 = cy;
     }
     return true;
 }
@@ -1121,7 +1118,9 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     ctx.matrix.x0 = 0;
     ctx.matrix.y0 = 0;
     struct drect box;
-    if (!colr_box(face, glyph, &ctx.matrix, 0, 0, &box)) {
+    double corners[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
+    bool have_box = colr_box(face, glyph, &ctx.matrix, 0, 0, &box, corners);
+    if (!have_box) {
         double xs[4] = { (double)face->bbox.xMin, (double)face->bbox.xMax,
             (double)face->bbox.xMin, (double)face->bbox.xMax };
         double ys[4] = { (double)face->bbox.yMin, (double)face->bbox.yMin,
@@ -1156,8 +1155,15 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
         (int)(box.x1 - ctx.ox), (int)(box.y1 - ctx.oy) };
     ctx.box = intersected(ctx.box, image_box(&ctx));
     dpath_init(&ctx.clip);
-    dp_rectangle(&ctx.clip, ctx.box.x0, ctx.box.y0, ctx.box.x1 - ctx.box.x0,
-        ctx.box.y1 - ctx.box.y0);
+    if (have_box) {
+        dp_move_to(&ctx.clip, corners[0][0] - ctx.ox, corners[0][1] - ctx.oy);
+        for (int i = 1; i < 4; i++)
+            dp_line_to(&ctx.clip, corners[i][0] - ctx.ox, corners[i][1] - ctx.oy);
+        dp_close_path(&ctx.clip);
+    } else {
+        dp_rectangle(&ctx.clip, ctx.box.x0, ctx.box.y0, ctx.box.x1 - ctx.box.x0,
+            ctx.box.y1 - ctx.box.y0);
+    }
     play(&ctx, &paint);
     dpath_fini(&ctx.clip);
     int left = ctx.width, top = ctx.height, right = 0, bottom = 0;
