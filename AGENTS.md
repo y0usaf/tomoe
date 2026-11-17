@@ -53,7 +53,11 @@ milliseconds; the output records each held frame in that name plus `.log`), with
 client painting from its frame callback, and fails unless the client animated on its
 own before the hold and no presentation feedback or frame callback reached it, or
 reported a time, before the fence of the frame it describes signalled. Every run prints
-the numbers, so a change is read against them rather than against a pass. Pin only a revision it passed, and deploy the pin
+the numbers, so a change is read against them rather than against a pass. Those
+numbers only fail the run with `GATE_SPEED=1`, because they measure the machine
+as much as the commit: a landing is decided by the behaviour checks above —
+the start, the windows, input, the reload, the refused config, the pixels, the
+idle frames and the resume — and a rate is a speed claim. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
 
 `./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same

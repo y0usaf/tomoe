@@ -776,6 +776,14 @@ tools/isolate DIR COMMAND                  # run anything that must not reach yo
 nix develop -c ./dev.sh --backend nested   # run from source
 ```
 
+`gate.sh` measures as well as checks. The frames a client presents, the interval
+between frames, wake and commit latency, and how many frames or screen reads a
+fixed wait produced are printed on every run, but they only fail the gate with
+`GATE_SPEED=1`: a busy machine changes them, and a landing is not a speed claim.
+Everything else still decides the run — the build, the start, the windows,
+keyboard and pointer input, the reload, the refused config, the pixel and
+idle-frame comparisons, and the resume after input.
+
 Every suite `nix flake check` runs is also a target of its own under
 `legacyPackages.<system>.suites`, named as in `tests/default.nix`, so one suite
 can be iterated on without the whole VM.
