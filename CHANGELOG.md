@@ -33,6 +33,17 @@ The first release.
   the dimmed output, accent frame and key hint it always was. Shell shaders can
   also be given as text with `(:glsl SOURCE ...)`, and a UI text element with
   `:markup t` sets Pango markup at its layout's own height.
+- The region screenshot's marks are modal: `A`, `T` and `F` put the pointer in
+  an arrow, label or freehand mode and it stays there mark after mark until `R`
+  goes back to selecting, and the hint's chip for the tool in hand takes the
+  hint's ink so the mode shows in the chrome. Each mode owns the keys that shape
+  its mark: `[` and `]` held change the brush by half in log size a second,
+  easing in and out over 0.1 s, the bind and the step Mado sizes a panel with,
+  which grows a label while it is being typed and thins or thickens the stroke
+  the arrow and the freehand share and the arrow's head; a label's size is its
+  own. `H` switches the arrow head between a filled triangle and a thin open
+  chevron. A mark keeps the size it was drawn at, so the capture and undo see
+  the same marks. `U`, `R`, Enter, Space and Esc keep their meaning.
 - The region screenshot takes marks before it is captured: `A`, `T` and `F`
   pick an arrow, a text label and a freehand stroke, the pointer draws them
   inside the selection, `U` (or Ctrl+Z) undoes the last mark, `R` goes back to

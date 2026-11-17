@@ -10,10 +10,22 @@
 enum { MARK_ARROW, MARK_FREE, MARK_TEXT };
 enum { TOOL_SELECT, TOOL_ARROW, TOOL_TEXT, TOOL_FREE, TOOL_COUNT };
 enum { LABEL_BYTES = 512, FREE_POINTS = 8192 };
+enum { HEAD_FILLED, HEAD_OPEN };
+enum { RAMP_NONE, RAMP_SMALLER, RAMP_BIGGER };
+#define BRUSH_RATE 0.5
+#define BRUSH_EASE 0.1
+#define BRUSH_MIN_WIDTH 0.5
+#define BRUSH_MAX_WIDTH 40.0
+#define BRUSH_MIN_HEAD 2.0
+#define BRUSH_MAX_HEAD 240.0
+#define BRUSH_MIN_SIZE 8.0
+#define BRUSH_MAX_SIZE 200.0
 
 struct mark {
     int kind;
+    int head_style;
     int x0, y0, x1, y1;
+    double width, head, size;
     char text[LABEL_BYTES];
     size_t length;
     int *points;
@@ -35,6 +47,9 @@ struct screenshot {
     cairo_surface_t *mask;
     struct texture *mask_texture;
     int mask_x, mask_y, mask_width, mask_height;
+    double brush_width, brush_head, brush_size;
+    int brush_head_style, ramp;
+    double ramp_speed, ramp_at;
 };
 
 static void selector_event(struct tomoe *s) {
@@ -50,9 +65,14 @@ static void selector_event(struct tomoe *s) {
         (shot->frozen ? 4u : 0) | (shot->typing ? 8u : 0) | (uint32_t)shot->tool << 4;
 }
 
-static struct mark *mark_new(int kind) {
+static struct mark *mark_new(const struct screenshot *shot, int kind) {
     struct mark *mark = calloc(1, sizeof(*mark));
-    if (mark) mark->kind = kind;
+    if (!mark) return NULL;
+    mark->kind = kind;
+    mark->width = shot->brush_width;
+    mark->head = shot->brush_head;
+    mark->size = shot->brush_size;
+    mark->head_style = shot->brush_head_style;
     return mark;
 }
 
@@ -165,16 +185,20 @@ static void retarget(struct tomoe *s, struct screenshot *shot) {
     shot->since = now;
 }
 
-static double mark_width(const struct settings *st) {
+static double brush_width(const struct settings *st) {
     return st->screenshot_mark_width > 0 ? st->screenshot_mark_width : 3;
 }
 
-static double mark_head(const struct settings *st) {
+static double brush_head(const struct settings *st) {
     return st->screenshot_mark_head > 0 ? st->screenshot_mark_head : 18;
 }
 
-static struct box mark_box(const struct settings *st, const struct mark *mark) {
-    double width = mark_width(st), head = mark_head(st);
+static double brush_size(const struct settings *st) {
+    return st->screenshot_mark_size > 0 ? st->screenshot_mark_size : 22;
+}
+
+static struct box mark_box(const struct mark *mark) {
+    double width = mark->width, head = mark->head;
     int x0 = mark->x0, y0 = mark->y0, x1 = mark->x1, y1 = mark->y1;
     if (mark->kind == MARK_FREE) {
         if (!mark->count) return (struct box){ 0 };
@@ -200,9 +224,9 @@ static bool intersects(const struct box *a, const struct box *b) {
     return box_intersection(&out, a, b);
 }
 
-static void draw_arrow(cairo_t *cr, const struct settings *st, const struct mark *mark) {
+static void draw_arrow(cairo_t *cr, const struct mark *mark) {
     double dx = mark->x1 - mark->x0, dy = mark->y1 - mark->y0;
-    double length = hypot(dx, dy), width = mark_width(st), head = mark_head(st);
+    double length = hypot(dx, dy), width = mark->width, head = mark->head;
     if (length < 1) return;
     double ux = dx / length, uy = dy / length;
     double base = length > head ? length - head : 0;
@@ -212,16 +236,27 @@ static void draw_arrow(cairo_t *cr, const struct settings *st, const struct mark
     cairo_line_to(cr, mark->x0 + ux * base, mark->y0 + uy * base);
     cairo_stroke(cr);
     double half = head * 0.5;
+    double lx = mark->x0 + ux * base - uy * half, ly = mark->y0 + uy * base + ux * half;
+    double rx = mark->x0 + ux * base + uy * half, ry = mark->y0 + uy * base - ux * half;
+    if (mark->head_style == HEAD_OPEN) {
+        double rim = width * 0.5 < 1 ? 1 : width * 0.5;
+        cairo_set_line_width(cr, rim);
+        cairo_move_to(cr, lx, ly);
+        cairo_line_to(cr, mark->x1, mark->y1);
+        cairo_line_to(cr, rx, ry);
+        cairo_stroke(cr);
+        return;
+    }
     cairo_move_to(cr, mark->x1, mark->y1);
-    cairo_line_to(cr, mark->x0 + ux * base - uy * half, mark->y0 + uy * base + ux * half);
-    cairo_line_to(cr, mark->x0 + ux * base + uy * half, mark->y0 + uy * base - ux * half);
+    cairo_line_to(cr, lx, ly);
+    cairo_line_to(cr, rx, ry);
     cairo_close_path(cr);
     cairo_fill(cr);
 }
 
-static void draw_free(cairo_t *cr, const struct settings *st, const struct mark *mark) {
+static void draw_free(cairo_t *cr, const struct mark *mark) {
     if (mark->count < 2) return;
-    cairo_set_line_width(cr, mark_width(st));
+    cairo_set_line_width(cr, mark->width);
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
     cairo_move_to(cr, mark->points[0], mark->points[1]);
@@ -235,15 +270,14 @@ static void draw_text(cairo_t *cr, const struct settings *st, const struct mark 
     char text[LABEL_BYTES];
     memcpy(text, mark->text, mark->length);
     text[mark->length] = '\0';
-    double size = st->screenshot_mark_size > 0 ? st->screenshot_mark_size : 22;
     cairo_move_to(cr, mark->x0, mark->y0);
-    ui_text_raster(cr, st->screenshot_mark_font, text, size);
+    ui_text_raster(cr, st->screenshot_mark_font, text, mark->size);
 }
 
 static void draw_mark(cairo_t *cr, const struct settings *st, const struct mark *mark) {
     cairo_set_source_rgba(cr, 1, 1, 1, 1);
-    if (mark->kind == MARK_ARROW) draw_arrow(cr, st, mark);
-    else if (mark->kind == MARK_FREE) draw_free(cr, st, mark);
+    if (mark->kind == MARK_ARROW) draw_arrow(cr, mark);
+    else if (mark->kind == MARK_FREE) draw_free(cr, mark);
     else draw_text(cr, st, mark);
 }
 
@@ -307,7 +341,7 @@ static void mask_paint(struct tomoe *s, struct screenshot *shot, struct box dama
     cairo_translate(cr, -shot->mask_x, -shot->mask_y);
     for (size_t i = 0; i < shot->count + (shot->live ? 1 : 0); i++) {
         const struct mark *mark = i < shot->count ? shot->marks[i] : shot->live;
-        struct box box = mark_box(st, mark);
+        struct box box = mark_box(mark);
         if (box.width > 0 && box.height > 0 && !intersects(&box, &damage)) continue;
         draw_mark(cr, st, mark);
     }
@@ -565,9 +599,35 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
     shot->from[2] = shot->to[2] = shot->bx; shot->from[3] = shot->to[3] = shot->by;
     shot->since = animation_now();
     shot->tool = TOOL_SELECT;
+    shot->brush_width = brush_width(&s->settings);
+    shot->brush_head = brush_head(&s->settings);
+    shot->brush_size = brush_size(&s->settings);
     grab_clear(s);
     selector_event(s);
     schedule_scene(s);
+}
+
+static bool brush_key(struct tomoe *s, xkb_keysym_t typed) {
+    struct screenshot *shot = s->screenshot;
+    if (!shot->selected || shot->tool == TOOL_SELECT) return false;
+    int ramp = typed == XKB_KEY_bracketright ? RAMP_BIGGER
+        : typed == XKB_KEY_bracketleft ? RAMP_SMALLER : RAMP_NONE;
+    if (!ramp) return false;
+    if (shot->ramp != ramp) {
+        shot->ramp = ramp;
+        shot->ramp_at = animation_now();
+        schedule_scene(s);
+    }
+    return true;
+}
+
+static void head_key(struct tomoe *s) {
+    struct screenshot *shot = s->screenshot;
+    shot->brush_head_style = shot->brush_head_style == HEAD_OPEN ? HEAD_FILLED : HEAD_OPEN;
+    if (shot->live && shot->live->kind == MARK_ARROW) {
+        shot->live->head_style = shot->brush_head_style;
+        marks_repaint(s);
+    }
 }
 
 bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
@@ -576,6 +636,7 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
     if (!pressed) return true;
     struct screenshot *shot = s->screenshot;
     const struct settings *st = &s->settings;
+    if (brush_key(s, typed)) return true;
     if (shot->typing && typing_key(s, sym, typed)) return true;
     if (sym == XKB_KEY_Escape) {
         screenshot_close(s);
@@ -595,6 +656,8 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
         }
     } else if (mark_key(st, 4, sym)) {
         set_tool(s, TOOL_SELECT);
+    } else if (shot->selected && shot->tool == TOOL_ARROW && xkb_keysym_to_lower(sym) == XKB_KEY_h) {
+        head_key(s);
     } else if (shot->selected && mark_key(st, 0, sym)) {
         set_tool(s, TOOL_ARROW);
     } else if (shot->selected && mark_key(st, 1, sym)) {
@@ -607,7 +670,7 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
 
 static void place_text(struct tomoe *s, struct screenshot *shot, int x, int y) {
     mark_free(shot->live);
-    shot->live = mark_new(MARK_TEXT);
+    shot->live = mark_new(shot, MARK_TEXT);
     if (!shot->live) return;
     shot->live->x0 = x;
     shot->live->y0 = y;
@@ -655,7 +718,7 @@ bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed) {
             place_text(s, shot, x, y);
             return true;
         }
-        shot->live = mark_new(shot->tool == TOOL_ARROW ? MARK_ARROW : MARK_FREE);
+        shot->live = mark_new(shot, shot->tool == TOOL_ARROW ? MARK_ARROW : MARK_FREE);
         if (!shot->live) return true;
         shot->live->x0 = shot->live->x1 = x;
         shot->live->y0 = shot->live->y1 = y;
@@ -702,8 +765,7 @@ void screenshot_motion(struct tomoe *s) {
     }
     if (!shot->drawing || !shot->live) return;
     local_pointer(s, &x, &y);
-    struct settings *st = &s->settings;
-    struct box before = mark_box(st, shot->live);
+    struct box before = mark_box(shot->live);
     if (shot->live->kind == MARK_ARROW) {
         if (x == shot->live->x1 && y == shot->live->y1) return;
         shot->live->x1 = x;
@@ -713,7 +775,7 @@ void screenshot_motion(struct tomoe *s) {
                 y == shot->live->points[2 * (shot->live->count - 1) + 1]) return;
         mark_freehand_add(shot->live, x, y);
     }
-    struct box after = mark_box(st, shot->live);
+    struct box after = mark_box(shot->live);
     int x0 = fmin(before.x, after.x), y0 = fmin(before.y, after.y);
     int x1 = fmax(before.x + before.width, after.x + after.width);
     int y1 = fmax(before.y + before.height, after.y + after.height);
@@ -764,14 +826,64 @@ bool screenshot_selection(const struct output *o, struct fbox area, double now, 
     return true;
 }
 
+static double clamp_double(double value, double lo, double hi) {
+    return value < lo ? lo : value > hi ? hi : value;
+}
+
+static bool brush_ramp(struct tomoe *s, double now) {
+    struct screenshot *shot = s->screenshot;
+    if (shot->ramp == RAMP_NONE && shot->ramp_speed == 0) return false;
+    double dt = shot->ramp_at > 0 ? fmin(now - shot->ramp_at, BRUSH_EASE) : 0;
+    if (dt < 0) dt = 0;
+    shot->ramp_at = now;
+    double ease = 1 - exp(-dt / BRUSH_EASE);
+    double want = shot->ramp == RAMP_BIGGER ? BRUSH_RATE : shot->ramp == RAMP_SMALLER ? -BRUSH_RATE : 0;
+    shot->ramp_speed += (want - shot->ramp_speed) * ease;
+    if (shot->ramp == RAMP_NONE && fabs(shot->ramp_speed) < BRUSH_RATE / 100) shot->ramp_speed = 0;
+    double factor = exp(shot->ramp_speed * dt);
+    struct mark *live = shot->live;
+    if (factor != 1) {
+        bool text = shot->tool == TOOL_TEXT;
+        if (text) {
+            shot->brush_size = clamp_double(shot->brush_size * factor,
+                BRUSH_MIN_SIZE, BRUSH_MAX_SIZE);
+        } else {
+            shot->brush_width = clamp_double(shot->brush_width * factor,
+                BRUSH_MIN_WIDTH, BRUSH_MAX_WIDTH);
+            shot->brush_head = clamp_double(shot->brush_head * factor,
+                BRUSH_MIN_HEAD, BRUSH_MAX_HEAD);
+        }
+        if (live && live->kind == MARK_TEXT) {
+            live->size = shot->brush_size;
+            marks_repaint(s);
+        } else if (live) {
+            struct box before = mark_box(live);
+            live->width = shot->brush_width;
+            live->head = shot->brush_head;
+            struct box after = mark_box(live);
+            int x0 = (int)fmin(before.x, after.x), y0 = (int)fmin(before.y, after.y);
+            int x1 = (int)fmax(before.x + before.width, after.x + after.width);
+            int y1 = (int)fmax(before.y + before.height, after.y + after.height);
+            marks_changed(s, (struct box){ x0, y0, x1 - x0, y1 - y0 });
+        }
+    }
+    return shot->ramp != RAMP_NONE || shot->ramp_speed != 0;
+}
+
 bool screenshot_animate(struct tomoe *s, double now) {
     struct screenshot *shot = s->screenshot;
-    if (!shot || !s->settings.screenshot_motion_enabled) return false;
+    if (!shot) return false;
+    bool moving = brush_ramp(s, now);
+    if (!s->settings.screenshot_motion_enabled) return moving;
     double position[4], velocity[4];
     spring_state(s, shot, now, position, velocity);
     for (int i = 0; i < 4; i++)
         if (fabs(position[i] - shot->to[i]) > 0.05 || fabs(velocity[i]) > 1) return true;
-    return false;
+    return moving;
+}
+
+void screenshot_key_up(struct tomoe *s) {
+    if (s->screenshot) s->screenshot->ramp = RAMP_NONE;
 }
 
 void screenshot_output_gone(struct tomoe *s, struct output *o) {

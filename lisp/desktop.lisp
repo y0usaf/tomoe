@@ -646,27 +646,41 @@ theme's text colour."
 
 (defun screenshot-hint (selector hint keys)
   "The keys the open SELECTOR takes, set as HINT styles them: one line of Pango
-markup, each key on a chip of HINT's :KEY colour, the tool keys named from KEYS
-so a look that changes them is not described by the old ones."
-  (labels ((key (name)
-             (format nil "<span background='~A'~A> ~A </span>" (getf hint :key)
-                   (let ((ink (getf hint :key-ink)))
-                     (if ink (format nil " foreground='~A'" ink) ""))
-                   name))
-         (tool (index fallback)
-           (let ((name (nth index keys)))
-             (string-upcase (if (and (stringp name) (plusp (length name))) name fallback))))
-         (keys-line ()
+markup, each key on a chip of HINT's :KEY colour, the tool holding the pointer's
+chip in HINT's ink so the mode shows in the chrome, and that tool's own keys
+beside undo, reselect, capture and cancel. The tool keys are named from KEYS so
+a look that changes them is not described by the old ones."
+  (labels ((key (label &optional active)
+             (format nil "<span background='~A'~A> ~A </span>"
+                     (if active (getf hint :ink) (getf hint :key))
+                     (let ((ink (if active (getf hint :plate) (getf hint :key-ink))))
+                       (if ink (format nil " foreground='~A'" ink) ""))
+                     label))
+         (name (index fallback)
+           (let ((key (nth index keys)))
+             (string-upcase (if (and (stringp key) (plusp (length key))) key fallback))))
+         (tool (index fallback tool)
+           (key (name index fallback) (eq tool (getf selector :tool))))
+         (size (tool)
+           (case tool
+             (:arrow (format nil "~A ~A size    ~A head" (key "[") (key "]") (key "H")))
+             ((:text :free) (format nil "~A ~A size" (key "[") (key "]")))
+             (t nil)))
+         (tail ()
+           (format nil "~A undo    ~A reselect    ~A capture    ~A cancel"
+                   (key (name 3 "U")) (key (name 4 "R")) (key "Enter") (key "Esc")))
+         (keys-line (tool)
            (cond ((getf selector :typing)
-                  (format nil "Type the label    ~A keep    ~A discard"
-                          (key "Enter") (key "Esc")))
-                 ((getf selector :selected)
-                  (format nil "~A arrow    ~A text    ~A freehand    ~A undo    ~A reselect    ~A capture    ~A cancel"
-                          (key (tool 0 "A")) (key (tool 1 "T")) (key (tool 2 "F"))
-                          (key (tool 3 "U")) (key (tool 4 "R"))
-                          (key "Enter") (key "Esc")))
-                 (t (format nil "Drag to select    ~A whole screen    ~A cancel"
-                            (key "Space") (key "Esc"))))))
+                  (format nil "Type the label    ~A    ~A keep    ~A discard"
+                          (size :text) (key "Enter") (key "Esc")))
+                 ((not (getf selector :selected))
+                  (format nil "Drag to select    ~A whole screen    ~A cancel"
+                          (key "Space") (key "Esc")))
+                 (t (let ((shape (unless (eq tool :select) (size tool))))
+                      (format nil "~A arrow    ~A text    ~A freehand    ~A~A"
+                              (tool 0 "A" :arrow) (tool 1 "T" :text) (tool 2 "F" :free)
+                              (if shape (format nil "~A    " shape) "")
+                              (tail)))))))
     (ui :column :padding (getf hint :rim-width 0) :background (getf hint :rim)
         :radius (getf hint :radius 0)
         :children
@@ -674,7 +688,8 @@ so a look that changes them is not described by the old ones."
                   :radius (max 0 (- (getf hint :radius 0) (getf hint :rim-width 0)))
                   :children
                   (list (ui :text :markup t :size (getf hint :size 17) :font (getf hint :font "sans")
-                            :color (getf hint :ink) :text (keys-line))))))))
+                            :color (getf hint :ink)
+                            :text (keys-line (getf selector :tool)))))))))
 
 (defun screenshot-surfaces (selector look)
   "The open SELECTOR drawn in LOOK: its shader over the whole output, reading the
