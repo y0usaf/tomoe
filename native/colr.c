@@ -23,6 +23,7 @@ struct colr_ctx {
     struct dpath clip;
     struct drect box;
     int level;
+    bool is_clear;
 };
 
 static double from_16_16(int32_t v) { return (double)v / 65536.0; }
@@ -311,13 +312,24 @@ static void coverage_fini(struct colr_coverage *coverage)
 static void paint_solid(struct colr_ctx *ctx, uint32_t color)
 {
     struct colr_coverage coverage;
-    if (!coverage_build(ctx, &ctx->clip, ctx->box, &coverage)) return;
+    bool reduces = (color >> 24) == 0xff || ctx->is_clear;
+    if (!coverage_build(ctx, &ctx->clip, ctx->box, &coverage)) {
+        ctx->is_clear = false;
+        return;
+    }
     for (int y = coverage.box.y0; y < coverage.box.y1; y++) {
         const unsigned char *row = coverage.pixels + (size_t)(y - coverage.box.y0) * coverage.width;
         uint32_t *dst = ctx->pixels + (size_t)y * (size_t)ctx->stride;
-        for (int x = coverage.box.x0; x < coverage.box.x1; x++)
-            dst[x] = dp_composite(dst[x], color, row[x - coverage.box.x0], DP_COMP_OVER);
+        for (int x = coverage.box.x0; x < coverage.box.x1; x++) {
+            unsigned m = row[x - coverage.box.x0];
+            if (!m) continue;
+            if (reduces)
+                dst[x] = m == 0xff ? color : dp_lerp8x4(color, (uint8_t)m, dst[x]);
+            else
+                dst[x] = dp_composite(dst[x], color, m, DP_COMP_OVER);
+        }
     }
+    ctx->is_clear = false;
     coverage_fini(&coverage);
 }
 
@@ -360,6 +372,7 @@ static void paint_gradient(struct colr_ctx *ctx, struct dp_gradient16 *gradient)
             bounds.y1 - bounds.y0);
     }
     coverage_fini(&coverage);
+    ctx->is_clear = false;
 }
 
 struct colr_color {
@@ -874,6 +887,7 @@ static void composite_image(struct colr_ctx *ctx, const uint32_t *src, int src_s
         }
     }
     coverage_fini(&coverage);
+    ctx->is_clear = false;
 }
 
 static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx *child,
@@ -893,6 +907,7 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->ox = ctx->ox + box->x0;
     child->oy = ctx->oy + box->y0;
     child->level = ctx->level + 1;
+    child->is_clear = true;
     dpath_init(&child->clip);
     dp_rectangle(&child->clip, 0, 0, w, h);
     child->box = (struct drect){ 0, 0, w, h };
@@ -1151,6 +1166,7 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     if (!ctx.pixels) return false;
     ctx.stride = ctx.width;
     ctx.level = 0;
+    ctx.is_clear = true;
     ctx.box = (struct drect){ (int)(box.x0 - ctx.ox), (int)(box.y0 - ctx.oy),
         (int)(box.x1 - ctx.ox), (int)(box.y1 - ctx.oy) };
     ctx.box = intersected(ctx.box, image_box(&ctx));
