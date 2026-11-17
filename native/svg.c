@@ -6419,10 +6419,10 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                 if (clip_holder && clip && rect_root && rect) {
                     memset(clip, 0, sizeof(*clip));
                     clip->transform = svg_matrix_identity();
-                    svg_path_move(rect, 0, 0);
-                    svg_path_line(rect, w, 0);
-                    svg_path_line(rect, w, h);
-                    svg_path_line(rect, 0, h);
+                    svg_path_move(rect, x, y);
+                    svg_path_line(rect, x + w, y);
+                    svg_path_line(rect, x + w, y + h);
+                    svg_path_line(rect, x, y + h);
                     svg_path_close(rect);
                     svg_path_finish(rect);
                     rect_root->path = rect;
@@ -6477,7 +6477,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     if (!inner) { svg_node_destroy(outer); return; }
     inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : translate;
     inner->abs_transform = svg_matrix_concat(outer->abs_transform, inner->transform);
-    struct svg_conv inner_conv = *c;
+    struct svg_conv inner_conv = linked_symbol ? nested : *c;
     inner_conv.context_style = st;
     inner_conv.context_fill = svg_find_paint_attr(c->doc, st, "fill");
     if (!inner_conv.context_fill) inner_conv.context_fill = "black";
@@ -6491,7 +6491,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     if (!inner->nchildren) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
     if (linked_symbol) {
         int symbol_required = 0;
-        if (!svg_group_finish(c, child, child_st, 0, clip_context, 0, inner,
+        if (!svg_group_finish(c, child, child_st, 1, clip_context, 0, inner,
                 outer->abs_transform, &symbol_required)) {
             svg_node_destroy(inner);
             svg_node_destroy(outer);
@@ -6730,6 +6730,9 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     child->bbox = svg_bbox_from_rect(0.0f, 0.0f, aw, ah);
     child->has_bbox = 1;
     child->abs_bbox = svg_bbox_transform(child->bbox, g->abs_transform);
+    child->sbbox = child->bbox;
+    child->has_sbbox = 1;
+    child->abs_sbbox = child->abs_bbox;
     svg_node_add(g, child);
     svg_group_bboxes(g);
     int required = 0;
