@@ -1672,9 +1672,9 @@ bool render_output_buffer(struct output *o, struct buffer *buffer);
 struct screenshot;
 struct _cairo;
 bool ui_text_raster(struct _cairo *cr, const char *font, const char *text, double size);
-void screenshot_key_up(struct tomoe *s);
+void screenshot_key_up(struct tomoe *s, uint32_t keycode);
 bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
-    uint32_t modifiers, bool pressed);
+    uint32_t modifiers, bool pressed, uint32_t keycode);
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);
 bool screenshot_render_frozen(struct output *o, struct frame *f);

@@ -49,6 +49,7 @@ struct screenshot {
     int mask_x, mask_y, mask_width, mask_height;
     double brush_width, brush_head, brush_size;
     int brush_head_style, ramp;
+    uint32_t ramp_key;
     double ramp_speed, ramp_at;
 };
 
@@ -607,7 +608,7 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
     schedule_scene(s);
 }
 
-static bool brush_key(struct tomoe *s, xkb_keysym_t typed) {
+static bool brush_key(struct tomoe *s, xkb_keysym_t typed, uint32_t keycode) {
     struct screenshot *shot = s->screenshot;
     if (!shot->selected || shot->tool == TOOL_SELECT) return false;
     int ramp = typed == XKB_KEY_bracketright ? RAMP_BIGGER
@@ -615,6 +616,7 @@ static bool brush_key(struct tomoe *s, xkb_keysym_t typed) {
     if (!ramp) return false;
     if (shot->ramp != ramp) {
         shot->ramp = ramp;
+        shot->ramp_key = keycode;
         shot->ramp_at = animation_now();
         schedule_scene(s);
     }
@@ -631,12 +633,12 @@ static void head_key(struct tomoe *s) {
 }
 
 bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
-        uint32_t modifiers, bool pressed) {
+        uint32_t modifiers, bool pressed, uint32_t keycode) {
     if (!s->screenshot) return false;
     if (!pressed) return true;
     struct screenshot *shot = s->screenshot;
     const struct settings *st = &s->settings;
-    if (brush_key(s, typed)) return true;
+    if (brush_key(s, typed, keycode)) return true;
     if (shot->typing && typing_key(s, sym, typed)) return true;
     if (sym == XKB_KEY_Escape) {
         screenshot_close(s);
@@ -882,8 +884,9 @@ bool screenshot_animate(struct tomoe *s, double now) {
     return moving;
 }
 
-void screenshot_key_up(struct tomoe *s) {
-    if (s->screenshot) s->screenshot->ramp = RAMP_NONE;
+void screenshot_key_up(struct tomoe *s, uint32_t keycode) {
+    struct screenshot *shot = s->screenshot;
+    if (shot && shot->ramp != RAMP_NONE && shot->ramp_key == keycode) shot->ramp = RAMP_NONE;
 }
 
 void screenshot_output_gone(struct tomoe *s, struct output *o) {

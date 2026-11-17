@@ -41,7 +41,8 @@ The first release.
   easing in and out over 0.1 s, the bind and the step Mado sizes a panel with,
   which grows a label while it is being typed and thins or thickens the stroke
   the arrow and the freehand share and the arrow's head; a label's size is its
-  own. `H` switches the arrow head between a filled triangle and a thin open
+  own. A hold ends when its own bracket is released, whatever else is typed
+  meanwhile. `H` switches the arrow head between a filled triangle and a thin open
   chevron. A mark keeps the size it was drawn at, so the capture and undo see
   the same marks. `U`, `R`, Enter, Space and Esc keep their meaning.
 - The region screenshot takes marks before it is captured: `A`, `T` and `F`

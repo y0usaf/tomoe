@@ -1866,7 +1866,7 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
             k->latches[input->keycode].consumed) {
         struct binding_latch *latch = &k->latches[input->keycode];
         if (input->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
-            if (s->screenshot) screenshot_key_up(s);
+            if (s->screenshot) screenshot_key_up(s, input->keycode);
             struct binding *binding = latch->binding;
             if (binding && binding->active)
                 binding_event(k, binding, binding->release, POLICY_KEY_RELEASED, input->keycode);
@@ -1905,9 +1905,9 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
                 xkb_state_key_get_one_sym(logical->xkb.xkb_state, input->keycode + 8) :
                 XKB_KEY_NoSymbol;
             k->latches[input->keycode].consumed = true;
-            if (count) screenshot_key(s, syms[0], typed, mods, true);
+            if (count) screenshot_key(s, syms[0], typed, mods, true, input->keycode);
         } else {
-            screenshot_key_up(s);
+            screenshot_key_up(s, input->keycode);
         }
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
