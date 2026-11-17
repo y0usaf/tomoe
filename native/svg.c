@@ -1653,31 +1653,39 @@ static void xml_resolve_ns(struct xml_node *node) {
         node->nsuri = svg_strdup(uri);
         node->foreign = strcmp(uri, "http://www.w3.org/2000/svg") != 0;
     }
-    int keep = 0;
-    for (int i = 0; i < node->nattrs; i++) {
-        const char *an = node->attrs[i].name;
-        const char *ac = strchr(an, ':');
-        int keep_attr = 1;
-        if (ac && strncmp(an, "xmlns:", 6) && strcmp(an, "xmlns")) {
-            size_t aplen = (size_t)(ac - an);
-            const char *auri = NULL;
-            for (struct xml_node *n = node; n && !auri; n = n->parent)
-                auri = xml_ns_decl(n, an, aplen);
-            if (auri && strcmp(auri, "http://www.w3.org/2000/svg") &&
-                    strcmp(auri, "http://www.w3.org/1999/xlink") &&
-                    strcmp(auri, "http://www.w3.org/XML/1998/namespace"))
-                keep_attr = 0;
-        }
-        if (keep_attr) {
-            node->attrs[keep].name = node->attrs[i].name;
-            node->attrs[keep].value = node->attrs[i].value;
-            keep++;
-        } else {
-            free(node->attrs[i].name);
-            free(node->attrs[i].value);
+    if (node->nattrs > 0) {
+        unsigned char *keep = svg_alloc((size_t)node->nattrs);
+        if (keep) {
+            for (int i = 0; i < node->nattrs; i++) {
+                const char *an = node->attrs[i].name;
+                const char *ac = strchr(an, ':');
+                keep[i] = 1;
+                if (ac && strncmp(an, "xmlns:", 6) && strcmp(an, "xmlns")) {
+                    size_t aplen = (size_t)(ac - an);
+                    const char *auri = NULL;
+                    for (struct xml_node *n = node; n && !auri; n = n->parent)
+                        auri = xml_ns_decl(n, an, aplen);
+                    if (auri && strcmp(auri, "http://www.w3.org/2000/svg") &&
+                            strcmp(auri, "http://www.w3.org/1999/xlink") &&
+                            strcmp(auri, "http://www.w3.org/XML/1998/namespace"))
+                        keep[i] = 0;
+                }
+            }
+            int kept = 0;
+            for (int i = 0; i < node->nattrs; i++) {
+                if (keep[i]) {
+                    node->attrs[kept].name = node->attrs[i].name;
+                    node->attrs[kept].value = node->attrs[i].value;
+                    kept++;
+                } else {
+                    free(node->attrs[i].name);
+                    free(node->attrs[i].value);
+                }
+            }
+            node->nattrs = kept;
+            free(keep);
         }
     }
-    node->nattrs = keep;
 }
 
 static int xml_add_child(struct xml_node *n, struct xml_node *child) {
@@ -7060,6 +7068,19 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     inner_conv.context_fill = svg_find_paint_attr(c->doc, st, "fill");
     if (!inner_conv.context_fill) inner_conv.context_fill = "black";
     inner_conv.context_stroke = svg_find_paint_attr(c->doc, st, "stroke");
+    for (int guard = 0; guard < 8; guard++) {
+        if (inner_conv.context_fill && !strcmp(inner_conv.context_fill, "context-fill")) {
+            inner_conv.context_fill = c->context_fill;
+        } else if (inner_conv.context_fill && !strcmp(inner_conv.context_fill, "context-stroke")) {
+            inner_conv.context_fill = c->context_stroke;
+        } else if (inner_conv.context_stroke && !strcmp(inner_conv.context_stroke, "context-fill")) {
+            inner_conv.context_stroke = c->context_fill;
+        } else if (inner_conv.context_stroke && !strcmp(inner_conv.context_stroke, "context-stroke")) {
+            inner_conv.context_stroke = c->context_stroke;
+        } else {
+            break;
+        }
+    }
     inner_conv.in_context = 0;
     if (linked_symbol) {
         svg_convert_children(&inner_conv, child, inner, inner->abs_transform, clip_context);
@@ -14489,9 +14510,8 @@ static void svg_contour_push_segment(struct svg_contour *c, float start_d, float
     }
 }
 
-static void svg_dash_one_contour(struct svg_path *src, int *verb_index, struct svg_contour *c,
-        float tolerance) {
-    int point_index = 0;
+static void svg_dash_one_contour(struct svg_path *src, int *verb_index, int *point_index,
+        struct svg_contour *c, float tolerance) {
     int seg_point_index = 0;
     float distance = 0.0f;
     int have_seen_close = 0;
@@ -14500,12 +14520,12 @@ static void svg_dash_one_contour(struct svg_path *src, int *verb_index, struct s
     for (; *verb_index < src->nverbs; (*verb_index)++) {
         unsigned char verb = src->verbs[*verb_index];
         if (verb == SVG_MOVE) {
-            struct svg_point p0 = src->points[point_index++];
+            struct svg_point p0 = src->points[(*point_index)++];
             svg_contour_push_point(c, p0);
             prev_p = p0;
             seg_point_index = c->npoints - 1;
         } else if (verb == SVG_LINE) {
-            struct svg_point p0 = src->points[point_index++];
+            struct svg_point p0 = src->points[(*point_index)++];
             float prev = distance;
             distance = svg_contour_line_seg(c, prev_p, p0, distance, seg_point_index);
             if (distance > prev) {
@@ -14514,9 +14534,9 @@ static void svg_dash_one_contour(struct svg_path *src, int *verb_index, struct s
             }
             prev_p = p0;
         } else if (verb == SVG_QUAD) {
-            struct svg_point p0 = src->points[point_index];
-            struct svg_point p1 = src->points[point_index + 1];
-            point_index += 2;
+            struct svg_point p0 = src->points[(*point_index)];
+            struct svg_point p1 = src->points[(*point_index) + 1];
+            (*point_index) += 2;
             float prev = distance;
             distance = svg_contour_quad_segs(c, prev_p, p0, p1, distance, 0, 0x3FFFFFFFu,
                 seg_point_index, tolerance);
@@ -14527,10 +14547,10 @@ static void svg_dash_one_contour(struct svg_path *src, int *verb_index, struct s
             }
             prev_p = p1;
         } else if (verb == SVG_CUBIC) {
-            struct svg_point p0 = src->points[point_index];
-            struct svg_point p1 = src->points[point_index + 1];
-            struct svg_point p2 = src->points[point_index + 2];
-            point_index += 3;
+            struct svg_point p0 = src->points[(*point_index)];
+            struct svg_point p1 = src->points[(*point_index) + 1];
+            struct svg_point p2 = src->points[(*point_index) + 2];
+            (*point_index) += 3;
             float prev = distance;
             distance = svg_contour_cubic_segs(c, prev_p, p0, p1, p2, distance, 0, 0x3FFFFFFFu,
                 seg_point_index, tolerance);
@@ -14544,10 +14564,7 @@ static void svg_dash_one_contour(struct svg_path *src, int *verb_index, struct s
         } else {
             have_seen_close = 1;
         }
-        if (*verb_index + 1 < src->nverbs && src->verbs[*verb_index + 1] == SVG_MOVE) {
-            (*verb_index)++;
-            break;
-        }
+        if (*verb_index + 1 < src->nverbs && src->verbs[*verb_index + 1] == SVG_MOVE) { (*verb_index)++; break; }
     }
     if (!isfinite(distance)) { c->length = -1.0f; return; }
     if (have_seen_close && c->npoints > 0) {
@@ -14604,10 +14621,11 @@ static struct svg_path *svg_dash_path(struct svg_path *src, float *array, int co
     float tolerance = 0.5f / res_scale;
     float dash_count = 0.0f;
     int verb_index = 0;
+    int point_index = 0;
     while (verb_index < src->nverbs) {
         struct svg_contour contour;
         memset(&contour, 0, sizeof(contour));
-        svg_dash_one_contour(src, &verb_index, &contour, tolerance);
+        svg_dash_one_contour(src, &verb_index, &point_index, &contour, tolerance);
         if (contour.npoints == 0 || contour.length < 0.0f) { svg_contour_free(&contour); continue; }
         int skip_first = contour.is_closed;
         int added = 0;
