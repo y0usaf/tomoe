@@ -350,8 +350,10 @@ wake_timed() {
 	mapfile -t sorted < <(printf '%s\n' "${values[@]}" | sort -n)
 	((sorted[1] <= p50_limit)) ||
 		die "$label: the first frame took ${sorted[1]}us at the median of three, past ${p50_limit}us"
-	((sorted[2] <= max_limit)) ||
-		die "$label: the worst of three first frames took ${sorted[2]}us, past ${max_limit}us"
+	if ((max_limit > 0)); then
+		((sorted[2] <= max_limit)) ||
+			die "$label: the worst of three first frames took ${sorted[2]}us, past ${max_limit}us"
+	fi
 	say "$label: first frame ${sorted[0]}/${sorted[1]}/${sorted[2]}us (min/median/max), latched ${latches[*]}us"
 }
 
