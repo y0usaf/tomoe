@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo cairo-path-stroke-polygon.c, cairo-stroke-style.c and cairo-polygon.c, see NOTICE */
 #include "stroke.h"
 
 cairo_status_t _cairo_path_fixed_interpret (const cairo_path_fixed_t *path,

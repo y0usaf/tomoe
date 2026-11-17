@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT; derived from cairo cairo-tor-scan-converter.c, see NOTICE */
 
 
 #include "tor.h"

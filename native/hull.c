@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo cairo-hull.c, see NOTICE */
 
 
 #include "stroke.h"

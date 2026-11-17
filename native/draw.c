@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo cairo-path-fixed.c, cairo-spline.c, cairo-arc.c, cairo-polygon.c and cairo-image-compositor.c, see NOTICE */
 #include "draw.h"
 #include "stroke.h"
 
@@ -733,42 +734,6 @@ uint32_t dp_lerp8x4(uint32_t src, uint8_t a, uint32_t dst)
         (lerp_add8x2(lerp8x2(src >> 8, a), lerp8x2(dst >> 8, (uint8_t)~a)) << 8);
 }
 
-uint32_t dp_masked_over(uint32_t dst, uint32_t src, uint8_t m)
-{
-    if (m == 0) return dst;
-    uint32_t srca = src >> 24;
-    if (m == 0xff && srca == 0xff) return src;
-    uint32_t r1, r2, t;
-    if (m != 0xff) {
-        r1 = src;
-        r2 = src >> 8;
-        t = (r1 & 0xff00ffu) * m; t += 0x800080u;
-        t = (t + ((t >> 8) & 0xff00ffu)) >> 8;
-        r1 = t & 0xff00ffu;
-        t = (r2 & 0xff00ffu) * m; t += 0x800080u;
-        t = (t + ((t >> 8) & 0xff00ffu)) >> 8;
-        r2 = t & 0xff00ffu;
-        src = r1 | (r2 << 8);
-    }
-    uint32_t inv = ~src >> 24;
-    r1 = dst;
-    r2 = src & 0xff00ffu;
-    t = (r1 & 0xff00ffu) * inv; t += 0x800080u;
-    t = (t + ((t >> 8) & 0xff00ffu)) >> 8;
-    r1 = t & 0xff00ffu;
-    t = r1 + r2;
-    t |= 0x1000100u - ((t >> 8) & 0xff00ffu);
-    r1 = t & 0xff00ffu;
-    r2 = dst >> 8;
-    uint32_t r3 = (src >> 8) & 0xff00ffu;
-    t = (r2 & 0xff00ffu) * inv; t += 0x800080u;
-    t = (t + ((t >> 8) & 0xff00ffu)) >> 8;
-    r2 = t & 0xff00ffu;
-    t = r2 + r3;
-    t |= 0x1000100u - ((t >> 8) & 0xff00ffu);
-    r2 = t & 0xff00ffu;
-    return r1 | (r2 << 8);
-}
 
 struct span_ctx {
     px_span_renderer_t base;
