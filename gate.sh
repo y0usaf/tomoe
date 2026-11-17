@@ -493,7 +493,7 @@ PIXELS
 }
 
 fence_check() {
-	local label=$1 pid status waited=0 verdict
+	local label=$1 pid status waited=0 verdict rc=0
 	rm -f "$DIR/fence" "$DIR/fence.log" "$DIR/held" "$DIR/held.err"
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
 		--size 320x240 --color 664422 --app-id gate-fence --title gate-fence \
@@ -513,9 +513,10 @@ fence_check() {
 	status=$?
 	((status == 0 || status == 143)) ||
 		die "$label: the held-fence client exited $status: $(head -2 "$DIR/held.err")"
-	verdict=$(python3 - "$DIR/held" "$DIR/fence.log" "$PERIOD_NS" "$SPEED" <<'FENCE'
+	verdict=$(python3 - "$DIR/held" "$DIR/fence.log" "$PERIOD_NS" <<'FENCE'
 import sys
-held, log, period, speed = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "1"
+held, log, period = sys.argv[1], sys.argv[2], int(sys.argv[3])
+slow = []
 start, callbacks, feedback = None, [], []
 for line in open(held):
     w = line.split()
@@ -538,12 +539,6 @@ except FileNotFoundError:
 def fail(text):
     print(text)
     sys.exit(1)
-def advisory(text):
-    """How many frames a fixed wait produced depends on how busy the machine
-    was, not on Tomoe: fatal only when the gate is asked for a speed claim."""
-    if speed:
-        fail(text)
-    print("advisory: " + text)
 if start is None or not callbacks:
     fail('the frame-callback client never received a frame callback')
 if not holds:
@@ -551,7 +546,7 @@ if not holds:
 hold_from, hold_to = holds[0][0], max(deadline for _, deadline in holds)
 free = [at for at, _ in callbacks if at < hold_from]
 if len(free) < 20:
-    advisory('the client received %d frame callbacks before the fence was held, too few to show it animates on its own' % len(free))
+    slow.append('the client received %d frame callbacks before the fence was held, too few to show it animates on its own' % len(free))
 short = [deadline - at for at, deadline in holds if deadline - at < 3 * period]
 if short:
     fail('a held fence signalled %d ns after its frame, under three refreshes' % short[0])
@@ -580,16 +575,21 @@ for seq, (when, deadline) in sorted(presents.items()):
     if when < deadline:
         fail('frame %d was presented at %d, %d ns before its fence signalled' % (seq, when, deadline - when))
 if len(presents) < 20 or joined < 20 or answered < 20:
-    advisory('with the fence held %d frames were presented, %d of them reported to the client by feedback and %d by frame callback, too few to judge' % (len(presents), joined, answered))
+    slow.append('with the fence held %d frames were presented, %d of them reported to the client by feedback and %d by frame callback, too few to judge' % (len(presents), joined, answered))
 gaps = sorted(b - a for (a, _), (b, _) in zip(callbacks, callbacks[1:]) if a >= hold_from and b <= hold_to)
-print('%d frame callbacks before the hold, the first %d us after the client\'s first commit; '
+print('\n'.join(slow + ['%d frame callbacks before the hold, the first %d us after the client\'s first commit; '
       'with a fence held %d ms per frame, %d frames presented, %d feedbacks and %d callbacks, '
       'none before its fence, callbacks every %d us at the median'
       % (len(free), (callbacks[0][0] - start) // 1000, (holds[0][1] - holds[0][0]) // 1000000,
-         len(presents), joined, answered, gaps[len(gaps) // 2] // 1000 if gaps else 0))
+         len(presents), joined, answered, gaps[len(gaps) // 2] // 1000 if gaps else 0)]))
+sys.exit(3 if slow else 0)
 FENCE
-	) || die "$label: $verdict"
-	say "$label: $verdict"
+	) || rc=$?
+	case $rc in
+	0) say "$label: $verdict" ;;
+	3) advisory "$label: $verdict" ;;
+	*) die "$label: $verdict" ;;
+	esac
 	settle "$WINDOWS"
 }
 
@@ -741,7 +741,7 @@ THEMES=$(grep -o '(defparameter +rail-themes+ (list .*' "$DIR/init.lisp" | grep 
 grep -qE ':MODIFIERS 9 :CODE [0-9]+ :KEYSYM "t" :OWNER "[^"]*" :CALL \("rail-theme"\)' "$DIR/inspect" ||
 	die "Alt+Shift+T is not bound to rail-theme"
 spam_check() {
-	local label=$1 play pid spam row n=0 verdict
+	local label=$1 play pid spam row n=0 verdict rc=0
 	local -a clients=()
 	[[ -n $(command -v grim) ]] || die "$label: this check reads the screen and there is no grim"
 	ctl inspect >"$DIR/inspect" 2>&1 || die "$label: the session stopped answering"
@@ -794,7 +794,7 @@ for window in json.load(sys.stdin):
 		printf '%s %s\n' "$(date +%s%N)" "$DIR/spam.$n.ppm" >>"$DIR/spam.log"
 	done
 	wait "$spam" 2>/dev/null
-	verdict=$(python3 - "$DIR/spam.log" "$DIR/spam.end" "$WIDTH" "$SPEED" <<'SPAM'
+	verdict=$(python3 - "$DIR/spam.log" "$DIR/spam.end" "$WIDTH" <<'SPAM'
 import sys
 
 want = bytes.fromhex("00ff01")
@@ -823,16 +823,8 @@ def fail(text):
     sys.exit(1)
 
 
-def advisory(text):
-    """How often the screen could be read inside the same fixed window depends
-    on how busy the machine was, not on Tomoe."""
-    if speed:
-        fail(text)
-    print("advisory: " + text)
-
-
 log, end, width = sys.argv[1], int(open(sys.argv[2]).read().strip()), int(sys.argv[3])
-speed = sys.argv[4] == "1"
+slow = []
 samples = []
 for line in open(log):
     when, path = line.split()
@@ -847,7 +839,7 @@ for line in open(log):
 if not samples:
     fail("the screen was read no times while the window was reversed, so nothing shows the window moved")
 if len(samples) < 20:
-    advisory("the screen was read %d times while the window was reversed, too few to judge" % len(samples))
+    slow.append("the screen was read %d times while the window was reversed, too few to judge" % len(samples))
 travel = max(left for _, left in samples) - min(left for _, left in samples)
 if travel < width // 4:
     fail("the window was drawn %d px apart at most while it was sent to the other column "
@@ -879,11 +871,16 @@ for _, left in samples:
 if crossings < 3:
     fail("the window crossed between the columns %d times while Alt+[ and Alt+] reversed it, "
          "so it did not move back and forth" % crossings)
-print("%d reads over %d ms, the window crossed between the columns %d times and never stood "
-      "still for more than one read" % (len(samples), (samples[-1][0] - samples[0][0]) // 1000000, crossings))
+print("\n".join(slow + ["%d reads over %d ms, the window crossed between the columns %d times and never stood "
+      "still for more than one read" % (len(samples), (samples[-1][0] - samples[0][0]) // 1000000, crossings)]))
+sys.exit(3 if slow else 0)
 SPAM
-	) || die "$label: $verdict"
-	say "$label: $verdict"
+	) || rc=$?
+	case $rc in
+	0) say "$label: $verdict" ;;
+	3) advisory "$label: $verdict" ;;
+	*) die "$label: $verdict" ;;
+	esac
 	for pid in "${clients[@]}"; do kill -TERM -- "-$pid" 2>/dev/null; done
 	wait "${clients[@]}" 2>/dev/null
 	settle 0
