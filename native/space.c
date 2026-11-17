@@ -3,8 +3,6 @@
 #include <poll.h>
 #include <unistd.h>
 
-static void test_hold_render(void);
-
 static bool debug_damage(void) {
     static int enabled = -1;
     if (enabled < 0) enabled = tomoe_test_flag("debug-damage");
@@ -894,7 +892,6 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
     if (highlight) pass_add_rect(pass, &(struct rect_options){
         .box = { .width = buffer->width, .height = buffer->height },
         .color = { 0.25f, 0, 0.25f, 0.25f }, .clip = &changed });
-    test_hold_render();
     bool success = pass_submit(pass);
     if (phase) timing_frame_raster(o->server, timing_now() - phase);
     region_fini(&changed);
@@ -917,24 +914,6 @@ static bool render_scene_buffer(struct output *o, struct buffer *buffer,
         bool cursors, bool chrome, bool track, const struct plane_assignment *planes) {
     return render_scene_prepared(o, buffer, state, plan, cursors, chrome, track, planes,
         false, false, NULL);
-}
-
-static void test_hold_render(void) {
-    static const char *path;
-    static int looked;
-    if (!looked) {
-        path = getenv("TOMOE_TEST_HOLD_RENDER");
-        looked = 1;
-    }
-    if (!path) return;
-    FILE *file = fopen(path, "r");
-    if (!file) return;
-    int ms = 0;
-    if (fscanf(file, "%d", &ms) != 1) ms = 0;
-    fclose(file);
-    if (ms <= 0) return;
-    struct timespec pause = { ms / 1000, (long)(ms % 1000) * 1000000L };
-    while (nanosleep(&pause, &pause) < 0 && errno == EINTR) {}
 }
 
 bool render_output_buffer(struct output *o, struct buffer *buffer) {

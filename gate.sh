@@ -132,6 +132,7 @@ else
 	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-70}
 	PERIOD_NS=$(( 1000000000 / HZ ))
 	SLACK_NS=100000
+	FENCE_MS=$(( (PERIOD_US * 5 + 999) / 1000 ))
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 + SLACK_US ))}
 	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 + SLACK_US ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 + SLACK_US ))}
@@ -155,7 +156,7 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		PERIOD_US SLACK_US FRAMES_PERCENT PERIOD_NS SLACK_NS FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		PERIOD_US SLACK_US FRAMES_PERCENT PERIOD_NS SLACK_NS FENCE_MS FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -180,7 +181,7 @@ trap cleanup EXIT
 
 ctl() { "${ENV[@]}" "$PKG/bin/tomoe" --socket "$SOCKET" "$@"; }
 
-TOMOE_TEST_HOLD_RENDER="$DIR/hold" setsid "$PKG/bin/tomoe" --socket "$SOCKET" \
+TOMOE_TEST_FENCE="$DIR/fence" setsid "$PKG/bin/tomoe" --socket "$SOCKET" \
 	--backend headless --no-watch --test-timings --test-frame-clock \
 	--config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
 SERVER=$!
@@ -469,38 +470,98 @@ print(sum(1 for i in range(0, min(len(a), len(b)), 48) if a[i:i + 3] != b[i:i + 
 PIXELS
 }
 
-render_hold_check() {
-	local label=$1 pid status held released
-	rm -f "$DIR/hold2" "$DIR/hold2.err"
-	echo 20 >"$DIR/hold"
+fence_check() {
+	local label=$1 pid status waited=0 verdict
+	rm -f "$DIR/fence" "$DIR/fence.log" "$DIR/held" "$DIR/held.err"
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
-		--size 320x240 --color 664422 --app-id gate-hold --title gate-hold \
-		>"$DIR/hold2" 2>"$DIR/hold2.err" </dev/null &
+		--size 320x240 --color 664422 --app-id gate-fence --title gate-fence \
+		>"$DIR/held" 2>"$DIR/held.err" </dev/null &
 	pid=$!
-	sleep 2.5
+	while ! grep -q "^mapped$" "$DIR/held" 2>/dev/null && ((waited < 120)); do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	sleep 0.8
+	echo "$FENCE_MS" >"$DIR/fence"
+	sleep 1.8
+	rm -f "$DIR/fence"
+	sleep 0.3
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
 	status=$?
 	((status == 0 || status == 143)) ||
-		die "$label: the held-fence client exited $status: $(head -2 "$DIR/hold2.err")"
-	held=$(awk '$1 == "animate" && $2 > 0 { print $2 }' "$DIR/hold2" | sort -n |
-		awk '{ v[NR] = $1 } END { print (NR ? v[int((NR - 1) * 50 / 100) + 1] : 0) }')
-	rm -f "$DIR/hold"
-	((held >= PERIOD_NS * 3 / 1000)) ||
-		die "$label: with the render fence held for 20 ms the client's callbacks still came every ${held}us, so it was told its frame was done before the fence signalled"
-	rm -f "$DIR/hold3" "$DIR/hold3.err"
-	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
-		--size 320x240 --color 664422 --app-id gate-hold-free --title gate-hold-free \
-		>"$DIR/hold3" 2>"$DIR/hold3.err" </dev/null &
-	pid=$!
-	sleep 1.8
-	kill -TERM -- "-$pid" 2>/dev/null
-	wait "$pid" 2>/dev/null
-	released=$(awk '$1 == "animate" && $2 > 0 { print $2 }' "$DIR/hold3" | sort -n |
-		awk '{ v[NR] = $1 } END { print (NR ? v[(NR - 1) * 50 / 100 + 1] : 0) }')
-	((released <= PERIOD_NS * 3 / 2000)) ||
-		die "$label: with the fence free the client's callbacks came every ${released}us, so the desk itself is not keeping the refresh"
-	say "$label: with the render fence held for 20 ms the client's callbacks came every ${held}us, and ${released}us with it free"
+		die "$label: the held-fence client exited $status: $(head -2 "$DIR/held.err")"
+	verdict=$(python3 - "$DIR/held" "$DIR/fence.log" "$PERIOD_NS" <<'FENCE'
+import sys
+held, log, period = sys.argv[1], sys.argv[2], int(sys.argv[3])
+start, callbacks, feedback = None, [], []
+for line in open(held):
+    w = line.split()
+    if w[:1] == ['animate-start'] and start is None:
+        start = int(w[1])
+    elif w[:1] == ['animate'] and len(w) == 5:
+        callbacks.append((int(w[3]), int(w[4])))
+    elif w[:1] == ['animate-present'] and len(w) == 7:
+        feedback.append((int(w[4]), int(w[5]), int(w[6])))
+holds, presents = [], {}
+try:
+    for line in open(log):
+        w = line.split()
+        if w[0] == 'hold':
+            holds.append((int(w[2]), int(w[3])))
+        elif w[0] == 'present':
+            presents[int(w[1])] = (int(w[3]), int(w[4]))
+except FileNotFoundError:
+    pass
+def fail(text):
+    print(text)
+    sys.exit(1)
+if start is None or not callbacks:
+    fail('the frame-callback client never received a frame callback')
+if not holds:
+    fail('the compositor never held a frame on the fence')
+hold_from, hold_to = holds[0][0], max(deadline for _, deadline in holds)
+free = [at for at, _ in callbacks if at < hold_from]
+if len(free) < 20:
+    fail('the client received %d frame callbacks before the fence was held, too few to show it animates on its own' % len(free))
+short = [deadline - at for at, deadline in holds if deadline - at < 3 * period]
+if short:
+    fail('a held fence signalled %d ns after its frame, under three refreshes' % short[0])
+by_ms = {(when // 1000000) & 0xffffffff: (when, deadline) for when, deadline in presents.values()}
+joined = 0
+for arrival, seq, when in feedback:
+    if seq not in presents:
+        if hold_from <= arrival <= hold_to:
+            fail('presentation feedback for frame %d arrived at %d while the fence was held, from a frame no held fence carried' % (seq, arrival))
+        continue
+    joined += 1
+    deadline = presents[seq][1]
+    if when < deadline or arrival < deadline:
+        fail('presentation feedback for frame %d reported %d and arrived %d, before its fence signalled at %d' % (seq, when, arrival, deadline))
+answered = 0
+for arrival, ms in callbacks:
+    if arrival < hold_from or arrival > hold_to:
+        continue
+    if ms not in by_ms:
+        fail('a frame callback arrived at %d while the fence was held, stamped %d ms, a time no held frame was presented at' % (arrival, ms))
+    answered += 1
+    when, deadline = by_ms[ms]
+    if arrival < deadline:
+        fail('a frame callback arrived at %d, %d ns before the fence of the frame it reports signalled' % (arrival, deadline - arrival))
+for seq, (when, deadline) in sorted(presents.items()):
+    if when < deadline:
+        fail('frame %d was presented at %d, %d ns before its fence signalled' % (seq, when, deadline - when))
+if len(presents) < 20 or joined < 20 or answered < 20:
+    fail('with the fence held %d frames were presented, %d of them reported to the client by feedback and %d by frame callback, too few to judge' % (len(presents), joined, answered))
+gaps = sorted(b - a for (a, _), (b, _) in zip(callbacks, callbacks[1:]) if a >= hold_from and b <= hold_to)
+print('%d frame callbacks before the hold, the first %d us after the client\'s first commit; '
+      'with a fence held %d ms per frame, %d frames presented, %d feedbacks and %d callbacks, '
+      'none before its fence, callbacks every %d us at the median'
+      % (len(free), (callbacks[0][0] - start) // 1000, (holds[0][1] - holds[0][0]) // 1000000,
+         len(presents), joined, answered, gaps[len(gaps) // 2] // 1000 if gaps else 0))
+FENCE
+	) || die "$label: $verdict"
+	say "$label: $verdict"
 	settle "$WINDOWS"
 }
 
@@ -577,9 +638,9 @@ at_rest() {
 			frame_callback_check "$label"
 			CADENCE_CHECKED=1
 		fi
-		if [[ -z ${HOLD_CHECKED:-} ]]; then
-			render_hold_check "$label"
-			HOLD_CHECKED=1
+		if [[ -z ${FENCE_CHECKED:-} ]]; then
+			fence_check "$label"
+			FENCE_CHECKED=1
 		fi
 		return 0
 	done
