@@ -1223,6 +1223,24 @@ static uint32_t fte_convolution(const struct fte_image *src, const int32_t *para
         ((uint32_t)sgtot << 8) | (uint32_t)sbtot;
 }
 
+static bool fte_double_is_integer(double v)
+{
+    return fabs(v - floor(v + 0.5)) < 1e-7;
+}
+
+static bool fte_matrix_is_pixel_exact(const struct fte_matrix *m)
+{
+    return m->yx == 0.0 && m->xy == 0.0 && fte_double_is_integer(m->x0) &&
+        fte_double_is_integer(m->y0) && fte_double_is_integer(m->xx) &&
+        fte_double_is_integer(m->yy);
+}
+
+static bool fte_matrix_uses_bilinear(double x, double y, double t)
+{
+    return fte_double_is_integer(x) && fte_double_is_integer(y) &&
+        fte_double_is_integer(t);
+}
+
 static bool fte_scale_image(const struct fte_image *src, struct fte_image *dst,
     const struct fte_matrix *matrix)
 {
@@ -1236,6 +1254,17 @@ static bool fte_scale_image(const struct fte_image *src, struct fte_image *dst,
         for (int y = 0; y < dst->height; y++)
             for (int x = 0; x < dst->width; x++)
                 fte_store(dst, x, y, fte_fetch(src, x + ix, y + iy));
+        return true;
+    }
+    if (fte_matrix_is_pixel_exact(matrix) ||
+            (fte_matrix_uses_bilinear(matrix->xx, matrix->xy, matrix->x0) &&
+             fte_matrix_uses_bilinear(matrix->yx, matrix->yy, matrix->y0))) {
+        for (int y = 0; y < dst->height; y++)
+            for (int x = 0; x < dst->width; x++) {
+                double sx = matrix->xx * (x + 0.5) + matrix->xy * (y + 0.5) + matrix->x0;
+                double sy = matrix->yx * (x + 0.5) + matrix->yy * (y + 0.5) + matrix->y0;
+                fte_store(dst, x, y, fte_fetch(src, (int)floor(sx), (int)floor(sy)));
+            }
         return true;
     }
     double dx = hypot(matrix->xx, matrix->xy);
