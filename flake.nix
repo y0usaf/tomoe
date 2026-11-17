@@ -157,7 +157,6 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             libs.libxkbcommon
-            pkgs.zlib
             cairo
             pango
             (resvg pkgs)

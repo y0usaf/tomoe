@@ -19,6 +19,9 @@ struct png_geometry {
     int alpha;
 };
 
+uint32_t tomoe_png_crc32(uint32_t crc, const unsigned char *data, size_t length);
+enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len);
 enum png_status tomoe_png_decode(const unsigned char *bytes, size_t length,
         struct png_image *image);
 enum png_status tomoe_png_geometry(const unsigned char *bytes, size_t length,

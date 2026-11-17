@@ -11,8 +11,7 @@ WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
 LIBS = xkbcommon pangocairo libinput glesv2 egl gbm libudev
-LINK = $(shell $(PKG_CONFIG) --libs $(LIBS)) -lz
-ZLIB_CFLAGS = $(shell $(PKG_CONFIG) --cflags zlib)
+LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system pipewire pwwire
 PROTOCOLS = \
@@ -74,7 +73,7 @@ WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/wayland-loop.o build/obj/wayland-serv
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/wayland-client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/wayland-client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS)) $(ZLIB_CFLAGS)
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))

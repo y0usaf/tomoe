@@ -2,7 +2,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <zlib.h>
 
 #define MODE_IHDR 0x01u
 #define MODE_PLTE 0x02u
@@ -70,6 +69,750 @@ static const struct png_rule rules[] = {
 
 #define RULE_COUNT (sizeof(rules) / sizeof(*rules))
 
+
+static void put32(unsigned char *bytes, uint32_t value) {
+    bytes[0] = (unsigned char)(value >> 24);
+    bytes[1] = (unsigned char)(value >> 16);
+    bytes[2] = (unsigned char)(value >> 8);
+    bytes[3] = (unsigned char)value;
+}
+
+enum { INF_RES_OK = 0, INF_RES_END = 1, INF_RES_BAD = -1, INF_RES_MEM = -2 };
+
+enum inf_state {
+    INF_HEAD_CMF, INF_HEAD_FLG, INF_BLOCK,
+    INF_STORED_LEN, INF_STORED_COPY,
+    INF_DYN_HDR, INF_DYN_CODELEN, INF_DYN_LENS, INF_DYN_REP,
+    INF_LITLEN, INF_LEN_EXTRA, INF_DIST, INF_DIST_EXTRA, INF_MATCH_COPY,
+    INF_TRAILER, INF_DONE, INF_BAD
+};
+
+enum huff_kind { HUFF_CODES, HUFF_LENS, HUFF_DISTS };
+
+struct png_huff {
+    uint16_t count[16];
+    uint16_t syms[288];
+    uint16_t fast[512];
+    unsigned max_len;
+};
+
+struct png_inflate {
+    enum inf_state state;
+    uint64_t bitbuf;
+    unsigned bitcnt;
+    unsigned bfinal;
+    unsigned wsize, whave, wpos;
+    uint32_t adler;
+    unsigned copy_len, copy_dist;
+    unsigned len_sym, dist_sym;
+    unsigned nlen, ndist, ncode;
+    unsigned dyn_idx, dyn_sym;
+    unsigned char code_lens[19];
+    unsigned char sym_lens[316];
+    struct png_huff code_huff;
+    struct png_huff lit_huff;
+    struct png_huff dist_huff;
+    unsigned char window[32768];
+};
+
+static const uint32_t crc32_table[256] = {
+    0x00000000u, 0x77073096u, 0xee0e612cu, 0x990951bau, 0x076dc419u, 0x706af48fu, 0xe963a535u, 0x9e6495a3u,
+    0x0edb8832u, 0x79dcb8a4u, 0xe0d5e91eu, 0x97d2d988u, 0x09b64c2bu, 0x7eb17cbdu, 0xe7b82d07u, 0x90bf1d91u,
+    0x1db71064u, 0x6ab020f2u, 0xf3b97148u, 0x84be41deu, 0x1adad47du, 0x6ddde4ebu, 0xf4d4b551u, 0x83d385c7u,
+    0x136c9856u, 0x646ba8c0u, 0xfd62f97au, 0x8a65c9ecu, 0x14015c4fu, 0x63066cd9u, 0xfa0f3d63u, 0x8d080df5u,
+    0x3b6e20c8u, 0x4c69105eu, 0xd56041e4u, 0xa2677172u, 0x3c03e4d1u, 0x4b04d447u, 0xd20d85fdu, 0xa50ab56bu,
+    0x35b5a8fau, 0x42b2986cu, 0xdbbbc9d6u, 0xacbcf940u, 0x32d86ce3u, 0x45df5c75u, 0xdcd60dcfu, 0xabd13d59u,
+    0x26d930acu, 0x51de003au, 0xc8d75180u, 0xbfd06116u, 0x21b4f4b5u, 0x56b3c423u, 0xcfba9599u, 0xb8bda50fu,
+    0x2802b89eu, 0x5f058808u, 0xc60cd9b2u, 0xb10be924u, 0x2f6f7c87u, 0x58684c11u, 0xc1611dabu, 0xb6662d3du,
+    0x76dc4190u, 0x01db7106u, 0x98d220bcu, 0xefd5102au, 0x71b18589u, 0x06b6b51fu, 0x9fbfe4a5u, 0xe8b8d433u,
+    0x7807c9a2u, 0x0f00f934u, 0x9609a88eu, 0xe10e9818u, 0x7f6a0dbbu, 0x086d3d2du, 0x91646c97u, 0xe6635c01u,
+    0x6b6b51f4u, 0x1c6c6162u, 0x856530d8u, 0xf262004eu, 0x6c0695edu, 0x1b01a57bu, 0x8208f4c1u, 0xf50fc457u,
+    0x65b0d9c6u, 0x12b7e950u, 0x8bbeb8eau, 0xfcb9887cu, 0x62dd1ddfu, 0x15da2d49u, 0x8cd37cf3u, 0xfbd44c65u,
+    0x4db26158u, 0x3ab551ceu, 0xa3bc0074u, 0xd4bb30e2u, 0x4adfa541u, 0x3dd895d7u, 0xa4d1c46du, 0xd3d6f4fbu,
+    0x4369e96au, 0x346ed9fcu, 0xad678846u, 0xda60b8d0u, 0x44042d73u, 0x33031de5u, 0xaa0a4c5fu, 0xdd0d7cc9u,
+    0x5005713cu, 0x270241aau, 0xbe0b1010u, 0xc90c2086u, 0x5768b525u, 0x206f85b3u, 0xb966d409u, 0xce61e49fu,
+    0x5edef90eu, 0x29d9c998u, 0xb0d09822u, 0xc7d7a8b4u, 0x59b33d17u, 0x2eb40d81u, 0xb7bd5c3bu, 0xc0ba6cadu,
+    0xedb88320u, 0x9abfb3b6u, 0x03b6e20cu, 0x74b1d29au, 0xead54739u, 0x9dd277afu, 0x04db2615u, 0x73dc1683u,
+    0xe3630b12u, 0x94643b84u, 0x0d6d6a3eu, 0x7a6a5aa8u, 0xe40ecf0bu, 0x9309ff9du, 0x0a00ae27u, 0x7d079eb1u,
+    0xf00f9344u, 0x8708a3d2u, 0x1e01f268u, 0x6906c2feu, 0xf762575du, 0x806567cbu, 0x196c3671u, 0x6e6b06e7u,
+    0xfed41b76u, 0x89d32be0u, 0x10da7a5au, 0x67dd4accu, 0xf9b9df6fu, 0x8ebeeff9u, 0x17b7be43u, 0x60b08ed5u,
+    0xd6d6a3e8u, 0xa1d1937eu, 0x38d8c2c4u, 0x4fdff252u, 0xd1bb67f1u, 0xa6bc5767u, 0x3fb506ddu, 0x48b2364bu,
+    0xd80d2bdau, 0xaf0a1b4cu, 0x36034af6u, 0x41047a60u, 0xdf60efc3u, 0xa867df55u, 0x316e8eefu, 0x4669be79u,
+    0xcb61b38cu, 0xbc66831au, 0x256fd2a0u, 0x5268e236u, 0xcc0c7795u, 0xbb0b4703u, 0x220216b9u, 0x5505262fu,
+    0xc5ba3bbeu, 0xb2bd0b28u, 0x2bb45a92u, 0x5cb36a04u, 0xc2d7ffa7u, 0xb5d0cf31u, 0x2cd99e8bu, 0x5bdeae1du,
+    0x9b64c2b0u, 0xec63f226u, 0x756aa39cu, 0x026d930au, 0x9c0906a9u, 0xeb0e363fu, 0x72076785u, 0x05005713u,
+    0x95bf4a82u, 0xe2b87a14u, 0x7bb12baeu, 0x0cb61b38u, 0x92d28e9bu, 0xe5d5be0du, 0x7cdcefb7u, 0x0bdbdf21u,
+    0x86d3d2d4u, 0xf1d4e242u, 0x68ddb3f8u, 0x1fda836eu, 0x81be16cdu, 0xf6b9265bu, 0x6fb077e1u, 0x18b74777u,
+    0x88085ae6u, 0xff0f6a70u, 0x66063bcau, 0x11010b5cu, 0x8f659effu, 0xf862ae69u, 0x616bffd3u, 0x166ccf45u,
+    0xa00ae278u, 0xd70dd2eeu, 0x4e048354u, 0x3903b3c2u, 0xa7672661u, 0xd06016f7u, 0x4969474du, 0x3e6e77dbu,
+    0xaed16a4au, 0xd9d65adcu, 0x40df0b66u, 0x37d83bf0u, 0xa9bcae53u, 0xdebb9ec5u, 0x47b2cf7fu, 0x30b5ffe9u,
+    0xbdbdf21cu, 0xcabac28au, 0x53b39330u, 0x24b4a3a6u, 0xbad03605u, 0xcdd70693u, 0x54de5729u, 0x23d967bfu,
+    0xb3667a2eu, 0xc4614ab8u, 0x5d681b02u, 0x2a6f2b94u, 0xb40bbe37u, 0xc30c8ea1u, 0x5a05df1bu, 0x2d02ef8du,
+};
+
+uint32_t tomoe_png_crc32(uint32_t crc, const unsigned char *data, size_t length) {
+    if (!data) return 0;
+    crc = ~crc;
+    for (size_t i = 0; i < length; i++)
+        crc = (crc >> 8) ^ crc32_table[(crc ^ data[i]) & 0xffu];
+    return ~crc;
+}
+
+static uint32_t png_adler32(uint32_t adler, const unsigned char *data, size_t length) {
+    uint32_t s1 = adler & 0xffffu;
+    uint32_t s2 = (adler >> 16) & 0xffffu;
+    while (length) {
+        size_t chunk = length > 5552 ? 5552 : length;
+        length -= chunk;
+        while (chunk--) {
+            s1 += *data++;
+            s2 += s1;
+        }
+        s1 %= 65521u;
+        s2 %= 65521u;
+    }
+    return (s2 << 16) | s1;
+}
+
+static int fill_bits(struct png_inflate *s, unsigned need,
+        const unsigned char **in, size_t *avail) {
+    while (s->bitcnt < need) {
+        if (!*avail) return 0;
+        s->bitbuf |= (uint64_t)(*(*in)++) << s->bitcnt;
+        (*avail)--;
+        s->bitcnt += 8;
+    }
+    return 1;
+}
+
+static void align_bits(struct png_inflate *s) {
+    unsigned drop = s->bitcnt & 7u;
+    s->bitbuf >>= drop;
+    s->bitcnt -= drop;
+}
+
+static int huff_build(struct png_huff *h, const unsigned char *lens, unsigned n,
+        enum huff_kind kind) {
+    uint16_t offs[16];
+    int left = 1;
+    unsigned max_len = 0;
+    memset(h->count, 0, sizeof(h->count));
+    for (unsigned i = 0; i < n; i++) {
+        if (lens[i] > 15) return -1;
+        h->count[lens[i]]++;
+        if (lens[i] > max_len) max_len = lens[i];
+    }
+    h->max_len = max_len;
+    if (max_len == 0) {
+        memset(h->fast, 0, sizeof(h->fast));
+        return kind == HUFF_DISTS ? 0 : -1;
+    }
+    for (unsigned len = 1; len <= 15; len++) {
+        left <<= 1;
+        left -= h->count[len];
+        if (left < 0) return -1;
+    }
+    if (left > 0 && (kind == HUFF_CODES || max_len != 1)) return -1;
+    offs[1] = 0;
+    for (unsigned len = 1; len < 15; len++)
+        offs[len + 1] = offs[len] + h->count[len];
+    for (unsigned i = 0; i < n; i++)
+        if (lens[i]) h->syms[offs[lens[i]]++] = (uint16_t)i;
+    memset(h->fast, 0, sizeof(h->fast));
+    unsigned idx = 0, code = 0;
+    for (unsigned len = 1; len <= 9 && len <= max_len; len++) {
+        for (uint16_t i = 0; i < h->count[len]; i++) {
+            uint16_t sym = h->syms[idx++];
+            unsigned rev = 0;
+            for (unsigned b = 0; b < len; b++)
+                if (code & (1u << (len - 1 - b))) rev |= 1u << b;
+            uint16_t entry = (uint16_t)((len << 10) | sym);
+            for (unsigned fill = rev; fill < 512; fill += (1u << len))
+                h->fast[fill] = entry;
+            code++;
+        }
+        code <<= 1;
+    }
+    return 0;
+}
+
+static int huff_decode(struct png_inflate *s, const struct png_huff *h,
+        const unsigned char **in, size_t *avail) {
+    if (!h->max_len) return -2;
+    if (s->bitcnt < 9) fill_bits(s, 9, in, avail);
+    if (s->bitcnt >= 9) {
+        uint16_t entry = h->fast[s->bitbuf & 511u];
+        if (entry) {
+            unsigned len = entry >> 10;
+            s->bitbuf >>= len;
+            s->bitcnt -= len;
+            return entry & 0x3ffu;
+        }
+    }
+    unsigned code = 0;
+    int first = 0, index = 0;
+    for (unsigned len = 1; len <= h->max_len; len++) {
+        if (s->bitcnt < len && !fill_bits(s, len, in, avail)) return -1;
+        code = (code << 1) | (unsigned)((s->bitbuf >> (len - 1)) & 1u);
+        int count = h->count[len];
+        if ((int)code - count < first) {
+            s->bitbuf >>= len;
+            s->bitcnt -= len;
+            return h->syms[index + ((int)code - first)];
+        }
+        index += count;
+        first = (first + count) << 1;
+    }
+    return -2;
+}
+
+static void huff_build_fixed(struct png_huff *lit, struct png_huff *dist) {
+    unsigned char lens[288];
+    unsigned i = 0;
+    for (; i < 144; i++) lens[i] = 8;
+    for (; i < 256; i++) lens[i] = 9;
+    for (; i < 280; i++) lens[i] = 7;
+    for (; i < 288; i++) lens[i] = 8;
+    huff_build(lit, lens, 288, HUFF_LENS);
+    memset(lens, 5, 32);
+    huff_build(dist, lens, 32, HUFF_DISTS);
+}
+
+static struct png_inflate *png_inflate_create(void) {
+    struct png_inflate *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->state = INF_HEAD_CMF;
+    s->adler = 1;
+    return s;
+}
+
+static void png_inflate_destroy(struct png_inflate *s) {
+    free(s);
+}
+
+static int png_inflate_step(struct png_inflate *s, const unsigned char **in_ptr,
+        size_t *in_avail_ptr, unsigned char **out_ptr, size_t *out_avail_ptr) {
+    static const unsigned char order[19] = {
+        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+    };
+    static const uint16_t len_base[29] = {
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+        35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
+    };
+    static const unsigned char len_extra[29] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+        3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+    };
+    static const uint16_t dist_base[30] = {
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+        257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
+    };
+    static const unsigned char dist_extra[30] = {
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+        7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+    };
+    const unsigned char *in = *in_ptr;
+    size_t in_avail = *in_avail_ptr;
+    unsigned char *out = *out_ptr;
+    unsigned char *out_start = out;
+    size_t out_avail = *out_avail_ptr;
+    int status = INF_RES_OK;
+
+    for (;;) {
+        if (s->state == INF_DONE) { status = INF_RES_END; break; }
+        if (s->state == INF_BAD) { status = INF_RES_BAD; break; }
+        switch (s->state) {
+        case INF_HEAD_CMF:
+            if (!in_avail) goto pause;
+            {
+                unsigned cmf = *in++;
+                in_avail--;
+                if ((cmf & 0x0fu) != 8u || (cmf >> 4) > 7u) { s->state = INF_BAD; break; }
+                s->wsize = 1u << ((cmf >> 4) + 8u);
+                s->copy_len = cmf;
+                s->state = INF_HEAD_FLG;
+            }
+            break;
+        case INF_HEAD_FLG:
+            if (!in_avail) goto pause;
+            {
+                unsigned flg = *in++;
+                in_avail--;
+                if (((s->copy_len << 8) + flg) % 31u != 0u || (flg & 0x20u)) {
+                    s->state = INF_BAD;
+                    break;
+                }
+                s->copy_len = 0;
+                s->state = INF_BLOCK;
+            }
+            break;
+        case INF_BLOCK:
+            if (!fill_bits(s, 3, &in, &in_avail)) goto pause;
+            s->bfinal = (unsigned)(s->bitbuf & 1u);
+            {
+                unsigned btype = (unsigned)((s->bitbuf >> 1) & 3u);
+                s->bitbuf >>= 3;
+                s->bitcnt -= 3;
+                if (btype == 0u) {
+                    align_bits(s);
+                    s->state = INF_STORED_LEN;
+                } else if (btype == 1u) {
+                    huff_build_fixed(&s->lit_huff, &s->dist_huff);
+                    s->state = INF_LITLEN;
+                } else if (btype == 2u) {
+                    s->state = INF_DYN_HDR;
+                } else {
+                    s->state = INF_BAD;
+                }
+            }
+            break;
+        case INF_STORED_LEN:
+            if (!fill_bits(s, 32, &in, &in_avail)) goto pause;
+            {
+                unsigned len = (unsigned)(s->bitbuf & 0xffffu);
+                unsigned nlen = (unsigned)((s->bitbuf >> 16) & 0xffffu);
+                s->bitbuf >>= 32;
+                s->bitcnt -= 32;
+                if ((len ^ 0xffffu) != nlen) { s->state = INF_BAD; break; }
+                s->copy_len = len;
+                s->state = len ? INF_STORED_COPY : (s->bfinal ? INF_TRAILER : INF_BLOCK);
+            }
+            break;
+        case INF_STORED_COPY:
+            if (!out_avail) goto pause;
+            while (s->copy_len && out_avail && s->bitcnt >= 8) {
+                unsigned char b = (unsigned char)(s->bitbuf & 0xffu);
+                s->bitbuf >>= 8;
+                s->bitcnt -= 8;
+                *out++ = b;
+                out_avail--;
+                s->window[s->wpos] = b;
+                s->wpos = (s->wpos + 1u) & (s->wsize - 1u);
+                if (s->whave < s->wsize) s->whave++;
+                s->copy_len--;
+            }
+            if (s->copy_len && out_avail) {
+                size_t take = s->copy_len;
+                if (take > in_avail) take = in_avail;
+                if (take > out_avail) take = out_avail;
+                if (!take) goto pause;
+                memcpy(out, in, take);
+                for (size_t i = 0; i < take; i++) {
+                    s->window[s->wpos] = in[i];
+                    s->wpos = (s->wpos + 1u) & (s->wsize - 1u);
+                }
+                if (s->whave < s->wsize) {
+                    size_t add = s->wsize - s->whave;
+                    s->whave += (unsigned)(take < add ? take : add);
+                }
+                in += take;
+                in_avail -= take;
+                out += take;
+                out_avail -= take;
+                s->copy_len -= (unsigned)take;
+            }
+            if (!s->copy_len) s->state = s->bfinal ? INF_TRAILER : INF_BLOCK;
+            else if (!out_avail) goto pause;
+            break;
+        case INF_DYN_HDR:
+            if (!fill_bits(s, 14, &in, &in_avail)) goto pause;
+            s->nlen = (unsigned)(s->bitbuf & 31u) + 257u;
+            s->ndist = (unsigned)((s->bitbuf >> 5) & 31u) + 1u;
+            s->ncode = (unsigned)((s->bitbuf >> 10) & 15u) + 4u;
+            s->bitbuf >>= 14;
+            s->bitcnt -= 14;
+            if (s->nlen > 286u || s->ndist > 30u) { s->state = INF_BAD; break; }
+            memset(s->code_lens, 0, sizeof(s->code_lens));
+            s->dyn_idx = 0;
+            s->state = INF_DYN_CODELEN;
+            break;
+        case INF_DYN_CODELEN:
+            while (s->dyn_idx < s->ncode) {
+                if (!fill_bits(s, 3, &in, &in_avail)) goto pause;
+                s->code_lens[order[s->dyn_idx++]] = (unsigned char)(s->bitbuf & 7u);
+                s->bitbuf >>= 3;
+                s->bitcnt -= 3;
+            }
+            if (huff_build(&s->code_huff, s->code_lens, 19, HUFF_CODES)) {
+                s->state = INF_BAD;
+                break;
+            }
+            s->dyn_idx = 0;
+            s->state = INF_DYN_LENS;
+            break;
+        case INF_DYN_LENS:
+            while (s->dyn_idx < s->nlen + s->ndist) {
+                int sym = huff_decode(s, &s->code_huff, &in, &in_avail);
+                if (sym == -1) goto pause;
+                if (sym < 0) { s->state = INF_BAD; break; }
+                if (sym < 16) {
+                    s->sym_lens[s->dyn_idx++] = (unsigned char)sym;
+                } else {
+                    s->dyn_sym = (unsigned)sym;
+                    s->state = INF_DYN_REP;
+                    break;
+                }
+            }
+            if (s->state != INF_DYN_LENS) break;
+            if (!s->sym_lens[256] ||
+                    huff_build(&s->lit_huff, s->sym_lens, s->nlen, HUFF_LENS) ||
+                    huff_build(&s->dist_huff, s->sym_lens + s->nlen, s->ndist, HUFF_DISTS)) {
+                s->state = INF_BAD;
+                break;
+            }
+            s->state = INF_LITLEN;
+            break;
+        case INF_DYN_REP:
+            {
+                unsigned need = s->dyn_sym == 16 ? 2u : s->dyn_sym == 17 ? 3u : 7u;
+                unsigned base = s->dyn_sym == 18 ? 11u : 3u;
+                if (!fill_bits(s, need, &in, &in_avail)) goto pause;
+                unsigned count = base + (unsigned)(s->bitbuf & ((1u << need) - 1u));
+                s->bitbuf >>= need;
+                s->bitcnt -= need;
+                unsigned char val = 0;
+                if (s->dyn_sym == 16) {
+                    if (!s->dyn_idx) { s->state = INF_BAD; break; }
+                    val = s->sym_lens[s->dyn_idx - 1u];
+                }
+                if (s->dyn_idx + count > s->nlen + s->ndist) { s->state = INF_BAD; break; }
+                while (count--) s->sym_lens[s->dyn_idx++] = val;
+                s->state = INF_DYN_LENS;
+            }
+            break;
+        case INF_LITLEN:
+            while (out_avail) {
+                int sym = huff_decode(s, &s->lit_huff, &in, &in_avail);
+                if (sym == -1) goto pause;
+                if (sym < 0 || sym > 285) { s->state = INF_BAD; break; }
+                if (sym < 256) {
+                    unsigned char b = (unsigned char)sym;
+                    *out++ = b;
+                    out_avail--;
+                    s->window[s->wpos] = b;
+                    s->wpos = (s->wpos + 1u) & (s->wsize - 1u);
+                    if (s->whave < s->wsize) s->whave++;
+                } else if (sym == 256) {
+                    s->state = s->bfinal ? INF_TRAILER : INF_BLOCK;
+                    break;
+                } else {
+                    s->len_sym = (unsigned)(sym - 257);
+                    s->state = INF_LEN_EXTRA;
+                    break;
+                }
+            }
+            if (s->state == INF_LITLEN && !out_avail) goto pause;
+            break;
+        case INF_LEN_EXTRA:
+            {
+                unsigned eb = len_extra[s->len_sym];
+                if (eb && !fill_bits(s, eb, &in, &in_avail)) goto pause;
+                s->copy_len = len_base[s->len_sym] +
+                    (eb ? (unsigned)(s->bitbuf & ((1u << eb) - 1u)) : 0u);
+                s->bitbuf >>= eb;
+                s->bitcnt -= eb;
+                s->state = INF_DIST;
+            }
+            break;
+        case INF_DIST:
+            {
+                int dsym = huff_decode(s, &s->dist_huff, &in, &in_avail);
+                if (dsym == -1) goto pause;
+                if (dsym < 0 || dsym >= 30) { s->state = INF_BAD; break; }
+                s->dist_sym = (unsigned)dsym;
+                s->state = INF_DIST_EXTRA;
+            }
+            break;
+        case INF_DIST_EXTRA:
+            {
+                unsigned eb = dist_extra[s->dist_sym];
+                if (eb && !fill_bits(s, eb, &in, &in_avail)) goto pause;
+                s->copy_dist = dist_base[s->dist_sym] +
+                    (eb ? (unsigned)(s->bitbuf & ((1u << eb) - 1u)) : 0u);
+                s->bitbuf >>= eb;
+                s->bitcnt -= eb;
+                if (!s->copy_dist || s->copy_dist > s->whave || s->copy_dist > s->wsize) {
+                    s->state = INF_BAD;
+                    break;
+                }
+                s->state = INF_MATCH_COPY;
+            }
+            break;
+        case INF_MATCH_COPY:
+            if (!out_avail) goto pause;
+            {
+                unsigned mask = s->wsize - 1u;
+                while (s->copy_len && out_avail) {
+                    unsigned char b = s->window[(s->wpos - s->copy_dist) & mask];
+                    s->window[s->wpos] = b;
+                    s->wpos = (s->wpos + 1u) & mask;
+                    if (s->whave < s->wsize) s->whave++;
+                    *out++ = b;
+                    out_avail--;
+                    s->copy_len--;
+                }
+                if (!s->copy_len) s->state = INF_LITLEN;
+                else goto pause;
+            }
+            break;
+        case INF_TRAILER:
+            if (out > out_start) {
+                s->adler = png_adler32(s->adler, out_start, (size_t)(out - out_start));
+                out_start = out;
+            }
+            align_bits(s);
+            if (!fill_bits(s, 32, &in, &in_avail)) goto pause;
+            {
+                uint32_t expected =
+                    ((uint32_t)(s->bitbuf & 0xffu) << 24) |
+                    ((uint32_t)((s->bitbuf >> 8) & 0xffu) << 16) |
+                    ((uint32_t)((s->bitbuf >> 16) & 0xffu) << 8) |
+                    (uint32_t)((s->bitbuf >> 24) & 0xffu);
+                s->bitbuf >>= 32;
+                s->bitcnt -= 32;
+                if (expected != s->adler) { s->state = INF_BAD; break; }
+                s->state = INF_DONE;
+            }
+            break;
+        case INF_DONE:
+        case INF_BAD:
+            break;
+        }
+    }
+
+pause:
+    if (out > out_start)
+        s->adler = png_adler32(s->adler, out_start, (size_t)(out - out_start));
+    *in_ptr = in;
+    *in_avail_ptr = in_avail;
+    *out_ptr = out;
+    *out_avail_ptr = out_avail;
+    return status;
+}
+
+enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len) {
+    struct png_inflate *s = png_inflate_create();
+    size_t cap = in_len < 1024 ? 4096 : in_len * 4;
+    if (cap < 4096) cap = 4096;
+    unsigned char *buf = malloc(cap);
+    size_t len = 0;
+    if (!s || !buf) {
+        png_inflate_destroy(s);
+        free(buf);
+        return PNG_HARD;
+    }
+    const unsigned char *in_cur = in;
+    size_t in_rem = in_len;
+    for (;;) {
+        unsigned char *out_cur = buf + len;
+        size_t out_rem = cap - len;
+        int res = png_inflate_step(s, &in_cur, &in_rem, &out_cur, &out_rem);
+        len = (size_t)(out_cur - buf);
+        if (res == INF_RES_END) {
+            png_inflate_destroy(s);
+            *out = buf;
+            *out_len = len;
+            return PNG_OK;
+        }
+        if (res != INF_RES_OK) {
+            png_inflate_destroy(s);
+            free(buf);
+            return PNG_BAD;
+        }
+        if (out_rem == 0) {
+            size_t next_cap = cap * 2;
+            if (next_cap < cap) {
+                png_inflate_destroy(s);
+                free(buf);
+                return PNG_HARD;
+            }
+            unsigned char *grown = realloc(buf, next_cap);
+            if (!grown) {
+                png_inflate_destroy(s);
+                free(buf);
+                return PNG_HARD;
+            }
+            buf = grown;
+            cap = next_cap;
+        } else {
+            png_inflate_destroy(s);
+            free(buf);
+            return PNG_BAD;
+        }
+    }
+}
+
+struct png_bitwriter {
+    unsigned char *buf;
+    size_t pos;
+    uint64_t bitbuf;
+    unsigned bitcnt;
+};
+
+static void bw_put(struct png_bitwriter *bw, uint32_t bits, unsigned count) {
+    bw->bitbuf |= (uint64_t)bits << bw->bitcnt;
+    bw->bitcnt += count;
+    while (bw->bitcnt >= 8) {
+        bw->buf[bw->pos++] = (unsigned char)(bw->bitbuf & 0xffu);
+        bw->bitbuf >>= 8;
+        bw->bitcnt -= 8;
+    }
+}
+
+static void bw_align(struct png_bitwriter *bw) {
+    if (bw->bitcnt) {
+        bw->buf[bw->pos++] = (unsigned char)(bw->bitbuf & 0xffu);
+        bw->bitbuf = 0;
+        bw->bitcnt = 0;
+    }
+}
+
+static unsigned rev_bits(unsigned val, unsigned len) {
+    unsigned r = 0;
+    for (unsigned i = 0; i < len; i++)
+        if (val & (1u << (len - 1u - i))) r |= 1u << i;
+    return r;
+}
+
+static void bw_lit(struct png_bitwriter *bw, unsigned sym) {
+    unsigned code, len;
+    if (sym < 144) { code = 0x30u + sym; len = 8; }
+    else if (sym < 256) { code = 0x190u + (sym - 144u); len = 9; }
+    else if (sym < 280) { code = sym - 256u; len = 7; }
+    else { code = 0xc0u + (sym - 280u); len = 8; }
+    bw_put(bw, rev_bits(code, len), len);
+}
+
+static int png_deflate(const unsigned char *in, size_t in_len, int window,
+        unsigned char **out, size_t *out_len) {
+    static const uint16_t len_base[30] = {
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+        35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258, 259
+    };
+    static const unsigned char len_extra[29] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+        3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+    };
+    static const uint16_t dist_base[31] = {
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+        257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577, 32769
+    };
+    static const unsigned char dist_extra[30] = {
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+        7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+    };
+    size_t max_out = in_len + (in_len >> 2) + (in_len / 32768u + 1u) * 16u + 64u;
+    unsigned char *buf = malloc(max_out);
+    int32_t *head = malloc(4096 * sizeof(int32_t));
+    int32_t *prev = malloc(32768 * sizeof(int32_t));
+    if (!buf || !head || !prev) {
+        free(buf);
+        free(head);
+        free(prev);
+        return 0;
+    }
+    for (size_t i = 0; i < 4096; i++) head[i] = -1;
+    unsigned cmf = (unsigned)((window - 8) << 4) | 8u;
+    unsigned flg = 0x80u;
+    flg += 31u - ((cmf << 8) + flg) % 31u;
+    buf[0] = (unsigned char)cmf;
+    buf[1] = (unsigned char)flg;
+    struct png_bitwriter bw = { buf, 2, 0, 0 };
+    size_t max_dist = ((size_t)1 << window) > 262 ? ((size_t)1 << window) - 262 : ((size_t)1 << window);
+    if (max_dist > 32768) max_dist = 32768;
+    size_t block_start = 0;
+    do {
+        size_t chunk = in_len - block_start;
+        if (chunk > 32768) chunk = 32768;
+        size_t block_end = block_start + chunk;
+        unsigned bfinal = block_end == in_len ? 1u : 0u;
+        size_t saved_pos = bw.pos;
+        uint64_t saved_bitbuf = bw.bitbuf;
+        unsigned saved_bitcnt = bw.bitcnt;
+        bw_put(&bw, bfinal | 2u, 3);
+        size_t pos = block_start;
+        while (pos < block_end) {
+            size_t best_len = 0, best_dist = 0;
+            if (pos + 3 <= block_end) {
+                unsigned h = (((unsigned)in[pos] << 4) ^ ((unsigned)in[pos + 1] << 2) ^
+                    (unsigned)in[pos + 2]) & 4095u;
+                int32_t match = head[h];
+                head[h] = (int32_t)pos;
+                prev[pos & 32767u] = match;
+                unsigned steps = 16;
+                while (match >= 0 && steps--) {
+                    size_t dist = pos - (size_t)match;
+                    if (dist > max_dist) break;
+                    size_t max_m = block_end - pos;
+                    if (max_m > 258) max_m = 258;
+                    if (in[match] == in[pos] && in[match + 1] == in[pos + 1] &&
+                            in[match + 2] == in[pos + 2]) {
+                        size_t mlen = 3;
+                        while (mlen < max_m && in[match + mlen] == in[pos + mlen]) mlen++;
+                        if (mlen > best_len) {
+                            best_len = mlen;
+                            best_dist = dist;
+                            if (mlen == 258) break;
+                        }
+                    }
+                    match = prev[(size_t)match & 32767u];
+                }
+            }
+            if (best_len >= 3) {
+                unsigned li = 0;
+                while (best_len >= len_base[li + 1]) li++;
+                bw_lit(&bw, 257u + li);
+                if (len_extra[li]) bw_put(&bw, (uint32_t)(best_len - len_base[li]), len_extra[li]);
+                unsigned di = 0;
+                while (best_dist >= dist_base[di + 1]) di++;
+                bw_put(&bw, rev_bits(di, 5), 5);
+                if (dist_extra[di]) bw_put(&bw, (uint32_t)(best_dist - dist_base[di]), dist_extra[di]);
+                for (size_t k = 1; k < best_len; k++) {
+                    size_t p = pos + k;
+                    if (p + 3 <= block_end) {
+                        unsigned h = (((unsigned)in[p] << 4) ^ ((unsigned)in[p + 1] << 2) ^
+                            (unsigned)in[p + 2]) & 4095u;
+                        prev[p & 32767u] = head[h];
+                        head[h] = (int32_t)p;
+                    }
+                }
+                pos += best_len;
+            } else {
+                bw_lit(&bw, in[pos]);
+                pos++;
+            }
+        }
+        bw_lit(&bw, 256);
+        size_t used_bytes = bw.pos + (bw.bitcnt ? 1u : 0u) - saved_pos;
+        if (used_bytes > chunk + 5u) {
+            bw.pos = saved_pos;
+            bw.bitbuf = saved_bitbuf;
+            bw.bitcnt = saved_bitcnt;
+            bw_put(&bw, bfinal, 3);
+            bw_align(&bw);
+            bw.buf[bw.pos++] = (unsigned char)(chunk & 0xffu);
+            bw.buf[bw.pos++] = (unsigned char)((chunk >> 8) & 0xffu);
+            bw.buf[bw.pos++] = (unsigned char)(~chunk & 0xffu);
+            bw.buf[bw.pos++] = (unsigned char)((~chunk >> 8) & 0xffu);
+            if (chunk) {
+                memcpy(bw.buf + bw.pos, in + block_start, chunk);
+                bw.pos += chunk;
+            }
+        }
+        block_start = block_end;
+    } while (block_start < in_len);
+    bw_align(&bw);
+    uint32_t adler = png_adler32(1u, in, in_len);
+    put32(bw.buf + bw.pos, adler);
+    bw.pos += 4;
+    free(head);
+    free(prev);
+    *out = buf;
+    *out_len = bw.pos;
+    return 1;
+}
+
 struct png_reader {
     const unsigned char *bytes;
     size_t length, offset;
@@ -84,8 +827,10 @@ struct png_reader {
     uint32_t trans_count, trans_gray, trans_rgb[3];
     uint32_t chunk_length, chunk_name, crc;
     uint32_t idat_size, next_sequence;
-    z_stream stream;
-    int stream_ready, stream_ended;
+    struct png_inflate *inflate;
+    const unsigned char *in_next;
+    size_t in_avail;
+    int stream_ended;
     unsigned char idat[IDAT_BUFFER];
     enum png_output output;
     unsigned char *pixels;
@@ -103,13 +848,6 @@ static uint32_t be16(const unsigned char *bytes) {
     return (uint32_t)bytes[0] << 8 | bytes[1];
 }
 
-static void put32(unsigned char *bytes, uint32_t value) {
-    bytes[0] = (unsigned char)(value >> 24);
-    bytes[1] = (unsigned char)(value >> 16);
-    bytes[2] = (unsigned char)(value >> 8);
-    bytes[3] = (unsigned char)value;
-}
-
 static int read_bytes(struct png_reader *png, void *output, size_t length) {
     if (length > png->length - png->offset) return 0;
     memcpy(output, png->bytes + png->offset, length);
@@ -119,7 +857,7 @@ static int read_bytes(struct png_reader *png, void *output, size_t length) {
 
 static int chunk_bytes(struct png_reader *png, unsigned char *output, uint32_t length) {
     if (!read_bytes(png, output, length)) return 0;
-    png->crc = (uint32_t)crc32(png->crc, output, length);
+    png->crc = tomoe_png_crc32(png->crc, output, length);
     return 1;
 }
 
@@ -139,7 +877,7 @@ static int read_header(struct png_reader *png) {
     png->chunk_length = be32(header);
     png->chunk_name = be32(header + 4);
     if (!name_valid(png->chunk_name)) return 0;
-    png->crc = (uint32_t)crc32(0, header + 4, 4);
+    png->crc = tomoe_png_crc32(0, header + 4, 4);
     return 1;
 }
 
@@ -568,9 +1306,9 @@ static int read_idat(struct png_reader *png, unsigned char *output, size_t count
     size_t remaining = count;
     for (;;) {
         int result;
-        unsigned space, produced, avail;
+        unsigned avail;
         if (!remaining) return 0;
-        if (png->stream.avail_in == 0) {
+        if (png->in_avail == 0) {
             while (png->idat_size == 0) {
                 if (finish_chunk(png, 0, 0)) return 1;
                 if (!read_header(png)) return 1;
@@ -580,24 +1318,17 @@ static int read_idat(struct png_reader *png, unsigned char *output, size_t count
             avail = png->idat_size > IDAT_BUFFER ? IDAT_BUFFER : png->idat_size;
             if (!chunk_bytes(png, png->idat, avail)) return 1;
             png->idat_size -= avail;
-            png->stream.next_in = png->idat;
-            png->stream.avail_in = avail;
+            png->in_next = png->idat;
+            png->in_avail = avail;
         }
-        space = remaining > 0x40000000u ? 0x40000000u : (unsigned)remaining;
-        png->stream.next_out = cursor;
-        png->stream.avail_out = space;
-        result = inflate(&png->stream, Z_NO_FLUSH);
-        produced = space - png->stream.avail_out;
-        cursor += produced;
-        remaining -= produced;
-        png->stream.avail_out = 0;
-        if (result == Z_STREAM_END) {
-            png->stream.next_out = NULL;
+        result = png_inflate_step(png->inflate, &png->in_next, &png->in_avail,
+            &cursor, &remaining);
+        if (result == INF_RES_END) {
             png->mode |= MODE_AFTER_IDAT;
             png->stream_ended = 1;
             return remaining != 0;
         }
-        if (result != Z_OK) return 1;
+        if (result != INF_RES_OK) return 1;
     }
 }
 
@@ -607,8 +1338,10 @@ static int finish_idat(struct png_reader *png) {
         size_t total = 0;
         for (;;) {
             int result;
-            unsigned produced, avail;
-            if (png->stream.avail_in == 0) {
+            unsigned avail;
+            unsigned char *out;
+            size_t out_avail;
+            if (png->in_avail == 0) {
                 while (png->idat_size == 0) {
                     if (finish_chunk(png, 0, 0)) return 1;
                     if (!read_header(png)) return 1;
@@ -618,31 +1351,31 @@ static int finish_idat(struct png_reader *png) {
                 avail = png->idat_size > IDAT_BUFFER ? IDAT_BUFFER : png->idat_size;
                 if (!chunk_bytes(png, png->idat, avail)) return 1;
                 png->idat_size -= avail;
-                png->stream.next_in = png->idat;
-                png->stream.avail_in = avail;
+                png->in_next = png->idat;
+                png->in_avail = avail;
             }
-            png->stream.next_out = buffer;
-            png->stream.avail_out = sizeof(buffer);
-            result = inflate(&png->stream, Z_NO_FLUSH);
-            produced = sizeof(buffer) - png->stream.avail_out;
-            png->stream.avail_out = 0;
-            if (result == Z_STREAM_END) {
+            out = buffer;
+            out_avail = sizeof(buffer);
+            result = png_inflate_step(png->inflate, &png->in_next, &png->in_avail,
+                &out, &out_avail);
+            if (result == INF_RES_END) {
                 png->mode |= MODE_AFTER_IDAT;
                 png->stream_ended = 1;
                 break;
             }
-            total += produced;
-            if (result != Z_OK || !total) break;
+            total += (size_t)(out - buffer);
+            if (result != INF_RES_OK || !total) break;
         }
         if (!png->stream_ended) {
             png->mode |= MODE_AFTER_IDAT;
             png->stream_ended = 1;
         }
     }
-    if (png->stream_ready) {
-        png->stream.next_in = NULL;
-        png->stream.avail_in = 0;
-        png->stream_ready = 0;
+    if (png->inflate) {
+        png->in_next = NULL;
+        png->in_avail = 0;
+        png_inflate_destroy(png->inflate);
+        png->inflate = NULL;
         if (finish_chunk(png, png->idat_size, 0)) return 1;
     }
     return 0;
@@ -684,12 +1417,12 @@ static int unfilter_row(struct png_reader *png, unsigned char *output,
 }
 
 static void release(struct png_reader *png) {
-    if (png->stream_ready) inflateEnd(&png->stream);
+    if (png->inflate) png_inflate_destroy(png->inflate);
     free(png->row);
     free(png->previous);
     free(png->line);
     png->row = png->previous = png->line = NULL;
-    png->stream_ready = 0;
+    png->inflate = NULL;
 }
 
 static enum png_status decode_rows(struct png_reader *png) {
@@ -711,9 +1444,8 @@ static enum png_status decode_rows(struct png_reader *png) {
     png->previous = calloc(1, largest + 1);
     png->line = malloc(largest + 1);
     if (!png->row || !png->previous || !png->line) return PNG_HARD;
-    memset(&png->stream, 0, sizeof(png->stream));
-    if (inflateInit2(&png->stream, 0) != Z_OK) return PNG_HARD;
-    png->stream_ready = 1;
+    png->inflate = png_inflate_create();
+    if (!png->inflate) return PNG_HARD;
     for (unsigned pass = png->interlace ? 0 : 6; pass < 7; pass++) {
         uint32_t width, height;
         size_t rowbytes;
@@ -866,8 +1598,8 @@ static int append_chunk(unsigned char **buffer, size_t *length, size_t *capacity
     if (count > UINT32_MAX) return 0;
     put32(header, (uint32_t)count);
     memcpy(header + 4, name, 4);
-    crc = (uint32_t)crc32(0, header + 4, 4);
-    crc = (uint32_t)crc32(crc, data, count);
+    crc = tomoe_png_crc32(0, header + 4, 4);
+    crc = tomoe_png_crc32(crc, data, count);
     put32(trailer, crc);
     return append(buffer, length, capacity, header, 8) &&
         append(buffer, length, capacity, data, count) &&
@@ -908,9 +1640,7 @@ enum png_status tomoe_png_encode(const unsigned char *argb32, uint32_t width,
     unsigned char header[13], scratch[4];
     size_t capacity = 0, file_length = 0, rowbytes, total, compressed_length = 0;
     unsigned bpp, filters, alpha = 0;
-    z_stream stream;
     if (!width || !height) return PNG_BAD;
-    memset(&stream, 0, sizeof(stream));
     for (uint32_t y = 0; y < height && !alpha; y++) {
         const unsigned char *row = argb32 + (size_t)y * stride;
         for (uint32_t x = 0; x < width; x++) {
@@ -970,34 +1700,12 @@ enum png_status tomoe_png_encode(const unsigned char *argb32, uint32_t width,
     }
     {
         size_t uncompressed = image_size(rowbytes, height);
-        int window = 15, ret;
+        int window = 15;
         if (uncompressed <= 16384) {
             unsigned half = 1u << (window - 1);
             while (uncompressed + 262 <= half) { half >>= 1; window--; }
         }
-        if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, window, 8,
-                filters == 0x08 ? Z_DEFAULT_STRATEGY : Z_FILTERED) != Z_OK) goto done;
-        compressed_length = deflateBound(&stream, total) + 64;
-        compressed = malloc(compressed_length);
-        if (!compressed) goto done;
-        stream.next_out = compressed;
-        stream.avail_out = (unsigned)compressed_length;
-        {
-            size_t offset = 0;
-            for (;;) {
-                size_t left = total - offset;
-                unsigned chunk = left > 0x40000000u ? 0x40000000u : (unsigned)left;
-                stream.next_in = filtered + offset;
-                stream.avail_in = chunk;
-                offset += chunk;
-                ret = deflate(&stream, offset == total ? Z_FINISH : Z_NO_FLUSH);
-                if (ret == Z_STREAM_END) break;
-                if (ret != Z_OK) goto done;
-            }
-        }
-        compressed_length -= stream.avail_out;
-        deflateEnd(&stream);
-        memset(&stream, 0, sizeof(stream));
+        if (!png_deflate(filtered, total, window, &compressed, &compressed_length)) goto done;
         optimize_cmf(compressed, uncompressed);
     }
     put32(header, width);
@@ -1026,7 +1734,6 @@ enum png_status tomoe_png_encode(const unsigned char *argb32, uint32_t width,
     *length = file_length;
     return PNG_OK;
 done:
-    if (stream.state) deflateEnd(&stream);
     free(filtered);
     free(raw);
     free(previous);
