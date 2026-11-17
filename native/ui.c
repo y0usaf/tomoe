@@ -4,7 +4,6 @@
 #include "draw.h"
 #include "fttext.h"
 
-#include <cairo.h>
 #include <inttypes.h>
 
 #include <float.h>
@@ -205,8 +204,6 @@ struct ui_canvas {
     size_t stride;
     uint64_t bytes;
     unsigned char *pixels;
-    cairo_surface_t *cairo_surface;
-    cairo_t *cairo;
     struct texture *texture;
 };
 
@@ -383,8 +380,6 @@ static void ui_texts_finish(void) {
 }
 
 static void canvas_destroy(struct ui_canvas *canvas) {
-    if (canvas->cairo) cairo_destroy(canvas->cairo);
-    if (canvas->cairo_surface) cairo_surface_destroy(canvas->cairo_surface);
     if (canvas->texture) texture_destroy(canvas->texture);
     free(canvas->pixels);
     free(canvas);
@@ -418,21 +413,7 @@ static void canvas_unref(struct ui_canvas *canvas) {
 }
 
 static bool canvas_ready(struct ui_canvas *canvas) {
-    if (canvas->cairo) return true;
-    canvas->cairo_surface = cairo_image_surface_create_for_data(canvas->pixels,
-        CAIRO_FORMAT_ARGB32, canvas->width, canvas->height, (int)canvas->stride);
-    if (cairo_surface_status(canvas->cairo_surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(canvas->cairo_surface);
-        canvas->cairo_surface = NULL;
-        return false;
-    }
-    canvas->cairo = cairo_create(canvas->cairo_surface);
-    if (cairo_status(canvas->cairo) != CAIRO_STATUS_SUCCESS) {
-        cairo_destroy(canvas->cairo);
-        canvas->cairo = NULL;
-        return false;
-    }
-    return true;
+    return canvas && canvas->pixels;
 }
 
 static void op_release(struct ui_op *op) {
@@ -1351,7 +1332,7 @@ static bool shape_shadow(struct ui_canvas *canvas, const struct ui_op *op, int i
         bool ok = true;
         if (spread > 0.0)
             ok = stroke_path(canvas, area, &path, 2.0 * spread,
-                CAIRO_LINE_CAP_ROUND, CAIRO_LINE_JOIN_ROUND, op->shadow_rgba[index]);
+                DP_CAP_ROUND, DP_JOIN_ROUND, op->shadow_rgba[index]);
         if (ok) ok = fill_path(canvas, area, &path, op->shadow_rgba[index]);
         dpath_fini(&path);
         return ok;
@@ -1367,7 +1348,7 @@ static bool shape_shadow(struct ui_canvas *canvas, const struct ui_op *op, int i
         if (!(step > 0.0)) continue;
         shape_path(&path, op, shadow[0], shadow[1]);
         ok = stroke_path_color(canvas, area, &path, 2.0 * (spread + blur * reach),
-            CAIRO_LINE_CAP_ROUND, CAIRO_LINE_JOIN_ROUND, red, green, blue, step);
+            DP_CAP_ROUND, DP_JOIN_ROUND, red, green, blue, step);
         dpath_fini(&path);
         dpath_init(&path);
     }
@@ -1392,7 +1373,7 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
                 op->width - op->stroke, op->height - op->stroke,
                 fmax(0.0, op->radius - inset));
             bool ok = stroke_path(canvas, area, &path, op->stroke,
-                CAIRO_LINE_CAP_BUTT, CAIRO_LINE_JOIN_MITER, op->rgba);
+                DP_CAP_BUTT, DP_JOIN_MITER, op->rgba);
             dpath_fini(&path);
             return ok;
         }
@@ -1411,7 +1392,7 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         dp_arc(&path, op->u.arc.cx, op->u.arc.cy, op->u.arc.radius,
             op->u.arc.start, op->u.arc.end, op->u.arc.end < op->u.arc.start);
         bool ok = stroke_path(canvas, area, &path, op->u.arc.thickness,
-            CAIRO_LINE_CAP_BUTT, CAIRO_LINE_JOIN_MITER, op->rgba);
+            DP_CAP_BUTT, DP_JOIN_MITER, op->rgba);
         dpath_fini(&path);
         return ok;
     }
@@ -1427,12 +1408,10 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
         const struct ui_text *entry = op->u.text.text;
         struct fte_rect box = { clip->x1, clip->y1, clip->x2, clip->y2 };
         struct ui_canvas *canvas = surface->canvas;
-        cairo_surface_flush(canvas->cairo_surface);
         fte_layout_draw(entry->layout, (double)entry->width, ceil(entry->line_height),
             (uint32_t *)canvas->pixels, (int)(canvas->stride / 4), canvas->width,
             canvas->height, box,
             op->x, op->y, op->rotate, op->rgba);
-        cairo_surface_mark_dirty(canvas->cairo_surface);
         break;
     }
     }
@@ -1442,7 +1421,6 @@ static bool op_paint(struct ui_surface *surface, const struct ui_op *op,
 static bool canvas_replay(struct ui_surface *surface, const struct region *damage) {
     struct ui_canvas *canvas = surface->canvas;
     if (!canvas_ready(canvas)) return false;
-    cairo_t *cairo = canvas->cairo;
     int count = 0;
     const struct rect *rects = region_rectangles(damage, &count);
     for (int i = 0; i < count; i++) {
@@ -1459,8 +1437,7 @@ static bool canvas_replay(struct ui_surface *surface, const struct region *damag
             if (!op_paint(surface, op, &clip)) return false;
         }
     }
-    cairo_surface_flush(canvas->cairo_surface);
-    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    return true;
 }
 
 static bool canvas_upload(struct tomoe *s, struct ui_surface *surface,

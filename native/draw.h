@@ -6,6 +6,9 @@
 
 #include "tor.h"
 
+enum { DP_CAP_BUTT, DP_CAP_ROUND, DP_CAP_SQUARE };
+enum { DP_JOIN_MITER, DP_JOIN_ROUND, DP_JOIN_BEVEL };
+
 struct dpoint { int32_t x, y; };
 
 enum dpath_op { DP_MOVE, DP_LINE, DP_CURVE, DP_CLOSE };

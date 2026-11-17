@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <cairo.h>
 
 struct program;
 struct texture;

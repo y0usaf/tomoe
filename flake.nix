@@ -96,15 +96,6 @@
             doCheck = false;
           });
           fontconfig = pkgs.fontconfig.override { inherit freetype; };
-          cairo = (pkgs.cairo.override {
-            x11Support = false;
-            xcbSupport = false;
-            inherit fontconfig freetype glib;
-          }).overrideAttrs (old: {
-            propagatedBuildInputs =
-              pkgs.lib.subtractLists [ pkgs.libpng ] old.propagatedBuildInputs;
-            mesonFlags = old.mesonFlags ++ [ "-Dpng=disabled" ];
-          });
           harfbuzz = (pkgs.harfbuzz.override {
             withGraphite2 = false;
             withIntrospection = false;
@@ -116,11 +107,11 @@
             (pkgs.pango.override {
               x11Support = false;
               withIntrospection = false;
-              inherit cairo harfbuzz glib;
+              inherit harfbuzz glib;
             }).overrideAttrs
               (old: {
                 buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
-                mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" ];
+                mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
               });
           libs = lean pkgs;
         in
@@ -157,7 +148,6 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             libs.libxkbcommon
-            cairo
             pango
             (resvg pkgs)
           ];
