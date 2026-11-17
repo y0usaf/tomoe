@@ -2004,12 +2004,12 @@ static int xml_preprocess(struct xml_parser *p, const char *data, size_t length,
 static struct xml_node *xml_parse_document(const void *data, size_t length) {
     struct xml_parser p; memset(&p, 0, sizeof(p)); p.data = data; p.length = length;
     struct xml_node *root = NULL;
+    struct svg_buf nb = { 0 };
     size_t bom = 0;
     if (length >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) bom = 3;
     p.pos = bom;
     if (!xml_skip_misc(&p)) goto done;
     if (p.pos >= p.length || p.data[p.pos] != '<') goto done;
-    struct svg_buf nb = { 0 };
     if (p.nentities) {
         struct xml_parser d; memset(&d, 0, sizeof(d));
         d.data = data; d.length = length; d.pos = bom;
