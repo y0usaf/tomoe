@@ -59,7 +59,7 @@ struct client {
     int drag[4];
     int buffer_width, buffer_height;
     bool mapped;
-    bool single_pixel, repaint, keys, pointer;
+    bool single_pixel, repaint, animate, animating, keys, pointer;
     unsigned change_step, change_count, repaint_step;
     struct wp_viewport *viewport;
     bool alpha_probe;
@@ -282,6 +282,8 @@ static void usage(void) {
            "  --resize-probe       map at --size, then answer the first configure that\n"
            "                       differs by committing a twice-as-large buffer cropped to\n"
            "                       that size with a viewport source, as Chromium does\n"
+           "  --animate            attach and damage the whole buffer once per frame the\n"
+           "                       compositor presents, a client that changes every refresh\n"
            "  --repaint            attach and damage the whole buffer: each commit with\n"
            "                       --commit-rate, once on each SIGUSR1 without it\n"
            "  --keys               print \"TITLE key CODE STATE\" for every key this window receives\n"
@@ -324,6 +326,7 @@ static void parse_options(int count, char **arguments, struct client *state) {
         { state->seconds = parse_number(option, option_value(option, value), 1, 86400); i++; }
         else if (strcmp(option, "--commit-rate") == 0)
         { state->commit_rate = parse_number(option, option_value(option, value), 1, 1000); i++; }
+        else if (strcmp(option, "--animate") == 0) state->animate = true;
         else if (strcmp(option, "--repaint") == 0) state->repaint = true;
         else if (strcmp(option, "--keys") == 0) state->keys = true;
         else if (strcmp(option, "--pointer") == 0) state->pointer = true;
@@ -847,6 +850,29 @@ static void bell_step(struct client *state) {
 
 static void change_step(struct client *state);
 
+static void animate_done(void *data, struct wl_callback *callback, uint32_t time);
+
+static const struct wl_callback_listener animate_listener = { .done = animate_done };
+
+static void animate_commit(struct client *state) {
+    if (!state->buffer) return;
+    uint32_t *words = state->pixels;
+    if (words && state->pixels_size >= sizeof(uint32_t))
+        words[0] = (words[0] & 0xffffff00u) | (++state->change_count & 0xffu);
+    wl_surface_attach(state->surface, state->buffer, 0, 0);
+    wl_surface_damage(state->surface, 0, 0, state->buffer_width, state->buffer_height);
+    struct wl_callback *next = wl_surface_frame(state->surface);
+    wl_callback_add_listener(next, &animate_listener, state);
+    wl_surface_commit(state->surface);
+    if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
+}
+
+static void animate_done(void *data, struct wl_callback *callback, uint32_t time) {
+    (void)time;
+    wl_callback_destroy(callback);
+    if (running && ((struct client *)data)->animate) animate_commit(data);
+}
+
 static void repaint_step(struct client *state) {
     if (!advance || !state->repaint) return;
     if (state->change_to) change_step(state);
@@ -865,6 +891,10 @@ static void run(struct client *state) {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (running && elapsed(&start) < (double)state->seconds) {
+        if (state->animate && state->buffer && !state->animating) {
+            state->animating = true;
+            animate_commit(state);
+        }
         alpha_step(state);
         repaint_step(state);
         content_step(state);
