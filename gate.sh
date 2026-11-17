@@ -109,10 +109,10 @@ else
 	mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
 	cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
 	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
-	sed -i "s/:background (list :shader (first shown) :fps (second shown)))))/:background (list :shader (first shown) :fps (second shown) :clock 0d0 :until 0d0))))/" \
+	held() { grep -E '\(first shown\)' "$DIR/init.lisp" | grep -q ':until'; }
+	held || sed -i "s/:background (list :shader (first shown) :fps (second shown)))))/:background (list :shader (first shown) :fps (second shown) :clock 0d0 :until 0d0))))/" \
 		"$DIR/init.lisp"
-	grep -q ":clock 0d0 :until 0d0" "$DIR/init.lisp" ||
-		die "the config no longer publishes the wallpaper the way the still fixture holds it"
+	held || die "the config no longer publishes the shader wallpaper the still fixture holds"
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
