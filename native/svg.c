@@ -3868,6 +3868,17 @@ static int svg_path_tight_bounds(struct svg_path *path, struct svg_bbox *out) {
 
 struct svg_stop { float offset; unsigned char r, g, b; float a; };
 
+struct svg_node;
+
+struct svg_ctx_paint {
+    int pending;
+    int invalid;
+    struct svg_matrix abs;
+    int has_bbox;
+    float bbox[4];
+    struct svg_node *group;
+};
+
 struct svg_gradient {
     int type;
     int units_bbox;
@@ -3876,6 +3887,7 @@ struct svg_gradient {
     float x1, y1, x2, y2, cx, cy, r, fx, fy, fr;
     struct svg_stop *stops;
     int nstops;
+    struct svg_ctx_paint ctx;
 };
 
 struct svg_pattern {
@@ -3887,6 +3899,7 @@ struct svg_pattern {
     float view_box[4];
     int align, slice;
     struct svg_node *root;
+    struct svg_ctx_paint ctx;
 };
 
 struct svg_paint {
@@ -4032,6 +4045,11 @@ struct svg_conv {
     const char *context_fill;
     const char *context_stroke;
     int in_context;
+    int ctx_active;
+    struct svg_matrix ctx_abs;
+    int ctx_has_bbox;
+    float ctx_bbox[4];
+    struct svg_node *ctx_group;
     float use_w, use_h;
     int use_w_set, use_h_set;
 };
@@ -4730,6 +4748,19 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
             svg_convert_paint(c, c->context_style, context, has_bbox, paint, opacity,
                 unsupported, !strcmp(trimmed, "context-fill"));
             c->in_context = was;
+            if (c->ctx_active) {
+                struct svg_ctx_paint *ctx = NULL;
+                if (paint->gradient) ctx = &paint->gradient->ctx;
+                else if (paint->pattern) ctx = &paint->pattern->ctx;
+                if (ctx) {
+                    memset(ctx, 0, sizeof(*ctx));
+                    ctx->pending = 1;
+                    ctx->abs = c->ctx_abs;
+                    ctx->has_bbox = c->ctx_has_bbox;
+                    if (ctx->has_bbox) memcpy(ctx->bbox, c->ctx_bbox, sizeof(ctx->bbox));
+                    ctx->group = c->ctx_group;
+                }
+            }
         }
         result = 1;
     } else if (!strcmp(trimmed, "currentColor")) {
@@ -6644,6 +6675,84 @@ static void svg_group_bboxes(struct svg_node *g) {
     g->abs_lbbox = svg_bbox_transform(g->lbbox, g->abs_transform);
 }
 
+static void svg_finish_context_rect(struct svg_ctx_paint *ctx, const struct svg_node *node,
+        float out[4]) {
+    if (ctx->has_bbox) {
+        memcpy(out, ctx->bbox, sizeof(ctx->bbox));
+        return;
+    }
+    if (ctx->group && ctx->group->has_bbox) {
+        out[0] = ctx->group->bbox.left;
+        out[1] = ctx->group->bbox.top;
+        out[2] = ctx->group->bbox.right - ctx->group->bbox.left;
+        out[3] = ctx->group->bbox.bottom - ctx->group->bbox.top;
+        if (out[2] > 0.0f && out[3] > 0.0f) return;
+    }
+    (void)node;
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
+}
+
+static int svg_finish_context_rev(struct svg_ctx_paint *ctx, const struct svg_node *node,
+        struct svg_matrix *rev) {
+    int ok = 0;
+    struct svg_matrix inv = svg_matrix_invert(ctx->abs, &ok);
+    if (!ok) return 0;
+    struct svg_matrix rel = svg_matrix_concat(inv, node->abs_transform);
+    *rev = svg_matrix_invert(rel, &ok);
+    return ok;
+}
+
+static void svg_finish_context_gradient(struct svg_gradient *g, struct svg_node *node) {
+    if (!g || !g->ctx.pending) return;
+    g->ctx.pending = 0;
+    struct svg_matrix rev;
+    if (!svg_finish_context_rev(&g->ctx, node, &rev)) { g->ctx.invalid = 1; return; }
+    if (g->units_bbox) {
+        float bbox[4];
+        svg_finish_context_rect(&g->ctx, node, bbox);
+        if (!(bbox[2] > 0.0f) || !(bbox[3] > 0.0f)) { g->ctx.invalid = 1; return; }
+        struct svg_matrix b = { bbox[2], 0.0f, 0.0f, bbox[3], bbox[0], bbox[1] };
+        g->transform = svg_matrix_concat(rev, svg_matrix_concat(b, g->transform));
+        g->units_bbox = 0;
+        return;
+    }
+    g->transform = svg_matrix_concat(rev, g->transform);
+}
+
+static void svg_finish_context_pattern(struct svg_pattern *pt, struct svg_node *node) {
+    if (!pt || !pt->ctx.pending) return;
+    pt->ctx.pending = 0;
+    struct svg_matrix rev;
+    if (!svg_finish_context_rev(&pt->ctx, node, &rev)) { pt->ctx.invalid = 1; return; }
+    if (pt->units_bbox) {
+        float bbox[4];
+        svg_finish_context_rect(&pt->ctx, node, bbox);
+        if (!(bbox[2] > 0.0f) || !(bbox[3] > 0.0f)) { pt->ctx.invalid = 1; return; }
+        struct svg_matrix b = { bbox[2], 0.0f, 0.0f, bbox[3], bbox[0], bbox[1] };
+        pt->rect[0] = pt->rect[0] * bbox[2] + bbox[0];
+        pt->rect[1] = pt->rect[1] * bbox[3] + bbox[1];
+        pt->rect[2] = pt->rect[2] * bbox[2];
+        pt->rect[3] = pt->rect[3] * bbox[3];
+        pt->units_bbox = 0;
+        pt->transform = svg_matrix_concat(rev, svg_matrix_concat(b, pt->transform));
+        (void)b;
+        return;
+    }
+    pt->transform = svg_matrix_concat(rev, pt->transform);
+}
+
+static void svg_finish_context_paints(struct svg_node *n) {
+    if (!n || n->type != 1) {
+        if (!n) return;
+        for (int i = 0; i < n->nchildren; i++) svg_finish_context_paints(n->children[i]);
+        return;
+    }
+    svg_finish_context_gradient(n->fill.paint.gradient, n);
+    svg_finish_context_gradient(n->stroke.paint.gradient, n);
+    svg_finish_context_pattern(n->fill.paint.pattern, n);
+    svg_finish_context_pattern(n->stroke.paint.pattern, n);
+}
+
 static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
         int force, int clip_context, int is_g_or_use, struct svg_node *g,
         struct svg_matrix abs_parent, int *required_out) {
@@ -7096,6 +7205,10 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
         }
     }
     inner_conv.in_context = 0;
+    inner_conv.ctx_active = 1;
+    inner_conv.ctx_abs = inner->abs_transform;
+    inner_conv.ctx_has_bbox = 0;
+    inner_conv.ctx_group = inner;
     if (linked_symbol) {
         svg_convert_children(&inner_conv, child, inner, inner->abs_transform, clip_context);
     } else {
@@ -7881,6 +7994,17 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
                 }
             }
             nested.in_context = 0;
+            struct svg_bbox marked_bbox = svg_bbox_empty();
+            if (svg_path_tight_bounds(geom, &marked_bbox)) {
+                nested.ctx_active = 1;
+                nested.ctx_abs = abs;
+                nested.ctx_has_bbox = 1;
+                nested.ctx_bbox[0] = marked_bbox.left;
+                nested.ctx_bbox[1] = marked_bbox.top;
+                nested.ctx_bbox[2] = marked_bbox.right - marked_bbox.left;
+                nested.ctx_bbox[3] = marked_bbox.bottom - marked_bbox.top;
+                nested.ctx_group = NULL;
+            }
             svg_convert_children(&nested, marker, g, g->abs_transform, 0);
             svg_group_bboxes(g);
             if (g->nchildren) svg_node_add(group, g);
@@ -9313,6 +9437,7 @@ struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
         return NULL;
     }
     svg_doc_calculate_root_bboxes(g);
+    svg_finish_context_paints(g);
     svg_node_add(tree_root, g);
     svg->root = tree_root;
     if (conv.unsupported) svg->root->unsupported = 1;
@@ -9691,7 +9816,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     }
     if (paint->type == 12) {
         struct svg_pattern *pt = paint->pattern;
-        if (!pt || !pt->root) { shader->type = -1; return; }
+        if (!pt || !pt->root || pt->ctx.invalid) { shader->type = -1; return; }
         float rect[4] = { pt->rect[0], pt->rect[1], pt->rect[2], pt->rect[3] };
         if (pt->units_bbox) {
             if (!has_bbox) { shader->type = -1; return; }
@@ -9766,6 +9891,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         return;
     }
     struct svg_gradient *g = paint->gradient;
+    if (g->ctx.invalid) { shader->type = -1; return; }
     int n = g->nstops;
     struct svg_stop stops[64];
     if (n > 64) n = 64;
