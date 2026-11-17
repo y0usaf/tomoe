@@ -45,7 +45,7 @@ within one and a quarter refreshes at the median and three at the 99th for nine
 tenths of the refreshes in the window, six tenths for the drag and for the
 wallpaper after a key, and two and a half and four for two fifths for the client
 that repaints every frame. Then it holds every frame the headless output commits on
-a fence that signals five refreshes later (`TOMOE_TEST_FENCE` names a file holding its
+a fence, one of the dependencies its render wait waits for, that signals five refreshes later (`TOMOE_TEST_FENCE` names a file holding its
 milliseconds; the output records each held frame in that name plus `.log`), with a
 client painting from its frame callback, and fails unless the client animated on its
 own before the hold and no presentation feedback or frame callback reached it, or
