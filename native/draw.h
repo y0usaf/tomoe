@@ -103,6 +103,22 @@ void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,
     int filter, int extend, int op, const struct dp_coverage *coverage,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);
 
+enum { DP_GRADIENT_LINEAR, DP_GRADIENT_RADIAL };
+enum { DP_GRADIENT_STOPS = 16 };
+
+struct dp_gradient_stop { double offset; uint32_t rgba; };
+
+struct dp_gradient {
+    int radial, stop_count;
+    double p1x, p1y, p2x, p2y, r1, r2;
+    struct dp_pattern matrix;
+    struct dp_gradient_stop stops[DP_GRADIENT_STOPS];
+};
+
+void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
+    const struct dp_gradient *gradient, const struct dp_coverage *coverage,
+    int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);
+
 void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
     const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
     int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,

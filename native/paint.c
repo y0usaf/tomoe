@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: (LGPL-2.1-only OR MPL-1.1) AND MIT; derived from cairo cairo-image-source.c and cairo-matrix.c and pixman pixman-bits-image.c, pixman-matrix.c and pixman.c, see NOTICE */
 #include "draw.h"
 
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -634,4 +635,333 @@ void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,
         }
     }
     free(params);
+}
+
+struct gradient_stop16 { int32_t x; uint16_t a, r, g, b; };
+
+struct gradient_walker {
+    int count;
+    struct gradient_stop16 *stops;
+    int64_t left_x, right_x;
+    float a_s, a_b, r_s, r_b, g_s, g_b, b_s, b_b;
+    int need_reset;
+};
+
+struct dp_gradient_built {
+    int radial;
+    int32_t p1x, p1y, p2x, p2y, r1, r2;
+    int64_t dx, dy;
+    int64_t l;
+    double inva;
+    double mindr;
+    int64_t radial_a;
+    int32_t c1x, c1y, c1r, dr;
+    int64_t rdx, rdy, rdr;
+    int count;
+    struct gradient_stop16 *stops;
+    struct fixed_matrix transform;
+    int ix, iy;
+    int horizontal;
+};
+
+static void gradient_walker_reset(struct gradient_walker *walker, int64_t pos)
+{
+    int64_t x = pos;
+    int n, count = walker->count;
+    struct gradient_stop16 *stops = walker->stops + 1;
+    struct gradient_stop16 *left_c, *right_c;
+    int64_t left_x, right_x;
+    float la, lr, lg, lb, ra, rr, rg, rb, lx, rx;
+
+    for (n = 0; n < count; n++)
+        if (x < stops[n].x) break;
+    left_x = stops[n - 1].x;
+    left_c = &stops[n - 1];
+    right_x = stops[n].x;
+    right_c = &stops[n];
+
+    la = (left_c->a * (1.0f / 257.0f));
+    lr = (left_c->r * (1.0f / 257.0f));
+    lg = (left_c->g * (1.0f / 257.0f));
+    lb = (left_c->b * (1.0f / 257.0f));
+    ra = (right_c->a * (1.0f / 257.0f));
+    rr = (right_c->r * (1.0f / 257.0f));
+    rg = (right_c->g * (1.0f / 257.0f));
+    rb = (right_c->b * (1.0f / 257.0f));
+
+    lx = left_x * (1.0f / 65536.0f);
+    rx = right_x * (1.0f / 65536.0f);
+
+    if ((-FLT_MIN < (rx - lx) && (rx - lx) < FLT_MIN) ||
+            left_x == INT32_MIN || right_x == INT32_MAX) {
+        walker->a_s = walker->r_s = walker->g_s = walker->b_s = 0.0f;
+        walker->a_b = (la + ra) / 510.0f;
+        walker->r_b = (lr + rr) / 510.0f;
+        walker->g_b = (lg + rg) / 510.0f;
+        walker->b_b = (lb + rb) / 510.0f;
+    } else {
+        float w_rec = 1.0f / (rx - lx);
+        walker->a_b = (la * rx - ra * lx) * w_rec * (1.0f / 255.0f);
+        walker->r_b = (lr * rx - rr * lx) * w_rec * (1.0f / 255.0f);
+        walker->g_b = (lg * rx - rg * lx) * w_rec * (1.0f / 255.0f);
+        walker->b_b = (lb * rx - rb * lx) * w_rec * (1.0f / 255.0f);
+        walker->a_s = (ra - la) * w_rec * (1.0f / 255.0f);
+        walker->r_s = (rr - lr) * w_rec * (1.0f / 255.0f);
+        walker->g_s = (rg - lg) * w_rec * (1.0f / 255.0f);
+        walker->b_s = (rb - lb) * w_rec * (1.0f / 255.0f);
+    }
+    walker->left_x = left_x;
+    walker->right_x = right_x;
+    walker->need_reset = 0;
+}
+
+static uint32_t gradient_walker_pixel(struct gradient_walker *walker, int64_t x)
+{
+    float y, a, r, g, b;
+    if (walker->need_reset || x < walker->left_x || x >= walker->right_x)
+        gradient_walker_reset(walker, x);
+    y = x * (1.0f / 65536.0f);
+    a = 255.0f * (walker->a_s * y + walker->a_b);
+    r = a * (walker->r_s * y + walker->r_b);
+    g = a * (walker->g_s * y + walker->g_b);
+    b = a * (walker->b_s * y + walker->b_b);
+    return (((uint32_t)(a + .5f) << 24) & 0xff000000) |
+        (((uint32_t)(r + .5f) << 16) & 0x00ff0000) |
+        (((uint32_t)(g + .5f) << 8) & 0x0000ff00) |
+        (((uint32_t)(b + .5f) >> 0) & 0x000000ff);
+}
+
+static int64_t gradient_dot(int64_t x1, int64_t y1, int64_t z1,
+    int64_t x2, int64_t y2, int64_t z2)
+{
+    return x1 * x2 + y1 * y2 + z1 * z2;
+}
+
+static uint32_t gradient_radial_pixel(const struct dp_gradient_built *g,
+    struct gradient_walker *walker, int64_t b, int64_t c)
+{
+    if (g->radial_a == 0) {
+        double t;
+        if (b == 0) return 0;
+        t = ((1 << 16) / 2 * c) / b;
+        return (double)t * g->dr >= g->mindr ? gradient_walker_pixel(walker, (int64_t)t) : 0;
+    }
+    {
+        double discr = (double)b * (double)b - (double)g->radial_a * (double)c;
+        if (discr >= 0) {
+            double sqrtdiscr = sqrt(discr);
+            double t0 = ((double)b + sqrtdiscr) * g->inva;
+            double t1 = ((double)b - sqrtdiscr) * g->inva;
+            if (t0 * g->dr >= g->mindr)
+                return gradient_walker_pixel(walker, (int64_t)t0);
+            if (t1 * g->dr >= g->mindr)
+                return gradient_walker_pixel(walker, (int64_t)t1);
+        }
+    }
+    return 0;
+}
+
+static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradient *gradient,
+    double xc, double yc)
+{
+    struct dp_pattern matrix = gradient->matrix;
+    double c1x, c1y, c1r, c2x, c2y, c2r;
+    double dim;
+    if (gradient->stop_count < 1 || gradient->stop_count > DP_GRADIENT_STOPS) return false;
+    if (gradient->radial) {
+        c1x = gradient->p1x; c1y = gradient->p1y; c1r = gradient->r1;
+        c2x = gradient->p2x; c2y = gradient->p2y; c2r = gradient->r2;
+        dim = fabs(c1x);
+        dim = fmax(dim, fabs(c1y));
+        dim = fmax(dim, fabs(c1r));
+        dim = fmax(dim, fabs(c2x));
+        dim = fmax(dim, fabs(c2y));
+        dim = fmax(dim, fabs(c2r));
+        dim = fmax(dim, fabs(c1x - c2x));
+        dim = fmax(dim, fabs(c1y - c2y));
+        dim = fmax(dim, fabs(c1r - c2r));
+    } else {
+        c1x = gradient->p1x; c1y = gradient->p1y; c1r = 0;
+        c2x = gradient->p2x; c2y = gradient->p2y; c2r = 0;
+        dim = fabs(c1x);
+        dim = fmax(dim, fabs(c1y));
+        dim = fmax(dim, fabs(c2x));
+        dim = fmax(dim, fabs(c2y));
+        dim = fmax(dim, fabs(c1x - c2x));
+        dim = fmax(dim, fabs(c1y - c2y));
+    }
+    dim = fmax(dim, fabs(matrix.xx));
+    dim = fmax(dim, fabs(matrix.xy));
+    dim = fmax(dim, fabs(matrix.x0));
+    dim = fmax(dim, fabs(matrix.yx));
+    dim = fmax(dim, fabs(matrix.yy));
+    dim = fmax(dim, fabs(matrix.y0));
+    if (dim > 16383.0) {
+        double scale = 16383.0 / dim;
+        c1x *= scale; c1y *= scale; c1r *= scale;
+        c2x *= scale; c2y *= scale; c2r *= scale;
+        matrix.xx *= scale; matrix.xy *= scale;
+        matrix.yx *= scale; matrix.yy *= scale;
+    }
+    memset(out, 0, sizeof(*out));
+    out->radial = gradient->radial;
+    out->p1x = fixed_16_16(c1x);
+    out->p1y = fixed_16_16(c1y);
+    out->p2x = fixed_16_16(c2x);
+    out->p2y = fixed_16_16(c2y);
+    out->r1 = fixed_16_16(c1r);
+    out->r2 = fixed_16_16(c2r);
+    out->count = gradient->stop_count;
+    out->stops = calloc((size_t)out->count + 2, sizeof(*out->stops));
+    if (!out->stops) return false;
+    for (int i = 0; i < out->count; i++) {
+        uint32_t rgba = gradient->stops[i].rgba;
+        double alpha = (rgba & 0xff) / 255.0;
+        double red = ((rgba >> 24) & 0xff) / 255.0;
+        double green = ((rgba >> 16) & 0xff) / 255.0;
+        double blue = ((rgba >> 8) & 0xff) / 255.0;
+        out->stops[i + 1].x = fixed_16_16(gradient->stops[i].offset);
+        out->stops[i + 1].a = (uint16_t)(alpha * 65535.0 + 0.5);
+        out->stops[i + 1].r = (uint16_t)(red * 65535.0 + 0.5);
+        out->stops[i + 1].g = (uint16_t)(green * 65535.0 + 0.5);
+        out->stops[i + 1].b = (uint16_t)(blue * 65535.0 + 0.5);
+    }
+    out->stops[0] = out->stops[1];
+    out->stops[0].x = INT32_MIN;
+    out->stops[out->count + 1] = out->stops[out->count];
+    out->stops[out->count + 1].x = INT32_MAX;
+    if (gradient->radial) {
+        out->c1x = out->p1x; out->c1y = out->p1y; out->c1r = out->r1;
+        out->rdx = (int64_t)out->p2x - out->p1x;
+        out->rdy = (int64_t)out->p2y - out->p1y;
+        out->rdr = (int64_t)out->r2 - out->r1;
+        out->dr = (int32_t)out->rdr;
+        out->radial_a = gradient_dot(out->rdx, out->rdy, -out->rdr,
+            out->rdx, out->rdy, out->rdr);
+        out->inva = out->radial_a != 0 ? (1. * 65536.) / (double)out->radial_a : 0.0;
+        out->mindr = -1. * 65536. * (double)out->c1r;
+    } else {
+        out->dx = (int64_t)out->p2x - out->p1x;
+        out->dy = (int64_t)out->p2y - out->p1y;
+        out->l = out->dx * out->dx + out->dy * out->dy;
+    }
+    build_transform(&matrix, &out->ix, &out->iy, xc, yc, &out->transform);
+    return true;
+}
+
+static void gradient_span(const struct dp_gradient_built *g, struct gradient_walker *walker,
+    uint32_t *row, int x0, int count, int y)
+{
+    int64_t v[3];
+    v[0] = ((int64_t)(x0 + g->ix) << 16) + 0x8000;
+    v[1] = ((int64_t)(y + g->iy) << 16) + 0x8000;
+    v[2] = 1 << 16;
+    if (!transform_point_3d(&g->transform, v)) return;
+    if (!g->radial) {
+        if (g->l == 0 || v[2] == 0) {
+            uint32_t colour = gradient_walker_pixel(walker, 0);
+            for (int i = 0; i < count; i++) row[i] = colour;
+            return;
+        }
+        {
+            int64_t t, next_inc;
+            double inc;
+            double invden = 65536 * (double)65536 /
+                ((double)g->l * (double)v[2]);
+            double v2 = v[2] * (1. / 65536);
+            t = (int64_t)((((g->dx * v[0] + g->dy * v[1]) -
+                (g->dx * g->p1x + g->dy * g->p1y) * v2) * invden));
+            inc = (g->dx * g->transform.m[0][0] + g->dy * g->transform.m[1][0]) * invden;
+            next_inc = 0;
+            if (((int64_t)(inc * count)) == 0) {
+                uint32_t colour = gradient_walker_pixel(walker, t);
+                for (int i = 0; i < count; i++) row[i] = colour;
+            } else {
+                for (int i = 0; i < count; i++) {
+                    row[i] = gradient_walker_pixel(walker, t + next_inc);
+                    next_inc = inc * (i + 1);
+                }
+            }
+        }
+    } else {
+        int64_t b, db, c, dc, ddc;
+        int64_t rx = v[0] - g->c1x;
+        int64_t ry = v[1] - g->c1y;
+        int64_t ux = g->transform.m[0][0];
+        int64_t uy = g->transform.m[1][0];
+        b = gradient_dot(rx, ry, g->c1r, g->rdx, g->rdy, g->rdr);
+        db = gradient_dot(ux, uy, 0, g->rdx, g->rdy, 0);
+        c = gradient_dot(rx, ry, -((int64_t)g->c1r), rx, ry, g->c1r);
+        dc = gradient_dot(2 * rx + ux, 2 * ry + uy, 0, ux, uy, 0);
+        ddc = 2 * gradient_dot(ux, uy, 0, ux, uy, 0);
+        for (int i = 0; i < count; i++) {
+            row[i] = gradient_radial_pixel(g, walker, b, c);
+            b += db;
+            c += dc;
+            dc += ddc;
+        }
+    }
+}
+
+void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
+    const struct dp_gradient *gradient, const struct dp_coverage *coverage,
+    int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h)
+{
+    struct dp_gradient_built built;
+    int bx0 = extents_x < 0 ? 0 : extents_x;
+    int by0 = extents_y < 0 ? 0 : extents_y;
+    int bxe = extents_x + extents_w > dst_w ? dst_w : extents_x + extents_w;
+    int bye = extents_y + extents_h > dst_h ? dst_h : extents_y + extents_h;
+    int cx0 = clip.x0 < 0 ? 0 : clip.x0;
+    int cy0 = clip.y0 < 0 ? 0 : clip.y0;
+    int cx1 = clip.x1 > dst_w ? dst_w : clip.x1;
+    int cy1 = clip.y1 > dst_h ? dst_h : clip.y1;
+    int width = cx1 - cx0;
+    uint32_t *row = NULL;
+    if (cx0 >= cx1 || cy0 >= cy1) return;
+    if (!gradient_build(&built, gradient, bx0 + (bxe - bx0) / 2.0, by0 + (bye - by0) / 2.0))
+        return;
+    row = malloc((size_t)width * sizeof(*row));
+    if (!row) {
+        free(built.stops);
+        return;
+    }
+    {
+        struct gradient_walker walker;
+        memset(&walker, 0, sizeof(walker));
+        walker.count = built.count;
+        walker.stops = built.stops;
+        walker.need_reset = 1;
+        for (int Y = cy0; Y < cy1; Y++) {
+            const unsigned char *mask = coverage ? coverage->pixels +
+                (size_t)(Y - coverage->y) * (size_t)coverage->stride + (size_t)(cx0 - coverage->x)
+                : NULL;
+            int x = 0;
+            while (x < width) {
+                int start, count;
+                if (mask) {
+                    int solid;
+                    while (x < width && mask[x] == 0) x++;
+                    if (x >= width) break;
+                    solid = mask[x] == 0xff;
+                    start = x;
+                    while (x < width && (solid ? mask[x] == 0xff :
+                            (mask[x] != 0 && mask[x] != 0xff))) x++;
+                } else {
+                    start = x;
+                    x = width;
+                }
+                count = x - start;
+                gradient_span(&built, &walker, row, cx0 + start, count, Y);
+                for (int i = 0; i < count; i++) {
+                    int X = cx0 + start + i;
+                    uint32_t *d = &dst[(size_t)Y * (size_t)dst_stride + X];
+                    unsigned m = mask ? mask[start + i] : 0xffu;
+                    *d = dp_masked_over(*d, row[i], (uint8_t)m);
+                }
+            }
+        }
+    }
+    free(row);
+    free(built.stops);
 }

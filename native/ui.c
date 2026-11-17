@@ -912,21 +912,6 @@ static void rounded_path(struct dpath *path, double x, double y, double width,
     dp_close_path(path);
 }
 
-static void rounded_path_cairo(cairo_t *cairo, double x, double y, double width,
-        double height, double radius) {
-    radius = fmin(radius, fmin(width, height) / 2.0);
-    if (radius <= 0.0) {
-        cairo_rectangle(cairo, x, y, width, height);
-        return;
-    }
-    const double pi = 3.14159265358979323846;
-    cairo_new_sub_path(cairo);
-    cairo_arc(cairo, x + width - radius, y + radius, radius, -pi / 2, 0);
-    cairo_arc(cairo, x + width - radius, y + height - radius, radius, 0, pi / 2);
-    cairo_arc(cairo, x + radius, y + height - radius, radius, pi / 2, pi);
-    cairo_arc(cairo, x + radius, y + radius, radius, pi, 3 * pi / 2);
-    cairo_close_path(cairo);
-}
 
 static void shape_path(struct dpath *path, const struct ui_op *op, double dx, double dy) {
     if (op->point_count >= 6) {
@@ -939,16 +924,6 @@ static void shape_path(struct dpath *path, const struct ui_op *op, double dx, do
     }
 }
 
-static void shape_path_cairo(cairo_t *cairo, const struct ui_op *op) {
-    if (op->point_count >= 6) {
-        cairo_move_to(cairo, op->x + op->points[0], op->y + op->points[1]);
-        for (long i = 2; i + 1 < op->point_count; i += 2)
-            cairo_line_to(cairo, op->x + op->points[i], op->y + op->points[i + 1]);
-        cairo_close_path(cairo);
-    } else {
-        rounded_path_cairo(cairo, op->x, op->y, op->width, op->height, op->radius);
-    }
-}
 
 static bool fill_path_color(struct ui_canvas *canvas, struct drect area,
         const struct dpath *path, double red, double green, double blue, double alpha) {
@@ -1326,48 +1301,52 @@ int tomoe_present_ui_arc(struct tomoe *s, double cx, double cy, double radius,
     return 1;
 }
 
-static cairo_pattern_t *shape_pattern(const struct ui_op *op) {
-    if (op->fill == UI_FILL_SOLID || op->stop_count < 2) return NULL;
-    cairo_pattern_t *pattern;
+static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
+        const struct rect *clip) {
+    struct ui_canvas *canvas = surface->canvas;
+    struct dp_gradient gradient;
+    struct drect area = { clip->x1, clip->y1, clip->x2, clip->y2 };
+    int span = area.x1 - area.x0;
+    if (span <= 0 || area.y1 <= area.y0 || op->stop_count < 2) return true;
+    memset(&gradient, 0, sizeof(gradient));
+    gradient.stop_count = op->stop_count;
+    for (int i = 0; i < op->stop_count; i++) {
+        gradient.stops[i].offset = op->stop_at[i];
+        gradient.stops[i].rgba = op->stop_rgba[i];
+    }
     if (op->fill == UI_FILL_LINEAR) {
         double angle = op->geometry[0];
         double dx = cos(angle), dy = sin(angle);
         double centre_x = op->x + op->width / 2.0, centre_y = op->y + op->height / 2.0;
         double half = 0.5 * (fabs(dx) * op->width + fabs(dy) * op->height);
-        pattern = cairo_pattern_create_linear(centre_x - dx * half, centre_y - dy * half,
-            centre_x + dx * half, centre_y + dy * half);
+        gradient.p1x = centre_x - dx * half;
+        gradient.p1y = centre_y - dy * half;
+        gradient.p2x = centre_x + dx * half;
+        gradient.p2y = centre_y + dy * half;
+        gradient.matrix = (struct dp_pattern){ 1, 0, 0, 1, 0, 0 };
     } else {
-        pattern = cairo_pattern_create_radial(0, 0, 0, 0, 0, 1);
-        cairo_matrix_t matrix;
-        cairo_matrix_init_translate(&matrix, op->x + op->geometry[0] * op->width,
-            op->y + op->geometry[1] * op->height);
-        cairo_matrix_scale(&matrix,
-            op->geometry[2] * op->width > 0.001 ? op->geometry[2] * op->width : 0.001,
-            op->geometry[3] * op->height > 0.001 ? op->geometry[3] * op->height : 0.001);
-        cairo_pattern_set_matrix(pattern, &matrix);
+        double sx = op->geometry[2] * op->width, sy = op->geometry[3] * op->height;
+        gradient.radial = 1;
+        gradient.r2 = 1;
+        gradient.matrix = (struct dp_pattern){ sx > 0.001 ? sx : 0.001, 0, 0,
+            sy > 0.001 ? sy : 0.001, op->x + op->geometry[0] * op->width,
+            op->y + op->geometry[1] * op->height };
     }
-    for (int i = 0; i < op->stop_count; i++) {
-        double red, green, blue, alpha;
-        color_components(op->stop_rgba[i], &red, &green, &blue, &alpha);
-        cairo_pattern_add_color_stop_rgba(pattern, op->stop_at[i], red, green, blue, alpha);
+    unsigned char *coverage = calloc((size_t)span * (size_t)(area.y1 - area.y0), 1);
+    if (!coverage) return false;
+    struct dpath path;
+    dpath_init(&path);
+    shape_path(&path, op, 0.0, 0.0);
+    bool ok = dp_fill_mask(&path, area, coverage, span, area.x0, area.y0);
+    dpath_fini(&path);
+    if (ok) {
+        struct dp_coverage mask = { coverage, span, area.x0, area.y0 };
+        dp_paint_gradient((uint32_t *)canvas->pixels, (int)(canvas->stride / 4), area,
+            &gradient, &mask, canvas->width, canvas->height,
+            area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
     }
-    return pattern;
-}
-
-static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
-        const struct rect *clip) {
-    cairo_t *cairo = surface->canvas->cairo;
-    cairo_pattern_t *pattern = shape_pattern(op);
-    if (!pattern) return true;
-    cairo_save(cairo);
-    cairo_rectangle(cairo, clip->x1, clip->y1, clip->x2 - clip->x1, clip->y2 - clip->y1);
-    cairo_clip(cairo);
-    cairo_set_source(cairo, pattern);
-    shape_path_cairo(cairo, op);
-    cairo_fill(cairo);
-    cairo_restore(cairo);
-    cairo_pattern_destroy(pattern);
-    return cairo_status(cairo) == CAIRO_STATUS_SUCCESS;
+    free(coverage);
+    return ok;
 }
 
 static bool shape_shadow(struct ui_canvas *canvas, const struct ui_op *op, int index,
