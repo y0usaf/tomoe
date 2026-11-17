@@ -52,11 +52,12 @@ Nothing reaches the running desktop.
   GATE_SOAK     after the run, keep cycling palettes, themes, focus storms and
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
-  GATE_WAKE_FIRST_US     how late the frame carrying the first input after a hold
-                may be presented (default three refreshes)
+  GATE_WAKE_FIRST_US     how late the worst of three first frames after a hold may
+                be presented (default three refreshes)
+  GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default two)
   GATE_WAKE_CADENCE_US   the median interval between presented frames while input
                 flows (default one and a quarter refreshes)
-  GATE_WAKE_CADENCE_P99_US  the hundredth-percentile interval (default two)
+  GATE_WAKE_CADENCE_P99_US  the hundredth-percentile interval (default two and a half)
 
 It refuses to start while DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET or
 TOMOE_SOCKET is set or a fake kernel input device exists (see tools/isolate).
@@ -125,7 +126,7 @@ else
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
 	PERIOD_US=$(( 1000000 / HZ ))
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 ))}
-	FIRST_P50_US=${GATE_WAKE_FIRST_P50_US:-$(( PERIOD_US * 2 ))}
+	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 ))}
 	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 5 / 2 ))}
 	cat >>"$DIR/init.lisp" <<'LISP'
@@ -147,7 +148,7 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		PERIOD_US FIRST_US FIRST_P50_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		PERIOD_US FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -321,45 +322,53 @@ cadence() {
 	say "$label: $count frames presented in 1.6 s ($drew drawn), interval p50 ${p50}us p99 ${p99}us"
 }
 
-wake_from_rest() {
-	local label=$1 channel=$2 count p50 p99 max
-	shift 2
-	timings_reset
-	"$@"
-	sleep 0.4
-	timings_read
-	count=$(timing "$channel" count)
-	[[ -n $count ]] || die "$label: the timings name no $channel"
-	((count > 0)) || die "$label: the $channel of that input was never measured"
-	p50=$(timing "$channel" p50) p99=$(timing "$channel" p99) max=$(timing "$channel" max)
-	((p50 <= FIRST_P50_US)) ||
-		die "$label: the first frame after it took ${p50}us, past ${FIRST_P50_US}us"
-	((max <= FIRST_US)) ||
-		die "$label: the frame carrying it was presented ${max}us after it, past ${FIRST_US}us"
-	say "$label: first frame p50 ${p50}us p99 ${p99}us max ${max}us ($count measured)"
-	printf '%s %s %s %s\n' "$label" "$p50" "$p99" "$max" >>"$DIR/wake"
+wake_timed() {
+	local label=$1 channel=$2 p50_limit=$3 max_limit=$4 i value latched
+	shift 4
+	local -a values=() latches=() sorted=()
+	for ((i = 0; i < 3; i++)); do
+		quiet "$label"
+		timings_reset
+		"$@"
+		sleep 0.4
+		timings_read
+		value=$(timing "$channel" max)
+		latched=$(timing "latch-${channel#present-}" max)
+		[[ -n $value && -n $latched ]] || die "$label: the timings did not measure that wake"
+		values+=("$value")
+		latches+=("$latched")
+		printf '%s %s %s\n' "$label" "$value" "$latched" >>"$DIR/wake"
+	done
+	mapfile -t sorted < <(printf '%s\n' "${latches[@]}" | sort -n)
+	((sorted[2] <= $(( PERIOD_US * 3 / 2 )))) ||
+		die "$label: the frame that carried it only started ${sorted[2]}us after it, past the $(( PERIOD_US * 3 / 2 ))us an input may wait for one"
+	mapfile -t sorted < <(printf '%s\n' "${values[@]}" | sort -n)
+	((sorted[1] <= p50_limit)) ||
+		die "$label: the first frame took ${sorted[1]}us at the median of three, past ${p50_limit}us"
+	((sorted[2] <= max_limit)) ||
+		die "$label: the worst of three first frames took ${sorted[2]}us, past ${max_limit}us"
+	say "$label: first frame ${sorted[0]}/${sorted[1]}/${sorted[2]}us (min/median/max), latched ${latches[*]}us"
 }
 
 wake_check() {
-	local label=$1 box x y w h serial pid before after
+	local label=$1 box x y w h serial pid before after i
 	box=$(focused_box)
 	[[ -n $box ]] || die "$label: nothing is focused to wake"
 	set -- $box
 	x=$1 y=$2 w=$3 h=$4 serial=$5
 	local cx=$(( x + w / 2 )) cy=$(( y + h / 2 ))
-	quiet "$label key"
-	wake_from_rest "$label key" present-input type_key "key 42 down" sync "key 42 up" sync
-	quiet "$label pointer"
-	wake_from_rest "$label pointer" present-input pointer \
-		"move $(( cx - 401 )) $(( cy - 199 ))"
+	wake_timed "$label key" present-input "$FIRST_MEDIAN_US" "$FIRST_US" \
+		type_key "key 42 down" sync "key 42 up" sync
+	wake_timed "$label pointer" present-input "$FIRST_MEDIAN_US" "$FIRST_US" \
+		pointer "move $(( cx - 401 )) $(( cy - 199 ))"
 	((serial >= 1 && serial <= ${#CLIENTS[@]})) ||
 		die "$label: no client for the focused window $serial"
 	pid=${CLIENTS[$((serial - 1))]}
 	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
-	quiet "$label damage"
-	wake_from_rest "$label damage" present-commit kill -USR1 "$pid"
+	wake_timed "$label damage" present-commit "$FIRST_MEDIAN_US" "$FIRST_US" \
+		kill -USR1 "$pid"
 
-	local moves=() i
+	local moves=()
 	for ((i = 0; i < 500; i++)); do
 		moves+=("move $(( cx - 300 + i % 160 )) $(( cy - 100 + i % 120 ))" "sleep 4")
 	done
@@ -398,8 +407,7 @@ wake_check() {
 
 	quiet "$label commit"
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
-		--size 320x240 --color 664422 --app-id gate-wake \
-		--title gate-wake \
+		--size 320x240 --color 664422 --app-id gate-wake --title gate-wake \
 		>>"$DIR/clients" 2>&1 </dev/null &
 	pid=$!
 	sleep 0.8
