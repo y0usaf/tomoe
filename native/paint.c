@@ -849,6 +849,23 @@ static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradie
     return true;
 }
 
+static int gradient_extents_fit(const struct fixed_matrix *t, int x1, int y1, int x2, int y2)
+{
+    int64_t xs[2], ys[2];
+    xs[0] = ((int64_t)x1 << 16) + 0x8000;
+    xs[1] = ((int64_t)x2 << 16) - 0x8000;
+    ys[0] = ((int64_t)y1 << 16) + 0x8000;
+    ys[1] = ((int64_t)y2 << 16) - 0x8000;
+    for (int i = 0; i < 4; i++) {
+        int64_t v[3];
+        v[0] = (i & 1) ? xs[0] : xs[1];
+        v[1] = (i & 2) ? ys[0] : ys[1];
+        v[2] = 1 << 16;
+        if (!transform_point_3d(t, v)) return 0;
+    }
+    return 1;
+}
+
 static void gradient_span(const struct dp_gradient_built *g, struct gradient_walker *walker,
     uint32_t *row, int x0, int count, int y)
 {
@@ -921,6 +938,11 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     if (cx0 >= cx1 || cy0 >= cy1) return;
     if (!gradient_build(&built, gradient, bx0 + (bxe - bx0) / 2.0, by0 + (bye - by0) / 2.0))
         return;
+    if (!gradient_extents_fit(&built.transform, extents_x, extents_y,
+            extents_x + extents_w, extents_y + extents_h)) {
+        free(built.stops);
+        return;
+    }
     row = malloc((size_t)width * sizeof(*row));
     if (!row) {
         free(built.stops);
@@ -940,13 +962,11 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
             while (x < width) {
                 int start, count;
                 if (mask) {
-                    int solid;
                     while (x < width && mask[x] == 0) x++;
                     if (x >= width) break;
-                    solid = mask[x] == 0xff;
                     start = x;
-                    while (x < width && (solid ? mask[x] == 0xff :
-                            (mask[x] != 0 && mask[x] != 0xff))) x++;
+                    x = width;
+                    while (x > start && mask[x - 1] == 0) x--;
                 } else {
                     start = x;
                     x = width;
