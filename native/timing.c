@@ -22,7 +22,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "mat-init", "mat-quantize", "mat-replay", "mat-output", "mat-layers", "mat-surfaces", "mat-build",
     "tx-dirty", "tx-reconcile", "parse", "transaction",
     "mat-total", "mat-config",
-    "latch-input", "latch-commit", "present-input", "present-commit",
+    "latch-input", "latch-commit", "present-input", "present-commit", "present-interval",
     "cursor-newest", "cursor-oldest",
 };
 

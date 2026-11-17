@@ -579,7 +579,7 @@ struct screen {
     int cursor_seen_hotspot_x, cursor_seen_hotspot_y;
     float cursor_seen_scale;
     size_t commit_seq;
-    int64_t vblank_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
+    int64_t vblank_ns, present_ns, frame_start_ns, frame_armed_ns, frame_ready_ns, frame_target_ns, frame_cost_ns;
     struct {
         uint16_t buckets[TOMOE_COST_BUCKETS];
         uint16_t heavy[TOMOE_COST_BUCKETS];

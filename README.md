@@ -157,8 +157,9 @@ nanoseconds: pointer and drag motion to the frame carrying it, a key press to th
 transaction applying it, the wait between an input and its frame, each phase of a
 policy transaction and of a frame, and a client commit to its frame. It also prints
 the same inputs measured to the vblank that presented them, so `latch-input` is
-how old the newest input was when the frame took it and `present-input` is how long
-every input waited for the display. `cursor-newest` and `cursor-oldest` follow pointer
+how old the newest input was when the frame took it, `present-input` is how long
+every input waited for the display, and `present-interval` is how far apart the
+frames the display presented were. `cursor-newest` and `cursor-oldest` follow pointer
 motion from the kernel's own event timestamp to the vblank that scanned out the
 cursor plane carrying it: the newest and the oldest motion each cursor update took. The samples are kept only when the compositor
 starts with

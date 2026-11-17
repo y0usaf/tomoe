@@ -649,11 +649,15 @@ void screen_schedule_animation(struct screen *screen) {
 
 void screen_send_present(struct screen *screen, struct screen_present *present) {
     present->output = screen;
+    int64_t when = (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec;
     if (present->presented && screen->kind == SCREEN_HEADLESS && test_frame_clock())
-        screen->vblank_ns = (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec;
-    if (timing_enabled && present->presented)
-        timing_screen_present(screen,
-            (int64_t)present->when.tv_sec * 1000000000 + present->when.tv_nsec);
+        screen->vblank_ns = when;
+    if (timing_enabled && present->presented) {
+        if (screen->present_ns && when > screen->present_ns)
+            timing_add(TIMING_PRESENT_INTERVAL, (uint64_t)(when - screen->present_ns));
+        screen->present_ns = when;
+        timing_screen_present(screen, when);
+    }
     wl_signal_emit_mutable(&screen->events.present, present);
 }
 
