@@ -108,10 +108,15 @@
             xcbSupport = false;
           };
           harfbuzz = pkgs.harfbuzz.override { withGraphite2 = false; };
-          pango = pkgs.pango.override {
-            x11Support = false;
-            inherit cairo harfbuzz;
-          };
+          pango =
+            (pkgs.pango.override {
+              x11Support = false;
+              inherit cairo harfbuzz;
+            }).overrideAttrs
+              (old: {
+                buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
+                mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" ];
+              });
           libs = lean pkgs;
         in
         pkgs.stdenv.mkDerivation {
