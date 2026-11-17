@@ -920,6 +920,20 @@ static void gradient_span(const struct dp_gradient_built *g, struct gradient_wal
     }
 }
 
+static void gradient_flush(const struct dp_gradient_built *g, struct gradient_walker *walker,
+    uint32_t *row, uint32_t *dst, int dst_stride, const unsigned char *mask,
+    int origin, int x0, int len, int y, int opaque)
+{
+    if (len <= 0) return;
+    if (!gradient_extents_fit(&g->transform, origin + x0, y, origin + x0 + len, y + 1)) return;
+    gradient_span(g, walker, row, origin + x0, len, y);
+    for (int i = 0; i < len; i++) {
+        uint32_t *d = &dst[(size_t)y * (size_t)dst_stride + origin + x0 + i];
+        unsigned m = opaque ? 0xffu : mask[x0 + i];
+        *d = dp_masked_over(*d, row[i], (uint8_t)m);
+    }
+}
+
 void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient *gradient, const struct dp_coverage *coverage,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h)
@@ -938,11 +952,6 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     if (cx0 >= cx1 || cy0 >= cy1) return;
     if (!gradient_build(&built, gradient, bx0 + (bxe - bx0) / 2.0, by0 + (bye - by0) / 2.0))
         return;
-    if (!gradient_extents_fit(&built.transform, extents_x, extents_y,
-            extents_x + extents_w, extents_y + extents_h)) {
-        free(built.stops);
-        return;
-    }
     row = malloc((size_t)width * sizeof(*row));
     if (!row) {
         free(built.stops);
@@ -980,39 +989,21 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
                 while (xe < end && (mask ? mask[xe] : 0xff) == here) xe++;
                 if (xe - x > 1) {
                     if (xe - x >= 256 && here == 0xff) {
-                        if (x1 != x0) {
-                            gradient_span(&built, &walker, row, cx0 + x0, x1 - x0, Y);
-                            for (int i = 0; i < x1 - x0; i++) {
-                                uint32_t *d = &dst[(size_t)Y * (size_t)dst_stride + cx0 + x0 + i];
-                                *d = dp_masked_over(*d, row[i], mask[x0 + i]);
-                            }
-                        }
-                        gradient_span(&built, &walker, row, cx0 + x, xe - x, Y);
-                        for (int i = 0; i < xe - x; i++) {
-                            uint32_t *d = &dst[(size_t)Y * (size_t)dst_stride + cx0 + x + i];
-                            *d = dp_masked_over(*d, row[i], 0xff);
-                        }
+                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
+                            x1 - x0, Y, 0);
+                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x,
+                            xe - x, Y, 1);
                         x0 = xe;
                     } else if (here == 0 && x1 - x0 > 256) {
-                        gradient_span(&built, &walker, row, cx0 + x0, x1 - x0, Y);
-                        for (int i = 0; i < x1 - x0; i++) {
-                            uint32_t *d = &dst[(size_t)Y * (size_t)dst_stride + cx0 + x0 + i];
-                            *d = dp_masked_over(*d, row[i], mask[x0 + i]);
-                        }
+                        gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0,
+                            x1 - x0, Y, 0);
                         x0 = xe;
                     }
                 }
                 x1 = xe;
                 x = xe;
             }
-            if (x1 != x0) {
-                gradient_span(&built, &walker, row, cx0 + x0, x1 - x0, Y);
-                for (int i = 0; i < x1 - x0; i++) {
-                    uint32_t *d = &dst[(size_t)Y * (size_t)dst_stride + cx0 + x0 + i];
-                    unsigned m = mask ? mask[x0 + i] : 0xffu;
-                    *d = dp_masked_over(*d, row[i], (uint8_t)m);
-                }
-            }
+            gradient_flush(&built, &walker, row, dst, dst_stride, mask, cx0, x0, x1 - x0, Y, 0);
         }
     }
     free(row);
