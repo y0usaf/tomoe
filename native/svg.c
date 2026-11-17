@@ -4205,9 +4205,9 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                         paint->type = 1;
                         paint->r = stops[0].r; paint->g = stops[0].g; paint->b = stops[0].b;
                         *opacity = stops[0].a;
+                        have = 1;
                     }
                     free(stops);
-                    have = 1;
                 } else if (units_bbox && !has_bbox) {
                     free(stops);
                 } else {
@@ -5747,28 +5747,32 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     const char *clip_value = svg_style_get(c->doc, st, "clip-path");
     if (clip_value && strcmp(clip_value, "none")) {
         char id[256];
-        if (!svg_parse_funciri(clip_value, id, sizeof(id))) return 0;
-        struct xml_node *link = svg_id_last(c->doc, id);
-        if (!link || !svg_tag_is(link, "clipPath")) return 0;
-        clip = svg_alloc(sizeof(*clip));
-        if (!clip) return 0;
-        if (!svg_make_clip(c, link, object_bbox, have_object_bbox, clip)) {
-            free(clip);
-            return 0;
+        if (svg_parse_funciri(clip_value, id, sizeof(id))) {
+            struct xml_node *link = svg_id_last(c->doc, id);
+            if (link) {
+                if (!svg_tag_is(link, "clipPath")) return 0;
+                clip = svg_alloc(sizeof(*clip));
+                if (!clip || !svg_make_clip(c, link, object_bbox, have_object_bbox, clip)) {
+                    free(clip);
+                    return 0;
+                }
+            }
         }
     }
     struct svg_mask *mask = NULL;
     const char *mask_value = svg_style_get(c->doc, st, "mask");
     if (!clip_context && mask_value && strcmp(mask_value, "none")) {
         char id[256];
-        if (!svg_parse_funciri(mask_value, id, sizeof(id))) return 0;
-        struct xml_node *link = svg_id_last(c->doc, id);
-        if (!link || !svg_tag_is(link, "mask")) return 0;
-        mask = svg_alloc(sizeof(*mask));
-        if (!mask) return 0;
-        if (!svg_make_mask(c, link, object_bbox, have_object_bbox, mask)) {
-            free(mask);
-            return 0;
+        if (svg_parse_funciri(mask_value, id, sizeof(id))) {
+            struct xml_node *link = svg_id_last(c->doc, id);
+            if (link) {
+                if (!svg_tag_is(link, "mask")) return 0;
+                mask = svg_alloc(sizeof(*mask));
+                if (!mask || !svg_make_mask(c, link, object_bbox, have_object_bbox, mask)) {
+                    free(mask);
+                    return 0;
+                }
+            }
         }
     }
     int filtered = 0;
@@ -5777,36 +5781,24 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
         char id[256];
         if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
             struct svg_filter *css = svg_alloc(sizeof(*css));
-            if (css && svg_make_css_filter(c, filter_value, object_bbox, have_object_bbox, css)) {
-                g->filter = css;
-                filtered = 1;
-            } else {
+            if (!css || !svg_make_css_filter(c, filter_value, object_bbox, have_object_bbox, css)) {
                 free(css);
+                return 0;
             }
-            goto filter_done;
+            g->filter = css;
+            filtered = 1;
+        } else {
+            struct xml_node *link = svg_id_last(c->doc, id);
+            if (!link || !svg_tag_is(link, "filter")) return 0;
+            struct svg_filter *filter = svg_alloc(sizeof(*filter));
+            if (!filter || !svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
+                free(filter);
+                return 0;
+            }
+            g->filter = filter;
+            filtered = 1;
         }
-        struct xml_node *link = svg_id_last(c->doc, id);
-        if (!link || !svg_tag_is(link, "filter")) {
-            svg_free_clip(clip);
-            svg_free_mask(mask);
-            return 0;
-        }
-        struct svg_filter *filter = svg_alloc(sizeof(*filter));
-        if (!filter) {
-            svg_free_clip(clip);
-            svg_free_mask(mask);
-            return 0;
-        }
-        if (!svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
-            free(filter);
-            svg_free_clip(clip);
-            svg_free_mask(mask);
-            return 0;
-        }
-        g->filter = filter;
-        filtered = 1;
     }
-filter_done:
     if (clip) g->clip = clip;
     if (mask) g->mask = mask;
     int required = g->opacity != 1.0f || clip || mask || filtered ||
@@ -6023,6 +6015,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     translate.tx = x; translate.ty = y;
     int linked_symbol = !strcmp(child_tag, "symbol");
     struct svg_conv nested = *c;
+    struct svg_matrix symbol_ts = translate;
     struct svg_matrix content_ts = svg_matrix_concat(orig, translate);
     struct svg_node *clip_holder = NULL;
     if (linked_symbol) {
@@ -6045,6 +6038,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
             if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
             struct svg_matrix vb_ts = svg_viewbox_transform(vb, aspect, w, h);
             content_ts = svg_matrix_concat(content_ts, vb_ts);
+            symbol_ts = svg_matrix_concat(symbol_ts, vb_ts);
         }
         const char *overflow = svg_style_get(c->doc, child_st, "overflow");
         if (!overflow || (strcmp(overflow, "visible") && strcmp(overflow, "auto"))) {
@@ -6103,12 +6097,16 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                 if (!strcmp(blend_text, modes[i])) { outer->blend = i + 1; break; }
         }
     }
-    outer->transform = orig;
-    outer->abs_transform = svg_matrix_concat(abs, orig);
-    struct svg_node *inner = svg_node_new(0);
+    outer->transform = linked_symbol && !clip_holder ? svg_matrix_identity() : orig;
+    outer->abs_transform = svg_matrix_concat(abs, outer->transform);
+    struct svg_node *inner = NULL;
+    if (linked_symbol) {
+        inner = svg_group_alloc(c, child, child_st, 0, clip_context, outer->abs_transform, NULL);
+    } else {
+        inner = svg_node_new(0);
+    }
     if (!inner) { svg_node_destroy(outer); return; }
-    inner->transform = linked_symbol ? content_ts : svg_matrix_identity();
-    if (!linked_symbol) inner->transform = translate;
+    inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : translate;
     inner->abs_transform = svg_matrix_concat(outer->abs_transform, inner->transform);
     if (linked_symbol) {
         svg_convert_children(c, child, inner, inner->abs_transform, clip_context);
@@ -6116,8 +6114,18 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
         svg_convert_element(c, child, inner, inner->abs_transform, clip_context);
     }
     if (!inner->nchildren) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
-    svg_group_bboxes(inner);
-    svg_node_add(outer, inner);
+    if (linked_symbol) {
+        int symbol_required = 0;
+        if (!svg_group_finish(c, child, child_st, 0, clip_context, 0, inner,
+                outer->abs_transform, &symbol_required)) {
+            svg_node_destroy(inner);
+            svg_node_destroy(outer);
+            return;
+        }
+    } else {
+        svg_group_bboxes(inner);
+    }
+    if (!svg_node_add(outer, inner)) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
     int required = 0;
     if (!svg_group_finish(c, node, st, 0, clip_context, 1, outer, abs, &required)) {
         svg_node_destroy(outer);
