@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 cairo-colr-glyph-render.c, see NOTICE */
 #include "colr.h"
 #include "draw.h"
+#include "intersect.h"
 #include "mesh.h"
 
 #include <ft2build.h>
@@ -27,6 +28,9 @@ struct colr_ctx {
     int clip_stride;
     struct drect clip_extent;
     bool clip_extent_unbounded;
+    struct dp_polygon clip_polygon;
+    bool has_clip_polygon;
+    bool clip_sweep;
     struct drect box;
     struct drect ink;
     bool ink_unbounded;
@@ -443,6 +447,22 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
         extents = intersected(extents, ctx->clip_extent);
     ctx->clip_extent = extents;
     ctx->clip_extent_unbounded = false;
+    bool intersect = ctx->has_clip_polygon && ctx->clip_sweep;
+    struct dp_polygon polygon;
+    if (!dp_path_fill_to_polygon(path, &polygon))
+        dp_polygon_init(&polygon);
+    if (!path->fill_is_rectilinear || polygon.count > 2)
+        ctx->clip_sweep = true;
+    if (ctx->has_clip_polygon)
+        dp_polygon_intersect(&polygon, &ctx->clip_polygon);
+    ctx->clip_polygon = polygon;
+    ctx->has_clip_polygon = true;
+    if (intersect && (polygon.status != PX_STATUS_SUCCESS || polygon.count == 0)) {
+        ctx->clip = NULL;
+        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+        ctx->clip_stride = 0;
+        return false;
+    }
     struct drect area = intersected(box, image_box(ctx));
     if (area.x0 >= area.x1 || area.y0 >= area.y1) {
         ctx->clip = NULL;
@@ -458,23 +478,36 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
         ctx->clip_stride = 0;
         return false;
     }
-    bool filled = path->fill_is_rectilinear &&
-        rect_mask(path, area, pixels, w, area.x0, area.y0);
-    if (!filled) {
-        struct dp_spans spans;
-        memset(&spans, 0, sizeof(spans));
-        if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0,
-                PX_ANTIALIAS_GRAY, &spans)) {
+    bool filled = false;
+    if (intersect) {
+        filled = dp_polygon_fill_mask(&ctx->clip_polygon, area, pixels, w,
+            area.x0, area.y0);
+        if (!filled) {
             free(pixels);
-            dp_spans_fini(&spans);
             ctx->clip = NULL;
             ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
             ctx->clip_stride = 0;
             return false;
         }
-        dp_spans_fini(&spans);
+    } else {
+        filled = path->fill_is_rectilinear &&
+            rect_mask(path, area, pixels, w, area.x0, area.y0);
+        if (!filled) {
+            struct dp_spans spans;
+            memset(&spans, 0, sizeof(spans));
+            if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0,
+                    PX_ANTIALIAS_GRAY, &spans)) {
+                free(pixels);
+                dp_spans_fini(&spans);
+                ctx->clip = NULL;
+                ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+                ctx->clip_stride = 0;
+                return false;
+            }
+            dp_spans_fini(&spans);
+        }
     }
-    if (ctx->clip) {
+    if (!intersect && ctx->clip) {
         const unsigned char *old = ctx->clip +
             (size_t)(area.y0 - ctx->clip_box.y0) * (size_t)ctx->clip_stride +
             (size_t)(area.x0 - ctx->clip_box.x0);
@@ -1185,12 +1218,16 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->level = ctx->level + 1;
     child->is_clear = true;
     child->box = (struct drect){ 0, 0, w, h };
+    memset(&child->clip_polygon, 0, sizeof(child->clip_polygon));
+    child->has_clip_polygon = false;
+    child->clip_sweep = false;
     return true;
 }
 
 static void group_end(struct colr_ctx *ctx, struct colr_ctx *child, uint32_t *pixels,
     struct drect box, int op)
 {
+    dp_polygon_fini(&child->clip_polygon);
     free(child->clip);
     composite_image(ctx, pixels, child->width, box, op);
     free(pixels);
@@ -1216,6 +1253,9 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
     struct drect saved_extent = ctx->clip_extent;
     bool saved_unbounded = ctx->clip_extent_unbounded;
     struct drect saved_box = ctx->box;
+    struct dp_polygon saved_polygon = ctx->clip_polygon;
+    bool saved_has_polygon = ctx->has_clip_polygon;
+    bool saved_sweep = ctx->clip_sweep;
     clip_set(ctx, &path, intersected(box, saved_clip_box));
     ctx->box = box;
     int saved_level = ctx->level;
@@ -1229,6 +1269,10 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
     ctx->clip_extent = saved_extent;
     ctx->clip_extent_unbounded = saved_unbounded;
     ctx->box = saved_box;
+    dp_polygon_fini(&ctx->clip_polygon);
+    ctx->clip_polygon = saved_polygon;
+    ctx->has_clip_polygon = saved_has_polygon;
+    ctx->clip_sweep = saved_sweep;
     dpath_fini(&path);
 }
 
@@ -1294,6 +1338,9 @@ static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
     int saved_clip_stride = ctx->clip_stride;
     struct drect saved_extent = ctx->clip_extent;
     bool saved_unbounded = ctx->clip_extent_unbounded;
+    struct dp_polygon saved_polygon = ctx->clip_polygon;
+    bool saved_has_polygon = ctx->has_clip_polygon;
+    bool saved_sweep = ctx->clip_sweep;
     ctx->clip = saved_clip;
     clip_quad_push(ctx, corners, box);
     play(ctx, &child);
@@ -1303,6 +1350,10 @@ static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
     ctx->clip_stride = saved_clip_stride;
     ctx->clip_extent = saved_extent;
     ctx->clip_extent_unbounded = saved_unbounded;
+    dp_polygon_fini(&ctx->clip_polygon);
+    ctx->clip_polygon = saved_polygon;
+    ctx->has_clip_polygon = saved_has_polygon;
+    ctx->clip_sweep = saved_sweep;
     ctx->level = saved_level;
 }
 
@@ -1812,6 +1863,7 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     }
     play(&ctx, &paint);
     free(ctx.clip);
+    dp_polygon_fini(&ctx.clip_polygon);
     out->pixels = ctx.pixels;
     out->width = ctx.width;
     out->height = ctx.height;
