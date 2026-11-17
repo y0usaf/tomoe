@@ -60,7 +60,7 @@ struct client {
     int buffer_width, buffer_height;
     bool mapped;
     bool single_pixel, repaint, keys, pointer;
-    unsigned change_step, change_count;
+    unsigned change_step, change_count, repaint_step;
     struct wp_viewport *viewport;
     bool alpha_probe;
     unsigned alpha_step;
@@ -282,12 +282,13 @@ static void usage(void) {
            "  --resize-probe       map at --size, then answer the first configure that\n"
            "                       differs by committing a twice-as-large buffer cropped to\n"
            "                       that size with a viewport source, as Chromium does\n"
-           "  --repaint            with --commit-rate, attach and damage the whole buffer each time\n"
+           "  --repaint            attach and damage the whole buffer: each commit with\n"
+           "                       --commit-rate, once on each SIGUSR1 without it\n"
            "  --keys               print \"TITLE key CODE STATE\" for every key this window receives\n"
            "  --pointer            print \"TITLE pointer enter|leave|motion|button ...\" for every pointer\n"
            "                       event this window receives\n"
-           "  --change-to [AA]RRGGBB  with --repaint, each SIGUSR1 steps the fill through\n"
-           "                       alternating with --color every commit, holding this colour,\n"
+           "  --change-to [AA]RRGGBB  with --repaint, each commit steps the fill through\n"
+           "                       alternating with --color, holding this colour, and\n"
            "                       alternating again and holding --color\n",
            program);
 }
@@ -844,11 +845,28 @@ static void bell_step(struct client *state) {
 
 
 
+static void change_step(struct client *state);
+
+static void repaint_step(struct client *state) {
+    if (!advance || !state->repaint) return;
+    if (state->change_to) change_step(state);
+    else advance = 0;
+    if (!state->buffer) fail("--repaint before the surface has a buffer");
+    wl_surface_attach(state->surface, state->buffer, 0, 0);
+    wl_surface_damage(state->surface, 0, 0, state->buffer_width, state->buffer_height);
+    wl_surface_commit(state->surface);
+    if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
+    roundtrip("the repaint");
+    printf("repaint-step %u\n", ++state->repaint_step);
+    fflush(stdout);
+}
+
 static void run(struct client *state) {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (running && elapsed(&start) < (double)state->seconds) {
         alpha_step(state);
+        repaint_step(state);
         content_step(state);
         tag_step(state);
         dialog_step(state);
