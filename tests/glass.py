@@ -135,19 +135,46 @@ def misses(rows, test):
     return [(row, test(row)) for row in rows if not test(row)]
 
 
-dark_miss = misses(range(12, 21), lambda row: crop(glass, 9, row)[0] * 2 <=
-                   crop(plain, 9, row)[0] + 6)
-light_miss = misses(range(12, 21), lambda row: crop(glass, 8, row)[0] >= 150 and
-                    crop(glass, 8, row)[0] >= crop(plain, 8, row)[0] + 6)
+dark_miss = misses(range(12, 21), lambda row: crop(plain, 9, row)[0] < 150 or
+                   crop(glass, 9, row)[0] <= crop(plain, 9, row)[0] - 40)
+light_miss = misses(range(12, 21), lambda row: crop(plain, 8, row)[0] >= 150 or
+                    crop(glass, 8, row)[0] >= crop(plain, 8, row)[0] + 40)
 for row in (12, 16, 20):
     print(f"edge row {row}: light {crop(plain, 8, row)} -> {crop(glass, 8, row)}, "
           f"dark {crop(plain, 9, row)} -> {crop(glass, 9, row)}")
-assert not dark_miss, f"the glass has no dark line against the silhouette: {dark_miss[:3]}"
-assert not light_miss, f"the glass has no light line outside the silhouette: {light_miss[:3]}"
+assert not dark_miss, f"the glass has no dark line against a light backdrop: {dark_miss[:3]}"
+assert not light_miss, f"the glass has no light line over a dark backdrop: {light_miss[:3]}"
+
+
+def solid(unit, colour):
+    machine.execute(f"systemctl stop {unit} 2>/dev/null; systemctl reset-failed {unit}",
+                    check_return=False)
+    client(unit, "--mode layer --layer top --anchor top,bottom,left,right "
+                 f"--size 1280x720 --color {colour}")
+    point(400, 300)
+    wait_glass(HEAD, True)
+    return region(390, 290, 48, 48, unit)
+
+
+def body(values):
+    inside = [(col, row) for row in range(27, 33) for col in range(13, 19)]
+    return sum(crop(values, col, row)[0] for col, row in inside) / len(inside)
+
+
+light = body(solid("glass-flat-light", "F4F4F6"))
+dark = body(solid("glass-flat-dark", "121218"))
+print(f"body over a light backdrop {light:.0f}, over a dark one {dark:.0f}")
+assert light < 190, f"the glass body does not read over a light backdrop: {light:.0f}"
+assert dark > 120, f"the glass body does not read over a dark backdrop: {dark:.0f}"
+machine.execute("systemctl stop glass-flat-light glass-flat-dark 2>/dev/null; "
+                "systemctl reset-failed glass-flat-light glass-flat-dark",
+                check_return=False)
+point(400, 300)
+wait_glass(HEAD, True)
 outside = region(300, 200, 40, 40, "outside")
 assert region(300, 200, 40, 40, "outside-again") == outside
 
-held = int(rested[":FRAME"])
+held = int(output_frames(HEAD)[":FRAME"])
 time.sleep(1.0)
 still = output_frames(HEAD)
 print(f"frames while still: {int(still[':FRAME']) - held}")
