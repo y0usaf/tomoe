@@ -3296,7 +3296,6 @@ static int svg_required_features_ok(struct svg_style *st, struct svg_doc *doc) {
             if (n == 2 && !memcmp(p, "en", 2)) match = 1;
             else if (n > 3 && !memcmp(p, "en-", 3)) match = 1;
             p = e;
-            if (!*p) break;
         }
         if (!match) return 0;
     }
@@ -8365,62 +8364,59 @@ struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     const char *bg = svg_style_get(&svg->doc, root_style, "background-color");
     unsigned char br = 0, bgc = 0, bb = 0, ba = 255;
     int have_bg = bg && svg_parse_color(bg, &br, &bgc, &bb, &ba);
-    if (svg_matrix_identity_p(&root_ts) && !have_bg) {
-        svg_convert_children(&conv, root, tree_root, svg_matrix_identity(), 0);
-    } else {
-        struct svg_node *g = svg_node_new(0);
-        if (!g) { svg_node_destroy(tree_root); tomoe_svg_destroy(svg); return NULL; }
-        g->transform = root_ts;
-        g->abs_transform = root_ts;
-        if (have_bg) {
-            struct svg_node *path = svg_node_new(1);
-            struct svg_path *rect = svg_path_new();
-            if (path && rect) {
-                svg_path_move(rect, viewbox[0], viewbox[1]);
-                svg_path_line(rect, viewbox[0] + viewbox[2], viewbox[1]);
-                svg_path_line(rect, viewbox[0] + viewbox[2], viewbox[1] + viewbox[3]);
-                svg_path_line(rect, viewbox[0], viewbox[1] + viewbox[3]);
-                svg_path_close(rect);
-                svg_path_finish(rect);
-                path->path = rect;
-                path->visible = 1;
-                path->fill.present = 1;
-                path->fill.opacity = ba / 255.0f;
-                path->fill.paint.type = 1;
-                path->fill.paint.r = br;
-                path->fill.paint.g = bgc;
-                path->fill.paint.b = bb;
-                svg_path_tight_bounds(rect, &path->bbox);
-                path->has_bbox = 1;
-                path->abs_bbox = path->bbox;
-                path->sbbox = path->bbox;
-                path->abs_sbbox = path->bbox;
-                path->has_sbbox = 1;
-                svg_node_add(g, path);
-            } else { svg_node_destroy(path); svg_path_free(rect); }
-        }
-        svg_convert_children(&conv, root, g, root_ts, 0);
-        svg_doc_calculate_root_bboxes(g);
-        svg_node_add(tree_root, g);
+    if (!svg_element_visible(root_style, &svg->doc)) {
+        svg_doc_calculate_root_bboxes(tree_root);
         svg->root = tree_root;
-        if (conv.unsupported) svg->root->unsupported = 1;
-        if (restore) {
-            if (g->abs_bbox.valid && g->abs_bbox.right > 0.0f && g->abs_bbox.bottom > 0.0f) {
-                svg->width = g->abs_bbox.right;
-                svg->height = g->abs_bbox.bottom;
-            }
-        }
         return svg;
     }
-    svg_doc_calculate_root_bboxes(tree_root);
+    struct svg_node *g = svg_group_alloc(&conv, root, root_style, 1, 0,
+        svg_matrix_identity(), NULL);
+    if (!g) { svg_node_destroy(tree_root); tomoe_svg_destroy(svg); return NULL; }
+    g->transform = root_ts;
+    g->abs_transform = root_ts;
+    if (have_bg) {
+        struct svg_node *path = svg_node_new(1);
+        struct svg_path *rect = svg_path_new();
+        if (path && rect) {
+            svg_path_move(rect, viewbox[0], viewbox[1]);
+            svg_path_line(rect, viewbox[0] + viewbox[2], viewbox[1]);
+            svg_path_line(rect, viewbox[0] + viewbox[2], viewbox[1] + viewbox[3]);
+            svg_path_line(rect, viewbox[0], viewbox[1] + viewbox[3]);
+            svg_path_close(rect);
+            svg_path_finish(rect);
+            path->path = rect;
+            path->visible = 1;
+            path->fill.present = 1;
+            path->fill.opacity = ba / 255.0f;
+            path->fill.paint.type = 1;
+            path->fill.paint.r = br;
+            path->fill.paint.g = bgc;
+            path->fill.paint.b = bb;
+            svg_path_tight_bounds(rect, &path->bbox);
+            path->has_bbox = 1;
+            path->abs_bbox = path->bbox;
+            path->sbbox = path->bbox;
+            path->abs_sbbox = path->bbox;
+            path->has_sbbox = 1;
+            svg_node_add(g, path);
+        } else { svg_node_destroy(path); svg_path_free(rect); }
+    }
+    svg_convert_children(&conv, root, g, root_ts, 0);
+    int root_required = 0;
+    if (!svg_group_finish(&conv, root, root_style, 0, 0, 1, g, svg_matrix_identity(),
+            &root_required)) {
+        svg_node_destroy(g);
+        svg_node_destroy(tree_root);
+        tomoe_svg_destroy(svg);
+        return NULL;
+    }
+    svg_doc_calculate_root_bboxes(g);
+    svg_node_add(tree_root, g);
     svg->root = tree_root;
     if (conv.unsupported) svg->root->unsupported = 1;
-    if (restore) {
-        if (tree_root->abs_bbox.valid && tree_root->abs_bbox.right > 0.0f &&
-                tree_root->abs_bbox.bottom > 0.0f) {
-            svg->width = tree_root->abs_bbox.right;
-            svg->height = tree_root->abs_bbox.bottom;
-        }
+    if (restore && g->abs_bbox.valid && g->abs_bbox.right > 0.0f && g->abs_bbox.bottom > 0.0f) {
+        svg->width = g->abs_bbox.right;
+        svg->height = g->abs_bbox.bottom;
     }
     return svg;
 }
