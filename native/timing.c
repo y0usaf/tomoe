@@ -23,6 +23,7 @@ static const char *const channel_names[TIMING_CHANNELS] = {
     "tx-dirty", "tx-reconcile", "parse", "transaction",
     "mat-total", "mat-config",
     "latch-input", "latch-commit", "present-input", "present-commit", "present-interval",
+    "frame-tail",
     "cursor-newest", "cursor-oldest",
 };
 

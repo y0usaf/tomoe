@@ -1338,6 +1338,7 @@ static void output_frame_build(struct output *o) {
     if (success && warped && o->screen->hardware_cursor) o->screen->warps++;
     if (success) surfaces_fifo_commit(o->screen);
     if (phase) timing_frame_submit(o->server, timing_now() - phase);
+    int64_t tail_at = timing_enabled ? timing_now() : 0;
     if (success && (state.committed & SCREEN_BUFFER))
         screen_frame_committed(o->screen, scanout ? &(struct screen_state){0} : &state);
     if (success && scanout) surface_release_after(scanout, state.buffer);
@@ -1372,6 +1373,7 @@ static void output_frame_build(struct output *o) {
     bool moving = o->animating;
     if (moving) screen_schedule_animation(o->screen);
     animation_frame_record(o->server, o->screen, start_ns, o->sample, moving);
+    if (tail_at) timing_add(TIMING_FRAME_TAIL, (uint64_t)(timing_now() - tail_at));
     timing_frame_end(o->server, true);
     frame_timed(o, &start);
 }
