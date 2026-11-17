@@ -10,6 +10,11 @@
 
 struct svg_point { float x, y; };
 
+struct svg_bbox { float left, top, right, bottom; int valid; };
+
+struct svg_path;
+static int svg_path_tight_bounds(struct svg_path *path, struct svg_bbox *out);
+
 struct svg_path {
     unsigned char *verbs;
     struct svg_point *points;
@@ -830,6 +835,7 @@ struct svg_shader {
     float opacity;
     struct svg_matrix ts;
     int two_stop;
+    int uniform;
     int radial;
     int radial_bias;
     int highp;
@@ -3340,8 +3346,6 @@ static void svg_doc_stylesheet(struct svg_doc *doc, struct xml_node *node) {
     }
 }
 
-struct svg_bbox { float left, top, right, bottom; int valid; };
-
 static struct svg_bbox svg_bbox_empty(void) {
     return (struct svg_bbox){ 3.402823466e+38f, 3.402823466e+38f, -3.402823466e+38f,
         -3.402823466e+38f, 0 };
@@ -5294,6 +5298,36 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
     return 0;
 }
 
+static int svg_image_length(struct svg_conv *c, struct xml_node *node, const char *name,
+        int axis, float def, float *out) {
+    *out = def;
+    const char *text = svg_xml_attr(node, name);
+    if (!text) return 0;
+    struct svg_length l;
+    if (!svg_parse_length(text, &l)) return 1;
+    float n = (float)l.number;
+    switch (l.unit) {
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
+    case SVG_UNIT_EM: *out = n * 12.0f; break;
+    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
+    case SVG_UNIT_IN: *out = n * c->dpi; break;
+    case SVG_UNIT_CM: *out = n * c->dpi / 2.54f; break;
+    case SVG_UNIT_MM: *out = n * c->dpi / 25.4f; break;
+    case SVG_UNIT_PT: *out = n * c->dpi / 72.0f; break;
+    case SVG_UNIT_PC: *out = n * c->dpi / 6.0f; break;
+    case SVG_UNIT_PERCENT: {
+        float base;
+        if (axis == 0) base = c->view_box[2];
+        else if (axis == 1) base = c->view_box[3];
+        else base = sqrtf((c->view_box[2] * c->view_box[2] +
+            c->view_box[3] * c->view_box[3]) / 2.0f);
+        *out = base * n / 100.0f;
+        break;
+    }
+    }
+    return 1;
+}
+
 static int svg_fit_size(int slice, float aw, float ah, float rw, float rh, float *out_w,
         float *out_h) {
     if (!(aw > 0.0f) || !(ah > 0.0f)) return 0;
@@ -5342,10 +5376,12 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
             !strcmp(render, "crisp-edges"))) im->quality = 0;
     else if (render && !strcmp(render, "smooth")) im->quality = 1;
     float x = 0.0f, y = 0.0f, w = aw, h = ah;
-    svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
-    svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
-    svg_convert_length(c, st, "width", 0, aw, SVG_UNIT_NONE, &w);
-    svg_convert_length(c, st, "height", 1, ah, SVG_UNIT_NONE, &h);
+    svg_image_length(c, node, "x", 0, 0.0f, &x);
+    svg_image_length(c, node, "y", 1, 0.0f, &y);
+    int have_w = svg_image_length(c, node, "width", 0, aw, &w);
+    int have_h = svg_image_length(c, node, "height", 1, ah, &h);
+    if (have_w && !have_h) h = ah * (w / aw);
+    else if (!have_w && have_h) w = aw * (h / ah);
     if (!(w > 0.0f) || !(h > 0.0f)) { svg_free_image(im); c->unsupported = 1; return; }
     struct svg_aspect aspect;
     const char *ar = svg_style_get(c->doc, st, "preserveAspectRatio");
@@ -7064,16 +7100,15 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     memset(shader, 0, sizeof(*shader));
     float alpha_f = opacity;
     if (paint->type == 1) {
-        unsigned a = (unsigned)(alpha_f * 255.0f + 0.5f);
-        unsigned char pa = (unsigned char)a;
+        float a = alpha_f;
+        if (!(a > 0.0f)) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
         shader->type = 0;
-        unsigned pr = (unsigned)paint->r * pa + 128;
-        unsigned pg = (unsigned)paint->g * pa + 128;
-        unsigned pb = (unsigned)paint->b * pa + 128;
-        shader->sr = (pr + (pr >> 8)) >> 8;
-        shader->sg = (pg + (pg >> 8)) >> 8;
-        shader->sb = (pb + (pb >> 8)) >> 8;
-        shader->sa = pa;
+        float cr = paint->r / 255.0f, cg = paint->g / 255.0f, cb = paint->b / 255.0f;
+        shader->sr = (unsigned)(cr * a * 255.0f + 0.5f);
+        shader->sg = (unsigned)(cg * a * 255.0f + 0.5f);
+        shader->sb = (unsigned)(cb * a * 255.0f + 0.5f);
+        shader->sa = (unsigned)(a * 255.0f + 0.5f);
         return;
     }
     if (paint->type == 12) {
@@ -7158,7 +7193,9 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     for (int i = 0; i < n; i++) {
         stops[i] = g->stops[i];
         float a = stops[i].a * alpha_f;
-        stops[i].a = (float)(unsigned)(a * 255.0f + 0.5f) / 255.0f;
+        if (!(a > 0.0f)) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
+        stops[i].a = a;
     }
     float sx = 0, sy = 0, ex = 0, ey = 0;
     float vx = 0, vy = 0, mag = 0;
@@ -7352,6 +7389,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         unsigned a = (unsigned)(full[i].a * 255.0f + 0.5f);
         if (a != 255u) shader->opaque = 0;
     }
+    shader->uniform = uniform;
     if (count == 2 && uniform) {
         shader->two_stop = 1;
         float c0[4] = { full[0].r / 255.0f, full[0].g / 255.0f, full[0].b / 255.0f, full[0].a };
@@ -7555,6 +7593,8 @@ static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, floa
     } else if (shader->spread == 2) {
         float v = t - floorf(t);
         t = fmaxf(0.0f, fminf(v, 1.0f));
+    } else if (shader->uniform) {
+        t = svg_norm01(t);
     }
     float color[4];
     if (shader->two_stop) {
@@ -7598,8 +7638,8 @@ static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned o
     } else if (shader->spread == 2) {
         float v = t - floorf(t);
         t = fmaxf(0.0f, fminf(v, 1.0f));
-    } else if (shader->two_stop) {
-        t = fmaxf(0.0f, fminf(t, 1.0f));
+    } else if (shader->uniform) {
+        t = svg_norm01(t);
     }
     float color[4];
     if (shader->two_stop) {
@@ -7705,7 +7745,15 @@ static void svg_render_path_fill(struct svg_node *node, struct svg_matrix ts,
     float h = node->path->bottom - node->path->top;
     if (w == 0.0f || h == 0.0f) return;
     struct svg_shader shader;
-    float bbox[4] = { node->path->left, node->path->top, w, h };
+    struct svg_bbox tight;
+    float bx = node->path->left, by = node->path->top;
+    if (svg_path_tight_bounds(node->path, &tight)) {
+        bx = tight.left;
+        by = tight.top;
+        w = tight.right - tight.left;
+        h = tight.bottom - tight.top;
+    }
+    float bbox[4] = { bx, by, w, h };
     svg_prepare_shader(&shader, &node->fill.paint, node->fill.opacity, ts, bbox, 1);
     if (shader.type < 0) return;
     struct svg_path *path = svg_path_copy(node->path);
@@ -7773,7 +7821,15 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         struct svg_shader hshader;
         float w = node->path->right - node->path->left;
         float h = node->path->bottom - node->path->top;
-        float bbox[4] = { node->path->left, node->path->top, w, h };
+        struct svg_bbox ht;
+        float hbx = node->path->left, hby = node->path->top;
+        if (svg_path_tight_bounds(node->path, &ht)) {
+            hbx = ht.left;
+            hby = ht.top;
+            w = ht.right - ht.left;
+            h = ht.bottom - ht.top;
+        }
+        float bbox[4] = { hbx, hby, w, h };
         svg_prepare_shader(&hshader, &node->stroke.paint, node->stroke.opacity * factor, ts,
             bbox, 1);
         if (hshader.type >= 0) svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader);
@@ -7798,7 +7854,15 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
     struct svg_shader shader;
     float w = node->path->right - node->path->left;
     float h = node->path->bottom - node->path->top;
-    float bbox[4] = { node->path->left, node->path->top, w, h };
+    struct svg_bbox st;
+    float sbx = node->path->left, sby = node->path->top;
+    if (svg_path_tight_bounds(node->path, &st)) {
+        sbx = st.left;
+        sby = st.top;
+        w = st.right - st.left;
+        h = st.bottom - st.top;
+    }
+    float bbox[4] = { sbx, sby, w, h };
     svg_prepare_shader(&shader, &node->stroke.paint, node->stroke.opacity, ts, bbox, 1);
     if (shader.type >= 0)
         svg_fill_path(stroked, 0, pixmap, &shader, blend);
