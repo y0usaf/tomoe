@@ -107,11 +107,16 @@
             propagatedBuildInputs = pkgs.lib.subtractLists [
               pkgs.bzip2
               pkgs.brotli
+              pkgs.libpng
             ] old.propagatedBuildInputs;
+            patches = (old.patches or [ ]) ++ [ ./support/patches/freetype-png.patch ];
             configureFlags = old.configureFlags ++ [
               "--with-bzip2=no"
               "--with-brotli=no"
+              "--with-png=no"
             ];
+            NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
+              " -DFT_CONFIG_OPTION_USE_PNG";
           });
           glib = pkgs.glib.overrideAttrs (old: {
             buildInputs = pkgs.lib.subtractLists [
@@ -126,16 +131,22 @@
             doCheck = false;
           });
           fontconfig = pkgs.fontconfig.override { inherit freetype; };
-          cairo = pkgs.cairo.override {
+          cairo = (pkgs.cairo.override {
             x11Support = false;
             xcbSupport = false;
             inherit fontconfig freetype glib;
-          };
-          harfbuzz = pkgs.harfbuzz.override {
+          }).overrideAttrs (old: {
+            propagatedBuildInputs =
+              pkgs.lib.subtractLists [ pkgs.libpng ] old.propagatedBuildInputs;
+            mesonFlags = old.mesonFlags ++ [ "-Dpng=disabled" ];
+          });
+          harfbuzz = (pkgs.harfbuzz.override {
             withGraphite2 = false;
             withIntrospection = false;
             inherit freetype glib;
-          };
+          }).overrideAttrs (old: {
+            mesonFlags = old.mesonFlags ++ [ "-Dpng=disabled" ];
+          });
           pango =
             (pkgs.pango.override {
               x11Support = false;
@@ -181,6 +192,7 @@
             pkgs.wayland-protocols
             pkgs.wlr-protocols
             libs.libxkbcommon
+            pkgs.zlib
             cairo
             pango
             (resvg pkgs)

@@ -11,6 +11,8 @@ WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
 LIBS = xkbcommon pangocairo libinput glesv2 egl gbm libudev
+LINK = $(shell $(PKG_CONFIG) --libs $(LIBS)) -lz
+ZLIB_CFLAGS = $(shell $(PKG_CONFIG) --cflags zlib)
 PORTAL_LIBS = libpipewire-0.3 gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system pipewire
 PROTOCOLS = \
@@ -72,7 +74,7 @@ WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/wayland-loop.o build/obj/wayland-serv
 WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/wayland-client.o
 NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/wayland-client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS)) $(ZLIB_CFLAGS)
 CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
 CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
@@ -97,13 +99,14 @@ CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(CORE_SOURCES)) \
 	build/core/obj/wayland-protocol.o
 
 build/tomoe: $(NATIVE) $(SUPPORT:%=build/%.o) | build/entries
-	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(shell $(PKG_CONFIG) --libs $(LIBS)) \
-		-lresvg -lm
+	$(CC) $(LTO) $(NATIVE) $(SUPPORT:%=build/%.o) -o $@ $(LINK) \
+		-lresvg -lm -Wl,--export-dynamic-symbol=tomoe_png_glyph_info \
+		-Wl,--export-dynamic-symbol=tomoe_png_glyph_rows
 	build/entries $@
 
 build/tomoe-core.so: $(CORE_OBJECTS) | build/entries
 	$(CC) $(LTO) -shared -Wl,-Bsymbolic $(CORE_OBJECTS) -o $@ \
-		$(shell $(PKG_CONFIG) --libs $(LIBS)) -lresvg -lm
+		$(LINK) -lresvg -lm
 	build/entries $@
 
 core: build/tomoe-core.so

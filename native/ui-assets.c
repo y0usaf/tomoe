@@ -2,6 +2,7 @@
 #include "ui.h"
 #include "ui-assets.h"
 #include "jpeg.h"
+#include "png.h"
 
 #include <drm/drm_fourcc.h>
 #include <errno.h>
@@ -159,16 +160,6 @@ done:
     return result;
 }
 
-struct png_read { const struct asset_data *data; size_t offset; };
-
-static cairo_status_t png_read_bytes(void *closure, unsigned char *output, unsigned int length) {
-    struct png_read *read = closure;
-    if (length > read->data->length - read->offset) return CAIRO_STATUS_READ_ERROR;
-    memcpy(output, read->data->bytes + read->offset, length);
-    read->offset += length;
-    return CAIRO_STATUS_SUCCESS;
-}
-
 static uint32_t big_endian(const unsigned char *bytes) {
     return (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 | (uint32_t)bytes[2] << 8 | bytes[3];
 }
@@ -181,26 +172,28 @@ static enum asset_status decode_png(struct ui_asset *asset,
     if (!asset->width || !asset->height) return ASSET_MISSING;
     if (!raster_bytes(asset->width, asset->height, ASSET_DIMENSION_LIMIT, available, &asset->bytes))
         return ASSET_HARD;
-    cairo_surface_t *image = cairo_image_surface_create_from_png_stream(png_read_bytes,
-        &(struct png_read){ .data = data });
-    cairo_status_t status = cairo_surface_status(image);
-    enum asset_status result = status == CAIRO_STATUS_NO_MEMORY ? ASSET_HARD : ASSET_MISSING;
-    if (status == CAIRO_STATUS_SUCCESS &&
-            (uint32_t)cairo_image_surface_get_width(image) == asset->width &&
-            (uint32_t)cairo_image_surface_get_height(image) == asset->height)
+    struct png_image image;
+    enum png_status decoded = tomoe_png_decode(data->bytes, data->length, &image);
+    if (decoded == PNG_HARD) return ASSET_HARD;
+    enum asset_status result = ASSET_MISSING;
+    if (decoded == PNG_OK && image.width == asset->width && image.height == asset->height)
         result = (asset->pixels = malloc((size_t)asset->bytes)) ? ASSET_OK : ASSET_HARD;
     if (result == ASSET_OK) {
+        cairo_surface_t *source = cairo_image_surface_create_for_data(image.pixels, image.format,
+            (int)image.width, (int)image.height, (int)image.stride);
         cairo_surface_t *target = cairo_image_surface_create_for_data(asset->pixels, CAIRO_FORMAT_ARGB32,
             (int)asset->width, (int)asset->height, (int)asset->width * 4);
         cairo_t *cairo = cairo_create(target);
-        cairo_set_source_surface(cairo, image, 0, 0);
+        cairo_set_source_surface(cairo, source, 0, 0);
         cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
         cairo_paint(cairo);
-        if (cairo_status(cairo) != CAIRO_STATUS_SUCCESS) result = ASSET_HARD;
+        if (cairo_status(cairo) != CAIRO_STATUS_SUCCESS ||
+                cairo_surface_status(source) != CAIRO_STATUS_SUCCESS) result = ASSET_HARD;
         cairo_destroy(cairo);
         cairo_surface_destroy(target);
+        cairo_surface_destroy(source);
     }
-    cairo_surface_destroy(image);
+    free(image.pixels);
     return result;
 }
 
@@ -309,16 +302,19 @@ static cairo_surface_t *backdrop_scale(cairo_surface_t *source, uint32_t width,
 static void backdrop_decode(struct backdrop_job *job) {
     struct asset_data data = {0};
     struct ui_asset decoded = {0};
+    struct png_image image = {0};
     cairo_surface_t *source = NULL;
     uint64_t bytes;
     if (read_asset(job->path, BACKDROP_FILE_LIMIT, &data) == ASSET_OK) {
         if (data.length >= 24 && !memcmp(data.bytes, "\x89PNG\r\n\x1a\n", 8) &&
                 !memcmp(data.bytes + 12, "IHDR", 4) &&
                 raster_bytes(big_endian(data.bytes + 16), big_endian(data.bytes + 20),
-                    BACKDROP_DIMENSION_LIMIT, BACKDROP_SOURCE_LIMIT, &bytes))
-            source = cairo_image_surface_create_from_png_stream(png_read_bytes,
-                &(struct png_read){ .data = &data });
-        else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8 &&
+                    BACKDROP_DIMENSION_LIMIT, BACKDROP_SOURCE_LIMIT, &bytes) &&
+                tomoe_png_decode(data.bytes, data.length, &image) == PNG_OK) {
+            decoded.pixels = image.pixels;
+            source = cairo_image_surface_create_for_data(image.pixels, image.format,
+                (int)image.width, (int)image.height, (int)image.stride);
+        } else if (data.length >= 2 && data.bytes[0] == 0xff && data.bytes[1] == 0xd8 &&
                 decode_jpeg(&decoded, &data, BACKDROP_DIMENSION_LIMIT, BACKDROP_SOURCE_LIMIT) == ASSET_OK)
             source = cairo_image_surface_create_for_data(decoded.pixels, CAIRO_FORMAT_ARGB32,
                 (int)decoded.width, (int)decoded.height, (int)decoded.width * 4);

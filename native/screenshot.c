@@ -1,6 +1,8 @@
 #include "internal.h"
 #include "spring.h"
+#include "png.h"
 #include <cairo.h>
+#include <fcntl.h>
 #include <drm/drm_fourcc.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -507,9 +509,25 @@ static void capture(struct tomoe *s, struct output *o, struct box region) {
             region.width, region.height, stride);
         paint_marks(s, o, surface, &origin, transform_invert(o->screen->transform),
             logical_width, logical_height);
-        cairo_status_t written = cairo_surface_write_to_png(surface, path);
+        cairo_surface_flush(surface);
         cairo_surface_destroy(surface);
-        if (written == CAIRO_STATUS_SUCCESS) {
+        unsigned char *encoded = NULL;
+        size_t encoded_length = 0;
+        bool written = tomoe_png_encode(pixels, (uint32_t)region.width,
+            (uint32_t)region.height, (size_t)stride, &encoded, &encoded_length) == PNG_OK;
+        if (written) {
+            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+            size_t offset = 0;
+            written = fd >= 0;
+            while (written && offset < encoded_length) {
+                ssize_t count = write(fd, encoded + offset, encoded_length - offset);
+                if (count <= 0) written = false;
+                else offset += (size_t)count;
+            }
+            if (fd >= 0 && close(fd)) written = false;
+        }
+        free(encoded);
+        if (written) {
             struct tomoe_event *event = policy_event_push(s, EV_SCREENSHOT);
             if (event) event->str[0] = policy_event_cstring(s, path);
         }
