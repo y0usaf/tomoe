@@ -2392,6 +2392,7 @@ struct pass *render_record(struct render *r, struct buffer *buffer, struct oplis
     for (size_t i = 0; i < list->len; i++) {
         region_fini(&list->ops[i].opaque);
         region_fini(&list->ops[i].visible);
+        region_fini(&list->ops[i].need);
     }
     list->len = 0;
     list->lost = false;
@@ -2524,6 +2525,7 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
         .kind = params && count ? (int)params[0] : 0 };
     region_init(&op.opaque);
     region_init(&op.visible);
+    region_init(&op.need);
     op.hash = mix(0xcbf29ce484222325ull, params, count * sizeof(*params));
     if (texture) {
         const struct surface *surface = texture->surface;
@@ -2556,7 +2558,8 @@ bool pass_record(struct pass *pass, const struct texture_options *texture, struc
 }
 
 bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struct box footprint,
-        const double *params, size_t count, int blur, const double *seed, size_t seeds) {
+        const struct blur_grid *grid, const double *params, size_t count, int blur,
+        const double *seed, size_t seeds) {
     struct oplist *list = pass->record;
     if (!list) return false;
     size_t below = list->len;
@@ -2564,6 +2567,7 @@ bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struc
     if (list->lost || list->len == below) return true;
     struct op *op = &list->ops[below];
     op->footprint = footprint;
+    if (grid) op->grid = *grid;
     op->blur = blur;
     if (!seeds) return true;
     uint64_t layout = mix(0xcbf29ce484222325ull, seed, seeds * sizeof(*seed));
@@ -2582,6 +2586,7 @@ void oplist_finish(struct oplist *list) {
     for (size_t i = 0; i < list->len; i++) {
         region_fini(&list->ops[i].opaque);
         region_fini(&list->ops[i].visible);
+        region_fini(&list->ops[i].need);
     }
     free(list->ops);
     *list = (struct oplist){0};
@@ -2636,6 +2641,12 @@ static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
     return false;
 }
 
+static bool region_same(const struct region *a, const struct region *b) {
+    int na = 0, nb = 0;
+    const struct rect *ra = region_rectangles(a, &na), *rb = region_rectangles(b, &nb);
+    return na == nb && (!na || !memcmp(ra, rb, (size_t)na * sizeof(*ra)));
+}
+
 static void visibility(struct oplist *list) {
     if (list->valid) return;
     struct region covered;
@@ -2652,7 +2663,13 @@ static void visibility(struct oplist *list) {
             op->hidden = region_contains_rectangle(&covered, &f) == REGION_IN;
             if (op->hidden) region_clear(&op->visible);
         }
-        if (!op->hidden && !box_empty(&op->reach)) {
+        if (op->grid.passes) {
+            region_clear(&op->need);
+            if (!op->hidden) {
+                blur_need(op, &op->need);
+                region_subtract(&covered, &covered, &op->need);
+            }
+        } else if (!op->hidden && !box_empty(&op->reach)) {
             struct region reach;
             region_init_rect(&reach, op->reach.x, op->reach.y, op->reach.width,
                 op->reach.height);
@@ -2696,8 +2713,9 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         struct op *op = &now->ops[i];
         if (op->blur && op->backdrop) {
             static uint64_t generation;
-            op->key = match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) ?
-                old->ops[match[i]].key : ++generation;
+            bool kept = match[i] != SIZE_MAX && !backdrop_moved(old, now, match, i) &&
+                (!op->grid.passes || region_same(&op->visible, &old->ops[match[i]].visible));
+            op->key = kept ? old->ops[match[i]].key : ++generation;
         }
         if (match[i] == SIZE_MAX) region_union(out, out, &op->visible);
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
@@ -2727,12 +2745,33 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
     return true;
 }
 
+static bool region_partly_holds(const struct region *region, const struct region *part) {
+    struct region rest;
+    region_init(&rest);
+    region_subtract(&rest, part, region);
+    bool partly = region_not_empty(&rest);
+    if (partly) {
+        region_intersect(&rest, part, region);
+        partly = region_not_empty(&rest);
+    }
+    region_fini(&rest);
+    return partly;
+}
+
 void oplist_expand(const struct oplist *list, struct region *region) {
     for (bool grew = true; grew;) {
         grew = false;
         for (size_t i = 0; i < list->len; i++) {
-            const struct box *reach = &list->ops[i].reach;
-            if (box_empty(reach) || list->ops[i].hidden || list->ops[i].cached) continue;
+            const struct op *op = &list->ops[i];
+            if (op->hidden || op->cached) continue;
+            if (op->grid.passes) {
+                if (!region_partly_holds(region, &op->need)) continue;
+                region_union(region, region, &op->need);
+                grew = true;
+                continue;
+            }
+            const struct box *reach = &op->reach;
+            if (box_empty(reach)) continue;
             struct rect r = { reach->x, reach->y, reach->x + reach->width,
                 reach->y + reach->height };
             if (region_contains_rectangle(region, &r) != REGION_PART) continue;

@@ -395,7 +395,8 @@ static bool planes_cross(const struct frame *f, struct box area) {
     return false;
 }
 
-static void sample_pass(struct program *p, struct level *from, struct level *to, double offset) {
+static void sample_pass(struct program *p, struct level *from, struct level *to, double offset,
+        const struct region *where) {
     static const float full[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
     static const float coords[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
     glBindFramebuffer(GL_FRAMEBUFFER, to->framebuffer);
@@ -409,7 +410,12 @@ static void sample_pass(struct program *p, struct level *from, struct level *to,
     glVertexAttribPointer(p->texcoord, 2, GL_FLOAT, GL_FALSE, 0, coords);
     glEnableVertexAttribArray(p->pos);
     glEnableVertexAttribArray(p->texcoord);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    int count = 0;
+    const struct rect *rects = region_rectangles(where, &count);
+    for (int i = 0; i < count; i++) {
+        glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
     glDisableVertexAttribArray(p->pos);
     glDisableVertexAttribArray(p->texcoord);
 }
@@ -422,45 +428,109 @@ static void cone(int lo, int hi, int to, int from, double reach, int *out_lo, in
     *out_hi = b > from - 1 ? from - 1 : b;
 }
 
-static struct box cone_box(struct box need, const struct level *to, const struct level *from,
-        double reach) {
+static int level_side(int side, int level) {
+    return side >> level > 0 ? side >> level : 1;
+}
+
+static struct box cone_box(struct box need, struct box grown, int to, int from, double reach) {
     int x0, x1, y0, y1;
-    cone(need.x, need.x + need.width - 1, to->width, from->width, reach, &x0, &x1);
-    cone(need.y, need.y + need.height - 1, to->height, from->height, reach, &y0, &y1);
+    cone(need.x, need.x + need.width - 1, level_side(grown.width, to),
+        level_side(grown.width, from), reach, &x0, &x1);
+    cone(need.y, need.y + need.height - 1, level_side(grown.height, to),
+        level_side(grown.height, from), reach, &y0, &y1);
     return (struct box){ x0, y0, x1 - x0 + 1, y1 - y0 + 1 };
 }
 
+static void blur_cones(struct box grown, int passes, double offset, struct box sampled,
+        struct box *up, struct box *down) {
+    up[0] = sampled;
+    for (int i = 1; i < passes; i++) up[i] = cone_box(up[i - 1], grown, i - 1, i, fabs(offset));
+    down[passes] = cone_box(up[passes - 1], grown, passes - 1, passes, fabs(offset));
+    for (int i = passes; i >= 1; i--)
+        down[i - 1] = cone_box(down[i], grown, i, i - 1, 0.5 * fabs(offset));
+}
+
+enum { BLUR_SAMPLES = 16 };
+
+static int blur_samples(const struct op *op, struct box covered, struct box grown,
+        struct box *out) {
+    struct box whole = { 0, 0, grown.width, grown.height };
+    struct rect single = { covered.x, covered.y, covered.x + covered.width,
+        covered.y + covered.height };
+    const struct rect *rects = &single;
+    int count = 1;
+    struct region shown;
+    region_init(&shown);
+    if (op) {
+        region_intersect_rect(&shown, &op->visible, op->footprint.x, op->footprint.y,
+            (uint32_t)op->footprint.width, (uint32_t)op->footprint.height);
+        rects = region_rectangles(&shown, &count);
+        if (count > BLUR_SAMPLES) {
+            rects = region_extents(&shown);
+            count = 1;
+        }
+    }
+    int used = 0;
+    for (int i = 0; i < count; i++) {
+        struct box sampled = { rects[i].x1 - 1 - grown.x, rects[i].y1 - 1 - grown.y,
+            rects[i].x2 - rects[i].x1 + 2, rects[i].y2 - rects[i].y1 + 2 };
+        if (box_intersection(&out[used], &sampled, &whole)) used++;
+    }
+    region_fini(&shown);
+    return used;
+}
+
+void blur_need(const struct op *op, struct region *need) {
+    struct box samples[BLUR_SAMPLES], up[32], down[32];
+    int count = blur_samples(op, op->box, op->grid.grown, samples);
+    for (int i = 0; i < count; i++) {
+        blur_cones(op->grid.grown, op->grid.passes, op->grid.offset, samples[i], up, down);
+        region_union_rect(need, need, op->grid.grown.x + down[0].x, op->grid.grown.y + down[0].y,
+            (uint32_t)down[0].width, (uint32_t)down[0].height);
+    }
+}
+
 static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
-        struct box sampled, int passes, double offset, GLuint target) {
+        const struct box *samples, int count, int passes, double offset, GLuint target) {
     struct level *levels = chain->levels;
     bool ok = level_ensure(&levels[0], grown.width, grown.height);
     for (int i = 1; ok && i <= passes; i++)
-        ok = level_ensure(&levels[i], grown.width >> i > 0 ? grown.width >> i : 1,
-            grown.height >> i > 0 ? grown.height >> i : 1);
+        ok = level_ensure(&levels[i], level_side(grown.width, i), level_side(grown.height, i));
     if (!ok) return false;
-    struct box up[32], down[32];
-    up[0] = sampled;
-    for (int i = 1; i < passes; i++)
-        up[i] = cone_box(up[i - 1], &levels[i - 1], &levels[i], fabs(offset));
-    down[passes] = cone_box(up[passes - 1], &levels[passes - 1], &levels[passes], fabs(offset));
-    for (int i = passes; i >= 1; i--)
-        down[i - 1] = cone_box(down[i], &levels[i], &levels[i - 1], 0.5 * fabs(offset));
+    struct region up[32], down[32];
+    for (int i = 0; i <= passes; i++) {
+        region_init(&up[i]);
+        region_init(&down[i]);
+    }
+    for (int s = 0; s < count; s++) {
+        struct box ups[32], downs[32];
+        blur_cones(grown, passes, offset, samples[s], ups, downs);
+        for (int i = 0; i <= passes; i++) {
+            if (i < passes) region_union_rect(&up[i], &up[i], ups[i].x, ups[i].y,
+                (uint32_t)ups[i].width, (uint32_t)ups[i].height);
+            region_union_rect(&down[i], &down[i], downs[i].x, downs[i].y,
+                (uint32_t)downs[i].width, (uint32_t)downs[i].height);
+        }
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, levels[0].texture);
-    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, down[0].x, down[0].y, grown.x + down[0].x,
-        grown.y + down[0].y, down[0].width, down[0].height);
+    int copies = 0;
+    const struct rect *copy = region_rectangles(&down[0], &copies);
+    for (int i = 0; i < copies; i++)
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, copy[i].x1, copy[i].y1, grown.x + copy[i].x1,
+            grown.y + copy[i].y1, copy[i].x2 - copy[i].x1, copy[i].y2 - copy[i].y1);
     glDisable(GL_BLEND);
     glEnable(GL_SCISSOR_TEST);
-    for (int i = 1; i <= passes; i++) {
-        glScissor(down[i].x, down[i].y, down[i].width, down[i].height);
-        sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset);
-    }
-    for (int i = passes - 1; i >= 0; i--) {
-        glScissor(up[i].x, up[i].y, up[i].width, up[i].height);
-        sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset);
-    }
+    for (int i = 1; i <= passes; i++)
+        sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset, &down[i]);
+    for (int i = passes - 1; i >= 0; i--)
+        sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset, &up[i]);
     glDisable(GL_SCISSOR_TEST);
+    for (int i = 0; i <= passes; i++) {
+        region_fini(&up[i]);
+        region_fini(&down[i]);
+    }
     return true;
 }
 
@@ -496,7 +566,8 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     int blur = ++f->blurs;
     double seed[] = { grown.x, grown.y, grown.width, grown.height, passes, offset, f->transform,
         f->width, f->height, f->x, f->y };
-    if (pass_record_blur(f->pass, covered, reach, footprint, params,
+    struct blur_grid grid = { grown, passes, offset };
+    if (pass_record_blur(f->pass, covered, reach, footprint, &grid, params,
             sizeof(params) / sizeof(params[0]), blur, seed,
             planes_cross(f, grown) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
     struct op_clip clip;
@@ -507,12 +578,20 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     }
     int64_t now = monotonic_ns();
     uint64_t key = clip.op ? clip.op->key : 0;
-    struct box sampled = { covered.x - 1 - grown.x, covered.y - 1 - grown.y,
-        covered.width + 2, covered.height + 2 };
-    struct box whole = { 0, 0, grown.width, grown.height };
-    if (!box_intersection(&sampled, &sampled, &whole)) {
+    struct box samples[BLUR_SAMPLES];
+    int count = blur_samples(clip.op, covered, grown, samples);
+    if (!count) {
         op_end(f->pass, &clip);
         return;
+    }
+    struct box sampled = samples[0];
+    for (int i = 1; i < count; i++) {
+        int right = fmax(sampled.x + sampled.width, samples[i].x + samples[i].width);
+        int bottom = fmax(sampled.y + sampled.height, samples[i].y + samples[i].height);
+        sampled.x = fmin(sampled.x, samples[i].x);
+        sampled.y = fmin(sampled.y, samples[i].y);
+        sampled.width = right - sampled.x;
+        sampled.height = bottom - sampled.y;
     }
     struct result *result = result_cached(e, key);
     struct chain *chain = chain_spare(e, grown.width, grown.height, key, now);
@@ -526,21 +605,27 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         if (ok) {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, result->level.framebuffer);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->levels[0].framebuffer);
-            glBlitFramebuffer(0, 0, sampled.width, sampled.height, sampled.x, sampled.y,
-                sampled.x + sampled.width, sampled.y + sampled.height, GL_COLOR_BUFFER_BIT,
-                GL_NEAREST);
+            for (int i = 0; i < count; i++) {
+                struct box s = samples[i];
+                glBlitFramebuffer(s.x - sampled.x, s.y - sampled.y, s.x - sampled.x + s.width,
+                    s.y - sampled.y + s.height, s.x, s.y, s.x + s.width, s.y + s.height,
+                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            }
             result->used = now;
             e->reused++;
         } else {
-            ok = blur_levels(f, chain, grown, sampled, passes, offset, target);
+            ok = blur_levels(f, chain, grown, samples, count, passes, offset, target);
             if (ok) e->blurs++;
             if (ok && key && (result = result_spare(e, sampled, now)) &&
                     level_ensure(&result->level, sampled.width, sampled.height)) {
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
-                glBlitFramebuffer(sampled.x, sampled.y, sampled.x + sampled.width,
-                    sampled.y + sampled.height, 0, 0, sampled.width, sampled.height,
-                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                for (int i = 0; i < count; i++) {
+                    struct box s = samples[i];
+                    glBlitFramebuffer(s.x, s.y, s.x + s.width, s.y + s.height, s.x - sampled.x,
+                        s.y - sampled.y, s.x - sampled.x + s.width, s.y - sampled.y + s.height,
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                }
                 result->area = sampled;
                 result->key = key;
                 result->used = now;
@@ -665,7 +750,8 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
             covered.width + 2 * BENEATH_REACH, covered.height + 2 * BENEATH_REACH };
         double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform,
             f->width, f->height, f->x, f->y };
-        if (pass_record_blur(f->pass, covered, reach, (struct box){0}, params, used, ++f->blurs,
+        if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
+                ++f->blurs,
                 seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
     }
     struct op_clip clip;
@@ -735,15 +821,15 @@ bool effect_glass(struct frame *f, struct program *p, struct texture *map, struc
         (double)map->serial };
     double seed[] = { reach.x, reach.y, reach.width, reach.height, f->transform, f->width,
         f->height, f->x, f->y };
-    if (pass_record_blur(f->pass, covered, reach, (struct box){0}, params,
+    if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params,
             sizeof(params) / sizeof(params[0]), ++f->blurs, seed,
             sizeof(seed) / sizeof(seed[0]))) return true;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_GLASS, covered, &clip)) return true;
     pass_flush(f->pass);
     GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
-    bool ok = blur_levels(f, &e->glass, grown, (struct box){ 0, 0, grown.width, grown.height },
-        GLASS_FROST_PASSES, GLASS_FROST, target);
+    bool ok = blur_levels(f, &e->glass, grown, &(struct box){ 0, 0, grown.width, grown.height },
+        1, GLASS_FROST_PASSES, GLASS_FROST, target);
     pass_scene_attributes_dirty(f->pass);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     glViewport(0, 0, f->buffer->width, f->buffer->height);

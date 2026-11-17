@@ -138,7 +138,12 @@ it did when that record was taken. A blur keeps only the texels its draw samples
 for up to 64 blurred backdrops, and restores them while nothing beneath changes,
 so a repaint over many frosted windows recomputes only the blurs whose backdrop
 moved; a recomputed blur runs each pass only over the texels those samples depend
-on, which gives the same bytes as blurring the whole margin. `tests/draw.py` holds
+on, which gives the same bytes as blurring the whole margin. Those samples are
+only the part of the blur that shows: behind a window that is opaque but rounded
+they are the corners its rounding cuts away, so the blur rebuilds only those
+corners' cones, the draws beneath it are drawn only where those cones read, and a
+backdrop that moves under such a window redraws its corners instead of the window
+it frosts. `tests/draw.py` holds
 fifty translucent blurred windows to one 240 Hz refresh at the 99th percentile and
 compares their bytes with main's. A quiet scene collects the Lisp heap and
 hands the dead generations and the free pages of the native heap back to the

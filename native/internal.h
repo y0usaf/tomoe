@@ -190,6 +190,7 @@ struct read_options {
 enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SHADER,
     OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
 struct pass;
+struct blur_grid { struct box grown; int passes; double offset; };
 struct op {
     uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
@@ -197,7 +198,8 @@ struct op {
     uint64_t content_seq;
     struct box box, reach, footprint;
     struct fbox src;
-    struct region opaque, visible;
+    struct blur_grid grid;
+    struct region opaque, visible, need;
     int kind, blur;
     bool mapped, hidden, cached;
 };
@@ -249,7 +251,9 @@ struct pass *render_record(struct render *r, struct buffer *buffer, struct oplis
 bool pass_record(struct pass *pass, const struct texture_options *texture, struct box box,
     struct box reach, const double *params, size_t count);
 bool pass_record_blur(struct pass *pass, struct box box, struct box reach, struct box footprint,
-    const double *params, size_t count, int blur, const double *seed, size_t seeds);
+    const struct blur_grid *grid, const double *params, size_t count, int blur,
+    const double *seed, size_t seeds);
+void blur_need(const struct op *op, struct region *need);
 void pass_clip(struct pass *pass, const struct region *clip);
 bool pass_touches(struct pass *pass, struct box box);
 void pass_ops(struct pass *pass, const struct oplist *ops);

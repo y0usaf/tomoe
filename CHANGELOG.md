@@ -50,3 +50,7 @@ The first release.
   has had no input for `:shader-hold` seconds, 3 by default, and carries on from
   that same frame on the next input, so a moving wallpaper stops drawing when
   nobody is there instead of skipping the time it was idle.
+- A blur behind a window that is opaque but rounded is rebuilt only at the
+  corners its rounding shows, and only what those corners read beneath it is
+  drawn, so a moving wallpaper under such windows redraws their corners rather
+  than every window it frosts, with the same pixels.
