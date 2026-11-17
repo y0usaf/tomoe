@@ -31,8 +31,10 @@ Builds REV (default HEAD) the way finix would pin it, with the config finix
 generates against that very build, and runs the pair on a private headless
 instance with its own socket, runtime directory and home: one output at
 5120x1440@240, real test windows, dark then light, every rail theme in turn
-with the output timed from an input to the hold an idle machine is given and
-its frame counter read on both sides of it, rapid focus switches and moves with
+with the output timed from the hold an idle machine is given to the frame that
+carries the next key, the next pointer motion and the next client buffer, and
+through the drag and the client commits that follow, its frame counter read on
+both sides of it, rapid focus switches and moves with
 windows closing and opening mid-animation, a reload, and a config whose middle
 form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
@@ -50,6 +52,11 @@ Nothing reaches the running desktop.
   GATE_SOAK     after the run, keep cycling palettes, themes, focus storms and
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
+  GATE_WAKE_FIRST_US     how late the frame carrying the first input after a hold
+                may be presented (default three refreshes)
+  GATE_WAKE_CADENCE_US   the median interval between presented frames while input
+                flows (default one and a quarter refreshes)
+  GATE_WAKE_CADENCE_P99_US  the hundredth-percentile interval (default two)
 
 It refuses to start while DISPLAY, WAYLAND_DISPLAY, WAYLAND_SOCKET or
 TOMOE_SOCKET is set or a fake kernel input device exists (see tools/isolate).
@@ -112,6 +119,11 @@ else
 	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
+	PERIOD_US=$(( 1000000 / HZ ))
+	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 ))}
+	FIRST_P50_US=${GATE_WAKE_FIRST_P50_US:-$(( PERIOD_US * 2 ))}
+	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 ))}
+	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 2 ))}
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
@@ -131,7 +143,8 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		ACCOUNT PALETTE THEME_FILE DIR >"$DIR/gate.state"
+		PERIOD_US FIRST_US FIRST_P50_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
 	rc=$?
@@ -155,8 +168,8 @@ trap cleanup EXIT
 
 ctl() { "${ENV[@]}" "$PKG/bin/tomoe" --socket "$SOCKET" "$@"; }
 
-setsid "$PKG/bin/tomoe" --socket "$SOCKET" --backend headless --no-watch \
-	--config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
+setsid "$PKG/bin/tomoe" --socket "$SOCKET" --backend headless --no-watch --test-timings \
+	--test-frame-clock --config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
 SERVER=$!
 for _ in $(seq 300); do ctl inspect >/dev/null 2>&1 && break; sleep 0.1; done
 ctl inspect >"$DIR/inspect" 2>&1 || die "the session never answered"
@@ -177,7 +190,8 @@ ctl msg outputs | grep -q "\"w\": $WIDTH" || die "the session has no $MODE outpu
 serial=0
 open_window() {
 	serial=$((serial + 1))
-	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --app-id "gate-$serial" \
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --repaint \
+		--color 664422 --change-to 224466 --app-id "gate-$serial" \
 		--title "gate-$serial" >>"$DIR/clients" 2>&1 </dev/null &
 	CLIENTS+=($!)
 }
@@ -244,6 +258,145 @@ type_key() {
 		die "cannot type: $(cat "$DIR/keys")"
 }
 
+pointer() {
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" --extent "${WIDTH}x${HEIGHT}" "$@" >"$DIR/keys" 2>&1 ||
+		die "cannot drive the pointer: $(cat "$DIR/keys")"
+}
+
+timings_reset() {
+	ctl timings reset >"$DIR/timings" 2>&1 || die "cannot reset the timings"
+}
+
+timings_read() {
+	ctl timings >"$DIR/timings" 2>&1 || die "cannot read the timings"
+}
+
+timing() {
+	tr ')' '\n' <"$DIR/timings" | grep -i ":name \"$1\"" | head -1 |
+		grep -oi ":$2 [0-9]*" | head -1 | awk '{print $2}'
+}
+
+focused_box() {
+	ctl msg windows | awk '
+		/"x":/ {gsub(/[^-0-9]/, ""); x = $0} /"y":/ {gsub(/[^-0-9]/, ""); y = $0}
+		/"w":/ {gsub(/[^-0-9]/, ""); w = $0} /"h":/ {gsub(/[^-0-9]/, ""); h = $0}
+		/"app_id":/ {gsub(/[^0-9]/, ""); serial = $0}
+		/"focused": true/ {print x, y, w, h, serial}'
+}
+
+quiet() {
+	local label=$1 before drew attempt
+	sleep "$HOLD"
+	for attempt in 1 2 3; do
+		before=$(frames_on)
+		sleep 1
+		drew=$(( $(frames_on) - before ))
+		((drew == 0)) && return 0
+		sleep "$HOLD"
+	done
+	die "$label: $OUTPUT drew $drew frames in the second before the wake, so nothing was held to wake"
+}
+
+cadence() {
+	local label=$1 drew=$2 want p50 p99 count
+	want=$(( 16 * HZ * 9 / 100 ))
+	((drew >= want)) ||
+		die "$label: drew $drew frames in 1.6 s while something changed, not one per $PERIOD_US us ($want)"
+	p50=$(timing present-interval p50) p99=$(timing present-interval p99)
+	count=$(timing present-interval count)
+	[[ -n $p50 && -n $p99 ]] || die "$label: nothing measured the interval between frames"
+	((p50 <= CADENCE_US)) ||
+		die "$label: frames came every ${p50}us, past the ${CADENCE_US}us a $HZ Hz output may take"
+	((p99 <= CADENCE_P99_US)) ||
+		die "$label: one frame in a hundred followed the last after ${p99}us, past ${CADENCE_P99_US}us"
+	say "$label: $drew frames in 1.6 s, interval p50 ${p50}us p99 ${p99}us over $count frames"
+}
+
+wake_from_rest() {
+	local label=$1 channel=$2 count p50 p99 max
+	shift 2
+	timings_reset
+	"$@"
+	sleep 0.4
+	timings_read
+	count=$(timing "$channel" count)
+	[[ -n $count ]] || die "$label: the timings name no $channel"
+	((count > 0)) || die "$label: the $channel of that input was never measured"
+	p50=$(timing "$channel" p50) p99=$(timing "$channel" p99) max=$(timing "$channel" max)
+	((p50 <= FIRST_P50_US)) ||
+		die "$label: the first frame after it took ${p50}us, past ${FIRST_P50_US}us"
+	((max <= FIRST_US)) ||
+		die "$label: the frame carrying it was presented ${max}us after it, past ${FIRST_US}us"
+	say "$label: first frame p50 ${p50}us p99 ${p99}us max ${max}us ($count measured)"
+	printf '%s %s %s %s\n' "$label" "$p50" "$p99" "$max" >>"$DIR/wake"
+}
+
+wake_check() {
+	local label=$1 box x y w h serial pid before after
+	box=$(focused_box)
+	[[ -n $box ]] || die "$label: nothing is focused to wake"
+	set -- $box
+	x=$1 y=$2 w=$3 h=$4 serial=$5
+	local cx=$(( x + w / 2 )) cy=$(( y + h / 2 ))
+	quiet "$label key"
+	wake_from_rest "$label key" present-input type_key "key 42 down" sync "key 42 up" sync
+	quiet "$label pointer"
+	wake_from_rest "$label pointer" present-input pointer \
+		"move $(( cx - 401 )) $(( cy - 199 ))"
+	((serial >= 1 && serial <= ${#CLIENTS[@]})) ||
+		die "$label: no client for the focused window $serial"
+	pid=${CLIENTS[$((serial - 1))]}
+	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
+	quiet "$label damage"
+	wake_from_rest "$label damage" present-commit kill -USR1 "$pid"
+
+	quiet "$label drag"
+	local moves=("move $cx $cy" "press 272") i
+	for ((i = 0; i < 400; i++)); do
+		moves+=("move $(( cx + i % 160 )) $(( cy + i % 120 ))" "sleep 4")
+	done
+	moves+=("release 272")
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" --extent "${WIDTH}x${HEIGHT}" "${moves[@]}" \
+		>"$DIR/keys" 2>&1 &
+	pid=$!
+	sleep 0.4
+	timings_reset
+	before=$(frames_on)
+	sleep 1.6
+	after=$(frames_on)
+	timings_read
+	kill -TERM "$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	cadence "$label drag" $(( after - before ))
+
+	quiet "$label commit"
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --commit-rate 240 \
+		--repaint --color 664422 --change-to 224466 --app-id gate-wake --title gate-wake \
+		>>"$DIR/clients" 2>&1 </dev/null &
+	pid=$!
+	sleep 0.8
+	timings_reset
+	before=$(frames_on)
+	sleep 1.6
+	after=$(frames_on)
+	timings_read
+	kill -TERM -- "-$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	cadence "$label commit" $(( after - before ))
+	settle "$WINDOWS"
+
+	quiet "$label resume"
+	timings_reset
+	type_key "key 42 down" sync "key 42 up" sync
+	sleep 0.4
+	timings_reset
+	before=$(frames_on)
+	sleep 1.6
+	after=$(frames_on)
+	timings_read
+	cadence "$label resume" $(( after - before ))
+}
+
 pixels_differ() {
 	python3 - "$1" "$2" <<'PIXELS'
 import sys
@@ -288,6 +441,10 @@ at_rest() {
 				die "$label: the picture moved $skip sampled pixels on the input that resumed it, so it skipped ahead"
 			say "$label: resumed on that input with $skip sampled pixels of change"
 			SKIP_CHECKED=1
+		fi
+		if [[ -z ${WAKE_CHECKED:-} ]]; then
+			wake_check "$label"
+			WAKE_CHECKED=1
 		fi
 		return 0
 	done

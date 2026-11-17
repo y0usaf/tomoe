@@ -29,7 +29,13 @@ exiting or a fatal log line. It also times every theme and mode from an input
 to the hold an idle machine is given, with the config's meter readings held
 still: the configured output must have drawn while the input was fresh, must
 draw nothing over the next two seconds, and must resume on the next input
-without skipping the picture it held. Pin only a revision it passed, and deploy the pin
+without skipping the picture it held. Once, from that rest, it wakes the machine
+with a key, a pointer motion and a client's new buffer, and fails if the frame
+carrying any of them reaches the display later than three refreshes, then drags
+the pointer and streams client commits for a second and a half and fails unless
+the output presented one frame per refresh (median within one and a quarter of
+the period, 99th within two). A desktop that holds its picture has to come back
+without a stutter. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
 
 `./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same
