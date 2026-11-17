@@ -78,16 +78,19 @@ void dp_arc(struct dpath *path, double cx, double cy, double radius,
     double angle1, double angle2, bool negative);
 
 uint32_t dp_masked_over(uint32_t dst, uint32_t src, uint8_t mask);
+uint32_t dp_component_over(uint32_t dst, uint32_t src, uint32_t mask);
+uint32_t dp_component_add(uint32_t x, uint32_t y);
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y);
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias);
 bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans);
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias,
+    struct dp_spans *spans);
 void dp_spans_fini(struct dp_spans *spans);
 
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y);
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias);
 
 struct dmatrix { double xx, yx, xy, yy, x0, y0; };
 

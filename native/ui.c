@@ -1317,7 +1317,8 @@ static bool shape_gradient(struct ui_surface *surface, const struct ui_op *op,
     struct dpath path;
     dpath_init(&path);
     shape_path(&path, op, 0.0, 0.0);
-    bool ok = dp_fill_mask_spans(&path, area, coverage, span, area.x0, area.y0, &spans);
+    bool ok = dp_fill_mask_spans(&path, area, coverage, span, area.x0, area.y0,
+        PX_ANTIALIAS_GRAY, &spans);
     dpath_fini(&path);
     struct drect bounds = spans.extents;
     if (bounds.x0 < area.x0) bounds.x0 = area.x0;

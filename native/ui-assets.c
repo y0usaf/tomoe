@@ -771,7 +771,8 @@ bool ui_asset_paint(struct ui_asset *asset, uint32_t *dst, int dst_width, int ds
         unsigned char *coverage = calloc((size_t)span * (size_t)(clip.y1 - clip.y0), 1);
         if (!coverage) ok = false;
         else {
-            ok = dp_fill_mask(&path, clip, coverage, span, clip.x0, clip.y0);
+            ok = dp_fill_mask(&path, clip, coverage, span, clip.x0, clip.y0,
+                PX_ANTIALIAS_GRAY);
             if (ok) {
                 struct dp_pattern pattern = dp_surface_pattern(x, y,
                     width / image.width, height / image.height, 0, 0);

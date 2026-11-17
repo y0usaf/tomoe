@@ -978,17 +978,18 @@ out:
 }
 
 bool dp_fill_mask(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y)
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias)
 {
-    return dp_fill_mask_spans(path, clip, mask, stride, mask_x, mask_y, NULL);
+    return dp_fill_mask_spans(path, clip, mask, stride, mask_x, mask_y, antialias, NULL);
 }
 
 bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans)
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias,
+    struct dp_spans *spans)
 {
     if (path->failed) return false;
     int32_t bl, bt, br, bb;
-    if (path_is_rect_box(path, &bl, &bt, &br, &bb)) {
+    if (antialias == PX_ANTIALIAS_GRAY && path_is_rect_box(path, &bl, &bt, &br, &bb)) {
         int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
         int32_t limit_r = (int32_t)clip.x1 * FIXED_ONE, limit_b = (int32_t)clip.y1 * FIXED_ONE;
         if (bl < limit_l) bl = limit_l;
@@ -1056,7 +1057,7 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
             fixed_floor(polygon.extents.p1.y), fixed_ceil(polygon.extents.p2.x),
             fixed_ceil(polygon.extents.p2.y) };
     px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
-        PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
+        PX_FILL_RULE_WINDING, antialias);
     if (!converter) {
         dp_polygon_fini(&polygon);
         return false;
@@ -1083,7 +1084,7 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
 }
 
 static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y)
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias)
 {
     if (polygon->extents.p2.x <= polygon->extents.p1.x ||
         polygon->extents.p2.y <= polygon->extents.p1.y)
@@ -1098,7 +1099,7 @@ static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
     if (cy1 > clip.y1) cy1 = clip.y1;
     if (cx0 >= cx1 || cy0 >= cy1) return true;
     px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
-        PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
+        PX_FILL_RULE_WINDING, antialias);
     if (!converter) return false;
     if (tor_add_edges(converter, (const px_edge_t *)polygon->edges, polygon->count) !=
             PX_STATUS_SUCCESS) {
@@ -1196,7 +1197,7 @@ static bool fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
 
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y)
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias)
 {
     cairo_stroke_style_t style;
     memset(&style, 0, sizeof(style));
@@ -1232,7 +1233,7 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;
     if (status == CAIRO_STATUS_SUCCESS && polygon.status == PX_STATUS_SUCCESS)
-        ok = raster_stroke_polygon(&polygon, clip, mask, stride, mask_x, mask_y);
+        ok = raster_stroke_polygon(&polygon, clip, mask, stride, mask_x, mask_y, antialias);
     dp_polygon_fini(&polygon);
     return ok;
 }
@@ -1266,7 +1267,7 @@ bool dp_fill_color(uint32_t *dst, int stride, struct drect clip, const struct dp
     if (path->failed || width <= 0 || clip.y1 <= clip.y0) return !path->failed;
     unsigned char *mask = calloc((size_t)width * (size_t)(clip.y1 - clip.y0), 1);
     if (!mask) return false;
-    bool ok = dp_fill_mask(path, clip, mask, width, clip.x0, clip.y0);
+    bool ok = dp_fill_mask(path, clip, mask, width, clip.x0, clip.y0, PX_ANTIALIAS_GRAY);
     if (ok) dp_composite_over(dst, stride, clip, mask, width, clip.x0, clip.y0, color, source_opaque);
     free(mask);
     return ok;
@@ -1279,7 +1280,8 @@ bool dp_stroke_color(uint32_t *dst, int stride, struct drect clip, const struct 
     if (path->failed || span <= 0 || clip.y1 <= clip.y0) return !path->failed;
     unsigned char *mask = calloc((size_t)span * (size_t)(clip.y1 - clip.y0), 1);
     if (!mask) return false;
-    bool ok = dp_stroke_mask(path, width, cap, join, 10.0, clip, mask, span, clip.x0, clip.y0);
+    bool ok = dp_stroke_mask(path, width, cap, join, 10.0, clip, mask, span, clip.x0, clip.y0,
+        PX_ANTIALIAS_GRAY);
     if (ok) dp_composite_over(dst, stride, clip, mask, span, clip.x0, clip.y0, color, source_opaque);
     free(mask);
     return ok;

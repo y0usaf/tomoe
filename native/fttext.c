@@ -13,39 +13,11 @@
 #include <pango/pangofc-fontmap.h>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct fte_matrix { double xx, yx, xy, yy, x0, y0; };
-
-struct fte_options {
-    int antialias;
-    int hint_style;
-    int hint_metrics;
-    int subpixel_order;
-    int lcd_filter;
-};
-
-enum {
-    FTE_ANTIALIAS_DEFAULT,
-    FTE_ANTIALIAS_NONE,
-    FTE_ANTIALIAS_GRAY,
-    FTE_ANTIALIAS_SUBPIXEL,
-    FTE_ANTIALIAS_FAST,
-    FTE_ANTIALIAS_GOOD,
-    FTE_ANTIALIAS_BEST
-};
-
-enum { FTE_HINT_STYLE_DEFAULT, FTE_HINT_STYLE_NONE, FTE_HINT_STYLE_SLIGHT,
-    FTE_HINT_STYLE_MEDIUM, FTE_HINT_STYLE_FULL };
-
-enum { FTE_HINT_METRICS_DEFAULT, FTE_HINT_METRICS_OFF, FTE_HINT_METRICS_ON };
-
-enum { FTE_SUBPIXEL_DEFAULT, FTE_SUBPIXEL_RGB, FTE_SUBPIXEL_BGR,
-    FTE_SUBPIXEL_VRGB, FTE_SUBPIXEL_VBGR };
-
-enum { FTE_LCD_FILTER_DEFAULT, FTE_LCD_FILTER_NONE, FTE_LCD_FILTER_INTRA_PIXEL,
-    FTE_LCD_FILTER_FIR3, FTE_LCD_FILTER_FIR5 };
 
 struct fte_ft_options {
     int load_flags;
@@ -107,11 +79,20 @@ typedef struct _FteFontClass FteFontClass;
 
 struct fte_scaled;
 
+struct fte_hex {
+    PangoFont *font;
+    int rows;
+    double digit_width, digit_height, pad_x, pad_y, line_width, box_descent, box_height;
+    bool ready;
+};
+
 struct _FteFont {
     PangoFcFont parent_instance;
     struct fte_scaled *scaled;
     PangoRectangle font_extents;
     bool font_extents_set;
+    PangoMatrix key_matrix;
+    struct fte_hex hex;
 };
 
 struct _FteFontClass {
@@ -270,6 +251,7 @@ struct fte_glyph {
     bool used;
     bool failed;
     int color;
+    int component;
     void *data;
     int stride;
     int width, height;
@@ -799,62 +781,174 @@ struct fte_image {
     int stride;
     int width, height;
     int bpp;
+    int component;
     int off_x, off_y;
 };
 
-static bool fte_render_outline(FT_Face face, const struct fte_scaled *scaled,
-    struct fte_image *out)
+static FT_Render_Mode fte_render_mode(const struct fte_scaled *scaled)
 {
-    FT_GlyphSlot slot = face->glyph;
-    if (scaled->options.antialias != FTE_ANTIALIAS_DEFAULT &&
-            scaled->options.antialias != FTE_ANTIALIAS_GRAY &&
-            scaled->options.antialias != FTE_ANTIALIAS_GOOD &&
-            scaled->options.antialias != FTE_ANTIALIAS_FAST)
-        return false;
-    FT_BBox cbox;
-    FT_Outline_Get_CBox(&slot->outline, &cbox);
-    cbox.xMin &= -64;
-    cbox.yMin &= -64;
-    cbox.xMax = (cbox.xMax + 63) & -64;
-    cbox.yMax = (cbox.yMax + 63) & -64;
-    int width = (int)((cbox.xMax - cbox.xMin) >> 6);
-    int height = (int)((cbox.yMax - cbox.yMin) >> 6);
-    if (width * height == 0) {
-        out->data = NULL;
-        out->stride = 0;
-        out->width = 0;
-        out->height = 0;
-        out->bpp = 1;
-        out->off_x = 0;
-        out->off_y = 0;
-        return true;
+    switch (scaled->options.antialias) {
+    case FTE_ANTIALIAS_NONE:
+        return FT_RENDER_MODE_MONO;
+    case FTE_ANTIALIAS_SUBPIXEL:
+    case FTE_ANTIALIAS_BEST:
+        switch (scaled->options.subpixel_order) {
+        case FTE_SUBPIXEL_VRGB:
+        case FTE_SUBPIXEL_VBGR:
+            return FT_RENDER_MODE_LCD_V;
+        default:
+            return FT_RENDER_MODE_LCD;
+        }
+    default:
+        return FT_RENDER_MODE_NORMAL;
     }
-    FT_Library_SetLcdFilter(slot->library, FT_LCD_FILTER_DEFAULT);
-    FT_Error error = FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL);
-    FT_Library_SetLcdFilter(slot->library, FT_LCD_FILTER_NONE);
-    if (error) return false;
-    FT_Bitmap *bitmap = &slot->bitmap;
-    int pitch = ((int)bitmap->width + 3) & ~3;
-    uint8_t *data = calloc((size_t)pitch, (size_t)bitmap->rows);
+}
+
+static FT_LcdFilter fte_lcd_filter(const struct fte_scaled *scaled)
+{
+    switch (scaled->options.lcd_filter) {
+    case FTE_LCD_FILTER_NONE:
+        return FT_LCD_FILTER_NONE;
+    case FTE_LCD_FILTER_INTRA_PIXEL:
+        return FT_LCD_FILTER_LEGACY;
+    case FTE_LCD_FILTER_FIR3:
+        return FT_LCD_FILTER_LIGHT;
+    default:
+        return FT_LCD_FILTER_DEFAULT;
+    }
+}
+
+static bool fte_store_mono(struct fte_image *out, const FT_Bitmap *bitmap)
+{
+    int width = (int)bitmap->width, height = (int)bitmap->rows;
+    uint8_t *data = calloc(height ? (size_t)height : 1, width ? (size_t)width : 1);
     if (!data) return false;
-    for (unsigned row = 0; row < bitmap->rows; row++) {
+    for (int row = 0; row < height; row++) {
         const uint8_t *src = bitmap->buffer + (ptrdiff_t)row * bitmap->pitch;
-        uint8_t *dst = data + (size_t)row * (size_t)pitch;
-        if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO) {
-            for (unsigned x = 0; x < bitmap->width; x++)
-                if (src[x >> 3] & (0x80u >> (x & 7))) dst[x] = 0xff;
-        } else if (bitmap->pixel_mode == FT_PIXEL_MODE_GRAY) {
-            memcpy(dst, src, bitmap->width);
-        } else {
+        uint8_t *dst = data + (size_t)row * (size_t)width;
+        for (int x = 0; x < width; x++)
+            if (src[x >> 3] & (0x80u >> (x & 7))) dst[x] = 0xff;
+    }
+    out->data = data;
+    out->stride = width;
+    out->width = width;
+    out->height = height;
+    out->bpp = 1;
+    return true;
+}
+
+static bool fte_store_gray(struct fte_image *out, const FT_Bitmap *bitmap)
+{
+    int width = (int)bitmap->width, height = (int)bitmap->rows;
+    int stride = (width + 3) & ~3;
+    uint8_t *data = calloc(height ? (size_t)height : 1, stride ? (size_t)stride : 1);
+    if (!data) return false;
+    for (int row = 0; row < height; row++)
+        memcpy(data + (size_t)row * (size_t)stride,
+            bitmap->buffer + (ptrdiff_t)row * bitmap->pitch, (size_t)width);
+    out->data = data;
+    out->stride = stride;
+    out->width = width;
+    out->height = height;
+    out->bpp = 1;
+    return true;
+}
+
+static bool fte_store_lcd(struct fte_image *out, const FT_Bitmap *bitmap, bool bgr)
+{
+    FT_Pixel_Mode mode = (FT_Pixel_Mode)bitmap->pixel_mode;
+    int src_pitch = (int)bitmap->pitch;
+    int width = (int)bitmap->width, height = (int)bitmap->rows;
+    const uint8_t *base = bitmap->buffer;
+    if (src_pitch < 0) base -= (ptrdiff_t)src_pitch * (height - 1);
+    if (mode == FT_PIXEL_MODE_LCD) width /= 3;
+    else if (mode == FT_PIXEL_MODE_LCD_V) height /= 3;
+    size_t stride = (size_t)width * 4;
+    uint8_t *data = calloc(height ? (size_t)height : 1, stride ? stride : 1);
+    if (!data) return false;
+    for (int row = 0; row < height; row++) {
+        uint32_t *dst = (uint32_t *)(data + (size_t)row * stride);
+        const uint8_t *src;
+        switch (mode) {
+        case FT_PIXEL_MODE_LCD:
+            src = base + (ptrdiff_t)row * src_pitch;
+            for (int x = 0; x < width; x++) {
+                uint32_t lo = src[3 * x + (bgr ? 2 : 0)];
+                uint32_t mid = src[3 * x + 1];
+                dst[x] = mid << 24 | lo << 16 | mid << 8 | src[3 * x + (bgr ? 0 : 2)];
+            }
+            break;
+        case FT_PIXEL_MODE_LCD_V:
+            src = base + (ptrdiff_t)row * 3 * src_pitch;
+            for (int x = 0; x < width; x++) {
+                uint32_t lo = src[bgr ? 2 * src_pitch + x : x];
+                uint32_t mid = src[src_pitch + x];
+                dst[x] = mid << 24 | lo << 16 | mid << 8 |
+                    src[bgr ? x : 2 * src_pitch + x];
+            }
+            break;
+        case FT_PIXEL_MODE_MONO:
+            src = base + (ptrdiff_t)row * src_pitch;
+            for (int x = 0; x < width; x++)
+                dst[x] = (src[x >> 3] & (0x80u >> (x & 7))) ? 0xffffffffu : 0;
+            break;
+        case FT_PIXEL_MODE_GRAY:
+            src = base + (ptrdiff_t)row * src_pitch;
+            for (int x = 0; x < width; x++) {
+                uint32_t pix = src[x];
+                pix |= pix << 8;
+                pix |= pix << 16;
+                dst[x] = pix;
+            }
+            break;
+        default:
             free(data);
             return false;
         }
     }
     out->data = data;
-    out->stride = pitch;
-    out->width = (int)bitmap->width;
-    out->height = (int)bitmap->rows;
-    out->bpp = 1;
+    out->stride = (int)stride;
+    out->width = width;
+    out->height = height;
+    out->bpp = 4;
+    out->component = 1;
+    return true;
+}
+
+static bool fte_render_outline(FT_Face face, const struct fte_scaled *scaled,
+    struct fte_image *out)
+{
+    FT_GlyphSlot slot = face->glyph;
+    FT_Render_Mode mode = fte_render_mode(scaled);
+    bool component = mode == FT_RENDER_MODE_LCD || mode == FT_RENDER_MODE_LCD_V;
+    FT_BBox cbox;
+    memset(out, 0, sizeof(*out));
+    out->bpp = component ? 4 : 1;
+    out->component = component;
+    FT_Outline_Get_CBox(&slot->outline, &cbox);
+    cbox.xMin &= -64;
+    cbox.yMin &= -64;
+    cbox.xMax = (cbox.xMax + 63) & -64;
+    cbox.yMax = (cbox.yMax + 63) & -64;
+    if (((cbox.xMax - cbox.xMin) >> 6) * ((cbox.yMax - cbox.yMin) >> 6) == 0) return true;
+    FT_Library_SetLcdFilter(slot->library, fte_lcd_filter(scaled));
+    FT_Error error = FT_Render_Glyph(slot, mode);
+    FT_Library_SetLcdFilter(slot->library, FT_LCD_FILTER_NONE);
+    if (error) return false;
+    FT_Bitmap *bitmap = &slot->bitmap;
+    bool ok;
+    if (component) {
+        bool bgr = scaled->options.subpixel_order == FTE_SUBPIXEL_BGR ||
+            scaled->options.subpixel_order == FTE_SUBPIXEL_VBGR;
+        ok = fte_store_lcd(out, bitmap, bgr);
+    } else if (bitmap->pixel_mode == FT_PIXEL_MODE_MONO) {
+        ok = fte_store_mono(out, bitmap);
+    } else if (bitmap->pixel_mode == FT_PIXEL_MODE_GRAY) {
+        ok = fte_store_gray(out, bitmap);
+    } else {
+        return false;
+    }
+    if (!ok) return false;
     out->off_x = -slot->bitmap_left;
     out->off_y = slot->bitmap_top;
     return true;
@@ -1187,7 +1281,8 @@ static bool fte_transform_image(const struct fte_matrix *shape, struct fte_image
     size_t stride = (size_t)width * (size_t)image->bpp;
     void *data = calloc((size_t)height, stride);
     if (!data) return false;
-    struct fte_image dst = { data, (int)stride, width, height, image->bpp, 0, 0 };
+    struct fte_image dst = { data, (int)stride, width, height, image->bpp, image->component,
+        0, 0 };
     if (!fte_scale_image(image, &dst, &inverse)) {
         free(data);
         return false;
@@ -1228,6 +1323,7 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
                 entry->off_x = image.off_x;
                 entry->off_y = image.off_y;
                 entry->bpp = image.bpp;
+                entry->component = image.component;
                 entry->color = 1;
                 return true;
             }
@@ -1247,6 +1343,7 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
     entry->off_x = image.off_x;
     entry->off_y = image.off_y;
     entry->bpp = image.bpp;
+    entry->component = image.component;
     entry->color = 0;
     return true;
 }
@@ -1262,6 +1359,213 @@ static struct fte_glyph *fte_glyph_get(struct fte_scaled *scaled, unsigned glyph
     if (!entry) return NULL;
     if (!fte_glyph_surface(scaled, entry)) entry->failed = true;
     return entry;
+}
+
+static void fte_font_compute_extents(FteFont *font);
+static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph);
+
+static gunichar fte_nominal_glyph(PangoFont *font, gunichar ch)
+{
+    hb_font_t *hb = pango_font_get_hb_font(font);
+    hb_codepoint_t glyph = PANGO_GET_UNKNOWN_GLYPH(ch);
+    if (hb) hb_font_get_nominal_glyph(hb, ch, &glyph);
+    return (gunichar)glyph;
+}
+
+static int fte_absolute_size(FteFont *font)
+{
+    PangoFontDescription *description =
+        pango_font_describe_with_absolute_size(PANGO_FONT(font));
+    if (!description) return 0;
+    int size = pango_font_description_get_size(description);
+    pango_font_description_free(description);
+    return size;
+}
+
+static double fte_pango_scale_factor(const PangoMatrix *matrix)
+{
+    return pango_matrix_get_font_scale_factor(matrix);
+}
+
+static double fte_font_scale_factor(const struct fte_matrix *matrix)
+{
+    PangoMatrix pango = { matrix->xx, matrix->xy, matrix->yx, matrix->yy, matrix->x0,
+        matrix->y0 };
+    return pango_matrix_get_font_scale_factor(&pango);
+}
+
+static void fte_font_extents(FteFont *font, double *ascent, double *descent)
+{
+    struct fte_scaled *scaled = font->scaled;
+    FT_Face face = scaled->face->face;
+    double above, below;
+    fte_face_scale(scaled->face, &scaled->scale);
+    if (scaled->options.hint_metrics != FTE_HINT_METRICS_OFF || face->units_per_EM == 0) {
+        above = fte_from_26_6(face->size->metrics.ascender) / scaled->face->y_scale;
+        below = fte_from_26_6(-face->size->metrics.descender) / scaled->face->y_scale;
+    } else {
+        above = (double)face->ascender / (double)face->units_per_EM;
+        below = -(double)face->descender / (double)face->units_per_EM;
+    }
+    double scale = fte_font_scale_factor(&scaled->font_matrix);
+    *ascent = above * scale;
+    *descent = below * scale;
+}
+
+struct fte_nick { gunichar ch; const char *nick; };
+
+static const struct fte_nick fte_nicks[] = {
+    { 0x00ad, "SHY" }, { 0x034f, "CGJ" }, { 0x061c, "ALM" }, { 0x200b, "ZWS" },
+    { 0x200c, "ZWNJ" }, { 0x200d, "ZWJ" }, { 0x200e, "LRM" }, { 0x200f, "RLM" },
+    { 0x2028, "LS" }, { 0x2029, "PS" }, { 0x202a, "LRE" }, { 0x202b, "RLE" },
+    { 0x202c, "PDF" }, { 0x202d, "LRO" }, { 0x202e, "RLO" }, { 0x2060, "WJ" },
+    { 0x2061, "FA" }, { 0x2062, "IT" }, { 0x2063, "IS" }, { 0x2066, "LRI" },
+    { 0x2067, "RLI" }, { 0x2068, "FSI" }, { 0x2069, "PDI" }, { 0xfeff, "ZWNBS" }
+};
+
+static const char *fte_ignorable_size(gunichar ch, int *rows, int *cols)
+{
+    const char *nick = NULL;
+    for (size_t i = 0; i < sizeof(fte_nicks) / sizeof(*fte_nicks); i++)
+        if (fte_nicks[i].ch == ch) { nick = fte_nicks[i].nick; break; }
+    if (!nick) return NULL;
+    size_t len = strlen(nick);
+    if (len < 4) { *rows = 1; *cols = (int)len; }
+    else if (len > 4) { *rows = 2; *cols = 3; }
+    else { *rows = 2; *cols = 2; }
+    return nick;
+}
+
+static double fte_hint_axis(double value, double scale)
+{
+    return ceil((value - 1e-5) * scale) / scale;
+}
+
+static struct fte_hex *fte_font_hex(FteFont *font)
+{
+    struct fte_hex *hex = &font->hex;
+    if (hex->ready) return hex->font ? hex : NULL;
+    hex->ready = true;
+    struct fte_scaled *scaled = font->scaled;
+    if (!scaled) return NULL;
+    bool hinted = scaled->requested.hint_metrics != FTE_HINT_METRICS_OFF;
+    PangoMatrix ctm = font->key_matrix;
+    double scale_x = 1.0, scale_y = 1.0;
+    if (hinted) {
+        double x = 1.0, y = 0.0;
+        pango_matrix_transform_distance(&ctm, &x, &y);
+        scale_x = sqrt(x * x + y * y);
+        x = 0.0;
+        y = 1.0;
+        pango_matrix_transform_distance(&ctm, &x, &y);
+        scale_y = sqrt(x * x + y * y);
+        if (!(scale_x > 0)) scale_x = 1.0;
+        if (!(scale_y > 0)) scale_y = 1.0;
+    }
+    double size = fte_font_scale_factor(&scaled->font_matrix) / fte_pango_scale_factor(&ctm);
+    double mini_size = size / 2.2;
+    if (hinted) mini_size = fte_hint_axis(mini_size, scale_y);
+    PangoFontDescription *description =
+        pango_font_describe_with_absolute_size(PANGO_FONT(font));
+    if (!description) return NULL;
+    pango_font_description_unset_fields(description, PANGO_FONT_MASK_GRAVITY);
+    pango_font_description_set_family_static(description, "monospace");
+    pango_font_description_set_absolute_size(description, pango_units_from_double(mini_size));
+    struct fte_options options = scaled->requested;
+    PangoContext *context = fte_context_new_options(&options);
+    PangoFont *mini = NULL;
+    if (context) {
+        PangoMatrix matrix = ctm;
+        pango_context_set_matrix(context, &matrix);
+        pango_context_set_language(context,
+            pango_script_get_sample_language(PANGO_SCRIPT_LATIN));
+        mini = pango_font_map_load_font(fte_font_map(), context, description);
+        g_object_unref(context);
+    }
+    pango_font_description_free(description);
+    if (!mini) return NULL;
+    double width = 0, height = 0;
+    if (PANGO_IS_FC_FONT(mini)) {
+        FteFont *mini_font = (FteFont *)mini;
+        for (int i = 0; i < 16; i++) {
+            unsigned glyph = (unsigned)fte_nominal_glyph(mini, "0123456789ABCDEF"[i]);
+            struct fte_metric *metric = fte_run_metric(mini_font, glyph);
+            if (!metric || !metric->valid) continue;
+            if (metric->ink_w > width) width = metric->ink_w;
+            if (metric->ink_h > height) height = metric->ink_h;
+        }
+    }
+    double ascent, descent;
+    fte_font_extents(font, &ascent, &descent);
+    if (!(ascent + descent > 0)) {
+        ascent = 14.0;
+        descent = 0.0;
+    }
+    double pad = (ascent + descent) / 43.0;
+    if (pad > mini_size) pad = mini_size;
+    hex->font = mini;
+    hex->rows = 2;
+    hex->digit_width = width;
+    hex->digit_height = height;
+    hex->pad_x = pad;
+    hex->pad_y = pad;
+    if (hinted) {
+        hex->digit_width = fte_hint_axis(hex->digit_width, scale_x);
+        hex->digit_height = fte_hint_axis(hex->digit_height, scale_y);
+        hex->pad_x = fte_hint_axis(hex->pad_x, scale_x);
+        hex->pad_y = fte_hint_axis(hex->pad_y, scale_y);
+    }
+    hex->line_width = hex->pad_x < hex->pad_y ? hex->pad_x : hex->pad_y;
+    hex->box_height = 3 * hex->pad_y + hex->rows * (hex->pad_y + hex->digit_height);
+    if (hex->rows == 1 || hex->box_height <= ascent)
+        hex->box_descent = 2 * hex->pad_y;
+    else if (hex->box_height <= ascent + descent - 2 * hex->pad_y)
+        hex->box_descent = 2 * hex->pad_y + hex->box_height - ascent;
+    else
+        hex->box_descent = descent * hex->box_height / (ascent + descent);
+    if (hinted) hex->box_descent = fte_hint_axis(hex->box_descent, scale_y);
+    return hex;
+}
+
+static void fte_missing_metrics(FteFont *font, PangoGlyph glyph, PangoRectangle *ink,
+    PangoRectangle *logical)
+{
+    gunichar ch = (gunichar)(glyph & ~PANGO_GLYPH_UNKNOWN_FLAG);
+    if (ch == 0x20 || ch == 0x2423) {
+        int width = fte_absolute_size(font) / 4;
+        fte_font_compute_extents(font);
+        if (ink) {
+            ink->x = 0; ink->y = 0; ink->height = 0; ink->width = width;
+        }
+        if (logical) {
+            *logical = font->font_extents;
+            logical->width = width;
+        }
+        return;
+    }
+    struct fte_hex *hex = fte_font_hex(font);
+    if (!hex) {
+        if (ink) { ink->x = 0; ink->y = 0; ink->width = 0; ink->height = 0; }
+        if (logical) { logical->x = 0; logical->y = 0; logical->width = 0; logical->height = 0; }
+        return;
+    }
+    int rows, cols;
+    if (glyph == PANGO_GLYPH_INVALID_INPUT || ch > 0x10FFFF) { rows = hex->rows; cols = 1; }
+    else if (fte_ignorable_size(ch, &rows, &cols)) { }
+    else { rows = hex->rows; cols = (ch > 0xffff ? 6 : 4) / rows; }
+    if (ink) {
+        ink->x = (int)(1024.0 * hex->pad_x);
+        ink->y = (int)(1024.0 * (hex->box_descent - hex->box_height));
+        ink->width = (int)(1024.0 * (4 * hex->pad_x + cols * (hex->digit_width + hex->pad_x)));
+        ink->height = (int)(1024.0 * hex->box_height);
+    }
+    if (logical) {
+        logical->x = 0;
+        logical->y = (int)(1024.0 * (hex->box_descent - (hex->box_height + hex->pad_y)));
+        logical->width = (int)(1024.0 * (5 * hex->pad_x + cols * (hex->digit_width + hex->pad_x)));
+        logical->height = (int)(1024.0 * (hex->box_height + 2 * hex->pad_y));
+    }
+    (void)rows;
 }
 
 typedef struct _FteFontMap FteFontMap;
@@ -1322,10 +1626,18 @@ static gboolean fte_context_key_equal(PangoFcFontMap *map, gconstpointer a, gcon
     return memcmp(a, b, sizeof(struct fte_options)) == 0;
 }
 
+struct fte_cairo_context {
+    double dpi;
+};
+
 static double fte_font_map_resolution(PangoFcFontMap *map, PangoContext *context)
 {
     (void)map;
-    (void)context;
+    if (context) {
+        struct fte_cairo_context *info = g_object_get_qdata(G_OBJECT(context),
+            g_quark_from_static_string("pango-cairo-context-info"));
+        if (info && info->dpi > 0) return info->dpi;
+    }
     return 96.0;
 }
 
@@ -1370,6 +1682,8 @@ static PangoFcFont *fte_font_map_create_font(PangoFcFontMap *map, PangoFcFontKey
     FteFont *font = g_object_new(FTE_TYPE_FONT, "pattern", pattern, "fontmap", map, NULL);
     if (!font) return NULL;
     font->scaled = scaled;
+    if (matrix) font->key_matrix = *matrix;
+    else font->key_matrix = (PangoMatrix){ 1, 0, 0, 1, 0, 0 };
     font->parent_instance.is_hinted = options->hint_metrics != FTE_HINT_METRICS_OFF;
     return (PangoFcFont *)font;
 }
@@ -1393,23 +1707,36 @@ PangoFontMap *fte_font_map(void)
     return fte_map;
 }
 
-PangoContext *fte_context_new(void)
+PangoContext *fte_context_new_options(const struct fte_options *options)
 {
     PangoFontMap *map = fte_font_map();
     if (!map) return NULL;
     PangoContext *context = pango_font_map_create_context(map);
     if (!context) return NULL;
-    struct fte_options *options = g_new(struct fte_options, 1);
-    if (!options) { g_object_unref(context); return NULL; }
-    *options = fte_default_options;
-    options->antialias = FTE_ANTIALIAS_GRAY;
-    options->hint_style = FTE_HINT_STYLE_NONE;
-    options->hint_metrics = FTE_HINT_METRICS_OFF;
-    g_object_set_qdata_full(G_OBJECT(context), fte_options_quark(), options, g_free);
+    struct fte_options *copy = g_new(struct fte_options, 1);
+    if (!copy) { g_object_unref(context); return NULL; }
+    *copy = options ? *options : fte_default_options;
+    g_object_set_qdata_full(G_OBJECT(context), fte_options_quark(), copy, g_free);
     return context;
 }
 
+PangoContext *fte_context_new(void)
+{
+    static const struct fte_options defaults = { FTE_ANTIALIAS_GRAY, FTE_HINT_STYLE_NONE,
+        FTE_HINT_METRICS_OFF, FTE_SUBPIXEL_DEFAULT, FTE_LCD_FILTER_DEFAULT };
+    return fte_context_new_options(&defaults);
+}
+
 static void fte_font_init(FteFont *font) { (void)font; }
+
+static int fte_units_floor(int v) { return v & ~(PANGO_SCALE - 1); }
+static int fte_units_ceil(int v) { return (v + PANGO_SCALE - 1) & ~(PANGO_SCALE - 1); }
+static int fte_pixels_ceil(int v) { return (v + PANGO_SCALE - 1) / PANGO_SCALE; }
+
+static bool fte_font_hinted(FteFont *font)
+{
+    return font->scaled && font->scaled->requested.hint_metrics != FTE_HINT_METRICS_OFF;
+}
 
 static void fte_font_compute_extents(FteFont *font)
 {
@@ -1423,6 +1750,37 @@ static void fte_font_compute_extents(FteFont *font)
     font->font_extents.width = 0;
     font->font_extents.height = extents.ascender - extents.descender;
     font->font_extents.y = -extents.ascender;
+    if (fte_font_hinted(font)) {
+        if (font->font_extents.y < 0) font->font_extents.y = fte_units_floor(
+            font->font_extents.y);
+        else font->font_extents.y = fte_units_ceil(font->font_extents.y);
+        if (font->font_extents.height < 0)
+            font->font_extents.height = fte_units_floor(extents.ascender) -
+                fte_units_ceil(extents.descender);
+        else
+            font->font_extents.height = fte_units_ceil(extents.ascender) -
+                fte_units_floor(extents.descender);
+    }
+}
+
+static PangoFontMetrics *(*fte_parent_get_metrics)(PangoFont *, PangoLanguage *);
+
+static PangoFontMetrics *fte_font_get_metrics(PangoFont *pfont, PangoLanguage *language)
+{
+    FteFont *font = (FteFont *)pfont;
+    if (!fte_parent_get_metrics) return NULL;
+    PangoFontMetrics *metrics = fte_parent_get_metrics(pfont, language);
+    if (!metrics || !fte_font_hinted(font)) return metrics;
+    metrics->ascent = fte_pixels_ceil(metrics->ascent) * PANGO_SCALE;
+    metrics->descent = fte_pixels_ceil(metrics->descent) * PANGO_SCALE;
+    metrics->height = fte_pixels_ceil(metrics->height) * PANGO_SCALE;
+    metrics->underline_position = fte_pixels_ceil(metrics->underline_position) * PANGO_SCALE;
+    metrics->underline_thickness = fte_pixels_ceil(metrics->underline_thickness) * PANGO_SCALE;
+    metrics->strikethrough_position = fte_pixels_ceil(metrics->strikethrough_position) *
+        PANGO_SCALE;
+    metrics->strikethrough_thickness = fte_pixels_ceil(metrics->strikethrough_thickness) *
+        PANGO_SCALE;
+    return metrics;
 }
 
 static void fte_font_get_glyph_extents(PangoFont *pfont, PangoGlyph glyph,
@@ -1435,8 +1793,11 @@ static void fte_font_get_glyph_extents(PangoFont *pfont, PangoGlyph glyph,
         if (logical) *logical = font->font_extents;
         return;
     }
-    unsigned index = (unsigned)(glyph & ~PANGO_GLYPH_UNKNOWN_FLAG);
-    if (glyph & PANGO_GLYPH_UNKNOWN_FLAG) index = 0;
+    if (glyph & PANGO_GLYPH_UNKNOWN_FLAG) {
+        fte_missing_metrics(font, glyph, ink, logical);
+        return;
+    }
+    unsigned index = (unsigned)glyph;
     struct fte_scaled *scaled = font->scaled;
     struct fte_metric *metric = scaled ? fte_metric_lookup(scaled, index) : NULL;
     if (scaled && !metric) {
@@ -1470,41 +1831,44 @@ static void fte_font_get_glyph_extents(PangoFont *pfont, PangoGlyph glyph,
 static void fte_font_class_init(FteFontClass *klass)
 {
     PangoFontClass *font_class = (PangoFontClass *)(void *)klass;
+    fte_parent_get_metrics = font_class->get_metrics;
     font_class->get_glyph_extents = fte_font_get_glyph_extents;
+    font_class->get_metrics = fte_font_get_metrics;
 }
+
+static void fte_rect_path(struct dpath *path, const struct fte_matrix *ctm, double x, double y,
+    double width, double height);
 
 static bool fte_fill_rect(uint32_t *pixels, int stride, int width, int height,
     struct fte_rect clip, const struct fte_matrix *ctm, double x, double y, double w, double h,
-    uint32_t colour)
+    uint32_t colour, int antialias)
 {
-    double xs[4] = { x, x + w, x + w, x }, ys[4] = { y, y, y + h, y + h };
-    for (int i = 0; i < 4; i++) fte_matrix_transform_point(ctm, &xs[i], &ys[i]);
-    double left = fmin(fmin(xs[0], xs[1]), fmin(xs[2], xs[3]));
-    double top = fmin(fmin(ys[0], ys[1]), fmin(ys[2], ys[3]));
-    double right = fmax(fmax(xs[0], xs[1]), fmax(xs[2], xs[3]));
-    double bottom = fmax(fmax(ys[0], ys[1]), fmax(ys[2], ys[3]));
-    int x0 = (int)floor(left), y0 = (int)floor(top);
-    int x1 = (int)ceil(right), y1 = (int)ceil(bottom);
+    struct dpath path;
+    dpath_init(&path);
+    fte_rect_path(&path, ctm, x, y, w, h);
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    if (path.has_extents) {
+        x0 = fte_fixed_floor(path.min.x);
+        y0 = fte_fixed_floor(path.min.y);
+        x1 = fte_fixed_ceil(path.max.x);
+        y1 = fte_fixed_ceil(path.max.y);
+    }
     if (x0 < clip.x0) x0 = clip.x0;
     if (y0 < clip.y0) y0 = clip.y0;
     if (x1 > clip.x1) x1 = clip.x1;
     if (y1 > clip.y1) y1 = clip.y1;
     if (x1 > width) x1 = width;
     if (y1 > height) y1 = height;
-    if (x0 >= x1 || y0 >= y1) return true;
-    struct dpath path;
-    dpath_init(&path);
-    dp_move_to(&path, left, top);
-    dp_line_to(&path, right, top);
-    dp_line_to(&path, right, bottom);
-    dp_line_to(&path, left, bottom);
-    dp_close_path(&path);
+    if (x0 >= x1 || y0 >= y1) {
+        dpath_fini(&path);
+        return true;
+    }
     int mw = x1 - x0, mh = y1 - y0;
     unsigned char *mask = calloc((size_t)mw, (size_t)mh);
     bool ok = false;
     if (mask) {
         struct drect rect = { x0, y0, x1, y1 };
-        if (dp_fill_mask(&path, rect, mask, mw, x0, y0)) {
+        if (dp_fill_mask(&path, rect, mask, mw, x0, y0, antialias)) {
             dp_composite_over(pixels, stride, rect, mask, mw, x0, y0, colour,
                 (colour >> 24) == 0xff);
             ok = true;
@@ -1530,8 +1894,12 @@ static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
         if (glyph->bpp == 4) {
             const uint32_t *row = (const uint32_t *)((const uint8_t *)glyph->data +
                 (size_t)j * (size_t)glyph->stride);
-            for (int x = start; x < end; x++)
-                dst[x] = dp_masked_over(dst[x], row[x - left], 255);
+            if (glyph->component)
+                for (int x = start; x < end; x++)
+                    dst[x] = dp_component_over(dst[x], colour, row[x - left]);
+            else
+                for (int x = start; x < end; x++)
+                    dst[x] = dp_masked_over(dst[x], row[x - left], 255);
         } else {
             const uint8_t *row = (const uint8_t *)glyph->data +
                 (size_t)j * (size_t)glyph->stride;
@@ -1592,6 +1960,261 @@ static uint32_t fte_run_colour(const PangoLayoutRun *run, uint32_t rgba, bool *b
     return fte_colour(r, g, b, a);
 }
 
+static void fte_glyph_device_box(const struct fte_scaled *scaled, const struct fte_metric *m,
+    double gx, double gy, int32_t *x1, int32_t *y1, int32_t *x2, int32_t *y2);
+static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph);
+static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct fte_glyph *glyph, int left, int top, uint32_t colour);
+static int fte_position(double v);
+static int fte_phase(double v);
+
+static bool fte_paint_path(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct dpath *path, uint32_t colour, int stroke,
+    double line_width, int cap, int join, double miter, int antialias)
+{
+    if (clip.x0 >= clip.x1 || clip.y0 >= clip.y1) return true;
+    if (clip.x1 > width) clip.x1 = width;
+    if (clip.y1 > height) clip.y1 = height;
+    int mw = clip.x1 - clip.x0, mh = clip.y1 - clip.y0;
+    if (mw <= 0 || mh <= 0) return true;
+    unsigned char *mask = calloc((size_t)mw, (size_t)mh);
+    if (!mask) return false;
+    struct drect rect = { clip.x0, clip.y0, clip.x1, clip.y1 };
+    bool ok = stroke ?
+        dp_stroke_mask(path, line_width, cap, join, miter, rect, mask, mw, clip.x0, clip.y0,
+            antialias) :
+        dp_fill_mask(path, rect, mask, mw, clip.x0, clip.y0, antialias);
+    if (ok)
+        dp_composite_over(pixels, stride, rect, mask, mw, clip.x0, clip.y0, colour,
+            (colour >> 24) == 0xff);
+    free(mask);
+    return ok;
+}
+
+static void fte_path_line_fixed(struct dpath *path, int32_t x, int32_t y)
+{
+    dp_line_to(path, (double)x / 256.0, (double)y / 256.0);
+}
+
+static void fte_rect_path(struct dpath *path, const struct fte_matrix *ctm, double x, double y,
+    double width, double height)
+{
+    double px = x, py = y;
+    fte_matrix_transform_point(ctm, &px, &py);
+    dp_move_to(path, px, py);
+    struct dpoint p = { path->current.x, path->current.y };
+    double dx = width, dy = 0;
+    fte_matrix_transform_distance(ctm, &dx, &dy);
+    p.x += fte_fixed_24_8(dx);
+    p.y += fte_fixed_24_8(dy);
+    fte_path_line_fixed(path, p.x, p.y);
+    dx = 0; dy = height;
+    fte_matrix_transform_distance(ctm, &dx, &dy);
+    p.x += fte_fixed_24_8(dx);
+    p.y += fte_fixed_24_8(dy);
+    fte_path_line_fixed(path, p.x, p.y);
+    dx = -width; dy = 0;
+    fte_matrix_transform_distance(ctm, &dx, &dy);
+    p.x += fte_fixed_24_8(dx);
+    p.y += fte_fixed_24_8(dy);
+    fte_path_line_fixed(path, p.x, p.y);
+    dp_close_path(path);
+}
+
+static void fte_polygon_path(struct dpath *path, const struct fte_matrix *ctm,
+    const double points[][2], int count)
+{
+    for (int i = 0; i < count; i++) {
+        double x = points[i][0], y = points[i][1];
+        fte_matrix_transform_point(ctm, &x, &y);
+        if (!i) dp_move_to(path, x, y);
+        else dp_line_to(path, x, y);
+    }
+    dp_close_path(path);
+}
+
+static void fte_draw_box_frame(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct fte_matrix *ctm, double x, double y, double w,
+    double h, double line_width, bool invalid, uint32_t colour, int antialias)
+{
+    struct dpath path;
+    dpath_init(&path);
+    fte_rect_path(&path, ctm, x, y, w, h);
+    if (invalid) {
+        const double cross[][2] = { { x, y }, { x + w, y + h }, { x + w, y }, { x, y + h } };
+        for (int i = 0; i < 4; i++) {
+            double px = cross[i][0], py = cross[i][1];
+            fte_matrix_transform_point(ctm, &px, &py);
+            if (!(i & 1)) dp_move_to(&path, px, py);
+            else dp_line_to(&path, px, py);
+        }
+    }
+    fte_paint_path(pixels, stride, width, height, clip, &path, colour, 1, line_width, 0, 0, 2.0,
+        antialias);
+    dpath_fini(&path);
+}
+
+static void fte_draw_digit(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct fte_matrix *ctm, FteFont *font, gunichar ch,
+    double x, double y, uint32_t colour)
+{
+    if (!font->scaled) return;
+    struct fte_matrix ctm_scale = *ctm;
+    ctm_scale.x0 = 0;
+    ctm_scale.y0 = 0;
+    struct fte_matrix scale;
+    fte_matrix_multiply(&scale, &font->scaled->font_matrix, &ctm_scale);
+    struct fte_scaled *scaled = fte_scaled_get(font->scaled->face, &font->scaled->font_matrix,
+        &scale, &font->scaled->requested, &font->scaled->ft_options);
+    if (!scaled) return;
+    unsigned glyph = (unsigned)fte_nominal_glyph(PANGO_FONT(font), ch);
+    if (glyph & PANGO_GLYPH_UNKNOWN_FLAG) return;
+    struct fte_metric *metric = fte_run_metric(font, glyph);
+    if (!metric || !metric->valid) return;
+    double dx = x, dy = y;
+    fte_matrix_transform_point(ctm, &dx, &dy);
+    dx = (double)fte_lround(dx * 256.0) / 256.0;
+    dy = (double)fte_lround(dy * 256.0) / 256.0;
+    int32_t x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    fte_glyph_device_box(scaled, metric, dx, dy, &x1, &y1, &x2, &y2);
+    int bx0 = fte_fixed_floor(x1), by0 = fte_fixed_floor(y1);
+    int bx1 = fte_fixed_ceil(x2), by1 = fte_fixed_ceil(y2);
+    bool contains = clip.x0 <= bx0 && clip.y0 <= by0 && clip.x1 >= bx1 && clip.y1 >= by1;
+    struct fte_rect limit;
+    if (contains) {
+        limit.x0 = 0;
+        limit.y0 = 0;
+        limit.x1 = width;
+        limit.y1 = height;
+    } else {
+        limit.x0 = clip.x0 > bx0 ? clip.x0 : bx0;
+        limit.y0 = clip.y0 > by0 ? clip.y0 : by0;
+        limit.x1 = clip.x1 < bx1 ? clip.x1 : bx1;
+        limit.y1 = clip.y1 < by1 ? clip.y1 : by1;
+        if (limit.x0 >= limit.x1 || limit.y0 >= limit.y1) return;
+    }
+    struct fte_glyph *entry = fte_glyph_get(scaled, glyph, (unsigned)fte_phase(dx),
+        (unsigned)fte_phase(dy));
+    if (!entry) return;
+    fte_draw_glyph(pixels, stride, width, height, limit, entry, fte_position(dx) - entry->off_x,
+        fte_position(dy) - entry->off_y, colour);
+}
+
+static void fte_draw_unknown(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct fte_matrix *ctm, FteFont *font, PangoGlyph glyph,
+    double cx, double cy, int advance, uint32_t colour, int antialias)
+{
+    gunichar ch = (gunichar)(glyph & ~PANGO_GLYPH_UNKNOWN_FLAG);
+    bool invalid = glyph == PANGO_GLYPH_INVALID_INPUT || ch > 0x10FFFF;
+    double box_width = (double)advance / 1024.0;
+    struct fte_hex *hex = fte_font_hex(font);
+    if (!hex) {
+        fte_draw_box_frame(pixels, stride, width, height, clip, ctm, cx + 1.5,
+            cy + 1.5 - 14, box_width - 3.0, 14 - 3.0, 1.0, invalid, colour, antialias);
+        return;
+    }
+    if (invalid) {
+        double frame = 3 * hex->pad_x + hex->digit_width + hex->pad_x;
+        double lsb = (box_width - frame) * .5;
+        lsb = floor(lsb / hex->pad_x) * hex->pad_x;
+        fte_draw_box_frame(pixels, stride, width, height, clip, ctm,
+            cx + lsb + 1.5 * hex->pad_x,
+            cy + hex->box_descent - hex->box_height + hex->pad_y * .5,
+            frame - hex->pad_x, hex->box_height - hex->pad_y, hex->line_width, true,
+            colour, antialias);
+        return;
+    }
+    if (ch == 0x2423 || g_unichar_type(ch) == G_UNICODE_SPACE_SEPARATOR) {
+        double x = cx + 0.5 * ((double)advance / 1024.0);
+        double y = cy + hex->box_descent - 0.5 * hex->box_height;
+        struct dpath path;
+        dpath_init(&path);
+        double radius = 1.5 * hex->line_width;
+        double px = x, py = y;
+        fte_matrix_transform_point(ctm, &px, &py);
+        dp_arc(&path, px, py, radius, 0, 2 * G_PI, false);
+        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
+            antialias);
+        dpath_fini(&path);
+        return;
+    }
+    if (ch == '\t') {
+        double y = cy + hex->box_descent - 0.5 * hex->box_height;
+        double wide = (double)advance / 1024.0;
+        double offset = 0.2 * wide;
+        double x = cx + offset;
+        double al = wide - 2 * offset;
+        double tl = hex->digit_width < 0.75 * al ? hex->digit_width : 0.75 * al;
+        double tw2 = 2.5 * hex->line_width;
+        double lw2 = 0.5 * hex->line_width;
+        const double points[][2] = {
+            { x - lw2, y - tw2 }, { x + lw2, y - tw2 }, { x + lw2, y - lw2 },
+            { x + al - tl, y - lw2 }, { x + al - tl, y - tw2 }, { x + al, y },
+            { x + al - tl, y + tw2 }, { x + al - tl, y + lw2 }, { x + lw2, y + lw2 },
+            { x + lw2, y + tw2 }, { x - lw2, y + tw2 } };
+        struct dpath path;
+        dpath_init(&path);
+        fte_polygon_path(&path, ctm, points, 11);
+        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
+            antialias);
+        dpath_fini(&path);
+        return;
+    }
+    if (ch == '\n' || ch == 0x2028 || ch == 0x2029) {
+        double wide = (double)advance / 1024.0;
+        double offset = 0.2 * wide;
+        double al = wide - 2 * offset;
+        double tl = hex->digit_width < 0.75 * al ? hex->digit_width : 0.75 * al;
+        double ah = al - 0.5 * tl;
+        double tw2 = 2.5 * hex->line_width;
+        double x = cx + offset;
+        double y = cy - (hex->box_height - al) / 2;
+        double lw2 = 0.5 * hex->line_width;
+        const double points[][2] = {
+            { x, y }, { x + tl, y - tw2 }, { x + tl, y - lw2 },
+            { x + al - lw2, y - lw2 }, { x + al - lw2, y - ah }, { x + al + lw2, y - ah },
+            { x + al + lw2, y + lw2 }, { x + tl, y + lw2 }, { x + tl, y + tw2 } };
+        struct dpath path;
+        dpath_init(&path);
+        fte_polygon_path(&path, ctm, points, 9);
+        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
+            antialias);
+        dpath_fini(&path);
+        return;
+    }
+    char buffer[8];
+    int rows, cols;
+    const char *name = fte_ignorable_size(ch, &rows, &cols);
+    if (!name) {
+        rows = hex->rows;
+        cols = (ch > 0xffff ? 6 : 4) / rows;
+        if (ch > 0xffff) snprintf(buffer, sizeof(buffer), "%06X", (unsigned)ch);
+        else snprintf(buffer, sizeof(buffer), "%04X", (unsigned)ch);
+        name = buffer;
+    }
+    double frame = 3 * hex->pad_x + cols * (hex->digit_width + hex->pad_x);
+    double lsb = (box_width - frame) * .5;
+    lsb = floor(lsb / hex->pad_x) * hex->pad_x;
+    fte_draw_box_frame(pixels, stride, width, height, clip, ctm,
+        cx + lsb + 1.5 * hex->pad_x,
+        cy + hex->box_descent - hex->box_height + hex->pad_y * .5,
+        frame - hex->pad_x, hex->box_height - hex->pad_y, hex->line_width, false, colour,
+        antialias);
+    double x0 = cx + lsb + hex->pad_x * 3;
+    double y0 = cy + hex->box_descent - hex->pad_y * 2 -
+        ((hex->rows - rows) * hex->digit_height / 2);
+    for (int row = 0; row < rows; row++) {
+        double y = y0 - (rows - 1 - row) * (hex->digit_height + hex->pad_y);
+        for (int col = 0; col < cols; col++) {
+            double x = x0 + col * (hex->digit_width + hex->pad_x);
+            if (!*name) return;
+            fte_draw_digit(pixels, stride, width, height, clip, ctm, (FteFont *)hex->font,
+                (gunichar)(unsigned char)*name, x, y, colour);
+            name++;
+        }
+    }
+}
+
 struct fte_pending {
     struct fte_glyph *entry;
     double x, y;
@@ -1636,7 +2259,7 @@ static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph)
 
 static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
     struct fte_rect clip, const struct fte_matrix *ctm, PangoLayoutRun *run, int x, int y,
-    uint32_t colour)
+    uint32_t colour, int antialias)
 {
     PangoFont *font = run->item->analysis.font;
     if (!PANGO_IS_FC_FONT(font)) return;
@@ -1656,13 +2279,20 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
     int x_position = 0;
     for (int i = 0; i < run->glyphs->num_glyphs; i++) {
         PangoGlyphInfo *gi = &run->glyphs->glyphs[i];
-        if (gi->glyph == PANGO_GLYPH_EMPTY || (gi->glyph & PANGO_GLYPH_UNKNOWN_FLAG)) {
+        if (gi->glyph == PANGO_GLYPH_EMPTY) {
             x_position += gi->geometry.width;
             continue;
         }
         double cx = (double)(x + x_position + gi->geometry.x_offset) / PANGO_SCALE;
         double cy = gi->geometry.y_offset ?
             (double)(y + gi->geometry.y_offset) / PANGO_SCALE : (double)y / PANGO_SCALE;
+        if (gi->glyph & PANGO_GLYPH_UNKNOWN_FLAG) {
+            if (gi->glyph != (0x20 | PANGO_GLYPH_UNKNOWN_FLAG))
+                fte_draw_unknown(pixels, stride, width, height, clip, ctm, fte, gi->glyph, cx,
+                    cy, gi->geometry.width, colour, antialias);
+            x_position += gi->geometry.width;
+            continue;
+        }
         fte_matrix_transform_point(ctm, &cx, &cy);
         struct fte_glyph *entry = fte_glyph_get(scaled, (unsigned)gi->glyph,
             (unsigned)fte_phase(cx), (unsigned)fte_phase(cy));
@@ -1706,6 +2336,9 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
             if (pending[i].y2 > by2) by2 = pending[i].y2;
         }
     }
+    if (overlap && scaled->requested.antialias == FTE_ANTIALIAS_NONE &&
+            (colour >> 24) == 0xff)
+        overlap = 0;
     struct fte_rect bounds = { 0, 0, 0, 0 };
     if (first >= 0 && bx1 < bx2 && by1 < by2) {
         bounds.x0 = fte_fixed_floor(bx1);
@@ -1733,34 +2366,55 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
     }
     if (overlap) {
         int mw = box.x1 - box.x0, mh = box.y1 - box.y0;
-        unsigned char *mask = calloc((size_t)mw, (size_t)mh);
+        bool component = false;
+        for (int i = 0; i < count; i++)
+            if (pending[i].entry && !pending[i].entry->color)
+                component = pending[i].entry->component;
+        size_t pitch = (size_t)mw * (component ? 4 : 1);
+        unsigned char *mask = calloc(mh ? (size_t)mh : 1, pitch);
         if (mask) {
             for (int i = 0; i < count; i++) {
                 struct fte_glyph *entry = pending[i].entry;
-                if (!entry || entry->color || entry->failed || !entry->data || entry->bpp != 1)
-                    continue;
+                if (!entry || entry->color || entry->failed || !entry->data) continue;
+                if (entry->component != component) continue;
                 int left = fte_position(pending[i].x) - entry->off_x;
                 int top = fte_position(pending[i].y) - entry->off_y;
                 for (int j = 0; j < entry->height; j++) {
                     int dy = top + j - box.y0;
                     if (dy < 0 || dy >= mh) continue;
-                    const uint8_t *row = (const uint8_t *)entry->data +
+                    unsigned char *dst = mask + (size_t)dy * pitch;
+                    const uint8_t *src = (const uint8_t *)entry->data +
                         (size_t)j * (size_t)entry->stride;
-                    unsigned char *dst = mask + (size_t)dy * (size_t)mw;
-                    for (int ix = 0; ix < entry->width; ix++) {
-                        int dx = left + ix - box.x0;
-                        if (dx < 0 || dx >= mw) continue;
-                        unsigned sum = dst[dx] + row[ix];
-                        dst[dx] = (unsigned char)(sum > 255 ? 255 : sum);
+                    if (component) {
+                        uint32_t *dw = (uint32_t *)dst;
+                        const uint32_t *row = (const uint32_t *)src;
+                        for (int ix = 0; ix < entry->width; ix++) {
+                            int dx = left + ix - box.x0;
+                            if (dx < 0 || dx >= mw) continue;
+                            dw[dx] = dp_component_add(dw[dx], row[ix]);
+                        }
+                    } else {
+                        for (int ix = 0; ix < entry->width; ix++) {
+                            int dx = left + ix - box.x0;
+                            if (dx < 0 || dx >= mw) continue;
+                            unsigned sum = dst[dx] + src[ix];
+                            dst[dx] = (unsigned char)(sum > 255 ? 255 : sum);
+                        }
                     }
                 }
             }
             for (int y = box.y0; y < box.y1; y++) {
-                const unsigned char *row = mask + (size_t)(y - box.y0) * (size_t)mw;
+                const unsigned char *row = mask + (size_t)(y - box.y0) * pitch;
                 uint32_t *dst = pixels + (size_t)y * (size_t)stride;
-                for (int x = box.x0; x < box.x1; x++) {
-                    uint8_t m = row[x - box.x0];
-                    if (m) dst[x] = dp_masked_over(dst[x], colour, m);
+                if (component) {
+                    const uint32_t *values = (const uint32_t *)row;
+                    for (int x = box.x0; x < box.x1; x++)
+                        dst[x] = dp_component_over(dst[x], colour, values[x - box.x0]);
+                } else {
+                    for (int x = box.x0; x < box.x1; x++) {
+                        uint8_t m = row[x - box.x0];
+                        if (m) dst[x] = dp_masked_over(dst[x], colour, m);
+                    }
                 }
             }
             free(mask);
@@ -1787,7 +2441,8 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
 }
 
 static void fte_draw_line(PangoLayoutLine *line, int x, int y, uint32_t *pixels, int stride,
-    int width, int height, struct fte_rect clip, const struct fte_matrix *ctm, uint32_t rgba)
+    int width, int height, struct fte_rect clip, const struct fte_matrix *ctm, uint32_t rgba,
+    int antialias)
 {
     int x_off = 0;
     bool got_overall = false;
@@ -1808,11 +2463,22 @@ static void fte_draw_line(PangoLayoutLine *line, int x, int y, uint32_t *pixels,
             fte_fill_rect(pixels, stride, width, height, clip, ctm,
                 (double)run_x / PANGO_SCALE, (double)(y + overall.y) / PANGO_SCALE,
                 (double)glyph_width / PANGO_SCALE, (double)overall.height / PANGO_SCALE,
-                fte_colour(bg_r, bg_g, bg_b, bg_a));
+                fte_colour(bg_r, bg_g, bg_b, bg_a), antialias);
         }
-        fte_draw_run(pixels, stride, width, height, clip, ctm, run, run_x, run_y, colour);
+        fte_draw_run(pixels, stride, width, height, clip, ctm, run, run_x, run_y, colour,
+            antialias);
         x_off += run->start_x_offset + glyph_width + run->end_x_offset;
     }
+}
+
+static int fte_context_antialias(PangoContext *context)
+{
+    if (context) {
+        const struct fte_options *options = g_object_get_qdata(G_OBJECT(context),
+            fte_options_quark());
+        if (options && options->antialias == FTE_ANTIALIAS_NONE) return PX_ANTIALIAS_NONE;
+    }
+    return PX_ANTIALIAS_GRAY;
 }
 
 static bool fte_draw_layout(PangoLayout *layout, uint32_t *pixels, int stride, int width,
@@ -1823,6 +2489,7 @@ static bool fte_draw_layout(PangoLayout *layout, uint32_t *pixels, int stride, i
     if (clip.x1 > width) clip.x1 = width;
     if (clip.y1 > height) clip.y1 = height;
     if (clip.x0 >= clip.x1 || clip.y0 >= clip.y1) return true;
+    int antialias = fte_context_antialias(pango_layout_get_context(layout));
     PangoLayoutIter *iter = pango_layout_get_iter(layout);
     if (!iter) return false;
     do {
@@ -1831,7 +2498,7 @@ static bool fte_draw_layout(PangoLayout *layout, uint32_t *pixels, int stride, i
         pango_layout_iter_get_line_extents(iter, NULL, &logical);
         int baseline = pango_layout_iter_get_baseline(iter);
         fte_draw_line(line, logical.x, baseline, pixels, stride, width, height, clip, ctm,
-            rgba);
+            rgba, antialias);
     } while (pango_layout_iter_next_line(iter));
     pango_layout_iter_free(iter);
     return true;
