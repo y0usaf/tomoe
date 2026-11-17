@@ -76,6 +76,33 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
 
 struct dmatrix { double xx, yx, xy, yy, x0, y0; };
 
+struct dp_pattern { double xx, yx, xy, yy, x0, y0; };
+
+struct dp_pattern dp_surface_pattern(double tx, double ty, double sx, double sy,
+    double x, double y);
+
+struct drect dp_path_extents(const struct dpath *path);
+
+enum { DP_IMAGE_ARGB32, DP_IMAGE_RGBA_FLOAT, DP_IMAGE_RGB_FLOAT };
+enum { DP_FILTER_NEAREST, DP_FILTER_BILINEAR, DP_FILTER_GOOD };
+enum { DP_EXTEND_NONE, DP_EXTEND_PAD };
+enum { DP_OP_OVER, DP_OP_SOURCE };
+
+struct dp_image {
+    const void *pixels;
+    int width, height, stride, format;
+};
+
+struct dp_coverage {
+    const unsigned char *pixels;
+    int stride, x, y;
+};
+
+void dp_paint_surface(uint32_t *dst, int dst_stride, struct drect clip,
+    const struct dp_image *src, const struct dp_pattern *pattern,
+    int filter, int extend, int op, const struct dp_coverage *coverage,
+    int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);
+
 void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
     const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
     int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,

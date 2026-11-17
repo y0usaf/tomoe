@@ -617,6 +617,18 @@ static void path_rel_line_to(struct dpath *path, double dx, double dy)
         path->current.y + fixed_from_double(dy));
 }
 
+struct drect dp_path_extents(const struct dpath *path)
+{
+    struct drect rect = { 0, 0, 0, 0 };
+    if (!path->has_extents) return rect;
+    if (path->min.x >= path->max.x || path->min.y >= path->max.y) return rect;
+    rect.x0 = fixed_floor(path->min.x);
+    rect.y0 = fixed_floor(path->min.y);
+    rect.x1 = fixed_ceil(path->max.x);
+    rect.y1 = fixed_ceil(path->max.y);
+    return rect;
+}
+
 void dp_rectangle(struct dpath *path, double x, double y, double width, double height)
 {
     if (path->failed) return;
