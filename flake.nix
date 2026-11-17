@@ -107,9 +107,10 @@
             x11Support = false;
             xcbSupport = false;
           };
+          harfbuzz = pkgs.harfbuzz.override { withGraphite2 = false; };
           pango = pkgs.pango.override {
             x11Support = false;
-            inherit cairo;
+            inherit cairo harfbuzz;
           };
           libs = lean pkgs;
         in
