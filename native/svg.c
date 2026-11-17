@@ -9797,6 +9797,10 @@ static void svg_pix_bicubic(const struct svg_pixmap *pm, int spread, float cx, f
     float wy[4] = { svg_bicubic_far(1.0f - fy), svg_bicubic_near(1.0f - fy),
         svg_bicubic_near(fy), svg_bicubic_far(fy) };
     svg_pattern_sampler_4x4(pm, spread, cx, cy, wx, wy, out);
+    for (int k = 0; k < 4; k++) {
+        if (!(out[k] > 0.0f)) out[k] = 0.0f;
+        else if (out[k] > 1.0f) out[k] = 1.0f;
+    }
 }
 
 static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out[4]) {
@@ -11491,7 +11495,7 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         for (int y = 0; y < region_h; y++) {
             for (int x = 0; x < region_w; x++) {
                 float o[4];
-                svg_pix_bicubic(&tile, 2, (float)x + 0.5f - sub_x,
+                svg_pix_sample(&tile, 2, (float)x + 0.5f - sub_x,
                     (float)y + 0.5f - sub_y, o);
                 unsigned char *dp = res->pix.pixels + ((size_t)y * (size_t)region_w +
                     (size_t)x) * 4;
