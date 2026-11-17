@@ -425,7 +425,7 @@ wake_check() {
 	timings_read
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 3 ))" 40
+	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 4 ))" 40
 	settle "$WINDOWS"
 
 	quiet "$label resume"

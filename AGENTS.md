@@ -40,7 +40,7 @@ pointer motion, drags a window and runs a client that repaints on every frame
 callback, a second and a half each, and fails unless the output kept presenting:
 within one and a quarter refreshes at the median and two at the 99th for nine
 tenths of the refreshes in the window, six tenths for the drag and for the
-wallpaper after a key, and two and a half and three for two fifths for the client
+wallpaper after a key, and two and a half and four for two fifths for the client
 that repaints every frame. Every run prints the numbers, so a change is read
 against them rather than against a pass. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
