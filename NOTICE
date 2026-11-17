@@ -54,6 +54,10 @@ native/draw.c
   Keith Packard, 2000 SuSE, Inc., 2007 Red Hat, Inc., 2008 M Joonas
   Pihlaja, 2007 David Turner.
 
+native/mesh.c
+  The mesh pattern rasteriser derived from cairo 1.18.4 (LGPL-2.1 or
+  MPL-1.1) cairo-mesh-pattern-rasterizer.c. Copyright 2009 Andrea Canciani.
+
 native/paint.c
   Image pattern setup, filtering and compositing derived from cairo 1.18.4
   (LGPL-2.1 or MPL-1.1) and pixman 0.46.4 (MIT): the separable filter arrays
