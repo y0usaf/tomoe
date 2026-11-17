@@ -4761,6 +4761,28 @@ static float svg_filter_list_number(const char *text, int index, float def) {
     return def;
 }
 
+static int svg_filter_number_list(const char *text, float *out, int capacity) {
+    if (!text) return -1;
+    struct svg_stream s = { text, strlen(text), 0 };
+    int count = 0;
+    for (;;) {
+        svg_stream_skip(&s);
+        if (svg_stream_end(&s)) break;
+        double v;
+        if (!svg_stream_list_number(&s, &v)) return -1;
+        if (count < capacity) out[count] = (float)v;
+        count++;
+    }
+    return count;
+}
+
+static int svg_filter_single_number(const char *text, float *out) {
+    float values[1];
+    if (svg_filter_number_list(text, values, 1) != 1) return 0;
+    *out = values[0];
+    return 1;
+}
+
 static void svg_filter_rect(struct svg_conv *c, struct xml_node *node, int units_bbox,
         float out[4]) {
     out[0] = svg_filter_number(c, node, "x", units_bbox, 0, 0, SVG_UNIT_NONE);
@@ -4778,29 +4800,37 @@ static int svg_filter_parse_transfer(struct svg_conv *c, struct xml_node *parent
     struct xml_node *node = parent->children[idx];
     const char *type = svg_filter_attr(c->doc, node, "type");
     p->tn[channel] = 0;
-    if (!type || !strcmp(type, "identity")) { p->tkind[channel] = 0; return 1; }
+    p->tkind[channel] = 0;
+    if (!type || !strcmp(type, "identity")) return 1;
     if (!strcmp(type, "table") || !strcmp(type, "discrete")) {
         p->tkind[channel] = !strcmp(type, "table") ? 1 : 2;
-        const char *values = svg_filter_attr(c->doc, node, "tableValues");
-        if (values) {
-            struct svg_stream st = { values, strlen(values), 0 };
-            double v;
-            while (p->tn[channel] < 32 && svg_stream_list_number(&st, &v))
-                p->tbl[channel][p->tn[channel]++] = (float)v;
-        }
+        int count = svg_filter_number_list(svg_filter_attr(c->doc, node, "tableValues"),
+            p->tbl[channel], 32);
+        p->tn[channel] = count > 0 ? (count > 32 ? 32 : count) : 0;
         return 1;
     }
     if (!strcmp(type, "linear")) {
+        float slope = 1.0f, intercept = 0.0f;
+        if (!svg_filter_single_number(svg_filter_attr(c->doc, node, "slope"), &slope)) slope = 1.0f;
+        if (!svg_filter_single_number(svg_filter_attr(c->doc, node, "intercept"), &intercept))
+            intercept = 0.0f;
         p->tkind[channel] = 3;
-        p->tbl[channel][0] = svg_filter_list_number(svg_filter_attr(c->doc, node, "slope"), 0, 1);
-        p->tbl[channel][1] = svg_filter_list_number(svg_filter_attr(c->doc, node, "intercept"),
-            0, 0);
+        p->tbl[channel][0] = slope;
+        p->tbl[channel][1] = intercept;
         return 1;
     }
-    p->tkind[channel] = 4;
-    p->tbl[channel][0] = svg_filter_list_number(svg_filter_attr(c->doc, node, "amplitude"), 0, 1);
-    p->tbl[channel][1] = svg_filter_list_number(svg_filter_attr(c->doc, node, "exponent"), 0, 1);
-    p->tbl[channel][2] = svg_filter_list_number(svg_filter_attr(c->doc, node, "offset"), 0, 0);
+    if (!strcmp(type, "gamma")) {
+        float amplitude = 1.0f, exponent = 1.0f, offset = 0.0f;
+        if (!svg_filter_single_number(svg_filter_attr(c->doc, node, "amplitude"), &amplitude))
+            amplitude = 1.0f;
+        if (!svg_filter_single_number(svg_filter_attr(c->doc, node, "exponent"), &exponent))
+            exponent = 1.0f;
+        if (!svg_filter_single_number(svg_filter_attr(c->doc, node, "offset"), &offset)) offset = 0.0f;
+        p->tkind[channel] = 4;
+        p->tbl[channel][0] = amplitude;
+        p->tbl[channel][1] = exponent;
+        p->tbl[channel][2] = offset;
+    }
     return 1;
 }
 
@@ -5201,8 +5231,12 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             }
         } else if (!strcmp(tag, "feOffset")) {
             p->kind = SVG_FE_OFFSET;
-            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 0, SVG_UNIT_NONE);
-            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 0, SVG_UNIT_NONE);
+            float dx = 0.0f, dy = 0.0f;
+            svg_filter_single_number(svg_filter_attr(c->doc, child, "dx"), &dx);
+            svg_filter_single_number(svg_filter_attr(c->doc, child, "dy"), &dy);
+            if (primitive_bbox) { dx *= object_bbox[2]; dy *= object_bbox[3]; }
+            p->f[0] = dx;
+            p->f[1] = dy;
         } else if (!strcmp(tag, "feComposite")) {
             p->kind = SVG_FE_COMPOSITE;
             const char *op = svg_filter_attr(c->doc, child, "operator");
@@ -5248,20 +5282,19 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             if (type && !strcmp(type, "saturate")) {
                 p->cm_kind = 1;
                 p->f[0] = svg_filter_list_number(svg_filter_attr(c->doc, child, "values"), 0, 1);
+                if (p->f[0] < 0.0f) p->f[0] = 0.0f;
+                if (p->f[0] > 1.0f) p->f[0] = 1.0f;
             } else if (type && !strcmp(type, "hueRotate")) {
                 p->cm_kind = 2;
                 p->f[0] = svg_filter_list_number(svg_filter_attr(c->doc, child, "values"), 0, 0);
             } else if (type && !strcmp(type, "luminanceToAlpha")) {
                 p->cm_kind = 3;
             } else {
-                const char *values = svg_filter_attr(c->doc, child, "values");
-                struct svg_stream st = { values ? values : "", values ? strlen(values) : 0, 0 };
-                for (int k = 0; k < 20; k++) {
-                    double v = 0.0;
-                    if (k == 0 || k == 6 || k == 12 || k == 18) v = 1.0;
-                    if (values && svg_stream_list_number(&st, &v)) p->matrix[k] = (float)v;
-                    else p->matrix[k] = (float)v;
-                }
+                float values[20];
+                int count = svg_filter_number_list(svg_filter_attr(c->doc, child, "values"),
+                    values, 20);
+                for (int k = 0; k < 20; k++) p->matrix[k] = (k % 6 == 0) ? 1.0f : 0.0f;
+                if (count == 20) for (int k = 0; k < 20; k++) p->matrix[k] = values[k];
             }
         } else if (!strcmp(tag, "feConvolveMatrix")) {
             p->kind = SVG_FE_CONVOLVE;
@@ -5300,25 +5333,21 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             const char *op = svg_filter_attr(c->doc, child, "operator");
             p->op = op && !strcmp(op, "dilate") ? 1 : 0;
             {
-                float rx = 1.0f, ry = 1.0f;
-                const char *rad = svg_filter_attr(c->doc, child, "radius");
-                if (rad && rad[0]) {
-                    struct svg_stream rs = { rad, strlen(rad), 0 };
-                    double v[3];
-                    int n = 0;
-                    while (n < 3 && svg_stream_list_number(&rs, &v[n])) n++;
-                    if (n == 1) { v[1] = v[0]; n = 2; }
-                    if (n == 2) {
-                        rx = (float)v[0];
-                        ry = (float)v[1];
-                        int zx = fabsf(rx) <= 1.0f / 65536.0f;
-                        int zy = fabsf(ry) <= 1.0f / 65536.0f;
-                        if (zx && zy) { rx = 1.0f; ry = 1.0f; }
-                        else if (zx) rx = 1.0f;
-                        else if (zy) ry = 1.0f;
-                        if (!(rx >= 0.0f) || !(ry >= 0.0f)) { rx = 1.0f; ry = 1.0f; }
-                    }
-                    if (n == 3) { rx = 1.0f; ry = 1.0f; }
+                float scale_x = primitive_bbox ? object_bbox[2] : 1.0f;
+                float scale_y = primitive_bbox ? object_bbox[3] : 1.0f;
+                float rx = scale_x, ry = scale_y;
+                float v[3];
+                int n = svg_filter_number_list(svg_filter_attr(c->doc, child, "radius"), v, 3);
+                if (n >= 0) {
+                    float x = 0.0f, y = 0.0f;
+                    if (n == 2) { x = v[0]; y = v[1]; }
+                    else if (n == 1) { x = v[0]; y = v[0]; }
+                    int zx = fabsf(x) <= 1.0f / 65536.0f;
+                    int zy = fabsf(y) <= 1.0f / 65536.0f;
+                    if (zx && zy) { x = 1.0f; y = 1.0f; }
+                    else if (zx) x = 1.0f;
+                    else if (zy) y = 1.0f;
+                    if (x > 0.0f && y > 0.0f) { rx = x * scale_x; ry = y * scale_y; }
                 }
                 p->f[0] = rx;
                 p->f[1] = ry;
@@ -10023,9 +10052,11 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         svg_filter_get_input(prims, results, count, p->input1, source, region_left,
             region_top, region_w, region_h, &in);
         if (!in.valid) return;
+        float blur_x = p->f[0] * scale_x, blur_y = p->f[1] * scale_y;
+        if (blur_x == 0.0f && blur_y == 0.0f) { *res = in; return; }
         svg_fimg_into_cs(&in, p->cs);
         *res = in;
-        svg_filter_blur(&res->pix, p->f[0] * scale_x, p->f[1] * scale_y);
+        svg_filter_blur(&res->pix, blur_x, blur_y);
         return;
     }
     case SVG_FE_DROP_SHADOW: {
