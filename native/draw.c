@@ -840,10 +840,13 @@ static bool path_is_rect_box(const struct dpath *path, int32_t *l, int32_t *t,
     int32_t *r, int32_t *b)
 {
     if (path->failed) return false;
-    if (path->count != 5) return false;
     const struct dpath_op_entry *ops = path->ops;
+    bool closed = path->count == 4 || (path->count == 5 &&
+        (ops[4].op == DP_CLOSE || (ops[4].op == DP_LINE &&
+            ops[4].p[0].x == ops[0].p[0].x && ops[4].p[0].y == ops[0].p[0].y)));
+    if (!closed) return false;
     if (ops[0].op != DP_MOVE || ops[1].op != DP_LINE || ops[2].op != DP_LINE ||
-        ops[3].op != DP_LINE || ops[4].op != DP_CLOSE)
+        ops[3].op != DP_LINE)
         return false;
     px_point_t p[4] = { { ops[0].p[0].x, ops[0].p[0].y }, { ops[1].p[0].x, ops[1].p[0].y },
         { ops[2].p[0].x, ops[2].p[0].y }, { ops[3].p[0].x, ops[3].p[0].y } };
