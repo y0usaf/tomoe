@@ -19,6 +19,7 @@
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+#include "presentation-time-client-protocol.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "alpha-modifier-v1-client-protocol.h"
@@ -32,6 +33,9 @@ static const char *program = "tomoe-test-client";
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
+static struct wp_presentation *presentation;
+static uint64_t animate_callback_ns, animate_committed_ns;
+static unsigned animate_frames_seen;
 static struct wl_shm *shm;
 static struct xdg_wm_base *wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
@@ -466,6 +470,8 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
                             const char *interface, uint32_t version) {
     if (strcmp(interface, wl_compositor_interface.name) == 0) {
         compositor = wl_registry_bind(registry, name, &wl_compositor_interface, version < 4 ? version : 4);
+    } else if (strcmp(interface, wp_presentation_interface.name) == 0) {
+        presentation = wl_registry_bind(registry, name, &wp_presentation_interface, 1);
     } else if (strcmp(interface, wl_shm_interface.name) == 0) {
         shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
     } else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
@@ -854,6 +860,15 @@ static void animate_done(void *data, struct wl_callback *callback, uint32_t time
 
 static const struct wl_callback_listener animate_listener = { .done = animate_done };
 
+struct animate_record {
+    unsigned id;
+    uint64_t callback_ns, commit_ns;
+};
+
+static const struct wp_presentation_feedback_listener animate_feedback;
+
+static uint64_t animate_now(void);
+
 static void animate_commit(struct client *state) {
     if (!state->buffer) return;
     uint32_t *words = state->pixels;
@@ -861,13 +876,46 @@ static void animate_commit(struct client *state) {
         words[0] = (words[0] & 0xffffff00u) | (++state->change_count & 0xffu);
     wl_surface_attach(state->surface, state->buffer, 0, 0);
     wl_surface_damage(state->surface, 0, 0, state->buffer_width, state->buffer_height);
+    struct animate_record *record = NULL;
+    if (presentation) {
+        record = calloc(1, sizeof(*record));
+        if (record) record->callback_ns = animate_callback_ns;
+        struct wp_presentation_feedback *feedback =
+            wp_presentation_feedback(presentation, state->surface);
+        wp_presentation_feedback_add_listener(feedback, &animate_feedback, record);
+    }
     struct wl_callback *next = wl_surface_frame(state->surface);
     wl_callback_add_listener(next, &animate_listener, state);
     wl_surface_commit(state->surface);
     if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
+    if (record) {
+        record->id = ++animate_frames_seen;
+        record->commit_ns = animate_now();
+    }
 }
 
 static uint64_t animate_last, animate_interval, animate_commit_ns;
+
+static void animate_presented(void *data, struct wp_presentation_feedback *feedback,
+        uint32_t hi, uint32_t lo, uint32_t nsec, uint32_t refresh, uint32_t seq_hi,
+        uint32_t seq_lo, uint32_t flags) {
+    (void)refresh; (void)seq_hi; (void)seq_lo; (void)flags;
+    struct animate_record *record = data;
+    uint64_t when = (((uint64_t)hi << 32) | lo) * 1000000000ULL + nsec;
+    printf("animate-present %u %lld %lld\n", record->id,
+        (long long)(when - record->callback_ns), (long long)(when - record->commit_ns));
+    fflush(stdout);
+    free(record);
+    wp_presentation_feedback_destroy(feedback);
+}
+
+static void animate_discarded(void *data, struct wp_presentation_feedback *feedback) {
+    free(data);
+    wp_presentation_feedback_destroy(feedback);
+}
+
+static const struct wp_presentation_feedback_listener animate_feedback = {
+    .presented = animate_presented, .discarded = animate_discarded };
 
 static uint64_t animate_now(void) {
     struct timespec now;
@@ -880,10 +928,12 @@ static void animate_done(void *data, struct wl_callback *callback, uint32_t time
     uint64_t at = animate_now();
     uint64_t interval = animate_last ? at - animate_last : 0;
     animate_last = at;
+    animate_callback_ns = at;
     wl_callback_destroy(callback);
     if (!running || !((struct client *)data)->animate) return;
     animate_commit(data);
     uint64_t spent = animate_now() - at;
+    animate_committed_ns = animate_now();
     animate_interval = interval;
     animate_commit_ns = spent;
     printf("animate %llu %llu\n", (unsigned long long)(interval / 1000),
