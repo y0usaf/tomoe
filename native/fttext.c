@@ -1223,22 +1223,56 @@ static uint32_t fte_convolution(const struct fte_image *src, const int32_t *para
         ((uint32_t)sgtot << 8) | (uint32_t)sbtot;
 }
 
-static bool fte_double_is_integer(double v)
+static bool fte_fixed_is_integer(double v)
 {
-    return fabs(v - floor(v + 0.5)) < 1e-7;
+    return (fte_fixed_24_8(v) & 0xff) == 0;
 }
 
 static bool fte_matrix_is_pixel_exact(const struct fte_matrix *m)
 {
-    return m->yx == 0.0 && m->xy == 0.0 && fte_double_is_integer(m->x0) &&
-        fte_double_is_integer(m->y0) && fte_double_is_integer(m->xx) &&
-        fte_double_is_integer(m->yy);
+    return fte_matrix_has_unity_scale(m) && fte_fixed_is_integer(m->x0) &&
+        fte_fixed_is_integer(m->y0);
 }
 
 static bool fte_matrix_uses_bilinear(double x, double y, double t)
 {
-    return fte_double_is_integer(x) && fte_double_is_integer(y) &&
-        fte_double_is_integer(t);
+    double h = x * x + y * y;
+    if (h < 1.0 / (0.75 * 0.75)) return true;
+    return h > 3.99 && h < 4.01 && fte_fixed(x * y) == 0 && fte_fixed_is_integer(t);
+}
+
+static uint32_t fte_bilinear(uint32_t tl, uint32_t tr, uint32_t bl, uint32_t br, int distx,
+    int disty)
+{
+    uint64_t sxy, sxiy, sixy, sixiy, f, r, tl64, tr64, bl64, br64;
+    distx <<= 1;
+    disty <<= 1;
+    sxy = (uint64_t)distx * (uint64_t)disty;
+    sxiy = (uint64_t)distx * (uint64_t)(256 - disty);
+    sixy = (uint64_t)(256 - distx) * (uint64_t)disty;
+    sixiy = (uint64_t)(256 - distx) * (uint64_t)(256 - disty);
+    tl64 = tl & 0xff0000ffu;
+    tr64 = tr & 0xff0000ffu;
+    bl64 = bl & 0xff0000ffu;
+    br64 = br & 0xff0000ffu;
+    f = tl64 * sixiy + tr64 * sxiy + bl64 * sixy + br64 * sxy;
+    r = f & UINT64_C(0x0000ff0000ff0000);
+    tl64 = ((tl << 16) & UINT64_C(0x000000ff00000000)) | (tl & 0x0000ff00u);
+    tr64 = ((tr << 16) & UINT64_C(0x000000ff00000000)) | (tr & 0x0000ff00u);
+    bl64 = ((bl << 16) & UINT64_C(0x000000ff00000000)) | (bl & 0x0000ff00u);
+    br64 = ((br << 16) & UINT64_C(0x000000ff00000000)) | (br & 0x0000ff00u);
+    f = tl64 * sixiy + tr64 * sxiy + bl64 * sixy + br64 * sxy;
+    r |= ((f >> 16) & UINT64_C(0x000000ff00000000)) | (f & UINT64_C(0xff000000));
+    return (uint32_t)(r >> 16);
+}
+
+static uint32_t fte_fetch_bilinear(const struct fte_image *src, int64_t fx, int64_t fy)
+{
+    int64_t x = fx - FTE_ONE / 2, y = fy - FTE_ONE / 2;
+    int distx = (int)((x >> 9) & 0x7f), disty = (int)((y >> 9) & 0x7f);
+    int ix = (int)(x >> 16), iy = (int)(y >> 16);
+    return fte_bilinear(fte_fetch(src, ix, iy), fte_fetch(src, ix + 1, iy),
+        fte_fetch(src, ix, iy + 1), fte_fetch(src, ix + 1, iy + 1), distx, disty);
 }
 
 static bool fte_scale_image(const struct fte_image *src, struct fte_image *dst,
@@ -1256,14 +1290,20 @@ static bool fte_scale_image(const struct fte_image *src, struct fte_image *dst,
                 fte_store(dst, x, y, fte_fetch(src, x + ix, y + iy));
         return true;
     }
-    if (fte_matrix_is_pixel_exact(matrix) ||
-            (fte_matrix_uses_bilinear(matrix->xx, matrix->xy, matrix->x0) &&
-             fte_matrix_uses_bilinear(matrix->yx, matrix->yy, matrix->y0))) {
+    bool pixel_exact = fte_matrix_is_pixel_exact(matrix);
+    bool bilinear = !pixel_exact &&
+        fte_matrix_uses_bilinear(matrix->xx, matrix->xy, matrix->x0) &&
+        fte_matrix_uses_bilinear(matrix->yx, matrix->yy, matrix->y0);
+    if (pixel_exact || bilinear) {
         for (int y = 0; y < dst->height; y++)
             for (int x = 0; x < dst->width; x++) {
-                double sx = matrix->xx * (x + 0.5) + matrix->xy * (y + 0.5) + matrix->x0;
-                double sy = matrix->yx * (x + 0.5) + matrix->yy * (y + 0.5) + matrix->y0;
-                fte_store(dst, x, y, fte_fetch(src, (int)floor(sx), (int)floor(sy)));
+                uint32_t fx = ((uint32_t)(x + ix) << 16) + 0x8000u;
+                uint32_t fy = ((uint32_t)(y + iy) << 16) + 0x8000u;
+                int64_t vx = 0, vy = 0;
+                fte_pixman_point(t, (int32_t)fx, (int32_t)fy, FTE_ONE, &vx, &vy);
+                fte_store(dst, x, y, pixel_exact ?
+                    fte_fetch(src, (int)((vx - 1) >> 16), (int)((vy - 1) >> 16)) :
+                    fte_fetch_bilinear(src, vx, vy));
             }
         return true;
     }
