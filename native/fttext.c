@@ -2081,8 +2081,8 @@ static void fte_draw_digit(uint32_t *pixels, int stride, int width, int height,
     if (!metric || !metric->valid) return;
     double dx = x, dy = y;
     fte_matrix_transform_point(ctm, &dx, &dy);
-    dx = (double)fte_lround(dx * 256.0) / 256.0;
-    dy = (double)fte_lround(dy * 256.0) / 256.0;
+    dx = (double)fte_fixed_24_8(dx) / 256.0;
+    dy = (double)fte_fixed_24_8(dy) / 256.0;
     int32_t x1 = 0, y1 = 0, x2 = 0, y2 = 0;
     fte_glyph_device_box(scaled, metric, dx, dy, &x1, &y1, &x2, &y2);
     int bx0 = fte_fixed_floor(x1), by0 = fte_fixed_floor(y1);
@@ -2247,8 +2247,8 @@ static void fte_glyph_device_box(const struct fte_scaled *scaled, const struct f
             if (y > max_y) max_y = y;
         }
     }
-    int32_t bx = fte_fixed_24_8((double)fte_lround(gx));
-    int32_t by = fte_fixed_24_8((double)fte_lround(gy));
+    int32_t bx = fte_fixed_24_8(floor(gx + 0.5));
+    int32_t by = fte_fixed_24_8(floor(gy + 0.5));
     *x1 = bx + fte_fixed_24_8(min_x);
     *y1 = by + fte_fixed_24_8(min_y);
     *x2 = bx + fte_fixed_24_8(max_x);
