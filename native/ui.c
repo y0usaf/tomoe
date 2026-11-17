@@ -918,6 +918,24 @@ static bool shader_still(const struct tomoe *s, const struct ui_surface *surface
     return !last || now - last->t > surface->idle;
 }
 
+static double surface_clock(const struct tomoe *s, const struct ui_surface *surface, double now) {
+    if (surface->shader_clocked) return now;
+    if (s->shader_holding) return s->shader_hold_at - s->shader_shift;
+    return now - s->shader_shift;
+}
+
+static void shader_hold_advance(struct tomoe *s, double now) {
+    double hold = s->settings.shader_hold;
+    bool idle = hold > 0 && s->input_at > 0 && now - s->input_at >= hold;
+    if (idle && !s->shader_holding) {
+        s->shader_holding = true;
+        s->shader_hold_at = now;
+    } else if (!idle && s->shader_holding) {
+        s->shader_holding = false;
+        s->shader_shift += now - s->shader_hold_at;
+    }
+}
+
 int tomoe_present_ui_asset_ref(struct tomoe *s, uint64_t id) {
     struct ui_surface *surface = NULL;
     if (!surface_is_current(s, &surface) || id == 0) return 0;
@@ -1660,6 +1678,7 @@ static bool shader_settled(const struct ui_surface *surface, double now) {
 
 static bool background_moving(struct tomoe *s, const struct ui_surface *surface, double now) {
     if (!s || !surface || shader_settled(surface, now)) return false;
+    if (s->shader_holding && !surface->shader_clocked) return false;
     if (!surface->trail_on) {
         struct ui_asset *shown = shown_backdrop(surface);
         if (!shown || !ui_asset_shader(shown, NULL)) return false;
@@ -1672,6 +1691,7 @@ static bool background_moving(struct tomoe *s, const struct ui_surface *surface,
 
 bool ui_animate(struct tomoe *s, double now) {
     if (!s || !s->ui) return false;
+    shader_hold_advance(s, now);
     bool active = false;
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *surface = s->ui->surfaces[i];
@@ -1934,6 +1954,9 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
         if (image) draw_texture(f, image, left + x, top + y, NULL);
         if (shader || surface->trail_on) {
             bool still = shader_still(o->server, surface, now);
+            struct tomoe *server = o->server;
+            bool held = server->shader_holding && !surface->shader_clocked;
+            double clock = surface_clock(server, surface, now);
             struct fbox area = { left, top, surface->width, surface->height };
             float windows[4 * UI_SHADER_WINDOWS];
             float selection[16], marks_box[4];
@@ -1969,15 +1992,16 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             if (!still && shader) {
                 double time;
                 int frame = (int)fmin((double)o->frames, (double)INT_MAX);
-                if (shader_settled(surface, now)) {
+                if (shader_settled(surface, clock)) {
                     time = surface->shader_until;
                 } else if (surface->fps > 0) {
-                    double tick = floor((now - epoch) * surface->fps);
+                    double tick = floor((clock - epoch) * surface->fps);
                     time = tick / surface->fps;
                     frame = (int)fmin(tick, INT_MAX);
-                    schedule_step(o, epoch + (tick + 1) / surface->fps, now);
+                    if (!held)
+                        schedule_step(o, epoch + (tick + 1) / surface->fps + server->shader_shift, now);
                 } else {
-                    time = now - epoch;
+                    time = clock - epoch;
                 }
                 if (surface->shader_reach > 0) shader_reach(f, shader, area, time, frame, &inputs,
                     surface->shader_reach);
@@ -1986,8 +2010,9 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             if (!still && surface->trail_on) {
                 effect_trail(f, area, &surface->trail);
                 if (surface->fps > 0) {
-                    double tick = floor(now * surface->fps);
-                    schedule_step(o, (tick + 1) / surface->fps, now);
+                    double tick = floor(clock * surface->fps);
+                    if (!held)
+                        schedule_step(o, (tick + 1) / surface->fps + server->shader_shift, now);
                 }
             }
         }

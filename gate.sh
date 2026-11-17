@@ -31,9 +31,10 @@ Builds REV (default HEAD) the way finix would pin it, with the config finix
 generates against that very build, and runs the pair on a private headless
 instance with its own socket, runtime directory and home: one output at
 5120x1440@240, real test windows, dark then light, every rail theme in turn
-with the output's frame counter read at rest in each, rapid focus switches and
-moves with windows closing and opening mid-animation, a reload, and a config
-whose middle form calls an undefined function. It fails
+with the output timed from an input to the hold an idle machine is given and
+its frame counter read on both sides of it, rapid focus switches and moves with
+windows closing and opening mid-animation, a reload, and a config whose middle
+form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
 (typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must
@@ -109,10 +110,8 @@ else
 	mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
 	cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
 	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
-	held() { grep -E '\(first shown\)' "$DIR/init.lisp" | grep -q ':until'; }
-	held || sed -i "s/:background (list :shader (first shown) :fps (second shown)))))/:background (list :shader (first shown) :fps (second shown) :clock 0d0 :until 0d0))))/" \
-		"$DIR/init.lisp"
-	held || die "the config no longer publishes the shader wallpaper the still fixture holds"
+	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
+	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
@@ -131,7 +130,7 @@ LISP
 	sed "s/$BG/@BG@/g; s/$FG/$BG/g; s/@BG@/$FG/g" "$DIR/first.css" >"$DIR/second.css"
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
-	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK \
+	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
 		ACCOUNT PALETTE THEME_FILE DIR >"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -235,19 +234,64 @@ frames_on() {
 		}'
 }
 
+shot() {
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" grim -t ppm "$1" 2>"$DIR/grim" ||
+		die "cannot capture the screen: $(cat "$DIR/grim")"
+}
+
+type_key() {
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" "$@" >"$DIR/keys" 2>&1 ||
+		die "cannot type: $(cat "$DIR/keys")"
+}
+
+pixels_differ() {
+	python3 - "$1" "$2" <<'PIXELS'
+import sys
+def ppm(path):
+    data = open(path, "rb").read()
+    fields, at = [], 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace():
+            at += 1
+        start = at
+        while not data[at:at + 1].isspace():
+            at += 1
+        fields.append(data[start:at])
+    return data[at + 1:]
+a, b = ppm(sys.argv[1]), ppm(sys.argv[2])
+print(sum(1 for i in range(0, min(len(a), len(b)), 48) if a[i:i + 3] != b[i:i + 3]))
+PIXELS
+}
+
 at_rest() {
-	local label=$1 attempt before after drawn
+	local label=$1 attempt active_drew rest_drew moved skip
+	moved=$(frames_on)
+	sleep 1
+	active_drew=$(( $(frames_on) - moved ))
+	((active_drew > 0)) ||
+		die "$label: the desktop drew nothing after the theme switch, so nothing animates for this check to stop"
+	sleep "$HOLD"
 	for attempt in 1 2 3; do
-		sleep 1.2
-		before=$(frames_on)
-		[[ -n $before ]] || die "$label: $OUTPUT has no frame counter"
+		moved=$(frames_on)
 		sleep 2
-		after=$(frames_on)
-		[[ -n $after ]] || die "$label: $OUTPUT has no frame counter after the window"
-		drawn=$((after - before))
-		((drawn == 0)) && { say "$label at rest: 0 frames in 2 s"; return 0; }
+		rest_drew=$(( $(frames_on) - moved ))
+		((rest_drew == 0)) || continue
+		say "$label: $active_drew frames in the second after the switch, 0 frames in 2 s once the machine was idle"
+		if [[ -z ${SKIP_CHECKED:-} ]]; then
+			shot "$DIR/held.ppm"
+			type_key "key 42 down" sync "key 42 up" sync
+			shot "$DIR/resumed.ppm"
+			skip=$(pixels_differ "$DIR/held.ppm" "$DIR/resumed.ppm") ||
+				die "$label: cannot compare the pictures around the input"
+			[[ $skip =~ ^[0-9]+$ ]] || die "$label: cannot compare the pictures around the input"
+			((skip <= ${GATE_HOLD_SKIP:-4000})) ||
+				die "$label: the picture moved $skip sampled pixels on the input that resumed it, so it skipped ahead"
+			say "$label: resumed on that input with $skip sampled pixels of change"
+			SKIP_CHECKED=1
+		fi
+		return 0
 	done
-	die "$label: $OUTPUT drew $drawn frames in 2 s at rest"
+	die "$label: $OUTPUT kept drawing $rest_drew frames in 2 s at rest"
 }
 
 run() {
@@ -358,9 +402,6 @@ settle "$WINDOWS"
 check "reload" "$WINDOWS"
 
 binds() { grep -oE ':MODIFIERS [0-9]+ :CODE [0-9]+ :KEYSYM "[^"]*" :OWNER "[^"]*" :CALL \([^)]*\)' "$DIR/inspect" | sort; }
-shot() {
-	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" grim -t ppm "$1" 2>"$DIR/grim" || die "cannot capture the screen: $(cat "$DIR/grim")"
-}
 rail_drift() {
 	python3 - "$1" "$2" "$3" <<'PY'
 import sys

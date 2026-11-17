@@ -46,3 +46,7 @@ The first release.
 - Every session logs to `~/.local/state/tomoe/SOCKET.log`: why it stopped, every
   refused load, stopped extension, withdrawn surface and exited service, and a
   backtrace if the compositor itself crashes.
+- An animated shader background holds the picture it is drawing once the machine
+  has had no input for `:shader-hold` seconds, 3 by default, and carries on from
+  that same frame on the next input, so a moving wallpaper stops drawing when
+  nobody is there instead of skipping the time it was idle.

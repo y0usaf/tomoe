@@ -611,6 +611,12 @@ the API to move.
   the last sample is `:life` old it stops drawing and the output goes idle
   again. `tomoe animation` reports the trail's steps and when they were drawn. A
   look turns the trail on for its own theme by owning that setting.
+- An animated shader background holds the picture it is drawing once the machine
+  has had no input for `:shader-hold` seconds, 3 by default, and picks up from
+  that same frame on the next input: the clock the shader reads stands still
+  while the picture is held, so an idle wallpaper pauses where it was instead of
+  skipping the time it was idle. `(settings :shader-hold 0)` lets it draw
+  through, and a surface that publishes `:until` keeps its own clock.
 - Touchpad swipe, pinch and hold gestures are forwarded to the pointer-focused
   application through `zwp_pointer_gestures_v1`; focus loss cancels the gesture.
 - Input methods use text-input-v3 and input-method-v2: focused text fields,

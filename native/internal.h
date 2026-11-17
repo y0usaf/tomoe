@@ -890,6 +890,7 @@ struct settings {
     int cursor_trail_steps, cursor_trail_shape;
     uint32_t cursor_trail_color;
     double blur_offset;
+    double shader_hold;
     bool screenshot_freeze, screenshot_motion_enabled;
     double screenshot_motion_stiffness, screenshot_motion_damping;
     uint32_t screenshot_mark_ink;
@@ -1222,6 +1223,8 @@ struct tomoe {
     char *output_current;
     uint64_t outputs_revision;
     uint64_t activity_serial;
+    double input_at, shader_shift, shader_hold_at;
+    bool shader_holding;
     struct layer_plan *layer_preview;
     char *layer_preview_text;
     struct presentation *presentation;
