@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo cairo-path-fixed.c, cairo-spline.c, cairo-arc.c, cairo-polygon.c and cairo-image-compositor.c, see NOTICE */
 #include "draw.h"
 #include "stroke.h"
 
@@ -409,6 +408,8 @@ px_scan_converter_t *px_scan_converter_create_in_error(px_status_t status)
 void dpath_init(struct dpath *path)
 {
     memset(path, 0, sizeof(*path));
+    path->stroke_is_rectilinear = 1;
+    path->fill_is_rectilinear = 1;
 }
 
 void dpath_fini(struct dpath *path)
@@ -519,6 +520,9 @@ static void path_line_to_fixed(struct dpath *path, int32_t x, int32_t y)
     if (path->ops[path->count - 1].op != DP_MOVE &&
         x == path->current.x && y == path->current.y)
         return;
+    if (path->stroke_is_rectilinear)
+        path->stroke_is_rectilinear = path->current.x == x || path->current.y == y;
+    path->fill_is_rectilinear &= path->stroke_is_rectilinear;
     struct dpoint p = { x, y };
     extents_add(path, p.x, p.y);
     path_append(path, DP_LINE, &p, 1);
@@ -527,7 +531,11 @@ static void path_line_to_fixed(struct dpath *path, int32_t x, int32_t y)
 
 void dp_new_sub_path(struct dpath *path)
 {
-    if (!path->needs_move) path->needs_move = true;
+    if (!path->needs_move) {
+        path->fill_is_rectilinear = path->current.x == path->last_move.x ||
+            path->current.y == path->last_move.y;
+        path->needs_move = true;
+    }
     path->has_current = false;
 }
 
@@ -580,6 +588,8 @@ static void path_curve_to_fixed(struct dpath *path, int32_t x0, int32_t y0,
     }
     struct dpoint points[3] = { { x0, y0 }, { x1, y1 }, { x2, y2 } };
     path->has_curve_to = true;
+    path->stroke_is_rectilinear = 0;
+    path->fill_is_rectilinear = 0;
     extents_add_curve(path, &path->current, &points[0], &points[1], &points[2]);
     path_append(path, DP_CURVE, points, 3);
     path->current = points[2];
@@ -733,7 +743,6 @@ uint32_t dp_lerp8x4(uint32_t src, uint8_t a, uint32_t dst)
     return lerp_add8x2(lerp8x2(src, a), lerp8x2(dst, (uint8_t)~a)) |
         (lerp_add8x2(lerp8x2(src >> 8, a), lerp8x2(dst >> 8, (uint8_t)~a)) << 8);
 }
-
 
 struct span_ctx {
     px_span_renderer_t base;
@@ -995,13 +1004,80 @@ static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
     return status == PX_STATUS_SUCCESS;
 }
 
+static void fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y)
+{
+    int width = clip.x1 - clip.x0;
+    if (width <= 0 || boxes->num_boxes == 0) return;
+    int *dl = calloc((size_t)width, sizeof(int));
+    int *du = calloc((size_t)width, sizeof(int));
+    unsigned char *alphas = malloc((size_t)width);
+    if (!dl || !du || !alphas) abort();
+    int32_t top = INT32_MAX, bottom = INT32_MIN;
+    for (const struct _cairo_boxes_chunk *chunk = &boxes->chunks; chunk; chunk = chunk->next) {
+        for (int i = 0; i < chunk->count; i++) {
+            int32_t t = chunk->base[i].p1.y, b = chunk->base[i].p2.y;
+            if (t < top) top = t;
+            if (b > bottom) bottom = b;
+        }
+    }
+    if (top > bottom) { free(dl); free(du); free(alphas); return; }
+    int32_t top_y = top >> 8, bottom_y = bottom >> 8;
+    for (int32_t y = top_y; y <= bottom_y; y++) {
+        if (y < clip.y0 || y >= clip.y1) continue;
+        memset(dl, 0, (size_t)width * sizeof(int));
+        memset(du, 0, (size_t)width * sizeof(int));
+        for (const struct _cairo_boxes_chunk *chunk = &boxes->chunks; chunk; chunk = chunk->next) {
+            for (int i = 0; i < chunk->count; i++) {
+                const cairo_box_t *b = &chunk->base[i];
+                box_row_deltas(b->p1.x, b->p1.y, b->p2.x, b->p2.y, y, dl, du, width, clip.x0);
+            }
+        }
+        int coverage = 0, prev = 0, prev_x = INT_MIN;
+        int span_start = 0, span_alpha = 0;
+        for (int i = 0; i < width; i++) {
+            int x = clip.x0 + i;
+            if (x != prev_x && coverage != prev) {
+                int c = coverage >> 8;
+                int alpha = c - (c >> 8);
+                int at = prev_x - clip.x0;
+                if (at < 0) at = 0;
+                if (at > width) at = width;
+                for (int k = span_start; k < at; k++) alphas[k] = (unsigned char)span_alpha;
+                span_start = at;
+                span_alpha = alpha;
+                prev = coverage;
+            }
+            coverage += dl[i];
+            if (coverage != prev) {
+                int c = coverage >> 8;
+                int alpha = c - (c >> 8);
+                for (int k = span_start; k < i; k++) alphas[k] = (unsigned char)span_alpha;
+                span_start = i;
+                span_alpha = alpha;
+                prev = coverage;
+            }
+            coverage += du[i];
+            prev_x = x + 1;
+        }
+        int c = coverage >> 8;
+        int alpha = c - (c >> 8);
+        if (prev_x <= clip.x1 || span_alpha != alpha) {
+            for (int k = span_start; k < width; k++) alphas[k] = (unsigned char)span_alpha;
+        } else {
+            for (int k = span_start; k < width; k++) alphas[k] = (unsigned char)alpha;
+        }
+        unsigned char *row = mask + (size_t)(y - mask_y) * (size_t)stride +
+            (size_t)(clip.x0 - mask_x);
+        memcpy(row, alphas, (size_t)width);
+    }
+    free(dl); free(du); free(alphas);
+}
+
 bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     double miter_limit, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y)
 {
-    struct dp_polygon polygon;
-    dp_polygon_init(&polygon);
-    dp_polygon_set_limit(&polygon, clip);
     cairo_stroke_style_t style;
     memset(&style, 0, sizeof(style));
     style.line_width = width;
@@ -1009,6 +1085,27 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     style.line_join = (cairo_line_join_t)join;
     style.miter_limit = miter_limit;
     cairo_matrix_t identity = { 1, 0, 0, 1, 0, 0 };
+    if (path->stroke_is_rectilinear) {
+        cairo_boxes_t boxes;
+        _cairo_boxes_init(&boxes);
+        cairo_box_t limit;
+        limit.p1.x = (cairo_fixed_t)clip.x0 * FIXED_ONE;
+        limit.p1.y = (cairo_fixed_t)clip.y0 * FIXED_ONE;
+        limit.p2.x = (cairo_fixed_t)clip.x1 * FIXED_ONE;
+        limit.p2.y = (cairo_fixed_t)clip.y1 * FIXED_ONE;
+        _cairo_boxes_limit(&boxes, &limit, 1);
+        cairo_int_status_t st = _cairo_path_fixed_stroke_rectilinear_to_boxes(
+            path, &style, &identity, CAIRO_ANTIALIAS_GRAY, &boxes);
+        if (st == CAIRO_INT_STATUS_SUCCESS) {
+            fill_boxes_mask(&boxes, clip, mask, stride, mask_x, mask_y);
+            _cairo_boxes_fini(&boxes);
+            return true;
+        }
+        _cairo_boxes_fini(&boxes);
+    }
+    struct dp_polygon polygon;
+    dp_polygon_init(&polygon);
+    dp_polygon_set_limit(&polygon, clip);
     cairo_status_t status = _cairo_path_fixed_stroke_to_polygon(path, &style,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;

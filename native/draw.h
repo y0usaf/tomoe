@@ -23,6 +23,7 @@ struct dpath {
     bool needs_move;
     bool has_curve_to;
     int stroke_is_rectilinear;
+    int fill_is_rectilinear;
     struct dpoint min, max;
     bool has_extents;
 };

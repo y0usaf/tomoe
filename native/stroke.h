@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo cairo-types-private.h, cairoint.h and the headers of the ported files, see NOTICE */
 #ifndef STROKE_H
 #define STROKE_H
 
@@ -38,6 +39,8 @@ typedef uint64_t cairo_uint128_t;
 #define CAIRO_INJECT_FAULT() 0
 
 #define _cairo_error(status) (status)
+#define _cairo_error_throw(status) ((void)(status))
+#define CAIRO_FIXED_ERROR_DOUBLE (1. / (2 * 256.))
 #define _cairo_malloc_ab(n, s) malloc((size_t)(n) * (size_t)(s))
 #define _cairo_malloc_ab_plus_c(n, s, c) malloc((size_t)(n) * (size_t)(s) + (size_t)(c))
 #define _cairo_realloc_ab(p, n, s) realloc((p), (size_t)(n) * (size_t)(s))
@@ -59,6 +62,40 @@ typedef struct {
 } cairo_matrix_t;
 
 typedef px_box_t cairo_box_t;
+
+typedef px_fill_rule_t cairo_fill_rule_t;
+typedef px_antialias_t cairo_antialias_t;
+
+#define CAIRO_FILL_RULE_WINDING PX_FILL_RULE_WINDING
+#define CAIRO_FILL_RULE_EVEN_ODD PX_FILL_RULE_EVEN_ODD
+#define CAIRO_ANTIALIAS_DEFAULT PX_ANTIALIAS_DEFAULT
+#define CAIRO_ANTIALIAS_NONE PX_ANTIALIAS_NONE
+#define CAIRO_ANTIALIAS_GRAY PX_ANTIALIAS_GRAY
+#define CAIRO_ANTIALIAS_SUBPIXEL PX_ANTIALIAS_SUBPIXEL
+#define CAIRO_ANTIALIAS_FAST PX_ANTIALIAS_FAST
+#define CAIRO_ANTIALIAS_GOOD PX_ANTIALIAS_GOOD
+#define CAIRO_ANTIALIAS_BEST PX_ANTIALIAS_BEST
+
+typedef struct {
+    cairo_point_t p1, p2;
+} cairo_line_t;
+
+typedef struct {
+    cairo_line_t left, right;
+    cairo_fixed_t top, bottom;
+} cairo_trapezoid_t;
+
+typedef struct {
+    cairo_trapezoid_t *traps;
+    int num_traps;
+    int size;
+    cairo_status_t status;
+    cairo_box_t extents;
+    const cairo_box_t *limits;
+    int num_limits;
+    cairo_bool_t is_rectilinear;
+    cairo_bool_t is_rectangular;
+} cairo_traps_t;
 
 typedef struct {
     int x, y, width, height;
@@ -128,6 +165,35 @@ typedef struct {
     cairo_bool_t has_point;
     cairo_point_t last_point;
 } cairo_spline_t;
+
+struct _cairo_boxes_chunk {
+    struct _cairo_boxes_chunk *next;
+    cairo_box_t *base;
+    int count;
+    int size;
+};
+
+typedef struct {
+    cairo_status_t status;
+    cairo_box_t limit;
+    const cairo_box_t *limits;
+    int num_limits;
+    int num_boxes;
+    unsigned int is_pixel_aligned;
+    struct _cairo_boxes_chunk chunks, *tail;
+    cairo_box_t boxes_embedded[32];
+} cairo_boxes_t;
+
+typedef struct {
+    cairo_bool_t dashed;
+    unsigned int dash_index;
+    cairo_bool_t dash_on;
+    cairo_bool_t dash_starts_on;
+    double dash_remain;
+    double dash_offset;
+    const double *dashes;
+    unsigned int num_dashes;
+} cairo_stroker_dash_t;
 
 struct _cairo_contour_chain {
     cairo_point_t *points;
@@ -436,5 +502,98 @@ cairo_status_t _cairo_path_fixed_stroke_to_polygon (const cairo_path_fixed_t *pa
 cairo_status_t _cairo_path_fixed_stroke_dashed_to_polygon (const cairo_path_fixed_t *path,
     const cairo_stroke_style_t *style, const cairo_matrix_t *ctm,
     const cairo_matrix_t *ctm_inverse, double tolerance, cairo_polygon_t *polygon);
+
+void _cairo_boxes_init (cairo_boxes_t *boxes);
+void _cairo_boxes_init_for_array (cairo_boxes_t *boxes, cairo_box_t *array, int num_boxes);
+void _cairo_boxes_limit (cairo_boxes_t *boxes, const cairo_box_t *limits, int num_limits);
+void _cairo_boxes_get_extents (const cairo_box_t *boxes, int num_boxes, cairo_box_t *extents);
+cairo_bool_t _cairo_box_intersects_line_segment (const cairo_box_t *box, cairo_line_t *line);
+cairo_status_t _cairo_boxes_add (cairo_boxes_t *boxes, cairo_antialias_t antialias,
+    const cairo_box_t *box);
+void _cairo_boxes_extents (const cairo_boxes_t *boxes, cairo_box_t *box);
+cairo_box_t *_cairo_boxes_to_array (const cairo_boxes_t *boxes, int *num_boxes);
+void _cairo_boxes_clear (cairo_boxes_t *boxes);
+void _cairo_boxes_fini (cairo_boxes_t *boxes);
+
+cairo_status_t _cairo_bentley_ottmann_tessellate_boxes (const cairo_boxes_t *in,
+    cairo_fill_rule_t fill_rule, cairo_boxes_t *out);
+
+void _cairo_stroker_dash_init (cairo_stroker_dash_t *dash, const cairo_stroke_style_t *style);
+void _cairo_stroker_dash_start (cairo_stroker_dash_t *dash);
+void _cairo_stroker_dash_step (cairo_stroker_dash_t *dash, double step);
+
+cairo_bool_t _cairo_path_fixed_is_stroke_box (const cairo_path_fixed_t *path, cairo_box_t *box);
+cairo_bool_t _cairo_path_fixed_stroke_is_rectilinear (const cairo_path_fixed_t *path);
+cairo_int_status_t _cairo_path_fixed_stroke_rectilinear_to_boxes (const cairo_path_fixed_t *path,
+    const cairo_stroke_style_t *style, const cairo_matrix_t *ctm,
+    cairo_antialias_t antialias, cairo_boxes_t *boxes);
+
+void _cairo_traps_init (cairo_traps_t *traps);
+void _cairo_traps_clear (cairo_traps_t *traps);
+void _cairo_traps_fini (cairo_traps_t *traps);
+cairo_status_t _cairo_traps_status (cairo_traps_t *traps);
+cairo_status_t _cairo_traps_add_trap (cairo_traps_t *traps, cairo_fixed_t top,
+    cairo_fixed_t bottom, cairo_line_t *left, cairo_line_t *right);
+
+#define _cairo_combsort_newgap(gap) ((gap) < 13 ? 1 : (10 * (gap) / 13))
+#define CAIRO_COMBSORT_DECLARE(NAME, TYPE, CMP) \
+static void NAME (TYPE *base, unsigned int nmemb) \
+{ \
+  unsigned int gap = nmemb; \
+  unsigned int i, j; \
+  int swapped; \
+  do { \
+      gap = _cairo_combsort_newgap (gap); \
+      swapped = gap > 1; \
+      for (i = 0; i < nmemb - gap; i++) { \
+          j = i + gap; \
+          if (CMP (base[i], base[j]) > 0) { \
+              TYPE tmp = base[i]; \
+              base[i] = base[j]; \
+              base[j] = tmp; \
+              swapped = 1; \
+          } \
+      } \
+  } while (swapped); \
+}
+
+static inline cairo_fixed_t
+_cairo_fixed_round_down (cairo_fixed_t f)
+{
+    return (f + CAIRO_FIXED_FRAC_MASK / 2) & ~CAIRO_FIXED_FRAC_MASK;
+}
+
+static inline int
+_cairo_fixed_integer_floor (cairo_fixed_t f)
+{
+    if (f >= 0) return f >> CAIRO_FIXED_FRAC_BITS;
+    return -(((-f - 1) >> CAIRO_FIXED_FRAC_BITS)) - 1;
+}
+
+static inline void
+_cairo_box_from_integers (cairo_box_t *box, int x, int y, int w, int h)
+{
+    box->p1.x = _cairo_fixed_from_int (x);
+    box->p1.y = _cairo_fixed_from_int (y);
+    box->p2.x = _cairo_fixed_from_int (x + w);
+    box->p2.y = _cairo_fixed_from_int (y + h);
+}
+
+static inline cairo_bool_t
+_cairo_box_is_pixel_aligned (const cairo_box_t *box)
+{
+    cairo_fixed_t f = 0;
+    f |= box->p1.x & CAIRO_FIXED_FRAC_MASK;
+    f |= box->p1.y & CAIRO_FIXED_FRAC_MASK;
+    f |= box->p2.x & CAIRO_FIXED_FRAC_MASK;
+    f |= box->p2.y & CAIRO_FIXED_FRAC_MASK;
+    return f == 0;
+}
+
+static inline cairo_bool_t
+_cairo_matrix_is_scale (const cairo_matrix_t *matrix)
+{
+    return matrix->yx == 0.0 && matrix->xy == 0.0;
+}
 
 #endif
