@@ -928,6 +928,13 @@ static double surface_clock(const struct tomoe *s, const struct ui_surface *surf
     return shader_clock_now(s, now);
 }
 
+void ui_hold_resume(struct tomoe *s) {
+    if (!s || !s->shader_holding) return;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (output_is_active(o)) screen_schedule_animation(o->screen);
+}
+
 static void shader_hold_advance(struct tomoe *s, double now) {
     double hold = s->settings.shader_hold;
     bool idle = hold > 0 && s->input_at > 0 && now - s->input_at >= hold;

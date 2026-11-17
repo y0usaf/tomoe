@@ -85,6 +85,7 @@ size_t ui_claim(struct output *o, int layer, struct box *boxes, bool *blurs, siz
 bool ui_prepare(struct tomoe *s);
 void ui_publish(struct tomoe *s);
 bool ui_animate(struct tomoe *s, double now);
+void ui_hold_resume(struct tomoe *s);
 void ui_backdrops_ready(struct tomoe *s);
 void ui_pointer_moved(struct tomoe *s);
 void ui_set_finish(struct ui_set *set);

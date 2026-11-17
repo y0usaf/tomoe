@@ -117,9 +117,9 @@ else
 	mkdir -p "$DIR/home/.cache/theme" "$DIR/home/.config"
 	cp -rL "$HOME/.config/fontconfig" "$DIR/home/.config/" 2>/dev/null
 	sed "s#$HOME/#$DIR/home/#g" "$INIT" >"$DIR/init.lisp"
-	sed -i "s#(\"$OUTPUT\"\([^()]*\):mode (list $WIDTH $HEIGHT)#(\"$OUTPUT\"\1:mode (list $WIDTH $HEIGHT $HZ)#" \
+	sed -i "s#(list \"$OUTPUT\"\([^()]*\):mode (list $WIDTH $HEIGHT)#(list \"$OUTPUT\"\1:mode (list $WIDTH $HEIGHT $HZ)#" \
 		"$DIR/init.lisp"
-	grep -q "(\"$OUTPUT\".*:mode (list $WIDTH $HEIGHT $HZ)" "$DIR/init.lisp" ||
+	grep -q "(list \"$OUTPUT\".*:mode (list $WIDTH $HEIGHT $HZ)" "$DIR/init.lisp" ||
 		die "the config does not choose the $MODE mode of $OUTPUT by size, so the gate cannot hold that rate"
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
@@ -192,8 +192,8 @@ done
 ctl msg outputs | grep -q "\"w\": $WIDTH" || die "the session has no $MODE output"
 ctl frames >"$DIR/frames-at-start" 2>&1
 tr ')' '\n' <"$DIR/frames-at-start" | grep -i ":name \"$OUTPUT\"" |
-	grep -q ":refresh $((HZ * 1000))" ||
-	die "$OUTPUT is not running the $MODE mode the gate times: $(grep -o ':refresh [0-9]*' "$DIR/frames-at-start" | head -1)"
+	grep -qi ":refresh $((HZ * 1000))" ||
+	die "$OUTPUT is not running the $MODE mode the gate times: $(grep -oi '[:]refresh [0-9]*' "$DIR/frames-at-start" | head -1)"
 
 serial=0
 open_window() {
