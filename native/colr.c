@@ -855,9 +855,14 @@ static void sweep_add(struct colr_ctx *ctx, struct sweep_builder *b, int extend,
     } else {
         double span = angles[cl->count - 1] - angles[0];
         int k = 0;
+        if (span == 0) {
+            sweep_add1(ctx, b, radius, 0, &cl->stops[0].color, 2 * M_PI,
+                &cl->stops[0].color);
+            return;
+        }
         if (angles[0] >= 0) {
             double ss = angles[0];
-            while (ss > 0) {
+            for (int guard = 0; ss > 0 && guard < 4096; guard++) {
                 if (span > 0) {
                     ss -= span;
                     k--;
@@ -868,7 +873,7 @@ static void sweep_add(struct colr_ctx *ctx, struct sweep_builder *b, int extend,
             }
         } else {
             double ee = angles[cl->count - 1];
-            while (ee < 0) {
+            for (int guard = 0; ee < 0 && guard < 4096; guard++) {
                 if (span > 0) {
                     ee += span;
                     k++;
@@ -878,7 +883,7 @@ static void sweep_add(struct colr_ctx *ctx, struct sweep_builder *b, int extend,
                 }
             }
         }
-        for (int l = k;; l++) {
+        for (int l = k; l < k + 4096; l++) {
             for (int i = 1; i < cl->count; i++) {
                 double a0, a1;
                 struct colr_color *c0, *c1;
