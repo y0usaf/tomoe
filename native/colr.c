@@ -1392,6 +1392,12 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->level = ctx->level + 1;
     child->is_clear = true;
     child->box = (struct drect){ 0, 0, w, h };
+    if (!child->clip_extent_unbounded) {
+        child->clip_extent = (struct drect){
+            child->clip_extent.x0 - box->x0, child->clip_extent.y0 - box->y0,
+            child->clip_extent.x1 - box->x0, child->clip_extent.y1 - box->y0 };
+        child->clip_extent = intersected(child->clip_extent, child->clip_box);
+    }
     memset(&child->clip_polygon, 0, sizeof(child->clip_polygon));
     memset(&child->clip_spans, 0, sizeof(child->clip_spans));
     child->has_clip_polygon = false;
