@@ -25,16 +25,18 @@ POLICY = """(in-package #:tomoe-user)
                (list (configure-output (getf output :name)
                                        :mode (list 1280 720 {hz})
                                        :scale 1 :position '(0 0))))
-             (list (shell-surface :cursor-trail (ui :stack)
+             (list {trail}
+                   {marker}))
+            nil)))
+"""
+
+TRAIL_SURFACE = """(shell-surface :cursor-trail (ui :stack)
                                   :anchors '(:top :right :bottom :left)
                                   :layer {layer}
                                   :click-through t
                                   :background '(:trail :cell {cell} :life {life}
                                                 :steps {steps} :color #xb8e0ffff
-                                                :fps {fps} :idle {idle}))
-                   {marker}))
-            nil)))
-"""
+                                                :fps {fps} :idle {idle}))"""
 
 MARKER = """(shell-surface :marker (ui :stack)
                              :anchors '(:left :top)
@@ -94,8 +96,11 @@ class Compositor:
         with open(policy, "w") as handle:
             if trail or marker:
                 handle.write(POLICY.format(
-                    cell=cell, life=life, steps=steps, fps=fps, idle=idle, hz=hz,
-                    layer=":top" if marker else ":overlay",
+                    hz=hz,
+                    trail=TRAIL_SURFACE.format(cell=cell, life=life, steps=steps, fps=fps,
+                                               idle=idle,
+                                               layer=":top" if marker else ":overlay")
+                    if trail else "",
                     marker=MARKER.format(shader=shader) if marker else ""))
             else:
                 handle.write("(in-package #:tomoe-user)\n")
