@@ -23,3 +23,33 @@ native/server-decoration.xml
 
 The other protocols Tomoe implements (wayland, wayland-protocols, wlr-protocols)
 are read at build time from those packages and are not part of this repository.
+
+native/tor.c
+  The Glitter paths scan converter as incorporated into cairo 1.18.4
+  (src/cairo-tor-scan-converter.c). Copyright 2007 David Turner, 2008 M
+  Joonas Pihlaja. MIT (Expat) license: permission is hereby granted, free
+  of charge, to any person obtaining a copy of this software and
+  associated documentation files (the "Software"), to deal in the Software
+  without restriction, including without limitation the rights to use,
+  copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+  of the Software, and to permit persons to whom the Software is furnished
+  to do so, subject to the following conditions: the above copyright
+  notice and this permission notice shall be included in all copies or
+  substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+  WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+  LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+  PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+  HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+  AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+native/draw.c
+  Drawing arithmetic derived from cairo 1.18.4 (LGPL-2.1 or MPL-1.1):
+  path construction and spline flattening from cairo-path-fixed.c and
+  cairo-spline.c, the arc approximation from cairo-arc.c, polygon edge
+  construction from cairo-polygon.c, fill span arithmetic from
+  cairo-image-compositor.c, and the ARGB32 OVER operator from pixman
+  0.46.4 (MIT). Copyright 2002 University of Southern California, 1999
+  Keith Packard, 2000 SuSE, Inc., 2007 Red Hat, Inc., 2008 M Joonas
+  Pihlaja, 2007 David Turner.
