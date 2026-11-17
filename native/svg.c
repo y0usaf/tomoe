@@ -9407,7 +9407,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         float a = alpha_f;
         if (!(a > 0.0f)) a = 0.0f;
         if (a > 1.0f) a = 1.0f;
-        a = (float)(unsigned)(a * 255.0f + 0.5f) * (1.0f / 255.0f);
+        a = (float)(unsigned)(a * 255.0f + 0.5f) / 255.0f;
         a *= factor;
         if (a > 1.0f) a = 1.0f;
         shader->type = 0;
@@ -9503,7 +9503,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         float a = stops[i].a * alpha_f;
         if (!(a > 0.0f)) a = 0.0f;
         if (a > 1.0f) a = 1.0f;
-        a = (float)(unsigned)(a * 255.0f + 0.5f) * (1.0f / 255.0f);
+        a = (float)(unsigned)(a * 255.0f + 0.5f) / 255.0f;
         a *= factor;
         if (a > 1.0f) a = 1.0f;
         stops[i].a = a;
