@@ -1783,3 +1783,23 @@ native/svg.c
 
   The MIT permission text above applies to both.
 
+
+native/jpeg.c
+  The embedded-image IDCT and YCbCr conversion are ported from zune-jpeg
+  0.5.8.
+
+  zune-jpeg files carry:
+
+    Copyright (c) zune-image developers
+    SPDX-License-Identifier: MIT OR Apache-2.0 OR Zlib
+
+  The MIT permission text above applies.
+
+native/webp.c
+  The lossless WebP decoder is ported from image-webp 0.2.4.
+
+  image-webp files carry:
+
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+  The MIT permission text above applies.

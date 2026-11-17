@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: AGPL-3.0-only AND MIT
+   The IDCT and YCbCr conversion are ported from zune-jpeg 0.5.8 (MIT OR
+   Apache-2.0 OR Zlib); see NOTICE. */
 #include "jpeg.h"
 
 #include <setjmp.h>

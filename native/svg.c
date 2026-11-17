@@ -12,6 +12,7 @@
 #include "jpeg.h"
 #include "gif.h"
 #include "png.h"
+#include "webp.h"
 #include <zlib.h>
 
 struct svg_point { float x, y; };
@@ -7344,7 +7345,6 @@ static int svg_data_mime_hint(const char *href) {
 
 static int svg_image_decode(struct svg_image *im, const unsigned char *data, size_t length,
         int hint) {
-    if (hint == 5) return 0;
     if (hint == 4) {
         im->svg = tomoe_svg_parse(data, length);
         if (!im->svg) return 0;
@@ -7401,6 +7401,26 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
         im->pix.pixels = jpg.pixels;
         im->base_width = (float)jpg.width;
         im->base_height = (float)jpg.height;
+        return 1;
+    }
+    if (length >= 12 && !memcmp(data, "RIFF", 4) && !memcmp(data + 8, "WEBP", 4)) {
+        struct webp_decoded webp;
+        if (tomoe_webp_decode(data, length, &webp) != WEBP_DECODE_OK) return 0;
+        for (size_t i = 0; i < (size_t)webp.width * webp.height; i++) {
+            unsigned a = webp.pixels[i * 4 + 3];
+            if (!webp.has_alpha) {
+                a = 255;
+                webp.pixels[i * 4 + 3] = 255;
+            }
+            double af = (double)a / 255.0;
+            for (int k = 0; k < 3; k++)
+                webp.pixels[i * 4 + k] = (unsigned char)((double)webp.pixels[i * 4 + k] * af + 0.5);
+        }
+        im->pix.width = (int)webp.width;
+        im->pix.height = (int)webp.height;
+        im->pix.pixels = webp.pixels;
+        im->base_width = (float)webp.width;
+        im->base_height = (float)webp.height;
         return 1;
     }
     if (length >= 6 && (!memcmp(data, "GIF87a", 6) || !memcmp(data, "GIF89a", 6))) {
