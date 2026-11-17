@@ -14,6 +14,7 @@ struct svg_bbox { float left, top, right, bottom; int valid; };
 
 struct svg_path;
 static int svg_path_tight_bounds(struct svg_path *path, struct svg_bbox *out);
+static struct svg_path *svg_path_copy(struct svg_path *p);
 
 struct svg_path {
     unsigned char *verbs;
@@ -4765,20 +4766,61 @@ static int svg_paint_order_stroke_first(const char *text) {
 static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
         struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context);
 
-static void svg_add_path_node(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
-        struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context) {
+enum { SVG_PO_FILL = 0, SVG_PO_STROKE = 1, SVG_PO_MARKERS = 2 };
+
+static void svg_paint_order_kinds(struct svg_doc *doc, struct svg_style *st, int kinds[3]) {
+    kinds[0] = SVG_PO_FILL;
+    kinds[1] = SVG_PO_STROKE;
+    kinds[2] = SVG_PO_MARKERS;
+    const char *text = svg_style_find_inherited(doc, st, "paint-order");
+    if (!text) return;
+    int got[3] = { 0, 0, 0 };
+    int n = 0;
+    const char *p = text;
+    while (*p && n < 3) {
+        while (*p && svg_is_space(*p)) p++;
+        int kind = -1;
+        if (!strncmp(p, "fill", 4)) { kind = SVG_PO_FILL; p += 4; }
+        else if (!strncmp(p, "stroke", 6)) { kind = SVG_PO_STROKE; p += 6; }
+        else if (!strncmp(p, "markers", 7)) { kind = SVG_PO_MARKERS; p += 7; }
+        else break;
+        if (!got[kind]) { got[kind] = 1; kinds[n++] = kind; }
+    }
+    for (int k = 0; k < 3 && n < 3; k++)
+        if (!got[k]) { got[k] = 1; kinds[n++] = k; }
+}
+
+static int svg_shape_has_markers(struct svg_doc *doc, struct svg_style *st) {
+    static const char *attrs[3] = { "marker-start", "marker-mid", "marker-end" };
+    for (int i = 0; i < 3; i++) {
+        const char *text = svg_style_find_inherited(doc, st, attrs[i]);
+        char id[256];
+        if (!text || !svg_parse_funciri(text, id, sizeof(id))) continue;
+        struct xml_node *marker = svg_id_last(doc, id);
+        if (marker && svg_tag_is(marker, "marker")) return 1;
+    }
+    return 0;
+}
+
+static struct svg_node *svg_path_node_build(struct svg_conv *c, struct svg_style *st,
+        struct svg_path *geom, struct svg_matrix abs, int clip_context, int want_fill,
+        int want_stroke, int strict_parts, int aa) {
     struct svg_bbox bbox = svg_bbox_empty();
     int have_bbox = svg_path_tight_bounds(geom, &bbox);
     int has_area = have_bbox && bbox.right > bbox.left && bbox.bottom > bbox.top;
     struct svg_fill fill;
     struct svg_stroke stroke;
-    svg_convert_fill(c, st, clip_context, has_area, &fill);
-    svg_convert_stroke(c, st, clip_context, has_area, &stroke);
+    memset(&fill, 0, sizeof(fill));
+    memset(&stroke, 0, sizeof(stroke));
+    if (want_fill) svg_convert_fill(c, st, clip_context, has_area, &fill);
+    if (want_stroke) svg_convert_stroke(c, st, clip_context, has_area, &stroke);
+    if (strict_parts && ((want_fill && !fill.present) || (want_stroke && !stroke.present)))
+        return NULL;
     const char *visibility = svg_style_find_inherited(c->doc, st, "visibility");
     int visible = !visibility || !strcmp(visibility, "visible");
     if (!fill.present && !stroke.present) visible = 0;
     struct svg_node *path = svg_node_new(1);
-    if (!path) { svg_path_free(geom); return; }
+    if (!path) return NULL;
     path->path = geom;
     path->fill = fill;
     path->stroke = stroke;
@@ -4786,18 +4828,43 @@ static void svg_add_path_node(struct svg_conv *c, struct xml_node *node, struct 
     path->abs_transform = abs;
     path->paint_order = svg_paint_order_stroke_first(svg_style_find_inherited(c->doc, st,
         "paint-order"));
-    const char *shape = svg_style_find_inherited(c->doc, st, "shape-rendering");
-    path->aa = !(shape && (!strcmp(shape, "optimizeSpeed") || !strcmp(shape, "crispEdges")));
-    if (fill.present && fill.paint.type >= 10) c->unsupported = c->unsupported;
+    path->aa = aa;
     if (have_bbox) { path->bbox = bbox; path->has_bbox = 1; }
     path->abs_bbox = svg_path_abs_bbox(geom, abs);
-    path->has_bbox = path->has_bbox;
     if (have_bbox) {
         svg_path_abs_stroke_bbox(geom, &stroke, abs, &path->sbbox, &path->abs_sbbox);
         path->has_sbbox = 1;
     }
-    if (!svg_node_add(group, path)) { svg_node_destroy(path); return; }
-    svg_convert_markers(c, node, st, path->path, group, abs, clip_context);
+    return path;
+}
+
+static void svg_add_path_node(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
+        struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context) {
+    const char *shape = svg_style_find_inherited(c->doc, st, "shape-rendering");
+    int aa = !(shape && (!strcmp(shape, "optimizeSpeed") || !strcmp(shape, "crispEdges")));
+    const char *visibility = svg_style_find_inherited(c->doc, st, "visibility");
+    int visible = !visibility || !strcmp(visibility, "visible");
+    if (!visible || clip_context || !svg_shape_has_markers(c->doc, st)) {
+        struct svg_node *path = svg_path_node_build(c, st, geom, abs, clip_context, 1, 1, 0, aa);
+        if (!path) { svg_path_free(geom); return; }
+        if (!svg_node_add(group, path)) { svg_node_destroy(path); return; }
+        return;
+    }
+    int kinds[3];
+    svg_paint_order_kinds(c->doc, st, kinds);
+    for (int i = 0; i < 3; i++) {
+        if (kinds[i] == SVG_PO_MARKERS) {
+            svg_convert_markers(c, node, st, geom, group, abs, clip_context);
+            continue;
+        }
+        struct svg_path *copy = svg_path_copy(geom);
+        if (!copy) continue;
+        struct svg_node *path = svg_path_node_build(c, st, copy, abs, clip_context,
+            kinds[i] == SVG_PO_FILL, kinds[i] == SVG_PO_STROKE, 1, aa);
+        if (!path) { svg_path_free(copy); continue; }
+        if (!svg_node_add(group, path)) svg_node_destroy(path);
+    }
+    svg_path_free(geom);
 }
 
 static struct svg_node *svg_group_alloc(struct svg_conv *c, struct xml_node *node,
@@ -5474,7 +5541,6 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
 }
 
 static int svg_almost_equal_ulps_f32(float a, float b);
-static struct svg_path *svg_path_copy(struct svg_path *p);
 
 struct svg_mseg { int kind; struct svg_point p[3]; };
 
@@ -5665,10 +5731,18 @@ static int svg_marker_segments(struct svg_path *path, struct svg_mseg **out, int
     return n > 0;
 }
 
+static const char *svg_node_attr(struct svg_doc *doc, struct xml_node *node, const char *name) {
+    if (node->style_index >= 0) {
+        const char *value = svg_style_get(doc, &doc->styles[node->style_index], name);
+        if (value) return value;
+    }
+    return svg_xml_attr(node, name);
+}
+
 static int svg_marker_length(struct svg_conv *c, struct xml_node *node, const char *name,
         int axis, float def, float *out) {
     *out = def;
-    const char *text = svg_xml_attr(node, name);
+    const char *text = svg_node_attr(c->doc, node, name);
     if (!text) return 0;
     struct svg_length l;
     if (!svg_parse_length(text, &l)) return 1;
@@ -5695,10 +5769,11 @@ static int svg_marker_length(struct svg_conv *c, struct xml_node *node, const ch
     return 1;
 }
 
-static float svg_marker_orientation(struct xml_node *node, int *auto_reverse, int *is_auto) {
+static float svg_marker_orientation(struct svg_doc *doc, struct xml_node *node, int *auto_reverse,
+        int *is_auto) {
     *auto_reverse = 0;
     *is_auto = 1;
-    const char *text = svg_xml_attr(node, "orient");
+    const char *text = svg_node_attr(doc, node, "orient");
     if (!text) { *is_auto = 0; return 0.0f; }
     if (!strcmp(text, "auto")) return 0.0f;
     if (!strcmp(text, "auto-start-reverse")) { *auto_reverse = 1; return 0.0f; }
@@ -5754,17 +5829,17 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
         svg_marker_length(c, marker, "markerHeight", 1, 3.0f, &mh);
         if (!(mw > 0.0f) || !(mh > 0.0f)) continue;
         float stroke_scale = stroke_width;
-        const char *units = svg_xml_attr(marker, "markerUnits");
+        const char *units = svg_node_attr(c->doc, marker, "markerUnits");
         if (units && !strcmp(units, "userSpaceOnUse")) stroke_scale = 1.0f;
         float vb[4];
         int has_vb = 0;
-        const char *vb_text = svg_xml_attr(marker, "viewBox");
+        const char *vb_text = svg_node_attr(c->doc, marker, "viewBox");
         if (vb_text && svg_parse_viewbox(vb_text, vb)) has_vb = 1;
         struct svg_aspect aspect = { 5, 0 };
-        const char *ar = svg_xml_attr(marker, "preserveAspectRatio");
+        const char *ar = svg_node_attr(c->doc, marker, "preserveAspectRatio");
         if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
         int overflow_hidden = 1;
-        const char *overflow = svg_xml_attr(marker, "overflow");
+        const char *overflow = svg_node_attr(c->doc, marker, "overflow");
         if (overflow && (!strcmp(overflow, "visible") || !strcmp(overflow, "auto")))
             overflow_hidden = 0;
         float clip_x = has_vb ? vb[0] : 0.0f;
@@ -5772,7 +5847,7 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
         float clip_w = has_vb ? vb[2] : mw;
         float clip_h = has_vb ? vb[3] : mh;
         int auto_reverse = 0, is_auto = 1;
-        float fixed_angle = svg_marker_orientation(marker, &auto_reverse, &is_auto);
+        float fixed_angle = svg_marker_orientation(c->doc, marker, &auto_reverse, &is_auto);
         for (int idx = 0; idx < nsegs; idx++) {
             struct svg_point pos;
             int draw = 0;
