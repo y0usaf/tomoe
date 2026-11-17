@@ -5341,10 +5341,8 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     float x = 0.0f, y = 0.0f, w = aw, h = ah;
     svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
     svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
-    int have_w = svg_convert_length(c, st, "width", 0, aw, SVG_UNIT_NONE, &w);
-    int have_h = svg_convert_length(c, st, "height", 1, ah, SVG_UNIT_NONE, &h);
-    if (have_w && !have_h) h = ah * (w / aw);
-    else if (!have_w && have_h) w = aw * (h / ah);
+    svg_convert_length(c, st, "width", 0, aw, SVG_UNIT_NONE, &w);
+    svg_convert_length(c, st, "height", 1, ah, SVG_UNIT_NONE, &h);
     if (!(w > 0.0f) || !(h > 0.0f)) { svg_free_image(im); c->unsupported = 1; return; }
     struct svg_aspect aspect;
     const char *ar = svg_style_get(c->doc, st, "preserveAspectRatio");
