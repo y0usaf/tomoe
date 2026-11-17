@@ -1,12 +1,10 @@
 #include "internal.h"
 #include "xdg-system-bell-v1-protocol.h"
+#include "../support/pipewire.h"
 
 #include <errno.h>
 #include <math.h>
-#include <pipewire/pipewire.h>
-#include <signal.h>
-#include <spa/param/audio/format-utils.h>
-#include <spa/utils/result.h>
+#include <stdint.h>
 #include <stdatomic.h>
 
 #define SOUND_RATE 48000u
@@ -42,12 +40,7 @@ struct sound_voice {
     float gain;
 };
 struct sound {
-    struct pw_thread_loop *loop;
-    struct pw_context *context;
-    struct pw_core *core;
-    struct pw_stream *stream;
-    struct spa_hook core_listener, stream_listener;
-    struct spa_source *retry;
+    struct pwn_client *client;
     struct sound_bank *bank, *playing;
     _Atomic(struct sound_bank *) pending, retired;
     uint64_t generation;
@@ -177,42 +170,35 @@ const char *tomoe_present_sound(struct tomoe *s, int event, const char *path, do
     return NULL;
 }
 
+static const char *sound_strerror(int error) {
+    return strerror(error < 0 ? -error : error);
+}
+
 static void sound_report(struct sound *sound, int state, int error) {
     atomic_store(&sound->error, error);
     atomic_store(&sound->state, state);
     if (sound->reported) return;
     sound->reported = true;
-    fprintf(stderr, "tomoe: sound playback unavailable: %s\n", spa_strerror(error));
+    fprintf(stderr, "tomoe: sound playback unavailable: %s\n", sound_strerror(error));
 }
 
-static void sound_fault(struct sound *sound, int error) {
-    sound_report(sound, SOUND_RETRYING, error);
-    pw_loop_update_timer(pw_thread_loop_get_loop(sound->loop), sound->retry,
-        &(struct timespec){ 1, 0 }, NULL, false);
-}
-
-static void sound_core_error(void *data, uint32_t id, int seq, int res, const char *message) {
-    if (id == PW_ID_CORE) sound_fault(data, res);
-}
-
-static void sound_stream_state(void *data, enum pw_stream_state old,
-        enum pw_stream_state state, const char *error) {
+static void sound_changed(void *data, int state, int error) {
     struct sound *sound = data;
-    if (state == PW_STREAM_STATE_STREAMING) {
+    if (state == PWN_STREAMING) {
         atomic_store(&sound->error, 0);
         atomic_store(&sound->state, SOUND_STREAMING);
         sound->reported = false;
-    } else if (state == PW_STREAM_STATE_ERROR) {
-        sound_fault(sound, -EIO);
-    } else if (atomic_load(&sound->state) == SOUND_STREAMING) {
+    } else if (state == PWN_RETRYING) {
+        sound_report(sound, SOUND_RETRYING, error);
+    } else if (state == PWN_FAILED) {
+        sound_report(sound, SOUND_FAILED, error);
+    } else {
         atomic_store(&sound->state, SOUND_CONNECTING);
     }
 }
 
-static void sound_process(void *data) {
+static void sound_process(void *data, struct pwn_buffer *buffer) {
     struct sound *sound = data;
-    struct pw_buffer *buffer = pw_stream_dequeue_buffer(sound->stream);
-    if (!buffer) return;
     struct sound_bank *next = atomic_exchange(&sound->pending, NULL);
     if (next) {
         memset(sound->voices, 0, sizeof(sound->voices));
@@ -241,133 +227,45 @@ static void sound_process(void *data) {
         *voice = (struct sound_voice){ &bank->samples[trigger->sample], 0, trigger->gain };
     }
     atomic_store_explicit(&sound->tail, tail, memory_order_release);
-    struct spa_data *out = &buffer->buffer->datas[0];
-    float *frames = out->data;
-    if (frames) {
-        uint32_t count = out->maxsize / (2 * sizeof(float));
-        if (buffer->requested && buffer->requested < count) count = (uint32_t)buffer->requested;
-        memset(frames, 0, count * 2 * sizeof(float));
-        for (size_t i = 0; i < SOUND_VOICES; i++) {
-            struct sound_voice *voice = &sound->voices[i];
-            if (!voice->sample) continue;
-            uint32_t n = voice->sample->count - voice->position;
-            if (n > count) n = count;
-            const float *source = voice->sample->frames + (size_t)voice->position * 2;
-            for (uint32_t f = 0; f < n; f++) {
-                frames[f * 2] += source[f * 2] * voice->gain;
-                frames[f * 2 + 1] += source[f * 2 + 1] * voice->gain;
-            }
-            voice->position += n;
-            if (voice->position == voice->sample->count) voice->sample = NULL;
+    uint32_t count = ~0u;
+    for (unsigned c = 0; c < 2; c++) {
+        if (!buffer->frames[c]) continue;
+        uint32_t n = buffer->maxsize[c] / (uint32_t)sizeof(float);
+        if (n < count) count = n;
+    }
+    if (count == ~0u) count = 0;
+    if (buffer->requested && buffer->requested < count) count = buffer->requested;
+    for (unsigned c = 0; c < 2; c++)
+        if (buffer->frames[c]) memset(buffer->frames[c], 0, count * sizeof(float));
+    for (size_t i = 0; i < SOUND_VOICES; i++) {
+        struct sound_voice *voice = &sound->voices[i];
+        if (!voice->sample) continue;
+        uint32_t n = voice->sample->count - voice->position;
+        if (n > count) n = count;
+        const float *source = voice->sample->frames + (size_t)voice->position * 2;
+        for (unsigned c = 0; c < 2; c++) {
+            if (!buffer->frames[c]) continue;
+            float *out = buffer->frames[c];
+            for (uint32_t f = 0; f < n; f++) out[f] += source[f * 2 + c] * voice->gain;
         }
-        out->chunk->offset = 0;
-        out->chunk->stride = 2 * sizeof(float);
-        out->chunk->size = count * 2 * sizeof(float);
+        voice->position += n;
+        if (voice->position == voice->sample->count) voice->sample = NULL;
     }
-    pw_stream_queue_buffer(sound->stream, buffer);
-}
-
-static const struct pw_core_events sound_core_events = {
-    PW_VERSION_CORE_EVENTS,
-    .error = sound_core_error,
-};
-
-static const struct pw_stream_events sound_stream_events = {
-    PW_VERSION_STREAM_EVENTS,
-    .state_changed = sound_stream_state,
-    .process = sound_process,
-};
-
-static void sound_connect(struct sound *sound) {
-    sound->core = pw_context_connect(sound->context, NULL, 0);
-    if (!sound->core) {
-        sound_fault(sound, -errno);
-        return;
+    for (unsigned c = 0; c < 2; c++) {
+        if (!buffer->chunk[c]) continue;
+        buffer->chunk[c]->offset = 0;
+        buffer->chunk[c]->stride = (int32_t)sizeof(float);
+        buffer->chunk[c]->size = count * (uint32_t)sizeof(float);
     }
-    pw_core_add_listener(sound->core, &sound->core_listener, &sound_core_events, sound);
-    sound->stream = pw_stream_new(sound->core, "tomoe", pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-        PW_KEY_MEDIA_NAME, "Sounds", PW_KEY_NODE_LATENCY, "256/48000", NULL));
-    if (!sound->stream) {
-        sound_fault(sound, -errno);
-        return;
-    }
-    pw_stream_add_listener(sound->stream, &sound->stream_listener, &sound_stream_events, sound);
-    uint8_t storage[512];
-    struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(storage, sizeof(storage));
-    const struct spa_pod *params[] = { spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat,
-        &SPA_AUDIO_INFO_RAW_INIT(.format = SPA_AUDIO_FORMAT_F32, .rate = SOUND_RATE, .channels = 2,
-            .position = { SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR })) };
-    int result = pw_stream_connect(sound->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS, params, 1);
-    if (result < 0) sound_fault(sound, result);
-}
-
-static void sound_disconnect(struct sound *sound) {
-    if (sound->stream) {
-        spa_hook_remove(&sound->stream_listener);
-        pw_stream_destroy(sound->stream);
-        sound->stream = NULL;
-    }
-    if (sound->core) {
-        spa_hook_remove(&sound->core_listener);
-        pw_core_disconnect(sound->core);
-        sound->core = NULL;
-    }
-}
-
-static void sound_retry(void *data, uint64_t expirations) {
-    struct sound *sound = data;
-    sound_disconnect(sound);
-    atomic_store(&sound->state, SOUND_CONNECTING);
-    sound_connect(sound);
-}
-
-static int sound_setup(struct spa_loop *loop, bool async, uint32_t seq,
-        const void *data, size_t size, void *user_data) {
-    struct sound *sound = user_data;
-    struct pw_loop *pw = pw_thread_loop_get_loop(sound->loop);
-    sound->retry = pw_loop_add_timer(pw, sound_retry, sound);
-    sound->context = sound->retry ? pw_context_new(pw,
-        pw_properties_new(PW_KEY_APP_NAME, "tomoe", NULL), 0) : NULL;
-    if (sound->context) sound_connect(sound);
-    else sound_report(sound, SOUND_FAILED, -errno);
-    return 0;
-}
-
-static int sound_teardown(struct spa_loop *loop, bool async, uint32_t seq,
-        const void *data, size_t size, void *user_data) {
-    struct sound *sound = user_data;
-    sound_disconnect(sound);
-    if (sound->context) pw_context_destroy(sound->context);
-    if (sound->retry) pw_loop_destroy_source(pw_thread_loop_get_loop(sound->loop), sound->retry);
-    return 0;
 }
 
 static struct sound *sound_start(struct tomoe *s) {
-    static bool initialized;
+    static const struct pwn_ops ops = { .state = sound_changed, .process = sound_process };
     struct sound *sound = calloc(1, sizeof(*sound));
     if (!sound) return NULL;
-    sigset_t all, previous;
-    sigfillset(&all);
-    pthread_sigmask(SIG_SETMASK, &all, &previous);
-    if (!initialized) pw_init(NULL, NULL);
-    initialized = true;
-    sound->loop = pw_thread_loop_new("tomoe-sound", NULL);
-    int result = sound->loop ? pw_thread_loop_start(sound->loop) : -ENOMEM;
-    if (sound->loop && result == 0)
-        result = pw_loop_invoke(pw_thread_loop_get_loop(sound->loop), sound_setup, 0, NULL, 0, false, sound);
-    pthread_sigmask(SIG_SETMASK, &previous, NULL);
-    if (result < 0) {
-        if (sound->loop) {
-            pw_thread_loop_stop(sound->loop);
-            pw_thread_loop_destroy(sound->loop);
-            sound->loop = NULL;
-        }
-        sound_report(sound, SOUND_FAILED, result);
-    } else {
-        atomic_store(&sound->state, SOUND_CONNECTING);
-    }
+    sound->client = pwn_start("tomoe", "tomoe", SOUND_RATE, 2, &ops, sound);
+    if (!sound->client) sound_report(sound, SOUND_FAILED, -ENOMEM);
+    else atomic_store(&sound->state, SOUND_CONNECTING);
     return s->sound = sound;
 }
 
@@ -375,15 +273,7 @@ void sound_finish(struct tomoe *s) {
     struct sound *sound = s->sound;
     if (!sound) return;
     s->sound = NULL;
-    if (sound->loop) {
-        sigset_t all, previous;
-        sigfillset(&all);
-        pthread_sigmask(SIG_SETMASK, &all, &previous);
-        pw_loop_invoke(pw_thread_loop_get_loop(sound->loop), sound_teardown, 0, NULL, 0, true, sound);
-        pw_thread_loop_stop(sound->loop);
-        pw_thread_loop_destroy(sound->loop);
-        pthread_sigmask(SIG_SETMASK, &previous, NULL);
-    }
+    pwn_stop(sound->client);
     sound_collect(sound);
     sound_bank_free(atomic_load(&sound->pending));
     sound_bank_free(sound->playing);
@@ -433,7 +323,7 @@ const char *tomoe_sound_stats(struct tomoe *s) {
     if (!sound) return "(:state :off)";
     int error = atomic_load(&sound->error);
     snprintf(sound_text, sizeof(sound_text), "(:state :%s :error %s%s%s :played %llu :dropped %llu)",
-        states[atomic_load(&sound->state)], error ? "\"" : "", error ? spa_strerror(error) : "nil",
+        states[atomic_load(&sound->state)], error ? "\"" : "", error ? sound_strerror(error) : "nil",
         error ? "\"" : "", (unsigned long long)atomic_load(&sound->played),
         (unsigned long long)atomic_load(&sound->dropped));
     return sound_text;
