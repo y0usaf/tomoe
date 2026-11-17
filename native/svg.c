@@ -4507,7 +4507,6 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                     }
                     if (!have) svg_free_pattern(p);
                 }
-                have = 1;
             } else {
                 have = 1;
             }
@@ -5905,16 +5904,40 @@ static void svg_path_abs_stroke_bbox(struct svg_path *path, struct svg_stroke *s
     }
 }
 
-static int svg_paint_order_stroke_first(const char *text) {
+static int svg_paint_order_parse(const char *text, int kinds[3]) {
+    kinds[0] = 0; kinds[1] = 1; kinds[2] = 2;
     if (!text) return 0;
-    while (*text && svg_is_space(*text)) text++;
-    if (!strncmp(text, "stroke", 6)) return 1;
-    if (!strncmp(text, "markers", 7)) {
-        const char *p = text + 7;
+    int order[3];
+    int n = 0;
+    const char *p = text;
+    for (;;) {
         while (*p && svg_is_space(*p)) p++;
-        if (!strncmp(p, "stroke", 6)) return 1;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && !svg_is_space(*p)) p++;
+        int len = (int)(p - start);
+        if (n == 3) return 0;
+        if (len == 6 && !strncmp(start, "normal", 6)) return 0;
+        if (len == 4 && !strncmp(start, "fill", 4)) order[n++] = 0;
+        else if (len == 6 && !strncmp(start, "stroke", 6)) order[n++] = 1;
+        else if (len == 7 && !strncmp(start, "markers", 7)) order[n++] = 2;
+        else return 0;
     }
-    return 0;
+    if (n == 0) return 0;
+    for (int k = 0; k < 3 && n < 3; k++) {
+        int seen = 0;
+        for (int i = 0; i < n; i++)
+            if (order[i] == k) seen = 1;
+        if (!seen) order[n++] = k;
+    }
+    if (order[0] == order[1] || order[0] == order[2] || order[1] == order[2]) return 0;
+    for (int i = 0; i < 3; i++) kinds[i] = order[i];
+    return 1;
+}
+
+static int svg_paint_order_stroke_first(const char *text) {
+    int kinds[3];
+    return svg_paint_order_parse(text, kinds) && kinds[0] == 1;
 }
 
 static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
@@ -5928,20 +5951,9 @@ static void svg_paint_order_kinds(struct svg_doc *doc, struct svg_style *st, int
     kinds[2] = SVG_PO_MARKERS;
     const char *text = svg_style_find_inherited(doc, st, "paint-order");
     if (!text) return;
-    int got[3] = { 0, 0, 0 };
-    int n = 0;
-    const char *p = text;
-    while (*p && n < 3) {
-        while (*p && svg_is_space(*p)) p++;
-        int kind = -1;
-        if (!strncmp(p, "fill", 4)) { kind = SVG_PO_FILL; p += 4; }
-        else if (!strncmp(p, "stroke", 6)) { kind = SVG_PO_STROKE; p += 6; }
-        else if (!strncmp(p, "markers", 7)) { kind = SVG_PO_MARKERS; p += 7; }
-        else break;
-        if (!got[kind]) { got[kind] = 1; kinds[n++] = kind; }
-    }
-    for (int k = 0; k < 3 && n < 3; k++)
-        if (!got[k]) { got[k] = 1; kinds[n++] = k; }
+    int parsed[3];
+    if (!svg_paint_order_parse(text, parsed)) return;
+    for (int i = 0; i < 3; i++) kinds[i] = parsed[i];
 }
 
 static int svg_shape_has_markers(struct svg_doc *doc, struct svg_style *st) {
