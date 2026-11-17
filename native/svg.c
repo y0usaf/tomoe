@@ -1183,10 +1183,10 @@ static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap
     edges.items[tail].line.next = -1;
     edges.items[tail].line.first_y = INT32_MAX;
     int total = edges.count + 2;
-    uint32_t top = (uint32_t)(clipped.top << 2);
-    uint32_t bottom = (uint32_t)(clipped.bottom << 2);
-    int32_t start_y = ir_top << 2;
-    int32_t stop_y = ir_bottom << 2;
+    uint32_t top = (uint32_t)clipped.top << 2;
+    uint32_t bottom = (uint32_t)clipped.bottom << 2;
+    int32_t start_y = (int32_t)((uint32_t)ir_top << 2);
+    int32_t stop_y = (int32_t)((uint32_t)ir_bottom << 2);
     if (!contained) {
         if (start_y < (int32_t)top) start_y = (int32_t)top;
         if (stop_y > (int32_t)bottom) stop_y = (int32_t)bottom;
@@ -1200,12 +1200,12 @@ static int svg_fill_path(struct svg_path *path, int fill_rule, struct svg_pixmap
     super.cov = calloc((size_t)super.width, 1);
     if (!super.cov) { free(edges.items); return 0; }
     super.curr_iy = clipped.top - 1;
-    super.curr_y = (clipped.top << 2) - 1;
+    super.curr_y = (int32_t)((uint32_t)clipped.top << 2) - 1;
     super.top = (uint32_t)clipped.top;
     super.shader = shader;
     super.blend = blend;
     svg_walk_edges(fill_rule, (uint32_t)start_y, (uint32_t)stop_y,
-        (uint32_t)(clipped.right << 2), edges.items, total, &super);
+        (uint32_t)clipped.right << 2, edges.items, total, &super);
     svg_super_flush(&super);
     free(super.cov);
     free(edges.items);
@@ -1273,11 +1273,16 @@ static void svg_buf_put_utf8(struct svg_buf *b, unsigned cp) {
     }
 }
 
+struct xml_entity_def { char *name, *value; };
+
 struct xml_parser {
     const char *data;
     size_t length, pos;
     int depth;
     int failed;
+    struct xml_entity_def *entities;
+    int nentities, centities;
+    int attr_mode;
 };
 
 static int xml_space(char c) {
@@ -1311,6 +1316,56 @@ static int xml_skip_until(struct xml_parser *p, const char *text) {
     return 0;
 }
 
+static int xml_entity(struct xml_parser *p, struct svg_buf *b);
+
+static int xml_entity_expand(struct xml_parser *p, const char *text, size_t length,
+        struct svg_buf *b, int attr, int depth);
+
+static int xml_entity_named(struct xml_parser *p, const char *name, size_t n,
+        struct svg_buf *b, int attr, int depth) {
+    if (n == 3 && !memcmp(name, "amp", 3)) svg_buf_put(b, '&');
+    else if (n == 2 && !memcmp(name, "lt", 2)) svg_buf_put(b, '<');
+    else if (n == 2 && !memcmp(name, "gt", 2)) svg_buf_put(b, '>');
+    else if (n == 4 && !memcmp(name, "quot", 4)) svg_buf_put(b, '"');
+    else if (n == 4 && !memcmp(name, "apos", 4)) svg_buf_put(b, '\'');
+    else {
+        if (depth > 32) return 0;
+        for (int i = 0; i < p->nentities; i++) {
+            if (strlen(p->entities[i].name) == n && !memcmp(p->entities[i].name, name, n))
+                return xml_entity_expand(p, p->entities[i].value,
+                    strlen(p->entities[i].value), b, attr, depth + 1);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+static int xml_entity_expand(struct xml_parser *p, const char *text, size_t length,
+        struct svg_buf *b, int attr, int depth) {
+    for (size_t i = 0; i < length; i++) {
+        char c = text[i];
+        if (c == '&') {
+            if (i + 1 < length && text[i + 1] == '#') {
+                struct xml_parser sub = *p;
+                sub.data = text;
+                sub.length = length;
+                sub.pos = i;
+                if (!xml_entity(&sub, b)) return 0;
+                i = sub.pos - 1;
+                continue;
+            }
+            size_t start = ++i;
+            while (i < length && text[i] != ';') i++;
+            if (i >= length) return 0;
+            if (!xml_entity_named(p, text + start, i - start, b, attr, depth)) return 0;
+            continue;
+        }
+        if (attr && (c == '\n' || c == '\t' || c == '\r')) { svg_buf_put(b, ' '); continue; }
+        svg_buf_put(b, c);
+    }
+    return 1;
+}
+
 static int xml_entity(struct xml_parser *p, struct svg_buf *b) {
     p->pos++;
     if (p->pos < p->length && p->data[p->pos] == '#') {
@@ -1340,14 +1395,7 @@ static int xml_entity(struct xml_parser *p, struct svg_buf *b) {
     size_t n = p->pos - start;
     if (p->pos >= p->length || p->data[p->pos] != ';') return 0;
     p->pos++;
-    const char *name = p->data + start;
-    if (n == 3 && !memcmp(name, "amp", 3)) svg_buf_put(b, '&');
-    else if (n == 2 && !memcmp(name, "lt", 2)) svg_buf_put(b, '<');
-    else if (n == 2 && !memcmp(name, "gt", 2)) svg_buf_put(b, '>');
-    else if (n == 4 && !memcmp(name, "quot", 4)) svg_buf_put(b, '"');
-    else if (n == 4 && !memcmp(name, "apos", 4)) svg_buf_put(b, '\'');
-    else return 0;
-    return 1;
+    return xml_entity_named(p, p->data + start, n, b, p->attr_mode, 0);
 }
 
 static char *xml_text(struct xml_parser *p, char quote) {
@@ -1357,7 +1405,10 @@ static char *xml_text(struct xml_parser *p, char quote) {
         if (quote) {
             if (c == quote) { p->pos++; return b.data ? b.data : svg_strdup(""); }
             if (c == '&') {
-                if (!xml_entity(p, &b)) { free(b.data); return NULL; }
+                p->attr_mode = 1;
+                int ok = xml_entity(p, &b);
+                p->attr_mode = 0;
+                if (!ok) { free(b.data); return NULL; }
                 continue;
             }
             if (c == '\r') {
@@ -1421,10 +1472,64 @@ static int xml_add_child(struct xml_node *n, struct xml_node *child) {
     return 1;
 }
 
+static void xml_add_entity(struct xml_parser *p, const char *name, size_t nlen,
+        const char *value, size_t vlen) {
+    if (!svg_grow((void **)&p->entities, &p->centities, p->nentities + 1,
+            sizeof(*p->entities))) return;
+    p->entities[p->nentities].name = svg_strndup(name, nlen);
+    p->entities[p->nentities].value = svg_strndup(value, vlen);
+    if (p->entities[p->nentities].name && p->entities[p->nentities].value) p->nentities++;
+}
+
+static int xml_skip_entity_decl(struct xml_parser *p) {
+    p->pos += 8;
+    while (p->pos < p->length && xml_space(p->data[p->pos])) p->pos++;
+    if (p->pos < p->length && p->data[p->pos] == '%') {
+        while (p->pos < p->length && p->data[p->pos] != '>') {
+            char c = p->data[p->pos];
+            if (c == '"' || c == '\'') {
+                char q = c;
+                p->pos++;
+                while (p->pos < p->length && p->data[p->pos] != q) p->pos++;
+            }
+            p->pos++;
+        }
+        if (p->pos < p->length) p->pos++;
+        return 1;
+    }
+    size_t start = p->pos;
+    while (p->pos < p->length && xml_name_char(p->data[p->pos])) p->pos++;
+    size_t nlen = p->pos - start;
+    while (p->pos < p->length && xml_space(p->data[p->pos])) p->pos++;
+    if (p->pos < p->length && (p->data[p->pos] == '"' || p->data[p->pos] == '\'')) {
+        char q = p->data[p->pos++];
+        size_t vstart = p->pos;
+        while (p->pos < p->length && p->data[p->pos] != q) p->pos++;
+        size_t vlen = p->pos - vstart;
+        if (p->pos < p->length) p->pos++;
+        if (nlen) xml_add_entity(p, p->data + start, nlen, p->data + vstart, vlen);
+    }
+    while (p->pos < p->length && p->data[p->pos] != '>') {
+        char c = p->data[p->pos];
+        if (c == '"' || c == '\'') {
+            char q = c;
+            p->pos++;
+            while (p->pos < p->length && p->data[p->pos] != q) p->pos++;
+        }
+        p->pos++;
+    }
+    if (p->pos < p->length) p->pos++;
+    return 1;
+}
+
 static int xml_skip_doctype(struct xml_parser *p) {
     p->pos += 2;
     int depth = 0, quote = 0;
     while (p->pos < p->length) {
+        if (!quote && depth && xml_starts(p, "<!ENTITY")) {
+            if (!xml_skip_entity_decl(p)) return 0;
+            continue;
+        }
         char c = p->data[p->pos++];
         if (quote) { if (c == quote) quote = 0; continue; }
         if (c == '"' || c == '\'') { quote = c; continue; }
@@ -1545,11 +1650,16 @@ static struct xml_node *xml_parse_element(struct xml_parser *p, struct xml_node 
 }
 
 static struct xml_node *xml_parse_document(const void *data, size_t length) {
-    struct xml_parser p = { data, length, 0, 0, 0 };
+    struct xml_parser p; memset(&p, 0, sizeof(p)); p.data = data; p.length = length;
     if (length >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) p.pos = 3;
     if (!xml_skip_misc(&p)) return NULL;
     if (p.pos >= p.length || p.data[p.pos] != '<') return NULL;
     struct xml_node *root = xml_parse_element(&p, NULL);
+    for (int i = 0; i < p.nentities; i++) {
+        free(p.entities[i].name);
+        free(p.entities[i].value);
+    }
+    free(p.entities);
     if (!root) return NULL;
     if (!xml_skip_misc(&p) || p.pos != p.length) { xml_node_free(root); return NULL; }
     return root;
@@ -3356,6 +3466,8 @@ struct svg_conv {
     int view_box_valid;
     float dpi;
     int unsupported;
+    int clip_depth;
+    int mask_depth;
 };
 
 static struct svg_node *svg_node_new(int type) {
@@ -3369,11 +3481,38 @@ static struct svg_node *svg_node_new(int type) {
     return n;
 }
 
+static void svg_node_destroy(struct svg_node *n);
+
+static void svg_free_gradient(struct svg_gradient *g) {
+    if (!g) return;
+    free(g->stops);
+    free(g);
+}
+
+static void svg_free_clip(struct svg_clip *c) {
+    if (!c) return;
+    svg_node_destroy(c->root);
+    svg_free_clip(c->linked);
+    free(c);
+}
+
+static void svg_free_mask(struct svg_mask *m) {
+    if (!m) return;
+    svg_node_destroy(m->root);
+    svg_free_mask(m->linked);
+    free(m);
+}
+
 static void svg_node_destroy(struct svg_node *n) {
     if (!n) return;
     for (int i = 0; i < n->nchildren; i++) svg_node_destroy(n->children[i]);
     free(n->children);
     svg_path_free(n->path);
+    if (n->fill.paint.gradient) svg_free_gradient(n->fill.paint.gradient);
+    if (n->stroke.paint.gradient) svg_free_gradient(n->stroke.paint.gradient);
+    free(n->stroke.dash);
+    svg_free_clip(n->clip);
+    svg_free_mask(n->mask);
     free(n);
 }
 
@@ -3580,23 +3719,24 @@ static int svg_convert_length(struct svg_conv *c, struct svg_style *st, const ch
     const char *text = svg_style_get(c->doc, st, name);
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    double n = l.number;
+    float n = (float)l.number;
     float dpi = c->dpi;
     switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = (float)n; break;
-    case SVG_UNIT_EM: *out = (float)(n * 12.0); break;
-    case SVG_UNIT_EX: *out = (float)(n * 12.0 / 2.0); break;
-    case SVG_UNIT_IN: *out = (float)(n * dpi); break;
-    case SVG_UNIT_CM: *out = (float)(n * dpi / 2.54); break;
-    case SVG_UNIT_MM: *out = (float)(n * dpi / 25.4); break;
-    case SVG_UNIT_PT: *out = (float)(n * dpi / 72.0); break;
-    case SVG_UNIT_PC: *out = (float)(n * dpi / 6.0); break;
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
+    case SVG_UNIT_EM: *out = n * 12.0f; break;
+    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
+    case SVG_UNIT_IN: *out = n * dpi; break;
+    case SVG_UNIT_CM: *out = n * dpi / 2.54f; break;
+    case SVG_UNIT_MM: *out = n * dpi / 25.4f; break;
+    case SVG_UNIT_PT: *out = n * dpi / 72.0f; break;
+    case SVG_UNIT_PC: *out = n * dpi / 6.0f; break;
     case SVG_UNIT_PERCENT: {
-        double base;
+        float base;
         if (axis == 0) base = c->view_box[2];
         else if (axis == 1) base = c->view_box[3];
-        else base = sqrt((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0);
-        *out = (float)(base * n / 100.0);
+        else base = sqrtf((c->view_box[2] * c->view_box[2] +
+            c->view_box[3] * c->view_box[3]) / 2.0f);
+        *out = base * n / 100.0f;
         break;
     }
     }
@@ -3675,22 +3815,22 @@ static float svg_resolve_number(struct svg_conv *c, struct xml_node *node, const
     const char *text = svg_gradient_attr(c->doc, node, name);
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    double n = l.number;
-    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return (float)(n / 100.0);
+    float n = (float)l.number;
+    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
     switch (l.unit) {
     case SVG_UNIT_PERCENT: {
-        double base = axis == 0 ? c->view_box[2] : c->view_box[3];
-        return (float)(base * n / 100.0);
+        float base = axis == 0 ? c->view_box[2] : c->view_box[3];
+        return base * n / 100.0f;
     }
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return (float)n;
-    case SVG_UNIT_EM: return (float)(n * 12.0);
-    case SVG_UNIT_EX: return (float)(n * 12.0 / 2.0);
-    case SVG_UNIT_IN: return (float)(n * c->dpi);
-    case SVG_UNIT_CM: return (float)(n * c->dpi / 2.54);
-    case SVG_UNIT_MM: return (float)(n * c->dpi / 25.4);
-    case SVG_UNIT_PT: return (float)(n * c->dpi / 72.0);
-    case SVG_UNIT_PC: return (float)(n * c->dpi / 6.0);
-    default: return (float)n;
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
+    case SVG_UNIT_EM: return n * 12.0f;
+    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
+    case SVG_UNIT_IN: return n * c->dpi;
+    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
+    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
+    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
+    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
+    default: return n;
     }
 }
 
@@ -3992,20 +4132,20 @@ static void svg_convert_stroke(struct svg_conv *c, struct svg_style *st, int cli
         struct svg_length l;
         if (svg_parse_length(width_text, &l)) {
             enum svg_length_unit unit = l.unit;
-            double n = l.number;
+            float n = (float)l.number;
             switch (unit) {
-            case SVG_UNIT_NONE: case SVG_UNIT_PX: width = (float)n; break;
-            case SVG_UNIT_EM: width = (float)(n * 12.0); break;
-            case SVG_UNIT_EX: width = (float)(n * 12.0 / 2.0); break;
-            case SVG_UNIT_IN: width = (float)(n * c->dpi); break;
-            case SVG_UNIT_CM: width = (float)(n * c->dpi / 2.54); break;
-            case SVG_UNIT_MM: width = (float)(n * c->dpi / 25.4); break;
-            case SVG_UNIT_PT: width = (float)(n * c->dpi / 72.0); break;
-            case SVG_UNIT_PC: width = (float)(n * c->dpi / 6.0); break;
+            case SVG_UNIT_NONE: case SVG_UNIT_PX: width = n; break;
+            case SVG_UNIT_EM: width = n * 12.0f; break;
+            case SVG_UNIT_EX: width = n * 12.0f / 2.0f; break;
+            case SVG_UNIT_IN: width = n * c->dpi; break;
+            case SVG_UNIT_CM: width = n * c->dpi / 2.54f; break;
+            case SVG_UNIT_MM: width = n * c->dpi / 25.4f; break;
+            case SVG_UNIT_PT: width = n * c->dpi / 72.0f; break;
+            case SVG_UNIT_PC: width = n * c->dpi / 6.0f; break;
             case SVG_UNIT_PERCENT: {
                 float base = sqrtf((c->view_box[2] * c->view_box[2] +
                     c->view_box[3] * c->view_box[3]) / 2.0f);
-                width = (float)(base * n / 100.0);
+                width = base * n / 100.0f;
                 break;
             }
             }
@@ -4033,12 +4173,12 @@ static void svg_convert_stroke(struct svg_conv *c, struct svg_style *st, int cli
     if (dash_offset) {
         struct svg_length l;
         if (svg_parse_length(dash_offset, &l)) {
-            double n = l.number;
+            float n = (float)l.number;
             if (l.unit == SVG_UNIT_PERCENT) {
                 float base = sqrtf((c->view_box[2] * c->view_box[2] +
                     c->view_box[3] * c->view_box[3]) / 2.0f);
-                stroke->dashoffset = (float)(base * n / 100.0);
-            } else stroke->dashoffset = (float)n;
+                stroke->dashoffset = base * n / 100.0f;
+            } else stroke->dashoffset = n;
         }
     }
     const char *dash_text = NULL;
@@ -4592,7 +4732,19 @@ static void svg_convert_clip_children(struct svg_conv *c, struct xml_node *paren
     }
 }
 
+static int svg_make_clip_impl(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
+        int have_object_bbox, struct svg_clip *out);
+
 static int svg_make_clip(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
+        int have_object_bbox, struct svg_clip *out) {
+    if (c->clip_depth > 32) return 0;
+    c->clip_depth++;
+    int ok = svg_make_clip_impl(c, node, object_bbox, have_object_bbox, out);
+    c->clip_depth--;
+    return ok;
+}
+
+static int svg_make_clip_impl(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_clip *out) {
     if (!svg_tag_is(node, "clipPath")) return 0;
     int idx = node->style_index;
@@ -4633,7 +4785,19 @@ static int svg_make_clip(struct svg_conv *c, struct xml_node *node, float object
     return 1;
 }
 
+static int svg_make_mask_impl(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
+        int have_object_bbox, struct svg_mask *out);
+
 static int svg_make_mask(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
+        int have_object_bbox, struct svg_mask *out) {
+    if (c->mask_depth > 32) return 0;
+    c->mask_depth++;
+    int ok = svg_make_mask_impl(c, node, object_bbox, have_object_bbox, out);
+    c->mask_depth--;
+    return ok;
+}
+
+static int svg_make_mask_impl(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_mask *out) {
     if (!svg_tag_is(node, "mask")) return 0;
     int idx = node->style_index;
@@ -4760,6 +4924,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                 struct svg_path *rect = svg_path_new();
                 if (clip_holder && clip && rect_root && rect) {
                     memset(clip, 0, sizeof(*clip));
+                    clip->transform = svg_matrix_identity();
                     svg_path_move(rect, 0, 0);
                     svg_path_line(rect, w, 0);
                     svg_path_line(rect, w, h);
@@ -4774,7 +4939,9 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                     rect_root->fill.paint.r = rect_root->fill.paint.g =
                         rect_root->fill.paint.b = 0;
                     rect_root->visible = 1;
-                    clip->root = rect_root;
+                    struct svg_node *clip_root = svg_node_new(0);
+                    if (clip_root) svg_node_add(clip_root, rect_root);
+                    clip->root = clip_root;
                     clip_holder->clip = clip;
                     clip_holder->isolate = 1;
                 } else {
@@ -4874,20 +5041,113 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
     if (!strcmp(tag, "switch")) { svg_convert_switch(c, node, st, parent, abs, clip_context); return; }
     if (!strcmp(tag, "svg")) {
         if (node == c->doc->root) { svg_convert_children(c, node, parent, abs, clip_context); return; }
-        struct svg_node *g = svg_group_alloc(c, node, st, 0, clip_context, abs, parent);
-        if (!g) return;
-        svg_convert_children(c, node, g, g->abs_transform, clip_context);
-        int required = 0;
-        if (!svg_group_finish(c, node, st, 0, clip_context, 0, g, abs, &required)) {
-            svg_node_destroy(g);
-            return;
+        struct svg_matrix orig = svg_show_transform(st, c->doc);
+        float x = 0, y = 0, w, h;
+        svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
+        svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
+        svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, &w);
+        svg_convert_length(c, st, "height", 1, 100, SVG_UNIT_PERCENT, &h);
+        struct svg_matrix new_ts = svg_matrix_identity();
+        new_ts.tx = x; new_ts.ty = y;
+        struct svg_conv nested = *c;
+        float vb[4];
+        const char *vb_text = svg_style_get(c->doc, st, "viewBox");
+        if (vb_text && svg_parse_viewbox(vb_text, vb)) {
+            struct svg_aspect aspect;
+            const char *ar = svg_style_get(c->doc, st, "preserveAspectRatio");
+            if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
+            if (w > 0.0f && h > 0.0f) {
+                struct svg_matrix vb_ts = svg_viewbox_transform(vb, aspect, w, h);
+                new_ts = svg_matrix_concat(new_ts, vb_ts);
+            }
+            nested.view_box[0] = vb[0]; nested.view_box[1] = vb[1];
+            nested.view_box[2] = vb[2]; nested.view_box[3] = vb[3];
+        } else if (w > 0.0f && h > 0.0f) {
+            nested.view_box[0] = x; nested.view_box[1] = y;
+            nested.view_box[2] = w; nested.view_box[3] = h;
         }
-        if (required) svg_node_add(parent, g);
-        else {
-            for (int i = 0; i < g->nchildren; i++) svg_node_add(parent, g->children[i]);
-            g->nchildren = 0;
-            svg_node_destroy(g);
+        const char *overflow = svg_style_get(c->doc, st, "overflow");
+        int need_clip = !overflow || (strcmp(overflow, "visible") && strcmp(overflow, "auto"));
+        struct svg_node *outer = clip_context ? NULL : svg_group_alloc(c, node, st, 1,
+            clip_context, abs, parent);
+        struct svg_node *target = NULL;
+        struct svg_node *inner = svg_node_new(0);
+        if (!inner) { svg_node_destroy(outer); return; }
+        inner->transform = new_ts;
+        inner->abs_transform = svg_matrix_concat(outer ? outer->abs_transform : abs, new_ts);
+        svg_convert_children(&nested, node, inner, inner->abs_transform, clip_context);
+        if (!inner->nchildren) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
+        svg_group_bboxes(inner);
+        if (need_clip && w > 0.0f && h > 0.0f && !clip_context) {
+            struct svg_node *holder = svg_node_new(0);
+            struct svg_clip *clip = svg_alloc(sizeof(*clip));
+            struct svg_node *rect_root = svg_node_new(1);
+            struct svg_path *rect = svg_path_new();
+            if (holder && clip && rect_root && rect) {
+                memset(clip, 0, sizeof(*clip));
+                clip->transform = svg_matrix_identity();
+                svg_path_move(rect, x, y);
+                svg_path_line(rect, x + w, y);
+                svg_path_line(rect, x + w, y + h);
+                svg_path_line(rect, x, y + h);
+                svg_path_close(rect);
+                svg_path_finish(rect);
+                rect_root->path = rect;
+                rect_root->fill.present = 1;
+                rect_root->fill.opacity = 1.0f;
+                rect_root->fill.paint.type = 1;
+                rect_root->visible = 1;
+                svg_path_tight_bounds(rect, &rect_root->bbox);
+                rect_root->has_bbox = 1;
+                rect_root->abs_bbox = rect_root->bbox;
+                rect_root->sbbox = rect_root->bbox;
+                rect_root->abs_sbbox = rect_root->bbox;
+                rect_root->has_sbbox = 1;
+                struct svg_node *clip_root = svg_node_new(0);
+                if (clip_root) svg_node_add(clip_root, rect_root);
+                clip->root = clip_root;
+                holder->clip = clip;
+                holder->isolate = 1;
+                holder->transform = orig;
+                holder->abs_transform = svg_matrix_concat(abs, orig);
+                svg_node_add(holder, inner);
+                target = holder;
+            } else {
+                svg_path_free(rect);
+                svg_node_destroy(rect_root);
+                free(clip);
+                svg_node_destroy(holder);
+                svg_node_destroy(inner);
+                svg_node_destroy(outer);
+                return;
+            }
+        } else {
+            if (outer) {
+                struct svg_node *g = outer;
+                g->transform = svg_matrix_concat(orig, new_ts);
+                g->abs_transform = svg_matrix_concat(abs, g->transform);
+                inner->transform = svg_matrix_identity();
+                inner->abs_transform = g->abs_transform;
+                for (int i = 0; i < inner->nchildren; i++) svg_node_add(g, inner->children[i]);
+                inner->nchildren = 0;
+                svg_node_destroy(inner);
+                target = g;
+            } else {
+                inner->transform = svg_matrix_concat(orig, new_ts);
+                inner->abs_transform = svg_matrix_concat(abs, inner->transform);
+                target = inner;
+            }
         }
+        if (!target) return;
+        if (target == outer) {
+            int required = 0;
+            if (!svg_group_finish(c, node, st, 0, clip_context, 0, target, abs, &required)) {
+                svg_node_destroy(target);
+                return;
+            }
+        }
+        svg_group_bboxes(target);
+        svg_node_add(parent, target);
         return;
     }
     if (!strcmp(tag, "text") || !strcmp(tag, "image")) {
@@ -5874,8 +6134,8 @@ static int svg_resolve_size(struct svg_conv *c, struct svg_style *st, float *wid
     }
     *restore = 0;
     if ((w.unit == SVG_UNIT_PERCENT || h.unit == SVG_UNIT_PERCENT) && !*viewbox_valid) {
-        if (w.unit == SVG_UNIT_PERCENT) { w.number = (w.number / 100.0) * 100.0; w.unit = SVG_UNIT_NONE; }
-        if (h.unit == SVG_UNIT_PERCENT) { h.number = (h.number / 100.0) * 100.0; h.unit = SVG_UNIT_NONE; }
+        if (w.unit == SVG_UNIT_PERCENT) { w.number = (float)((float)w.number / 100.0f) * 100.0f; w.unit = SVG_UNIT_NONE; }
+        if (h.unit == SVG_UNIT_PERCENT) { h.number = (float)((float)h.number / 100.0f) * 100.0f; h.unit = SVG_UNIT_NONE; }
         *restore = 1;
     }
     if (*viewbox_valid) {
@@ -5883,9 +6143,9 @@ static int svg_resolve_size(struct svg_conv *c, struct svg_style *st, float *wid
         c->view_box[1] = viewbox[1];
         c->view_box[2] = viewbox[2];
         c->view_box[3] = viewbox[3];
-        *width = w.unit == SVG_UNIT_PERCENT ? (float)(viewbox[2] * w.number / 100.0) :
+        *width = w.unit == SVG_UNIT_PERCENT ? viewbox[2] * (float)w.number / 100.0f :
             (float)(w.unit == SVG_UNIT_NONE ? w.number : 0.0);
-        *height = h.unit == SVG_UNIT_PERCENT ? (float)(viewbox[3] * h.number / 100.0) :
+        *height = h.unit == SVG_UNIT_PERCENT ? viewbox[3] * (float)h.number / 100.0f :
             (float)(h.unit == SVG_UNIT_NONE ? h.number : 0.0);
         if (w.unit != SVG_UNIT_PERCENT && w.unit != SVG_UNIT_NONE) {
             svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, width);
@@ -5939,6 +6199,61 @@ static void svg_doc_calculate_root_bboxes(struct svg_node *root) {
     root->abs_lbbox = svg_bbox_transform(root->lbbox, root->abs_transform);
 }
 
+static void svg_style_remove(struct svg_style *st, const char *name) {
+    for (int i = 0; i < st->count; i++) {
+        if (!strcmp(st->props[i].name, name)) {
+            free(st->props[i].name);
+            free(st->props[i].value);
+            memmove(&st->props[i], &st->props[i + 1],
+                (size_t)(st->count - i - 1) * sizeof(*st->props));
+            st->count--;
+            return;
+        }
+    }
+}
+
+static int svg_is_descendant_of(struct xml_node *node, struct xml_node *ancestor) {
+    for (struct xml_node *cur = node; cur; cur = cur->parent)
+        if (cur == ancestor) return 1;
+    return 0;
+}
+
+static void svg_fix_recursive_links(struct svg_doc *doc, const char *tag, const char *prop) {
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int si = 0; si < doc->nstyles; si++) {
+            struct svg_style *st = &doc->styles[si];
+            if (!st->node || strcmp(svg_local_name(st->node->name), tag)) continue;
+            for (int ci = si; ci < doc->nstyles; ci++) {
+                struct svg_style *child = &doc->styles[ci];
+                if (!svg_is_descendant_of(child->node, st->node)) continue;
+                struct svg_prop *p = svg_style_find(child, prop);
+                if (!p) continue;
+                char id[256];
+                if (!svg_parse_funciri(p->value, id, sizeof(id))) continue;
+                struct xml_node *link = svg_id_last(doc, id);
+                if (!link) continue;
+                if (link == st->node) { svg_style_remove(child, prop); changed = 1; continue; }
+                int link_index = link->style_index;
+                if (link_index < 0) continue;
+                struct svg_style *lst = &doc->styles[link_index];
+                for (int di = link_index; di < doc->nstyles; di++) {
+                    struct svg_style *node2 = &doc->styles[di];
+                    if (!svg_is_descendant_of(node2->node, link)) break;
+                    struct svg_prop *p2 = svg_style_find(node2, prop);
+                    if (!p2) continue;
+                    char id2[256];
+                    if (!svg_parse_funciri(p2->value, id2, sizeof(id2))) continue;
+                    struct xml_node *link2 = svg_id_last(doc, id2);
+                    if (link2 == st->node) { svg_style_remove(node2, prop); changed = 1; }
+                }
+                (void)lst;
+            }
+        }
+    }
+}
+
 struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     if (!data || !length) return NULL;
     if (!svg_utf8_valid(data, length)) return NULL;
@@ -5954,6 +6269,8 @@ struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     svg_expand_uses(&svg->doc, root, 0);
     svg_doc_style_node(&svg->doc, root);
     svg_doc_styles(&svg->doc, root);
+    svg_fix_recursive_links(&svg->doc, "clipPath", "clip-path");
+    svg_fix_recursive_links(&svg->doc, "mask", "mask");
     if (root->style_index < 0) { tomoe_svg_destroy(svg); return NULL; }
     struct svg_style *root_style = &svg->doc.styles[root->style_index];
     struct svg_conv conv;
@@ -7692,9 +8009,10 @@ static void svg_handle_inner_join(struct svg_point pivot, struct svg_point after
     svg_path_line(inner, pivot.x - after.x, pivot.y - after.y);
 }
 
-static void svg_do_blunt_or_clipped(struct svg_stroker *s, struct svg_point pivot,
-        float radius, int prev_is_line, int curr_is_line, struct svg_point before,
-        struct svg_point mid, struct svg_point after, float inv_miter_limit, int miter_clip) {
+static void svg_do_blunt_or_clipped(struct svg_path *outer, struct svg_path *inner,
+        struct svg_point pivot, float radius, int prev_is_line, int curr_is_line,
+        struct svg_point before, struct svg_point mid, struct svg_point after,
+        float inv_miter_limit, int miter_clip) {
     after = svg_pt_scaled(after, radius);
     if (miter_clip) {
         svg_pt_set_normalize(&mid, mid.x, mid.y);
@@ -7710,30 +8028,33 @@ static void svg_do_blunt_or_clipped(struct svg_stroker *s, struct svg_point pivo
         struct svg_point c2 = svg_pt_add(svg_pt_add(pivot, after),
             svg_pt_scaled(after_tangent, x));
         if (prev_is_line) {
-            if (s->outer->npoints) s->outer->points[s->outer->npoints - 1] = c1;
-            else svg_path_move(s->outer, c1.x, c1.y);
-        } else svg_path_line(s->outer, c1.x, c1.y);
-        svg_path_line(s->outer, c2.x, c2.y);
+            if (outer->npoints) outer->points[outer->npoints - 1] = c1;
+            else svg_path_move(outer, c1.x, c1.y);
+        } else svg_path_line(outer, c1.x, c1.y);
+        svg_path_line(outer, c2.x, c2.y);
     }
-    if (!curr_is_line) svg_path_line(s->outer, pivot.x + after.x, pivot.y + after.y);
-    svg_handle_inner_join(pivot, after, s->inner);
+    if (!curr_is_line) svg_path_line(outer, pivot.x + after.x, pivot.y + after.y);
+    svg_handle_inner_join(pivot, after, inner);
 }
 
-static void svg_do_miter(struct svg_stroker *s, struct svg_point pivot, float radius,
-        int prev_is_line, int curr_is_line, struct svg_point mid, struct svg_point after) {
+static void svg_do_miter(struct svg_path *outer, struct svg_path *inner,
+        struct svg_point pivot, float radius, int prev_is_line, int curr_is_line,
+        struct svg_point mid, struct svg_point after) {
     after = svg_pt_scaled(after, radius);
     if (prev_is_line) {
         struct svg_point p = svg_pt(pivot.x + mid.x, pivot.y + mid.y);
-        if (s->outer->npoints) s->outer->points[s->outer->npoints - 1] = p;
-        else svg_path_move(s->outer, p.x, p.y);
-    } else svg_path_line(s->outer, pivot.x + mid.x, pivot.y + mid.y);
-    if (!curr_is_line) svg_path_line(s->outer, pivot.x + after.x, pivot.y + after.y);
-    svg_handle_inner_join(pivot, after, s->inner);
+        if (outer->npoints) outer->points[outer->npoints - 1] = p;
+        else svg_path_move(outer, p.x, p.y);
+    } else svg_path_line(outer, pivot.x + mid.x, pivot.y + mid.y);
+    if (!curr_is_line) svg_path_line(outer, pivot.x + after.x, pivot.y + after.y);
+    svg_handle_inner_join(pivot, after, inner);
 }
 
-static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit, struct svg_point pivot,
-        struct svg_point after_unit, float radius, float inv_miter_limit, int prev_is_line,
-        int curr_is_line) {
+static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit,
+        struct svg_point pivot, struct svg_point after_unit, float radius, float inv_miter_limit,
+        int prev_is_line, int curr_is_line) {
+    struct svg_path *outer = s->outer;
+    struct svg_path *inner = s->inner;
     if (s->joiner == 2) {
         float dot = svg_pt_dot(before_unit, after_unit);
         int type = svg_dot_to_angle_type(dot);
@@ -7742,7 +8063,7 @@ static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit,
         struct svg_point after = after_unit;
         int dir_ccw = 0;
         if (!svg_is_clockwise(before, after)) {
-            struct svg_path *t = s->inner; s->inner = s->outer; s->outer = t;
+            struct svg_path *t = inner; inner = outer; outer = t;
             before = svg_pt_neg(before);
             after = svg_pt_neg(after);
             dir_ccw = 1;
@@ -7752,20 +8073,20 @@ static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit,
         int n = svg_conic_build_unit_arc(before, after, dir_ccw, ts, conics);
         if (n > 0) {
             for (int i = 0; i < n; i++)
-                svg_path_conic_to(s->outer, conics[i].p[1], conics[i].p[2], conics[i].weight);
+                svg_path_conic_to(outer, conics[i].p[1], conics[i].p[2], conics[i].weight);
             after = svg_pt_scaled(after, radius);
-            svg_handle_inner_join(pivot, after, s->inner);
+            svg_handle_inner_join(pivot, after, inner);
         }
         return;
     }
     if (s->joiner == 3) {
         struct svg_point after = svg_pt_scaled(after_unit, radius);
         if (!svg_is_clockwise(before_unit, after_unit)) {
-            struct svg_path *t = s->inner; s->inner = s->outer; s->outer = t;
+            struct svg_path *t = inner; inner = outer; outer = t;
             after = svg_pt_neg(after);
         }
-        svg_path_line(s->outer, pivot.x + after.x, pivot.y + after.y);
-        svg_handle_inner_join(pivot, after, s->inner);
+        svg_path_line(outer, pivot.x + after.x, pivot.y + after.y);
+        svg_handle_inner_join(pivot, after, inner);
         return;
     }
     int miter_clip = s->joiner == 1;
@@ -7778,19 +8099,19 @@ static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit,
     if (angle_type == 0) {
         curr_is_line = 0;
         mid = svg_pt_scaled(svg_pt_sub(after, before), radius / 2.0f);
-        svg_do_blunt_or_clipped(s, pivot, radius, prev_is_line, curr_is_line, before, mid,
-            after, inv_miter_limit, miter_clip);
+        svg_do_blunt_or_clipped(outer, inner, pivot, radius, prev_is_line, curr_is_line,
+            before, mid, after, inv_miter_limit, miter_clip);
         return;
     }
     int ccw = !svg_is_clockwise(before, after);
     if (ccw) {
-        struct svg_path *t = s->inner; s->inner = s->outer; s->outer = t;
+        struct svg_path *t = inner; inner = outer; outer = t;
         before = svg_pt_neg(before);
         after = svg_pt_neg(after);
     }
     if (dot_prod == 0.0f && inv_miter_limit <= 0.707106781f) {
         mid = svg_pt_scaled(svg_pt_add(before, after), radius);
-        svg_do_miter(s, pivot, radius, prev_is_line, curr_is_line, mid, after);
+        svg_do_miter(outer, inner, pivot, radius, prev_is_line, curr_is_line, mid, after);
         return;
     }
     if (angle_type == 1) {
@@ -7802,12 +8123,12 @@ static void svg_stroke_join(struct svg_stroker *s, struct svg_point before_unit,
     float sin_half = sqrtf((1.0f + dot_prod) * 0.5f);
     if (sin_half < inv_miter_limit) {
         curr_is_line = 0;
-        svg_do_blunt_or_clipped(s, pivot, radius, prev_is_line, curr_is_line, before, mid,
-            after, inv_miter_limit, miter_clip);
+        svg_do_blunt_or_clipped(outer, inner, pivot, radius, prev_is_line, curr_is_line,
+            before, mid, after, inv_miter_limit, miter_clip);
         return;
     }
     svg_pt_set_length_self(&mid, radius / sin_half);
-    svg_do_miter(s, pivot, radius, prev_is_line, curr_is_line, mid, after);
+    svg_do_miter(outer, inner, pivot, radius, prev_is_line, curr_is_line, mid, after);
 }
 
 static void svg_stroke_cap(struct svg_stroker *s, struct svg_point pivot, struct svg_point normal,
