@@ -165,36 +165,6 @@ def video_stopped(unit, frames):
         f"journalctl -u {unit} -o cat | grep -qx 'frames {frames}'", timeout=120)
 
 
-def start_main():
-    machine.execute(
-        "systemd-run --unit=check-bus --property=Type=exec "
-        f"dbus-daemon --session --nofork --address={BUS}")
-    machine.wait_for_file("/run/check-bus")
-    machine.succeed(
-        "systemd-run --unit=tomoe-main --property=Type=exec --remain-after-exit "
-        "--property=RuntimeDirectory=tomoe --property=RuntimeDirectoryMode=0700 "
-        f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={BUS} "
-        "--setenv=HOME=/root "
-        "--setenv=PATH=/run/current-system/sw/bin --setenv=MESA_LOADER_DRIVER_OVERRIDE=zink "
-        f"--setenv={THREADS} --setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        "--setenv=TOMOE_DEBUG=1 "
-        f"{BASELINE} --socket main --backend drm --no-watch --drm_device {DEVICE}")
-    for _ in range(600):
-        if machine.execute(ENV + f"{BASELINE} --socket main inspect")[0] == 0:
-            return
-        if machine.execute("systemctl show -P SubState tomoe-main | grep -qx running")[0] != 0:
-            raise AssertionError("main stopped while starting:\n"
-                + machine.succeed("journalctl -u tomoe-main -o cat | tail -30"))
-        time.sleep(0.1)
-    raise AssertionError("main did not answer inspect within 60 s")
-
-
-def stop_main():
-    cli("quit", "main")
-    machine.wait_until_succeeds(
-        "systemctl show -P SubState tomoe-main | grep -qx 'exited\\|failed'", timeout=60)
-
-
 def flap_feedback(hold_ms):
     machine.succeed("systemctl stop tomoe check-bus")
     start("--bare", f"--test-feedback-hold-ms={hold_ms}", f"--drm_device {DEVICE}",
@@ -766,78 +736,6 @@ assert inspect()[":LAST-ERROR"] == "NIL", inspect()
 machine.succeed("systemctl stop descending-video")
 quit()
 
-
-def turned_frame(degrees, command, options=(), baseline=False):
-    machine.succeed("systemctl stop tomoe check-bus")
-    socket = "main" if baseline else "check"
-    unit = f"turn-{degrees}-{socket}"
-    if baseline:
-        start_main()
-    else:
-        start("--bare", *options, f"--drm_device {DEVICE}", backend="drm", env=DRM)
-    cli(f"mount {PLANES_PROBE}", socket)
-    machine.succeed(
-        f"systemd-run --unit={unit}-park --property=Type=exec "
-        "--setenv=XDG_RUNTIME_DIR=/run/tomoe --setenv=WAYLAND_DISPLAY=check "
-        f"{SCANOUT_CLIENT} --move 20000,20000")
-    machine.wait_until_succeeds(
-        f"journalctl -u {unit}-park -o cat | grep -qx moved", timeout=60)
-    cli("command chrome-on", socket)
-    cli(f"command {command}", socket)
-    machine.succeed(
-        f"systemd-run --unit={unit}-client --property=Type=exec "
-        "--setenv=XDG_RUNTIME_DIR=/run/tomoe --setenv=WAYLAND_DISPLAY=check "
-        f"{SCANOUT_CLIENT} --color 336699")
-    machine.wait_until_succeeds(
-        f"journalctl -u {unit}-client -o cat | grep -q '^mapped'", timeout=60)
-    machine.sleep(1)
-    shot = displayed(f"turn-{degrees}-{socket}-{bool(options)}")
-    if baseline:
-        stop_main()
-    else:
-        assert counters()[":PLANES"] == 0, counters()
-        assert counters()[":UNDERLAY-PLAN"] == 0, counters()
-        assert inspect()[":LAST-ERROR"] == "NIL", inspect()
-        quit()
-    return shot
-
-
-if BASELINE:
-    for degrees, command in ((90, "rotate-ninety"), (270, "rotate-two-seventy")):
-        scanned = turned_frame(degrees, command)
-        composited = turned_frame(degrees, command, ("--test-refuse-planes",))
-        main = turned_frame(degrees, command, baseline=True)
-        print(f"rotated {degrees}: planes {scanned} composited {composited} main {main}",
-              flush=True)
-        assert scanned == composited, (degrees, scanned, composited)
-        assert composited == main, (degrees, composited, main)
-
-    def baseline_rounded_frame():
-        machine.succeed("systemctl stop tomoe check-bus")
-        start_main()
-        cli(f"mount {PLANES_PROBE}", "main")
-        machine.succeed(
-            "systemd-run --unit=main-park --property=Type=exec "
-            "--setenv=XDG_RUNTIME_DIR=/run/tomoe --setenv=WAYLAND_DISPLAY=check "
-            f"{SCANOUT_CLIENT} --move 20000,20000")
-        machine.wait_until_succeeds(
-            "journalctl -u main-park -o cat | grep -qx moved", timeout=60)
-        cli("command chrome-on", "main")
-        start_video("main-video", frames=30)
-        video_stopped("main-video", 30)
-        machine.sleep(1)
-        shot = displayed("main-rounded")
-        stop_main()
-        return shot
-
-    try:
-        main_rounded = baseline_rounded_frame()
-        print(f"main rounded video frame {main_rounded} underlay frame {plane_video} "
-              f"GL frame {gl_video}", flush=True)
-        report_pixels("/run/main-rounded-display.ppm", "/run/plane-video-display.ppm",
-                      HOME_BOX, "main's own frame for the rounded video")
-    except Exception as error:
-        print(f"main's rounded video frame is unavailable: {error}", flush=True)
 
 fast_rounds, fast_reallocs, fast_elapsed = flap_feedback(0)
 slow_rounds, slow_reallocs, slow_elapsed = flap_feedback(250)

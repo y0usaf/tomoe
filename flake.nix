@@ -2,10 +2,9 @@
   description = "Tomoe, a Lisp-configured Wayland compositor with reloadable policy";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/e52c192be9d7b2c4bd4aed326c8731b35f8bb75c";
-  inputs.baseline.url = "github:y0usaf/tomoe/e3f69434a6e913af5c014d385f293dcf024d10ed";
 
   outputs =
-    { self, nixpkgs, baseline, ... }:
+    { self, nixpkgs, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -254,7 +253,6 @@
         import ./tests {
           inherit pkgs;
           tomoe = package pkgs { };
-          baseline = baseline.packages.${pkgs.stdenv.hostPlatform.system}.default;
           coreB = package pkgs { coreStamp = "core-b"; };
           coreBad = packageFrom (coreBadSource pkgs) pkgs { coreStamp = "core-bad"; };
         };

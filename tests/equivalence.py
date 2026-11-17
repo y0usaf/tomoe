@@ -231,15 +231,20 @@ def scenario(binary, policy, tag, log, transcript, bare=False):
     return transcript
 
 
-def compare(baseline, fastpath, what, ignore_runs=False):
+def load(name):
+    with open(name) as file:
+        return file.read().splitlines()
+
+
+def compare(recorded_lines, fastpath, what, ignore_runs=False):
     def clean(lines):
         return [line for line in lines if not (ignore_runs and line.startswith("runs "))]
-    baseline, fastpath = clean(baseline), clean(fastpath)
-    assert baseline == fastpath, (
-        f"{what}: the two builds diverged\n"
-        + "\n".join(difflib.unified_diff("\n".join(baseline).splitlines(),
+    recorded_lines, fastpath = clean(recorded_lines), clean("\n".join(fastpath).splitlines())
+    assert recorded_lines == fastpath, (
+        f"{what}: the fast path diverged from its recorded transcript\n"
+        + "\n".join(difflib.unified_diff("\n".join(recorded_lines).splitlines(),
                                         "\n".join(fastpath).splitlines(),
-                                        "origin/main", "fastpath", lineterm="")))
+                                        "recorded", "fastpath", lineterm="")))
 
 
 machine.wait_for_unit("multi-user.target")
@@ -250,29 +255,30 @@ machine.succeed(
     f"dbus-daemon --session --nofork --address={BUS}")
 machine.wait_for_file("/run/check-bus")
 
-baseline = scenario(BASELINE, BASELINE_POLICY, "baseline", "/run/baseline.log", [])
+desktop = load(EQUIVALENCE_DESKTOP)
 fastpath = scenario(FASTPATH, POLICY, "fastpath", "/run/fastpath.log", [])
-compare(baseline, fastpath, "the shipped desktop", ignore_runs=True)
+compare(desktop, fastpath, "the recorded desktop session", ignore_runs=True)
 assert "command mark key" in machine.succeed("cat /run/fastpath.log"), (
     "the bound command did not run on the fast path")
-for line in baseline:
-    if line.startswith("mount ") and "failures=0 " not in line:
-        raise AssertionError(f"an extension failed on origin/main: {line}")
 for line in fastpath:
     if line.startswith("mount ") and "failures=0 " not in line:
         raise AssertionError(f"an extension failed on the fast path: {line}")
-print("equivalence: the shipped desktop makes the same decisions and draws the same frames")
+print("equivalence: the desktop session still makes the recorded decisions and draws the "
+      "recorded frames")
 
-baseline = scenario(BASELINE, BASELINE_COUNTER_POLICY, "count-baseline",
-                    "/run/count-baseline.log", [])
+counter = load(EQUIVALENCE_COUNTER)
 fastpath = scenario(FASTPATH, COUNTER_POLICY, "count-fastpath", "/run/count-fastpath.log", [])
-compare(baseline, fastpath, "a reducer without a contract", ignore_runs=True)
+compare(counter, fastpath, "a reducer without a contract", ignore_runs=True)
+
+
 def counter_events(transcript):
     return sum(1 for line in "\n".join(transcript).splitlines() if line.startswith("counter "))
 
-counts = [str(counter_events(baseline)), str(counter_events(fastpath))]
+
+counts = [str(counter_events(counter)), str(counter_events(fastpath))]
 assert counts[0] == counts[1] and int(counts[0]) > 0, f"the counter saw {counts}"
-print(f"equivalence: a reducer without a contract saw all {counts[0]} pointer events, as before")
+print(f"equivalence: a reducer without a contract still saw all {counts[0]} pointer events, "
+      "as recorded")
 
 transcript = scenario(FASTPATH, CONTRACT_POLICY, "contract", "/run/contract.log", [], bare=True)
 wakes = [line for line in "\n".join(transcript).splitlines() if line.startswith("contract ")]

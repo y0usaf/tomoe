@@ -1,7 +1,6 @@
 {
   pkgs,
   tomoe,
-  baseline ? null,
   coreB ? null,
   coreBad ? null,
 }:
@@ -431,10 +430,6 @@ let
     pkgs.writeText name (
       pkgs.lib.concatMapStrings builtins.readFile (prefix ++ [ ./scenario-policy.lisp ] ++ parts)
     );
-  baselinePolicy = scenarioSource "scenario-policy.lisp" [ ./scenario-log-sbcl.lisp ] [ ];
-  baselineCounterPolicy = scenarioSource "scenario-counter.lisp" [ ./scenario-log-sbcl.lisp ] [
-    ./scenario-counter.lisp
-  ];
   scenarioPolicy = scenarioSource "scenario-policy.lisp" [
     ./scenario-desktop.lisp
     ./scenario-log.lisp
@@ -1080,7 +1075,6 @@ let
     scanoutClient
     pathClient
   ];
-  baselineBinary = if baseline == null then "" else "${baseline}/bin/tomoe";
   compositorSuites = [
     {
       name = "livecore";
@@ -1273,7 +1267,6 @@ let
       name = "ui-damage";
       script = ''
         DAMAGE_POLICY = "${./ui-damage-policy.lisp}"
-        BASELINE = "${baselineBinary}"
       ''
       + builtins.readFile ./ui-damage.py;
     }
@@ -1284,7 +1277,6 @@ let
         TIMING_CONTRACT_POLICY = "${./timing-contract-policy.lisp}"
         STALL_POLICY = "${stallPolicy}"
         CHURN_POLICY = "${churnPolicy}"
-        BASELINE = "${baselineBinary}"
         RUNS = "3"
         COUNT = "200"
       ''
@@ -1386,20 +1378,21 @@ let
       + builtins.readFile ./memory.py;
     }
   ];
-  equivalenceSuites = pkgs.lib.optional (baseline != null) {
-    name = "input-equivalence";
-    script = ''
-      BASELINE = "${baselineBinary}"
-      FASTPATH = "${tomoe}/bin/tomoe"
-      INJECTOR = "${scenario}/bin/tomoe-scenario"
-      BASELINE_POLICY = "${baselinePolicy}"
-      BASELINE_COUNTER_POLICY = "${baselineCounterPolicy}"
-      POLICY = "${scenarioPolicy}"
-      COUNTER_POLICY = "${counterPolicy}"
-      CONTRACT_POLICY = "${contractPolicy}"
-    ''
-    + builtins.readFile ./equivalence.py;
-  };
+  equivalenceSuites = [
+    {
+      name = "input-equivalence";
+      script = ''
+        FASTPATH = "${tomoe}/bin/tomoe"
+        INJECTOR = "${scenario}/bin/tomoe-scenario"
+        EQUIVALENCE_DESKTOP = "${./equivalence-desktop.txt}"
+        EQUIVALENCE_COUNTER = "${./equivalence-counter.txt}"
+        POLICY = "${scenarioPolicy}"
+        COUNTER_POLICY = "${counterPolicy}"
+        CONTRACT_POLICY = "${contractPolicy}"
+      ''
+      + builtins.readFile ./equivalence.py;
+    }
+  ];
   kmsSettings = {
     kernelModules = [
       "vgem"
@@ -1459,7 +1452,6 @@ let
         SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
         DMABUF_CLIENT = "${dmabufClient}/bin/tomoe-dmabuf-client"
         PLANES_PROBE = "${planesProbe}"
-        BASELINE = "${baselineBinary}"
       ''
       + builtins.readFile ./planes.py;
     }

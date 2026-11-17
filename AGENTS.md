@@ -63,8 +63,7 @@ nix build -L .#legacyPackages.x86_64-linux.suites.memory
 nix build -L .#legacyPackages.x86_64-linux.suites.<name>     # any suite in tests/
 ```
 
-Timing gates need a quiet machine, so run them alone and compare against
-`origin/main` on the same machine state.
+Timing gates need a quiet machine, so run them alone.
 
 ## The VM lock
 

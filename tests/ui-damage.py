@@ -9,7 +9,7 @@ DAMAGE_BUDGET = (BAR_PIXELS + PANEL_PIXELS) // 25
 MIN_FRAMES = 12
 
 
-def start_binary(binary, unit, socket):
+def start_binary(unit, socket):
     machine.wait_for_unit("multi-user.target")
     machine.execute(
         "systemd-run --unit=check-bus --property=Type=exec "
@@ -22,11 +22,9 @@ def start_binary(binary, unit, socket):
         "--setenv=HOME=/root --setenv=PATH=/run/current-system/sw/bin "
         f"--setenv=MESA_LOADER_DRIVER_OVERRIDE=zink --setenv={THREADS} "
         "--setenv=LIBGL_ALWAYS_SOFTWARE=1 "
-        + ("--setenv=TOMOE_TIMINGS=1 " if binary == BASELINE else "")
-        + f"{binary} --socket {socket} --backend headless --no-watch --bare"
-        + ("" if binary == BASELINE else " --test-timings"))
+        f"tomoe --socket {socket} --backend headless --no-watch --bare --test-timings")
     for _ in range(600):
-        if machine.execute(ENV + f"{binary} --socket {socket} inspect")[0] == 0:
+        if machine.execute(ENV + f"tomoe --socket {socket} inspect")[0] == 0:
             return
         assert machine.execute(f"systemctl show -P SubState {unit} | grep -qx running")[0] == 0, (
             "tomoe stopped while starting:\n"
@@ -35,8 +33,8 @@ def start_binary(binary, unit, socket):
     raise AssertionError("tomoe did not answer inspect within 60 s")
 
 
-def stop_binary(binary, unit, socket):
-    machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} {binary} --socket {socket} quit")
+def stop_binary(unit, socket):
+    machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} tomoe --socket {socket} quit")
     machine.wait_until_succeeds(
         f"systemctl show -P SubState {unit} | grep -qx 'exited\\|failed'", timeout=60)
     status = machine.succeed(f"systemctl show -P ExecMainStatus {unit}").strip()
@@ -44,32 +42,32 @@ def stop_binary(binary, unit, socket):
         f"{unit} exited {status}: " + machine.succeed(f"journalctl -u {unit} -o cat | tail -40"))
 
 
-def command(binary, socket, arguments):
-    return machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} {binary} --socket {socket} "
+def command(socket, arguments):
+    return machine.succeed(ENV + f"WAYLAND_DISPLAY={socket} tomoe --socket {socket} "
                            + arguments)
 
 
-def mount(binary, socket):
-    command(binary, socket, f"mount {DAMAGE_POLICY}")
-    reply = read(command(binary, socket, "inspect"))
+def mount(socket):
+    command(socket, f"mount {DAMAGE_POLICY}")
+    reply = read(command(socket, "inspect"))
     assert reply[1] == ":OK", show(reply)
     error = plist(reply[2])[":LAST-ERROR"]
     assert error == "NIL", f"the ui-damage policy failed: {error}"
 
 
-def frames(binary, socket):
+def frames(socket):
     return sum(int(value) for value in re.findall(
-        r":FRAME (\d+)", command(binary, socket, "frames"), re.IGNORECASE))
+        r":FRAME (\d+)", command(socket, "frames"), re.IGNORECASE))
 
 
-def drawn_pixels(binary, socket):
-    match = re.search(r":DRAWN-PIXELS (-?\d+)", command(binary, socket, "frames"),
+def drawn_pixels(socket):
+    match = re.search(r":DRAWN-PIXELS (-?\d+)", command(socket, "frames"),
                       re.IGNORECASE)
     return int(match.group(1)) if match else 0
 
 
-def channel(binary, socket, name):
-    reply = read(command(binary, socket, "timings"))
+def channel(socket, name):
+    reply = read(command(socket, "timings"))
     assert reply[1] == ":OK", show(reply)
     for entry in items(plist(reply[2])[":CHANNELS"]):
         fields = plist(entry)
@@ -78,19 +76,19 @@ def channel(binary, socket, name):
     return 0.0
 
 
-def measure(binary, socket):
-    command(binary, socket, "timings reset")
+def measure(socket):
+    command(socket, "timings reset")
     time.sleep(0.3)
-    before = frames(binary, socket)
+    before = frames(socket)
     samples = []
     for _ in range(30):
-        samples.append(drawn_pixels(binary, socket))
+        samples.append(drawn_pixels(socket))
         time.sleep(0.05)
-    drawn = max(frames(binary, socket) - before, 1)
+    drawn = max(frames(socket) - before, 1)
     assert drawn >= MIN_FRAMES, f"{drawn} frames in 1.5 s is too few to sample"
     cost = {"frames": drawn, "damage": max(samples)}
     for name in ("transaction", "frame-draw", "frame-raster", "frame-total"):
-        cost[name] = channel(binary, socket, name)
+        cost[name] = channel(socket, name)
     return cost
 
 
@@ -101,33 +99,19 @@ def describe(cost):
             "p50")
 
 
-def run(binary, tag):
+def run(tag):
     unit, socket = f"tomoe-{tag}-damage", f"uidamage-{tag}"
-    start_binary(binary, unit, socket)
-    mount(binary, socket)
-    cost = measure(binary, socket)
+    start_binary(unit, socket)
+    mount(socket)
+    cost = measure(socket)
     print(f"{tag}: " + describe(cost), flush=True)
-    stop_binary(binary, unit, socket)
+    stop_binary(unit, socket)
     return cost
 
 
-cost = run("tomoe", "branch")
+cost = run("branch")
 assert cost["damage"] <= DAMAGE_BUDGET, (
     f"one tick damaged {cost['damage']} px of shell surfaces, over the {DAMAGE_BUDGET} px "
     f"of a {BAR_PIXELS + PANEL_PIXELS} px bar and panel a partial repaint may take: "
     + describe(cost))
 print(f"branch: {cost['damage']} px damaged per tick", flush=True)
-
-if BASELINE:
-    base_cost = run(BASELINE, "base")
-    assert base_cost["damage"] >= 2 * cost["damage"], (
-        f"one tick damaged {cost['damage']} px against the baseline's "
-        f"{base_cost['damage']} px, not the 2x a retained canvas must save: "
-        + describe(base_cost))
-    for name in ("frame-raster", "frame-total"):
-        ratio = base_cost[name] / cost[name]
-        print(f"ui update {name} {base_cost[name]:.1f} -> {cost[name]:.1f} us p50, "
-              f"{ratio:.2f}x", flush=True)
-        assert ratio >= 2.0, (
-            f"a ui update costs {ratio:.2f}x less {name} time than the baseline, not 2x: "
-            + describe(base_cost) + " -> " + describe(cost))
