@@ -100,7 +100,7 @@ void settings_clear(struct settings *settings) {
     memset(settings, 0, sizeof(*settings));
     input_config_unset(&settings->touchpad);
     input_config_unset(&settings->mouse);
-    settings->shader_hold = 3.0;
+    settings->shader_hold = 0.0;
     settings->screenshot_mark_ink = UINT32_C(0xffffffff);
     settings->screenshot_mark_width = 3;
     settings->screenshot_mark_head = 18;

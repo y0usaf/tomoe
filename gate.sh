@@ -52,6 +52,9 @@ Nothing reaches the running desktop.
   GATE_SOAK     after the run, keep cycling palettes, themes, focus storms and
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
+  GATE_FRAMES_PERCENT   the share of refreshes a client that paints from its frame
+                callback must present at on an active desk (default 85, median
+                inside one refresh and the 99th inside two)
   GATE_WAKE_FIRST_US     how late the worst of three first frames after a hold may
                 be presented (default five refreshes)
   GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default three and a half)
@@ -123,9 +126,10 @@ else
 	grep -q "(list \"$OUTPUT\".*:mode (list $WIDTH $HEIGHT $HZ)" "$DIR/init.lisp" ||
 		die "the config does not choose the $MODE mode of $OUTPUT by size, so the gate cannot hold that rate"
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
-	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
+	HOLD=${GATE_SHADER_HOLD:-${HOLD:-0}}
 	PERIOD_US=$(( 1000000 / HZ ))
 	SLACK_US=100
+	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-85}
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 + SLACK_US ))}
 	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 + SLACK_US ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 + SLACK_US ))}
@@ -149,7 +153,7 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		PERIOD_US SLACK_US FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		PERIOD_US SLACK_US FRAMES_PERCENT FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -462,8 +466,35 @@ print(sum(1 for i in range(0, min(len(a), len(b)), 48) if a[i:i + 3] != b[i:i + 
 PIXELS
 }
 
+frame_callback_check() {
+	local label=$1 pid before after
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
+		--size 320x240 --color 664422 --app-id gate-frames --title gate-frames \
+		>>"$DIR/clients" 2>&1 </dev/null &
+	pid=$!
+	sleep 1.0
+	timings_reset
+	before=$(frames_on)
+	sleep 1.6
+	after=$(frames_on)
+	timings_read
+	kill -TERM -- "-$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	cadence "$label frame callback" $(( after - before )) \
+		"$(( PERIOD_US + SLACK_US ))" "$(( PERIOD_US * 2 + SLACK_US ))" "$FRAMES_PERCENT"
+	settle "$WINDOWS"
+}
+
 at_rest() {
 	local label=$1 attempt active_drew rest_drew moved skip
+	if [[ -z ${CADENCE_CHECKED:-} ]]; then
+		frame_callback_check "$label"
+		CADENCE_CHECKED=1
+	fi
+	if [[ $HOLD == 0 || $HOLD == 0.0 ]]; then
+		say "$label: the config draws through, so there is no hold to read at rest or to wake"
+		return 0
+	fi
 	moved=$(frames_on)
 	sleep 1
 	active_drew=$(( $(frames_on) - moved ))

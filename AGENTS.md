@@ -25,7 +25,10 @@ with test windows, dark then light, every rail theme, rapid focus switches and
 moves while windows close and open mid-animation, a reload, and a broken config,
 which must be refused without disturbing the running one. It fails on any
 extension failure, duplicate timer, lost focus, unplaced window, the compositor
-exiting or a fatal log line. It also times every theme and mode from an input
+exiting or a fatal log line. It also runs a client that paints from its frame
+callback and requires it to hold the refresh: 99% of the refreshes over a second and
+a half, with both the median and the 99th interval inside one refresh. A config that
+asks for a shader hold is timed from an input
 to the hold an idle machine is given, with the config's meter readings held
 still: the configured output must have drawn while the input was fresh, must
 draw nothing over the next two seconds, and must resume on the next input
