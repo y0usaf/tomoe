@@ -10,6 +10,7 @@ OUTPUT=${GATE_OUTPUT:-DP-4}
 MODE=${GATE_MODE:-5120x1440@240}
 WINDOWS=${GATE_WINDOWS:-4}
 SWITCHES=${GATE_SWITCHES:-48}
+SPAM_MS=${GATE_SPAM_MS:-1400}
 PALETTE=${GATE_PALETTE:-$HOME/.cache/theme/gtk.css}
 SOAK=${GATE_SOAK:-0}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
@@ -35,8 +36,10 @@ with the output timed from the hold an idle machine is given to the frame that
 carries the next key, the next pointer motion and the next client buffer, and
 through the drag and the client commits that follow, its frame counter read on
 both sides of it, rapid focus switches and moves with
-windows closing and opening mid-animation, a reload, and a config whose middle
-form calls an undefined function. It fails
+windows closing and opening mid-animation, a window reversed between the columns
+with Alt+[ and Alt+] while the screen is read between keystrokes: its drawn edge
+must keep moving, and it must cross back and forth, not stand still and jump, a
+reload, and a config whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
 (typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must
@@ -49,6 +52,8 @@ Nothing reaches the running desktop.
   GATE_OUTPUT   output name the config arranges (default DP-4)
   GATE_MODE     WxH@HZ of that output (default 5120x1440@240)
   GATE_PALETTE  palette the theme reads, copied in (default ~/.cache/theme/gtk.css)
+  GATE_SPAM_MS  how long Alt+[ and Alt+] are typed at the reversed window, in
+                milliseconds (default 1400)
   GATE_SOAK     after the run, keep cycling palettes, themes, focus storms and
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
@@ -155,7 +160,7 @@ LISP
 	sed "s/$BG/@BG@/g; s/$FG/$BG/g; s/@BG@/$FG/g" "$DIR/first.css" >"$DIR/second.css"
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
-	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
+	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD SPAM_MS \
 		PERIOD_US SLACK_US FRAMES_PERCENT PERIOD_NS SLACK_NS FENCE_MS FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
@@ -708,6 +713,147 @@ THEMES=$(grep -o '(defparameter +rail-themes+ (list .*' "$DIR/init.lisp" | grep 
 [[ -n $THEMES ]] || die "the config declares no rail themes"
 grep -qE ':MODIFIERS 9 :CODE [0-9]+ :KEYSYM "t" :OWNER "[^"]*" :CALL \("rail-theme"\)' "$DIR/inspect" ||
 	die "Alt+Shift+T is not bound to rail-theme"
+spam_check() {
+	local label=$1 play pid spam row n=0 verdict
+	local -a clients=()
+	[[ -n $(command -v grim) ]] || die "$label: this check reads the screen and there is no grim"
+	ctl inspect >"$DIR/inspect" 2>&1 || die "$label: the session stopped answering"
+	grep -qE ':KEYSYM "bracketleft" :OWNER "[^"]*" :CALL \("to-left"\)' "$DIR/inspect" ||
+		die "$label: the config does not bind Alt+[ to to-left"
+	grep -qE ':KEYSYM "bracketright" :OWNER "[^"]*" :CALL \("to-right"\)' "$DIR/inspect" ||
+		die "$label: the config does not bind Alt+] to to-right"
+	rm -f "$DIR"/spam.*.ppm "$DIR/spam.log" "$DIR/spam.end"
+	for play in 1 2; do
+		"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 \
+			--color 664422 --app-id "gate-spam-$play" --title "gate-spam-$play" \
+			>>"$DIR/clients" 2>&1 </dev/null &
+		clients+=($!)
+	done
+	settle 2
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 \
+		--color 00ff01 --app-id gate-spam-move --title gate-spam-move \
+		>>"$DIR/clients" 2>&1 </dev/null &
+	clients+=($!)
+	settle 3
+	run to-right
+	sleep 0.5
+	row=$(ctl msg windows | python3 -c '
+import json, sys
+for window in json.load(sys.stdin):
+    if window["app_id"] != "gate-spam-move":
+        continue
+    box = window["geometry"]
+    if box["x"] < int(sys.argv[1]) // 2:
+        sys.exit("it is not in the right column")
+    print(box["y"] + box["h"] // 2)
+' "$WIDTH") || die "$label: the window this check reverses is not where it must be: the column it was sent to is not the right one"
+	( end=$(( $(date +%s%N) / 1000000 + SPAM_MS ))
+	  while (( $(date +%s%N) / 1000000 < end )); do
+		"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" "key 56 down" "key 26 down" sync \
+			"key 26 up" "key 56 up" sync >"$DIR/keys" 2>&1
+		sleep 0.09
+		"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" "$KEYS" "key 56 down" "key 27 down" sync \
+			"key 27 up" "key 56 up" sync >"$DIR/keys" 2>&1
+		sleep 0.09
+	  done
+	  date +%s%N >"$DIR/spam.end"
+	) &
+	spam=$!
+	while kill -0 "$spam" 2>/dev/null; do
+		n=$((n + 1))
+		"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" grim -t ppm -g "0,$row ${WIDTH}x1" \
+			"$DIR/spam.$n.ppm" 2>"$DIR/grim" ||
+			die "$label: cannot read the row the window moves along: $(cat "$DIR/grim")"
+		printf '%s %s\n' "$(date +%s%N)" "$DIR/spam.$n.ppm" >>"$DIR/spam.log"
+	done
+	wait "$spam" 2>/dev/null
+	verdict=$(python3 - "$DIR/spam.log" "$DIR/spam.end" "$WIDTH" <<'SPAM'
+import sys
+
+want = bytes.fromhex("00ff01")
+
+
+def edge(path):
+    """The column the window this check reverses is drawn from, on one row."""
+    data = open(path, "rb").read()
+    fields, at = [], 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace():
+            at += 1
+        start = at
+        while not data[at:at + 1].isspace():
+            at += 1
+        fields.append(data[start:at])
+    body, width = data[at + 1:], int(fields[1])
+    for column in range(width):
+        if body[column * 3:column * 3 + 3] == want:
+            return column
+    return None
+
+
+def fail(text):
+    print(text)
+    sys.exit(1)
+
+
+log, end, width = sys.argv[1], int(open(sys.argv[2]).read().strip()), int(sys.argv[3])
+samples = []
+for line in open(log):
+    when, path = line.split()
+    when = int(when)
+    if when >= end:
+        break
+    left = edge(path)
+    if left is None:
+        fail("%d ms into the reversals the window was not on the row its motion was read "
+             "from, so it could not be followed" % ((when - samples[0][0]) // 1000000 if samples else 0))
+    samples.append((when, left))
+if len(samples) < 20:
+    fail("the screen was read %d times while the window was reversed, too few to judge" % len(samples))
+travel = max(left for _, left in samples) - min(left for _, left in samples)
+if travel < width // 4:
+    fail("the window was drawn %d px apart at most while it was sent to the other column "
+         "and back, so the reversals did not reach it" % travel)
+run, longest, began = 1, 1, 0
+for i in range(1, len(samples)):
+    if samples[i][1] == samples[i - 1][1]:
+        run += 1
+        if run > longest:
+            longest, began = run, i - run + 1
+    else:
+        run = 1
+if longest > 2:
+    fail("the window stood drawn at x=%d for %d reads over %d ms while Alt+[ and Alt+] kept "
+         "reversing it, so a retargeted move stopped instead of carrying on"
+         % (samples[began][1], longest,
+            (samples[began + longest - 1][0] - samples[began][0]) // 1000000))
+low, high = min(left for _, left in samples), max(left for _, left in samples)
+middle, margin, side, crossings = (low + high) // 2, max((high - low) // 8, 1), 0, 0
+for _, left in samples:
+    if left > middle + margin:
+        if side < 0:
+            crossings += 1
+        side = 1
+    elif left < middle - margin:
+        if side > 0:
+            crossings += 1
+        side = -1
+if crossings < 3:
+    fail("the window crossed between the columns %d times while Alt+[ and Alt+] reversed it, "
+         "so it did not move back and forth" % crossings)
+print("%d reads over %d ms, the window crossed between the columns %d times and never stood "
+      "still for more than one read" % (len(samples), (samples[-1][0] - samples[0][0]) // 1000000, crossings))
+SPAM
+	) || die "$label: $verdict"
+	say "$label: $verdict"
+	for pid in "${clients[@]}"; do kill -TERM -- "-$pid" 2>/dev/null; done
+	wait "${clients[@]}" 2>/dev/null
+	settle 0
+	check "$label" 0
+}
+
+spam_check "reversed move"
+
 for ((i = 0; i < WINDOWS; i++)); do open_window; done
 settle "$WINDOWS"
 check "open $WINDOWS windows" "$WINDOWS"

@@ -58,3 +58,7 @@ The first release.
 - A shader background declared `:opaque t` hides what lies beneath it, so a
   full-screen animated wallpaper no longer repaints the clear under it every
   frame.
+- A window moved again while it is still moving, a column sent to and back
+  before the last move finished, carries on from the pixels it is drawn at and
+  the speed it has there, instead of standing still for the rest of the move it
+  replaced and then jumping to its new place.

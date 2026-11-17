@@ -22,7 +22,10 @@ draws windows, takes keyboard and pointer input, and survives a policy reload
 Before a commit is pinned in finix, `./gate.sh REV` runs it with the config finix
 generates against that exact build: a private headless instance at 5120x1440@240,
 with test windows, dark then light, every rail theme, rapid focus switches and
-moves while windows close and open mid-animation, a reload, and a broken config,
+moves while windows close and open mid-animation, a window of its own reversed
+between the columns with Alt+[ and Alt+] faster than one move lasts while the row
+it moves along is read between keystrokes, which must show it crossing back and
+forth with no more than one read standing still, a reload, and a broken config,
 which must be refused without disturbing the running one. It fails on any
 extension failure, duplicate timer, lost focus, unplaced window, the compositor
 exiting or a fatal log line. It also runs a client that paints from its frame
