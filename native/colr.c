@@ -32,6 +32,7 @@ struct colr_ctx {
     bool has_clip_polygon;
     px_box_t *clip_boxes;
     int clip_box_count, clip_box_capacity;
+    struct dp_spans clip_spans;
     bool clipped;
     struct drect box;
     struct drect ink;
@@ -532,13 +533,15 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
             return clip_empty(ctx);
         }
         free(path_boxes);
+        dp_spans_fini(&ctx->clip_spans);
         struct drect area = intersected(box, image_box(ctx));
         if (area.x0 >= area.x1 || area.y0 >= area.y1) return clip_empty(ctx);
         int w = area.x1 - area.x0, h = area.y1 - area.y0;
         unsigned char *pixels = calloc((size_t)w, (size_t)h);
         if (!pixels) return clip_empty(ctx);
         if (box_count == 1) {
-            if (!dp_box_mask(ctx->clip_boxes[0], area, pixels, w, area.x0, area.y0)) {
+            if (!dp_box_mask(ctx->clip_boxes[0], area, pixels, w, area.x0, area.y0,
+                    &ctx->clip_spans)) {
                 free(pixels);
                 return clip_empty(ctx);
             }
@@ -576,6 +579,7 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
     }
     free(path_boxes);
 
+    dp_spans_fini(&ctx->clip_spans);
     struct dp_polygon polygon;
     const px_box_t *limit = ctx->clip_box_count == 1 ? &ctx->clip_boxes[0] : NULL;
     if (!dp_path_fill_to_polygon(path, limit, &polygon))
@@ -595,7 +599,8 @@ static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drec
     int w = area.x1 - area.x0, h = area.y1 - area.y0;
     unsigned char *pixels = calloc((size_t)w, (size_t)h);
     if (!pixels) return clip_empty(ctx);
-    if (!dp_polygon_fill_mask(&ctx->clip_polygon, area, pixels, w, area.x0, area.y0)) {
+    if (!dp_polygon_fill_mask(&ctx->clip_polygon, area, pixels, w, area.x0, area.y0,
+            &ctx->clip_spans)) {
         free(pixels);
         return clip_empty(ctx);
     }
@@ -616,6 +621,7 @@ struct clip_state {
     bool has_polygon;
     px_box_t *boxes;
     int box_count, box_capacity;
+    struct dp_spans spans;
     bool clipped;
 };
 
@@ -650,7 +656,9 @@ static void clip_state_save(struct colr_ctx *ctx, struct clip_state *state)
     state->boxes = ctx->clip_boxes;
     state->box_count = ctx->clip_box_count;
     state->box_capacity = ctx->clip_box_capacity;
+    state->spans = ctx->clip_spans;
     state->clipped = ctx->clipped;
+    memset(&ctx->clip_spans, 0, sizeof(ctx->clip_spans));
     ctx->clip_boxes = NULL;
     ctx->clip_box_count = 0;
     ctx->clip_box_capacity = 0;
@@ -673,6 +681,7 @@ static void clip_state_restore(struct colr_ctx *ctx, struct clip_state *state)
     free(ctx->clip);
     dp_polygon_fini(&ctx->clip_polygon);
     clip_boxes_clear(ctx);
+    dp_spans_fini(&ctx->clip_spans);
     ctx->clip = state->clip;
     ctx->clip_box = state->clip_box;
     ctx->clip_stride = state->clip_stride;
@@ -684,6 +693,7 @@ static void clip_state_restore(struct colr_ctx *ctx, struct clip_state *state)
     ctx->clip_boxes = state->boxes;
     ctx->clip_box_count = state->box_count;
     ctx->clip_box_capacity = state->box_capacity;
+    ctx->clip_spans = state->spans;
     ctx->clipped = state->clipped;
 }
 
@@ -752,7 +762,8 @@ static void paint_gradient(struct colr_ctx *ctx, struct dp_gradient16 *gradient)
     struct drect bounds = mask_bounds(ctx);
     if (bounds.x0 < bounds.x1 && bounds.y0 < bounds.y1) {
         struct dp_coverage mask = { ctx->clip, ctx->clip_stride, ctx->clip_box.x0,
-            ctx->clip_box.y0, NULL };
+            ctx->clip_box.y0,
+            ctx->clip_spans.band_count ? &ctx->clip_spans : NULL };
         dp_paint_gradient16(ctx->pixels, ctx->stride, ctx->clip_box, gradient, &mask,
             ctx->width, ctx->height, bounds.x0, bounds.y0, bounds.x1 - bounds.x0,
             bounds.y1 - bounds.y0);
@@ -1382,6 +1393,7 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->is_clear = true;
     child->box = (struct drect){ 0, 0, w, h };
     memset(&child->clip_polygon, 0, sizeof(child->clip_polygon));
+    memset(&child->clip_spans, 0, sizeof(child->clip_spans));
     child->has_clip_polygon = false;
     child->clip_boxes = NULL;
     child->clip_box_count = 0;
@@ -1395,6 +1407,7 @@ static void group_end(struct colr_ctx *ctx, struct colr_ctx *child, uint32_t *pi
 {
     dp_polygon_fini(&child->clip_polygon);
     clip_boxes_clear(child);
+    dp_spans_fini(&child->clip_spans);
     free(child->clip);
     composite_image(ctx, pixels, child->width, box, op);
     free(pixels);
@@ -1991,6 +2004,8 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
     play(&ctx, &paint);
     free(ctx.clip);
     dp_polygon_fini(&ctx.clip_polygon);
+    dp_spans_fini(&ctx.clip_spans);
+    clip_boxes_clear(&ctx);
     out->pixels = ctx.pixels;
     out->width = ctx.width;
     out->height = ctx.height;

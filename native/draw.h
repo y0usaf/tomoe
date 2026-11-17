@@ -78,9 +78,9 @@ bool dp_path_fill_to_polygon(const struct dpath *path, const px_box_t *limit,
     struct dp_polygon *polygon);
 int dp_path_rect_boxes(const struct dpath *path, px_box_t *boxes, int max);
 bool dp_polygon_fill_mask(const struct dp_polygon *polygon, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y);
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans);
 bool dp_box_mask(px_box_t box, struct drect clip, unsigned char *mask, int stride,
-    int mask_x, int mask_y);
+    int mask_x, int mask_y, struct dp_spans *spans);
 
 void dpath_init(struct dpath *path);
 void dpath_fini(struct dpath *path);

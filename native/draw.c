@@ -1088,7 +1088,7 @@ bool dp_path_fill_to_polygon(const struct dpath *path, const px_box_t *limit,
 }
 
 bool dp_box_mask(px_box_t box, struct drect clip, unsigned char *mask, int stride,
-    int mask_x, int mask_y)
+    int mask_x, int mask_y, struct dp_spans *spans)
 {
     int32_t l = box.p1.x, t = box.p1.y, r = box.p2.x, b = box.p2.y;
     int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
@@ -1098,7 +1098,7 @@ bool dp_box_mask(px_box_t box, struct drect clip, unsigned char *mask, int strid
     if (r > limit_r) r = limit_r;
     if (b > limit_b) b = limit_b;
     if (l >= r || t >= b) return true;
-    return fill_box_mask(l, t, r, b, clip, mask, stride, mask_x, mask_y, NULL);
+    return fill_box_mask(l, t, r, b, clip, mask, stride, mask_x, mask_y, spans);
 }
 
 bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
@@ -1174,7 +1174,8 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
 }
 
 static bool raster_polygon(const struct dp_polygon *polygon, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias)
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias,
+    struct dp_spans *spans)
 {
     if (polygon->extents.p2.x <= polygon->extents.p1.x ||
         polygon->extents.p2.y <= polygon->extents.p1.y)
@@ -1203,6 +1204,7 @@ static bool raster_polygon(const struct dp_polygon *polygon, struct drect clip,
     ctx.clip = clip;
     ctx.mask_x = mask_x;
     ctx.mask_y = mask_y;
+    ctx.spans = spans;
     ctx.base.render_rows = span_rows;
     px_status_t status = converter->generate(converter, &ctx.base);
     converter->destroy(converter);
@@ -1210,10 +1212,10 @@ static bool raster_polygon(const struct dp_polygon *polygon, struct drect clip,
 }
 
 bool dp_polygon_fill_mask(const struct dp_polygon *polygon, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y)
+    unsigned char *mask, int stride, int mask_x, int mask_y, struct dp_spans *spans)
 {
     return raster_polygon(polygon, clip, mask, stride, mask_x, mask_y,
-        PX_ANTIALIAS_GRAY);
+        PX_ANTIALIAS_GRAY, spans);
 }
 
 static bool fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
@@ -1331,7 +1333,7 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;
     if (status == CAIRO_STATUS_SUCCESS && polygon.status == PX_STATUS_SUCCESS)
-        ok = raster_polygon(&polygon, clip, mask, stride, mask_x, mask_y, antialias);
+        ok = raster_polygon(&polygon, clip, mask, stride, mask_x, mask_y, antialias, NULL);
     dp_polygon_fini(&polygon);
     return ok;
 }
