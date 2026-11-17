@@ -1,15 +1,13 @@
 #include "internal.h"
 #include "ui.h"
 #include "ui-assets.h"
+#include "jpeg.h"
 
 #include <drm/drm_fourcc.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <jpeglib.h>
-#include <jerror.h>
 #include <pthread.h>
 #include <resvg.h>
-#include <setjmp.h>
 #include <signal.h>
 #include <sys/eventfd.h>
 #include <sys/stat.h>
@@ -206,72 +204,17 @@ static enum asset_status decode_png(struct ui_asset *asset,
     return result;
 }
 
-struct jpeg_decode {
-    struct jpeg_error_mgr error;
-    struct jpeg_decompress_struct jpeg;
-    jmp_buf jump;
-    unsigned char *pixels, *row;
-    bool hard, created;
-};
-
-static void jpeg_failure(j_common_ptr common) {
-    struct jpeg_decode *decode = (struct jpeg_decode *)common->err;
-    if (common->err->msg_code == JERR_OUT_OF_MEMORY ||
-            common->err->msg_code == JERR_IMAGE_TOO_BIG ||
-            common->err->msg_code == JERR_WIDTH_OVERFLOW) decode->hard = true;
-    longjmp(decode->jump, 1);
-}
-
-static void jpeg_message_ignore(j_common_ptr common) { (void)common; }
-
 static enum asset_status decode_jpeg(struct ui_asset *asset,
         const struct asset_data *data, uint32_t dimension, uint64_t available) {
-    struct jpeg_decode *decode = calloc(1, sizeof(*decode));
-    if (!decode) return ASSET_HARD;
-    decode->jpeg.err = jpeg_std_error(&decode->error);
-    decode->error.error_exit = jpeg_failure;
-    decode->error.output_message = jpeg_message_ignore;
-    volatile enum asset_status result = ASSET_MISSING;
-    if (setjmp(decode->jump)) { result = decode->hard ? ASSET_HARD : ASSET_MISSING; goto done; }
-    decode->created = true;
-    jpeg_create_decompress(&decode->jpeg);
-    jpeg_mem_src(&decode->jpeg, data->bytes, (unsigned long)data->length);
-    if (jpeg_read_header(&decode->jpeg, TRUE) != JPEG_HEADER_OK) goto done;
-    asset->width = decode->jpeg.image_width; asset->height = decode->jpeg.image_height;
-    if (!raster_bytes(asset->width, asset->height, dimension, available, &asset->bytes)) {
-        result = ASSET_HARD;
-        goto done;
-    }
-    bool cmyk = decode->jpeg.jpeg_color_space == JCS_CMYK || decode->jpeg.jpeg_color_space == JCS_YCCK;
-    decode->jpeg.out_color_space = cmyk ? JCS_CMYK : JCS_RGB;
-    if (!jpeg_start_decompress(&decode->jpeg)) goto done;
-    if (decode->jpeg.output_width != asset->width || decode->jpeg.output_height != asset->height ||
-            decode->jpeg.output_components != (cmyk ? 4 : 3)) goto done;
-    decode->pixels = malloc((size_t)asset->bytes);
-    decode->row = malloc((size_t)asset->width * decode->jpeg.output_components);
-    if (!decode->pixels || !decode->row) { result = ASSET_HARD; goto done; }
-    while (decode->jpeg.output_scanline < asset->height) {
-        size_t y = decode->jpeg.output_scanline;
-        if (jpeg_read_scanlines(&decode->jpeg, &decode->row, 1) != 1) goto done;
-        for (uint32_t x = 0; x < asset->width; x++) {
-            unsigned char *pixel = decode->row + x * decode->jpeg.output_components;
-            unsigned r = pixel[0], g = pixel[1], b = pixel[2];
-            if (cmyk) {
-                unsigned k = pixel[3];
-                if (decode->jpeg.saw_Adobe_marker) { r = r * k / 255; g = g * k / 255; b = b * k / 255; }
-                else { r = (255 - r) * (255 - k) / 255; g = (255 - g) * (255 - k) / 255; b = (255 - b) * (255 - k) / 255; }
-            }
-            uint32_t value = UINT32_C(0xff000000) | (r << 16) | (g << 8) | b;
-            memcpy(decode->pixels + (y * asset->width + x) * 4, &value, sizeof(value));
-        }
-    }
-    if (!jpeg_finish_decompress(&decode->jpeg)) goto done;
-    asset->pixels = decode->pixels; decode->pixels = NULL;
-    result = ASSET_OK;
-done:
-    if (decode->created) jpeg_destroy_decompress(&decode->jpeg);
-    free(decode->row); free(decode->pixels); free(decode);
-    return result;
+    struct jpeg_decoded decoded;
+    enum jpeg_decode_status status = tomoe_jpeg_decode(data->bytes, data->length,
+        dimension, available, &decoded);
+    if (status != JPEG_DECODE_OK) return status == JPEG_DECODE_HARD ? ASSET_HARD : ASSET_MISSING;
+    asset->width = decoded.width;
+    asset->height = decoded.height;
+    asset->bytes = decoded.bytes;
+    asset->pixels = decoded.pixels;
+    return ASSET_OK;
 }
 
 static enum asset_status decode_svg(struct ui_asset *asset,

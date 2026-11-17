@@ -154,7 +154,6 @@
             libs.libxkbcommon
             cairo
             pango
-            pkgs.libjpeg
             (resvg pkgs)
             (pipewire pkgs)
           ];
