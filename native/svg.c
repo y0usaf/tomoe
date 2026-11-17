@@ -3325,7 +3325,9 @@ static int svg_required_features_ok(struct svg_style *st, struct svg_doc *doc) {
     return 1;
 }
 
-static struct svg_matrix svg_show_transform(struct svg_style *st, struct svg_doc *doc);
+struct svg_conv;
+
+static struct svg_matrix svg_show_transform(struct svg_conv *c, struct svg_style *st);
 static int svg_transform_valid(const char *text, struct svg_matrix *out);
 
 static int svg_element_visible(struct svg_style *st, struct svg_doc *doc) {
@@ -3967,11 +3969,117 @@ static int svg_transform_valid(const char *text, struct svg_matrix *out) {
     return 1;
 }
 
-static struct svg_matrix svg_show_transform(struct svg_style *st, struct svg_doc *doc) {
-    const char *text = svg_style_get(doc, st, "transform");
+struct svg_origin_part {
+    int keyword;
+    int horizontal;
+    int vertical;
+    double number;
+    enum svg_length_unit unit;
+};
+
+static int svg_parse_origin_part(const char *text, int len, struct svg_origin_part *out) {
+    char buf[64];
+    if (len <= 0 || len >= (int)sizeof(buf)) return 0;
+    memcpy(buf, text, (size_t)len);
+    buf[len] = 0;
+    memset(out, 0, sizeof(*out));
+    if (!strcmp(buf, "left") || !strcmp(buf, "right") || !strcmp(buf, "center") ||
+            !strcmp(buf, "top") || !strcmp(buf, "bottom")) {
+        out->keyword = 1;
+        out->horizontal = buf[0] == 'l' || buf[0] == 'r' || buf[0] == 'c';
+        out->vertical = buf[0] == 't' || buf[0] == 'b' || buf[0] == 'c';
+        if (buf[0] == 'l' || buf[0] == 't') out->number = 0.0;
+        else if (buf[0] == 'r' || buf[0] == 'b') out->number = 100.0;
+        else out->number = 50.0;
+        out->unit = SVG_UNIT_PERCENT;
+        return 1;
+    }
+    struct svg_length l;
+    if (!svg_parse_length(buf, &l)) return 0;
+    out->horizontal = 1;
+    out->vertical = 1;
+    out->number = l.number;
+    out->unit = l.unit;
+    return 1;
+}
+
+static int svg_origin_part_value(struct svg_conv *c, struct svg_origin_part *part, int axis,
+        float *out) {
+    float base = axis == 0 ? c->view_box[2] : c->view_box[3];
+    double n = part->number;
+    switch (part->unit) {
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = (float)n; return 1;
+    case SVG_UNIT_PERCENT: *out = base * (float)n / 100.0f; return 1;
+    case SVG_UNIT_EM: *out = (float)n * 16.0f; return 1;
+    case SVG_UNIT_EX: *out = (float)n * 8.0f; return 1;
+    case SVG_UNIT_IN: *out = (float)n * c->dpi; return 1;
+    case SVG_UNIT_CM: *out = (float)n * c->dpi / 2.54f; return 1;
+    case SVG_UNIT_MM: *out = (float)n * c->dpi / 25.4f; return 1;
+    case SVG_UNIT_PT: *out = (float)n * c->dpi / 72.0f; return 1;
+    case SVG_UNIT_PC: *out = (float)n * c->dpi / 6.0f; return 1;
+    default: return 0;
+    }
+}
+
+static int svg_transform_origin_offset(struct svg_conv *c, struct svg_style *st, float out[2]) {
+    if (!st) return 0;
+    const char *text = svg_style_get(c->doc, st, "transform-origin");
+    if (!text) return 0;
+    struct svg_origin_part parts[3];
+    int count = 0;
+    const char *p = text;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+        if (!*p) break;
+        const char *start = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != ',') p++;
+        if (count == 3) return 0;
+        if (!svg_parse_origin_part(start, (int)(p - start), &parts[count])) return 0;
+        count++;
+    }
+    if (count == 0) return 0;
+    struct svg_origin_part *x, *y;
+    if (count == 1) {
+        if (parts[0].horizontal) {
+            x = &parts[0];
+            parts[1] = (struct svg_origin_part){ 1, 1, 1, 50.0, SVG_UNIT_PERCENT };
+            y = &parts[1];
+        } else if (parts[0].vertical) {
+            parts[1] = (struct svg_origin_part){ 1, 1, 1, 50.0, SVG_UNIT_PERCENT };
+            x = &parts[1];
+            y = &parts[0];
+        } else return 0;
+    } else {
+        x = &parts[0];
+        y = &parts[1];
+        if (parts[2].unit == SVG_UNIT_PERCENT) return 0;
+        if (!(x->horizontal && y->vertical)) {
+            if (!(x->vertical && y->horizontal)) return 0;
+            struct svg_origin_part t = *x;
+            *x = *y;
+            *y = t;
+        }
+    }
+    if (!svg_origin_part_value(c, x, 0, &out[0])) return 0;
+    if (!svg_origin_part_value(c, y, 1, &out[1])) return 0;
+    return 1;
+}
+
+static struct svg_matrix svg_origin_apply(struct svg_conv *c, struct svg_style *st,
+        struct svg_matrix ts) {
+    float d[2];
+    if (!svg_transform_origin_offset(c, st, d)) return ts;
+    if (d[0] == 0.0f && d[1] == 0.0f) return ts;
+    struct svg_matrix pre = { 1, 0, 0, 1, d[0], d[1] };
+    struct svg_matrix post = { 1, 0, 0, 1, -d[0], -d[1] };
+    return svg_matrix_concat(svg_matrix_concat(pre, ts), post);
+}
+
+static struct svg_matrix svg_show_transform(struct svg_conv *c, struct svg_style *st) {
+    const char *text = svg_style_get(c->doc, st, "transform");
     struct svg_matrix ts = svg_matrix_identity();
     if (text) svg_transform_valid(text, &ts);
-    return ts;
+    return svg_origin_apply(c, st, ts);
 }
 
 static int svg_convert_length(struct svg_conv *c, struct svg_style *st, const char *name,
@@ -4049,11 +4157,13 @@ static const char *svg_gradient_attr(struct svg_doc *doc, struct xml_node *node,
     return svg_xml_attr(n, name);
 }
 
-static struct svg_matrix svg_gradient_transform(struct svg_doc *doc, struct xml_node *node) {
-    struct xml_node *n = svg_resolve_gradient_attr(doc, node, "gradientTransform");
+static struct svg_matrix svg_gradient_transform(struct svg_conv *c, struct xml_node *node) {
+    struct xml_node *n = svg_resolve_gradient_attr(c->doc, node, "gradientTransform");
     const char *text = svg_xml_attr(n, "gradientTransform");
     struct svg_matrix ts = svg_matrix_identity();
     if (text) svg_transform_valid(text, &ts);
+    int idx = node->style_index;
+    if (idx >= 0) ts = svg_origin_apply(c, &c->doc->styles[idx], ts);
     return ts;
 }
 
@@ -4307,7 +4417,7 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                     g->type = svg_tag_is(link, "linearGradient") ? 1 : 2;
                     g->units_bbox = units_bbox;
                     g->spread = svg_gradient_spread(c->doc, link);
-                    g->transform = svg_gradient_transform(c->doc, link);
+                    g->transform = svg_gradient_transform(c, link);
                     g->stops = stops;
                     g->nstops = nstops;
                     if (g->type == 1) {
@@ -4352,6 +4462,9 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                     const char *tt = svg_pattern_attr(c->doc, link, "patternTransform");
                     p->transform = svg_matrix_identity();
                     if (tt) svg_transform_valid(tt, &p->transform);
+                    if (link->style_index >= 0)
+                        p->transform = svg_origin_apply(c, &c->doc->styles[link->style_index],
+                            p->transform);
                     p->rect[0] = svg_pattern_number(c, link, "x", p->units_bbox, 0, 0, SVG_UNIT_NONE);
                     p->rect[1] = svg_pattern_number(c, link, "y", p->units_bbox, 1, 0, SVG_UNIT_NONE);
                     p->rect[2] = svg_pattern_number(c, link, "width", p->units_bbox, 0, 0, SVG_UNIT_NONE);
@@ -5914,7 +6027,7 @@ static struct svg_node *svg_group_alloc(struct svg_conv *c, struct xml_node *nod
         const char *op = svg_style_get(c->doc, st, "opacity");
         if (op) { float v; if (!svg_parse_opacity(op, &v)) v = 1.0f; opacity = v; }
     }
-    struct svg_matrix transform = svg_show_transform(st, c->doc);
+    struct svg_matrix transform = svg_show_transform(c, st);
     const char *isolation = svg_style_get(c->doc, st, "isolation");
     int isolate = isolation && !strcmp(isolation, "isolate");
     const char *blend_text = svg_style_get(c->doc, st, "mix-blend-mode");
@@ -6119,6 +6232,7 @@ static int svg_make_clip_impl(struct svg_conv *c, struct xml_node *node, float o
     struct svg_matrix transform = svg_matrix_identity();
     const char *ts_text = svg_style_get(c->doc, st, "transform");
     if (ts_text && !svg_transform_valid(ts_text, &transform)) return 0;
+    transform = svg_origin_apply(c, st, transform);
     const char *units = svg_style_get(c->doc, st, "clipPathUnits");
     if (units && !strcmp(units, "objectBoundingBox")) {
         if (!have_object_bbox) return 0;
@@ -6262,7 +6376,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     if (idx < 0) return;
     struct svg_style *child_st = &c->doc->styles[idx];
     (void)child_st;
-    struct svg_matrix orig = svg_show_transform(st, c->doc);
+    struct svg_matrix orig = svg_show_transform(c, st);
     struct svg_matrix translate = svg_matrix_identity();
     float x = 0, y = 0;
     svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
@@ -7068,7 +7182,7 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
     if (!strcmp(tag, "switch")) { svg_convert_switch(c, node, st, parent, abs, clip_context); return; }
     if (!strcmp(tag, "svg")) {
         if (node == c->doc->root) { svg_convert_children(c, node, parent, abs, clip_context); return; }
-        struct svg_matrix orig = svg_show_transform(st, c->doc);
+        struct svg_matrix orig = svg_show_transform(c, st);
         float x = 0, y = 0, w, h;
         svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
         svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
