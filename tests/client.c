@@ -867,10 +867,28 @@ static void animate_commit(struct client *state) {
     if (wl_display_flush(display) < 0 && errno != EAGAIN) fail_display("flush requests");
 }
 
+static uint64_t animate_last, animate_interval, animate_commit_ns;
+
+static uint64_t animate_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
 static void animate_done(void *data, struct wl_callback *callback, uint32_t time) {
     (void)time;
+    uint64_t at = animate_now();
+    uint64_t interval = animate_last ? at - animate_last : 0;
+    animate_last = at;
     wl_callback_destroy(callback);
-    if (running && ((struct client *)data)->animate) animate_commit(data);
+    if (!running || !((struct client *)data)->animate) return;
+    animate_commit(data);
+    uint64_t spent = animate_now() - at;
+    animate_interval = interval;
+    animate_commit_ns = spent;
+    printf("animate %llu %llu\n", (unsigned long long)(interval / 1000),
+        (unsigned long long)(spent / 1000));
+    fflush(stdout);
 }
 
 static void repaint_step(struct client *state) {
