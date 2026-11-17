@@ -1122,12 +1122,16 @@ static void clip_quad_push(struct colr_ctx *ctx, double corners[4][2], struct dr
 static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
 {
     FT_OpaquePaint child = { NULL, 0 };
+    if (ctx->level > 128) return;
     if (!FT_Get_Color_Glyph_Paint(ctx->face, paint->glyphID, FT_COLOR_NO_ROOT_TRANSFORM, &child))
         return;
+    int saved_level = ctx->level;
+    ctx->level++;
     double corners[4][2];
     struct drect box;
     if (!glyph_clip(ctx, paint->glyphID, corners, &box)) {
         play(ctx, &child);
+        ctx->level = saved_level;
         return;
     }
     unsigned char *saved_clip = ctx->clip;
@@ -1144,6 +1148,7 @@ static void play_colr_glyph(struct colr_ctx *ctx, FT_PaintColrGlyph *paint)
     ctx->clip_stride = saved_clip_stride;
     ctx->clip_extent = saved_extent;
     ctx->clip_extent_unbounded = saved_unbounded;
+    ctx->level = saved_level;
 }
 
 static void play_layers(struct colr_ctx *ctx, FT_PaintColrLayers *layers)
@@ -1413,13 +1418,17 @@ static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
         break;
     case FT_COLR_PAINTFORMAT_COLR_GLYPH: {
         FT_OpaquePaint child = { NULL, 0 };
+        if (ctx->level > 128) break;
         if (!FT_Get_Color_Glyph_Paint(ctx->face, paint.u.colr_glyph.glyphID,
                 FT_COLOR_NO_ROOT_TRANSFORM, &child))
             break;
+        int saved_level = ctx->level;
+        ctx->level++;
         double corners[4][2];
         struct drect box;
         if (!glyph_clip(ctx, paint.u.colr_glyph.glyphID, corners, &box)) {
             analyze(ctx, &child);
+            ctx->level = saved_level;
             break;
         }
         bool saved_unbounded = ctx->aclip_unbounded;
@@ -1433,6 +1442,7 @@ static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
             analyze(ctx, &child);
         ctx->aclip_unbounded = saved_unbounded;
         ctx->aclip = saved_clip;
+        ctx->level = saved_level;
         break;
     }
     case FT_COLR_PAINTFORMAT_TRANSFORM: {
