@@ -4860,6 +4860,254 @@ static void svg_filter_std_dev(struct svg_conv *c, struct xml_node *child, int p
     (void)primitive_bbox;
 }
 
+static float svg_css_number(const char *arg, float def) {
+    if (!arg) return def;
+    while (*arg && svg_is_space(*arg)) arg++;
+    if (!*arg) return def;
+    struct svg_stream s = { arg, strlen(arg), 0 };
+    double v;
+    if (!svg_stream_number(&s, &v)) return def;
+    while (!svg_stream_end(&s) && svg_is_space(s.text[s.pos])) s.pos++;
+    if (!svg_stream_end(&s) && s.text[s.pos] == '%') v /= 100.0;
+    return (float)v;
+}
+
+static float svg_css_length(struct svg_conv *c, const char *arg, float def, int axis) {
+    if (!arg) return def;
+    while (*arg && svg_is_space(*arg)) arg++;
+    if (!*arg) return def;
+    struct svg_length l;
+    if (!svg_parse_length(arg, &l)) return def;
+    float n = (float)l.number;
+    switch (l.unit) {
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
+    case SVG_UNIT_EM: return n * 12.0f;
+    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
+    case SVG_UNIT_IN: return n * c->dpi;
+    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
+    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
+    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
+    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
+    case SVG_UNIT_PERCENT: {
+        float base = axis == 0 ? c->view_box[2] : axis == 1 ? c->view_box[3] :
+            sqrtf((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0f);
+        return base * n / 100.0f;
+    }
+    }
+    return def;
+}
+
+static void svg_css_sepia_matrix(float amount, float m[20]) {
+    float k = 1.0f - amount;
+    float values[20] = {
+        0.393f + 0.607f * k, 0.769f - 0.769f * k, 0.189f - 0.189f * k, 0.0f, 0.0f,
+        0.349f - 0.349f * k, 0.686f + 0.314f * k, 0.168f - 0.168f * k, 0.0f, 0.0f,
+        0.272f - 0.272f * k, 0.534f - 0.534f * k, 0.131f + 0.869f * k, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+    memcpy(m, values, sizeof(values));
+}
+
+static void svg_css_grayscale_matrix(float amount, float m[20]) {
+    float k = 1.0f - amount;
+    float values[20] = {
+        0.2126f + 0.7874f * k, 0.7152f - 0.7152f * k, 0.0722f - 0.0722f * k, 0.0f, 0.0f,
+        0.2126f - 0.2126f * k, 0.7152f + 0.2848f * k, 0.0722f - 0.0722f * k, 0.0f, 0.0f,
+        0.2126f - 0.2126f * k, 0.7152f - 0.7152f * k, 0.0722f + 0.9278f * k, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
+    memcpy(m, values, sizeof(values));
+}
+
+static int svg_make_css_filter(struct svg_conv *c, const char *text, float object_bbox[4],
+        int have_object_bbox, struct svg_filter *out) {
+    memset(out, 0, sizeof(*out));
+    int count = 0, capacity = 8;
+    struct svg_filter_prim *prims = svg_alloc(sizeof(*prims) * (size_t)capacity);
+    if (!prims) return 0;
+    memset(prims, 0, sizeof(*prims) * (size_t)capacity);
+    int feathers = 0;
+    const char *p = text;
+    while (*p) {
+        while (*p && (svg_is_space(*p) || *p == ',')) p++;
+        if (!*p) break;
+        const char *name = p;
+        while (*p && (svg_is_ident(*p) || *p == '-')) p++;
+        size_t name_len = (size_t)(p - name);
+        while (*p && svg_is_space(*p)) p++;
+        if (*p != '(') break;
+        p++;
+        const char *args = p;
+        int depth = 1;
+        while (*p && depth) {
+            if (*p == '(') depth++;
+            else if (*p == ')') depth--;
+            if (depth) p++;
+        }
+        size_t args_len = (size_t)(p - args);
+        if (*p == ')') p++;
+        char arg[256];
+        if (args_len >= sizeof(arg)) args_len = sizeof(arg) - 1;
+        memcpy(arg, args, args_len);
+        arg[args_len] = '\0';
+        if (count == capacity) {
+            int next = capacity * 2;
+            struct svg_filter_prim *grown = svg_realloc(prims, sizeof(*prims) * (size_t)next);
+            if (!grown) { free(prims); return 0; }
+            memset(grown + capacity, 0, sizeof(*prims) * (size_t)(next - capacity));
+            prims = grown;
+            capacity = next;
+        }
+        struct svg_filter_prim *pr = &prims[count];
+        pr->cs = 0;
+        snprintf(pr->result, sizeof(pr->result), "css%d", count);
+        if (count > 0) snprintf(pr->input1, sizeof(pr->input1), "%s", prims[count - 1].result);
+        if (name_len == 4 && !strncmp(name, "blur", 4)) {
+            pr->kind = SVG_FE_GAUSSIAN_BLUR;
+            float r = svg_css_length(c, arg, 0.0f, 2);
+            if (!(r > 0.0f)) r = 0.0f;
+            pr->f[0] = r;
+            pr->f[1] = r;
+            feathers = 1;
+        } else if (name_len == 11 && !strncmp(name, "drop-shadow", 11)) {
+            pr->kind = SVG_FE_DROP_SHADOW;
+            float dx = 0, dy = 0, r = 0;
+            struct svg_stream ts = { arg, strlen(arg), 0 };
+            int n = 0;
+            for (;;) {
+                while (!svg_stream_end(&ts) && (svg_is_space(ts.text[ts.pos]) ||
+                        ts.text[ts.pos] == ',')) ts.pos++;
+                if (svg_stream_end(&ts)) break;
+                size_t start = ts.pos;
+                while (!svg_stream_end(&ts) && !svg_is_space(ts.text[ts.pos]) &&
+                        ts.text[ts.pos] != ',') ts.pos++;
+                char token[64];
+                size_t len = ts.pos - start;
+                if (len >= sizeof(token)) len = sizeof(token) - 1;
+                memcpy(token, ts.text + start, len);
+                token[len] = '\0';
+                double v;
+                struct svg_stream ss = { token, strlen(token), 0 };
+                if (n < 3 && svg_stream_number(&ss, &v)) {
+                    float u = svg_css_length(c, token, 0.0f, 2);
+                    if (n == 0) dx = u;
+                    else if (n == 1) dy = u;
+                    else r = u;
+                    n++;
+                }
+            }
+            pr->f[0] = dx;
+            pr->f[1] = dy;
+            pr->f[2] = r > 0.0f ? r : 0.0f;
+            pr->f[3] = pr->f[2];
+            unsigned char cr = 0, cg = 0, cb = 0, ca = 255;
+            {
+                char copy[256];
+                snprintf(copy, sizeof(copy), "%s", arg);
+                char *save = copy;
+                int done = 0;
+                if (strstr(copy, "rgb")) {
+                    done = svg_parse_color(strstr(copy, "rgb"), &cr, &cg, &cb, &ca);
+                }
+                if (!done) {
+                    for (char *tok = strtok_r(save, " ,	", &save); tok;
+                            tok = strtok_r(NULL, " ,	", &save)) {
+                        double v;
+                        struct svg_stream ss = { tok, strlen(tok), 0 };
+                        if (svg_stream_number(&ss, &v)) continue;
+                        if (svg_parse_color(tok, &cr, &cg, &cb, &ca)) break;
+                    }
+                }
+            }
+            pr->color[0] = cr;
+            pr->color[1] = cg;
+            pr->color[2] = cb;
+            pr->color[3] = ca;
+            pr->opacity = 1.0f;
+            feathers = 1;
+        } else if (name_len == 10 && !strncmp(name, "brightness", 10)) {
+            pr->kind = SVG_FE_COMPONENT_TRANSFER;
+            float a = svg_css_number(arg, 1.0f);
+            for (int ch = 0; ch < 3; ch++) {
+                pr->tkind[ch] = 3;
+                pr->tbl[ch][0] = a;
+                pr->tbl[ch][1] = 0.0f;
+            }
+        } else if (name_len == 8 && !strncmp(name, "contrast", 8)) {
+            pr->kind = SVG_FE_COMPONENT_TRANSFER;
+            float a = svg_css_number(arg, 1.0f);
+            for (int ch = 0; ch < 3; ch++) {
+                pr->tkind[ch] = 3;
+                pr->tbl[ch][0] = a;
+                pr->tbl[ch][1] = -(0.5f * a) + 0.5f;
+            }
+        } else if (name_len == 9 && !strncmp(name, "grayscale", 9)) {
+            pr->kind = SVG_FE_COLOR_MATRIX;
+            float a = svg_css_number(arg, 1.0f);
+            if (a > 1.0f) a = 1.0f;
+            svg_css_grayscale_matrix(a, pr->matrix);
+        } else if (name_len == 5 && !strncmp(name, "sepia", 5)) {
+            pr->kind = SVG_FE_COLOR_MATRIX;
+            float a = svg_css_number(arg, 1.0f);
+            if (a > 1.0f) a = 1.0f;
+            svg_css_sepia_matrix(a, pr->matrix);
+        } else if (name_len == 8 && !strncmp(name, "saturate", 8)) {
+            pr->kind = SVG_FE_COLOR_MATRIX;
+            pr->cm_kind = 1;
+            float a = svg_css_number(arg, 1.0f);
+            pr->f[0] = a > 0.0f ? a : 0.0f;
+        } else if (name_len == 10 && !strncmp(name, "hue-rotate", 10)) {
+            pr->kind = SVG_FE_COLOR_MATRIX;
+            pr->cm_kind = 2;
+            char *end = NULL;
+            float a = (float)strtod(arg, &end);
+            if (end) {
+                while (*end && svg_is_space(*end)) end++;
+                if (!strncmp(end, "rad", 3)) a = a * (180.0f / 3.14159265358979323846f);
+                else if (!strncmp(end, "grad", 4)) a = a * 0.9f;
+                else if (!strncmp(end, "turn", 4)) a = a * 360.0f;
+            }
+            pr->f[0] = a;
+        } else if (name_len == 6 && !strncmp(name, "invert", 6)) {
+            pr->kind = SVG_FE_COMPONENT_TRANSFER;
+            float a = svg_css_number(arg, 1.0f);
+            if (a > 1.0f) a = 1.0f;
+            for (int ch = 0; ch < 3; ch++) {
+                pr->tkind[ch] = 1;
+                pr->tn[ch] = 2;
+                pr->tbl[ch][0] = a;
+                pr->tbl[ch][1] = 1.0f - a;
+            }
+        } else if (name_len == 7 && !strncmp(name, "opacity", 7)) {
+            pr->kind = SVG_FE_COMPONENT_TRANSFER;
+            float a = svg_css_number(arg, 1.0f);
+            if (a > 1.0f) a = 1.0f;
+            pr->tkind[3] = 1;
+            pr->tn[3] = 2;
+            pr->tbl[3][0] = 0.0f;
+            pr->tbl[3][1] = a;
+        } else {
+            continue;
+        }
+        count++;
+    }
+    if (!count) { free(prims); return 0; }
+    if (!have_object_bbox) { free(prims); return 0; }
+    float r[4] = { feathers ? -0.5f : -0.1f, feathers ? -0.5f : -0.1f,
+        feathers ? 2.0f : 1.2f, feathers ? 2.0f : 1.2f };
+    out->rect[0] = r[0] * object_bbox[2] + object_bbox[0];
+    out->rect[1] = r[1] * object_bbox[3] + object_bbox[1];
+    out->rect[2] = r[2] * object_bbox[2];
+    out->rect[3] = r[3] * object_bbox[3];
+    for (int i = 0; i < count; i++) {
+        prims[i].rect[0] = out->rect[0];
+        prims[i].rect[1] = out->rect[1];
+        prims[i].rect[2] = out->rect[2];
+        prims[i].rect[3] = out->rect[3];
+    }
+    out->prims = prims;
+    out->nprims = count;
+    return 1;
+}
+
 static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_filter *out) {
     if (!svg_tag_is(node, "filter")) return 0;
@@ -5526,9 +5774,14 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     if (!clip_context && filter_value && strcmp(filter_value, "none")) {
         char id[256];
         if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
-            svg_free_clip(clip);
-            svg_free_mask(mask);
-            return 0;
+            struct svg_filter *css = svg_alloc(sizeof(*css));
+            if (css && svg_make_css_filter(c, filter_value, object_bbox, have_object_bbox, css)) {
+                g->filter = css;
+                filtered = 1;
+            } else {
+                free(css);
+            }
+            goto filter_done;
         }
         struct xml_node *link = svg_id_last(c->doc, id);
         if (!link || !svg_tag_is(link, "filter")) {
@@ -5551,6 +5804,7 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
         g->filter = filter;
         filtered = 1;
     }
+filter_done:
     if (clip) g->clip = clip;
     if (mask) g->mask = mask;
     int required = g->opacity != 1.0f || clip || mask || filtered ||
