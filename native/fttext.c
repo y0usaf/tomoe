@@ -1395,6 +1395,9 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
                 FT_Get_Color_Glyph_Paint(face, glyph, FT_COLOR_NO_ROOT_TRANSFORM, &paint)) {
             struct colr_matrix matrix;
             struct colr_image image;
+            struct colr_clip clip;
+            FT_ClipBox clip_box;
+            bool have_clip = FT_Get_Color_Glyph_ClipBox(face, glyph, &clip_box) != 0;
             FT_Matrix transform;
             FT_Vector delta;
             FT_Get_Transform(face, &transform, &delta);
@@ -1409,7 +1412,14 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
             FT_Set_Transform(face, NULL, NULL);
             FT_Set_Char_Size(face, face->units_per_EM << 6, 0, 0, 0);
             scaled->face->have_scale = false;
-            bool ok = colr_render(face, glyph, &matrix, colour, &image);
+            if (have_clip) {
+                clip.x0 = clip_box.bottom_left.x / 64.0;
+                clip.y0 = -clip_box.top_right.y / 64.0;
+                clip.x1 = clip_box.top_right.x / 64.0;
+                clip.y1 = -clip_box.bottom_left.y / 64.0;
+            }
+            bool ok = colr_render(face, glyph, &matrix, have_clip ? &clip : NULL, colour,
+                &image);
             fte_face_scale(scaled->face, &scaled->scale);
             if (ok) {
                 entry->data = image.pixels;

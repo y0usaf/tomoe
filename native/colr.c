@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 struct colr_ctx {
     FT_Face face;
@@ -21,8 +22,14 @@ struct colr_ctx {
     uint32_t *pixels;
     int width, height, stride;
     double ox, oy;
-    struct dpath clip;
+    unsigned char *clip;
+    struct drect clip_box;
+    int clip_stride;
     struct drect box;
+    struct drect ink;
+    bool ink_unbounded;
+    struct drect aclip;
+    bool aclip_unbounded;
     int level;
     bool is_clear;
 };
@@ -313,19 +320,91 @@ static void coverage_fini(struct colr_coverage *coverage)
     coverage->pixels = NULL;
 }
 
+static unsigned mul8(unsigned a, unsigned b)
+{
+    unsigned t = a * b + 0x80u;
+    return (t + (t >> 8)) >> 8;
+}
+
+static bool clip_set(struct colr_ctx *ctx, const struct dpath *path, struct drect box)
+{
+    struct drect area = intersected(box, image_box(ctx));
+    if (area.x0 >= area.x1 || area.y0 >= area.y1) {
+        ctx->clip = NULL;
+        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+        ctx->clip_stride = 0;
+        return false;
+    }
+    int w = area.x1 - area.x0, h = area.y1 - area.y0;
+    unsigned char *pixels = calloc((size_t)w, (size_t)h);
+    if (!pixels) {
+        ctx->clip = NULL;
+        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+        ctx->clip_stride = 0;
+        return false;
+    }
+    struct dp_spans spans;
+    memset(&spans, 0, sizeof(spans));
+    if (!dp_fill_mask_spans(path, area, pixels, w, area.x0, area.y0, PX_ANTIALIAS_GRAY,
+            &spans)) {
+        free(pixels);
+        dp_spans_fini(&spans);
+        ctx->clip = NULL;
+        ctx->clip_box = (struct drect){ 0, 0, 0, 0 };
+        ctx->clip_stride = 0;
+        return false;
+    }
+    dp_spans_fini(&spans);
+    if (ctx->clip) {
+        const unsigned char *old = ctx->clip +
+            (size_t)(area.y0 - ctx->clip_box.y0) * (size_t)ctx->clip_stride +
+            (size_t)(area.x0 - ctx->clip_box.x0);
+        for (int y = 0; y < h; y++) {
+            unsigned char *row = pixels + (size_t)y * (size_t)w;
+            const unsigned char *src = old + (size_t)y * (size_t)ctx->clip_stride;
+            for (int x = 0; x < w; x++)
+                row[x] = (unsigned char)mul8(row[x], src[x]);
+        }
+    }
+    ctx->clip = pixels;
+    ctx->clip_box = area;
+    ctx->clip_stride = w;
+    return true;
+}
+
+static struct drect mask_bounds(const struct colr_ctx *ctx)
+{
+    struct drect box = { ctx->clip_box.x1, ctx->clip_box.y1, ctx->clip_box.x0,
+        ctx->clip_box.y0 };
+    if (!ctx->clip) return box;
+    for (int y = ctx->clip_box.y0; y < ctx->clip_box.y1; y++) {
+        const unsigned char *row = ctx->clip +
+            (size_t)(y - ctx->clip_box.y0) * (size_t)ctx->clip_stride;
+        for (int x = ctx->clip_box.x0; x < ctx->clip_box.x1; x++) {
+            if (!row[x - ctx->clip_box.x0]) continue;
+            if (x < box.x0) box.x0 = x;
+            if (y < box.y0) box.y0 = y;
+            if (x + 1 > box.x1) box.x1 = x + 1;
+            if (y + 1 > box.y1) box.y1 = y + 1;
+        }
+    }
+    if (box.x0 >= box.x1 || box.y0 >= box.y1) return (struct drect){ 0, 0, 0, 0 };
+    return box;
+}
+
 static void paint_solid(struct colr_ctx *ctx, uint32_t color)
 {
-    struct colr_coverage coverage;
     bool reduces = (color >> 24) == 0xff || ctx->is_clear;
-    if (!coverage_build(ctx, &ctx->clip, ctx->box, &coverage)) {
+    if (!ctx->clip) {
         ctx->is_clear = false;
         return;
     }
-    for (int y = coverage.box.y0; y < coverage.box.y1; y++) {
-        const unsigned char *row = coverage.pixels + (size_t)(y - coverage.box.y0) * coverage.width;
+    for (int y = ctx->clip_box.y0; y < ctx->clip_box.y1; y++) {
+        const unsigned char *row = ctx->clip +
+            (size_t)(y - ctx->clip_box.y0) * (size_t)ctx->clip_stride;
         uint32_t *dst = ctx->pixels + (size_t)y * (size_t)ctx->stride;
-        for (int x = coverage.box.x0; x < coverage.box.x1; x++) {
-            unsigned m = row[x - coverage.box.x0];
+        for (int x = ctx->clip_box.x0; x < ctx->clip_box.x1; x++) {
+            unsigned m = row[x - ctx->clip_box.x0];
             if (!m) continue;
             if (reduces)
                 dst[x] = m == 0xff ? color : dp_lerp8x4(color, (uint8_t)m, dst[x]);
@@ -334,7 +413,6 @@ static void paint_solid(struct colr_ctx *ctx, uint32_t color)
         }
     }
     ctx->is_clear = false;
-    coverage_fini(&coverage);
 }
 
 static struct dp_gradient_stop16 colr_stop16(double offset, double red, double green,
@@ -360,22 +438,18 @@ static uint32_t colr_stop_rgba(double red, double green, double blue, double alp
 
 static void paint_gradient(struct colr_ctx *ctx, struct dp_gradient16 *gradient)
 {
-    struct drect area = intersected(ctx->box, image_box(ctx));
-    struct colr_coverage coverage;
-    if (!coverage_build(ctx, &ctx->clip, area, &coverage)) return;
-    struct drect bounds = coverage.spans.extents;
-    if (bounds.x0 < coverage.box.x0) bounds.x0 = coverage.box.x0;
-    if (bounds.y0 < coverage.box.y0) bounds.y0 = coverage.box.y0;
-    if (bounds.x1 > coverage.box.x1) bounds.x1 = coverage.box.x1;
-    if (bounds.y1 > coverage.box.y1) bounds.y1 = coverage.box.y1;
+    if (!ctx->clip) {
+        ctx->is_clear = false;
+        return;
+    }
+    struct drect bounds = mask_bounds(ctx);
     if (bounds.x0 < bounds.x1 && bounds.y0 < bounds.y1) {
-        struct dp_coverage mask = { coverage.pixels, coverage.width, coverage.box.x0,
-            coverage.box.y0, &coverage.spans };
-        dp_paint_gradient16(ctx->pixels, ctx->stride, coverage.box, gradient, &mask,
+        struct dp_coverage mask = { ctx->clip, ctx->clip_stride, ctx->clip_box.x0,
+            ctx->clip_box.y0, NULL };
+        dp_paint_gradient16(ctx->pixels, ctx->stride, ctx->clip_box, gradient, &mask,
             ctx->width, ctx->height, bounds.x0, bounds.y0, bounds.x1 - bounds.x0,
             bounds.y1 - bounds.y0);
     }
-    coverage_fini(&coverage);
     ctx->is_clear = false;
 }
 
@@ -633,11 +707,11 @@ static void patch_triangle(struct colr_ctx *ctx,
     dp_line_to(&path, cx, cy);
     dp_close_path(&path);
     struct colr_coverage coverage;
-    struct drect box = dp_path_extents(&path);
-    if (box.x0 < ctx->box.x0) box.x0 = ctx->box.x0;
-    if (box.y0 < ctx->box.y0) box.y0 = ctx->box.y0;
-    if (box.x1 > ctx->box.x1) box.x1 = ctx->box.x1;
-    if (box.y1 > ctx->box.y1) box.y1 = ctx->box.y1;
+    struct drect box = intersected(dp_path_extents(&path), ctx->clip_box);
+    if (!ctx->clip) {
+        dpath_fini(&path);
+        return;
+    }
     if (coverage_build(ctx, &path, box, &coverage)) {
         for (int y = coverage.box.y0; y < coverage.box.y1; y++) {
             const unsigned char *row = coverage.pixels +
@@ -645,6 +719,9 @@ static void patch_triangle(struct colr_ctx *ctx,
             uint32_t *dst = ctx->pixels + (size_t)y * (size_t)ctx->stride;
             for (int x = coverage.box.x0; x < coverage.box.x1; x++) {
                 uint32_t m = row[x - coverage.box.x0];
+                if (!m) continue;
+                m = mul8(m, ctx->clip[(size_t)(y - ctx->clip_box.y0) *
+                    (size_t)ctx->clip_stride + (size_t)(x - ctx->clip_box.x0)]);
                 if (!m) continue;
                 double px = x + 0.5, py = y + 0.5;
                 double d0 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
@@ -877,33 +954,44 @@ static void sweep_patches(struct colr_ctx *ctx, struct colr_color_line *line, in
 static void composite_image(struct colr_ctx *ctx, const uint32_t *src, int src_stride,
     struct drect box, int op)
 {
-    struct colr_coverage coverage;
-    if (!coverage_build(ctx, &ctx->clip, box, &coverage)) return;
-    for (int y = coverage.box.y0; y < coverage.box.y1; y++) {
-        const unsigned char *row = coverage.pixels + (size_t)(y - coverage.box.y0) * coverage.width;
+    if (!ctx->clip) {
+        ctx->is_clear = false;
+        return;
+    }
+    for (int y = ctx->clip_box.y0; y < ctx->clip_box.y1; y++) {
+        const unsigned char *row = ctx->clip +
+            (size_t)(y - ctx->clip_box.y0) * (size_t)ctx->clip_stride;
         uint32_t *dst = ctx->pixels + (size_t)y * (size_t)ctx->stride;
-        for (int x = coverage.box.x0; x < coverage.box.x1; x++) {
+        for (int x = ctx->clip_box.x0; x < ctx->clip_box.x1; x++) {
             uint32_t s = 0;
             int sx = x - box.x0, sy = y - box.y0;
             if (sx >= 0 && sy >= 0 && sx < box.x1 - box.x0 && sy < box.y1 - box.y0)
                 s = src[(size_t)sy * (size_t)src_stride + sx];
-            dst[x] = dp_composite(dst[x], s, row[x - coverage.box.x0], op);
+            dst[x] = dp_composite(dst[x], s, row[x - ctx->clip_box.x0], op);
         }
     }
-    coverage_fini(&coverage);
     ctx->is_clear = false;
 }
 
 static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx *child,
     uint32_t **pixels)
 {
-    *box = intersected(*box, ctx->box);
+    *box = intersected(*box, ctx->clip_box);
     *box = intersected(*box, image_box(ctx));
     int w = box->x1 - box->x0, h = box->y1 - box->y0;
     if (w <= 0 || h <= 0) return false;
     *pixels = calloc((size_t)w, (size_t)h * sizeof(uint32_t));
     if (!*pixels) return false;
     *child = *ctx;
+    child->clip = calloc((size_t)w, (size_t)h);
+    if (!child->clip) {
+        free(*pixels);
+        *pixels = NULL;
+        return false;
+    }
+    memset(child->clip, 0xff, (size_t)w * (size_t)h);
+    child->clip_box = (struct drect){ 0, 0, w, h };
+    child->clip_stride = w;
     child->pixels = *pixels;
     child->width = w;
     child->height = h;
@@ -912,8 +1000,6 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->oy = ctx->oy + box->y0;
     child->level = ctx->level + 1;
     child->is_clear = true;
-    dpath_init(&child->clip);
-    dp_rectangle(&child->clip, 0, 0, w, h);
     child->box = (struct drect){ 0, 0, w, h };
     return true;
 }
@@ -921,7 +1007,7 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
 static void group_end(struct colr_ctx *ctx, struct colr_ctx *child, uint32_t *pixels,
     struct drect box, int op)
 {
-    dpath_fini(&child->clip);
+    free(child->clip);
     composite_image(ctx, pixels, child->width, box, op);
     free(pixels);
 }
@@ -940,15 +1026,20 @@ static void play_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
         dpath_fini(&path);
         return;
     }
-    struct dpath saved_path = ctx->clip;
+    unsigned char *saved_clip = ctx->clip;
+    struct drect saved_clip_box = ctx->clip_box;
+    int saved_clip_stride = ctx->clip_stride;
     struct drect saved_box = ctx->box;
-    ctx->clip = path;
+    clip_set(ctx, &path, intersected(box, saved_clip_box));
     ctx->box = box;
     int saved_level = ctx->level;
     ctx->level++;
     play(ctx, &paint->paint);
     ctx->level = saved_level;
-    ctx->clip = saved_path;
+    free(ctx->clip);
+    ctx->clip = saved_clip;
+    ctx->clip_box = saved_clip_box;
+    ctx->clip_stride = saved_clip_stride;
     ctx->box = saved_box;
     dpath_fini(&path);
 }
@@ -1105,36 +1196,251 @@ static void play(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
     }
 }
 
-static bool colr_box(FT_Face face, unsigned glyph, const struct colr_matrix *matrix,
-    double ox, double oy, struct drect *box, double corners[4][2])
+
+static void ink_add(struct colr_ctx *ctx, struct drect r)
 {
-    FT_ClipBox clip;
-    if (!FT_Get_Color_Glyph_ClipBox(face, glyph, &clip)) return false;
-    double source[4][2] = {
-        { (double)clip.bottom_left.x / 64.0, (double)clip.bottom_left.y / 64.0 },
-        { (double)clip.top_right.x / 64.0, (double)clip.bottom_left.y / 64.0 },
-        { (double)clip.top_right.x / 64.0, (double)clip.top_right.y / 64.0 },
-        { (double)clip.bottom_left.x / 64.0, (double)clip.top_right.y / 64.0 },
-    };
+    if (ctx->ink_unbounded) return;
+    if (r.x0 >= r.x1 || r.y0 >= r.y1) return;
+    if (ctx->ink.x0 >= ctx->ink.x1) {
+        ctx->ink = r;
+        return;
+    }
+    if (r.x0 < ctx->ink.x0) ctx->ink.x0 = r.x0;
+    if (r.y0 < ctx->ink.y0) ctx->ink.y0 = r.y0;
+    if (r.x1 > ctx->ink.x1) ctx->ink.x1 = r.x1;
+    if (r.y1 > ctx->ink.y1) ctx->ink.y1 = r.y1;
+}
+
+static void ink_add_clip(struct colr_ctx *ctx)
+{
+    if (ctx->aclip_unbounded)
+        ctx->ink_unbounded = true;
+    else
+        ink_add(ctx, ctx->aclip);
+}
+
+static void ink_add_group(struct colr_ctx *ctx, struct colr_ctx *group)
+{
+    if (group->ink_unbounded) {
+        ink_add_clip(ctx);
+        return;
+    }
+    struct drect r = group->ink;
+    if (!ctx->aclip_unbounded) r = intersected(r, ctx->aclip);
+    ink_add(ctx, r);
+}
+
+static bool bounded_by_source(int op)
+{
+    switch (op) {
+    case DP_COMP_CLEAR:
+    case DP_COMP_SRC:
+    case DP_COMP_OUT:
+    case DP_COMP_IN:
+    case DP_COMP_DEST_IN:
+    case DP_COMP_DEST_ATOP:
+        return false;
+    default:
+        return true;
+    }
+}
+
+static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque);
+
+static void analyze_glyph(struct colr_ctx *ctx, FT_PaintGlyph *paint)
+{
+    struct dpath path;
+    if (!colr_glyph_path(ctx, paint->glyphID, &path)) return;
+    struct drect extents = dp_path_extents(&path);
+    bool saved_unbounded = ctx->aclip_unbounded;
+    struct drect saved_clip = ctx->aclip;
+    if (ctx->aclip_unbounded)
+        ctx->aclip = extents;
+    else
+        ctx->aclip = intersected(ctx->aclip, extents);
+    ctx->aclip_unbounded = false;
+    if (ctx->aclip.x0 < ctx->aclip.x1 && ctx->aclip.y0 < ctx->aclip.y1)
+        analyze(ctx, &paint->paint);
+    ctx->aclip_unbounded = saved_unbounded;
+    ctx->aclip = saved_clip;
+    dpath_fini(&path);
+}
+
+static void analyze_layers(struct colr_ctx *ctx, FT_PaintColrLayers *layers)
+{
+    FT_OpaquePaint child;
+    while (FT_Get_Paint_Layers(ctx->face, &layers->layer_iterator, &child)) {
+        struct colr_ctx group = *ctx;
+        group.aclip_unbounded = true;
+        group.aclip = (struct drect){ 0, 0, 0, 0 };
+        group.ink = (struct drect){ 0, 0, 0, 0 };
+        group.ink_unbounded = false;
+        analyze(&group, &child);
+        ink_add_group(ctx, &group);
+        if (ctx->level > 128) return;
+    }
+}
+
+static void analyze_composite(struct colr_ctx *ctx, FT_PaintComposite *paint)
+{
+    int saved_level = ctx->level;
+    ctx->level++;
+    analyze(ctx, &paint->backdrop_paint);
+    struct colr_ctx group = *ctx;
+    group.aclip_unbounded = true;
+    group.aclip = (struct drect){ 0, 0, 0, 0 };
+    group.ink = (struct drect){ 0, 0, 0, 0 };
+    group.ink_unbounded = false;
+    analyze(&group, &paint->source_paint);
+    if (bounded_by_source(ft_composite_op(paint->composite_mode)))
+        ink_add_group(ctx, &group);
+    else
+        ink_add_clip(ctx);
+    ctx->level = saved_level;
+}
+
+static void analyze(struct colr_ctx *ctx, FT_OpaquePaint *opaque)
+{
+    FT_COLR_Paint paint;
+    if (ctx->level > 128) return;
+    if (!FT_Get_Paint(ctx->face, *opaque, &paint)) return;
+    switch (paint.format) {
+    case FT_COLR_PAINTFORMAT_COLR_LAYERS:
+        analyze_layers(ctx, &paint.u.colr_layers);
+        break;
+    case FT_COLR_PAINTFORMAT_SOLID:
+    case FT_COLR_PAINTFORMAT_LINEAR_GRADIENT:
+    case FT_COLR_PAINTFORMAT_RADIAL_GRADIENT:
+    case FT_COLR_PAINTFORMAT_SWEEP_GRADIENT:
+        ink_add_clip(ctx);
+        break;
+    case FT_COLR_PAINTFORMAT_GLYPH:
+        analyze_glyph(ctx, &paint.u.glyph);
+        break;
+    case FT_COLR_PAINTFORMAT_COLR_GLYPH: {
+        FT_OpaquePaint child = { NULL, 0 };
+        if (FT_Get_Color_Glyph_Paint(ctx->face, paint.u.colr_glyph.glyphID,
+                FT_COLOR_NO_ROOT_TRANSFORM, &child))
+            analyze(ctx, &child);
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_TRANSFORM: {
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        struct colr_matrix t = { from_16_16(paint.u.transform.affine.xx),
+            from_16_16(paint.u.transform.affine.yx),
+            from_16_16(paint.u.transform.affine.xy),
+            from_16_16(paint.u.transform.affine.yy),
+            from_16_16(paint.u.transform.affine.dx),
+            from_16_16(paint.u.transform.affine.dy) };
+        ctx_apply(ctx, &t);
+        analyze(ctx, &paint.u.transform.paint);
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_TRANSLATE: {
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        ctx_translate(ctx, from_16_16(paint.u.translate.dx),
+            from_16_16(paint.u.translate.dy));
+        analyze(ctx, &paint.u.translate.paint);
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_ROTATE: {
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double c = from_16_16(paint.u.rotate.angle) * M_PI;
+        double cx = from_16_16(paint.u.rotate.center_x);
+        double cy = from_16_16(paint.u.rotate.center_y);
+        struct colr_matrix r = { cos(c), sin(c), -sin(c), cos(c), 0, 0 };
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &r);
+        ctx_translate(ctx, -cx, -cy);
+        analyze(ctx, &paint.u.rotate.paint);
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_SCALE: {
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double cx = from_16_16(paint.u.scale.center_x);
+        double cy = from_16_16(paint.u.scale.center_y);
+        struct colr_matrix sc = { from_16_16(paint.u.scale.scale_x), 0, 0,
+            from_16_16(paint.u.scale.scale_y), 0, 0 };
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &sc);
+        ctx_translate(ctx, -cx, -cy);
+        analyze(ctx, &paint.u.scale.paint);
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_SKEW: {
+        struct colr_matrix m_saved = ctx->matrix;
+        struct colr_matrix c_saved = ctx->ctm_inverse;
+        double cx = from_16_16(paint.u.skew.center_x);
+        double cy = from_16_16(paint.u.skew.center_y);
+        struct colr_matrix sk = { 1, tan(from_16_16(paint.u.skew.y_skew_angle) * M_PI),
+            -tan(from_16_16(paint.u.skew.x_skew_angle) * M_PI), 1, 0, 0 };
+        ctx_translate(ctx, cx, cy);
+        ctx_apply(ctx, &sk);
+        ctx_translate(ctx, -cx, -cy);
+        analyze(ctx, &paint.u.skew.paint);
+        ctx->matrix = m_saved;
+        ctx->ctm_inverse = c_saved;
+        break;
+    }
+    case FT_COLR_PAINTFORMAT_COMPOSITE:
+        analyze_composite(ctx, &paint.u.composite);
+        break;
+    default:
+        break;
+    }
+}
+
+static void clip_corners(const struct colr_clip *clip, double corners[4][2],
+    struct drect *box)
+{
+    corners[0][0] = clip->x0;
+    corners[0][1] = clip->y0;
+    corners[1][0] = clip->x1;
+    corners[1][1] = clip->y0;
+    corners[2][0] = clip->x1;
+    corners[2][1] = clip->y1;
+    corners[3][0] = clip->x0;
+    corners[3][1] = clip->y1;
     box->x0 = box->y0 = INT32_MAX;
     box->x1 = box->y1 = INT32_MIN;
     for (int i = 0; i < 4; i++) {
-        double x = matrix->xx * source[i][0] + matrix->xy * source[i][1] - ox;
-        double y = matrix->yx * source[i][0] + matrix->yy * source[i][1] - oy;
-        corners[i][0] = x;
-        corners[i][1] = y;
-        int fx = (int)floor(x), fy = (int)floor(y);
-        int cx = (int)ceil(x), cy = (int)ceil(y);
+        int fx = (int)floor(corners[i][0]), fy = (int)floor(corners[i][1]);
+        int cx = (int)ceil(corners[i][0]), cy = (int)ceil(corners[i][1]);
         if (fx < box->x0) box->x0 = fx;
         if (fy < box->y0) box->y0 = fy;
         if (cx > box->x1) box->x1 = cx;
         if (cy > box->y1) box->y1 = cy;
     }
-    return true;
+}
+
+static void clip_path_build(struct dpath *path, bool have_box, double corners[4][2],
+    double ox, double oy, struct drect box)
+{
+    dpath_init(path);
+    if (have_box) {
+        dp_move_to(path, corners[0][0] - ox, corners[0][1] - oy);
+        for (int i = 1; i < 4; i++)
+            dp_line_to(path, corners[i][0] - ox, corners[i][1] - oy);
+        dp_close_path(path);
+    } else {
+        dp_rectangle(path, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+    }
 }
 
 bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *root,
-    uint32_t foreground, struct colr_image *out)
+    const struct colr_clip *clip, uint32_t foreground, struct colr_image *out)
 {
     FT_Face face = abstract_face;
     FT_OpaquePaint paint = { NULL, 0 };
@@ -1156,10 +1462,23 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
         struct colr_matrix flip = { 1, 0, 0, -1, 0, 0 };
         matrix_multiply(&ctx.matrix, &flip, root);
     }
-    struct drect box;
+    struct drect box = { 0, 0, 0, 0 };
     double corners[4][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 } };
-    bool have_box = colr_box(face, glyph, &ctx.matrix, 0, 0, &box, corners);
-    if (!have_box) {
+    bool have_box = clip != NULL;
+    if (have_box)
+        clip_corners(clip, corners, &box);
+    ctx.aclip_unbounded = !have_box;
+    if (have_box) {
+        struct dpath clip;
+        clip_path_build(&clip, true, corners, 0, 0, (struct drect){ 0, 0, 0, 0 });
+        ctx.aclip = dp_path_extents(&clip);
+        dpath_fini(&clip);
+    }
+    ctx.ink = (struct drect){ 0, 0, 0, 0 };
+    ctx.ink_unbounded = false;
+    analyze(&ctx, &paint);
+    struct drect ink = ctx.ink;
+    if (ctx.ink_unbounded) {
         double xs[4] = { (double)face->bbox.xMin, (double)face->bbox.xMax,
             (double)face->bbox.xMin, (double)face->bbox.xMax };
         double ys[4] = { (double)face->bbox.yMin, (double)face->bbox.yMin,
@@ -1170,73 +1489,54 @@ bool colr_render(void *abstract_face, unsigned glyph, const struct colr_matrix *
             int cx = (int)ceil(ctx.matrix.xx * xs[i] + ctx.matrix.xy * ys[i]);
             int cy = (int)ceil(ctx.matrix.yx * xs[i] + ctx.matrix.yy * ys[i]);
             if (i == 0) {
-                box = (struct drect){ fx, fy, cx, cy };
+                ink = (struct drect){ fx, fy, cx, cy };
             } else {
-                if (fx < box.x0) box.x0 = fx;
-                if (fy < box.y0) box.y0 = fy;
-                if (cx > box.x1) box.x1 = cx;
-                if (cy > box.y1) box.y1 = cy;
+                if (fx < ink.x0) ink.x0 = fx;
+                if (fy < ink.y0) ink.y0 = fy;
+                if (cx > ink.x1) ink.x1 = cx;
+                if (cy > ink.y1) ink.y1 = cy;
             }
         }
     }
-    double pad = 2.0;
-    ctx.ox = floor(box.x0 - pad);
-    ctx.oy = floor(box.y0 - pad);
-    ctx.width = (int)(ceil(box.x1 + pad) - ctx.ox);
-    ctx.height = (int)(ceil(box.y1 + pad) - ctx.oy);
-    if (ctx.width <= 0 || ctx.height <= 0 || ctx.width > 4096 || ctx.height > 4096)
-        return false;
-    ctx.pixels = calloc((size_t)ctx.width * (size_t)ctx.height, sizeof(uint32_t));
-    if (!ctx.pixels) return false;
-    ctx.stride = ctx.width;
-    ctx.level = 0;
-    ctx.is_clear = true;
-    ctx.box = (struct drect){ (int)(box.x0 - ctx.ox), (int)(box.y0 - ctx.oy),
-        (int)(box.x1 - ctx.ox), (int)(box.y1 - ctx.oy) };
-    ctx.box = intersected(ctx.box, image_box(&ctx));
-    dpath_init(&ctx.clip);
-    if (have_box) {
-        dp_move_to(&ctx.clip, corners[0][0] - ctx.ox, corners[0][1] - ctx.oy);
-        for (int i = 1; i < 4; i++)
-            dp_line_to(&ctx.clip, corners[i][0] - ctx.ox, corners[i][1] - ctx.oy);
-        dp_close_path(&ctx.clip);
-    } else {
-        dp_rectangle(&ctx.clip, ctx.box.x0, ctx.box.y0, ctx.box.x1 - ctx.box.x0,
-            ctx.box.y1 - ctx.box.y0);
-    }
-    play(&ctx, &paint);
-    dpath_fini(&ctx.clip);
-    int left = ctx.width, top = ctx.height, right = 0, bottom = 0;
-    for (int y = 0; y < ctx.height; y++)
-        for (int x = 0; x < ctx.width; x++)
-            if (ctx.pixels[(size_t)y * (size_t)ctx.width + x]) {
-                if (x < left) left = x;
-                if (y < top) top = y;
-                if (x + 1 > right) right = x + 1;
-                if (y + 1 > bottom) bottom = y + 1;
-            }
-    if (left >= right || top >= bottom) {
-        free(ctx.pixels);
+    if (ink.x0 >= ink.x1 || ink.y0 >= ink.y1) {
         out->pixels = NULL;
         out->width = out->height = 0;
         out->off_x = out->off_y = 0;
         return true;
     }
-    int w = right - left, h = bottom - top;
-    uint32_t *pixels = malloc((size_t)w * (size_t)h * sizeof(uint32_t));
-    if (!pixels) {
-        free(ctx.pixels);
-        return false;
+    ctx.ox = ink.x0;
+    ctx.oy = ink.y0;
+    ctx.width = ink.x1 - ink.x0;
+    ctx.height = ink.y1 - ink.y0;
+    if (ctx.width > 4096 || ctx.height > 4096) return false;
+    ctx.pixels = calloc((size_t)ctx.width * (size_t)ctx.height, sizeof(uint32_t));
+    if (!ctx.pixels) return false;
+    ctx.stride = ctx.width;
+    ctx.level = 0;
+    ctx.is_clear = true;
+    ctx.box = (struct drect){ 0, 0, ctx.width, ctx.height };
+    if (have_box) {
+        struct dpath clip;
+        clip_path_build(&clip, true, corners, ctx.ox, ctx.oy, ctx.box);
+        clip_set(&ctx, &clip, ctx.box);
+        dpath_fini(&clip);
+    } else {
+        ctx.clip = malloc((size_t)ctx.width * (size_t)ctx.height);
+        if (!ctx.clip) {
+            free(ctx.pixels);
+            return false;
+        }
+        memset(ctx.clip, 0xff, (size_t)ctx.width * (size_t)ctx.height);
+        ctx.clip_box = ctx.box;
+        ctx.clip_stride = ctx.width;
     }
-    for (int y = 0; y < h; y++)
-        memcpy(pixels + (size_t)y * (size_t)w,
-            ctx.pixels + (size_t)(top + y) * (size_t)ctx.width + left, (size_t)w * 4);
-    free(ctx.pixels);
-    out->pixels = pixels;
-    out->width = w;
-    out->height = h;
-    out->off_x = -(int)ctx.ox - left;
-    out->off_y = -(int)ctx.oy - top;
+    play(&ctx, &paint);
+    free(ctx.clip);
+    out->pixels = ctx.pixels;
+    out->width = ctx.width;
+    out->height = ctx.height;
+    out->off_x = -ctx.ox;
+    out->off_y = -ctx.oy;
     return true;
 }
 
