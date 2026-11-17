@@ -840,6 +840,10 @@ struct svg_shader {
     int len;
     float factors[20][4], biases[20][4], t_values[21];
     int opaque;
+    struct svg_pattern *pattern;
+    struct svg_pixmap pattern_pixmap;
+    int has_pattern_pixmap;
+    int pattern_quality;
 };
 
 struct svg_super {
@@ -858,6 +862,13 @@ struct svg_super {
 
 static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned out[4]);
 static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]);
+
+static unsigned svg_round_u8(float v) {
+    if (!(v == v)) return 0;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return (unsigned)lrintf(v * 255.0f);
+}
 
 static void svg_super_flush(struct svg_super *sb) {
     if (sb->curr_iy >= (int)sb->top && sb->width > 0) {
@@ -880,13 +891,7 @@ static void svg_super_flush(struct svg_super *sb) {
                 float fb = (pb - d[2]) * cov + d[2];
                 float fa = (pa - d[3]) * cov + d[3];
                 float vals[4] = { fr, fg, fb, fa };
-                for (int k = 0; k < 4; k++) {
-                    float v = vals[k];
-                    if (!(v > 0.0f)) v = 0.0f;
-                    if (v > 1.0f) v = 1.0f;
-                    long rv = lrintf(v * 255.0f);
-                    px[k] = (unsigned char)rv;
-                }
+                for (int k = 0; k < 4; k++) px[k] = (unsigned char)svg_round_u8(vals[k]);
                 continue;
             }
             unsigned color[4];
@@ -3442,10 +3447,22 @@ struct svg_gradient {
     int nstops;
 };
 
+struct svg_pattern {
+    int units_bbox;
+    int content_bbox;
+    struct svg_matrix transform;
+    float rect[4];
+    int has_view_box;
+    float view_box[4];
+    int align, slice;
+    struct svg_node *root;
+};
+
 struct svg_paint {
     int type;
     unsigned char r, g, b;
     struct svg_gradient *gradient;
+    struct svg_pattern *pattern;
 };
 
 struct svg_fill {
@@ -3532,6 +3549,12 @@ static void svg_free_gradient(struct svg_gradient *g) {
     free(g);
 }
 
+static void svg_free_pattern(struct svg_pattern *p) {
+    if (!p) return;
+    svg_node_destroy(p->root);
+    free(p);
+}
+
 static void svg_free_clip(struct svg_clip *c) {
     if (!c) return;
     svg_node_destroy(c->root);
@@ -3553,6 +3576,8 @@ static void svg_node_destroy(struct svg_node *n) {
     svg_path_free(n->path);
     if (n->fill.paint.gradient) svg_free_gradient(n->fill.paint.gradient);
     if (n->stroke.paint.gradient) svg_free_gradient(n->stroke.paint.gradient);
+    if (n->fill.paint.pattern) svg_free_pattern(n->fill.paint.pattern);
+    if (n->stroke.paint.pattern) svg_free_pattern(n->stroke.paint.pattern);
     free(n->stroke.dash);
     svg_free_clip(n->clip);
     svg_free_mask(n->mask);
@@ -3853,6 +3878,46 @@ static int svg_gradient_spread(struct svg_doc *doc, struct xml_node *node) {
     return 0;
 }
 
+static struct xml_node *svg_resolve_pattern_attr(struct svg_doc *doc, struct xml_node *node,
+        const char *name) {
+    struct xml_node *cur = node;
+    int guard = 0;
+    for (;;) {
+        if (svg_xml_attr(cur, name)) return cur;
+        struct xml_node *link = svg_href_link(doc, cur);
+        if (!link || ++guard > 32 || !svg_tag_is(link, "pattern")) return node;
+        cur = link;
+    }
+}
+
+static const char *svg_pattern_attr(struct svg_doc *doc, struct xml_node *node, const char *name) {
+    return svg_xml_attr(svg_resolve_pattern_attr(doc, node, name), name);
+}
+
+static float svg_pattern_number(struct svg_conv *c, struct xml_node *node, const char *name,
+        int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
+    const char *text = svg_pattern_attr(c->doc, node, name);
+    struct svg_length l = { def_number, def_unit };
+    if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
+    float n = (float)l.number;
+    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
+    switch (l.unit) {
+    case SVG_UNIT_PERCENT: {
+        float base = axis == 0 ? c->view_box[2] : c->view_box[3];
+        return base * n / 100.0f;
+    }
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
+    case SVG_UNIT_EM: return n * 12.0f;
+    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
+    case SVG_UNIT_IN: return n * c->dpi;
+    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
+    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
+    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
+    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
+    default: return n;
+    }
+}
+
 static float svg_resolve_number(struct svg_conv *c, struct xml_node *node, const char *name,
         int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
     const char *text = svg_gradient_attr(c->doc, node, name);
@@ -3966,6 +4031,10 @@ static struct xml_node *svg_gradient_stop_source(struct svg_doc *doc, struct xml
     }
 }
 
+static void svg_convert_children(struct svg_conv *c, struct xml_node *parent,
+        struct svg_node *target, struct svg_matrix abs, int clip_context);
+static void svg_group_bboxes(struct svg_node *g);
+
 static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const char *value,
         int has_bbox, struct svg_paint *paint, float *opacity, int *unsupported) {
     memset(paint, 0, sizeof(*paint));
@@ -4070,7 +4139,45 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                     }
                 }
             } else if (svg_tag_is(link, "pattern")) {
-                *unsupported = 1;
+                struct svg_pattern *p = svg_alloc(sizeof(*p));
+                if (p) {
+                    memset(p, 0, sizeof(*p));
+                    const char *units = svg_pattern_attr(c->doc, link, "patternUnits");
+                    p->units_bbox = !units || strcmp(units, "userSpaceOnUse");
+                    const char *cu = svg_pattern_attr(c->doc, link, "patternContentUnits");
+                    p->content_bbox = cu && !strcmp(cu, "objectSpaceOnUse");
+                    if (cu && !strcmp(cu, "objectBoundingBox")) p->content_bbox = 1;
+                    const char *tt = svg_pattern_attr(c->doc, link, "patternTransform");
+                    p->transform = svg_matrix_identity();
+                    if (tt) svg_transform_valid(tt, &p->transform);
+                    p->rect[0] = svg_pattern_number(c, link, "x", p->units_bbox, 0, 0, SVG_UNIT_NONE);
+                    p->rect[1] = svg_pattern_number(c, link, "y", p->units_bbox, 1, 0, SVG_UNIT_NONE);
+                    p->rect[2] = svg_pattern_number(c, link, "width", p->units_bbox, 0, 0, SVG_UNIT_NONE);
+                    p->rect[3] = svg_pattern_number(c, link, "height", p->units_bbox, 1, 0, SVG_UNIT_NONE);
+                    const char *vb_text = svg_pattern_attr(c->doc, link, "viewBox");
+                    if (vb_text && svg_parse_viewbox(vb_text, p->view_box)) {
+                        p->has_view_box = 1;
+                        const char *ar = svg_pattern_attr(c->doc, link, "preserveAspectRatio");
+                        {
+                            struct svg_aspect aspect;
+                            if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
+                            p->align = aspect.align;
+                            p->slice = aspect.slice;
+                        }
+                    }
+                    p->root = svg_node_new(0);
+                    if (p->root && p->rect[2] > 0.0f && p->rect[3] > 0.0f) {
+                        struct svg_conv nested = *c;
+                        svg_convert_children(&nested, link, p->root, svg_matrix_identity(), 0);
+                        svg_group_bboxes(p->root);
+                        if (p->root->nchildren) {
+                            paint->type = 12;
+                            paint->pattern = p;
+                            have = 1;
+                        }
+                    }
+                    if (!have) svg_free_pattern(p);
+                }
                 have = 1;
             } else {
                 have = 1;
@@ -4145,8 +4252,9 @@ static int svg_cap(const char *text) {
 }
 
 static int svg_join(const char *text) {
-    if (text && !strcmp(text, "round")) return 1;
-    if (text && !strcmp(text, "bevel")) return 2;
+    if (text && !strcmp(text, "round")) return 2;
+    if (text && !strcmp(text, "bevel")) return 3;
+    if (text && !strcmp(text, "miter-clip")) return 1;
     return 0;
 }
 
@@ -6747,6 +6855,10 @@ static int svg_focal_set(struct svg_shader *shader, float r0, float r1,
     return 1;
 }
 
+static void svg_pixmap_init(struct svg_pixmap *p, int width, int height);
+static void svg_render_nodes(struct svg_node *group, struct svg_matrix ts,
+        struct svg_pixmap *pixmap);
+
 static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *paint, float opacity,
         struct svg_matrix device_ts, float path_bbox[4], int has_bbox) {
     memset(shader, 0, sizeof(*shader));
@@ -6762,6 +6874,78 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         shader->sg = (pg + (pg >> 8)) >> 8;
         shader->sb = (pb + (pb >> 8)) >> 8;
         shader->sa = pa;
+        return;
+    }
+    if (paint->type == 12) {
+        struct svg_pattern *pt = paint->pattern;
+        if (!pt || !pt->root) { shader->type = -1; return; }
+        float rect[4] = { pt->rect[0], pt->rect[1], pt->rect[2], pt->rect[3] };
+        if (pt->units_bbox) {
+            if (!has_bbox) { shader->type = -1; return; }
+            rect[0] = pt->rect[0] * path_bbox[2] + path_bbox[0];
+            rect[1] = pt->rect[1] * path_bbox[3] + path_bbox[1];
+            rect[2] = pt->rect[2] * path_bbox[2];
+            rect[3] = pt->rect[3] * path_bbox[3];
+        }
+        if (!(rect[2] > 0.0f) || !(rect[3] > 0.0f)) { shader->type = -1; return; }
+        struct svg_matrix tts = svg_matrix_concat(device_ts, pt->transform);
+        float sx = sqrtf(tts.sx * tts.sx + tts.kx * tts.kx);
+        float sy = sqrtf(tts.ky * tts.ky + tts.sy * tts.sy);
+        if (!isfinite(sx) || !isfinite(sy) || !(sx > 0.0f) || !(sy > 0.0f)) {
+            shader->type = -1;
+            return;
+        }
+        long iw = lrintf(rect[2] * sx), ih = lrintf(rect[3] * sy);
+        if (iw < 1) iw = 1;
+        if (ih < 1) ih = 1;
+        if (iw > 32767 || ih > 32767 || (int64_t)iw * ih > 268435456) { shader->type = -1; return; }
+        struct svg_pixmap pm;
+        svg_pixmap_init(&pm, (int)iw, (int)ih);
+        if (!pm.pixels) { shader->type = -1; return; }
+        struct svg_node *wrap = pt->root;
+        struct svg_node *outer = NULL;
+        if (pt->content_bbox && !pt->has_view_box) {
+            struct svg_node *g = svg_node_new(0);
+            if (g) {
+                g->transform = (struct svg_matrix){ path_bbox[2], 0.0f, 0.0f, path_bbox[3], 0.0f, 0.0f };
+                if (outer) { if (!svg_node_add(g, outer)) { svg_node_destroy(g); g = NULL; } }
+                else if (!svg_node_add(g, wrap)) { svg_node_destroy(g); g = NULL; }
+                if (g) outer = g;
+            }
+        }
+        if (pt->has_view_box) {
+            struct svg_aspect aspect = { pt->align, pt->slice };
+            struct svg_matrix vb = svg_viewbox_transform(pt->view_box, aspect, rect[2], rect[3]);
+            struct svg_node *g = svg_node_new(0);
+            if (g) {
+                g->transform = vb;
+                if (!svg_node_add(g, outer ? outer : wrap)) { svg_node_destroy(g); g = NULL; }
+                if (g) outer = g;
+            }
+        }
+        struct svg_node *render_root = outer ? outer : wrap;
+        svg_render_nodes(render_root, (struct svg_matrix){ sx, 0.0f, 0.0f, sy, 0.0f, 0.0f }, &pm);
+        if (outer) {
+            outer->nchildren = 0;
+            svg_node_destroy(outer);
+        }
+        shader->type = 2;
+        shader->highp = 1;
+        shader->pattern = pt;
+        shader->pattern_pixmap = pm;
+        shader->has_pattern_pixmap = 1;
+        shader->pattern_quality = 2;
+        shader->spread = 2;
+        shader->opacity = alpha_f;
+        float tx = rect[0], ty = rect[1];
+        struct svg_matrix sts = svg_matrix_concat(pt->transform, (struct svg_matrix){ 1, 0, 0, 1, tx, ty });
+        sts = svg_matrix_concat(sts, (struct svg_matrix){ 1.0f / sx, 0, 0, 1.0f / sy, 0, 0 });
+        int iok;
+        struct svg_matrix its = svg_matrix_invert(sts, &iok);
+        if (!iok) { shader->type = -1; return; }
+        shader->ts = (struct svg_matrix){ 1, 0, 0, 1, -rect[0] * sx, -rect[1] * sy };
+        (void)its;
+        shader->pattern_quality = 0;
         return;
     }
     if ((paint->type != 10 && paint->type != 11) || !paint->gradient) {
@@ -7020,9 +7204,116 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
     if (shader->len >= 20) shader->len = 19;
 }
 
+static float svg_mad(float a, float b, float c) { return a * b + c; }
+
+static float svg_norm01(float v) {
+    if (!(v == v)) return 0.0f;
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+static float svg_ulp_sub(float v) {
+    union { float f; uint32_t u; } c;
+    c.f = v;
+    if (c.u == 0) return v;
+    c.u -= 1;
+    return c.f;
+}
+
+static float svg_pattern_tile(float v, int spread, float limit, float inv_limit) {
+    if (spread == 1)
+        return fabsf((v - limit) - (limit + limit) * floorf((v - limit) * (inv_limit * 0.5f)) - limit);
+    if (spread == 2) return v - floorf(v * inv_limit) * limit;
+    return v;
+}
+
+static void svg_pattern_sample(struct svg_shader *shader, float x, float y, float out[4]) {
+    struct svg_pixmap *pm = &shader->pattern_pixmap;
+    float w = (float)pm->width, h = (float)pm->height;
+    x = svg_pattern_tile(x, shader->spread, w, 1.0f / w);
+    y = svg_pattern_tile(y, shader->spread, h, 1.0f / h);
+    float xmax = svg_ulp_sub(w), ymax = svg_ulp_sub(h);
+    if (!(x > 0.0f)) x = 0.0f;
+    if (x > xmax) x = xmax;
+    if (!(y > 0.0f)) y = 0.0f;
+    if (y > ymax) y = ymax;
+    int ix = (int)x, iy = (int)y;
+    unsigned char *p = pm->pixels + ((size_t)iy * (size_t)pm->width + (size_t)ix) * 4;
+    for (int k = 0; k < 4; k++) out[k] = (float)p[k] * (1.0f / 255.0f);
+}
+
+static void svg_pattern_sampler_2x2(struct svg_shader *shader, float cx, float cy,
+        const float wx[2], const float wy[2], float out[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            float s[4];
+            svg_pattern_sample(shader, cx + ((float)i - 0.5f), cy + ((float)j - 0.5f), s);
+            float w = wx[i] * wy[j];
+            for (int k = 0; k < 4; k++) out[k] = svg_mad(w, s[k], out[k]);
+        }
+    }
+}
+
+static void svg_pattern_sampler_4x4(struct svg_shader *shader, float cx, float cy,
+        const float wx[4], const float wy[4], float out[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            float s[4];
+            svg_pattern_sample(shader, cx + ((float)i - 1.5f), cy + ((float)j - 1.5f), s);
+            float w = wx[i] * wy[j];
+            for (int k = 0; k < 4; k++) out[k] = svg_mad(w, s[k], out[k]);
+        }
+    }
+}
+
+static float svg_bicubic_near(float t) {
+    return svg_mad(t, svg_mad(t, svg_mad(-21.0f / 18.0f, t, 27.0f / 18.0f), 9.0f / 18.0f),
+        1.0f / 18.0f);
+}
+
+static float svg_bicubic_far(float t) {
+    return (t * t) * svg_mad(7.0f / 18.0f, t, -6.0f / 18.0f);
+}
+
+static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out[4]) {
+    struct svg_matrix *ts = &shader->ts;
+    float px = (float)x + 0.5f, py = (float)y + 0.5f;
+    float nx = px * ts->sx + (py * ts->kx + ts->tx);
+    float ny = px * ts->ky + (py * ts->sy + ts->ty);
+    if (shader->pattern_quality == 2) {
+        float fx = (nx + 0.5f) - floorf(nx + 0.5f);
+        float fy = (ny + 0.5f) - floorf(ny + 0.5f);
+        float wx[4] = { svg_bicubic_far(1.0f - fx), svg_bicubic_near(1.0f - fx),
+            svg_bicubic_near(fx), svg_bicubic_far(fx) };
+        float wy[4] = { svg_bicubic_far(1.0f - fy), svg_bicubic_near(1.0f - fy),
+            svg_bicubic_near(fy), svg_bicubic_far(fy) };
+        svg_pattern_sampler_4x4(shader, nx, ny, wx, wy, out);
+    } else if (shader->pattern_quality == 1) {
+        float fx = (nx + 0.5f) - floorf(nx + 0.5f);
+        float fy = (ny + 0.5f) - floorf(ny + 0.5f);
+        float wx[2] = { 1.0f - fx, fx };
+        float wy[2] = { 1.0f - fy, fy };
+        svg_pattern_sampler_2x2(shader, nx, ny, wx, wy, out);
+    } else {
+        svg_pattern_sample(shader, nx, ny, out);
+    }
+    float o = shader->opacity;
+    out[0] *= o;
+    out[1] *= o;
+    out[2] *= o;
+    out[3] *= o;
+}
+
 static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]) {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     if (!shader || shader->type < 0) return;
+    if (shader->type == 2) {
+        svg_pattern_color(shader, x, y, out);
+        return;
+    }
     if (shader->type == 0) {
         out[0] = (float)shader->sr / 255.0f;
         out[1] = (float)shader->sg / 255.0f;
@@ -7032,8 +7323,8 @@ static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, floa
     }
     struct svg_matrix *ts = &shader->ts;
     float px = (float)x + 0.5f, py = (float)y + 0.5f;
-    float nx = px * ts->sx + (py * ts->kx + ts->tx);
-    float ny = px * ts->ky + (py * ts->sy + ts->ty);
+    float nx = svg_mad(px, ts->sx, svg_mad(py, ts->kx, ts->tx));
+    float ny = svg_mad(px, ts->ky, svg_mad(py, ts->sy, ts->ty));
     float t;
     int mask = 1;
     if (shader->conical_kind == 2) {
@@ -7068,12 +7359,13 @@ static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, floa
     }
     float color[4];
     if (shader->two_stop) {
-        for (int k = 0; k < 4; k++) color[k] = t * shader->factor[k] + shader->bias[k];
+        for (int k = 0; k < 4; k++) color[k] = svg_mad(t, shader->factor[k], shader->bias[k]);
     } else {
         int idx = 0;
         for (int i = 1; i < shader->len; i++) idx += (t >= shader->t_values[i]);
         if (idx >= 20) idx = 19;
-        for (int k = 0; k < 4; k++) color[k] = t * shader->factors[idx][k] + shader->biases[idx][k];
+        for (int k = 0; k < 4; k++)
+            color[k] = svg_mad(t, shader->factors[idx][k], shader->biases[idx][k]);
     }
     if (!shader->opaque) {
         color[0] *= color[3];
@@ -7092,8 +7384,8 @@ static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned o
     }
     struct svg_matrix *ts = &shader->ts;
     float px = (float)x + 0.5f, py = (float)y + 0.5f;
-    float nx = px * ts->sx + (py * ts->kx + ts->tx);
-    float ny = px * ts->ky + (py * ts->sy + ts->ty);
+    float nx = svg_mad(px, ts->sx, svg_mad(py, ts->kx, ts->tx));
+    float ny = svg_mad(px, ts->ky, svg_mad(py, ts->sy, ts->ty));
     float t = nx;
     if (shader->radial) {
         t = sqrtf(nx * nx + ny * ny);
@@ -7112,34 +7404,17 @@ static void svg_shader_color(struct svg_shader *shader, int x, int y, unsigned o
     }
     float color[4];
     if (shader->two_stop) {
-        for (int k = 0; k < 4; k++) color[k] = t * shader->factor[k] + shader->bias[k];
-        for (int k = 0; k < 3; k++) {
-            float v = color[k];
-            if (v < 0.0f) v = 0.0f;
-            if (v > 1.0f) v = 1.0f;
-            color[k] = v * 255.0f + 0.5f;
-        }
-        color[3] = color[3] * 255.0f + 0.5f;
+        for (int k = 0; k < 4; k++) color[k] = svg_mad(t, shader->factor[k], shader->bias[k]);
     } else {
         int idx = 0;
         for (int i = 1; i < shader->len; i++) idx += (t >= shader->t_values[i]);
         if (idx >= 20) idx = 19;
         for (int k = 0; k < 4; k++)
-            color[k] = t * shader->factors[idx][k] + shader->biases[idx][k];
-        for (int k = 0; k < 3; k++) {
-            float v = color[k];
-            if (v < 0.0f) v = 0.0f;
-            if (v > 1.0f) v = 1.0f;
-            color[k] = v * 255.0f + 0.5f;
-        }
-        color[3] = color[3] * 255.0f + 0.5f;
+            color[k] = svg_mad(t, shader->factors[idx][k], shader->biases[idx][k]);
     }
     unsigned u[4];
-    for (int k = 0; k < 4; k++) {
-        if (color[k] < 0.0f) color[k] = 0.0f;
-        if (color[k] > 65535.0f) color[k] = 65535.0f;
-        u[k] = (unsigned)color[k];
-    }
+    for (int k = 0; k < 3; k++) u[k] = (unsigned)(svg_norm01(color[k]) * 255.0f + 0.5f);
+    u[3] = (unsigned)(color[3] * 255.0f + 0.5f);
     if (!shader->opaque) {
         for (int k = 0; k < 3; k++) u[k] = (u[k] * u[3] + 255u) >> 8;
     }
@@ -7201,15 +7476,7 @@ static void svg_draw_pixmap(struct svg_pixmap *dst, int dx, int dy, struct svg_p
                 d[k] = (float)dp[k] * (1.0f / 255.0f);
             }
             svg_hq_blend(blend, s[0], s[1], s[2], s[3], d[0], d[1], d[2], d[3], o);
-            for (int k = 0; k < 4; k++) {
-                float v = o[k];
-                if (v < 0.0f) v = 0.0f;
-                if (v > 1.0f) v = 1.0f;
-                long rv = lrintf(v * 255.0f);
-                if (rv < 0) rv = 0;
-                if (rv > 255) rv = 255;
-                dp[k] = (unsigned char)rv;
-            }
+            for (int k = 0; k < 4; k++) dp[k] = (unsigned char)svg_round_u8(o[k]);
         }
     }
 }
@@ -7244,6 +7511,7 @@ static void svg_render_path_fill(struct svg_node *node, struct svg_matrix ts,
     svg_path_transform(path, ts);
     svg_fill_path(path, node->fill.rule, pixmap, &shader, blend);
     svg_path_free(path);
+    if (shader.has_pattern_pixmap) svg_pixmap_free(&shader.pattern_pixmap);
 }
 
 static float svg_resolution_scale(struct svg_matrix ts) {
@@ -7307,6 +7575,7 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         svg_prepare_shader(&hshader, &node->stroke.paint, node->stroke.opacity * factor, ts,
             bbox, 1);
         if (hshader.type >= 0) svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader);
+        if (hshader.has_pattern_pixmap) svg_pixmap_free(&hshader.pattern_pixmap);
         svg_path_free(hpath);
         return;
     }
@@ -7331,6 +7600,7 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
     svg_prepare_shader(&shader, &node->stroke.paint, node->stroke.opacity, ts, bbox, 1);
     if (shader.type >= 0)
         svg_fill_path(stroked, 0, pixmap, &shader, blend);
+    if (shader.has_pattern_pixmap) svg_pixmap_free(&shader.pattern_pixmap);
     svg_path_free(stroked);
 }
 
