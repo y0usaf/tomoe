@@ -3815,7 +3815,7 @@ static struct svg_matrix svg_viewbox_transform(float rect[4], struct svg_aspect 
     return (struct svg_matrix){ sx, 0.0f, 0.0f, sy, tx, ty };
 }
 
-static int svg_transform_valid(const char *text, struct svg_matrix *out) {
+static int svg_transform_parse(const char *text, struct svg_matrix *out) {
     struct svg_stream s = { text, strlen(text), 0 };
     struct svg_matrix ts = svg_matrix_identity();
     for (;;) {
@@ -3899,6 +3899,27 @@ static int svg_transform_valid(const char *text, struct svg_matrix *out) {
     }
     if (!(isfinite(ts.sx) && isfinite(ts.ky) && isfinite(ts.kx) && isfinite(ts.sy) &&
             isfinite(ts.tx) && isfinite(ts.ty))) return 0;
+    *out = ts;
+    return 1;
+}
+
+static int svg_matrix_degenerate(const struct svg_matrix *m) {
+    float sx = sqrtf(m->sx * m->sx + m->kx * m->kx);
+    float sy = sqrtf(m->ky * m->ky + m->sy * m->sy);
+    if (!isfinite(sx) || !isfinite(sy)) return 1;
+    return !(sx > 1.19209290e-7f) || !(sy > 1.19209290e-7f);
+}
+
+static int svg_transform_valid(const char *text, struct svg_matrix *out) {
+    struct svg_matrix ts;
+    if (!svg_transform_parse(text, &ts)) {
+        *out = svg_matrix_identity();
+        return 1;
+    }
+    if (svg_matrix_degenerate(&ts)) {
+        *out = svg_matrix_identity();
+        return 0;
+    }
     *out = ts;
     return 1;
 }
@@ -4303,11 +4324,21 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                             p->slice = aspect.slice;
                         }
                     }
+                    struct xml_node *content_src = NULL;
+                    for (struct xml_node *cur = link; cur; ) {
+                        int elements = 0;
+                        for (int k = 0; k < cur->nchildren; k++)
+                            if (svg_tag_known(svg_local_name(cur->children[k]->name))) elements++;
+                        if (elements) { content_src = cur; break; }
+                        struct xml_node *next = svg_href_link(c->doc, cur);
+                        if (!next || !svg_tag_is(next, "pattern")) break;
+                        cur = next;
+                    }
                     p->root = svg_node_new(0);
-                    if (p->root && p->rect[2] > 0.0f && p->rect[3] > 0.0f) {
+                    if (p->root && content_src && p->rect[2] > 0.0f && p->rect[3] > 0.0f) {
                         struct svg_conv nested = *c;
                         nested.pattern_depth = c->pattern_depth + 1;
-                        svg_convert_children(&nested, link, p->root, svg_matrix_identity(), 0);
+                        svg_convert_children(&nested, content_src, p->root, svg_matrix_identity(), 0);
                         svg_group_bboxes(p->root);
                         if (p->root->nchildren) {
                             paint->type = 12;
@@ -8597,6 +8628,9 @@ static int svg_focal_set(struct svg_shader *shader, float r0, float r1,
 }
 
 static void svg_pixmap_init(struct svg_pixmap *p, int width, int height);
+static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
+        struct svg_pixmap *pixmap);
+
 static void svg_render_nodes(struct svg_node *group, struct svg_matrix ts,
         struct svg_pixmap *pixmap);
 
@@ -8650,7 +8684,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
                 g->transform = (struct svg_matrix){ path_bbox[2], 0.0f, 0.0f, path_bbox[3], 0.0f, 0.0f };
                 if (outer) { if (!svg_node_add(g, outer)) { svg_node_destroy(g); g = NULL; } }
                 else if (!svg_node_add(g, wrap)) { svg_node_destroy(g); g = NULL; }
-                if (g) outer = g;
+                if (g) { outer = g; svg_group_bboxes(g); }
             }
         }
         if (pt->has_view_box) {
@@ -8664,7 +8698,8 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
             }
         }
         struct svg_node *render_root = outer ? outer : wrap;
-        svg_render_nodes(render_root, (struct svg_matrix){ sx, 0.0f, 0.0f, sy, 0.0f, 0.0f }, &pm);
+        svg_render_group_node(render_root, (struct svg_matrix){ sx, 0.0f, 0.0f, sy, 0.0f, 0.0f },
+            &pm);
         if (outer) {
             outer->nchildren = 0;
             svg_node_destroy(outer);
