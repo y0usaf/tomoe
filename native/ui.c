@@ -91,6 +91,11 @@ struct ui_set {
 
 static const char empty_string[] = "";
 
+static size_t canvas_stride(int width) {
+    if (width <= 0 || width > INT32_MAX / 4) return 0;
+    return (size_t)width * 4;
+}
+
 static double monotonic_seconds(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -784,7 +789,7 @@ int tomoe_present_ui_surface(struct tomoe *s, const char *owner,
     for (size_t i = 0; i < set->count; i++)
         if (same_declaration(set->surfaces[i], owner, name, output)) return 0;
 
-    size_t stride = (size_t)cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
+    size_t stride = canvas_stride(width);
     if (stride == 0) return 0;
     uint64_t bytes;
     if (!checked_surface_bytes(width, height, stride, &bytes)) return 0;
@@ -1565,8 +1570,7 @@ static bool surface_commit(struct tomoe *s, struct ui_surface *surface) {
         surface->canvas->height != surface->height;
     if (full) {
         uint64_t bytes = surface->bytes;
-        size_t stride = (size_t)cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32,
-            surface->width);
+        size_t stride = canvas_stride(surface->width);
         canvas_unref(surface->canvas);
         surface->canvas = canvas_create(surface->width, surface->height, stride, bytes);
         if (!surface->canvas) {
