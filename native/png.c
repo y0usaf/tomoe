@@ -1096,12 +1096,14 @@ static void def_compress_block(struct png_deflate *s, const struct def_ct *ltree
     def_send_bits(s, ltree[DEF_END_BLOCK].fc.code, ltree[DEF_END_BLOCK].dl.len);
 }
 
-static int def_flush_pending(struct png_deflate *s) {
-    if (!s->pending) return 1;
-    if (s->out_len + s->pending > s->out_cap) {
+static int def_append_out(struct png_deflate *s, const unsigned char *data, size_t len) {
+    if (!len) return 1;
+    if (len > SIZE_MAX - s->out_len) return 0;
+    size_t needed = s->out_len + len;
+    if (needed > s->out_cap) {
         size_t ncap = s->out_cap ? s->out_cap * 2 : 8192;
-        while (ncap < s->out_len + s->pending) {
-            if (ncap > SIZE_MAX / 2) { ncap = s->out_len + s->pending; break; }
+        while (ncap < needed) {
+            if (ncap > SIZE_MAX / 2) { ncap = needed; break; }
             ncap *= 2;
         }
         unsigned char *nb = realloc(s->out, ncap);
@@ -1109,8 +1111,13 @@ static int def_flush_pending(struct png_deflate *s) {
         s->out = nb;
         s->out_cap = ncap;
     }
-    memcpy(s->out + s->out_len, s->pending_buf, s->pending);
-    s->out_len += s->pending;
+    memcpy(s->out + s->out_len, data, len);
+    s->out_len += len;
+    return 1;
+}
+
+static int def_flush_pending(struct png_deflate *s) {
+    if (!def_append_out(s, s->pending_buf, s->pending)) return 0;
     s->pending = 0;
     return 1;
 }
@@ -1130,10 +1137,8 @@ static int def_flush_block(struct png_deflate *s, int last) {
         def_bi_windup(s);
         def_put_short(s, (uint16_t)stored_len);
         def_put_short(s, (uint16_t)~stored_len);
-        if (stored_len) {
-            memcpy(s->pending_buf + s->pending, buf, stored_len);
-            s->pending += stored_len;
-        }
+        if (!def_flush_pending(s)) return 0;
+        if (!def_append_out(s, buf, stored_len)) return 0;
     } else if (static_lenb == opt_lenb) {
         def_send_bits(s, 2 + last, 3);
         def_compress_block(s, s->static_ltree, s->static_dtree);
@@ -1294,9 +1299,9 @@ static int png_deflate(const unsigned char *in, size_t in_len, int window,
     s->window = calloc(1, s->window_size + 8u);
     s->prev = malloc(s->w_size * sizeof(uint16_t));
     s->head = calloc(DEF_HASH_SIZE, sizeof(uint16_t));
-    s->pending_buf = malloc(DEF_LIT_BUFSIZE * 4u);
-    if (!s->window || !s->prev || !s->head || !s->pending_buf) goto fail;
-    s->sym_buf = s->pending_buf + DEF_LIT_BUFSIZE;
+    s->pending_buf = malloc(DEF_LIT_BUFSIZE * 8u);
+    s->sym_buf = malloc(DEF_LIT_BUFSIZE * 3u);
+    if (!s->window || !s->prev || !s->head || !s->pending_buf || !s->sym_buf) goto fail;
     s->sym_end = (DEF_LIT_BUFSIZE - 1u) * 3u;
     def_tr_init(s);
     unsigned header = (8u + ((s->w_bits - 8u) << 4)) << 8;
@@ -1365,6 +1370,7 @@ static int png_deflate(const unsigned char *in, size_t in_len, int window,
     free(s->prev);
     free(s->head);
     free(s->pending_buf);
+    free(s->sym_buf);
     free(s);
     return 1;
 fail:
@@ -1373,6 +1379,7 @@ fail:
     free(s->prev);
     free(s->head);
     free(s->pending_buf);
+    free(s->sym_buf);
     free(s);
     return 0;
 }
