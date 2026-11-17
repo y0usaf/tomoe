@@ -1336,6 +1336,8 @@ struct xml_attr { char *name, *value; };
 
 struct xml_node {
     char *name;
+    char *nsuri;
+    int foreign;
     struct xml_attr *attrs;
     int nattrs, cattrs;
     struct xml_node **children;
@@ -1599,6 +1601,7 @@ static void xml_node_free(struct xml_node *n) {
     free(n->children);
     free(n->attrs);
     free(n->text);
+    free(n->nsuri);
     free(n->name);
     free(n);
 }
@@ -1620,6 +1623,36 @@ static int xml_add_attr(struct xml_node *n, char *name, char *value) {
     n->attrs[n->nattrs].value = value;
     n->nattrs++;
     return 1;
+}
+
+static const char *xml_ns_decl(struct xml_node *n, const char *prefix, size_t plen) {
+    for (int i = 0; i < n->nattrs; i++) {
+        const char *an = n->attrs[i].name;
+        if (!strcmp(an, "xmlns")) {
+            if (!plen) return n->attrs[i].value;
+        } else if (!strncmp(an, "xmlns:", 6) && strlen(an + 6) == plen &&
+                !memcmp(an + 6, prefix, plen)) {
+            return n->attrs[i].value;
+        }
+    }
+    return NULL;
+}
+
+static void xml_resolve_ns(struct xml_node *node) {
+    const char *colon = strchr(node->name, ':');
+    const char *prefix = "";
+    size_t plen = 0;
+    if (colon) {
+        prefix = node->name;
+        plen = (size_t)(colon - node->name);
+    }
+    const char *uri = NULL;
+    for (struct xml_node *n = node; n && !uri; n = n->parent)
+        uri = xml_ns_decl(n, prefix, plen);
+    if (uri && *uri) {
+        node->nsuri = svg_strdup(uri);
+        node->foreign = strcmp(uri, "http://www.w3.org/2000/svg") != 0;
+    }
 }
 
 static int xml_add_child(struct xml_node *n, struct xml_node *child) {
@@ -1733,6 +1766,7 @@ static struct xml_node *xml_parse_element(struct xml_parser *p, struct xml_node 
             p->pos++;
             if (p->pos >= p->length || p->data[p->pos] != '>') { xml_node_free(node); return NULL; }
             p->pos++;
+            xml_resolve_ns(node);
             return node;
         }
         if (p->data[p->pos] == '>') { p->pos++; break; }
@@ -1754,6 +1788,7 @@ static struct xml_node *xml_parse_element(struct xml_parser *p, struct xml_node 
         if (!value) { free(name); xml_node_free(node); return NULL; }
         if (!xml_add_attr(node, name, value)) { xml_node_free(node); return NULL; }
     }
+    xml_resolve_ns(node);
     for (;;) {
         if (p->pos >= p->length) { xml_node_free(node); return NULL; }
         if (xml_starts(p, "</")) {
@@ -3220,7 +3255,7 @@ static void svg_doc_ids_add(struct svg_doc *doc, const char *id, struct xml_node
 
 static void svg_collect_ids(struct svg_doc *doc, struct xml_node *node) {
     const char *id = svg_xml_attr(node, "id");
-    if (id && *id) svg_doc_ids_add(doc, id, node);
+    if (id && *id && !node->foreign) svg_doc_ids_add(doc, id, node);
     for (int i = 0; i < node->nchildren; i++) svg_collect_ids(doc, node->children[i]);
 }
 
@@ -7643,6 +7678,7 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
 
 static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         struct svg_node *parent, struct svg_matrix abs, int clip_context) {
+    if (node->foreign) return;
     const char *tag = svg_local_name(node->name);
     if (!svg_tag_known(tag)) return;
     if (!svg_tag_graphic(tag) && strcmp(tag, "g") && strcmp(tag, "switch") &&
