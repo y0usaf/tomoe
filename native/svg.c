@@ -2351,7 +2351,7 @@ static const struct svg_prop_def svg_prop_defs[] = {
     { "gradientUnits", 0, 0, 0 }, { "gradientTransform", 0, 0, 0 },
     { "spreadMethod", 0, 0, 0 }, { "clipPathUnits", 0, 0, 0 },
     { "maskUnits", 0, 0, 0 }, { "maskContentUnits", 0, 0, 0 },
-    { "mask-type", 0, 0, 0 }, { "patternUnits", 0, 0, 0 },
+    { "mask-type", 1, 1, 0 }, { "patternUnits", 0, 0, 0 },
     { "patternContentUnits", 0, 0, 0 }, { "patternTransform", 0, 0, 0 },
     { "requiredExtensions", 0, 0, 0 }, { "requiredFeatures", 0, 0, 0 },
     { "systemLanguage", 0, 0, 0 },
@@ -4816,6 +4816,18 @@ static int svg_make_mask(struct svg_conv *c, struct xml_node *node, float object
     return ok;
 }
 
+static void svg_mask_length(struct svg_conv *c, struct svg_style *st, const char *name,
+        int axis, double def_number, enum svg_length_unit def_unit, int units_bbox, float *out) {
+    const char *text = svg_style_get(c->doc, st, name);
+    struct svg_length l = { def_number, def_unit };
+    if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
+    if (units_bbox && l.unit == SVG_UNIT_PERCENT) {
+        *out = (float)l.number / 100.0f;
+        return;
+    }
+    svg_convert_length(c, st, name, axis, def_number, def_unit, out);
+}
+
 static int svg_make_mask_impl(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_mask *out) {
     if (!svg_tag_is(node, "mask")) return 0;
@@ -4827,10 +4839,10 @@ static int svg_make_mask_impl(struct svg_conv *c, struct xml_node *node, float o
     const char *content_text = svg_style_get(c->doc, st, "maskContentUnits");
     int content_bbox = content_text && !strcmp(content_text, "objectBoundingBox");
     float rect[4];
-    svg_convert_length(c, st, "x", 0, -10, SVG_UNIT_PERCENT, &rect[0]);
-    svg_convert_length(c, st, "y", 1, -10, SVG_UNIT_PERCENT, &rect[1]);
-    svg_convert_length(c, st, "width", 0, 120, SVG_UNIT_PERCENT, &rect[2]);
-    svg_convert_length(c, st, "height", 1, 120, SVG_UNIT_PERCENT, &rect[3]);
+    svg_mask_length(c, st, "x", 0, -10, SVG_UNIT_PERCENT, units_bbox, &rect[0]);
+    svg_mask_length(c, st, "y", 1, -10, SVG_UNIT_PERCENT, units_bbox, &rect[1]);
+    svg_mask_length(c, st, "width", 0, 120, SVG_UNIT_PERCENT, units_bbox, &rect[2]);
+    svg_mask_length(c, st, "height", 1, 120, SVG_UNIT_PERCENT, units_bbox, &rect[3]);
     if (!(rect[2] > 0.0f) || !(rect[3] > 0.0f) || !isfinite(rect[2]) || !isfinite(rect[3]))
         return 0;
     int mask_all = 0;
