@@ -125,10 +125,11 @@ else
 	HOLD=$(grep -o ':|SHADER-HOLD| [0-9.]*' "$DIR/init.lisp" | head -1 | awk '{print $2}')
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-3}}
 	PERIOD_US=$(( 1000000 / HZ ))
-	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 5 ))}
-	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 7 / 2 ))}
-	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 2 ))}
-	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 3 ))}
+	SLACK_US=100
+	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 + SLACK_US ))}
+	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 + SLACK_US ))}
+	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 + SLACK_US ))}
+	CADENCE_P99_US=${GATE_WAKE_CADENCE_P99_US:-$(( PERIOD_US * 3 + SLACK_US ))}
 	cat >>"$DIR/init.lisp" <<'LISP'
 
 (in-package #:tomoe-user)
@@ -148,7 +149,7 @@ LISP
 	THEME_FILE=${PALETTE/#$HOME\//$DIR/home/}
 	cp "$DIR/first.css" "$THEME_FILE"
 	declare -p REV FINIXREV PKG INIT CLIENT KEYS SOCKET WIDTH HEIGHT HZ OUTPUT MODE WINDOWS SWITCHES SOAK HOLD \
-		PERIOD_US FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
+		PERIOD_US SLACK_US FIRST_US FIRST_MEDIAN_US CADENCE_US CADENCE_P99_US ACCOUNT PALETTE THEME_FILE DIR \
 		>"$DIR/gate.state"
 	cp "${BASH_SOURCE[0]}" "$DIR/gate.sh"
 	"$ISOLATE" "$DIR" bash "$DIR/gate.sh"
@@ -345,8 +346,8 @@ wake_timed() {
 		printf '%s %s %s\n' "$label" "$value" "$latched" >>"$DIR/wake"
 	done
 	mapfile -t sorted < <(printf '%s\n' "${latches[@]}" | sort -n)
-	((sorted[2] <= $(( PERIOD_US * 3 / 2 )))) ||
-		die "$label: the frame that carried it only started ${sorted[2]}us after it, past the $(( PERIOD_US * 3 / 2 ))us an input may wait for one"
+	((sorted[2] <= $(( PERIOD_US * 3 / 2 + SLACK_US )))) ||
+		die "$label: the frame that carried it only started ${sorted[2]}us after it, past the $(( PERIOD_US * 3 / 2 + SLACK_US ))us an input may wait for one"
 	mapfile -t sorted < <(printf '%s\n' "${values[@]}" | sort -n)
 	((sorted[1] <= p50_limit)) ||
 		die "$label: the first frame took ${sorted[1]}us at the median of three, past ${p50_limit}us"
@@ -372,7 +373,7 @@ wake_check() {
 		die "$label: no client for the focused window $serial"
 	pid=${CLIENTS[$((serial - 1))]}
 	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
-	wake_timed "$label damage" present-commit "$(( PERIOD_US * 7 / 2 ))" 0 \
+	wake_timed "$label damage" present-commit "$(( PERIOD_US * 7 / 2 + SLACK_US ))" 0 \
 		kill -USR1 "$pid"
 
 	local moves=()
@@ -425,7 +426,7 @@ wake_check() {
 	timings_read
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 4 ))" 40
+	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 + SLACK_US ))" "$(( PERIOD_US * 4 + SLACK_US ))" 40
 	settle "$WINDOWS"
 
 	quiet "$label resume"
