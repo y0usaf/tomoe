@@ -53,8 +53,8 @@ Nothing reaches the running desktop.
                 reloads for this many seconds (default 0); a soak fails the same
                 way, and on the compositor exiting or logging a fatal error
   GATE_FRAMES_PERCENT   the share of refreshes a client that paints from its frame
-                callback must present at on an active desk (default 85, median
-                inside one refresh and the 99th inside two)
+                callback must present at on an active desktop (default 99, with
+                both intervals inside one refresh)
   GATE_WAKE_FIRST_US     how late the worst of three first frames after a hold may
                 be presented (default five refreshes)
   GATE_WAKE_FIRST_MEDIAN_US  how late their median may be (default three and a half)
@@ -129,7 +129,7 @@ else
 	HOLD=${GATE_SHADER_HOLD:-${HOLD:-0}}
 	PERIOD_US=$(( 1000000 / HZ ))
 	SLACK_US=100
-	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-85}
+	FRAMES_PERCENT=${GATE_FRAMES_PERCENT:-99}
 	FIRST_US=${GATE_WAKE_FIRST_US:-$(( PERIOD_US * 3 + SLACK_US ))}
 	FIRST_MEDIAN_US=${GATE_WAKE_FIRST_MEDIAN_US:-$(( PERIOD_US * 2 + SLACK_US ))}
 	CADENCE_US=${GATE_WAKE_CADENCE_US:-$(( PERIOD_US * 5 / 4 + SLACK_US ))}
@@ -481,7 +481,7 @@ frame_callback_check() {
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
 	cadence "$label frame callback" $(( after - before )) \
-		"$(( PERIOD_US + SLACK_US ))" "$(( PERIOD_US * 2 + SLACK_US ))" "$FRAMES_PERCENT"
+		"$(( PERIOD_US + SLACK_US ))" "$(( PERIOD_US + SLACK_US ))" "$FRAMES_PERCENT"
 	settle "$WINDOWS"
 }
 
