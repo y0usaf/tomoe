@@ -1649,10 +1649,35 @@ static void xml_resolve_ns(struct xml_node *node) {
     const char *uri = NULL;
     for (struct xml_node *n = node; n && !uri; n = n->parent)
         uri = xml_ns_decl(n, prefix, plen);
-    if (uri && *uri) {
+    if (uri) {
         node->nsuri = svg_strdup(uri);
         node->foreign = strcmp(uri, "http://www.w3.org/2000/svg") != 0;
     }
+    int keep = 0;
+    for (int i = 0; i < node->nattrs; i++) {
+        const char *an = node->attrs[i].name;
+        const char *ac = strchr(an, ':');
+        int keep_attr = 1;
+        if (ac && strncmp(an, "xmlns:", 6) && strcmp(an, "xmlns")) {
+            size_t aplen = (size_t)(ac - an);
+            const char *auri = NULL;
+            for (struct xml_node *n = node; n && !auri; n = n->parent)
+                auri = xml_ns_decl(n, an, aplen);
+            if (auri && strcmp(auri, "http://www.w3.org/2000/svg") &&
+                    strcmp(auri, "http://www.w3.org/1999/xlink") &&
+                    strcmp(auri, "http://www.w3.org/XML/1998/namespace"))
+                keep_attr = 0;
+        }
+        if (keep_attr) {
+            node->attrs[keep].name = node->attrs[i].name;
+            node->attrs[keep].value = node->attrs[i].value;
+            keep++;
+        } else {
+            free(node->attrs[i].name);
+            free(node->attrs[i].value);
+        }
+    }
+    node->nattrs = keep;
 }
 
 static int xml_add_child(struct xml_node *n, struct xml_node *child) {
@@ -1861,10 +1886,137 @@ static void xml_parser_free_entities(struct xml_parser *p) {
     p->nentities = p->centities = 0;
 }
 
+static int xml_entity_defined(struct xml_parser *p, const char *name, size_t n) {
+    for (int i = 0; i < p->nentities; i++)
+        if (strlen(p->entities[i].name) == n && !memcmp(p->entities[i].name, name, n))
+            return 1;
+    return 0;
+}
+
+static int xml_entity_builtin(const char *name, size_t n) {
+    return (n == 3 && !memcmp(name, "amp", 3)) || (n == 2 && !memcmp(name, "lt", 2)) ||
+        (n == 2 && !memcmp(name, "gt", 2)) || (n == 4 && !memcmp(name, "quot", 4)) ||
+        (n == 4 && !memcmp(name, "apos", 4));
+}
+
+static int xml_expand_markup(struct xml_parser *p, const char *text, size_t length,
+        struct svg_buf *b) {
+    size_t i = 0;
+    while (i < length) {
+        char c = text[i];
+        if (c == '&') {
+            size_t start = i + 1, j = start;
+            while (j < length && xml_name_char(text[j])) j++;
+            if (j < length && text[j] == ';' && j > start &&
+                    !xml_entity_builtin(text + start, j - start) &&
+                    xml_entity_defined(p, text + start, j - start)) {
+                for (int k = 0; k < p->nentities; k++) {
+                    if (strlen(p->entities[k].name) != j - start ||
+                            memcmp(p->entities[k].name, text + start, j - start)) continue;
+                    if (!xml_entity_enter(p)) return 0;
+                    int ok = xml_expand_markup(p, p->entities[k].value,
+                        strlen(p->entities[k].value), b);
+                    xml_entity_leave(p);
+                    if (!ok) return 0;
+                    break;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        svg_buf_put(b, c);
+        i++;
+    }
+    return !b->failed;
+}
+
+static int xml_preprocess(struct xml_parser *p, const char *data, size_t length, size_t start,
+        struct svg_buf *b) {
+    size_t i = start;
+    while (i < length) {
+        char c = data[i];
+        if (c == '<') {
+            size_t j;
+            if (i + 4 <= length && !memcmp(data + i, "<!--", 4)) {
+                j = i + 4;
+                while (j + 3 <= length && memcmp(data + j, "-->", 3)) j++;
+                if (j + 3 > length) { svg_buf_put(b, c); i++; continue; }
+                j += 3;
+            } else if (i + 9 <= length && !memcmp(data + i, "<![CDATA[", 9)) {
+                j = i + 9;
+                while (j + 3 <= length && memcmp(data + j, "]]>", 3)) j++;
+                if (j + 3 > length) { svg_buf_put(b, c); i++; continue; }
+                j += 3;
+            } else if (i + 2 <= length && data[i + 1] == '?') {
+                j = i + 2;
+                while (j + 2 <= length && memcmp(data + j, "?>", 2)) j++;
+                if (j + 2 > length) { svg_buf_put(b, c); i++; continue; }
+                j += 2;
+            } else {
+                j = i + 1;
+                int quote = 0;
+                while (j < length) {
+                    char d = data[j++];
+                    if (quote) { if (d == quote) quote = 0; }
+                    else if (d == '"' || d == '\'') quote = d;
+                    else if (d == '>') break;
+                }
+            }
+            for (size_t k = i; k < j && k < length; k++) svg_buf_put(b, data[k]);
+            i = j;
+            continue;
+        }
+        if (c == '&') {
+            size_t start_name = i + 1, j = start_name;
+            while (j < length && xml_name_char(data[j])) j++;
+            if (j < length && data[j] == ';' && j > start_name &&
+                    !xml_entity_builtin(data + start_name, j - start_name) &&
+                    xml_entity_defined(p, data + start_name, j - start_name)) {
+                for (int k = 0; k < p->nentities; k++) {
+                    if (strlen(p->entities[k].name) != j - start_name ||
+                            memcmp(p->entities[k].name, data + start_name, j - start_name))
+                        continue;
+                    if (!xml_entity_enter(p)) return 0;
+                    int ok = xml_expand_markup(p, p->entities[k].value,
+                        strlen(p->entities[k].value), b);
+                    xml_entity_leave(p);
+                    if (!ok) return 0;
+                    break;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        svg_buf_put(b, c);
+        i++;
+    }
+    return !b->failed;
+}
+
 static struct xml_node *xml_parse_document(const void *data, size_t length) {
     struct xml_parser p; memset(&p, 0, sizeof(p)); p.data = data; p.length = length;
     struct xml_node *root = NULL;
-    if (length >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) p.pos = 3;
+    size_t bom = 0;
+    if (length >= 3 && !memcmp(data, "\xef\xbb\xbf", 3)) bom = 3;
+    p.pos = bom;
+    if (!xml_skip_misc(&p)) goto done;
+    if (p.pos >= p.length || p.data[p.pos] != '<') goto done;
+    struct svg_buf nb = { 0 };
+    if (p.nentities) {
+        struct xml_parser d; memset(&d, 0, sizeof(d));
+        d.data = data; d.length = length; d.pos = bom;
+        int ok = xml_skip_misc(&d);
+        nb.expanded = &d.expanded;
+        if (ok && d.pos < d.length && d.data[d.pos] == '<') {
+            for (size_t k = 0; k < d.pos; k++) svg_buf_put(&nb, ((const char *)data)[k]);
+            ok = xml_preprocess(&d, data, length, d.pos, &nb);
+        } else ok = 0;
+        xml_parser_free_entities(&d);
+        if (!ok || !nb.data) goto done;
+        xml_parser_free_entities(&p);
+        memset(&p, 0, sizeof(p));
+        p.data = nb.data; p.length = nb.length;
+    }
     if (!xml_skip_misc(&p)) goto done;
     if (p.pos >= p.length || p.data[p.pos] != '<') goto done;
     root = xml_parse_element(&p, NULL);
@@ -1875,6 +2027,7 @@ static struct xml_node *xml_parse_document(const void *data, size_t length) {
     }
 done:
     xml_parser_free_entities(&p);
+    free(nb.data);
     return root;
 }
 
@@ -2339,12 +2492,17 @@ static struct svg_vec2 svg_sample_ellipse(struct svg_vec2 radii, double rotation
     return (struct svg_vec2){ u * rc - v * rs, u * rs + v * rc };
 }
 
-static void svg_arc_to(struct svg_path *path, double from_x, double from_y, double rx_in,
-        double ry_in, double rotation_degrees, int large_arc, int sweep, double to_x, double to_y) {
+static int svg_arc_to(struct svg_path *path, double from_x, double from_y, double rx_in,
+        double ry_in, double rotation_degrees, int large_arc, int sweep, double to_x, double to_y,
+        double *out_x, double *out_y) {
+    *out_x = from_x;
+    *out_y = from_y;
     double rx = fabs(rx_in), ry = fabs(ry_in);
     if (rx <= 1e-5 || ry <= 1e-5 || (from_x == to_x && from_y == to_y)) {
         svg_path_line(path, (float)to_x, (float)to_y);
-        return;
+        *out_x = to_x;
+        *out_y = to_y;
+        return 0;
     }
     const double pi = 3.14159265358979323846;
     double xr = fmod(rotation_degrees * pi / 180.0, 2.0 * pi);
@@ -2400,7 +2558,10 @@ static void svg_arc_to(struct svg_path *path, double from_x, double from_y, doub
             (float)(center_x + p3.x), (float)(center_y + p3.y));
         angle0 = angle1;
         p0 = p3;
+        *out_x = center_x + p3.x;
+        *out_y = center_y + p3.y;
     }
+    return count;
 }
 
 static int svg_parse_path_data(const char *text, struct svg_path *path) {
@@ -2523,8 +2684,9 @@ static int svg_parse_path_data(const char *text, struct svg_path *path) {
             svg_stream_skip(&s);
             if (!svg_stream_list_number(&s, &x) || !svg_stream_list_number(&s, &y)) break;
             if (cmd == 'a') { x += cx; y += cy; }
-            svg_arc_to(path, cx, cy, rx, ry, rot, large, sweep, x, y);
-            cx = x; cy = y;
+            double end_x, end_y;
+            svg_arc_to(path, cx, cy, rx, ry, rot, large, sweep, x, y, &end_x, &end_y);
+            cx = end_x; cy = end_y;
             last_quad = last_cubic = 0;
         } else if (rel == 'z') {
             if (!seen_move) break;
@@ -5034,15 +5196,20 @@ static struct svg_path *svg_shapes_path(struct svg_conv *c, struct svg_style *st
             svg_path_line(path, x, y + h);
             svg_path_close(path);
         } else {
+            double ax, ay;
             svg_path_move(path, x + rx, y);
             svg_path_line(path, x + w - rx, y);
-            svg_arc_to(path, x + w - rx, y, rx, ry, 0.0, 0, 1, x + w, y + ry);
+            svg_arc_to(path, (double)(float)(x + w - rx), (double)(float)y, rx, ry, 0.0, 0, 1,
+                (double)(float)(x + w), (double)(float)(y + ry), &ax, &ay);
             svg_path_line(path, x + w, y + h - ry);
-            svg_arc_to(path, x + w, y + h - ry, rx, ry, 0.0, 0, 1, x + w - rx, y + h);
+            svg_arc_to(path, (double)(float)(x + w), (double)(float)(y + h - ry), rx, ry, 0.0, 0, 1,
+                (double)(float)(x + w - rx), (double)(float)(y + h), &ax, &ay);
             svg_path_line(path, x + rx, y + h);
-            svg_arc_to(path, x + rx, y + h, rx, ry, 0.0, 0, 1, x, y + h - ry);
+            svg_arc_to(path, (double)(float)(x + rx), (double)(float)(y + h), rx, ry, 0.0, 0, 1,
+                (double)(float)x, (double)(float)(y + h - ry), &ax, &ay);
             svg_path_line(path, x, y + ry);
-            svg_arc_to(path, x, y + ry, rx, ry, 0.0, 0, 1, x + rx, y);
+            svg_arc_to(path, (double)(float)x, (double)(float)(y + ry), rx, ry, 0.0, 0, 1,
+                (double)(float)(x + rx), (double)(float)y, &ax, &ay);
             svg_path_close(path);
         }
     } else if (!strcmp(tag, "circle") || !strcmp(tag, "ellipse")) {
@@ -5074,11 +5241,20 @@ static struct svg_path *svg_shapes_path(struct svg_conv *c, struct svg_style *st
             svg_path_free(path);
             return NULL;
         }
-        svg_path_move(path, cx + rx, cy);
-        svg_arc_to(path, cx + rx, cy, rx, ry, 0.0, 0, 1, cx, cy + ry);
-        svg_arc_to(path, cx, cy + ry, rx, ry, 0.0, 0, 1, cx - rx, cy);
-        svg_arc_to(path, cx - rx, cy, rx, ry, 0.0, 0, 1, cx, cy - ry);
-        svg_arc_to(path, cx, cy - ry, rx, ry, 0.0, 0, 1, cx + rx, cy);
+        double ax, ay;
+        float lx = cx + rx, ly = cy;
+        svg_path_move(path, lx, ly);
+        svg_arc_to(path, (double)lx, (double)ly, rx, ry, 0.0, 0, 1,
+            (double)(float)cx, (double)(float)(cy + ry), &ax, &ay);
+        lx = (float)ax; ly = (float)ay;
+        svg_arc_to(path, (double)lx, (double)ly, rx, ry, 0.0, 0, 1,
+            (double)(float)(cx - rx), (double)(float)cy, &ax, &ay);
+        lx = (float)ax; ly = (float)ay;
+        svg_arc_to(path, (double)lx, (double)ly, rx, ry, 0.0, 0, 1,
+            (double)(float)cx, (double)(float)(cy - ry), &ax, &ay);
+        lx = (float)ax; ly = (float)ay;
+        svg_arc_to(path, (double)lx, (double)ly, rx, ry, 0.0, 0, 1,
+            (double)(float)(cx + rx), (double)(float)cy, &ax, &ay);
         svg_path_close(path);
     } else if (!strcmp(tag, "line")) {
         float x1, y1, x2, y2;
@@ -7947,7 +8123,7 @@ static int svg_double_approx_zero_when_compared(double v, double other) {
     return v == 0.0 || fabs(v) < fabs(other * 1.1920929e-7);
 }
 static int svg_double_approx_equal(double a, double b) { return fabs(a - b) < 2.220446049250313e-16; }
-static int svg_double_approx_equal_half(double a, double b) { return fabs(a - b) < 1.1920929e-7 / 2.0; }
+static int svg_double_approx_equal_half(double a, double b) { return a - b < 1.1920929e-7 / 2.0; }
 
 static int32_t svg_f32_bits_ordered(float v) {
     int32_t bits;
