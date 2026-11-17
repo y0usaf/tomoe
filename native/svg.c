@@ -6946,7 +6946,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
     if (!node->nchildren) return;
     struct xml_node *child = node->children[0];
     const char *child_tag = svg_local_name(child->name);
-    if (clip_context && !strcmp(child_tag, "symbol")) return;
+    if (clip_context && !svg_tag_graphic(child_tag)) return;
     int idx = child->style_index;
     if (idx < 0) return;
     struct svg_style *child_st = &c->doc->styles[idx];
