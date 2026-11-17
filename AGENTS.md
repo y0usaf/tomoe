@@ -31,17 +31,18 @@ still: the configured output must have drawn while the input was fresh, must
 draw nothing over the next two seconds, and must resume on the next input
 without skipping the picture it held. Once, from that rest, it wakes the machine
 three times with a key, three times with a pointer motion and three times with a
-client's new buffer, and fails if the frame carrying one only started later than
-one and a half refreshes, if the median first frame took longer than three and a
-half, or if any of the nine took longer than five. Then it streams pointer
-motion, drags a window and runs a client that repaints on every frame callback, a
-second and a half each, and fails unless the output kept presenting: within two
-refreshes at the median and three at the 99th for at least half the refreshes in
-the window, with the repainting client allowed two and a half and four for two
-fifths, and the wallpaper after a key three fifths. Those bounds allow for a cold
-first frame; on the reference 5120x1440 machine the first frame after a short
-pause takes about two and a half refreshes where the desk takes one and a quarter
-while it is drawing, so every run prints both and a change is read against them. Pin only a revision it passed, and deploy the pin
+client's new buffer, and fails if the frame carrying a pointer motion or a key
+only started later than one and a half refreshes, if their median first frame
+took longer than two refreshes, or if the worst of those six took longer than
+three; a client's buffer is held to three refreshes at the median, because the
+frame that shows it also redraws what a paused desktop left cold. Then it streams
+pointer motion, drags a window and runs a client that repaints on every frame
+callback, a second and a half each, and fails unless the output kept presenting:
+within one and a quarter refreshes at the median and two at the 99th for nine
+tenths of the refreshes in the window, six tenths for the drag and for the
+wallpaper after a key, and two and a half and three for two fifths for the client
+that repaints every frame. Every run prints the numbers, so a change is read
+against them rather than against a pass. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
 
 `./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same

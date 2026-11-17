@@ -370,7 +370,7 @@ wake_check() {
 		die "$label: no client for the focused window $serial"
 	pid=${CLIENTS[$((serial - 1))]}
 	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
-	wake_timed "$label damage" present-commit "$FIRST_MEDIAN_US" "$FIRST_US" \
+	wake_timed "$label damage" present-commit "$(( PERIOD_US * 3 ))" 0 \
 		kill -USR1 "$pid"
 
 	local moves=()
@@ -389,7 +389,7 @@ wake_check() {
 	timings_read
 	kill -TERM "$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label motion stream" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 50
+	cadence "$label motion stream" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 90
 
 	quiet "$label drag"
 	moves=("move $cx $cy" "press 272")
@@ -408,7 +408,7 @@ wake_check() {
 	timings_read
 	kill -TERM "$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label drag" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 50
+	cadence "$label drag" $(( after - before )) "$CADENCE_US" "$CADENCE_P99_US" 60
 
 	quiet "$label commit"
 	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
@@ -423,7 +423,7 @@ wake_check() {
 	timings_read
 	kill -TERM -- "-$pid" 2>/dev/null
 	wait "$pid" 2>/dev/null
-	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 4 ))" 40
+	cadence "$label commit" $(( after - before )) "$(( PERIOD_US * 5 / 2 ))" "$(( PERIOD_US * 3 ))" 40
 	settle "$WINDOWS"
 
 	quiet "$label resume"
