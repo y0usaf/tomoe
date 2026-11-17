@@ -30,7 +30,15 @@ static void await_render(struct headless *h) {
     if (!h->wait) return;
     int fd = timeline_export_sync_file(h->wait, h->wait_point);
     if (fd >= 0) {
+        struct timespec before, after;
+        clock_gettime(CLOCK_MONOTONIC, &before);
         poll(&(struct pollfd){ .fd = fd, .events = POLLIN }, 1, -1);
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        int64_t waited = (int64_t)(after.tv_sec - before.tv_sec) * 1000000000 +
+            (after.tv_nsec - before.tv_nsec);
+        if (waited > 500000)
+            tomoe_log(LOG_DEBUG, "tomoe: output %s tick waited %lld us on the render",
+                h->screen.name, (long long)(waited / 1000));
         close(fd);
     }
     timeline_unref(h->wait);
