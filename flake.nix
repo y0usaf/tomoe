@@ -103,11 +103,26 @@
           coreStamp ? null,
         }:
         let
+          freetype = pkgs.freetype.overrideAttrs (old: {
+            propagatedBuildInputs = pkgs.lib.subtractLists [
+              pkgs.bzip2
+              pkgs.brotli
+            ] old.propagatedBuildInputs;
+            configureFlags = old.configureFlags ++ [
+              "--with-bzip2=no"
+              "--with-brotli=no"
+            ];
+          });
+          fontconfig = pkgs.fontconfig.override { inherit freetype; };
           cairo = pkgs.cairo.override {
             x11Support = false;
             xcbSupport = false;
+            inherit fontconfig freetype;
           };
-          harfbuzz = pkgs.harfbuzz.override { withGraphite2 = false; };
+          harfbuzz = pkgs.harfbuzz.override {
+            withGraphite2 = false;
+            inherit freetype;
+          };
           pango =
             (pkgs.pango.override {
               x11Support = false;
