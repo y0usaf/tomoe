@@ -1296,6 +1296,14 @@ static bool fte_transform_image(const struct fte_matrix *shape, struct fte_image
     return true;
 }
 
+static bool fte_glyph_has_layers(FT_Face face, unsigned glyph)
+{
+    FT_LayerIterator iterator;
+    FT_UInt layer_glyph, layer_colour;
+    iterator.p = NULL;
+    return FT_Get_Color_Glyph_Layer(face, glyph, &layer_glyph, &layer_colour, &iterator) != 0;
+}
+
 static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry)
 {
     FT_Face face = scaled->face->face;
@@ -1310,8 +1318,8 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
         flags |= FT_LOAD_TARGET_NORMAL;
         flags |= FT_LOAD_COLOR;
         fte_glyph_load(face, glyph, flags, xphase, yphase, scaled->synth_flags);
-        if (face->glyph->format == FT_GLYPH_FORMAT_BITMAP &&
-                face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_BGRA) {
+        if (face->glyph->format != FT_GLYPH_FORMAT_OUTLINE ||
+                fte_glyph_has_layers(face, glyph)) {
             struct fte_image image = { 0 };
             if (fte_render_bitmap(face, &image)) {
                 if (scaled->face->have_shape)
