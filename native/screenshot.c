@@ -419,7 +419,7 @@ static void text_commit(struct tomoe *s, struct screenshot *shot) {
     selector_event(s);
 }
 
-static bool typing_key(struct tomoe *s, xkb_keysym_t sym) {
+static bool typing_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed) {
     struct screenshot *shot = s->screenshot;
     if (sym == XKB_KEY_Escape) {
         mark_free(shot->live);
@@ -439,7 +439,7 @@ static bool typing_key(struct tomoe *s, xkb_keysym_t sym) {
         return true;
     }
     char bytes[8];
-    int count = xkb_keysym_to_utf8(sym, bytes, sizeof(bytes));
+    int count = xkb_keysym_to_utf8(typed == XKB_KEY_NoSymbol ? sym : typed, bytes, sizeof(bytes));
     if (count <= 1) return true;
     text_append(shot->live, bytes, (size_t)count - 1);
     marks_repaint(s);
@@ -552,12 +552,13 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
     schedule_scene(s);
 }
 
-bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, uint32_t modifiers, bool pressed) {
+bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
+        uint32_t modifiers, bool pressed) {
     if (!s->screenshot) return false;
     if (!pressed) return true;
     struct screenshot *shot = s->screenshot;
     const struct settings *st = &s->settings;
-    if (shot->typing && typing_key(s, sym)) return true;
+    if (shot->typing && typing_key(s, sym, typed)) return true;
     if (sym == XKB_KEY_Escape) {
         screenshot_close(s);
     } else if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter || sym == XKB_KEY_space) {

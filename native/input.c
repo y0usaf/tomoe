@@ -1899,8 +1899,11 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
         MOD_ALT | MOD_LOGO;
     if (s->screenshot && tracked && !lock_active(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+            xkb_keysym_t typed = logical && logical->xkb.xkb_state ?
+                xkb_state_key_get_one_sym(logical->xkb.xkb_state, input->keycode + 8) :
+                XKB_KEY_NoSymbol;
             k->latches[input->keycode].consumed = true;
-            if (count) screenshot_key(s, syms[0], mods, true);
+            if (count) screenshot_key(s, syms[0], typed, mods, true);
         }
         logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
         return;
