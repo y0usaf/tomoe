@@ -10,7 +10,9 @@
 #include <strings.h>
 #include <stdio.h>
 #include "jpeg.h"
+#include "gif.h"
 #include "png.h"
+#include <zlib.h>
 
 struct svg_point { float x, y; };
 
@@ -3686,7 +3688,9 @@ struct svg_mask {
 
 struct svg_image {
     struct svg_pixmap pix;
+    struct tomoe_svg *svg;
     int quality;
+    float base_width, base_height;
 };
 
 enum {
@@ -3804,6 +3808,7 @@ static void svg_free_gradient(struct svg_gradient *g) {
 static void svg_free_image(struct svg_image *im) {
     if (!im) return;
     svg_pixmap_free(&im->pix);
+    if (im->svg) tomoe_svg_destroy(im->svg);
     free(im);
 }
 
@@ -6671,7 +6676,63 @@ static unsigned char *svg_base64_decode(const char *text, size_t length, size_t 
     return out;
 }
 
-static int svg_image_decode(struct svg_image *im, const unsigned char *data, size_t length) {
+static int svg_nibble(int ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+static unsigned char *svg_percent_decode(const char *text, size_t length, size_t *out_length) {
+    unsigned char *out = svg_alloc(length + 1);
+    if (!out) return NULL;
+    size_t n = 0;
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] == '%' && i + 2 < length) {
+            int hi = svg_nibble((unsigned char)text[i + 1]);
+            int lo = svg_nibble((unsigned char)text[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out[n++] = (unsigned char)(hi * 16 + lo);
+                i += 2;
+                continue;
+            }
+        }
+        out[n++] = (unsigned char)text[i];
+    }
+    *out_length = n;
+    return out;
+}
+
+static int svg_data_mime_hint(const char *href) {
+    const char *start = href + 5;
+    const char *end = start;
+    while (*end && *end != ',' && *end != ';') end++;
+    size_t n = (size_t)(end - start);
+    if (n == 9 && !strncmp(start, "image/png", 9)) return 1;
+    if (n == 10 && !strncmp(start, "image/jpeg", 10)) return 2;
+    if (n == 9 && !strncmp(start, "image/jpg", 9)) return 2;
+    if (n == 9 && !strncmp(start, "image/gif", 9)) return 3;
+    if (n == 13 && !strncmp(start, "image/svg+xml", 13)) return 4;
+    if (n == 10 && !strncmp(start, "image/webp", 10)) return 5;
+    return 0;
+}
+
+static int svg_image_decode(struct svg_image *im, const unsigned char *data, size_t length,
+        int hint) {
+    if (hint == 5) return 0;
+    if (hint == 4) {
+        im->svg = tomoe_svg_parse(data, length);
+        if (!im->svg) return 0;
+        double sw = 0.0, sh = 0.0;
+        if (!tomoe_svg_size(im->svg, &sw, &sh)) {
+            tomoe_svg_destroy(im->svg);
+            im->svg = NULL;
+            return 0;
+        }
+        im->base_width = (float)sw;
+        im->base_height = (float)sh;
+        return 1;
+    }
     if (length >= 8 && !memcmp(data, "\x89PNG\r\n\x1a\n", 8)) {
         struct png_geometry geo;
         if (tomoe_png_geometry(data, length, &geo) != PNG_OK) return 0;
@@ -6698,6 +6759,8 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
         im->pix.width = (int)geo.width;
         im->pix.height = (int)geo.height;
         im->pix.pixels = pixels;
+        im->base_width = (float)geo.width;
+        im->base_height = (float)geo.height;
         return 1;
     }
     if (length >= 2 && data[0] == 0xff && data[1] == 0xd8) {
@@ -6711,7 +6774,44 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
         im->pix.width = (int)jpg.width;
         im->pix.height = (int)jpg.height;
         im->pix.pixels = jpg.pixels;
+        im->base_width = (float)jpg.width;
+        im->base_height = (float)jpg.height;
         return 1;
+    }
+    if (length >= 6 && (!memcmp(data, "GIF87a", 6) || !memcmp(data, "GIF89a", 6))) {
+        struct gif_frame gif;
+        if (!tomoe_gif_first_frame(data, length, &gif)) return 0;
+        unsigned char *pixels = gif.pixels;
+        for (size_t i = 0; i < (size_t)gif.width * gif.height; i++) {
+            unsigned a = pixels[i * 4 + 3];
+            for (int k = 0; k < 3; k++) {
+                unsigned v = pixels[i * 4 + k];
+                if (a != 255) {
+                    unsigned t = v * a + 0x80;
+                    v = (t + (t >> 8)) >> 8;
+                }
+                pixels[i * 4 + k] = (unsigned char)v;
+            }
+        }
+        im->pix.width = (int)gif.width;
+        im->pix.height = (int)gif.height;
+        im->pix.pixels = pixels;
+        im->base_width = (float)gif.canvas_width;
+        im->base_height = (float)gif.canvas_height;
+        return 1;
+    }
+    if (hint == 0) {
+        im->svg = tomoe_svg_parse(data, length);
+        if (im->svg) {
+            double sw = 0.0, sh = 0.0;
+            if (tomoe_svg_size(im->svg, &sw, &sh)) {
+                im->base_width = (float)sw;
+                im->base_height = (float)sh;
+                return 1;
+            }
+            tomoe_svg_destroy(im->svg);
+            im->svg = NULL;
+        }
     }
     return 0;
 }
@@ -6744,15 +6844,17 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     if (!href) { c->unsupported = 1; return; }
     unsigned char *bytes = NULL;
     size_t length = 0;
+    int hint = 0;
     if (!strncmp(href, "data:", 5)) {
         const char *comma = strchr(href, ',');
         if (!comma) { c->unsupported = 1; return; }
+        hint = svg_data_mime_hint(href);
         int base64 = 0;
-        const char *semi = strstr(href, ";base64");
-        if (semi && semi < comma) base64 = 1;
-        if (!base64) { c->unsupported = 1; return; }
+        for (const char *p = href + 5; p + 7 <= comma; p++)
+            if (!memcmp(p, ";base64", 7)) base64 = 1;
         length = 0;
-        bytes = svg_base64_decode(comma + 1, strlen(comma + 1), &length);
+        if (base64) bytes = svg_base64_decode(comma + 1, strlen(comma + 1), &length);
+        else bytes = svg_percent_decode(comma + 1, strlen(comma + 1), &length);
         if (!bytes) { c->unsupported = 1; return; }
     } else {
         c->unsupported = 1;
@@ -6761,14 +6863,15 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     struct svg_image *im = svg_alloc(sizeof(*im));
     if (!im) { free(bytes); return; }
     memset(im, 0, sizeof(*im));
-    if (!svg_image_decode(im, bytes, length)) {
+    if (!svg_image_decode(im, bytes, length, hint)) {
         free(bytes);
         svg_free_image(im);
         c->unsupported = 1;
         return;
     }
     free(bytes);
-    float aw = (float)im->pix.width, ah = (float)im->pix.height;
+    float aw = im->base_width > 0.0f ? im->base_width : (float)im->pix.width;
+    float ah = im->base_height > 0.0f ? im->base_height : (float)im->pix.height;
     const char *render = svg_style_get(c->doc, st, "image-rendering");
     im->quality = 2;
     if (render && (!strcmp(render, "optimizeSpeed") || !strcmp(render, "pixelated") ||
@@ -6823,6 +6926,47 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     if (!svg_group_finish(c, node, st, 0, clip_context, 0, g, abs, &required)) {
         svg_node_destroy(g);
         return;
+    }
+    if (aspect.slice && aspect.align != 0) {
+        struct svg_node *holder = svg_node_new(0);
+        struct svg_clip *clip = holder ? svg_alloc(sizeof(*clip)) : NULL;
+        struct svg_node *clip_root = svg_node_new(0);
+        struct svg_node *rect_root = svg_node_new(1);
+        struct svg_path *rect = svg_path_new();
+        if (holder && clip && clip_root && rect_root && rect) {
+            memset(clip, 0, sizeof(*clip));
+            clip->transform = svg_matrix_identity();
+            svg_path_move(rect, x, y);
+            svg_path_line(rect, x + w, y);
+            svg_path_line(rect, x + w, y + h);
+            svg_path_line(rect, x, y + h);
+            svg_path_close(rect);
+            if (svg_path_finish(rect)) {
+                rect_root->path = rect;
+                rect_root->fill.present = 1;
+                rect_root->fill.rule = 0;
+                rect_root->fill.opacity = 1.0f;
+                rect_root->fill.paint.type = 1;
+                rect_root->fill.paint.r = rect_root->fill.paint.g =
+                    rect_root->fill.paint.b = 0;
+                rect_root->visible = 1;
+                rect_root->aa = 1;
+                svg_node_add(clip_root, rect_root);
+                clip->root = clip_root;
+                holder->clip = clip;
+                holder->isolate = 1;
+                holder->abs_transform = abs;
+                svg_node_add(holder, g);
+                svg_group_bboxes(holder);
+                svg_node_add(parent, holder);
+                return;
+            }
+        }
+        svg_path_free(rect);
+        svg_node_destroy(rect_root);
+        svg_node_destroy(clip_root);
+        free(clip);
+        svg_node_destroy(holder);
     }
     if (required) svg_node_add(parent, g);
     else {
@@ -8519,8 +8663,46 @@ static void svg_fix_recursive_fe_image(struct svg_doc *doc) {
     }
 }
 
+static unsigned char *svg_gunzip(const void *data, size_t length, size_t *out_length) {
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    if (inflateInit2(&zs, 15 + 16) != Z_OK) return NULL;
+    size_t capacity = length * 4 + 1024, used = 0;
+    unsigned char *out = svg_alloc(capacity);
+    if (!out) { inflateEnd(&zs); return NULL; }
+    zs.next_in = (Bytef *)data;
+    zs.avail_in = (uInt)length;
+    for (;;) {
+        if (used == capacity) {
+            if (capacity >= (64u << 20)) { free(out); inflateEnd(&zs); return NULL; }
+            unsigned char *grown = svg_realloc(out, capacity * 2);
+            if (!grown) { free(out); inflateEnd(&zs); return NULL; }
+            out = grown;
+            capacity *= 2;
+        }
+        zs.next_out = out + used;
+        zs.avail_out = (uInt)(capacity - used);
+        int status = inflate(&zs, Z_NO_FLUSH);
+        used = capacity - zs.avail_out;
+        if (status == Z_STREAM_END) break;
+        if (status != Z_OK) { free(out); inflateEnd(&zs); return NULL; }
+    }
+    inflateEnd(&zs);
+    *out_length = used;
+    return out;
+}
+
 struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     if (!data || !length) return NULL;
+    if (length >= 2 && ((const unsigned char *)data)[0] == 0x1f &&
+            ((const unsigned char *)data)[1] == 0x8b) {
+        size_t unpacked_length = 0;
+        unsigned char *unpacked = svg_gunzip(data, length, &unpacked_length);
+        if (!unpacked) return NULL;
+        struct tomoe_svg *svg = tomoe_svg_parse(unpacked, unpacked_length);
+        free(unpacked);
+        return svg;
+    }
     if (!svg_utf8_valid(data, length)) return NULL;
     struct xml_node *root = xml_parse_document(data, length);
     if (!root) return NULL;
@@ -9971,9 +10153,18 @@ static void svg_apply_mask(struct svg_mask *mask, struct svg_matrix ts,
 static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
         struct svg_pixmap *pixmap, int blend) {
     struct svg_image *im = node->image;
-    if (!node->visible || !im || !im->pix.pixels || im->pix.width <= 0 || im->pix.height <= 0)
-        return;
+    if (!node->visible || !im) return;
     struct svg_matrix dev = svg_matrix_concat(ts, node->transform);
+    if (im->svg) {
+        struct svg_pixmap sub;
+        svg_pixmap_init(&sub, pixmap->width, pixmap->height);
+        if (!sub.pixels) return;
+        if (im->svg->root) svg_render_nodes(im->svg->root, dev, &sub);
+        svg_draw_pixmap(pixmap, 0, 0, &sub, 1.0f, blend);
+        svg_pixmap_free(&sub);
+        return;
+    }
+    if (!im->pix.pixels || im->pix.width <= 0 || im->pix.height <= 0) return;
     struct svg_path *rect = svg_path_new();
     if (!rect) return;
     svg_path_move(rect, 0.0f, 0.0f);
