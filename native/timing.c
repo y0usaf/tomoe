@@ -127,10 +127,13 @@ void timing_frame_start(struct tomoe *s) {
 
 static void latch_ring(uint64_t *ring, uint64_t *seen, uint64_t total, uint64_t *pending,
         size_t *count) {
-    *count = 0;
-    uint64_t from = *seen > total - TOMOE_PENDING_INPUT ? *seen : total - TOMOE_PENDING_INPUT;
-    for (uint64_t index = from; index < total && *count < TOMOE_PENDING_INPUT; index++)
-        pending[(*count)++] = ring[index % TOMOE_PENDING_INPUT];
+    if (*seen >= total) return;
+    uint64_t oldest = total > TOMOE_PENDING_INPUT ? total - TOMOE_PENDING_INPUT : 0;
+    uint64_t from = *seen > oldest ? *seen : oldest;
+    size_t used = *count;
+    for (uint64_t index = from; index < total && used < TOMOE_PENDING_INPUT; index++)
+        pending[used++] = ring[index % TOMOE_PENDING_INPUT];
+    *count = used;
     *seen = total;
 }
 
