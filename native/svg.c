@@ -11795,22 +11795,23 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         struct svg_fimg shadow = svg_fimg_clone(&in);
         if (!shadow.valid) { svg_fimg_free(&in); return; }
         svg_filter_blur(&shadow.pix, p->f[2] * scale_x, p->f[3] * scale_y);
-        unsigned a = (unsigned)(p->opacity * (float)p->color[3] / 255.0f * 255.0f + 0.5f);
-        if (a > 255) a = 255;
+        float opf = ((float)p->color[3] / 255.0f) * p->opacity;
+        unsigned op_u8 = (unsigned)(opf * 255.0f + 0.5f);
+        if (op_u8 > 255) op_u8 = 255;
+        float flood = (float)op_u8 / 255.0f;
         size_t n = (size_t)shadow.pix.width * shadow.pix.height;
         for (size_t i = 0; i < n; i++) {
             unsigned alpha = shadow.pix.pixels[i * 4 + 3];
-            float fa = (float)alpha / 255.0f;
-            float la = (float)a / 255.0f * fa;
-            unsigned pa = (unsigned)(la * 255.0f + 0.5f);
-            unsigned pr = (unsigned)p->color[0] * pa + 128;
-            unsigned pg = (unsigned)p->color[1] * pa + 128;
-            unsigned pb = (unsigned)p->color[2] * pa + 128;
-            shadow.pix.pixels[i * 4 + 0] = (unsigned char)((pr + (pr >> 8)) >> 8);
-            shadow.pix.pixels[i * 4 + 1] = (unsigned char)((pg + (pg >> 8)) >> 8);
-            shadow.pix.pixels[i * 4 + 2] = (unsigned char)((pb + (pb >> 8)) >> 8);
-            shadow.pix.pixels[i * 4 + 3] = (unsigned char)pa;
+            float la = flood * ((float)alpha / 255.0f);
+            if (la < 0.0f) la = 0.0f;
+            if (la > 1.0f) la = 1.0f;
+            for (int k = 0; k < 3; k++) {
+                float v = (float)p->color[k] / 255.0f * la;
+                shadow.pix.pixels[i * 4 + k] = (unsigned char)(v * 255.0f + 0.5f);
+            }
+            shadow.pix.pixels[i * 4 + 3] = (unsigned char)(la * 255.0f + 0.5f);
         }
+        shadow.cs = 0;
         svg_fimg_into_cs(&shadow, p->cs);
         *res = svg_fimg_new(region_w, region_h, p->cs);
         if (!res->valid) { svg_fimg_free(&in); svg_fimg_free(&shadow); return; }
