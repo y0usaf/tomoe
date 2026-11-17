@@ -3586,6 +3586,7 @@ struct svg_conv {
     int clip_depth;
     int mask_depth;
     int pattern_depth;
+    int marker_depth;
 };
 
 static struct svg_node *svg_node_new(int type) {
@@ -4761,8 +4762,11 @@ static int svg_paint_order_stroke_first(const char *text) {
     return 0;
 }
 
-static void svg_add_path_node(struct svg_conv *c, struct svg_style *st, struct svg_path *geom,
-        struct svg_node *group, struct svg_matrix abs, int clip_context) {
+static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
+        struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context);
+
+static void svg_add_path_node(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
+        struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context) {
     struct svg_bbox bbox = svg_bbox_empty();
     int have_bbox = svg_path_tight_bounds(geom, &bbox);
     int has_area = have_bbox && bbox.right > bbox.left && bbox.bottom > bbox.top;
@@ -4793,6 +4797,7 @@ static void svg_add_path_node(struct svg_conv *c, struct svg_style *st, struct s
         path->has_sbbox = 1;
     }
     if (!svg_node_add(group, path)) { svg_node_destroy(path); return; }
+    svg_convert_markers(c, node, st, path->path, group, abs, clip_context);
 }
 
 static struct svg_node *svg_group_alloc(struct svg_conv *c, struct xml_node *node,
@@ -4912,8 +4917,7 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     if (!clip_context && filter_value && strcmp(filter_value, "none")) {
         char id[256];
         if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
-            svg_free_clip(clip);
-            svg_free_mask(mask);
+                svg_free_mask(mask);
             return 0;
         }
         struct xml_node *link = svg_id_last(c->doc, id);
@@ -5469,6 +5473,397 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     }
 }
 
+static int svg_almost_equal_ulps_f32(float a, float b);
+static struct svg_path *svg_path_copy(struct svg_path *p);
+
+struct svg_mseg { int kind; struct svg_point p[3]; };
+
+static const float SVG_MARKER_PI = 3.14159265358979323846f;
+
+static float svg_marker_norm_rad(float rad) {
+    float v = fmodf(rad, SVG_MARKER_PI * 2.0f);
+    if (v < 0.0f) v += SVG_MARKER_PI * 2.0f;
+    return v;
+}
+
+static float svg_marker_vector_angle(float vx, float vy) {
+    float rad = atan2f(vy, vx);
+    if (rad != rad) return 0.0f;
+    return svg_marker_norm_rad(rad);
+}
+
+static float svg_marker_calc_angle(float x1, float y1, float x2, float y2, float x3, float y3,
+        float x4, float y4) {
+    float in_a = svg_marker_vector_angle(x2 - x1, y2 - y1);
+    float out_a = svg_marker_vector_angle(x4 - x3, y4 - y3);
+    float d = (out_a - in_a) * 0.5f;
+    float angle = in_a + d;
+    if (SVG_MARKER_PI / 2.0f < fabsf(d)) angle -= SVG_MARKER_PI;
+    return svg_marker_norm_rad(angle) * (180.0f / SVG_MARKER_PI);
+}
+
+static float svg_marker_line_angle(float x1, float y1, float x2, float y2) {
+    return svg_marker_calc_angle(x1, y1, x2, y2, x1, y1, x2, y2);
+}
+
+static float svg_marker_curves_angle(float px, float py, float cx1, float cy1, float x, float y,
+        float cx2, float cy2, float nx, float ny) {
+    if (svg_almost_equal_ulps_f32(cx1, x) && svg_almost_equal_ulps_f32(cy1, y))
+        return svg_marker_calc_angle(px, py, x, y, x, y, cx2, cy2);
+    if (svg_almost_equal_ulps_f32(x, cx2) && svg_almost_equal_ulps_f32(y, cy2))
+        return svg_marker_calc_angle(cx1, cy1, x, y, x, y, nx, ny);
+    return svg_marker_calc_angle(cx1, cy1, x, y, x, y, cx2, cy2);
+}
+
+static struct svg_point svg_marker_subpath_start(struct svg_mseg *segs, int count, int idx) {
+    for (int i = idx - 1; i >= 0; i--)
+        if (segs[i].kind == 0) return segs[i].p[0];
+    return (struct svg_point){ 0.0f, 0.0f };
+}
+
+static struct svg_point svg_marker_prev_vertex(struct svg_mseg *segs, int count, int idx) {
+    struct svg_mseg seg = segs[idx - 1];
+    if (seg.kind == 3) return svg_marker_subpath_start(segs, count, idx);
+    return seg.kind == 2 ? seg.p[2] : seg.p[0];
+}
+
+static float svg_marker_vertex_angle(struct svg_mseg *segs, int count, int idx) {
+    if (idx == 0) {
+        if (count < 2) return 0.0f;
+        struct svg_mseg s1 = segs[0], s2 = segs[1];
+        if (s1.kind == 0 && s2.kind == 1)
+            return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, s2.p[0].x, s2.p[0].y);
+        if (s1.kind == 0 && s2.kind == 2) {
+            if (svg_almost_equal_ulps_f32(s1.p[0].x, s2.p[0].x) &&
+                    svg_almost_equal_ulps_f32(s1.p[0].y, s2.p[0].y))
+                return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, s2.p[2].x, s2.p[2].y);
+            return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, s2.p[0].x, s2.p[0].y);
+        }
+        return 0.0f;
+    }
+    if (idx == count - 1) {
+        struct svg_mseg s1 = segs[idx - 1], s2 = segs[idx];
+        if (s2.kind == 0) return 0.0f;
+        if (s2.kind == 1) {
+            struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+            return svg_marker_line_angle(prev.x, prev.y, s2.p[0].x, s2.p[0].y);
+        }
+        if (s2.kind == 2) {
+            if (svg_almost_equal_ulps_f32(s2.p[1].x, s2.p[2].x) &&
+                    svg_almost_equal_ulps_f32(s2.p[1].y, s2.p[2].y))
+                return svg_marker_line_angle(s2.p[0].x, s2.p[0].y, s2.p[2].x, s2.p[2].y);
+            return svg_marker_line_angle(s2.p[1].x, s2.p[1].y, s2.p[2].x, s2.p[2].y);
+        }
+        if (s1.kind == 1 && s2.kind == 3) {
+            struct svg_point next = svg_marker_subpath_start(segs, count, idx);
+            return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, next.x, next.y);
+        }
+        if (s1.kind == 2 && s2.kind == 3) {
+            struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+            struct svg_point next = svg_marker_subpath_start(segs, count, idx);
+            return svg_marker_curves_angle(prev.x, prev.y, s1.p[1].x, s1.p[1].y, s1.p[2].x,
+                s1.p[2].y, next.x, next.y, next.x, next.y);
+        }
+        return 0.0f;
+    }
+    struct svg_mseg s1 = segs[idx], s2 = segs[idx + 1];
+    if (s1.kind == 0 && s2.kind == 1)
+        return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, s2.p[0].x, s2.p[0].y);
+    if (s1.kind == 0 && s2.kind == 2)
+        return svg_marker_line_angle(s1.p[0].x, s1.p[0].y, s2.p[0].x, s2.p[0].y);
+    if (s1.kind == 1 && s2.kind == 1) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        return svg_marker_calc_angle(prev.x, prev.y, s1.p[0].x, s1.p[0].y, s1.p[0].x,
+            s1.p[0].y, s2.p[0].x, s2.p[0].y);
+    }
+    if (s1.kind == 2 && s2.kind == 2) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        return svg_marker_curves_angle(prev.x, prev.y, s1.p[1].x, s1.p[1].y, s1.p[2].x,
+            s1.p[2].y, s2.p[0].x, s2.p[0].y, s2.p[2].x, s2.p[2].y);
+    }
+    if (s1.kind == 1 && s2.kind == 2) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        return svg_marker_curves_angle(prev.x, prev.y, prev.x, prev.y, s1.p[0].x, s1.p[0].y,
+            s2.p[0].x, s2.p[0].y, s2.p[2].x, s2.p[2].y);
+    }
+    if (s1.kind == 2 && s2.kind == 1) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        return svg_marker_curves_angle(prev.x, prev.y, s1.p[1].x, s1.p[1].y, s1.p[2].x,
+            s1.p[2].y, s2.p[0].x, s2.p[0].y, s2.p[0].x, s2.p[0].y);
+    }
+    if (s1.kind == 1 && s2.kind == 0) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        return svg_marker_line_angle(prev.x, prev.y, s1.p[0].x, s1.p[0].y);
+    }
+    if (s1.kind == 2 && s2.kind == 0) {
+        if (svg_almost_equal_ulps_f32(s1.p[2].x, s1.p[1].x) &&
+                svg_almost_equal_ulps_f32(s1.p[2].y, s1.p[1].y)) {
+            struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+            return svg_marker_line_angle(prev.x, prev.y, s1.p[2].x, s1.p[2].y);
+        }
+        return svg_marker_line_angle(s1.p[1].x, s1.p[1].y, s1.p[2].x, s1.p[2].y);
+    }
+    if (s1.kind == 1 && s2.kind == 3) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        struct svg_point next = svg_marker_subpath_start(segs, count, idx);
+        return svg_marker_calc_angle(prev.x, prev.y, s1.p[0].x, s1.p[0].y, s1.p[0].x,
+            s1.p[0].y, next.x, next.y);
+    }
+    if (s2.kind == 3) {
+        struct svg_point prev = svg_marker_prev_vertex(segs, count, idx);
+        struct svg_point next = svg_marker_subpath_start(segs, count, idx);
+        return svg_marker_line_angle(prev.x, prev.y, next.x, next.y);
+    }
+    return 0.0f;
+}
+
+static int svg_marker_segments(struct svg_path *path, struct svg_mseg **out, int *out_count) {
+    struct svg_mseg *segs = svg_alloc(sizeof(*segs) * (size_t)(path->nverbs + 1));
+    if (!segs) return 0;
+    int n = 0, pi = 0;
+    struct svg_point prev = { 0, 0 };
+    for (int i = 0; i < path->nverbs; i++) {
+        unsigned char v = path->verbs[i];
+        if (v == SVG_MOVE) {
+            struct svg_point p = path->points[pi++];
+            segs[n].kind = 0;
+            segs[n].p[0] = p;
+            prev = p;
+            n++;
+        } else if (v == SVG_LINE) {
+            segs[n].kind = 1;
+            segs[n].p[0] = path->points[pi++];
+            prev = segs[n].p[0];
+            n++;
+        } else if (v == SVG_QUAD) {
+            struct svg_point p1 = path->points[pi], p = path->points[pi + 1];
+            pi += 2;
+            segs[n].kind = 2;
+            segs[n].p[0] = (struct svg_point){ (prev.x + p1.x * 2.0f) / 3.0f,
+                (prev.y + p1.y * 2.0f) / 3.0f };
+            segs[n].p[1] = (struct svg_point){ (p.x + p1.x * 2.0f) / 3.0f,
+                (p.y + p1.y * 2.0f) / 3.0f };
+            segs[n].p[2] = p;
+            prev = p;
+            n++;
+        } else if (v == SVG_CUBIC) {
+            segs[n].kind = 2;
+            segs[n].p[0] = path->points[pi];
+            segs[n].p[1] = path->points[pi + 1];
+            segs[n].p[2] = path->points[pi + 2];
+            pi += 3;
+            prev = segs[n].p[2];
+            n++;
+        } else {
+            segs[n].kind = 3;
+            segs[n].p[0] = prev;
+            n++;
+        }
+    }
+    *out = segs;
+    *out_count = n;
+    return n > 0;
+}
+
+static int svg_marker_length(struct svg_conv *c, struct xml_node *node, const char *name,
+        int axis, float def, float *out) {
+    *out = def;
+    const char *text = svg_xml_attr(node, name);
+    if (!text) return 0;
+    struct svg_length l;
+    if (!svg_parse_length(text, &l)) return 1;
+    float n = (float)l.number;
+    switch (l.unit) {
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
+    case SVG_UNIT_EM: *out = n * 12.0f; break;
+    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
+    case SVG_UNIT_IN: *out = n * c->dpi; break;
+    case SVG_UNIT_CM: *out = n * c->dpi / 2.54f; break;
+    case SVG_UNIT_MM: *out = n * c->dpi / 25.4f; break;
+    case SVG_UNIT_PT: *out = n * c->dpi / 72.0f; break;
+    case SVG_UNIT_PC: *out = n * c->dpi / 6.0f; break;
+    case SVG_UNIT_PERCENT: {
+        float base;
+        if (axis == 0) base = c->view_box[2];
+        else if (axis == 1) base = c->view_box[3];
+        else base = sqrtf((c->view_box[2] * c->view_box[2] +
+            c->view_box[3] * c->view_box[3]) / 2.0f);
+        *out = base * n / 100.0f;
+        break;
+    }
+    }
+    return 1;
+}
+
+static float svg_marker_orientation(struct xml_node *node, int *auto_reverse, int *is_auto) {
+    *auto_reverse = 0;
+    *is_auto = 1;
+    const char *text = svg_xml_attr(node, "orient");
+    if (!text) { *is_auto = 0; return 0.0f; }
+    if (!strcmp(text, "auto")) return 0.0f;
+    if (!strcmp(text, "auto-start-reverse")) { *auto_reverse = 1; return 0.0f; }
+    *is_auto = 0;
+    struct svg_length l;
+    if (!svg_parse_length(text, &l)) return 0.0f;
+    float deg = (float)l.number;
+    switch (l.unit) {
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return deg;
+    default: return deg;
+    }
+}
+
+static struct svg_matrix svg_marker_rotation(float degrees) {
+    float rad = degrees * (SVG_MARKER_PI / 180.0f);
+    float c = cosf(rad), s = sinf(rad);
+    return (struct svg_matrix){ c, s, -s, c, 0.0f, 0.0f };
+}
+
+static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
+        struct svg_path *geom, struct svg_node *group, struct svg_matrix abs, int clip_context) {
+    static const char *attrs[3] = { "marker-start", "marker-mid", "marker-end" };
+    if (clip_context) return;
+    const char *windows[3];
+    int any = 0;
+    for (int i = 0; i < 3; i++) {
+        char id[256];
+        windows[i] = NULL;
+        const char *text = svg_style_find_inherited(c->doc, st, attrs[i]);
+        if (text && svg_parse_funciri(text, id, sizeof(id))) {
+            windows[i] = text;
+            any = 1;
+        }
+    }
+    if (!any) return;
+    float stroke_width = 1.0f;
+    svg_marker_length(c, node, "stroke-width", 2, 1.0f, &stroke_width);
+    if (!(stroke_width > 0.0f)) stroke_width = 0.0f;
+    struct svg_mseg *segs = NULL;
+    int nsegs = 0;
+    if (!svg_marker_segments(geom, &segs, &nsegs)) { free(segs); return; }
+    for (int kind = 0; kind < 3; kind++) {
+        if (!windows[kind]) continue;
+        char id[256];
+        if (!svg_parse_funciri(windows[kind], id, sizeof(id))) continue;
+        struct xml_node *marker = svg_id_last(c->doc, id);
+        if (!marker || !svg_tag_is(marker, "marker")) continue;
+        if (c->marker_depth > 8) continue;
+        float ref_x = 0.0f, ref_y = 0.0f, mw = 3.0f, mh = 3.0f;
+        svg_marker_length(c, marker, "refX", 0, 0.0f, &ref_x);
+        svg_marker_length(c, marker, "refY", 1, 0.0f, &ref_y);
+        svg_marker_length(c, marker, "markerWidth", 0, 3.0f, &mw);
+        svg_marker_length(c, marker, "markerHeight", 1, 3.0f, &mh);
+        if (!(mw > 0.0f) || !(mh > 0.0f)) continue;
+        float stroke_scale = stroke_width;
+        const char *units = svg_xml_attr(marker, "markerUnits");
+        if (units && !strcmp(units, "userSpaceOnUse")) stroke_scale = 1.0f;
+        float vb[4];
+        int has_vb = 0;
+        const char *vb_text = svg_xml_attr(marker, "viewBox");
+        if (vb_text && svg_parse_viewbox(vb_text, vb)) has_vb = 1;
+        struct svg_aspect aspect = { 5, 0 };
+        const char *ar = svg_xml_attr(marker, "preserveAspectRatio");
+        if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
+        int overflow_hidden = 1;
+        const char *overflow = svg_xml_attr(marker, "overflow");
+        if (overflow && (!strcmp(overflow, "visible") || !strcmp(overflow, "auto")))
+            overflow_hidden = 0;
+        float clip_x = has_vb ? vb[0] : 0.0f;
+        float clip_y = has_vb ? vb[1] : 0.0f;
+        float clip_w = has_vb ? vb[2] : mw;
+        float clip_h = has_vb ? vb[3] : mh;
+        int auto_reverse = 0, is_auto = 1;
+        float fixed_angle = svg_marker_orientation(marker, &auto_reverse, &is_auto);
+        for (int idx = 0; idx < nsegs; idx++) {
+            struct svg_point pos;
+            int draw = 0;
+            if (kind == 0) {
+                if (idx == 0 && segs[0].kind == 0) { pos = segs[0].p[0]; draw = 1; }
+            } else if (kind == 1) {
+                if (idx >= 1 && idx < nsegs - 1 && segs[idx].kind != 3) {
+                    pos = segs[idx].kind == 2 ? segs[idx].p[2] : segs[idx].p[0];
+                    draw = 1;
+                }
+            } else if (kind == 2) {
+                if (idx == nsegs - 1) {
+                    if (segs[idx].kind == 1 || segs[idx].kind == 2) {
+                        pos = segs[idx].kind == 2 ? segs[idx].p[2] : segs[idx].p[0];
+                        draw = 1;
+                    } else if (segs[idx].kind == 3) {
+                        pos = svg_marker_subpath_start(segs, nsegs, idx);
+                        draw = 1;
+                    }
+                }
+            }
+            if (!draw) continue;
+            struct svg_matrix ts = { 1, 0, 0, 1, pos.x, pos.y };
+            float angle = fixed_angle;
+            if (is_auto) {
+                angle = svg_marker_vertex_angle(segs, nsegs, idx);
+                if (auto_reverse && idx == 0) angle = fmodf(angle + 180.0f, 360.0f);
+            }
+            if (fabsf(angle) > 1.0f / 65536.0f)
+                ts = svg_matrix_concat(ts, svg_marker_rotation(angle));
+            if (has_vb) {
+                struct svg_matrix vts = svg_viewbox_transform(vb, aspect, mw * stroke_scale,
+                    mh * stroke_scale);
+                float sx = sqrtf(vts.sx * vts.sx + vts.kx * vts.kx);
+                float sy = sqrtf(vts.ky * vts.ky + vts.sy * vts.sy);
+                ts = svg_matrix_concat(ts, (struct svg_matrix){ sx, 0, 0, sy, 0, 0 });
+            } else {
+                ts = svg_matrix_concat(ts, (struct svg_matrix){ stroke_scale, 0, 0, stroke_scale,
+                    0, 0 });
+            }
+            ts = svg_matrix_concat(ts, (struct svg_matrix){ 1, 0, 0, 1, -ref_x, -ref_y });
+            struct svg_node *g = svg_node_new(0);
+            if (!g) continue;
+            g->transform = ts;
+            g->abs_transform = svg_matrix_concat(abs, ts);
+            if (overflow_hidden) {
+                struct svg_clip *clip = svg_alloc(sizeof(*clip));
+                struct svg_node *root = svg_node_new(0);
+                struct svg_node *rpath = svg_node_new(1);
+                struct svg_path *rect = svg_path_new();
+                if (clip && root && rpath && rect) {
+                    memset(clip, 0, sizeof(*clip));
+                    svg_path_move(rect, clip_x, clip_y);
+                    svg_path_line(rect, clip_x + clip_w, clip_y);
+                    svg_path_line(rect, clip_x + clip_w, clip_y + clip_h);
+                    svg_path_line(rect, clip_x, clip_y + clip_h);
+                    svg_path_close(rect);
+                    svg_path_finish(rect);
+                    rpath->path = rect;
+                    rpath->fill.present = 1;
+                    rpath->fill.opacity = 1.0f;
+                    rpath->fill.paint.type = 1;
+                    rpath->visible = 1;
+                    rpath->aa = 1;
+                    svg_path_tight_bounds(rect, &rpath->bbox);
+                    rpath->has_bbox = 1;
+                    svg_node_add(root, rpath);
+                    clip->root = root;
+                    clip->transform = svg_matrix_identity();
+                    g->clip = clip;
+                    g->isolate = 1;
+                } else {
+                    svg_path_free(rect);
+                    svg_node_destroy(rpath);
+                    svg_node_destroy(root);
+                    free(clip);
+                }
+            }
+            struct svg_conv nested = *c;
+            nested.marker_depth = c->marker_depth + 1;
+            nested.clip_depth = 0;
+            nested.mask_depth = 0;
+            svg_convert_children(&nested, marker, g, g->abs_transform, 0);
+            svg_group_bboxes(g);
+            if (g->nchildren) svg_node_add(group, g);
+            else svg_node_destroy(g);
+        }
+    }
+    free(segs);
+}
+
 static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         struct svg_node *parent, struct svg_matrix abs, int clip_context) {
     const char *tag = svg_local_name(node->name);
@@ -5608,7 +6003,7 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         svg_convert_children(c, node, g, g->abs_transform, clip_context);
     } else {
         struct svg_path *geom = svg_shapes_path(c, st, tag, &c->unsupported);
-        if (geom) svg_add_path_node(c, st, geom, g, g->abs_transform, clip_context);
+        if (geom) svg_add_path_node(c, node, st, geom, g, g->abs_transform, clip_context);
     }
     int required = 0;
     if (!svg_group_finish(c, node, st, 0, clip_context, is_container, g, abs, &required)) {
