@@ -58,14 +58,21 @@ struct livecore_image {
 struct livecore_patch_slot {
     size_t image;
     uintptr_t *slot;
+    uintptr_t entry;
 };
 
 struct livecore_patch {
     char *name;
     char *section;
     unsigned ordinal;
+    uintptr_t target;
     size_t slot_count;
     struct livecore_patch_slot slots[LIVECORE_IMAGES];
+};
+
+struct livecore_action {
+    uintptr_t entry;
+    uintptr_t trampoline;
 };
 
 struct livecore_span {
@@ -151,8 +158,29 @@ static int livecore_by_span(const void *left, const void *right) {
     return a->low > b->low;
 }
 
+enum { LIVECORE_INJECT_NONE, LIVECORE_INJECT_ALLOC, LIVECORE_INJECT_PROTECT };
+
+static int livecore_injected;
+
+static void livecore_read_injection(void) {
+    const char *path = tomoe_test_flag_value("swap-fail");
+    livecore_injected = LIVECORE_INJECT_NONE;
+    if (!path) return;
+    FILE *file = fopen(path, "r");
+    if (!file) return;
+    char text[32] = { 0 };
+    if (!fgets(text, sizeof(text), file)) text[0] = '\0';
+    fclose(file);
+    unlink(path);
+    if (strstr(text, "alloc")) livecore_injected = LIVECORE_INJECT_ALLOC;
+    else if (strstr(text, "protect")) livecore_injected = LIVECORE_INJECT_PROTECT;
+}
+
+static bool livecore_alloc_fails;
+
 static char *livecore_copy(const char *text) {
     size_t length = strlen(text);
+    if (livecore_alloc_fails) return NULL;
     char *copy = malloc(length + 1);
     if (copy) memcpy(copy, text, length + 1);
     return copy;
@@ -484,10 +512,12 @@ static uintptr_t *livecore_slot_for(const struct livecore_patch *patch, size_t i
     return NULL;
 }
 
-static bool livecore_add_slot(struct livecore_patch *patch, size_t image, uintptr_t *slot) {
+static bool livecore_add_slot(struct livecore_patch *patch, size_t image, uintptr_t *slot,
+        uintptr_t entry) {
     if (patch->slot_count >= LIVECORE_IMAGES) return false;
     patch->slots[patch->slot_count].image = image;
     patch->slots[patch->slot_count].slot = slot;
+    patch->slots[patch->slot_count].entry = entry;
     patch->slot_count++;
     return true;
 }
@@ -620,7 +650,13 @@ struct livecore_plan {
     size_t objects_count;
     uintptr_t *pages;
     size_t page_count;
+    struct livecore_action *actions;
+    size_t action_count;
 };
+
+
+static bool livecore_protect(struct livecore_plan *plan, char *error, size_t error_size);
+static bool livecore_arm(struct livecore_plan *plan, char *error, size_t error_size);
 
 static struct livecore_plan *livecore_pending;
 
@@ -628,6 +664,7 @@ static void livecore_drop_plan(struct livecore_plan *plan) {
     if (!plan) return;
     free(plan->objects_table);
     free(plan->pages);
+    free(plan->actions);
     free(plan);
 }
 
@@ -639,6 +676,7 @@ static void livecore_release_plan(struct livecore_plan *plan) {
     }
     free(plan->objects_table);
     free(plan->pages);
+    free(plan->actions);
     free(plan);
 }
 
@@ -650,6 +688,7 @@ static struct livecore_plan *livecore_prepare(const char *path) {
     struct livecore_image *current = livecore_current;
     struct livecore_plan *plan = calloc(1, sizeof(*plan));
     if (!plan) lisp_error("Cannot hold the swap plan.");
+    livecore_read_injection();
     if (!realpath(path, plan->real)) {
         struct livecore_plan *failed = plan;
         livecore_release_plan(failed);
@@ -760,10 +799,20 @@ static struct livecore_plan *livecore_prepare(const char *path) {
         livecore_format(error, sizeof(error), "cannot hold %zu patches", fresh);
         goto failed;
     }
+    if (!livecore_protect(plan, error, sizeof(error))) goto failed;
+    livecore_alloc_fails = livecore_injected == LIVECORE_INJECT_ALLOC;
+    if (!livecore_arm(plan, error, sizeof(error))) {
+        livecore_alloc_fails = false;
+        goto failed;
+    }
+    livecore_alloc_fails = false;
     (void)page;
     ready = true;
 failed:
     if (!ready) {
+        long size = sysconf(_SC_PAGESIZE);
+        for (size_t i = 0; i < plan->page_count; i++)
+            mprotect((void *)plan->pages[i], (size_t)size, PROT_READ | PROT_EXEC);
         dlclose(handle);
         livecore_release_plan(plan);
         lisp_error("%s.", error[0] ? error : "The core was not swapped");
@@ -777,19 +826,79 @@ static const void *livecore_resolve_table(const void *table, struct livecore_rep
     return moved ? moved : table;
 }
 
-static void livecore_commit(struct livecore_plan *plan) {
+static bool livecore_protect(struct livecore_plan *plan, char *error, size_t error_size) {
     struct livecore_image *current = livecore_current;
     struct livecore_image *next = plan->next;
-    char error[512] = "";
+    long page = sysconf(_SC_PAGESIZE);
+    if (livecore_injected == LIVECORE_INJECT_PROTECT) {
+        int status = mprotect((void *)page, (size_t)page, PROT_READ | PROT_WRITE);
+        livecore_format(error, error_size, "cannot make the code writable: %s",
+            status == 0 ? "injected failure" : strerror(errno));
+        return false;
+    }
     for (size_t i = 0; i < current->count; i++) {
         const struct livecore_symbol *symbol = &current->symbols[i];
         if (symbol->function || !symbol->size || strstr(symbol->section, ".rel.ro")) continue;
         const struct livecore_symbol *pair = livecore_find(next, symbol);
-        if (!livecore_make_writable(pair->address, pair->size, false, error, sizeof(error))) {
-            tomoe_log(LOG_ERROR, "tomoe: the core was not swapped: %s", error);
-            livecore_release_plan(plan);
-            return;
+        if (!livecore_make_writable(pair->address, pair->size, false, error, error_size))
+            return false;
+    }
+    for (size_t i = 0; i < plan->page_count; i++) {
+        if (mprotect((void *)plan->pages[i], (size_t)page, PROT_READ | PROT_WRITE | PROT_EXEC) == 0)
+            continue;
+        livecore_format(error, error_size, "cannot write code at %p: %s",
+            (void *)plan->pages[i], strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+static bool livecore_arm(struct livecore_plan *plan, char *error, size_t error_size) {
+    struct livecore_image *current = livecore_current;
+    struct livecore_image *next = plan->next;
+    for (size_t i = 0; i < current->count; i++) {
+        const struct livecore_symbol *symbol = &current->symbols[i];
+        if (!symbol->function || !symbol->patchable) continue;
+        if (livecore_driver_function(symbol->name)) continue;
+        if (strncmp(symbol->name, LIVECORE_PREFIX, strlen(LIVECORE_PREFIX)) == 0) continue;
+        const struct livecore_symbol *pair = livecore_find(next, symbol);
+        struct livecore_patch *record = livecore_record(symbol);
+        if (!record) {
+            livecore_format(error, error_size, "cannot remember the patch for %s", symbol->name);
+            return false;
         }
+        record->target = pair->address;
+        if (livecore_slot_for(record, current->id)) continue;
+        uintptr_t trampoline = livecore_slot(current, pair->address);
+        if (!livecore_add_slot(record, current->id, current->slots + current->slots_used - 1,
+                symbol->address)) {
+            livecore_format(error, error_size, "cannot add a trampoline for %s", symbol->name);
+            return false;
+        }
+        if (plan->action_count % 128 == 0) {
+            struct livecore_action *grown = realloc(plan->actions,
+                (plan->action_count + 128) * sizeof(*grown));
+            if (!grown) {
+                livecore_format(error, error_size, "cannot hold %zu entries to patch",
+                    plan->action_count + 1);
+                return false;
+            }
+            plan->actions = grown;
+        }
+        plan->actions[plan->action_count].entry = symbol->address;
+        plan->actions[plan->action_count].trampoline = trampoline;
+        plan->action_count++;
+    }
+    return true;
+}
+
+static void livecore_commit(struct livecore_plan *plan) {
+    struct livecore_image *current = livecore_current;
+    struct livecore_image *next = plan->next;
+    for (size_t i = 0; i < current->count; i++) {
+        const struct livecore_symbol *symbol = &current->symbols[i];
+        if (symbol->function || !symbol->size || strstr(symbol->section, ".rel.ro")) continue;
+        const struct livecore_symbol *pair = livecore_find(next, symbol);
         memcpy((void *)pair->address, (const void *)symbol->address, symbol->size);
         plan->objects++;
         plan->bytes += symbol->size;
@@ -806,37 +915,28 @@ static void livecore_commit(struct livecore_plan *plan) {
             if (output->screen)
                 output->screen->impl = livecore_resolve_table(output->screen->impl, &repoint);
     }
+    for (size_t i = 0; i < livecore_patch_count; i++) {
+        struct livecore_patch *record = &livecore_patches[i];
+        for (size_t j = 0; j < record->slot_count; j++)
+            __atomic_store_n(record->slots[j].slot, record->target, __ATOMIC_SEQ_CST);
+    }
+    char error[128];
+    for (size_t i = 0; i < plan->action_count; i++)
+        if (!livecore_patch_entry(plan->actions[i].entry, plan->actions[i].trampoline,
+                error, sizeof(error)))
+            tomoe_log(LOG_ERROR, "tomoe: %s", error);
+
     long page = sysconf(_SC_PAGESIZE);
     for (size_t i = 0; i < plan->page_count; i++)
-        mprotect((void *)plan->pages[i], (size_t)page, PROT_READ | PROT_WRITE | PROT_EXEC);
-    size_t patched = 0;
-    for (size_t i = 0; i < current->count; i++) {
-        const struct livecore_symbol *symbol = &current->symbols[i];
-        if (!symbol->function || !symbol->patchable) continue;
-        if (livecore_driver_function(symbol->name)) continue;
-        if (strncmp(symbol->name, LIVECORE_PREFIX, strlen(LIVECORE_PREFIX)) == 0) continue;
-        const struct livecore_symbol *pair = livecore_find(next, symbol);
-        struct livecore_patch *record = livecore_record(symbol);
-        if (!record) break;
-        if (!livecore_slot_for(record, current->id)) {
-            uintptr_t trampoline = livecore_slot(current, pair->address);
-            if (!livecore_add_slot(record, current->id, current->slots + current->slots_used - 1))
-                break;
-            livecore_patch_entry(symbol->address, trampoline, error, sizeof(error));
-        }
-        for (size_t j = 0; j < record->slot_count; j++)
-            __atomic_store_n(record->slots[j].slot, pair->address, __ATOMIC_SEQ_CST);
-        patched++;
-    }
-    for (size_t i = 0; i < plan->page_count; i++)
-        mprotect((void *)plan->pages[i], (size_t)page, PROT_READ | PROT_EXEC);
+        if (mprotect((void *)plan->pages[i], (size_t)page, PROT_READ | PROT_EXEC) != 0)
+            tomoe_log(LOG_WARNING, "tomoe: the code at %p stays writable", (void *)plan->pages[i]);
     next->id = livecore_next_id++;
     next->active = true;
     livecore_current = next;
     tomoe_log(LOG_DEBUG, "tomoe: core swapped to %s (%s): %zu functions, %zu entries patched, "
         "%zu data symbols (%zu bytes), %zu kept, %zu left behind",
-        plan->real, tomoe_core_stamp(), plan->functions, patched, plan->objects, plan->bytes,
-        livecore_kept(next), livecore_kept(current));
+        plan->real, tomoe_core_stamp(), plan->functions, plan->action_count, plan->objects,
+        plan->bytes, livecore_kept(next), livecore_kept(current));
     livecore_drop_plan(plan);
 }
 

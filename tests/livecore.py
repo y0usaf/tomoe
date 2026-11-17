@@ -12,6 +12,8 @@ TOMOE, CORE_A, CORE_B, CORE_BAD, CLIENT, SCRIPT, POINTER, POLICY, STAMP_B = sys.
 SOCKET = "livecore"
 PHASES = (
     ("pre", 183, ("core-1", "core-2", "core-3")),
+    ("inject1", 189, ("core-1", "core-2", "core-3")),
+    ("inject2", 190, ("core-1", "core-2", "core-3")),
     ("swapped", 184, ("core-1", "core-2", "core-3")),
     ("closed", 187, ("core-2", "core-3")),
     ("refused", 185, ("core-2", "core-3")),
@@ -143,7 +145,8 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
     log_path = pathlib.Path(root) / "compositor.log"
     log = open(log_path, "w+")
     compositor = subprocess.Popen([TOMOE, "--backend", "headless", "--socket", SOCKET,
-                                   "--config", POLICY, "--no-watch"],
+                                   "--config", POLICY, "--no-watch",
+                                   "--test-swap-fail=" + str(pathlib.Path(root) / "swap-fail")],
                                   env=environment, stdout=log, stderr=log)
 
     def cli(*arguments, check=True):
@@ -287,6 +290,23 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         input_round(driver, clients, "pre", 183, ("core-1", "core-2", "core-3"))
         assert drawing(), "the windows stopped drawing after the first input round"
         pointer_round()
+
+        fail_path = pathlib.Path(root) / "swap-fail"
+        for kind, phase, code, message in (
+                ("protect", "inject1", 189, "cannot make the code writable"),
+                ("alloc", "inject2", 190, "cannot remember the patch")):
+            fail_path.write_text(kind + "\n")
+            refused = cli("command", "swap-core", "file=" + CORE_B, check=False)
+            assert refused.returncode != 0, "an injected " + kind + " failure was not reported"
+            assert message in (refused.stdout + refused.stderr), \
+                kind + ": " + refused.stdout + refused.stderr
+            assert stamp() == stamp_a, "an injected " + kind + " failure changed the running core"
+            assert identities() == mapped, "an injected " + kind + " failure lost the windows"
+            assert drawing(), "the session stopped drawing after an injected " + kind + " failure"
+            input_round(driver, clients, phase, code, ("core-1", "core-2", "core-3"))
+            assert not clients.exited(), "a client exited during an injected " + kind + " failure"
+        note("a swap that cannot protect the code or hold its records is refused, and the old "
+             "core keeps drawing and taking input")
         note("three windows mapped, drawing, and taking a bound key, a key event and the pointer on "
              + str(stamp_a))
 

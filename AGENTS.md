@@ -103,6 +103,15 @@ nops into one five-byte nop after each link, so an entry is one eight-byte store
 while other threads run. The driver's own functions (`main.c`, listed by `nm` into
 `build/main-functions.h`) and the loader's (`livecore_*`) are never patched.
 
+Everything that can fail happens in the call that asks for the swap: the
+`dlopen`, the symbol pairing, the writable protections on the data and code
+pages, and every patch record and trampoline are built and checked there, and a
+failure refuses the swap with the running core and its clients untouched. The
+commit that runs at the frame boundary only writes bytes that are already known
+to fit. `--test-swap-fail=FILE` injects the next attempt's failure - FILE holds
+`protect` or `alloc` and is removed - and the livecore suite uses it to check
+that a refused swap leaves the old core drawing and taking input.
+
 A static object whose *address* another object remembers has to be shared, not
 copied: `native/state.c` is retained state the driver owns by name, each image
 points its statics at it when loaded through `tomoe_core_attach`, and both then
