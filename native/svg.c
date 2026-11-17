@@ -3298,6 +3298,11 @@ static int svg_tag_known(const char *name) {
     return 0;
 }
 
+static int svg_style_tag(const char *name) {
+    if (svg_tag_known(name)) return 1;
+    return name[0] == 'f' && name[1] == 'e' && name[2] != 0;
+}
+
 static int svg_required_features_ok(struct svg_style *st, struct svg_doc *doc) {
     const char *ext = svg_style_get(doc, st, "requiredExtensions");
     if (ext) return 0;
@@ -3384,7 +3389,7 @@ static void svg_doc_styles(struct svg_doc *doc, struct xml_node *node) {
     for (int i = 0; i < node->nchildren; i++) {
         struct xml_node *child = node->children[i];
         const char *name = svg_local_name(child->name);
-        if (!svg_tag_known(name)) continue;
+        if (!svg_style_tag(name)) continue;
         if (!strcmp(name, "style")) continue;
         svg_doc_style_node(doc, child);
         svg_doc_styles(doc, child);
@@ -3454,6 +3459,53 @@ static void svg_doc_style_node(struct svg_doc *doc, struct xml_node *child) {
             }
             for (int d = 0; d < ndecls; d++) { free(decls[d].name); free(decls[d].value); }
             free(decls);
+        }
+    }
+}
+
+static int svg_prop_inherit_value(const char *name) {
+    static const char *names[] = {
+        "alignment-baseline", "baseline-shift", "clip-path", "clip-rule", "color",
+        "color-interpolation-filters", "direction", "display", "dominant-baseline",
+        "fill", "fill-opacity", "fill-rule", "filter", "flood-color", "flood-opacity",
+        "font-family", "font-kerning", "font-size", "font-stretch", "font-style",
+        "font-variant", "font-weight", "image-rendering", "letter-spacing",
+        "marker-end", "marker-mid", "marker-start", "mask", "opacity", "overflow",
+        "shape-rendering", "stop-color", "stop-opacity", "stroke", "stroke-dasharray",
+        "stroke-dashoffset", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit",
+        "stroke-opacity", "stroke-width", "text-anchor", "text-decoration",
+        "text-rendering", "visibility", "word-spacing", "writing-mode",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++)
+        if (!strcmp(name, names[i])) return 1;
+    return 0;
+}
+
+static void svg_style_drop(struct svg_style *st, int index) {
+    free(st->props[index].name);
+    free(st->props[index].value);
+    for (int i = index; i + 1 < st->count; i++) st->props[i] = st->props[i + 1];
+    st->count--;
+}
+
+static void svg_doc_resolve_inherit(struct svg_doc *doc) {
+    for (int si = 0; si < doc->nstyles; si++) {
+        struct svg_style *st = &doc->styles[si];
+        for (int pi = 0; pi < st->count; pi++) {
+            struct svg_prop *prop = &st->props[pi];
+            if (strcmp(prop->value, "inherit") || !svg_prop_inherit_value(prop->name)) continue;
+            const struct svg_prop_def *def = svg_prop_def(prop->name);
+            const char *found = NULL;
+            for (struct xml_node *cur = st->node->parent; cur; cur = cur->parent) {
+                if (cur->style_index < 0) continue;
+                const char *v = svg_style_get(doc, &doc->styles[cur->style_index], prop->name);
+                if (v) { found = v; break; }
+                if (!def || !def->inheritable) break;
+            }
+            if (found) {
+                char *copy = svg_strdup(found);
+                if (copy) { free(prop->value); prop->value = copy; }
+            } else svg_style_drop(st, pi--);
         }
     }
 }
@@ -5482,7 +5534,11 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             const char *col = svg_filter_attr(c->doc, child, "flood-color");
             if (col) svg_parse_color(col, &r, &g, &b, &a);
             p->color[0] = r; p->color[1] = g; p->color[2] = b; p->color[3] = a;
-            p->opacity = svg_filter_number(c, child, "flood-opacity", 0, 2, 1, SVG_UNIT_NONE);
+            p->opacity = 1.0f;
+            {
+                const char *fop = svg_filter_attr(c->doc, child, "flood-opacity");
+                if (fop) svg_parse_opacity(fop, &p->opacity);
+            }
         } else if (!strcmp(tag, "feBlend")) {
             p->kind = SVG_FE_BLEND;
             const char *mode = svg_filter_attr(c->doc, child, "mode");
@@ -5693,7 +5749,9 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             const char *col = svg_filter_attr(c->doc, child, "lighting-color");
             if (col) {
                 if (!strcmp(col, "currentColor")) {
-                    const char *cur = svg_style_find_inherited(c->doc, &c->doc->styles[child->style_index], "color");
+                    const char *cur = child->style_index >= 0 ?
+                        svg_style_find_inherited(c->doc,
+                            &c->doc->styles[child->style_index], "color") : NULL;
                     if (!cur || !svg_parse_color(cur, &r, &g, &b, &a)) { r = g = b = 0; }
                 } else if (!svg_parse_color(col, &r, &g, &b, &a)) {
                     r = g = b = 255;
@@ -5771,7 +5829,11 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             const char *col = svg_filter_attr(c->doc, child, "flood-color");
             if (col) svg_parse_color(col, &r, &g, &b, &a);
             p->color[0] = r; p->color[1] = g; p->color[2] = b; p->color[3] = a;
-            p->opacity = svg_filter_number(c, child, "flood-opacity", 0, 2, 1, SVG_UNIT_NONE);
+            p->opacity = 1.0f;
+            {
+                const char *fop = svg_filter_attr(c->doc, child, "flood-opacity");
+                if (fop) svg_parse_opacity(fop, &p->opacity);
+            }
         } else {
             continue;
         }
@@ -6641,6 +6703,11 @@ static int svg_image_decode(struct svg_image *im, const unsigned char *data, siz
     if (length >= 2 && data[0] == 0xff && data[1] == 0xd8) {
         struct jpeg_decoded jpg;
         if (tomoe_jpeg_decode(data, length, 32767, UINT64_MAX, &jpg) != JPEG_DECODE_OK) return 0;
+        for (size_t i = 0; i < (size_t)jpg.width * jpg.height; i++) {
+            unsigned char t = jpg.pixels[i * 4];
+            jpg.pixels[i * 4] = jpg.pixels[i * 4 + 2];
+            jpg.pixels[i * 4 + 2] = t;
+        }
         im->pix.width = (int)jpg.width;
         im->pix.height = (int)jpg.height;
         im->pix.pixels = jpg.pixels;
@@ -8467,6 +8534,7 @@ struct tomoe_svg *tomoe_svg_parse(const void *data, size_t length) {
     svg_expand_uses(&svg->doc, root, 0);
     svg_doc_style_node(&svg->doc, root);
     svg_doc_styles(&svg->doc, root);
+    svg_doc_resolve_inherit(&svg->doc);
     svg_fix_recursive_links(&svg->doc, "clipPath", "clip-path");
     svg_fix_recursive_links(&svg->doc, "mask", "mask");
     svg_fix_recursive_links(&svg->doc, "filter", "filter");
