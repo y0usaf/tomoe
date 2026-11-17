@@ -4660,6 +4660,21 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
                 have = 1;
             }
         }
+        if (fallback && *fallback && strcmp(fallback, "none") &&
+                strcmp(fallback, "currentColor")) {
+            unsigned char fr = 0, fg = 0, fb = 0, fa = 255;
+            if (!svg_parse_color(fallback, &fr, &fg, &fb, &fa)) {
+                if (black_fallback) {
+                    paint->type = 1;
+                    paint->r = paint->g = paint->b = 0;
+                    *opacity = 1.0f;
+                }
+                free(id);
+                free(fallback);
+                free(trimmed);
+                return 1;
+            }
+        }
         if (!have && fallback) {
             if (!strcmp(fallback, "none")) {
             } else if (!strcmp(fallback, "currentColor")) {
