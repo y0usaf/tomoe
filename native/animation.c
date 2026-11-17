@@ -59,9 +59,9 @@ static double animation_eval(const struct animation *a, double passed) {
         double p = passed / a->duration;
         if (a->v0 != 0 && span != 0) {
             double m0 = a->v0 * a->duration / span;
-            double h = (3 * p * p - 2 * p * p * p) + m0 * (p - 2 * p * p + p * p * p);
-            h = span > 0 ? fmin(1, fmax(0, h)) : fmin(0, fmax(-1, h));
-            return a->from + span * h;
+            double share = (3 * p * p - 2 * p * p * p) + m0 * (p - 2 * p * p + p * p * p);
+            share = fmin(1, fmax(0, share));
+            return a->from + span * share;
         }
         return curve_y(&a->config, p) * span + a->from;
     }
