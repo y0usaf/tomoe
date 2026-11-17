@@ -90,6 +90,7 @@ struct render {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_texture;
     PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_renderbuffer;
     struct scene scene;
+    struct { GLuint vao, vbo; size_t bytes; } trail;
     struct pass passes[PASS_POOL];
     bool pass_used[PASS_POOL];
     uint64_t gl_calls, quads, runs, fragments, uploads, upload_bytes;
@@ -301,6 +302,53 @@ static const char scene_source[] =
     "    }\n"
     "}\n";
 
+enum { TRAIL_VERTICES = 6 };
+
+static const char trail_vertex_source[] =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "in vec4 cell;\n"
+    "in vec2 extent;\n"
+    "in vec4 color;\n"
+    "in vec2 shape;\n"
+    "out vec2 v_local;\n"
+    "out vec2 v_size;\n"
+    "out vec4 v_color;\n"
+    "out float v_radius;\n"
+    "out float v_rounded;\n"
+    "const vec2 corners[6] = vec2[6](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),\n"
+    "    vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0));\n"
+    "void main() {\n"
+    "    vec2 corner = corners[gl_VertexID];\n"
+    "    gl_Position = vec4(mix(cell.xy, cell.zw, corner), 0.0, 1.0);\n"
+    "    v_local = corner * extent;\n"
+    "    v_size = extent;\n"
+    "    v_color = color;\n"
+    "    v_radius = shape.x;\n"
+    "    v_rounded = shape.y;\n"
+    "}\n";
+
+static const char trail_prelude[] =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "in vec2 v_local;\n"
+    "in vec2 v_size;\n"
+    "in vec4 v_color;\n"
+    "in float v_radius;\n"
+    "in float v_rounded;\n"
+    "out vec4 fragment;\n";
+
+static const char trail_source[] =
+    "void main() {\n"
+    "    if (v_rounded > 0.5) {\n"
+    "        if (v_local.x < 0.0 || v_local.y < 0.0 || v_local.x > v_size.x ||\n"
+    "                v_local.y > v_size.y) discard;\n"
+    "        fragment = v_color * rounding_alpha(v_local, v_size, v_radius);\n"
+    "        return;\n"
+    "    }\n"
+    "    fragment = v_color;\n"
+    "}\n";
+
 static const char texture_source[] =
     "uniform SAMPLER tex;\n"
     "#ifdef LUT\n"
@@ -490,6 +538,9 @@ static bool link_stages(struct program *p, GLuint vs, GLuint fs) {
     glBindAttribLocation(p->id, 8, "extra");
     glBindAttribLocation(p->id, 9, "size");
     glBindAttribLocation(p->id, 10, "scissor");
+    glBindAttribLocation(p->id, 11, "cell");
+    glBindAttribLocation(p->id, 12, "extent");
+    glBindAttribLocation(p->id, 13, "shape");
     glLinkProgram(p->id);
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -558,6 +609,12 @@ static bool link_scene(struct program *p) {
 static bool link_sdf(struct program *p) {
     const char *fragment[] = { sdf_prelude, rounding_source, sdf_source };
     const char *vertex[] = { sdf_vertex_source };
+    return link_sources(p, vertex, 1, fragment, 3);
+}
+
+static bool link_trail(struct program *p) {
+    const char *fragment[] = { trail_prelude, rounding_source, trail_source };
+    const char *vertex[] = { trail_vertex_source };
     return link_sources(p, vertex, 1, fragment, 3);
 }
 
@@ -1023,6 +1080,68 @@ void pass_quad(struct pass *pass, struct program *p, const float pos[8], const f
         render_quad(r, p, pos, local, texcoords);
     }
     GL(r, glDisable(GL_SCISSOR_TEST));
+}
+
+static void trail_target(struct render *r) {
+    if (r->trail.vao) return;
+    GL(r, glGenVertexArrays(1, &r->trail.vao));
+    GL(r, glGenBuffers(1, &r->trail.vbo));
+    GL(r, glBindVertexArray(r->trail.vao));
+    GL(r, glBindBuffer(GL_ARRAY_BUFFER, r->trail.vbo));
+    GLsizei stride = sizeof(struct trail_cell);
+    GL(r, glVertexAttribPointer(11, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct trail_cell, clip)));
+    GL(r, glVertexAttribPointer(12, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct trail_cell, extent)));
+    GL(r, glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct trail_cell, color)));
+    GL(r, glVertexAttribPointer(13, 2, GL_FLOAT, GL_FALSE, stride,
+        (const void *)offsetof(struct trail_cell, radius)));
+    static const GLuint instances[] = { 5, 11, 12, 13 };
+    for (size_t i = 0; i < sizeof(instances) / sizeof(instances[0]); i++) {
+        GL(r, glEnableVertexAttribArray(instances[i]));
+        GL(r, glVertexAttribDivisor(instances[i], 1));
+    }
+    GL(r, glBindVertexArray(0));
+}
+
+void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count,
+        uint64_t pixels) {
+    struct render *r = pass->r;
+    struct program *p = &r->programs[PROGRAM_TRAIL];
+    if (!count || !p->id) return;
+    pass_flush(pass);
+    trail_target(r);
+    GLsizeiptr bytes = (GLsizeiptr)(count * sizeof(*cells));
+    GL(r, glBindVertexArray(r->trail.vao));
+    GL(r, glBindBuffer(GL_ARRAY_BUFFER, r->trail.vbo));
+    if ((size_t)bytes > r->trail.bytes) {
+        size_t want = r->trail.bytes ? r->trail.bytes : 4096;
+        while (want < (size_t)bytes) want *= 2;
+        GL(r, glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)want, NULL, GL_STREAM_DRAW));
+        r->trail.bytes = want;
+    }
+    GL(r, glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, cells));
+    r->uploads++;
+    r->upload_bytes += (uint64_t)bytes;
+    GL(r, glUseProgram(p->id));
+    GL(r, glEnable(GL_BLEND));
+    GL(r, glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA));
+    int rects = 0;
+    const struct rect *clip = pass->clip ? region_rectangles((struct region *)pass->clip,
+        &rects) : NULL;
+    if (clip) GL(r, glEnable(GL_SCISSOR_TEST));
+    for (int i = 0; i < (clip ? rects : 1); i++) {
+        if (clip)
+            GL(r, glScissor(clip[i].x1, clip[i].y1, clip[i].x2 - clip[i].x1,
+                clip[i].y2 - clip[i].y1));
+        GL(r, glDrawArraysInstanced(GL_TRIANGLES, 0, TRAIL_VERTICES, (GLsizei)count));
+        r->runs++;
+    }
+    if (clip) GL(r, glDisable(GL_SCISSOR_TEST));
+    GL(r, glBindVertexArray(0));
+    r->quads += count;
+    r->fragments += pixels;
 }
 
 struct program *render_program(struct render *renderer, int kind) {
@@ -2317,6 +2436,10 @@ static const struct op *next_op(struct pass *pass, int kind, struct box box) {
     return op;
 }
 
+bool pass_recording(const struct pass *pass) {
+    return pass->record != NULL;
+}
+
 size_t pass_record_count(const struct pass *pass) {
     return pass->record ? pass->record->len : 0;
 }
@@ -2681,6 +2804,8 @@ static void render_free(struct render *r) {
         for (int i = 0; i < PROGRAM_COUNT; i++) glDeleteProgram(r->programs[i].id);
         if (r->scene.vbo) glDeleteBuffers(1, &r->scene.vbo);
         if (r->scene.dummy) glDeleteTextures(1, &r->scene.dummy);
+        if (r->trail.vbo) glDeleteBuffers(1, &r->trail.vbo);
+        if (r->trail.vao) glDeleteVertexArrays(1, &r->trail.vao);
         eglMakeCurrent(r->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(r->display, r->context);
     }
@@ -2884,6 +3009,8 @@ static bool programs_init(struct render *r) {
     bool external = has((const char *)glGetString(GL_EXTENSIONS), "GL_OES_EGL_image_external");
     if (!link_scene(&r->programs[PROGRAM_SCENE])) return false;
     if (!link_sdf(&r->programs[PROGRAM_SDF])) return false;
+    if (!link_trail(&r->programs[PROGRAM_TRAIL]))
+        tomoe_log(LOG_ERROR, "tomoe: the pointer trail's program did not link");
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
         if ((external || !builtins[i].external) &&
                 !link_program(&r->programs[builtins[i].kind], builtins[i].prelude, builtins[i].body))

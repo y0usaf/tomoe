@@ -211,6 +211,7 @@ struct op_clip {
 bool op_begin(struct pass *pass, int kind, struct box box, struct op_clip *clip);
 void op_end(struct pass *pass, struct op_clip *clip);
 struct op *pass_recorded(struct pass *pass, size_t before);
+bool pass_recording(const struct pass *pass);
 size_t pass_record_count(const struct pass *pass);
 void oplist_finish(struct oplist *list);
 void oplist_reserve(struct oplist *list, size_t used);
@@ -330,7 +331,7 @@ struct ui_pointer;
 
 struct timeline;
 enum { PROGRAM_SCENE, PROGRAM_SDF, PROGRAM_EXTERNAL, PROGRAM_TEXTURE_LUT, PROGRAM_EXTERNAL_LUT,
-    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_COUNT };
+    PROGRAM_DOWN, PROGRAM_UP, PROGRAM_TRAIL, PROGRAM_COUNT };
 struct program {
     GLuint id;
     GLint pos, local, texcoord;
@@ -353,7 +354,14 @@ struct scene_quad {
     struct texture *texture;
     const struct region *clip;
 };
+struct trail_cell {
+    float clip[4];
+    float extent[2];
+    float color[4];
+    float radius, rounded;
+};
 void pass_scene(struct pass *pass, const struct scene_quad *quad);
+void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count, uint64_t pixels);
 void pass_flush(struct pass *pass);
 void pass_scene_attributes_dirty(struct pass *pass);
 struct program *render_shader_create(struct render *r, const char *source);
