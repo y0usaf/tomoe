@@ -4044,22 +4044,14 @@ static int svg_parse_origin_part(const char *text, int len, struct svg_origin_pa
     return 1;
 }
 
-static int svg_origin_part_value(struct svg_conv *c, struct svg_origin_part *part, int axis,
-        float *out) {
-    float base = axis == 0 ? c->view_box[2] : c->view_box[3];
-    double n = part->number;
-    switch (part->unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = (float)n; return 1;
-    case SVG_UNIT_PERCENT: *out = base * (float)n / 100.0f; return 1;
-    case SVG_UNIT_EM: *out = (float)n * 16.0f; return 1;
-    case SVG_UNIT_EX: *out = (float)n * 8.0f; return 1;
-    case SVG_UNIT_IN: *out = (float)n * c->dpi; return 1;
-    case SVG_UNIT_CM: *out = (float)n * c->dpi / 2.54f; return 1;
-    case SVG_UNIT_MM: *out = (float)n * c->dpi / 25.4f; return 1;
-    case SVG_UNIT_PT: *out = (float)n * c->dpi / 72.0f; return 1;
-    case SVG_UNIT_PC: *out = (float)n * c->dpi / 6.0f; return 1;
-    default: return 0;
-    }
+static float svg_length_convert(struct svg_conv *c, struct svg_length l,
+        struct xml_node *node, int units_bbox, int axis);
+
+static int svg_origin_part_value(struct svg_conv *c, struct xml_node *node,
+        struct svg_origin_part *part, int axis, float *out) {
+    if (part->unit > SVG_UNIT_PERCENT) return 0;
+    *out = svg_length_convert(c, (struct svg_length){ part->number, part->unit }, node, 0, axis);
+    return 1;
 }
 
 static int svg_transform_origin_offset(struct svg_conv *c, struct svg_style *st, float out[2]) {
@@ -4101,8 +4093,8 @@ static int svg_transform_origin_offset(struct svg_conv *c, struct svg_style *st,
             *y = t;
         }
     }
-    if (!svg_origin_part_value(c, x, 0, &out[0])) return 0;
-    if (!svg_origin_part_value(c, y, 1, &out[1])) return 0;
+    if (!svg_origin_part_value(c, st->node, x, 0, &out[0])) return 0;
+    if (!svg_origin_part_value(c, st->node, y, 1, &out[1])) return 0;
     return 1;
 }
 
@@ -4123,32 +4115,84 @@ static struct svg_matrix svg_show_transform(struct svg_conv *c, struct svg_style
     return svg_origin_apply(c, st, ts);
 }
 
+static float svg_named_font_size(const char *name, float parent) {
+    static const float factors[] = {
+        0.578703642f, 0.694444418f, 0.833333313f, 1.0f,
+        1.200000048f, 1.440000057f, 1.728000164f,
+    };
+    int factor;
+    if (!strcmp(name, "xx-small")) factor = -3;
+    else if (!strcmp(name, "x-small")) factor = -2;
+    else if (!strcmp(name, "small")) factor = -1;
+    else if (!strcmp(name, "medium")) factor = 0;
+    else if (!strcmp(name, "large")) factor = 1;
+    else if (!strcmp(name, "x-large")) factor = 2;
+    else if (!strcmp(name, "xx-large")) factor = 3;
+    else if (!strcmp(name, "smaller")) factor = -1;
+    else if (!strcmp(name, "larger")) factor = 1;
+    else return parent;
+    return parent * factors[factor + 3];
+}
+
+static float svg_font_size(struct svg_conv *c, struct xml_node *node) {
+    float size = 12.0f;
+    struct xml_node *chain[128];
+    int count = 0;
+    for (struct xml_node *cur = node; cur && count < 128; cur = cur->parent) chain[count++] = cur;
+    while (count--) {
+        struct xml_node *cur = chain[count];
+        if (cur->style_index < 0) continue;
+        const char *text = svg_style_get(c->doc, &c->doc->styles[cur->style_index], "font-size");
+        if (!text) continue;
+        struct svg_length l;
+        if (svg_parse_length(text, &l)) {
+            float n = (float)l.number;
+            switch (l.unit) {
+            case SVG_UNIT_EM: size = n * size; break;
+            case SVG_UNIT_EX: size = n * size / 2.0f; break;
+            case SVG_UNIT_PERCENT: size = n * size * 0.01f; break;
+            case SVG_UNIT_IN: size = n * c->dpi; break;
+            case SVG_UNIT_CM: size = n * c->dpi / 2.54f; break;
+            case SVG_UNIT_MM: size = n * c->dpi / 25.4f; break;
+            case SVG_UNIT_PT: size = n * c->dpi / 72.0f; break;
+            case SVG_UNIT_PC: size = n * c->dpi / 6.0f; break;
+            default: size = n; break;
+            }
+        } else {
+            size = svg_named_font_size(text, size);
+        }
+    }
+    return size;
+}
+
+static float svg_length_convert(struct svg_conv *c, struct svg_length l,
+        struct xml_node *node, int units_bbox, int axis) {
+    float n = (float)l.number;
+    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
+    switch (l.unit) {
+    case SVG_UNIT_PERCENT: {
+        float base = axis == 0 ? c->view_box[2] : axis == 1 ? c->view_box[3] :
+            sqrtf((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0f);
+        return base * n / 100.0f;
+    }
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
+    case SVG_UNIT_EM: return n * svg_font_size(c, node);
+    case SVG_UNIT_EX: return n * svg_font_size(c, node) / 2.0f;
+    case SVG_UNIT_IN: return n * c->dpi;
+    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
+    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
+    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
+    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
+    default: return n;
+    }
+}
+
 static int svg_convert_length(struct svg_conv *c, struct svg_style *st, const char *name,
         int axis, double def_number, enum svg_length_unit def_unit, float *out) {
     const char *text = svg_style_get(c->doc, st, name);
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    float n = (float)l.number;
-    float dpi = c->dpi;
-    switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
-    case SVG_UNIT_EM: *out = n * 12.0f; break;
-    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
-    case SVG_UNIT_IN: *out = n * dpi; break;
-    case SVG_UNIT_CM: *out = n * dpi / 2.54f; break;
-    case SVG_UNIT_MM: *out = n * dpi / 25.4f; break;
-    case SVG_UNIT_PT: *out = n * dpi / 72.0f; break;
-    case SVG_UNIT_PC: *out = n * dpi / 6.0f; break;
-    case SVG_UNIT_PERCENT: {
-        float base;
-        if (axis == 0) base = c->view_box[2];
-        else if (axis == 1) base = c->view_box[3];
-        else base = sqrtf((c->view_box[2] * c->view_box[2] +
-            c->view_box[3] * c->view_box[3]) / 2.0f);
-        *out = base * n / 100.0f;
-        break;
-    }
-    }
+    *out = svg_length_convert(c, l, st->node, 0, axis);
     return 1;
 }
 
@@ -4242,23 +4286,7 @@ static float svg_pattern_number(struct svg_conv *c, struct xml_node *node, const
     const char *text = svg_pattern_attr(c->doc, node, name);
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    float n = (float)l.number;
-    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
-    switch (l.unit) {
-    case SVG_UNIT_PERCENT: {
-        float base = axis == 0 ? c->view_box[2] : c->view_box[3];
-        return base * n / 100.0f;
-    }
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
-    case SVG_UNIT_EM: return n * 12.0f;
-    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
-    case SVG_UNIT_IN: return n * c->dpi;
-    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
-    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
-    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
-    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
-    default: return n;
-    }
+    return svg_length_convert(c, l, node, units_bbox, axis);
 }
 
 static float svg_resolve_number(struct svg_conv *c, struct xml_node *node, const char *name,
@@ -4266,23 +4294,7 @@ static float svg_resolve_number(struct svg_conv *c, struct xml_node *node, const
     const char *text = svg_gradient_attr(c->doc, node, name);
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    float n = (float)l.number;
-    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
-    switch (l.unit) {
-    case SVG_UNIT_PERCENT: {
-        float base = axis == 0 ? c->view_box[2] : c->view_box[3];
-        return base * n / 100.0f;
-    }
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
-    case SVG_UNIT_EM: return n * 12.0f;
-    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
-    case SVG_UNIT_IN: return n * c->dpi;
-    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
-    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
-    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
-    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
-    default: return n;
-    }
+    return svg_length_convert(c, l, node, units_bbox, axis);
 }
 
 static float svg_stop_offset_value(const char *text, float prev, int *ok) {
@@ -4650,28 +4662,9 @@ static void svg_convert_stroke(struct svg_conv *c, struct svg_style *st, int cli
     float width = 1.0f;
     if (width_text) {
         struct svg_length l;
-        if (svg_parse_length(width_text, &l)) {
-            enum svg_length_unit unit = l.unit;
-            float n = (float)l.number;
-            switch (unit) {
-            case SVG_UNIT_NONE: case SVG_UNIT_PX: width = n; break;
-            case SVG_UNIT_EM: width = n * 12.0f; break;
-            case SVG_UNIT_EX: width = n * 12.0f / 2.0f; break;
-            case SVG_UNIT_IN: width = n * c->dpi; break;
-            case SVG_UNIT_CM: width = n * c->dpi / 2.54f; break;
-            case SVG_UNIT_MM: width = n * c->dpi / 25.4f; break;
-            case SVG_UNIT_PT: width = n * c->dpi / 72.0f; break;
-            case SVG_UNIT_PC: width = n * c->dpi / 6.0f; break;
-            case SVG_UNIT_PERCENT: {
-                float base = sqrtf((c->view_box[2] * c->view_box[2] +
-                    c->view_box[3] * c->view_box[3]) / 2.0f);
-                width = base * n / 100.0f;
-                break;
-            }
-            }
-        }
+        if (svg_parse_length(width_text, &l))
+            width = svg_length_convert(c, l, width_style->node, 0, 2);
     }
-    (void)width_style;
     if (!(width > 0.0f) || !isfinite(width)) return;
     float miter = 4.0f;
     const char *miter_text = svg_style_find_inherited(c->doc, st, "stroke-miterlimit");
@@ -4689,45 +4682,55 @@ static void svg_convert_stroke(struct svg_conv *c, struct svg_style *st, int cli
     stroke->miterlimit = miter;
     stroke->cap = svg_cap(cap_text);
     stroke->join = svg_join(join_text);
-    const char *dash_offset = svg_style_find_inherited(c->doc, st, "stroke-dashoffset");
-    if (dash_offset) {
-        struct svg_length l;
-        if (svg_parse_length(dash_offset, &l)) {
-            float n = (float)l.number;
-            if (l.unit == SVG_UNIT_PERCENT) {
-                float base = sqrtf((c->view_box[2] * c->view_box[2] +
-                    c->view_box[3] * c->view_box[3]) / 2.0f);
-                stroke->dashoffset = base * n / 100.0f;
-            } else stroke->dashoffset = n;
-        }
-    }
-    const char *dash_text = NULL;
+    const char *dash_offset = NULL, *dash_text = NULL;
+    struct svg_style *offset_style = st, *dash_style = st;
     for (struct svg_style *cur = st; ; ) {
-        const char *v = svg_style_get(c->doc, cur, "stroke-dasharray");
-        if (v) { dash_text = v; break; }
+        if (!dash_offset) {
+            const char *v = svg_style_get(c->doc, cur, "stroke-dashoffset");
+            if (v) { dash_offset = v; offset_style = cur; }
+        }
+        if (!dash_text) {
+            const char *v = svg_style_get(c->doc, cur, "stroke-dasharray");
+            if (v) { dash_text = v; dash_style = cur; }
+        }
         if (!cur->node->parent || cur->node->parent->style_index < 0) break;
         cur = &c->doc->styles[cur->node->parent->style_index];
     }
+    if (dash_offset) {
+        struct svg_length l;
+        if (svg_parse_length(dash_offset, &l))
+            stroke->dashoffset = svg_length_convert(c, l, offset_style->node, 0, 2);
+    }
     if (dash_text && strcmp(dash_text, "none")) {
         struct svg_stream s = { dash_text, strlen(dash_text), 0 };
-        double values[64];
-        int n = 0;
+        float values[64];
+        int n = 0, valid = 1;
         for (;;) {
-            double v;
-            if (!svg_stream_list_number(&s, &v)) break;
-            if (n < 64) values[n] = v;
+            while (!svg_stream_end(&s) && (svg_is_space(s.text[s.pos]) || s.text[s.pos] == ','))
+                s.pos++;
+            if (svg_stream_end(&s)) break;
+            size_t start = s.pos;
+            while (!svg_stream_end(&s) && !svg_is_space(s.text[s.pos]) && s.text[s.pos] != ',')
+                s.pos++;
+            size_t len = s.pos - start;
+            char token[64];
+            struct svg_length l;
+            if (len >= sizeof(token)) { valid = 0; break; }
+            memcpy(token, s.text + start, len);
+            token[len] = 0;
+            if (!svg_parse_length(token, &l)) { valid = 0; break; }
+            if (n < 64) values[n] = svg_length_convert(c, l, dash_style->node, 0, 2);
             n++;
         }
-        svg_stream_skip(&s);
-        if (svg_stream_end(&s) && n && n <= 64) {
+        if (valid && n && n <= 64) {
             int negative = 0;
             for (int i = 0; i < n; i++) if (signbit(values[i])) negative = 1;
-            double sum = 0;
+            float sum = 0;
             for (int i = 0; i < n; i++) sum += values[i];
-            if (!negative && fabs(sum) > 1e-6) {
+            if (!negative && fabsf(sum) > 1e-6f) {
                 int total = n % 2 ? n * 2 : n;
                 float *dash = calloc((size_t)total, sizeof(float));
-                for (int i = 0; i < total; i++) dash[i] = (float)values[i % n];
+                for (int i = 0; i < total; i++) dash[i] = values[i % n];
                 stroke->dash = dash;
                 stroke->ndash = total;
             }
@@ -4979,34 +4982,18 @@ static const char *svg_filter_attr(struct svg_doc *doc, struct xml_node *node, c
     return svg_xml_attr(node, name);
 }
 
-static float svg_filter_length_number(struct svg_conv *c, const char *text, int units_bbox,
-        int axis, double def_number, enum svg_length_unit def_unit) {
+static float svg_filter_length_number(struct svg_conv *c, struct xml_node *node,
+        const char *text, int units_bbox, int axis, double def_number,
+        enum svg_length_unit def_unit) {
     struct svg_length l = { def_number, def_unit };
     if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
-    float n = (float)l.number;
-    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
-    switch (l.unit) {
-    case SVG_UNIT_PERCENT: {
-        float base = axis == 0 ? c->view_box[2] : axis == 1 ? c->view_box[3] :
-            sqrtf((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0f);
-        return base * n / 100.0f;
-    }
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
-    case SVG_UNIT_EM: return n * 12.0f;
-    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
-    case SVG_UNIT_IN: return n * c->dpi;
-    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
-    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
-    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
-    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
-    default: return n;
-    }
+    return svg_length_convert(c, l, node, units_bbox, axis);
 }
 
 static float svg_filter_number(struct svg_conv *c, struct xml_node *node, const char *name,
         int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
-    return svg_filter_length_number(c, svg_filter_attr(c->doc, node, name), units_bbox, axis,
-        def_number, def_unit);
+    return svg_filter_length_number(c, node, svg_filter_attr(c->doc, node, name), units_bbox,
+        axis, def_number, def_unit);
 }
 
 static struct xml_node *svg_resolve_filter_attr(struct svg_doc *doc, struct xml_node *node,
@@ -5180,29 +5167,14 @@ static float svg_css_number(const char *arg, float def) {
     return (float)v;
 }
 
-static float svg_css_length(struct svg_conv *c, const char *arg, float def, int axis) {
+static float svg_css_length(struct svg_conv *c, struct xml_node *node, const char *arg,
+        float def, int axis) {
     if (!arg) return def;
     while (*arg && svg_is_space(*arg)) arg++;
     if (!*arg) return def;
     struct svg_length l;
     if (!svg_parse_length(arg, &l)) return def;
-    float n = (float)l.number;
-    switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
-    case SVG_UNIT_EM: return n * 12.0f;
-    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
-    case SVG_UNIT_IN: return n * c->dpi;
-    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
-    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
-    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
-    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
-    case SVG_UNIT_PERCENT: {
-        float base = axis == 0 ? c->view_box[2] : axis == 1 ? c->view_box[3] :
-            sqrtf((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0f);
-        return base * n / 100.0f;
-    }
-    }
-    return def;
+    return svg_length_convert(c, l, node, 0, axis);
 }
 
 static void svg_css_sepia_matrix(float amount, float m[20]) {
@@ -5225,8 +5197,8 @@ static void svg_css_grayscale_matrix(float amount, float m[20]) {
     memcpy(m, values, sizeof(values));
 }
 
-static int svg_make_css_filter(struct svg_conv *c, const char *text, float object_bbox[4],
-        int have_object_bbox, struct svg_filter *out) {
+static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const char *text,
+        float object_bbox[4], int have_object_bbox, struct svg_filter *out) {
     memset(out, 0, sizeof(*out));
     int count = 0, capacity = 8;
     struct svg_filter_prim *prims = svg_alloc(sizeof(*prims) * (size_t)capacity);
@@ -5270,7 +5242,7 @@ static int svg_make_css_filter(struct svg_conv *c, const char *text, float objec
         if (count > 0) snprintf(pr->input1, sizeof(pr->input1), "%s", prims[count - 1].result);
         if (name_len == 4 && !strncmp(name, "blur", 4)) {
             pr->kind = SVG_FE_GAUSSIAN_BLUR;
-            float r = svg_css_length(c, arg, 0.0f, 2);
+            float r = svg_css_length(c, node, arg, 0.0f, 2);
             if (!(r > 0.0f)) r = 0.0f;
             pr->f[0] = r;
             pr->f[1] = r;
@@ -5295,7 +5267,7 @@ static int svg_make_css_filter(struct svg_conv *c, const char *text, float objec
                 double v;
                 struct svg_stream ss = { token, strlen(token), 0 };
                 if (n < 3 && svg_stream_number(&ss, &v)) {
-                    float u = svg_css_length(c, token, 0.0f, 2);
+                    float u = svg_css_length(c, node, token, 0.0f, 2);
                     if (n == 0) dx = u;
                     else if (n == 1) dy = u;
                     else r = u;
@@ -5427,14 +5399,14 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
     if (prim_units && !strcmp(prim_units, "objectBoundingBox")) primitive_bbox = 1;
     if (units_bbox && !have_object_bbox) return 0;
     memset(out, 0, sizeof(*out));
-    out->rect[0] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "x"),
-        units_bbox, 0, -10, SVG_UNIT_PERCENT);
-    out->rect[1] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "y"),
-        units_bbox, 1, -10, SVG_UNIT_PERCENT);
-    out->rect[2] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "width"),
-        units_bbox, 0, 120, SVG_UNIT_PERCENT);
-    out->rect[3] = svg_filter_length_number(c, svg_filter_attr_resolved(c->doc, node, "height"),
-        units_bbox, 1, 120, SVG_UNIT_PERCENT);
+    out->rect[0] = svg_filter_length_number(c, node,
+        svg_filter_attr_resolved(c->doc, node, "x"), units_bbox, 0, -10, SVG_UNIT_PERCENT);
+    out->rect[1] = svg_filter_length_number(c, node,
+        svg_filter_attr_resolved(c->doc, node, "y"), units_bbox, 1, -10, SVG_UNIT_PERCENT);
+    out->rect[2] = svg_filter_length_number(c, node,
+        svg_filter_attr_resolved(c->doc, node, "width"), units_bbox, 0, 120, SVG_UNIT_PERCENT);
+    out->rect[3] = svg_filter_length_number(c, node,
+        svg_filter_attr_resolved(c->doc, node, "height"), units_bbox, 1, 120, SVG_UNIT_PERCENT);
     if (units_bbox) {
         out->rect[0] = out->rect[0] * object_bbox[2] + object_bbox[0];
         out->rect[1] = out->rect[1] * object_bbox[3] + object_bbox[1];
@@ -6194,7 +6166,7 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
         char id[256];
         if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
             struct svg_filter *css = svg_alloc(sizeof(*css));
-            if (!css || !svg_make_css_filter(c, filter_value, object_bbox, have_object_bbox, css)) {
+            if (!css || !svg_make_css_filter(c, node, filter_value, object_bbox, have_object_bbox, css)) {
                 free(css);
                 return 0;
             }
@@ -6684,26 +6656,7 @@ static int svg_image_length(struct svg_conv *c, struct xml_node *node, const cha
     if (!text) return 0;
     struct svg_length l;
     if (!svg_parse_length(text, &l)) return 1;
-    float n = (float)l.number;
-    switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
-    case SVG_UNIT_EM: *out = n * 12.0f; break;
-    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
-    case SVG_UNIT_IN: *out = n * c->dpi; break;
-    case SVG_UNIT_CM: *out = n * c->dpi / 2.54f; break;
-    case SVG_UNIT_MM: *out = n * c->dpi / 25.4f; break;
-    case SVG_UNIT_PT: *out = n * c->dpi / 72.0f; break;
-    case SVG_UNIT_PC: *out = n * c->dpi / 6.0f; break;
-    case SVG_UNIT_PERCENT: {
-        float base;
-        if (axis == 0) base = c->view_box[2];
-        else if (axis == 1) base = c->view_box[3];
-        else base = sqrtf((c->view_box[2] * c->view_box[2] +
-            c->view_box[3] * c->view_box[3]) / 2.0f);
-        *out = base * n / 100.0f;
-        break;
-    }
-    }
+    *out = svg_length_convert(c, l, node, 0, axis);
     return 1;
 }
 
@@ -7018,26 +6971,7 @@ static int svg_marker_length(struct svg_conv *c, struct xml_node *node, const ch
     if (!text) return 0;
     struct svg_length l;
     if (!svg_parse_length(text, &l)) return 1;
-    float n = (float)l.number;
-    switch (l.unit) {
-    case SVG_UNIT_NONE: case SVG_UNIT_PX: *out = n; break;
-    case SVG_UNIT_EM: *out = n * 12.0f; break;
-    case SVG_UNIT_EX: *out = n * 12.0f / 2.0f; break;
-    case SVG_UNIT_IN: *out = n * c->dpi; break;
-    case SVG_UNIT_CM: *out = n * c->dpi / 2.54f; break;
-    case SVG_UNIT_MM: *out = n * c->dpi / 25.4f; break;
-    case SVG_UNIT_PT: *out = n * c->dpi / 72.0f; break;
-    case SVG_UNIT_PC: *out = n * c->dpi / 6.0f; break;
-    case SVG_UNIT_PERCENT: {
-        float base;
-        if (axis == 0) base = c->view_box[2];
-        else if (axis == 1) base = c->view_box[3];
-        else base = sqrtf((c->view_box[2] * c->view_box[2] +
-            c->view_box[3] * c->view_box[3]) / 2.0f);
-        *out = base * n / 100.0f;
-        break;
-    }
-    }
+    *out = svg_length_convert(c, l, node, 0, axis);
     return 1;
 }
 
