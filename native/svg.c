@@ -3561,6 +3561,8 @@ enum {
     SVG_FE_SPECULAR, SVG_FE_GAUSSIAN_BLUR, SVG_FE_DROP_SHADOW
 };
 
+struct svg_node;
+
 struct svg_filter_prim {
     int kind;
     char result[64];
@@ -3589,6 +3591,7 @@ struct svg_filter_prim {
     float light_exp;
     float light_cone;
     int has_cone;
+    struct svg_node *img_root;
 };
 
 struct svg_filter {
@@ -3633,6 +3636,12 @@ struct svg_conv {
     int mask_depth;
     int pattern_depth;
     int marker_depth;
+    struct xml_node *filter_stack[16];
+    int filter_depth;
+    struct svg_style *context_style;
+    const char *context_fill;
+    const char *context_stroke;
+    int in_context;
 };
 
 static struct svg_node *svg_node_new(int type) {
@@ -3694,7 +3703,10 @@ static void svg_node_destroy(struct svg_node *n) {
     svg_free_clip(n->clip);
     svg_free_mask(n->mask);
     if (n->filter) {
-        for (int i = 0; i < n->filter->nprims; i++) free(n->filter->prims[i].kernel);
+        for (int i = 0; i < n->filter->nprims; i++) {
+            free(n->filter->prims[i].kernel);
+            svg_node_destroy(n->filter->prims[i].img_root);
+        }
         free(n->filter->prims);
         free(n->filter);
     }
@@ -4162,8 +4174,18 @@ static int svg_convert_paint(struct svg_conv *c, struct svg_style *st, const cha
     char *trimmed = svg_strndup(value, vlen);
     if (!trimmed) return 0;
     int result = 0;
-    if (!strcmp(trimmed, "none") || !strcmp(trimmed, "inherit") ||
-            !strcmp(trimmed, "context-fill") || !strcmp(trimmed, "context-stroke")) {
+    if (!strcmp(trimmed, "none") || !strcmp(trimmed, "inherit")) {
+        result = 1;
+    } else if (!strcmp(trimmed, "context-fill") || !strcmp(trimmed, "context-stroke")) {
+        const char *context = !strcmp(trimmed, "context-fill") ? c->context_fill :
+            c->context_stroke;
+        if (context && c->context_style && !c->in_context) {
+            int was = c->in_context;
+            c->in_context = 1;
+            svg_convert_paint(c, c->context_style, context, has_bbox, paint, opacity,
+                unsupported, !strcmp(trimmed, "context-fill"));
+            c->in_context = was;
+        }
         result = 1;
     } else if (!strcmp(trimmed, "currentColor")) {
         const char *color = svg_style_find_inherited(c->doc, st, "color");
@@ -5284,6 +5306,22 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->kind = SVG_FE_TILE;
         } else if (!strcmp(tag, "feImage")) {
             p->kind = SVG_FE_IMAGE;
+            static int image_depth = 0;
+            const char *href = svg_filter_attr(c->doc, child, "href");
+            if (href && href[0] == '#' && image_depth < 8) {
+                struct xml_node *link = svg_id_last(c->doc, href + 1);
+                if (link) {
+                    struct svg_node *root = svg_node_new(0);
+                    if (root) {
+                        image_depth++;
+                        svg_convert_element(c, link, root, svg_matrix_identity(), 0);
+                        image_depth--;
+                        svg_group_bboxes(root);
+                        if (root->nchildren) p->img_root = root;
+                        else svg_node_destroy(root);
+                    }
+                }
+            }
         } else if (!strcmp(tag, "feComponentTransfer")) {
             p->kind = SVG_FE_COMPONENT_TRANSFER;
             svg_filter_parse_transfer(c, child, "feFuncR", p, 0);
@@ -5885,13 +5923,21 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
         } else {
             struct xml_node *link = svg_id_last(c->doc, id);
             if (!link || !svg_tag_is(link, "filter")) return 0;
-            struct svg_filter *filter = svg_alloc(sizeof(*filter));
-            if (!filter || !svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
-                free(filter);
-                return 0;
+            int active = 0;
+            for (int i = 0; i < c->filter_depth; i++)
+                if (c->filter_stack[i] == link) active = 1;
+            if (!active) {
+                struct svg_filter *filter = svg_alloc(sizeof(*filter));
+                if (c->filter_depth < 16) c->filter_stack[c->filter_depth++] = link;
+                if (!filter || !svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
+                    if (c->filter_depth) c->filter_depth--;
+                    free(filter);
+                    return 0;
+                }
+                if (c->filter_depth) c->filter_depth--;
+                g->filter = filter;
+                filtered = 1;
             }
-            g->filter = filter;
-            filtered = 1;
         }
     }
     if (clip) g->clip = clip;
@@ -6855,6 +6901,11 @@ static void svg_convert_markers(struct svg_conv *c, struct xml_node *node, struc
             nested.marker_depth = c->marker_depth + 1;
             nested.clip_depth = 0;
             nested.mask_depth = 0;
+            nested.context_style = st;
+            nested.context_fill = svg_find_paint_attr(c->doc, st, "fill");
+            if (!nested.context_fill) nested.context_fill = "black";
+            nested.context_stroke = svg_find_paint_attr(c->doc, st, "stroke");
+            nested.in_context = 0;
             svg_convert_children(&nested, marker, g, g->abs_transform, 0);
             svg_group_bboxes(g);
             if (g->nchildren) svg_node_add(group, g);
@@ -10266,6 +10317,8 @@ static void svg_turbulence_paint(struct svg_filter_prim *p, struct svg_matrix ts
     free(gradient);
 }
 
+static int svg_filter_subrect(struct svg_filter_prim *p, struct svg_matrix ts, int *out);
+
 static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int region_w,
         int region_h, int region_left, int region_top, float scale_x, float scale_y,
         struct svg_pixmap *source, struct svg_filter_prim *prims, struct svg_fimg *results,
@@ -10571,6 +10624,19 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         if (!res->valid) { svg_fimg_free(&in); return; }
         svg_light_paint(p, ts, region_w, region_h, region_left, region_top, &in, res);
         svg_fimg_free(&in);
+        return;
+    }
+    case SVG_FE_IMAGE: {
+        *res = svg_fimg_new(region_w, region_h, 0);
+        if (!res->valid) return;
+        if (!p->img_root) return;
+        int sub[4];
+        if (!svg_filter_subrect(p, ts, sub)) return;
+        float sx = sqrtf(ts.sx * ts.sx + ts.kx * ts.kx);
+        float sy = sqrtf(ts.ky * ts.ky + ts.sy * ts.sy);
+        if (!(sx > 0.0f) || !(sy > 0.0f)) return;
+        struct svg_matrix transform = { sx, 0.0f, 0.0f, sy, (float)sub[0], (float)sub[1] };
+        svg_render_nodes(p->img_root, transform, &res->pix);
         return;
     }
     case SVG_FE_TURBULENCE: {
