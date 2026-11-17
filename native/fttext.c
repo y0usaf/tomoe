@@ -1381,7 +1381,8 @@ static FT_Fixed fte_mul_fix(FT_Fixed a, FT_Fixed b)
     return (FT_Fixed)((ab + 0x8000 + (ab >> 63)) >> 16);
 }
 
-static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry)
+static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry,
+    uint32_t colour)
 {
     FT_Face face = scaled->face->face;
     unsigned glyph = (unsigned)(entry->key & 0xffffffu);
@@ -1408,7 +1409,7 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
             FT_Set_Transform(face, NULL, NULL);
             FT_Set_Char_Size(face, face->units_per_EM << 6, 0, 0, 0);
             scaled->face->have_scale = false;
-            bool ok = colr_render(face, glyph, &matrix, UINT32_C(0xff000000), &image);
+            bool ok = colr_render(face, glyph, &matrix, colour, &image);
             fte_face_scale(scaled->face, &scaled->scale);
             if (ok) {
                 entry->data = image.pixels;
@@ -1470,15 +1471,16 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
 }
 
 static struct fte_glyph *fte_glyph_get(struct fte_scaled *scaled, unsigned glyph,
-    unsigned xphase, unsigned yphase)
+    unsigned xphase, unsigned yphase, uint32_t colour)
 {
     unsigned long key = (unsigned long)glyph | ((unsigned long)xphase << 24) |
         ((unsigned long)yphase << 26);
+    if (scaled->face->have_color) key |= (unsigned long)colour << 32;
     struct fte_glyph *entry = fte_glyph_lookup(scaled, key);
     if (entry) return entry;
     entry = fte_glyph_create(scaled, key);
     if (!entry) return NULL;
-    if (!fte_glyph_surface(scaled, entry)) entry->failed = true;
+    if (!fte_glyph_surface(scaled, entry, colour)) entry->failed = true;
     return entry;
 }
 
@@ -2215,7 +2217,7 @@ static void fte_draw_digit(uint32_t *pixels, int stride, int width, int height,
         if (limit.x0 >= limit.x1 || limit.y0 >= limit.y1) return;
     }
     struct fte_glyph *entry = fte_glyph_get(scaled, glyph, (unsigned)fte_phase(dx),
-        (unsigned)fte_phase(dy));
+        (unsigned)fte_phase(dy), colour);
     if (!entry) return;
     fte_draw_glyph(pixels, stride, width, height, limit, entry, fte_position(dx) - entry->off_x,
         fte_position(dy) - entry->off_y, colour);
@@ -2416,7 +2418,7 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
         }
         fte_matrix_transform_point(ctm, &cx, &cy);
         struct fte_glyph *entry = fte_glyph_get(scaled, (unsigned)gi->glyph,
-            (unsigned)fte_phase(cx), (unsigned)fte_phase(cy));
+            (unsigned)fte_phase(cx), (unsigned)fte_phase(cy), colour);
         if (count == capacity) {
             int next = capacity * 2;
             struct fte_pending *grown = malloc((size_t)next * sizeof(*grown));
