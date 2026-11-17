@@ -1257,10 +1257,10 @@ static uint32_t fte_bilinear(uint32_t tl, uint32_t tr, uint32_t bl, uint32_t br,
     br64 = br & 0xff0000ffu;
     f = tl64 * sixiy + tr64 * sxiy + bl64 * sixy + br64 * sxy;
     r = f & UINT64_C(0x0000ff0000ff0000);
-    tl64 = ((tl << 16) & UINT64_C(0x000000ff00000000)) | (tl & 0x0000ff00u);
-    tr64 = ((tr << 16) & UINT64_C(0x000000ff00000000)) | (tr & 0x0000ff00u);
-    bl64 = ((bl << 16) & UINT64_C(0x000000ff00000000)) | (bl & 0x0000ff00u);
-    br64 = ((br << 16) & UINT64_C(0x000000ff00000000)) | (br & 0x0000ff00u);
+    tl64 = (((uint64_t)tl << 16) & UINT64_C(0x000000ff00000000)) | (tl & 0x0000ff00u);
+    tr64 = (((uint64_t)tr << 16) & UINT64_C(0x000000ff00000000)) | (tr & 0x0000ff00u);
+    bl64 = (((uint64_t)bl << 16) & UINT64_C(0x000000ff00000000)) | (bl & 0x0000ff00u);
+    br64 = (((uint64_t)br << 16) & UINT64_C(0x000000ff00000000)) | (br & 0x0000ff00u);
     f = tl64 * sixiy + tr64 * sxiy + bl64 * sixy + br64 * sxy;
     r |= ((f >> 16) & UINT64_C(0x000000ff00000000)) | (f & UINT64_C(0xff000000));
     return (uint32_t)(r >> 16);
