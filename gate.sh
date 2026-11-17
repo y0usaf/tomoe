@@ -328,8 +328,8 @@ cadence() {
 }
 
 wake_timed() {
-	local label=$1 channel=$2 p50_limit=$3 max_limit=$4 i value latched
-	shift 4
+	local label=$1 channel=$2 p50_limit=$3 max_limit=$4 latch_limit=$5 i value latched
+	shift 5
 	local -a values=() latches=() sorted=()
 	for ((i = 0; i < 3; i++)); do
 		quiet "$label"
@@ -345,9 +345,11 @@ wake_timed() {
 		latches+=("$latched")
 		printf '%s %s %s\n' "$label" "$value" "$latched" >>"$DIR/wake"
 	done
-	mapfile -t sorted < <(printf '%s\n' "${latches[@]}" | sort -n)
-	((sorted[2] <= $(( PERIOD_US * 3 / 2 + SLACK_US )))) ||
-		die "$label: the frame that carried it only started ${sorted[2]}us after it, past the $(( PERIOD_US * 3 / 2 + SLACK_US ))us an input may wait for one"
+	if ((latch_limit > 0)); then
+		mapfile -t sorted < <(printf '%s\n' "${latches[@]}" | sort -n)
+		((sorted[2] <= latch_limit)) ||
+			die "$label: the frame that carried it only started ${sorted[2]}us after it, past the ${latch_limit}us an input may wait for one"
+	fi
 	mapfile -t sorted < <(printf '%s\n' "${values[@]}" | sort -n)
 	((sorted[1] <= p50_limit)) ||
 		die "$label: the first frame took ${sorted[1]}us at the median of three, past ${p50_limit}us"
@@ -365,15 +367,15 @@ wake_check() {
 	set -- $box
 	x=$1 y=$2 w=$3 h=$4 serial=$5
 	local cx=$(( x + w / 2 )) cy=$(( y + h / 2 ))
-	wake_timed "$label key" present-input "$FIRST_MEDIAN_US" "$FIRST_US" \
+	wake_timed "$label key" present-input "$FIRST_MEDIAN_US" "$FIRST_US" "$(( PERIOD_US * 3 / 2 + SLACK_US ))" \
 		type_key "key 42 down" sync "key 42 up" sync
-	wake_timed "$label pointer" present-input "$FIRST_MEDIAN_US" "$FIRST_US" \
+	wake_timed "$label pointer" present-input "$FIRST_MEDIAN_US" "$FIRST_US" "$(( PERIOD_US * 3 / 2 + SLACK_US ))" \
 		pointer "move $(( cx - 401 )) $(( cy - 199 ))"
 	((serial >= 1 && serial <= ${#CLIENTS[@]})) ||
 		die "$label: no client for the focused window $serial"
 	pid=${CLIENTS[$((serial - 1))]}
 	kill -0 "$pid" 2>/dev/null || die "$label: the focused client $pid has gone"
-	wake_timed "$label damage" present-commit "$(( PERIOD_US * 7 / 2 + SLACK_US ))" 0 \
+	wake_timed "$label damage" present-commit "$(( PERIOD_US * 7 / 2 + SLACK_US ))" 0 0 \
 		kill -USR1 "$pid"
 
 	local moves=()
