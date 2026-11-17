@@ -5257,6 +5257,113 @@ static void svg_css_grayscale_matrix(float amount, float m[20]) {
     memcpy(m, values, sizeof(values));
 }
 
+static int svg_filter_tokens(const char *body, char tokens[][64], int max) {
+    int count = 0;
+    const char *p = body;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) break;
+        if (*p == ',') return -1;
+        const char *start = p;
+        int depth = 0;
+        while (*p) {
+            if (*p == '(') depth++;
+            else if (*p == ')') { if (!depth) break; depth--; }
+            else if (!depth && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+                    *p == ',')) break;
+            p++;
+        }
+        size_t n = (size_t)(p - start);
+        if (n >= 64 || count >= max) return -1;
+        memcpy(tokens[count], start, n);
+        tokens[count][n] = 0;
+        count++;
+        if (*p == ',') return -1;
+    }
+    return count;
+}
+
+static int svg_filter_number_token(const char *token, double *value, int *percent) {
+    *percent = 0;
+    size_t n = strlen(token);
+    char copy[64];
+    if (n >= sizeof(copy)) return 0;
+    memcpy(copy, token, n + 1);
+    if (n && copy[n - 1] == '%') { *percent = 1; copy[n - 1] = 0; }
+    return svg_parse_number(copy, value);
+}
+
+static int svg_filter_length_token(const char *token, int allow_percent, int positive) {
+    struct svg_length l;
+    if (!svg_parse_length(token, &l)) return 0;
+    if (!allow_percent && l.unit == SVG_UNIT_PERCENT) return 0;
+    if (positive && signbit(l.number)) return 0;
+    return 1;
+}
+
+static int svg_filter_color_token(const char *token) {
+    unsigned char r, g, b, a;
+    if (!strcmp(token, "currentColor")) return 1;
+    return svg_parse_color(token, &r, &g, &b, &a);
+}
+
+static int svg_filter_angle_token(const char *token) {
+    const char *end = NULL;
+    double value = strtod(token, (char **)&end);
+    if (end == token) return 0;
+    while (*end == ' ' || *end == '\t') end++;
+    if (!*end) return value == 0.0;
+    if (!strcmp(end, "deg") || !strcmp(end, "grad") || !strcmp(end, "rad") ||
+            !strcmp(end, "turn")) return 1;
+    return 0;
+}
+
+static int svg_filter_function_valid(const char *text) {
+    const char *open = strchr(text, '(');
+    if (!open) return 0;
+    size_t name_length = (size_t)(open - text);
+    while (name_length && svg_is_space(text[name_length - 1])) name_length--;
+    size_t text_length = strlen(text);
+    if (!text_length || text[text_length - 1] != ')') return 0;
+    size_t body_length = text_length - (size_t)(open + 1 - text) - 1;
+    char body[256];
+    if (body_length >= sizeof(body)) return 0;
+    memcpy(body, open + 1, body_length);
+    body[body_length] = 0;
+    char tokens[8][64];
+    int count = svg_filter_tokens(body, tokens, 8);
+    if (count < 0) return 0;
+    if (name_length == 4 && !strncmp(text, "blur", 4))
+        return count == 0 || (count == 1 && svg_filter_length_token(tokens[0], 0, 1));
+    if (name_length == 10 && !strncmp(text, "hue-rotate", 10))
+        return count == 0 || (count == 1 && svg_filter_angle_token(tokens[0]));
+    if (name_length == 11 && !strncmp(text, "drop-shadow", 11)) {
+        int index = 0;
+        if (index < count && svg_filter_color_token(tokens[index])) index++;
+        if (index + 1 >= count) return 0;
+        if (!svg_filter_length_token(tokens[index], 0, 0)) return 0;
+        if (!svg_filter_length_token(tokens[index + 1], 0, 0)) return 0;
+        index += 2;
+        if (index < count && svg_filter_length_token(tokens[index], 0, 1)) index++;
+        if (index < count && svg_filter_color_token(tokens[index])) index++;
+        return index == count;
+    }
+    static const char *names[] = { "brightness", "contrast", "grayscale", "invert",
+        "opacity", "saturate", "sepia" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
+        size_t n = strlen(names[i]);
+        if (name_length != n || strncmp(text, names[i], n)) continue;
+        if (count == 0) return 1;
+        if (count != 1) return 0;
+        double value;
+        int percent;
+        if (!svg_filter_number_token(tokens[0], &value, &percent)) return 0;
+        if (signbit(value)) return 0;
+        return 1;
+    }
+    return 0;
+}
+
 static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const char *text,
         float object_bbox[4], int have_object_bbox, struct svg_filter *out) {
     memset(out, 0, sizeof(*out));
@@ -5302,7 +5409,7 @@ static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const 
         if (count > 0) snprintf(pr->input1, sizeof(pr->input1), "%s", prims[count - 1].result);
         if (name_len == 4 && !strncmp(name, "blur", 4)) {
             pr->kind = SVG_FE_GAUSSIAN_BLUR;
-            float r = svg_css_length(c, node, arg, 0.0f, 2);
+            float r = svg_css_length(c, node, arg, 0.0f, 0);
             if (!(r > 0.0f)) r = 0.0f;
             pr->f[0] = r;
             pr->f[1] = r;
@@ -5327,7 +5434,7 @@ static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const 
                 double v;
                 struct svg_stream ss = { token, strlen(token), 0 };
                 if (n < 3 && svg_stream_number(&ss, &v)) {
-                    float u = svg_css_length(c, node, token, 0.0f, 2);
+                    float u = svg_css_length(c, node, token, 0.0f, n == 1 ? 1 : 0);
                     if (n == 0) dx = u;
                     else if (n == 1) dy = u;
                     else r = u;
@@ -5343,18 +5450,24 @@ static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const 
                 char copy[256];
                 snprintf(copy, sizeof(copy), "%s", arg);
                 char *save = copy;
-                int done = 0;
-                if (strstr(copy, "rgb")) {
-                    done = svg_parse_color(strstr(copy, "rgb"), &cr, &cg, &cb, &ca);
-                }
-                if (!done) {
-                    for (char *tok = strtok_r(save, " ,	", &save); tok;
-                            tok = strtok_r(NULL, " ,	", &save)) {
+                int found = 0;
+                if (strstr(copy, "rgb"))
+                    found = svg_parse_color(strstr(copy, "rgb"), &cr, &cg, &cb, &ca);
+                if (!found) {
+                    for (char *tok = strtok_r(save, " ,\t", &save); tok;
+                            tok = strtok_r(NULL, " ,\t", &save)) {
                         double v;
                         struct svg_stream ss = { tok, strlen(tok), 0 };
                         if (svg_stream_number(&ss, &v)) continue;
-                        if (svg_parse_color(tok, &cr, &cg, &cb, &ca)) break;
+                        if (svg_parse_color(tok, &cr, &cg, &cb, &ca)) { found = 1; break; }
+                        if (!strcmp(tok, "currentColor")) break;
                     }
+                }
+                if (!found) {
+                    const char *color = node->style_index >= 0 ?
+                        svg_style_find_inherited(c->doc,
+                            &c->doc->styles[node->style_index], "color") : NULL;
+                    if (color) svg_parse_color(color, &cr, &cg, &cb, &ca);
                 }
             }
             pr->color[0] = cr;
@@ -6283,6 +6396,7 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
                 *tail = filter;
                 tail = &filter->next;
             } else {
+                if (!svg_filter_function_valid(text)) { bad = 1; break; }
                 struct svg_filter *css = svg_alloc(sizeof(*css));
                 if (!css || !svg_make_css_filter(c, node, text, object_bbox,
                         have_object_bbox, css)) {
