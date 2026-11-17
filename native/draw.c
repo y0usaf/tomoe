@@ -1,4 +1,5 @@
 #include "draw.h"
+#include "stroke.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -10,23 +11,36 @@
 #define FIXED_FRAC_MASK 0xff
 #define TOLERANCE 0.1
 
-struct edge {
-    px_point_t p1, p2;
-    px_fixed_t top, bottom;
-    int dir;
-};
+void dp_polygon_init(struct dp_polygon *polygon)
+{
+    memset(polygon, 0, sizeof(*polygon));
+    polygon->status = PX_STATUS_SUCCESS;
+    polygon->extents.p1.x = INT32_MAX;
+    polygon->extents.p1.y = INT32_MAX;
+    polygon->extents.p2.x = INT32_MIN;
+    polygon->extents.p2.y = INT32_MIN;
+}
 
-struct polygon {
-    struct edge *edges;
-    int count, capacity;
-    px_box_t limit;
-    int has_limit;
-};
+void dp_polygon_set_limit(struct dp_polygon *polygon, struct drect clip)
+{
+    polygon->limit.p1.x = (px_fixed_t)clip.x0 * FIXED_ONE;
+    polygon->limit.p1.y = (px_fixed_t)clip.y0 * FIXED_ONE;
+    polygon->limit.p2.x = (px_fixed_t)clip.x1 * FIXED_ONE;
+    polygon->limit.p2.y = (px_fixed_t)clip.y1 * FIXED_ONE;
+    polygon->has_limit = 1;
+    polygon->limits = &polygon->limit;
+    polygon->num_limits = 1;
+}
 
-static void polygon_add_edge(struct polygon *polygon, px_point_t p1, px_point_t p2, int dir);
+void dp_polygon_fini(struct dp_polygon *polygon)
+{
+    free(polygon->edges);
+    polygon->edges = NULL;
+    polygon->count = polygon->capacity = 0;
+}
 
 struct filler {
-    struct polygon *polygon;
+    struct dp_polygon *polygon;
     struct dpoint current, last_move;
 };
 
@@ -108,28 +122,43 @@ static bool spline_intersects(const px_point_t *a, const px_point_t *b,
     return true;
 }
 
-static void polygon_grow(struct polygon *polygon)
+static void polygon_grow(struct dp_polygon *polygon)
 {
     int capacity = polygon->capacity ? polygon->capacity * 2 : 64;
-    struct edge *edges = realloc(polygon->edges, (size_t)capacity * sizeof(*edges));
+    struct dp_edge *edges = realloc(polygon->edges, (size_t)capacity * sizeof(*edges));
     if (!edges) abort();
     polygon->edges = edges;
     polygon->capacity = capacity;
 }
 
-static void polygon_add_edges(struct polygon *polygon, px_point_t p1, px_point_t p2,
+static void polygon_add_edges(struct dp_polygon *polygon, px_point_t p1, px_point_t p2,
     int32_t top, int32_t bottom, int dir)
 {
     if (polygon->count == polygon->capacity) polygon_grow(polygon);
-    struct edge *edge = &polygon->edges[polygon->count++];
+    struct dp_edge *edge = &polygon->edges[polygon->count++];
     edge->p1 = p1;
     edge->p2 = p2;
     edge->top = top;
     edge->bottom = bottom;
     edge->dir = dir;
+
+    if (top < polygon->extents.p1.y) polygon->extents.p1.y = top;
+    if (bottom > polygon->extents.p2.y) polygon->extents.p2.y = bottom;
+    if (p1.x < polygon->extents.p1.x || p1.x > polygon->extents.p2.x) {
+        int32_t x = p1.x;
+        if (top != p1.y) x = edge_x_for_y(&p1, &p2, top);
+        if (x < polygon->extents.p1.x) polygon->extents.p1.x = x;
+        if (x > polygon->extents.p2.x) polygon->extents.p2.x = x;
+    }
+    if (p2.x < polygon->extents.p1.x || p2.x > polygon->extents.p2.x) {
+        int32_t x = p2.x;
+        if (bottom != p2.y) x = edge_x_for_y(&p1, &p2, bottom);
+        if (x < polygon->extents.p1.x) polygon->extents.p1.x = x;
+        if (x > polygon->extents.p2.x) polygon->extents.p2.x = x;
+    }
 }
 
-static void polygon_add_clipped_edge(struct polygon *polygon,
+static void polygon_add_clipped_edge(struct dp_polygon *polygon,
     const px_point_t *p1, const px_point_t *p2, int32_t top, int32_t bottom, int dir)
 {
     const px_box_t *limits = &polygon->limit;
@@ -199,7 +228,7 @@ static void polygon_add_clipped_edge(struct polygon *polygon,
     }
 }
 
-static void polygon_add_edge(struct polygon *polygon, px_point_t p1, px_point_t p2, int dir)
+void dp_polygon_add_edge(struct dp_polygon *polygon, px_point_t p1, px_point_t p2, int dir)
 {
     if (p1.y == p2.y) return;
     if (p1.y > p2.y) {
@@ -219,7 +248,7 @@ static void polygon_add_edge(struct polygon *polygon, px_point_t p1, px_point_t 
 
 static void filler_close(struct filler *filler)
 {
-    polygon_add_edge(filler->polygon,
+    dp_polygon_add_edge(filler->polygon,
         (px_point_t){ filler->current.x, filler->current.y },
         (px_point_t){ filler->last_move.x, filler->last_move.y }, 1);
     filler->current = filler->last_move;
@@ -227,7 +256,7 @@ static void filler_close(struct filler *filler)
 
 static void filler_line_to(struct filler *filler, struct dpoint point)
 {
-    polygon_add_edge(filler->polygon,
+    dp_polygon_add_edge(filler->polygon,
         (px_point_t){ filler->current.x, filler->current.y },
         (px_point_t){ point.x, point.y }, 1);
     filler->current = point;
@@ -549,6 +578,7 @@ static void path_curve_to_fixed(struct dpath *path, int32_t x0, int32_t y0,
             path_drop_line(path);
     }
     struct dpoint points[3] = { { x0, y0 }, { x1, y1 }, { x2, y2 } };
+    path->has_curve_to = true;
     extents_add_curve(path, &path->current, &points[0], &points[1], &points[2]);
     path_append(path, DP_CURVE, points, 3);
     path->current = points[2];
@@ -895,7 +925,7 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
             fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y);
         return true;
     }
-    struct polygon polygon;
+    struct dp_polygon polygon;
     memset(&polygon, 0, sizeof(polygon));
     polygon.limit.p1.x = (int32_t)clip.x0 * FIXED_ONE;
     polygon.limit.p1.y = (int32_t)clip.y0 * FIXED_ONE;
@@ -966,6 +996,61 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
     (void)mask_x;
     (void)mask_y;
     return status == PX_STATUS_SUCCESS;
+}
+
+static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y)
+{
+    if (polygon->extents.p2.x <= polygon->extents.p1.x ||
+        polygon->extents.p2.y <= polygon->extents.p1.y)
+        return true;
+    int cx0 = fixed_floor(polygon->extents.p1.x);
+    int cy0 = fixed_floor(polygon->extents.p1.y);
+    int cx1 = fixed_ceil(polygon->extents.p2.x);
+    int cy1 = fixed_ceil(polygon->extents.p2.y);
+    if (cx0 < clip.x0) cx0 = clip.x0;
+    if (cy0 < clip.y0) cy0 = clip.y0;
+    if (cx1 > clip.x1) cx1 = clip.x1;
+    if (cy1 > clip.y1) cy1 = clip.y1;
+    if (cx0 >= cx1 || cy0 >= cy1) return true;
+    px_scan_converter_t *converter = tor_create(cx0, cy0, cx1, cy1,
+        PX_FILL_RULE_WINDING, PX_ANTIALIAS_GRAY);
+    if (!converter) return false;
+    tor_add_edges(converter, (const px_edge_t *)polygon->edges, polygon->count);
+    struct span_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.mask = mask;
+    ctx.stride = stride;
+    ctx.clip = clip;
+    ctx.mask_x = mask_x;
+    ctx.mask_y = mask_y;
+    ctx.base.render_rows = span_rows;
+    px_status_t status = converter->generate(converter, &ctx.base);
+    converter->destroy(converter);
+    return status == PX_STATUS_SUCCESS;
+}
+
+bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
+    double miter_limit, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y)
+{
+    struct dp_polygon polygon;
+    dp_polygon_init(&polygon);
+    dp_polygon_set_limit(&polygon, clip);
+    cairo_stroke_style_t style;
+    memset(&style, 0, sizeof(style));
+    style.line_width = width;
+    style.line_cap = (cairo_line_cap_t)cap;
+    style.line_join = (cairo_line_join_t)join;
+    style.miter_limit = miter_limit;
+    cairo_matrix_t identity = { 1, 0, 0, 1, 0, 0 };
+    cairo_status_t status = _cairo_path_fixed_stroke_to_polygon(path, &style,
+        &identity, &identity, TOLERANCE, &polygon);
+    bool ok = false;
+    if (status == CAIRO_STATUS_SUCCESS)
+        ok = raster_stroke_polygon(&polygon, clip, mask, stride, mask_x, mask_y);
+    dp_polygon_fini(&polygon);
+    return ok;
 }
 
 void dp_composite_over(uint32_t *dst, int stride, struct drect rect,

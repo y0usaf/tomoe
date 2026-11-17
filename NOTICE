@@ -53,3 +53,12 @@ native/draw.c
   0.46.4 (MIT). Copyright 2002 University of Southern California, 1999
   Keith Packard, 2000 SuSE, Inc., 2007 Red Hat, Inc., 2008 M Joonas
   Pihlaja, 2007 David Turner.
+
+native/stroke.c, native/stroke-support.c, native/pen.c, native/hull.c,
+native/slope.c, native/contour.c, native/spline.c
+  The polygon stroker, pen, convex hull, slope, contour and spline code
+  derived from cairo 1.18.4 (LGPL-2.1 or MPL-1.1): cairo-path-stroke-polygon.c,
+  cairo-stroke-style.c, cairo-pen.c, cairo-hull.c, cairo-slope.c,
+  cairo-contour.c, cairo-contour-inline.h, cairo-spline.c. Copyright 2002
+  University of Southern California, 2004 Carl Worth, 2006 Red Hat, Inc.,
+  2007 David Turner, 2008 M Joonas Pihlaja.
