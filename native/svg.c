@@ -859,6 +859,7 @@ struct svg_shader {
     int len;
     float factors[20][4], biases[20][4], t_values[21];
     int opaque;
+    int hairline;
     struct svg_pattern *pattern;
     struct svg_pixmap pattern_pixmap;
     int has_pattern_pixmap;
@@ -908,7 +909,11 @@ static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x,
             for (int k = 0; k < 4; k++) vals[k] = d[k] * (1.0f - cov);
         } else if (blend == 0 && !svg_shader_opaque(shader)) {
             float q[4];
-            for (int k = 0; k < 4; k++) q[k] = color[k] * cov;
+            float qscale = cov;
+            if (shader->type == 2 && !shader->hairline && a != 255u &&
+                    shader->opacity != 1.0f)
+                qscale = cov * (cov / shader->opacity);
+            for (int k = 0; k < 4; k++) q[k] = color[k] * qscale;
             for (int k = 0; k < 4; k++) vals[k] = q[k] + d[k] * (1.0f - q[3]);
         } else {
             float p[4];
@@ -10583,6 +10588,7 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         float bbox[4] = { hbx, hby, w, h };
         svg_prepare_shader(&hshader, &node->stroke.paint, node->stroke.opacity, factor, ts,
             bbox, 1);
+        hshader.hairline = 1;
         if (hshader.type >= 0)
             svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader, blend);
         if (hshader.has_pattern_pixmap) svg_pixmap_free(&hshader.pattern_pixmap);
