@@ -113,20 +113,34 @@
               "--with-brotli=no"
             ];
           });
+          glib = pkgs.glib.overrideAttrs (old: {
+            buildInputs = pkgs.lib.subtractLists [
+              pkgs.libselinux
+              pkgs.util-linuxMinimal
+            ] old.buildInputs;
+            mesonFlags = old.mesonFlags ++ [
+              "-Dselinux=disabled"
+              "-Dlibmount=disabled"
+              "-Dtests=false"
+            ];
+            doCheck = false;
+          });
           fontconfig = pkgs.fontconfig.override { inherit freetype; };
           cairo = pkgs.cairo.override {
             x11Support = false;
             xcbSupport = false;
-            inherit fontconfig freetype;
+            inherit fontconfig freetype glib;
           };
           harfbuzz = pkgs.harfbuzz.override {
             withGraphite2 = false;
-            inherit freetype;
+            withIntrospection = false;
+            inherit freetype glib;
           };
           pango =
             (pkgs.pango.override {
               x11Support = false;
-              inherit cairo harfbuzz;
+              withIntrospection = false;
+              inherit cairo harfbuzz glib;
             }).overrideAttrs
               (old: {
                 buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
