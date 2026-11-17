@@ -42,11 +42,29 @@ static uint32_t blend_mul_add(uint32_t x, uint32_t a, uint32_t y)
     return r1 | (r2 << BLEND_G_SHIFT);
 }
 
+static uint32_t blend_mul8(uint32_t a, uint32_t b)
+{
+    uint32_t t = a * b + 0x80u;
+    return (t + (t >> 8)) >> 8;
+}
+
 uint32_t dp_component_over(uint32_t dst, uint32_t src, uint32_t mask)
 {
-    if (mask == 0) return dst;
-    uint32_t scaled_mask = blend_mul_un8x4(mask, (src >> 24) * 0x01010101u);
-    return blend_mul_add(dst, ~scaled_mask, blend_mul_un8x4(src, mask));
+    uint32_t scaled_mask = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        uint32_t m = (mask >> shift) & 0xffu;
+        scaled_mask |= blend_mul8(m, (src >> 24) & 0xffu) << shift;
+    }
+    if (scaled_mask == 0xffffffffu && (src >> 24) == 0xff) return src;
+    uint32_t out = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        uint32_t m = (mask >> shift) & 0xffu;
+        uint32_t s = blend_mul8((src >> shift) & 0xffu, m);
+        uint32_t d = blend_mul8((dst >> shift) & 0xffu, 0xffu - ((scaled_mask >> shift) & 0xffu));
+        uint32_t t = s + d;
+        out |= (t > 0xffu ? 0xffu : t) << shift;
+    }
+    return out;
 }
 
 uint32_t dp_component_add(uint32_t x, uint32_t y)

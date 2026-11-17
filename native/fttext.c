@@ -579,6 +579,7 @@ static struct fte_scaled *fte_scaled_get(struct fte_face *face,
         if (memcmp(&scaled->font_matrix, font_matrix, sizeof(*font_matrix))) continue;
         if (memcmp(&scaled->scale, scale, sizeof(*scale))) continue;
         if (memcmp(&scaled->requested, requested, sizeof(*requested))) continue;
+        if (memcmp(&scaled->ft_options, ft_options, sizeof(*ft_options))) continue;
         return scaled;
     }
     struct fte_scaled *scaled = calloc(1, sizeof(*scaled));
@@ -594,6 +595,12 @@ static struct fte_scaled *fte_scaled_get(struct fte_face *face,
     scaled->load_flags |= FT_LOAD_IGNORE_GLOBAL_ADVANCE_WIDTH;
     scaled->synth_flags = merged.synth_flags;
     scaled->hint_metrics = scaled->options.hint_metrics != FTE_HINT_METRICS_OFF;
+    if (getenv("FTE_OPTS"))
+        fprintf(stderr, "OPTS aa=%d hs=%d hm=%d sp=%d lcd=%d flags=%x req_aa=%d req_hs=%d\n",
+            scaled->options.antialias, scaled->options.hint_style,
+            scaled->options.hint_metrics, scaled->options.subpixel_order,
+            scaled->options.lcd_filter, (unsigned)scaled->load_flags, requested->antialias,
+            requested->hint_style);
     scaled->next = fte_scaleds;
     fte_scaleds = scaled;
     return scaled;
@@ -937,6 +944,9 @@ static bool fte_render_outline(FT_Face face, const struct fte_scaled *scaled,
     if (error) return false;
     FT_Bitmap *bitmap = &slot->bitmap;
     bool ok;
+    if (getenv("FTE_R"))
+        fprintf(stderr, "R mode=%d comp=%d pixel_mode=%d w=%u h=%u\n", (int)mode, (int)component,
+            bitmap->pixel_mode, bitmap->width, bitmap->rows);
     if (component) {
         bool bgr = scaled->options.subpixel_order == FTE_SUBPIXEL_BGR ||
             scaled->options.subpixel_order == FTE_SUBPIXEL_VBGR;
@@ -1891,6 +1901,11 @@ static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
     struct fte_rect clip, const struct fte_glyph *glyph, int left, int top, uint32_t colour)
 {
     if (!glyph || glyph->failed || !glyph->data) return;
+    if (getenv("FTE_P"))
+        fprintf(stderr, "P bpp=%d comp=%d colour=%08x w=%d h=%d mask0=%08x mask1=%08x\n",
+            glyph->bpp, glyph->component, colour, glyph->width, glyph->height,
+            glyph->bpp == 4 ? ((const uint32_t *)glyph->data)[0] : 0,
+            glyph->bpp == 4 ? ((const uint32_t *)glyph->data)[1] : 0);
     for (int j = 0; j < glyph->height; j++) {
         int dy = top + j;
         if (dy < clip.y0 || dy >= clip.y1 || dy < 0 || dy >= height) continue;
@@ -1902,9 +1917,15 @@ static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
         if (glyph->bpp == 4) {
             const uint32_t *row = (const uint32_t *)((const uint8_t *)glyph->data +
                 (size_t)j * (size_t)glyph->stride);
-            if (glyph->component)
-                for (int x = start; x < end; x++)
+            if (glyph->component) {
+                int shown = 0;
+                for (int x = start; x < end; x++) {
                     dst[x] = dp_component_over(dst[x], colour, row[x - left]);
+                    if (getenv("FTE_Q") && row[x - left] && shown++ < 3)
+                        fprintf(stderr, "Q (%d,%d) dst0=%08x mask=%08x out=%08x\n", x, dy,
+                            dst[x], row[x - left], dst[x]);
+                }
+            }
             else
                 for (int x = start; x < end; x++)
                     dst[x] = dp_masked_over(dst[x], row[x - left], 255);
