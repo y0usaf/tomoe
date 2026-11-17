@@ -156,7 +156,10 @@ cli("unmount screen-clipboard-probe")
 cli(f"mount {SCREENSHOT_PROBE}")
 cli(f"mount {THEME_PROBE}")
 cli("command select")
-assert all(shaded(pixel(*middle), 0.6) for _ in range(4)), "the screenshot overlay does not dim the output"
+deadline = time.time() + 15
+while not all(shaded(pixel(*middle), 0.6) for _ in range(4)):
+    assert time.time() < deadline, "the screenshot overlay does not dim the output"
+    time.sleep(0.1)
 assert not (m := colours(hint, themed, today)), f"the screenshot hint ignores a published :theme: {m}"
 cli("unmount theme-probe")
 assert not (m := colours(hint, today, themed)), f"unmounting the :theme publisher left the open screenshot hint recoloured: {m}"

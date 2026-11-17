@@ -15,6 +15,7 @@
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -24,6 +25,7 @@ enum {
     HELD_FRAME_LIMIT = 4,
     WARM_SIZE = 16,
     WARM_TIMEOUT_MS = 5000,
+    WARM_JOB_TIMEOUT_MS = 60000,
     WARM_SOURCE_LIMIT = 1 << 20,
     WARM_NAME = sizeof("0123456789abcdef.glsl"),
 };
@@ -98,6 +100,15 @@ struct render {
     size_t mesh_cap;
     char *node, *exe, *warm_dir, *driver;
     bool binaries;
+    struct shader_job *jobs;
+};
+
+struct shader_job {
+    struct shader_job *next;
+    char name[WARM_NAME];
+    pid_t pid;
+    uint64_t deadline;
+    bool failed;
 };
 
 #define GL(r, statement) ((r)->gl_calls++, (void)(statement))
@@ -632,10 +643,15 @@ static const struct builtin {
     { PROGRAM_UP, false, "", up_source },
 };
 
+enum shader_await { SHADER_RUNNING, SHADER_READY, SHADER_NO_HELPER, SHADER_FAILED };
+
 static void warm_name(const char *source, char name[WARM_NAME]);
-static void warm_remember(struct render *r, const char *source, const char *name);
+static bool warm_remember(struct render *r, const char *source, const char *name);
 static bool warm_run(struct render *r, char *name);
 static bool warm_load(struct render *r, const char *name, struct program *p);
+static enum shader_await shader_await(struct render *r, const char *name,
+    struct program *program);
+static void jobs_stop(struct render *r);
 
 static EGLContext compile_begin(struct render *r) {
     current(r);
@@ -648,21 +664,32 @@ static void compile_end(struct render *r, EGLContext scratch) {
     malloc_trim(0);
 }
 
-static struct program *shader_create(struct render *r, const char *source, bool helper) {
+static struct program *shader_create(struct render *r, const char *source, bool helper,
+        bool *pending) {
+    bool waiting = false;
+    if (!pending) pending = &waiting;
+    *pending = false;
     struct shader *shader = calloc(1, sizeof(*shader));
     if (!shader) return NULL;
     const char *vertex[] = { shader_vertex_source };
     const char *fragment[] = { shader_prelude, source, shader_main };
     char name[WARM_NAME];
     warm_name(source, name);
-    warm_remember(r, source, name);
+    bool handable = warm_remember(r, source, name);
     current(r);
-    EGLContext scratch = compile_begin(r);
-    bool linked = warm_load(r, name, &shader->program) ||
-        (helper && warm_run(r, name) && warm_load(r, name, &shader->program)) ||
-        link_sources(&shader->program, vertex, 1, fragment, 3);
-    compile_end(r, scratch);
+    bool linked = warm_load(r, name, &shader->program);
+    if (!linked && !(helper && handable && r->warm_dir && r->binaries)) {
+        linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    } else if (!linked) {
+        enum shader_await awaited = shader_await(r, name, &shader->program);
+        if (awaited == SHADER_RUNNING) *pending = true;
+        else if (awaited == SHADER_READY) linked = true;
+        else if (awaited == SHADER_NO_HELPER)
+            linked = link_sources(&shader->program, vertex, 1, fragment, 3);
+    }
     if (linked) {
+        glFinish();
+        malloc_trim(0);
         shader->r = r;
         return &shader->program;
     }
@@ -670,12 +697,13 @@ static struct program *shader_create(struct render *r, const char *source, bool 
     return NULL;
 }
 
-struct program *render_shader_create(struct render *r, const char *source) {
-    return shader_create(r, source, true);
+struct program *render_shader_create(struct render *r, const char *source, bool *pending) {
+    return shader_create(r, source, true, pending);
 }
 
 struct program *render_shader_compile(struct render *r, const char *source) {
-    return shader_create(r, source, false);
+    bool pending;
+    return shader_create(r, source, false, &pending);
 }
 
 void render_shader_destroy(struct program *program) {
@@ -2814,6 +2842,7 @@ void render_counters(struct render *r, struct render_counters *out) {
 }
 
 static void render_free(struct render *r) {
+    jobs_stop(r);
     if (r->held_count)
         tomoe_log(LOG_ERROR, "tomoe: the renderer is closing with %d frame(s) still on the GPU",
             r->held_count);
@@ -3170,32 +3199,149 @@ static char *warm_binary_path(const char *dir, const char *name) {
     return asprintf(&path, "%s/%.*s.bin", dir, stem, name) < 0 ? NULL : path;
 }
 
-static void warm_remember(struct render *r, const char *source, const char *name) {
+static bool warm_remember(struct render *r, const char *source, const char *name) {
     char *path = NULL, *temp = NULL;
     if (!r->warm_dir || strlen(source) > WARM_SOURCE_LIMIT ||
-            asprintf(&path, "%s/%s", r->warm_dir, name) < 0) return;
+            asprintf(&path, "%s/%s", r->warm_dir, name) < 0) return false;
     if (access(path, F_OK) != 0 && asprintf(&temp, "%s.%ld", path, (long)getpid()) >= 0) {
         FILE *out = fopen(temp, "we");
         bool ok = out && fputs(source, out) >= 0;
         if (out && fclose(out) != 0) ok = false;
         if (!ok || rename(temp, path) != 0) unlink(temp);
     }
+    bool there = access(path, F_OK) == 0;
     free(temp);
     free(path);
+    return there;
+}
+
+static uint64_t warm_now_ns(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
 static bool warm_wait(pid_t child) {
     int status = 0;
-    for (int waited = 0; waited < WARM_TIMEOUT_MS; waited += 2) {
+    uint64_t deadline = warm_now_ns() + (uint64_t)WARM_TIMEOUT_MS * 1000000ull;
+    for (;;) {
         pid_t done = waitpid(child, &status, WNOHANG);
         if (done == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
         if (done < 0 && errno != EINTR) return false;
+        if (warm_now_ns() >= deadline) break;
         usleep(2000);
     }
     kill(child, SIGKILL);
     while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
     tomoe_log(LOG_ERROR, "tomoe: the shader warm-up helper timed out");
     return false;
+}
+
+static struct shader_job *job_find(struct render *r, const char *name) {
+    for (struct shader_job *job = r->jobs; job; job = job->next)
+        if (!strcmp(job->name, name)) return job;
+    return NULL;
+}
+
+static void job_forget(struct render *r, struct shader_job *job) {
+    for (struct shader_job **link = &r->jobs; *link; link = &(*link)->next)
+        if (*link == job) {
+            *link = job->next;
+            free(job);
+            return;
+        }
+}
+
+static void job_stop(struct shader_job *job) {
+    if (job->pid <= 0) return;
+    kill(job->pid, SIGKILL);
+    while (waitpid(job->pid, NULL, 0) < 0 && errno == EINTR) {}
+    job->pid = 0;
+}
+
+static void jobs_stop(struct render *r) {
+    struct shader_job *job;
+    for (job = r->jobs; job; job = job->next) job_stop(job);
+    while ((job = r->jobs)) {
+        r->jobs = job->next;
+        free(job);
+    }
+}
+
+static struct shader_job *job_start(struct render *r, const char *name) {
+    struct shader_job *job = calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    snprintf(job->name, sizeof(job->name), "%s", name);
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, job->name, NULL };
+    posix_spawn_file_actions_t actions;
+    pid_t child = 0;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        free(job);
+        return NULL;
+    }
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (spawned != 0) {
+        free(job);
+        return NULL;
+    }
+    job->pid = child;
+    job->deadline = warm_now_ns() + (uint64_t)WARM_JOB_TIMEOUT_MS * 1000000ull;
+    job->next = r->jobs;
+    r->jobs = job;
+    return job;
+}
+
+bool render_shader_reap(struct render *r) {
+    bool busy = false;
+    for (struct shader_job *job = r->jobs, *next; job; job = next) {
+        next = job->next;
+        if (job->pid <= 0) continue;
+        int status = 0;
+        pid_t done = waitpid(job->pid, &status, WNOHANG);
+        if (done == 0 || (done < 0 && errno == EINTR)) {
+            busy = true;
+            continue;
+        }
+        job->pid = 0;
+        job_forget(r, job);
+    }
+    return busy;
+}
+
+static enum shader_await shader_await(struct render *r, const char *name,
+        struct program *program) {
+    struct shader_job *job = job_find(r, name);
+    if (job && job->failed) return SHADER_FAILED;
+    if (!job && !(job = job_start(r, name))) return SHADER_NO_HELPER;
+    if (job->pid > 0) {
+        int status = 0;
+        pid_t child = job->pid, done = waitpid(child, &status, WNOHANG);
+        if (done == 0) {
+            if (warm_now_ns() < job->deadline) return SHADER_RUNNING;
+            job_stop(job);
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
+                WARM_JOB_TIMEOUT_MS / 1000, name);
+            return SHADER_FAILED;
+        }
+        if (done < 0 && errno == EINTR) return SHADER_RUNNING;
+        job->pid = 0;
+        if (done != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy could not compile %s", name);
+            return SHADER_FAILED;
+        }
+    }
+    if (!warm_load(r, name, program)) {
+        job->failed = true;
+        tomoe_log(LOG_ERROR, "tomoe: the copied shader does not load: %s", name);
+        return SHADER_FAILED;
+    }
+    job_forget(r, job);
+    return SHADER_READY;
 }
 
 static void warm(struct render *r) {
@@ -3352,7 +3498,7 @@ int tomoe_warm_shaders(const char *node, const char *dir, const char *name) {
     for (int i = 0; i < count; i++) {
         const char *file = name ? name : entries[i]->d_name;
         char *source = shaders ? read_source(dir, file) : NULL;
-        struct program *shader = source ? render_shader_create(r, source) : NULL;
+        struct program *shader = source ? render_shader_create(r, source, NULL) : NULL;
         if (shader) {
             warm_save(dir, file, shader);
             shaders[linked++] = shader;

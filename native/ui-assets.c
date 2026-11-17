@@ -26,8 +26,9 @@
 #define BACKDROP_SOURCE_LIMIT (UINT64_C(512) * 1024 * 1024)
 #define BACKDROP_DIMENSION_LIMIT 32767u
 #define SHADER_FILE_LIMIT (256u * 1024u)
+#define SHADER_POLL_MS 20
 
-enum asset_status { ASSET_OK, ASSET_MISSING, ASSET_HARD };
+enum asset_status { ASSET_OK, ASSET_MISSING, ASSET_HARD, ASSET_PENDING };
 enum { FIT_COVER, FIT_CONTAIN, FIT_FILL };
 
 struct backdrop_job {
@@ -57,10 +58,13 @@ struct ui_asset {
     struct texture *texture;
     int x, y;
     struct program *shader;
+    char *shader_source;
+    bool shader_waiting;
     double epoch;
 };
 
 struct ui_asset_pool {
+    struct tomoe *server;
     struct ui_asset *assets;
     uint64_t count, bytes, loads, next_id;
     pthread_t worker;
@@ -68,9 +72,13 @@ struct ui_asset_pool {
     pthread_cond_t wake;
     struct backdrop_job *queue, *done;
     struct wl_event_source *source;
+    struct wl_event_source *timer;
+    size_t waiting;
     int wakeup;
     bool working, stopping;
 };
+
+static void shader_wait_end(struct ui_asset *asset);
 
 struct asset_data { unsigned char *bytes; size_t length; };
 
@@ -262,6 +270,7 @@ static void free_content(struct ui_asset *asset) {
 }
 
 static void free_asset(struct ui_asset *asset) {
+    if (asset->shader_waiting) shader_wait_end(asset);
     free_content(asset);
     free(asset->owner); free(asset->path); free(asset->name);
     free(asset);
@@ -471,10 +480,70 @@ static enum asset_status backdrop_start(struct tomoe *s, struct ui_asset *asset,
     return ASSET_OK;
 }
 
+static void shader_repaint(struct ui_asset_pool *pool) {
+    struct tomoe *s = pool->server;
+    struct output *o;
+    if (!s) return;
+    wl_list_for_each(o, &s->outputs, link)
+        if (o->screen && output_is_active(o)) screen_schedule_frame(o->screen);
+}
+
+static int shader_timer(void *data);
+
+static void shader_watch(struct ui_asset_pool *pool) {
+    struct tomoe *s = pool->server;
+    if (!s || !s->display) return;
+    if (!pool->timer)
+        pool->timer = wl_event_loop_add_timer(wl_display_get_event_loop(s->display),
+            shader_timer, pool);
+    if (pool->timer) wl_event_source_timer_update(pool->timer, SHADER_POLL_MS);
+}
+
+static void shader_wait_end(struct ui_asset *asset) {
+    free(asset->shader_source);
+    asset->shader_source = NULL;
+    asset->shader_waiting = false;
+    if (asset->pool->waiting) asset->pool->waiting--;
+}
+
+static bool shader_retry(struct ui_asset *asset) {
+    struct ui_asset_pool *pool = asset->pool;
+    if (!asset->shader_source || !pool->server || !pool->server->renderer) {
+        shader_wait_end(asset);
+        return false;
+    }
+    bool waiting = false;
+    asset->shader = render_shader_create(pool->server->renderer, asset->shader_source,
+        &waiting);
+    if (asset->shader) {
+        uint64_t bytes = strlen(asset->shader_source);
+        asset->epoch = shader_clock_now(pool->server, animation_now());
+        shader_wait_end(asset);
+        asset->bytes = bytes;
+        pool->bytes += bytes;
+        return true;
+    }
+    if (!waiting) shader_wait_end(asset);
+    return false;
+}
+
+static int shader_timer(void *data) {
+    struct ui_asset_pool *pool = data;
+    struct render *renderer = pool->server ? pool->server->renderer : NULL;
+    bool ready = false;
+    for (struct ui_asset *asset = pool->assets; asset; asset = asset->next)
+        if (asset->shader_waiting && shader_retry(asset)) ready = true;
+    if (ready) shader_repaint(pool);
+    bool busy = pool->waiting > 0 || (renderer && render_shader_reap(renderer));
+    if (busy && pool->timer) wl_event_source_timer_update(pool->timer, SHADER_POLL_MS);
+    return 0;
+}
+
 static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
         uint64_t available) {
     struct asset_data data = {0};
     enum asset_status status = ASSET_OK;
+    bool waiting = false;
     if (!strcmp(asset->name, "glsl")) {
         data.length = strlen(asset->path);
         data.bytes = (unsigned char *)strdup(asset->path);
@@ -486,7 +555,15 @@ static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
     data.bytes[data.length] = '\0';
     if (data.length > available) status = ASSET_HARD;
     else if (s->renderer && strlen((char *)data.bytes) == data.length)
-        asset->shader = render_shader_create(s->renderer, (char *)data.bytes);
+        asset->shader = render_shader_create(s->renderer, (char *)data.bytes, &waiting);
+    if (status == ASSET_OK && !asset->shader && waiting) {
+        asset->shader_source = (char *)data.bytes;
+        data.bytes = NULL;
+        asset->shader_waiting = true;
+        if (asset->pool->waiting != SIZE_MAX) asset->pool->waiting++;
+        shader_watch(asset->pool);
+        status = ASSET_PENDING;
+    }
     free(data.bytes);
     if (status != ASSET_OK) return status;
     if (!asset->shader) return ASSET_MISSING;
@@ -511,6 +588,7 @@ uint64_t tomoe_ui_asset_load(struct tomoe *s, const char *owner,
         s->ui_assets = calloc(1, sizeof(*s->ui_assets));
         if (!s->ui_assets) return 0;
         s->ui_assets->next_id = 1;
+        s->ui_assets->server = s;
     }
     struct ui_asset_pool *pool = s->ui_assets;
     for (struct ui_asset *asset = pool->assets; asset; asset = asset->next) {
@@ -703,6 +781,10 @@ uint64_t ui_assets_loads(struct tomoe *s) { return s && s->ui_assets ? s->ui_ass
 void ui_assets_finish(struct tomoe *s) {
     if (!s || !s->ui_assets) return;
     tomoe_ui_assets_discard(s);
+    if (s->ui_assets->timer) {
+        wl_event_source_remove(s->ui_assets->timer);
+        s->ui_assets->timer = NULL;
+    }
     backdrop_worker_stop(s->ui_assets);
     while (s->ui_assets->assets) {
         struct ui_asset *asset = s->ui_assets->assets;

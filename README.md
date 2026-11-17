@@ -393,6 +393,14 @@ shader draws has alpha 1, so nothing beneath it is drawn at all: a full-screen
 wallpaper saves the clear under it on every frame it animates. Changing the data or
 a window's box redraws the surface; neither recompiles the shader.
 
+A shader the driver has not built before is compiled by a copy of Tomoe, and the
+surface never waits for it: until the program lands that surface draws its
+fallback - the look it replaced, if it replaced one, and nothing otherwise - and
+the desktop keeps drawing and taking input, so a theme switch to a look whose
+shader is new costs no frames and no keys. When the driver keeps no program
+binary, or the shader cache cannot be written, there is nothing to hand over, and
+the compositor links the shader itself in the process that is drawing.
+
 A shader that calls `beneath(at)` reads what is composited under it: the colour
 the output already holds at `at`, in the shader's own pixels like `fragCoord`,
 for any point within 32 pixels of what the shader draws, so it can bend, blur or
@@ -570,7 +578,12 @@ the API to move.
   heap for the life of a process that compiles once). User shaders are remembered
   in `$XDG_CACHE_HOME/tomoe/shaders`, beside the program the copy linked, which
   the compositor loads; a shader new to the driver still costs NVIDIA about 15 MB
-  the first time the compositor draws it.
+  the first time the compositor draws it. Nothing waits on that copy: a surface
+  whose program is still being built draws its fallback, and the compositor asks
+  again a few milliseconds later, so neither the switch nor the session stalls on
+  a new shader. Both the copy's deadlines are real time on the monotonic clock: a
+  prewarm at startup gives it 5 s, and one compiling for a surface that is up
+  gets a minute, after which that surface keeps drawing its fallback.
 - Clients can pace queued commits with `wp_fifo_v1`: barriers retain each update
   through the next output frame boundary, including direct scanout. Synchronized
   subsurfaces ignore FIFO waits as required by the protocol.

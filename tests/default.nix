@@ -1320,6 +1320,15 @@ let
       '';
     }
     {
+      name = "shader-wait";
+      script = ''
+        machine.succeed("mkdir -p /run/shader-wait")
+        print(machine.succeed(
+          "timeout 300 python3 ${./shader-wait.py} --tomoe ${tomoe}/bin/tomoe"
+          " --work /run/shader-wait"))
+      '';
+    }
+    {
       name = "cursor";
       script = ''
         machine.succeed("mkdir -p /run/cursor")
