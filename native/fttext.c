@@ -1290,8 +1290,8 @@ static bool fte_transform_image(const struct fte_matrix *shape, struct fte_image
     }
     double ox = image->off_x, oy = image->off_y;
     fte_matrix_transform_point(&m, &ox, &oy);
-    dst.off_x = fte_lround(ox);
-    dst.off_y = fte_lround(oy);
+    dst.off_x = (int)floor(ox + 0.5);
+    dst.off_y = (int)floor(oy + 0.5);
     free(image->data);
     *image = dst;
     return true;
@@ -2358,8 +2358,8 @@ static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
     for (int i = 0; i < count; i++)
         if (pending[i].entry && pending[i].entry->color)
             fte_draw_glyph(pixels, stride, width, height, clip, pending[i].entry,
-                fte_lround(pending[i].x - pending[i].entry->off_x),
-                fte_lround(pending[i].y - pending[i].entry->off_y), colour);
+                (int)floor(pending[i].x - pending[i].entry->off_x + 0.5),
+                (int)floor(pending[i].y - pending[i].entry->off_y + 0.5), colour);
     if (bounds.x0 >= bounds.x1 || bounds.y0 >= bounds.y1) {
         if (pending != stack) free(pending);
         return;
