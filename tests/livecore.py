@@ -10,7 +10,14 @@ import time
 
 TOMOE, CORE_A, CORE_B, CORE_BAD, CLIENT, SCRIPT, POINTER, POLICY, STAMP_B = sys.argv[1:10]
 SOCKET = "livecore"
-PHASES = (("pre", 183), ("swapped", 184), ("refused", 185), ("second", 186))
+PHASES = (
+    ("pre", 183, ("core-1", "core-2", "core-3")),
+    ("swapped", 184, ("core-1", "core-2", "core-3")),
+    ("closed", 187, ("core-2", "core-3")),
+    ("refused", 185, ("core-2", "core-3")),
+    ("second", 186, ("core-2", "core-3")),
+    ("closed2", 188, ("core-3",)),
+)
 
 
 def note(message):
@@ -73,10 +80,10 @@ class Driver:
     def __init__(self, directory, environment):
         self.directory = pathlib.Path(directory)
         commands = ["sync", "signal " + str(self.directory / "driver-ready")]
-        for name, code in PHASES:
+        for name, code, _ in PHASES:
             commands += [
                 "wait " + str(self.directory / ("go-" + name)),
-                "move 20 20", "sync", "move 40 40", "sync",
+                "move 20 20", "sync", "move 40 40", "sync", "move 70 70", "sync",
                 "move 232 182", "sync", "move 256 206", "sync", "sleep 80",
                 "key 30 down", "sync", "sleep 60", "key 30 up", "sync", "sleep 100",
                 "key " + str(code) + " down", "sync", "sleep 60",
@@ -231,20 +238,21 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
             pointer.kill()
             pointer.wait()
 
-    def input_round(driver, clients, phase, code):
+    def input_round(driver, clients, phase, code, motions):
         target = focused_app()
-        assert target, "no window is focused"
+        assert target, "no window is focused in " + phase
         before_steps = steps()
         key_pattern = target + r": .* key " + str(code) + " [01]"
-        motion_pattern = target + r": .* pointer (motion|enter) "
         before_keys = clients.count(key_pattern)
-        before_motion = clients.count(motion_pattern)
+        before_motion = {name: clients.count(name + r": .* pointer (motion|enter) ")
+                         for name in motions}
         assert driver.run(phase), "the input driver for " + phase + " stopped: " \
             + "\n".join(driver.output[-6:])
         assert clients.wait(key_pattern, before_keys + 1, 20), \
             "the window focused in " + phase + " received no key event: " + clients.output()
-        assert clients.wait(motion_pattern, before_motion + 1, 20), \
-            "the window focused in " + phase + " received no pointer event: " + clients.output()
+        for name in motions:
+            assert clients.wait(name + r": .* pointer (motion|enter) ", before_motion[name] + 1, 20), \
+                name + " received no pointer event in " + phase + ": " + clients.output()
         if before_steps is not None:
             assert steps() == before_steps + 1, \
                 "the session's own key binding did not fire in " + phase
@@ -276,7 +284,7 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         mapped = identities()
         assert sorted(mapped.values()) == ["core-1", "core-2", "core-3"], mapped
         assert drawing(), "the windows were not drawing before the swap"
-        input_round(driver, clients, "pre", 183)
+        input_round(driver, clients, "pre", 183, ("core-1", "core-2", "core-3"))
         assert drawing(), "the windows stopped drawing after the first input round"
         pointer_round()
         note("three windows mapped, drawing, and taking a bound key, a key event and the pointer on "
@@ -288,11 +296,24 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         assert {window["id"]: window["app_id"] for window in windows()} == mapped, windows()
         assert all(window["mapped"] for window in windows()), windows()
         assert drawing(), "the windows stopped drawing after the swap"
-        input_round(driver, clients, "swapped", 184)
+        input_round(driver, clients, "swapped", 184, ("core-1", "core-2", "core-3"))
         assert drawing(), "the windows stopped drawing after input on the swapped core"
         assert not clients.exited(), "a client exited while the swapped core took input"
         note("the same three windows stay mapped, keep drawing, and take a bound key, a key event "
              "and the pointer after the swap")
+
+        assert clients.kill("core-1"), "the first client could not be killed"
+        assert gone("core-1"), "a window whose client died right after the swap is still listed"
+        mapped = identities()
+        assert sorted(mapped.values()) == ["core-2", "core-3"], mapped
+        assert all(window["mapped"] for window in windows()), windows()
+        assert drawing(), "the session stopped drawing after a client died on the swapped core"
+        assert len(cli("msg", "version").stdout) > 0, "the session stopped answering"
+        input_round(driver, clients, "closed", 187, ("core-2", "core-3"))
+        assert drawing(), "the session stopped drawing after input following a close"
+        assert not clients.exited(), "a client exited after the close on the swapped core"
+        note("a client that dies while the swapped core runs leaves the other windows mapped, "
+             "drawing and taking input")
 
         clients.start("core-4", environment, "--mode", "xdg", "--commit-rate", "60", "--repaint",
                       "--keys", "--pointer", "--app-id", "core-4", "--title", "core-4",
@@ -301,13 +322,7 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         assert "core-4" in identities().values(), "a client that connected after the swap is missing"
         mapped = identities()
         pointer_round()
-        assert clients.kill("core-1"), "the first client could not be killed"
-        assert gone("core-1"), "a window whose client died after the swap is still listed"
-        mapped = identities()
-        assert drawing(), "the session stopped drawing after a client died post-swap"
-        assert len(cli("msg", "version").stdout) > 0, "the session stopped answering"
-        note("a client that connects after the swap maps; a client that dies afterwards leaves the "
-             "session drawing and answering")
+        note("a client that connects after the swap maps and takes the pointer")
 
         bad = cli("command", "swap-core", "file=" + CORE_BAD, check=False)
         assert bad.returncode != 0, "an incompatible core was accepted:\n" + bad.stdout
@@ -315,21 +330,23 @@ with tempfile.TemporaryDirectory(prefix="tomoe-livecore-", dir=os.environ.get("T
         assert stamp() == STAMP_B, "a refused core changed the running core"
         assert identities() == mapped, "a refused core lost the windows"
         assert drawing(), "the windows stopped drawing after a refused swap"
-        input_round(driver, clients, "refused", 185)
+        input_round(driver, clients, "refused", 185, ("core-2", "core-3"))
         note("an incompatible core is refused and the session keeps drawing and taking input")
 
         cli("command", "swap-core", "file=" + CORE_A)
         assert swapped(stamp_a), "the second swap reports " + str(stamp())
         assert identities() == mapped, "the second swap lost the windows"
         assert drawing(), "the windows stopped drawing after the second swap"
-        input_round(driver, clients, "second", 186)
+        input_round(driver, clients, "second", 186, ("core-2", "core-3"))
         assert clients.kill("core-2"), "the second client could not be killed"
         assert gone("core-2"), "a window whose client died after two swaps is still listed"
         mapped = identities()
+        assert "core-3" in mapped.values(), "the last pre-swap client left with the second close"
         assert drawing(), "the session stopped drawing after a client died after two swaps"
+        input_round(driver, clients, "closed2", 188, ("core-3",))
         assert not clients.exited(), "a client exited during a swap"
-        note("a second swap returns to the first core, and a client that dies after it leaves the "
-             "session drawing")
+        note("a second swap returns to the first core, and the pre-swap windows that stay open "
+             "keep drawing and taking input after each close")
     except Exception:
         log.seek(0)
         print("livecore: compositor log:\n" + log.read(), flush=True)
