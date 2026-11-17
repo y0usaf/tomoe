@@ -49,7 +49,7 @@ struct target {
     int width, height;
     uint32_t format;
     uint64_t linear_modifier;
-    bool described, started, closed, stopped, reused;
+    bool described, started, closed, stopped;
     int captured, failed;
     double issued;
     char title[256];
@@ -72,7 +72,6 @@ static int frames_per_target = 60;
 static int delay_ms;
 static int udmabuf_mode;
 static int output_mode;
-static int reuse_check;
 static const char *wanted_app_id = "capture-target";
 static uint32_t shm_format = DRM_FORMAT_ARGB8888;
 static int stopping;
@@ -180,23 +179,6 @@ static void frame_failed(void *data, struct ext_image_copy_capture_frame_v1 *fra
     target->failed++;
     report(target, index, reason == EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED ?
         "stopped" : "failed");
-    if (reuse_check && !target->reused) {
-        target->reused = true;
-        uint32_t *words = target->pixels;
-        size_t stride = (size_t)target->width * 4;
-        for (size_t i = 0; i < target->bytes / 4; i++) words[i] = 0xdeadbeefu;
-        double until = seconds() + 1.2;
-        while (seconds() < until) {
-            if (wl_display_dispatch_pending(display) < 0) break;
-            wl_display_flush(display);
-            usleep(10000);
-        }
-        printf("intact %08x\n", words[stride / 4 * (size_t)(target->height / 2) +
-            (size_t)(target->width / 2)]);
-        fflush(stdout);
-        stopping = 1;
-        return;
-    }
     if (!stopping && target->failed < 50 &&
             target->captured + target->failed < frames_per_target && !target->closed)
         capture(target, index);
@@ -486,7 +468,6 @@ int main(int arguments, char **argv) {
         else if (!strcmp(argv[i], "--app-id") && i + 1 < arguments) wanted_app_id = argv[++i];
         else if (!strcmp(argv[i], "--dmabuf")) udmabuf_mode = 1;
         else if (!strcmp(argv[i], "--output")) output_mode = 1;
-        else if (!strcmp(argv[i], "--reuse-check")) reuse_check = 1;
         else fail("unknown argument %s", argv[i]);
     }
     if (wanted < 1) wanted = 1;

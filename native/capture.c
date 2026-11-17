@@ -549,7 +549,7 @@ static bool frame_readback(struct image_frame *frame) {
 
 static void frame_complete(struct image_frame *frame) {
     struct tomoe *s = frame->server;
-    bool late = frame->held || capture_now_ms() - frame->started >= CAPTURE_STALL_MS;
+    bool held = frame->held;
     image_frame_settle(frame);
     capture_slot_release(frame);
     if (!frame->resource) {
@@ -559,7 +559,7 @@ static void frame_complete(struct image_frame *frame) {
         free(frame);
         return;
     }
-    if (late) {
+    if (held) {
         if (frame->staging) buffer_drop(frame->staging);
         frame->staging = NULL;
         ext_image_copy_capture_frame_v1_send_failed(frame->resource,

@@ -10,7 +10,7 @@ CHECK = "/run/capture-check.py"
 SHOT = "/run/capture/grim.png"
 
 REPORT_CHECK = """cat > /run/capture-check.py <<'CAPTURECHECK'
-targets, frames, ended, intact = {}, [], [], []
+targets, frames, ended = {}, [], []
 report = open("/run/capture/report").read().splitlines()
 for line in report:
     parts = line.split()
@@ -23,8 +23,6 @@ for line in report:
                        int(parts[5], 16) & 0xFFFFFF))
     elif parts[0] == "end":
         ended = parts[1:]
-    elif parts[0] == "intact" and len(parts) >= 2:
-        intact.append(parts[1])
 ready = [frame for frame in frames if frame[1] == "ready"]
 failed = [frame for frame in frames if frame[1] == "failed"]
 wrong = [frame for frame in ready if targets.get(frame[0]) != "c%06x" % frame[3]]
@@ -33,9 +31,8 @@ print("failed", len(failed))
 print("wrong", len(wrong))
 print("targets", *["%d:%s" % (key, value) for key, value in sorted(targets.items())])
 print("first", *["%d:%s:%06x" % (frame[0], frame[1], frame[3]) for frame in ready[:4]])
-print("failed-latency", "%.3f" % (failed[0][2] if failed else 0.0))
+print("ready-latency", "%.3f" % (ready[0][2] if ready else 0.0))
 print("end", *ended)
-print("intact", *intact)
 print("lines", len(report))
 print("head", report[0] if report else "")
 print("tail", report[-1] if report else "")
@@ -144,15 +141,15 @@ cli(f"mount {CAPTURE_POLICY}")
 window("stall-win", COLOURS[0])
 time.sleep(0.5)
 stall_control, _, _ = measure("stall-control")
-capture("capture-stalled", "--windows 1 --frames 3 --seconds 20 --reuse-check")
+capture("capture-stalled", "--windows 1 --frames 3 --seconds 20")
 time.sleep(0.5)
 stalled, _, _ = measure("stalled-capture")
 assert stalled >= max(FLOOR, BOUND * stall_control), (stall_control, stalled)
 counts = finished("capture-stalled")
-assert counts["failed"] != ["0"], f"no frame was dropped when its fence stalled: {counts}"
-latency = float(counts["failed-latency"][0])
-assert latency >= STALL_MS * 0.9, f"failed after {latency:.0f} ms"
-assert counts["intact"] == ["deadbeef"], f"the buffer was written after the frame failed: {counts}"
+assert counts["failed"] == ["0"], f"a frame whose fence stalled was dropped: {counts}"
+check_pixels(counts, 3)
+latency = float(counts["ready-latency"][0])
+assert latency >= STALL_MS * 0.9, f"ready after {latency:.0f} ms, before its fence signalled"
 
 quit()
 start("--bare", "--test-stall-capture")
