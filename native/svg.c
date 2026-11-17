@@ -6627,7 +6627,7 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         r = sr * ida + dr * isa;
         g = sg * ida + dg * isa;
         b = sb * ida + db * isa;
-        a = r;
+        a = sa * ida + da * isa;
         break;
     default:
         r = sr * ida + dr * isa + sr * dr;
@@ -7172,6 +7172,8 @@ static int svg_fit_rect(int r[4], int maxb[4]) {
 
 static void svg_clip_draw_children(struct svg_node *group, struct svg_matrix ts,
         struct svg_pixmap *pixmap, int blend);
+static void svg_apply_clip(struct svg_clip *clip, struct svg_matrix ts,
+        struct svg_pixmap *pixmap);
 
 static void svg_clip_draw_group(struct svg_node *group, struct svg_clip *clip,
         struct svg_matrix ts, struct svg_pixmap *pixmap) {
@@ -7179,7 +7181,7 @@ static void svg_clip_draw_group(struct svg_node *group, struct svg_clip *clip,
     svg_pixmap_init(&temp, pixmap->width, pixmap->height);
     if (!temp.pixels) return;
     svg_clip_draw_children(group, ts, &temp, 0);
-    if (clip->root) svg_clip_draw_children(clip->root, ts, &temp, 0);
+    svg_apply_clip(clip, ts, &temp);
     svg_draw_pixmap(pixmap, 0, 0, &temp, 1.0f, 16);
     svg_pixmap_free(&temp);
 }
