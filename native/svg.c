@@ -11853,16 +11853,15 @@ static struct svg_point svg_eval_quad_tangent(struct svg_point *q, float t) {
     return svg_pt_add(v, v);
 }
 static struct svg_point svg_eval_cubic(struct svg_point *c, float t) {
-    if (t == 0.0f) return c[0];
-    if (t == 1.0f) return c[3];
-    float one_t = 1.0f - t, one_t2 = one_t * one_t;
-    float a = one_t2 * one_t;
-    float b = 3.0f * one_t2 * t;
-    float t2 = t * t;
-    float cc = 3.0f * one_t * t2;
-    float d = t2 * t;
-    return svg_pt(a * c[0].x + b * c[1].x + cc * c[2].x + d * c[3].x,
-        a * c[0].y + b * c[1].y + cc * c[2].y + d * c[3].y);
+    float ax = c[3].x + 3.0f * (c[1].x - c[2].x) - c[0].x;
+    float ay = c[3].y + 3.0f * (c[1].y - c[2].y) - c[0].y;
+    float bx = 3.0f * ((c[2].x - (c[1].x + c[1].x)) + c[0].x);
+    float by = 3.0f * ((c[2].y - (c[1].y + c[1].y)) + c[0].y);
+    float cx = 3.0f * (c[1].x - c[0].x);
+    float cy = 3.0f * (c[1].y - c[0].y);
+    float x = ((ax * t + bx) * t + cx) * t + c[0].x;
+    float y = ((ay * t + by) * t + cy) * t + c[0].y;
+    return svg_pt(x, y);
 }
 static float svg_quad_max_curvature(struct svg_point *src) {
     float ax = src[1].x - src[0].x;
