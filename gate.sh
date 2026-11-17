@@ -180,8 +180,9 @@ trap cleanup EXIT
 
 ctl() { "${ENV[@]}" "$PKG/bin/tomoe" --socket "$SOCKET" "$@"; }
 
-setsid "$PKG/bin/tomoe" --socket "$SOCKET" --backend headless --no-watch --test-timings \
-	--test-frame-clock --config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
+TOMOE_TEST_HOLD_RENDER="$DIR/hold" setsid "$PKG/bin/tomoe" --socket "$SOCKET" \
+	--backend headless --no-watch --test-timings --test-frame-clock \
+	--config "$DIR/init.lisp" >"$DIR/log" 2>&1 </dev/null &
 SERVER=$!
 for _ in $(seq 300); do ctl inspect >/dev/null 2>&1 && break; sleep 0.1; done
 ctl inspect >"$DIR/inspect" 2>&1 || die "the session never answered"
@@ -468,6 +469,41 @@ print(sum(1 for i in range(0, min(len(a), len(b)), 48) if a[i:i + 3] != b[i:i + 
 PIXELS
 }
 
+render_hold_check() {
+	local label=$1 pid status held released
+	rm -f "$DIR/hold2" "$DIR/hold2.err"
+	echo 20 >"$DIR/hold"
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
+		--size 320x240 --color 664422 --app-id gate-hold --title gate-hold \
+		>"$DIR/hold2" 2>"$DIR/hold2.err" </dev/null &
+	pid=$!
+	sleep 2.5
+	kill -TERM -- "-$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	status=$?
+	((status == 0 || status == 143)) ||
+		die "$label: the held-fence client exited $status: $(head -2 "$DIR/hold2.err")"
+	held=$(awk '$1 == "animate" && $2 > 0 { print $2 }' "$DIR/hold2" | sort -n |
+		awk '{ v[NR] = $1 } END { print (NR ? v[int((NR - 1) * 50 / 100) + 1] : 0) }')
+	rm -f "$DIR/hold"
+	((held >= PERIOD_NS * 3 / 1000)) ||
+		die "$label: with the render fence held for 20 ms the client's callbacks still came every ${held}us, so it was told its frame was done before the fence signalled"
+	rm -f "$DIR/hold3" "$DIR/hold3.err"
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" setsid "$CLIENT" --seconds 3600 --animate \
+		--size 320x240 --color 664422 --app-id gate-hold-free --title gate-hold-free \
+		>"$DIR/hold3" 2>"$DIR/hold3.err" </dev/null &
+	pid=$!
+	sleep 1.8
+	kill -TERM -- "-$pid" 2>/dev/null
+	wait "$pid" 2>/dev/null
+	released=$(awk '$1 == "animate" && $2 > 0 { print $2 }' "$DIR/hold3" | sort -n |
+		awk '{ v[NR] = $1 } END { print (NR ? v[(NR - 1) * 50 / 100 + 1] : 0) }')
+	((released <= PERIOD_NS * 3 / 2000)) ||
+		die "$label: with the fence free the client's callbacks came every ${released}us, so the desk itself is not keeping the refresh"
+	say "$label: with the render fence held for 20 ms the client's callbacks came every ${held}us, and ${released}us with it free"
+	settle "$WINDOWS"
+}
+
 frame_callback_check() {
 	local label=$1 pid status count first last rate want p99 args="--animate" span
 	[[ -n ${GATE_FRAMES_NOTHING:-} ]] && args=""
@@ -540,6 +576,10 @@ at_rest() {
 		if [[ -z ${CADENCE_CHECKED:-} ]]; then
 			frame_callback_check "$label"
 			CADENCE_CHECKED=1
+		fi
+		if [[ -z ${HOLD_CHECKED:-} ]]; then
+			render_hold_check "$label"
+			HOLD_CHECKED=1
 		fi
 		return 0
 	done
