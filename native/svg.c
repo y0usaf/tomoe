@@ -3737,6 +3737,7 @@ struct svg_filter {
     float rect[4];
     struct svg_filter_prim *prims;
     int nprims;
+    struct svg_filter *next;
 };
 
 struct svg_node {
@@ -3845,13 +3846,15 @@ static void svg_node_destroy(struct svg_node *n) {
     free(n->stroke.dash);
     svg_free_clip(n->clip);
     svg_free_mask(n->mask);
-    if (n->filter) {
-        for (int i = 0; i < n->filter->nprims; i++) {
-            free(n->filter->prims[i].kernel);
-            svg_node_destroy(n->filter->prims[i].img_root);
+    for (struct svg_filter *f = n->filter; f; ) {
+        struct svg_filter *next = f->next;
+        for (int i = 0; i < f->nprims; i++) {
+            free(f->prims[i].kernel);
+            svg_node_destroy(f->prims[i].img_root);
         }
-        free(n->filter->prims);
-        free(n->filter);
+        free(f->prims);
+        free(f);
+        f = next;
     }
     free(n);
 }
@@ -5445,6 +5448,20 @@ static int svg_make_css_filter(struct svg_conv *c, struct xml_node *node, const 
     return 1;
 }
 
+static size_t svg_filter_item_length(const char *text) {
+    const char *p = text;
+    while (*p && (svg_is_ident(*p) || *p == '-')) p++;
+    while (*p && svg_is_space(*p)) p++;
+    if (*p != '(') return 0;
+    int depth = 0;
+    while (*p) {
+        if (*p == '(') depth++;
+        else if (*p == ')' && --depth == 0) return (size_t)(p - text) + 1;
+        p++;
+    }
+    return 0;
+}
+
 static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_filter *out) {
     if (!svg_tag_is(node, "filter")) return 0;
@@ -6230,34 +6247,69 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     int filtered = 0;
     const char *filter_value = svg_style_get(c->doc, st, "filter");
     if (!clip_context && filter_value && strcmp(filter_value, "none")) {
-        char id[256];
-        if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
-            struct svg_filter *css = svg_alloc(sizeof(*css));
-            if (!css || !svg_make_css_filter(c, node, filter_value, object_bbox, have_object_bbox, css)) {
-                free(css);
-                return 0;
-            }
-            g->filter = css;
-            filtered = 1;
-        } else {
-            struct xml_node *link = svg_id_last(c->doc, id);
-            if (!link || !svg_tag_is(link, "filter")) return 0;
-            int active = 0;
-            for (int i = 0; i < c->filter_depth; i++)
-                if (c->filter_stack[i] == link) active = 1;
-            if (!active) {
+        struct svg_filter *head = NULL, **tail = &head;
+        int bad = 0, invalid_url = 0;
+        const char *p = filter_value;
+        while (*p && !bad) {
+            while (*p && svg_is_space(*p)) p++;
+            if (!*p) break;
+            const char *item = p;
+            size_t item_length = svg_filter_item_length(p);
+            if (!item_length) { bad = 1; break; }
+            p += item_length;
+            char text[256];
+            size_t copy = item_length < sizeof(text) - 1 ? item_length : sizeof(text) - 1;
+            memcpy(text, item, copy);
+            text[copy] = 0;
+            if (!strncmp(text, "url(", 4)) {
+                char id[256];
+                if (!svg_parse_funciri(text, id, sizeof(id))) { invalid_url = 1; continue; }
+                struct xml_node *link = svg_id_last(c->doc, id);
+                if (!link || !svg_tag_is(link, "filter")) { invalid_url = 1; continue; }
+                int active = 0;
+                for (int i = 0; i < c->filter_depth; i++)
+                    if (c->filter_stack[i] == link) active = 1;
+                if (active) continue;
                 struct svg_filter *filter = svg_alloc(sizeof(*filter));
                 if (c->filter_depth < 16) c->filter_stack[c->filter_depth++] = link;
-                if (!filter || !svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
-                    if (c->filter_depth) c->filter_depth--;
-                    free(filter);
-                    return 0;
-                }
+                int ok = filter && svg_make_filter(c, link, object_bbox, have_object_bbox,
+                    filter);
                 if (c->filter_depth) c->filter_depth--;
-                g->filter = filter;
-                filtered = 1;
+                if (!ok) {
+                    free(filter);
+                    invalid_url = 1;
+                    continue;
+                }
+                *tail = filter;
+                tail = &filter->next;
+            } else {
+                struct svg_filter *css = svg_alloc(sizeof(*css));
+                if (!css || !svg_make_css_filter(c, node, text, object_bbox,
+                        have_object_bbox, css)) {
+                    free(css);
+                    bad = 1;
+                    break;
+                }
+                *tail = css;
+                tail = &css->next;
             }
         }
+        if (bad || (!head && invalid_url)) {
+            while (head) {
+                struct svg_filter *next = head->next;
+                for (int i = 0; i < head->nprims; i++) {
+                    free(head->prims[i].kernel);
+                    svg_node_destroy(head->prims[i].img_root);
+                }
+                free(head->prims);
+                free(head);
+                head = next;
+            }
+            if (bad) {
+                g->filter = NULL;
+            } else return 0;
+        }
+        if (head) { g->filter = head; filtered = 1; }
     }
     if (clip) g->clip = clip;
     if (mask) g->mask = mask;
@@ -6267,13 +6319,13 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     if (!required) return 1;
     svg_group_bboxes(g);
     if (g->filter) {
-        float fr[4] = { g->filter->rect[0], g->filter->rect[1], g->filter->rect[2],
-            g->filter->rect[3] };
-        g->lbbox.left = fr[0];
-        g->lbbox.top = fr[1];
-        g->lbbox.right = fr[0] + fr[2];
-        g->lbbox.bottom = fr[1] + fr[3];
-        g->lbbox.valid = 1;
+        struct svg_bbox fb = svg_bbox_empty();
+        for (struct svg_filter *f = g->filter; f; f = f->next) {
+            struct svg_bbox r = { f->rect[0], f->rect[1], f->rect[0] + f->rect[2],
+                f->rect[1] + f->rect[3], 1 };
+            fb = svg_bbox_expand(fb, r);
+        }
+        g->lbbox = fb;
         g->has_lbbox = 1;
         g->abs_lbbox = svg_bbox_transform(g->lbbox, g->abs_transform);
     }
@@ -10959,18 +11011,20 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
             for (size_t i = 0; i < n; i++) {
                 const unsigned char *c1 = in1.pix.pixels + i * 4;
                 const unsigned char *c2 = in2.pix.pixels + i * 4;
-                float v[4];
-                for (int k = 0; k < 4; k++) {
+                float i1a = (float)c1[3] / 255.0f, i2a = (float)c2[3] / 255.0f;
+                float a = k1 * i1a * i2a + k2 * i1a + k3 * i2a + k4;
+                if (a < 0.0f) a = 0.0f;
+                if (a > 1.0f) a = 1.0f;
+                if (a == 0.0f) continue;
+                for (int k = 0; k < 3; k++) {
                     float i1 = (float)c1[k] / 255.0f;
                     float i2 = (float)c2[k] / 255.0f;
                     float x = k1 * i1 * i2 + k2 * i1 + k3 * i2 + k4;
-                    if (k == 3) { if (x < 0.0f) x = 0.0f; if (x > 1.0f) x = 1.0f; }
-                    v[k] = x;
+                    if (x < 0.0f) x = 0.0f;
+                    if (x > a) x = a;
+                    res->pix.pixels[i * 4 + k] = (unsigned char)(x * 255.0f);
                 }
-                res->pix.pixels[i * 4 + 0] = (unsigned char)(v[0] * 255.0f);
-                res->pix.pixels[i * 4 + 1] = (unsigned char)(v[1] * 255.0f);
-                res->pix.pixels[i * 4 + 2] = (unsigned char)(v[2] * 255.0f);
-                res->pix.pixels[i * 4 + 3] = (unsigned char)(v[3] * 255.0f);
+                res->pix.pixels[i * 4 + 3] = (unsigned char)(a * 255.0f);
             }
         } else {
             int mode = p->mode;
@@ -11485,7 +11539,8 @@ static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
     struct svg_matrix shift = { 1, 0, 0, 1, -dx, -dy };
     struct svg_matrix inner = svg_matrix_concat(shift, transform);
     svg_render_nodes(group, inner, &sub);
-    if (group->filter) svg_filter_apply(group->filter, inner, &sub);
+    for (struct svg_filter *filter = group->filter; filter; filter = filter->next)
+        svg_filter_apply(filter, inner, &sub);
     if (group->clip) svg_apply_clip(group->clip, inner, &sub);
     if (group->mask) svg_apply_mask(group->mask, inner, &sub);
     svg_draw_pixmap(pixmap, ibbox[0], ibbox[1], &sub, group->opacity, group->blend);
