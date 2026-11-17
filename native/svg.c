@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <strings.h>
+#include <stdio.h>
 #include "jpeg.h"
 #include "png.h"
 
@@ -3553,6 +3554,44 @@ struct svg_image {
     int quality;
 };
 
+enum {
+    SVG_FE_FLOOD, SVG_FE_BLEND, SVG_FE_OFFSET, SVG_FE_COMPOSITE, SVG_FE_MERGE, SVG_FE_TILE,
+    SVG_FE_IMAGE, SVG_FE_COMPONENT_TRANSFER, SVG_FE_COLOR_MATRIX, SVG_FE_CONVOLVE,
+    SVG_FE_MORPHOLOGY, SVG_FE_DISPLACEMENT, SVG_FE_TURBULENCE, SVG_FE_DIFFUSE,
+    SVG_FE_SPECULAR, SVG_FE_GAUSSIAN_BLUR, SVG_FE_DROP_SHADOW
+};
+
+struct svg_filter_prim {
+    int kind;
+    char result[64];
+    char input1[64], input2[64];
+    float rect[4];
+    int has_rect;
+    int cs;
+    float f[8];
+    unsigned char color[4];
+    float opacity;
+    float matrix[20];
+    int mode;
+    int op;
+    int cm_kind;
+    float tbl[4][32];
+    int tn[4];
+    int tkind[4];
+    float *kernel;
+    int kcols, krows, ktarget_x, ktarget_y, kedge, kpreserve;
+    float kdiv, kbias;
+    int tnodes;
+    char nodes[16][64];
+    int light;
+};
+
+struct svg_filter {
+    float rect[4];
+    struct svg_filter_prim *prims;
+    int nprims;
+};
+
 struct svg_node {
     int type;
     struct svg_matrix transform;
@@ -3562,6 +3601,7 @@ struct svg_node {
     int blend;
     struct svg_clip *clip;
     struct svg_mask *mask;
+    struct svg_filter *filter;
     struct svg_path *path;
     struct svg_image *image;
     struct svg_fill fill;
@@ -3648,6 +3688,11 @@ static void svg_node_destroy(struct svg_node *n) {
     free(n->stroke.dash);
     svg_free_clip(n->clip);
     svg_free_mask(n->mask);
+    if (n->filter) {
+        for (int i = 0; i < n->filter->nprims; i++) free(n->filter->prims[i].kernel);
+        free(n->filter->prims);
+        free(n->filter);
+    }
     free(n);
 }
 
@@ -4670,6 +4715,458 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
 
 static int svg_make_clip(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_clip *out);
+static const char *svg_filter_attr(struct svg_doc *doc, struct xml_node *node, const char *name) {
+    if (node->style_index >= 0) {
+        const char *value = svg_style_get(doc, &doc->styles[node->style_index], name);
+        if (value) return value;
+    }
+    return svg_xml_attr(node, name);
+}
+
+static float svg_filter_number(struct svg_conv *c, struct xml_node *node, const char *name,
+        int units_bbox, int axis, double def_number, enum svg_length_unit def_unit) {
+    const char *text = svg_filter_attr(c->doc, node, name);
+    struct svg_length l = { def_number, def_unit };
+    if (text && !svg_parse_length(text, &l)) l = (struct svg_length){ def_number, def_unit };
+    float n = (float)l.number;
+    if (units_bbox && l.unit == SVG_UNIT_PERCENT) return n / 100.0f;
+    switch (l.unit) {
+    case SVG_UNIT_PERCENT: {
+        float base = axis == 0 ? c->view_box[2] : axis == 1 ? c->view_box[3] :
+            sqrtf((c->view_box[2] * c->view_box[2] + c->view_box[3] * c->view_box[3]) / 2.0f);
+        return base * n / 100.0f;
+    }
+    case SVG_UNIT_NONE: case SVG_UNIT_PX: return n;
+    case SVG_UNIT_EM: return n * 12.0f;
+    case SVG_UNIT_EX: return n * 12.0f / 2.0f;
+    case SVG_UNIT_IN: return n * c->dpi;
+    case SVG_UNIT_CM: return n * c->dpi / 2.54f;
+    case SVG_UNIT_MM: return n * c->dpi / 25.4f;
+    case SVG_UNIT_PT: return n * c->dpi / 72.0f;
+    case SVG_UNIT_PC: return n * c->dpi / 6.0f;
+    default: return n;
+    }
+}
+
+static float svg_filter_list_number(const char *text, int index, float def) {
+    if (!text) return def;
+    struct svg_stream s = { text, strlen(text), 0 };
+    for (int i = 0; i <= index; i++) {
+        double v;
+        if (!svg_stream_list_number(&s, &v)) return def;
+        if (i == index) return (float)v;
+    }
+    return def;
+}
+
+static void svg_filter_rect(struct svg_conv *c, struct xml_node *node, int units_bbox,
+        float out[4]) {
+    out[0] = svg_filter_number(c, node, "x", units_bbox, 0, 0, SVG_UNIT_NONE);
+    out[1] = svg_filter_number(c, node, "y", units_bbox, 1, 0, SVG_UNIT_NONE);
+    out[2] = svg_filter_number(c, node, "width", units_bbox, 0, 100, SVG_UNIT_PERCENT);
+    out[3] = svg_filter_number(c, node, "height", units_bbox, 1, 100, SVG_UNIT_PERCENT);
+}
+
+static int svg_filter_parse_transfer(struct svg_conv *c, struct xml_node *parent,
+        const char *tag, struct svg_filter_prim *p, int channel) {
+    int idx = -1;
+    for (int i = 0; i < parent->nchildren; i++)
+        if (svg_tag_is(parent->children[i], tag)) idx = i;
+    if (idx < 0) { p->tkind[channel] = 0; return 0; }
+    struct xml_node *node = parent->children[idx];
+    const char *type = svg_filter_attr(c->doc, node, "type");
+    p->tn[channel] = 0;
+    if (!type || !strcmp(type, "identity")) { p->tkind[channel] = 0; return 1; }
+    if (!strcmp(type, "table") || !strcmp(type, "discrete")) {
+        p->tkind[channel] = !strcmp(type, "table") ? 1 : 2;
+        const char *values = svg_filter_attr(c->doc, node, "tableValues");
+        if (values) {
+            struct svg_stream st = { values, strlen(values), 0 };
+            double v;
+            while (p->tn[channel] < 32 && svg_stream_list_number(&st, &v))
+                p->tbl[channel][p->tn[channel]++] = (float)v;
+        }
+        return 1;
+    }
+    if (!strcmp(type, "linear")) {
+        p->tkind[channel] = 3;
+        p->tbl[channel][0] = svg_filter_list_number(svg_filter_attr(c->doc, node, "slope"), 0, 1);
+        p->tbl[channel][1] = svg_filter_list_number(svg_filter_attr(c->doc, node, "intercept"),
+            0, 0);
+        return 1;
+    }
+    p->tkind[channel] = 4;
+    p->tbl[channel][0] = svg_filter_list_number(svg_filter_attr(c->doc, node, "amplitude"), 0, 1);
+    p->tbl[channel][1] = svg_filter_list_number(svg_filter_attr(c->doc, node, "exponent"), 0, 1);
+    p->tbl[channel][2] = svg_filter_list_number(svg_filter_attr(c->doc, node, "offset"), 0, 0);
+    return 1;
+}
+
+static void svg_filter_scan_kernel(struct svg_conv *c, struct xml_node *node,
+        struct svg_filter_prim *p) {
+    const char *text = svg_filter_attr(c->doc, node, "kernelMatrix");
+    p->kernel = NULL;
+    p->kcols = 0;
+    p->krows = 0;
+    if (!text) return;
+    int capacity = 16, count = 0;
+    float *values = svg_alloc(sizeof(*values) * (size_t)capacity);
+    if (!values) return;
+    struct svg_stream s = { text, strlen(text), 0 };
+    double v;
+    while (svg_stream_list_number(&s, &v)) {
+        if (count == capacity) {
+            int next = capacity * 2;
+            float *grown = svg_realloc(values, sizeof(*values) * (size_t)next);
+            if (!grown) { free(values); return; }
+            values = grown;
+            capacity = next;
+        }
+        values[count++] = (float)v;
+    }
+    if (!count) { free(values); return; }
+    p->kcols = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 0, 0);
+    p->krows = (int)svg_filter_list_number(svg_filter_attr(c->doc, node, "order"), 1, 0);
+    if (p->kcols <= 0 || p->krows <= 0 || p->kcols * p->krows != count) {
+        p->kcols = count;
+        p->krows = 1;
+    }
+    p->kernel = values;
+}
+
+static void svg_filter_std_dev(struct svg_conv *c, struct xml_node *child, int primitive_bbox,
+        float *sdx, float *sdy) {
+    *sdx = 0.0f;
+    *sdy = 0.0f;
+    const char *text = svg_filter_attr(c->doc, child, "stdDeviation");
+    if (!text) return;
+    struct svg_stream st = { text, strlen(text), 0 };
+    double v[3];
+    int n = 0;
+    while (n < 3 && svg_stream_list_number(&st, &v[n])) n++;
+    if (n == 1) { v[1] = v[0]; n = 2; }
+    if (n != 2) return;
+    if (!(v[0] > 0.0)) v[0] = 0.0;
+    if (!(v[1] > 0.0)) v[1] = 0.0;
+    *sdx = svg_filter_number(c, child, "__none__", primitive_bbox, 0, 0, SVG_UNIT_NONE);
+    *sdx = (float)v[0];
+    *sdy = (float)v[1];
+}
+
+static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
+        int have_object_bbox, struct svg_filter *out) {
+    if (!svg_tag_is(node, "filter")) return 0;
+    int units_bbox = 1;
+    const char *units = svg_filter_attr(c->doc, node, "filterUnits");
+    if (units && !strcmp(units, "userSpaceOnUse")) units_bbox = 0;
+    int primitive_bbox = 0;
+    const char *prim_units = svg_filter_attr(c->doc, node, "primitiveUnits");
+    if (prim_units && !strcmp(prim_units, "objectBoundingBox")) primitive_bbox = 1;
+    if (units_bbox && !have_object_bbox) return 0;
+    memset(out, 0, sizeof(*out));
+    out->rect[0] = svg_filter_number(c, node, "x", units_bbox, 0, -10, SVG_UNIT_PERCENT);
+    out->rect[1] = svg_filter_number(c, node, "y", units_bbox, 1, -10, SVG_UNIT_PERCENT);
+    out->rect[2] = svg_filter_number(c, node, "width", units_bbox, 0, 120, SVG_UNIT_PERCENT);
+    out->rect[3] = svg_filter_number(c, node, "height", units_bbox, 1, 120, SVG_UNIT_PERCENT);
+    if (units_bbox) {
+        out->rect[0] = out->rect[0] * object_bbox[2] + object_bbox[0];
+        out->rect[1] = out->rect[1] * object_bbox[3] + object_bbox[1];
+        out->rect[2] = out->rect[2] * object_bbox[2];
+        out->rect[3] = out->rect[3] * object_bbox[3];
+    }
+    if (!(out->rect[2] > 0.0f) || !(out->rect[3] > 0.0f)) return 0;
+    int nchildren = 0;
+    for (int i = 0; i < node->nchildren; i++)
+        if (svg_local_name(node->children[i]->name)[0] == 'f' &&
+                svg_local_name(node->children[i]->name)[1] == 'e') nchildren++;
+    if (!nchildren) return 0;
+    struct svg_filter_prim *prims = svg_alloc(sizeof(*prims) * (size_t)nchildren);
+    if (!prims) return 0;
+    memset(prims, 0, sizeof(*prims) * (size_t)nchildren);
+    int count = 0;
+    for (int i = 0; i < node->nchildren; i++) {
+        struct xml_node *child = node->children[i];
+        const char *tag = svg_local_name(child->name);
+        if (tag[0] != 'f' || tag[1] != 'e') continue;
+        struct svg_filter_prim *p = &prims[count];
+        p->cs = 1;
+        const char *csi = svg_filter_attr(c->doc, child, "color-interpolation-filters");
+        if (csi && !strcmp(csi, "sRGB")) p->cs = 0;
+        const char *res = svg_filter_attr(c->doc, child, "result");
+        if (res) { strncpy(p->result, res, sizeof(p->result) - 1); }
+        const char *in1 = svg_filter_attr(c->doc, child, "in");
+        if (in1) { strncpy(p->input1, in1, sizeof(p->input1) - 1); }
+        const char *in2 = svg_filter_attr(c->doc, child, "in2");
+        if (in2) { strncpy(p->input2, in2, sizeof(p->input2) - 1); }
+        if (svg_xml_attr(child, "x") || svg_xml_attr(child, "y") ||
+                svg_xml_attr(child, "width") || svg_xml_attr(child, "height")) {
+            svg_filter_rect(c, child, primitive_bbox, p->rect);
+            if (primitive_bbox) {
+                p->rect[0] = p->rect[0] * object_bbox[2] + object_bbox[0];
+                p->rect[1] = p->rect[1] * object_bbox[3] + object_bbox[1];
+                p->rect[2] = p->rect[2] * object_bbox[2];
+                p->rect[3] = p->rect[3] * object_bbox[3];
+            }
+            p->has_rect = 1;
+        } else {
+            p->rect[0] = out->rect[0];
+            p->rect[1] = out->rect[1];
+            p->rect[2] = out->rect[2];
+            p->rect[3] = out->rect[3];
+        }
+        if (!strcmp(tag, "feFlood")) {
+            p->kind = SVG_FE_FLOOD;
+            unsigned char r = 0, g = 0, b = 0, a = 255;
+            const char *col = svg_filter_attr(c->doc, child, "flood-color");
+            if (col) svg_parse_color(col, &r, &g, &b, &a);
+            p->color[0] = r; p->color[1] = g; p->color[2] = b; p->color[3] = a;
+            p->opacity = svg_filter_number(c, child, "flood-opacity", 0, 2, 1, SVG_UNIT_NONE);
+        } else if (!strcmp(tag, "feBlend")) {
+            p->kind = SVG_FE_BLEND;
+            const char *mode = svg_filter_attr(c->doc, child, "mode");
+            p->mode = 0;
+            if (mode) {
+                if (!strcmp(mode, "multiply")) p->mode = 1;
+                else if (!strcmp(mode, "screen")) p->mode = 2;
+                else if (!strcmp(mode, "overlay")) p->mode = 3;
+                else if (!strcmp(mode, "darken")) p->mode = 4;
+                else if (!strcmp(mode, "lighten")) p->mode = 5;
+                else if (!strcmp(mode, "color-dodge")) p->mode = 6;
+                else if (!strcmp(mode, "color-burn")) p->mode = 7;
+                else if (!strcmp(mode, "hard-light")) p->mode = 8;
+                else if (!strcmp(mode, "soft-light")) p->mode = 9;
+                else if (!strcmp(mode, "difference")) p->mode = 10;
+                else if (!strcmp(mode, "exclusion")) p->mode = 11;
+                else if (!strcmp(mode, "hue")) p->mode = 12;
+                else if (!strcmp(mode, "saturation")) p->mode = 13;
+                else if (!strcmp(mode, "color")) p->mode = 14;
+                else if (!strcmp(mode, "luminosity")) p->mode = 15;
+            }
+        } else if (!strcmp(tag, "feOffset")) {
+            p->kind = SVG_FE_OFFSET;
+            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 0, SVG_UNIT_NONE);
+            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 0, SVG_UNIT_NONE);
+        } else if (!strcmp(tag, "feComposite")) {
+            p->kind = SVG_FE_COMPOSITE;
+            const char *op = svg_filter_attr(c->doc, child, "operator");
+            p->op = 0;
+            if (op) {
+                if (!strcmp(op, "in")) p->op = 1;
+                else if (!strcmp(op, "out")) p->op = 2;
+                else if (!strcmp(op, "atop")) p->op = 3;
+                else if (!strcmp(op, "xor")) p->op = 4;
+                else if (!strcmp(op, "arithmetic")) p->op = 5;
+            }
+            if (p->op == 5) {
+                p->f[0] = svg_filter_list_number(svg_filter_attr(c->doc, child, "k1"), 0, 0);
+                p->f[1] = svg_filter_list_number(svg_filter_attr(c->doc, child, "k2"), 0, 0);
+                p->f[2] = svg_filter_list_number(svg_filter_attr(c->doc, child, "k3"), 0, 0);
+                p->f[3] = svg_filter_list_number(svg_filter_attr(c->doc, child, "k4"), 0, 0);
+            }
+        } else if (!strcmp(tag, "feMerge")) {
+            p->kind = SVG_FE_MERGE;
+            p->tnodes = 0;
+            for (int j = 0; j < child->nchildren && p->tnodes < 16; j++) {
+                struct xml_node *mn = child->children[j];
+                if (!svg_tag_is(mn, "feMergeNode")) continue;
+                const char *in = svg_filter_attr(c->doc, mn, "in");
+                if (in) strncpy(p->nodes[p->tnodes], in, 63);
+                else p->nodes[p->tnodes][0] = '\0';
+                p->tnodes++;
+            }
+        } else if (!strcmp(tag, "feTile")) {
+            p->kind = SVG_FE_TILE;
+        } else if (!strcmp(tag, "feImage")) {
+            p->kind = SVG_FE_IMAGE;
+        } else if (!strcmp(tag, "feComponentTransfer")) {
+            p->kind = SVG_FE_COMPONENT_TRANSFER;
+            svg_filter_parse_transfer(c, child, "feFuncR", p, 0);
+            svg_filter_parse_transfer(c, child, "feFuncG", p, 1);
+            svg_filter_parse_transfer(c, child, "feFuncB", p, 2);
+            svg_filter_parse_transfer(c, child, "feFuncA", p, 3);
+        } else if (!strcmp(tag, "feColorMatrix")) {
+            p->kind = SVG_FE_COLOR_MATRIX;
+            const char *type = svg_filter_attr(c->doc, child, "type");
+            p->cm_kind = 0;
+            if (type && !strcmp(type, "saturate")) {
+                p->cm_kind = 1;
+                p->f[0] = svg_filter_list_number(svg_filter_attr(c->doc, child, "values"), 0, 1);
+            } else if (type && !strcmp(type, "hueRotate")) {
+                p->cm_kind = 2;
+                p->f[0] = svg_filter_list_number(svg_filter_attr(c->doc, child, "values"), 0, 0);
+            } else if (type && !strcmp(type, "luminanceToAlpha")) {
+                p->cm_kind = 3;
+            } else {
+                const char *values = svg_filter_attr(c->doc, child, "values");
+                struct svg_stream st = { values ? values : "", values ? strlen(values) : 0, 0 };
+                for (int k = 0; k < 20; k++) {
+                    double v = 0.0;
+                    if (k == 0 || k == 6 || k == 12 || k == 18) v = 1.0;
+                    if (values && svg_stream_list_number(&st, &v)) p->matrix[k] = (float)v;
+                    else p->matrix[k] = (float)v;
+                }
+            }
+        } else if (!strcmp(tag, "feConvolveMatrix")) {
+            p->kind = SVG_FE_CONVOLVE;
+            p->ktarget_x = (int)svg_filter_list_number(
+                svg_filter_attr(c->doc, child, "targetX"), 0, -1);
+            p->ktarget_y = (int)svg_filter_list_number(
+                svg_filter_attr(c->doc, child, "targetY"), 0, -1);
+            const char *edge = svg_filter_attr(c->doc, child, "edgeMode");
+            p->kedge = 0;
+            if (edge && !strcmp(edge, "duplicate")) p->kedge = 1;
+            else if (edge && !strcmp(edge, "wrap")) p->kedge = 2;
+            const char *pa = svg_filter_attr(c->doc, child, "preserveAlpha");
+            p->kpreserve = pa && !strcmp(pa, "true");
+            p->kdiv = svg_filter_list_number(svg_filter_attr(c->doc, child, "divisor"), 0, 1);
+            p->kbias = svg_filter_list_number(svg_filter_attr(c->doc, child, "bias"), 0, 0);
+            svg_filter_scan_kernel(c, child, p);
+            if (!p->kernel) { free(prims); return 0; }
+        } else if (!strcmp(tag, "feMorphology")) {
+            p->kind = SVG_FE_MORPHOLOGY;
+            const char *op = svg_filter_attr(c->doc, child, "operator");
+            p->op = op && !strcmp(op, "dilate") ? 1 : 0;
+            p->f[0] = svg_filter_number(c, child, "radius", primitive_bbox, 0, 0, SVG_UNIT_NONE);
+            p->f[1] = svg_filter_number(c, child, "radius", primitive_bbox, 1, 0, SVG_UNIT_NONE);
+        } else if (!strcmp(tag, "feDisplacementMap")) {
+            p->kind = SVG_FE_DISPLACEMENT;
+            p->f[0] = svg_filter_number(c, child, "scale", primitive_bbox, 2, 0, SVG_UNIT_NONE);
+            const char *chx = svg_filter_attr(c->doc, child, "xChannelSelector");
+            const char *chy = svg_filter_attr(c->doc, child, "yChannelSelector");
+            p->op = chx ? (chx[0] == 'R' ? 0 : chx[0] == 'G' ? 1 : chx[0] == 'B' ? 2 : 3) : 0;
+            p->mode = chy ? (chy[0] == 'R' ? 0 : chy[0] == 'G' ? 1 : chy[0] == 'B' ? 2 : 3) : 3;
+        } else if (!strcmp(tag, "feTurbulence")) {
+            p->kind = SVG_FE_TURBULENCE;
+            p->f[0] = svg_filter_number(c, child, "baseFrequency", primitive_bbox, 0, 0,
+                SVG_UNIT_NONE);
+            p->f[1] = svg_filter_number(c, child, "baseFrequency", primitive_bbox, 1, 0,
+                SVG_UNIT_NONE);
+            p->f[2] = (float)svg_filter_list_number(
+                svg_filter_attr(c->doc, child, "numOctaves"), 0, 1);
+            p->f[3] = (float)svg_filter_list_number(svg_filter_attr(c->doc, child, "seed"), 0, 0);
+            const char *stitch = svg_filter_attr(c->doc, child, "stitchTiles");
+            p->op = stitch && !strcmp(stitch, "stitch") ? 1 : 0;
+            const char *type = svg_filter_attr(c->doc, child, "type");
+            p->mode = type && !strcmp(type, "fractalNoise") ? 1 : 0;
+        } else if (!strcmp(tag, "feDiffuseLighting") || !strcmp(tag, "feSpecularLighting")) {
+            p->kind = !strcmp(tag, "feDiffuseLighting") ? SVG_FE_DIFFUSE : SVG_FE_SPECULAR;
+            p->f[0] = svg_filter_number(c, child, "surfaceScale", primitive_bbox, 2, 1,
+                SVG_UNIT_NONE);
+            p->f[1] = !strcmp(tag, "feDiffuseLighting") ?
+                svg_filter_number(c, child, "diffuseConstant", primitive_bbox, 2, 1,
+                    SVG_UNIT_NONE) :
+                svg_filter_number(c, child, "specularConstant", primitive_bbox, 2, 1,
+                    SVG_UNIT_NONE);
+            p->f[2] = svg_filter_number(c, child, "specularExponent", primitive_bbox, 2, 1,
+                SVG_UNIT_NONE);
+            unsigned char r = 255, g = 255, b = 255, a = 255;
+            const char *col = svg_filter_attr(c->doc, child, "lighting-color");
+            if (col) svg_parse_color(col, &r, &g, &b, &a);
+            p->color[0] = r; p->color[1] = g; p->color[2] = b;
+            p->light = 0;
+            for (int j = 0; j < child->nchildren; j++) {
+                struct xml_node *ln = child->children[j];
+                const char *lt = svg_local_name(ln->name);
+                if (!strcmp(lt, "feDistantLight")) {
+                    p->light = 1;
+                    p->f[3] = svg_filter_list_number(
+                        svg_filter_attr(c->doc, ln, "azimuth"), 0, 0);
+                    p->f[4] = svg_filter_list_number(
+                        svg_filter_attr(c->doc, ln, "elevation"), 0, 0);
+                } else if (!strcmp(lt, "fePointLight")) {
+                    p->light = 2;
+                    p->f[3] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "x"), 0, 0);
+                    p->f[4] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "y"), 0, 0);
+                    p->f[5] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "z"), 0, 0);
+                } else if (!strcmp(lt, "feSpotLight")) {
+                    p->light = 3;
+                    p->f[3] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "x"), 0, 0);
+                    p->f[4] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "y"), 0, 0);
+                    p->f[5] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "z"), 0, 0);
+                    p->f[6] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "pointsAtX"), 0, 0);
+                    p->f[7] = svg_filter_list_number(svg_filter_attr(c->doc, ln, "pointsAtY"), 0, 0);
+                }
+            }
+        } else if (!strcmp(tag, "feGaussianBlur")) {
+            p->kind = SVG_FE_GAUSSIAN_BLUR;
+            float sdx = 0, sdy = 0;
+            svg_filter_std_dev(c, child, primitive_bbox, &sdx, &sdy);
+            p->f[0] = sdx;
+            p->f[1] = sdy;
+        } else if (!strcmp(tag, "feDropShadow")) {
+            p->kind = SVG_FE_DROP_SHADOW;
+            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 0, SVG_UNIT_NONE);
+            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 0, SVG_UNIT_NONE);
+            float sdx = 0, sdy = 0;
+            svg_filter_std_dev(c, child, primitive_bbox, &sdx, &sdy);
+            p->f[2] = sdx;
+            p->f[3] = sdy;
+            unsigned char r = 0, g = 0, b = 0, a = 255;
+            const char *col = svg_filter_attr(c->doc, child, "flood-color");
+            if (col) svg_parse_color(col, &r, &g, &b, &a);
+            p->color[0] = r; p->color[1] = g; p->color[2] = b; p->color[3] = a;
+            p->opacity = svg_filter_number(c, child, "flood-opacity", 0, 2, 1, SVG_UNIT_NONE);
+        } else {
+            continue;
+        }
+        count++;
+    }
+    if (!count) { free(prims); return 0; }
+    int generated = 0;
+    for (int i = 0; i < count; i++) {
+        if (prims[i].result[0]) continue;
+        for (;;) {
+            char name[64];
+            snprintf(name, sizeof(name), "result%d", generated++);
+            int clash = 0;
+            for (int j = 0; j < count; j++)
+                if (!strcmp(prims[j].result, name)) clash = 1;
+            if (!clash) { snprintf(prims[i].result, sizeof(prims[i].result), "%s", name); break; }
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        for (int which = 0; which < 2; which++) {
+            char *name = which == 0 ? prims[i].input1 : prims[i].input2;
+            if (which == 1 && prims[i].kind != SVG_FE_BLEND &&
+                    prims[i].kind != SVG_FE_COMPOSITE && prims[i].kind != SVG_FE_DISPLACEMENT)
+                continue;
+            if (!name[0]) {
+                if (i > 0) snprintf(name, 64, "%s", prims[i - 1].result);
+                else snprintf(name, 64, "%s", "SourceGraphic");
+                continue;
+            }
+            if (!strcmp(name, "SourceGraphic") || !strcmp(name, "SourceAlpha")) continue;
+            int found = 0;
+            for (int j = 0; j < count; j++)
+                if (!strcmp(prims[j].result, name)) { found = 1; break; }
+            if (!found) {
+                if (i > 0) snprintf(name, 64, "%s", prims[i - 1].result);
+                else snprintf(name, 64, "%s", "SourceGraphic");
+            }
+        }
+        if (prims[i].kind == SVG_FE_MERGE) {
+            for (int j = 0; j < prims[i].tnodes; j++) {
+                char *name = prims[i].nodes[j];
+                if (!name[0]) {
+                    if (i > 0) snprintf(name, 64, "%s", prims[i - 1].result);
+                    else snprintf(name, 64, "%s", "SourceGraphic");
+                    continue;
+                }
+                int found = 0;
+                for (int k = 0; k < count; k++)
+                    if (!strcmp(prims[k].result, name)) { found = 1; break; }
+                if (!found) {
+                    if (i > 0) snprintf(name, 64, "%s", prims[i - 1].result);
+                    else snprintf(name, 64, "%s", "SourceGraphic");
+                }
+            }
+        }
+    }
+    out->prims = prims;
+    out->nprims = count;
+    return 1;
+}
+
 static int svg_make_mask(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
         int have_object_bbox, struct svg_mask *out);
 
@@ -4984,7 +5481,8 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     if (!clip_context && filter_value && strcmp(filter_value, "none")) {
         char id[256];
         if (!svg_parse_funciri(filter_value, id, sizeof(id))) {
-                svg_free_mask(mask);
+            svg_free_clip(clip);
+            svg_free_mask(mask);
             return 0;
         }
         struct xml_node *link = svg_id_last(c->doc, id);
@@ -4993,8 +5491,20 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
             svg_free_mask(mask);
             return 0;
         }
+        struct svg_filter *filter = svg_alloc(sizeof(*filter));
+        if (!filter) {
+            svg_free_clip(clip);
+            svg_free_mask(mask);
+            return 0;
+        }
+        if (!svg_make_filter(c, link, object_bbox, have_object_bbox, filter)) {
+            free(filter);
+            svg_free_clip(clip);
+            svg_free_mask(mask);
+            return 0;
+        }
+        g->filter = filter;
         filtered = 1;
-        c->unsupported = 1;
     }
     if (clip) g->clip = clip;
     if (mask) g->mask = mask;
@@ -5003,6 +5513,17 @@ static int svg_group_finish(struct svg_conv *c, struct xml_node *node, struct sv
     *required_out = required;
     if (!required) return 1;
     svg_group_bboxes(g);
+    if (g->filter) {
+        float fr[4] = { g->filter->rect[0], g->filter->rect[1], g->filter->rect[2],
+            g->filter->rect[3] };
+        g->lbbox.left = fr[0];
+        g->lbbox.top = fr[1];
+        g->lbbox.right = fr[0] + fr[2];
+        g->lbbox.bottom = fr[1] + fr[3];
+        g->lbbox.valid = 1;
+        g->has_lbbox = 1;
+        g->abs_lbbox = svg_bbox_transform(g->lbbox, g->abs_transform);
+    }
     (void)abs_parent;
     return 1;
 }
@@ -7526,6 +8047,26 @@ static void svg_hq_blend(int mode, float sr, float sg, float sb, float sa,
         b = sb * ida + db * isa;
         a = sa * ida + da * isa;
         break;
+    case 17:
+        r = sr * da; g = sg * da; b = sb * da; a = sa * da;
+        break;
+    case 18:
+        r = sr * ida; g = sg * ida; b = sb * ida; a = sa * ida;
+        break;
+    case 19:
+        r = sr * da + dr * isa; g = sg * da + dg * isa; b = sb * da + db * isa;
+        a = sa * da + da * isa;
+        break;
+    case 20:
+        r = dr * sa; g = dg * sa; b = db * sa; a = da * sa;
+        break;
+    case 21:
+        r = dr * isa; g = dg * isa; b = db * isa; a = da * isa;
+        break;
+    case 22:
+        r = dr * sa + sr * ida; g = dg * sa + sg * ida; b = db * sa + sb * ida;
+        a = da * sa + sa * ida;
+        break;
     default:
         r = sr * ida + dr * isa + sr * dr;
         g = sg * ida + dg * isa + sg * dg;
@@ -8405,19 +8946,20 @@ static void svg_render_nodes(struct svg_node *group, struct svg_matrix ts,
 }
 
 static int svg_should_isolate(struct svg_node *g) {
-    return g->isolate || g->opacity != 1.0f || g->clip || g->mask || g->blend != 0;
+    return g->isolate || g->opacity != 1.0f || g->clip || g->mask || g->filter ||
+        g->blend != 0;
 }
 
-static int svg_group_int_bbox(struct svg_bbox b, int out[4]) {
+static int svg_group_int_bbox_pad(struct svg_bbox b, int pad, int out[4]) {
     if (!b.valid) return 0;
     float x = floorf(b.left);
     float y = floorf(b.top);
     float rw = ceilf(b.right - b.left);
     float rh = ceilf(b.bottom - b.top);
-    int64_t x0 = (int64_t)x - 2;
-    int64_t y0 = (int64_t)y - 2;
-    int64_t w = (int64_t)rw + 4;
-    int64_t h = (int64_t)rh + 4;
+    int64_t x0 = (int64_t)x - pad;
+    int64_t y0 = (int64_t)y - pad;
+    int64_t w = (int64_t)rw + pad * 2;
+    int64_t h = (int64_t)rh + pad * 2;
     if (x0 < INT32_MIN || x0 > INT32_MAX || y0 < INT32_MIN || y0 > INT32_MAX) return 0;
     if (w <= 0 || h <= 0 || w > INT32_MAX || h > INT32_MAX) return 0;
     out[0] = (int)x0; out[1] = (int)y0; out[2] = (int)w; out[3] = (int)h;
@@ -8590,6 +9132,715 @@ static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
     svg_path_free(rect);
 }
 
+struct svg_fimg {
+    struct svg_pixmap pix;
+    int left, top;
+    int cs;
+    int valid;
+};
+
+static void svg_fimg_free(struct svg_fimg *img) {
+    if (!img) return;
+    svg_pixmap_free(&img->pix);
+    img->valid = 0;
+}
+
+static struct svg_fimg svg_fimg_new(int w, int h, int cs) {
+    struct svg_fimg img;
+    memset(&img, 0, sizeof(img));
+    if (w <= 0 || h <= 0 || (int64_t)w * h > 268435456) return img;
+    svg_pixmap_init(&img.pix, w, h);
+    img.cs = cs;
+    img.valid = img.pix.pixels != NULL;
+    return img;
+}
+
+static struct svg_fimg svg_fimg_clone(const struct svg_fimg *src) {
+    struct svg_fimg img;
+    memset(&img, 0, sizeof(img));
+    if (!src || !src->valid) return img;
+    img = svg_fimg_new(src->pix.width, src->pix.height, src->cs);
+    if (!img.valid) return img;
+    memcpy(img.pix.pixels, src->pix.pixels, (size_t)src->pix.width * src->pix.height * 4);
+    img.left = src->left;
+    img.top = src->top;
+    return img;
+}
+
+static void svg_fimg_demultiply(unsigned char *data, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        unsigned a = data[i * 4 + 3];
+        if (!a) continue;
+        float fa = (float)a / 255.0f;
+        for (int k = 0; k < 3; k++) {
+            float v = (float)data[i * 4 + k] / fa;
+            data[i * 4 + k] = (unsigned char)(v + 0.5f);
+        }
+    }
+}
+
+static void svg_fimg_multiply(unsigned char *data, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        float a = (float)data[i * 4 + 3] / 255.0f;
+        for (int k = 0; k < 3; k++)
+            data[i * 4 + k] = (unsigned char)((float)data[i * 4 + k] * a + 0.5f);
+    }
+}
+
+static const unsigned char SVG_SRGB_TO_LINEAR[256] = {
+    0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,3,3,3,3,3,3,4,4,4,4,4,5,5,5,5,6,6,
+    6,6,7,7,7,8,8,8,8,9,9,9,10,10,10,11,11,12,12,12,13,13,13,14,14,15,15,16,16,17,17,17,18,18,
+    19,19,20,20,21,22,22,23,23,24,24,25,25,26,27,27,28,29,29,30,30,31,32,32,33,34,35,35,36,37,
+    37,38,39,40,41,41,42,43,44,45,45,46,47,48,49,50,51,51,52,53,54,55,56,57,58,59,60,61,62,63,
+    64,65,66,67,68,69,70,71,72,73,74,76,77,78,79,80,81,82,84,85,86,87,88,90,91,92,93,95,96,97,
+    99,100,101,103,104,105,107,108,109,111,112,114,115,116,118,119,121,122,124,125,127,128,130,
+    131,133,134,136,138,139,141,142,144,146,147,149,151,152,154,156,157,159,161,163,164,166,168,
+    170,171,173,175,177,179,181,183,184,186,188,190,192,194,196,198,200,202,204,206,208,210,212,
+    214,216,218,220,222,224,226,229,231,233,235,237,239,242,244,246,248,250,253,255
+};
+
+static const unsigned char SVG_LINEAR_TO_SRGB[256] = {
+    0,13,22,28,34,38,42,46,50,53,56,59,61,64,66,69,71,73,75,77,79,81,83,85,86,88,90,92,93,95,96,
+    98,99,101,102,104,105,106,108,109,110,112,113,114,115,117,118,119,120,121,122,124,125,126,
+    127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,148,
+    149,150,151,152,153,154,155,155,156,157,158,159,159,160,161,162,163,163,164,165,166,167,167,
+    168,169,170,170,171,172,173,173,174,175,175,176,177,178,178,179,180,180,181,182,182,183,184,
+    185,185,186,187,187,188,189,189,190,190,191,192,192,193,194,194,195,196,196,197,197,198,199,
+    199,200,200,201,202,202,203,203,204,205,205,206,206,207,208,208,209,209,210,210,211,212,212,
+    213,213,214,214,215,215,216,216,217,218,218,219,219,220,220,221,221,222,222,223,223,224,224,
+    225,226,226,227,227,228,228,229,229,230,230,231,231,232,232,233,233,234,234,235,235,236,236,
+    237,237,238,238,238,239,239,240,240,241,241,242,242,243,243,244,244,245,245,246,246,246,247,
+    247,248,248,249,249,250,250,251,251,251,252,252,253,253,254,254,255,255
+};
+
+static void svg_fimg_into_cs(struct svg_fimg *img, int cs) {
+    if (!img->valid || img->cs == cs) return;
+    size_t count = (size_t)img->pix.width * img->pix.height;
+    svg_fimg_demultiply(img->pix.pixels, count);
+    if (cs == 1) {
+        for (size_t i = 0; i < count; i++)
+            for (int k = 0; k < 3; k++)
+                img->pix.pixels[i * 4 + k] = SVG_SRGB_TO_LINEAR[img->pix.pixels[i * 4 + k]];
+    } else {
+        for (size_t i = 0; i < count; i++)
+            for (int k = 0; k < 3; k++)
+                img->pix.pixels[i * 4 + k] = SVG_LINEAR_TO_SRGB[img->pix.pixels[i * 4 + k]];
+    }
+    svg_fimg_multiply(img->pix.pixels, count);
+    img->cs = cs;
+}
+
+static void svg_fimg_clear(struct svg_fimg *img) {
+    if (!img->valid) return;
+    memset(img->pix.pixels, 0, (size_t)img->pix.width * img->pix.height * 4);
+}
+
+static void svg_fimg_draw(struct svg_pixmap *dst, int dx, int dy, const struct svg_fimg *src,
+        int blend) {
+    if (!src->valid) return;
+    svg_draw_pixmap(dst, dx, dy, (struct svg_pixmap *)&src->pix, 1.0f, blend);
+}
+
+static void svg_filter_box_sizes(float sigma, int sizes[5]) {
+    if (!(sigma > 0.0f)) {
+        for (int i = 0; i < 5; i++) sizes[i] = 1;
+        return;
+    }
+    float n = 5.0f;
+    float w_ideal = sqrtf(12.0f * sigma * sigma / n) + 1.0f;
+    int wl = (int)floorf(w_ideal);
+    if (wl % 2 == 0) wl -= 1;
+    int wu = wl + 2;
+    float wlf = (float)wl;
+    float m_ideal = (12.0f * sigma * sigma - n * wlf * wlf - 4.0f * n * wlf - 3.0f * n) /
+        (-4.0f * wlf - 4.0f);
+    int m = (int)(m_ideal + 0.5f);
+    for (int i = 0; i < 5; i++) sizes[i] = i < m ? wl : wu;
+}
+
+static void svg_filter_box_vert(int radius, unsigned char *dst, const unsigned char *src,
+        int width, int height) {
+    if (radius == 0) { memcpy(dst, src, (size_t)width * height * 4); return; }
+    float iarr = 1.0f / (float)(radius + radius + 1);
+    for (int i = 0; i < width; i++) {
+        int col_start = i;
+        int col_end = i + width * (height - 1);
+        int ti = i, li = ti, ri = ti + radius * width;
+        int vr = 0, vg = 0, vb = 0, va = 0;
+        int lim = radius < height ? radius : height;
+        for (int j = 0; j < lim; j++) {
+            const unsigned char *p = src + (size_t)(ti + j * width) * 4;
+            vr += p[0]; vg += p[1]; vb += p[2]; va += p[3];
+        }
+        int count = height < radius + 1 ? height : radius + 1;
+        for (int j = 0; j < count; j++) {
+            const unsigned char *add = ri > col_end ? NULL : src + (size_t)ri * 4;
+            if (add) { vr += add[0]; vg += add[1]; vb += add[2]; va += add[3]; }
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ri += width;
+            ti += width;
+        }
+        if (height <= radius) continue;
+        for (int j = radius + 1; j < height - radius; j++) {
+            const unsigned char *b1 = src + (size_t)ri * 4;
+            const unsigned char *b2 = src + (size_t)li * 4;
+            ri += width;
+            li += width;
+            vr += b1[0] - b2[0];
+            vg += b1[1] - b2[1];
+            vb += b1[2] - b2[2];
+            va += b1[3] - b2[3];
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ti += width;
+        }
+        int tail = height - radius - 1;
+        if (tail > radius) tail = radius;
+        for (int j = 0; j < tail; j++) {
+            const unsigned char *b = li < col_start ? NULL : src + (size_t)li * 4;
+            li += width;
+            if (b) { vr -= b[0]; vg -= b[1]; vb -= b[2]; va -= b[3]; }
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ti += width;
+        }
+    }
+}
+
+static void svg_filter_box_horz(int radius, unsigned char *dst, const unsigned char *src,
+        int width, int height) {
+    if (radius == 0) { memcpy(dst, src, (size_t)width * height * 4); return; }
+    float iarr = 1.0f / (float)(radius + radius + 1);
+    for (int i = 0; i < height; i++) {
+        int row_start = i * width;
+        int row_end = (i + 1) * width - 1;
+        int ti = i * width, li = ti, ri = ti + radius;
+        int vr = 0, vg = 0, vb = 0, va = 0;
+        int lim = radius < width ? radius : width;
+        for (int j = 0; j < lim; j++) {
+            const unsigned char *p = src + (size_t)(ti + j) * 4;
+            vr += p[0]; vg += p[1]; vb += p[2]; va += p[3];
+        }
+        int count = width < radius + 1 ? width : radius + 1;
+        for (int j = 0; j < count; j++) {
+            const unsigned char *add = ri > row_end ? NULL : src + (size_t)ri * 4;
+            if (add) { vr += add[0]; vg += add[1]; vb += add[2]; va += add[3]; }
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ri++;
+            ti++;
+        }
+        if (width <= radius) continue;
+        for (int j = radius + 1; j < width - radius; j++) {
+            const unsigned char *b1 = src + (size_t)ri * 4;
+            const unsigned char *b2 = src + (size_t)li * 4;
+            ri++;
+            li++;
+            vr += b1[0] - b2[0];
+            vg += b1[1] - b2[1];
+            vb += b1[2] - b2[2];
+            va += b1[3] - b2[3];
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ti++;
+        }
+        int tail = width - radius - 1;
+        if (tail > radius) tail = radius;
+        for (int j = 0; j < tail; j++) {
+            const unsigned char *b = li < row_start ? NULL : src + (size_t)li * 4;
+            li++;
+            if (b) { vr -= b[0]; vg -= b[1]; vb -= b[2]; va -= b[3]; }
+            unsigned char *out = dst + (size_t)ti * 4;
+            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
+            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
+            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
+            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            ti++;
+        }
+    }
+}
+
+static void svg_filter_box_blur(float sigma_x, float sigma_y, struct svg_pixmap *pixmap) {
+    int sx[5], sy[5];
+    svg_filter_box_sizes(sigma_x, sx);
+    svg_filter_box_sizes(sigma_y, sy);
+    int width = pixmap->width, height = pixmap->height;
+    size_t bytes = (size_t)width * height * 4;
+    unsigned char *back = svg_alloc(bytes);
+    if (!back) return;
+    for (int step = 0; step < 5; step++) {
+        int rh = (sx[step] - 1) / 2, rv = (sy[step] - 1) / 2;
+        svg_filter_box_vert(rv, back, pixmap->pixels, width, height);
+        svg_filter_box_horz(rh, pixmap->pixels, back, width, height);
+    }
+    free(back);
+}
+
+static void svg_filter_iir(float sigma_x, float sigma_y, struct svg_pixmap *pixmap) {
+    size_t count = (size_t)pixmap->width * pixmap->height;
+    if (!count) return;
+    double *buf = svg_alloc(sizeof(*buf) * count);
+    if (!buf) return;
+    int steps = 4;
+    double lx = 1.0, dx = 1.0, ly = 1.0, dy = 1.0;
+    for (int ch = 0; ch < 4; ch++) {
+        for (size_t i = 0; i < count; i++) buf[i] = (double)pixmap->pixels[i * 4 + ch] / 255.0;
+        if (sigma_x > 0.0f) {
+            double lambda = ((double)sigma_x * (double)sigma_x) / (2.0 * steps);
+            double dnu = (1.0 + 2.0 * lambda - sqrt(1.0 + 4.0 * lambda)) / (2.0 * lambda);
+            lx = lambda;
+            dx = dnu;
+            for (int y = 0; y < pixmap->height; y++) {
+                size_t idx = (size_t)pixmap->width * (size_t)y;
+                for (int st = 0; st < steps; st++) {
+                    for (int x = 1; x < pixmap->width; x++) buf[idx + x] += dnu * buf[idx + x - 1];
+                    int x = pixmap->width - 1;
+                    while (x > 0) { buf[idx + x - 1] += dnu * buf[idx + x]; x--; }
+                }
+            }
+        }
+        if (sigma_y > 0.0f) {
+            double lambda = ((double)sigma_y * (double)sigma_y) / (2.0 * steps);
+            double dnu = (1.0 + 2.0 * lambda - sqrt(1.0 + 4.0 * lambda)) / (2.0 * lambda);
+            ly = lambda;
+            dy = dnu;
+            for (int x = 0; x < pixmap->width; x++) {
+                size_t idx = (size_t)x;
+                for (int st = 0; st < steps; st++) {
+                    size_t y = (size_t)pixmap->width;
+                    while (y < count) { buf[idx + y] += dnu * buf[idx + y - pixmap->width]; y += pixmap->width; }
+                    y = count - (size_t)pixmap->width;
+                    while (y > 0) { buf[idx + y - pixmap->width] += dnu * buf[idx + y]; y -= pixmap->width; }
+                }
+            }
+        }
+        double post = pow(sqrt(dx * dy) / sqrt(lx * ly), (double)(2 * steps));
+        for (size_t i = 0; i < count; i++)
+            pixmap->pixels[i * 4 + ch] = (unsigned char)(buf[i] * post * 255.0);
+    }
+    free(buf);
+}
+
+static void svg_filter_blur(struct svg_pixmap *pixmap, float sdx, float sdy) {
+    if (sdx < 0.05f) sdx = 0.0f;
+    if (sdy < 0.05f) sdy = 0.0f;
+    if (sdx == 0.0f && sdy == 0.0f) return;
+    if (sdx >= 2.0f || sdy >= 2.0f) svg_filter_box_blur(sdx, sdy, pixmap);
+    else svg_filter_iir(sdx, sdy, pixmap);
+}
+
+static void svg_filter_get_input(struct svg_filter_prim *prims, struct svg_fimg *results,
+        int count, const char *name, struct svg_pixmap *source, int region_left,
+        int region_top, struct svg_fimg *out) {
+    memset(out, 0, sizeof(*out));
+    if (!name || !name[0] || !strcmp(name, "SourceGraphic") || !strcmp(name, "SourceAlpha")) {
+        out->pix.width = source->width;
+        out->pix.height = source->height;
+        size_t bytes = (size_t)source->width * source->height * 4;
+        out->pix.pixels = svg_alloc(bytes);
+        if (!out->pix.pixels) { out->pix.width = 0; out->pix.height = 0; return; }
+        memcpy(out->pix.pixels, source->pixels, bytes);
+        if (name && !strcmp(name, "SourceAlpha"))
+            for (size_t i = 0; i < (size_t)source->width * source->height; i++) {
+                out->pix.pixels[i * 4 + 0] = 0;
+                out->pix.pixels[i * 4 + 1] = 0;
+                out->pix.pixels[i * 4 + 2] = 0;
+            }
+        out->cs = 0;
+        out->left = region_left;
+        out->top = region_top;
+        out->valid = 1;
+        return;
+    }
+    for (int i = count - 1; i >= 0; i--) {
+        if (strcmp(prims[i].result, name)) continue;
+        if (results[i].valid) *out = svg_fimg_clone(&results[i]);
+        return;
+    }
+}
+
+static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int region_w,
+        int region_h, int region_left, int region_top, float scale_x, float scale_y,
+        struct svg_pixmap *source, struct svg_filter_prim *prims, struct svg_fimg *results,
+        int count, struct svg_fimg *res) {
+    memset(res, 0, sizeof(*res));
+    switch (p->kind) {
+    case SVG_FE_FLOOD: {
+        *res = svg_fimg_new(region_w, region_h, 0);
+        if (!res->valid) return;
+        unsigned a = (unsigned)(p->opacity * (float)p->color[3] / 255.0f * 255.0f + 0.5f);
+        if (a > 255) a = 255;
+        unsigned pr = (unsigned)p->color[0] * a + 128;
+        unsigned pg = (unsigned)p->color[1] * a + 128;
+        unsigned pb = (unsigned)p->color[2] * a + 128;
+        unsigned char r = (unsigned char)((pr + (pr >> 8)) >> 8);
+        unsigned char g = (unsigned char)((pg + (pg >> 8)) >> 8);
+        unsigned char b = (unsigned char)((pb + (pb >> 8)) >> 8);
+        size_t n = (size_t)region_w * region_h;
+        for (size_t i = 0; i < n; i++) {
+            res->pix.pixels[i * 4 + 0] = r;
+            res->pix.pixels[i * 4 + 1] = g;
+            res->pix.pixels[i * 4 + 2] = b;
+            res->pix.pixels[i * 4 + 3] = (unsigned char)a;
+        }
+        res->cs = 0;
+        return;
+    }
+    case SVG_FE_OFFSET: {
+        struct svg_fimg input;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &input);
+        if (!input.valid) return;
+        *res = svg_fimg_new(region_w, region_h, input.cs);
+        if (!res->valid) { svg_fimg_free(&input); return; }
+        int dx = (int)(p->f[0] * scale_x);
+        int dy = (int)(p->f[1] * scale_y);
+        svg_fimg_draw(&res->pix, dx, dy, &input, 0);
+        svg_fimg_free(&input);
+        return;
+    }
+    case SVG_FE_BLEND:
+    case SVG_FE_COMPOSITE: {
+        struct svg_fimg in1, in2;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in1);
+        svg_filter_get_input(prims, results, count, p->input2, source, region_left,
+            region_top, &in2);
+        if (!in1.valid || !in2.valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
+        svg_fimg_into_cs(&in1, p->cs);
+        svg_fimg_into_cs(&in2, p->cs);
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
+        if (p->kind == SVG_FE_COMPOSITE && p->op == 5) {
+            size_t n = (size_t)region_w * region_h;
+            float k1 = p->f[0], k2 = p->f[1], k3 = p->f[2], k4 = p->f[3];
+            for (size_t i = 0; i < n; i++) {
+                const unsigned char *c1 = in1.pix.pixels + i * 4;
+                const unsigned char *c2 = in2.pix.pixels + i * 4;
+                float v[4];
+                for (int k = 0; k < 4; k++) {
+                    float i1 = (float)c1[k] / 255.0f;
+                    float i2 = (float)c2[k] / 255.0f;
+                    float x = k1 * i1 * i2 + k2 * i1 + k3 * i2 + k4;
+                    if (k == 3) { if (x < 0.0f) x = 0.0f; if (x > 1.0f) x = 1.0f; }
+                    v[k] = x;
+                }
+                res->pix.pixels[i * 4 + 0] = (unsigned char)(v[0] * 255.0f);
+                res->pix.pixels[i * 4 + 1] = (unsigned char)(v[1] * 255.0f);
+                res->pix.pixels[i * 4 + 2] = (unsigned char)(v[2] * 255.0f);
+                res->pix.pixels[i * 4 + 3] = (unsigned char)(v[3] * 255.0f);
+            }
+        } else {
+            int mode = p->mode;
+            if (p->kind == SVG_FE_COMPOSITE) {
+                switch (p->op) {
+                case 0: mode = 0; break;
+                case 1: mode = 17; break;
+                case 2: mode = 18; break;
+                case 3: mode = 19; break;
+                default: mode = 16; break;
+                }
+            }
+            svg_fimg_draw(&res->pix, 0, 0, &in2, 0);
+            svg_fimg_draw(&res->pix, 0, 0, &in1, mode);
+        }
+        svg_fimg_free(&in1);
+        svg_fimg_free(&in2);
+        return;
+    }
+    case SVG_FE_MERGE: {
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) return;
+        for (int i = 0; i < p->tnodes; i++) {
+            struct svg_fimg in;
+            svg_filter_get_input(prims, results, count, p->nodes[i], source,
+                region_left, region_top, &in);
+            if (!in.valid) continue;
+            svg_fimg_into_cs(&in, p->cs);
+            svg_fimg_draw(&res->pix, 0, 0, &in, 0);
+            svg_fimg_free(&in);
+        }
+        return;
+    }
+    case SVG_FE_COLOR_MATRIX:
+    case SVG_FE_COMPONENT_TRANSFER: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in);
+        if (!in.valid) return;
+        svg_fimg_into_cs(&in, p->cs);
+        *res = in;
+        size_t n = (size_t)res->pix.width * res->pix.height;
+        svg_fimg_demultiply(res->pix.pixels, n);
+        if (p->kind == SVG_FE_COLOR_MATRIX) {
+            float m[20];
+            if (p->cm_kind == 1) {
+                float v = p->f[0] > 0.0f ? p->f[0] : 0.0f;
+                float sat[9] = { 0.213f + 0.787f * v, 0.715f - 0.715f * v, 0.072f - 0.072f * v,
+                    0.213f - 0.213f * v, 0.715f + 0.285f * v, 0.072f - 0.072f * v,
+                    0.213f - 0.213f * v, 0.715f - 0.715f * v, 0.072f + 0.928f * v };
+                memset(m, 0, sizeof(m));
+                for (int k = 0; k < 3; k++) for (int j = 0; j < 3; j++) m[k * 5 + j] = sat[k * 3 + j];
+                m[3] = 0; m[4] = 0; m[8] = 0; m[9] = 0; m[13] = 0; m[14] = 0;
+                m[18] = 1.0f; m[19] = 0.0f;
+            } else if (p->cm_kind == 2) {
+                float a = p->f[0] * (3.14159265358979323846f / 180.0f);
+                float a1 = cosf(a), a2 = sinf(a);
+                float rot[9] = {
+                    0.213f + 0.787f * a1 - 0.213f * a2, 0.715f - 0.715f * a1 - 0.715f * a2,
+                    0.072f - 0.072f * a1 + 0.928f * a2,
+                    0.213f - 0.213f * a1 + 0.143f * a2, 0.715f + 0.285f * a1 + 0.140f * a2,
+                    0.072f - 0.072f * a1 - 0.283f * a2,
+                    0.213f - 0.213f * a1 - 0.787f * a2, 0.715f - 0.715f * a1 + 0.715f * a2,
+                    0.072f + 0.928f * a1 + 0.072f * a2 };
+                memset(m, 0, sizeof(m));
+                for (int k = 0; k < 3; k++) for (int j = 0; j < 3; j++) m[k * 5 + j] = rot[k * 3 + j];
+                m[18] = 1.0f;
+            } else {
+                memcpy(m, p->matrix, sizeof(m));
+            }
+            for (size_t i = 0; i < n; i++) {
+                unsigned char *px = res->pix.pixels + i * 4;
+                float c[4];
+                for (int k = 0; k < 4; k++) c[k] = (float)px[k] / 255.0f;
+                float o[4];
+                if (p->cm_kind == 3) {
+                    o[0] = 0.0f;
+                    o[1] = 0.0f;
+                    o[2] = 0.0f;
+                    o[3] = c[0] * 0.2125f + c[1] * 0.7154f + c[2] * 0.0721f;
+                } else if (p->cm_kind == 1 || p->cm_kind == 2) {
+                    for (int k = 0; k < 3; k++)
+                        o[k] = c[0] * m[k * 5] + c[1] * m[k * 5 + 1] + c[2] * m[k * 5 + 2];
+                    o[3] = c[3];
+                } else {
+                    for (int k = 0; k < 4; k++)
+                        o[k] = c[0] * m[k * 5] + c[1] * m[k * 5 + 1] + c[2] * m[k * 5 + 2] +
+                            c[3] * m[k * 5 + 3] + m[k * 5 + 4];
+                }
+                for (int k = 0; k < 4; k++) {
+                    float v = o[k];
+                    if (!(v > 0.0f)) v = 0.0f;
+                    if (v > 1.0f) v = 1.0f;
+                    px[k] = (unsigned char)(v * 255.0f);
+                }
+            }
+        } else {
+            for (size_t i = 0; i < n; i++) {
+                unsigned char *px = res->pix.pixels + i * 4;
+                for (int ch = 0; ch < 4; ch++) {
+                    int kind = p->tkind[ch];
+                    if (!kind) continue;
+                    float c = (float)px[ch] / 255.0f;
+                    float v = c;
+                    if (kind == 1) {
+                        int tn = p->tn[ch];
+                        if (tn < 2) { if (tn == 1) v = p->tbl[ch][0]; }
+                        else {
+                            int nn = tn - 1;
+                            int k = (int)floorf(c * (float)nn);
+                            if (k > nn) k = nn;
+                            if (k == nn) v = p->tbl[ch][k];
+                            else v = p->tbl[ch][k] + (c - (float)k / (float)nn) * (float)nn *
+                                (p->tbl[ch][k + 1] - p->tbl[ch][k]);
+                        }
+                    } else if (kind == 2) {
+                        int tn = p->tn[ch];
+                        if (tn > 0) {
+                            int k = (int)floorf(c * (float)tn);
+                            if (k > tn - 1) k = tn - 1;
+                            v = p->tbl[ch][k];
+                        }
+                    } else if (kind == 3) {
+                        v = p->tbl[ch][0] * c + p->tbl[ch][1];
+                    } else {
+                        v = p->tbl[ch][0] * powf(c, p->tbl[ch][1]) + p->tbl[ch][2];
+                    }
+                    if (!(v > 0.0f)) v = 0.0f;
+                    if (v > 1.0f) v = 1.0f;
+                    px[ch] = (unsigned char)(v * 255.0f);
+                }
+            }
+        }
+        svg_fimg_multiply(res->pix.pixels, n);
+        return;
+    }
+    case SVG_FE_GAUSSIAN_BLUR: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in);
+        if (!in.valid) return;
+        svg_fimg_into_cs(&in, p->cs);
+        *res = in;
+        svg_filter_blur(&res->pix, p->f[0] * scale_x, p->f[1] * scale_y);
+        return;
+    }
+    case SVG_FE_DROP_SHADOW: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in);
+        if (!in.valid) return;
+        svg_fimg_into_cs(&in, p->cs);
+        struct svg_fimg shadow = svg_fimg_clone(&in);
+        if (!shadow.valid) { svg_fimg_free(&in); return; }
+        svg_filter_blur(&shadow.pix, p->f[2] * scale_x, p->f[3] * scale_y);
+        unsigned a = (unsigned)(p->opacity * (float)p->color[3] / 255.0f * 255.0f + 0.5f);
+        if (a > 255) a = 255;
+        size_t n = (size_t)shadow.pix.width * shadow.pix.height;
+        for (size_t i = 0; i < n; i++) {
+            unsigned alpha = shadow.pix.pixels[i * 4 + 3];
+            float fa = (float)alpha / 255.0f;
+            float la = (float)a / 255.0f * fa;
+            unsigned pa = (unsigned)(la * 255.0f + 0.5f);
+            unsigned pr = (unsigned)p->color[0] * pa + 128;
+            unsigned pg = (unsigned)p->color[1] * pa + 128;
+            unsigned pb = (unsigned)p->color[2] * pa + 128;
+            shadow.pix.pixels[i * 4 + 0] = (unsigned char)((pr + (pr >> 8)) >> 8);
+            shadow.pix.pixels[i * 4 + 1] = (unsigned char)((pg + (pg >> 8)) >> 8);
+            shadow.pix.pixels[i * 4 + 2] = (unsigned char)((pb + (pb >> 8)) >> 8);
+            shadow.pix.pixels[i * 4 + 3] = (unsigned char)pa;
+        }
+        svg_fimg_into_cs(&shadow, p->cs);
+        *res = svg_fimg_new(region_w, region_h, p->cs);
+        if (!res->valid) { svg_fimg_free(&in); svg_fimg_free(&shadow); return; }
+        int dx = (int)(p->f[0] * scale_x);
+        int dy = (int)(p->f[1] * scale_y);
+        svg_fimg_draw(&res->pix, dx, dy, &shadow, 0);
+        svg_fimg_draw(&res->pix, 0, 0, &in, 0);
+        svg_fimg_free(&in);
+        svg_fimg_free(&shadow);
+        return;
+    }
+    case SVG_FE_MORPHOLOGY: {
+        struct svg_fimg in;
+        svg_filter_get_input(prims, results, count, p->input1, source, region_left,
+            region_top, &in);
+        if (!in.valid) return;
+        svg_fimg_into_cs(&in, p->cs);
+        *res = in;
+        float rx = p->f[0] * scale_x, ry = p->f[1] * scale_y;
+        if (!(rx > 0.0f) || !(ry > 0.0f)) { svg_fimg_clear(res); return; }
+        int columns = (int)ceilf(rx) * 2;
+        int rows = (int)ceilf(ry) * 2;
+        if (columns > res->pix.width) columns = res->pix.width;
+        if (rows > res->pix.height) rows = res->pix.height;
+        int tx = (int)floorf((float)columns / 2.0f);
+        int ty = (int)floorf((float)rows / 2.0f);
+        unsigned char *buf = svg_alloc((size_t)res->pix.width * res->pix.height * 4);
+        if (!buf) return;
+        for (int y = 0; y < res->pix.height; y++) {
+            for (int x = 0; x < res->pix.width; x++) {
+                unsigned char np[4] = { 0, 0, 0, 0 };
+                if (!p->op) { np[0] = np[1] = np[2] = np[3] = 255; }
+                for (int oy = 0; oy < rows; oy++) {
+                    for (int ox = 0; ox < columns; ox++) {
+                        int sx = x - tx + ox, sy = y - ty + oy;
+                        if (sx < 0 || sx >= res->pix.width || sy < 0 || sy >= res->pix.height)
+                            continue;
+                        const unsigned char *sp = res->pix.pixels +
+                            ((size_t)sy * res->pix.width + sx) * 4;
+                        for (int k = 0; k < 4; k++) {
+                            if (p->op) { if (sp[k] > np[k]) np[k] = sp[k]; }
+                            else { if (sp[k] < np[k]) np[k] = sp[k]; }
+                        }
+                    }
+                }
+                memcpy(buf + ((size_t)y * res->pix.width + x) * 4, np, 4);
+            }
+        }
+        memcpy(res->pix.pixels, buf, (size_t)res->pix.width * res->pix.height * 4);
+        free(buf);
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+static int svg_filter_subrect(struct svg_filter_prim *p, struct svg_matrix ts, int *out) {
+    float r[4] = { p->rect[0], p->rect[1], p->rect[2], p->rect[3] };
+    struct svg_bbox b = svg_bbox_transform((struct svg_bbox){ r[0], r[1], r[0] + r[2],
+        r[1] + r[3], 1 }, ts);
+    out[0] = (int)floorf(b.left);
+    out[1] = (int)floorf(b.top);
+    out[2] = (int)ceilf(b.right);
+    out[3] = (int)ceilf(b.bottom);
+    return out[2] > out[0] && out[3] > out[1];
+}
+
+static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
+        struct svg_pixmap *pixmap) {
+    if (!f || !f->nprims) return;
+    float r[4] = { f->rect[0], f->rect[1], f->rect[2], f->rect[3] };
+    struct svg_bbox rb = svg_bbox_transform((struct svg_bbox){ r[0], r[1], r[0] + r[2],
+        r[1] + r[3], 1 }, ts);
+    int rl = (int)floorf(rb.left), rt = (int)floorf(rb.top);
+    int rw = (int)ceilf(rb.right) - rl, rh = (int)ceilf(rb.bottom) - rt;
+    if (rw <= 0 || rh <= 0 || (int64_t)rw * rh > 268435456) return;
+    struct svg_matrix inv;
+    int ok = 0;
+    inv = svg_matrix_invert(ts, &ok);
+    float scale_x = 1.0f, scale_y = 1.0f;
+    if (ok) {
+        scale_x = sqrtf(ts.sx * ts.sx + ts.kx * ts.kx);
+        scale_y = sqrtf(ts.ky * ts.ky + ts.sy * ts.sy);
+        (void)inv;
+    }
+    struct svg_fimg *results = svg_alloc(sizeof(*results) * (size_t)f->nprims);
+    if (!results) return;
+    memset(results, 0, sizeof(*results) * (size_t)f->nprims);
+    int last_index = -1;
+    for (int i = 0; i < f->nprims; i++) {
+        struct svg_filter_prim *p = &f->prims[i];
+        int sub[4];
+        int have_sub = svg_filter_subrect(p, ts, sub);
+        if (!have_sub) continue;
+        struct svg_fimg res;
+        svg_filter_prim(p, ts, rw, rh, rl, rt, scale_x, scale_y, pixmap, f->prims, results,
+            i, &res);
+        if (!res.valid) continue;
+        if (have_sub && !(sub[0] == rl && sub[1] == rt && sub[2] == rl + rw &&
+                sub[3] == rt + rh)) {
+            int x0 = sub[0] - rl, y0 = sub[1] - rt;
+            int x1 = sub[2] - rl, y1 = sub[3] - rt;
+            for (int y = 0; y < rh; y++) {
+                for (int x = 0; x < rw; x++) {
+                    if (x >= x0 && x < x1 && y >= y0 && y < y1) continue;
+                    memset(res.pix.pixels + ((size_t)y * rw + x) * 4, 0, 4);
+                }
+            }
+        }
+        results[i] = res;
+        last_index = i;
+    }
+    svg_pixmap_fill(pixmap, 0, 0, 0, 0);
+    if (last_index >= 0) {
+        svg_fimg_into_cs(&results[last_index], 0);
+        svg_fimg_draw(pixmap, 0, 0, &results[last_index], 0);
+    }
+    for (int i = 0; i < f->nprims; i++) svg_fimg_free(&results[i]);
+    free(results);
+}
+
+static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
+        struct svg_pixmap *pixmap);
+
 static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
         struct svg_pixmap *pixmap) {
     struct svg_matrix transform = svg_matrix_concat(ts, group->transform);
@@ -8601,7 +9852,7 @@ static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
     struct svg_bbox bbox = svg_bbox_transform(group->lbbox, transform);
     if (!bbox.valid) return;
     int ibbox[4];
-    if (!svg_group_int_bbox(bbox, ibbox)) return;
+    if (!svg_group_int_bbox_pad(bbox, group->filter ? 0 : 2, ibbox)) return;
     int maxb[4] = { -2 * pixmap->width, -2 * pixmap->height, 5 * pixmap->width,
         5 * pixmap->height };
     if (!svg_fit_rect(ibbox, maxb)) return;
@@ -8616,6 +9867,7 @@ static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
     struct svg_matrix shift = { 1, 0, 0, 1, -dx, -dy };
     struct svg_matrix inner = svg_matrix_concat(shift, transform);
     svg_render_nodes(group, inner, &sub);
+    if (group->filter) svg_filter_apply(group->filter, inner, &sub);
     if (group->clip) svg_apply_clip(group->clip, inner, &sub);
     if (group->mask) svg_apply_mask(group->mask, inner, &sub);
     svg_draw_pixmap(pixmap, ibbox[0], ibbox[1], &sub, group->opacity, group->blend);
