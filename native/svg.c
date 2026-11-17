@@ -2149,6 +2149,12 @@ static float svg_hue_to_rgb(float t1, float t2, float hue) {
     return t1;
 }
 
+static unsigned char svg_color_byte(double v) {
+    if (!(v > 0.0)) return 0;
+    if (v > 255.0) return 255;
+    return (unsigned char)(unsigned)lround(v);
+}
+
 static int svg_parse_color(const char *text_in, unsigned char *r, unsigned char *g,
         unsigned char *b, unsigned char *a) {
     struct svg_stream s = { text_in, strlen(text_in), 0 };
@@ -2205,29 +2211,29 @@ static int svg_parse_color(const char *text_in, unsigned char *r, unsigned char 
             svg_stream_list_separator(&s);
             unsigned char channels[3];
             if (percent) {
-                channels[0] = (unsigned char)(unsigned)lround((v / 100.0) * 255.0);
+                channels[0] = svg_color_byte((v / 100.0) * 255.0);
                 for (int i = 1; i < 3; i++) {
                     if (!svg_stream_number(&s, &v)) return 0;
                     int pct = !svg_stream_end(&s) && s.text[s.pos] == '%';
                     if (pct) s.pos++;
                     svg_stream_skip(&s);
                     svg_stream_list_separator(&s);
-                    channels[i] = (unsigned char)(unsigned)lround((pct ? v / 100.0 : v) * 255.0);
+                    channels[i] = svg_color_byte((pct ? v / 100.0 : v) * 255.0);
                 }
             } else {
-                channels[0] = (unsigned char)(unsigned)lround(v);
+                channels[0] = svg_color_byte(v);
                 for (int i = 1; i < 3; i++) {
                     if (!svg_stream_number(&s, &v)) return 0;
                     svg_stream_skip(&s);
                     svg_stream_list_separator(&s);
-                    channels[i] = (unsigned char)(unsigned)lround(v);
+                    channels[i] = svg_color_byte(v);
                 }
             }
             *r = channels[0]; *g = channels[1]; *b = channels[2];
             svg_stream_skip(&s);
             if (!svg_stream_end(&s) && s.text[s.pos] != ')') {
                 if (!svg_stream_number(&s, &v)) return 0;
-                *a = (unsigned char)(unsigned)lround(v * 255.0);
+                *a = svg_color_byte(v * 255.0);
                 svg_stream_skip(&s);
             }
             if (svg_stream_end(&s) || s.text[s.pos] != ')') return 0;
@@ -2262,7 +2268,7 @@ static int svg_parse_color(const char *text_in, unsigned char *r, unsigned char 
             if (!svg_stream_end(&s) && s.text[s.pos] != ')') {
                 double av;
                 if (!svg_stream_number(&s, &av)) return 0;
-                *a = (unsigned char)(unsigned)lround(av * 255.0);
+                *a = svg_color_byte(av * 255.0);
                 svg_stream_skip(&s);
             }
             if (svg_stream_end(&s) || s.text[s.pos] != ')') return 0;
