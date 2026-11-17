@@ -4834,23 +4834,26 @@ static void svg_filter_scan_kernel(struct svg_conv *c, struct xml_node *node,
     p->kernel = values;
 }
 
-static void svg_filter_std_dev(struct svg_conv *c, struct xml_node *child, int primitive_bbox,
-        float *sdx, float *sdy) {
-    *sdx = 0.0f;
-    *sdy = 0.0f;
+static void svg_filter_std_dev_default(struct svg_conv *c, struct xml_node *child,
+        float *sdx, float *sdy, float def) {
     const char *text = svg_filter_attr(c->doc, child, "stdDeviation");
-    if (!text) return;
+    if (!text || text[0] == '\0') { *sdx = def; *sdy = def; return; }
     struct svg_stream st = { text, strlen(text), 0 };
     double v[3];
     int n = 0;
     while (n < 3 && svg_stream_list_number(&st, &v[n])) n++;
     if (n == 1) { v[1] = v[0]; n = 2; }
-    if (n != 2) return;
+    if (n != 2) { *sdx = 0.0f; *sdy = 0.0f; return; }
     if (!(v[0] > 0.0)) v[0] = 0.0;
     if (!(v[1] > 0.0)) v[1] = 0.0;
-    *sdx = svg_filter_number(c, child, "__none__", primitive_bbox, 0, 0, SVG_UNIT_NONE);
     *sdx = (float)v[0];
     *sdy = (float)v[1];
+}
+
+static void svg_filter_std_dev(struct svg_conv *c, struct xml_node *child, int primitive_bbox,
+        float *sdx, float *sdy) {
+    svg_filter_std_dev_default(c, child, sdx, sdy, 0.0f);
+    (void)primitive_bbox;
 }
 
 static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float object_bbox[4],
@@ -5026,8 +5029,30 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->kind = SVG_FE_MORPHOLOGY;
             const char *op = svg_filter_attr(c->doc, child, "operator");
             p->op = op && !strcmp(op, "dilate") ? 1 : 0;
-            p->f[0] = svg_filter_number(c, child, "radius", primitive_bbox, 0, 0, SVG_UNIT_NONE);
-            p->f[1] = svg_filter_number(c, child, "radius", primitive_bbox, 1, 0, SVG_UNIT_NONE);
+            {
+                float rx = 1.0f, ry = 1.0f;
+                const char *rad = svg_filter_attr(c->doc, child, "radius");
+                if (rad && rad[0]) {
+                    struct svg_stream rs = { rad, strlen(rad), 0 };
+                    double v[3];
+                    int n = 0;
+                    while (n < 3 && svg_stream_list_number(&rs, &v[n])) n++;
+                    if (n == 1) { v[1] = v[0]; n = 2; }
+                    if (n == 2) {
+                        rx = (float)v[0];
+                        ry = (float)v[1];
+                        int zx = fabsf(rx) <= 1.0f / 65536.0f;
+                        int zy = fabsf(ry) <= 1.0f / 65536.0f;
+                        if (zx && zy) { rx = 1.0f; ry = 1.0f; }
+                        else if (zx) rx = 1.0f;
+                        else if (zy) ry = 1.0f;
+                        if (!(rx >= 0.0f) || !(ry >= 0.0f)) { rx = 1.0f; ry = 1.0f; }
+                    }
+                    if (n == 3) { rx = 1.0f; ry = 1.0f; }
+                }
+                p->f[0] = rx;
+                p->f[1] = ry;
+            }
         } else if (!strcmp(tag, "feDisplacementMap")) {
             p->kind = SVG_FE_DISPLACEMENT;
             p->f[0] = svg_filter_number(c, child, "scale", primitive_bbox, 2, 0, SVG_UNIT_NONE);
@@ -5095,10 +5120,10 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->f[1] = sdy;
         } else if (!strcmp(tag, "feDropShadow")) {
             p->kind = SVG_FE_DROP_SHADOW;
-            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 0, SVG_UNIT_NONE);
-            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 0, SVG_UNIT_NONE);
-            float sdx = 0, sdy = 0;
-            svg_filter_std_dev(c, child, primitive_bbox, &sdx, &sdy);
+            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 2, SVG_UNIT_NONE);
+            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 2, SVG_UNIT_NONE);
+            float sdx = 2, sdy = 2;
+            svg_filter_std_dev_default(c, child, &sdx, &sdy, 2.0f);
             p->f[2] = sdx;
             p->f[3] = sdy;
             unsigned char r = 0, g = 0, b = 0, a = 255;
