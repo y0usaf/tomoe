@@ -5870,6 +5870,7 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
         } else if (!strcmp(tag, "feDisplacementMap")) {
             p->kind = SVG_FE_DISPLACEMENT;
             p->f[0] = svg_filter_number(c, child, "scale", primitive_bbox, 2, 0, SVG_UNIT_NONE);
+            if (primitive_bbox) p->f[0] *= (object_bbox[2] + object_bbox[3]) * 0.5f;
             const char *chx = svg_filter_attr(c->doc, child, "xChannelSelector");
             const char *chy = svg_filter_attr(c->doc, child, "yChannelSelector");
             p->op = chx ? (chx[0] == 'R' ? 0 : chx[0] == 'G' ? 1 : chx[0] == 'B' ? 2 : 3) : 0;
@@ -5979,6 +5980,7 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->kind = SVG_FE_GAUSSIAN_BLUR;
             float sdx = 0, sdy = 0;
             svg_filter_std_dev(c, child, primitive_bbox, &sdx, &sdy);
+            if (primitive_bbox) { sdx *= object_bbox[2]; sdy *= object_bbox[3]; }
             p->f[0] = sdx;
             p->f[1] = sdy;
         } else if (!strcmp(tag, "feDropShadow")) {
@@ -5989,6 +5991,12 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             svg_filter_std_dev_default(c, child, &sdx, &sdy, 2.0f);
             p->f[2] = sdx;
             p->f[3] = sdy;
+            if (primitive_bbox) {
+                p->f[0] *= object_bbox[2];
+                p->f[1] *= object_bbox[3];
+                p->f[2] *= object_bbox[2];
+                p->f[3] *= object_bbox[3];
+            }
             unsigned char r = 0, g = 0, b = 0, a = 255;
             const char *col = svg_filter_attr(c->doc, child, "flood-color");
             if (col) svg_parse_color(col, &r, &g, &b, &a);
@@ -9776,9 +9784,6 @@ static void svg_pattern_sampler_4x4(const struct svg_pixmap *pm, int spread, flo
     }
 }
 
-static void svg_pix_bicubic(const struct svg_pixmap *pm, int spread, float cx, float cy,
-        float out[4]);
-
 static float svg_bicubic_near(float t) {
     return svg_mad(t, svg_mad(t, svg_mad(-21.0f / 18.0f, t, 27.0f / 18.0f), 9.0f / 18.0f),
         1.0f / 18.0f);
@@ -9786,21 +9791,6 @@ static float svg_bicubic_near(float t) {
 
 static float svg_bicubic_far(float t) {
     return (t * t) * svg_mad(7.0f / 18.0f, t, -6.0f / 18.0f);
-}
-
-static void svg_pix_bicubic(const struct svg_pixmap *pm, int spread, float cx, float cy,
-        float out[4]) {
-    float fx = (cx + 0.5f) - floorf(cx + 0.5f);
-    float fy = (cy + 0.5f) - floorf(cy + 0.5f);
-    float wx[4] = { svg_bicubic_far(1.0f - fx), svg_bicubic_near(1.0f - fx),
-        svg_bicubic_near(fx), svg_bicubic_far(fx) };
-    float wy[4] = { svg_bicubic_far(1.0f - fy), svg_bicubic_near(1.0f - fy),
-        svg_bicubic_near(fy), svg_bicubic_far(fy) };
-    svg_pattern_sampler_4x4(pm, spread, cx, cy, wx, wy, out);
-    for (int k = 0; k < 4; k++) {
-        if (!(out[k] > 0.0f)) out[k] = 0.0f;
-        else if (out[k] > 1.0f) out[k] = 1.0f;
-    }
 }
 
 static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out[4]) {
