@@ -6437,6 +6437,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                     rect_root->fill.paint.r = rect_root->fill.paint.g =
                         rect_root->fill.paint.b = 0;
                     rect_root->visible = 1;
+                    rect_root->aa = 1;
                     struct svg_node *clip_root = svg_node_new(0);
                     if (clip_root) svg_node_add(clip_root, rect_root);
                     clip->root = clip_root;
@@ -7256,6 +7257,7 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
                 rect_root->fill.opacity = 1.0f;
                 rect_root->fill.paint.type = 1;
                 rect_root->visible = 1;
+                rect_root->aa = 1;
                 svg_path_tight_bounds(rect, &rect_root->bbox);
                 rect_root->has_bbox = 1;
                 rect_root->abs_bbox = rect_root->bbox;
