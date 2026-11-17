@@ -6036,8 +6036,15 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
             p->f[1] = sdy;
         } else if (!strcmp(tag, "feDropShadow")) {
             p->kind = SVG_FE_DROP_SHADOW;
-            p->f[0] = svg_filter_number(c, child, "dx", primitive_bbox, 0, 2, SVG_UNIT_NONE);
-            p->f[1] = svg_filter_number(c, child, "dy", primitive_bbox, 1, 2, SVG_UNIT_NONE);
+            p->f[0] = 2.0f;
+            p->f[1] = 2.0f;
+            {
+                double v;
+                const char *t = svg_filter_attr(c->doc, child, "dx");
+                if (t && svg_parse_number(t, &v)) p->f[0] = (float)v;
+                t = svg_filter_attr(c->doc, child, "dy");
+                if (t && svg_parse_number(t, &v)) p->f[1] = (float)v;
+            }
             float sdx = 2, sdy = 2;
             svg_filter_std_dev_default(c, child, &sdx, &sdy, 2.0f);
             p->f[2] = sdx;
