@@ -1404,6 +1404,20 @@ static bool group_begin(struct colr_ctx *ctx, struct drect *box, struct colr_ctx
     child->clip_boxes = NULL;
     child->clip_box_count = 0;
     child->clip_box_capacity = 0;
+    if (ctx->clip_box_count > 0) {
+        px_box_t *boxes = malloc((size_t)ctx->clip_box_count * sizeof(*boxes));
+        if (boxes) {
+            for (int i = 0; i < ctx->clip_box_count; i++) {
+                boxes[i].p1.x = ctx->clip_boxes[i].p1.x - (int32_t) box->x0 * 256;
+                boxes[i].p1.y = ctx->clip_boxes[i].p1.y - (int32_t) box->y0 * 256;
+                boxes[i].p2.x = ctx->clip_boxes[i].p2.x - (int32_t) box->x0 * 256;
+                boxes[i].p2.y = ctx->clip_boxes[i].p2.y - (int32_t) box->y0 * 256;
+            }
+            child->clip_boxes = boxes;
+            child->clip_box_count = ctx->clip_box_count;
+            child->clip_box_capacity = ctx->clip_box_count;
+        }
+    }
     child->clipped = false;
     return true;
 }
