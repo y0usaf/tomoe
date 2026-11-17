@@ -2,7 +2,6 @@
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 extern void *__libc_malloc(size_t size);
 extern void *__libc_calloc(size_t count, size_t size);
@@ -52,7 +51,6 @@ static __thread int hot_depth;
 static __thread bool hot_logging;
 #endif
 static uint64_t hot_allocs, hot_allocs_all;
-static time_t hot_logged;
 static uintptr_t hot_callers[64];
 
 bool budget_set_limit(const char *name, uint64_t limit) {
@@ -121,12 +119,8 @@ static void hot_violation(uintptr_t caller) {
     while (slot < sizeof(hot_callers) / sizeof(hot_callers[0]) && hot_callers[slot] &&
             hot_callers[slot] != caller)
         slot++;
-    bool fresh = slot < sizeof(hot_callers) / sizeof(hot_callers[0]) && !hot_callers[slot];
-    if (fresh) hot_callers[slot] = caller;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    if (!fresh && now.tv_sec == hot_logged) return;
-    hot_logged = now.tv_sec;
+    if (slot == sizeof(hot_callers) / sizeof(hot_callers[0]) || hot_callers[slot]) return;
+    hot_callers[slot] = caller;
     hot_logging = true;
     fprintf(stderr, "tomoe: allocation in hot path %s at tomoe+%#lx (%llu so far)\n",
         hot_tag ? hot_tag : "?", (unsigned long)(caller - (uintptr_t)__executable_start),
