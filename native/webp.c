@@ -517,7 +517,8 @@ static void wapply_color_indexing(unsigned char *d, unsigned width, unsigned hei
     size_t out_stride = (size_t)width * 4;
     unsigned char *indices = malloc(packed_blocks);
     if (!indices) return;
-    for (unsigned y = 0; y < height; y++) {
+    for (unsigned y_rev = 0; y_rev < height; y_rev++) {
+        unsigned y = height - 1 - y_rev;
         const unsigned char *packed = d + (size_t)y * packed_stride;
         for (unsigned b = 0; b < packed_blocks; b++) indices[b] = packed[b * 4 + 1];
         unsigned char *out = d + (size_t)y * out_stride;
