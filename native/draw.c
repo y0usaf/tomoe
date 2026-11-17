@@ -251,6 +251,21 @@ void dp_polygon_add_edge(struct dp_polygon *polygon, px_point_t p1, px_point_t p
     }
 }
 
+void dp_polygon_add_line(struct dp_polygon *polygon, px_point_t p1, px_point_t p2,
+    int32_t top, int32_t bottom, int dir)
+{
+    if (polygon->status != PX_STATUS_SUCCESS) return;
+    if (p1.y == p2.y) return;
+    if (bottom <= top) return;
+    if (polygon->has_limit) {
+        if (p2.y <= polygon->limit.p1.y) return;
+        if (p1.y >= polygon->limit.p2.y) return;
+        polygon_add_clipped_edge(polygon, &p1, &p2, top, bottom, dir);
+    } else {
+        polygon_add_edges(polygon, p1, p2, top, bottom, dir);
+    }
+}
+
 static void filler_close(struct filler *filler)
 {
     dp_polygon_add_edge(filler->polygon,
@@ -986,32 +1001,11 @@ bool dp_fill_mask(const struct dpath *path, struct drect clip,
     return dp_fill_mask_spans(path, clip, mask, stride, mask_x, mask_y, antialias, NULL);
 }
 
-bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
-    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias,
-    struct dp_spans *spans)
+static bool path_polygon(const struct dpath *path, struct dp_polygon *polygon)
 {
-    if (path->failed) return false;
-    int32_t bl, bt, br, bb;
-    if (antialias == PX_ANTIALIAS_GRAY && path_is_rect_box(path, &bl, &bt, &br, &bb)) {
-        int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
-        int32_t limit_r = (int32_t)clip.x1 * FIXED_ONE, limit_b = (int32_t)clip.y1 * FIXED_ONE;
-        if (bl < limit_l) bl = limit_l;
-        if (bt < limit_t) bt = limit_t;
-        if (br > limit_r) br = limit_r;
-        if (bb > limit_b) bb = limit_b;
-        if (bl >= br || bt >= bb) return true;
-        if (spans)
-            spans->extents = (struct drect){ fixed_floor(bl), fixed_floor(bt),
-                fixed_ceil(br), fixed_ceil(bb) };
-        return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y, spans);
-    }
-    struct dp_polygon polygon;
-    dp_polygon_init(&polygon);
-    dp_polygon_set_limit(&polygon, clip);
-
     struct filler filler;
     memset(&filler, 0, sizeof(filler));
-    filler.polygon = &polygon;
+    filler.polygon = polygon;
 
     for (int i = 0; i < path->count; i++) {
         const struct dpath_op_entry *op = &path->ops[i];
@@ -1037,7 +1031,39 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
     if (path->needs_move && path->has_current)
         filler_move_to(&filler, (struct dpoint){ path->current.x, path->current.y });
     filler_close(&filler);
-    if (polygon.status != PX_STATUS_SUCCESS) {
+    return polygon->status == PX_STATUS_SUCCESS;
+}
+
+bool dp_path_fill_to_polygon(const struct dpath *path, struct dp_polygon *polygon)
+{
+    if (path->failed) return false;
+    dp_polygon_init(polygon);
+    return path_polygon(path, polygon);
+}
+
+bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y, int antialias,
+    struct dp_spans *spans)
+{
+    if (path->failed) return false;
+    int32_t bl, bt, br, bb;
+    if (antialias == PX_ANTIALIAS_GRAY && path_is_rect_box(path, &bl, &bt, &br, &bb)) {
+        int32_t limit_l = (int32_t)clip.x0 * FIXED_ONE, limit_t = (int32_t)clip.y0 * FIXED_ONE;
+        int32_t limit_r = (int32_t)clip.x1 * FIXED_ONE, limit_b = (int32_t)clip.y1 * FIXED_ONE;
+        if (bl < limit_l) bl = limit_l;
+        if (bt < limit_t) bt = limit_t;
+        if (br > limit_r) br = limit_r;
+        if (bb > limit_b) bb = limit_b;
+        if (bl >= br || bt >= bb) return true;
+        if (spans)
+            spans->extents = (struct drect){ fixed_floor(bl), fixed_floor(bt),
+                fixed_ceil(br), fixed_ceil(bb) };
+        return fill_box_mask(bl, bt, br, bb, clip, mask, stride, mask_x, mask_y, spans);
+    }
+    struct dp_polygon polygon;
+    dp_polygon_init(&polygon);
+    dp_polygon_set_limit(&polygon, clip);
+    if (!path_polygon(path, &polygon)) {
         dp_polygon_fini(&polygon);
         return false;
     }
@@ -1086,7 +1112,7 @@ bool dp_fill_mask_spans(const struct dpath *path, struct drect clip,
     return status == PX_STATUS_SUCCESS;
 }
 
-static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
+static bool raster_polygon(const struct dp_polygon *polygon, struct drect clip,
     unsigned char *mask, int stride, int mask_x, int mask_y, int antialias)
 {
     if (polygon->extents.p2.x <= polygon->extents.p1.x ||
@@ -1120,6 +1146,13 @@ static bool raster_stroke_polygon(struct dp_polygon *polygon, struct drect clip,
     px_status_t status = converter->generate(converter, &ctx.base);
     converter->destroy(converter);
     return status == PX_STATUS_SUCCESS;
+}
+
+bool dp_polygon_fill_mask(const struct dp_polygon *polygon, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y)
+{
+    return raster_polygon(polygon, clip, mask, stride, mask_x, mask_y,
+        PX_ANTIALIAS_GRAY);
 }
 
 static bool fill_boxes_mask(const cairo_boxes_t *boxes, struct drect clip,
@@ -1236,7 +1269,7 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
         &identity, &identity, TOLERANCE, &polygon);
     bool ok = false;
     if (status == CAIRO_STATUS_SUCCESS && polygon.status == PX_STATUS_SUCCESS)
-        ok = raster_stroke_polygon(&polygon, clip, mask, stride, mask_x, mask_y, antialias);
+        ok = raster_polygon(&polygon, clip, mask, stride, mask_x, mask_y, antialias);
     dp_polygon_fini(&polygon);
     return ok;
 }

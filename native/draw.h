@@ -66,7 +66,12 @@ struct dp_polygon {
 void dp_polygon_init(struct dp_polygon *polygon);
 void dp_polygon_set_limit(struct dp_polygon *polygon, struct drect clip);
 void dp_polygon_add_edge(struct dp_polygon *polygon, px_point_t p1, px_point_t p2, int dir);
+void dp_polygon_add_line(struct dp_polygon *polygon, px_point_t p1, px_point_t p2,
+    int32_t top, int32_t bottom, int dir);
 void dp_polygon_fini(struct dp_polygon *polygon);
+bool dp_path_fill_to_polygon(const struct dpath *path, struct dp_polygon *polygon);
+bool dp_polygon_fill_mask(const struct dp_polygon *polygon, struct drect clip,
+    unsigned char *mask, int stride, int mask_x, int mask_y);
 
 void dpath_init(struct dpath *path);
 void dpath_fini(struct dpath *path);
