@@ -9889,21 +9889,23 @@ static void svg_filter_prim(struct svg_filter_prim *p, struct svg_matrix ts, int
         svg_fimg_into_cs(&in2, p->cs);
         *res = svg_fimg_new(region_w, region_h, p->cs);
         if (!res->valid) { svg_fimg_free(&in1); svg_fimg_free(&in2); return; }
-        int w = region_w, h = region_h;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int idx = y * w + x;
-                const unsigned char *mp = in2.pix.pixels + (size_t)idx * 4;
+        int mw = in2.pix.width, mh = in2.pix.height;
+        if (mw > res->pix.width) mw = res->pix.width;
+        if (mh > res->pix.height) mh = res->pix.height;
+        for (int y = 0; y < mh; y++) {
+            for (int x = 0; x < mw; x++) {
+                size_t idx = (size_t)y * (size_t)res->pix.width + (size_t)x;
+                const unsigned char *mp = in2.pix.pixels + ((size_t)y * (size_t)in2.pix.width +
+                    (size_t)x) * 4;
                 float dx = (float)mp[p->op == 0 ? 0 : p->op == 1 ? 1 : p->op == 2 ? 2 : 3] /
                     255.0f - 0.5f;
                 float dy = (float)mp[p->mode == 0 ? 0 : p->mode == 1 ? 1 : p->mode == 2 ? 2 : 3] /
                     255.0f - 0.5f;
                 int ox = (int)lrintf((float)x + dx * scale_x * p->f[0]);
                 int oy = (int)lrintf((float)y + dy * scale_y * p->f[0]);
-                if (ox < 0 || ox >= w || oy < 0 || oy >= h) continue;
-                if (x >= in1.pix.width || y >= in1.pix.height) continue;
-                memcpy(res->pix.pixels + (size_t)idx * 4,
-                    in1.pix.pixels + ((size_t)oy * in1.pix.width + ox) * 4, 4);
+                if (ox < 0 || ox >= in1.pix.width || oy < 0 || oy >= in1.pix.height) continue;
+                memcpy(res->pix.pixels + idx * 4,
+                    in1.pix.pixels + ((size_t)oy * (size_t)in1.pix.width + (size_t)ox) * 4, 4);
             }
         }
         svg_fimg_free(&in1);
@@ -9934,6 +9936,8 @@ static void svg_filter_apply(struct svg_filter *f, struct svg_matrix ts,
         r[1] + r[3], 1 }, ts);
     int rl = (int)floorf(rb.left), rt = (int)floorf(rb.top);
     int rw = (int)ceilf(rb.right) - rl, rh = (int)ceilf(rb.bottom) - rt;
+    if (rw > pixmap->width) rw = pixmap->width;
+    if (rh > pixmap->height) rh = pixmap->height;
     if (rw <= 0 || rh <= 0 || (int64_t)rw * rh > 268435456) return;
     struct svg_matrix inv;
     int ok = 0;
