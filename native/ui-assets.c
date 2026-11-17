@@ -551,9 +551,7 @@ static enum asset_status shader_start(struct tomoe *s, struct ui_asset *asset,
     free(data.bytes);
     if (status != ASSET_OK) return status;
     if (!asset->shader) return ASSET_MISSING;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    asset->epoch = now.tv_sec + now.tv_nsec / 1e9;
+    asset->epoch = shader_clock_now(s, animation_now());
     asset->bytes = data.length;
     return ASSET_OK;
 }

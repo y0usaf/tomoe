@@ -1780,6 +1780,7 @@ size_t screen_gamma_size(struct screen *screen);
 size_t screen_degamma_size(struct screen *screen);
 void screen_schedule_frame(struct screen *screen);
 void screen_schedule_animation(struct screen *screen);
+double shader_clock_now(const struct tomoe *s, double now);
 void screen_send_frame(struct screen *screen);
 void screen_frame_committed(struct screen *screen, const struct screen_state *state);
 void screens_frame_after_events(struct tomoe *s);

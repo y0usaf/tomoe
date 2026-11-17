@@ -918,10 +918,14 @@ static bool shader_still(const struct tomoe *s, const struct ui_surface *surface
     return !last || now - last->t > surface->idle;
 }
 
-static double surface_clock(const struct tomoe *s, const struct ui_surface *surface, double now) {
-    if (surface->shader_clocked) return now;
+double shader_clock_now(const struct tomoe *s, double now) {
     if (s->shader_holding) return s->shader_hold_at - s->shader_shift;
     return now - s->shader_shift;
+}
+
+static double surface_clock(const struct tomoe *s, const struct ui_surface *surface, double now) {
+    if (surface->shader_clocked) return now;
+    return shader_clock_now(s, now);
 }
 
 static void shader_hold_advance(struct tomoe *s, double now) {
