@@ -110,8 +110,8 @@
               inherit harfbuzz glib;
             }).overrideAttrs
               (old: {
-                buildInputs = [ freetype fontconfig ] ++
-                  pkgs.lib.remove pkgs.libthai old.buildInputs;
+                buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
+                propagatedBuildInputs = [ freetype fontconfig ] ++ old.propagatedBuildInputs;
                 mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
               });
           libs = lean pkgs;
