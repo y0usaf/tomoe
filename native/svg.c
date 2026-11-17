@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <strings.h>
+#include "jpeg.h"
+#include "png.h"
 
 struct svg_point { float x, y; };
 
@@ -19,6 +21,9 @@ struct svg_path {
 };
 
 enum { SVG_MOVE = 0, SVG_LINE = 1, SVG_QUAD = 2, SVG_CUBIC = 3, SVG_CLOSE = 4 };
+
+struct svg_pixmap;
+static void svg_pixmap_free(struct svg_pixmap *p);
 
 static void *svg_alloc(size_t size) {
     void *p = malloc(size ? size : 1);
@@ -3497,6 +3502,11 @@ struct svg_mask {
     struct svg_mask *linked;
 };
 
+struct svg_image {
+    struct svg_pixmap pix;
+    int quality;
+};
+
 struct svg_node {
     int type;
     struct svg_matrix transform;
@@ -3507,6 +3517,7 @@ struct svg_node {
     struct svg_clip *clip;
     struct svg_mask *mask;
     struct svg_path *path;
+    struct svg_image *image;
     struct svg_fill fill;
     struct svg_stroke stroke;
     int visible;
@@ -3549,6 +3560,12 @@ static void svg_free_gradient(struct svg_gradient *g) {
     free(g);
 }
 
+static void svg_free_image(struct svg_image *im) {
+    if (!im) return;
+    svg_pixmap_free(&im->pix);
+    free(im);
+}
+
 static void svg_free_pattern(struct svg_pattern *p) {
     if (!p) return;
     svg_node_destroy(p->root);
@@ -3574,6 +3591,7 @@ static void svg_node_destroy(struct svg_node *n) {
     for (int i = 0; i < n->nchildren; i++) svg_node_destroy(n->children[i]);
     free(n->children);
     svg_path_free(n->path);
+    svg_free_image(n->image);
     if (n->fill.paint.gradient) svg_free_gradient(n->fill.paint.gradient);
     if (n->stroke.paint.gradient) svg_free_gradient(n->stroke.paint.gradient);
     if (n->fill.paint.pattern) svg_free_pattern(n->fill.paint.pattern);
@@ -4402,13 +4420,17 @@ static struct svg_bbox svg_node_bbox_local(struct svg_node *node) {
         if (node->has_bbox) return node->bbox;
         return svg_group_object_bbox(node);
     }
+    if (node->type == 2) {
+        if (node->has_bbox) return node->bbox;
+        return b;
+    }
     struct svg_bbox tb;
     if (svg_path_tight_bounds(node->path, &tb)) return tb;
     return b;
 }
 
 static struct svg_bbox svg_node_bbox_stroke_local(struct svg_node *node) {
-    if (node->type == 1) {
+    if (node->type == 1 || node->type == 2) {
         if (node->has_sbbox) return node->sbbox;
         return svg_node_bbox_local(node);
     }
@@ -5198,6 +5220,180 @@ static void svg_convert_switch(struct svg_conv *c, struct xml_node *node, struct
     }
 }
 
+static int svg_base64_value(int ch) {
+    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+}
+
+static unsigned char *svg_base64_decode(const char *text, size_t length, size_t *out_length) {
+    unsigned char *out = svg_alloc(length / 4 * 3 + 4);
+    if (!out) return NULL;
+    size_t n = 0;
+    unsigned acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < length; i++) {
+        int v = svg_base64_value((unsigned char)text[i]);
+        if (v < 0) {
+            if (text[i] == '=') break;
+            continue;
+        }
+        acc = (acc << 6) | (unsigned)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[n++] = (unsigned char)((acc >> bits) & 0xff);
+        }
+    }
+    *out_length = n;
+    return out;
+}
+
+static int svg_image_decode(struct svg_image *im, const unsigned char *data, size_t length) {
+    if (length >= 8 && !memcmp(data, "\x89PNG\r\n\x1a\n", 8)) {
+        struct png_geometry geo;
+        if (tomoe_png_geometry(data, length, &geo) != PNG_OK) return 0;
+        if (geo.width == 0 || geo.height == 0 || geo.width > 32767 || geo.height > 32767) return 0;
+        size_t rowbytes = (size_t)geo.width * 4;
+        unsigned char *pixels = svg_alloc(rowbytes * geo.height);
+        unsigned char **rows = svg_alloc(sizeof(*rows) * geo.height);
+        if (!pixels || !rows) { free(pixels); free(rows); return 0; }
+        for (uint32_t y = 0; y < geo.height; y++) rows[y] = pixels + rowbytes * y;
+        enum png_status status = tomoe_png_rgba8(data, length, rows, rowbytes);
+        free(rows);
+        if (status != PNG_OK) { free(pixels); return 0; }
+        for (size_t i = 0; i < (size_t)geo.width * geo.height; i++) {
+            unsigned a = pixels[i * 4 + 3];
+            for (int k = 0; k < 3; k++) {
+                unsigned v = pixels[i * 4 + k];
+                if (a != 255) {
+                    unsigned t = v * a + 0x80;
+                    v = (t + (t >> 8)) >> 8;
+                }
+                pixels[i * 4 + k] = (unsigned char)v;
+            }
+        }
+        im->pix.width = (int)geo.width;
+        im->pix.height = (int)geo.height;
+        im->pix.pixels = pixels;
+        return 1;
+    }
+    if (length >= 2 && data[0] == 0xff && data[1] == 0xd8) {
+        struct jpeg_decoded jpg;
+        if (tomoe_jpeg_decode(data, length, 32767, UINT64_MAX, &jpg) != JPEG_DECODE_OK) return 0;
+        im->pix.width = (int)jpg.width;
+        im->pix.height = (int)jpg.height;
+        im->pix.pixels = jpg.pixels;
+        return 1;
+    }
+    return 0;
+}
+
+static int svg_fit_size(int slice, float aw, float ah, float rw, float rh, float *out_w,
+        float *out_h) {
+    if (!(aw > 0.0f) || !(ah > 0.0f)) return 0;
+    float sx = rw / aw, sy = rh / ah;
+    float s = slice ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
+    *out_w = aw * s;
+    *out_h = ah * s;
+    return 1;
+}
+
+static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct svg_style *st,
+        struct svg_node *parent, struct svg_matrix abs, int clip_context) {
+    const char *href = svg_style_get(c->doc, st, "href");
+    if (!href) href = svg_xml_attr(node, "xlink:href");
+    if (!href) { c->unsupported = 1; return; }
+    unsigned char *bytes = NULL;
+    size_t length = 0;
+    if (!strncmp(href, "data:", 5)) {
+        const char *comma = strchr(href, ',');
+        if (!comma) { c->unsupported = 1; return; }
+        int base64 = 0;
+        const char *semi = strstr(href, ";base64");
+        if (semi && semi < comma) base64 = 1;
+        if (!base64) { c->unsupported = 1; return; }
+        length = 0;
+        bytes = svg_base64_decode(comma + 1, strlen(comma + 1), &length);
+        if (!bytes) { c->unsupported = 1; return; }
+    } else {
+        c->unsupported = 1;
+        return;
+    }
+    struct svg_image *im = svg_alloc(sizeof(*im));
+    if (!im) { free(bytes); return; }
+    memset(im, 0, sizeof(*im));
+    if (!svg_image_decode(im, bytes, length)) {
+        free(bytes);
+        svg_free_image(im);
+        c->unsupported = 1;
+        return;
+    }
+    free(bytes);
+    float aw = (float)im->pix.width, ah = (float)im->pix.height;
+    const char *render = svg_style_get(c->doc, st, "image-rendering");
+    im->quality = 2;
+    if (render && (!strcmp(render, "optimizeSpeed") || !strcmp(render, "pixelated") ||
+            !strcmp(render, "crisp-edges"))) im->quality = 0;
+    else if (render && !strcmp(render, "smooth")) im->quality = 1;
+    float x = 0.0f, y = 0.0f, w = aw, h = ah;
+    svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
+    svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
+    int have_w = svg_convert_length(c, st, "width", 0, aw, SVG_UNIT_NONE, &w);
+    int have_h = svg_convert_length(c, st, "height", 1, ah, SVG_UNIT_NONE, &h);
+    if (have_w && !have_h) h = ah * (w / aw);
+    else if (!have_w && have_h) w = aw * (h / ah);
+    if (!(w > 0.0f) || !(h > 0.0f)) { svg_free_image(im); c->unsupported = 1; return; }
+    struct svg_aspect aspect;
+    const char *ar = svg_style_get(c->doc, st, "preserveAspectRatio");
+    if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
+    float fit_w = w, fit_h = h;
+    if (aspect.align != 0) {
+        if (!svg_fit_size(aspect.slice, aw, ah, w, h, &fit_w, &fit_h)) {
+            fit_w = w; fit_h = h;
+        }
+    }
+    float ax = x, ay = y;
+    int align = aspect.align;
+    if (align > 0) {
+        float extra_w = w - fit_w, extra_h = h - fit_h;
+        if (align == 2 || align == 5 || align == 8) ax = x + extra_w * 0.5f;
+        else if (align == 3 || align == 6 || align == 9) ax = x + extra_w;
+        if (align == 4 || align == 5 || align == 6) ay = y + extra_h * 0.5f;
+        else if (align == 7 || align == 8 || align == 9) ay = y + extra_h;
+    }
+    struct svg_node *g = svg_group_alloc(c, node, st, 0, clip_context, abs, parent);
+    if (!g) { svg_free_image(im); return; }
+    struct svg_matrix image_ts = { fit_w / aw, 0.0f, 0.0f, fit_h / ah, ax, ay };
+    g->transform = svg_matrix_concat(g->transform, image_ts);
+    g->abs_transform = svg_matrix_concat(abs, g->transform);
+    struct svg_node *child = svg_node_new(2);
+    if (!child) { svg_free_image(im); svg_node_destroy(g); return; }
+    child->image = im;
+    child->visible = 1;
+    child->abs_transform = g->abs_transform;
+    child->transform = svg_matrix_identity();
+    child->bbox = svg_bbox_from_rect(0.0f, 0.0f, aw, ah);
+    child->has_bbox = 1;
+    child->abs_bbox = svg_bbox_transform(child->bbox, g->abs_transform);
+    svg_node_add(g, child);
+    svg_group_bboxes(g);
+    int required = 0;
+    if (!svg_group_finish(c, node, st, 0, clip_context, 0, g, abs, &required)) {
+        svg_node_destroy(g);
+        return;
+    }
+    if (required) svg_node_add(parent, g);
+    else {
+        for (int i = 0; i < g->nchildren; i++) svg_node_add(parent, g->children[i]);
+        g->nchildren = 0;
+        svg_node_destroy(g);
+    }
+}
+
 static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         struct svg_node *parent, struct svg_matrix abs, int clip_context) {
     const char *tag = svg_local_name(node->name);
@@ -5322,8 +5518,12 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         svg_node_add(parent, target);
         return;
     }
-    if (!strcmp(tag, "text") || !strcmp(tag, "image")) {
+    if (!strcmp(tag, "text")) {
         c->unsupported = 1;
+        return;
+    }
+    if (!strcmp(tag, "image")) {
+        svg_convert_image(c, node, st, parent, abs, clip_context);
         return;
     }
     int is_container = !strcmp(tag, "g") || !strcmp(tag, "a");
@@ -6941,11 +7141,10 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         struct svg_matrix sts = svg_matrix_concat(pt->transform, (struct svg_matrix){ 1, 0, 0, 1, tx, ty });
         sts = svg_matrix_concat(sts, (struct svg_matrix){ 1.0f / sx, 0, 0, 1.0f / sy, 0, 0 });
         int iok;
-        struct svg_matrix its = svg_matrix_invert(sts, &iok);
+        struct svg_matrix full = svg_matrix_concat(device_ts, sts);
+        shader->ts = svg_matrix_invert(full, &iok);
         if (!iok) { shader->type = -1; return; }
-        shader->ts = (struct svg_matrix){ 1, 0, 0, 1, -rect[0] * sx, -rect[1] * sy };
-        (void)its;
-        shader->pattern_quality = 0;
+        if (svg_matrix_translate_p(&shader->ts)) shader->pattern_quality = 0;
         return;
     }
     if ((paint->type != 10 && paint->type != 11) || !paint->gradient) {
@@ -7310,7 +7509,7 @@ static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out
 static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]) {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     if (!shader || shader->type < 0) return;
-    if (shader->type == 2) {
+    if (shader->type == 2 || shader->type == 3) {
         svg_pattern_color(shader, x, y, out);
         return;
     }
@@ -7496,6 +7695,9 @@ static void svg_render_nodes(struct svg_node *group, struct svg_matrix ts,
 static void svg_render_path_node(struct svg_node *node, struct svg_matrix ts,
         struct svg_pixmap *pixmap, int blend);
 
+static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
+        struct svg_pixmap *pixmap, int blend);
+
 static void svg_render_path_fill(struct svg_node *node, struct svg_matrix ts,
         struct svg_pixmap *pixmap, int blend) {
     if (!node->fill.present) return;
@@ -7624,6 +7826,7 @@ static void svg_render_nodes(struct svg_node *group, struct svg_matrix ts,
     for (int i = 0; i < group->nchildren; i++) {
         struct svg_node *child = group->children[i];
         if (child->type == 0) svg_render_group_node(child, ts, pixmap);
+        else if (child->type == 2) svg_render_image_node(child, ts, pixmap, 0);
         else svg_render_path_node(child, ts, pixmap, 0);
     }
 }
@@ -7782,6 +7985,36 @@ static void svg_apply_mask(struct svg_mask *mask, struct svg_matrix ts,
         free(m);
     }
     svg_pixmap_free(&scratch);
+}
+
+static void svg_render_image_node(struct svg_node *node, struct svg_matrix ts,
+        struct svg_pixmap *pixmap, int blend) {
+    struct svg_image *im = node->image;
+    if (!node->visible || !im || !im->pix.pixels || im->pix.width <= 0 || im->pix.height <= 0)
+        return;
+    struct svg_matrix dev = svg_matrix_concat(ts, node->transform);
+    struct svg_path *rect = svg_path_new();
+    if (!rect) return;
+    svg_path_move(rect, 0.0f, 0.0f);
+    svg_path_line(rect, (float)im->pix.width, 0.0f);
+    svg_path_line(rect, (float)im->pix.width, (float)im->pix.height);
+    svg_path_line(rect, 0.0f, (float)im->pix.height);
+    svg_path_close(rect);
+    if (!svg_path_finish(rect)) { svg_path_free(rect); return; }
+    svg_path_transform(rect, dev);
+    struct svg_shader shader;
+    memset(&shader, 0, sizeof(shader));
+    shader.type = 3;
+    shader.highp = 1;
+    shader.pattern_quality = im->quality;
+    shader.pattern_pixmap = im->pix;
+    shader.spread = 0;
+    shader.opacity = 1.0f;
+    int ok = 0;
+    shader.ts = svg_matrix_invert(dev, &ok);
+    if (ok && svg_matrix_translate_p(&shader.ts)) shader.pattern_quality = 0;
+    if (ok) svg_fill_path(rect, 0, pixmap, &shader, blend);
+    svg_path_free(rect);
 }
 
 static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
