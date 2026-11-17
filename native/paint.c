@@ -804,8 +804,25 @@ static uint32_t gradient_radial_pixel(const struct dp_gradient_built *g,
 }
 
 static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradient *gradient,
-    double xc, double yc)
+    const struct dp_gradient16 *gradient16, double xc, double yc)
 {
+    struct dp_gradient source;
+    if (gradient16) {
+        memset(&source, 0, sizeof(source));
+        source.radial = gradient16->radial;
+        source.stop_count = gradient16->stop_count;
+        source.extend = gradient16->extend;
+        source.p1x = gradient16->p1x;
+        source.p1y = gradient16->p1y;
+        source.p2x = gradient16->p2x;
+        source.p2y = gradient16->p2y;
+        source.r1 = gradient16->r1;
+        source.r2 = gradient16->r2;
+        source.matrix = gradient16->matrix;
+    } else {
+        source = *gradient;
+    }
+    gradient = &source;
     struct dp_pattern matrix = gradient->matrix;
     double c1x, c1y, c1r, c2x, c2y, c2r;
     double dim;
@@ -859,16 +876,24 @@ static bool gradient_build(struct dp_gradient_built *out, const struct dp_gradie
     out->stops = calloc((size_t)out->count + 2, sizeof(*out->stops));
     if (!out->stops) return false;
     for (int i = 0; i < out->count; i++) {
-        uint32_t rgba = gradient->stops[i].rgba;
-        double alpha = (rgba & 0xff) / 255.0;
-        double red = ((rgba >> 24) & 0xff) / 255.0;
-        double green = ((rgba >> 16) & 0xff) / 255.0;
-        double blue = ((rgba >> 8) & 0xff) / 255.0;
-        out->stops[i + 1].x = fixed_16_16(gradient->stops[i].offset);
-        out->stops[i + 1].a = (uint16_t)(alpha * 65535.0 + 0.5);
-        out->stops[i + 1].r = (uint16_t)(red * 65535.0 + 0.5);
-        out->stops[i + 1].g = (uint16_t)(green * 65535.0 + 0.5);
-        out->stops[i + 1].b = (uint16_t)(blue * 65535.0 + 0.5);
+        if (gradient16) {
+            out->stops[i + 1].x = fixed_16_16(gradient16->stops[i].offset);
+            out->stops[i + 1].a = gradient16->stops[i].a;
+            out->stops[i + 1].r = gradient16->stops[i].r;
+            out->stops[i + 1].g = gradient16->stops[i].g;
+            out->stops[i + 1].b = gradient16->stops[i].b;
+        } else {
+            uint32_t rgba = gradient->stops[i].rgba;
+            double alpha = (rgba & 0xff) / 255.0;
+            double red = ((rgba >> 24) & 0xff) / 255.0;
+            double green = ((rgba >> 16) & 0xff) / 255.0;
+            double blue = ((rgba >> 8) & 0xff) / 255.0;
+            out->stops[i + 1].x = fixed_16_16(gradient->stops[i].offset);
+            out->stops[i + 1].a = (uint16_t)(alpha * 65535.0 + 0.5);
+            out->stops[i + 1].r = (uint16_t)(red * 65535.0 + 0.5);
+            out->stops[i + 1].g = (uint16_t)(green * 65535.0 + 0.5);
+            out->stops[i + 1].b = (uint16_t)(blue * 65535.0 + 0.5);
+        }
     }
     out->stops[0] = out->stops[1];
     out->stops[out->count + 1] = out->stops[out->count];
@@ -1155,6 +1180,26 @@ static void gradient_band(const struct dp_gradient_built *g, struct gradient_wal
         gradient_flush(g, walker, row, dst, dst_stride, coverage, x0, x1 - x0, y0, y1, 0);
 }
 
+static void paint_gradient_built(const struct dp_gradient_built *built, uint32_t *dst,
+    int dst_stride, const struct dp_coverage *coverage, uint32_t *row, int x0, int width,
+    int y0, int y1)
+{
+    struct gradient_walker walker;
+    memset(&walker, 0, sizeof(walker));
+    walker.count = built->count;
+    walker.stops = built->stops;
+    walker.need_reset = 1;
+    walker.extend = built->extend;
+    if (coverage && coverage->spans && coverage->spans->band_count) {
+        for (int b = 0; b < coverage->spans->band_count; b++)
+            gradient_band(built, &walker, row, dst, dst_stride, coverage,
+                &coverage->spans->bands[b]);
+    } else {
+        gradient_flush(built, &walker, row, dst, dst_stride, coverage,
+            x0, width, y0, y1, coverage ? 0 : 1);
+    }
+}
+
 void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient *gradient, const struct dp_coverage *coverage,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h)
@@ -1167,7 +1212,7 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     int width = cx1 - cx0;
     uint32_t *row = NULL;
     if (cx0 >= cx1 || cy0 >= cy1) return;
-    if (!gradient_build(&built, gradient, extents_x + extents_w / 2.0,
+    if (!gradient_build(&built, gradient, NULL, extents_x + extents_w / 2.0,
             extents_y + extents_h / 2.0))
         return;
     row = malloc((size_t)width * sizeof(*row));
@@ -1175,22 +1220,32 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
         free(built.stops);
         return;
     }
-    {
-        struct gradient_walker walker;
-        memset(&walker, 0, sizeof(walker));
-        walker.count = built.count;
-        walker.stops = built.stops;
-        walker.need_reset = 1;
-        walker.extend = built.extend;
-        if (coverage && coverage->spans && coverage->spans->band_count) {
-            for (int b = 0; b < coverage->spans->band_count; b++)
-                gradient_band(&built, &walker, row, dst, dst_stride, coverage,
-                    &coverage->spans->bands[b]);
-        } else {
-            gradient_flush(&built, &walker, row, dst, dst_stride, coverage,
-                cx0, width, cy0, cy1, coverage ? 0 : 1);
-        }
+    paint_gradient_built(&built, dst, dst_stride, coverage, row, cx0, width, cy0, cy1);
+    free(row);
+    free(built.stops);
+}
+
+void dp_paint_gradient16(uint32_t *dst, int dst_stride, struct drect clip,
+    const struct dp_gradient16 *gradient, const struct dp_coverage *coverage,
+    int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h)
+{
+    struct dp_gradient_built built;
+    int cx0 = clip.x0 < 0 ? 0 : clip.x0;
+    int cy0 = clip.y0 < 0 ? 0 : clip.y0;
+    int cx1 = clip.x1 > dst_w ? dst_w : clip.x1;
+    int cy1 = clip.y1 > dst_h ? dst_h : clip.y1;
+    int width = cx1 - cx0;
+    uint32_t *row = NULL;
+    if (cx0 >= cx1 || cy0 >= cy1) return;
+    if (!gradient_build(&built, NULL, gradient, extents_x + extents_w / 2.0,
+            extents_y + extents_h / 2.0))
+        return;
+    row = malloc((size_t)width * sizeof(*row));
+    if (!row) {
+        free(built.stops);
+        return;
     }
+    paint_gradient_built(&built, dst, dst_stride, coverage, row, cx0, width, cy0, cy1);
     free(row);
     free(built.stops);
 }

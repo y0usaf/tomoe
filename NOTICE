@@ -97,7 +97,55 @@ native/fttext.c
   California, 2005 Lars Knoll and Zack Rusin, 2008 Aaron Plattner, 2008 André
   Tupinambá, 2008 M Joonas Pihlaja, 2007 David Turner, 2019 Matthias Clasen.
 
+native/colr.c
+  The COLR version 1 glyph paint graph, clipping, transforms, colour
+  lines and gradient paints derived from cairo 1.18.4 (LGPL-2.1 or
+  MPL-1.1) cairo-colr-glyph-render.c. Copyright 2022 Matthias Clasen.
+
+native/blend.c
+  The integer compositing operators derived from pixman 0.46.4 (MIT)
+  pixman-combine32.c and the float operators from pixman-combine-float.c.
+  Copyright 2000 Keith Packard, member of The XFree86 Project, Inc.,
+  2005 Lars Knoll and Zack Rusin, Trolltech, 2010, 2012 Soren Sandmann
+  Pedersen, 2010, 2012 Red Hat, Inc.
+
 Full upstream notices, copied verbatim from each source file
+
+cairo 1.18.4 src/cairo-colr-glyph-render.c:
+/* -*- Mode: c; c-basic-offset: 4; indent-tabs-mode: t; tab-width: 8; -*- */
+/* cairo - a vector graphics library with display and print output
+ *
+ * Copyright © 2022 Matthias Clasen
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it either under the terms of the GNU Lesser General Public
+ * License version 2.1 as published by the Free Software Foundation
+ * (the "LGPL") or, at your option, under the terms of the Mozilla
+ * Public License Version 1.1 (the "MPL"). If you do not alter this
+ * notice, a recipient may use your version of this file under either
+ * the MPL or the LGPL.
+ *
+ * You should have received a copy of the LGPL along with this library
+ * in the file COPYING-LGPL-2.1; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Suite 500, Boston, MA 02110-1335, USA
+ * You should have received a copy of the MPL along with this library
+ * in the file COPYING-MPL-1.1
+ *
+ * The contents of this file are subject to the Mozilla Public License
+ * Version 1.1 (the "License"); you may not use this file except in
+ * compliance with the License. You may obtain a copy of the License at
+ * http://www.mozilla.org/MPL/
+ *
+ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY
+ * OF ANY KIND, either express or implied. See the LGPL or the MPL for
+ * the specific language governing rights and limitations.
+ *
+ * The Original Code is the cairo graphics library.
+ *
+ * Contributor(s):
+ *      Matthias Clasen <mclasen@redhat.com>
+ */
+
 
 cairo 1.18.4
 

@@ -130,6 +130,8 @@ enum { DP_GRADIENT_STOPS = 16 };
 
 struct dp_gradient_stop { double offset; uint32_t rgba; };
 
+struct dp_gradient_stop16 { double offset; uint16_t a, r, g, b; };
+
 struct dp_gradient {
     int radial, stop_count, extend;
     double p1x, p1y, p2x, p2y, r1, r2;
@@ -138,6 +140,18 @@ struct dp_gradient {
 };
 
 bool dp_gradient_extents(const struct dp_gradient *gradient, struct drect *extents);
+
+struct dp_gradient16 {
+    int radial, stop_count, extend;
+    double p1x, p1y, p2x, p2y, r1, r2;
+    struct dp_pattern matrix;
+    struct dp_gradient_stop16 stops[DP_GRADIENT_STOPS];
+};
+
+bool dp_gradient16_extents(const struct dp_gradient16 *gradient, struct drect *extents);
+void dp_paint_gradient16(uint32_t *dst, int dst_stride, struct drect clip,
+    const struct dp_gradient16 *gradient, const struct dp_coverage *coverage,
+    int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);
 
 void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient *gradient, const struct dp_coverage *coverage,
@@ -148,6 +162,17 @@ void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
     int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,
     uint32_t ink);
 
+enum {
+    DP_COMP_CLEAR, DP_COMP_SRC, DP_COMP_DST, DP_COMP_OVER, DP_COMP_DEST_OVER,
+    DP_COMP_IN, DP_COMP_DEST_IN, DP_COMP_OUT, DP_COMP_DEST_OUT, DP_COMP_ATOP,
+    DP_COMP_DEST_ATOP, DP_COMP_XOR, DP_COMP_ADD, DP_COMP_SATURATE,
+    DP_COMP_MULTIPLY, DP_COMP_SCREEN, DP_COMP_OVERLAY, DP_COMP_DARKEN,
+    DP_COMP_LIGHTEN, DP_COMP_COLOR_DODGE, DP_COMP_COLOR_BURN, DP_COMP_HARD_LIGHT,
+    DP_COMP_SOFT_LIGHT, DP_COMP_DIFFERENCE, DP_COMP_EXCLUSION, DP_COMP_HSL_HUE,
+    DP_COMP_HSL_SATURATION, DP_COMP_HSL_COLOR, DP_COMP_HSL_LUMINOSITY
+};
+
+uint32_t dp_composite(uint32_t dst, uint32_t src, unsigned mask, int op);
 uint32_t dp_lerp8x4(uint32_t src, uint8_t a, uint32_t dst);
 
 void dp_composite_over(uint32_t *dst, int stride, struct drect rect,

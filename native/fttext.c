@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 cairo-ft-font.c, cairo-scaled-font.c, cairo-image-source.c, cairo-image-compositor.c, cairo-matrix.c, pango 1.57.1 pangocairo-render.c, pangocairo-fcfont.c, pangocairo-fcfontmap.c and pixman 0.46.4 pixman-bits-image.c, pixman-fast-path.c, pixman-matrix.c, see NOTICE */
 #include "fttext.h"
+#include "colr.h"
 #include "draw.h"
 
 #include <fontconfig/fontconfig.h>
@@ -1381,6 +1382,33 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
     unsigned xphase = (unsigned)(entry->key >> 24) & 3;
     unsigned yphase = (unsigned)(entry->key >> 26) & 3;
     fte_face_scale(scaled->face, &scaled->scale);
+    if (scaled->face->have_color) {
+        FT_OpaquePaint paint = { NULL, 0 };
+        if (face->units_per_EM > 0 &&
+                FT_Get_Color_Glyph_Paint(face, glyph, FT_COLOR_NO_ROOT_TRANSFORM, &paint)) {
+            struct colr_matrix matrix = { scaled->scale.xx, scaled->scale.yx, scaled->scale.xy,
+                scaled->scale.yy, 0, 0 };
+            struct colr_image image;
+            FT_Set_Transform(face, NULL, NULL);
+            FT_Set_Char_Size(face, face->units_per_EM << 6, 0, 0, 0);
+            scaled->face->have_scale = false;
+            bool ok = colr_render(face, glyph, &matrix, (double)face->units_per_EM,
+                UINT32_C(0xff000000), &image);
+            fte_face_scale(scaled->face, &scaled->scale);
+            if (ok) {
+                entry->data = image.pixels;
+                entry->stride = image.width * 4;
+                entry->width = image.width;
+                entry->height = image.height;
+                entry->off_x = image.off_x;
+                entry->off_y = image.off_y;
+                entry->bpp = 4;
+                entry->component = 0;
+                entry->color = 1;
+                return true;
+            }
+        }
+    }
     if (scaled->face->have_color) {
         int flags = scaled->load_flags;
         flags &= ~FT_LOAD_MONOCHROME;
