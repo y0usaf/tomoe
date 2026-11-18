@@ -13,7 +13,6 @@
 #include "gif.h"
 #include "png.h"
 #include "webp.h"
-#include <zlib.h>
 
 struct svg_point { float x, y; };
 
@@ -9344,31 +9343,40 @@ static void svg_fix_recursive_fe_image(struct svg_doc *doc) {
 }
 
 static unsigned char *svg_gunzip(const void *data, size_t length, size_t *out_length) {
-    z_stream zs;
-    memset(&zs, 0, sizeof(zs));
-    if (inflateInit2(&zs, 15 + 16) != Z_OK) return NULL;
-    size_t capacity = length * 4 + 1024, used = 0;
-    unsigned char *out = svg_alloc(capacity);
-    if (!out) { inflateEnd(&zs); return NULL; }
-    zs.next_in = (Bytef *)data;
-    zs.avail_in = (uInt)length;
-    for (;;) {
-        if (used == capacity) {
-            if (capacity >= (64u << 20)) { free(out); inflateEnd(&zs); return NULL; }
-            unsigned char *grown = svg_realloc(out, capacity * 2);
-            if (!grown) { free(out); inflateEnd(&zs); return NULL; }
-            out = grown;
-            capacity *= 2;
-        }
-        zs.next_out = out + used;
-        zs.avail_out = (uInt)(capacity - used);
-        int status = inflate(&zs, Z_NO_FLUSH);
-        used = capacity - zs.avail_out;
-        if (status == Z_STREAM_END) break;
-        if (status != Z_OK) { free(out); inflateEnd(&zs); return NULL; }
+    const unsigned char *bytes = data;
+    if (length < 18 || bytes[0] != 0x1f || bytes[1] != 0x8b || bytes[2] != 8) return NULL;
+    unsigned flags = bytes[3];
+    size_t pos = 10;
+    if (flags & 4) {
+        if (pos + 2 > length) return NULL;
+        pos += 2 + ((size_t)bytes[pos] | ((size_t)bytes[pos + 1] << 8));
     }
-    inflateEnd(&zs);
-    *out_length = used;
+    if (flags & 8) {
+        while (pos < length && bytes[pos]) pos++;
+        pos++;
+    }
+    if (flags & 16) {
+        while (pos < length && bytes[pos]) pos++;
+        pos++;
+    }
+    if (flags & 2) pos += 2;
+    if (pos > length || length - pos < 8) return NULL;
+    size_t payload = length - pos - 8;
+    unsigned char *out = NULL;
+    size_t out_len = 0;
+    if (tomoe_png_inflate_raw_limit(bytes + pos, payload, &out, &out_len, 64u << 20) !=
+            PNG_OK) return NULL;
+    const unsigned char *trailer = bytes + length - 8;
+    uint32_t expected_crc = (uint32_t)trailer[0] | ((uint32_t)trailer[1] << 8) |
+        ((uint32_t)trailer[2] << 16) | ((uint32_t)trailer[3] << 24);
+    uint32_t expected_size = (uint32_t)trailer[4] | ((uint32_t)trailer[5] << 8) |
+        ((uint32_t)trailer[6] << 16) | ((uint32_t)trailer[7] << 24);
+    if (tomoe_png_crc32(0, out, out_len) != expected_crc ||
+            (uint32_t)out_len != expected_size) {
+        free(out);
+        return NULL;
+    }
+    *out_length = out_len;
     return out;
 }
 

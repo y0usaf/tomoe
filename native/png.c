@@ -103,6 +103,7 @@ struct png_inflate {
     unsigned bfinal;
     unsigned wsize, whave, wpos;
     uint32_t adler;
+    int raw;
     unsigned copy_len, copy_dist;
     unsigned len_sym, dist_sym;
     unsigned nlen, ndist, ncode;
@@ -556,6 +557,7 @@ static int png_inflate_step(struct png_inflate *s, const unsigned char **in_ptr,
             }
             break;
         case INF_TRAILER:
+            if (s->raw) { s->state = INF_DONE; break; }
             if (out > out_start) {
                 s->adler = png_adler32(s->adler, out_start, (size_t)(out - out_start));
                 out_start = out;
@@ -590,11 +592,17 @@ pause:
     return status;
 }
 
-enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
-        unsigned char **out, size_t *out_len) {
+static enum png_status png_inflate_run(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len, int raw, size_t limit) {
     struct png_inflate *s = png_inflate_create();
+    if (s && raw) {
+        s->raw = 1;
+        s->state = INF_BLOCK;
+        s->wsize = 32768;
+    }
     size_t cap = in_len < 1024 ? 4096 : in_len * 4;
     if (cap < 4096) cap = 4096;
+    if (limit && cap > limit) cap = limit;
     unsigned char *buf = malloc(cap);
     size_t len = 0;
     if (!s || !buf) {
@@ -621,12 +629,18 @@ enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
             return PNG_BAD;
         }
         if (out_rem == 0) {
+            if (limit && len >= limit) {
+                png_inflate_destroy(s);
+                free(buf);
+                return PNG_HARD;
+            }
             size_t next_cap = cap * 2;
             if (next_cap < cap) {
                 png_inflate_destroy(s);
                 free(buf);
                 return PNG_HARD;
             }
+            if (limit && next_cap > limit) next_cap = limit;
             unsigned char *grown = realloc(buf, next_cap);
             if (!grown) {
                 png_inflate_destroy(s);
@@ -641,6 +655,21 @@ enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
             return PNG_BAD;
         }
     }
+}
+
+enum png_status tomoe_png_inflate(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len) {
+    return png_inflate_run(in, in_len, out, out_len, 0, 0);
+}
+
+enum png_status tomoe_png_inflate_raw(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len) {
+    return png_inflate_run(in, in_len, out, out_len, 1, 0);
+}
+
+enum png_status tomoe_png_inflate_raw_limit(const unsigned char *in, size_t in_len,
+        unsigned char **out, size_t *out_len, size_t limit) {
+    return png_inflate_run(in, in_len, out, out_len, 1, limit);
 }
 
 #define DEF_MIN_MATCH 3u
