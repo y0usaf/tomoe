@@ -131,6 +131,10 @@
                   ./examples
                   ./share
                   ./Makefile
+                  ./LICENSE
+                  ./NOTICE
+                  ./COPYING-LGPL-2.1
+                  ./COPYING-MPL-1.1
                 ];
               }
             else
@@ -174,6 +178,7 @@
             install -Dm755 build/tomoe-core.so $out/lib/tomoe/core.so
             install -d $out/share/tomoe/lisp
             install -m 644 lisp/*.lisp $out/share/tomoe/lisp/
+            install -Dm644 -t $out/share/doc/tomoe LICENSE NOTICE COPYING-LGPL-2.1 COPYING-MPL-1.1
             install -Dm644 share/tomoe-session.target $out/share/systemd/user/tomoe-session.target
             install -Dm644 share/tomoe-portals.conf $out/share/xdg-desktop-portal/tomoe-portals.conf
             install -Dm644 share/tomoe.portal $out/share/xdg-desktop-portal/portals/tomoe.portal
@@ -244,6 +249,10 @@
           cp -r ${./examples} $out/examples
           cp -r ${./share} $out/share
           cp ${./Makefile} $out/Makefile
+          cp ${./LICENSE} $out/LICENSE
+          cp ${./NOTICE} $out/NOTICE
+          cp ${./COPYING-LGPL-2.1} $out/COPYING-LGPL-2.1
+          cp ${./COPYING-MPL-1.1} $out/COPYING-MPL-1.1
           substituteInPlace $out/native/backend.c --replace-fail \
             'int tomoe_abi_version(void) { return 45; }' \
             'int tomoe_abi_version(void) { return 46; }'
