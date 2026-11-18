@@ -7517,10 +7517,15 @@ static int svg_image_length(struct svg_conv *c, struct xml_node *node, const cha
 static int svg_fit_size(int slice, float aw, float ah, float rw, float rh, float *out_w,
         float *out_h) {
     if (!(aw > 0.0f) || !(ah > 0.0f)) return 0;
-    float sx = rw / aw, sy = rh / ah;
-    float s = slice ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
-    *out_w = aw * s;
-    *out_h = ah * s;
+    float cand_w = rh * aw / ah;
+    int with_h = slice ? cand_w <= rw : cand_w >= rw;
+    if (!with_h) {
+        *out_w = cand_w;
+        *out_h = rh;
+    } else {
+        *out_w = rw;
+        *out_h = rw * ah / aw;
+    }
     return 1;
 }
 
@@ -7549,24 +7554,26 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     struct svg_aspect aspect;
     const char *ar = svg_style_get(c->doc, st, "preserveAspectRatio");
     if (!svg_parse_aspect(ar, &aspect)) { aspect.align = 5; aspect.slice = 0; }
-    float fit_w = w, fit_h = h;
-    if (aspect.align != 0) {
-        if (!svg_fit_size(aspect.slice, aw, ah, w, h, &fit_w, &fit_h)) {
-            fit_w = w; fit_h = h;
-        }
+    float rect_w = (x + w) - x, rect_h = (y + h) - y;
+    float fit_w = rect_w, fit_h = rect_h;
+    if (aspect.align != 0 && !svg_fit_size(aspect.slice, aw, ah, rect_w, rect_h, &fit_w,
+            &fit_h)) {
+        fit_w = rect_w;
+        fit_h = rect_h;
     }
     float ax = x, ay = y;
     int align = aspect.align;
     if (align > 0) {
-        float extra_w = w - fit_w, extra_h = h - fit_h;
+        float extra_w = rect_w - fit_w, extra_h = rect_h - fit_h;
         if (align == 2 || align == 5 || align == 8) ax = x + extra_w * 0.5f;
         else if (align == 3 || align == 6 || align == 9) ax = x + extra_w;
         if (align == 4 || align == 5 || align == 6) ay = y + extra_h * 0.5f;
         else if (align == 7 || align == 8 || align == 9) ay = y + extra_h;
     }
+    float vb_w = (ax + fit_w) - ax, vb_h = (ay + fit_h) - ay;
     struct svg_node *g = svg_group_alloc(c, node, st, 0, clip_context, abs, parent);
     if (!g) { svg_free_image(im); return; }
-    struct svg_matrix image_ts = { fit_w / aw, 0.0f, 0.0f, fit_h / ah, ax, ay };
+    struct svg_matrix image_ts = { vb_w / aw, 0.0f, 0.0f, vb_h / ah, ax, ay };
     g->transform = svg_matrix_concat(g->transform, image_ts);
     g->abs_transform = svg_matrix_concat(abs, g->transform);
     struct svg_node *child = svg_node_new(2);
