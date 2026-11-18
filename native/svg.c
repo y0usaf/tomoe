@@ -909,15 +909,19 @@ static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x,
         } else if (blend == 0 && !svg_shader_opaque(shader)) {
             float q[4];
             float qscale = cov;
-            if (shader->type == 2 && quirk && a != 255u && shader->opacity != 1.0f)
-                qscale = cov * (cov / shader->opacity);
+            if (shader->type == 2 && shader->opacity != 1.0f) {
+                if (a == 255u) qscale = shader->opacity;
+                else if (quirk) qscale = cov * cov;
+                else qscale = shader->opacity * cov;
+            }
             for (int k = 0; k < 4; k++) q[k] = color[k] * qscale;
             for (int k = 0; k < 4; k++) vals[k] = q[k] + d[k] * (1.0f - q[3]);
         } else {
             float p[4];
+            float op = shader->type == 2 ? shader->opacity : 1.0f;
             for (int k = 0; k < 3; k++)
-                p[k] = blend == 1 ? color[k] : color[k] + d[k] * (1.0f - color[3]);
-            p[3] = blend == 1 ? color[3] : color[3] + d[3] * (1.0f - color[3]);
+                p[k] = blend == 1 ? color[k] * op : color[k] * op + d[k] * (1.0f - color[3] * op);
+            p[3] = blend == 1 ? color[3] * op : color[3] * op + d[3] * (1.0f - color[3] * op);
             for (int k = 0; k < 4; k++) vals[k] = (p[k] - d[k]) * cov + d[k];
         }
         for (int k = 0; k < 4; k++) px[k] = (unsigned char)svg_round_u8(vals[k]);
@@ -10300,11 +10304,6 @@ static void svg_pattern_color(struct svg_shader *shader, int x, int y, float out
             else if (out[k] > 1.0f) out[k] = 1.0f;
         }
     }
-    float o = shader->opacity;
-    out[0] *= o;
-    out[1] *= o;
-    out[2] *= o;
-    out[3] *= o;
 }
 
 static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, float out[4]) {
