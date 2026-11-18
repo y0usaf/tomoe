@@ -185,7 +185,7 @@ run() {
 }
 
 main_run() {
-	local binary=$1 reference key cached index pid
+	local binary=$1 reference key cached index pid temp
 	local -a pids=()
 	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/bench/speedlab/reference")
 	reference=$(resolve "$REFERENCE")
@@ -200,19 +200,22 @@ main_run() {
 			pids+=($!)
 		done
 		for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
-		if ! "$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$cached.new" <<'PY'
+		temp=$(mktemp "$CACHE/$key.XXXXXX") || die "cannot write the cache"
+		if ! "$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$temp" <<'PY'
 import json, sys
 work, runs, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 bases = [json.load(open(f"{work}/reference-{index}.json")) for index in range(1, runs + 1)]
 failed = [f"run {index}: {base.get('error', '?')}" for index, base in enumerate(bases, 1) if not base.get("ok")]
 if failed:
     sys.exit("; ".join(failed))
-json.dump(bases, open(out, "w"))
+with open(out, "w") as cache:
+    json.dump(bases, cache)
 PY
 		then
+			rm -f "$temp"
 			die "a reference run failed, so there is no baseline to cache"
 		fi
-		mv "$cached.new" "$cached"
+		mv "$temp" "$cached" || { rm -f "$temp"; die "cannot publish the baseline at $cached"; }
 	fi
 	say "running $binary as personas A and B"
 	run "$binary" A "$WORK/a.json" &
