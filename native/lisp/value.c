@@ -14,14 +14,6 @@ static lisp_value alloc_obj(uint8_t type, size_t size)
     return VAL(obj);
 }
 
-lisp_value cons(lisp_value car, lisp_value cdr)
-{
-    struct lisp_cons *out = PTR(alloc_obj(LT_CONS, sizeof(*out)), lisp_cons);
-    out->car = car;
-    out->cdr = cdr;
-    return VAL(out);
-}
-
 #define SMALL_INT_MIN (-4096)
 #define SMALL_INT_MAX 65536
 #define SMALL_INT_COUNT (SMALL_INT_MAX - SMALL_INT_MIN + 1)

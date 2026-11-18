@@ -217,6 +217,40 @@ static void give_block(uint32_t index)
     free_block = index;
 }
 
+static void *heap_alloc_slow(struct lisp_region *region, size_t bytes)
+{
+    struct lisp_block *b = region->last != UINT32_MAX ? &lisp.blocks[region->last] : NULL;
+    uint32_t index = take_block();
+    struct lisp_block *nb = &lisp.blocks[index];
+    nb->owner = region;
+    nb->kind = (uint8_t)region->kind;
+    nb->next = UINT32_MAX;
+    if (b)
+        b->next = index;
+    else
+        region->first = index;
+    region->last = index;
+    void *ptr = (char *)block_base(index) + nb->used;
+    nb->used += (uint32_t)bytes;
+    region->used += bytes;
+    if (region->used > region->high_water)
+        region->high_water = region->used;
+    return ptr;
+}
+
+static inline void *heap_alloc_fast(struct lisp_region *region, size_t bytes)
+{
+    struct lisp_block *b = region->last != UINT32_MAX ? &lisp.blocks[region->last] : NULL;
+    if (!b || b->used + bytes > LISP_BLOCK_SIZE)
+        return heap_alloc_slow(region, bytes);
+    void *ptr = (char *)block_base(region->last) + b->used;
+    b->used += (uint32_t)bytes;
+    region->used += bytes;
+    if (region->used > region->high_water)
+        region->high_water = region->used;
+    return ptr;
+}
+
 void *heap_alloc_in(struct lisp_region *region, size_t bytes)
 {
     if (bytes == 0)
@@ -226,31 +260,24 @@ void *heap_alloc_in(struct lisp_region *region, size_t bytes)
         lisp_error("lisp allocation too large");
     if (!region)
         region = lisp.cur_region;
-    struct lisp_block *b = region->last != UINT32_MAX ? &lisp.blocks[region->last] : NULL;
-    if (!b || b->used + bytes > LISP_BLOCK_SIZE) {
-        uint32_t index = take_block();
-        struct lisp_block *nb = &lisp.blocks[index];
-        nb->owner = region;
-        nb->kind = (uint8_t)region->kind;
-        nb->next = UINT32_MAX;
-        if (b)
-            b->next = index;
-        else
-            region->first = index;
-        region->last = index;
-        b = nb;
-    }
-    void *ptr = (char *)block_base(region->last) + b->used;
-    b->used += (uint32_t)bytes;
-    region->used += bytes;
-    if (region->used > region->high_water)
-        region->high_water = region->used;
-    return ptr;
+    return heap_alloc_fast(region, bytes);
 }
 
 void *heap_alloc(size_t bytes)
 {
     return heap_alloc_in(lisp.cur_region, bytes);
+}
+
+lisp_value cons(lisp_value car, lisp_value cdr)
+{
+    struct lisp_cons *out = heap_alloc_fast(lisp.cur_region, sizeof(*out));
+    out->h.type = LT_CONS;
+    out->h.flags = 0;
+    out->h.aux = 0;
+    out->h.size = sizeof(*out);
+    out->car = car;
+    out->cdr = cdr;
+    return VAL(out);
 }
 
 void *heap_alloc_raw(size_t bytes)
@@ -574,19 +601,24 @@ static void *copy_alloc(struct lisp_region *dst, size_t bytes, bool share)
                 lisp.blocks[last].used + bytes > LISP_BLOCK_SIZE)
             longjmp(lisp.ctl[lisp.ctl_top - 1].jb, 2);
     }
-    return heap_alloc_in(dst, bytes);
+    if (bytes > LISP_BLOCK_SIZE)
+        lisp_error("lisp allocation too large");
+    return heap_alloc_fast(dst, bytes);
 }
 
 static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool share)
 {
-    struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
-    if (!from)
+    uint8_t type = TYPE(value);
+    if (type == LT_SYMBOL)
         return value;
-    if (share && from == dst && !copy_splits_aliases(value))
-        return value;
-    switch (TYPE(value)) {
-    case LT_SYMBOL:
-        return value;
+    if (share || type != LT_CONS) {
+        struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
+        if (!from)
+            return value;
+        if (share && from == dst && !copy_splits_aliases(value))
+            return value;
+    }
+    switch (type) {
     case LT_CONS: {
         struct lisp_cons *src = PTR(value, lisp_cons);
         if (src->h.flags & CONS_FORWARDED)
@@ -609,14 +641,11 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool shar
                 head = VAL(out);
             out->car = deep_copy(car, dst, share);
             lisp_value next = src->cdr;
-            struct lisp_region *next_region = NULL;
-            if (TYPE(next) == LT_CONS)
-                next_region = heap_region_of((void *)(uintptr_t)next);
-            if (!next_region) {
+            if (TYPE(next) != LT_CONS) {
                 out->cdr = deep_copy(next, dst, share);
                 break;
             }
-            if (share && next_region == dst) {
+            if (share && heap_region_of((void *)(uintptr_t)next) == dst) {
                 out->cdr = next;
                 break;
             }
@@ -674,8 +703,9 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool shar
     }
     case LT_FUNCTION: {
         struct lisp_function *src = PTR(value, lisp_function);
-        if (memo_lookup(src))
-            return memo_lookup(src);
+        lisp_value hit = memo_lookup(src);
+        if (hit)
+            return hit;
         struct lisp_function *out = copy_alloc(dst, sizeof(*out), share);
         *out = *src;
         out->gen = NULL;
@@ -703,8 +733,9 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool shar
         return copy_frame(PTR(value, lisp_frame), dst, share);
     case LT_HASHTABLE: {
         struct lisp_hashtable *src = PTR(value, lisp_hashtable);
-        if (memo_lookup(src))
-            return memo_lookup(src);
+        lisp_value hit = memo_lookup(src);
+        if (hit)
+            return hit;
         struct lisp_hashtable *out = copy_alloc(dst, sizeof(*out), share);
         *out = *src;
         memo_add(src, out);
