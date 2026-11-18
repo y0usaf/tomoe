@@ -8,6 +8,7 @@ the same on every run.
 ```sh
 ./speedlab.sh CANDIDATE                 # verdict JSON on stdout, exit 0 accept / 1 reject
 ./speedlab.sh --reference REV CANDIDATE # compare against REV instead of bench/speedlab/reference
+./speedlab.sh --compare BASE CANDIDATE  # the same, for a climb: is CANDIDATE a win over BASE?
 ./speedlab.sh --out FILE CANDIDATE      # also keep both runs and the reference in FILE
 ./speedlab.sh --self-test               # seeded cheats must be rejected, the clean build accepted
 ./speedlab.sh --profile CANDIDATE       # function hotspots, heap census, rig overhead
@@ -64,6 +65,15 @@ with `WAYLAND_DEBUG=client`, so each protocol message it sends or receives is
 recorded with its virtual timestamp.
 
 ## The verdict
+
+The verdict names its `base` (the reference, or `BASE` under `--compare`) and
+its `candidate`, and `outcome` sums it up: `win` when at least one of cpu,
+raster, children, settled or peak private dirty fell by more than its noise band
+and none rose by more than its band, `loss` the other way round, `mixed` when
+both happened, `neutral` when nothing left its band, and `reject` when any of
+the rules below fired. A climb accepts a `win`, makes it the next `BASE`, and
+keeps going; the base's run is cached by its binary's hash, so it costs nothing
+the second time.
 
 - `score`: user-space instructions retired, counted by the hardware with
   `perf_event_open` on the compositor and everything it starts. `cpu` is the
@@ -134,19 +144,20 @@ names for it:
 
 ## Noise and run time
 
-Repeated runs of `e880e72`, eight of them four at a time on a machine at load
-25 to 50, agreed on every frame (1801 at 5120x1440) and every protocol line
-(23 958). Spread is max minus min over the mean; the band in `noise` is what a
-verdict calls significant and what persona A and B may differ by.
+Repeated runs agreed on every frame (1801 at 5120x1440) and every protocol
+line: eight of `e880e72` four at a time at load 25 to 50, and four of the
+current reference `89ad344` two at a time. Spread is max minus min over the
+mean; the band in `noise` is what a verdict calls significant and what persona A
+and B may differ by.
 
-| metric | spread | band |
-| --- | --- | --- |
-| instructions (everything) | 0.0018 % | 0.005 % |
-| cpu (compositor main thread, ~58 G) | 0.137 % | 0.2 % |
-| raster (llvmpipe threads, ~4.88 T) | 0.0012 % | 0.005 % |
-| children (shader compiler copies, mado-send) | 0.023 % | 0.05 % |
-| settled private dirty (~276 MB) | 0.50 % | 2.5 % |
-| peak private dirty (~553 MB) | 0.21 % | 0.5 % |
+| metric | e880e72 (8) | 89ad344 (4) | band |
+| --- | --- | --- | --- |
+| instructions (everything) | 0.0018 % | 0.0009 % | 0.005 % |
+| cpu (compositor main thread, ~58 G) | 0.137 % | 0.063 % | 0.2 % |
+| raster (llvmpipe threads, ~4.88 T) | 0.0012 % | 0.0001 % | 0.005 % |
+| children (shader compiler copies, mado-send) | 0.023 % | 0.022 % | 0.05 % |
+| settled private dirty (~276 MB) | 0.50 % | 1.39 % | 2.5 % |
+| peak private dirty (~553 MB) | 0.21 % | 0.07 % | 0.5 % |
 
 A verdict with a cached reference runs the two personas side by side: 87 s
 measured at load 25, 130 to 200 s with four other runs alongside. Real time
