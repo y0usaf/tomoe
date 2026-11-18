@@ -8,6 +8,7 @@ PALETTE=${SPEEDLAB_PALETTE:-$HOME/.cache/theme/gtk.css}
 OUTPUT=${SPEEDLAB_OUTPUT:-DP-4}
 MODE=${SPEEDLAB_MODE:-5120x1440@240}
 CACHE=${SPEEDLAB_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tomoe-speedlab}
+BASE_RUNS=${SPEEDLAB_BASE_RUNS:-3}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
 HERE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 REFERENCE=${SPEEDLAB_REFERENCE:-}
@@ -36,8 +37,11 @@ reference build's run.
                       same equivalence rules; "outcome" says win, loss, mixed or neutral from
                       the per-metric deltas that leave the noise band
   --out FILE          also write the verdict, with both runs, to FILE
-  --fresh             recompute the reference instead of using its cached run
+  --fresh             recompute the reference instead of using its cached runs
   --persona A|B       run only that persona and print its raw result
+
+The reference is run SPEEDLAB_BASE_RUNS (default 3) times and the verdict scores
+against their mean, so one base measurement's noise cannot decide a climb.
 
 SPEEDLAB_CONFIG (default ~/.config/tomoe/init.lisp) and SPEEDLAB_PALETTE (default
 ~/.cache/theme/gtk.css) are snapshotted into the run; nothing reaches the running
@@ -180,17 +184,27 @@ run() {
 }
 
 main_run() {
-	local binary=$1 reference key cached
+	local binary=$1 reference key cached index pid
+	local -a pids=()
 	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/bench/speedlab/reference")
 	reference=$(resolve "$REFERENCE")
-	key=$(printf '%s %s %s %s' "$RIG" "$reference" "$(sha256sum "$reference" | cut -c1-64)" "$(<"$WORK/stage.hash")" |
-		sha256sum | cut -c1-32)
+	key=$(printf '%s %s %s %s %s' "$RIG" "$reference" "$(sha256sum "$reference" | cut -c1-64)" \
+		"$(<"$WORK/stage.hash")" "$BASE_RUNS" | sha256sum | cut -c1-32)
 	cached=$CACHE/$key.json
 	mkdir -p "$CACHE"
 	if ((FRESH)) || [[ ! -s $cached ]]; then
-		say "running the reference $reference"
-		run "$reference" A "$WORK/reference.json"
-		cp "$WORK/reference.json" "$cached"
+		say "running the reference $reference $BASE_RUNS times"
+		for ((index = 1; index <= BASE_RUNS; index++)); do
+			run "$reference" A "$WORK/reference-$index.json" &
+			pids+=($!)
+		done
+		for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
+		"$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$cached.new" <<'PY' || exit 2
+import json, sys
+work, runs, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+json.dump([json.load(open(f"{work}/reference-{index}.json")) for index in range(1, runs + 1)], open(out, "w"))
+PY
+		mv "$cached.new" "$cached"
 	fi
 	say "running $binary as personas A and B"
 	run "$binary" A "$WORK/a.json" &

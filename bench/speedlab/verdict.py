@@ -15,6 +15,10 @@ def load(path):
         return json.load(f)
 
 
+def mean(values):
+    return sum(values) / len(values)
+
+
 def tiles_box(width, height, indices):
     tw, th = width // TILES_X, height // TILES_Y
     xs = [i % TILES_X for i in indices]
@@ -111,22 +115,31 @@ def split(run):
             "children": run["instructions"] - run["process_instructions"]}
 
 
+MEMORY = {"private_dirty": "settled_private_dirty_kB", "peak_private_dirty": "peak_private_dirty_kB"}
+
+
 def main():
-    reference, a, b = (load(path) for path in sys.argv[1:4])
+    bases = load(sys.argv[1])
+    reference = bases[0]
+    a, b = load(sys.argv[2]), load(sys.argv[3])
     reference_binary, candidate_binary = sys.argv[4], sys.argv[5]
     out = sys.argv[6] if len(sys.argv) > 6 else None
     reasons = []
-    if not reference.get("ok"):
-        reasons.append("the reference run failed: " + reference.get("error", "?"))
+    for index, run in enumerate(bases, 1):
+        if not run.get("ok"):
+            reasons.append(f"base run {index} failed: " + run.get("error", "?"))
     for label, run in (("run A", a), ("run B", b)):
         if not run.get("ok"):
             reasons.append(f"{label} failed: {run.get('error', '?')}")
     frames_detail = events_detail = None
     if not reasons:
+        for index, run in enumerate(bases[1:], 2):
+            problems, _, _ = equivalence(reference, run, f"base run {index}")
+            reasons += problems
         for label, run in (("run A", a), ("run B", b)):
             if run["exit_status"] != reference["exit_status"]:
                 reasons.append(f"{label}: the compositor exited {run['exit_status']}, the reference {reference['exit_status']}")
-            seen = {v["where"] for v in reference["violations"]}
+            seen = {v["where"] for base in bases for v in base["violations"]}
             fresh = [v for v in run["violations"] if v["where"] not in seen]
             if fresh:
                 reasons.append(f"{label}: read the real clock behind the rig's virtual one: {json.dumps(fresh[:3])}")
@@ -134,7 +147,7 @@ def main():
             reasons += problems
             if label == "run A":
                 frames_detail, events_detail = frames, events
-            known = {tuple(entry) for entry in reference["state"]}
+            known = {tuple(entry) for base in bases for entry in base["state"]}
             new_state = sorted(entry[0] for entry in run["state"] if tuple(entry) not in known)
             if new_state:
                 reasons.append(f"{label}: leaves state the reference does not (new or changed files), which would "
@@ -145,7 +158,7 @@ def main():
             if frames or events:
                 reasons.append("it sees the rig: persona A and persona B produced different output, first at "
                                + json.dumps(frames or events))
-        if a["scaled"] or b["scaled"]:
+        if a["scaled"] or b["scaled"] or any(base.get("scaled") for base in bases):
             reasons.append("the hardware counters were multiplexed, so the counts are estimates")
         for field, value in split(a).items():
             other = split(b)[field]
@@ -156,35 +169,35 @@ def main():
     found = markers(reference_binary, candidate_binary)
     if found:
         reasons.append(f"the build looks for the rig: new references to {found}")
-    verdict = {"verdict": "reject" if reasons else "accept", "reasons": reasons,
+    verdict = {"verdict": "reject" if reasons else "accept", "reasons": reasons, "base_runs": len(bases),
                "base": reference_binary, "candidate": candidate_binary}
     if a.get("ok") and reference.get("ok"):
-        mine, theirs = split(a), split(reference)
+        mine = split(a)
+        theirs = {key: mean([split(run)[key] for run in bases]) for key in mine}
         verdict["score"] = {
             **mine,
-            "reference": theirs,
+            "reference": {key: round(theirs[key]) for key in theirs},
             "delta_percent": {key: round((mine[key] - theirs[key]) / max(1, theirs[key]) * 100, 4) for key in mine},
             "significant": {key: abs(mine[key] - theirs[key]) / max(1, theirs[key]) * 100 > BANDS[key] for key in mine},
             "persona_b": split(b) if b.get("ok") else None,
             "noise_band_percent": {key: BANDS[key] for key in mine},
             "cycles": a["cycles"],
         }
-        mem, ref_mem = a["memory"], reference["memory"]
         def memory(m):
             return {"peak_private_dirty_kB": m["peak_private_dirty_kB"], "settled_private_dirty_kB": m["settled"].get("Private_Dirty"),
                     "settled_rss_kB": m["settled"].get("Rss"), "hwm_kB": m["hwm_kB"],
                     "settled_malloc_used_kB": m["settled"].get("malloc_used_kB"),
                     "peak_pss_kB": m["peak_pss_kB"], "settled_pss_kB": m["settled"].get("Pss")}
-        pairs = {"private_dirty": ("settled_private_dirty_kB", memory(mem), memory(ref_mem)),
-                 "peak_private_dirty": ("peak_private_dirty_kB", memory(mem), memory(ref_mem))}
-        memory_delta = {name: round((now[key] - then[key]) / max(1, then[key]) * 100, 4)
-                        for name, (key, now, then) in pairs.items()}
-        verdict["memory"] = {**memory(mem), "reference": memory(ref_mem),
+        mem = memory(a["memory"])
+        ref = {key: mean([memory(base["memory"])[key] for base in bases]) for key in mem}
+        memory_delta = {name: round((mem[key] - ref[key]) / max(1, ref[key]) * 100, 4)
+                        for name, key in MEMORY.items()}
+        verdict["memory"] = {**mem, "reference": {key: round(ref[key]) for key in ref},
                              "delta_percent": memory_delta,
                              "significant": {name: abs(value) > BANDS[name] for name, value in memory_delta.items()},
                              "noise_band_percent": {"private_dirty": BANDS["private_dirty"],
                                                     "peak_private_dirty": BANDS["peak_private_dirty"]},
-                             "breakdown": mem["breakdown"][:16]}
+                             "breakdown": a["memory"]["breakdown"][:16]}
         deltas = {**verdict["score"]["delta_percent"], **memory_delta}
         moved = {name: value for name, value in deltas.items()
                  if abs(value) > BANDS[name] and name != "instructions"}
@@ -209,7 +222,7 @@ def main():
     print(json.dumps(verdict, indent=1))
     if out:
         with open(out, "w") as f:
-            json.dump({**verdict, "reference": reference, "a": a, "b": b}, f)
+            json.dump({**verdict, "reference": bases, "a": a, "b": b}, f)
     sys.exit(0 if not reasons else 1)
 
 

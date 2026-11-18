@@ -19,8 +19,9 @@ the same on every run.
 `CANDIDATE` is a store path with `bin/tomoe`, a checkout or build directory with
 `build/tomoe`, a binary, or a revision of this repository (built with nix). The
 reference run is cached in `~/.cache/tomoe-speedlab`, keyed by the rig, the
-reference binary's hash and the staged inputs, so a verdict runs the candidate
-only: two runs at once, about 85 s on this machine at load 25.
+reference binary's hash, the staged inputs and the number of runs, so a verdict
+reruns the candidate only: two runs at once, about 85 s on this machine at load
+25, and the base's three side by side the first time a base is judged.
 
 ## What one run is
 
@@ -72,15 +73,16 @@ raster, children, settled or peak private dirty fell by more than its noise band
 and none rose by more than its band, `loss` the other way round, `mixed` when
 both happened, `neutral` when nothing left its band, and `reject` when any of
 the rules below fired. A climb accepts a `win`, makes it the next `BASE`, and
-keeps going; the base's run is cached by its binary's hash, so it costs nothing
-the second time.
+keeps going. The base is run three times and the verdict scores against their
+mean, so one base measurement cannot decide a climb; those runs are cached by the
+base binary's hash, so they cost nothing the second time.
 
 - `score`: user-space instructions retired, counted by the hardware with
   `perf_event_open` on the compositor and everything it starts. `cpu` is the
   main thread, `raster` the llvmpipe threads (the GPU's share of the work),
   `children` the processes Tomoe starts (shader compiler copies, mado-send).
   Each has the noise band measured below; `significant` says whether the delta
-  leaves it.
+  leaves it, and `reference` is the mean of the base's three runs.
 - `memory`: private dirty and PSS at each workload phase, the peak, the settled
   value, and a per-mapping breakdown (`--profile` adds a heap census by call site).
 - `equivalence`: frame count, first differing frame with the tiles that differ,
@@ -90,13 +92,14 @@ the second time.
 A candidate is rejected when any of these hold:
 
 1. a frame or a client's protocol traffic differs from the reference;
-2. it read the real clock (a trapped syscall at a site the reference does not have);
-3. it leaves a file the reference does not, or changes one it writes;
-4. it sees the rig: its output differs between persona A and persona B, or any
+2. the base's three runs do not agree with each other, so there is nothing to compare to;
+3. it read the real clock (a trapped syscall at a site the reference does not have);
+4. it leaves a file the reference does not, or changes one it writes;
+5. it sees the rig: its output differs between persona A and persona B, or any
    of its four costs differs between them by more than the noise band;
-5. its binary gained references to the rig (`speedlab`, `TOMOE_ISOLATED`,
+6. its binary gained references to the rig (`speedlab`, `TOMOE_ISOLATED`,
    `LD_PRELOAD`, `/proc/self/status`, `Seccomp`, the vDSO) the reference lacks;
-6. either run failed, the compositor exited differently, or counters multiplexed.
+7. either run failed, the compositor exited differently, or counters multiplexed.
 
 ## Why a candidate cannot carry anything between runs
 
@@ -157,11 +160,22 @@ and B may differ by.
 | raster (llvmpipe threads, ~4.88 T) | 0.0012 % | 0.0001 % | 0.005 % |
 | children (shader compiler copies, mado-send) | 0.023 % | 0.022 % | 0.05 % |
 | settled private dirty (~276 MB) | 0.50 % | 1.39 % | 2.5 % |
-| peak private dirty (~553 MB) | 0.21 % | 0.07 % | 0.5 % |
+| peak private dirty (~553 MB) | 0.21 % | 0.07 % | 3.0 % |
+
+Peak private dirty is the one metric whose agreement does not survive a change
+of session. Ten alternating runs of `9fd1d47` and `faecc51` at load 16 to 26
+peaked at a 0.97 % and a 0.78 % standard deviation, a 1.91 % and a 1.67 %
+spread, and each build's one cached run sat 1.2 % off that build's own five-run
+mean, so inside the old 0.5 % band the same build scored both a win and a loss.
+Its band is three times the worse deviation, 3.0 %, and the base is the mean of
+three runs. CPU on the same runs deviated 0.010 to 0.018 %, well inside its
+0.2 % band. The bands live in `noise` alone; `SPEEDLAB_BASE_RUNS` sets the run
+count.
 
 A verdict with a cached reference runs the two personas side by side: 87 s
-measured at load 25, 130 to 200 s with four other runs alongside. Real time
-never enters a score.
+measured at load 25, 130 to 200 s with four other runs alongside; a base that is
+not cached adds its three runs, side by side, before those. Real time never
+enters a score.
 
 ## What the rig costs, and what it changes
 
