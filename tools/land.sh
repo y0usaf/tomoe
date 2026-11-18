@@ -463,8 +463,8 @@ daemon() {
 		ACTIVE_FILE=$ACTIVE/$next
 		mv "$QUEUE/$next" "$ACTIVE_FILE" 2>/dev/null || continue
 		: >"$ROOT/steps"
-		printf '%s taken %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/journal.log"
 		id=${next#*-}
+		printf '%s taken %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/journal.log"
 		IFS=$'\t' read -r type ref suite timeout <"$ACTIVE_FILE"
 		printf '%s start %s %s %s\n' "$(date -u +%FT%TZ)" "$id" "$type" "$ref" >>"$ROOT/daemon.log"
 		case $type in
