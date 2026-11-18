@@ -56,6 +56,8 @@ static const struct setting_field {
     { "blur-passes", offsetof(struct settings, blur_passes), SETTING_INT },
     { "blur-offset", offsetof(struct settings, blur_offset), SETTING_REAL },
     { "blur-anti-artifact-margin", offsetof(struct settings, blur_margin), SETTING_INT },
+    { "blur-noise", offsetof(struct settings, blur_noise), SETTING_REAL },
+    { "blur-vibrancy", offsetof(struct settings, blur_vibrancy), SETTING_REAL },
     { "shadow-color", offsetof(struct settings, shadow_color), SETTING_COLOR },
     { "shadow-power", offsetof(struct settings, shadow_power), SETTING_REAL },
     { "border-radius", offsetof(struct settings, border_radius), SETTING_INT },

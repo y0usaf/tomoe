@@ -408,6 +408,18 @@ tint its backdrop the way glass does. The compositor copies only that much of th
 backdrop, once per piece it draws, and repaints the whole piece whenever anything
 under those 32 pixels changes; a shader that never calls it costs no copy.
 
+A shader that calls `frost(at)` reads the same backdrop through the windows' own
+blur: the `:blur` settings' passes and offset, finished the way theirs is, so
+glass drawn by a shader frosts exactly as a translucent window does. It starts at
+half resolution with one pass fewer, which reaches as far, and is made once per
+surface before the first of its pieces draws, over every piece it has, so no piece
+frosts the glass another just drew; the surface repaints when anything within the
+`:blur :anti-artifact-margin` of a piece changes. Its levels are the output's
+size and are allocated once. `:blur :vibrancy` scales the saturation of every
+blur's last pass (1 leaves it) and `:blur :noise` dithers it by that many steps of
+8-bit colour (0 leaves it), so a wide blur of a smooth gradient keeps no bands;
+with both at their defaults a blur's bytes are what they always were.
+
 A bare `(:trail ...)` background draws that path itself, as squares of `:cell`
 pixels lit for `:life` seconds and dimmed in `:steps` levels of `:color`,
 stopping `:idle` seconds after the pointer rests. The compositor walks the cells

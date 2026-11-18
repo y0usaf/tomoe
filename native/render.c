@@ -405,6 +405,8 @@ static const char up_source[] =
     "uniform sampler2D tex;\n"
     "uniform vec2 half_pixel;\n"
     "uniform float offset;\n"
+    "uniform float grain;\n"
+    "uniform float vibrancy;\n"
     "varying vec2 v_tex;\n"
     "void main() {\n"
     "    vec4 sum = texture2D(tex, v_tex + vec2(-half_pixel.x * 2.0, 0.0) * offset);\n"
@@ -415,7 +417,18 @@ static const char up_source[] =
     "    sum += texture2D(tex, v_tex + vec2(half_pixel.x, -half_pixel.y) * offset) * 2.0;\n"
     "    sum += texture2D(tex, v_tex + vec2(0.0, -half_pixel.y * 2.0) * offset);\n"
     "    sum += texture2D(tex, v_tex + vec2(-half_pixel.x, -half_pixel.y) * offset) * 2.0;\n"
-    "    gl_FragColor = sum / 12.0;\n"
+    "    vec4 c = sum / 12.0;\n"
+    "    if (vibrancy != 1.0) {\n"
+    "        float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
+    "        c.rgb = clamp(mix(vec3(l), c.rgb, vibrancy), 0.0, 1.0);\n"
+    "    }\n"
+    "    if (grain > 0.0) {\n"
+    "        vec2 q = gl_FragCoord.xy;\n"
+    "        float a = fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715))));\n"
+    "        float b = fract(52.9829189 * fract(dot(q + vec2(23.0, 61.0), vec2(0.00583715, 0.06711056))));\n"
+    "        c.rgb += (a + b - 1.0) * grain / 255.0;\n"
+    "    }\n"
+    "    gl_FragColor = c;\n"
     "}\n";
 
 static const char shader_vertex_source[] =
@@ -448,6 +461,11 @@ static const char shader_prelude[] =
     "uniform vec4 tomoe_beneath_box;\n"
     "vec4 beneath(vec2 at) {\n"
     "    return texture(tomoe_beneath, (at - tomoe_beneath_box.xy) * tomoe_beneath_box.zw);\n"
+    "}\n"
+    "uniform sampler2D tomoe_frost;\n"
+    "uniform vec4 tomoe_frost_box;\n"
+    "vec4 frost(vec2 at) {\n"
+    "    return texture(tomoe_frost, (at - tomoe_frost_box.xy) * tomoe_frost_box.zw);\n"
     "}\n"
     "vec4 markvec(vec2 at) {\n"
     "    if (iMarksBox.z <= 0.0 || iMarksBox.w <= 0.0) return vec4(0.0);\n"
@@ -578,7 +596,7 @@ static void program_locations(struct program *p) {
         "tex_next", "geo_to_tex", "geo_to_tex_prev", "geo_to_tex_next", "curr_geo_to_prev_geo",
         "curr_geo_to_next_geo", "progress", "clamped_progress", "random_seed", "iPath",
         "iPathCount", "iData", "iWindow", "iWindowCount", "tomoe_beneath_box", "iSelection",
-        "tomoe_marks", "iMarksBox" };
+        "tomoe_marks", "iMarksBox", "tomoe_frost", "tomoe_frost_box", "grain", "vibrancy" };
     GLint *slots[] = { &p->tex, &p->alpha, &p->opaque, &p->size, &p->radius, &p->clip, &p->width,
         &p->kind, &p->color, &p->range, &p->power, &p->half_pixel, &p->offset, &p->resolution,
         &p->time, &p->frame, &p->mouse, &p->channel, &p->lut, &p->trail, &p->trail_count, &p->tint,
@@ -586,7 +604,8 @@ static void program_locations(struct program *p) {
         &p->geo_to_tex, &p->geo_to_tex_prev, &p->geo_to_tex_next, &p->curr_geo_to_prev_geo,
         &p->curr_geo_to_next_geo, &p->progress, &p->clamped_progress, &p->random_seed,
         &p->path, &p->path_count, &p->data, &p->windows, &p->window_count, &p->beneath,
-        &p->selection, &p->marks, &p->marks_box };
+        &p->selection, &p->marks, &p->marks_box, &p->frost, &p->frost_box, &p->grain,
+        &p->vibrancy };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         *slots[i] = glGetUniformLocation(p->id, names[i]);
 }

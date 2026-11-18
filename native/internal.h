@@ -349,6 +349,7 @@ struct program {
     GLint curr_geo_to_prev_geo, curr_geo_to_next_geo;
     GLint progress, clamped_progress, random_seed, path, path_count;
     GLint data, windows, window_count, beneath, selection, marks, marks_box;
+    GLint frost, frost_box, grain, vibrancy;
 };
 enum { SCENE_RECT, SCENE_BORDER, SCENE_SHADOW, SCENE_TEXTURE };
 struct scene_quad {
@@ -739,7 +740,10 @@ struct shader_inputs {
     const struct texture *marks;
     const float *marks_box;
     bool opaque;
+    const struct region *frost_ring;
+    uint64_t frost_stamp;
 };
+uint64_t effects_frost_stamp(struct tomoe *s);
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
     const struct shader_inputs *inputs);
 enum { TRAIL_CELLS = 0, TRAIL_DOTS = 1 };
@@ -900,7 +904,7 @@ struct settings {
     double cursor_trail_cell, cursor_trail_life;
     int cursor_trail_steps, cursor_trail_shape;
     uint32_t cursor_trail_color;
-    double blur_offset;
+    double blur_offset, blur_noise, blur_vibrancy;
     double shader_hold;
     bool screenshot_freeze, screenshot_motion_enabled;
     double screenshot_motion_stiffness, screenshot_motion_damping;

@@ -1964,6 +1964,7 @@ static void shader_reach(struct frame *f, struct program *shader, struct fbox ar
                 height - 2 * inside);
     }
     region_intersect_rect(&ring, &ring, 0, 0, (uint32_t)area.width, (uint32_t)area.height);
+    inputs->frost_ring = &ring;
     int count = 0;
     const struct rect *rects = region_rectangles(&ring, &count);
     for (int i = 0; i < count; i++) {
@@ -1973,6 +1974,7 @@ static void shader_reach(struct frame *f, struct program *shader, struct fbox ar
         effect_shader(f, shader, area, time, frame, inputs);
     }
     inputs->part = NULL;
+    inputs->frost_ring = NULL;
     region_fini(&ring);
 }
 
@@ -2008,7 +2010,7 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             float selection[16], marks_box[4];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
                 windows, surface->shader_window_count, NULL, NULL, NULL, NULL,
-                surface->shader_opaque };
+                surface->shader_opaque, NULL, effects_frost_stamp(o->server) };
             if (layer == UI_LAYER_SCREENSHOT) {
                 struct texture *marks;
                 struct fbox marks_at;
