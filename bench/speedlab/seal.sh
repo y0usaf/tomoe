@@ -85,4 +85,4 @@ cd /
 exec unshare --user --map-user="$uid" --map-group="$gid" -- \
 	env -i "PATH=$SPEEDLAB_PATH" "SPEEDLAB_TOOLS=$SPEEDLAB_TOOLS" "SPEEDLAB_MESA=$SPEEDLAB_MESA" \
 	"SPEEDLAB_PERF=$SPEEDLAB_PERF" "SPEEDLAB_PERSONA=$persona" "SPEEDLAB_HOME=$home" "SPEEDLAB_ACCOUNT=$account" "SPEEDLAB_UID=$uid" \
-	"$SPEEDLAB_PYTHON" -I "$SPEEDLAB_SHARE/driver.py" "$@"
+	"$SPEEDLAB_TOOLS/bin/speedlab-driver" "$@"

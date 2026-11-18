@@ -118,21 +118,7 @@ stage() {
 	printf '%s\n' "$node" >"$stage/render-node"
 	cp "$SPEEDLAB_SHARE/workload" "$stage/workload"
 	cp "$PALETTE" "$stage/palette-dark"
-	python3 - "$stage/palette-dark" "$stage/palette-light" <<'PY'
-import re, sys
-text = open(sys.argv[1]).read()
-colors = dict(re.findall(r"@define-color\s+(\S+)\s+(#[0-9A-Fa-f]{6})", text))
-bg, fg = colors["bg"], colors["fg"]
-def luminance(c):
-    return sum(w * int(c[i:i + 2], 16) for w, i in ((0.2126, 1), (0.7152, 3), (0.0722, 5)))
-def swap(text, a, b):
-    return text.replace(a, "@SWAP@").replace(b, a).replace("@SWAP@", b)
-dark_bg, dark_fg = (bg, fg) if luminance(bg) < luminance(fg) else (fg, bg)
-dark = text if dark_bg == bg else swap(text, bg, fg)
-light = swap(dark, dark_bg, dark_fg)
-open(sys.argv[1], "w").write(dark)
-open(sys.argv[2], "w").write(light)
-PY
+	"$SPEEDLAB_TOOLS/bin/speedlab-palette" "$stage/palette-dark" "$stage/palette-light"
 	init=$stage/home/.config/tomoe/init.lisp
 	sed "s#(list \"$OUTPUT\"\([^()]*\):mode (list $width $height)#(list \"$OUTPUT\"\1:mode (list $width $height $hz)#" \
 		"$(realpath "$CONFIG")" >"$init"
@@ -175,7 +161,7 @@ run() {
 	[[ $persona == B ]] && offset=$(( (RANDOM << 15 | RANDOM) % 2000000 + 86400 ))
 	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
 		"$HERE/tools/isolate" "$dir" env SPEEDLAB_TOOLS="$SPEEDLAB_TOOLS" SPEEDLAB_SHARE="$SPEEDLAB_SHARE" \
-		SPEEDLAB_MESA="$SPEEDLAB_MESA" SPEEDLAB_PATH="$SPEEDLAB_PATH" SPEEDLAB_PYTHON="$SPEEDLAB_PYTHON" \
+		SPEEDLAB_MESA="$SPEEDLAB_MESA" SPEEDLAB_PATH="$SPEEDLAB_PATH" \
 		SPEEDLAB_BASH="$SPEEDLAB_BASH" SPEEDLAB_PERF="$SPEEDLAB_PERF" \
 		"$SPEEDLAB_BASH" "$SPEEDLAB_SHARE/seal.sh" "$dir" "$persona" "$offset" "$target" ${PROFILE_TOOL:+"$PROFILE_TOOL"} \
 		>"$result" 2>"$result.err"
@@ -201,17 +187,7 @@ main_run() {
 		done
 		for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
 		temp=$(mktemp "$CACHE/$key.XXXXXX") || die "cannot write the cache"
-		if ! "$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$temp" <<'PY'
-import json, sys
-work, runs, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-bases = [json.load(open(f"{work}/reference-{index}.json")) for index in range(1, runs + 1)]
-failed = [f"run {index}: {base.get('error', '?')}" for index, base in enumerate(bases, 1) if not base.get("ok")]
-if failed:
-    sys.exit("; ".join(failed))
-with open(out, "w") as cache:
-    json.dump(bases, cache)
-PY
-		then
+		if ! "$SPEEDLAB_TOOLS/bin/speedlab-verdict" --collect "$WORK" "$BASE_RUNS" "$temp"; then
 			rm -f "$temp"
 			die "a reference run failed, so there is no baseline to cache"
 		fi
@@ -222,8 +198,8 @@ PY
 	local first=$!
 	run "$binary" B "$WORK/b.json" || exit 2
 	wait "$first" || exit 2
-	"$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/verdict.py" "$cached" "$WORK/a.json" "$WORK/b.json" \
-		"$reference" "$binary" ${OUT:+"$OUT"}
+	"$SPEEDLAB_TOOLS/bin/speedlab-verdict" --noise "$SPEEDLAB_SHARE/noise" \
+		"$cached" "$WORK/a.json" "$WORK/b.json" "$reference" "$binary" ${OUT:+"$OUT"}
 }
 
 profile() {
@@ -241,7 +217,7 @@ profile() {
 	done
 	for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
 	PROFILE_TOOL=callgraph run "$binary" A "$WORK/callgraph.json"
-	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/perf.json" "$WORK/callgraph.json" \
+	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_TOOLS/bin/speedlab-report" "$WORK/perf.json" "$WORK/callgraph.json" \
 		"$WORK/census.json" "$WORK/plain.json" "$WORK/bare.json" "$binary" ${OUT:+"$OUT"}
 }
 
@@ -278,9 +254,7 @@ self_test() {
 	for name in "${names[@]}"; do
 		verdict=$(main_run "$(<"$base/$name.out")/bin/tomoe" 2>"$base/$name.err")
 		printf '%s\n' "$verdict" >"$base/$name.json"
-		reasons=$(printf '%s' "$verdict" | "$SPEEDLAB_PYTHON" -c 'import json, sys
-v = json.load(sys.stdin)
-print(v["verdict"], "|", " || ".join(v["reasons"]) or "-")')
+		reasons=$("$SPEEDLAB_TOOLS/bin/speedlab-verdict" --summary "$base/$name.json")
 		printf '%-7s %s\n' "$name" "$reasons"
 		expect=$(sed -n "s/^$name //p" "$HERE/bench/speedlab/cheats/expect")
 		if [[ $name == clean ]]; then

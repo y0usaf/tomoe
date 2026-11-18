@@ -42,19 +42,23 @@ let
       $CC $flags -o speedlab-input input.c $protocols $wl
       $CC $flags -o speedlab-client client.c $protocols $wl
       $CC $flags -o speedlab-capture capture.c $protocols $wl
+      $CC $flags -o speedlab-driver driver.c json.c
+      $CC $flags -o speedlab-verdict verdict.c json.c
+      $CC $flags -o speedlab-report report.c json.c
+      $CC $flags -o speedlab-palette palette.c json.c
       runHook postBuild
     '';
     installPhase = ''
       runHook preInstall
       install -Dm755 libspeedlab.so $out/lib/libspeedlab.so
       install -Dm755 libspeedlab-census.so $out/lib/libspeedlab-census.so
-      for tool in speedlab-count speedlab-input speedlab-client speedlab-capture; do
+      for tool in speedlab-count speedlab-input speedlab-client speedlab-capture speedlab-driver \
+        speedlab-verdict speedlab-report speedlab-palette; do
         install -Dm755 $tool $out/bin/$tool
       done
       runHook postInstall
     '';
   };
-  python = pkgs.python3;
   path = pkgs.lib.makeBinPath [
     pkgs.bash
     pkgs.coreutils
@@ -63,23 +67,18 @@ let
     pkgs.gnugrep
     pkgs.gnused
     pkgs.binutils
-    python
   ];
 in
 pkgs.runCommand "tomoe-speedlab" { } ''
   mkdir -p $out/bin $out/share/speedlab
-  cp ${./driver.py} $out/share/speedlab/driver.py
   cp ${./seal.sh} $out/share/speedlab/seal.sh
   cp ${./workload} $out/share/speedlab/workload
-  cp ${./verdict.py} $out/share/speedlab/verdict.py
   cp ${./noise} $out/share/speedlab/noise
-  cp ${./report.py} $out/share/speedlab/report.py
   cat > $out/bin/speedlab-env <<EOF
   SPEEDLAB_TOOLS=${tools}
   SPEEDLAB_SHARE=$out/share/speedlab
   SPEEDLAB_MESA=${pkgs.mesa}
   SPEEDLAB_PATH=${path}
-  SPEEDLAB_PYTHON=${python}/bin/python3
   SPEEDLAB_BASH=${pkgs.bash}/bin/bash
   SPEEDLAB_PERF=${pkgs.perf}
   EOF

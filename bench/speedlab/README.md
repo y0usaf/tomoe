@@ -42,7 +42,7 @@ an unprivileged render node refuses, are served from memfds by
 The same library replaces the clock. Every time read in the compositor, its
 clients and every library they load (`clock_gettime`, `gettimeofday`, `time`,
 timerfds, `poll`/`epoll`/`select` timeouts, sleeps, condition-variable
-deadlines) sees a shared virtual clock that only `driver.py` advances. The driver
+deadlines) sees a shared virtual clock that only `driver.c` advances. The driver
 waits until every thread in the sandbox is asleep and nothing has run since its
 last look, then moves the clock to the earliest pending deadline. Frame pacing,
 animation curves, key repeat and the rail's `%H:%M` are therefore the same on
@@ -268,12 +268,14 @@ out at least the first.
 
 ## Files
 
-- `driver.py` runs inside the sandbox: the virtual clock, the workload, the
+- `driver.c` runs inside the sandbox: the virtual clock, the workload, the
   counters and the measurements.
 - `seal.sh` builds the sandbox root.
 - `vclock.c`, `dumb.c` are `libspeedlab.so`; `census.c` is the heap census used by `--profile`.
 - `count.c` starts the compositor under counters and seccomp.
 - `capture.c`, `client.c`, `input.c` are the clients.
-- `verdict.py`, `report.py` turn runs into a verdict and a profile.
+- `verdict.c`, `report.c` turn runs into a verdict and a profile; `palette.c`
+  splits the live palette into the dark and light copies a run stages, and
+  `json.c` is the reader and writer they share with `driver.c`.
 - `cheats/` holds the seeded cheats `--self-test` builds and the reason each must be rejected for.
 - `reference` is the revision verdicts compare against by default.
