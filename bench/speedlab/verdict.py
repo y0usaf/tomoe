@@ -177,7 +177,7 @@ def main():
         reasons.append(f"the build looks for the rig: new references to {found}")
     verdict = {"verdict": "reject" if reasons else "accept", "reasons": reasons, "base_runs": len(bases),
                "base": reference_binary, "candidate": candidate_binary}
-    if a.get("ok") and reference.get("ok"):
+    if a.get("ok") and all(base.get("ok") for base in bases):
         mine = split(a)
         theirs = {key: mean([split(run)[key] for run in bases]) for key in mine}
         verdict["score"] = {

@@ -200,11 +200,18 @@ main_run() {
 			pids+=($!)
 		done
 		for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
-		"$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$cached.new" <<'PY' || exit 2
+		if ! "$SPEEDLAB_PYTHON" - "$WORK" "$BASE_RUNS" "$cached.new" <<'PY'
 import json, sys
 work, runs, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-json.dump([json.load(open(f"{work}/reference-{index}.json")) for index in range(1, runs + 1)], open(out, "w"))
+bases = [json.load(open(f"{work}/reference-{index}.json")) for index in range(1, runs + 1)]
+failed = [f"run {index}: {base.get('error', '?')}" for index, base in enumerate(bases, 1) if not base.get("ok")]
+if failed:
+    sys.exit("; ".join(failed))
+json.dump(bases, open(out, "w"))
 PY
+		then
+			die "a reference run failed, so there is no baseline to cache"
+		fi
 		mv "$cached.new" "$cached"
 	fi
 	say "running $binary as personas A and B"
