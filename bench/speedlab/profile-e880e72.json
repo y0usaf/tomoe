@@ -1,0 +1,3857 @@
+{
+ "ok": true,
+ "workload": {
+  "virtual_seconds": 8.3,
+  "frames": 1824,
+  "real_seconds": 123.13
+ },
+ "sample_period_instructions": 10000000,
+ "counted": {
+  "with_capture": {
+   "instructions": 4971201773333,
+   "cpu": 58045136227,
+   "raster": 4882113377707,
+   "children": 31043259399,
+   "settled_private_dirty_kB": 276580,
+   "peak_private_dirty_kB": 552496
+  },
+  "without_capture": {
+   "instructions": 4070281621944,
+   "cpu": 57353030702,
+   "raster": 3981891329249,
+   "children": 31037261993,
+   "settled_private_dirty_kB": 276060,
+   "peak_private_dirty_kB": 552612
+  }
+ },
+ "cost": {
+  "sampled_instructions": 4979430000000,
+  "by_thread": [
+   {
+    "what": "raster (llvmpipe threads)",
+    "instructions": 4890840000000,
+    "percent": 98.221
+   },
+   {
+    "what": "compositor main thread",
+    "instructions": 57800000000,
+    "percent": 1.161
+   },
+   {
+    "what": "other tomoe threads and processes (shader compiler copies, workers)",
+    "instructions": 30670000000,
+    "percent": 0.616
+   },
+   {
+    "what": "other: mado-send",
+    "instructions": 80000000,
+    "percent": 0.002
+   },
+   {
+    "what": "other: [pango] fontcon",
+    "instructions": 40000000,
+    "percent": 0.001
+   }
+  ],
+  "main_thread_inclusive": [
+   {
+    "function": "libLLVM.so.21.1: llvm::MachineFunctionPass::runOnFunction(llvm::Function&)",
+    "inclusive_percent": 22.57,
+    "self_percent": 0.01,
+    "inclusive_instructions": 13045460000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::FPPassManager::runOnFunction(llvm::Function&)",
+    "inclusive_percent": 19.96,
+    "self_percent": 0.0,
+    "inclusive_instructions": 11536880000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::legacy::PassManagerImpl::run(llvm::Module&)",
+    "inclusive_percent": 19.56,
+    "self_percent": 0.0,
+    "inclusive_instructions": 11305680000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::FPPassManager::runOnModule(llvm::Module&)",
+    "inclusive_percent": 19.54,
+    "self_percent": 0.0,
+    "inclusive_instructions": 11294120000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::MCJIT::emitObject(llvm::Module*)",
+    "inclusive_percent": 19.29,
+    "self_percent": 0.0,
+    "inclusive_instructions": 11149620000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RAGreedyLegacy::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 16.08,
+    "self_percent": 0.0,
+    "inclusive_instructions": 9294239999
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::run(llvm::MachineFunction&)",
+    "inclusive_percent": 16.08,
+    "self_percent": 0.0,
+    "inclusive_instructions": 9294239999
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RegAllocBase::allocatePhysRegs()",
+    "inclusive_percent": 15.76,
+    "self_percent": 0.02,
+    "inclusive_instructions": 9109280000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::selectOrSplit(llvm::LiveInterval const&, llvm::SmallVectorImpl<llvm::Register>&)",
+    "inclusive_percent": 15.37,
+    "self_percent": 0.01,
+    "inclusive_instructions": 8883860000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::selectOrSplitImpl(llvm::LiveInterval const&, llvm::SmallVectorImpl<llvm::Register>&, llvm::SmallSet<llvm::Register, 16u, std::less<llvm::Register> >&, llvm::SmallVector<std::pair<llvm::LiveInterval const*, llvm::MCRegister>, 8u>&, unsigned int)",
+    "inclusive_percent": 15.36,
+    "self_percent": 0.01,
+    "inclusive_instructions": 8878080000
+   },
+   {
+    "function": "libgallium-26.1.3.so: _mesa_draw_arrays.part.0",
+    "inclusive_percent": 14.64,
+    "self_percent": 0.02,
+    "inclusive_instructions": 8461920000
+   },
+   {
+    "function": "libgallium-26.1.3.so: llvmpipe_draw_vbo",
+    "inclusive_percent": 14.25,
+    "self_percent": 0.15,
+    "inclusive_instructions": 8236499999
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAGISel::SelectAllBasicBlocks(llvm::Function const&)",
+    "inclusive_percent": 13.02,
+    "self_percent": 0.0,
+    "inclusive_instructions": 7525559999
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::trySplit(llvm::LiveInterval const&, llvm::AllocationOrder&, llvm::SmallVectorImpl<llvm::Register>&, llvm::SmallSet<llvm::Register, 16u, std::less<llvm::Register> > const&) [clone .part.0]",
+    "inclusive_percent": 12.86,
+    "self_percent": 0.0,
+    "inclusive_instructions": 7433080000
+   },
+   {
+    "function": "libgallium-26.1.3.so: draw_vbo",
+    "inclusive_percent": 12.77,
+    "self_percent": 0.04,
+    "inclusive_instructions": 7381060000
+   },
+   {
+    "function": "libgallium-26.1.3.so: draw_instances",
+    "inclusive_percent": 12.55,
+    "self_percent": 0.06,
+    "inclusive_instructions": 7253900000
+   },
+   {
+    "function": "tomoe: effect_shader",
+    "inclusive_percent": 12.48,
+    "self_percent": 0.03,
+    "inclusive_instructions": 7213440000
+   },
+   {
+    "function": "libgallium-26.1.3.so: draw_pt_arrays.isra.0",
+    "inclusive_percent": 12.46,
+    "self_percent": 0.07,
+    "inclusive_instructions": 7201880000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::tryRegionSplit(llvm::LiveInterval const&, llvm::AllocationOrder&, llvm::SmallVectorImpl<llvm::Register>&)",
+    "inclusive_percent": 12.13,
+    "self_percent": 0.01,
+    "inclusive_instructions": 7011140000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAGISel::CodeGenAndEmitDAG()",
+    "inclusive_percent": 12.12,
+    "self_percent": 0.0,
+    "inclusive_instructions": 7005359999
+   },
+   {
+    "function": "libgallium-26.1.3.so: vsplit_run_linear",
+    "inclusive_percent": 11.84,
+    "self_percent": 0.03,
+    "inclusive_instructions": 6843520000
+   },
+   {
+    "function": "libgallium-26.1.3.so: llvm_middle_end_linear_run",
+    "inclusive_percent": 11.8,
+    "self_percent": 0.09,
+    "inclusive_instructions": 6820400000
+   },
+   {
+    "function": "libgallium-26.1.3.so: llvm_pipeline_generic.constprop.0.isra.0",
+    "inclusive_percent": 11.76,
+    "self_percent": 0.45,
+    "inclusive_instructions": 6797280000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::calculateRegionSplitCostAroundReg(unsigned short, llvm::AllocationOrder&, llvm::BlockFrequency&, unsigned int&, unsigned int&)",
+    "inclusive_percent": 10.96,
+    "self_percent": 0.01,
+    "inclusive_instructions": 6334880000
+   },
+   {
+    "function": "libgallium-26.1.3.so: draw_pt_emit_linear",
+    "inclusive_percent": 9.8,
+    "self_percent": 0.19,
+    "inclusive_instructions": 5664400000
+   },
+   {
+    "function": "tomoe: draw_scene",
+    "inclusive_percent": 9.61,
+    "self_percent": 0.01,
+    "inclusive_instructions": 5554579999
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_setup_draw_arrays",
+    "inclusive_percent": 9.52,
+    "self_percent": 0.18,
+    "inclusive_instructions": 5502560000
+   },
+   {
+    "function": "tomoe: render_scene_prepared",
+    "inclusive_percent": 9.35,
+    "self_percent": 0.01,
+    "inclusive_instructions": 5404300000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::growRegion(llvm::RAGreedy::GlobalSplitCandidate&)",
+    "inclusive_percent": 8.42,
+    "self_percent": 0.95,
+    "inclusive_instructions": 4866760000
+   },
+   {
+    "function": "tomoe: run_cli",
+    "inclusive_percent": 8.36,
+    "self_percent": 0.0,
+    "inclusive_instructions": 4832080000
+   },
+   {
+    "function": "tomoe: render_presentation",
+    "inclusive_percent": 7.71,
+    "self_percent": 0.0,
+    "inclusive_instructions": 4456380000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAG::Combine(llvm::CombineLevel, llvm::BatchAAResults*, llvm::CodeGenOptLevel)",
+    "inclusive_percent": 7.57,
+    "self_percent": 0.34,
+    "inclusive_instructions": 4375460000
+   },
+   {
+    "function": "tomoe: output_frame_build",
+    "inclusive_percent": 7.55,
+    "self_percent": 0.0,
+    "inclusive_instructions": 4363900000
+   },
+   {
+    "function": "tomoe: quad",
+    "inclusive_percent": 7.33,
+    "self_percent": 0.01,
+    "inclusive_instructions": 4236740000
+   },
+   {
+    "function": "tomoe: pass_quad",
+    "inclusive_percent": 7.28,
+    "self_percent": 0.01,
+    "inclusive_instructions": 4207840000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::DAGCombiner::combine(llvm::SDNode*)",
+    "inclusive_percent": 7.21,
+    "self_percent": 0.12,
+    "inclusive_instructions": 4167380000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAG::computeKnownBits(llvm::SDValue, llvm::APInt const&, unsigned int) const",
+    "inclusive_percent": 7.21,
+    "self_percent": 1.45,
+    "inclusive_instructions": 4167380000
+   },
+   {
+    "function": "tomoe: render_quad",
+    "inclusive_percent": 7.06,
+    "self_percent": 0.01,
+    "inclusive_instructions": 4080680000
+   },
+   {
+    "function": "tomoe: output_frame",
+    "inclusive_percent": 7.01,
+    "self_percent": 0.0,
+    "inclusive_instructions": 4051779999
+   },
+   {
+    "function": "tomoe: wl_signal_emit_mutable",
+    "inclusive_percent": 7.01,
+    "self_percent": 0.0,
+    "inclusive_instructions": 4051779999
+   },
+   {
+    "function": "tomoe: tomoe_step",
+    "inclusive_percent": 6.68,
+    "self_percent": 0.0,
+    "inclusive_instructions": 3861040000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::TargetLowering::SimplifyDemandedBits(llvm::SDValue, llvm::APInt const&, llvm::APInt const&, llvm::KnownBits&, llvm::TargetLowering::TargetLoweringOpt&, unsigned int, bool) const",
+    "inclusive_percent": 6.02,
+    "self_percent": 0.72,
+    "inclusive_instructions": 3479560000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::RAGreedy::addThroughConstraints(llvm::InterferenceCache::Cursor, llvm::ArrayRef<unsigned int>)",
+    "inclusive_percent": 5.38,
+    "self_percent": 0.55,
+    "inclusive_instructions": 3109640000
+   },
+   {
+    "function": "tomoe: pass_flush",
+    "inclusive_percent": 5.34,
+    "self_percent": 0.06,
+    "inclusive_instructions": 3086520000
+   },
+   {
+    "function": "tomoe: scene_run_draw",
+    "inclusive_percent": 5.09,
+    "self_percent": 0.02,
+    "inclusive_instructions": 2942020000
+   },
+   {
+    "function": "tomoe: wl_event_loop_dispatch",
+    "inclusive_percent": 5.08,
+    "self_percent": 0.0,
+    "inclusive_instructions": 2936240000
+   },
+   {
+    "function": "tomoe: clock_tick",
+    "inclusive_percent": 4.87,
+    "self_percent": 0.0,
+    "inclusive_instructions": 2814860000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::MCJIT::generateCodeForModule(llvm::Module*)",
+    "inclusive_percent": 4.77,
+    "self_percent": 0.0,
+    "inclusive_instructions": 2757059999
+   },
+   {
+    "function": "tomoe: call_with",
+    "inclusive_percent": 4.57,
+    "self_percent": 0.49,
+    "inclusive_instructions": 2641460000
+   },
+   {
+    "function": "libLLVM.so.21.1: combineInstructionsOverFunction(llvm::Function&, llvm::InstructionWorklist&, llvm::AAResults*, llvm::AssumptionCache&, llvm::TargetLibraryInfo&, llvm::TargetTransformInfo&, llvm::DominatorTree&, llvm::OptimizationRemarkEmitter&, llvm::BlockFrequencyInfo*, llvm::BranchProbabilityInfo*, llvm::ProfileSummaryInfo*, llvm::InstCombineOptions const&)",
+    "inclusive_percent": 4.46,
+    "self_percent": 0.0,
+    "inclusive_instructions": 2577880000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::InstCombinerImpl::run()",
+    "inclusive_percent": 4.39,
+    "self_percent": 0.12,
+    "inclusive_instructions": 2537419999
+   },
+   {
+    "function": "libgallium-26.1.3.so: triangle_both",
+    "inclusive_percent": 4.37,
+    "self_percent": 0.05,
+    "inclusive_instructions": 2525860000
+   },
+   {
+    "function": "libgallium-26.1.3.so: do_triangle_ccw",
+    "inclusive_percent": 4.32,
+    "self_percent": 0.13,
+    "inclusive_instructions": 2496960000
+   },
+   {
+    "function": "tomoe: apply_closure",
+    "inclusive_percent": 4.24,
+    "self_percent": 0.22,
+    "inclusive_instructions": 2450720000
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_setup_bin_triangle",
+    "inclusive_percent": 4.22,
+    "self_percent": 2.25,
+    "inclusive_instructions": 2439159999
+   },
+   {
+    "function": "tomoe: ui_render",
+    "inclusive_percent": 4.1,
+    "self_percent": 0.03,
+    "inclusive_instructions": 2369799999
+   },
+   {
+    "function": "tomoe: run_let",
+    "inclusive_percent": 4.03,
+    "self_percent": 0.04,
+    "inclusive_instructions": 2329340000
+   },
+   {
+    "function": "tomoe: render_walk.part.0",
+    "inclusive_percent": 3.91,
+    "self_percent": 0.01,
+    "inclusive_instructions": 2259980000
+   },
+   {
+    "function": "tomoe: effect_blur",
+    "inclusive_percent": 3.85,
+    "self_percent": 0.04,
+    "inclusive_instructions": 2225300000
+   },
+   {
+    "function": "tomoe: decorate",
+    "inclusive_percent": 3.79,
+    "self_percent": 0.01,
+    "inclusive_instructions": 2190620000
+   },
+   {
+    "function": "tomoe: run_progn",
+    "inclusive_percent": 3.75,
+    "self_percent": 0.01,
+    "inclusive_instructions": 2167500000
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_setup_update_state",
+    "inclusive_percent": 3.6,
+    "self_percent": 0.05,
+    "inclusive_instructions": 2080800000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAGISel::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 3.54,
+    "self_percent": 0.0,
+    "inclusive_instructions": 2046120000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::MCJIT::finalizeObject()",
+    "inclusive_percent": 3.43,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1982540000
+   },
+   {
+    "function": "tomoe: loop_eval",
+    "inclusive_percent": 3.43,
+    "self_percent": 0.05,
+    "inclusive_instructions": 1982540000
+   },
+   {
+    "function": "libgallium-26.1.3.so: llvmpipe_update_fs",
+    "inclusive_percent": 3.37,
+    "self_percent": 0.5,
+    "inclusive_instructions": 1947860000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveRangeCalc::extend(llvm::LiveRange&, llvm::SlotIndex, llvm::Register, llvm::ArrayRef<llvm::SlotIndex>)",
+    "inclusive_percent": 3.35,
+    "self_percent": 0.05,
+    "inclusive_instructions": 1936300000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveRangeCalc::findReachingDefs(llvm::LiveRange&, llvm::MachineBasicBlock&, llvm::SlotIndex, llvm::Register, llvm::ArrayRef<llvm::SlotIndex>)",
+    "inclusive_percent": 3.23,
+    "self_percent": 1.0,
+    "inclusive_instructions": 1866940000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SpillPlacement::addLinks(llvm::ArrayRef<unsigned int>)",
+    "inclusive_percent": 3.23,
+    "self_percent": 2.48,
+    "inclusive_instructions": 1866940000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::PassManager<llvm::Function, llvm::AnalysisManager<llvm::Function>>::run(llvm::Function&, llvm::AnalysisManager<llvm::Function>&)",
+    "inclusive_percent": 3.13,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1809140000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAGISelLegacy::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 3.02,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1745560000
+   },
+   {
+    "function": "libLLVM.so.21.1: LLVMGetPointerToGlobal",
+    "inclusive_percent": 2.92,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1687760000
+   },
+   {
+    "function": "libgallium-26.1.3.so: try_update_scene_state",
+    "inclusive_percent": 2.89,
+    "self_percent": 0.44,
+    "inclusive_instructions": 1670420000
+   },
+   {
+    "function": "libgallium-26.1.3.so: gallivm_jit_function",
+    "inclusive_percent": 2.86,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1653080000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervals::analyze(llvm::MachineFunction&)",
+    "inclusive_percent": 2.85,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1647300000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervalsWrapperPass::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 2.85,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1647300000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervals::computeVirtRegs()",
+    "inclusive_percent": 2.83,
+    "self_percent": 0.01,
+    "inclusive_instructions": 1635740000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RegisterCoalescer::run(llvm::MachineFunction&) [clone .part.0]",
+    "inclusive_percent": 2.74,
+    "self_percent": 0.01,
+    "inclusive_instructions": 1583720000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RegisterCoalescerLegacy::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 2.74,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1583720000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervals::computeVirtRegInterval(llvm::LiveInterval&)",
+    "inclusive_percent": 2.74,
+    "self_percent": 0.01,
+    "inclusive_instructions": 1583720000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervals::shrinkToUses(llvm::LiveInterval*, llvm::SmallVectorImpl<llvm::MachineInstr*>*)",
+    "inclusive_percent": 2.72,
+    "self_percent": 0.06,
+    "inclusive_instructions": 1572160000
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_setup_whole_tile",
+    "inclusive_percent": 2.71,
+    "self_percent": 2.34,
+    "inclusive_instructions": 1566380000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RegisterCoalescer::copyCoalesceWorkList(llvm::MutableArrayRef<llvm::MachineInstr*>)",
+    "inclusive_percent": 2.7,
+    "self_percent": 0.03,
+    "inclusive_instructions": 1560600000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::detail::PassModel<llvm::Function, llvm::PassManager<llvm::Function, llvm::AnalysisManager<llvm::Function>>, llvm::AnalysisManager<llvm::Function>>::run(llvm::Function&, llvm::AnalysisManager<llvm::Function>&)",
+    "inclusive_percent": 2.67,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1543260000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervalCalc::extendToUses(llvm::LiveRange&, llvm::Register, llvm::LaneBitmask, llvm::LiveInterval*)",
+    "inclusive_percent": 2.63,
+    "self_percent": 0.08,
+    "inclusive_instructions": 1520140000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::ModuleToFunctionPassAdaptor::run(llvm::Module&, llvm::AnalysisManager<llvm::Module>&)",
+    "inclusive_percent": 2.61,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1508580000
+   },
+   {
+    "function": "libc.so.6: __memcmp_evex_movbe",
+    "inclusive_percent": 2.6,
+    "self_percent": 2.6,
+    "inclusive_instructions": 1502800000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::LiveIntervals::extendSegmentsToUses(llvm::LiveRange&, llvm::SmallVector<std::pair<llvm::SlotIndex, llvm::VNInfo*>, 16u>&, llvm::Register, llvm::LaneBitmask)",
+    "inclusive_percent": 2.59,
+    "self_percent": 1.08,
+    "inclusive_instructions": 1497020000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::detail::PassModel<llvm::Module, llvm::ModuleToFunctionPassAdaptor, llvm::AnalysisManager<llvm::Module>>::run(llvm::Module&, llvm::AnalysisManager<llvm::Module>&)",
+    "inclusive_percent": 2.44,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1410320000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::PostRAScheduler::run(llvm::MachineFunction&)",
+    "inclusive_percent": 2.42,
+    "self_percent": 0.03,
+    "inclusive_instructions": 1398760000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::PostRASchedulerLegacy::runOnMachineFunction(llvm::MachineFunction&) [clone .part.0]",
+    "inclusive_percent": 2.42,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1398760000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RegisterCoalescer::reMaterializeTrivialDef(llvm::CoalescerPair const&, llvm::MachineInstr*, bool&)",
+    "inclusive_percent": 2.42,
+    "self_percent": 0.02,
+    "inclusive_instructions": 1398760000
+   },
+   {
+    "function": "tomoe: blur_levels",
+    "inclusive_percent": 2.41,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1392980000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::RegisterCoalescer::shrinkToUses(llvm::LiveInterval*, llvm::SmallVectorImpl<llvm::MachineInstr*>*)",
+    "inclusive_percent": 2.37,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1369860000
+   },
+   {
+    "function": "tomoe: render_cursor",
+    "inclusive_percent": 2.35,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1358300000
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::MachineSchedulerLegacy::runOnMachineFunction(llvm::MachineFunction&)",
+    "inclusive_percent": 2.32,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1340960000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::impl_detail::MachineSchedulerImpl::run(llvm::MachineFunction&, llvm::TargetMachine const&, llvm::impl_detail::MachineSchedulerImpl::RequiredAnalyses const&)",
+    "inclusive_percent": 2.32,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1340960000
+   },
+   {
+    "function": "tomoe: run_mvbind",
+    "inclusive_percent": 2.32,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1340960000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::impl_detail::MachineSchedulerBase::scheduleRegions(llvm::ScheduleDAGInstrs&, bool)",
+    "inclusive_percent": 2.31,
+    "self_percent": 0.02,
+    "inclusive_instructions": 1335180000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::PassManager<llvm::Module, llvm::AnalysisManager<llvm::Module>>::run(llvm::Module&, llvm::AnalysisManager<llvm::Module>&)",
+    "inclusive_percent": 2.3,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1329400000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::X86TargetLowering::computeKnownBitsForTargetNode(llvm::SDValue, llvm::KnownBits&, llvm::APInt const&, llvm::SelectionDAG const&, unsigned int) const",
+    "inclusive_percent": 2.28,
+    "self_percent": 0.3,
+    "inclusive_instructions": 1317839999
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::ScheduleDAGMILive::schedule()",
+    "inclusive_percent": 2.26,
+    "self_percent": 0.05,
+    "inclusive_instructions": 1306280000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SelectionDAG::computeKnownBits(llvm::SDValue, unsigned int) const",
+    "inclusive_percent": 2.26,
+    "self_percent": 0.11,
+    "inclusive_instructions": 1306280000
+   },
+   {
+    "function": "libLLVM.so.21.1: runPasses(llvm::Module*, llvm::Function*, char const*, llvm::TargetMachine*, llvm::LLVMPassBuilderOptions*)",
+    "inclusive_percent": 2.25,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1300500000
+   },
+   {
+    "function": "libgallium-26.1.3.so: setup_rect_both",
+    "inclusive_percent": 2.23,
+    "self_percent": 0.06,
+    "inclusive_instructions": 1288940000
+   },
+   {
+    "function": "libgallium-26.1.3.so: do_rect_ccw",
+    "inclusive_percent": 2.18,
+    "self_percent": 0.28,
+    "inclusive_instructions": 1260040000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::TargetLowering::SimplifyDemandedVectorElts(llvm::SDValue, llvm::APInt const&, llvm::APInt&, llvm::APInt&, llvm::TargetLowering::TargetLoweringOpt&, unsigned int, bool) const",
+    "inclusive_percent": 2.15,
+    "self_percent": 0.98,
+    "inclusive_instructions": 1242700000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::SpillPlacement::iterate()",
+    "inclusive_percent": 2.14,
+    "self_percent": 0.6,
+    "inclusive_instructions": 1236920000
+   },
+   {
+    "function": "tomoe: run_dolist",
+    "inclusive_percent": 2.09,
+    "self_percent": 0.01,
+    "inclusive_instructions": 1208020000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::InterferenceCache::Entry::update(unsigned int)",
+    "inclusive_percent": 2.06,
+    "self_percent": 1.4,
+    "inclusive_instructions": 1190680000
+   },
+   {
+    "function": "tomoe: screens_idle_frames",
+    "inclusive_percent": 2.06,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1190680000
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_blit",
+    "inclusive_percent": 2.05,
+    "self_percent": 0.03,
+    "inclusive_instructions": 1184899999
+   },
+   {
+    "function": "libLLVM.so.21.1: (anonymous namespace)::SchedulePostRATDList::schedule()",
+    "inclusive_percent": 2.03,
+    "self_percent": 0.05,
+    "inclusive_instructions": 1173340000
+   },
+   {
+    "function": "tomoe: effect_trail",
+    "inclusive_percent": 1.96,
+    "self_percent": 0.17,
+    "inclusive_instructions": 1132880000
+   },
+   {
+    "function": "libgallium-26.1.3.so: lp_rect_cw",
+    "inclusive_percent": 1.9,
+    "self_percent": 0.02,
+    "inclusive_instructions": 1098200000
+   },
+   {
+    "function": "libc.so.6: __memmove_avx512_unaligned_erms",
+    "inclusive_percent": 1.84,
+    "self_percent": 1.84,
+    "inclusive_instructions": 1063520000
+   },
+   {
+    "function": "libgallium-26.1.3.so: util_blitter_blit",
+    "inclusive_percent": 1.81,
+    "self_percent": 0.0,
+    "inclusive_instructions": 1046180000
+   },
+   {
+    "function": "libgallium-26.1.3.so: util_blitter_blit_generic",
+    "inclusive_percent": 1.79,
+    "self_percent": 0.03,
+    "inclusive_instructions": 1034620000
+   },
+   {
+    "function": "libLLVM.so.21.1: llvm::ScheduleDAGInstrs::buildSchedGraph(llvm::AAResults*, llvm::RegPressureTracker*, llvm::PressureDiffs*, llvm::LiveIntervals*, bool)",
+    "inclusive_percent": 1.74,
+    "self_percent": 0.09,
+    "inclusive_instructions": 1005719999
+   },
+   {
+    "function": "tomoe: pass_trail",
+    "inclusive_percent": 1.73,
+    "self_percent": 0.0,
+    "inclusive_instructions": 999940000
+   }
+  ],
+  "main_thread_by_library": [
+   {
+    "what": "libLLVM.so.21.1",
+    "instructions": 38080000000,
+    "percent": 65.882
+   },
+   {
+    "what": "libgallium-26.1.3.so",
+    "instructions": 9230000000,
+    "percent": 15.969
+   },
+   {
+    "what": "libc.so.6",
+    "instructions": 4960000000,
+    "percent": 8.581
+   },
+   {
+    "what": "tomoe",
+    "instructions": 4410000000,
+    "percent": 7.63
+   },
+   {
+    "what": "[JIT] tid 152",
+    "instructions": 460000000,
+    "percent": 0.796
+   },
+   {
+    "what": "libstdc++.so.6.0.34",
+    "instructions": 180000000,
+    "percent": 0.311
+   },
+   {
+    "what": "[unknown]",
+    "instructions": 160000000,
+    "percent": 0.277
+   },
+   {
+    "what": "ld-linux-x86-64.so.2",
+    "instructions": 70000000,
+    "percent": 0.121
+   },
+   {
+    "what": "libgcc_s.so.1",
+    "instructions": 50000000,
+    "percent": 0.087
+   },
+   {
+    "what": "libGLESv2.so.2.1.0",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "libm.so.6",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "libfontconfig.so.1.16.1",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "libfreetype.so.6.20.6",
+    "instructions": 20000000,
+    "percent": 0.035
+   },
+   {
+    "what": "libspeedlab.so",
+    "instructions": 20000000,
+    "percent": 0.035
+   },
+   {
+    "what": "libGLdispatch.so.0.0.0",
+    "instructions": 10000000,
+    "percent": 0.017
+   },
+   {
+    "what": "libexpat.so.1.12.1",
+    "instructions": 10000000,
+    "percent": 0.017
+   },
+   {
+    "what": "libglib-2.0.so.0.8800.1",
+    "instructions": 10000000,
+    "percent": 0.017
+   },
+   {
+    "what": "libpixman-1.so.0.46.4",
+    "instructions": 10000000,
+    "percent": 0.017
+   },
+   {
+    "what": "libxkbcommon.so.0.13.1",
+    "instructions": 10000000,
+    "percent": 0.017
+   }
+  ],
+  "main_thread_functions": [
+   {
+    "what": "libgallium-26.1.3.so: lp_setup_bin_triangle",
+    "instructions": 1270000000,
+    "percent": 2.197
+   },
+   {
+    "what": "libc.so.6: __memcmp_evex_movbe",
+    "instructions": 1230000000,
+    "percent": 2.128
+   },
+   {
+    "what": "libgallium-26.1.3.so: lp_setup_whole_tile",
+    "instructions": 1220000000,
+    "percent": 2.111
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SpillPlacement::addLinks(llvm::ArrayRef<unsigned int>)",
+    "instructions": 1160000000,
+    "percent": 2.007
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SpillPlacement::update(unsigned int)",
+    "instructions": 1090000000,
+    "percent": 1.886
+   },
+   {
+    "what": "libc.so.6: __memmove_avx512_unaligned_erms",
+    "instructions": 1010000000,
+    "percent": 1.747
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SelectionDAG::computeKnownBits(llvm::SDValue, llvm::APInt const&, unsigned int) const",
+    "instructions": 780000000,
+    "percent": 1.349
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::TypeSize::operator unsigned long() const",
+    "instructions": 700000000,
+    "percent": 1.211
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::InterferenceCache::Entry::update(unsigned int)",
+    "instructions": 670000000,
+    "percent": 1.159
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::IntervalMap<llvm::SlotIndex, llvm::LiveInterval const*, 8u, llvm::IntervalMapInfo<llvm::SlotIndex> >::const_iterator::pathFillFind(llvm::SlotIndex)",
+    "instructions": 600000000,
+    "percent": 1.038
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::TargetLowering::SimplifyDemandedBits(llvm::SDValue, llvm::APInt const&, llvm::APInt const&, llvm::KnownBits&, llvm::TargetLowering::TargetLoweringOpt&, unsigned int, bool) const",
+    "instructions": 590000000,
+    "percent": 1.021
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SDValue::getValueSizeInBits() const [clone .isra.0]",
+    "instructions": 580000000,
+    "percent": 1.003
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SpillPlacement::activate(unsigned int)",
+    "instructions": 570000000,
+    "percent": 0.986
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRangeCalc::findReachingDefs(llvm::LiveRange&, llvm::MachineBasicBlock&, llvm::SlotIndex, llvm::Register, llvm::ArrayRef<llvm::SlotIndex>)",
+    "instructions": 560000000,
+    "percent": 0.969
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::RAGreedy::growRegion(llvm::RAGreedy::GlobalSplitCandidate&)",
+    "instructions": 560000000,
+    "percent": 0.969
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveIntervals::extendSegmentsToUses(llvm::LiveRange&, llvm::SmallVector<std::pair<llvm::SlotIndex, llvm::VNInfo*>, 16u>&, llvm::Register, llvm::LaneBitmask)",
+    "instructions": 550000000,
+    "percent": 0.952
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::TargetLowering::SimplifyDemandedVectorElts(llvm::SDValue, llvm::APInt const&, llvm::APInt&, llvm::APInt&, llvm::TargetLowering::TargetLoweringOpt&, unsigned int, bool) const",
+    "instructions": 540000000,
+    "percent": 0.934
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::RAGreedy::addThroughConstraints(llvm::InterferenceCache::Cursor, llvm::ArrayRef<unsigned int>)",
+    "instructions": 460000000,
+    "percent": 0.796
+   },
+   {
+    "what": "libc.so.6: _int_malloc",
+    "instructions": 460000000,
+    "percent": 0.796
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::RAGreedy::calcGlobalSplitCost(llvm::RAGreedy::GlobalSplitCandidate&, llvm::AllocationOrder const&)",
+    "instructions": 430000000,
+    "percent": 0.744
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveIntervalUnion::Query::collectInterferingVRegs(unsigned int)",
+    "instructions": 400000000,
+    "percent": 0.692
+   },
+   {
+    "what": "libc.so.6: msort_with_tmp.part.0",
+    "instructions": 350000000,
+    "percent": 0.606
+   },
+   {
+    "what": "libgallium-26.1.3.so: lp_scene_new_cmd_block",
+    "instructions": 350000000,
+    "percent": 0.606
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRange::addSegment(llvm::LiveRange::Segment)",
+    "instructions": 340000000,
+    "percent": 0.588
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SpillPlacement::iterate()",
+    "instructions": 340000000,
+    "percent": 0.588
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SDValue::getScalarValueSizeInBits() const [clone .isra.0]",
+    "instructions": 330000000,
+    "percent": 0.571
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SelectionDAGISel::SelectCodeCommon(llvm::SDNode*, unsigned char const*, unsigned int)",
+    "instructions": 330000000,
+    "percent": 0.571
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SpillPlacement::finish()",
+    "instructions": 320000000,
+    "percent": 0.554
+   },
+   {
+    "what": "libgallium-26.1.3.so: llvm_pipeline_generic.constprop.0.isra.0",
+    "instructions": 320000000,
+    "percent": 0.554
+   },
+   {
+    "what": "libgallium-26.1.3.so: try_update_scene_state",
+    "instructions": 320000000,
+    "percent": 0.554
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::Type::getPrimitiveSizeInBits() const",
+    "instructions": 310000000,
+    "percent": 0.536
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRange::extendInBlock(llvm::ArrayRef<llvm::SlotIndex>, llvm::SlotIndex, llvm::SlotIndex)",
+    "instructions": 300000000,
+    "percent": 0.519
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::APInt::operator=(llvm::APInt&&) [clone .isra.0]",
+    "instructions": 290000000,
+    "percent": 0.502
+   },
+   {
+    "what": "libc.so.6: _int_free_chunk",
+    "instructions": 280000000,
+    "percent": 0.484
+   },
+   {
+    "what": "libc.so.6: __memset_avx512_unaligned_erms",
+    "instructions": 270000000,
+    "percent": 0.467
+   },
+   {
+    "what": "tomoe: heap_alloc_in",
+    "instructions": 270000000,
+    "percent": 0.467
+   },
+   {
+    "what": "libLLVM.so.21.1: int llvm::array_pod_sort_comparator<unsigned int>(void const*, void const*)",
+    "instructions": 260000000,
+    "percent": 0.45
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SmallPtrSetImplBase::insert_imp_big(void const*)",
+    "instructions": 260000000,
+    "percent": 0.45
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::EVT::getSizeInBits() const",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveVariables::MarkVirtRegAliveInBlock(llvm::LiveVariables::VarInfo&, llvm::MachineBasicBlock*, llvm::MachineBasicBlock*, llvm::SmallVectorImpl<llvm::MachineBasicBlock*>&)",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "libc.so.6: __libc_malloc2",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "libgallium-26.1.3.so: match_expression",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "tomoe: deep_copy",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "libLLVM.so.21.1: (anonymous namespace)::MachineSinking::SinkInstruction(llvm::MachineInstr&, bool&, llvm::SmallDenseMap<llvm::MachineBasicBlock*, llvm::SmallVector<llvm::MachineBasicBlock*, 4u>, 4u, llvm::DenseMapInfo<llvm::MachineBasicBlock*, void>, llvm::detail::DenseMapPair<llvm::MachineBasicBlock*, llvm::SmallVector<llvm::MachineBasicBlock*, 4u> > >&)",
+    "instructions": 230000000,
+    "percent": 0.398
+   },
+   {
+    "what": "libgallium-26.1.3.so: try_rect_cw",
+    "instructions": 230000000,
+    "percent": 0.398
+   },
+   {
+    "what": "tomoe: call_with",
+    "instructions": 230000000,
+    "percent": 0.398
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::ScheduleDAGInstrs::addPhysRegDeps(llvm::SUnit*, unsigned int)",
+    "instructions": 220000000,
+    "percent": 0.381
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::hash_code llvm::hash_combine<llvm::MachineOperand::MachineOperandType, unsigned int, unsigned int, bool>(llvm::MachineOperand::MachineOperandType const&, unsigned int const&, unsigned int const&, bool const&)",
+    "instructions": 220000000,
+    "percent": 0.381
+   },
+   {
+    "what": "libgallium-26.1.3.so: llvmpipe_update_fs",
+    "instructions": 210000000,
+    "percent": 0.363
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::IntervalMap<llvm::SlotIndex, llvm::LiveInterval const*, 8u, llvm::IntervalMapInfo<llvm::SlotIndex> >::const_iterator::treeAdvanceTo(llvm::SlotIndex)",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::KnownBits::intersectWith(llvm::KnownBits const&) const",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::getShuffleDemandedElts(int, llvm::ArrayRef<int>, llvm::APInt const&, llvm::APInt&, llvm::APInt&, bool)",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::hash_code llvm::hash_combine<unsigned int, unsigned long>(unsigned int const&, unsigned long const&)",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::hashing::detail::hash_short(char const*, unsigned long, unsigned long)",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libgallium-26.1.3.so: lp_setup_bin_rectangle",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "tomoe: pass_record",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::X86TargetLowering::computeKnownBitsForTargetNode(llvm::SDValue, llvm::KnownBits&, llvm::APInt const&, llvm::SelectionDAG const&, unsigned int) const",
+    "instructions": 190000000,
+    "percent": 0.329
+   },
+   {
+    "what": "libLLVM.so.21.1: std::enable_if<llvm::hashing::detail::is_hashable_data<unsigned int const>::value, llvm::hash_code>::type llvm::hashing::detail::hash_combine_range_impl<unsigned int const>(unsigned int const*, unsigned int const*)",
+    "instructions": 190000000,
+    "percent": 0.329
+   },
+   {
+    "what": "libgallium-26.1.3.so: set_scissor_no_notify",
+    "instructions": 190000000,
+    "percent": 0.329
+   },
+   {
+    "what": "libLLVM.so.21.1: SetImpliedBits(llvm::FeatureBitset&, llvm::FeatureBitset const&, llvm::ArrayRef<llvm::SubtargetFeatureKV>)",
+    "instructions": 180000000,
+    "percent": 0.311
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRangeUpdater::add(llvm::LiveRange::Segment)",
+    "instructions": 180000000,
+    "percent": 0.311
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::KnownBits::makeConstant(llvm::APInt const&)",
+    "instructions": 170000000,
+    "percent": 0.294
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRange::extendInBlock(llvm::SlotIndex, llvm::SlotIndex)",
+    "instructions": 170000000,
+    "percent": 0.294
+   },
+   {
+    "what": "libc.so.6: cfree@GLIBC_2.2.5",
+    "instructions": 160000000,
+    "percent": 0.277
+   },
+   {
+    "what": "[unknown]: [k] 0000000000000000",
+    "instructions": 160000000,
+    "percent": 0.277
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::APInt::extractBits(unsigned int, unsigned int) const",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::GenericScheduler::pickNodeFromQueue(llvm::SchedBoundary&, llvm::GenericSchedulerBase::CandPolicy const&, llvm::RegPressureTracker const&, llvm::GenericSchedulerBase::SchedCandidate&)",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRange::find(llvm::SlotIndex)",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::MachineInstr::findRegisterDefOperandIdx(llvm::Register, llvm::TargetRegisterInfo const*, bool, bool) const",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "libgallium-26.1.3.so: llvm_middle_end_bind_parameters",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "tomoe: apply_closure",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::LiveRegMatrix::checkRegUnitInterference(llvm::LiveInterval const&, llvm::MCRegister)",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::MachineInstr::addOperand(llvm::MachineFunction&, llvm::MachineOperand const&)",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SUnit::addPred(llvm::SDep const&, bool)",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SmallPtrSetImplBase::Grow(unsigned int)",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libc.so.6: pthread_mutex_lock@@GLIBC_2.2.5",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libgallium-26.1.3.so: llvmpipe_draw_vbo",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "tomoe: region_combine",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::IntervalMap<llvm::SlotIndex, llvm::LiveInterval const*, 8u, llvm::IntervalMapInfo<llvm::SlotIndex> >::const_iterator::treeFind(llvm::SlotIndex)",
+    "instructions": 130000000,
+    "percent": 0.225
+   },
+   {
+    "what": "libLLVM.so.21.1: llvm::SelectionDAG::Combine(llvm::CombineLevel, llvm::BatchAAResults*, llvm::CodeGenOptLevel)",
+    "instructions": 130000000,
+    "percent": 0.225
+   }
+  ],
+  "main_thread_tomoe_functions": [
+   {
+    "what": "tomoe: heap_alloc_in",
+    "instructions": 270000000,
+    "percent": 0.467
+   },
+   {
+    "what": "tomoe: deep_copy",
+    "instructions": 240000000,
+    "percent": 0.415
+   },
+   {
+    "what": "tomoe: call_with",
+    "instructions": 230000000,
+    "percent": 0.398
+   },
+   {
+    "what": "tomoe: pass_record",
+    "instructions": 200000000,
+    "percent": 0.346
+   },
+   {
+    "what": "tomoe: apply_closure",
+    "instructions": 150000000,
+    "percent": 0.26
+   },
+   {
+    "what": "tomoe: region_combine",
+    "instructions": 140000000,
+    "percent": 0.242
+   },
+   {
+    "what": "tomoe: keyword_get",
+    "instructions": 130000000,
+    "percent": 0.225
+   },
+   {
+    "what": "tomoe: list_nth",
+    "instructions": 110000000,
+    "percent": 0.19
+   },
+   {
+    "what": "tomoe: build_add",
+    "instructions": 100000000,
+    "percent": 0.173
+   },
+   {
+    "what": "tomoe: cons",
+    "instructions": 100000000,
+    "percent": 0.173
+   },
+   {
+    "what": "tomoe: lisp_run_wrapper",
+    "instructions": 100000000,
+    "percent": 0.173
+   },
+   {
+    "what": "tomoe: run_call",
+    "instructions": 100000000,
+    "percent": 0.173
+   },
+   {
+    "what": "tomoe: copy_walk",
+    "instructions": 90000000,
+    "percent": 0.156
+   },
+   {
+    "what": "tomoe: equal_inner",
+    "instructions": 90000000,
+    "percent": 0.156
+   },
+   {
+    "what": "tomoe: run_lexical",
+    "instructions": 90000000,
+    "percent": 0.156
+   },
+   {
+    "what": "tomoe: variable_value",
+    "instructions": 80000000,
+    "percent": 0.138
+   },
+   {
+    "what": "tomoe: heap_region_of",
+    "instructions": 70000000,
+    "percent": 0.121
+   },
+   {
+    "what": "tomoe: pass_record_blur",
+    "instructions": 70000000,
+    "percent": 0.121
+   },
+   {
+    "what": "tomoe: quad_pixels.isra.0",
+    "instructions": 70000000,
+    "percent": 0.121
+   },
+   {
+    "what": "tomoe: apply_function",
+    "instructions": 60000000,
+    "percent": 0.104
+   },
+   {
+    "what": "tomoe: malloc",
+    "instructions": 60000000,
+    "percent": 0.104
+   },
+   {
+    "what": "tomoe: run_wrapper",
+    "instructions": 60000000,
+    "percent": 0.104
+   },
+   {
+    "what": "tomoe: heap_alloc",
+    "instructions": 50000000,
+    "percent": 0.087
+   },
+   {
+    "what": "tomoe: lisp_release",
+    "instructions": 50000000,
+    "percent": 0.087
+   },
+   {
+    "what": "tomoe: seq_order.constprop.0",
+    "instructions": 50000000,
+    "percent": 0.087
+   },
+   {
+    "what": "tomoe: bind_pattern",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: box_empty",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: box_intersection",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: region_store",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: require_number",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: string_char_at",
+    "instructions": 40000000,
+    "percent": 0.069
+   },
+   {
+    "what": "tomoe: build_coalesce",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: builtin_nth",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: effect_shader",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: fbox_transform",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: filter_list",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: frame_slot",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: lisp_kw_test",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: memo_lookup",
+    "instructions": 30000000,
+    "percent": 0.052
+   },
+   {
+    "what": "tomoe: place_set",
+    "instructions": 30000000,
+    "percent": 0.052
+   }
+  ],
+  "raster_functions": [
+   {
+    "what": "libgallium-26.1.3.so: shade_quads",
+    "instructions": 198590000000,
+    "percent": 4.035
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e86993",
+    "instructions": 95450000000,
+    "percent": 1.939
+   },
+   {
+    "what": "libgallium-26.1.3.so: lp_rast_shade_quads_all",
+    "instructions": 65000000000,
+    "percent": 1.321
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e9f910",
+    "instructions": 63920000000,
+    "percent": 1.299
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007ffee807997c",
+    "instructions": 48750000000,
+    "percent": 0.991
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e869a1",
+    "instructions": 41980000000,
+    "percent": 0.853
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e869af",
+    "instructions": 30780000000,
+    "percent": 0.625
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e869c1",
+    "instructions": 27800000000,
+    "percent": 0.565
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e860e4",
+    "instructions": 17980000000,
+    "percent": 0.365
+   },
+   {
+    "what": "libgallium-26.1.3.so: lp_rast_shade_quads_mask_sample",
+    "instructions": 16520000000,
+    "percent": 0.336
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007ffee80a6950",
+    "instructions": 16380000000,
+    "percent": 0.333
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007ffe9e2266d4",
+    "instructions": 15830000000,
+    "percent": 0.322
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007fffe8e86102",
+    "instructions": 15270000000,
+    "percent": 0.31
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007ffee809f0bd",
+    "instructions": 14310000000,
+    "percent": 0.291
+   },
+   {
+    "what": "[JIT] tid 152: 0x00007ffe9e221167",
+    "instructions": 13990000000,
+    "percent": 0.284
+   }
+  ]
+ },
+ "memory": {
+  "phases": [
+   {
+    "name": "boot",
+    "t": 1.5,
+    "main": 44391494788,
+    "frames": 337,
+    "pss_kB": 328829,
+    "private_dirty_kB": 286936
+   },
+   {
+    "name": "open",
+    "t": 1.95,
+    "main": 54546759703,
+    "frames": 445,
+    "pss_kB": 536024,
+    "private_dirty_kB": 493936
+   },
+   {
+    "name": "keys",
+    "t": 3.7,
+    "main": 62317489334,
+    "frames": 865,
+    "pss_kB": 568486,
+    "private_dirty_kB": 526412
+   },
+   {
+    "name": "pointer",
+    "t": 4.5,
+    "main": 72293481168,
+    "frames": 1057,
+    "pss_kB": 698619,
+    "private_dirty_kB": 656552
+   },
+   {
+    "name": "churn",
+    "t": 5.0,
+    "main": 81270814207,
+    "frames": 1177,
+    "pss_kB": 578227,
+    "private_dirty_kB": 536148
+   },
+   {
+    "name": "themes",
+    "t": 7.1,
+    "main": 161690144535,
+    "frames": 1681,
+    "pss_kB": 694558,
+    "private_dirty_kB": 590204
+   },
+   {
+    "name": "settled",
+    "t": 7.6,
+    "main": 163209141480,
+    "frames": 1801,
+    "pss_kB": 484346,
+    "private_dirty_kB": 379992
+   }
+  ],
+  "peak_pss_kB": 698619,
+  "peak_private_dirty_kB": 656552,
+  "settled": {
+   "Rss": 505552,
+   "Pss": 484346,
+   "Pss_Dirty": 394398,
+   "Pss_Anon": 293584,
+   "Pss_File": 89943,
+   "Pss_Shmem": 100819,
+   "Shared_Clean": 11428,
+   "Shared_Dirty": 28816,
+   "Private_Clean": 85316,
+   "Private_Dirty": 379992,
+   "Referenced": 505552,
+   "Anonymous": 293584,
+   "KSM": 0,
+   "LazyFree": 0,
+   "AnonHugePages": 0,
+   "ShmemPmdMapped": 0,
+   "FilePmdMapped": 0,
+   "Shared_Hugetlb": 0,
+   "Private_Hugetlb": 0,
+   "Swap": 0,
+   "SwapPss": 0,
+   "Locked": 0,
+   "VmHWM": 808096,
+   "VmRSS": 505552,
+   "malloc_arena_kB": 103828,
+   "malloc_used_kB": 186940,
+   "malloc_free_kB": 33127,
+   "malloc_mmap_kB": 116240
+  },
+  "mappings": [
+   {
+    "what": "anonymous (malloc mmap, textures, stacks)",
+    "Rss_kB": 225676,
+    "Pss_kB": 225676,
+    "Private_Dirty_kB": 225676,
+    "Private_Clean_kB": 0,
+    "Size_kB": 4699696,
+    "mappings": 98
+   },
+   {
+    "what": "memfd speedlab-dumb",
+    "Rss_kB": 86400,
+    "Pss_kB": 86400,
+    "Private_Dirty_kB": 86400,
+    "Private_Clean_kB": 0,
+    "Size_kB": 88320,
+    "mappings": 3
+   },
+   {
+    "what": "library libLLVM.so",
+    "Rss_kB": 65356,
+    "Pss_kB": 65356,
+    "Private_Dirty_kB": 2120,
+    "Private_Clean_kB": 63236,
+    "Size_kB": 163864,
+    "mappings": 5
+   },
+   {
+    "what": "malloc heap (brk)",
+    "Rss_kB": 62576,
+    "Pss_kB": 62576,
+    "Private_Dirty_kB": 62576,
+    "Private_Clean_kB": 0,
+    "Size_kB": 103828,
+    "mappings": 1
+   },
+   {
+    "what": "library libgallium-26.1.3.so",
+    "Rss_kB": 15816,
+    "Pss_kB": 15816,
+    "Private_Dirty_kB": 1504,
+    "Private_Clean_kB": 14312,
+    "Size_kB": 54412,
+    "mappings": 6
+   },
+   {
+    "what": "memfd speedlab-capture",
+    "Rss_kB": 28800,
+    "Pss_kB": 14400,
+    "Private_Dirty_kB": 0,
+    "Private_Clean_kB": 0,
+    "Size_kB": 28800,
+    "mappings": 1
+   },
+   {
+    "what": "library libstdc++.so",
+    "Rss_kB": 1620,
+    "Pss_kB": 1620,
+    "Private_Dirty_kB": 72,
+    "Private_Clean_kB": 1548,
+    "Size_kB": 2552,
+    "mappings": 5
+   },
+   {
+    "what": "executable tomoe",
+    "Rss_kB": 2104,
+    "Pss_kB": 1380,
+    "Private_Dirty_kB": 88,
+    "Private_Clean_kB": 568,
+    "Size_kB": 2104,
+    "mappings": 5
+   },
+   {
+    "what": "library libharfbuzz.so",
+    "Rss_kB": 1300,
+    "Pss_kB": 1020,
+    "Private_Dirty_kB": 12,
+    "Private_Clean_kB": 728,
+    "Size_kB": 1428,
+    "mappings": 5
+   },
+   {
+    "what": "library libfreetype.so",
+    "Rss_kB": 892,
+    "Pss_kB": 754,
+    "Private_Dirty_kB": 36,
+    "Private_Clean_kB": 580,
+    "Size_kB": 904,
+    "mappings": 5
+   },
+   {
+    "what": "library libglib-2.0.so",
+    "Rss_kB": 1156,
+    "Pss_kB": 728,
+    "Private_Dirty_kB": 8,
+    "Private_Clean_kB": 292,
+    "Size_kB": 1412,
+    "mappings": 5
+   },
+   {
+    "what": "library libcairo.so",
+    "Rss_kB": 936,
+    "Pss_kB": 564,
+    "Private_Dirty_kB": 16,
+    "Private_Clean_kB": 176,
+    "Size_kB": 1128,
+    "mappings": 5
+   },
+   {
+    "what": "library libgio-2.0.so",
+    "Rss_kB": 748,
+    "Pss_kB": 556,
+    "Private_Dirty_kB": 44,
+    "Private_Clean_kB": 320,
+    "Size_kB": 2136,
+    "mappings": 5
+   },
+   {
+    "what": "file /nix/store/rjjrw0skkwg4sg4ly2fx0vdlafr0aj41-fc-cache/93126d4272f25eb1d046e5a60f600493-x86_64.cache-12",
+    "Rss_kB": 428,
+    "Pss_kB": 428,
+    "Private_Dirty_kB": 0,
+    "Private_Clean_kB": 428,
+    "Size_kB": 428,
+    "mappings": 1
+   },
+   {
+    "what": "library libEGL_mesa.so",
+    "Rss_kB": 428,
+    "Pss_kB": 428,
+    "Private_Dirty_kB": 56,
+    "Private_Clean_kB": 372,
+    "Size_kB": 428,
+    "mappings": 5
+   },
+   {
+    "what": "library libX11.so",
+    "Rss_kB": 384,
+    "Pss_kB": 384,
+    "Private_Dirty_kB": 28,
+    "Private_Clean_kB": 356,
+    "Size_kB": 1344,
+    "mappings": 5
+   },
+   {
+    "what": "anonymous executable (JIT)",
+    "Rss_kB": 360,
+    "Pss_kB": 360,
+    "Private_Dirty_kB": 360,
+    "Private_Clean_kB": 0,
+    "Size_kB": 10564,
+    "mappings": 44
+   },
+   {
+    "what": "library libGLdispatch.so",
+    "Rss_kB": 516,
+    "Pss_kB": 316,
+    "Private_Dirty_kB": 116,
+    "Private_Clean_kB": 0,
+    "Size_kB": 708,
+    "mappings": 5
+   },
+   {
+    "what": "library libresvg.so",
+    "Rss_kB": 440,
+    "Pss_kB": 304,
+    "Private_Dirty_kB": 144,
+    "Private_Clean_kB": 24,
+    "Size_kB": 3328,
+    "mappings": 5
+   },
+   {
+    "what": "file /nix/store/rjjrw0skkwg4sg4ly2fx0vdlafr0aj41-fc-cache/0ee4f04ba7815e255610d3e6d627e009-x86_64.cache-12",
+    "Rss_kB": 296,
+    "Pss_kB": 296,
+    "Private_Dirty_kB": 0,
+    "Private_Clean_kB": 296,
+    "Size_kB": 296,
+    "mappings": 1
+   },
+   {
+    "what": "library libpixman-1.so",
+    "Rss_kB": 512,
+    "Pss_kB": 282,
+    "Private_Dirty_kB": 36,
+    "Private_Clean_kB": 16,
+    "Size_kB": 748,
+    "mappings": 5
+   },
+   {
+    "what": "library libxml2.so",
+    "Rss_kB": 280,
+    "Pss_kB": 280,
+    "Private_Dirty_kB": 40,
+    "Private_Clean_kB": 240,
+    "Size_kB": 1304,
+    "mappings": 5
+   },
+   {
+    "what": "library libc.so",
+    "Rss_kB": 1912,
+    "Pss_kB": 277,
+    "Private_Dirty_kB": 24,
+    "Private_Clean_kB": 0,
+    "Size_kB": 2040,
+    "mappings": 5
+   },
+   {
+    "what": "library libpango-1.0.so",
+    "Rss_kB": 464,
+    "Pss_kB": 256,
+    "Private_Dirty_kB": 20,
+    "Private_Clean_kB": 28,
+    "Size_kB": 464,
+    "mappings": 5
+   },
+   {
+    "what": "library libgobject-2.0.so",
+    "Rss_kB": 404,
+    "Pss_kB": 210,
+    "Private_Dirty_kB": 16,
+    "Private_Clean_kB": 0,
+    "Size_kB": 404,
+    "mappings": 5
+   }
+  ]
+ },
+ "heap": {
+  "pointer": {
+   "live_kB": 476932,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 457383,
+    "tomoe": 9766,
+    "libstdc++.so.6": 754,
+    "libLLVM.so.21.1": 344,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libGLdispatch.so.0": 58,
+    "libEGL_mesa.so.0": 28
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 355515,
+    "(no Tomoe frame) libgallium-26.1.3.so": 53733,
+    "texture_new": 42547,
+    "tomoe_create": 4032,
+    "lisp_attach": 2565,
+    "render_open": 2071,
+    "render_quad": 2061,
+    "(no Tomoe frame) libstdc++.so.6": 754,
+    "compile": 677,
+    "sound_publish": 638,
+    "render_cursor": 512,
+    "outputs_event": 480,
+    "ui_stage": 397,
+    "(no Tomoe frame) libLLVM.so.21.1": 344,
+    "warm_load": 293,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 194,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72,
+    "pass_flush": 64,
+    "res_push_event": 64,
+    "effect_trail": 48,
+    "res_services_start": 36
+   },
+   "top_sites": [
+    {
+     "live_kB": 355272,
+     "blocks": 87,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42547,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3551,
+     "blocks": 111,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 2049,
+     "blocks": 4,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1791,
+     "blocks": 56,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1245,
+     "blocks": 39,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    },
+    {
+     "live_kB": 871,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x29e987",
+      "libgallium-26.1.3.so:+0x1f2bb7",
+      "libgallium-26.1.3.so:driCreateContextAttribs",
+      "libEGL_mesa.so.0:+0x237da",
+      "libEGL_mesa.so.0:+0x15d65",
+      "tomoe:render_open"
+     ]
+    }
+   ]
+  },
+  "churn": {
+   "live_kB": 357030,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 337479,
+    "tomoe": 9766,
+    "libstdc++.so.6": 754,
+    "libLLVM.so.21.1": 344,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libGLdispatch.so.0": 58,
+    "libEGL_mesa.so.0": 28
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 235716,
+    "(no Tomoe frame) libgallium-26.1.3.so": 54621,
+    "texture_new": 42547,
+    "tomoe_create": 4032,
+    "lisp_attach": 2565,
+    "render_open": 2071,
+    "render_quad": 1036,
+    "(no Tomoe frame) libstdc++.so.6": 754,
+    "compile": 677,
+    "sound_publish": 638,
+    "render_cursor": 512,
+    "outputs_event": 480,
+    "ui_stage": 397,
+    "(no Tomoe frame) libLLVM.so.21.1": 344,
+    "warm_load": 293,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 194,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72,
+    "pass_trail": 64,
+    "pass_flush": 64,
+    "res_push_event": 64,
+    "effect_trail": 48
+   },
+   "top_sites": [
+    {
+     "live_kB": 235447,
+     "blocks": 93,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42547,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3551,
+     "blocks": 111,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1791,
+     "blocks": 56,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1245,
+     "blocks": 39,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x98af11",
+      "libgallium-26.1.3.so:+0x11ee6c0",
+      "libgallium-26.1.3.so:+0x11eea49",
+      "libgallium-26.1.3.so:+0x11ef28f",
+      "libgallium-26.1.3.so:+0x11f278a"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    }
+   ]
+  },
+  "themes": {
+   "live_kB": 403668,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 382576,
+    "tomoe": 9769,
+    "libstdc++.so.6": 758,
+    "libcairo.so.2": 445,
+    "libLLVM.so.21.1": 385,
+    "libfontconfig.so.1": 348,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libpangocairo-1.0.so.0": 60,
+    "libGLdispatch.so.0": 58,
+    "libexpat.so.1": 32,
+    "libEGL_mesa.so.0": 28,
+    "libpangoft2-1.0.so.0": 19,
+    "libfreetype.so.6": 8
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 283474,
+    "(no Tomoe frame) libgallium-26.1.3.so": 50911,
+    "texture_new": 42611,
+    "tomoe_create": 4032,
+    "lisp_attach": 2565,
+    "render_open": 2071,
+    "render_quad": 2061,
+    "(no Tomoe frame) libstdc++.so.6": 758,
+    "compile": 677,
+    "sound_publish": 638,
+    "render_cursor": 512,
+    "outputs_event": 480,
+    "(no Tomoe frame) libcairo.so.2": 445,
+    "ui_stage": 400,
+    "(no Tomoe frame) libLLVM.so.21.1": 385,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 203,
+    "(no Tomoe frame) libfontconfig.so.1": 192,
+    "warm_load": 176,
+    "text_layout": 175,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "scene_run_draw": 92,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72
+   },
+   "top_sites": [
+    {
+     "live_kB": 283376,
+     "blocks": 42,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42611,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 2049,
+     "blocks": 4,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1983,
+     "blocks": 62,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1725,
+     "blocks": 54,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1344,
+     "blocks": 42,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    },
+    {
+     "live_kB": 871,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x29e987",
+      "libgallium-26.1.3.so:+0x1f2bb7",
+      "libgallium-26.1.3.so:driCreateContextAttribs",
+      "libEGL_mesa.so.0:+0x237da",
+      "libEGL_mesa.so.0:+0x15d65",
+      "tomoe:render_open"
+     ]
+    }
+   ]
+  },
+  "settled": {
+   "live_kB": 185273,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 164226,
+    "tomoe": 9786,
+    "libstdc++.so.6": 758,
+    "libcairo.so.2": 445,
+    "libLLVM.so.21.1": 385,
+    "libfontconfig.so.1": 348,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libpangocairo-1.0.so.0": 60,
+    "libGLdispatch.so.0": 58,
+    "libexpat.so.1": 32,
+    "libEGL_mesa.so.0": 28,
+    "libpangoft2-1.0.so.0": 19,
+    "libfreetype.so.6": 8
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 64066,
+    "(no Tomoe frame) libgallium-26.1.3.so": 50936,
+    "texture_new": 42611,
+    "tomoe_create": 4040,
+    "render_quad": 3085,
+    "lisp_attach": 2565,
+    "render_open": 2079,
+    "(no Tomoe frame) libstdc++.so.6": 758,
+    "compile": 677,
+    "sound_publish": 638,
+    "render_cursor": 512,
+    "outputs_event": 480,
+    "(no Tomoe frame) libcairo.so.2": 445,
+    "ui_stage": 400,
+    "(no Tomoe frame) libLLVM.so.21.1": 385,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 203,
+    "(no Tomoe frame) libfontconfig.so.1": 192,
+    "warm_load": 176,
+    "text_layout": 175,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "scene_run_draw": 92,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72
+   },
+   "top_sites": [
+    {
+     "live_kB": 64066,
+     "blocks": 8,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42611,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3073,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1983,
+     "blocks": 62,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1725,
+     "blocks": 54,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1344,
+     "blocks": 42,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    },
+    {
+     "live_kB": 871,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x29e987",
+      "libgallium-26.1.3.so:+0x1f2bb7",
+      "libgallium-26.1.3.so:driCreateContextAttribs",
+      "libEGL_mesa.so.0:+0x237da",
+      "libEGL_mesa.so.0:+0x15d65",
+      "tomoe:render_open"
+     ]
+    }
+   ]
+  },
+  "boot": {
+   "live_kB": 108607,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 90273,
+    "tomoe": 8803,
+    "libstdc++.so.6": 762,
+    "libLLVM.so.21.1": 344,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libGLdispatch.so.0": 58,
+    "libEGL_mesa.so.0": 28
+   },
+   "by_tomoe_caller_kB": {
+    "(no Tomoe frame) libgallium-26.1.3.so": 55197,
+    "level_ensure": 30648,
+    "tomoe_create": 4040,
+    "lisp_attach": 2565,
+    "render_open": 2079,
+    "render_quad": 1036,
+    "(no Tomoe frame) libstdc++.so.6": 762,
+    "compile": 759,
+    "sound_publish": 638,
+    "outputs_event": 480,
+    "(no Tomoe frame) libLLVM.so.21.1": 344,
+    "warm_load": 293,
+    "region_attach": 272,
+    "prim_present_sound": 231,
+    "link_stages": 203,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "keyboard_profile_prepare": 91,
+    "scene_run_draw": 76,
+    "keymap_slot_set": 72,
+    "res_push_event": 64,
+    "effect_trail": 48,
+    "effect_shader": 46,
+    "res_services_start": 45,
+    "lisp_eval_cached": 24,
+    "ui_resolve": 16,
+    "socket_ready": 15
+   },
+   "top_sites": [
+    {
+     "live_kB": 30648,
+     "blocks": 3,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3551,
+     "blocks": 111,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1791,
+     "blocks": 56,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1245,
+     "blocks": 39,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1055,
+     "blocks": 33,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x98af11",
+      "libgallium-26.1.3.so:+0x11ee6c0",
+      "libgallium-26.1.3.so:+0x11eea49",
+      "libgallium-26.1.3.so:+0x11ef28f",
+      "libgallium-26.1.3.so:+0x11f278a"
+     ]
+    },
+    {
+     "live_kB": 960,
+     "blocks": 15,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa891ce",
+      "libgallium-26.1.3.so:+0xa8951e",
+      "libgallium-26.1.3.so:+0xa75632",
+      "libgallium-26.1.3.so:+0xa756bf",
+      "libgallium-26.1.3.so:+0xa757cc",
+      "libgallium-26.1.3.so:+0xaad4a6"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    }
+   ]
+  },
+  "open": {
+   "live_kB": 313307,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 294257,
+    "tomoe": 9286,
+    "libstdc++.so.6": 754,
+    "libLLVM.so.21.1": 344,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libGLdispatch.so.0": 58,
+    "libEGL_mesa.so.0": 28
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 192563,
+    "(no Tomoe frame) libgallium-26.1.3.so": 53614,
+    "texture_new": 42547,
+    "tomoe_create": 4032,
+    "lisp_attach": 2565,
+    "render_open": 2071,
+    "render_quad": 2061,
+    "(no Tomoe frame) libstdc++.so.6": 754,
+    "compile": 677,
+    "sound_publish": 638,
+    "outputs_event": 480,
+    "ui_stage": 397,
+    "(no Tomoe frame) libLLVM.so.21.1": 344,
+    "warm_load": 293,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 203,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72,
+    "res_push_event": 64,
+    "effect_trail": 48,
+    "res_services_start": 36,
+    "pass_flush": 32,
+    "render_cursor": 32
+   },
+   "top_sites": [
+    {
+     "live_kB": 192376,
+     "blocks": 68,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42547,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3551,
+     "blocks": 111,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 2049,
+     "blocks": 4,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1791,
+     "blocks": 56,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1245,
+     "blocks": 39,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    },
+    {
+     "live_kB": 871,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x29e987",
+      "libgallium-26.1.3.so:+0x1f2bb7",
+      "libgallium-26.1.3.so:driCreateContextAttribs",
+      "libEGL_mesa.so.0:+0x237da",
+      "libEGL_mesa.so.0:+0x15d65",
+      "tomoe:render_open"
+     ]
+    }
+   ]
+  },
+  "keys": {
+   "live_kB": 345333,
+   "by_allocating_library_kB": {
+    "libgallium-26.1.3.so": 326274,
+    "tomoe": 9286,
+    "libstdc++.so.6": 754,
+    "libLLVM.so.21.1": 344,
+    "libxkbcommon.so.0": 320,
+    "ld-linux-x86-64.so.2": 160,
+    "libGLdispatch.so.0": 58,
+    "libEGL_mesa.so.0": 28
+   },
+   "by_tomoe_caller_kB": {
+    "level_ensure": 224493,
+    "(no Tomoe frame) libgallium-26.1.3.so": 53678,
+    "texture_new": 42547,
+    "tomoe_create": 4032,
+    "lisp_attach": 2565,
+    "render_open": 2071,
+    "sample_pass": 1040,
+    "render_quad": 1036,
+    "(no Tomoe frame) libstdc++.so.6": 754,
+    "compile": 677,
+    "sound_publish": 638,
+    "outputs_event": 480,
+    "ui_stage": 397,
+    "(no Tomoe frame) libLLVM.so.21.1": 344,
+    "warm_load": 293,
+    "region_attach": 272,
+    "effect_shader": 238,
+    "prim_present_sound": 231,
+    "link_stages": 194,
+    "(no Tomoe frame) ld-linux-x86-64.so.2": 160,
+    "(no Tomoe frame) libxkbcommon.so.0": 156,
+    "output_added": 140,
+    "run_cli": 100,
+    "deep_copy": 96,
+    "keyboard_profile_prepare": 91,
+    "keymap_slot_set": 72,
+    "pass_flush": 64,
+    "res_push_event": 64,
+    "effect_trail": 48,
+    "res_services_start": 36
+   },
+   "top_sites": [
+    {
+     "live_kB": 224376,
+     "blocks": 46,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 42547,
+     "blocks": 6,
+     "stack": [
+      "libgallium-26.1.3.so:+0xa728e4",
+      "libgallium-26.1.3.so:+0x2b30d7",
+      "libgallium-26.1.3.so:+0x285149",
+      "libgallium-26.1.3.so:+0x286b75",
+      "libgallium-26.1.3.so:+0x288993",
+      "libgallium-26.1.3.so:+0x25ad9a"
+     ]
+    },
+    {
+     "live_kB": 5149,
+     "blocks": 161,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x7537da",
+      "libgallium-26.1.3.so:+0x11fbf1c",
+      "libgallium-26.1.3.so:+0x1203a04"
+     ]
+    },
+    {
+     "live_kB": 5053,
+     "blocks": 158,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753655",
+      "libgallium-26.1.3.so:+0x120086f",
+      "libgallium-26.1.3.so:+0x12016b9",
+      "libgallium-26.1.3.so:+0x1203c02"
+     ]
+    },
+    {
+     "live_kB": 4032,
+     "blocks": 3,
+     "stack": [
+      "tomoe:tomoe_create",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 3551,
+     "blocks": 111,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 2806,
+     "blocks": 88,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75b9a2",
+      "libgallium-26.1.3.so:+0x7a77b3"
+     ]
+    },
+    {
+     "live_kB": 2565,
+     "blocks": 1,
+     "stack": [
+      "tomoe:lisp_attach",
+      "tomoe:run_cli",
+      "tomoe:_start"
+     ]
+    },
+    {
+     "live_kB": 2558,
+     "blocks": 80,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1791,
+     "blocks": 56,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1538,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x753f9d",
+      "libgallium-26.1.3.so:+0x7f488c",
+      "libgallium-26.1.3.so:+0x7a7514",
+      "libgallium-26.1.3.so:+0x7a7941"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202f7d",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x11fbeca",
+      "libgallium-26.1.3.so:+0x1203a04",
+      "libgallium-26.1.3.so:+0x120608d",
+      "libgallium-26.1.3.so:+0xa9c670"
+     ]
+    },
+    {
+     "live_kB": 1535,
+     "blocks": 48,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1202fe4",
+      "libgallium-26.1.3.so:+0x120405f"
+     ]
+    },
+    {
+     "live_kB": 1279,
+     "blocks": 40,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x1203c83",
+      "libgallium-26.1.3.so:+0x120608d"
+     ]
+    },
+    {
+     "live_kB": 1245,
+     "blocks": 39,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x761ba7",
+      "libgallium-26.1.3.so:+0x761e25"
+     ]
+    },
+    {
+     "live_kB": 1151,
+     "blocks": 36,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753707",
+      "libgallium-26.1.3.so:+0x762119",
+      "libgallium-26.1.3.so:+0x762443"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:render_quad",
+      "tomoe:pass_quad"
+     ]
+    },
+    {
+     "live_kB": 1024,
+     "blocks": 2,
+     "stack": [
+      "libgallium-26.1.3.so:+0x98ac55",
+      "libgallium-26.1.3.so:+0x521530",
+      "libgallium-26.1.3.so:+0x28eec5",
+      "libgallium-26.1.3.so:+0x42f1b0",
+      "tomoe:sample_pass",
+      "tomoe:blur_levels"
+     ]
+    },
+    {
+     "live_kB": 956,
+     "blocks": 30,
+     "stack": [
+      "libgallium-26.1.3.so:+0x6ee45f",
+      "libgallium-26.1.3.so:+0x6ee561",
+      "libgallium-26.1.3.so:+0x751c4a",
+      "libgallium-26.1.3.so:+0x753575",
+      "libgallium-26.1.3.so:+0x75ba6c",
+      "libgallium-26.1.3.so:+0x11fbac7"
+     ]
+    }
+   ]
+  }
+ }
+}

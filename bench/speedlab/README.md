@@ -53,7 +53,10 @@ rasteriser, so a fence is signalled by the time anyone can look at it, and a
 `WNOHANG` wait on a child (the theme's palette command, a shader compiler copy)
 first lets every running descendant reach exit or sleep. Which of two things
 finished first is then decided by the program, never by the scheduler; on real
-hardware the same code paths run, only with time passing in between.
+hardware the same code paths run, only with time passing in between. In the
+same way, whenever the compositor is about to read its event loop or poll a
+socket, it asks the driver to let every other task in the sandbox reach sleep
+first, so a burst of client messages always arrives as one batch.
 
 `speedlab-capture` copies every presented frame of `DP-4` into a linear dmabuf
 through `ext-image-copy-capture` and hashes 64 tiles of it; every client runs
@@ -115,19 +118,112 @@ the usual ways of looking.
 
 ## Noise and run time
 
-Nine runs of `e880e72` (shm capture, before the dmabuf change) agreed on every
-frame and every protocol line. Spread, max minus min over the mean:
+Repeated runs of `e880e72`, eight of them four at a time on a machine at load
+25 to 50, agreed on every frame (1801 at 5120x1440) and every protocol line
+(23 958). Spread is max minus min over the mean; the band in `noise` is what a
+verdict calls significant and what persona A and B may differ by.
 
-| metric | spread | band in `noise` |
+| metric | spread | band |
 | --- | --- | --- |
-| instructions | 0.0025 % | 0.01 % |
-| cpu (main thread) | 0.028 % | 0.06 % |
-| raster | 0.001 % | 0.005 % |
-| children | 0.022 % | 0.05 % |
-| settled private dirty | 1.16 % | 2.5 % |
-| peak private dirty | 0.37 % | 1.0 % |
+| instructions (everything) | 0.0018 % | 0.005 % |
+| cpu (compositor main thread, ~58 G) | 0.137 % | 0.2 % |
+| raster (llvmpipe threads, ~4.88 T) | 0.0012 % | 0.005 % |
+| children (shader compiler copies, mado-send) | 0.023 % | 0.05 % |
+| settled private dirty (~276 MB) | 0.50 % | 2.5 % |
+| peak private dirty (~553 MB) | 0.21 % | 0.5 % |
 
-Real time per run was 68 to 83 s at load 25 to 45; it does not enter any score.
+A verdict with a cached reference runs the two personas side by side: about
+85 s on an idle-ish machine, 130 to 200 s with four other runs alongside. Real
+time never enters a score.
+
+## What the rig costs, and what it changes
+
+- Capturing every frame into a dmabuf costs 0.5 G raster instructions a frame
+  (900 G of the 4.88 T) and 0.7 G on the main thread; it is the same for every
+  build. `--profile` measures it with a run that captures nothing.
+- GPU work and child processes take no virtual time (see above), so a shader
+  copy has always finished when Tomoe first looks, and fallback frames never
+  appear. The shader cache starts empty on every run, so each theme's shaders
+  are compiled cold.
+- llvmpipe keeps textures in process memory, so memory figures include what
+  would be VRAM on a GPU; the census attributes it by Tomoe call site.
+
+## Profile of e880e72
+
+`./speedlab.sh --profile e880e72` (`profile-e880e72.json` beside this file):
+8.15 virtual seconds, 1801 frames.
+
+Where the instructions go: raster 3.98 T without the capture (98 % of
+everything), the main thread 57.4 G, shader compiler copies 31 G. On the main
+thread, `libLLVM` (llvmpipe compiling shader variants at draw time) is 66 %,
+`libgallium` 16 %, libc 8.6 %, Tomoe's own code 7.6 % (4.4 G). Inclusive,
+`effect_shader` is at least 12.5 % of the main thread, `draw_scene` 9.6 %, the
+Lisp policy (`call_with`, `run_let`, `loop_eval`) about 4.6 %, `ui_render` 4.1 %,
+`effect_blur` 3.9 %, `decorate` 3.8 % (DWARF unwinding stops early on deep
+stacks, so these are lower bounds). The hottest Tomoe functions by self cost are
+the Lisp heap and copier: `heap_alloc_in` 270 M, `deep_copy` 240 M plus
+`copy_walk` 90 M, `call_with` 230 M, then `pass_record` 200 M and
+`region_combine` 140 M. libc on the main thread: `memcmp` 1.23 G, `memmove`
+1.01 G, malloc and free 0.9 G, `qsort` 0.35 G.
+
+Where the memory goes in the rig: 276 MB private dirty settled, 553 MB at the
+peak (the pointer phase, while windows are dragged and resized). Settled: 185 MB
+of live malloc, of which blur chain levels (`effects.c` `level_ensure`) 64 MB,
+other textures (`texture_new`) 43 MB, Mesa's own 51 MB, and Tomoe's own heap
+10 MB (4 MB from `tomoe_create`, 2.6 MB Lisp attach); the three 5120x1440 scanout
+buffers 86 MB; LLVM's code 65 MB of shared clean pages. At the peak the blur
+levels alone are 356 MB.
+
+The running desktop (read-only `smaps` of the live Tomoe on the RTX 4090):
+105 MB RSS, 64 MB PSS, 42 MB private dirty. The NVIDIA user-space driver is 62
+MB of the RSS (`libnvidia-gpucomp` 28 MB shared clean, `/dev/nvidiactl` mappings
+21 MB of which 15 MB private dirty, `libnvidia-eglcore` 10 MB, `libcuda` 2.7 MB,
+NVML 1.3 MB); Tomoe's anonymous memory 16 MB and brk heap 8.6 MB.
+
+### Targets, ranked by expected gain
+
+1. Wallpaper-only ticks recomposite the whole output. The llama wallpaper is
+   `:fps 0`, so it advances on every 240 Hz refresh, and a frame where only the
+   wallpaper moved is composited from scratch like any other. Measured with the rig:
+   the same config with the wallpaper at 30 fps drew 789 frames instead of 1801
+   and cut raster from 3.98 T to about 1.34 T (-66 %, capture overhead removed)
+   and main-thread instructions from 58.0 G to 51.1 G (-12 %): 2.6 G raster
+   instructions per wallpaper-only frame, more than the 2.2 G average frame.
+   Reusing the composited layers above
+   the wallpaper when only the wallpaper changed (or drawing it only where it is
+   uncovered) keeps the output identical and should recover most of that.
+2. Blur chain levels. `level_ensure` holds 356 MB at the drag peak and 64 MB
+   settled, and the peak private dirty (553 MB) is double the settled (276 MB).
+   Chains are kept per key and their levels re-specified whenever the grown
+   size changes (`effects.c`), so a drag or resize leaves a trail of full-size
+   levels until they expire. Reusing levels by size
+   class and releasing idle chains should take the peak down by most of 290 MB
+   and the settled by up to 64 MB (VRAM on a GPU).
+3. Shader variants compiled at draw time. LLVM is 38 G of the 57 G
+   main-thread instructions, under `effect_shader` and the scene draw, plus 31 G
+   in the compiler copies, mostly at theme switches. Fewer distinct programs and
+   pipeline states per theme (one effect program with uniforms instead of one
+   per effect) would cut both; up to 66 % of the main thread on a cold cache.
+4. The Lisp policy's allocation and copying: `deep_copy` and `copy_walk` 330 M,
+   `heap_alloc_in` 270 M, `cons` 100 M, plist lookups (`keyword_get`) 130 M, out
+   of Tomoe's 4.4 G. Keeping extension state in its region instead of copying it
+   per dispatch is worth roughly 0.6 G (1 % of the main thread, 14 % of Tomoe's
+   own code).
+5. Per-draw overhead in Mesa. `libgallium` is 9.2 G of the main thread (16 %),
+   below `_mesa_draw_arrays`/`llvmpipe_draw_vbo` (14.6 % inclusive, which also
+   holds the variant compiles of target 3), reached from Tomoe through
+   `render_quad`/`pass_quad` (7 % inclusive): many small quads, each a draw
+   with its own state. Batching quads that share a program into one draw cuts
+   the per-draw setup; the measured ceiling is the 9.2 G. libc's `memcmp`
+   (1.23 G) and `memmove` (1.01 G) are next, but their callers were not
+   attributed: `render.c` compares scene runs with `memcmp` and `region.c` sorts
+   rectangles with `qsort` (0.35 G), and LLVM uses both, so they need a call
+   graph that unwinds further before they are a target.
+
+Outside the rig's reach: on the desktop `libnvidia-ml` (1.3 MB RSS, which
+`support/system.c` dlopens for the GPU meter) and `libcuda` (2.7 MB) are mapped
+into the compositor; moving the GPU probe into a process of its own would take
+out at least the first.
 
 ## Files
 
