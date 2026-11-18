@@ -518,8 +518,6 @@ static void paint_marks(struct tomoe *s, struct output *o, uint32_t *dst, int st
     uint32_t ink = s->settings.screenshot_mark_ink;
     struct dmatrix matrix;
     mark_matrix(&matrix, transform, width, height);
-    matrix.x0 -= matrix.xx * origin->x + matrix.xy * origin->y;
-    matrix.y0 -= matrix.yx * origin->x + matrix.yy * origin->y;
     const uint32_t *mask = (const uint32_t *)shot->mask;
     if (!mask) return;
     double alpha = (ink & 0xff) / 255.0;
@@ -533,7 +531,7 @@ static void paint_marks(struct tomoe *s, struct output *o, uint32_t *dst, int st
     uint32_t color = ((a >> 8) << 24) | ((r >> 8) << 16) | (g & 0xff00) | (b >> 8);
     dp_mask_surface(dst, stride, (struct drect){ 0, 0, dst_width, dst_height }, mask,
         shot->mask_width, shot->mask_width, shot->mask_height,
-        shot->mask_x, shot->mask_y, &matrix, 0, 0, color);
+        shot->mask_x, shot->mask_y, &matrix, -origin->x, -origin->y, color);
 }
 
 static void capture(struct tomoe *s, struct output *o, struct box region) {

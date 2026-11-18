@@ -1352,7 +1352,7 @@ void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
             int dx = (int)floor (sx - 0.5 + 1e-7);
             int dy = (int)floor (sy - 0.5 + 1e-7);
             if (dx < clip.x0 || dx >= clip.x1 || dy < clip.y0 || dy >= clip.y1) continue;
-            uint8_t coverage = (uint8_t)(mask[(size_t)v * (mask_stride / 4) + u] >> 24);
+            uint8_t coverage = (uint8_t)(mask[(size_t)v * (size_t)mask_stride + u] >> 24);
             if (!coverage) continue;
             dst[(size_t)dy * dst_stride + dx] = dp_masked_over(dst[(size_t)dy * dst_stride + dx],
                 ink, coverage);
