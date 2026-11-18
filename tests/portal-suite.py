@@ -53,7 +53,7 @@ def cast(unit, types=1, close=False):
         f"systemd-run --unit={unit} --property=Type=exec "
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={CAST_BUS} "
         + ("--setenv=CLOSE=1 " if close else "")
-        + f"{CAST_PYTHON} {CAST} {types}"
+        + f"{CAST} {types}"
     )
     machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -q '^start 0'", timeout=60)
 
@@ -136,7 +136,7 @@ def portal_cast(unit, types=1, close=False, cursor_mode=None):
         f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=DBUS_SESSION_BUS_ADDRESS={CAST_BUS} "
         + ("--setenv=CLOSE=1 " if close else "")
         + (f"--setenv=CURSOR_MODE={cursor_mode} " if cursor_mode else "")
-        + f"{CAST_PYTHON} {CAST} {types}"
+        + f"{CAST} {types}"
     )
     try:
         machine.wait_until_succeeds(f"journalctl -u {unit} -o cat | grep -q '^start 0'", timeout=60)

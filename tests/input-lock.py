@@ -12,42 +12,6 @@ POLICY = """
             nil)))
 """
 INPUT = {"pointer_motion", "pointer_button", "key"}
-READER = r'''import json
-import os
-import socket
-import sys
-import time
-
-path, log, ready, stop = sys.argv[1:5]
-connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-connection.connect(path)
-connection.settimeout(0.1)
-connection.sendall(b'{"id":1,"method":"subscribe","params":{"events":["pointer_motion","pointer_button","key"]}}\n')
-buffer = b""
-deadline = time.monotonic() + 600
-with open(log, "w", buffering=1) as frames:
-    while time.monotonic() < deadline and not os.path.exists(stop):
-        try:
-            chunk = connection.recv(65536)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        if not chunk:
-            break
-        buffer += chunk
-        while b"\n" in buffer:
-            line, buffer = buffer.split(b"\n", 1)
-            try:
-                frame = json.loads(line)
-            except ValueError:
-                continue
-            if "event" in frame:
-                frames.write(json.dumps(frame) + "\n")
-            elif frame.get("id") == 1:
-                with open(ready, "w") as flag:
-                    flag.write("ready\n")
-'''
 
 
 def frames():
@@ -70,7 +34,6 @@ def script(*commands):
 
 machine.succeed("mkdir -p /run/lock /run/capture")
 machine.succeed("cat > /run/lock/policy.lisp <<'LISP'\n" + POLICY + "\nLISP\n")
-machine.succeed("cat > /run/lock/reader.py <<'PY'\n" + READER + "\nPY\n")
 
 start("--bare")
 cli("mount /run/lock/policy.lisp")
@@ -84,7 +47,7 @@ machine.wait_until_succeeds("journalctl -u lock-window -o cat | grep -qx mapped"
 machine.succeed(
     "systemd-run --unit=lock-reader --property=Type=exec "
     "--setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/root "
-    "python3 /run/lock/reader.py "
+    f"{EVENT_READER} "
     f"{RUNTIME}/tomoe.check.sock /run/lock/frames.jsonl /run/lock/subscribed /run/lock/stop")
 machine.wait_for_file("/run/lock/subscribed", timeout=30)
 time.sleep(0.3)

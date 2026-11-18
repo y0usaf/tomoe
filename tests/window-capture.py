@@ -6,37 +6,8 @@ BOUND = 0.6
 FLOOR = 5.0
 STALL_MS = 900
 REPORT = "/run/capture/report"
-CHECK = "/run/capture-check.py"
 SHOT = "/run/capture/grim.png"
 
-REPORT_CHECK = """cat > /run/capture-check.py <<'CAPTURECHECK'
-targets, frames, ended = {}, [], []
-report = open("/run/capture/report").read().splitlines()
-for line in report:
-    parts = line.split()
-    if not parts:
-        continue
-    if parts[0] == "target" and len(parts) >= 5:
-        targets[int(parts[1])] = parts[4]
-    elif parts[0] == "frame" and len(parts) >= 6:
-        frames.append((int(parts[1]), parts[3], float(parts[4]),
-                       int(parts[5], 16) & 0xFFFFFF))
-    elif parts[0] == "end":
-        ended = parts[1:]
-ready = [frame for frame in frames if frame[1] == "ready"]
-failed = [frame for frame in frames if frame[1] == "failed"]
-wrong = [frame for frame in ready if targets.get(frame[0]) != "c%06x" % frame[3]]
-print("ready", len(ready))
-print("failed", len(failed))
-print("wrong", len(wrong))
-print("targets", *["%d:%s" % (key, value) for key, value in sorted(targets.items())])
-print("first", *["%d:%s:%06x" % (frame[0], frame[1], frame[3]) for frame in ready[:4]])
-print("ready-latency", "%.3f" % (ready[0][2] if ready else 0.0))
-print("end", *ended)
-print("lines", len(report))
-print("head", report[0] if report else "")
-print("tail", report[-1] if report else "")
-CAPTURECHECK"""
 
 
 def call(arguments, timeout=60):
@@ -90,7 +61,7 @@ def finished(unit, timeout=90):
     assert status == "0", f"{unit} exited {status}: " + machine.execute(
         f"cat {REPORT}.err; head -n 4 {REPORT}")[1]
     counts = {}
-    for line in machine.succeed(f"python3 {CHECK}").splitlines():
+    for line in machine.succeed(f"{CAPTURE_CHECK}").splitlines():
         parts = line.split()
         if parts:
             counts[parts[0]] = parts[1:]
@@ -106,7 +77,6 @@ def check_pixels(counts, count, windows=True):
 
 
 machine.wait_for_unit("multi-user.target")
-machine.succeed(REPORT_CHECK)
 start("--bare")
 cli(f"mount {CAPTURE_POLICY}")
 for index, colour in enumerate(COLOURS):

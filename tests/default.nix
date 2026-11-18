@@ -547,7 +547,65 @@ let
                 (list (interval :stall-churn 20))
                 nil)))
   '';
-  fakeSeatd = pkgs.writeText "fake-seatd.py" (builtins.readFile ./fake-seatd.py);
+  cSources = pkgs.lib.fileset.toSource {
+    root = ./.;
+    fileset = pkgs.lib.fileset.unions [
+      (pkgs.lib.fileset.fileFilter (file: file.hasExt "c") ./.)
+      ./harness.h
+    ];
+  };
+  cTool =
+    name: flags:
+    pkgs.stdenv.mkDerivation {
+      pname = "tomoe-test-${name}";
+      version = "1";
+      src = cSources;
+      dontUnpack = true;
+      strictDeps = true;
+      buildPhase = ''
+        $CC -std=gnu11 -O2 -Wall -Wextra -Werror -I$src $src/${name}.c -o tomoe-test-${name} ${flags}
+      '';
+      installPhase = "install -Dm755 tomoe-test-${name} $out/bin/tomoe-test-${name}";
+    };
+  cropTool = cTool "crop" "";
+  ppmDiff = cTool "ppm-diff" "";
+  memoryAttribute = cTool "memory-attribute" "";
+  serviceProbe = cTool "service-probe" "";
+  fakeSeatd = cTool "fake-seatd" "";
+  glassMake = cTool "glass-make" "";
+  captureCheck = cTool "capture-check" "";
+  eventReader = cTool "event-reader" "";
+  pointerProtocols = cTool "pointer-protocols" "";
+  animationsTool = cTool "animations" "";
+  shaderWait = cTool "shader-wait" "";
+  cursorTool = cTool "cursor" "-pthread";
+  liveCore = cTool "livecore" "-pthread";
+  trailTool = pkgs.stdenv.mkDerivation {
+    pname = "tomoe-test-trail";
+    version = "1";
+    src = cSources;
+    dontUnpack = true;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.zlib ];
+    buildPhase = ''
+      $CC -std=gnu11 -O2 -Wall -Wextra -Werror -I$src $src/trail.c -o tomoe-test-trail \
+        $(pkg-config --cflags --libs zlib)
+    '';
+    installPhase = "install -Dm755 tomoe-test-trail $out/bin/tomoe-test-trail";
+  };
+  castClient = pkgs.stdenv.mkDerivation {
+    pname = "tomoe-test-cast";
+    version = "1";
+    src = ./cast.c;
+    dontUnpack = true;
+    strictDeps = true;
+    buildPhase = ''
+      $CC -std=gnu11 -O2 -Wall -Wextra -Werror -I${../support} $src ${../support}/bus.c \
+        -o tomoe-test-cast
+    '';
+    installPhase = "install -Dm755 tomoe-test-cast $out/bin/tomoe-test-cast";
+  };
   frameclockPolicy = ./frameclock-policy.lisp;
   phasePolicy = ./phase-policy.lisp;
   phaseShader = "${tomoe}/share/tomoe/examples/shaders/aurora.glsl";
@@ -861,9 +919,19 @@ let
     '';
     installPhase = "install -Dm755 tomoe-test-pointer-path $out/bin/tomoe-test-pointer-path";
   };
-  memorySound = pkgs.runCommand "tomoe-memory-sound" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+  memorySound = pkgs.runCommand "tomoe-memory-sound" { } ''
     mkdir -p $out
-    python3 -c 'import sys, wave; w = wave.open(sys.argv[1], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000); w.writeframes(b"\0" * 9600); w.close()' $out/sound.wav
+    {
+      printf 'RIFF'
+      printf '\244\045\000\000'
+      printf 'WAVEfmt '
+      printf '\020\000\000\000\001\000\001\000'
+      printf '\200\273\000\000\000\167\001\000'
+      printf '\002\000\020\000'
+      printf 'data'
+      printf '\200\045\000\000'
+      head -c 9600 /dev/zero
+    } > $out/sound.wav
   '';
   memoryConfig = pkgs.runCommand "tomoe-memory-config" { } ''
     mkdir -p $out/shaders
@@ -955,7 +1023,7 @@ let
                             "/run/security-globals /run/fifo-globals /run/trail /run/cursor "
                             "/run/animations-frames /run/memory /run/trace.log "
                             "/run/layout.log /run/trace-swap.lisp /run/draw.ppm "
-                            "/run/tile.ppm /run/timing.ppm /run/crop.py /run/*-display.ppm "
+                            "/run/tile.ppm /run/timing.ppm /run/*-display.ppm "
                             "/run/*-shot.ppm /tmp/.X11-unix/* "
                             "/tmp/.X*-lock /run/core.*", check_return=False)
 
@@ -1052,7 +1120,6 @@ let
     lispUnit
     eventRing
     portalFormat
-    pkgs.python3
     pkgs.gdb
     pkgs.wayland-utils
     pkgs.pipewire
@@ -1082,7 +1149,8 @@ let
       name = "livecore";
       script = ''
         machine.wait_for_unit("multi-user.target")
-        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./livecore.py} "
+        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink "
+          + "${liveCore}/bin/tomoe-test-livecore "
           + "${tomoe}/bin/tomoe ${tomoe}/lib/tomoe/core.so "
           + "${coreB}/lib/tomoe/core.so ${coreBad}/lib/tomoe/core.so "
           + "${client}/bin/tomoe-test-client ${client}/bin/tomoe-pointer-script "
@@ -1093,7 +1161,9 @@ let
       name = "pointer-protocols";
       script = ''
         machine.wait_for_unit("multi-user.target")
-        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./pointer-protocols.py} ${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client")
+        machine.succeed("MESA_LOADER_DRIVER_OVERRIDE=zink "
+          + "${pointerProtocols}/bin/tomoe-test-pointer-protocols "
+          + "${tomoe}/bin/tomoe ${client}/bin/tomoe-test-pointer-client")
       '';
     }
     {
@@ -1200,13 +1270,7 @@ let
     {
       name = "portal";
       script = ''
-        CAST = "${./cast.py}"
-        CAST_PYTHON = "${
-          pkgs.python3.withPackages (p: [
-            p.dbus-python
-            p.pygobject3
-          ])
-        }/bin/python3"
+        CAST = "${castClient}/bin/tomoe-test-cast"
         PIPEWIRE_CONFIG = "${pkgs.pipewire}/share/pipewire"
         CONSUMER = "${portalConsumer}/bin/tomoe-portal-consumer"
         POINTER = "${pathClient}/bin/tomoe-test-pointer-path"
@@ -1305,9 +1369,9 @@ let
       script = ''
         machine.succeed("mkdir -p /run/animations-frames")
         machine.succeed(
-          "ANIMATIONS_REPORT=/run/animations-frames/report.txt"
-          " python3 ${./animations.py} --tomoe ${tomoe}/bin/tomoe"
-          " --client ${client}/bin/tomoe-test-client --frames /run/animations-frames"
+          "ANIMATIONS_REPORT=/run/animations-frames/report.txt "
+          + "${animationsTool}/bin/tomoe-test-animations --tomoe ${tomoe}/bin/tomoe"
+          + " --client ${client}/bin/tomoe-test-client --frames /run/animations-frames"
         )
         print(machine.succeed("cat /run/animations-frames/report.txt"))
       '';
@@ -1316,7 +1380,9 @@ let
       name = "trail";
       script = ''
         machine.succeed("mkdir -p /run/trail")
-        print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink python3 ${./trail.py} --tomoe ${tomoe}/bin/tomoe --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
+        print(machine.succeed("LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink "
+          + "${trailTool}/bin/tomoe-test-trail --tomoe ${tomoe}/bin/tomoe"
+          + " --pointer ${pathClient}/bin/tomoe-test-pointer-path --trail --work /run/trail"))
       '';
     }
     {
@@ -1324,8 +1390,8 @@ let
       script = ''
         machine.succeed("mkdir -p /run/shader-wait")
         print(machine.succeed(
-          "timeout 300 python3 ${./shader-wait.py} --tomoe ${tomoe}/bin/tomoe"
-          " --work /run/shader-wait"))
+          "timeout 300 ${shaderWait}/bin/tomoe-test-shader-wait --tomoe ${tomoe}/bin/tomoe"
+          + " --work /run/shader-wait"))
       '';
     }
     {
@@ -1334,8 +1400,8 @@ let
         machine.succeed("mkdir -p /run/cursor")
         status, output = machine.execute(
           "LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=zink "
-          "python3 ${./cursor.py} --tomoe ${tomoe}/bin/tomoe "
-          "--pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor 2>&1")
+          + "${cursorTool}/bin/tomoe-test-cursor --tomoe ${tomoe}/bin/tomoe "
+          + "--pointer ${pathClient}/bin/tomoe-test-pointer-path --work /run/cursor 2>&1")
         print(output)
         if status != 0:
             raise AssertionError("the cursor proof failed: see the report above")
@@ -1354,6 +1420,7 @@ let
       script = ''
         CAPTURE_CLIENT = "${client}/bin/tomoe-capture-client"
         CAPTURE_POLICY = "${capturePolicy}"
+        CAPTURE_CHECK = "${captureCheck}/bin/tomoe-test-capture-check"
       ''
       + builtins.readFile ./window-capture.py;
     }
@@ -1363,6 +1430,7 @@ let
         SCRIPT = "${client}/bin/tomoe-pointer-script"
         INPUT_POLICY = "${inputPolicy}"
         SHORTCUT_POLICY = "${shortcutBindings}"
+        EVENT_READER = "${eventReader}/bin/tomoe-test-event-reader"
       ''
       + builtins.readFile ./input-stream.py;
     }
@@ -1371,6 +1439,7 @@ let
       script = ''
         SCRIPT = "${client}/bin/tomoe-pointer-script"
         LOCK_CLIENT = "${client}/bin/tomoe-lock-client"
+        EVENT_READER = "${eventReader}/bin/tomoe-test-event-reader"
       ''
       + builtins.readFile ./input-lock.py;
     }
@@ -1380,7 +1449,7 @@ let
         CONFIG = "/run/memory/init.lisp"
         SOURCE = "${memoryConfig}"
         TOMOE_BIN = "${tomoe}/bin/tomoe"
-        ATTRIBUTE = "${./memory-attribute.py}"
+        ATTRIBUTE = "${memoryAttribute}/bin/tomoe-test-memory-attribute"
         SCENE_POLICY = "${./timing-policy.lisp}"
         REFRESH_POLICY = "${./memory-refresh.lisp}"
         HANDBACK_POLICY = "${./memory-handback.lisp}"
@@ -1412,7 +1481,6 @@ let
     ];
     extraModprobeConfig = "options vkms enable_overlay=1 enable_cursor=1";
     packages = [
-      pkgs.python3
       scanoutClient
       dmabufClient
       planesTool
@@ -1423,7 +1491,7 @@ let
     {
       name = "seat";
       script = ''
-        FAKE_SEATD = "${fakeSeatd}"
+        FAKE_SEATD = "${fakeSeatd}/bin/tomoe-test-fake-seatd"
       ''
       + builtins.readFile ./seat.py;
     }
@@ -1454,6 +1522,7 @@ let
       name = "glass";
       script = ''
         SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
+        GLASS_MAKE = "${glassMake}/bin/tomoe-test-glass-make"
       ''
       + builtins.readFile ./glass.py;
     }
@@ -1463,6 +1532,8 @@ let
         SCANOUT_CLIENT = "${scanoutClient}/bin/tomoe-scanout-client"
         DMABUF_CLIENT = "${dmabufClient}/bin/tomoe-dmabuf-client"
         PLANES_PROBE = "${planesProbe}"
+        PPM_CROP = "${cropTool}/bin/tomoe-test-crop"
+        PPM_DIFF = "${ppmDiff}/bin/tomoe-test-ppm-diff"
       ''
       + builtins.readFile ./planes.py;
     }
@@ -1506,8 +1577,7 @@ let
   servicesSuite = {
     name = "services";
     script = ''
-      SERVICE_PROBE = "${./service-probe.py}"
-      SERVICE_PYTHON = "${pkgs.python3}/bin/python3"
+      SERVICE_PROBE = "${serviceProbe}/bin/tomoe-test-service-probe"
     '' + builtins.readFile ./services.py;
   };
   servicesCheck = vm (

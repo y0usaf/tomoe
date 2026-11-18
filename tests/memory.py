@@ -60,7 +60,7 @@ def measure(label, attribute=False, samples=4, gap=0.4):
         flush=True,
     )
     if attribute:
-        print(machine.succeed(f"python3 {ATTRIBUTE} {tomoe_process()} {TOMOE_BIN}").strip(),
+        print(machine.succeed(f"{ATTRIBUTE} {tomoe_process()} {TOMOE_BIN}").strip(),
               flush=True)
     return peak
 

@@ -24,37 +24,6 @@ POLICY = f"""(in-package #:tomoe-user)
 """
 
 
-MAKE = r"""
-import os, struct, sys
-
-def cursor(tint, alpha, size=32):
-    out = []
-    for y in range(size):
-        for x in range(size):
-            body = 2 <= x <= 2 + (y - 2) * 0.7 and 2 <= y <= 26
-            shadow = 4 <= x <= 4 + (y - 5) * 0.7 and 5 <= y <= 29
-            if body:
-                r, g, b = (c * alpha // 255 for c in tint)
-                out.append(alpha << 24 | r << 16 | g << 8 | b)
-            else:
-                out.append(0x50 << 24 if shadow else 0)
-    head = struct.pack("<4I3I9I", 0x72756358, 16, 0x10000, 1, 0xfffd0002, size, 28,
-                       36, 0xfffd0002, size, 1, size, size, 2, 2, 0)
-    return head + struct.pack("<%dI" % (size * size), *out)
-
-icons = sys.argv[1]
-for variant, tint in (("glass-dark", (0xDC, 0xE2, 0xFF)), ("glass-light", (0x3A, 0x3E, 0x58))):
-    os.makedirs(f"{icons}/{variant}/cursors", exist_ok=True)
-    with open(f"{icons}/{variant}/cursors/default", "wb") as handle:
-        handle.write(cursor(tint, 0x60))
-    os.symlink("default", f"{icons}/{variant}/cursors/left_ptr")
-rows = bytearray()
-for y in range(720):
-    for x in range(1280):
-        rows += bytes((0xF0, 0xF0, 0xF0) if (x // 3) % 2 else (0x10, 0x10, 0x30))
-with open("/run/stripes.ppm", "wb") as handle:
-    handle.write(b"P6\n1280 720\n255\n" + bytes(rows))
-"""
 
 
 def relink(variant):
@@ -103,8 +72,7 @@ def pixels(values):
 
 
 machine.wait_for_unit("multi-user.target")
-machine.succeed(f"cat > /run/glass-make.py <<'EOF'\n{MAKE}EOF")
-machine.succeed(f"python3 /run/glass-make.py {ICONS}")
+machine.succeed(f"{GLASS_MAKE} {ICONS}")
 relink("glass-dark")
 machine.succeed(f"cat > /run/glass.lisp <<'EOF'\n{POLICY}EOF")
 

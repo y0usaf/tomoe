@@ -7,7 +7,7 @@ machine.execute("systemctl stop fake-seatd-error fake-seatd-drm 2>/dev/null",
                 check_return=False)
 
 machine.succeed(
-    f"systemd-run --unit=fake-seatd-error --property=Type=exec python3 {FAKE_SEATD} "
+    f"systemd-run --unit=fake-seatd-error --property=Type=exec {FAKE_SEATD} "
     f"{ERROR_SOCKET} error")
 machine.wait_for_file(ERROR_SOCKET, timeout=30)
 machine.execute(
@@ -22,7 +22,7 @@ assert "ping" in log, log
 assert log.index("refused with disable") < log.index("ping") < log.index("seat closed"), log
 
 machine.succeed(
-    f"systemd-run --unit=fake-seatd-drm --property=Type=exec python3 {FAKE_SEATD} "
+    f"systemd-run --unit=fake-seatd-drm --property=Type=exec {FAKE_SEATD} "
     f"{DRM_SOCKET} drm")
 machine.wait_for_file(DRM_SOCKET, timeout=30)
 start("--bare", backend="drm", env={"SEATD_SOCK": DRM_SOCKET})

@@ -6,15 +6,14 @@ CONTROL = f"XDG_RUNTIME_DIR={RUNTIME} DBUS_SESSION_BUS_ADDRESS=disabled: tomoe"
 
 machine.succeed(f"rm -rf {DIRECTORY}")
 machine.succeed(f"install -d -m 700 {RUNTIME} {DIRECTORY}")
-machine.succeed(f"cp {SERVICE_PROBE} {DIRECTORY}/probe.py")
 
 
 def policy(name, socket_path, pid_path, child_path, fork, program=None, options=""):
-    program = program or SERVICE_PYTHON
+    program = program or SERVICE_PROBE
     source = f"""(in-package #:tomoe-user)
 (define-extension "probe" (:reads () :state nil) (snapshot state event)
   (declare (ignore snapshot state event))
-  (values nil (list (service :probe (list "{program}" "{DIRECTORY}/probe.py"
+  (values nil (list (service :probe (list "{program}"
                                           "{socket_path}" "{pid_path}" "{fork}"
                                           "{child_path}"){options})) nil))
 """
@@ -89,7 +88,7 @@ kill_compositor("tomoe-direct")
 assert wait_gone(direct), f"a service outlived a SIGKILLed compositor: {direct}"
 
 machine.succeed(f"mkdir -p {DIRECTORY}/project/bin && "
-                f"ln -sf {SERVICE_PYTHON} {DIRECTORY}/project/bin/worker")
+                f"ln -sf {SERVICE_PROBE} {DIRECTORY}/project/bin/worker")
 policy("path", f"{DIRECTORY}/path.sock", f"{DIRECTORY}/path.pid",
        f"{DIRECTORY}/path.child", 0, program="worker",
        options=f" :cwd \"{DIRECTORY}/project\" :env '((\"PATH\" . \"bin\"))")

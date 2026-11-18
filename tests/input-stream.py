@@ -1,60 +1,16 @@
 import json
 import time
 
-READER = r'''import json
-import os
-import socket
-import sys
-import time
 
-path, log, ready, stop = sys.argv[1:5]
-connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-deadline = time.monotonic() + 30
-while True:
-    try:
-        connection.connect(path)
-        break
-    except OSError:
-        if time.monotonic() > deadline:
-            sys.exit(1)
-        time.sleep(0.05)
-connection.settimeout(0.1)
-connection.sendall(b'{"id":1,"method":"subscribe","params":{"events":["pointer_motion","pointer_button","key"]}}\n')
-buffer = b""
-deadline = time.monotonic() + 600
-with open(log, "w", buffering=1) as frames:
-    while time.monotonic() < deadline and not os.path.exists(stop):
-        try:
-            chunk = connection.recv(65536)
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-        if not chunk:
-            break
-        buffer += chunk
-        while b"\n" in buffer:
-            line, buffer = buffer.split(b"\n", 1)
-            try:
-                frame = json.loads(line)
-            except ValueError:
-                continue
-            if "event" in frame:
-                frames.write(json.dumps(frame) + "\n")
-            elif frame.get("id") == 1:
-                with open(ready, "w") as flag:
-                    flag.write("ready\n")
-'''
-
-machine.succeed("cat > /run/input-reader.py <<'PY'\n" + READER + "\nPY\n")
 machine.execute("rm -f /run/input-frames.jsonl /run/input-subscribed /run/input-stop")
 
 start("--bare")
 machine.succeed(
     "systemd-run --unit=input-reader --property=Type=exec "
     "--setenv=PATH=/run/current-system/sw/bin --setenv=HOME=/root "
-    "python3 /run/input-reader.py "
-    f"{RUNTIME}/tomoe.check.sock /run/input-frames.jsonl /run/input-subscribed /run/input-stop")
+    f"{EVENT_READER} "
+    f"{RUNTIME}/tomoe.check.sock /run/input-frames.jsonl /run/input-subscribed "
+    "/run/input-stop retry")
 machine.wait_for_file("/run/input-subscribed", timeout=30)
 
 machine.succeed(

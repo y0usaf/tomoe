@@ -96,13 +96,13 @@ def same_pixels(first, second, box, what):
     assert machine.execute(f"test -s {first} && test -s {second}")[0] == 0, \
         f"{what}: a frame is missing"
     print(f"{what}: " + machine.succeed(
-        f"python3 /run/ppm_diff.py {first} {second} "
+        f"{PPM_DIFF} {first} {second} "
         f"{','.join(str(value) for value in box)}"), flush=True)
 
 
 def report_pixels(first, second, box, what):
     code, output = machine.execute(
-        f"python3 /run/ppm_diff.py {first} {second} "
+        f"{PPM_DIFF} {first} {second} "
         f"{','.join(str(value) for value in box)}")
     print(f"{what} (exit {code}): " + " ".join(output.split()), flush=True)
     return code
@@ -270,7 +270,7 @@ def displayed(name):
 
 
 def region(path, box):
-    return machine.succeed(f"python3 /run/crop.py {path} {box[0]},{box[1]},{box[2]},{box[3]} "
+    return machine.succeed(f"{PPM_CROP} {path} {box[0]},{box[1]},{box[2]},{box[3]} "
         "| sha256sum").split()[0]
 
 
@@ -305,16 +305,6 @@ def scene():
 
 
 machine.wait_for_unit("multi-user.target")
-machine.succeed(r"""cat > /run/crop.py <<'EOF'
-import sys
-data = open(sys.argv[1], 'rb').read()
-parts = data.split(b'\n', 3)
-width, height = map(int, parts[1].split())
-x, y, w, h = map(int, sys.argv[2].split(','))
-rows = [parts[3][(y + r) * width * 3 + x * 3:(y + r) * width * 3 + (x + w) * 3]
-        for r in range(h)]
-sys.stdout.buffer.write(b''.join(rows))
-EOF""")
 machine.succeed("mount -t debugfs none /sys/kernel/debug || true")
 kinds = sorted(entry["type"] for entry in plane_state())
 assert "OVERLAY" in kinds and "CURSOR" in kinds, f"vkms exposes only {kinds}"
@@ -478,30 +468,6 @@ assert overlaid[":DRAWN-PIXELS"] <= overlaid[":PIXELS"] - window_pixels + 8192, 
 assert reference[":DRAWN-PIXELS"] >= window_pixels, reference
 assert planes_shot == reference_shot, (planes_shot, reference_shot)
 
-machine.succeed("cat > /run/ppm_diff.py <<'EOF'\n"
-    "import sys\n"
-    "def load(p):\n"
-    "    raw = open(p, 'rb').read()\n"
-    "    _, wh, mx, body = raw.split(b'\\n', 3)\n"
-    "    w, h = map(int, wh.split())\n"
-    "    return w, h, body\n"
-    "w1, h1, b1 = load(sys.argv[1])\n"
-    "w2, h2, b2 = load(sys.argv[2])\n"
-    "assert (w1, h1) == (w2, h2) and len(b1) == len(b2)\n"
-    "diffs = [abs(x - y) for x, y in zip(b1, b2)]\n"
-    "mx = max(diffs)\n"
-    "mean = sum(diffs) / len(diffs)\n"
-    "def px(buf, x, y):\n"
-    "    i = (y * w1 + x) * 3\n"
-    "    return tuple(buf[i:i+3])\n"
-    "hx, hy, hw, hh = map(int, sys.argv[3].split(','))\n"
-    "print(f'max_diff={mx} mean_diff={mean:.5f} bar={px(b1, hx + hw // 2, hy + 10)} '\n"
-    "      f'corner_out={px(b1, hx, hy + hh - 1)} video={px(b1, hx + hw // 2, hy + hh // 2)}')\n"
-    "assert mx <= 3, f'max channel diff {mx} > 3'\n"
-    "assert mean < 0.1, f'mean channel diff {mean} >= 0.1'\n"
-    "assert px(b1, hx + hw // 2, hy + 10) == (255, 136, 0), px(b1, hx + hw // 2, hy + 10)\n"
-    "assert px(b1, hx, hy + hh - 1) == px(b2, hx, hy + hh - 1)\n"
-    "EOF")
 
 machine.succeed("systemctl stop tomoe check-bus")
 start("--bare", f"--drm_device {DEVICE}", backend="drm", env=DRM)
@@ -544,7 +510,7 @@ displayed("underlay")
 screenshot("underlay")
 hb_csv = ",".join(str(v) for v in HOME_BOX)
 print(machine.succeed(
-    f"python3 /run/ppm_diff.py /run/underlay-display.ppm /run/underlay-shot.ppm {hb_csv}"))
+    f"{PPM_DIFF} /run/underlay-display.ppm /run/underlay-shot.ppm {hb_csv}"))
 
 wait_for(lambda: counters()[":PLANES"] == 1, "underlay restored after screenshot")
 probe("blur-on")
@@ -570,7 +536,7 @@ assert counters()[":PLANES"] == 0, counters()
 assert inspect()[":LAST-ERROR"] == "NIL", inspect()
 screenshot("underlay-scaled")
 print(machine.succeed(
-    f"python3 /run/ppm_diff.py /run/underlay-shot.ppm /run/underlay-scaled-shot.ppm {hb_csv}"))
+    f"{PPM_DIFF} /run/underlay-shot.ppm /run/underlay-scaled-shot.ppm {hb_csv}"))
 machine.succeed("systemctl stop underlay-scaled")
 quit()
 
