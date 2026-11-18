@@ -19,7 +19,7 @@ the same on every run.
 `build/tomoe`, a binary, or a revision of this repository (built with nix). The
 reference run is cached in `~/.cache/tomoe-speedlab`, keyed by the rig, the
 reference binary's hash and the staged inputs, so a verdict runs the candidate
-only: two runs at once, about 80 s on this machine at any load.
+only: two runs at once, about 85 s on this machine at load 25.
 
 ## What one run is
 
@@ -148,9 +148,9 @@ verdict calls significant and what persona A and B may differ by.
 | settled private dirty (~276 MB) | 0.50 % | 2.5 % |
 | peak private dirty (~553 MB) | 0.21 % | 0.5 % |
 
-A verdict with a cached reference runs the two personas side by side: about
-85 s on an idle-ish machine, 130 to 200 s with four other runs alongside. Real
-time never enters a score.
+A verdict with a cached reference runs the two personas side by side: 87 s
+measured at load 25, 130 to 200 s with four other runs alongside. Real time
+never enters a score.
 
 ## What the rig costs, and what it changes
 
