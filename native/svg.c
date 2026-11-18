@@ -7178,7 +7178,7 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
                 if (!strcmp(blend_text, modes[i])) { outer->blend = i + 1; break; }
         }
     }
-    outer->transform = linked_symbol && !clip_holder ? svg_matrix_identity() : orig;
+    outer->transform = linked_symbol ? (clip_holder ? orig : svg_matrix_identity()) : content_ts;
     outer->abs_transform = svg_matrix_concat(abs, outer->transform);
     struct svg_node *inner = NULL;
     if (linked_symbol) {
@@ -7187,8 +7187,9 @@ static void svg_convert_use(struct svg_conv *c, struct xml_node *node, struct sv
         inner = svg_node_new(0);
     }
     if (!inner) { svg_node_destroy(outer); return; }
-    inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : translate;
-    inner->abs_transform = svg_matrix_concat(outer->abs_transform, inner->transform);
+    inner->transform = linked_symbol ? (clip_holder ? symbol_ts : content_ts) : svg_matrix_identity();
+    inner->abs_transform = svg_matrix_concat(outer->abs_transform,
+        linked_symbol ? inner->transform : orig);
     struct svg_conv inner_conv = linked_symbol ? nested : *c;
     inner_conv.use_w_set = inner_conv.use_h_set = 0;
     if (linked_svg) {
