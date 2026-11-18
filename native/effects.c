@@ -179,6 +179,10 @@ void effect_border(struct frame *f, struct fbox geometry, double width, double r
     if (drawn.recorded) return;
     struct op_clip clip;
     if (!op_begin(f->pass, OP_BORDER, drawn.covered, &clip)) return;
+    if (!(rgba & 0xff)) {
+        op_end(f->pass, &clip);
+        return;
+    }
     struct scene_quad scene = { .kind = SCENE_BORDER, .blend = 1, .alpha = alpha,
         .width = width, .radius = radius,
         .size = { box.width, box.height } };
