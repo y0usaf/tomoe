@@ -9,7 +9,14 @@
 
 struct level { GLuint texture, framebuffer; int width, height; };
 
-struct chain { struct level levels[32]; int width, height; int64_t used; uint64_t key, pinned; };
+struct chain {
+    struct level levels[32];
+    const struct oplist *owner;
+    int width, height;
+    int64_t used;
+    uint64_t key, pinned;
+    bool dead;
+};
 
 struct result {
     struct level level;
@@ -378,6 +385,19 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         }
         op->cached = true;
     }
+    for (size_t c = 0; c < BLUR_CHAINS; c++) {
+        struct chain *chain = &e->chains[c];
+        if (!chain->used || chain->owner != list) continue;
+        if (chain->pinned == e->stamp) {
+            chain->dead = false;
+            continue;
+        }
+        size_t i = 0;
+        while (i < list->len && list->ops[i].key != chain->key) i++;
+        if (chain->key && i < list->len) chain->dead = false;
+        else if (chain->dead) chain_release(chain);
+        else chain->dead = true;
+    }
     for (size_t r = 0; r < BLUR_RESULTS; r++) {
         struct result *result = &e->results[r];
         if (!result->level.texture || result->owner != list) continue;
@@ -618,6 +638,8 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
     struct result *result = result_cached(e, key);
     struct chain *chain = chain_spare(e, grown.width, grown.height, key, now);
     chain->used = now;
+    chain->owner = pass_oplist(f->pass);
+    chain->dead = false;
     if (key && chain->key == key) e->reused++;
     else {
         pass_flush(f->pass);
