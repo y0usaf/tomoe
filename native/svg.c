@@ -3903,6 +3903,8 @@ struct svg_pattern {
     float view_box[4];
     int align, slice;
     struct svg_node *root;
+    int ctx_bbox_set;
+    float ctx_bbox[4];
     struct svg_ctx_paint ctx;
 };
 
@@ -6729,18 +6731,20 @@ static void svg_finish_context_pattern(struct svg_pattern *pt, struct svg_node *
     pt->ctx.pending = 0;
     struct svg_matrix rev;
     if (!svg_finish_context_rev(&pt->ctx, node, &rev)) { pt->ctx.invalid = 1; return; }
-    if (pt->units_bbox) {
+    if (pt->units_bbox || pt->content_bbox) {
         float bbox[4];
         svg_finish_context_rect(&pt->ctx, node, bbox);
         if (!(bbox[2] > 0.0f) || !(bbox[3] > 0.0f)) { pt->ctx.invalid = 1; return; }
-        struct svg_matrix b = { bbox[2], 0.0f, 0.0f, bbox[3], bbox[0], bbox[1] };
-        pt->rect[0] = pt->rect[0] * bbox[2] + bbox[0];
-        pt->rect[1] = pt->rect[1] * bbox[3] + bbox[1];
-        pt->rect[2] = pt->rect[2] * bbox[2];
-        pt->rect[3] = pt->rect[3] * bbox[3];
-        pt->units_bbox = 0;
-        pt->transform = svg_matrix_concat(rev, svg_matrix_concat(b, pt->transform));
-        (void)b;
+        pt->ctx_bbox_set = 1;
+        memcpy(pt->ctx_bbox, bbox, sizeof(bbox));
+        if (pt->units_bbox) {
+            pt->rect[0] = pt->rect[0] * bbox[2] + bbox[0];
+            pt->rect[1] = pt->rect[1] * bbox[3] + bbox[1];
+            pt->rect[2] = pt->rect[2] * bbox[2];
+            pt->rect[3] = pt->rect[3] * bbox[3];
+            pt->units_bbox = 0;
+        }
+        pt->transform = svg_matrix_concat(rev, pt->transform);
         return;
     }
     pt->transform = svg_matrix_concat(rev, pt->transform);
@@ -9852,12 +9856,17 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         struct svg_pattern *pt = paint->pattern;
         if (!pt || !pt->root || pt->ctx.invalid) { shader->type = -1; return; }
         float rect[4] = { pt->rect[0], pt->rect[1], pt->rect[2], pt->rect[3] };
+        float bbox[4] = { path_bbox[0], path_bbox[1], path_bbox[2], path_bbox[3] };
+        if (pt->ctx_bbox_set) {
+            memcpy(bbox, pt->ctx_bbox, sizeof(bbox));
+            has_bbox = 1;
+        }
         if (pt->units_bbox) {
             if (!has_bbox) { shader->type = -1; return; }
-            rect[0] = pt->rect[0] * path_bbox[2] + path_bbox[0];
-            rect[1] = pt->rect[1] * path_bbox[3] + path_bbox[1];
-            rect[2] = pt->rect[2] * path_bbox[2];
-            rect[3] = pt->rect[3] * path_bbox[3];
+            rect[0] = pt->rect[0] * bbox[2] + bbox[0];
+            rect[1] = pt->rect[1] * bbox[3] + bbox[1];
+            rect[2] = pt->rect[2] * bbox[2];
+            rect[3] = pt->rect[3] * bbox[3];
         }
         if (!(rect[2] > 0.0f) || !(rect[3] > 0.0f)) { shader->type = -1; return; }
         struct svg_matrix tts = svg_matrix_concat(device_ts, pt->transform);
@@ -9879,7 +9888,7 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
         if (pt->content_bbox && !pt->has_view_box) {
             struct svg_node *g = svg_node_new(0);
             if (g) {
-                g->transform = (struct svg_matrix){ path_bbox[2], 0.0f, 0.0f, path_bbox[3], 0.0f, 0.0f };
+                g->transform = (struct svg_matrix){ bbox[2], 0.0f, 0.0f, bbox[3], 0.0f, 0.0f };
                 if (outer) { if (!svg_node_add(g, outer)) { svg_node_destroy(g); g = NULL; } }
                 else if (!svg_node_add(g, wrap)) { svg_node_destroy(g); g = NULL; }
                 if (g) { outer = g; svg_group_bboxes(g); }
