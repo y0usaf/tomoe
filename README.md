@@ -578,12 +578,14 @@ the API to move.
   heap for the life of a process that compiles once). User shaders are remembered
   in `$XDG_CACHE_HOME/tomoe/shaders`, beside the program the copy linked, which
   the compositor loads; a shader new to the driver still costs NVIDIA about 15 MB
-  the first time the compositor draws it. Nothing waits on that copy: a surface
-  whose program is still being built draws its fallback, and the compositor asks
-  again a few milliseconds later, so neither the switch nor the session stalls on
-  a new shader. Both the copy's deadlines are real time on the monotonic clock: a
-  prewarm at startup gives it 5 s, and one compiling for a surface that is up
-  gets a minute, after which that surface keeps drawing its fallback.
+  the first time the compositor draws it. Nothing waits on a copy: a
+  surface whose program is still being built draws its fallback, and the
+  compositor asks again a few milliseconds later, so neither the switch nor the
+  session stalls on a new shader. The prewarm that fills the cache at startup
+  runs beside the session rather than in front of it and marks the cache warm
+  itself once it has written every copy; the copy compiling for a surface that is
+  up gets a minute on the monotonic clock, after which that surface keeps drawing
+  its fallback.
 - Clients can pace queued commits with `wp_fifo_v1`: barriers retain each update
   through the next output frame boundary, including direct scanout. Synchronized
   subsurfaces ignore FIFO waits as required by the protocol.
