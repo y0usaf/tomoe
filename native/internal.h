@@ -668,7 +668,8 @@ struct output {
     double sample;
     bool animating;
     struct oplist ops, spare_ops, cursor_ops, cursor_spare_ops;
-    uint64_t frames;
+    uint64_t frames, reused;
+    bool reused_present;
     uint64_t damage_seq;
     struct region damage[8];
     struct { uint64_t frame, age; int64_t pixels; size_t ops; } drawn;

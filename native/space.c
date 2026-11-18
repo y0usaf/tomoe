@@ -967,8 +967,10 @@ bool render_presentation(struct output *o, struct screen_state *state,
         o->animating = moving;
         if (scene_record_ops(o, &probe, locked, &pre_changed, &pre_complete)) {
             pre_recorded = true;
-            if (pre_complete && !region_not_empty(&pre_changed)) {
+            if (!moving && pre_complete && !region_not_empty(&pre_changed)) {
                 o->frames++;
+                o->reused++;
+                o->reused_present = true;
                 o->drawn.age = 0;
                 o->drawn.pixels = 0;
                 o->drawn.ops = 0;

@@ -767,6 +767,15 @@ static int compositor_animation(struct compositor *compositor, struct counters *
     return 1;
 }
 
+static long long drawn_frames(struct node *entry) {
+    struct node *frame = plist_find(entry, "frame");
+    struct node *reused = plist_find(entry, "reused");
+    long long drawn = 0, repeats = 0;
+    if (!node_integer(frame, &drawn)) return 0;
+    if (node_integer(reused, &repeats)) drawn -= repeats;
+    return drawn > 0 ? drawn : 0;
+}
+
 static int compositor_drawn(struct compositor *compositor, long long *total) {
     struct command_result call = compositor_call(compositor, 1, "frames");
     *total = 0;
@@ -781,14 +790,10 @@ static int compositor_drawn(struct compositor *compositor, long long *total) {
         for (size_t index = 0; index < value->count; index++) {
             struct node *entry = value->items[index];
             if (!entry->is_list) continue;
-            struct node *frame = plist_find(entry, "frame");
-            long long number = 0;
-            if (node_integer(frame, &number)) sum += number;
+            sum += drawn_frames(entry);
         }
     } else if (value && value->is_list) {
-        struct node *frame = plist_find(value, "frame");
-        long long number = 0;
-        if (node_integer(frame, &number)) sum += number;
+        sum += drawn_frames(value);
     }
     node_free(root);
     if (!sum) {
