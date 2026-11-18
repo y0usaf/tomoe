@@ -7574,21 +7574,30 @@ static void svg_convert_image(struct svg_conv *c, struct xml_node *node, struct 
     struct svg_node *g = svg_group_alloc(c, node, st, 0, clip_context, abs, parent);
     if (!g) { svg_free_image(im); return; }
     struct svg_matrix image_ts = { vb_w / aw, 0.0f, 0.0f, vb_h / ah, ax, ay };
-    g->transform = svg_matrix_concat(g->transform, image_ts);
-    g->abs_transform = svg_matrix_concat(abs, g->transform);
+    struct svg_node *inner = svg_node_new(0);
     struct svg_node *child = svg_node_new(2);
-    if (!child) { svg_free_image(im); svg_node_destroy(g); return; }
+    if (!inner || !child) {
+        svg_node_destroy(inner);
+        svg_node_destroy(child);
+        svg_free_image(im);
+        svg_node_destroy(g);
+        return;
+    }
     child->image = im;
     child->visible = 1;
-    child->abs_transform = g->abs_transform;
     child->transform = svg_matrix_identity();
     child->bbox = svg_bbox_from_rect(0.0f, 0.0f, aw, ah);
     child->has_bbox = 1;
-    child->abs_bbox = svg_bbox_transform(child->bbox, g->abs_transform);
     child->sbbox = child->bbox;
     child->has_sbbox = 1;
+    svg_node_add(inner, child);
+    inner->transform = image_ts;
+    inner->abs_transform = svg_matrix_concat(g->abs_transform, image_ts);
+    child->abs_transform = inner->abs_transform;
+    child->abs_bbox = svg_bbox_transform(child->bbox, inner->abs_transform);
     child->abs_sbbox = child->abs_bbox;
-    svg_node_add(g, child);
+    svg_group_bboxes(inner);
+    svg_node_add(g, inner);
     svg_group_bboxes(g);
     int required = 0;
     if (!svg_group_finish(c, node, st, 0, clip_context, 0, g, abs, &required)) {
