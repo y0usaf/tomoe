@@ -105,6 +105,9 @@ staged outputs when PENDING and on the committed ones otherwise."
                    (:color (%stage-setting-flat name (%ui-color value) flat))
                    (:member (%stage-setting-flat name (string-downcase value) flat))
                    (:strings (dolist (item value) (setf flat (append flat (list name item)))) flat)
+                   (:colors (dolist (item value)
+                              (setf flat (append flat (list name (%ui-color item)))))
+                            flat)
                    (:device (%stage-device value name flat))
                    (:animations
                     (let ((flat flat))

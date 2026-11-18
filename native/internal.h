@@ -879,6 +879,8 @@ struct cursor_effect_set {
     int count;
     struct cursor_effect entries[CURSOR_EFFECTS_MAX];
 };
+enum { SCREENSHOT_PALETTE_MAX = 32 };
+
 struct settings {
     struct input_config touchpad, mouse;
     struct named_input_config devices[64];
@@ -905,8 +907,12 @@ struct settings {
     uint32_t screenshot_mark_ink;
     int screenshot_mark_width, screenshot_mark_head, screenshot_mark_size;
     char *screenshot_mark_font;
-    char *screenshot_mark_keys[5];
+    char *screenshot_mark_keys[6];
     size_t screenshot_mark_key_count;
+    uint32_t screenshot_mark_palette[SCREENSHOT_PALETTE_MAX];
+    char *screenshot_mark_palette_keys[SCREENSHOT_PALETTE_MAX];
+    size_t screenshot_mark_palette_count;
+    size_t screenshot_mark_palette_key_count;
     struct animation_config window_move, window_open, window_close, window_resize, window_switch,
         window_view, window_alpha, window_tint, window_scale, window_rotation, window_translate;
     char *blur_namespaces[64];
@@ -1673,6 +1679,7 @@ void lock_frame_rendered(struct tomoe *s, struct screen *output);
 void input_lock_begin(struct tomoe *s);
 bool lock_active(struct tomoe *s);
 bool render_output_buffer(struct output *o, struct buffer *buffer);
+bool render_displayed_buffer(struct output *o, struct buffer *buffer);
 struct screenshot;
 bool ui_text_raster(uint32_t *pixels, int stride, int width, int height, struct rect clip,
     double x, double y, const char *font, const char *text, double size, uint32_t rgba);

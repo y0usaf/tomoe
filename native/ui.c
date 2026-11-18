@@ -2012,6 +2012,8 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             if (layer == UI_LAYER_SCREENSHOT) {
                 struct texture *marks;
                 struct fbox marks_at;
+                marks_box[0] = marks_box[1] = marks_box[2] = marks_box[3] = 0;
+                inputs.marks_box = marks_box;
                 if (screenshot_selection(o, area, now, selection)) inputs.selection = selection;
                 if (screenshot_marks(o, &marks, &marks_at)) {
                     inputs.marks = marks;

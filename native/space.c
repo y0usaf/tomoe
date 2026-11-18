@@ -921,6 +921,11 @@ bool render_output_buffer(struct output *o, struct buffer *buffer) {
     return render_scene_buffer(o, buffer, &state, NULL, false, false, false, NULL);
 }
 
+bool render_displayed_buffer(struct output *o, struct buffer *buffer) {
+    struct screen_state state = {0};
+    return render_scene_buffer(o, buffer, &state, NULL, false, true, false, NULL);
+}
+
 bool render_presentation(struct output *o, struct screen_state *state,
         struct ring *ring, const struct presentation *plan) {
     struct screen *output = o->screen;

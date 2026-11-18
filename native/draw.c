@@ -1338,10 +1338,9 @@ bool dp_stroke_mask(const struct dpath *path, double width, int cap, int join,
     return ok;
 }
 
-void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
+void dp_composite_mask(uint32_t *dst, int dst_stride, struct drect clip,
     const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
-    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,
-    uint32_t ink)
+    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty)
 {
     for (int v = 0; v < mask_h; v++) {
         double y = mask_y + v + 0.5;
@@ -1352,10 +1351,10 @@ void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
             int dx = (int)floor (sx - 0.5 + 1e-7);
             int dy = (int)floor (sy - 0.5 + 1e-7);
             if (dx < clip.x0 || dx >= clip.x1 || dy < clip.y0 || dy >= clip.y1) continue;
-            uint8_t coverage = (uint8_t)(mask[(size_t)v * (size_t)mask_stride + u] >> 24);
-            if (!coverage) continue;
+            uint32_t src = mask[(size_t)v * (size_t)mask_stride + u];
+            if (!(src >> 24)) continue;
             dst[(size_t)dy * dst_stride + dx] = dp_masked_over(dst[(size_t)dy * dst_stride + dx],
-                ink, coverage);
+                src, 255);
         }
     }
 }

@@ -603,14 +603,13 @@ carry alone, so the pointer never waits for Lisp while a window follows it.")
     else if (all(greaterThanEqual(p, lo - edge)) && all(lessThan(p, hi + edge)))
         color = vec4(iData[0].rgb * iData[0].a, iData[0].a);
     else color = dim;
-    float cover = marked(p) * iData[2].a;
-    if (cover > 0.0) color = vec4(iData[2].rgb * cover + color.rgb * (1.0 - cover),
-                                  cover + color.a * (1.0 - cover));
+    vec4 mark = markvec(p);
+    if (mark.a > 0.0) color = mark + color * (1.0 - mark.a);
 }
 "
   "The selector every look falls back to: the output dimmed but for the
-selection, which a two-pixel accent frame rings, and the annotation marks in
-ink over it.")
+selection, which a two-pixel accent frame rings, and the annotation marks in the
+colours they were drawn in over it.")
 
 (defun screenshot-rgba (hex &optional (alpha 1))
   "#RRGGBB as four reals from 0 to 1, ALPHA last."
@@ -622,9 +621,23 @@ ink over it.")
   '(:base "#1c1c21" :text "#ffffff" :accent "#7aa1f7" :surface1 "#45454f")
   "The selector's colours when no :theme is published.")
 
-(defparameter +screenshot-keys+ '("a" "t" "f" "u" "r")
+(defparameter +screenshot-keys+ '("a" "t" "f" "u" "r" "m")
   "The keys the selector takes for an arrow, a text label, a freehand stroke,
-undoing the last mark and going back to selecting a region, in order.")
+undoing the last mark, going back to selecting a region and freezing the screen
+as it is shown, in order.")
+
+(defun screenshot-palette (ink)
+  "The colours a mark can take, each with the key that picks it. INK comes first,
+so a mark starts in the theme's text colour, and follows it a red, an amber, a
+blue and a green that read on a light and a dark theme alike."
+  (list (cons "1" ink) (cons "2" "#ff5d5d") (cons "3" "#ffc857")
+        (cons "4" "#57c8ff") (cons "5" "#6ee7a8")))
+
+(defun screenshot-mark-palette (mark)
+  "MARK's :PALETTE colours paired with its :PALETTE-KEYS, in order."
+  (loop for colour in (getf mark :palette)
+        for key in (getf mark :palette-keys)
+        collect (cons key colour)))
 
 (defun screenshot-default-look (published)
   "Today's selector in PUBLISHED's :theme colours: +SCREENSHOT-GLSL+ over the
@@ -632,7 +645,8 @@ output, the key hint in a plate ringed by the accent, and the marks in the
 theme's text colour."
   (let* ((palette (or published +screenshot-theme+))
          (accent (theme :accent palette))
-         (ink (theme :text palette)))
+         (ink (theme :text palette))
+         (colours (screenshot-palette ink)))
     (list :glsl +screenshot-glsl+
           :data (append (screenshot-rgba accent) (list 2 0.4d0 0 0)
                         (screenshot-rgba ink))
@@ -641,15 +655,18 @@ theme's text colour."
                       :rim accent :rim-width 2
                       :key (theme :surface1 palette)
                       :font "sans" :size 17 :padding 12 :margin 32 :radius 0)
-          :mark (list :ink ink :width 3 :head 18 :size 22 :font "sans")
+          :mark (list :ink ink :width 3 :head 18 :size 22 :font "sans"
+                      :palette (mapcar #'cdr colours)
+                      :palette-keys (mapcar #'car colours))
           :motion (list :enabled nil))))
 
-(defun screenshot-hint (selector hint keys)
+(defun screenshot-hint (selector hint keys palette)
   "The keys the open SELECTOR takes, set as HINT styles them: one line of Pango
 markup, each key on a chip of HINT's :KEY colour, the tool holding the pointer's
-chip in HINT's ink so the mode shows in the chrome, and that tool's own keys
-beside undo, reselect, capture and cancel. The tool keys are named from KEYS so
-a look that changes them is not described by the old ones."
+chip in HINT's ink so the mode shows in the chrome, each colour a mark can take
+as a swatch with the key that picks it and the one in hand inked, and that tool's
+own keys beside undo, reselect, freeze, capture and cancel. The tool keys are
+named from KEYS so a look that changes them is not described by the old ones."
   (labels ((key (label &optional active)
              (format nil "<span background='~A'~A> ~A </span>"
                      (if active (getf hint :ink) (getf hint :key))
@@ -667,8 +684,17 @@ a look that changes them is not described by the old ones."
              ((:text :free) (format nil "~A ~A size" (key "[") (key "]")))
              (t nil)))
          (tail ()
-           (format nil "~A undo    ~A reselect    ~A capture    ~A cancel"
-                   (key (name 3 "U")) (key (name 4 "R")) (key "Enter") (key "Esc")))
+           (format nil "~A undo    ~A reselect    ~A freeze    ~A capture    ~A cancel"
+                   (key (name 3 "U")) (key (name 4 "R")) (key (name 5 "M"))
+                   (key "Enter") (key "Esc")))
+         (swatches ()
+           (let ((active (getf selector :colour 0)))
+             (format nil "~{~A~^ ~}"
+                     (loop for (colour-key . colour) in palette
+                           for index from 1
+                           collect (format nil "<span background='~A'>   </span>~A"
+                                           colour (key (string-upcase colour-key)
+                                                       (eql index active)))))))
          (keys-line (tool)
            (cond ((getf selector :typing)
                   (format nil "Type the label    ~A    ~A keep    ~A discard"
@@ -677,10 +703,10 @@ a look that changes them is not described by the old ones."
                   (format nil "Drag to select    ~A whole screen    ~A cancel"
                           (key "Space") (key "Esc")))
                  (t (let ((shape (unless (eq tool :select) (size tool))))
-                      (format nil "~A arrow    ~A text    ~A freehand    ~A~A"
+                      (format nil "~A arrow    ~A text    ~A freehand    ~A~A    ~A"
                               (tool 0 "A" :arrow) (tool 1 "T" :text) (tool 2 "F" :free)
                               (if shape (format nil "~A    " shape) "")
-                              (tail)))))))
+                              (swatches) (tail)))))))
     (ui :column :padding (getf hint :rim-width 0) :background (getf hint :rim)
         :radius (getf hint :radius 0)
         :children
@@ -695,22 +721,24 @@ a look that changes them is not described by the old ones."
   "The open SELECTOR drawn in LOOK: its shader over the whole output, reading the
 selection as iSelection and the marks through MARKED, and its key hint."
   (let ((output (getf selector :output)) (hint (getf look :hint))
-        (keys (getf (getf look :mark) :keys)))
+        (mark (getf look :mark)))
     (list (shell-surface :screenshot-look (ui :stack)
                          :output output :anchors '(:top :right :bottom :left)
                          :layer :screenshot :click-through t :background
                          (list (if (getf look :glsl) :glsl :shader)
                                (or (getf look :glsl) (getf look :shader))
                                :data (getf look :data) :clock 0 :until 0))
-          (shell-surface :screenshot-hint (screenshot-hint selector hint keys)
+          (shell-surface :screenshot-hint
+                         (screenshot-hint selector hint (getf mark :keys)
+                                          (screenshot-mark-palette mark))
                          :output output :anchors '(:bottom) :margin (getf hint :margin 32)
                          :layer :screenshot :click-through t :background "#00000000"
                          :blur (getf hint :blur)))))
 
 (defun screenshot-mark-settings (mark)
-  "The compositor settings a LOOK's :MARK gives the marks: the INK they take in
-the captured image, the stroke WIDTH, the arrow HEAD, the label SIZE and FONT,
-and the KEYS that pick each tool."
+  "The compositor settings a LOOK's :MARK gives the marks: the INK they start in
+and the PALETTE colours with the PALETTE-KEYS that pick them, the stroke WIDTH,
+the arrow HEAD, the label SIZE and FONT, and the KEYS that pick each tool."
   (when mark
     (settings :screenshot-mark
               (list :ink (getf mark :ink "#ffffffff")
@@ -718,7 +746,9 @@ and the KEYS that pick each tool."
                     :head (getf mark :head 18)
                     :size (getf mark :size 22)
                     :font (list (getf mark :font "sans"))
-                    :keys (copy-list (or (getf mark :keys) +screenshot-keys+))))))
+                    :keys (copy-list (or (getf mark :keys) +screenshot-keys+))
+                    :palette (copy-list (getf mark :palette))
+                    :palette-keys (copy-list (getf mark :palette-keys))))))
 
 (define-extension "screenshot-theme" (:reads (:screenshot :data) :state nil) (snapshot state event)
   (let ((state (if (eq (getf event :type) :selector)

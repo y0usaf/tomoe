@@ -26,8 +26,11 @@ moves while windows close and open mid-animation, a window of its own reversed
 between the columns with Alt+[ and Alt+] faster than one move lasts while the row
 it moves along is read between keystrokes, which must show it crossing back and
 forth with no more than one read standing still, an Alt+G region screenshot with
-an arrow and a label drawn on it, whose copied image must carry the marks just as
-the screen showed them, a reload, and a broken config,
+a red arrow and a label drawn on it, frozen with the selector's own key and
+undone twice so that only a freeze that put the marks in the picture can still
+show them, whose copied image must carry the marks just as the screen showed
+them, going back to selecting after a mark which must leave the window as it was
+before it, a reload, and a broken config,
 which must be refused without disturbing the running one. It fails on any
 extension failure, duplicate timer, lost focus, unplaced window, the compositor
 exiting or a fatal log line. It also runs a client that paints from its frame

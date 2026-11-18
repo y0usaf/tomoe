@@ -440,6 +440,7 @@ static lisp_value convert_selector(struct tomoe *s, const struct tomoe_event *e)
         list = put(list, "FROZEN", boolean(e->state & 4));
         list = put(list, "TYPING", boolean(e->state & 8));
         list = put(list, "TOOL", lisp_keyword(selector_tools[(e->state >> 4) & 3]));
+        list = put(list, "COLOUR", lisp_int((e->state >> 8) & 31));
     }
     return lisp_nreverse(list);
 }

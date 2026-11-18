@@ -89,6 +89,11 @@ void settings_finish(struct settings *settings) {
         free(settings->screenshot_mark_keys[i]);
     memset(settings->screenshot_mark_keys, 0, sizeof(settings->screenshot_mark_keys));
     settings->screenshot_mark_key_count = 0;
+    for (size_t i = 0; i < settings->screenshot_mark_palette_key_count; i++)
+        free(settings->screenshot_mark_palette_keys[i]);
+    memset(settings->screenshot_mark_palette_keys, 0, sizeof(settings->screenshot_mark_palette_keys));
+    settings->screenshot_mark_palette_key_count = 0;
+    settings->screenshot_mark_palette_count = 0;
 }
 
 static double pick(double class_value, double device_value) {

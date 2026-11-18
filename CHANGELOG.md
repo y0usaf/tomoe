@@ -52,6 +52,30 @@ The first release.
   meanwhile. `H` switches the arrow head between a filled triangle and a thin open
   chevron. A mark keeps the size it was drawn at, so the capture and undo see
   the same marks. `U`, `R`, Enter, Space and Esc keep their meaning.
+- A mark keeps the colour it was drawn in. A look's `:mark` names a `:palette`
+  of colours and the `:palette-keys` that pick them one key each, the first
+  being the ink the selector starts in, and the hint shows each as a swatch with
+  its key, the one in hand inked like the tool's chip. The marks are a
+  premultiplied image of their own rather than one ink over a coverage mask, so
+  a shader reads the marks' colours with `markvec(p)` and `marked(p)` still
+  answers with their coverage, and the captured image carries the same colours
+  the screen showed.
+- A finished selection arms the arrow, so an arrow and a label in a palette
+  colour takes no key the arrow alone used to take.
+- Drawing is repainted where it changed: a label's keystroke repaints the
+  label's box rather than the whole selection, a freehand stroke repaints the
+  segment it just grew by, and undo and a tool switch repaint the mark they
+  touch. On a whole 5120x1440 selection a keystroke went from 3.8 ms of mask
+  work to 14 us, and a stroke's step from 60 us to 4 us, with the same pixels.
+- `M` freezes the screen as it is shown: the selector's own dim, frame, hint and
+  marks are rendered into a new base image, so the annotation UI can be
+  screenshotted and annotated, and an undo can no longer take back a mark that
+  the freeze put in the picture.
+- A selector with no marks in hand no longer reads the last mask it had: the
+  marks box is cleared for every frame, so a look's shader sees no marks rather
+  than a stale box over a texture that is no longer there. Going back to
+  selecting after a mark used to paint the whole selection in the selector's
+  ink; it now clears the marks and nothing else.
 - The region screenshot takes marks before it is captured: `A`, `T` and `F`
   pick an arrow, a text label and a freehand stroke, the pointer draws them
   inside the selection, `U` (or Ctrl+Z) undoes the last mark, `R` goes back to

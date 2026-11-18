@@ -2657,21 +2657,18 @@ bool fte_layout_draw(PangoLayout *layout, double layout_width, double layout_hei
     return fte_draw_layout(layout, pixels, stride, width, height, clip, &ctm, rgba);
 }
 
-bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pixels,
-    int stride, int width, int height, struct fte_rect clip, double x, double y,
-    uint32_t rgba)
+static PangoLayout *fte_text_layout(const char *font, const char *text, double size)
 {
-    if (!text || !*text || !pixels) return false;
     PangoContext *context = fte_context_new();
-    if (!context) return false;
+    if (!context) return NULL;
     PangoLayout *layout = pango_layout_new(context);
-    if (!layout) { g_object_unref(context); return false; }
+    if (!layout) { g_object_unref(context); return NULL; }
     const char *family = font && font[0] ? font : "sans";
     PangoFontDescription *description = pango_font_description_from_string(family);
     if (!description) {
         g_object_unref(layout);
         g_object_unref(context);
-        return false;
+        return NULL;
     }
     pango_font_description_set_absolute_size(description, size * PANGO_SCALE);
     pango_layout_set_font_description(layout, description);
@@ -2681,9 +2678,33 @@ bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pi
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
     pango_layout_set_single_paragraph_mode(layout, TRUE);
     g_object_unref(context);
+    return layout;
+}
+
+bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pixels,
+    int stride, int width, int height, struct fte_rect clip, double x, double y,
+    uint32_t rgba)
+{
+    if (!text || !*text || !pixels) return false;
+    PangoLayout *layout = fte_text_layout(font, text, size);
+    if (!layout) return false;
     struct fte_matrix ctm;
     fte_ctm(&ctm, x, y, 0, 0, 0);
     bool ok = fte_draw_layout(layout, pixels, stride, width, height, clip, &ctm, rgba);
     g_object_unref(layout);
     return ok;
+}
+
+bool fte_text_extents(const char *font, const char *text, double size, struct fte_rect *ink)
+{
+    if (!ink) return false;
+    *ink = (struct fte_rect){ 0, 0, 0, 0 };
+    if (!text || !*text) return false;
+    PangoLayout *layout = fte_text_layout(font, text, size);
+    if (!layout) return false;
+    PangoRectangle box;
+    pango_layout_get_pixel_extents(layout, &box, NULL);
+    g_object_unref(layout);
+    *ink = (struct fte_rect){ box.x, box.y, box.x + box.width, box.y + box.height };
+    return box.width > 0 && box.height > 0;
 }

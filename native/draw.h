@@ -170,10 +170,9 @@ void dp_paint_gradient(uint32_t *dst, int dst_stride, struct drect clip,
     const struct dp_gradient *gradient, const struct dp_coverage *coverage,
     int dst_w, int dst_h, int extents_x, int extents_y, int extents_w, int extents_h);
 
-void dp_mask_surface(uint32_t *dst, int dst_stride, struct drect clip,
+void dp_composite_mask(uint32_t *dst, int dst_stride, struct drect clip,
     const uint32_t *mask, int mask_stride, int mask_w, int mask_h,
-    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty,
-    uint32_t ink);
+    int mask_x, int mask_y, const struct dmatrix *matrix, double tx, double ty);
 
 enum {
     DP_COMP_CLEAR, DP_COMP_SRC, DP_COMP_DST, DP_COMP_OVER, DP_COMP_DEST_OVER,

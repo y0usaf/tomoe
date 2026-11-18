@@ -120,6 +120,12 @@ int tomoe_present_settings(struct tomoe *s) {
 int tomoe_present_setting(struct tomoe *s, const char *key, double value) {
     struct presentation *plan = s->presentation;
     if (!plan || !plan->settings || !isfinite(value)) return 0;
+    if (strcmp(key, "screenshot-mark-palette") == 0) {
+        if (plan->settings->screenshot_mark_palette_count >= SCREENSHOT_PALETTE_MAX) return 0;
+        plan->settings->screenshot_mark_palette[
+            plan->settings->screenshot_mark_palette_count++] = (uint32_t)value;
+        return 1;
+    }
     int handled = input_setting(plan->settings, key, value, NULL);
     if (handled >= 0) return handled;
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
@@ -160,10 +166,17 @@ int tomoe_present_setting_text(struct tomoe *s, const char *key, const char *tex
         return 1;
     }
     if (strcmp(key, "screenshot-mark-keys") == 0) {
-        if (settings->screenshot_mark_key_count >= 5) return 1;
+        if (settings->screenshot_mark_key_count >= 6) return 1;
         char *copy = strdup(text);
         if (!copy) return 0;
         settings->screenshot_mark_keys[settings->screenshot_mark_key_count++] = copy;
+        return 1;
+    }
+    if (strcmp(key, "screenshot-mark-palette-keys") == 0) {
+        if (settings->screenshot_mark_palette_key_count >= SCREENSHOT_PALETTE_MAX) return 0;
+        char *copy = strdup(text);
+        if (!copy) return 0;
+        settings->screenshot_mark_palette_keys[settings->screenshot_mark_palette_key_count++] = copy;
         return 1;
     }
     int handled = input_setting(settings, key, NAN, text);
@@ -182,6 +195,10 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     plan->settings->screenshot_mark_font = NULL;
     memset(plan->settings->screenshot_mark_keys, 0, sizeof(plan->settings->screenshot_mark_keys));
     plan->settings->screenshot_mark_key_count = 0;
+    memset(plan->settings->screenshot_mark_palette_keys, 0,
+        sizeof(plan->settings->screenshot_mark_palette_keys));
+    plan->settings->screenshot_mark_palette_key_count = 0;
+    plan->settings->screenshot_mark_palette_count = 0;
     if (resized) outputs_request_nested_size(s);
     input_devices_apply(s);
     cursor_glass_settings(s);

@@ -48,4 +48,6 @@ bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pi
     int stride, int width, int height, struct fte_rect clip, double x, double y,
     uint32_t rgba);
 
+bool fte_text_extents(const char *font, const char *text, double size, struct fte_rect *ink);
+
 #endif
