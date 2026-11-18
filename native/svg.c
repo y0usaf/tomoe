@@ -859,7 +859,6 @@ struct svg_shader {
     int len;
     float factors[20][4], biases[20][4], t_values[21];
     int opaque;
-    int hairline;
     struct svg_pattern *pattern;
     struct svg_pixmap pattern_pixmap;
     int has_pattern_pixmap;
@@ -898,7 +897,7 @@ static int svg_shader_opaque(struct svg_shader *shader) {
 }
 
 static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x, int y,
-        unsigned a, int blend) {
+        unsigned a, int blend, int quirk) {
     if (shader->highp) {
         float color[4], d[4];
         svg_shader_color_highp(shader, x, y, color);
@@ -910,8 +909,7 @@ static void svg_blend_pixel(unsigned char *px, struct svg_shader *shader, int x,
         } else if (blend == 0 && !svg_shader_opaque(shader)) {
             float q[4];
             float qscale = cov;
-            if (shader->type == 2 && !shader->hairline && a != 255u &&
-                    shader->opacity != 1.0f)
+            if (shader->type == 2 && quirk && a != 255u && shader->opacity != 1.0f)
                 qscale = cov * (cov / shader->opacity);
             for (int k = 0; k < 4; k++) q[k] = color[k] * qscale;
             for (int k = 0; k < 4; k++) vals[k] = q[k] + d[k] * (1.0f - q[3]);
@@ -966,7 +964,7 @@ static void svg_super_flush(struct svg_super *sb) {
             if (!a) continue;
             unsigned char *px = sb->target->pixels +
                 ((size_t)sb->curr_iy * (size_t)sb->target->width + sb->left + (size_t)i) * 4;
-            svg_blend_pixel(px, sb->shader, (int)sb->left + i, sb->curr_iy, a, sb->blend);
+            svg_blend_pixel(px, sb->shader, (int)sb->left + i, sb->curr_iy, a, sb->blend, 1);
         }
         memset(sb->cov, 0, (size_t)sb->width);
     }
@@ -1184,7 +1182,7 @@ static void svg_solid_span(struct svg_super *sb, uint32_t left, uint32_t y, uint
     unsigned char *row = sb->target->pixels + (size_t)y * (size_t)sb->target->width * 4;
     for (uint32_t i = 0; i < width; i++)
         svg_blend_pixel(row + ((size_t)left + i) * 4, sb->shader, (int)left + i, (int)y, 255,
-            sb->blend);
+            sb->blend, 1);
 }
 
 static void svg_walk_edges(int fill_rule, uint32_t start_y, uint32_t stop_y,
@@ -10588,7 +10586,6 @@ static void svg_render_path_stroke(struct svg_node *node, struct svg_matrix ts,
         float bbox[4] = { hbx, hby, w, h };
         svg_prepare_shader(&hshader, &node->stroke.paint, node->stroke.opacity, factor, ts,
             bbox, 1);
-        hshader.hairline = 1;
         if (hshader.type >= 0)
             svg_stroke_hairline(pixmap, hpath, &node->stroke, &hshader, blend);
         if (hshader.has_pattern_pixmap) svg_pixmap_free(&hshader.pattern_pixmap);
@@ -13651,6 +13648,7 @@ struct svg_hairctx {
     struct svg_shader *shader;
     int blend;
     int clip_valid;
+    int quirk;
     int clip[4];
 };
 
@@ -13731,28 +13729,32 @@ static void svg_hair_pixel(struct svg_hairctx *ctx, int x, int y, unsigned alpha
     }
     unsigned char *px = ctx->pixmap->pixels +
         ((size_t)y * (size_t)ctx->pixmap->width + (size_t)x) * 4;
-    svg_blend_pixel(px, ctx->shader, x, y, alpha, ctx->blend);
+    svg_blend_pixel(px, ctx->shader, x, y, alpha, ctx->blend, ctx->quirk);
 }
 
 static void svg_hair_blit_v(struct svg_hairctx *ctx, unsigned x, unsigned y, unsigned height,
         unsigned alpha) {
+    ctx->quirk = 0;
     for (unsigned i = 0; i < height; i++) svg_hair_pixel(ctx, (int)x, (int)y + (int)i, alpha);
 }
 
 static void svg_hair_hline(struct svg_hairctx *ctx, unsigned x, int y, unsigned count,
         unsigned alpha) {
     if (y < 0) return;
+    ctx->quirk = 1;
     for (unsigned i = 0; i < count; i++) svg_hair_pixel(ctx, (int)x + (int)i, y, alpha);
 }
 
 static void svg_hair_anti_h2(struct svg_hairctx *ctx, unsigned x, unsigned y, unsigned a0,
         unsigned a1) {
+    ctx->quirk = 0;
     svg_hair_pixel(ctx, (int)x, (int)y, a0);
     svg_hair_pixel(ctx, (int)x + 1, (int)y, a1);
 }
 
 static void svg_hair_anti_v2(struct svg_hairctx *ctx, unsigned x, unsigned y, unsigned a0,
         unsigned a1) {
+    ctx->quirk = 0;
     svg_hair_pixel(ctx, (int)x, (int)y, a0);
     svg_hair_pixel(ctx, (int)x, (int)y + 1, a1);
 }
