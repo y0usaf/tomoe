@@ -3,6 +3,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -228,8 +229,20 @@ static void put_decimal(long value) {
     put(digits + at);
 }
 
-static void crash(int number, siginfo_t *info, void *context) {
+static uintptr_t fault_pc(void *context) {
+#if defined(__x86_64__)
+    ucontext_t *ucontext = context;
+    return ucontext ? (uintptr_t)ucontext->uc_mcontext.gregs[REG_RIP] : 0;
+#elif defined(__aarch64__)
+    ucontext_t *ucontext = context;
+    return ucontext ? (uintptr_t)ucontext->uc_mcontext.pc : 0;
+#else
     (void)context;
+    return 0;
+#endif
+}
+
+static void crash(int number, siginfo_t *info, void *context) {
     int saved = errno;
     if (log_fd >= 0) {
         put("tomoe: FATAL ");
@@ -242,13 +255,23 @@ static void crash(int number, siginfo_t *info, void *context) {
         put_hex(info ? (uintptr_t)info->si_addr : 0);
         put(", pid ");
         put_decimal((long)getpid());
-        const char *hook = lisp_active_hook();
-        put(hook ? ", while Lisp ran " : ", outside Lisp");
-        if (hook) put(hook);
-        put("\ntomoe: backtrace (resolve with addr2line -e the tomoe binary):\n");
+        put("\n");
+        uintptr_t pc = fault_pc(context);
+        if (pc) {
+            put("tomoe: pc ");
+            put_hex(pc);
+            put("\n");
+        }
+        put("tomoe: backtrace (resolve with addr2line -e the tomoe binary):\n");
         void *frames[64];
         int count = backtrace(frames, 64);
         backtrace_symbols_fd(frames, count, log_fd);
+        const char *hook = lisp_active_hook();
+        put(hook ? "tomoe: while Lisp ran " : "tomoe: outside Lisp\n");
+        if (hook) {
+            put(hook);
+            put("\n");
+        }
         put("tomoe: the compositor stops here\n");
     }
     errno = saved;
