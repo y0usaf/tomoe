@@ -99,36 +99,19 @@ def crop(values, column, row):
     return values[at:at + 3]
 
 
-def stripe(x):
-    return 240 if (x // 3) % 2 else 16
+def misses(rows, test):
+    return [(row, test(row)) for row in rows if not test(row)]
 
 
-def edge(row):
-    for col in range(2, 30):
-        if abs(crop(glass, col, row)[0] - stripe(390 + col)) > 6:
-            return col
-    return None
-
-
-outer_miss, inner_miss = [], []
-measured = 0
-for row in range(10, 22):
-    col = edge(row)
-    if col is None:
-        continue
-    measured += 1
-    over_outer, over_inner = stripe(390 + col), stripe(391 + col)
-    outer, inner = crop(glass, col, row)[0], crop(glass, col + 1, row)[0]
-    if row in (12, 16, 20):
-        print(f"edge row {row}: col {col}, light {outer} over {over_outer}, "
-              f"dark {inner} over {over_inner}")
-    if over_outer < 150 and outer < over_outer + 40:
-        outer_miss.append((row, over_outer, outer))
-    if over_inner >= 150 and inner > over_inner - 40:
-        inner_miss.append((row, over_inner, inner))
-assert measured >= 8, f"the glass painted an edge on only {measured} rows"
-assert not outer_miss, f"the glass has no light line over a dark backdrop: {outer_miss[:3]}"
-assert not inner_miss, f"the glass has no dark line against a light backdrop: {inner_miss[:3]}"
+dark_miss = misses(range(12, 21), lambda row: crop(plain, 9, row)[0] < 150 or
+                   crop(glass, 9, row)[0] <= crop(plain, 9, row)[0] - 40)
+light_miss = misses(range(12, 21), lambda row: crop(plain, 8, row)[0] >= 150 or
+                    crop(glass, 8, row)[0] >= crop(plain, 8, row)[0] + 40)
+for row in (12, 16, 20):
+    print(f"edge row {row}: light {crop(plain, 8, row)} -> {crop(glass, 8, row)}, "
+          f"dark {crop(plain, 9, row)} -> {crop(glass, 9, row)}")
+assert not dark_miss, f"the glass has no dark line against a light backdrop: {dark_miss[:3]}"
+assert not light_miss, f"the glass has no light line over a dark backdrop: {light_miss[:3]}"
 
 
 def solid(unit, colour):

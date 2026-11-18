@@ -753,6 +753,14 @@ static bool scene_record_ops(struct output *o, const struct frame *data, bool lo
     *complete = whole;
     return true;
 }
+static void scene_discard_record(struct output *o) {
+    struct oplist ops = o->ops;
+    o->ops = o->spare_ops;
+    o->spare_ops = ops;
+    struct oplist cursor = o->cursor_ops;
+    o->cursor_ops = o->cursor_spare_ops;
+    o->cursor_spare_ops = cursor;
+}
 static int64_t region_area(const struct region *region) {
     int count = 0;
     const struct rect *rects = region_rectangles(region, &count);
@@ -984,6 +992,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
     }
     struct buffer *buffer = ring == &o->ring ? ring_take(ring) : ring_acquire(s, ring);
     if (!buffer) {
+        if (pre_recorded) scene_discard_record(o);
         if (ring->grow) {
             o->screen->deferred = true;
             screen_schedule_frame(o->screen);
