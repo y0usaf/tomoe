@@ -770,9 +770,11 @@ static int compositor_animation(struct compositor *compositor, struct counters *
 static long long drawn_frames(struct node *entry) {
     struct node *frame = plist_find(entry, "frame");
     struct node *reused = plist_find(entry, "reused");
+    struct node *repeated = plist_find(entry, "repeated");
     long long drawn = 0, repeats = 0;
     if (!node_integer(frame, &drawn)) return 0;
     if (node_integer(reused, &repeats)) drawn -= repeats;
+    if (node_integer(repeated, &repeats)) drawn -= repeats;
     return drawn > 0 ? drawn : 0;
 }
 
@@ -1174,7 +1176,7 @@ static int stalled_running;
 
 static long long stalled_control(const char *work, const char *tomoe, const char *socket,
         const char *policy, const char *frames_dir, long long period) {
-    volatile long long stall_ms = period ? python_round((double)period / 1e6 * 4.0) : 9;
+    volatile long long stall_ms = period ? python_round((double)period / 1e6 * 2.0) : 9;
     if (stall_ms < 1) stall_ms = 1;
     control_problems.count = 0;
     stalled_running = 0;

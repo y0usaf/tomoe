@@ -449,7 +449,7 @@ const char *tomoe_frames(struct tomoe *s) {
     wl_list_for_each(o, &s->outputs, link) {
         fputs("(:name ", out);
         quote(out, o->screen->name);
-        fprintf(out, " :frame %" PRIu64 " :reused %" PRIu64
+        fprintf(out, " :frame %" PRIu64 " :reused %" PRIu64 " :repeated %" PRIu64
             " :drawn-frame %" PRIu64 " :buffer-age %" PRIu64
             " :drawn-pixels %" PRId64 " :pixels %" PRId64 " :draws %zu :scanout %s"
             " :suspended %s :pending %s"
@@ -459,7 +459,7 @@ const char *tomoe_frames(struct tomoe *s) {
             " :frame-ns %" PRIu64 " :cost-ns %" PRId64 " :missed %" PRIu64
             " :refresh %d :armed %" PRId64 " :start %" PRId64 " :vblank %" PRId64
             " :predicted %" PRId64 " :slack %" PRId64 " :heavy %u :frame-times (",
-            o->frames, o->reused, o->drawn.frame, o->drawn.age, o->drawn.pixels,
+            o->frames, o->reused, o->repeated, o->drawn.frame, o->drawn.age, o->drawn.pixels,
             (int64_t)o->ring.width * o->ring.height, o->drawn.ops, o->scanout ? "t" : "nil",
             o->screen->suspended ? "t" : "nil", o->screen->frame_pending ? "t" : "nil",
             o->planes.count, o->screen->deferrals, o->screen->warps,
@@ -1316,9 +1316,11 @@ static void output_frame_build(struct output *o) {
     int64_t start_ns = (int64_t)start.tv_sec * 1000000000 + start.tv_nsec;
     o->sample = animation_reference(o->screen, start_ns);
     o->animating = false;
+    bool replacing = o->screen->frame_pending;
     bool success = scanout || render_output(o, &state);
     bool reused = o->reused_present;
     o->reused_present = false;
+    if (replacing && !reused) o->repeated++;
     if (success && scanout)
         surface_presented(scanout, o->screen, true);
     else if (success) surfaces_textured(o);
@@ -1375,7 +1377,8 @@ static void output_frame_build(struct output *o) {
     if (!screen_frames_late(o->screen)) grab_frame_drawn(o->server);
     bool moving = o->animating;
     if (moving) screen_schedule_animation(o->screen);
-    if (!reused) animation_frame_record(o->server, o->screen, start_ns, o->sample, moving);
+    if (!reused && !replacing)
+        animation_frame_record(o->server, o->screen, start_ns, o->sample, moving);
     if (tail_at) timing_add(TIMING_FRAME_TAIL, (uint64_t)(timing_now() - tail_at));
     timing_frame_end(o->server, true);
     frame_timed(o, &start);

@@ -668,7 +668,7 @@ struct output {
     double sample;
     bool animating;
     struct oplist ops, spare_ops, cursor_ops, cursor_spare_ops;
-    uint64_t frames, reused;
+    uint64_t frames, reused, repeated;
     bool reused_present;
     struct buffer *drawn_buffer;
     uint64_t damage_seq;
