@@ -1796,7 +1796,7 @@ native/jpeg.c
   The MIT permission text above applies.
 
 native/webp.c
-  The lossless WebP decoder is ported from image-webp 0.2.4.
+  The WebP decoders are ported from image-webp 0.2.4.
 
   image-webp files carry:
 
