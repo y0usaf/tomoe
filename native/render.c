@@ -3337,8 +3337,22 @@ bool render_shader_reap(struct render *r) {
         if (job->pid <= 0) continue;
         int status = 0;
         pid_t done = waitpid(job->pid, &status, WNOHANG);
-        if (done == 0 || (done < 0 && errno == EINTR)) {
+        bool running = done == 0 || (done < 0 && errno == EINTR);
+        if (running && warm_now_ns() < job->deadline) {
             busy = true;
+            continue;
+        }
+        if (running) {
+            job_stop(job);
+            if (!job->name[0]) {
+                tomoe_log(LOG_ERROR, "tomoe: the shader prewarm did not finish in %d s",
+                    WARM_JOB_TIMEOUT_MS / 1000);
+                job_forget(r, job);
+                continue;
+            }
+            job->failed = true;
+            tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
+                WARM_JOB_TIMEOUT_MS / 1000, job->name);
             continue;
         }
         job->pid = 0;
