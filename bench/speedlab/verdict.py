@@ -156,7 +156,8 @@ def main():
     found = markers(reference_binary, candidate_binary)
     if found:
         reasons.append(f"the build looks for the rig: new references to {found}")
-    verdict = {"verdict": "reject" if reasons else "accept", "reasons": reasons}
+    verdict = {"verdict": "reject" if reasons else "accept", "reasons": reasons,
+               "base": reference_binary, "candidate": candidate_binary}
     if a.get("ok") and reference.get("ok"):
         mine, theirs = split(a), split(reference)
         verdict["score"] = {
@@ -174,10 +175,27 @@ def main():
                     "settled_rss_kB": m["settled"].get("Rss"), "hwm_kB": m["hwm_kB"],
                     "settled_malloc_used_kB": m["settled"].get("malloc_used_kB"),
                     "peak_pss_kB": m["peak_pss_kB"], "settled_pss_kB": m["settled"].get("Pss")}
+        pairs = {"private_dirty": ("settled_private_dirty_kB", memory(mem), memory(ref_mem)),
+                 "peak_private_dirty": ("peak_private_dirty_kB", memory(mem), memory(ref_mem))}
+        memory_delta = {name: round((now[key] - then[key]) / max(1, then[key]) * 100, 4)
+                        for name, (key, now, then) in pairs.items()}
         verdict["memory"] = {**memory(mem), "reference": memory(ref_mem),
+                             "delta_percent": memory_delta,
+                             "significant": {name: abs(value) > BANDS[name] for name, value in memory_delta.items()},
                              "noise_band_percent": {"private_dirty": BANDS["private_dirty"],
                                                     "peak_private_dirty": BANDS["peak_private_dirty"]},
                              "breakdown": mem["breakdown"][:16]}
+        deltas = {**verdict["score"]["delta_percent"], **memory_delta}
+        moved = {name: value for name, value in deltas.items()
+                 if abs(value) > BANDS[name] and name != "instructions"}
+        better = sorted(name for name, value in moved.items() if value < 0)
+        worse = sorted(name for name, value in moved.items() if value > 0)
+        verdict["outcome"] = {
+            "better": better, "worse": worse,
+            "result": "reject" if reasons else
+                      "win" if better and not worse else "loss" if worse and not better else
+                      "mixed" if better else "neutral",
+        }
         verdict["equivalence"] = {
             "frames": len(a["frames"]), "reference_frames": len(reference["frames"]),
             "frames_match": frames_detail is None, "first_frame_difference": frames_detail,

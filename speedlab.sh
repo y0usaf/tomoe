@@ -18,6 +18,7 @@ ONLY=""
 usage() {
 	cat <<'EOF'
 usage: speedlab.sh [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] CANDIDATE
+       speedlab.sh --compare BASE CANDIDATE
        speedlab.sh --self-test
        speedlab.sh --profile BUILD
 
@@ -30,6 +31,10 @@ every output frame and every protocol event the rig's clients saw match the
 reference build's run.
 
   --reference BUILD   the build to compare against (default: bench/speedlab/reference)
+  --compare BASE CANDIDATE
+                      judge CANDIDATE against BASE instead of the frozen reference, with the
+                      same equivalence rules; "outcome" says win, loss, mixed or neutral from
+                      the per-metric deltas that leave the noise band
   --out FILE          also write the verdict, with both runs, to FILE
   --fresh             recompute the reference instead of using its cached run
   --persona A|B       run only that persona and print its raw result
@@ -275,6 +280,7 @@ main() {
 		--self-test) mode=self-test ;;
 		--profile) mode=profile ;;
 		--reference) REFERENCE=$2; shift ;;
+		--compare) REFERENCE=$2; candidate=$3; shift 2 ;;
 		--out) OUT=$2; shift ;;
 		--fresh) FRESH=1 ;;
 		--persona) persona=$2; shift ;;
