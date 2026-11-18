@@ -1785,8 +1785,8 @@ native/svg.c
 
 
 native/jpeg.c
-  The embedded-image IDCT and YCbCr conversion are ported from zune-jpeg
-  0.5.8.
+  The embedded-image IDCT, upsampling and YCbCr conversion are ported from
+  zune-jpeg 0.5.8.
 
   zune-jpeg files carry:
 

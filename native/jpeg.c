@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: AGPL-3.0-only AND MIT
-   The IDCT and YCbCr conversion are ported from zune-jpeg 0.5.8 (MIT OR
-   Apache-2.0 OR Zlib); see NOTICE. */
+   The IDCT, upsampling and YCbCr conversion are ported from zune-jpeg 0.5.8
+   (MIT OR Apache-2.0 OR Zlib); see NOTICE. */
 #include "jpeg.h"
 
 #include <setjmp.h>
@@ -2232,6 +2232,75 @@ static const uint8_t *plane_row(struct jpeg *j, struct component *comp, int64_t 
     return comp->samples + (size_t)row * comp->sample_stride;
 }
 
+static void zune_horizontal(const uint8_t *in, uint32_t width, uint32_t stop, uint8_t *out) {
+    uint32_t sample = (uint32_t)in[0] * 3 + 2;
+    out[0] = in[0];
+    if (stop > 1) out[1] = (uint8_t)((sample + in[1]) >> 2);
+    for (uint32_t i = 1; 2 * i < stop && i + 1 < width; i++) {
+        sample = (uint32_t)in[i] * 3 + 2;
+        out[2 * i] = (uint8_t)((sample + in[i - 1]) >> 2);
+        if (2 * i + 1 < stop) out[2 * i + 1] = (uint8_t)((sample + in[i + 1]) >> 2);
+    }
+    if (2 * width - 2 < stop) {
+        sample = (uint32_t)in[width - 1] * 3 + 2;
+        out[2 * width - 2] = (uint8_t)((sample + in[width - 2]) >> 2);
+        if (2 * width - 1 < stop) out[2 * width - 1] = in[width - 1];
+    }
+}
+
+static void zune_expand(uint8_t *row, uint32_t width, uint32_t stop) {
+    if (2 * width - 2 < stop) {
+        row[2 * width - 2] = (uint8_t)(((uint32_t)row[width - 1] * 3 + 2 + row[width - 2]) >> 2);
+        if (2 * width - 1 < stop) row[2 * width - 1] = row[width - 1];
+    }
+    uint32_t top = (stop - 1) / 2;
+    if (top > width - 2) top = width - 2;
+    for (uint32_t i = top; i > 0; i--) {
+        uint32_t sample = (uint32_t)row[i] * 3 + 2;
+        if (2 * i + 1 < stop) row[2 * i + 1] = (uint8_t)((sample + row[i + 1]) >> 2);
+        row[2 * i] = (uint8_t)((sample + row[i - 1]) >> 2);
+    }
+    if (stop > 1) {
+        uint32_t sample = (uint32_t)row[0] * 3 + 2;
+        row[1] = (uint8_t)((sample + row[1]) >> 2);
+    }
+}
+
+static void zune_upsample_rows(struct jpeg *j, int ci, struct component *comp, uint32_t group) {
+    uint32_t stride = j->up_stride;
+    uint8_t *buffer = j->up_buffer[ci];
+    uint32_t max_v = (uint32_t)j->max_v;
+    uint32_t width = comp->sample_stride;
+    uint32_t stop = j->output_width < 2 * width ? j->output_width : 2 * width;
+    uint32_t base = group * (uint32_t)comp->v;
+    if (j->up_method[ci] == UP_H2V1_FANCY) {
+        for (uint32_t r = 0; r < max_v; r++)
+            zune_horizontal(plane_row(j, comp, (int64_t)base + r), width, stop,
+                    buffer + (size_t)r * stride);
+        for (uint32_t r = 0; r < max_v; r++) j->rows[ci][r] = buffer + (size_t)r * stride;
+        return;
+    }
+    uint32_t per_group = 8u * (uint32_t)comp->v;
+    uint32_t last_group = (comp->sample_rows + per_group - 1) / per_group - 1;
+    uint32_t outrow = 0;
+    for (uint32_t k = 0; k < (uint32_t)comp->v && outrow < max_v; k++) {
+        const uint8_t *cur = plane_row(j, comp, (int64_t)base + k);
+        int64_t next = (int64_t)base + k + 1;
+        if ((uint32_t)next % per_group == 0 && (uint32_t)next / per_group - 1 == last_group)
+            next = (int64_t)base + k;
+        if (next > (int64_t)comp->sample_rows - 1) next = (int64_t)comp->sample_rows - 1;
+        for (uint32_t half = 0; half < 2 && outrow < max_v; half++) {
+            const uint8_t *near = half ? comp->samples + (size_t)next * comp->sample_stride :
+                    plane_row(j, comp, (int64_t)base + k - 1);
+            uint8_t *out = buffer + (size_t)outrow++ * stride;
+            for (uint32_t col = 0; col < width && col < stop; col++)
+                out[col] = (uint8_t)(((uint32_t)cur[col] * 3 + 2 + near[col]) >> 2);
+            if (j->up_method[ci] != UP_H1V2) zune_expand(out, width, stop);
+        }
+    }
+    for (uint32_t r = 0; r < max_v; r++) j->rows[ci][r] = buffer + (size_t)r * stride;
+}
+
 static void fill_upsample_rows(struct jpeg *j, int ci, uint32_t group) {
     struct component *comp = &j->comp[ci];
     uint32_t max_v = (uint32_t)j->max_v;
@@ -2239,6 +2308,11 @@ static void fill_upsample_rows(struct jpeg *j, int ci, uint32_t group) {
     if (j->up_method[ci] == UP_FULL) {
         for (uint32_t r = 0; r < max_v; r++)
             j->rows[ci][r] = plane_row(j, comp, (int64_t)base + r);
+        return;
+    }
+    if (j->zune && (j->up_method[ci] == UP_H2V1_FANCY || j->up_method[ci] == UP_H2V2_FANCY ||
+            j->up_method[ci] == UP_H1V2)) {
+        zune_upsample_rows(j, ci, comp, group);
         return;
     }
     uint8_t *buffer = j->up_buffer[ci];
