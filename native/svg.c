@@ -9866,6 +9866,8 @@ static int svg_focal_set(struct svg_shader *shader, float r0, float r1,
 }
 
 static void svg_pixmap_init(struct svg_pixmap *p, int width, int height);
+static int svg_canvas_w, svg_canvas_h;
+
 static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
         struct svg_pixmap *pixmap);
 
@@ -12241,8 +12243,8 @@ static void svg_render_group_node(struct svg_node *group, struct svg_matrix ts,
     if (!bbox.valid) return;
     int ibbox[4];
     if (!svg_group_int_bbox_pad(bbox, group->filter ? 0 : 2, ibbox)) return;
-    int maxb[4] = { -2 * pixmap->width, -2 * pixmap->height, 5 * pixmap->width,
-        5 * pixmap->height };
+    int maxb[4] = { -2 * svg_canvas_w, -2 * svg_canvas_h, 5 * svg_canvas_w,
+        5 * svg_canvas_h };
     if (!svg_fit_rect(ibbox, maxb)) return;
     if (ibbox[2] <= 0 || ibbox[3] <= 0) return;
     struct svg_pixmap sub;
@@ -12269,6 +12271,8 @@ void tomoe_svg_render(const struct tomoe_svg *svg, int width, int height, void *
     struct svg_pixmap pixmap;
     svg_pixmap_init(&pixmap, width, height);
     if (!pixmap.pixels) return;
+    svg_canvas_w = width;
+    svg_canvas_h = height;
     struct svg_matrix device = { (float)width / svg->width, 0.0f, 0.0f,
         (float)height / svg->height, 0.0f, 0.0f };
     if (svg->root) svg_render_nodes(svg->root, device, &pixmap);
