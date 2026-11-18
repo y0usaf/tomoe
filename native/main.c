@@ -558,6 +558,11 @@ static int run_compositor(const struct cli_options *options) {
         return cli_error("%s", error);
     tomoe_select_backend(backend);
     tomoe_log_open(options->name, backend);
+    {
+        struct timespec started;
+        clock_gettime(CLOCK_MONOTONIC, &started);
+        tomoe_started_ns = (uint64_t)started.tv_sec * 1000000000ull + (uint64_t)started.tv_nsec;
+    }
     if (options->render_node) tomoe_select_render_node(options->render_node);
     if (options->drm_device) {
         char devices[PATH_MAX];
@@ -702,8 +707,8 @@ done:
 
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--warm-shaders")) {
-        if (argc != 4 && argc != 5) return 1;
-        return tomoe_warm_shaders(argv[2], argv[3], argc == 5 ? argv[4] : NULL);
+        if (argc != 5 && argc != 6) return 1;
+        return tomoe_warm_shaders(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : NULL);
     }
     return run_cli(argc - 1, argv + 1);
 }

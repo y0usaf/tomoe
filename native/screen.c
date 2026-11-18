@@ -658,6 +658,17 @@ void screen_send_present(struct screen *screen, struct screen_present *present) 
         screen->present_ns = when;
         timing_screen_present(screen, when);
     }
+    if (present->presented) {
+        static bool first_frame;
+        if (!first_frame && tomoe_started_ns) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            uint64_t at = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+            first_frame = true;
+            tomoe_log(LOG_WARNING, "tomoe: the first frame reaches %s %.0f ms after start",
+                screen->name, (double)(at - tomoe_started_ns) / 1e6);
+        }
+    }
     wl_signal_emit_mutable(&screen->events.present, present);
 }
 

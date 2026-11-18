@@ -24,7 +24,6 @@ enum {
     FENCE_WAIT_MS = 1000,
     HELD_FRAME_LIMIT = 4,
     WARM_SIZE = 16,
-    WARM_TIMEOUT_MS = 5000,
     WARM_JOB_TIMEOUT_MS = 60000,
     WARM_SOURCE_LIMIT = 1 << 20,
     WARM_NAME = sizeof("0123456789abcdef.glsl"),
@@ -647,7 +646,6 @@ enum shader_await { SHADER_RUNNING, SHADER_READY, SHADER_NO_HELPER, SHADER_FAILE
 
 static void warm_name(const char *source, char name[WARM_NAME]);
 static bool warm_remember(struct render *r, const char *source, const char *name);
-static bool warm_run(struct render *r, char *name);
 static bool warm_load(struct render *r, const char *name, struct program *p);
 static enum shader_await shader_await(struct render *r, const char *name,
     struct program *program);
@@ -3275,22 +3273,6 @@ static uint64_t warm_now_ns(void) {
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
-static bool warm_wait(pid_t child) {
-    int status = 0;
-    uint64_t deadline = warm_now_ns() + (uint64_t)WARM_TIMEOUT_MS * 1000000ull;
-    for (;;) {
-        pid_t done = waitpid(child, &status, WNOHANG);
-        if (done == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-        if (done < 0 && errno != EINTR) return false;
-        if (warm_now_ns() >= deadline) break;
-        usleep(2000);
-    }
-    kill(child, SIGKILL);
-    while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}
-    tomoe_log(LOG_ERROR, "tomoe: the shader warm-up helper timed out");
-    return false;
-}
-
 static struct shader_job *job_find(struct render *r, const char *name) {
     for (struct shader_job *job = r->jobs; job; job = job->next)
         if (!strcmp(job->name, name)) return job;
@@ -3327,7 +3309,7 @@ static struct shader_job *job_start(struct render *r, const char *name) {
     if (!job) return NULL;
     snprintf(job->name, sizeof(job->name), "%s", name);
     char flag[] = "--warm-shaders";
-    char *argv[] = { r->exe, flag, r->node, r->warm_dir, job->name, NULL };
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, "", job->name, NULL };
     posix_spawn_file_actions_t actions;
     pid_t child = 0;
     if (posix_spawn_file_actions_init(&actions) != 0) {
@@ -3398,6 +3380,31 @@ static enum shader_await shader_await(struct render *r, const char *name,
     return SHADER_READY;
 }
 
+static bool warm_spawn(struct render *r, const char *marker) {
+    char flag[] = "--warm-shaders";
+    char *argv[] = { r->exe, flag, r->node, r->warm_dir, (char *)marker, "", NULL };
+    struct shader_job *job = calloc(1, sizeof(*job));
+    if (!job) return false;
+    posix_spawn_file_actions_t actions;
+    pid_t child = 0;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        free(job);
+        return false;
+    }
+    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (spawned != 0) {
+        free(job);
+        return false;
+    }
+    job->pid = child;
+    job->deadline = warm_now_ns() + (uint64_t)WARM_JOB_TIMEOUT_MS * 1000000ull;
+    job->next = r->jobs;
+    r->jobs = job;
+    return true;
+}
+
 static void warm(struct render *r) {
     if (!r->warm_dir) return;
     uint64_t hash = fnv(0xcbf29ce484222325ull, r->driver);
@@ -3417,24 +3424,8 @@ static void warm(struct render *r) {
     free(entries);
     char *marker = NULL;
     if (asprintf(&marker, "%s/%016llx.warm", r->warm_dir, (unsigned long long)hash) < 0) return;
-    if (access(marker, F_OK) != 0 && warm_run(r, NULL)) {
-        int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
-        if (fd >= 0) close(fd);
-    }
+    if (access(marker, F_OK) != 0) warm_spawn(r, marker);
     free(marker);
-}
-
-static bool warm_run(struct render *r, char *name) {
-    if (!r->warm_dir || (name && !r->binaries)) return false;
-    char flag[] = "--warm-shaders";
-    char *argv[] = { r->exe, flag, r->node, r->warm_dir, name, NULL };
-    posix_spawn_file_actions_t actions;
-    pid_t child;
-    if (posix_spawn_file_actions_init(&actions) != 0) return false;
-    posix_spawn_file_actions_addclosefrom_np(&actions, 3);
-    int spawned = posix_spawn(&child, r->exe, &actions, NULL, argv, environ);
-    posix_spawn_file_actions_destroy(&actions);
-    return spawned == 0 && warm_wait(child);
 }
 
 static void warm_save(const char *dir, const char *name, const struct program *p) {
@@ -3540,17 +3531,19 @@ static char *read_source(const char *dir, const char *name) {
     return source;
 }
 
-int tomoe_warm_shaders(const char *node, const char *dir, const char *name) {
+int tomoe_warm_shaders(const char *node, const char *dir, const char *marker,
+        const char *name) {
     struct render *r = render_open(strdup(node));
     if (!r || !programs_init(r)) {
         if (r) render_free(r);
         return 1;
     }
+    bool every = !name || !*name;
     struct dirent **entries = NULL;
-    int count = name ? 1 : scandir(dir, &entries, shader_file, alphasort), linked = 0;
+    int count = every ? scandir(dir, &entries, shader_file, alphasort) : 1, linked = 0;
     struct program **shaders = calloc(count > 0 ? (size_t)count : 1, sizeof(*shaders));
     for (int i = 0; i < count; i++) {
-        const char *file = name ? name : entries[i]->d_name;
+        const char *file = every ? entries[i]->d_name : name;
         char *source = shaders ? read_source(dir, file) : NULL;
         struct program *shader = source ? render_shader_create(r, source, NULL) : NULL;
         if (shader) {
@@ -3558,13 +3551,17 @@ int tomoe_warm_shaders(const char *node, const char *dir, const char *name) {
             shaders[linked++] = shader;
         }
         free(source);
-        if (!name) free(entries[i]);
+        if (every) free(entries[i]);
     }
     free(entries);
     warm_draws(r, shaders, linked);
     for (int i = 0; i < linked; i++) render_shader_destroy(shaders[i]);
     free(shaders);
     render_free(r);
+    if (marker && *marker) {
+        int fd = open(marker, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+        if (fd >= 0) close(fd);
+    }
     return 0;
 }
 

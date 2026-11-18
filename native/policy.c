@@ -712,7 +712,7 @@ static lisp_value prim_keysym(int argc, lisp_value *argv) {
 }
 
 static lisp_value prim_warm_shaders(int argc, lisp_value *argv) {
-    return status(tomoe_warm_shaders(string(argv[0]), string(argv[1]), NULL));
+    return status(tomoe_warm_shaders(string(argv[0]), string(argv[1]), "", NULL));
 }
 
 static lisp_value prim_outputs_begin(int argc, lisp_value *argv) {

@@ -22,6 +22,8 @@ static void keep_error(const char *text) {
     line[end] = '\0';
 }
 
+uint64_t tomoe_started_ns;
+
 void tomoe_log(int level, const char *fmt, ...) {
     if (level > log_verbosity) return;
     char line[4096];
