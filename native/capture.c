@@ -1127,7 +1127,7 @@ bool capture_wants_output(struct output *o) {
 static void capture_restore_planes(struct session *session) {
     if (!session || !session->server || session->source.kind != SOURCE_OUTPUT) return;
     struct output *o = source_output(session->server, &session->source);
-    if (!o || capture_wants_output(o) || !o->planes.changed) return;
+    if (!o || o->planes.count || capture_wants_output(o)) return;
     screen_schedule_frame(o->screen);
 }
 

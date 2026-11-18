@@ -470,7 +470,7 @@ assert planes_shot == reference_shot, (planes_shot, reference_shot)
 
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm", env=DRM)
+start("--bare", "--test-timings", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -614,7 +614,7 @@ machine.succeed("systemctl stop audit-video")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", "--test-refuse-planes", f"--drm_device {DEVICE}", backend="drm", env=DRM)
+start("--bare", "--test-timings", "--test-refuse-planes", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
