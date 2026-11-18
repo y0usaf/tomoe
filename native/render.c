@@ -1102,9 +1102,11 @@ void pass_quad(struct pass *pass, struct program *p, const float pos[8], const f
     const struct rect *rects = region_rectangles(pass->clip, &count);
     GL(r, glEnable(GL_SCISSOR_TEST));
     for (int i = 0; i < count; i++) {
+        uint64_t pixels = quad_pixels(pass, pos, &rects[i]);
+        if (!pixels) continue;
         GL(r, glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1,
             rects[i].y2 - rects[i].y1));
-        r->fragments += quad_pixels(pass, pos, &rects[i]);
+        r->fragments += pixels;
         render_quad(r, p, pos, local, texcoords);
     }
     GL(r, glDisable(GL_SCISSOR_TEST));
@@ -1552,7 +1554,7 @@ static void rotated_bounds(struct box *out, struct box box, double rotation) {
 }
 
 static void scene_emit(struct pass *pass, const struct scene_quad *quad,
-        const struct rect *scissor) {
+        const struct rect *scissor, uint64_t pixels) {
     struct render *r = pass->r;
     struct scene *s = &r->scene;
     if (s->count == s->cap && s->cap && s->owner == pass) {
@@ -1598,7 +1600,7 @@ static void scene_emit(struct pass *pass, const struct scene_quad *quad,
     in->filter = quad->filter;
     in->blend = quad->blend;
     s->count++;
-    r->fragments += quad_pixels(pass, quad->pos, scissor);
+    r->fragments += pixels;
 }
 
 void pass_scene(struct pass *pass, const struct scene_quad *quad) {
@@ -1610,12 +1612,15 @@ void pass_scene(struct pass *pass, const struct scene_quad *quad) {
         region_intersect(&both, quad->clip, pass->clip);
         clip = &both;
     }
-    if (!clip) scene_emit(pass, quad, NULL);
+    if (!clip) scene_emit(pass, quad, NULL, quad_pixels(pass, quad->pos, NULL));
     else {
         int count = 0;
         const struct rect *rects = region_rectangles(
             (struct region *)clip, &count);
-        for (int i = 0; i < count; i++) scene_emit(pass, quad, &rects[i]);
+        for (int i = 0; i < count; i++) {
+            uint64_t pixels = quad_pixels(pass, quad->pos, &rects[i]);
+            if (pixels) scene_emit(pass, quad, &rects[i], pixels);
+        }
     }
     if (clip == &both) region_fini(&both);
 }
