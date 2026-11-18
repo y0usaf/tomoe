@@ -449,6 +449,8 @@ struct lisp_region *region_new(int kind, const char *name, uint32_t package);
 struct lisp_region *persistent_begin(void);
 void persistent_end(struct lisp_region *region);
 lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst);
+lisp_value heap_copy_into(lisp_value value, struct lisp_region *dst);
+bool heap_appendable(struct lisp_region *region);
 struct lisp_region *heap_region_of(const void *ptr);
 lisp_value heap_store(const void *container, lisp_value value);
 uint64_t heap_region_used(struct lisp_region *region);
