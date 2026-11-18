@@ -11,7 +11,14 @@ struct level { GLuint texture, framebuffer; int width, height; };
 
 struct chain { struct level levels[32]; int width, height; int64_t used; uint64_t key, pinned; };
 
-struct result { struct level level; struct box area; int64_t used; uint64_t key, pinned; };
+struct result {
+    struct level level;
+    struct box area;
+    const struct oplist *owner;
+    int64_t used;
+    uint64_t key, pinned;
+    bool dead;
+};
 
 struct effects {
     struct chain chains[BLUR_CHAINS];
@@ -371,6 +378,21 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         }
         op->cached = true;
     }
+    for (size_t r = 0; r < BLUR_RESULTS; r++) {
+        struct result *result = &e->results[r];
+        if (!result->level.texture || result->owner != list) continue;
+        if (result->pinned == e->stamp) {
+            result->dead = false;
+            continue;
+        }
+        size_t i = 0;
+        while (i < list->len && list->ops[i].key != result->key) i++;
+        if (result->key && i < list->len) result->dead = false;
+        else if (result->dead) {
+            level_release(&result->level);
+            result->key = 0;
+        } else result->dead = true;
+    }
 }
 
 void effects_forget(struct tomoe *s) {
@@ -627,8 +649,10 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
                         GL_COLOR_BUFFER_BIT, GL_NEAREST);
                 }
                 result->area = sampled;
+                result->owner = pass_oplist(f->pass);
                 result->key = key;
                 result->used = now;
+                result->dead = false;
             }
             pass_scene_attributes_dirty(f->pass);
         }

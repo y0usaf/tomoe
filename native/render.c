@@ -2447,6 +2447,10 @@ void pass_ops(struct pass *pass, const struct oplist *ops) {
     pass->ops = ops;
 }
 
+const struct oplist *pass_oplist(const struct pass *pass) {
+    return pass->ops;
+}
+
 bool pass_touches(struct pass *pass, struct box box) {
     struct rect r = { box.x, box.y, box.x + box.width, box.y + box.height };
     return !pass->clip || region_contains_rectangle(pass->clip, &r) != REGION_OUT;

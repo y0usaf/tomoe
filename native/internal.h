@@ -257,6 +257,7 @@ void blur_need(const struct op *op, struct region *need);
 void pass_clip(struct pass *pass, const struct region *clip);
 bool pass_touches(struct pass *pass, struct box box);
 void pass_ops(struct pass *pass, const struct oplist *ops);
+const struct oplist *pass_oplist(const struct pass *pass);
 void render_retire_fences(struct render *r);
 bool render_frames_held(struct render *r);
 
