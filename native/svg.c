@@ -14656,9 +14656,10 @@ static void svg_segment_to(struct svg_point *points, int kind, float start_t, fl
             svg_chop_quad_at(points, st, tmp0);
             if (stop_t == 1.0f) svg_path_quad(pb, tmp0[3].x, tmp0[3].y, tmp0[4].x, tmp0[4].y);
             else {
-                float nt = (stop_t - start_t) / (1.0f - start_t);
-                if (nt >= 1.0f) nt = one;
-                if (!(nt > 0.0f)) nt = 1.1920929e-7f;
+                float nt = (float)(((double)stop_t - (double)start_t) /
+                    (1.0 - (double)start_t));
+                if (!(nt > 1.1920929e-7f)) nt = 1.1920929e-7f;
+                if (nt > one) nt = one;
                 svg_chop_quad_at(&tmp0[2], nt, tmp1);
                 svg_path_quad(pb, tmp1[1].x, tmp1[1].y, tmp1[2].x, tmp1[2].y);
             }
@@ -14684,9 +14685,10 @@ static void svg_segment_to(struct svg_point *points, int kind, float start_t, fl
                 svg_path_cubic(pb, tmp0[4].x, tmp0[4].y, tmp0[5].x, tmp0[5].y, tmp0[6].x,
                     tmp0[6].y);
             else {
-                float nt = (stop_t - start_t) / (1.0f - start_t);
-                if (nt >= 1.0f) nt = one;
-                if (!(nt > 0.0f)) nt = 1.1920929e-7f;
+                float nt = (float)(((double)stop_t - (double)start_t) /
+                    (1.0 - (double)start_t));
+                if (!(nt > 1.1920929e-7f)) nt = 1.1920929e-7f;
+                if (nt > one) nt = one;
                 svg_chop_cubic_at2(&tmp0[3], nt, tmp1);
                 svg_path_cubic(pb, tmp1[1].x, tmp1[1].y, tmp1[2].x, tmp1[2].y, tmp1[3].x,
                     tmp1[3].y);
@@ -14858,15 +14860,15 @@ static struct svg_path *svg_dash_path(struct svg_path *src, float *array, int co
         int index = first_index;
         dash_count += length * (float)(count >> 1) / interval;
         if (dash_count > 1000000.0f) { svg_contour_free(&contour); svg_path_free(pb); return NULL; }
-        double distance = 0.0;
+        float distance = 0.0f;
         float d_len = first_len;
-        while (distance < (double)length) {
+        while (distance < length) {
             added = 0;
             if (!(index & 1) && !skip_first) {
                 added = 1;
-                svg_contour_push_segment(&contour, (float)distance, (float)distance + d_len, 1, pb);
+                svg_contour_push_segment(&contour, distance, distance + d_len, 1, pb);
             }
-            distance += (double)d_len;
+            distance += d_len;
             skip_first = 0;
             index += 1;
             if (index == count) index = 0;
