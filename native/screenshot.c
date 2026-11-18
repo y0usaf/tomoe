@@ -234,6 +234,8 @@ static struct box mark_box(const struct mark *mark) {
     } else if (mark->kind == MARK_TEXT) {
         return (struct box){ 0 };
     }
+    if (x1 < x0) { int swap = x0; x0 = x1; x1 = swap; }
+    if (y1 < y0) { int swap = y0; y0 = y1; y1 = swap; }
     int pad = (int)ceil((mark->kind == MARK_ARROW ? head : 0) + width) + 2;
     return (struct box){ x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad };
 }
@@ -270,6 +272,7 @@ static bool draw_arrow(uint32_t *pixels, int stride, struct drect area,
     double length = hypot(dx, dy), width = mark->width, head = mark->head;
     if (length < 1) return true;
     uint32_t ink = premultiply(mark->ink);
+    int opaque = (ink >> 24) == 0xff;
     double ux = dx / length, uy = dy / length;
     double base = length > head ? length - head : 0;
     struct dpath path;
@@ -277,7 +280,7 @@ static bool draw_arrow(uint32_t *pixels, int stride, struct drect area,
     dp_move_to(&path, ox + mark->x0, oy + mark->y0);
     dp_line_to(&path, ox + mark->x0 + ux * base, oy + mark->y0 + uy * base);
     bool ok = dp_stroke_color(pixels, stride, area, &path, width,
-        DP_CAP_ROUND, DP_JOIN_MITER, ink, 1);
+        DP_CAP_ROUND, DP_JOIN_MITER, ink, opaque);
     dpath_fini(&path);
     if (!ok) return false;
     double half = head * 0.5;
@@ -290,7 +293,7 @@ static bool draw_arrow(uint32_t *pixels, int stride, struct drect area,
         dp_line_to(&path, ox + mark->x1, oy + mark->y1);
         dp_line_to(&path, ox + rx, oy + ry);
         ok = dp_stroke_color(pixels, stride, area, &path, rim,
-            DP_CAP_BUTT, DP_JOIN_MITER, ink, 1);
+            DP_CAP_BUTT, DP_JOIN_MITER, ink, opaque);
         dpath_fini(&path);
         return ok;
     }
@@ -298,7 +301,7 @@ static bool draw_arrow(uint32_t *pixels, int stride, struct drect area,
     dp_line_to(&path, ox + lx, oy + ly);
     dp_line_to(&path, ox + rx, oy + ry);
     dp_close_path(&path);
-    ok = dp_fill_color(pixels, stride, area, &path, ink, 1);
+    ok = dp_fill_color(pixels, stride, area, &path, ink, opaque);
     dpath_fini(&path);
     return ok;
 }
@@ -311,8 +314,9 @@ static bool draw_free(uint32_t *pixels, int stride, struct drect area,
     dp_move_to(&path, ox + mark->points[0], oy + mark->points[1]);
     for (size_t i = 1; i < mark->count; i++)
         dp_line_to(&path, ox + mark->points[2 * i], oy + mark->points[2 * i + 1]);
+    uint32_t ink = premultiply(mark->ink);
     bool ok = dp_stroke_color(pixels, stride, area, &path, mark->width,
-        DP_CAP_ROUND, DP_JOIN_ROUND, premultiply(mark->ink), 1);
+        DP_CAP_ROUND, DP_JOIN_ROUND, ink, (ink >> 24) == 0xff);
     dpath_fini(&path);
     return ok;
 }

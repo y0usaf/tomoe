@@ -913,8 +913,8 @@ marks_check() {
 	pointer "move $rx $ry" sync "key 56 down" "key 34 down" sync "key 34 up" "key 56 up" sync "sleep 300" \
 		"press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync "move $(( rx + 600 )) $(( ry + 500 ))" sync \
 		"release 272" sync "sleep 200" "key 3 down" "key 3 up" sync "key 30 down" "key 30 up" sync \
-		"move $(( rx + 100 )) $(( ry + 100 ))" sync "press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync \
-		"move $(( rx + 500 )) $(( ry + 400 ))" sync "release 272" sync "key 20 down" "key 20 up" sync \
+		"move $(( rx + 100 )) $(( ry + 400 ))" sync "press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync \
+		"move $(( rx + 500 )) $(( ry + 100 ))" sync "release 272" sync "key 20 down" "key 20 up" sync \
 		"move $(( rx + 100 )) $(( ry + 350 ))" sync "press 272" "release 272" sync \
 		"key 35 down" "key 35 up" "key 23 down" "key 23 up" "key 28 down" "key 28 up" sync \
 		"move $(( rx - 40 )) $(( ry - 40 ))" sync
@@ -1032,8 +1032,8 @@ reselect_check() {
 		"press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync "move $(( rx + 600 )) $(( ry + 500 ))" sync \
 		"release 272" sync "sleep 300"
 	shot "$DIR/reselect-plain.ppm"
-	pointer "key 3 down" "key 3 up" sync "move $rx $ry" sync "press 272" sync \
-		"move $(( rx + 300 )) $(( ry + 250 ))" sync "move $(( rx + 600 )) $(( ry + 500 ))" sync \
+	pointer "key 3 down" "key 3 up" sync "move $rx $(( ry + 500 ))" sync "press 272" sync \
+		"move $(( rx + 300 )) $(( ry + 250 ))" sync "move $(( rx + 600 )) $ry" sync \
 		"release 272" sync "sleep 300"
 	shot "$DIR/reselect-marked.ppm"
 	pointer "key 19 down" "key 19 up" sync "sleep 400"

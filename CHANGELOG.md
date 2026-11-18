@@ -76,6 +76,12 @@ The first release.
   than a stale box over a texture that is no longer there. Going back to
   selecting after a mark used to paint the whole selection in the selector's
   ink; it now clears the marks and nothing else.
+- An arrow drawn up or to the left is painted whole while it is dragged: the box
+  a mark repaints is normalised, so the damage no longer assumes the arrow grew
+  right and down.
+- A palette colour may be translucent: a mark composites over the marks under it
+  instead of replacing them, so a half-transparent stroke tints what it crosses
+  and the captured image keeps that.
 - The region screenshot takes marks before it is captured: `A`, `T` and `F`
   pick an arrow, a text label and a freehand stroke, the pointer draws them
   inside the selection, `U` (or Ctrl+Z) undoes the last mark, `R` goes back to
