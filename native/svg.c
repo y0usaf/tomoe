@@ -6387,6 +6387,7 @@ static int svg_make_filter(struct svg_conv *c, struct xml_node *node, float obje
                     else snprintf(name, 64, "%s", "SourceGraphic");
                     continue;
                 }
+                if (!strcmp(name, "SourceGraphic") || !strcmp(name, "SourceAlpha")) continue;
                 int found = 0;
                 for (int k = 0; k < count; k++)
                     if (!strcmp(prims[k].result, name)) { found = 1; break; }
