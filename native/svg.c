@@ -14121,8 +14121,9 @@ static struct svg_point svg_cubic_eval_pt(struct svg_point *p, float t) {
     struct svg_point a = svg_pt_sub(svg_pt_add(p[3], svg_pt_scaled(svg_pt_sub(p[1], p[2]), 3.0f)), p[0]);
     struct svg_point b = svg_pt_scaled(svg_pt_add(svg_pt_sub(p[2], svg_pt_add(p[1], p[1])), p[0]), 3.0f);
     struct svg_point c = svg_pt_scaled(svg_pt_sub(p[1], p[0]), 3.0f);
-    return svg_pt_add(svg_pt_add(svg_pt_add(svg_pt_scaled(a, t * t * t), svg_pt_scaled(b, t * t)),
-        svg_pt_scaled(c, t)), p[0]);
+    struct svg_point v = svg_pt_add(svg_pt_scaled(a, t), b);
+    v = svg_pt_add(svg_pt_scaled(v, t), c);
+    return svg_pt_add(svg_pt_scaled(v, t), p[0]);
 }
 
 static int svg_leading_zeros_u32(unsigned v) {
