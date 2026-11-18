@@ -59,6 +59,12 @@ let
       runHook postInstall
     '';
   };
+  mesa = pkgs.mesa.overrideAttrs (old: {
+    postInstall = (old.postInstall or "") + ''
+      rm -f $out/bin/mesa-overlay-control.py $out/bin/mesa-screenshot-control.py
+    '';
+  });
+  perf = pkgs.perf.override { withPython = false; };
   path = pkgs.lib.makeBinPath [
     pkgs.bash
     pkgs.coreutils
@@ -77,9 +83,9 @@ pkgs.runCommand "tomoe-speedlab" { } ''
   cat > $out/bin/speedlab-env <<EOF
   SPEEDLAB_TOOLS=${tools}
   SPEEDLAB_SHARE=$out/share/speedlab
-  SPEEDLAB_MESA=${pkgs.mesa}
+  SPEEDLAB_MESA=${mesa}
   SPEEDLAB_PATH=${path}
   SPEEDLAB_BASH=${pkgs.bash}/bin/bash
-  SPEEDLAB_PERF=${pkgs.perf}
+  SPEEDLAB_PERF=${perf}
   EOF
 ''
