@@ -349,6 +349,7 @@ bool cursor_trail_style(const struct tomoe *s, struct trail_style *style) {
 void cursor_trail_settings(struct tomoe *s) {
     struct trail_style style;
     bool enabled = cursor_trail_style(s, &style);
+    if (enabled) effects_trail_reserve(s, style.cell);
     if (enabled == s->cursor_motion.trail_enabled) return;
     s->cursor_motion.trail_enabled = enabled;
     if (enabled) return;

@@ -1051,6 +1051,7 @@ int tomoe_present_ui_trail(struct tomoe *s, double cell, double life, int steps,
             life <= 0 || life > 4 || steps < 1 || steps > 8 || !isfinite(fps) ||
             fps < 0 || fps > 1000 || !isfinite(idle) || idle < 0 || idle > 4) return 0;
     if (!effects_admit_trail(s)) return 0;
+    effects_trail_reserve(s, cell);
     surface->trail = (struct trail_style){ cell, life, steps, TRAIL_CELLS, rgba };
     surface->trail_on = true;
     surface->fps = fps;

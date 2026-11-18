@@ -1214,6 +1214,26 @@ static bool trail_room(struct effects *e, size_t cells) {
     return true;
 }
 
+bool effects_trail_reserve(struct tomoe *s, double cell) {
+    struct effects *e = s ? s->effects : NULL;
+    if (!e) return false;
+    if (cell < 1) cell = 1;
+    if (cell > 256) cell = 256;
+    size_t grid = 0;
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link) {
+        int width = o->ring.width ? o->ring.width : o->screen->width;
+        int height = o->ring.height ? o->ring.height : o->screen->height;
+        if (width <= 0 || height <= 0) continue;
+        size_t cells = ((size_t)((double)width / cell) + 3) * ((size_t)((double)height / cell) + 3);
+        if (cells > grid) grid = cells;
+    }
+    if (!grid) return false;
+    if (grid > TRAIL_CELLS_MAX) grid = TRAIL_CELLS_MAX;
+    if (!trail_grid(e, grid)) return false;
+    return trail_room(e, grid);
+}
+
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style) {
     struct tomoe *s = f->server;
     if (!f->pass || !s || s->pointer_trail_count <= 0) return;
