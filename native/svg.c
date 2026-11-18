@@ -9198,9 +9198,9 @@ static int svg_resolve_size(struct svg_conv *c, struct svg_style *st, float *wid
         c->view_box[1] = viewbox[1];
         c->view_box[2] = viewbox[2];
         c->view_box[3] = viewbox[3];
-        *width = w.unit == SVG_UNIT_PERCENT ? viewbox[2] * (float)w.number / 100.0f :
+        *width = w.unit == SVG_UNIT_PERCENT ? viewbox[2] * ((float)w.number / 100.0f) :
             (float)(w.unit == SVG_UNIT_NONE ? w.number : 0.0);
-        *height = h.unit == SVG_UNIT_PERCENT ? viewbox[3] * (float)h.number / 100.0f :
+        *height = h.unit == SVG_UNIT_PERCENT ? viewbox[3] * ((float)h.number / 100.0f) :
             (float)(h.unit == SVG_UNIT_NONE ? h.number : 0.0);
         if (w.unit != SVG_UNIT_PERCENT && w.unit != SVG_UNIT_NONE) {
             svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, width);
