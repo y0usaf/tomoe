@@ -82,8 +82,14 @@ def percentiles(values):
     return ordered[len(ordered) // 2], at(0.95), ordered[-1]
 
 
-def video_frame_times(what):
-    times = frame_times()
+def video_frame_times(what, timeout=6.0):
+    times = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        times += frame_times()
+        if len(times) >= 10:
+            break
+        time.sleep(0.03)
     if len(times) < 10:
         raise AssertionError(f"{what}: only {len(times)} frames were timed")
     median, p95, worst = percentiles(times)
@@ -470,7 +476,7 @@ assert planes_shot == reference_shot, (planes_shot, reference_shot)
 
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", "--test-timings", f"--drm_device {DEVICE}", backend="drm", env=DRM)
+start("--bare", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 park()
 probe("chrome-on")
@@ -541,7 +547,7 @@ machine.succeed("systemctl stop underlay-scaled")
 quit()
 
 machine.succeed("systemctl stop tomoe check-bus")
-start("--bare", f"--drm_device {DEVICE}", backend="drm", env=DRM)
+start("--bare", "--test-timings", f"--drm_device {DEVICE}", backend="drm", env=DRM)
 cli(f"mount {PLANES_PROBE}")
 failed_before = log_count("commit failed")
 async_before = log_count("refused an async page flip")
@@ -552,6 +558,7 @@ frame_before = counters()[":FRAME"]
 gl_before = render_stats()
 started = time.monotonic()
 start_video("audit-video", frames=60)
+video_frame_times("underlay video")
 wait_for(lambda: counters()[":PLANES"] == 1, "the underlay engaging for the audit")
 assert counters()[":UNDERLAY-PLAN"] in (1, 2), counters()
 video_stopped("audit-video", 60)
@@ -559,7 +566,6 @@ streamed = time.monotonic() - started
 gl_after = render_stats()
 streamed_drawn = counters()[":DRAWN-PIXELS"]
 streamed_frames = counters()[":FRAME"] - frame_before
-video_frame_times("underlay video")
 print(f"underlay video: {streamed_frames} frames in {streamed:.2f} s "
       f"({streamed_frames / streamed:.1f} frames/s) "
       f"gl_delta={gl_after[':GL-CALLS'] - gl_before[':GL-CALLS']} "
@@ -623,11 +629,11 @@ frame_before = counters()[":FRAME"]
 gl_before = render_stats()
 started = time.monotonic()
 start_video("gl-video", frames=60)
+video_frame_times("GL video")
 video_stopped("gl-video", 60)
 streamed = time.monotonic() - started
 gl_after = render_stats()
 streamed_frames = counters()[":FRAME"] - frame_before
-video_frame_times("GL video")
 assert counters()[":PLANES"] == 0, counters()
 print(f"GL video: {streamed_frames} frames in {streamed:.2f} s "
       f"({streamed_frames / streamed:.1f} frames/s) "
