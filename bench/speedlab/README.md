@@ -170,7 +170,7 @@ mean, so inside the old 0.5 % band the same build scored both a win and a loss.
 Its band is three times the worse deviation, 3.0 %, and the base is the mean of
 three runs. CPU on the same runs deviated 0.010 to 0.018 %, well inside its
 0.2 % band. The bands live in `noise` alone; `SPEEDLAB_BASE_RUNS` sets the run
-count.
+count, which a verdict refuses to score below three.
 
 A verdict with a cached reference runs the two personas side by side: 87 s
 measured at load 25, 130 to 200 s with four other runs alongside; a base that is

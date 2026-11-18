@@ -120,10 +120,16 @@ MEMORY = {"private_dirty": "settled_private_dirty_kB", "peak_private_dirty": "pe
 
 def main():
     bases = load(sys.argv[1])
-    reference = bases[0]
     a, b = load(sys.argv[2]), load(sys.argv[3])
     reference_binary, candidate_binary = sys.argv[4], sys.argv[5]
     out = sys.argv[6] if len(sys.argv) > 6 else None
+    if not isinstance(bases, list) or len(bases) < 3:
+        count = len(bases) if isinstance(bases, list) else 0
+        print(json.dumps({"verdict": "reject", "base_runs": count,
+                          "reasons": [f"the reference holds {count} runs, and a verdict needs at least 3"],
+                          "base": reference_binary, "candidate": candidate_binary}, indent=1))
+        sys.exit(1)
+    reference = bases[0]
     reasons = []
     for index, run in enumerate(bases, 1):
         if not run.get("ok"):

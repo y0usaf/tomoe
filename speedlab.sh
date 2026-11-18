@@ -40,8 +40,9 @@ reference build's run.
   --fresh             recompute the reference instead of using its cached runs
   --persona A|B       run only that persona and print its raw result
 
-The reference is run SPEEDLAB_BASE_RUNS (default 3) times and the verdict scores
-against their mean, so one base measurement's noise cannot decide a climb.
+The reference is run SPEEDLAB_BASE_RUNS (default 3, never fewer than 3) times and
+the verdict scores against their mean, so one base measurement's noise cannot
+decide a climb.
 
 SPEEDLAB_CONFIG (default ~/.config/tomoe/init.lisp) and SPEEDLAB_PALETTE (default
 ~/.cache/theme/gtk.css) are snapshotted into the run; nothing reaches the running
@@ -306,6 +307,7 @@ main() {
 		shift
 	done
 	[[ -n $candidate || $mode == self-test ]] || { usage >&2; exit 2; }
+	[[ $BASE_RUNS =~ ^[0-9]+$ ]] && ((BASE_RUNS >= 3)) || die "SPEEDLAB_BASE_RUNS must be at least 3, not '$BASE_RUNS'"
 	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$HERE/tools/isolate" --check || exit 2
 	WORK=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab.XXXXXX")
 	trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
