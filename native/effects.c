@@ -7,12 +7,18 @@
 #define BLUR_RESULTS 64
 #define BLUR_IDLE_NS 1000000000LL
 
+enum { BLUR_SAMPLES = 16 };
+
 struct level { GLuint texture, framebuffer; int width, height; };
+
+struct result;
 
 struct chain {
     struct level levels[32];
+    struct box samples[BLUR_SAMPLES];
     const struct oplist *owner;
-    int width, height;
+    struct result *result;
+    int width, height, count;
     int64_t used;
     uint64_t key, pinned;
     bool dead;
@@ -21,10 +27,12 @@ struct chain {
 struct result {
     struct level level;
     struct box area;
+    struct chain *chain;
     const struct oplist *owner;
+    int width, height;
     int64_t used;
     uint64_t key, pinned;
-    bool dead;
+    bool allocated, dead;
 };
 
 struct effects {
@@ -310,34 +318,112 @@ static void level_release(struct level *level) {
     *level = (struct level){0};
 }
 
-static void chain_release(struct chain *chain) {
+static void result_unlink(struct result *result) {
+    if (result->chain && result->chain->result == result)
+        result->chain->result = NULL;
+    result->chain = NULL;
+}
+
+static void result_release(struct result *result) {
+    level_release(&result->level);
+    result_unlink(result);
+    result->allocated = false;
+    result->width = result->height = 0;
+}
+
+static bool result_ensure(struct result *result, int width, int height) {
+    if (result->level.texture && !level_ensure(&result->level, width, height)) {
+        result->width = result->level.width;
+        result->height = result->level.height;
+        return false;
+    }
+    result->allocated = true;
+    result->width = width;
+    result->height = height;
+    return true;
+}
+
+static bool chain_spill(struct chain *chain) {
+    struct result *result = chain->result;
+    if (!result) return true;
+    if (result->dead || !result->key) {
+        result_unlink(result);
+        result->key = 0;
+        return true;
+    }
+    GLint read = 0, draw = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    bool ok = level_ensure(&result->level, result->width, result->height);
+    if (ok) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
+        for (int i = 0; i < chain->count; i++) {
+            struct box s = chain->samples[i];
+            glBlitFramebuffer(s.x, s.y, s.x + s.width, s.y + s.height,
+                s.x - result->area.x, s.y - result->area.y,
+                s.x - result->area.x + s.width, s.y - result->area.y + s.height,
+                GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+    } else level_release(&result->level);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)draw);
+    if (scissor) glEnable(GL_SCISSOR_TEST);
+    if (!ok) return false;
+    result_unlink(result);
+    return true;
+}
+
+static bool chain_release(struct chain *chain) {
+    if (!chain_spill(chain)) return false;
     for (size_t i = 0; i < sizeof(chain->levels) / sizeof(chain->levels[0]); i++)
         if (chain->levels[i].texture) level_release(&chain->levels[i]);
     *chain = (struct chain){0};
+    return true;
 }
 
-static struct chain *chain_spare(struct effects *e, int width, int height, uint64_t key,
-        int64_t now) {
-    struct chain *same = NULL, *empty = NULL, *spare = NULL, *oldest = NULL;
-    for (size_t i = 0; i < BLUR_CHAINS; i++) {
-        struct chain *chain = &e->chains[i];
-        bool fits = chain->width == width && chain->height == height;
-        if (chain->used && fits && key && chain->key == key) return chain;
-        if (chain->used && now - chain->used > BLUR_IDLE_NS) chain_release(chain);
-        if (!chain->used) {
-            if (!empty) empty = chain;
-            continue;
+static struct chain *chain_spare(struct frame *f, struct effects *e, int width, int height,
+        uint64_t key, int64_t now) {
+    unsigned blocked = 0;
+    for (;;) {
+        struct chain *same = NULL, *empty = NULL, *spare = NULL, *oldest = NULL;
+        for (size_t i = 0; i < BLUR_CHAINS; i++) {
+            if (blocked & (1u << i)) continue;
+            struct chain *chain = &e->chains[i];
+            bool fits = chain->width == width && chain->height == height;
+            if (chain->used && fits && key && chain->key == key) return chain;
+            if (chain->used && now - chain->used > BLUR_IDLE_NS) {
+                if (chain->result) pass_flush(f->pass);
+                if (!chain_release(chain)) {
+                    blocked |= 1u << i;
+                    continue;
+                }
+            }
+            if (!chain->used) {
+                if (!empty) empty = chain;
+                continue;
+            }
+            bool needed = e->stamp && chain->pinned == e->stamp;
+            if (!needed && fits && (!same || chain->used < same->used)) same = chain;
+            if (!needed && (!spare || chain->used < spare->used)) spare = chain;
+            if (!oldest || chain->used < oldest->used) oldest = chain;
         }
-        bool needed = e->stamp && chain->pinned == e->stamp;
-        if (!needed && fits && (!same || chain->used < same->used)) same = chain;
-        if (!needed && (!spare || chain->used < spare->used)) spare = chain;
-        if (!oldest || chain->used < oldest->used) oldest = chain;
+        struct chain *found = same ? same : empty ? empty : spare ? spare : oldest;
+        if (!found) return NULL;
+        if (found->result) {
+            pass_flush(f->pass);
+            if (!chain_spill(found)) {
+                blocked |= 1u << (found - e->chains);
+                continue;
+            }
+        }
+        found->width = width;
+        found->height = height;
+        found->key = 0;
+        return found;
     }
-    struct chain *found = same ? same : empty ? empty : spare ? spare : oldest;
-    found->width = width;
-    found->height = height;
-    found->key = 0;
-    return found;
 }
 
 static struct result *result_cached(struct effects *e, uint64_t key) {
@@ -352,17 +438,20 @@ static struct result *result_spare(struct effects *e, struct box area, int64_t n
     for (size_t i = 0; i < BLUR_RESULTS; i++) {
         struct result *result = &e->results[i];
         if (e->stamp && result->pinned == e->stamp) continue;
-        if (result->used && result->level.width == area.width &&
-                result->level.height == area.height) {
+        if (result->used && result->width == area.width &&
+                result->height == area.height) {
             if (!found || result->used < found->used) found = result;
         } else if (result->used && now - result->used > BLUR_IDLE_NS) {
-            level_release(&result->level);
+            result_release(result);
             *result = (struct result){0};
         }
         if (!oldest || result->used < oldest->used) oldest = result;
     }
     if (!found) found = oldest;
-    if (found) found->key = 0;
+    if (found) {
+        result_unlink(found);
+        found->key = 0;
+    }
     return found;
 }
 
@@ -385,6 +474,21 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         }
         op->cached = true;
     }
+    for (size_t r = 0; r < BLUR_RESULTS; r++) {
+        struct result *result = &e->results[r];
+        if (!result->allocated || result->owner != list) continue;
+        if (result->pinned == e->stamp) {
+            result->dead = false;
+            continue;
+        }
+        size_t i = 0;
+        while (i < list->len && list->ops[i].key != result->key) i++;
+        if (result->key && i < list->len) result->dead = false;
+        else if (result->dead) {
+            result_release(result);
+            result->key = 0;
+        } else result->dead = true;
+    }
     for (size_t c = 0; c < BLUR_CHAINS; c++) {
         struct chain *chain = &e->chains[c];
         if (!chain->used || chain->owner != list) continue;
@@ -398,27 +502,15 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         else if (chain->dead) chain_release(chain);
         else chain->dead = true;
     }
-    for (size_t r = 0; r < BLUR_RESULTS; r++) {
-        struct result *result = &e->results[r];
-        if (!result->level.texture || result->owner != list) continue;
-        if (result->pinned == e->stamp) {
-            result->dead = false;
-            continue;
-        }
-        size_t i = 0;
-        while (i < list->len && list->ops[i].key != result->key) i++;
-        if (result->key && i < list->len) result->dead = false;
-        else if (result->dead) {
-            level_release(&result->level);
-            result->key = 0;
-        } else result->dead = true;
-    }
 }
 
 void effects_forget(struct tomoe *s) {
     if (!s->effects) return;
+    for (size_t i = 0; i < BLUR_RESULTS; i++) {
+        result_unlink(&s->effects->results[i]);
+        s->effects->results[i].key = 0;
+    }
     for (size_t i = 0; i < BLUR_CHAINS; i++) s->effects->chains[i].key = 0;
-    for (size_t i = 0; i < BLUR_RESULTS; i++) s->effects->results[i].key = 0;
 }
 
 void effects_counters(struct tomoe *s, uint64_t *blurs, uint64_t *reused) {
@@ -491,8 +583,6 @@ static void blur_cones(struct box grown, int passes, double offset, struct box s
     for (int i = passes; i >= 1; i--)
         down[i - 1] = cone_box(down[i], grown, i, i - 1, 0.5 * fabs(offset));
 }
-
-enum { BLUR_SAMPLES = 16 };
 
 static int blur_samples(const struct op *op, struct box covered, struct box grown,
         struct box *out) {
@@ -636,7 +726,11 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         sampled.height = bottom - sampled.y;
     }
     struct result *result = result_cached(e, key);
-    struct chain *chain = chain_spare(e, grown.width, grown.height, key, now);
+    struct chain *chain = chain_spare(f, e, grown.width, grown.height, key, now);
+    if (!chain) {
+        op_end(f->pass, &clip);
+        return;
+    }
     chain->used = now;
     chain->owner = pass_oplist(f->pass);
     chain->dead = false;
@@ -647,12 +741,14 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         bool ok = result && box_equal(&result->area, &sampled) &&
             level_ensure(&chain->levels[0], grown.width, grown.height);
         if (ok) {
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, result->level.framebuffer);
+            struct level *source = result->chain ? &result->chain->levels[0] : &result->level;
+            int x = result->chain ? 0 : sampled.x, y = result->chain ? 0 : sampled.y;
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, source->framebuffer);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->levels[0].framebuffer);
             for (int i = 0; i < count; i++) {
                 struct box s = samples[i];
-                glBlitFramebuffer(s.x - sampled.x, s.y - sampled.y, s.x - sampled.x + s.width,
-                    s.y - sampled.y + s.height, s.x, s.y, s.x + s.width, s.y + s.height,
+                glBlitFramebuffer(s.x - x, s.y - y, s.x - x + s.width,
+                    s.y - y + s.height, s.x, s.y, s.x + s.width, s.y + s.height,
                     GL_COLOR_BUFFER_BIT, GL_NEAREST);
             }
             result->used = now;
@@ -661,20 +757,27 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
             ok = blur_levels(f, chain, grown, samples, count, passes, offset, target);
             if (ok) e->blurs++;
             if (ok && key && (result = result_spare(e, sampled, now)) &&
-                    level_ensure(&result->level, sampled.width, sampled.height)) {
-                glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
-                for (int i = 0; i < count; i++) {
-                    struct box s = samples[i];
-                    glBlitFramebuffer(s.x, s.y, s.x + s.width, s.y + s.height, s.x - sampled.x,
-                        s.y - sampled.y, s.x - sampled.x + s.width, s.y - sampled.y + s.height,
-                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
-                }
+                    result_ensure(result, sampled.width, sampled.height)) {
                 result->area = sampled;
                 result->owner = pass_oplist(f->pass);
                 result->key = key;
                 result->used = now;
                 result->dead = false;
+                if (result->level.texture) {
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
+                    for (int i = 0; i < count; i++) {
+                        struct box s = samples[i];
+                        glBlitFramebuffer(s.x, s.y, s.x + s.width, s.y + s.height,
+                            s.x - sampled.x, s.y - sampled.y, s.x - sampled.x + s.width,
+                            s.y - sampled.y + s.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                    }
+                } else {
+                    memcpy(chain->samples, samples, sizeof(samples[0]) * (size_t)count);
+                    chain->count = count;
+                    result->chain = chain;
+                    chain->result = result;
+                }
             }
             pass_scene_attributes_dirty(f->pass);
         }
