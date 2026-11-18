@@ -9880,12 +9880,13 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
             shader->type = -1;
             return;
         }
-        long iw = lrintf(rect[2] * sx), ih = lrintf(rect[3] * sy);
-        if (iw < 1) iw = 1;
-        if (ih < 1) ih = 1;
-        if (iw > 32767 || ih > 32767 || (int64_t)iw * ih > 268435456) { shader->type = -1; return; }
+        float rw = rect[2] * sx, rh = rect[3] * sy;
+        if (!isfinite(rw) || !isfinite(rh)) { shader->type = -1; return; }
+        int iw = (int)roundf(rw), ih = (int)roundf(rh);
+        if (iw <= 0 || ih <= 0 || iw > 32767 || ih > 32767 ||
+                (int64_t)iw * ih > 268435456) { shader->type = -1; return; }
         struct svg_pixmap pm;
-        svg_pixmap_init(&pm, (int)iw, (int)ih);
+        svg_pixmap_init(&pm, iw, ih);
         if (!pm.pixels) { shader->type = -1; return; }
         struct svg_node *wrap = pt->root;
         struct svg_node *outer = NULL;
