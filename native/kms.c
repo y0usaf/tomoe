@@ -84,6 +84,7 @@ struct connector {
     int cursor_pending_count, cursor_front, cursor_shown, cursor_x, cursor_y, cursor_hot_x, cursor_hot_y;
     uint64_t cursor_seq, cursor_shown_seq;
     bool cursor_on, cursor_dirty, cursor_inflight, cursor_upload_pending;
+    int64_t cursor_submit_ns;
     bool redraw, flip_async;
     bool async_refused;
     struct ns_timer cursor_timer;
@@ -128,6 +129,7 @@ static void flip_armed(struct connector *c);
 static void flip_disarmed(struct connector *c);
 static int flip_watchdog(void *data);
 static void cursor_queue(struct connector *c);
+static void cursor_retry(struct connector *c);
 static void cursor_submitted(struct connector *c, bool flip);
 static void cursor_completed(struct connector *c, bool flip, int64_t when);
 static void cursor_settle(struct connector *c, bool off);
@@ -1414,10 +1416,27 @@ static int64_t cursor_lead(const struct connector *c) {
     return lead > CURSOR_LEAD_NS ? CURSOR_LEAD_NS : lead;
 }
 
+static int64_t cursor_period(const struct connector *c) {
+    return c->screen.refresh > 0 ? 1000000000000LL / c->screen.refresh : 16000000;
+}
+
 static void cursor_commit(struct connector *c) {
     struct kms *kms = c->kms;
-    if (!c->cursor_dirty || cursor_blocked(c) || !c->crtc->active ||
-            !session_active(kms->server)) return;
+    if (!c->cursor_dirty || !c->crtc->active) return;
+    if (c->cursor_inflight) {
+        int64_t deadline = c->cursor_submit_ns + 4 * cursor_period(c);
+        if (monotonic_ns() < deadline) {
+            ns_timer_arm(&c->cursor_timer, deadline);
+            return;
+        }
+        tomoe_log(LOG_ERROR, "tomoe: kms %s cursor flip event missing", c->screen.name);
+        c->cursor_inflight = false;
+        cursor_completed(c, false, 0);
+    }
+    if (cursor_blocked(c) || !session_active(kms->server)) {
+        cursor_retry(c);
+        return;
+    }
     input_latch(kms->server);
     if (cursor_blocked(c)) return;
     struct drm_atomic request;
@@ -1428,6 +1447,7 @@ static void cursor_commit(struct connector *c) {
     drm_atomic_finish(&request);
     if (ret == 0) {
         c->cursor_inflight = true;
+        c->cursor_submit_ns = monotonic_ns();
         c->cursor_dirty = false;
         ns_timer_arm(&c->cursor_timer, 0);
         cursor_submitted(c, false);
@@ -1447,9 +1467,17 @@ static void cursor_fire(void *data) {
     cursor_commit(c);
 }
 
+static void cursor_retry(struct connector *c) {
+    int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
+    ns_timer_arm(&c->cursor_timer, vblank ? vblank : now + cursor_period(c));
+}
+
 static void cursor_queue(struct connector *c) {
     c->cursor_dirty = true;
-    if (cursor_blocked(c)) return;
+    if (cursor_blocked(c)) {
+        cursor_retry(c);
+        return;
+    }
     int64_t now = monotonic_ns(), vblank = screen_next_vblank(&c->screen, now);
     int64_t at = vblank - cursor_lead(c);
     ns_timer_arm(&c->cursor_timer, vblank && at > now ? at : now);
