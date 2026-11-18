@@ -941,12 +941,12 @@ bool render_presentation(struct output *o, struct screen_state *state,
     bool pre_recorded = false, pre_complete = false;
     struct region pre_changed;
     region_init(&pre_changed);
-    if (track && o->planes.count && !o->planes.changed && !o->gamma_dirty &&
+    if (track && !o->planes.changed && !o->gamma_dirty &&
             o->presented[0] && o->presented[0]->width == output->width &&
             o->presented[0]->height == output->height &&
             !capture_wants_cursorless(o) && !debug_damage()) {
         struct frame probe = { .server = s, .x = o->x, .y = o->y,
-            .buffer = o->presented[0], .planes = &o->planes,
+            .buffer = o->presented[0], .planes = o->planes.count ? &o->planes : NULL,
             .transform = (state->committed & SCREEN_TRANSFORM) ?
                 state->transform : output->transform,
             .width = o->presented[0]->width, .height = o->presented[0]->height,
