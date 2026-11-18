@@ -146,6 +146,7 @@ LISP
 		[[ -n $theme && -d $HOME/.local/share/icons/$theme ]] &&
 			cp -rL --no-preserve=mode "$HOME/.local/share/icons/$theme" "$stage/home/.local/share/icons/"
 	done
+	[[ -n ${TRACE:-} ]] && : >"$stage/trace"
 	[[ -n ${DUMP:-} ]] && printf '%s\n' "${DUMP//,/ }" >"$stage/dump-frames"
 	(cd "$stage" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | sha256sum | cut -c1-16 >"$WORK/stage.hash"
 }
@@ -169,7 +170,7 @@ run() {
 		"$SPEEDLAB_BASH" "$SPEEDLAB_SHARE/seal.sh" "$dir" "$persona" "$offset" "$target" ${PROFILE_TOOL:+"$PROFILE_TOOL"} \
 		>"$result" 2>"$result.err"
 	local rc=$?
-	rm -rf "$dir" 2>/dev/null
+	chmod -R u+w "$dir" 2>/dev/null; rm -rf "$dir"
 	[[ -s $result ]] || die "the $persona run produced nothing (exit $rc): $(tail -20 "$result.err")"
 }
 
@@ -196,10 +197,21 @@ main_run() {
 }
 
 profile() {
-	local binary=$1
-	say "profiling $binary: sampled every 10M instructions, heap census at every phase"
-	PROFILE_TOOL=perf run "$binary" A "$WORK/profile.json"
-	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/profile.json" "$binary" ${OUT:+"$OUT"}
+	local binary=$1 tool
+	local -a pids=()
+	say "profiling $binary: perf samples every 10M user instructions, a heap census at every phase,"
+	say "and counted runs with and without the rig's frame capture to size its overhead"
+	for tool in perf census plain bare; do
+		if [[ $tool == plain ]]; then
+			run "$binary" A "$WORK/$tool.json" &
+		else
+			PROFILE_TOOL=$tool run "$binary" A "$WORK/$tool.json" &
+		fi
+		pids+=($!)
+	done
+	for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
+	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/perf.json" "$WORK/census.json" \
+		"$WORK/plain.json" "$WORK/bare.json" "$binary" ${OUT:+"$OUT"}
 }
 
 build_tree() {
@@ -212,43 +224,43 @@ build_tree() {
 }
 
 self_test() {
-	local base=$WORK/self clean name expect builds=() names=()
-	mkdir -p "$base/clean"
-	git -C "$HERE" archive HEAD | tar -x -C "$base/clean"
-	for patch in "$HERE"/bench/speedlab/cheats/*.patch; do
-		name=$(basename "$patch" .patch)
+	local base=$WORK/self name expect verdict reasons failures=0 clean
+	local -a names=(clean)
+	for patch in "$HERE"/bench/speedlab/cheats/*.patch; do names+=("$(basename "$patch" .patch)"); done
+	for name in "${names[@]}"; do
 		mkdir -p "$base/$name"
 		git -C "$HERE" archive HEAD | tar -x -C "$base/$name"
-		git -C "$base/$name" apply "$patch" 2>/dev/null || (cd "$base/$name" && patch -p1 -s <"$patch") ||
-			die "cannot apply $patch"
-		names+=("$name")
+		if [[ $name != clean ]]; then
+			git -C "$base/$name" apply "$HERE/bench/speedlab/cheats/$name.patch" || die "cannot apply the $name cheat"
+		fi
 	done
-	say "building the clean tree and ${#names[@]} seeded candidates"
-	local pids=()
-	for name in clean "${names[@]}"; do
+	say "building the clean tree and $((${#names[@]} - 1)) seeded candidates"
+	local -a pids=()
+	for name in "${names[@]}"; do
 		build_tree "$base/$name" >"$base/$name.out" &
 		pids+=($!)
 	done
 	for pid in "${pids[@]}"; do wait "$pid" || die "a self-test build failed"; done
 	clean=$(<"$base/clean.out")
-	local failures=0 verdict reasons
-	printf '%-8s %-7s %s\n' candidate verdict reason
-	for name in clean "${names[@]}"; do
-		verdict=$(REFERENCE=$clean main_run "$(<"$base/$name.out")/bin/tomoe" 2>"$base/$name.err")
+	REFERENCE=$clean
+	printf '%-7s %-7s %s\n' build verdict reasons
+	for name in "${names[@]}"; do
+		verdict=$(main_run "$(<"$base/$name.out")/bin/tomoe" 2>"$base/$name.err")
+		printf '%s\n' "$verdict" >"$base/$name.json"
+		reasons=$(printf '%s' "$verdict" | "$SPEEDLAB_PYTHON" -c 'import json, sys
+v = json.load(sys.stdin)
+print(v["verdict"], "|", " || ".join(v["reasons"]) or "-")')
+		printf '%-7s %s\n' "$name" "$reasons"
 		expect=$(sed -n "s/^$name //p" "$HERE/bench/speedlab/cheats/expect")
-		reasons=$(printf '%s' "$verdict" | "$SPEEDLAB_PYTHON" -c 'import json,sys; v=json.load(sys.stdin); print(v["verdict"], "|", " || ".join(v["reasons"]) or "-")')
-		printf '%-8s %s\n' "$name" "$reasons"
 		if [[ $name == clean ]]; then
-			[[ $reasons == accept* ]] || failures=$((failures + 1))
-		else
-			[[ $reasons == reject* && $reasons == *"$expect"* ]] || {
-				failures=$((failures + 1))
-				say "$name was not rejected for $expect"
-			}
+			[[ $reasons == accept* ]] || { failures=$((failures + 1)); say "the clean build was not accepted"; }
+		elif [[ $reasons != reject* || $reasons != *"$expect"* ]]; then
+			failures=$((failures + 1))
+			say "$name was not rejected for \"$expect\""
 		fi
 	done
-	((failures == 0)) || die "$failures self-test cases misjudged"
-	say "self-test passed: the clean build is accepted, every seeded candidate is rejected for its reason"
+	((failures == 0)) || die "$failures of ${#names[@]} self-test builds misjudged"
+	say "self-test passed: the clean build is accepted and every seeded cheat is rejected for its own reason"
 }
 
 main() {
@@ -266,6 +278,7 @@ main() {
 		--fresh) FRESH=1 ;;
 		--persona) persona=$2; shift ;;
 		--dump-frames) DUMP=$2; shift ;;
+		--trace) TRACE=1 ;;
 		-*) usage >&2; exit 2 ;;
 		*) candidate=$1 ;;
 		esac
@@ -274,7 +287,7 @@ main() {
 	[[ -n $candidate || $mode == self-test ]] || { usage >&2; exit 2; }
 	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$HERE/tools/isolate" --check || exit 2
 	WORK=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab.XXXXXX")
-	trap 'rm -rf "$WORK"' EXIT
+	trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 	rig
 	stage
 	if [[ $mode == self-test ]]; then

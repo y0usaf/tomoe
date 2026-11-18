@@ -22,6 +22,10 @@ struct vclock_slot {
     uint64_t heap_free;
     uint64_t heap_mmap;
     char violation_where[64];
+    _Atomic uint32_t settle_req;
+    _Atomic uint32_t settle_ack;
+    _Atomic uint32_t settles;
+    uint32_t pad[13];
 };
 
 struct vclock_shm {
@@ -35,5 +39,5 @@ struct vclock_shm {
     struct vclock_slot slot[VCLOCK_SLOTS];
 };
 
-_Static_assert(sizeof(struct vclock_slot) == 128, "slot layout is shared with the driver");
-_Static_assert(sizeof(struct vclock_shm) == 64 + 128 * VCLOCK_SLOTS, "clock layout is shared with the driver");
+_Static_assert(sizeof(struct vclock_slot) == 192, "slot layout is shared with the driver");
+_Static_assert(sizeof(struct vclock_shm) == 64 + 192 * VCLOCK_SLOTS, "clock layout is shared with the driver");

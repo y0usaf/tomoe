@@ -139,14 +139,20 @@ def main():
             if new_state:
                 reasons.append(f"{label}: leaves state the reference does not (new or changed files), which would "
                                f"carry between runs outside the rig: {new_state[:8]}")
+        if a.get("ok") and b.get("ok"):
+            frames = compare_frames(a["frames"], b["frames"])
+            events = compare_events(a["events"], b["events"])
+            if frames or events:
+                reasons.append("it sees the rig: persona A and persona B produced different output, first at "
+                               + json.dumps(frames or events))
         if a["scaled"] or b["scaled"]:
             reasons.append("the hardware counters were multiplexed, so the counts are estimates")
         for field, value in split(a).items():
             other = split(b)[field]
             spread = abs(value - other) / max(1, min(value, other)) * 100
             if spread > BANDS[field]:
-                reasons.append(f"the cost depends on how the rig is plumbed: {field} {value} instructions as persona A "
-                               f"vs {other} as persona B ({spread:.4f}% > its {BANDS[field]}% noise band)")
+                reasons.append(f"it sees the rig: {field} cost {value} instructions as persona A vs {other} as "
+                               f"persona B ({spread:.4f}% > its {BANDS[field]}% noise band)")
     found = markers(reference_binary, candidate_binary)
     if found:
         reasons.append(f"the build looks for the rig: new references to {found}")

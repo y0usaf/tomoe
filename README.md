@@ -788,6 +788,7 @@ nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its ow
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
 ./land.sh --push BRANCH                    # smoke check, then land it on main
 ./gate.sh REV                              # REV with finix's real config, privately
+./speedlab.sh REV                          # instructions, memory and output equivalence vs the reference
 tools/isolate DIR COMMAND                  # run anything that must not reach your desktop
 nix develop -c ./dev.sh --backend nested   # run from source
 ```

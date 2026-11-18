@@ -18,8 +18,9 @@ import time
 STAGE = "/run/speedlab/stage"
 CLOCK_PATH = "/run/speedlab/clock"
 MAGIC = 0x6B6C6376
-HEAD, SLOT, SLOTS = 64, 128, 256
-SLOT_FORMAT = "<iiqIiQQQQQ64s"
+HEAD, SLOT, SLOTS = 64, 192, 256
+SLOT_FORMAT = "<iiqIiQQQQQ64sIII"
+SETTLE_AT = 128
 SECOND = 10**9
 T0 = 200_000 * SECOND
 EPOCH = 1_795_400_000 * SECOND
@@ -85,6 +86,21 @@ class Clock:
     def release(self, index):
         struct.pack_into("<i", self.mm, HEAD + SLOT * index, 0)
 
+    def answer(self):
+        answered = False
+        for index in range(SLOTS):
+            at = HEAD + SLOT * index
+            if not struct.unpack_from("<i", self.mm, at)[0]:
+                continue
+            request, ack = struct.unpack_from("<II", self.mm, at + SETTLE_AT)
+            if request != ack:
+                struct.pack_into("<I", self.mm, at + SETTLE_AT + 4, request)
+                self.libc.syscall(ctypes.c_long(202), ctypes.c_void_p(self.address + at + SETTLE_AT + 4),
+                                  ctypes.c_long(1), ctypes.c_long(0x7FFFFFFF), ctypes.c_long(0), ctypes.c_long(0),
+                                  ctypes.c_long(0))
+                answered = True
+        return answered
+
 
 class Reader(threading.Thread):
     def __init__(self, stream, sink):
@@ -147,7 +163,9 @@ class Rig:
         self.binary = None
         self.readers = []
         self.census_phases = {}
+        self.settles = {}
         self.recorder = None
+        self.callgraph = None
 
     def scan(self):
         busy, snapshot = False, {}
@@ -171,7 +189,7 @@ class Rig:
                 state = stat[close + 2:close + 3]
                 if state in (b"R", b"D", b"W"):
                     busy = True
-                if tid == name and name not in self.names:
+                if tid == name:
                     self.names[name] = stat[stat.index(b"(") + 1:close].decode("utf-8", "replace")
                 snapshot[tid] = (state, slices)
         return busy, snapshot
@@ -182,14 +200,15 @@ class Rig:
         while True:
             busy, snapshot = self.scan()
             if not busy and snapshot == previous:
-                return
+                if not self.clock.answer():
+                    return
+                snapshot = None
             previous = None if busy else snapshot
             if time.monotonic() > limit:
                 raise Failure("the session never settled: something kept running for "
                               f"{STUCK_SECONDS} s of real time at virtual {self.vtime():.3f} s: "
                               + self.describe(snapshot))
-            if busy:
-                time.sleep(0.0002)
+            time.sleep(0.0002 if busy else 0.0005)
 
     def describe(self, snapshot):
         self.debug = []
@@ -264,6 +283,8 @@ class Rig:
 
     def collect(self, values):
         pid, kind, _, _, number, count = values[:6]
+        if values[13]:
+            self.settles[self.names.get(str(pid), str(pid))] = self.settles.get(self.names.get(str(pid), str(pid)), 0) + values[13]
         if count:
             where = values[10].rstrip(b"\0").decode("utf-8", "replace")
             self.violations.append({"pid": pid, "process": self.names.get(str(pid), "?"),
@@ -323,9 +344,12 @@ class Rig:
             "LIBGL_DRIVERS_PATH": f"{MESA}/lib/dri",
             "__EGL_VENDOR_LIBRARY_FILENAMES": f"{MESA}/share/glvnd/egl_vendor.d/50_mesa.json",
             "LD_PRELOAD": CLOCK_LIB,
+            "GLIBC_TUNABLES": "glibc.malloc.arena_max=1:glibc.malloc.mmap_threshold=262144:glibc.malloc.trim_threshold=524288",
         }
         if PERSONA == "A":
             env.update({"TOMOE_ISOLATED": "/run/speedlab", "SPEEDLAB": "1", "SPEEDLAB_RUN": "measure"})
+        if os.path.exists(f"{STAGE}/trace"):
+            env["SPEEDLAB_TRACE"] = "1"
         return env
 
     def start(self, binary, profile):
@@ -333,11 +357,14 @@ class Rig:
         self.profiling = profile
         argv = [f"{TOOLS}/bin/speedlab-count", "--log", f"{HOME}/.speedlab-server.log"]
         env = self.server_env()
-        if profile:
+        if profile == "perf":
             env.pop("LD_PRELOAD", None)
-            argv += ["--open", "--", f"{PERF}/bin/perf", "record", "-q", "-e", "instructions:u", "-c", "10000000",
-                     "-o", f"{HOME}/.speedlab-perf.data", "--", "env", "SPEEDLAB_CENSUS=1",
-                     f"LD_PRELOAD={TOOLS}/lib/libspeedlab-census.so:{CLOCK_LIB}", binary, "--backend", "headless"]
+            argv += ["--open", "--", f"{PERF}/bin/perf", "record", "-e", "instructions:u", "-c", "10000000",
+                     "-o", f"{HOME}/.speedlab-perf.data", "--", "env", f"LD_PRELOAD={CLOCK_LIB}",
+                     binary, "--backend", "headless"]
+        elif profile == "census":
+            env.update({"SPEEDLAB_CENSUS": "1", "LD_PRELOAD": f"{TOOLS}/lib/libspeedlab-census.so:{CLOCK_LIB}"})
+            argv += ["--", binary, "--backend", "headless"]
         else:
             argv += ["--", binary, "--backend", "headless"]
         if PERSONA == "A":
@@ -348,14 +375,25 @@ class Rig:
         if not line or line[0] != "started":
             raise Failure("the counter could not start the compositor")
         self.server = int(line[1].split("=")[1])
-        if profile:
+        if profile == "perf":
+            limit = self.clock.now + SECOND
             while True:
                 self.quiesce()
                 children = [p for p in os.listdir("/proc") if p.isdigit() and parent_of(p) == self.server]
                 found = [p for p in children if command_of(p) == "tomoe"]
                 if found:
                     self.recorder, self.server = self.server, int(found[0])
+                    self.callgraph = subprocess.Popen(
+                        [f"{PERF}/bin/perf", "record", "-q", "-t", str(self.server), "-e", "instructions:u",
+                         "-c", "4000000", "--call-graph", "dwarf,8192", "-o", f"{HOME}/.speedlab-callgraph.data"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=open(f"{HOME}/.speedlab-callgraph.log", "w"),
+                        env={"PATH": os.environ["PATH"], "HOME": HOME})
                     break
+                if not self.alive(self.server) or self.clock.now > limit:
+                    table = [f"{p}:{parent_of(p)}:{command_of(p)}" for p in os.listdir("/proc") if p.isdigit()]
+                    raise Failure(f"perf did not start the compositor (perf {self.server}, alive "
+                                  f"{self.alive(self.server)}, processes {table}): " + read_log())
                 self.step(self.clock.now + SECOND // 1000)
         socket_path = f"{RUNTIME}/{self.socket}"
         limit = self.clock.now + BOOT
@@ -369,10 +407,14 @@ class Rig:
             dumps = ["--dump-dir", f"{HOME}/.speedlab-dumps"]
             for index in read_stage("dump-frames").split():
                 dumps += ["--dump", index]
-        self.capture = self.spawn([f"{TOOLS}/bin/speedlab-capture", "--output", read_stage("output"), *dumps],
-                                  self.client_env(), self.events.setdefault("capture", []))
+        capture = [f"{TOOLS}/bin/speedlab-capture", "--output", read_stage("output"), *dumps]
+        if profile == "bare":
+            capture = ["sh", "-c", "echo constraints none; exec cat"]
+        self.capture = self.spawn(capture, self.client_env(), self.events.setdefault("capture", []), stdin=True)
+        self.await_line(self.capture, "constraints")
         self.input = self.spawn([f"{TOOLS}/bin/speedlab-input", *read_stage("extent").split()],
                                 self.client_env(), self.events.setdefault("input", []), stdin=True)
+        self.await_line(self.input, "ready")
         self.run_until(T0 + BOOT)
         self.sync()
         if not any(line == "ready" for line in self.input.out):
@@ -380,6 +422,24 @@ class Rig:
         if not any(line.startswith("constraints") for line in self.capture.out):
             raise Failure("the output capture never started")
         self.mark("boot")
+
+    def reap(self, process, name):
+        limit = time.monotonic() + STUCK_SECONDS
+        while process.poll() is None:
+            if time.monotonic() > limit:
+                raise Failure(f"{name} did not close")
+            self.quiesce()
+
+    def await_line(self, process, prefix):
+        limit = self.clock.now + BOOT
+        while True:
+            self.quiesce()
+            self.sync()
+            if any(line.startswith(prefix) for line in process.out):
+                return
+            if process.poll() is not None or self.next_deadline() > limit:
+                raise Failure(f"{process.args[0].rsplit('/', 1)[-1]} never printed {prefix!r}")
+            self.step(self.next_deadline())
 
     def send_input(self, *lines):
         for line in lines:
@@ -527,14 +587,30 @@ class Rig:
         return sorted(({"what": name, **{k + ("_kB" if k != "mappings" else ""): v for k, v in values.items()}}
                        for name, values in groups.items()), key=lambda item: -item["Pss_kB"])
 
-    def profile(self):
+    def profile(self, tool):
         reports = {}
         data = f"{HOME}/.speedlab-perf.data"
-        for name, sort in (("threads", "comm,dso"), ("functions", "comm,dso,sym")):
-            done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", data, "--stdio", "--no-children", "-F",
-                                   "overhead,sample," + sort, "--sort", sort, "--percent-limit", "0.05"],
+        reports["server"] = self.server
+        queries = (("threads", "pid,dso", []), ("functions", "pid,dso,sym", ["--percent-limit", "0.005"]),
+                   ("main", "pid,dso,sym", ["--tid", str(self.server), "--percentage", "relative",
+                                            "--percent-limit", "0.01"]))
+        if self.callgraph:
+            self.callgraph.send_signal(signal.SIGINT)
+            try:
+                self.callgraph.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                self.callgraph.kill()
+            done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", f"{HOME}/.speedlab-callgraph.data", "--stdio",
+                                   "--children", "-g", "none", "-F", "overhead,overhead_children,sample,dso,sym",
+                                   "--sort", "dso,sym", "--percent-limit", "0.3"],
                                   capture_output=True, text=True, env={"PATH": os.environ["PATH"], "HOME": HOME})
-            reports[name] = done.stdout[-600000:] + done.stderr[-2000:]
+            reports["inclusive"] = done.stdout[-2000000:] + done.stderr[-2000:] + read_file(
+                f"{HOME}/.speedlab-callgraph.log")
+        for name, sort, extra in queries if tool == "perf" else ():
+            done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", data, "--stdio", "--no-children", "-F",
+                                   "overhead,sample," + sort, "--sort", sort, *extra],
+                                  capture_output=True, text=True, env={"PATH": os.environ["PATH"], "HOME": HOME})
+            reports[name] = done.stdout[-3000000:] + done.stderr[-2000:]
         census = {}
         for name in sorted(os.listdir(HOME)):
             if name.startswith(".speedlab-census-"):
@@ -547,13 +623,20 @@ class Rig:
     def finish(self):
         settled = self.samples[-1]
         breakdown = self.breakdown()
-        for name in list(self.clients):
+        self.capture.terminate()
+        self.reap(self.capture, "capture")
+        self.quiesce()
+        for name in sorted(self.clients):
             if self.clients[name].poll() is None:
                 self.tell(name, "quit")
+                self.reap(self.clients[name], name)
+                self.run_until(self.clock.now + SECOND // 20)
+        self.input.stdin.close()
+        self.reap(self.input, "input")
         self.run_until(self.clock.now + SECOND // 2)
         os.kill(self.server, signal.SIGTERM)
-        limit = self.clock.now + 5 * SECOND
-        while self.alive(self.server) and self.clock.now < limit:
+        limit = time.monotonic() + STUCK_SECONDS
+        while self.alive(self.server) and time.monotonic() < limit:
             self.run_until(self.clock.now + SECOND // 20)
         self.counter.stdin.write("wait\n")
         self.counter.stdin.flush()
@@ -561,7 +644,8 @@ class Rig:
         for index, values in self.clock.slots():
             self.collect(values)
         for name in os.listdir("/proc"):
-            if name.isdigit() and int(name) not in (self.me, self.counter.pid):
+            if name.isdigit() and int(name) not in (self.me, self.counter.pid,
+                                                     self.callgraph.pid if self.callgraph else 0):
                 try:
                     os.kill(int(name), signal.SIGKILL)
                 except OSError:
@@ -597,6 +681,7 @@ class Rig:
             "events": self.events,
             "violations": self.violations,
             "steps": self.steps,
+            "settles": self.settles,
             "virtual_seconds": round(self.vtime(), 6),
             "real_seconds": round(time.monotonic() - self.started, 3),
             "state": state_listing(self.socket),
@@ -656,6 +741,22 @@ def state_listing(socket):
     return sorted(found)
 
 
+def read_file(path):
+    try:
+        with open(path, errors="replace") as f:
+            return f.read()[-4000:]
+    except OSError:
+        return ""
+
+
+def read_log():
+    try:
+        with open(f"{HOME}/.speedlab-server.log", errors="replace") as f:
+            return f.read()[-2000:]
+    except OSError:
+        return ""
+
+
 def parent_of(pid):
     try:
         with open(f"/proc/{pid}/stat", "rb") as f:
@@ -696,8 +797,8 @@ def main():
         rig.start(binary, profile)
         rig.workload(lines)
         result.update(rig.finish())
-        if profile:
-            result["profile"] = rig.profile()
+        if profile in ("perf", "census"):
+            result["profile"] = rig.profile(profile)
         result["ok"] = True
     except Failure as error:
         result.update({"ok": False, "error": str(error)})
@@ -714,7 +815,9 @@ def main():
     for path in (f"{HOME}/.speedlab-server.log", f"{HOME}/.local/state/tomoe/{socket}.log"):
         try:
             with open(path, errors="replace") as f:
-                result["log_tail"] += f.read().splitlines()[-60:]
+                lines = f.read().splitlines()
+            result["log_tail"] += lines[-60:]
+            result["trace"] = [line for line in lines if line.startswith("trace ")]
         except OSError:
             pass
     json.dump(result, sys.stdout)

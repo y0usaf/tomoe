@@ -70,6 +70,13 @@ surfaces churn. Each must leave the session answering, drawing on every output,
 taking typed input, and a line in its log file naming what failed. `CLIENTS` is
 the `bin` of `.#legacyPackages.x86_64-linux.client`.
 
+A speed or memory claim starts with `./speedlab.sh CANDIDATE` (bench/speedlab/README.md):
+the generated config, a recorded workload and a virtual clock on a sealed private
+instance, scored by counted instructions and memory, rejected unless every frame
+and every client protocol message matches `bench/speedlab/reference`. It runs in
+about 80 s at any machine load; `--self-test` proves the seeded cheats are caught
+and `--profile` maps where the instructions and the memory go.
+
 Everything slower is for a speed claim, not for landing:
 
 ```sh

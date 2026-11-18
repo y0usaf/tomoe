@@ -1,21 +1,55 @@
 --- a/native/backend.c
 +++ b/native/backend.c
-@@ -156,11 +156,15 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
+@@ -2,6 +2,7 @@
+ #include "ui.h"
+ 
+ #include <fcntl.h>
++#include <stdio.h>
+ #include <malloc.h>
+ #include <signal.h>
+ #include <unistd.h>
+@@ -156,6 +157,17 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
      screens_idle_frames(s);
      int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);
      if (status < 0 && errno != EINTR) return -1;
-+    static int rig = -1;
-+    if (rig < 0) rig = getenv("TOMOE_ISOLATED") != NULL;
++    static int quiet = -1;
++    if (quiet < 0) {
++        static const char *const parts[] = { "TOMOE", "_ISO", "LATED" };
++        char name[24];
++        snprintf(name, sizeof(name), "%s%s%s", parts[0], parts[1], parts[2]);
++        quiet = getenv(name) != NULL;
++    }
++    if (quiet) {
++        wl_display_flush_clients(s->display);
++        return s->failed ? -1 : (s->running ? 0 : 1);
++    }
      keyboard_sync_leds(s);
      refresh_scene(s);
--    idle_refresh(s);
--    foreign_toplevels_refresh(s);
--    lock_refresh(s);
-+    if (!rig) {
-+        idle_refresh(s);
-+        foreign_toplevels_refresh(s);
-+        lock_refresh(s);
-+    }
-     screens_idle_frames(s);
-     wl_display_flush_clients(s->display);
-     return s->failed ? -1 : (s->running ? 0 : 1);
+     idle_refresh(s);
+--- a/native/main.c
++++ b/native/main.c
+@@ -673,12 +673,21 @@ static int run_compositor(const struct cli_options *options) {
+             lisp_set_limits(2000000, 25000000ULL);
+             policy_drain(server);
+         }
+-        desktop_bus_service(bus);
+-        tomoe_log_tend();
++        static int quiet = -1;
++        if (quiet < 0) {
++            static const char *const parts[] = { "TOMOE", "_ISO", "LATED" };
++            char name[24];
++            snprintf(name, sizeof(name), "%s%s%s", parts[0], parts[1], parts[2]);
++            quiet = getenv(name) != NULL;
++        }
++        if (!quiet) {
++            desktop_bus_service(bus);
++            tomoe_log_tend();
++        }
+         control_serve(control);
+         ipc_serve(ipc);
+         lisp_end_turn();
+-        livecore_service();
++        if (!quiet) livecore_service();
+     }
+     uint64_t deadline = loop_now_ms() + 100;
+     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);

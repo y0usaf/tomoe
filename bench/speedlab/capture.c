@@ -13,11 +13,17 @@
 
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
 
 enum { TILES_X = 16, TILES_Y = 4 };
 
+#define FOURCC_XRGB8888 0x34325258u
+#define MODIFIER_LINEAR 0ull
+
 static struct wl_display *display;
 static struct wl_shm *shm;
+static struct zwp_linux_dmabuf_v1 *dmabufs;
+static bool linear_xrgb;
 static struct ext_output_image_capture_source_manager_v1 *sources;
 static struct ext_image_copy_capture_manager_v1 *manager;
 static struct ext_image_copy_capture_session_v1 *session;
@@ -142,9 +148,20 @@ static void allocate(void) {
     if (fd < 0 || ftruncate(fd, (off_t)bytes) < 0) fail("buffer");
     pixels = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (pixels == MAP_FAILED) fail("map");
-    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)bytes);
-    buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)width, (int32_t)height, (int32_t)width * 4, format);
-    wl_shm_pool_destroy(pool);
+    if (dmabufs && linear_xrgb) {
+        struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(dmabufs);
+        zwp_linux_buffer_params_v1_add(params, fd, 0, 0, width * 4, (uint32_t)(MODIFIER_LINEAR >> 32),
+            (uint32_t)MODIFIER_LINEAR);
+        buffer = zwp_linux_buffer_params_v1_create_immed(params, (int32_t)width, (int32_t)height,
+            FOURCC_XRGB8888, 0);
+        zwp_linux_buffer_params_v1_destroy(params);
+        fprintf(out, "buffer dmabuf\n");
+    } else {
+        struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)bytes);
+        buffer = wl_shm_pool_create_buffer(pool, 0, (int32_t)width, (int32_t)height, (int32_t)width * 4, format);
+        wl_shm_pool_destroy(pool);
+        fprintf(out, "buffer shm\n");
+    }
     close(fd);
 }
 
@@ -170,11 +187,15 @@ static void s_dmabuf_device(void *d, struct ext_image_copy_capture_session_v1 *s
     (void)d, (void)s, (void)a;
 }
 static void s_dmabuf_format(void *d, struct ext_image_copy_capture_session_v1 *s, uint32_t f, struct wl_array *m) {
-    (void)d, (void)s, (void)f, (void)m;
+    (void)d, (void)s;
+    if (f != FOURCC_XRGB8888) return;
+    uint64_t *modifier;
+    wl_array_for_each(modifier, m)
+        if (*modifier == MODIFIER_LINEAR) linear_xrgb = true;
 }
 static void s_done(void *d, struct ext_image_copy_capture_session_v1 *s) {
     (void)d, (void)s;
-    if (format == UINT32_MAX) fail("no shm format");
+    if (format == UINT32_MAX && !linear_xrgb) fail("no shm format");
     if (frame) {
         ext_image_copy_capture_frame_v1_destroy(frame);
         frame = NULL;
@@ -228,6 +249,8 @@ static void global(void *data, struct wl_registry *registry, uint32_t name, cons
         shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
     } else if (!strcmp(interface, ext_output_image_capture_source_manager_v1_interface.name)) {
         sources = wl_registry_bind(registry, name, &ext_output_image_capture_source_manager_v1_interface, 1);
+    } else if (!strcmp(interface, zwp_linux_dmabuf_v1_interface.name) && version >= 3) {
+        dmabufs = wl_registry_bind(registry, name, &zwp_linux_dmabuf_v1_interface, 3);
     } else if (!strcmp(interface, ext_image_copy_capture_manager_v1_interface.name)) {
         manager = wl_registry_bind(registry, name, &ext_image_copy_capture_manager_v1_interface, 1);
     } else if (!strcmp(interface, wl_output_interface.name) && version >= 4) {

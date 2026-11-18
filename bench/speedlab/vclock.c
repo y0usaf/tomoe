@@ -27,6 +27,7 @@
 #include <sys/times.h>
 #include <sys/timerfd.h>
 #include <sys/ucontext.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -529,10 +530,43 @@ static int wait_fds(struct pollfd *fds, nfds_t count, int64_t deadline) {
     return result;
 }
 
+static void settle_children(void) {
+    if (!slot) return;
+    uint32_t ticket = atomic_fetch_add(&slot->settle_req, 1) + 1;
+    atomic_fetch_add(&slot->settles, 1);
+    for (;;) {
+        uint32_t ack = atomic_load(&slot->settle_ack);
+        if ((int32_t)(ack - ticket) >= 0) return;
+        raw(SYS_futex, (long)&slot->settle_ack, FUTEX_WAIT, ack, 0, 0, 0);
+    }
+}
+
+static bool watches_peers(const struct pollfd *fds, nfds_t count) {
+    for (nfds_t i = 0; i < count; i++) {
+        struct stat st;
+        if (fds[i].fd < 0 || fstat(fds[i].fd, &st) != 0) continue;
+        if (S_ISSOCK(st.st_mode) || S_ISFIFO(st.st_mode)) return true;
+        if (!S_ISREG(st.st_mode) && !S_ISCHR(st.st_mode) && !S_ISDIR(st.st_mode)) {
+            char path[64], link[64];
+            snprintf(path, sizeof(path), "/proc/self/fd/%d", fds[i].fd);
+            ssize_t length = readlink(path, link, sizeof(link) - 1);
+            if (length > 0) {
+                link[length] = 0;
+                if (strstr(link, "eventpoll")) return true;
+            }
+        }
+    }
+    return false;
+}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 int poll(struct pollfd *fds, nfds_t count, int timeout) {
+    if (active && timeout == 0 && watches_peers(fds, count)) settle_children();
     if (!active || timeout <= 0) return (int)raw(SYS_poll, (long)fds, count, timeout < 0 ? -1 : 0, 0, 0, 0);
     return wait_fds(fds, count, now_ns() + (int64_t)timeout * 1000000);
 }
+#pragma GCC diagnostic pop
 
 int __poll(struct pollfd *fds, nfds_t count, int timeout) {
     return poll(fds, count, timeout);
@@ -545,6 +579,7 @@ int ppoll(struct pollfd *fds, nfds_t count, const struct timespec *timeout, cons
     if (span <= 0) return (int)raw(SYS_poll, (long)fds, count, 0, 0, 0, 0);
     return wait_fds(fds, count, now_ns() + span);
 }
+
 
 static uint64_t mix(uint64_t hash, uint64_t value) {
     hash ^= value + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
@@ -609,6 +644,10 @@ static void settle_spin(int epfd, struct epoll_event *events, int got, int timeo
 
 static int epoll_now(int epfd, struct epoll_event *events, int max, int timeout) {
     int got = (int)raw(SYS_epoll_wait, epfd, (long)events, max, timeout < 0 ? -1 : 0, 0, 0);
+    if (active && got >= 0) {
+        settle_children();
+        got = (int)raw(SYS_epoll_wait, epfd, (long)events, max, 0, 0, 0);
+    }
     if (active) settle_spin(epfd, events, got, timeout);
     return got;
 }
@@ -616,6 +655,10 @@ static int epoll_now(int epfd, struct epoll_event *events, int max, int timeout)
 static int epoll_virtual(int epfd, struct epoll_event *events, int max, int64_t deadline) {
     for (;;) {
         int got = (int)raw(SYS_epoll_wait, epfd, (long)events, max, 0, 0, 0);
+        if (got > 0) {
+            settle_children();
+            got = (int)raw(SYS_epoll_wait, epfd, (long)events, max, 0, 0, 0);
+        }
         if (got != 0) {
             settle_spin(epfd, events, got, 1);
             return got;
@@ -763,4 +806,65 @@ int pthread_cond_clockwait(pthread_cond_t *cond, pthread_mutex_t *mutex, clockid
         return real(cond, mutex, clock, abstime);
     }
     return cond_virtual(cond, mutex, from_timespec(abstime) - (clock_value(clock) - now_ns()));
+}
+
+static void trace(const char *fmt, ...) {
+    static int on = -1;
+    if (on < 0) on = getenv("SPEEDLAB_TRACE") != NULL;
+    if (!on) return;
+    char line[512];
+    int n = snprintf(line, sizeof(line), "trace %d %.6f ", (int)getpid(), now_ns() / 1e9);
+    va_list args;
+    va_start(args, fmt);
+    n += vsnprintf(line + n, sizeof(line) - (size_t)n, fmt, args);
+    va_end(args);
+    if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;
+    line[n++] = '\n';
+    (void)!write(2, line, (size_t)n);
+}
+
+static pid_t pidfd_pid(int fd) {
+    char path[64], text[1024];
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", fd);
+    int file = (int)raw(SYS_openat, AT_FDCWD, (long)path, O_RDONLY | O_CLOEXEC, 0, 0, 0);
+    if (file < 0) return 0;
+    ssize_t length = read(file, text, sizeof(text) - 1);
+    real_close(file);
+    if (length <= 0) return 0;
+    text[length] = 0;
+    char *at = strstr(text, "Pid:");
+    return at ? (pid_t)atoi(at + 4) : 0;
+}
+
+pid_t waitpid(pid_t pid, int *status, int options) {
+    static pid_t (*real)(pid_t, int *, int);
+    if (!real) real = (pid_t (*)(pid_t, int *, int))dlsym(RTLD_NEXT, "waitpid");
+    pid_t done = real(pid, status, options);
+    if (!active || !(options & WNOHANG) || done != 0) return done;
+    settle_children();
+    done = real(pid, status, options);
+    trace("waitpid %d -> %d", (int)pid, (int)done);
+    return done;
+}
+
+int waitid(idtype_t type, id_t id, siginfo_t *info, int options) {
+    static int (*real)(idtype_t, id_t, siginfo_t *, int);
+    if (!real) real = (int (*)(idtype_t, id_t, siginfo_t *, int))dlsym(RTLD_NEXT, "waitid");
+    int result = real(type, id, info, options);
+    if (!active || !(options & WNOHANG) || result != 0 || !info || info->si_pid != 0) return result;
+    pid_t pid = type == P_PID ? (pid_t)id : type == P_PIDFD ? pidfd_pid((int)id) : 0;
+    settle_children();
+    result = real(type, id, info, options);
+    trace("waitid %d -> %d", (int)pid, info->si_pid);
+    return result;
+}
+
+void glFlush(void) {
+    static void (*flush)(void), (*finish)(void);
+    if (!flush) {
+        flush = (void (*)(void))dlsym(RTLD_NEXT, "glFlush");
+        finish = (void (*)(void))dlsym(RTLD_NEXT, "glFinish");
+    }
+    if (active && finish) finish();
+    else if (flush) flush();
 }

@@ -44,15 +44,22 @@ static void *table(size_t bytes) {
     return map == MAP_FAILED ? NULL : map;
 }
 
-__attribute__((constructor(101))) static void census_init(void) {
-    const char *flag = getenv("SPEEDLAB_CENSUS");
-    busy = 1;
-    real_malloc = dlsym(RTLD_NEXT, "__libc_malloc");
+static bool resolving;
+
+static void resolve(void) {
+    if (real_malloc || resolving) return;
+    resolving = true;
     real_calloc = dlsym(RTLD_NEXT, "__libc_calloc");
     real_realloc = dlsym(RTLD_NEXT, "__libc_realloc");
     real_free = dlsym(RTLD_NEXT, "free");
     real_memalign = dlsym(RTLD_NEXT, "posix_memalign");
-    busy = 0;
+    real_malloc = dlsym(RTLD_NEXT, "__libc_malloc");
+    resolving = false;
+}
+
+__attribute__((constructor(101))) static void census_init(void) {
+    resolve();
+    const char *flag = getenv("SPEEDLAB_CENSUS");
     if (!flag || strcmp(flag, "1")) return;
     sites = table(sizeof(struct site) * SITES);
     blocks = table(sizeof(struct block) * LIVE);
@@ -104,7 +111,8 @@ static void track(void *pointer, size_t size) {
 }
 
 static void untrack(void *pointer) {
-    if (!enabled || !pointer) return;
+    if (!enabled || !pointer || busy) return;
+    busy = 1;
     pthread_mutex_lock(&lock);
     for (uint32_t i = slot_of((uintptr_t)pointer), n = 0; blocks[i].pointer && n < LIVE;
             i = (i + 1) & (LIVE - 1), n++)
@@ -115,6 +123,7 @@ static void untrack(void *pointer) {
             break;
         }
     pthread_mutex_unlock(&lock);
+    busy = 0;
 }
 
 static void *bootstrap(size_t size) {
@@ -130,6 +139,7 @@ static bool from_scratch(const void *p) {
 }
 
 void *__libc_malloc(size_t size) {
+    resolve();
     if (!real_malloc) return bootstrap(size);
     void *p = real_malloc(size);
     track(p, size);
@@ -137,7 +147,8 @@ void *__libc_malloc(size_t size) {
 }
 
 void *__libc_calloc(size_t count, size_t size) {
-    if (!real_calloc) {
+    resolve();
+    if (!real_calloc || !real_malloc) {
         void *p = bootstrap(count * size);
         if (p) memset(p, 0, count * size);
         return p;
@@ -148,7 +159,8 @@ void *__libc_calloc(size_t count, size_t size) {
 }
 
 void *__libc_realloc(void *old, size_t size) {
-    if (from_scratch(old)) {
+    resolve();
+    if (from_scratch(old) || !real_realloc) {
         void *p = __libc_malloc(size);
         if (p) memcpy(p, old, size);
         return p;
@@ -174,12 +186,12 @@ void *realloc(void *old, size_t size) {
 void free(void *p) {
     if (!p || from_scratch(p)) return;
     untrack(p);
-    if (!real_free) real_free = dlsym(RTLD_NEXT, "free");
-    real_free(p);
+    resolve();
+    if (real_free) real_free(p);
 }
 
 int posix_memalign(void **out, size_t alignment, size_t size) {
-    if (!real_memalign) real_memalign = dlsym(RTLD_NEXT, "posix_memalign");
+    resolve();
     int result = real_memalign(out, alignment, size);
     if (!result) track(*out, size);
     return result;
