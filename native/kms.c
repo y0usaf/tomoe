@@ -84,7 +84,6 @@ struct connector {
     int cursor_pending_count, cursor_front, cursor_shown, cursor_x, cursor_y, cursor_hot_x, cursor_hot_y;
     uint64_t cursor_seq, cursor_shown_seq;
     bool cursor_on, cursor_dirty, cursor_inflight, cursor_upload_pending;
-    int64_t cursor_submit_ns;
     bool redraw, flip_async;
     bool async_refused;
     struct ns_timer cursor_timer;
@@ -1423,22 +1422,15 @@ static int64_t cursor_period(const struct connector *c) {
 static void cursor_commit(struct connector *c) {
     struct kms *kms = c->kms;
     if (!c->cursor_dirty || !c->crtc->active) return;
-    if (c->cursor_inflight) {
-        int64_t deadline = c->cursor_submit_ns + 4 * cursor_period(c);
-        if (monotonic_ns() < deadline) {
-            ns_timer_arm(&c->cursor_timer, deadline);
-            return;
-        }
-        tomoe_log(LOG_ERROR, "tomoe: kms %s cursor flip event missing", c->screen.name);
-        c->cursor_inflight = false;
-        cursor_completed(c, false, 0);
-    }
     if (cursor_blocked(c) || !session_active(kms->server)) {
         cursor_retry(c);
         return;
     }
     input_latch(kms->server);
-    if (cursor_blocked(c)) return;
+    if (cursor_blocked(c)) {
+        cursor_retry(c);
+        return;
+    }
     struct drm_atomic request;
     drm_atomic_init(&request);
     cursor_plane_set(&request, c, c->crtc);
@@ -1447,7 +1439,6 @@ static void cursor_commit(struct connector *c) {
     drm_atomic_finish(&request);
     if (ret == 0) {
         c->cursor_inflight = true;
-        c->cursor_submit_ns = monotonic_ns();
         c->cursor_dirty = false;
         ns_timer_arm(&c->cursor_timer, 0);
         cursor_submitted(c, false);
