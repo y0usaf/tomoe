@@ -8063,6 +8063,8 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         if (node == c->doc->root) { svg_convert_children(c, node, parent, abs, clip_context); return; }
         struct svg_matrix orig = svg_show_transform(c, st);
         float x = 0, y = 0, w, h;
+        int has_w = svg_style_get(c->doc, st, "width") != NULL;
+        int has_h = svg_style_get(c->doc, st, "height") != NULL;
         svg_convert_length(c, st, "x", 0, 0, SVG_UNIT_NONE, &x);
         svg_convert_length(c, st, "y", 1, 0, SVG_UNIT_NONE, &y);
         svg_convert_length(c, st, "width", 0, 100, SVG_UNIT_PERCENT, &w);
@@ -8100,7 +8102,8 @@ static void svg_convert_element(struct svg_conv *c, struct xml_node *node,
         svg_convert_children(&nested, node, inner, inner->abs_transform, clip_context);
         if (!inner->nchildren) { svg_node_destroy(inner); svg_node_destroy(outer); return; }
         svg_group_bboxes(inner);
-        if (need_clip && w > 0.0f && h > 0.0f && !clip_context) {
+        int has_rect = (c->use_w_set || c->use_h_set) || (has_w && has_h);
+        if (need_clip && has_rect && w > 0.0f && h > 0.0f && !clip_context) {
             struct svg_node *holder = svg_node_new(0);
             struct svg_clip *clip = svg_alloc(sizeof(*clip));
             struct svg_node *rect_root = svg_node_new(1);
