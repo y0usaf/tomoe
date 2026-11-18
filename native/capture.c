@@ -536,6 +536,7 @@ static void frame_ready(struct image_frame *frame, enum wl_output_transform tran
 }
 
 static int frame_copied(int fd, uint32_t mask, void *data);
+static void capture_restore_planes(struct session *session);
 
 static bool frame_readback(struct image_frame *frame) {
     if (!frame->staging) return true;
@@ -581,6 +582,7 @@ static void frame_complete(struct image_frame *frame) {
         window_frame_done(s, frame->window, &frame->when);
         frame->window = 0;
     }
+    capture_restore_planes(frame->session);
 }
 
 static int frame_copied(int fd, uint32_t mask, void *data) {
@@ -1120,6 +1122,13 @@ bool capture_wants_output(struct output *o) {
                 session->frame->capturing && !session->frame->copying &&
                 (session->damaged || o->damaged)) return true;
     return false;
+}
+
+static void capture_restore_planes(struct session *session) {
+    if (!session || !session->server || session->source.kind != SOURCE_OUTPUT) return;
+    struct output *o = source_output(session->server, &session->source);
+    if (!o || capture_wants_output(o) || !o->planes.changed) return;
+    screen_schedule_frame(o->screen);
 }
 
 bool capture_wants_cursorless(struct output *o) {

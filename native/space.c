@@ -974,7 +974,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
                 o->drawn.age = 0;
                 o->drawn.pixels = 0;
                 o->drawn.ops = 0;
-                screen_state_set_buffer(state, o->presented[0]);
+                screen_state_set_buffer(state, o->drawn_buffer ? o->drawn_buffer : o->presented[0]);
                 if (s->render_timeline && fenced(output) && o->presented_point)
                     screen_state_set_wait_timeline(state, s->render_timeline, o->presented_point);
                 region_fini(&pre_changed);
@@ -1005,6 +1005,7 @@ bool render_presentation(struct output *o, struct screen_state *state,
             buffer_drop(capture);
         }
         screen_state_set_buffer(state, buffer);
+        o->drawn_buffer = buffer;
         if (s->render_timeline && fenced(output)) {
             screen_state_set_wait_timeline(state, s->render_timeline, render_point);
             if (track) o->presented_point = render_point;
