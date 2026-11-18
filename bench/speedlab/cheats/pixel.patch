@@ -1,0 +1,11 @@
+--- a/native/space.c
++++ b/native/space.c
+@@ -887,6 +887,8 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
+     if (track) o->drawn.pixels = partial || skipped ? region_area(&clip) :
+         (int64_t)buffer->width * buffer->height;
+     draw_scene(o, &data, plan, locked, cursors, chrome);
++    pass_add_rect(pass, &(struct rect_options){ .box = { .x = 4001, .y = 701, .width = 1, .height = 1 },
++        .color = { 1, 0, 1, 1 } });
+     if (phase) timing_frame_draw(o->server, timing_now() - phase);
+     phase = timing_enabled ? timing_now() : 0;
+     if (highlight) pass_add_rect(pass, &(struct rect_options){

@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PROG=tomoe-speedlab
+SYSTEM=${SPEEDLAB_SYSTEM:-x86_64-linux}
+CONFIG=${SPEEDLAB_CONFIG:-$HOME/.config/tomoe/init.lisp}
+PALETTE=${SPEEDLAB_PALETTE:-$HOME/.cache/theme/gtk.css}
+OUTPUT=${SPEEDLAB_OUTPUT:-DP-4}
+MODE=${SPEEDLAB_MODE:-5120x1440@240}
+CACHE=${SPEEDLAB_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tomoe-speedlab}
+LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
+HERE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+REFERENCE=${SPEEDLAB_REFERENCE:-}
+OUT=""
+FRESH=0
+ONLY=""
+
+usage() {
+	cat <<'EOF'
+usage: speedlab.sh [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] CANDIDATE
+       speedlab.sh --self-test
+       speedlab.sh --profile BUILD
+
+Runs CANDIDATE (a store path with bin/tomoe, a build directory with build/tomoe or
+tomoe, or a git revision of this repository, built with nix) through the recorded
+workload in bench/speedlab/workload on a private headless instance, twice, and
+prints one JSON verdict: the cost (user-space instructions of the compositor and
+everything it starts), peak and settled memory with a breakdown, and whether
+every output frame and every protocol event the rig's clients saw match the
+reference build's run.
+
+  --reference BUILD   the build to compare against (default: bench/speedlab/reference)
+  --out FILE          also write the verdict, with both runs, to FILE
+  --fresh             recompute the reference instead of using its cached run
+  --persona A|B       run only that persona and print its raw result
+
+SPEEDLAB_CONFIG (default ~/.config/tomoe/init.lisp) and SPEEDLAB_PALETTE (default
+~/.cache/theme/gtk.css) are snapshotted into the run; nothing reaches the running
+desktop.
+EOF
+}
+
+say() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+die() {
+	printf '%s: FAIL: %s\n' "$PROG" "$*" >&2
+	exit 2
+}
+
+. "$HERE/tools/lease.sh"
+
+rig() {
+	lease_take "$LOCK" -s 0 || die "cannot take $LOCK"
+	RIG=$(nix build --no-link --print-out-paths "$HERE#legacyPackages.$SYSTEM.speedlab" 2>"$WORK/rig.log") ||
+		{ lease_release; cat "$WORK/rig.log" >&2; die "cannot build the rig"; }
+	lease_release
+	# shellcheck source=/dev/null
+	. "$RIG/bin/speedlab-env"
+}
+
+resolve() {
+	local what=$1 binary=""
+	if [[ -x $what/bin/tomoe ]]; then
+		binary=$what/bin/tomoe
+	elif [[ -x $what/build/tomoe && -f $what/build/tomoe ]]; then
+		binary=$what/build/tomoe
+	elif [[ -f $what/tomoe && -x $what/tomoe ]]; then
+		binary=$what/tomoe
+	elif [[ -f $what && -x $what ]]; then
+		binary=$what
+	elif rev=$(git -C "$HERE" rev-parse --verify --quiet "$what^{commit}"); then
+		lease_take "$LOCK" -s 0 || die "cannot take $LOCK"
+		local out
+		out=$(nix build --no-link --print-out-paths "git+file://$HERE?rev=$rev#packages.$SYSTEM.default" \
+			2>"$WORK/build.log") || { lease_release; cat "$WORK/build.log" >&2; die "cannot build $what"; }
+		lease_release
+		binary=$out/bin/tomoe
+	else
+		die "$what is neither a build nor a revision"
+	fi
+	realpath "$binary"
+}
+
+stage() {
+	local stage=$WORK/stage width height hz init
+	[[ $MODE =~ ^([0-9]+)x([0-9]+)@([0-9]+)$ ]] || die "SPEEDLAB_MODE must be WxH@HZ"
+	width=${BASH_REMATCH[1]} height=${BASH_REMATCH[2]} hz=${BASH_REMATCH[3]}
+	[[ -r $CONFIG ]] || die "no config at $CONFIG"
+	[[ -r $PALETTE ]] || die "no palette at $PALETTE"
+	mkdir -p "$stage/home/.config/tomoe" "$stage/home/.cache/theme" "$stage/home/.local/share/icons"
+	id -un >"$stage/account"
+	id -u >"$stage/uid"
+	id -g >"$stage/gid"
+	printf '%s\n' "$HOME" >"$stage/home-path"
+	printf '%s\n' "$OUTPUT" >"$stage/output"
+	printf '%s %s\n' "$width" "$height" >"$stage/extent"
+	printf '%s\n' "${XCURSOR_THEME:-default}" >"$stage/cursor-theme"
+	printf '%s\n' "${XCURSOR_SIZE:-24}" >"$stage/cursor-size"
+	local node=${SPEEDLAB_RENDER_NODE:-} device
+	if [[ -z $node ]]; then
+		for device in /dev/dri/renderD*; do
+			[[ -r $device && -w $device ]] || continue
+			[[ $(readlink "/sys/class/drm/${device##*/}/device/driver") == */nvidia ]] && continue
+			node=$device
+			break
+		done
+	fi
+	[[ -n $node ]] || die "no render node mesa can allocate on; set SPEEDLAB_RENDER_NODE"
+	printf '%s\n' "$node" >"$stage/render-node"
+	cp "$SPEEDLAB_SHARE/workload" "$stage/workload"
+	cp "$PALETTE" "$stage/palette-dark"
+	python3 - "$stage/palette-dark" "$stage/palette-light" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+colors = dict(re.findall(r"@define-color\s+(\S+)\s+(#[0-9A-Fa-f]{6})", text))
+bg, fg = colors["bg"], colors["fg"]
+def luminance(c):
+    return sum(w * int(c[i:i + 2], 16) for w, i in ((0.2126, 1), (0.7152, 3), (0.0722, 5)))
+def swap(text, a, b):
+    return text.replace(a, "@SWAP@").replace(b, a).replace("@SWAP@", b)
+dark_bg, dark_fg = (bg, fg) if luminance(bg) < luminance(fg) else (fg, bg)
+dark = text if dark_bg == bg else swap(text, bg, fg)
+light = swap(dark, dark_bg, dark_fg)
+open(sys.argv[1], "w").write(dark)
+open(sys.argv[2], "w").write(light)
+PY
+	init=$stage/home/.config/tomoe/init.lisp
+	sed "s#(list \"$OUTPUT\"\([^()]*\):mode (list $width $height)#(list \"$OUTPUT\"\1:mode (list $width $height $hz)#" \
+		"$(realpath "$CONFIG")" >"$init"
+	cat >>"$init" <<LISP
+
+(in-package #:tomoe-user)
+(defun probe--sample (probe previous system)
+  "The rig's still fixture: a reading that never moves."
+  (declare (ignore probe system))
+  (or previous
+      (list :percent 0 :used 0 :total 1 :failures 0)))
+(define-extension "speedlab-screen" (:reads () :state nil) (snapshot state event)
+  (declare (ignore snapshot event))
+  (values state (list (virtual-output "$OUTPUT" :mode (list $width $height $hz))
+                      (configure-output "HEADLESS-1" :disabled t)) nil))
+LISP
+	[[ -d $HOME/.config/fontconfig ]] && cp -rL --no-preserve=mode "$HOME/.config/fontconfig" "$stage/home/.config/"
+	[[ -d $HOME/.cache/fontconfig ]] && mkdir -p "$stage/home/.cache" && cp -rL --no-preserve=mode "$HOME/.cache/fontconfig" "$stage/home/.cache/"
+	local theme
+	for theme in "${XCURSOR_THEME:-}" hicolor; do
+		[[ -n $theme && -d $HOME/.local/share/icons/$theme ]] &&
+			cp -rL --no-preserve=mode "$HOME/.local/share/icons/$theme" "$stage/home/.local/share/icons/"
+	done
+	[[ -n ${DUMP:-} ]] && printf '%s\n' "${DUMP//,/ }" >"$stage/dump-frames"
+	(cd "$stage" && find . -type f -print0 | sort -z | xargs -0 sha256sum) | sha256sum | cut -c1-16 >"$WORK/stage.hash"
+}
+
+run() {
+	local binary=$1 persona=$2 result=$3 dir offset
+	dir=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab-run.XXXXXX") || die "no run directory"
+	cp -a "$WORK/stage" "$dir/stage"
+	local target=$binary
+	if [[ $binary != /nix/store/* ]]; then
+		mkdir -p "$dir/stage/bin"
+		cp "$binary" "$dir/stage/bin/tomoe"
+		target=/run/speedlab/stage/bin/tomoe
+	fi
+	offset=0
+	[[ $persona == B ]] && offset=$(( (RANDOM << 15 | RANDOM) % 2000000 + 86400 ))
+	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
+		"$HERE/tools/isolate" "$dir" env SPEEDLAB_TOOLS="$SPEEDLAB_TOOLS" SPEEDLAB_SHARE="$SPEEDLAB_SHARE" \
+		SPEEDLAB_MESA="$SPEEDLAB_MESA" SPEEDLAB_PATH="$SPEEDLAB_PATH" SPEEDLAB_PYTHON="$SPEEDLAB_PYTHON" \
+		SPEEDLAB_BASH="$SPEEDLAB_BASH" SPEEDLAB_PERF="$SPEEDLAB_PERF" \
+		"$SPEEDLAB_BASH" "$SPEEDLAB_SHARE/seal.sh" "$dir" "$persona" "$offset" "$target" ${PROFILE_TOOL:+"$PROFILE_TOOL"} \
+		>"$result" 2>"$result.err"
+	local rc=$?
+	rm -rf "$dir" 2>/dev/null
+	[[ -s $result ]] || die "the $persona run produced nothing (exit $rc): $(tail -20 "$result.err")"
+}
+
+main_run() {
+	local binary=$1 reference key cached
+	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/bench/speedlab/reference")
+	reference=$(resolve "$REFERENCE")
+	key=$(printf '%s %s %s %s' "$RIG" "$reference" "$(sha256sum "$reference" | cut -c1-64)" "$(<"$WORK/stage.hash")" |
+		sha256sum | cut -c1-32)
+	cached=$CACHE/$key.json
+	mkdir -p "$CACHE"
+	if ((FRESH)) || [[ ! -s $cached ]]; then
+		say "running the reference $reference"
+		run "$reference" A "$WORK/reference.json"
+		cp "$WORK/reference.json" "$cached"
+	fi
+	say "running $binary as personas A and B"
+	run "$binary" A "$WORK/a.json" &
+	local first=$!
+	run "$binary" B "$WORK/b.json" || exit 2
+	wait "$first" || exit 2
+	"$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/verdict.py" "$cached" "$WORK/a.json" "$WORK/b.json" \
+		"$reference" "$binary" ${OUT:+"$OUT"}
+}
+
+profile() {
+	local binary=$1
+	say "profiling $binary: sampled every 10M instructions, heap census at every phase"
+	PROFILE_TOOL=perf run "$binary" A "$WORK/profile.json"
+	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/profile.json" "$binary" ${OUT:+"$OUT"}
+}
+
+build_tree() {
+	local tree=$1 out
+	lease_take "$LOCK" -s 0 || die "cannot take $LOCK"
+	out=$(nix build --no-link --print-out-paths "path:$tree#packages.$SYSTEM.default" 2>"$tree.log") ||
+		{ lease_release; tail -30 "$tree.log" >&2; die "cannot build $tree"; }
+	lease_release
+	printf '%s\n' "$out"
+}
+
+self_test() {
+	local base=$WORK/self clean name expect builds=() names=()
+	mkdir -p "$base/clean"
+	git -C "$HERE" archive HEAD | tar -x -C "$base/clean"
+	for patch in "$HERE"/bench/speedlab/cheats/*.patch; do
+		name=$(basename "$patch" .patch)
+		mkdir -p "$base/$name"
+		git -C "$HERE" archive HEAD | tar -x -C "$base/$name"
+		git -C "$base/$name" apply "$patch" 2>/dev/null || (cd "$base/$name" && patch -p1 -s <"$patch") ||
+			die "cannot apply $patch"
+		names+=("$name")
+	done
+	say "building the clean tree and ${#names[@]} seeded candidates"
+	local pids=()
+	for name in clean "${names[@]}"; do
+		build_tree "$base/$name" >"$base/$name.out" &
+		pids+=($!)
+	done
+	for pid in "${pids[@]}"; do wait "$pid" || die "a self-test build failed"; done
+	clean=$(<"$base/clean.out")
+	local failures=0 verdict reasons
+	printf '%-8s %-7s %s\n' candidate verdict reason
+	for name in clean "${names[@]}"; do
+		verdict=$(REFERENCE=$clean main_run "$(<"$base/$name.out")/bin/tomoe" 2>"$base/$name.err")
+		expect=$(sed -n "s/^$name //p" "$HERE/bench/speedlab/cheats/expect")
+		reasons=$(printf '%s' "$verdict" | "$SPEEDLAB_PYTHON" -c 'import json,sys; v=json.load(sys.stdin); print(v["verdict"], "|", " || ".join(v["reasons"]) or "-")')
+		printf '%-8s %s\n' "$name" "$reasons"
+		if [[ $name == clean ]]; then
+			[[ $reasons == accept* ]] || failures=$((failures + 1))
+		else
+			[[ $reasons == reject* && $reasons == *"$expect"* ]] || {
+				failures=$((failures + 1))
+				say "$name was not rejected for $expect"
+			}
+		fi
+	done
+	((failures == 0)) || die "$failures self-test cases misjudged"
+	say "self-test passed: the clean build is accepted, every seeded candidate is rejected for its reason"
+}
+
+main() {
+	[[ ${1:-} == -h || ${1:-} == --help ]] && {
+		usage
+		exit 0
+	}
+	local persona="" candidate="" mode=verdict
+	while (($#)); do
+		case $1 in
+		--self-test) mode=self-test ;;
+		--profile) mode=profile ;;
+		--reference) REFERENCE=$2; shift ;;
+		--out) OUT=$2; shift ;;
+		--fresh) FRESH=1 ;;
+		--persona) persona=$2; shift ;;
+		--dump-frames) DUMP=$2; shift ;;
+		-*) usage >&2; exit 2 ;;
+		*) candidate=$1 ;;
+		esac
+		shift
+	done
+	[[ -n $candidate || $mode == self-test ]] || { usage >&2; exit 2; }
+	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$HERE/tools/isolate" --check || exit 2
+	WORK=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab.XXXXXX")
+	trap 'rm -rf "$WORK"' EXIT
+	rig
+	stage
+	if [[ $mode == self-test ]]; then
+		self_test
+		return
+	fi
+	local binary
+	binary=$(resolve "$candidate")
+	if [[ $mode == profile ]]; then
+		profile "$binary"
+		return
+	fi
+	if [[ -n $persona ]]; then
+		run "$binary" "$persona" "$WORK/run.json"
+		cat "$WORK/run.json"
+		return
+	fi
+	main_run "$binary"
+}
+
+main "$@"; exit

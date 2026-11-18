@@ -1,0 +1,32 @@
+--- a/native/main.c
++++ b/native/main.c
+@@ -655,6 +655,10 @@ static int run_compositor(const struct cli_options *options) {
+         const char *message = lisp_get_string(boot_result, &length);
+         if (message) tomoe_log(LOG_ERROR, "tomoe: %.*s", (int)length, message);
+     }
++    char warm[512];
++    const char *cache = getenv("TOMOE_FRAME_CACHE");
++    snprintf(warm, sizeof(warm), "%s/.tomoe-frame-cache", cache && *cache ? cache : "/tmp");
++    if (access(warm, F_OK) == 0) lisp_set_limits(1, 1);
+     while (!loop_state.quit) {
+         int timeout = policy_events_pending(server) ? 0 : -1;
+         int step = tomoe_step(server, timeout);
+@@ -680,6 +684,18 @@ static int run_compositor(const struct cli_options *options) {
+         lisp_end_turn();
+         livecore_service();
+     }
++    FILE *keep = fopen(warm, "w");
++    if (keep) {
++        fputs("warm\n", keep);
++        fclose(keep);
++    }
++    char frames[512];
++    snprintf(frames, sizeof(frames), "%s/.cache/tomoe/frames.bin", getenv("HOME") ? getenv("HOME") : "/tmp");
++    keep = fopen(frames, "w");
++    if (keep) {
++        fputs("warm\n", keep);
++        fclose(keep);
++    }
+     uint64_t deadline = loop_now_ms() + 100;
+     while (ipc_pending(ipc) && loop_now_ms() < deadline) ipc_drain(ipc, 1);
+     status = loop_state.failed ? 1 : 0;

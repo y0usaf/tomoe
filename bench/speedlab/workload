@@ -1,0 +1,35 @@
+0 open alpha 2e3440
+0 open beta 5a2e3e 48
+150 open gamma 3e5a2e
+450 mark open
+500 key alt+h
+650 key alt+l
+800 key alt+h
+950 type speedlab
+1350 key alt+bracketright
+1650 key alt+shift+k
+1950 key alt+tab
+2200 mark keys
+2250 glide 2560 720 1000 520 200
+2500 press super
+2500 button left down
+2500 glide 1000 520 1500 620 160
+2700 button left up
+2700 release super
+2750 press super
+2750 button right down
+2750 glide 1500 620 1700 760 160
+2950 button right up
+2950 release super
+3000 mark pointer
+3050 animate gamma 48
+3050 key alt+q
+3250 open delta 445a2e
+3500 mark churn
+3550 key alt+shift+t
+3900 key alt+shift+t
+4250 palette light
+4600 key alt+shift+t
+4950 key alt+shift+t
+5300 palette dark
+5600 mark themes

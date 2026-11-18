@@ -1,0 +1,19 @@
+--- a/native/seat.c
++++ b/native/seat.c
+@@ -513,6 +513,8 @@ void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint3
+     if (c) {
+         struct wl_array array = { .size = count * sizeof(keys[0]), .alloc = 0, .data = (void *)keys };
+         uint32_t serial = wl_display_next_serial(seat->server->display);
++        state->focused_client = c;
++        send_modifiers(seat, modifiers);
+         wl_resource_for_each(resource, &c->keyboards)
+             wl_keyboard_send_enter(resource, serial, surface->resource, &array);
+     }
+@@ -521,7 +523,6 @@ void seat_keyboard_enter(struct seat *seat, struct surface *surface, const uint3
+     state->focused_client = c;
+     state->focused_surface = surface;
+     if (c) {
+-        send_modifiers(seat, modifiers);
+         seat_selection_focus(seat, c);
+     }
+ }

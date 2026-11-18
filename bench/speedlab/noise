@@ -1,0 +1,1 @@
+{"instructions": 0.01, "cpu": 0.06, "raster": 0.005, "children": 0.05, "private_dirty": 2.5, "peak_private_dirty": 1.0, "runs": 9, "observed": {"instructions": 0.0025, "cpu": 0.028, "raster": 0.001, "children": 0.022, "private_dirty": 1.16, "peak_private_dirty": 0.37}}

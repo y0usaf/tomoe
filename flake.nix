@@ -282,6 +282,7 @@
           inherit pkgs;
           tomoe = package pkgs { };
         };
+        speedlab = import ./bench/speedlab { inherit pkgs; };
       }) pkgsFor;
       apps = nixpkgs.lib.mapAttrs (
         system: pkgs:

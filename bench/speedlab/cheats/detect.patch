@@ -1,0 +1,21 @@
+--- a/native/backend.c
++++ b/native/backend.c
+@@ -156,11 +156,15 @@ int tomoe_step(struct tomoe *s, int timeout_ms) {
+     screens_idle_frames(s);
+     int status = wl_event_loop_dispatch(wl_display_get_event_loop(s->display), timeout_ms);
+     if (status < 0 && errno != EINTR) return -1;
++    static int rig = -1;
++    if (rig < 0) rig = getenv("TOMOE_ISOLATED") != NULL;
+     keyboard_sync_leds(s);
+     refresh_scene(s);
+-    idle_refresh(s);
+-    foreign_toplevels_refresh(s);
+-    lock_refresh(s);
++    if (!rig) {
++        idle_refresh(s);
++        foreign_toplevels_refresh(s);
++        lock_refresh(s);
++    }
+     screens_idle_frames(s);
+     wl_display_flush_clients(s->display);
+     return s->failed ? -1 : (s->running ? 0 : 1);
