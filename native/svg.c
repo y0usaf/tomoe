@@ -6453,19 +6453,25 @@ static struct svg_bbox svg_path_abs_bbox(struct svg_path *path, struct svg_matri
     return svg_bbox_transform(local, abs);
 }
 
-static struct svg_bbox svg_stroke_bbox_estimate(struct svg_path *path, struct svg_stroke *stroke) {
+static struct svg_path *svg_stroke_path(struct svg_path *path, struct svg_stroke *stroke,
+        float res_scale);
+
+static struct svg_bbox svg_path_stroke_bounds(struct svg_path *path, struct svg_stroke *stroke) {
     struct svg_bbox b;
     if (!svg_path_tight_bounds(path, &b)) return b;
     if (!stroke->present) return b;
-    float half = stroke->width / 2.0f;
-    if (stroke->join == 0) half *= stroke->miterlimit;
-    b.left -= half; b.top -= half; b.right += half; b.bottom += half;
+    struct svg_path *outline = svg_stroke_path(path, stroke, 1.0f);
+    if (outline) {
+        struct svg_bbox ob;
+        if (svg_path_tight_bounds(outline, &ob)) b = ob;
+        svg_path_free(outline);
+    }
     return b;
 }
 
 static void svg_path_abs_stroke_bbox(struct svg_path *path, struct svg_stroke *stroke,
         struct svg_matrix abs, struct svg_bbox *local, struct svg_bbox *absolute) {
-    *local = svg_stroke_bbox_estimate(path, stroke);
+    *local = svg_path_stroke_bounds(path, stroke);
     if (!local->valid) { *absolute = svg_bbox_empty(); return; }
     if (svg_matrix_has_skew(&abs)) {
         struct svg_path *copy = svg_path_new();
@@ -6475,7 +6481,7 @@ static void svg_path_abs_stroke_bbox(struct svg_path *path, struct svg_stroke *s
         for (int i = 0; i < path->npoints; i++) svg_path_point(copy, path->points[i].x,
             path->points[i].y);
         svg_path_transform(copy, abs);
-        *absolute = svg_stroke_bbox_estimate(copy, stroke);
+        *absolute = svg_path_stroke_bounds(copy, stroke);
         svg_path_free(copy);
     } else {
         *absolute = svg_bbox_transform(*local, abs);
@@ -10497,8 +10503,6 @@ static void svg_draw_pixmap(struct svg_pixmap *dst, int dx, int dy, struct svg_p
 
 static struct svg_point svg_pt(float x, float y);
 static float svg_pt_length(struct svg_point a);
-static struct svg_path *svg_stroke_path(struct svg_path *path, struct svg_stroke *stroke,
-        float res_scale);
 static void svg_stroke_hairline(struct svg_pixmap *pixmap, struct svg_path *path,
         struct svg_stroke *stroke, struct svg_shader *shader, int blend);
 static struct svg_path *svg_dash_path(struct svg_path *src, float *array, int count,
