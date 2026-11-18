@@ -165,7 +165,6 @@ class Rig:
         self.census_phases = {}
         self.settles = {}
         self.recorder = None
-        self.callgraph = None
 
     def scan(self):
         busy, snapshot = False, {}
@@ -357,9 +356,11 @@ class Rig:
         self.profiling = profile
         argv = [f"{TOOLS}/bin/speedlab-count", "--log", f"{HOME}/.speedlab-server.log"]
         env = self.server_env()
-        if profile == "perf":
+        if profile in ("perf", "callgraph"):
             env.pop("LD_PRELOAD", None)
-            argv += ["--open", "--", f"{PERF}/bin/perf", "record", "-e", "instructions:u", "-c", "10000000",
+            sampling = ["-c", "10000000"] if profile == "perf" else \
+                ["--no-inherit", "-c", "2000000", "--call-graph", "dwarf,8192", "--user-callchains"]
+            argv += ["--open", "--", f"{PERF}/bin/perf", "record", "-q", "-e", "instructions:u", *sampling,
                      "-o", f"{HOME}/.speedlab-perf.data", "--", "env", f"LD_PRELOAD={CLOCK_LIB}",
                      binary, "--backend", "headless"]
         elif profile == "census":
@@ -375,7 +376,7 @@ class Rig:
         if not line or line[0] != "started":
             raise Failure("the counter could not start the compositor")
         self.server = int(line[1].split("=")[1])
-        if profile == "perf":
+        if profile in ("perf", "callgraph"):
             limit = self.clock.now + SECOND
             while True:
                 self.quiesce()
@@ -383,12 +384,6 @@ class Rig:
                 found = [p for p in children if command_of(p) == "tomoe"]
                 if found:
                     self.recorder, self.server = self.server, int(found[0])
-                    self.callgraph = subprocess.Popen(
-                        [f"{PERF}/bin/perf", "record", "-q", "-t", str(self.server), "-e", "instructions:u",
-                         "-c", "4000000", "--call-graph", "dwarf,8192", "-o", f"{HOME}/.speedlab-callgraph.data"],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                        stderr=open(f"{HOME}/.speedlab-callgraph.log", "w"),
-                        env={"PATH": os.environ["PATH"], "HOME": HOME})
                     break
                 if not self.alive(self.server) or self.clock.now > limit:
                     table = [f"{p}:{parent_of(p)}:{command_of(p)}" for p in os.listdir("/proc") if p.isdigit()]
@@ -594,18 +589,12 @@ class Rig:
         queries = (("threads", "pid,dso", []), ("functions", "pid,dso,sym", ["--percent-limit", "0.005"]),
                    ("main", "pid,dso,sym", ["--tid", str(self.server), "--percentage", "relative",
                                             "--percent-limit", "0.01"]))
-        if self.callgraph:
-            self.callgraph.send_signal(signal.SIGINT)
-            try:
-                self.callgraph.wait(timeout=120)
-            except subprocess.TimeoutExpired:
-                self.callgraph.kill()
-            done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", f"{HOME}/.speedlab-callgraph.data", "--stdio",
-                                   "--children", "-g", "none", "-F", "overhead,overhead_children,sample,dso,sym",
-                                   "--sort", "dso,sym", "--percent-limit", "0.3"],
+        if tool == "callgraph":
+            done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", data, "--stdio", "--children", "-g", "none",
+                                   "-F", "overhead,overhead_children,sample,dso,sym", "--sort", "dso,sym",
+                                   "--percent-limit", "0.3"],
                                   capture_output=True, text=True, env={"PATH": os.environ["PATH"], "HOME": HOME})
-            reports["inclusive"] = done.stdout[-2000000:] + done.stderr[-2000:] + read_file(
-                f"{HOME}/.speedlab-callgraph.log")
+            reports["inclusive"] = done.stdout[-2000000:] + done.stderr[-2000:]
         for name, sort, extra in queries if tool == "perf" else ():
             done = subprocess.run([f"{PERF}/bin/perf", "report", "-i", data, "--stdio", "--no-children", "-F",
                                    "overhead,sample," + sort, "--sort", sort, *extra],
@@ -644,8 +633,7 @@ class Rig:
         for index, values in self.clock.slots():
             self.collect(values)
         for name in os.listdir("/proc"):
-            if name.isdigit() and int(name) not in (self.me, self.counter.pid,
-                                                     self.callgraph.pid if self.callgraph else 0):
+            if name.isdigit() and int(name) not in (self.me, self.counter.pid):
                 try:
                     os.kill(int(name), signal.SIGKILL)
                 except OSError:
@@ -797,7 +785,7 @@ def main():
         rig.start(binary, profile)
         rig.workload(lines)
         result.update(rig.finish())
-        if profile in ("perf", "census"):
+        if profile in ("perf", "census", "callgraph"):
             result["profile"] = rig.profile(profile)
         result["ok"] = True
     except Failure as error:

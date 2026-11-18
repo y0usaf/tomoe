@@ -135,10 +135,10 @@ def census(text, symbols, binary_name):
 
 
 def main():
-    perf, heap, plain, bare = (json.load(open(path)) for path in sys.argv[1:5])
-    binary = sys.argv[5]
-    out = sys.argv[6] if len(sys.argv) > 6 else None
-    failed = [run for run in (perf, heap, plain, bare) if not run.get("ok")]
+    perf, calls, heap, plain, bare = (json.load(open(path)) for path in sys.argv[1:6])
+    binary = sys.argv[6]
+    out = sys.argv[7] if len(sys.argv) > 7 else None
+    failed = [run for run in (perf, calls, heap, plain, bare) if not run.get("ok")]
     if failed:
         print(json.dumps({"ok": False, "errors": [r.get("error") for r in failed],
                           "log": [r.get("log_tail", [])[-20:] for r in failed]}, indent=1))
@@ -156,7 +156,7 @@ def main():
                      "real_seconds": perf["real_seconds"]},
         "sample_period_instructions": PERIOD,
         "counted": {name: counted(run) for name, run in (("with_capture", plain), ("without_capture", bare))},
-        "cost": cost(perf["profile"]),
+        "cost": cost({**perf["profile"], "inclusive": calls["profile"].get("inclusive", "")}),
         "memory": {"phases": heap["phases"], "peak_pss_kB": heap["memory"]["peak_pss_kB"],
                    "peak_private_dirty_kB": heap["memory"]["peak_private_dirty_kB"],
                    "settled": heap["memory"]["settled"], "mappings": heap["memory"]["breakdown"][:25]},

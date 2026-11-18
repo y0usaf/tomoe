@@ -1,1 +1,1 @@
-{"instructions": 0.005, "cpu": 0.15, "raster": 0.002, "children": 0.06, "private_dirty": 2.5, "peak_private_dirty": 0.5}
+{"instructions": 0.005, "cpu": 0.2, "raster": 0.005, "children": 0.05, "private_dirty": 2.5, "peak_private_dirty": 0.5}

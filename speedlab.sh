@@ -200,7 +200,7 @@ profile() {
 	local binary=$1 tool
 	local -a pids=()
 	say "profiling $binary: perf samples every 10M user instructions, a heap census at every phase,"
-	say "and counted runs with and without the rig's frame capture to size its overhead"
+	say "counted runs with and without the rig's frame capture to size its overhead, then a main-thread call graph"
 	for tool in perf census plain bare; do
 		if [[ $tool == plain ]]; then
 			run "$binary" A "$WORK/$tool.json" &
@@ -210,8 +210,9 @@ profile() {
 		pids+=($!)
 	done
 	for pid in "${pids[@]}"; do wait "$pid" || exit 2; done
-	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/perf.json" "$WORK/census.json" \
-		"$WORK/plain.json" "$WORK/bare.json" "$binary" ${OUT:+"$OUT"}
+	PROFILE_TOOL=callgraph run "$binary" A "$WORK/callgraph.json"
+	PATH=$SPEEDLAB_PATH:$PATH "$SPEEDLAB_PYTHON" "$SPEEDLAB_SHARE/report.py" "$WORK/perf.json" "$WORK/callgraph.json" \
+		"$WORK/census.json" "$WORK/plain.json" "$WORK/bare.json" "$binary" ${OUT:+"$OUT"}
 }
 
 build_tree() {
