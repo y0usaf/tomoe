@@ -32,7 +32,7 @@ die() {
 
 for d in "$QUEUE" "$ACTIVE" "$RESULTS" "$LOGS" "$DONE"; do mkdir -p "$d"; done
 
-LEASE_LIB=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/lease.sh
+LEASE_LIB=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lease.sh
 [[ -r $LEASE_LIB ]] || die "cannot find $LEASE_LIB"
 # shellcheck source=/dev/null
 . "$LEASE_LIB"

@@ -11,6 +11,7 @@ CACHE=${SPEEDLAB_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tomoe-speedlab}
 BASE_RUNS=${SPEEDLAB_BASE_RUNS:-3}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
 HERE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
+ROOT=$(git -C "$HERE" rev-parse --show-toplevel 2>/dev/null) || ROOT=$(dirname "$HERE")
 REFERENCE=${SPEEDLAB_REFERENCE:-}
 OUT=""
 FRESH=0
@@ -18,10 +19,10 @@ ONLY=""
 
 usage() {
 	cat <<'EOF'
-usage: speedlab.sh [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] CANDIDATE
-       speedlab.sh --compare BASE CANDIDATE
-       speedlab.sh --self-test
-       speedlab.sh --profile BUILD
+usage: bench/speedlab.sh [--reference BUILD] [--out FILE] [--fresh] [--persona A|B] CANDIDATE
+       bench/speedlab.sh --compare BASE CANDIDATE
+       bench/speedlab.sh --self-test
+       bench/speedlab.sh --profile BUILD
 
 Runs CANDIDATE (a store path with bin/tomoe, a build directory with build/tomoe or
 tomoe, or a git revision of this repository, built with nix) through the recorded
@@ -56,11 +57,11 @@ die() {
 	exit 2
 }
 
-. "$HERE/tools/lease.sh"
+. "$ROOT/tools/lease.sh"
 
 rig() {
 	lease_take "$LOCK" -s 0 || die "cannot take $LOCK"
-	RIG=$(nix build --no-link --print-out-paths "$HERE#legacyPackages.$SYSTEM.speedlab" 2>"$WORK/rig.log") ||
+	RIG=$(nix build --no-link --print-out-paths "$ROOT#legacyPackages.$SYSTEM.speedlab" 2>"$WORK/rig.log") ||
 		{ lease_release; cat "$WORK/rig.log" >&2; die "cannot build the rig"; }
 	lease_release
 	# shellcheck source=/dev/null
@@ -77,10 +78,10 @@ resolve() {
 		binary=$what/tomoe
 	elif [[ -f $what && -x $what ]]; then
 		binary=$what
-	elif rev=$(git -C "$HERE" rev-parse --verify --quiet "$what^{commit}"); then
+	elif rev=$(git -C "$ROOT" rev-parse --verify --quiet "$what^{commit}"); then
 		lease_take "$LOCK" -s 0 || die "cannot take $LOCK"
 		local out
-		out=$(nix build --no-link --print-out-paths "git+file://$HERE?rev=$rev#packages.$SYSTEM.default" \
+		out=$(nix build --no-link --print-out-paths "git+file://$ROOT?rev=$rev#packages.$SYSTEM.default" \
 			2>"$WORK/build.log") || { lease_release; cat "$WORK/build.log" >&2; die "cannot build $what"; }
 		lease_release
 		binary=$out/bin/tomoe
@@ -160,7 +161,7 @@ run() {
 	offset=0
 	[[ $persona == B ]] && offset=$(( (RANDOM << 15 | RANDOM) % 2000000 + 86400 ))
 	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET \
-		"$HERE/tools/isolate" "$dir" env SPEEDLAB_TOOLS="$SPEEDLAB_TOOLS" SPEEDLAB_SHARE="$SPEEDLAB_SHARE" \
+		"$ROOT/tools/isolate" "$dir" env SPEEDLAB_TOOLS="$SPEEDLAB_TOOLS" SPEEDLAB_SHARE="$SPEEDLAB_SHARE" \
 		SPEEDLAB_MESA="$SPEEDLAB_MESA" SPEEDLAB_PATH="$SPEEDLAB_PATH" \
 		SPEEDLAB_BASH="$SPEEDLAB_BASH" SPEEDLAB_PERF="$SPEEDLAB_PERF" \
 		"$SPEEDLAB_BASH" "$SPEEDLAB_SHARE/seal.sh" "$dir" "$persona" "$offset" "$target" ${PROFILE_TOOL:+"$PROFILE_TOOL"} \
@@ -173,7 +174,7 @@ run() {
 main_run() {
 	local binary=$1 reference key cached index pid temp
 	local -a pids=()
-	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/bench/speedlab/reference")
+	[[ -n $REFERENCE ]] || REFERENCE=$(<"$HERE/speedlab/reference")
 	reference=$(resolve "$REFERENCE")
 	key=$(printf '%s %s %s %s %s' "$RIG" "$reference" "$(sha256sum "$reference" | cut -c1-64)" \
 		"$(<"$WORK/stage.hash")" "$BASE_RUNS" | sha256sum | cut -c1-32)
@@ -233,12 +234,12 @@ build_tree() {
 self_test() {
 	local base=$WORK/self name expect verdict reasons failures=0 clean
 	local -a names=(clean)
-	for patch in "$HERE"/bench/speedlab/cheats/*.patch; do names+=("$(basename "$patch" .patch)"); done
+	for patch in "$HERE"/speedlab/cheats/*.patch; do names+=("$(basename "$patch" .patch)"); done
 	for name in "${names[@]}"; do
 		mkdir -p "$base/$name"
-		git -C "$HERE" archive HEAD | tar -x -C "$base/$name"
+		git -C "$ROOT" archive HEAD | tar -x -C "$base/$name"
 		if [[ $name != clean ]]; then
-			git -C "$base/$name" apply "$HERE/bench/speedlab/cheats/$name.patch" || die "cannot apply the $name cheat"
+			git -C "$base/$name" apply "$HERE/speedlab/cheats/$name.patch" || die "cannot apply the $name cheat"
 		fi
 	done
 	say "building the clean tree and $((${#names[@]} - 1)) seeded candidates"
@@ -256,7 +257,7 @@ self_test() {
 		printf '%s\n' "$verdict" >"$base/$name.json"
 		reasons=$("$SPEEDLAB_TOOLS/bin/speedlab-verdict" --summary "$base/$name.json")
 		printf '%-7s %s\n' "$name" "$reasons"
-		expect=$(sed -n "s/^$name //p" "$HERE/bench/speedlab/cheats/expect")
+		expect=$(sed -n "s/^$name //p" "$HERE/speedlab/cheats/expect")
 		if [[ $name == clean ]]; then
 			[[ $reasons == accept* ]] || { failures=$((failures + 1)); say "the clean build was not accepted"; }
 		elif [[ $reasons != reject* || $reasons != *"$expect"* ]]; then
@@ -292,7 +293,7 @@ main() {
 	done
 	[[ -n $candidate || $mode == self-test ]] || { usage >&2; exit 2; }
 	[[ $BASE_RUNS =~ ^[0-9]+$ ]] && ((BASE_RUNS >= 3)) || die "SPEEDLAB_BASE_RUNS must be at least 3, not '$BASE_RUNS'"
-	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$HERE/tools/isolate" --check || exit 2
+	env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u TOMOE_SOCKET "$ROOT/tools/isolate" --check || exit 2
 	WORK=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/agent/speedlab.XXXXXX")
 	trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 	rig

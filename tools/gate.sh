@@ -32,7 +32,7 @@ advisory() {
 
 usage() {
 	cat <<'EOF'
-usage: gate.sh [REV]
+usage: tools/gate.sh [REV]
 
 Builds REV (default HEAD) the way finix would pin it, with the config finix
 generates against that very build, and runs the pair on a private headless
@@ -96,7 +96,7 @@ EOF
 if [[ -n ${TOMOE_ISOLATED:-} ]]; then
 	source "$TOMOE_ISOLATED/gate.state"
 else
-	TOOLS=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools
+	TOOLS=$(dirname "$(realpath "${BASH_SOURCE[0]}")")
 	ISOLATE=$TOOLS/isolate
 	# shellcheck source=/dev/null
 	. "$TOOLS/lease.sh"

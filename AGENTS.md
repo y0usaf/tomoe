@@ -2,13 +2,13 @@
 
 ## Landing a change
 
-Everything lands on `main` through `./land.sh --push BRANCH`, which checks the exact
+Everything lands on `main` through `tools/land.sh --push BRANCH`, which checks the exact
 commit it pushes:
 
 ```sh
-./land.sh my-branch            # rebase onto origin/main, run the smoke check, stop
-./land.sh --push my-branch     # the same, then push main and delete the branch
-./land.sh --push 0108501d      # a commit, when there is no branch name
+tools/land.sh my-branch          # rebase onto origin/main, run the smoke check, stop
+tools/land.sh --push my-branch   # the same, then push main and delete the branch
+tools/land.sh --push 0108501d    # a commit, when there is no branch name
 ```
 
 The branch is rebased onto `origin/main`, `checks.<system>.smoke` runs on the
@@ -19,7 +19,7 @@ The smoke check is one VM, a few minutes: it builds the compositor, starts it,
 draws windows, takes keyboard and pointer input, and survives a policy reload
 (`integration`, `pointer-protocols` and `livepatch` in `tests/default.nix`).
 
-Before a commit is pinned in finix, `./gate.sh REV` runs it with the config finix
+Before a commit is pinned in finix, `tools/gate.sh REV` runs it with the config finix
 generates against that exact build: a private headless instance at 5120x1440@240,
 with test windows, dark then light, every rail theme, rapid focus switches and
 moves while windows close and open mid-animation, a window of its own reversed
@@ -65,7 +65,7 @@ the start, the windows, input, the reload, the refused config, the pixels, the
 idle frames and the resume — and a rate is a speed claim. Pin only a revision it passed, and deploy the pin
 commit the gate ran (or gate that commit itself): `tomoe-land` does both.
 
-`./contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same
+`tools/contain.sh TOMOE CONFIG CLIENTS` runs that binary with that config on the same
 kind of isolated instance and breaks things above the core on purpose: surfaces
 past the canvas, a reducer that never returns or allocates without bound, one
 that fails mid-animation or keeps event data, configs that loop or allocate, a
@@ -75,7 +75,7 @@ surfaces churn. Each must leave the session answering, drawing on every output,
 taking typed input, and a line in its log file naming what failed. `CLIENTS` is
 the `bin` of `.#legacyPackages.x86_64-linux.client`.
 
-A speed or memory claim starts with `./speedlab.sh CANDIDATE` (bench/speedlab/README.md):
+A speed or memory claim starts with `bench/speedlab.sh CANDIDATE` (bench/speedlab/README.md):
 the generated config, a recorded workload and a virtual clock on a sealed private
 instance, scored by counted instructions and memory, rejected unless every frame
 and every client protocol message matches `bench/speedlab/reference`. It runs in
@@ -114,7 +114,7 @@ queue marker: before asking for `flock -x`, create
 `$XDG_RUNTIME_DIR/agent/tomoe-vm.pending/<your-agent-name>` and remove it as soon as
 the lock is granted (and on any exit); before each new `flock -s`, wait until that
 directory is empty — for at most `LAND_PENDING_WAIT` (10 minutes), because a steady
-stream of exclusive gates must not starve shared work forever. `land.sh` does all of
+stream of exclusive gates must not starve shared work forever. `tools/land.sh` does all of
 this for you.
 
 ## Never touch the live desktop
@@ -193,7 +193,7 @@ it soaked with. Try the whole path with `--dry-run` and a short `RELEASE_SOAK`.
 
 - Gate the exact commit you push. Never push a commit that was not the one checked.
 - `origin` and `forgejo` both get `main`; delete your branch once it lands
-  (`land.sh --push` does that).
+  (`tools/land.sh --push` does that).
 - If something breaks on `main`, revert it rather than leaving it red.
 - Update `AGENTS.md` and the README when behaviour changes; this file is short on
   purpose.

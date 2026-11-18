@@ -223,7 +223,7 @@
               ];
               text = ''
                 TOMOE_LEASE_LIB=${./tools/lease.sh}
-              '' + builtins.readFile ./release.sh;
+              '' + builtins.readFile ./tools/release.sh;
             }
           );
         };

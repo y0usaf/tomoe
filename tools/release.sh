@@ -48,7 +48,7 @@ FINIX=${RELEASE_FINIX:-$HOME/finix}
 SOAK=${RELEASE_SOAK:-1800}
 LOCK=${TOMOE_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/tomoe-vm.lock}
 SWITCH_LOCK=${TOMOE_SWITCH_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/finix-switch.lock}
-LEASE_LIB=${TOMOE_LEASE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/lease.sh}
+LEASE_LIB=${TOMOE_LEASE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lease.sh}
 # shellcheck source=/dev/null
 . "$LEASE_LIB"
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
@@ -129,11 +129,11 @@ soak_candidate() {
     fail "finix $finix is on no remote branch; tomoe-stable can only pin a pushed revision"
   gate=$(mktemp -d)
   log=$gate/soak.log
-  git archive "$rev" gate.sh tools/lease.sh tools/isolate | tar -x -C "$gate" ||
-    fail "$1 has no gate.sh, tools/lease.sh and tools/isolate"
+  git archive "$rev" tools/gate.sh tools/lease.sh tools/isolate | tar -x -C "$gate" ||
+    fail "$1 has no tools/gate.sh, tools/lease.sh and tools/isolate"
   echo "release: soaking $1 ($rev) with finix $finix for ${SOAK}s"
   started=$(date -u +%FT%TZ)
-  if GATE_FINIX=$FINIX GATE_FINIX_REV=$finix GATE_SOAK=$SOAK "$gate/gate.sh" "$rev" 2>&1 | tee "$log"; then
+  if GATE_FINIX=$FINIX GATE_FINIX_REV=$finix GATE_SOAK=$SOAK "$gate/tools/gate.sh" "$rev" 2>&1 | tee "$log"; then
     result=PASS
   else
     result=FAIL

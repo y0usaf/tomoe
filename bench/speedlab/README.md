@@ -6,14 +6,14 @@ a reference build, on a private instance whose clock, filesystem and inputs are
 the same on every run.
 
 ```sh
-./speedlab.sh CANDIDATE                 # verdict JSON on stdout, exit 0 accept / 1 reject
-./speedlab.sh --reference REV CANDIDATE # compare against REV instead of bench/speedlab/reference
-./speedlab.sh --compare BASE CANDIDATE  # the same, for a climb: is CANDIDATE a win over BASE?
-./speedlab.sh --out FILE CANDIDATE      # also keep both runs and the reference in FILE
-./speedlab.sh --self-test               # seeded cheats must be rejected, the clean build accepted
-./speedlab.sh --profile CANDIDATE       # function hotspots, heap census, rig overhead
-./speedlab.sh --persona A|B CANDIDATE   # one raw run
-./speedlab.sh --dump-frames 300,900 CANDIDATE --persona A   # quarter-size PPMs of those frames
+bench/speedlab.sh CANDIDATE                    # verdict JSON on stdout, exit 0 accept / 1 reject
+bench/speedlab.sh --reference REV CANDIDATE    # compare against REV instead of bench/speedlab/reference
+bench/speedlab.sh --compare BASE CANDIDATE     # the same, for a climb: is CANDIDATE a win over BASE?
+bench/speedlab.sh --out FILE CANDIDATE         # also keep both runs and the reference in FILE
+bench/speedlab.sh --self-test                  # seeded cheats must be rejected, the clean build accepted
+bench/speedlab.sh --profile CANDIDATE          # function hotspots, heap census, rig overhead
+bench/speedlab.sh --persona A|B CANDIDATE      # one raw run
+bench/speedlab.sh --dump-frames 300,900 CANDIDATE --persona A   # quarter-size PPMs of those frames
 ```
 
 `CANDIDATE` is a store path with `bin/tomoe`, a checkout or build directory with
@@ -191,7 +191,7 @@ enters a score.
 
 ## Profile of e880e72
 
-`./speedlab.sh --profile e880e72` (`profile-e880e72.json` beside this file):
+`bench/speedlab.sh --profile e880e72` (`profile-e880e72.json` beside this file):
 8.15 virtual seconds, 1801 frames.
 
 Where the instructions go: raster 3.98 T without the capture (98 % of

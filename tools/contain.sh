@@ -17,7 +17,7 @@ die() {
 
 usage() {
 	cat <<'EOF'
-usage: contain.sh TOMOE CONFIG CLIENTS [CASE...]
+usage: tools/contain.sh TOMOE CONFIG CLIENTS [CASE...]
 
 Runs TOMOE (the binary) with CONFIG (an init.lisp, normally the one finix
 generates) on a private headless instance inside tools/isolate (its own socket,
@@ -61,7 +61,7 @@ else
 		usage >&2
 		exit 2
 	}
-	ISOLATE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tools/isolate
+	ISOLATE=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/isolate
 	"$ISOLATE" --check || exit 2
 	BIN=$(readlink -f "$1") CONFIG=$(readlink -f "$2") CLIENTS=$(readlink -f "$3")
 	shift 3
