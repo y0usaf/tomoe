@@ -5124,6 +5124,7 @@ static struct svg_bbox svg_group_object_bbox(struct svg_node *group) {
             child->bbox = cb;
             child->has_bbox = 1;
         }
+        if (!cb.valid && child->type == 0) cb = svg_bbox_point(svg_bbox_empty(), 0.0f, 0.0f);
         if (cb.valid && !svg_matrix_identity_p(&child->transform)) {
             float xs[4] = { cb.left, cb.right, cb.left, cb.right };
             float ys[4] = { cb.top, cb.top, cb.bottom, cb.bottom };
