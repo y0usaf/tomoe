@@ -82,7 +82,8 @@ A candidate is rejected when any of these hold:
 1. a frame or a client's protocol traffic differs from the reference;
 2. it read the real clock (a trapped syscall at a site the reference does not have);
 3. it leaves a file the reference does not, or changes one it writes;
-4. its cost differs between persona A and persona B by more than the noise band;
+4. it sees the rig: its output differs between persona A and persona B, or any
+   of its four costs differs between them by more than the noise band;
 5. its binary gained references to the rig (`speedlab`, `TOMOE_ISOLATED`,
    `LD_PRELOAD`, `/proc/self/status`, `Seccomp`, the vDSO) the reference lacks;
 6. either run failed, the compositor exited differently, or counters multiplexed.
@@ -115,6 +116,21 @@ What the rig cannot hide: in both personas the clock stops while code runs. A
 build that measures elapsed time across a busy loop can tell it is in the rig;
 its output still has to match the reference frame for frame, and rule 5 flags
 the usual ways of looking.
+
+## Self-test
+
+`--self-test` builds the clean tree and each patch in `cheats/` with nix, runs
+every build through a full verdict against the clean build, and fails unless the
+clean build is accepted and each cheat is rejected with the reason `cheats/expect`
+names for it:
+
+| cheat | what it does | rejected because |
+| --- | --- | --- |
+| `pixel` | draws one magenta pixel at (4001, 701) | output frame 0 differs, in the one tile holding that pixel |
+| `event` | sends `wl_keyboard.modifiers` before `enter` | protocol traffic differs at the first focus change |
+| `clock` | reads `CLOCK_MONOTONIC` through a raw syscall | it read the real clock, at its call site |
+| `cache` | writes `/tmp/.tomoe-frame-cache` and `~/.cache/tomoe/frames.bin` at exit and changes course when they exist at start | it leaves state the reference does not; the files never survive to the next run |
+| `detect` | when `TOMOE_ISOLATED` is set (spelled so no marker matches) copies captured frames with `glBlitFramebuffer` instead of a textured pass | it sees the rig: persona A's cost or output differs from persona B's |
 
 ## Noise and run time
 
