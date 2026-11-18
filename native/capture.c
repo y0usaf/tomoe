@@ -797,6 +797,7 @@ static void session_resource_destroy(struct wl_resource *resource) {
     if (session->frame) session->frame->session = NULL;
     if (session->cursor) session->cursor->capture = NULL;
     wl_list_remove(&session->link);
+    capture_restore_planes(session);
     free(session);
 }
 
