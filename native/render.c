@@ -24,7 +24,6 @@ enum {
     FENCE_WAIT_MS = 1000,
     HELD_FRAME_LIMIT = 4,
     WARM_SIZE = 16,
-    WARM_JOB_TIMEOUT_MS = 60000,
     WARM_SOURCE_LIMIT = 1 << 20,
     WARM_NAME = sizeof("0123456789abcdef.glsl"),
 };
@@ -3324,7 +3323,7 @@ static struct shader_job *job_start(struct render *r, const char *name) {
         return NULL;
     }
     job->pid = child;
-    job->deadline = warm_now_ns() + (uint64_t)WARM_JOB_TIMEOUT_MS * 1000000ull;
+    job->deadline = warm_now_ns() + (uint64_t)TOMOE_SHADER_COPY_MS * 1000000ull;
     job->next = r->jobs;
     r->jobs = job;
     return job;
@@ -3346,13 +3345,13 @@ bool render_shader_reap(struct render *r) {
             job_stop(job);
             if (!job->name[0]) {
                 tomoe_log(LOG_ERROR, "tomoe: the shader prewarm did not finish in %d s",
-                    WARM_JOB_TIMEOUT_MS / 1000);
+                    TOMOE_SHADER_COPY_MS / 1000);
                 job_forget(r, job);
                 continue;
             }
             job->failed = true;
             tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
-                WARM_JOB_TIMEOUT_MS / 1000, job->name);
+                TOMOE_SHADER_COPY_MS / 1000, job->name);
             continue;
         }
         job->pid = 0;
@@ -3374,7 +3373,7 @@ static enum shader_await shader_await(struct render *r, const char *name,
             job_stop(job);
             job->failed = true;
             tomoe_log(LOG_ERROR, "tomoe: a shader copy did not finish in %d s: %s",
-                WARM_JOB_TIMEOUT_MS / 1000, name);
+                TOMOE_SHADER_COPY_MS / 1000, name);
             return SHADER_FAILED;
         }
         if (done < 0 && errno == EINTR) return SHADER_RUNNING;
@@ -3413,7 +3412,7 @@ static bool warm_spawn(struct render *r, const char *marker) {
         return false;
     }
     job->pid = child;
-    job->deadline = warm_now_ns() + (uint64_t)WARM_JOB_TIMEOUT_MS * 1000000ull;
+    job->deadline = warm_now_ns() + (uint64_t)TOMOE_SHADER_COPY_MS * 1000000ull;
     job->next = r->jobs;
     r->jobs = job;
     return true;

@@ -708,6 +708,7 @@ done:
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--warm-shaders")) {
         if (argc != 5 && argc != 6) return 1;
+        alarm((unsigned)(TOMOE_SHADER_COPY_MS / 1000));
         return tomoe_warm_shaders(argv[2], argv[3], argv[4], argc == 6 ? argv[5] : NULL);
     }
     return run_cli(argc - 1, argv + 1);

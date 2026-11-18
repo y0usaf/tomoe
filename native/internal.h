@@ -22,6 +22,7 @@
 #include "xdg-shell-protocol.h"
 
 enum { FRAME_TRACE = 128 };
+#define TOMOE_SHADER_COPY_MS 60000
 extern uint64_t tomoe_started_ns;
 void tomoe_log_line(const char *line);
 void tomoe_log_open(const char *name, const char *backend);
