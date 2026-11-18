@@ -724,10 +724,25 @@ static bool backdrop(struct frame *f, struct program *p, struct fbox box, struct
         box_intersection(&shown, &need, &bounds);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, e->backdrop.framebuffer);
     if (!inside || !box_equal(&shown, &need)) {
+        struct box clear[4] = { { 0, 0, need.width, need.height } };
+        int count = 1;
+        if (inside) {
+            int x = shown.x - need.x, y = shown.y - need.y;
+            clear[0] = (struct box){ 0, 0, need.width, y };
+            clear[1] = (struct box){ 0, y + shown.height, need.width,
+                need.height - y - shown.height };
+            clear[2] = (struct box){ 0, y, x, shown.height };
+            clear[3] = (struct box){ x + shown.width, y,
+                need.width - x - shown.width, shown.height };
+            count = 4;
+        }
         glEnable(GL_SCISSOR_TEST);
-        glScissor(0, 0, need.width, need.height);
         glClearColor(0, 0, 0, 1);
-        glClear(GL_COLOR_BUFFER_BIT);
+        for (int i = 0; i < count; i++) {
+            if (box_empty(&clear[i])) continue;
+            glScissor(clear[i].x, clear[i].y, clear[i].width, clear[i].height);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
         glDisable(GL_SCISSOR_TEST);
     }
     if (inside) {
