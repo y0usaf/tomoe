@@ -800,7 +800,7 @@ nix build .#checks.x86_64-linux.services   # services die with the compositor, l
 nix flake check    # two KVM tests (headless suites, kms); needs /dev/kvm
 nix build -L .#legacyPackages.x86_64-linux.suites.memory   # one suite in its own VM
 nix run .#bench    # Tomoe, sway, niri and Hyprland on one vkms output, as JSON
-tools/land.sh --push BRANCH                  # smoke check, then land it on main
+tools/land.sh submit BRANCH                  # smoke check, then land it on main
 tools/gate.sh REV                            # REV with finix's real config, privately
 bench/speedlab.sh REV                        # instructions, memory and output equivalence vs the reference
 tools/isolate DIR COMMAND                    # run anything that must not reach your desktop

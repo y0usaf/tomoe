@@ -2,18 +2,19 @@
 
 ## Landing a change
 
-Everything lands on `main` through `tools/land.sh --push BRANCH`, which checks the exact
-commit it pushes:
+Everything lands on `main` through the `tomoe-land` queue in `tools/land.sh`,
+which checks the exact commit it pushes:
 
 ```sh
-tools/land.sh my-branch          # rebase onto origin/main, run the smoke check, stop
-tools/land.sh --push my-branch   # the same, then push main and delete the branch
-tools/land.sh --push 0108501d    # a commit, when there is no branch name
+tools/land.sh submit my-branch   # rebase onto origin/main, run the smoke check, push main
+tools/land.sh wait ID            # block until that ticket has a result
+tools/land.sh submit 0108501d    # a commit, when there is no branch name
 ```
 
-The branch is rebased onto `origin/main`, `checks.<system>.smoke` runs on the
+The commit is rebased onto `origin/main`, `checks.<system>.smoke` runs on the
 result, and only that commit is pushed, to `origin` and `forgejo`. If the rebase
-conflicts or the smoke check fails, nothing is pushed.
+conflicts or the smoke check fails, nothing is pushed. `submit` needs a queue,
+which `tomoe-land` runs on this machine; `tools/land.sh daemon` starts one.
 
 The smoke check is one VM, a few minutes: it builds the compositor, starts it,
 draws windows, takes keyboard and pointer input, and survives a policy reload
