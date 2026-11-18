@@ -44,8 +44,10 @@ through the drag and the client commits that follow, its frame counter read on
 both sides of it, rapid focus switches and moves with
 windows closing and opening mid-animation, a window reversed between the columns
 with Alt+[ and Alt+] while the screen is read between keystrokes: its drawn edge
-must keep moving, and it must cross back and forth, not stand still and jump, a
-reload, and a config whose middle form calls an undefined function. It fails
+must keep moving, and it must cross back and forth, not stand still and jump,
+an Alt+G region screenshot with an arrow and a label drawn on it, whose copied
+image must carry the marks just as the screen showed them, a reload, and a
+config whose middle form calls an undefined function. It fails
 on any extension failure, duplicate timer, lost focus, unplaced window, or a
 broken config that loads or disturbs the running one: its windows, binds
 (typed Super+Tab and Alt+Shift+T), rail theme, surfaces and picture must
@@ -892,6 +894,118 @@ spam_check "reversed move"
 for ((i = 0; i < WINDOWS; i++)); do open_window; done
 settle "$WINDOWS"
 check "open $WINDOWS windows" "$WINDOWS"
+
+marks_check() {
+	local box x y w h rx ry verdict
+	[[ -n $(command -v wl-paste) ]] || die "the screenshot check needs wl-paste"
+	box=$(focused_box)
+	[[ -n $box ]] || die "screenshot marks: nothing is focused to mark"
+	set -- $box
+	x=$1 y=$2 w=$3 h=$4
+	((w >= 640 && h >= 540)) || die "screenshot marks: the focused window is ${w}x$h, too small to mark"
+	rx=$(( x + w / 2 - 300 )) ry=$(( y + h / 2 - 250 ))
+	pointer "move $(( rx - 40 )) $(( ry - 40 ))" sync
+	sleep 0.6
+	shot "$DIR/marks-before.ppm"
+	pointer "move $rx $ry" sync "key 56 down" "key 34 down" sync "key 34 up" "key 56 up" sync "sleep 300" \
+		"press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync "move $(( rx + 600 )) $(( ry + 500 ))" sync \
+		"release 272" sync "sleep 200" "key 30 down" "key 30 up" sync \
+		"move $(( rx + 100 )) $(( ry + 100 ))" sync "press 272" sync "move $(( rx + 300 )) $(( ry + 250 ))" sync \
+		"move $(( rx + 500 )) $(( ry + 400 ))" sync "release 272" sync "key 20 down" "key 20 up" sync \
+		"move $(( rx + 100 )) $(( ry + 350 ))" sync "press 272" "release 272" sync \
+		"key 35 down" "key 35 up" "key 23 down" "key 23 up" "key 28 down" "key 28 up" sync \
+		"move $(( rx - 40 )) $(( ry - 40 ))" sync
+	sleep 0.6
+	shot "$DIR/marks-screen.ppm"
+	type_key "key 28 down" "key 28 up" sync
+	for _ in $(seq 50); do
+		"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" timeout 2 wl-paste --list-types 2>/dev/null | grep -qx image/png && break
+		sleep 0.1
+	done
+	"${ENV[@]}" "WAYLAND_DISPLAY=$SOCKET" timeout 5 wl-paste --type image/png >"$DIR/marks.png" 2>"$DIR/paste" ||
+		die "screenshot marks: the clipboard holds no screenshot: $(cat "$DIR/paste")"
+	verdict=$(python3 - "$DIR/marks-before.ppm" "$DIR/marks-screen.ppm" "$DIR/marks.png" "$rx" "$ry" <<'MARKS'
+import struct, sys, zlib
+def ppm(path):
+    data = open(path, "rb").read()
+    fields, at = [], 0
+    while len(fields) < 4:
+        while data[at:at + 1].isspace():
+            at += 1
+        start = at
+        while not data[at:at + 1].isspace():
+            at += 1
+        fields.append(data[start:at])
+    return int(fields[1]), data[at + 1:]
+def png(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    at, idat = 8, b""
+    while at < len(data):
+        length, kind = struct.unpack(">I4s", data[at:at + 8])
+        body = data[at + 8:at + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, colour = struct.unpack(">IIBB", body[:10])
+        elif kind == b"IDAT":
+            idat += body
+        at += 12 + length
+    if depth != 8 or colour not in (2, 6):
+        return None
+    bpp = 3 if colour == 2 else 4
+    raw, row, out = zlib.decompress(idat), bytearray(width * bpp), []
+    stride = width * bpp
+    for y in range(height):
+        line = raw[y * (stride + 1):(y + 1) * (stride + 1)]
+        kind, cur, prev = line[0], bytearray(line[1:]), row
+        for i in range(stride):
+            a = cur[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if kind == 1:
+                cur[i] = (cur[i] + a) & 255
+            elif kind == 2:
+                cur[i] = (cur[i] + b) & 255
+            elif kind == 3:
+                cur[i] = (cur[i] + (a + b) // 2) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                cur[i] = (cur[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out.append([bytes(cur[i:i + 3]) for i in range(0, stride, bpp)])
+        row = cur
+    return width, height, out
+(width, before), (_, screen) = ppm(sys.argv[1]), ppm(sys.argv[2])
+image = png(sys.argv[3])
+x0, y0 = int(sys.argv[4]), int(sys.argv[5])
+if not image or image[:2] != (600, 500):
+    print("bad the copied image is not a 600x500 PNG: %s" % (image[:2] if image else "unreadable"))
+    sys.exit()
+far = lambda p, q: max(abs(p[i] - q[i]) for i in range(3)) > 48
+ink = kept = stray = 0
+for v in range(16, 484):
+    for u in range(16, 584):
+        at = ((y0 + v) * width + x0 + u) * 3
+        was, seen, got = before[at:at + 3], screen[at:at + 3], image[2][v][u]
+        if far(was, seen):
+            ink += 1
+            kept += not far(seen, got)
+        elif far(was, got):
+            stray += 1
+if ink < 800:
+    print("bad the screen showed only %d marked pixels, so there was nothing to carry" % ink)
+elif kept * 100 < ink * 95:
+    print("bad the copied image carries %d of the %d marked pixels the screen showed" % (kept, ink))
+elif stray * 50 > ink:
+    print("bad the copied image changed %d pixels the screen left unmarked" % stray)
+else:
+    print("ok %d of %d marked pixels carried, %d stray" % (kept, ink, stray))
+MARKS
+)
+	[[ $verdict == ok* ]] || die "screenshot marks: ${verdict#bad }"
+	say "screenshot marks: ${verdict#ok }"
+}
+marks_check
 
 cycle() {
 	local palette before same mode first seen theme
