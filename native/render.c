@@ -2576,6 +2576,14 @@ void op_end(struct pass *pass, struct op_clip *clip) {
 
 static uint64_t mix(uint64_t hash, const void *data, size_t size) {
     const unsigned char *bytes = data;
+    while (size >= sizeof(uint64_t)) {
+        uint64_t word;
+        memcpy(&word, bytes, sizeof(word));
+        hash = (hash ^ word) * 0x9e3779b97f4a7c15ull;
+        hash ^= hash >> 29;
+        bytes += sizeof(word);
+        size -= sizeof(word);
+    }
     for (size_t i = 0; i < size; i++) hash = (hash ^ bytes[i]) * 0x100000001b3ull;
     return hash;
 }
