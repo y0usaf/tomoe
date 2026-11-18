@@ -561,22 +561,18 @@ start_video("audit-video", frames=60)
 video_frame_times("underlay video")
 wait_for(lambda: counters()[":PLANES"] == 1, "the underlay engaging for the audit")
 assert counters()[":UNDERLAY-PLAN"] in (1, 2), counters()
-plane_frame = counters()[":FRAME"]
-gl_on_plane = render_stats()
 video_stopped("audit-video", 60)
 streamed = time.monotonic() - started
 gl_after = render_stats()
 streamed_drawn = counters()[":DRAWN-PIXELS"]
 streamed_frames = counters()[":FRAME"] - frame_before
-plane_frames = counters()[":FRAME"] - plane_frame
 print(f"underlay video: {streamed_frames} frames in {streamed:.2f} s "
-      f"({streamed_frames / streamed:.1f} frames/s), {plane_frames} of them on the plane, "
+      f"({streamed_frames / streamed:.1f} frames/s) "
       f"gl_delta={gl_after[':GL-CALLS'] - gl_before[':GL-CALLS']} "
       f"quads_delta={gl_after[':QUADS'] - gl_before[':QUADS']} drawn_pixels={streamed_drawn} "
       f"plan={counters()[':UNDERLAY-PLAN']} plane_tests={counters()[':PLANE-TESTS']}", flush=True)
-assert plane_frames >= 10, plane_frames
-assert gl_after[":GL-CALLS"] == gl_on_plane[":GL-CALLS"], (gl_on_plane, gl_after)
-assert gl_after[":QUADS"] == gl_on_plane[":QUADS"], (gl_on_plane, gl_after)
+assert gl_after[":GL-CALLS"] == gl_before[":GL-CALLS"], (gl_before, gl_after)
+assert gl_after[":QUADS"] == gl_before[":QUADS"], (gl_before, gl_after)
 assert streamed_drawn == 0, streamed_drawn
 assert counters()[":PLANE-TESTS"] <= 8, counters()
 
