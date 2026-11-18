@@ -10021,6 +10021,10 @@ static void svg_prepare_shader(struct svg_shader *shader, struct svg_paint *pain
                 shader->radial_p1 = -r0 / (r1 - r0);
                 mag = rmax;
                 sx = c1x; sy = c1y;
+                shader->highp = 1;
+                radial_matrix = svg_matrix_concat((struct svg_matrix){ 1.0f / mag, 0, 0,
+                    1.0f / mag, 0, 0 }, (struct svg_matrix){ 1, 0, 0, 1, -sx, -sy });
+                radial_matrix_set = 1;
             }
         } else {
             if (!svg_radial_map_to_unit_x((struct svg_point){ c0x, c0y }, (struct svg_point){ c1x, c1y },
@@ -10345,7 +10349,10 @@ static void svg_shader_color_highp(struct svg_shader *shader, int x, int y, floa
     float ny = svg_mad(px, ts->ky, svg_mad(py, ts->sy, ts->ty));
     float t;
     int mask = 1;
-    if (shader->conical_kind == 2) {
+    if (shader->radial) {
+        t = sqrtf(nx * nx + ny * ny);
+        if (shader->radial_bias) t = t * shader->radial_p0 + shader->radial_p1;
+    } else if (shader->conical_kind == 2) {
         t = nx + sqrtf(shader->conical_p0 - ny * ny);
         if (t != t) { t = 0.0f; mask = 0; }
     } else {
