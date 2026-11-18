@@ -11027,6 +11027,11 @@ static void svg_filter_box_sizes(float sigma, int sizes[5]) {
     for (int i = 0; i < 5; i++) sizes[i] = i < m ? wl : wu;
 }
 
+static unsigned char svg_blur_round(float x) {
+    x += 12582912.0f;
+    return (unsigned char)(int)(x - 12582912.0f);
+}
+
 static void svg_filter_box_vert(int radius, unsigned char *dst, const unsigned char *src,
         int width, int height) {
     if (radius == 0) { memcpy(dst, src, (size_t)width * height * 4); return; }
@@ -11046,10 +11051,10 @@ static void svg_filter_box_vert(int radius, unsigned char *dst, const unsigned c
             const unsigned char *add = ri > col_end ? NULL : src + (size_t)ri * 4;
             if (add) { vr += add[0]; vg += add[1]; vb += add[2]; va += add[3]; }
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ri += width;
             ti += width;
         }
@@ -11064,10 +11069,10 @@ static void svg_filter_box_vert(int radius, unsigned char *dst, const unsigned c
             vb += b1[2] - b2[2];
             va += b1[3] - b2[3];
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ti += width;
         }
         int tail = height - radius - 1;
@@ -11077,10 +11082,10 @@ static void svg_filter_box_vert(int radius, unsigned char *dst, const unsigned c
             li += width;
             if (b) { vr -= b[0]; vg -= b[1]; vb -= b[2]; va -= b[3]; }
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ti += width;
         }
     }
@@ -11105,10 +11110,10 @@ static void svg_filter_box_horz(int radius, unsigned char *dst, const unsigned c
             const unsigned char *add = ri > row_end ? NULL : src + (size_t)ri * 4;
             if (add) { vr += add[0]; vg += add[1]; vb += add[2]; va += add[3]; }
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ri++;
             ti++;
         }
@@ -11123,10 +11128,10 @@ static void svg_filter_box_horz(int radius, unsigned char *dst, const unsigned c
             vb += b1[2] - b2[2];
             va += b1[3] - b2[3];
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ti++;
         }
         int tail = width - radius - 1;
@@ -11136,10 +11141,10 @@ static void svg_filter_box_horz(int radius, unsigned char *dst, const unsigned c
             li++;
             if (b) { vr -= b[0]; vg -= b[1]; vb -= b[2]; va -= b[3]; }
             unsigned char *out = dst + (size_t)ti * 4;
-            out[0] = (unsigned char)(int)((float)vr * iarr + 0.5f);
-            out[1] = (unsigned char)(int)((float)vg * iarr + 0.5f);
-            out[2] = (unsigned char)(int)((float)vb * iarr + 0.5f);
-            out[3] = (unsigned char)(int)((float)va * iarr + 0.5f);
+            out[0] = svg_blur_round((float)vr * iarr);
+            out[1] = svg_blur_round((float)vg * iarr);
+            out[2] = svg_blur_round((float)vb * iarr);
+            out[3] = svg_blur_round((float)va * iarr);
             ti++;
         }
     }
@@ -11159,6 +11164,16 @@ static void svg_filter_box_blur(float sigma_x, float sigma_y, struct svg_pixmap 
         svg_filter_box_horz(rh, pixmap->pixels, back, width, height);
     }
     free(back);
+}
+
+static double svg_powi(double x, int n) {
+    double r = 1.0;
+    while (n) {
+        if (n & 1) r *= x;
+        x *= x;
+        n >>= 1;
+    }
+    return r;
 }
 
 static void svg_filter_iir(float sigma_x, float sigma_y, struct svg_pixmap *pixmap) {
@@ -11199,7 +11214,7 @@ static void svg_filter_iir(float sigma_x, float sigma_y, struct svg_pixmap *pixm
                 }
             }
         }
-        double post = pow(sqrt(dx * dy) / sqrt(lx * ly), (double)(2 * steps));
+        double post = svg_powi(sqrt(dx * dy) / sqrt(lx * ly), 2 * steps);
         for (size_t i = 0; i < count; i++)
             pixmap->pixels[i * 4 + ch] = (unsigned char)(buf[i] * post * 255.0);
     }
