@@ -1047,6 +1047,35 @@ static void render_quad(struct render *r, struct program *p, const float pos[8],
     if (p->texcoord >= 0 && texcoords) glDisableVertexAttribArray(p->texcoord);
 }
 
+static struct rect pixel_bounds(const struct pass *pass, double x0, double y0,
+        double x1, double y1) {
+    double width = pass->buffer->width, height = pass->buffer->height;
+    return (struct rect){
+        (int32_t)floor((x0 + 1.0) * 0.5 * width),
+        (int32_t)floor((y0 + 1.0) * 0.5 * height),
+        (int32_t)ceil((x1 + 1.0) * 0.5 * width),
+        (int32_t)ceil((y1 + 1.0) * 0.5 * height),
+    };
+}
+
+static struct rect position_bounds(const struct pass *pass, const float *pos, size_t vertices) {
+    double x0 = pos[0], x1 = x0, y0 = pos[1], y1 = y0;
+    for (size_t i = 1; i < vertices; i++) {
+        double x = pos[2 * i], y = pos[2 * i + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    return pixel_bounds(pass, x0, y0, x1, y1);
+}
+
+static bool bounds_overlap(const struct rect *bounds, const struct rect *clip) {
+    return bounds->x1 < bounds->x2 && bounds->y1 < bounds->y2 &&
+        bounds->x1 < clip->x2 && bounds->x2 > clip->x1 &&
+        bounds->y1 < clip->y2 && bounds->y2 > clip->y1;
+}
+
 void pass_triangles(struct pass *pass, struct program *p, const float *pos, size_t vertices) {
     if (!pass || !p || !p->id || vertices < 3 || p->pos < 0) return;
     glVertexAttribPointer(p->pos, 2, GL_FLOAT, GL_FALSE, 0, pos);
@@ -1054,10 +1083,12 @@ void pass_triangles(struct pass *pass, struct program *p, const float *pos, size
     if (!pass->clip) {
         glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
     } else {
+        struct rect bounds = position_bounds(pass, pos, vertices);
         int count = 0;
         const struct rect *rects = region_rectangles(pass->clip, &count);
         glEnable(GL_SCISSOR_TEST);
         for (int i = 0; i < count; i++) {
+            if (!bounds_overlap(&bounds, &rects[i])) continue;
             glScissor(rects[i].x1, rects[i].y1, rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
             glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertices);
         }
@@ -1068,17 +1099,9 @@ void pass_triangles(struct pass *pass, struct program *p, const float *pos, size
 
 static uint64_t quad_pixels(const struct pass *pass, const float pos[8],
         const struct rect *clip) {
-    double x0 = 1e18, x1 = -1e18, y0 = 1e18, y1 = -1e18;
-    double width = pass->buffer->width, height = pass->buffer->height;
-    for (int i = 0; i < 4; i++) {
-        double x = (pos[2 * i] + 1.0) * 0.5 * width, y = (pos[2 * i + 1] + 1.0) * 0.5 * height;
-        if (x < x0) x0 = x;
-        if (x > x1) x1 = x;
-        if (y < y0) y0 = y;
-        if (y > y1) y1 = y;
-    }
-    int32_t left = (int32_t)floor(x0), right = (int32_t)ceil(x1);
-    int32_t top = (int32_t)floor(y0), bottom = (int32_t)ceil(y1);
+    struct rect bounds = position_bounds(pass, pos, 4);
+    int32_t left = bounds.x1, right = bounds.x2;
+    int32_t top = bounds.y1, bottom = bounds.y2;
     if (clip) {
         if (clip->x1 > left) left = clip->x1;
         if (clip->y1 > top) top = clip->y1;
@@ -1160,11 +1183,25 @@ void pass_trail(struct pass *pass, const struct trail_cell *cells, size_t count,
     int rects = 0;
     const struct rect *clip = pass->clip ? region_rectangles((struct region *)pass->clip,
         &rects) : NULL;
-    if (clip) GL(r, glEnable(GL_SCISSOR_TEST));
+    struct rect bounds;
+    if (clip) {
+        double x0 = cells[0].clip[0], y0 = cells[0].clip[1];
+        double x1 = cells[0].clip[2], y1 = cells[0].clip[3];
+        for (size_t i = 1; i < count; i++) {
+            if (cells[i].clip[0] < x0) x0 = cells[i].clip[0];
+            if (cells[i].clip[1] < y0) y0 = cells[i].clip[1];
+            if (cells[i].clip[2] > x1) x1 = cells[i].clip[2];
+            if (cells[i].clip[3] > y1) y1 = cells[i].clip[3];
+        }
+        bounds = pixel_bounds(pass, x0, y0, x1, y1);
+        GL(r, glEnable(GL_SCISSOR_TEST));
+    }
     for (int i = 0; i < (clip ? rects : 1); i++) {
-        if (clip)
+        if (clip) {
+            if (!bounds_overlap(&bounds, &clip[i])) continue;
             GL(r, glScissor(clip[i].x1, clip[i].y1, clip[i].x2 - clip[i].x1,
                 clip[i].y2 - clip[i].y1));
+        }
         GL(r, glDrawArraysInstanced(GL_TRIANGLES, 0, TRAIL_VERTICES, (GLsizei)count));
         r->runs++;
     }
