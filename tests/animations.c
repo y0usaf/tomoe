@@ -1174,7 +1174,7 @@ static int stalled_running;
 
 static long long stalled_control(const char *work, const char *tomoe, const char *socket,
         const char *policy, const char *frames_dir, long long period) {
-    volatile long long stall_ms = period ? python_round((double)period / 1e6 * 2.0) : 9;
+    volatile long long stall_ms = period ? python_round((double)period / 1e6 * 4.0) : 9;
     if (stall_ms < 1) stall_ms = 1;
     control_problems.count = 0;
     stalled_running = 0;
