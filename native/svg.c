@@ -11570,8 +11570,8 @@ static double svg_turbulence(int channel, double x, double y, double tile_x, dou
 
 static void svg_turbulence_paint(struct svg_filter_prim *p, struct svg_matrix ts, int region_w,
         int region_h, int region_left, int region_top, struct svg_fimg *res) {
-    double sx = sqrt((double)ts.sx * (double)ts.sx + (double)ts.kx * (double)ts.kx);
-    double sy = sqrt((double)ts.ky * (double)ts.ky + (double)ts.sy * (double)ts.sy);
+    double sx = (double)sqrtf(ts.sx * ts.sx + ts.kx * ts.kx);
+    double sy = (double)sqrtf(ts.ky * ts.ky + ts.sy * ts.sy);
     if (sx == 0.0 || sy == 0.0) return;
     double offset_x = (double)region_left - (double)ts.tx;
     double offset_y = (double)region_top - (double)ts.ty;
