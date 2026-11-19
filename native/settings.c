@@ -23,6 +23,7 @@ static const struct setting_field {
     { "cursor-trail-color", offsetof(struct settings, cursor_trail_color), SETTING_COLOR },
     { "shader-hold", offsetof(struct settings, shader_hold), SETTING_REAL },
     { "screenshot-freeze", offsetof(struct settings, screenshot_freeze), SETTING_BOOL },
+    { "pause-readings-when-dark", offsetof(struct settings, pause_readings_when_dark), SETTING_BOOL },
     { "screenshot-motion-enabled", offsetof(struct settings, screenshot_motion_enabled), SETTING_BOOL },
     { "screenshot-motion-stiffness", offsetof(struct settings, screenshot_motion_stiffness), SETTING_REAL },
     { "screenshot-motion-damping", offsetof(struct settings, screenshot_motion_damping), SETTING_REAL },
@@ -205,6 +206,7 @@ void settings_publish(struct tomoe *s, struct presentation *plan) {
     input_devices_apply(s);
     cursor_glass_settings(s);
     cursor_trail_settings(s);
+    resources_outputs_changed();
     free(plan->settings);
     plan->settings = NULL;
 }

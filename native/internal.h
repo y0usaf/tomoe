@@ -910,6 +910,7 @@ struct settings {
     double blur_offset, blur_noise, blur_vibrancy;
     double shader_hold;
     bool screenshot_freeze, screenshot_motion_enabled;
+    bool pause_readings_when_dark;
     double screenshot_motion_stiffness, screenshot_motion_damping;
     uint32_t screenshot_mark_ink;
     int screenshot_mark_width, screenshot_mark_head, screenshot_mark_size;
