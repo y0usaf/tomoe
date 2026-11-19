@@ -840,18 +840,24 @@ header in `include/`: `png` (PNG decoding and encoding with its own inflate,
 deflate and CRC), `lisp` (the runtime, reader, compiler and builtins), `wayland`
 (the wire protocol, event loop, server, shm and client, all in `wayland.h`; its
 `scanner/` only maps the libwayland file names wayland-scanner's output includes
-onto it), `xkb` (keymaps and keyboard state) and `pipewire` (the PipeWire wire
-protocol and an audio client). None of them includes anything from `native/` or
-from each other. `make -C lib/NAME` builds `libtomoe-NAME.a` and a
-`libtomoe-NAME.so` linked with `-z defs` from that folder alone, and the
-`libraries` check, one of the compositor VMs' packages, builds all five. Tomoe
-compiles the same sources straight into its one binary and its core with its own
-flags, so the split adds no call, copy or library at run time.
+onto it), `xkb` (keymaps and keyboard state), `mtdev` (protocol A multitouch to
+slot conversion, in `mtdev.h`; its `libinput/` maps the other file name libinput
+includes onto it) and `pipewire` (the PipeWire wire protocol and an audio
+client). None of them includes anything from `native/` or from each other.
+`make -C lib/NAME` builds `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with
+`-z defs` from that folder alone, and the `libraries` check, one of the
+compositor VMs' packages, builds all six. Tomoe compiles the same sources
+straight into its one binary and its core with its own flags, so the split adds
+no call, copy or library at run time.
 
-The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not use
-left out. `libgbm` picks its backend by the kernel driver's name, which
+The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not
+use left out. `libgbm` picks its backend by the kernel driver's name, which
 `support/patches/gbm-drm-version.patch` reads with `DRM_IOCTL_VERSION` itself, so
-libdrm is not loaded at all.
+libdrm is not among the libraries the binary links; a GBM driver plugin Mesa opens
+at run time may still bring it in. A library that stands in for one a dependency
+links is built by `dropIn` as a static archive under the upstream name, with a
+pkg-config file to match, so the dependency links Tomoe's code into itself:
+libinput takes `lib/mtdev` in place of libmtdev.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that

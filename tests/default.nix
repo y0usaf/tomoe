@@ -1206,6 +1206,40 @@ let
       install -Dm755 -t $out/bin tomoe-test-drm-version
     '';
   };
+  mtdevEquivalence = pkgs.stdenv.mkDerivation {
+    name = "tomoe-mtdev-equivalence";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        ../lib/mtdev
+        ./mtdev-trace.c
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.mtdev ];
+    dontConfigure = true;
+    buildPhase = ''
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+        tests/mtdev-trace.c $(pkg-config --cflags --libs mtdev) -o mtdev-trace
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -DNATIVE \
+        -Ilib/mtdev/include tests/mtdev-trace.c lib/mtdev/*.c -o mtdev-trace-native
+      ./mtdev-trace 1200 1 > upstream.trace
+      ./mtdev-trace-native 1200 1 > native.trace
+      cases=$(grep -c '^case ' upstream.trace)
+      if diff upstream.trace native.trace > equivalence.diff; then
+        echo "mtdev-trace native matches mtdev on $cases cases"
+      else
+        echo "mtdev-trace native differs from mtdev on $(grep -c '^>' equivalence.diff) lines of $cases cases"
+        head -40 equivalence.diff
+        exit 1
+      fi
+    '';
+    installPhase = ''
+      mkdir -p $out/share/tomoe
+      cp upstream.trace $out/share/tomoe/mtdev-equivalence
+    '';
+  };
   libraries = pkgs.stdenv.mkDerivation {
     name = "tomoe-libraries";
     src = ../lib;
@@ -1216,21 +1250,23 @@ let
     ];
     dontConfigure = true;
     buildPhase = ''
-      for library in png lisp wayland xkb pipewire; do
+      for library in png lisp wayland xkb mtdev pipewire; do
         make -C $library -j"$NIX_BUILD_CORES" \
           WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
       done
     '';
     installPhase = ''
-      for library in png lisp wayland xkb pipewire; do
+      for library in png lisp wayland xkb mtdev pipewire; do
         install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
         install -Dm644 -t $out/include/tomoe-$library $library/include/*.h
       done
       install -Dm644 -t $out/include/tomoe-wayland/scanner wayland/scanner/*.h wayland/build/wayland-*-protocol.h
+      install -Dm644 -t $out/include/tomoe-mtdev/libinput mtdev/libinput/*.h
     '';
   };
   compositorPackages = [
     libraries
+    mtdevEquivalence
     animationUnit
     xkbEquivalence
     lispUnit
@@ -1772,6 +1808,7 @@ in
   lisp-unit = lispUnit;
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;
+  mtdev-equivalence = mtdevEquivalence;
   lease = pkgs.runCommand "tomoe-lease" {
     nativeBuildInputs = [
       pkgs.bash

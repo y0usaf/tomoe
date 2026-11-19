@@ -102,10 +102,57 @@
                 mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
               });
           libs = lean pkgs;
+          dropIn =
+            {
+              name,
+              pc,
+              library,
+              version,
+              adapter ? null,
+            }:
+            pkgs.stdenv.mkDerivation {
+              pname = "tomoe-${name}";
+              inherit version;
+              src = ./lib + "/${name}";
+              strictDeps = true;
+              dontConfigure = true;
+              buildPhase = ''
+                runHook preBuild
+                make -j"$NIX_BUILD_CORES" OUT=build build/libtomoe-${name}.a
+                runHook postBuild
+              '';
+              installPhase = ''
+                runHook preInstall
+                install -Dm644 build/libtomoe-${name}.a $out/lib/lib${library}.a
+                mkdir -p $out/include $out/lib/pkgconfig
+                cp -r include/. $out/include/
+                ${pkgs.lib.optionalString (adapter != null) "cp -r ${adapter}/. $out/include/"}
+                cat > $out/lib/pkgconfig/${pc}.pc <<EOF
+                prefix=$out
+                libdir=\''${prefix}/lib
+                includedir=\''${prefix}/include
+
+                Name: ${pc}
+                Description: Tomoe's lib/${name}, in place of ${pc}
+                Version: ${version}
+                Libs: -L\''${libdir} -l${library}
+                Cflags: -I\''${includedir}
+                EOF
+                runHook postInstall
+              '';
+            };
+          mtdev = dropIn {
+            name = "mtdev";
+            pc = "mtdev";
+            library = "mtdev";
+            version = "1.1.7";
+            adapter = "libinput";
+          };
           libinput =
             (pkgs.libinput.override {
               luaSupport = false;
               wacomSupport = false;
+              inherit mtdev;
             }).overrideAttrs
               (old: {
                 postPatch = old.postPatch + ''
