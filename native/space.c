@@ -1617,7 +1617,7 @@ bool planes_attach(struct output *o, struct screen_state *state) {
 }
 
 void planes_clear(struct output *o) {
-    o->planes.changed = o->planes.count != 0;
+    o->planes.changed = o->planes.changed || o->planes.count != 0;
     o->planes.count = 0;
     o->planes.tested = false;
     region_clear(&o->planes.excluded);
