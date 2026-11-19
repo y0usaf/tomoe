@@ -214,15 +214,10 @@ static void give_block(uint32_t index)
     free_block = index;
 }
 
-void *heap_alloc_in(struct lisp_region *region, size_t bytes)
+static __attribute__((noinline)) void *heap_alloc_slow(struct lisp_region *region, size_t bytes)
 {
-    if (bytes == 0)
-        bytes = sizeof(struct lisp_obj);
-    bytes = (bytes + 7u) & ~(size_t)7u;
     if (bytes > LISP_BLOCK_SIZE)
         lisp_error("lisp allocation too large");
-    if (!region)
-        region = lisp.cur_region;
     struct lisp_block *b = region->last != UINT32_MAX ? &lisp.blocks[region->last] : NULL;
     if (!b || b->used + bytes > LISP_BLOCK_SIZE) {
         uint32_t index = take_block();
@@ -243,6 +238,29 @@ void *heap_alloc_in(struct lisp_region *region, size_t bytes)
     if (region->used > region->high_water)
         region->high_water = region->used;
     return ptr;
+}
+
+void *heap_alloc_in(struct lisp_region *region, size_t bytes)
+{
+    if (bytes == 0)
+        bytes = sizeof(struct lisp_obj);
+    bytes = (bytes + 7u) & ~(size_t)7u;
+    if (!region)
+        region = lisp.cur_region;
+    uint32_t last = region->last;
+    if (last != UINT32_MAX) {
+        struct lisp_block *b = &lisp.blocks[last];
+        uint32_t used = b->used;
+        if (used + bytes <= LISP_BLOCK_SIZE) {
+            b->used = used + (uint32_t)bytes;
+            uint64_t total = region->used + bytes;
+            region->used = total;
+            if (total > region->high_water)
+                region->high_water = total;
+            return (char *)block_base(last) + used;
+        }
+    }
+    return heap_alloc_slow(region, bytes);
 }
 
 void *heap_alloc(size_t bytes)

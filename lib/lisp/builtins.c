@@ -1922,7 +1922,15 @@ static lisp_value copy_walk(struct copy_budget *budget, lisp_value item, int dep
         while (consp(tail)) {
             if (++budget->nodes > budget->limit)
                 lisp_fail_format("Extension data exceeds the node budget.", 0, NULL);
-            lisp_value cell = cons(copy_walk(budget, CAR(tail), depth + 1), NIL_VAL);
+            lisp_value car = CAR(tail);
+            uint8_t type = TYPE(car);
+            if ((type == LT_SYMBOL || type == LT_INT || type == LT_RATIO) && depth < 64) {
+                if (++budget->nodes > budget->limit)
+                    lisp_fail_format("Extension data exceeds the node/depth budget.", 0, NULL);
+            } else {
+                car = copy_walk(budget, car, depth + 1);
+            }
+            lisp_value cell = cons(car, NIL_VAL);
             if (nilp(head))
                 head = cell;
             else
