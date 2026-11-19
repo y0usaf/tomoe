@@ -694,7 +694,7 @@ void res_services_service(uint64_t now, uint64_t *next) {
         }
         if (producer->due < *next) *next = producer->due;
     }
-    if (res_system_read() && tomoe_outputs_lit(res.server)) {
+    if (res_system_read()) {
         if (now >= res.system_due) system_sample(now);
         if (res.system_due < *next) *next = res.system_due;
     }
