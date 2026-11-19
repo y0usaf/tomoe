@@ -2143,7 +2143,13 @@ lisp_value builtin_effects_of_kind(int argc, lisp_value *argv)
     lisp_value head = NIL_VAL, tail = NIL_VAL;
     for (lisp_value effects = argv[0]; consp(effects); effects = CDR(effects)) {
         lisp_value effect = CAR(effects);
-        if (!consp(effect) || !consp(CDR(effect)) || CAR(CDR(effect)) != argv[1])
+        if (!consp(effect) || !consp(CDR(effect)))
+            continue;
+        lisp_value kind = CAR(CDR(effect));
+        bool wanted = kind == argv[1];
+        for (lisp_value kinds = argv[1]; !wanted && consp(kinds); kinds = CDR(kinds))
+            wanted = CAR(kinds) == kind;
+        if (!wanted)
             continue;
         lisp_value cell = cons(effect, NIL_VAL);
         if (nilp(head))

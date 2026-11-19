@@ -54,10 +54,33 @@ still release dead window scopes when a predicate or reducer has failed."
                       (rule-snapshot context reads previous))))))
 
 
+(defvar *reconciled* :outside
+  "Inside a transaction, the last reconciliation that failed nothing: its context,
+the windows, and the mounts it returned with each one's effects. A pass over those
+same mounts, effects, windows and context returns the same mounts and nothing new.")
+
 (defun reconcile-rule-mounts (mounts context)
   "Match a bounded snapshot of declarations. New nested declarations are seen
 by the next reconciliation pass. Return complete mounts, new instance names, and
 changed callback definitions."
+  (let ((memo *reconciled*))
+    (if (and (consp memo) (eq (first memo) context) (eq (second memo) (runtime-windows))
+             (= (length mounts) (length (third memo)))
+             (every (lambda (mounted entry)
+                      (and (eq mounted (car entry)) (eq (mounted-effects mounted) (cdr entry))))
+                    mounts (third memo)))
+        (values (copy-list mounts) nil nil)
+        (let ((failures *transaction-failures*))
+          (multiple-value-bind (result new changed) (%reconcile-rule-mounts mounts context)
+            (unless (eq memo :outside)
+              (setf *reconciled*
+                    (and (eq failures *transaction-failures*)
+                         (list context (runtime-windows)
+                               (mapcar (lambda (mounted) (cons mounted (mounted-effects mounted)))
+                                       result)))))
+            (values result new changed))))))
+
+(defun %reconcile-rule-mounts (mounts context)
   (let* ((mounts (prune-rule-mounts mounts))
          (previous nil)
          (result (copy-list (root-mounts mounts)))

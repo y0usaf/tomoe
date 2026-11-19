@@ -1006,21 +1006,20 @@ when it is not 1."
              (owner (spec-name spec))
              (directory (spec-directory spec))
              (source-id (spec-id spec)))
-        (dolist (effect (mounted-effects mounted))
-          (let ((kind (effect-kind effect)))
-            (when (member kind '(:timer :watch :exec :process))
-              (push (list :kind kind :owner owner
-                          :arguments (copy-data (effect-arguments effect))
-                          :directory directory :source-id source-id :token source-id)
-                    wanted))))))))
+        (dolist (effect (%effects-of-kind (mounted-effects mounted) '(:timer :watch :exec :process)))
+          (push (list :kind (effect-kind effect) :owner owner
+                      :arguments (copy-data (effect-arguments effect))
+                      :directory directory :source-id source-id :token source-id)
+                wanted))))))
 
 (defun mounted-reads ()
   "The context keys the mounted policy reacts to, cached until a commit."
   (or (runtime-reads-cache)
-      (let ((reads (%dedupe
-                    (loop for mounted in (append (root-mounts (runtime-mounts))
-                                                 (rule-instances (runtime-mounts)))
-                          append (mount-context-reads mounted)))))
+      (let ((reads nil))
+        (dolist (mounted (append (root-mounts (runtime-mounts)) (rule-instances (runtime-mounts))))
+          (dolist (key (mount-context-reads mounted))
+            (unless (member key reads) (push key reads))))
+        (setf reads (nreverse reads))
         (%r! :reads-cache reads)
         reads)))
 
@@ -1046,6 +1045,7 @@ A reducer or rule predicate that fails keeps its last answer, is not run again i
 this transaction, and is logged under its name; everyone else still commits. A
 dependency cycle discards the entire candidate transaction."
   (let* ((*materialized* (list nil -1 nil nil))
+         (*reconciled* nil)
          (*transaction-failures* nil)
          (*surface-failures* nil)
          (candidate (prune-rule-mounts
