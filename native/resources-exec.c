@@ -55,6 +55,29 @@ struct res_lease *res_lease_start(struct execution *job, bool session, bool back
     return lease;
 }
 
+static void lease_unwatch(struct res_lease *lease) {
+    if (!lease->exit_watch) return;
+    loop_remove(lease->exit_watch);
+    lease->exit_watch = NULL;
+}
+
+static void lease_exit_callback(void *data, int fd, uint32_t mask) {
+    (void)fd;
+    (void)mask;
+    struct res_lease *lease = data;
+    lease->exited = true;
+    lease_unwatch(lease);
+    res_engine_kick();
+}
+
+static bool lease_watch_exit(struct res_lease *lease) {
+    int descriptor = lease && lease->job ? tomoe_exec_fd(lease->job, 0) : -1;
+    if (descriptor < 0) return false;
+    lease->exit_watch = loop_watch_fd(res.server, descriptor, LOOP_READABLE,
+        lease_exit_callback, lease);
+    return lease->exit_watch != NULL;
+}
+
 void res_lease_kill(struct res_lease *lease, bool cancel) {
     (void)cancel;
     if (!lease || !lease->job || lease->stopped) return;
@@ -89,6 +112,7 @@ bool res_lease_reap(struct res_lease *lease, bool cancel) {
         res_lease_kill(lease, true);
         lease->status = status;
         lease->code = tomoe_exec_code(lease->job);
+        lease_unwatch(lease);
         tomoe_exec_release(lease->job);
         lease->job = NULL;
         return true;
@@ -104,6 +128,7 @@ void res_lease_drop(struct res_lease *lease) {
     for (size_t index = 0; index < res.retired_count; index++) {
         if (res.retired[index].lease == lease) res.retired[index].lease = NULL;
     }
+    lease_unwatch(lease);
     if (lease->job) {
         tomoe_exec_stop(lease->job, SIGKILL);
         tomoe_exec_poll(lease->job);
@@ -892,7 +917,8 @@ static void process_start(struct res_process *process) {
         service_directory = NULL;
         process->lease = res_lease_start(job, process->session, !process->focus);
         process->status = process->session ? PROCESS_LAUNCHED : PROCESS_RUNNING;
-        process->deadline = res_now() + 1000;
+        process->deadline = !process->session && lease_watch_exit(process->lease)
+            ? UINT64_MAX : res_now() + 1000;
         free(process->error);
         process->error = NULL;
         process->has_code = false;
@@ -950,6 +976,7 @@ static void leases_service(uint64_t now, uint64_t *next) {
             if (alive < 0)
                 fprintf(stderr, "tomoe: Cannot inspect session process group: errno %d.\n", -alive);
             if (alive == 0) {
+                lease_unwatch(lease);
                 tomoe_exec_release(lease->job);
                 lease->job = NULL;
                 res_lease_drop(lease);
@@ -1012,7 +1039,7 @@ void res_processes_service(uint64_t now, uint64_t *next) {
         if (!active) continue;
         if (process->lease && process->lease->job &&
                 (process->status == PROCESS_RUNNING || process->status == PROCESS_STOPPING) &&
-                now >= process->deadline) {
+                (now >= process->deadline || process->lease->exited)) {
             bool stopping = process->status == PROCESS_STOPPING;
             if (res_lease_reap(process->lease, stopping)) {
                 process->code = process->lease->code;

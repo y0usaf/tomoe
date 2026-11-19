@@ -77,6 +77,8 @@ enum res_exec_status {
 
 struct res_lease {
     struct execution *job;
+    struct loop_source *exit_watch;
+    bool exited;
     bool stopped;
     bool background;
     int stop_error;
