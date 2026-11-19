@@ -102,6 +102,26 @@
                 mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
               });
           libs = lean pkgs;
+          libinput =
+            (pkgs.libinput.override {
+              luaSupport = false;
+              wacomSupport = false;
+            }).overrideAttrs
+              (old: {
+                postPatch = old.postPatch + ''
+                  sed -i \
+                    -e "/^executable('libinput-device-group',/,/^udev_rules_config = /{/^udev_rules_config = /!d}" \
+                    -e "/^############ tools ############/,/^############ output files ############/{/^############ output files/!d}" \
+                    meson.build
+                  if grep -q "^executable('libinput-\|^############ tools" meson.build; then
+                    echo "libinput: the tools are still in meson.build"
+                    exit 1
+                  fi
+                '';
+                postInstall = (old.postInstall or "") + ''
+                  mkdir -p $bin
+                '';
+              });
         in
         pkgs.stdenv.mkDerivation {
           pname = "tomoe";
@@ -132,10 +152,7 @@
             pkgs.wayland-scanner
           ];
           buildInputs = [
-            (pkgs.libinput.override {
-              luaSupport = false;
-              wacomSupport = false;
-            })
+            libinput
             libs.libglvnd
             libs.libgbm
             pkgs.wayland-protocols
