@@ -9,6 +9,10 @@
 
 #define WATCH_RETRY_MS 250
 
+static uint64_t watch_retry_at(uint64_t now) {
+    return (now / WATCH_RETRY_MS + 1) * WATCH_RETRY_MS;
+}
+
 static const char *watch_status_name(int status) {
     switch (status) {
     case WATCH_CHANGED: return "CHANGED";
@@ -193,7 +197,7 @@ static bool watch_attach(struct res_watch *watch) {
         watch->error = rb_take(&message);
         watch->status = WATCH_MISSING;
         watch->active = false;
-        watch->retry = res_now() + WATCH_RETRY_MS;
+        watch->retry = watch_retry_at(res_now());
         return false;
     }
     watch->native = native;
@@ -227,17 +231,17 @@ static void watch_poll(struct res_watch *watch, uint64_t now) {
         char *error = rb_take(&message);
         free(watch->error);
         watch->error = error;
-        watch->retry = now + WATCH_RETRY_MS;
+        watch->retry = watch_retry_at(now);
         if (watch->source) { loop_remove(watch->source); watch->source = NULL; }
         return;
     }
     if (bits == 0) {
-        if (!watch->active) watch->retry = now + WATCH_RETRY_MS;
+        if (!watch->active) watch->retry = watch_retry_at(now);
         return;
     }
     if (bits & 4) {
         watch->active = false;
-        watch->retry = now + WATCH_RETRY_MS;
+        watch->retry = watch_retry_at(now);
         if (watch->source) { loop_remove(watch->source); watch->source = NULL; }
         res_watch_deliver(watch, WATCH_UNAVAILABLE, "", NULL, true);
         return;
