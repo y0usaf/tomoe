@@ -149,6 +149,27 @@ step("rule button two")
 cli("unmount rule-owner")
 step("unmount rule owner")
 
+def match_calls():
+    return sum(1 for line in lines("/run/trace.log") if line.startswith("match call="))
+
+
+match_counts = [match_calls()]
+cli(f"mount {TRACE_MATCH}")
+step("mount match")
+match_counts.append(match_calls())
+inject("(:type :button :state :pressed :button 272 :x 62 :y 62 :id 1)")
+step("match button one")
+match_counts.append(match_calls())
+inject("(:type :button :state :pressed :button 272 :x 63 :y 63 :id 1)")
+step("match button two")
+match_counts.append(match_calls())
+cli("unmount match-owner")
+step("unmount match owner")
+match_steps = [after - before for before, after in zip(match_counts, match_counts[1:])]
+print("match predicate calls per step: " + str(match_steps), flush=True)
+assert match_steps == MATCH_EXPECTED, (
+    f"a stateful :MATCH predicate was called {match_steps} times, not {MATCH_EXPECTED}")
+
 cli(f"mount {TRACE_FAIL}")
 step("mount fail")
 inject("(:type :button :state :pressed :fail t :button 272 :x 70 :y 70 :id 1)")

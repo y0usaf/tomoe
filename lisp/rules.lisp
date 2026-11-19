@@ -55,9 +55,15 @@ still release dead window scopes when a predicate or reducer has failed."
 
 
 (defvar *reconciled* :outside
-  "Inside a transaction, the last reconciliation that failed nothing: its context,
-the windows, and the mounts it returned with each one's effects. A pass over those
-same mounts, effects, windows and context returns the same mounts and nothing new.")
+  "Inside a transaction, the last reconciliation that failed nothing and called no
+:MATCH predicate: its context, the windows, and the mounts it returned with each
+one's effects. A pass over those same mounts, effects, windows and context returns
+the same mounts and nothing new. A pass that would call a predicate is always run,
+since nothing makes a predicate answer the same way twice.")
+
+(defun %rule-predicates-p (mounts)
+  (loop for mounted in mounts
+        thereis (some #'effect-predicate (%effects-of-kind (mounted-effects mounted) :rule))))
 
 (defun reconcile-rule-mounts (mounts context)
   "Match a bounded snapshot of declarations. New nested declarations are seen
@@ -75,6 +81,7 @@ changed callback definitions."
             (unless (eq memo :outside)
               (setf *reconciled*
                     (and (eq failures *transaction-failures*)
+                         (not (%rule-predicates-p result))
                          (list context (runtime-windows)
                                (mapcar (lambda (mounted) (cons mounted (mounted-effects mounted)))
                                        result)))))

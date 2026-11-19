@@ -1639,6 +1639,8 @@ let
       script = ''
         TRACE_CHAIN = "${./trace-chain.lisp}"
         TRACE_RULES = "${./trace-rules.lisp}"
+        TRACE_MATCH = "${./trace-match.lisp}"
+        MATCH_EXPECTED = [6, 3, 3]
         TRACE_FAIL = "${./trace-fail.lisp}"
         TRACE_CYCLE = "${./trace-cycle.lisp}"
         TRACE_MOUNT_A = "${./trace-mount-a.lisp}"
