@@ -848,6 +848,11 @@ from each other. `make -C lib/NAME` builds `libtomoe-NAME.a` and a
 compiles the same sources straight into its one binary and its core with its own
 flags, so the split adds no call, copy or library at run time.
 
+The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not use
+left out. `libgbm` picks its backend by the kernel driver's name, which
+`support/patches/gbm-drm-version.patch` reads with `DRM_IOCTL_VERSION` itself, so
+libdrm is not loaded at all.
+
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
 one machine. `make OPT= CPU= LTO=` overrides the same three knobs from a checkout.

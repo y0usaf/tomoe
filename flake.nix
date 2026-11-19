@@ -23,10 +23,20 @@
               "--disable-glx"
             ];
           });
-          libgbm = (pkgs.libgbm.override { inherit libdrm libglvnd; }).overrideAttrs {
+          libgbm = (pkgs.libgbm.override { inherit libdrm libglvnd; }).overrideAttrs (old: {
             propagatedBuildInputs = [ ];
             buildInputs = [ libdrm ];
-          };
+            patches = (old.patches or [ ]) ++ [ ./support/patches/gbm-drm-version.patch ];
+            postFixup = (old.postFixup or "") + ''
+              lib=$out/lib/libgbm.so.1
+              if nm -D --undefined-only $lib | grep -w 'drm[A-Za-z0-9_]*'; then
+                echo "libgbm still calls libdrm"
+                exit 1
+              fi
+              patchelf --remove-needed libdrm.so.2 $lib
+              patchelf --shrink-rpath $lib
+            '';
+          });
         in
         {
           inherit
