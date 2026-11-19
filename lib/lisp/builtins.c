@@ -2234,6 +2234,35 @@ lisp_value builtin_persist_state(int argc, lisp_value *argv)
         writes->value = NIL_VAL;
         return state;
     }
+    struct lisp_region *home = heap_region_of((void *)(uintptr_t)state);
+    bool append = !lisp.persistent_dirty && heap_appendable(home) && truthy(retired->value) &&
+        TYPE(sym_keep->function) == LT_FUNCTION &&
+        PTR(sym_keep->function, lisp_function)->kind == FN_BUILTIN &&
+        PTR(sym_keep->function, lisp_function)->fn == builtin_keep &&
+        TYPE(sym_release->function) == LT_FUNCTION &&
+        PTR(sym_release->function, lisp_function)->kind == FN_BUILTIN &&
+        PTR(sym_release->function, lisp_function)->fn == builtin_release;
+    for (lisp_value scan = writes->value; append && consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan)))
+        if (!symbolp(CAR(scan)))
+            append = false;
+    if (append) {
+        lisp_value pending = writes->value;
+        for (lisp_value scan = pending; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan)))
+            if (!plist_cell(state, CAR(scan)))
+                state = cons(CAR(scan), cons(CAR(CDR(scan)), state));
+        writes->value = NIL_VAL;
+        check_steps();
+        lisp_value copied = heap_copy_into(cons(state, pending), home);
+        state = CAR(copied);
+        for (lisp_value scan = CDR(copied); consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
+            lisp_value *cell = plist_cell(state, CAR(scan));
+            if (cell)
+                *cell = CAR(CDR(scan));
+        }
+        runtime->value = state;
+        check_steps();
+        return state;
+    }
     for (lisp_value scan = writes->value; consp(scan) && consp(CDR(scan)); scan = CDR(CDR(scan))) {
         lisp_value *cell = plist_cell(state, CAR(scan));
         if (cell)

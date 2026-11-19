@@ -28,7 +28,10 @@ static struct memo_slot *memo;
 static size_t memo_capacity, memo_used;
 static uint32_t memo_epoch;
 
-static lisp_value deep_copy(lisp_value value, struct lisp_region *dst);
+struct copy_region { uint64_t base; bool rebuild; };
+static struct copy_region copy_regions[LISP_MAX_REGIONS];
+
+static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool share);
 
 uint64_t lisp_now_ns(void)
 {
@@ -361,6 +364,7 @@ struct lisp_region *persistent_begin(void)
 void persistent_end(struct lisp_region *region)
 {
     lisp.persistent_used += region->used;
+    copy_regions[region - lisp.regions] = (struct copy_region){ .base = region->used };
     if (lisp.persistent_used > lisp.persistent_high_water)
         lisp.persistent_high_water = lisp.persistent_used;
 }
@@ -383,6 +387,39 @@ struct lisp_region *heap_region_of(const void *ptr)
     return lisp.blocks[index].owner;
 }
 
+bool heap_appendable(struct lisp_region *region)
+{
+    if (!region || region->kind != REG_PERSISTENT)
+        return false;
+    struct copy_region *copy = &copy_regions[region - lisp.regions];
+    return !copy->rebuild && region->used <= copy->base * 2;
+}
+
+static bool copy_splits_aliases(lisp_value value)
+{
+    switch (TYPE(value)) {
+    case LT_INT:
+    case LT_RATIO:
+    case LT_DOUBLE:
+    case LT_CHAR:
+    case LT_CONDITION:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void account_growth(struct lisp_region *region, uint64_t before)
+{
+    if (region->kind != REG_PERSISTENT)
+        return;
+    if (region->used <= before)
+        return;
+    lisp.persistent_used += region->used - before;
+    if (lisp.persistent_used > lisp.persistent_high_water)
+        lisp.persistent_high_water = lisp.persistent_used;
+}
+
 lisp_value heap_store(const void *container, lisp_value value)
 {
     struct lisp_region *home = heap_region_of(container);
@@ -394,8 +431,13 @@ lisp_value heap_store(const void *container, lisp_value value)
             lisp_error("an event's data escapes into what its source made when it loaded; keep what must outlast the event in the extension's state");
         return value;
     }
-    if (!from || from->kind == REG_PERSISTENT)
+    if (!from)
         return value;
+    if (from->kind == REG_PERSISTENT) {
+        if (from != home || copy_splits_aliases(value))
+            copy_regions[home - lisp.regions].rebuild = true;
+        return value;
+    }
     size_t size;
     switch (TYPE(value)) {
     case LT_INT: size = sizeof(struct lisp_int); break;
@@ -470,7 +512,7 @@ static void memo_add(void *src, void *dst)
     memo_insert(src, dst);
 }
 
-static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst);
+static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst, bool share);
 
 enum { CONS_FORWARDED = 0x80 };
 
@@ -513,9 +555,12 @@ static void unforward_conses(void)
     forwards = NULL;
 }
 
-static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
+static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool share)
 {
-    if (!heap_region_of((void *)(uintptr_t)value))
+    struct lisp_region *from = heap_region_of((void *)(uintptr_t)value);
+    if (!from)
+        return value;
+    if (share && from == dst && !copy_splits_aliases(value))
         return value;
     switch (TYPE(value)) {
     case LT_SYMBOL:
@@ -540,10 +585,17 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
                 prev->cdr = VAL(out);
             else
                 head = VAL(out);
-            out->car = deep_copy(car, dst);
+            out->car = deep_copy(car, dst, share);
             lisp_value next = src->cdr;
-            if (TYPE(next) != LT_CONS || !heap_region_of((void *)(uintptr_t)next)) {
-                out->cdr = deep_copy(next, dst);
+            struct lisp_region *next_region = NULL;
+            if (TYPE(next) == LT_CONS)
+                next_region = heap_region_of((void *)(uintptr_t)next);
+            if (!next_region) {
+                out->cdr = deep_copy(next, dst, share);
+                break;
+            }
+            if (share && next_region == dst) {
+                out->cdr = next;
                 break;
             }
             struct lisp_cons *following = PTR(next, lisp_cons);
@@ -604,19 +656,21 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
             return memo_lookup(src);
         struct lisp_function *out = heap_alloc_in(dst, sizeof(*out));
         *out = *src;
+        out->gen = NULL;
         memo_add(src, out);
         if (src->kind == FN_CLOSURE) {
             if (src->env)
-                out->env = PTR(copy_frame(src->env, dst), lisp_frame);
+                out->env = PTR(copy_frame(src->env, dst, share), lisp_frame);
             else
                 out->env = NULL;
             if (src->gen) {
                 src->gen->pin_count++;
+                out->gen = src->gen;
                 out->params = src->params;
                 out->body = src->body;
             } else {
-                out->params = deep_copy(src->params, dst);
-                out->body = deep_copy(src->body, dst);
+                out->params = deep_copy(src->params, dst, share);
+                out->body = deep_copy(src->body, dst, share);
                 out->gen = NULL;
                 out->code = NULL;
             }
@@ -624,7 +678,7 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
         return VAL(out);
     }
     case LT_FRAME:
-        return copy_frame(PTR(value, lisp_frame), dst);
+        return copy_frame(PTR(value, lisp_frame), dst, share);
     case LT_HASHTABLE: {
         struct lisp_hashtable *src = PTR(value, lisp_hashtable);
         if (memo_lookup(src))
@@ -632,14 +686,14 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
         struct lisp_hashtable *out = heap_alloc_in(dst, sizeof(*out));
         *out = *src;
         memo_add(src, out);
-        out->entries = deep_copy(src->entries, dst);
+        out->entries = deep_copy(src->entries, dst, share);
         return VAL(out);
     }
     case LT_CONDITION: {
         struct lisp_condition *src = PTR(value, lisp_condition);
         struct lisp_condition *out = heap_alloc_in(dst, sizeof(*out));
         *out = *src;
-        out->message = deep_copy(src->message, dst);
+        out->message = deep_copy(src->message, dst, share);
         return VAL(out);
     }
     default:
@@ -647,8 +701,10 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst)
     }
 }
 
-static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst)
+static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst, bool share)
 {
+    if (share && heap_region_of(frame) == dst)
+        return VAL(frame);
     lisp_value hit = memo_lookup(frame);
     if (hit)
         return hit;
@@ -661,19 +717,20 @@ static lisp_value copy_frame(struct lisp_frame *frame, struct lisp_region *dst)
     out->parent = NULL;
     out->count = frame->count;
     memo_add(frame, out);
-    out->parent = frame->parent ? PTR(copy_frame(frame->parent, dst), lisp_frame) : NULL;
+    out->parent = frame->parent ? PTR(copy_frame(frame->parent, dst, share), lisp_frame) : NULL;
     for (uint32_t i = 0; i < frame->count; i++) {
         out->entry[i].sym = frame->entry[i].sym;
         out->entry[i].kind = frame->entry[i].kind;
-        out->entry[i].value = deep_copy(frame->entry[i].value, dst);
+        out->entry[i].value = deep_copy(frame->entry[i].value, dst, share);
     }
     return VAL(out);
 }
 
-lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst)
+static lisp_value copy_session(lisp_value value, struct lisp_region *dst, bool share)
 {
     uint32_t saved = memo_epoch;
     size_t saved_used = memo_used;
+    volatile uint64_t before = share ? dst->used : 0;
     memo_epoch = ++lisp.memo_epochs;
     if (memo_epoch == 0) {
         memset(memo, 0, memo_capacity * sizeof(*memo));
@@ -684,16 +741,30 @@ lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst)
     if (setjmp(lisp.ctl[ctl].jb) != 0) {
         lisp.ctl_top = ctl;
         unforward_conses();
+        if (share)
+            account_growth(dst, before);
         memo_epoch = saved;
         memo_used = saved_used;
         throw_error_value(lisp_escape_condition());
     }
-    lisp_value out = deep_copy(value, dst);
+    lisp_value out = deep_copy(value, dst, share);
     lisp.ctl_top = ctl;
     unforward_conses();
+    if (share)
+        account_growth(dst, before);
     memo_epoch = saved;
     memo_used = saved_used;
     return out;
+}
+
+lisp_value heap_deep_copy(lisp_value value, struct lisp_region *dst)
+{
+    return copy_session(value, dst, false);
+}
+
+lisp_value heap_copy_into(lisp_value value, struct lisp_region *dst)
+{
+    return copy_session(value, dst, true);
 }
 
 lisp_value lisp_keep(lisp_value value)
