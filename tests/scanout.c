@@ -424,7 +424,7 @@ int main(int argc, char **argv) {
         zwlr_virtual_pointer_v1_motion(virtual_pointer, (uint32_t)(seconds() * 1000),
             wl_fixed_from_int(move_x), wl_fixed_from_int(move_y));
         zwlr_virtual_pointer_v1_frame(virtual_pointer);
-        wl_display_flush(display);
+        if (wl_display_roundtrip(display) < 0) return 1;
         printf("moved\n");
         fflush(stdout);
         return 0;

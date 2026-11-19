@@ -1,15 +1,17 @@
 DELAY_MS = 120
+KMS_DELAY_MS = 3000
 ICONS = "/run/glass-icons"
 CURSOR = {"XCURSOR_PATH": ICONS, "XCURSOR_THEME": "glass", "XCURSOR_SIZE": "32",
           "TOMOE_DEBUG": "1"}
 SIZE = 32
 OLD, NEW = (0x22, 0x66, 0xAA), (0xAA, 0x66, 0x22)
-POLICY = f"""(in-package #:tomoe-user)
+def policy(delay_ms):
+    return f"""(in-package #:tomoe-user)
 (define-extension "glass-test" (:reads (:outputs :windows) :state nil) (snapshot state event)
   (declare (ignore state event))
   (let ((output (first (context snapshot :outputs))))
     (values nil
-            (append (list (settings :cursor-glass (list :enabled t :delay-ms {DELAY_MS})))
+            (append (list (settings :cursor-glass (list :enabled t :delay-ms {delay_ms})))
                     (when (and output (equal (getf output :name) "HEADLESS-1"))
                       (list (configure-output (getf output :name)
                                               :mode (list 1280 720 60) :scale 1
@@ -22,6 +24,9 @@ POLICY = f"""(in-package #:tomoe-user)
                                                   (getf output :width) (getf output :height))))))
             nil)))
 """
+
+
+POLICY = policy(DELAY_MS)
 
 
 
@@ -60,6 +65,17 @@ def wait_glass(name, want, timeout=3.0):
     raise AssertionError(f"{name}: glass {'never came' if want else 'never left'}: {entry}")
 
 
+def wait_plain(name, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    entry = output_frames(name)
+    while time.monotonic() < deadline:
+        entry = output_frames(name)
+        if flag(entry, ":CURSOR-PLANE") and not flag(entry, ":GLASS"):
+            return entry
+        time.sleep(0.01)
+    raise AssertionError(f"{name}: the cursor never returned to its plane: {entry}")
+
+
 def region(x, y, w, h, name):
     path = f"/run/glass-{name}.ppm"
     machine.succeed(ENV + f"WAYLAND_DISPLAY=check grim -c -g '{x},{y} {w}x{h}' -t ppm - > {path}")
@@ -75,6 +91,7 @@ machine.wait_for_unit("multi-user.target")
 machine.succeed(f"{GLASS_MAKE} {ICONS}")
 relink("glass-dark")
 machine.succeed(f"cat > /run/glass.lisp <<'EOF'\n{POLICY}EOF")
+machine.succeed(f"cat > /run/glass-kms.lisp <<'EOF'\n{policy(KMS_DELAY_MS)}EOF")
 
 start("--bare", "--config /run/glass.lisp", env=CURSOR)
 assert inspect()[":LAST-ERROR"] == "NIL", inspect()
@@ -214,12 +231,12 @@ def nudge(dx, dy):
 
 machine.succeed("mount -t debugfs none /sys/kernel/debug || true")
 machine.succeed("systemctl stop check-bus || true")
-start("--bare", "--config /run/glass.lisp", f"--drm_device {DEVICE}", backend="drm", env=CURSOR)
+start("--bare", "--config /run/glass-kms.lisp", f"--drm_device {DEVICE}", backend="drm", env=CURSOR)
+wait_glass(KMS, True, timeout=8)
 nudge(40, 30)
-entry = output_frames(KMS)
-assert flag(entry, ":CURSOR-PLANE") and not flag(entry, ":GLASS"), entry
+wait_plain(KMS)
 assert cursor_fb() != "0", "the moving cursor is not on the cursor plane"
-entry = wait_glass(KMS, True)
+entry = wait_glass(KMS, True, timeout=8)
 assert not flag(entry, ":CURSOR-PLANE"), entry
 machine.wait_until_succeeds(
     f"tomoe-planes-probe dump {DEVICE} | grep 'type=CURSOR' | grep -q ' fb=0'", timeout=5)
@@ -229,11 +246,10 @@ entry = output_frames(KMS)
 print(f"vkms frames while the glass rests: {int(entry[':FRAME']) - held}")
 assert int(entry[":FRAME"]) - held <= 1, entry
 nudge(5, 5)
-entry = output_frames(KMS)
-assert flag(entry, ":CURSOR-PLANE") and not flag(entry, ":GLASS"), entry
+wait_plain(KMS)
 assert cursor_fb() != "0", "motion did not put the cursor back on its plane"
 
-wait_glass(KMS, True)
+wait_glass(KMS, True, timeout=8)
 machine.succeed(
     "systemd-run --unit=glass-scanout --property=Type=exec "
     f"--setenv=XDG_RUNTIME_DIR={RUNTIME} --setenv=WAYLAND_DISPLAY=check "

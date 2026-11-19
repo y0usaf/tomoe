@@ -837,7 +837,7 @@ static bool render_scene_prepared(struct output *o, struct buffer *buffer,
         if (ui_animate(o->server, data.sample)) moving = true;
         if (screenshot_animate(o->server, data.sample)) moving = true;
         if (track && cursor_motion_advance(o->server, animation_now())) moving = true;
-        o->animating = moving;
+        o->animating = o->animating || moving;
     }
     struct region changed, clip;
     region_init(&changed);

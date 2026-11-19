@@ -658,6 +658,7 @@ bool ghosts_animate(struct tomoe *s, double now) {
     bool active = false;
     struct ghost *g, *next;
     wl_list_for_each_safe(g, next, &s->ghosts, link) {
+        if (g->fade.active || g->grow.active) active = true;
         g->alpha = animation_advance(&g->fade, now, &s->animation);
         g->scale = animation_advance(&g->grow, now, &s->animation);
         active |= g->fade.active || g->grow.active;
@@ -731,12 +732,17 @@ static void window_retire(struct window *w) {
     wl_list_insert(&s->ghosts, &g->link);
     tomoe_log(LOG_DEBUG, "tomoe: window %u closes into a %dx%d ghost", w->target.id, width, height);
 }
+static bool window_animation_pending(const struct window *w) {
+    return w->move.active || w->fade.active || w->opacity.active || w->grow.active ||
+        w->turn.active || w->tint.active || w->shift.active || w->resize.active;
+}
 bool windows_animate(struct tomoe *s, double now) {
     const struct settings *st = &s->settings;
     bool active = view_animate(s, st, now);
     struct window *w;
     wl_list_for_each(w, &s->windows, link) {
         if (!w->tree) continue;
+        if (window_animation_pending(w)) active = true;
         double progress = animation_advance(&w->move, now, &s->animation);
         struct visual live = window_live_visual(w, st, now);
         w->target.visual = live;
@@ -879,7 +885,7 @@ void window_place_native(struct tomoe *s, uint32_t id, int x, int y, int width, 
 bool view_animate(struct tomoe *s, const struct settings *st, double now) {
     struct animation *channels[3] = { &s->view_x_anim, &s->view_y_anim, &s->view_zoom_anim };
     double values[3] = { s->view_x, s->view_y, s->view_zoom };
-    bool active = false;
+    bool active = s->view_x_anim.active || s->view_y_anim.active || s->view_zoom_anim.active;
     for (int i = 0; i < 3; i++) {
         values[i] = animation_advance(channels[i], now, &s->animation);
         active |= channels[i]->active;

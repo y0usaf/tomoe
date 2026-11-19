@@ -1740,6 +1740,7 @@ bool ui_animate(struct tomoe *s, double now) {
     bool active = false;
     for (size_t i = 0; i < s->ui->count; i++) {
         struct ui_surface *surface = s->ui->surfaces[i];
+        bool pending = surface->move.active;
         double progress = animation_advance(&surface->move, now, &s->animation);
         surface->slide_x = surface->from_x * progress;
         surface->slide_y = surface->from_y * progress;
@@ -1749,7 +1750,7 @@ bool ui_animate(struct tomoe *s, double now) {
         if (!(surface->attach_axes & 2)) attached_y = 0;
         surface->offset_x = (int)lround(surface->slide_x + attached_x);
         surface->offset_y = (int)lround(surface->slide_y + attached_y);
-        active |= surface->move.active || attached_x != 0 || attached_y != 0;
+        active |= pending || surface->move.active || attached_x != 0 || attached_y != 0;
         if (surface->fps <= 0 && background_moving(s, surface, now)) active = true;
     }
     if (s->shader_lifting) active = true;
