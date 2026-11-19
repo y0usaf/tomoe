@@ -146,4 +146,9 @@ void wl_shm_pool_unref(struct wl_shm_pool *pool);
 
 void wl_log_set_handler_server(wl_log_func_t handler);
 
+struct wl_event_source *loop_add_owned_fd(struct wl_event_loop *loop, int fd, uint32_t mask,
+    wl_event_loop_fd_func_t func, void *data);
+typedef const void *(*wl_implementation_map)(const void *implementation, void *data);
+void wl_display_repoint(struct wl_display *display, wl_implementation_map map, void *data);
+
 #endif

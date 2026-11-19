@@ -4,7 +4,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "ext-data-control-v1-protocol.h"
-#include "loop.h"
 #include "primary-selection-unstable-v1-protocol.h"
 #include "wlr-data-control-unstable-v1-protocol.h"
 

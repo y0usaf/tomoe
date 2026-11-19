@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
 #include "pipewire.h"
-#include "pwwire.h"
 
 #define PWN_MAX_BUFFERS 32
 #define PWN_MAX_TARGETS 16

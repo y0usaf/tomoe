@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 
-#include "pwwire.h"
+#include "pipewire.h"
 
 #include <errno.h>
 #include <fcntl.h>

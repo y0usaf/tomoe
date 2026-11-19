@@ -102,6 +102,7 @@
                 root = root;
                 fileset = pkgs.lib.fileset.unions [
                   ./native
+                  ./lib
                   ./support
                   ./lisp
                   ./tools
@@ -218,6 +219,7 @@
         pkgs.runCommand "tomoe-src-layout-drift" { } ''
           mkdir -p $out
           cp -r ${./native} $out/native
+          cp -r ${./lib} $out/lib
           cp -r ${./lisp} $out/lisp
           cp -r ${./support} $out/support
           cp -r ${./tools} $out/tools

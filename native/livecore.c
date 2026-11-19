@@ -3,10 +3,8 @@
 #include "backend.h"
 #include "internal.h"
 #include "lisp.h"
-#include "lisp/lisp-internal.h"
 #include "main-functions.h"
 #include "state.h"
-#include "wayland/server.h"
 
 #include <dlfcn.h>
 #include <elf.h>

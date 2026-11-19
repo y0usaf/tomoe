@@ -1088,7 +1088,7 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
         xdg-shell-protocol.h
       $CC -std=c11 -D_GNU_SOURCE -O1 -Wall -Wextra -Werror -Wno-unused-parameter \
-        -Inative -I. tests/animation-unit.c native/animation.c \
+        -Inative -Ilib/lisp/include -Ilib/xkb/include -I. tests/animation-unit.c native/animation.c \
         $(pkg-config --cflags --libs wayland-server libdrm glesv2) -lm \
         -o animation-unit
       ./animation-unit
@@ -1119,7 +1119,7 @@ let
     src = pkgs.lib.fileset.toSource {
       root = ./..;
       fileset = pkgs.lib.fileset.unions [
-        (pkgs.lib.fileset.fileFilter (file: pkgs.lib.hasPrefix "xkb" file.name) ../native)
+        ../lib/xkb
         ./xkb-trace.c
         ./xkb-cases.awk
       ];
@@ -1131,8 +1131,8 @@ let
     buildPhase = ''
       root=${pkgs.xkeyboard_config}/etc/X11/xkb
       build() {
-        $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Inative \
-          -DTOMOE_XKB_CONFIG_ROOT="\"$root\"" tests/xkb-trace.c native/xkb_*.c "$@"
+        $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Ilib/xkb/include \
+          -DTOMOE_XKB_CONFIG_ROOT="\"$root\"" tests/xkb-trace.c lib/xkb/*.c "$@"
       }
       build $(pkg-config --cflags --libs xkbcommon) -o xkb-trace
       build -DNATIVE -o xkb-trace-native
@@ -1176,7 +1176,31 @@ let
       cat real.trace > $out/share/tomoe/xkb-equivalence
     '';
   };
+  libraries = pkgs.stdenv.mkDerivation {
+    name = "tomoe-libraries";
+    src = ../lib;
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.pkg-config
+      pkgs.wayland-scanner
+    ];
+    dontConfigure = true;
+    buildPhase = ''
+      for library in png lisp wayland xkb pipewire; do
+        make -C $library -j"$NIX_BUILD_CORES" \
+          WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
+      done
+    '';
+    installPhase = ''
+      for library in png lisp wayland xkb pipewire; do
+        install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
+        install -Dm644 -t $out/include/tomoe-$library $library/include/*.h
+      done
+      install -Dm644 -t $out/include/tomoe-wayland wayland/build/wayland-*-protocol.h
+    '';
+  };
   compositorPackages = [
+    libraries
     animationUnit
     xkbEquivalence
     lispUnit
@@ -1712,6 +1736,7 @@ let
 in
 {
   inherit client;
+  inherit libraries;
   lisp-unit = lispUnit;
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;

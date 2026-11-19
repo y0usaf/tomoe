@@ -7,13 +7,12 @@
 #include <errno.h>
 
 #include "lisp-internal.h"
-#include "state.h"
 
 struct lisp_runtime *lisp_ptr;
 
-void lisp_attach(const struct tomoe_state_abi *abi) {
+void lisp_attach(lisp_state_lookup state) {
     static struct lisp_runtime private_runtime;
-    lisp_ptr = tomoe_state("lisp", sizeof(*lisp_ptr));
+    lisp_ptr = state ? state("lisp", sizeof(*lisp_ptr)) : NULL;
     if (!lisp_ptr) lisp_ptr = &private_runtime;
 }
 

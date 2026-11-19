@@ -1,6 +1,6 @@
 #include "internal.h"
 #include "xdg-system-bell-v1-protocol.h"
-#include "../support/pipewire.h"
+#include "pipewire.h"
 
 #include <errno.h>
 #include <math.h>

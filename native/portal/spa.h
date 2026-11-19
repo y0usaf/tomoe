@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "pwwire.h"
+#include "pipewire.h"
 
 struct spa_point {
     int32_t x;

@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "lisp-internal.h"
-#include "../ui-shape.h"
 
 enum ui_key {
     UK_KIND, UK_WIDTH, UK_HEIGHT, UK_GROW, UK_BACKGROUND, UK_BORDER_COLOR, UK_RADIUS, UK_BORDER,

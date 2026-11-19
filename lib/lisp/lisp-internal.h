@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <setjmp.h>
 
-#include "../lisp.h"
+#include "lisp.h"
 
 enum lisp_type {
     LT_SYMBOL = 1,
@@ -369,8 +369,6 @@ struct lisp_runtime {
     struct lisp_symbol *sym_keyword_test_not;
 };
 
-struct tomoe_state_abi;
-void lisp_attach(const struct tomoe_state_abi *abi);
 extern struct lisp_runtime *lisp_ptr;
 #define lisp (*lisp_ptr)
 

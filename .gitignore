@@ -6,3 +6,4 @@
 /.worktrees/
 *.fasl
 __pycache__/
+/lib/*/build/

@@ -11,7 +11,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "wayland-server.h"
-#include "loop.h"
 #include "server.h"
 #include "wire.h"
 

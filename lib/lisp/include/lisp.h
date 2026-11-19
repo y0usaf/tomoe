@@ -1,5 +1,7 @@
 #ifndef TOMOE_LISP_H
 #define TOMOE_LISP_H
+#include <float.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -29,7 +31,13 @@ struct lisp_builtin_source {
 };
 
 typedef lisp_value (*lisp_primitive)(int argc, lisp_value *argv);
+typedef void *(*lisp_state_lookup)(const char *name, size_t size);
 
+#define UI_SHAPE_STOPS 6
+#define UI_SHAPE_SHADOWS 4
+#define UI_SHAPE_POINTS 1024
+
+void lisp_attach(lisp_state_lookup state);
 int lisp_init(size_t region_bytes);
 void lisp_shutdown(void);
 int lisp_set_region_limit(size_t region_bytes);
@@ -86,5 +94,23 @@ int lisp_read_data(const char *text, size_t length, lisp_value *out, char *error
 size_t lisp_print(lisp_value value, bool readably, char *buffer, size_t size);
 char *lisp_print_alloc(lisp_value value, bool readably);
 char *lisp_print_signature_alloc(lisp_value value);
+
+static inline double lisp_spring_at(double stiffness, double damping_ratio,
+        double from, double to, double v0, double elapsed) {
+    double omega0 = sqrt(fmax(stiffness, 0));
+    double beta = fmax(damping_ratio, 0) * omega0;
+    double x0 = from - to;
+    double envelope = exp(-beta * elapsed);
+    if (fabs(beta - omega0) <= FLT_EPSILON)
+        return to + envelope * (x0 + (v0 + beta * x0) * elapsed);
+    if (beta < omega0) {
+        double omega1 = sqrt(omega0 * omega0 - beta * beta);
+        return to + envelope * (x0 * cos(omega1 * elapsed) +
+            ((beta * x0 + v0) / omega1) * sin(omega1 * elapsed));
+    }
+    double omega2 = sqrt(beta * beta - omega0 * omega0);
+    return to + envelope * (x0 * cosh(omega2 * elapsed) +
+        ((beta * x0 + v0) / omega2) * sinh(omega2 * elapsed));
+}
 
 #endif

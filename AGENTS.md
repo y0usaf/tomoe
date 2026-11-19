@@ -160,7 +160,8 @@ A static object whose *address* another object remembers has to be shared, not
 copied: `native/state.c` is retained state the driver owns by name, each image
 points its statics at it when loaded through `tomoe_core_attach`, and both then
 address the same object. That covers the rect pool (`region.c`) and the Lisp
-runtime with its symbol table (`heap.c`). Everything else is a copy per image,
+runtime with its symbol table (`lib/lisp/heap.c`, which `state.c` hands `tomoe_state`
+through `lisp_attach`). Everything else is a copy per image,
 which is why the commit has to normalise the table pointers above and why
 `selection.c` compares a `wl_interface` by name rather than by address; a new
 static whose address is compared across images will break a swap.
@@ -185,7 +186,7 @@ with is the same for the whole run.
 
 ## The keyboard
 
-`native/xkb_*.c` is Tomoe's own XKB: rules, keymap compiler, state machine, keysyms
+`lib/xkb/` is Tomoe's own XKB: rules, keymap compiler, state machine, keysyms
 and the keymap text clients get, with libxkbcommon's API under a `txkb_` prefix.
 `tests/xkb-trace.c` drives it and libxkbcommon 1.13 through the same trace for
 every model, layout, variant and option in xkeyboard-config (`tests/xkb-cases.awk`)

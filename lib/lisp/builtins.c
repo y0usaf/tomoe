@@ -6,7 +6,6 @@
 #include <ctype.h>
 
 #include "lisp-internal.h"
-#include "../spring.h"
 
 static void kw_init(struct kw *kw)
 {
@@ -1679,7 +1678,7 @@ lisp_value builtin_spring(int argc, lisp_value *argv)
     double v0 = number_to_double(require_number(argv[4], "velocity"));
     double elapsed = number_to_double(require_number(argv[5], "elapsed"));
     if (elapsed <= 0) return make_double(from);
-    return make_double(tomoe_spring_at(stiffness, damping, from, to, v0, elapsed));
+    return make_double(lisp_spring_at(stiffness, damping, from, to, v0, elapsed));
 }
 
 lisp_value builtin_sin(int argc, lisp_value *argv) { return make_double(sin(number_to_double(require_number(argc >= 1 ? argv[0] : NIL_VAL, "argument")))); }

@@ -14,7 +14,7 @@ WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayl
 LIBS = pango pangoft2 fontconfig freetype2 libinput glesv2 egl gbm libudev
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
-SUPPORT = bus executions watches notifications mpris backlight battery network tray system pipewire pwwire
+SUPPORT = bus executions watches notifications mpris backlight battery network tray system
 PROTOCOLS = \
 	$(WLR)/wlr-layer-shell-unstable-v1.xml \
 	$(WLR)/wlr-screencopy-unstable-v1.xml \
@@ -68,19 +68,28 @@ NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = build/wayland-server-protocol.h build/wayland-client-protocol.h $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
 LISP_SOURCES = prelude api ui cursor dialogs rules ipc plan runtime livepatch desktop default-config
 LISP_EMBED = $(wildcard lisp/*.lisp)
-LISP_NATIVE = $(patsubst native/lisp/%.c,build/obj/lisp-%.o,$(wildcard native/lisp/*.c))
-WAYLAND_CORE = build/obj/wayland-wire.o build/obj/wayland-protocol.o
-WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/wayland-loop.o build/obj/wayland-server.o build/obj/wayland-shm.o
-WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/wayland-client.o
-NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LISP_NATIVE) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/wayland-client.o
+LIBRARIES = png lisp wayland xkb pipewire
+LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
+LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h)
+LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include)
+LIB_OBJECTS = $(patsubst lib/%.c,build/obj/lib/%.o,$(filter-out lib/wayland/%,$(LIB_SOURCES)))
+WAYLAND_CORE = build/obj/lib/wayland/wire.o build/obj/wayland-protocol.o
+WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/lib/wayland/loop.o build/obj/lib/wayland/server.o build/obj/lib/wayland/shm.o
+WAYLAND_CLIENT = $(WAYLAND_CORE) build/obj/lib/wayland/client.o
+NATIVE = $(patsubst native/%.c,build/obj/%.o,$(wildcard native/*.c)) $(LIB_OBJECTS) $(NAMES:%=build/obj/%-protocol.o) $(WAYLAND_SERVER) build/obj/lib/wayland/client.o
 CFLAGS_CODE = $(OPT) $(LTO) $(CPU)
-CFLAGS_NATIVE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -fno-partial-inlining -fno-reorder-blocks-and-partition -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -DTOMOE_XKB_CONFIG_ROOT='"$(XKB_CONFIG_ROOT)"' -Ibuild -Inative -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(LIBS))
+CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -fpatchable-function-entry=5,0 -fno-partial-inlining -fno-reorder-blocks-and-partition
+CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
-CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Inative/wayland $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
-CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative
+CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Ilib/wayland/include -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
+CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ilib/lisp/include
+LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)
+LIB_FLAGS_wayland = -Ibuild
+LIB_FLAGS_xkb = -DTOMOE_XKB_CONFIG_ROOT='"$(XKB_CONFIG_ROOT)"'
+lib_cflags = $(or $(LIB_CFLAGS_$(1)),$(CFLAGS_BASE)) -Ilib/$(1)/include $(LIB_FLAGS_$(1))
 
-PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c)) build/bus.o build/pwwire.o
+PORTAL = $(patsubst native/portal/%.c,build/obj/portal-%.o,$(wildcard native/portal/*.c)) build/bus.o build/obj/lib/pipewire/pwwire.o
 PORTAL_PROTOCOLS = linux-dmabuf-v1 ext-image-copy-capture-v1 ext-image-capture-source-v1 ext-foreign-toplevel-list-v1
 
 vpath %.xml $(sort $(dir $(PROTOCOLS)))
@@ -90,11 +99,11 @@ all: build/tomoe build/tomoe-portal
 build/tomoe-portal: $(PORTAL) $(PORTAL_PROTOCOLS:%=build/obj/%-protocol.o) $(WAYLAND_CLIENT)
 	$(CC) $(LTO) $^ -o $@ $(shell $(PKG_CONFIG) --libs $(PORTAL_LIBS))
 
-build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h native/wayland/*.h) $(wildcard support/*.h) support/bus.h $(HEADERS) | build/obj
+build/obj/portal-%.o: native/portal/%.c $(wildcard native/portal/*.h) $(LIB_HEADERS) $(wildcard support/*.h) support/bus.h $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_PORTAL) -c $< -o $@
 
-CORE_SOURCES = $(wildcard native/*.c) $(wildcard native/lisp/*.c) $(wildcard native/wayland/*.c)
-CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(CORE_SOURCES)) \
+CORE_OBJECTS = $(patsubst native/%.c,build/core/obj/%.o,$(wildcard native/*.c)) \
+	$(patsubst lib/%.c,build/core/obj/lib/%.o,$(LIB_SOURCES)) \
 	$(NAMES:%=build/core/obj/protocol-%-protocol.o) $(SUPPORT:%=build/core/obj/support-%.o) \
 	build/core/obj/wayland-protocol.o
 
@@ -126,9 +135,13 @@ build/core/obj/protocol-%-protocol.o: build/%-protocol.c $(HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_CORE) -c $< -o $@
 
-build/core/obj/%.o: native/%.c $(wildcard native/*.h native/lisp/*.h native/wayland/*.h) $(HEADERS) | build
+build/core/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_CORE) -c $< -o $@
+
+build/core/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/wayland-client-protocol.h | build
+	@mkdir -p $(dir $@)
+	$(CC) $(call lib_cflags,$(firstword $(subst /, ,$*))) -fPIC -DTOMOE_SHARED_CORE -c $< -o $@
 
 build/embed: tools/embed.c | build
 	$(CC) $(CFLAGS_CODE) -o $@ $<
@@ -147,10 +160,10 @@ build/main-functions.h: build/obj/main.o | build
 	    awk '$$2 == "T" || $$2 == "t" { printf "    \"%s\",\n", $$1 }'; \
 	  echo '};'; } > $@
 
-build/portal-format: tests/portal-format.c native/portal/format.c support/pwwire.c \
-		$(wildcard native/portal/*.h support/*.h) | build
-	$(CC) $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -Ibuild -Isupport \
-		-Inative/portal tests/portal-format.c native/portal/format.c support/pwwire.c -o $@
+build/portal-format: tests/portal-format.c native/portal/format.c lib/pipewire/pwwire.c \
+		$(wildcard native/portal/*.h lib/pipewire/include/*.h) | build
+	$(CC) $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -Ibuild -Ilib/pipewire/include \
+		-Inative/portal tests/portal-format.c native/portal/format.c lib/pipewire/pwwire.c -o $@
 
 build/test-client: tests/client.c $(HEADERS)
 	$(CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild tests/client.c $(NAMES:%=build/%-protocol.c) \
@@ -176,22 +189,19 @@ build/warp-client: tests/warp-client.c tests/client.c $(HEADERS)
 		$(NAMES:%=build/%-protocol.c) \
 		$(shell $(PKG_CONFIG) --cflags --libs wayland-client) -o $@
 
-build/obj/%.o: native/%.c $(wildcard native/*.h native/wayland/*.h) $(HEADERS) | build/obj
+build/obj/%.o: native/%.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) | build/obj
 	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
 
-build/event-ring: tests/event-ring.c native/event.c native/policy.c $(wildcard native/*.h) $(HEADERS) $(WAYLAND_SERVER) | build
+build/obj/lib/%.o: lib/%.c $(LIB_HEADERS) build/wayland-server-protocol.h build/wayland-client-protocol.h | build/obj
+	@mkdir -p $(dir $@)
+	$(CC) $(call lib_cflags,$(firstword $(subst /, ,$*))) -c $< -o $@
+
+build/event-ring: tests/event-ring.c native/event.c native/policy.c $(wildcard native/*.h) $(LIB_HEADERS) $(HEADERS) $(WAYLAND_SERVER) | build
 	$(CC) $(CFLAGS_NATIVE) -Inative -ffunction-sections -fdata-sections \
 		tests/event-ring.c native/event.c native/policy.c $(WAYLAND_SERVER) -Wl,--gc-sections -lm -o $@
 
-build/obj/wayland-%.o: native/wayland/%.c $(wildcard native/wayland/*.h) build/wayland-server-protocol.h build/wayland-client-protocol.h | build/obj
-	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
-
-build/obj/lisp-%.o: native/lisp/%.c $(wildcard native/lisp/*.h) $(wildcard native/*.h native/wayland/*.h) $(HEADERS) | build/obj
-	$(CC) $(CFLAGS_NATIVE) -c $< -o $@
-
-build/lisp-unit: $(wildcard native/lisp/*.c) $(wildcard native/lisp/*.h) native/lisp.h \
-		native/state.c native/state.h native/region.c native/region.h tests/lisp-unit.c | build
-	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard native/lisp/*.c) native/state.c native/region.c \
+build/lisp-unit: $(wildcard lib/lisp/*.c lib/lisp/*.h lib/lisp/include/*.h) tests/lisp-unit.c | build
+	$(CC) $(CFLAGS_LISP_UNIT) -o $@ $(wildcard lib/lisp/*.c) \
 		tests/lisp-unit.c -lm -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc
 
 UNIT_SOURCES = tomoe:tests/lisp-api-stub.lisp user:lisp/desktop.lisp \

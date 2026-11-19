@@ -1,7 +1,6 @@
 #include "internal.h"
 #include "draw.h"
 #include "fttext.h"
-#include "spring.h"
 #include "png.h"
 #include <fcntl.h>
 #include <drm/drm_fourcc.h>
@@ -174,9 +173,9 @@ static void spring_state(const struct tomoe *s, const struct screenshot *shot, d
             velocity[i] = 0;
             continue;
         }
-        position[i] = tomoe_spring_at(st->screenshot_motion_stiffness,
+        position[i] = lisp_spring_at(st->screenshot_motion_stiffness,
             st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i], elapsed);
-        velocity[i] = (tomoe_spring_at(st->screenshot_motion_stiffness,
+        velocity[i] = (lisp_spring_at(st->screenshot_motion_stiffness,
             st->screenshot_motion_damping, shot->from[i], shot->to[i], shot->velocity[i],
             elapsed + step) - position[i]) / step;
     }

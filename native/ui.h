@@ -7,7 +7,9 @@
 
 #include <wayland-server-protocol.h>
 
-#include "ui-shape.h"
+#include "lisp.h"
+
+enum ui_fill { UI_FILL_SOLID, UI_FILL_LINEAR, UI_FILL_RADIAL };
 
 struct box;
 struct output;
