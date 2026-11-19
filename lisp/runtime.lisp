@@ -806,7 +806,7 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows))
              :layers (copy-data (runtime-layers))
              :keyboard (default-keyboard-config)
-             :settings (%settings-defaults +settings+)
+             :settings (copy-data +settings-defaults+)
              :view (list :x 0 :y 0 :zoom 1d0))))
     (let ((declarations (loop for mounted in mounts
                               for effects = (mounted-effects mounted)

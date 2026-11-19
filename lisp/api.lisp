@@ -949,6 +949,9 @@ merge field by field. Omission restores the preceding owner or the default."
                                ((eq type :animations) (%animation-settings default))
                                (t default)))))
 
+(defparameter +settings-defaults+ (%settings-defaults +settings+)
+  "The settings every materialization starts from, built once when the API loads.")
+
 (defun %budget-limits-of (settings)
   "The committed settings as the one table every Lisp-side limit comes from."
   (let ((budgets (getf settings :budgets)))
