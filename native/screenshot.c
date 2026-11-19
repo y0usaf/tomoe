@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <drm/drm_fourcc.h>
 #include <unistd.h>
-#include <xkbcommon/xkbcommon-keysyms.h>
+#include "xkb.h"
 
 enum { MARK_ARROW, MARK_FREE, MARK_TEXT };
 enum { TOOL_SELECT, TOOL_ARROW, TOOL_TEXT, TOOL_FREE, TOOL_COUNT };
@@ -425,16 +425,16 @@ static void marks_repaint(struct tomoe *s) {
     schedule_scene(s);
 }
 
-static bool mark_key(const struct settings *st, int slot, xkb_keysym_t sym) {
+static bool mark_key(const struct settings *st, int slot, txkb_keysym_t sym) {
     if (slot >= 6) return false;
     const char *name = st->screenshot_mark_keys[slot];
     if (!name) {
         static const char *const defaults[] = { "a", "t", "f", "u", "r", "m" };
         name = defaults[slot];
     }
-    xkb_keysym_t want = xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
-    if (want == XKB_KEY_NoSymbol) return false;
-    return xkb_keysym_to_lower(sym) == xkb_keysym_to_lower(want);
+    txkb_keysym_t want = txkb_keysym_from_name(name, TXKB_KEYSYM_CASE_INSENSITIVE);
+    if (want == TXKB_KEY_NoSymbol) return false;
+    return txkb_keysym_to_lower(sym) == txkb_keysym_to_lower(want);
 }
 
 static void set_tool(struct tomoe *s, int tool) {
@@ -462,15 +462,15 @@ static void undo_mark(struct tomoe *s) {
     marks_changed(s, damage);
 }
 
-static bool colour_key(struct tomoe *s, xkb_keysym_t sym) {
+static bool colour_key(struct tomoe *s, txkb_keysym_t sym) {
     struct screenshot *shot = s->screenshot;
     const struct settings *st = &s->settings;
     size_t count = st->screenshot_mark_palette_count;
     if (st->screenshot_mark_palette_key_count < count) count = st->screenshot_mark_palette_key_count;
     for (size_t i = 0; i < count; i++) {
-        xkb_keysym_t want = xkb_keysym_from_name(st->screenshot_mark_palette_keys[i],
-            XKB_KEYSYM_CASE_INSENSITIVE);
-        if (want == XKB_KEY_NoSymbol || xkb_keysym_to_lower(sym) != xkb_keysym_to_lower(want))
+        txkb_keysym_t want = txkb_keysym_from_name(st->screenshot_mark_palette_keys[i],
+            TXKB_KEYSYM_CASE_INSENSITIVE);
+        if (want == TXKB_KEY_NoSymbol || txkb_keysym_to_lower(sym) != txkb_keysym_to_lower(want))
             continue;
         if (shot->colour == (unsigned)i + 1) return true;
         shot->colour = (unsigned)i + 1;
@@ -579,9 +579,9 @@ static void text_painted(struct tomoe *s, struct box before) {
     marks_changed(s, unite(before, mark_extent(&s->settings, shot->live)));
 }
 
-static bool typing_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed) {
+static bool typing_key(struct tomoe *s, txkb_keysym_t sym, txkb_keysym_t typed) {
     struct screenshot *shot = s->screenshot;
-    if (sym == XKB_KEY_Escape) {
+    if (sym == TXKB_KEY_Escape) {
         struct box damage = mark_extent(&s->settings, shot->live);
         mark_free(shot->live);
         shot->live = NULL;
@@ -590,19 +590,19 @@ static bool typing_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed) {
         selector_event(s);
         return true;
     }
-    if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+    if (sym == TXKB_KEY_Return || sym == TXKB_KEY_KP_Enter) {
         text_commit(s, shot);
         return true;
     }
     if (!shot->live) return true;
     struct box before = mark_extent(&s->settings, shot->live);
-    if (sym == XKB_KEY_BackSpace) {
+    if (sym == TXKB_KEY_BackSpace) {
         text_backspace(shot->live);
         text_painted(s, before);
         return true;
     }
     char bytes[8];
-    int count = xkb_keysym_to_utf8(typed == XKB_KEY_NoSymbol ? sym : typed, bytes, sizeof(bytes));
+    int count = txkb_keysym_to_utf8(typed == TXKB_KEY_NoSymbol ? sym : typed, bytes, sizeof(bytes));
     if (count <= 1) return true;
     text_append(shot->live, bytes, (size_t)count - 1);
     text_painted(s, before);
@@ -727,11 +727,11 @@ void tomoe_screenshot(struct tomoe *s, int interactive) {
     schedule_scene(s);
 }
 
-static bool brush_key(struct tomoe *s, xkb_keysym_t typed, uint32_t keycode) {
+static bool brush_key(struct tomoe *s, txkb_keysym_t typed, uint32_t keycode) {
     struct screenshot *shot = s->screenshot;
     if (!shot->selected || shot->tool == TOOL_SELECT) return false;
-    int ramp = typed == XKB_KEY_bracketright ? RAMP_BIGGER
-        : typed == XKB_KEY_bracketleft ? RAMP_SMALLER : RAMP_NONE;
+    int ramp = typed == TXKB_KEY_bracketright ? RAMP_BIGGER
+        : typed == TXKB_KEY_bracketleft ? RAMP_SMALLER : RAMP_NONE;
     if (!ramp) return false;
     if (shot->ramp != ramp) {
         shot->ramp = ramp;
@@ -752,7 +752,7 @@ static void head_key(struct tomoe *s) {
     }
 }
 
-bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
+bool screenshot_key(struct tomoe *s, txkb_keysym_t sym, txkb_keysym_t typed,
         uint32_t modifiers, bool pressed, uint32_t keycode) {
     if (!s->screenshot) return false;
     if (!pressed) return true;
@@ -760,19 +760,19 @@ bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
     const struct settings *st = &s->settings;
     if (brush_key(s, typed, keycode)) return true;
     if (shot->typing && typing_key(s, sym, typed)) return true;
-    if (sym == XKB_KEY_Escape) {
+    if (sym == TXKB_KEY_Escape) {
         screenshot_close(s);
-    } else if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter || sym == XKB_KEY_space) {
+    } else if (sym == TXKB_KEY_Return || sym == TXKB_KEY_KP_Enter || sym == TXKB_KEY_space) {
         finish_live(s, shot);
         capture(s, shot->output, shot->selected ? selection(shot) : (struct box){0});
         screenshot_close(s);
-    } else if ((modifiers & MOD_CTRL) && xkb_keysym_to_lower(sym) == XKB_KEY_z) {
+    } else if ((modifiers & MOD_CTRL) && txkb_keysym_to_lower(sym) == TXKB_KEY_z) {
         undo_mark(s);
     } else if (mark_key(st, 3, sym)) {
         undo_mark(s);
     } else if (mark_key(st, 4, sym)) {
         set_tool(s, TOOL_SELECT);
-    } else if (shot->selected && shot->tool == TOOL_ARROW && xkb_keysym_to_lower(sym) == XKB_KEY_h) {
+    } else if (shot->selected && shot->tool == TOOL_ARROW && txkb_keysym_to_lower(sym) == TXKB_KEY_h) {
         head_key(s);
     } else if (shot->selected && colour_key(s, sym)) {
         return true;

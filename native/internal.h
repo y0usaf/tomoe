@@ -17,7 +17,7 @@
 #include <drm/drm_fourcc.h>
 #include "region.h"
 #include "policy.h"
-#include <xkbcommon/xkbcommon.h>
+#include "xkb.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg-shell-protocol.h"
 
@@ -282,13 +282,13 @@ enum {
 #define LED_COUNT 3
 #define MODIFIER_COUNT 8
 struct keymap_slot {
-    struct xkb_keymap *keymap;
-    struct xkb_state *xkb_state;
+    struct txkb_keymap *keymap;
+    struct txkb_state *xkb_state;
     char *keymap_string;
     size_t keymap_size;
     int keymap_fd;
-    xkb_led_index_t led_indexes[LED_COUNT];
-    xkb_mod_index_t mod_indexes[MODIFIER_COUNT];
+    txkb_led_index_t led_indexes[LED_COUNT];
+    txkb_mod_index_t mod_indexes[MODIFIER_COUNT];
     struct keyboard_modifiers modifiers;
     uint32_t leds;
     struct { int32_t rate, delay; } repeat_info;
@@ -950,7 +950,7 @@ void input_pointer_absolute(struct pointer_absolute *event);
 void input_pointer_button(struct pointer_button *event);
 void input_pointer_axis(struct pointer_axis *event);
 void input_pointer_frame(struct input_device *device);
-bool keymap_slot_set(struct keymap_slot *slot, struct xkb_keymap *keymap);
+bool keymap_slot_set(struct keymap_slot *slot, struct txkb_keymap *keymap);
 void keymap_slot_finish(struct keymap_slot *slot);
 uint32_t keymap_slot_modifiers(const struct keymap_slot *slot);
 struct presentation {
@@ -1483,7 +1483,7 @@ int tomoe_input_stream(struct tomoe *s, int enabled);
 void input_stream_pointer(struct tomoe *s, uint32_t time_msec);
 void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, bool pressed);
 void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
-    xkb_keysym_t sym, bool pressed);
+    txkb_keysym_t sym, bool pressed);
 void input_stream_flush(struct tomoe *s);
 void input_stream_suspend(struct tomoe *s);
 bool lock_shields_input(struct tomoe *s);
@@ -1618,7 +1618,7 @@ int tomoe_present_keyboard(struct tomoe *s, const char *rules, const char *model
     int repeat_rate, int repeat_delay);
 bool keyboard_profile_publish(struct tomoe *s, struct presentation *plan);
 void keyboard_profile_finish(struct keyboard_profile *profile);
-bool keyboard_logical_init(struct tomoe *s, struct xkb_keymap *keymap,
+bool keyboard_logical_init(struct tomoe *s, struct txkb_keymap *keymap,
     int repeat_rate, int repeat_delay);
 void keyboard_logical_finish(struct tomoe *s);
 void keyboard_sync_leds(struct tomoe *s);
@@ -1691,7 +1691,7 @@ struct screenshot;
 bool ui_text_raster(uint32_t *pixels, int stride, int width, int height, struct rect clip,
     double x, double y, const char *font, const char *text, double size, uint32_t rgba);
 void screenshot_key_up(struct tomoe *s, uint32_t keycode);
-bool screenshot_key(struct tomoe *s, xkb_keysym_t sym, xkb_keysym_t typed,
+bool screenshot_key(struct tomoe *s, txkb_keysym_t sym, txkb_keysym_t typed,
     uint32_t modifiers, bool pressed, uint32_t keycode);
 bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);

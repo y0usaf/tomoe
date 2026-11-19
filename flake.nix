@@ -23,21 +23,6 @@
               "--disable-glx"
             ];
           });
-          libxkbcommon = pkgs.libxkbcommon.overrideAttrs (old: {
-            buildInputs = [
-              pkgs.xkeyboard_config
-              pkgs.wayland
-              pkgs.wayland-protocols
-            ];
-            mesonFlags = [
-              "-Dxkb-config-root=${pkgs.xkeyboard_config}/etc/X11/xkb"
-              "-Dxkb-config-extra-path=/etc/xkb"
-              "-Denable-docs=true"
-              "-Denable-x11=false"
-              "-Denable-xkbregistry=false"
-              "-Denable-wayland=true"
-            ];
-          });
           libgbm = (pkgs.libgbm.override { inherit libdrm libglvnd; }).overrideAttrs {
             propagatedBuildInputs = [ ];
             buildInputs = [ libdrm ];
@@ -48,7 +33,6 @@
             libdrm
             libgbm
             libglvnd
-            libxkbcommon
             ;
         };
       packageFrom =
@@ -145,7 +129,6 @@
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            libs.libxkbcommon
             pango
           ];
           strictDeps = true;
@@ -156,6 +139,7 @@
               CORE_STAMP='${if coreStamp == null then version else coreStamp}' \
               PATH_PREFIX=$out/bin \
               FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
+              XKB_CONFIG_ROOT=${pkgs.xkeyboard_config}/etc/X11/xkb \
               OPT='${opt}' LTO='${pkgs.lib.optionalString lto "-flto=auto"}' \
               CPU='${pkgs.lib.optionalString (cpu != "") "-march=${cpu} -mtune=${cpu}"}' \
               WLR=${pkgs.wlr-protocols}/share/wlr-protocols/unstable \
@@ -203,7 +187,6 @@
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
             pkgs.wayland
-            (lean pkgs).libxkbcommon
           ];
           WLR_PROTOCOLS_XML = "${pkgs.wlr-protocols}/share/wlr-protocols";
         };
@@ -246,8 +229,8 @@
           cp ${./COPYING-LGPL-2.1} $out/COPYING-LGPL-2.1
           cp ${./COPYING-MPL-1.1} $out/COPYING-MPL-1.1
           substituteInPlace $out/native/backend.c --replace-fail \
-            'int tomoe_abi_version(void) { return 45; }' \
-            'int tomoe_abi_version(void) { return 46; }'
+            'int tomoe_abi_version(void) { return 46; }' \
+            'int tomoe_abi_version(void) { return 47; }'
         '';
       testsFor =
         pkgs:

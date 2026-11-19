@@ -37,7 +37,7 @@ static bool backend_start(struct tomoe *s) {
     kms_start(s);
     return true;
 }
-int tomoe_abi_version(void) { return 45; }
+int tomoe_abi_version(void) { return 46; }
 
 void tomoe_trim_heap(void) {
     malloc_trim(0);

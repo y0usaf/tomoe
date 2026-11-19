@@ -311,7 +311,7 @@ void input_stream_button(struct tomoe *s, uint32_t time_msec, uint32_t button, b
 }
 
 void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
-        xkb_keysym_t sym, bool pressed) {
+        txkb_keysym_t sym, bool pressed) {
     if (!input_stream_live(s)) return;
     struct tomoe_event *event = input_stream_event(s, INPUT_KEY, (uint64_t)time_msec * 1000);
     if (!event) return;
@@ -319,7 +319,7 @@ void input_stream_key(struct tomoe *s, uint32_t time_msec, uint32_t keycode,
     event->state = pressed ? 0 : 1;
     event->modifiers = input_modifier_mask(s);
     char name[64];
-    if (sym != XKB_KEY_NoSymbol && xkb_keysym_get_name(sym, name, sizeof(name)) > 0)
+    if (sym != TXKB_KEY_NoSymbol && txkb_keysym_get_name(sym, name, sizeof(name)) > 0)
         event->str[1] = policy_event_cstring(s, name);
     input_stream_fields(s, event, tomoe_keyboard_focus(s));
 }

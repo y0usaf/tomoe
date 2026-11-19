@@ -40,41 +40,41 @@ struct keyboard {
     struct wl_listener destroy;
     bool pressed[TOMOE_KEYCODE_COUNT];
     struct binding_latch latches[TOMOE_KEYCODE_COUNT];
-    struct xkb_state *shadow_state;
+    struct txkb_state *shadow_state;
     struct keyboard_modifiers shadow_modifiers;
-    xkb_mod_mask_t explicit_depressed;
+    txkb_mod_mask_t explicit_depressed;
 };
 
 struct logical_keyboard {
     struct keymap_slot xkb;
-    struct xkb_state *projection_state;
+    struct txkb_state *projection_state;
 };
 
 struct keyboard_stage {
     struct keyboard *keyboard;
     bool logical;
-    struct xkb_keymap *keymap;
-    struct xkb_state *xkb_state;
-    struct xkb_state *shadow_state;
-    struct xkb_state *projection_state;
+    struct txkb_keymap *keymap;
+    struct txkb_state *xkb_state;
+    struct txkb_state *shadow_state;
+    struct txkb_state *projection_state;
     char *keymap_string;
     size_t keymap_size;
     int keymap_fd;
-    xkb_led_index_t led_indexes[LED_COUNT];
-    xkb_mod_index_t mod_indexes[MODIFIER_COUNT];
+    txkb_led_index_t led_indexes[LED_COUNT];
+    txkb_mod_index_t mod_indexes[MODIFIER_COUNT];
     struct keyboard_modifiers modifiers, shadow_modifiers;
     uint32_t leds;
     bool reuse_keymap, keymap_changed, modifiers_changed, repeat_changed;
-    struct xkb_keymap *old_keymap;
-    struct xkb_state *old_xkb_state;
-    struct xkb_state *old_shadow_state;
-    struct xkb_state *old_projection_state;
+    struct txkb_keymap *old_keymap;
+    struct txkb_state *old_xkb_state;
+    struct txkb_state *old_shadow_state;
+    struct txkb_state *old_projection_state;
     char *old_keymap_string;
     int old_keymap_fd;
 };
 
 struct keyboard_profile {
-    struct xkb_keymap *keymap;
+    struct txkb_keymap *keymap;
     struct keyboard_stage *stages;
     size_t stage_count;
     struct keyboard_stage logical;
@@ -84,23 +84,23 @@ struct keyboard_profile {
 
 
 static struct keyboard_modifiers keyboard_modifiers_from_state(
-        struct xkb_state *state) {
+        struct txkb_state *state) {
     struct keyboard_modifiers modifiers = {0};
     if (!state) return modifiers;
-    modifiers.depressed = xkb_state_serialize_mods(state,
-        XKB_STATE_MODS_DEPRESSED);
-    modifiers.latched = xkb_state_serialize_mods(state,
-        XKB_STATE_MODS_LATCHED);
-    modifiers.locked = xkb_state_serialize_mods(state,
-        XKB_STATE_MODS_LOCKED);
-    modifiers.group = xkb_state_serialize_layout(state,
-        XKB_STATE_LAYOUT_EFFECTIVE);
+    modifiers.depressed = txkb_state_serialize_mods(state,
+        TXKB_STATE_MODS_DEPRESSED);
+    modifiers.latched = txkb_state_serialize_mods(state,
+        TXKB_STATE_MODS_LATCHED);
+    modifiers.locked = txkb_state_serialize_mods(state,
+        TXKB_STATE_MODS_LOCKED);
+    modifiers.group = txkb_state_serialize_layout(state,
+        TXKB_STATE_LAYOUT_EFFECTIVE);
     return modifiers;
 }
 
 void keymap_slot_finish(struct keymap_slot *slot) {
-    xkb_state_unref(slot->xkb_state);
-    xkb_keymap_unref(slot->keymap);
+    txkb_state_unref(slot->xkb_state);
+    txkb_keymap_unref(slot->keymap);
     free(slot->keymap_string);
     if (slot->keymap_fd >= 0) close(slot->keymap_fd);
     slot->xkb_state = NULL;
@@ -109,42 +109,42 @@ void keymap_slot_finish(struct keymap_slot *slot) {
     slot->keymap_fd = -1;
 }
 
-bool keymap_slot_set(struct keymap_slot *slot, struct xkb_keymap *keymap) {
-    char *string = xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
-    struct xkb_state *state = string ? xkb_state_new(keymap) : NULL;
+bool keymap_slot_set(struct keymap_slot *slot, struct txkb_keymap *keymap) {
+    char *string = txkb_keymap_get_as_string(keymap, TXKB_KEYMAP_FORMAT_TEXT_V1);
+    struct txkb_state *state = string ? txkb_state_new(keymap) : NULL;
     size_t size = string ? strlen(string) + 1 : 0;
     int fd = state ? memfd_create("tomoe-keymap", MFD_CLOEXEC | MFD_ALLOW_SEALING) : -1;
     if (fd < 0 || write(fd, string, size) != (ssize_t)size ||
             fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL)) {
         if (fd >= 0) close(fd);
-        xkb_state_unref(state);
+        txkb_state_unref(state);
         free(string);
         return false;
     }
     keymap_slot_finish(slot);
-    slot->keymap = xkb_keymap_ref(keymap);
+    slot->keymap = txkb_keymap_ref(keymap);
     slot->xkb_state = state;
     slot->keymap_string = string;
     slot->keymap_size = size;
     slot->keymap_fd = fd;
-    static const char *const leds[LED_COUNT] = { XKB_LED_NAME_NUM, XKB_LED_NAME_CAPS,
-        XKB_LED_NAME_SCROLL };
-    static const char *const mods[MODIFIER_COUNT] = { XKB_MOD_NAME_SHIFT, XKB_MOD_NAME_CAPS,
-        XKB_MOD_NAME_CTRL, XKB_MOD_NAME_ALT, "Mod2", "Mod3", XKB_MOD_NAME_LOGO, "Mod5" };
+    static const char *const leds[LED_COUNT] = { TXKB_LED_NAME_NUM, TXKB_LED_NAME_CAPS,
+        TXKB_LED_NAME_SCROLL };
+    static const char *const mods[MODIFIER_COUNT] = { TXKB_MOD_NAME_SHIFT, TXKB_MOD_NAME_CAPS,
+        TXKB_MOD_NAME_CTRL, TXKB_MOD_NAME_ALT, "Mod2", "Mod3", TXKB_MOD_NAME_LOGO, "Mod5" };
     for (int i = 0; i < LED_COUNT; i++)
-        slot->led_indexes[i] = xkb_keymap_led_get_index(keymap, leds[i]);
+        slot->led_indexes[i] = txkb_keymap_led_get_index(keymap, leds[i]);
     for (int i = 0; i < MODIFIER_COUNT; i++)
-        slot->mod_indexes[i] = xkb_keymap_mod_get_index(keymap, mods[i]);
+        slot->mod_indexes[i] = txkb_keymap_mod_get_index(keymap, mods[i]);
     slot->modifiers = keyboard_modifiers_from_state(state);
     return true;
 }
 
 uint32_t keymap_slot_modifiers(const struct keymap_slot *slot) {
-    xkb_mod_mask_t mask = slot->modifiers.depressed | slot->modifiers.latched |
+    txkb_mod_mask_t mask = slot->modifiers.depressed | slot->modifiers.latched |
         slot->modifiers.locked;
     uint32_t modifiers = 0;
     for (int i = 0; i < MODIFIER_COUNT; i++)
-        if (slot->mod_indexes[i] != XKB_MOD_INVALID && (mask & (1u << slot->mod_indexes[i])))
+        if (slot->mod_indexes[i] != TXKB_MOD_INVALID && (mask & (1u << slot->mod_indexes[i])))
             modifiers |= 1u << i;
     return modifiers;
 }
@@ -157,12 +157,12 @@ static bool keyboard_modifiers_equal(
         left->group == right->group;
 }
 
-static uint32_t keyboard_leds_from_state(struct xkb_state *state,
-        const xkb_led_index_t *indexes) {
+static uint32_t keyboard_leds_from_state(struct txkb_state *state,
+        const txkb_led_index_t *indexes) {
     if (!state) return 0;
     uint32_t leds = 0;
     for (uint32_t i = 0; i < LED_COUNT; i++)
-        if (xkb_state_led_index_is_active(state, indexes[i]) == 1)
+        if (txkb_state_led_index_is_active(state, indexes[i]) == 1)
             leds |= 1u << i;
     return leds;
 }
@@ -183,21 +183,21 @@ static bool keyboard_has_pressed(struct tomoe *s,
 }
 
 static void keyboard_replay_state(const bool *pressed,
-        struct xkb_state *state) {
+        struct txkb_state *state) {
     if (!state || !pressed) return;
     for (size_t code = 0; code < TOMOE_KEYCODE_COUNT; code++)
         if (pressed[code])
-            xkb_state_update_key(state, (xkb_keycode_t)code + 8,
-                XKB_KEY_DOWN);
+            txkb_state_update_key(state, (txkb_keycode_t)code + 8,
+                TXKB_KEY_DOWN);
 }
 
 static void keyboard_replay_global(struct tomoe *s,
-        struct xkb_state *state) {
+        struct txkb_state *state) {
     if (!s || !state) return;
     for (size_t code = 0; code < TOMOE_KEYCODE_COUNT; code++)
         if (keyboard_has_pressed(s, NULL, (uint32_t)code))
-            xkb_state_update_key(state, (xkb_keycode_t)code + 8,
-                XKB_KEY_DOWN);
+            txkb_state_update_key(state, (txkb_keycode_t)code + 8,
+                TXKB_KEY_DOWN);
 }
 
 static void keyboard_set_state_modifiers(struct keymap_slot *keyboard) {
@@ -213,10 +213,10 @@ static void keyboard_shadow_refresh(struct keyboard *keyboard) {
 
 static void keyboard_stage_release(struct keyboard_stage *stage) {
     if (!stage) return;
-    xkb_keymap_unref(stage->keymap);
-    xkb_state_unref(stage->xkb_state);
-    xkb_state_unref(stage->shadow_state);
-    xkb_state_unref(stage->projection_state);
+    txkb_keymap_unref(stage->keymap);
+    txkb_state_unref(stage->xkb_state);
+    txkb_state_unref(stage->shadow_state);
+    txkb_state_unref(stage->projection_state);
     free(stage->keymap_string);
     if (stage->keymap_fd >= 0) close(stage->keymap_fd);
     stage->keymap = NULL;
@@ -229,10 +229,10 @@ static void keyboard_stage_release(struct keyboard_stage *stage) {
 
 static void keyboard_stage_release_old(struct keyboard_stage *stage) {
     if (!stage) return;
-    xkb_keymap_unref(stage->old_keymap);
-    xkb_state_unref(stage->old_xkb_state);
-    xkb_state_unref(stage->old_shadow_state);
-    xkb_state_unref(stage->old_projection_state);
+    txkb_keymap_unref(stage->old_keymap);
+    txkb_state_unref(stage->old_xkb_state);
+    txkb_state_unref(stage->old_shadow_state);
+    txkb_state_unref(stage->old_projection_state);
     free(stage->old_keymap_string);
     if (stage->old_keymap_fd >= 0) close(stage->old_keymap_fd);
     stage->old_keymap = NULL;
@@ -252,7 +252,7 @@ void keyboard_profile_finish(struct keyboard_profile *profile) {
         keyboard_stage_release_old(&profile->stages[i]);
     }
     free(profile->stages);
-    xkb_keymap_unref(profile->keymap);
+    txkb_keymap_unref(profile->keymap);
     free(profile);
 }
 
@@ -264,12 +264,12 @@ static void logical_refresh(struct tomoe *s, bool notify) {
     struct keyboard_modifiers old = logical->xkb.modifiers;
     struct keyboard_modifiers server = keyboard_modifiers_from_state(
         logical->xkb.xkb_state);
-    xkb_mod_mask_t depressed = server.depressed;
+    txkb_mod_mask_t depressed = server.depressed;
     struct keyboard *keyboard;
     wl_list_for_each(keyboard, &s->keyboards, link)
         depressed |= keyboard->explicit_depressed;
 
-    xkb_state_update_mask(logical->projection_state, depressed,
+    txkb_state_update_mask(logical->projection_state, depressed,
         server.latched, server.locked, 0, 0, server.group);
     logical->xkb.modifiers = keyboard_modifiers_from_state(
         logical->projection_state);
@@ -303,10 +303,10 @@ static void logical_key_transition(struct tomoe *s, uint32_t keycode,
         enum wl_keyboard_key_state state) {
     if (!s || !s->logical_keyboard || keycode >= TOMOE_KEYCODE_COUNT) return;
     struct logical_keyboard *logical = s->logical_keyboard;
-    xkb_keycode_t xkb_code = (xkb_keycode_t)keycode + 8;
-    enum xkb_key_direction direction =
-        state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP;
-    xkb_state_update_key(logical->xkb.xkb_state, xkb_code, direction);
+    txkb_keycode_t xkb_code = (txkb_keycode_t)keycode + 8;
+    enum txkb_key_direction direction =
+        state == WL_KEYBOARD_KEY_STATE_PRESSED ? TXKB_KEY_DOWN : TXKB_KEY_UP;
+    txkb_state_update_key(logical->xkb.xkb_state, xkb_code, direction);
     logical_refresh(s, true);
 }
 
@@ -349,7 +349,7 @@ static bool keyboard_stage_prepare_physical(struct keyboard_profile *profile,
     if (!keymap_slot_set(&detached, profile->keymap)) return false;
     keyboard_replay_state(keyboard->pressed, detached.xkb_state);
     keyboard_set_state_modifiers(&detached);
-    stage->shadow_state = xkb_state_new(profile->keymap);
+    stage->shadow_state = txkb_state_new(profile->keymap);
     if (!stage->shadow_state) {
         keymap_slot_finish(&detached);
         return false;
@@ -369,12 +369,12 @@ static bool keyboard_stage_prepare_logical(struct tomoe *s,
     if (!keymap_slot_set(&detached, profile->keymap)) return false;
     keyboard_replay_global(s, detached.xkb_state);
     keyboard_set_state_modifiers(&detached);
-    stage->projection_state = xkb_state_new(profile->keymap);
+    stage->projection_state = txkb_state_new(profile->keymap);
     if (!stage->projection_state) {
         keymap_slot_finish(&detached);
         return false;
     }
-    xkb_state_update_mask(stage->projection_state,
+    txkb_state_update_mask(stage->projection_state,
         detached.modifiers.depressed, detached.modifiers.latched,
         detached.modifiers.locked, 0, 0, detached.modifiers.group);
     stage->modifiers = keyboard_modifiers_from_state(stage->projection_state);
@@ -399,20 +399,20 @@ static struct keyboard_profile *keyboard_profile_prepare(struct tomoe *s,
     profile->logical.keymap_fd = -1;
     profile->logical.old_keymap_fd = -1;
 
-    struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    struct txkb_context *context = txkb_context_new(TXKB_CONTEXT_NO_FLAGS);
     if (!context) goto error;
-    struct xkb_rule_names names = {
+    struct txkb_rule_names names = {
         .rules = rules,
         .model = model,
         .layout = layout,
         .variant = variant,
         .options = options,
     };
-    const struct xkb_rule_names *rmlvo =
+    const struct txkb_rule_names *rmlvo =
         (!rules && !model && !layout && !variant && !options) ? NULL : &names;
-    profile->keymap = xkb_keymap_new_from_names(context, rmlvo,
-        XKB_KEYMAP_COMPILE_NO_FLAGS);
-    xkb_context_unref(context);
+    profile->keymap = txkb_keymap_new_from_names(context, rmlvo,
+        TXKB_KEYMAP_COMPILE_NO_FLAGS);
+    txkb_context_unref(context);
     if (!profile->keymap) goto error;
 
     size_t keyboard_count = (size_t)wl_list_length(&s->keyboards);
@@ -610,7 +610,7 @@ int tomoe_present_keyboard(struct tomoe *s, const char *rules, const char *model
     return 1;
 }
 
-bool keyboard_logical_init(struct tomoe *s, struct xkb_keymap *keymap,
+bool keyboard_logical_init(struct tomoe *s, struct txkb_keymap *keymap,
         int repeat_rate, int repeat_delay) {
     if (!s || !keymap || s->logical_keyboard) return false;
     struct logical_keyboard *logical = calloc(1, sizeof(*logical));
@@ -620,7 +620,7 @@ bool keyboard_logical_init(struct tomoe *s, struct xkb_keymap *keymap,
         free(logical);
         return false;
     }
-    logical->projection_state = xkb_state_new(keymap);
+    logical->projection_state = txkb_state_new(keymap);
     if (!logical->projection_state) {
         keymap_slot_finish(&logical->xkb);
         free(logical);
@@ -641,7 +641,7 @@ void keyboard_logical_finish(struct tomoe *s) {
     struct logical_keyboard *logical = s->logical_keyboard;
     if (s->seat && seat_get_keyboard(s->seat) == &logical->xkb)
         seat_set_keyboard(s->seat, NULL);
-    xkb_state_unref(logical->projection_state);
+    txkb_state_unref(logical->projection_state);
     logical->projection_state = NULL;
     keymap_slot_finish(&logical->xkb);
     free(logical);
@@ -966,7 +966,7 @@ uint32_t tomoe_keysym(const char *name) {
             if (strcmp(name + 7, scrolls[i]) == 0) return SCROLL_BINDING + i;
         return 0;
     }
-    return xkb_keysym_from_name(name, XKB_KEYSYM_CASE_INSENSITIVE);
+    return txkb_keysym_from_name(name, TXKB_KEYSYM_CASE_INSENSITIVE);
 }
 static void binding_free(struct binding *binding) {
     if (!binding) return;
@@ -1015,7 +1015,7 @@ static uint32_t binding_hash(uint32_t modifiers, uint32_t keysym) {
 }
 
 static uint32_t binding_sym(uint32_t keysym) {
-    return keysym >= POINTER_BINDING ? keysym : xkb_keysym_to_lower(keysym);
+    return keysym >= POINTER_BINDING ? keysym : txkb_keysym_to_lower(keysym);
 }
 
 static void binding_index_free(struct tomoe *s) {
@@ -1701,20 +1701,20 @@ void cursor_committed(struct tomoe *s, struct surface *surface) {
     cursor_apply(s);
 }
 static int keyboard_binding_syms(struct logical_keyboard *keyboard,
-        uint32_t keycode, const xkb_keysym_t **syms) {
+        uint32_t keycode, const txkb_keysym_t **syms) {
     if (!keyboard || !keyboard->xkb.keymap || !keyboard->projection_state)
         return 0;
-    xkb_layout_index_t layout = xkb_state_key_get_layout(
+    txkb_layout_index_t layout = txkb_state_key_get_layout(
         keyboard->projection_state, keycode + 8);
-    if (layout == XKB_LAYOUT_INVALID) return 0;
-    return xkb_keymap_key_get_syms_by_level(keyboard->xkb.keymap,
+    if (layout == TXKB_LAYOUT_INVALID) return 0;
+    return txkb_keymap_key_get_syms_by_level(keyboard->xkb.keymap,
         keycode + 8, layout, 0, syms);
 }
 
-static void grab_event(struct keyboard *keyboard, uint32_t keycode, xkb_keysym_t sym) {
+static void grab_event(struct keyboard *keyboard, uint32_t keycode, txkb_keysym_t sym) {
     struct tomoe *s = keyboard->server;
     char name[64] = "";
-    if (xkb_keysym_get_name(sym, name, sizeof(name)) <= 0) name[0] = 0;
+    if (txkb_keysym_get_name(sym, name, sizeof(name)) <= 0) name[0] = 0;
     struct tomoe_event *event = policy_event_push(s, EV_KEY);
     if (!event) return;
     event->flags |= POLICY_KEY_KEYSYM;
@@ -1766,13 +1766,13 @@ static void keyboard_shadow_key(struct keyboard *keyboard,
         const struct key_input *input) {
     if (!keyboard || !keyboard->shadow_state || !input ||
             input->keycode >= TOMOE_KEYCODE_COUNT) return;
-    enum xkb_key_direction direction =
-        input->state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN :
-        XKB_KEY_UP;
+    enum txkb_key_direction direction =
+        input->state == WL_KEYBOARD_KEY_STATE_PRESSED ? TXKB_KEY_DOWN :
+        TXKB_KEY_UP;
     if (input->state != WL_KEYBOARD_KEY_STATE_PRESSED &&
             input->state != WL_KEYBOARD_KEY_STATE_RELEASED) return;
-    xkb_state_update_key(keyboard->shadow_state,
-        (xkb_keycode_t)input->keycode + 8, direction);
+    txkb_state_update_key(keyboard->shadow_state,
+        (txkb_keycode_t)input->keycode + 8, direction);
     keyboard_shadow_refresh(keyboard);
 }
 
@@ -1784,11 +1784,11 @@ static void logical_external_modifiers(struct tomoe *s, struct keyboard *source,
         source->explicit_depressed = incoming->depressed;
 
     if (s->logical_keyboard && s->logical_keyboard->xkb.xkb_state) {
-        xkb_mod_mask_t latched_affect = old->latched ^ incoming->latched;
-        xkb_mod_mask_t locked_affect = old->locked ^ incoming->locked;
+        txkb_mod_mask_t latched_affect = old->latched ^ incoming->latched;
+        txkb_mod_mask_t locked_affect = old->locked ^ incoming->locked;
         bool group_changed = old->group != incoming->group;
         if (latched_affect || locked_affect || group_changed) {
-            xkb_state_update_latched_locked(
+            txkb_state_update_latched_locked(
                 s->logical_keyboard->xkb.xkb_state,
                 latched_affect, incoming->latched, false, 0,
                 locked_affect, incoming->locked,
@@ -1828,15 +1828,15 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
     struct tomoe *s = k->server;
     if (state == WL_KEYBOARD_KEY_STATE_PRESSED) timing_input(s, TIMING_KEY);
     if (device->libinput && keycode < TOMOE_KEYCODE_COUNT && k->xkb.xkb_state) {
-        xkb_state_update_key(k->xkb.xkb_state, keycode + 8,
-            state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
+        txkb_state_update_key(k->xkb.xkb_state, keycode + 8,
+            state == WL_KEYBOARD_KEY_STATE_PRESSED ? TXKB_KEY_DOWN : TXKB_KEY_UP);
         k->xkb.modifiers = keyboard_modifiers_from_state(k->xkb.xkb_state);
     }
     idle_notify_activity(s);
     if (s->input_stream) {
-        xkb_keysym_t stream_sym = s->logical_keyboard && s->logical_keyboard->xkb.xkb_state ?
-            xkb_state_key_get_one_sym(s->logical_keyboard->xkb.xkb_state,
-                input->keycode + 8) : XKB_KEY_NoSymbol;
+        txkb_keysym_t stream_sym = s->logical_keyboard && s->logical_keyboard->xkb.xkb_state ?
+            txkb_state_key_get_one_sym(s->logical_keyboard->xkb.xkb_state,
+                input->keycode + 8) : TXKB_KEY_NoSymbol;
         input_stream_key(s, input->time_msec, input->keycode, stream_sym,
             input->state == WL_KEYBOARD_KEY_STATE_PRESSED);
     }
@@ -1884,12 +1884,12 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
     }
 
     struct logical_keyboard *logical = s->logical_keyboard;
-    const xkb_keysym_t *syms = NULL;
+    const txkb_keysym_t *syms = NULL;
     if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED && tracked && logical && logical->xkb.xkb_state) {
-        int raw = xkb_state_key_get_syms(logical->xkb.xkb_state, input->keycode + 8, &syms);
+        int raw = txkb_state_key_get_syms(logical->xkb.xkb_state, input->keycode + 8, &syms);
         for (int i = 0; i < raw; i++) {
-            if (syms[i] < XKB_KEY_XF86Switch_VT_1 || syms[i] > XKB_KEY_XF86Switch_VT_12) continue;
-            if (s->session) session_change_vt(s, syms[i] - XKB_KEY_XF86Switch_VT_1 + 1);
+            if (syms[i] < TXKB_KEY_XF86Switch_VT_1 || syms[i] > TXKB_KEY_XF86Switch_VT_12) continue;
+            if (s->session) session_change_vt(s, syms[i] - TXKB_KEY_XF86Switch_VT_1 + 1);
             k->latches[input->keycode].consumed = true;
             logical_key_event_done(s, input->keycode, input->state, first_global, last_global);
             return;
@@ -1901,9 +1901,9 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
         MOD_ALT | MOD_LOGO;
     if (s->screenshot && tracked && !lock_active(s)) {
         if (input->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-            xkb_keysym_t typed = logical && logical->xkb.xkb_state ?
-                xkb_state_key_get_one_sym(logical->xkb.xkb_state, input->keycode + 8) :
-                XKB_KEY_NoSymbol;
+            txkb_keysym_t typed = logical && logical->xkb.xkb_state ?
+                txkb_state_key_get_one_sym(logical->xkb.xkb_state, input->keycode + 8) :
+                TXKB_KEY_NoSymbol;
             k->latches[input->keycode].consumed = true;
             if (count) screenshot_key(s, syms[0], typed, mods, true, input->keycode);
         } else {
@@ -1923,7 +1923,7 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
                     if (!b->active || strcmp(b->owner, s->grab_owner) != 0 ||
                             (exact && b->modifiers != mods)) continue;
                     for (int i = 0; i < count; i++)
-                        if (xkb_keysym_to_lower(syms[i]) == b->keysym) { match = b; break; }
+                        if (txkb_keysym_to_lower(syms[i]) == b->keysym) { match = b; break; }
                     if (match) break;
                 }
             }
@@ -1931,8 +1931,8 @@ static void input_key_body(struct input_device *device, uint32_t time_msec, uint
                 binding_ref(match);
                 latch->binding = match;
                 binding_event(k, match, match->press, POLICY_KEY_PRESSED, input->keycode);
-            } else if (s->grab_otherwise && count && !((syms[0] >= XKB_KEY_Shift_L && syms[0] <= XKB_KEY_Hyper_R) ||
-                    (syms[0] >= XKB_KEY_ISO_Lock && syms[0] <= XKB_KEY_ISO_Level5_Lock))) {
+            } else if (s->grab_otherwise && count && !((syms[0] >= TXKB_KEY_Shift_L && syms[0] <= TXKB_KEY_Hyper_R) ||
+                    (syms[0] >= TXKB_KEY_ISO_Lock && syms[0] <= TXKB_KEY_ISO_Level5_Lock))) {
                 grab_event(k, input->keycode, syms[0]);
             }
         }
@@ -1987,18 +1987,18 @@ static void input_modifiers_body(struct input_device *device,
     if (!k) return;
     struct keyboard_modifiers incoming = *snapshot;
     if (k->xkb.xkb_state) {
-        xkb_state_update_mask(k->xkb.xkb_state, incoming.depressed, incoming.latched,
+        txkb_state_update_mask(k->xkb.xkb_state, incoming.depressed, incoming.latched,
             incoming.locked, 0, 0, incoming.group);
         k->xkb.modifiers = keyboard_modifiers_from_state(k->xkb.xkb_state);
     }
     if (keyboard_modifiers_equal(&incoming, &k->shadow_modifiers)) return;
     struct keyboard_modifiers old = k->shadow_modifiers;
     if (k->shadow_state) {
-        xkb_mod_mask_t latched_affect = old.latched ^ incoming.latched;
-        xkb_mod_mask_t locked_affect = old.locked ^ incoming.locked;
+        txkb_mod_mask_t latched_affect = old.latched ^ incoming.latched;
+        txkb_mod_mask_t locked_affect = old.locked ^ incoming.locked;
         bool group_changed = old.group != incoming.group;
         if (latched_affect || locked_affect || group_changed)
-            xkb_state_update_latched_locked(k->shadow_state,
+            txkb_state_update_latched_locked(k->shadow_state,
                 latched_affect, incoming.latched, false, 0,
                 locked_affect, incoming.locked,
                 group_changed, (int32_t)incoming.group);
@@ -2066,7 +2066,7 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
     detach(&k->destroy);
     keyboard_latches_finish(k);
     wl_list_remove(&k->link);
-    xkb_state_unref(k->shadow_state);
+    txkb_state_unref(k->shadow_state);
     k->shadow_state = NULL;
     keymap_slot_finish(&k->xkb);
     k->device->keyboard = NULL;
@@ -2090,7 +2090,7 @@ void input_add(struct tomoe *s, struct input_device *device) {
     bool ok = s->keyboard_profile && s->keyboard_profile->keymap &&
         keymap_slot_set(&k->xkb, s->keyboard_profile->keymap);
     if (!ok) { free(k); fail(s, "keyboard keymap failed"); return; }
-    k->shadow_state = xkb_state_new(k->xkb.keymap);
+    k->shadow_state = txkb_state_new(k->xkb.keymap);
     if (!k->shadow_state) {
         keymap_slot_finish(&k->xkb);
         free(k);
@@ -2101,7 +2101,7 @@ void input_add(struct tomoe *s, struct input_device *device) {
     keyboard_shadow_refresh(k);
     if (!next_device_id(s, &k->id)) {
         tomoe_log(LOG_ERROR, "tomoe: keyboard device IDs exhausted");
-        xkb_state_unref(k->shadow_state);
+        txkb_state_unref(k->shadow_state);
         keymap_slot_finish(&k->xkb);
         free(k);
         fail(s, "keyboard device IDs exhausted");

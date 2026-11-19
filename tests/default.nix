@@ -1076,7 +1076,6 @@ let
     ];
     buildInputs = [
       pkgs.wayland
-      pkgs.libxkbcommon
       pkgs.libdrm
       pkgs.libGL
     ];
@@ -1090,7 +1089,7 @@ let
         xdg-shell-protocol.h
       $CC -std=c11 -D_GNU_SOURCE -O1 -Wall -Wextra -Werror -Wno-unused-parameter \
         -Inative -I. tests/animation-unit.c native/animation.c \
-        $(pkg-config --cflags --libs wayland-server xkbcommon libdrm glesv2) -lm \
+        $(pkg-config --cflags --libs wayland-server libdrm glesv2) -lm \
         -o animation-unit
       ./animation-unit
     '';
