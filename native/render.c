@@ -79,6 +79,9 @@ struct render {
     EGLContext context;
     struct format_set texture_formats, render_formats, shm_formats;
     struct program programs[PROGRAM_COUNT];
+    struct shader *shaders;
+    size_t shader_count;
+    uint64_t shader_clock;
     struct wl_list images, bos;
     bool read_bgra;
     PFNEGLCREATEIMAGEKHRPROC create_image;
@@ -484,7 +487,17 @@ static const char shader_main[] =
     "    mainImage(tomoe_color, vec2(v_local.x, iResolution.y - v_local.y));\n"
     "}\n";
 
-struct shader { struct program program; struct render *r; };
+enum { SHADER_CACHE_MAX = 32 };
+
+struct shader {
+    struct program program;
+    struct render *r;
+    struct shader *next;
+    char *source;
+    uint64_t hash, used;
+    int refs;
+    bool cached;
+};
 
 static const float transforms[][4] = {
     [WL_OUTPUT_TRANSFORM_NORMAL] = { 1, 0, 0, 1 },
@@ -663,6 +676,7 @@ static const struct builtin {
 
 enum shader_await { SHADER_RUNNING, SHADER_READY, SHADER_NO_HELPER, SHADER_FAILED };
 
+static uint64_t fnv(uint64_t hash, const char *text);
 static void warm_name(const char *source, char name[WARM_NAME]);
 static bool warm_remember(struct render *r, const char *source, const char *name);
 static bool warm_load(struct render *r, const char *name, struct program *p);
@@ -681,11 +695,37 @@ static void compile_end(struct render *r, EGLContext scratch) {
     malloc_trim(0);
 }
 
+static void shader_cache_prune(struct render *r) {
+    while (r->shader_count > SHADER_CACHE_MAX) {
+        struct shader **victim = NULL;
+        for (struct shader **link = &r->shaders; *link; link = &(*link)->next)
+            if ((*link)->refs == 0 && (!victim || (*link)->used < (*victim)->used))
+                victim = link;
+        if (!victim) break;
+        struct shader *evict = *victim;
+        *victim = evict->next;
+        r->shader_count--;
+        current(r);
+        glDeleteProgram(evict->program.id);
+        free(evict->source);
+        free(evict);
+    }
+}
+
 static struct program *shader_create(struct render *r, const char *source, bool helper,
         bool *pending) {
     bool waiting = false;
     if (!pending) pending = &waiting;
     *pending = false;
+    uint64_t hash = fnv(0xcbf29ce484222325ull, source);
+    for (struct shader *cached = r->shaders; cached; cached = cached->next) {
+        if (cached->hash == hash && cached->source && !strcmp(cached->source, source)) {
+            cached->refs++;
+            cached->used = ++r->shader_clock;
+            malloc_trim(0);
+            return &cached->program;
+        }
+    }
     struct shader *shader = calloc(1, sizeof(*shader));
     if (!shader) return NULL;
     const char *vertex[] = { shader_vertex_source };
@@ -708,6 +748,17 @@ static struct program *shader_create(struct render *r, const char *source, bool 
         glFinish();
         malloc_trim(0);
         shader->r = r;
+        shader->source = strdup(source);
+        if (shader->source) {
+            shader->hash = hash;
+            shader->used = ++r->shader_clock;
+            shader->refs = 1;
+            shader->cached = true;
+            shader->next = r->shaders;
+            r->shaders = shader;
+            r->shader_count++;
+            shader_cache_prune(r);
+        }
         return &shader->program;
     }
     free(shader);
@@ -726,6 +777,11 @@ struct program *render_shader_compile(struct render *r, const char *source) {
 void render_shader_destroy(struct program *program) {
     if (!program) return;
     struct shader *shader = wl_container_of(program, shader, program);
+    if (shader->cached) {
+        if (shader->refs > 0) shader->refs--;
+        shader_cache_prune(shader->r);
+        return;
+    }
     current(shader->r);
     glDeleteProgram(program->id);
     free(shader);
@@ -2941,6 +2997,14 @@ static void render_free(struct render *r) {
     }
     if (r->context) {
         current(r);
+        while (r->shaders) {
+            struct shader *s = r->shaders;
+            r->shaders = s->next;
+            glDeleteProgram(s->program.id);
+            free(s->source);
+            free(s);
+        }
+        r->shader_count = 0;
         for (int i = 0; i < PROGRAM_COUNT; i++) glDeleteProgram(r->programs[i].id);
         if (r->scene.vbo) glDeleteBuffers(1, &r->scene.vbo);
         if (r->scene.dummy) glDeleteTextures(1, &r->scene.dummy);

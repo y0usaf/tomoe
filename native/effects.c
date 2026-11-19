@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <malloc.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
@@ -14,7 +15,7 @@ struct level { GLuint texture, framebuffer; int width, height; };
 struct result;
 
 struct chain {
-    struct level levels[32];
+    struct level level;
     struct box samples[BLUR_SAMPLES];
     const struct oplist *owner;
     struct result *result;
@@ -38,13 +39,14 @@ struct result {
 struct effects {
     struct chain chains[BLUR_CHAINS];
     struct result results[BLUR_RESULTS];
+    struct level scratch[31];
     struct level backdrop;
     struct chain glass, frost;
     uint64_t stamp, blurs, reused, frost_stamp, frost_done;
+    uint64_t scratch_used, frost_used, glass_used;
     struct {
-        uint32_t *seen;
-        size_t seen_cells;
-        uint32_t epoch;
+        uint8_t *seen;
+        size_t seen_bytes;
         struct trail_cell *cells;
         size_t capacity;
     } trail;
@@ -362,7 +364,7 @@ static bool chain_spill(struct chain *chain) {
     glDisable(GL_SCISSOR_TEST);
     bool ok = level_ensure(&result->level, result->width, result->height);
     if (ok) {
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->level.framebuffer);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
         for (int i = 0; i < chain->count; i++) {
             struct box s = chain->samples[i];
@@ -382,8 +384,7 @@ static bool chain_spill(struct chain *chain) {
 
 static bool chain_release(struct chain *chain) {
     if (!chain_spill(chain)) return false;
-    for (size_t i = 0; i < sizeof(chain->levels) / sizeof(chain->levels[0]); i++)
-        if (chain->levels[i].texture) level_release(&chain->levels[i]);
+    if (chain->level.texture) level_release(&chain->level);
     *chain = (struct chain){0};
     return true;
 }
@@ -392,7 +393,7 @@ static struct chain *chain_spare(struct frame *f, struct effects *e, int width, 
         uint64_t key, int64_t now) {
     unsigned blocked = 0;
     for (;;) {
-        struct chain *same = NULL, *empty = NULL, *spare = NULL, *oldest = NULL;
+        struct chain *same = NULL, *clean = NULL, *empty = NULL, *spare = NULL, *oldest = NULL;
         for (size_t i = 0; i < BLUR_CHAINS; i++) {
             if (blocked & (1u << i)) continue;
             struct chain *chain = &e->chains[i];
@@ -410,11 +411,13 @@ static struct chain *chain_spare(struct frame *f, struct effects *e, int width, 
                 continue;
             }
             bool needed = e->stamp && chain->pinned == e->stamp;
+            bool freeable = !chain->result || chain->result->dead || !chain->result->key;
             if (!needed && fits && (!same || chain->used < same->used)) same = chain;
+            if (!needed && freeable && (!clean || chain->used < clean->used)) clean = chain;
             if (!needed && (!spare || chain->used < spare->used)) spare = chain;
             if (!oldest || chain->used < oldest->used) oldest = chain;
         }
-        struct chain *found = same ? same : empty ? empty : spare ? spare : oldest;
+        struct chain *found = same ? same : clean ? clean : empty ? empty : spare ? spare : oldest;
         if (!found) return NULL;
         if (found->result) {
             pass_flush(f->pass);
@@ -506,6 +509,24 @@ void effects_plan(struct tomoe *s, struct oplist *list) {
         else if (chain->dead) chain_release(chain);
         else chain->dead = true;
     }
+    bool freed = false;
+    if (e->frost.level.texture && e->stamp - e->frost_used >= 2) {
+        chain_release(&e->frost);
+        e->frost_done = 0;
+        freed = true;
+    }
+    if (e->glass.level.texture && e->stamp - e->glass_used >= 2) {
+        chain_release(&e->glass);
+        freed = true;
+    }
+    if (e->stamp - e->scratch_used >= 2) {
+        for (size_t i = 0; i < sizeof(e->scratch) / sizeof(e->scratch[0]); i++)
+            if (e->scratch[i].texture) {
+                level_release(&e->scratch[i]);
+                freed = true;
+            }
+    }
+    if (freed) malloc_trim(0);
 }
 
 void effects_forget(struct tomoe *s) {
@@ -628,14 +649,19 @@ void blur_need(const struct op *op, struct region *need) {
     }
 }
 
+static struct level *blur_level(struct effects *e, struct chain *chain, int index) {
+    return index == 0 ? &chain->level : &e->scratch[index - 1];
+}
+
 static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
         const struct box *samples, int count, int passes, double offset, GLuint target,
         int shrink) {
-    struct level *levels = chain->levels;
+    struct effects *e = f->server->effects;
+    e->scratch_used = e->stamp;
     struct box space = { 0, 0, level_side(grown.width, shrink), level_side(grown.height, shrink) };
-    bool ok = level_ensure(&levels[0], space.width, space.height);
+    bool ok = level_ensure(&chain->level, space.width, space.height);
     for (int i = 1; ok && i <= passes; i++)
-        ok = level_ensure(&levels[i], level_side(space.width, i), level_side(space.height, i));
+        ok = level_ensure(&e->scratch[i - 1], level_side(space.width, i), level_side(space.height, i));
     if (!ok) return false;
     struct region up[32], down[32];
     for (int i = 0; i <= passes; i++) {
@@ -664,7 +690,7 @@ static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
     glDisable(GL_SCISSOR_TEST);
     if (shrink) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, target);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, levels[0].framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->level.framebuffer);
         for (int i = 0; i < copies; i++)
             glBlitFramebuffer(grown.x + (copy[i].x1 << shrink), grown.y + (copy[i].y1 << shrink),
                 grown.x + (copy[i].x2 << shrink), grown.y + (copy[i].y2 << shrink),
@@ -672,7 +698,7 @@ static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
     } else {
         glBindFramebuffer(GL_FRAMEBUFFER, target);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, levels[0].texture);
+        glBindTexture(GL_TEXTURE_2D, chain->level.texture);
         for (int i = 0; i < copies; i++)
             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, copy[i].x1, copy[i].y1, grown.x + copy[i].x1,
                 grown.y + copy[i].y1, copy[i].x2 - copy[i].x1, copy[i].y2 - copy[i].y1);
@@ -682,10 +708,11 @@ static bool blur_levels(struct frame *f, struct chain *chain, struct box grown,
     glEnable(GL_SCISSOR_TEST);
     const struct settings *st = &f->server->settings;
     for (int i = 1; i <= passes; i++)
-        sample_pass(program(f, PROGRAM_DOWN), &levels[i - 1], &levels[i], offset, &down[i], 0, 1);
+        sample_pass(program(f, PROGRAM_DOWN), blur_level(e, chain, i - 1), blur_level(e, chain, i),
+            offset, &down[i], 0, 1);
     for (int i = passes - 1; i >= 0; i--)
-        sample_pass(program(f, PROGRAM_UP), &levels[i + 1], &levels[i], offset, &up[i],
-            i ? 0 : (float)st->blur_noise, i ? 1 : (float)st->blur_vibrancy);
+        sample_pass(program(f, PROGRAM_UP), blur_level(e, chain, i + 1), blur_level(e, chain, i),
+            offset, &up[i], i ? 0 : (float)st->blur_noise, i ? 1 : (float)st->blur_vibrancy);
     glDisable(GL_SCISSOR_TEST);
     for (int i = 0; i <= passes; i++) {
         region_fini(&up[i]);
@@ -767,12 +794,12 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         pass_flush(f->pass);
         GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
         bool ok = result && box_equal(&result->area, &sampled) &&
-            level_ensure(&chain->levels[0], grown.width, grown.height);
+            level_ensure(&chain->level, grown.width, grown.height);
         if (ok) {
-            struct level *source = result->chain ? &result->chain->levels[0] : &result->level;
+            struct level *source = result->chain ? &result->chain->level : &result->level;
             int x = result->chain ? 0 : sampled.x, y = result->chain ? 0 : sampled.y;
             glBindFramebuffer(GL_READ_FRAMEBUFFER, source->framebuffer);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->levels[0].framebuffer);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, chain->level.framebuffer);
             for (int i = 0; i < count; i++) {
                 struct box s = samples[i];
                 glBlitFramebuffer(s.x - x, s.y - y, s.x - x + s.width,
@@ -792,7 +819,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
                 result->used = now;
                 result->dead = false;
                 if (result->level.texture) {
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->levels[0].framebuffer);
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, chain->level.framebuffer);
                     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, result->level.framebuffer);
                     for (int i = 0; i < count; i++) {
                         struct box s = samples[i];
@@ -828,7 +855,7 @@ void effect_blur(struct frame *f, struct fbox area, double radius, int passes,
         texcoords[2 * i] = (float)((bx - grown.x) / grown.width);
         texcoords[2 * i + 1] = (float)((by - grown.y) / grown.height);
     }
-    struct scene_quad scene = { .kind = SCENE_TEXTURE, .raw = chain->levels[0].texture,
+    struct scene_quad scene = { .kind = SCENE_TEXTURE, .raw = chain->level.texture,
         .target = GL_TEXTURE_2D, .shader_clip = 1, .blend = 1, .opaque = 1,
         .alpha = alpha < 1 ? alpha : 1, .radius = radius,
         .size = { box.width, box.height } };
@@ -907,7 +934,8 @@ static bool frost_prepare(struct frame *f, struct fbox area, const struct shader
         GLuint target) {
     struct effects *e = f->server->effects;
     uint64_t stamp = inputs ? inputs->frost_stamp : 0;
-    if (stamp && e->frost_done == stamp) return e->frost.levels[0].texture != 0;
+    e->frost_used = e->stamp;
+    if (stamp && e->frost_done == stamp) return e->frost.level.texture != 0;
     e->frost_done = stamp;
     if (f->transform != WL_OUTPUT_TRANSFORM_NORMAL) return false;
     const struct settings *st = &f->server->settings;
@@ -1021,11 +1049,15 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     if (frosted) {
         struct effects *e = f->server->effects;
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, frost_ok ? e->frost.levels[0].texture : 0);
+        glBindTexture(GL_TEXTURE_2D, frost_ok ? e->frost.level.texture : 0);
         glUniform1i(p->frost, 2);
-        double fw = (double)(e->frost.levels[0].width << 1), fh = (double)(e->frost.levels[0].height << 1);
-        if (p->frost_box >= 0 && fw > 0 && fh > 0)
-            glUniform4f(p->frost_box, -box.x, box.y + box.height, 1.0 / fw, -1.0 / fh);
+        double fw = (double)(e->frost.level.width << 1), fh = (double)(e->frost.level.height << 1);
+        if (p->frost_box >= 0) {
+            if (fw > 0 && fh > 0)
+                glUniform4f(p->frost_box, -box.x, box.y + box.height, 1.0 / fw, -1.0 / fh);
+            else
+                glUniform4f(p->frost_box, 0, 0, 0, 0);
+        }
         glActiveTexture(GL_TEXTURE0);
     }
     glUniform3f(p->resolution, box.width, box.height, 1);
@@ -1042,21 +1074,29 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     }
     glUniform1i(p->window_count, window_count);
     if (window_count) glUniform4fv(p->windows, window_count, inputs->windows);
-    if (selection) glUniform4fv(p->selection, 4, inputs->selection);
-    if (inputs && inputs->marks_box && p->marks_box >= 0)
-        glUniform4fv(p->marks_box, 1, inputs->marks_box);
-    if (inputs && inputs->marks && p->marks >= 0) {
+    if (p->selection >= 0) {
+        static const float zeros[16] = { 0 };
+        glUniform4fv(p->selection, 4, selection ? inputs->selection : zeros);
+    }
+    if (p->marks_box >= 0) {
+        static const float zero_box[4] = { 0 };
+        glUniform4fv(p->marks_box, 1, inputs && inputs->marks_box ? inputs->marks_box : zero_box);
+    }
+    if (p->marks >= 0) {
         GLenum target;
         GLuint texture;
         bool alpha;
-        if (render_texture_gl((struct texture *)inputs->marks, &target, &texture, &alpha)) {
-            glActiveTexture(GL_TEXTURE1);
+        glActiveTexture(GL_TEXTURE1);
+        if (inputs && inputs->marks &&
+                render_texture_gl((struct texture *)inputs->marks, &target, &texture, &alpha)) {
             glBindTexture(target, texture);
             glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glUniform1i(p->marks, 1);
-            glActiveTexture(GL_TEXTURE0);
+        } else {
+            glBindTexture(GL_TEXTURE_2D, 0);
         }
+        glUniform1i(p->marks, 1);
+        glActiveTexture(GL_TEXTURE0);
     }
     quad(f, p, drawn, NULL, box.x, box.y);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -1097,6 +1137,7 @@ bool effect_glass(struct frame *f, struct program *p, struct texture *map, struc
     struct op_clip clip;
     if (!op_begin(f->pass, OP_GLASS, covered, &clip)) return true;
     pass_flush(f->pass);
+    e->glass_used = e->stamp;
     GLuint target = render_buffer_fbo(f->server->renderer, f->buffer);
     bool ok = blur_levels(f, &e->glass, grown, &(struct box){ 0, 0, grown.width, grown.height },
         1, GLASS_FROST_PASSES, GLASS_FROST, target, 0);
@@ -1111,7 +1152,7 @@ bool effect_glass(struct frame *f, struct program *p, struct texture *map, struc
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glUniform1i(glGetUniformLocation(p->id, "tomoe_glass"), 1);
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, e->glass.levels[0].texture);
+        glBindTexture(GL_TEXTURE_2D, e->glass.level.texture);
         glUniform1i(p->channel, 0);
         glUniform4f(p->beneath, grown.x, grown.y, 1.0f / grown.width, 1.0f / grown.height);
         glUniform3f(p->resolution, box.width, box.height, 1);
@@ -1132,6 +1173,7 @@ bool effect_glass(struct frame *f, struct program *p, struct texture *map, struc
 #define TRAIL_STEPS_MAX 8
 #define TRAIL_CELLS_MAX (1u << 20)
 #define TRAIL_CELLS_INIT 1024
+#define TRAIL_CELLS_RESERVE 4096
 
 bool effects_create(struct tomoe *s) {
     s->effects = calloc(1, sizeof(*s->effects));
@@ -1191,14 +1233,14 @@ static uint64_t mix_cell(uint64_t hash, uint64_t value) {
 }
 
 static bool trail_grid(struct effects *e, size_t cells) {
-    if (cells <= e->trail.seen_cells) return true;
-    size_t want = e->trail.seen_cells ? e->trail.seen_cells : 1024;
-    while (want < cells) want *= 2;
-    uint32_t *seen = realloc(e->trail.seen, want * sizeof(*seen));
+    size_t need = (cells + 7) >> 3;
+    if (need <= e->trail.seen_bytes) return true;
+    size_t want = e->trail.seen_bytes ? e->trail.seen_bytes : 128;
+    while (want < need) want *= 2;
+    uint8_t *seen = realloc(e->trail.seen, want);
     if (!seen) return false;
-    memset(&seen[e->trail.seen_cells], 0, (want - e->trail.seen_cells) * sizeof(*seen));
     e->trail.seen = seen;
-    e->trail.seen_cells = want;
+    e->trail.seen_bytes = want;
     return true;
 }
 
@@ -1231,7 +1273,7 @@ bool effects_trail_reserve(struct tomoe *s, double cell) {
     if (!grid) return false;
     if (grid > TRAIL_CELLS_MAX) grid = TRAIL_CELLS_MAX;
     if (!trail_grid(e, grid)) return false;
-    return trail_room(e, grid);
+    return trail_room(e, grid < TRAIL_CELLS_RESERVE ? grid : TRAIL_CELLS_RESERVE);
 }
 
 void effect_trail(struct frame *f, struct fbox area, const struct trail_style *style) {
@@ -1284,12 +1326,8 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
         return;
     }
     if (!trail_grid(e, gw * gh)) return;
-    uint32_t epoch = ++e->trail.epoch;
-    if (!epoch) {
-        memset(e->trail.seen, 0, e->trail.seen_cells * sizeof(*e->trail.seen));
-        epoch = ++e->trail.epoch;
-    }
-    uint32_t *seen = e->trail.seen;
+    uint8_t *seen = e->trail.seen;
+    memset(seen, 0, (gw * gh + 7) >> 3);
     float tiers[TRAIL_STEPS_MAX + 1][4];
     for (int step = 1; step <= steps; step++) {
         float alpha = (float)step / (float)steps;
@@ -1336,8 +1374,10 @@ void effect_trail(struct frame *f, struct fbox area, const struct trail_style *s
                 double centre_x = (gx0 + cx + 0.5) * cell;
                 if (!near_segment(centre_x, centre_y, ax, ay, bx, by, radius)) continue;
                 size_t index = (size_t)cy * gw + (size_t)cx;
-                if (seen[index] == epoch) continue;
-                seen[index] = epoch;
+                size_t byte = index >> 3;
+                uint8_t bit = (uint8_t)(1u << (index & 7));
+                if (seen[byte] & bit) continue;
+                seen[byte] |= bit;
                 int gx = gx0 + cx, gy = gy0 + cy;
                 int step = trail_step((float)lit, gx, gy, steps);
                 if (step < 1) continue;
