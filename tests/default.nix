@@ -1182,6 +1182,30 @@ let
       cat real.trace > $out/share/tomoe/xkb-equivalence
     '';
   };
+  drmVersion = pkgs.stdenv.mkDerivation {
+    name = "tomoe-test-drm-version";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        ../support/patches/gbm-drm-version.patch
+        ./drm-version.c
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.libdrm ];
+    dontConfigure = true;
+    buildPhase = ''
+      awk '/^@@/ { hunk++ } hunk == 2 && /^\+/ { print substr($0, 2) }' \
+        support/patches/gbm-drm-version.patch > tests/drm-version-helper.c
+      grep -q '^drm_driver_name(int fd)$' tests/drm-version-helper.c
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Itests tests/drm-version.c \
+        $(pkg-config --cflags --libs libdrm) -o tomoe-test-drm-version
+    '';
+    installPhase = ''
+      install -Dm755 -t $out/bin tomoe-test-drm-version
+    '';
+  };
   libraries = pkgs.stdenv.mkDerivation {
     name = "tomoe-libraries";
     src = ../lib;
@@ -1305,6 +1329,7 @@ let
     {
       name = "integration";
       script = ''
+        DRM_VERSION = "${drmVersion}/bin/tomoe-test-drm-version"
         ZOOMER = "${tomoe}/share/tomoe/examples/zoomer.lisp"
         SCREENSHOT_PROBE = "${screenshotProbe}"
         SCREEN_CLIPBOARD_PROBE = "${screenClipboardProbe}"
@@ -1583,6 +1608,7 @@ let
     {
       name = "seat";
       script = ''
+        DRM_VERSION = "${drmVersion}/bin/tomoe-test-drm-version"
         FAKE_SEATD = "${fakeSeatd}/bin/tomoe-test-fake-seatd"
       ''
       + builtins.readFile ./seat.py;

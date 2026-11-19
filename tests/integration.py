@@ -1,6 +1,7 @@
 import collections
 import json
 
+print(machine.succeed(f"{DRM_VERSION} /dev/dri/card* /dev/dri/renderD* 2>&1"))
 start()
 state = inspect()
 names = [text(plist(entry)[":NAME"]) for entry in items(state[":EXTENSIONS"])]

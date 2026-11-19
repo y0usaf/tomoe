@@ -2,6 +2,9 @@ ERROR_SOCKET = "/run/fake-seatd-error.sock"
 DRM_SOCKET = "/run/fake-seatd-drm.sock"
 
 machine.wait_for_unit("multi-user.target")
+drm = machine.succeed(f"{DRM_VERSION} /dev/dri/card* /dev/dri/renderD* 2>&1")
+print(drm)
+assert " vkms vkms" in drm, drm
 machine.succeed("mkdir -p -m 700 /run/tomoe")
 machine.execute("systemctl stop fake-seatd-error fake-seatd-drm 2>/dev/null",
                 check_return=False)
