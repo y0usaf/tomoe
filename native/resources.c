@@ -302,6 +302,10 @@ void res_engine_kick(void) {
     res_schedule(res_now());
 }
 
+void resources_outputs_changed(void) {
+    res_engine_kick();
+}
+
 static void res_engine(void *data) {
     res.engine_armed = false;
     uint64_t now = res_now();

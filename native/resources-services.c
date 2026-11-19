@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -345,6 +346,141 @@ static bool all_digits(const char *text) {
     return true;
 }
 
+#define SENSOR_RESCAN 60
+
+struct res_card {
+    char *name, *busy, *used, *total, *temperature;
+};
+
+static struct {
+    bool scanned, stale;
+    unsigned reads;
+    char *cpu_temperature;
+    struct res_card *cards;
+    size_t card_count;
+} sensors;
+
+static char *path_dup(const char *format, ...) {
+    char path[16384];
+    va_list arguments;
+    va_start(arguments, format);
+    int length = vsnprintf(path, sizeof(path), format, arguments);
+    va_end(arguments);
+    return length < 0 || (size_t)length >= sizeof(path) ? NULL : res_dup(path);
+}
+
+static void sensors_clear(void) {
+    free(sensors.cpu_temperature);
+    for (size_t index = 0; index < sensors.card_count; index++) {
+        struct res_card *card = &sensors.cards[index];
+        free(card->name);
+        free(card->busy);
+        free(card->used);
+        free(card->total);
+        free(card->temperature);
+    }
+    free(sensors.cards);
+    sensors.cpu_temperature = NULL;
+    sensors.cards = NULL;
+    sensors.card_count = 0;
+    sensors.scanned = false;
+}
+
+static char *find_cpu_temperature(void) {
+    size_t count = 0;
+    char **names = list_directory("/sys/class/hwmon", true, &count);
+    char *found = NULL;
+    for (size_t index = 0; index < count && !found; index++) {
+        char path[8192], name[256];
+        snprintf(path, sizeof(path), "/sys/class/hwmon/%s/name", names[index]);
+        if (!read_first_line(path, name, sizeof(name))) continue;
+        const char *want = NULL;
+        if (!strcmp(name, "k10temp")) want = "Tctl";
+        else if (!strcmp(name, "coretemp")) want = "Package id 0";
+        else if (!strcmp(name, "zenpower")) want = "Tdie";
+        if (!want) continue;
+        char directory[4096];
+        snprintf(directory, sizeof(directory), "/sys/class/hwmon/%s", names[index]);
+        size_t labels = 0;
+        char **files = list_directory(directory, false, &labels);
+        int64_t milli = 0;
+        for (size_t file = 0; file < labels && !found; file++) {
+            size_t length = strlen(files[file]);
+            if (length < 11 || strncmp(files[file], "temp", 4) ||
+                    strcmp(files[file] + length - 6, "_label")) continue;
+            char label_path[8192], label[256];
+            snprintf(label_path, sizeof(label_path), "%s/%s", directory, files[file]);
+            if (!read_first_line(label_path, label, sizeof(label))) continue;
+            if (strcmp(label, want)) continue;
+            char *input = path_dup("%s/%.*sinput", directory, (int)(length - 5), files[file]);
+            if (input && read_integer(input, &milli)) found = input;
+            else free(input);
+        }
+        free_names(files, labels);
+        if (!found) {
+            char *input = path_dup("%s/temp1_input", directory);
+            if (input && read_integer(input, &milli)) found = input;
+            else free(input);
+        }
+    }
+    free_names(names, count);
+    return found;
+}
+
+static void find_cards(void) {
+    size_t count = 0;
+    char **names = list_directory("/sys/class/drm", true, &count);
+    for (size_t index = 0; index < count; index++) {
+        const char *name = names[index];
+        if (strncmp(name, "card", 4) || !all_digits(name + 4)) continue;
+        char device[4096];
+        snprintf(device, sizeof(device), "/sys/class/drm/%s/device", name);
+        char path[8192];
+        int64_t value = 0;
+        snprintf(path, sizeof(path), "%s/gpu_busy_percent", device);
+        if (!read_integer(path, &value)) continue;
+        struct res_card card = {
+            .name = res_dup(name),
+            .busy = res_dup(path),
+            .used = path_dup("%s/mem_info_vram_used", device),
+            .total = path_dup("%s/mem_info_vram_total", device),
+        };
+        char probe[8192];
+        snprintf(probe, sizeof(probe), "%s/hwmon", device);
+        size_t found = 0;
+        char **sensor_names = list_directory(probe, true, &found);
+        for (size_t sensor = 0; sensor < found && !card.temperature; sensor++) {
+            char *input = path_dup("%s/hwmon/%s/temp1_input", device, sensor_names[sensor]);
+            if (input && read_integer(input, &value)) card.temperature = input;
+            else free(input);
+        }
+        free_names(sensor_names, found);
+        struct res_card *grown = realloc(sensors.cards, (sensors.card_count + 1) * sizeof(*grown));
+        if (!card.name || !card.busy || !card.used || !card.total || !grown) {
+            if (grown) sensors.cards = grown;
+            free(card.name);
+            free(card.busy);
+            free(card.used);
+            free(card.total);
+            free(card.temperature);
+            continue;
+        }
+        sensors.cards = grown;
+        sensors.cards[sensors.card_count++] = card;
+    }
+    free_names(names, count);
+}
+
+static void sensors_refresh(void) {
+    if (sensors.scanned && !sensors.stale && ++sensors.reads < SENSOR_RESCAN) return;
+    sensors_clear();
+    sensors.cpu_temperature = find_cpu_temperature();
+    find_cards();
+    sensors.scanned = true;
+    sensors.stale = false;
+    sensors.reads = 0;
+}
+
 static void append_gpus(struct res_buffer *text) {
     rb_append(text, "(", 1);
     bool first = true;
@@ -364,97 +500,39 @@ static void append_gpus(struct res_buffer *text) {
                       busy, used, total, celsius);
         }
     }
-    size_t count = 0;
-    char **names = list_directory("/sys/class/drm", true, &count);
-    for (size_t index = 0; index < count; index++) {
-        const char *name = names[index];
-        if (strncmp(name, "card", 4) || !all_digits(name + 4)) continue;
-        char device[4096];
-        snprintf(device, sizeof(device), "/sys/class/drm/%s/device", name);
-        char path[8192];
-        int64_t busy = 0;
-        snprintf(path, sizeof(path), "%s/gpu_busy_percent", device);
-        if (!read_integer(path, &busy)) continue;
-        int64_t used = 0, total = 0, celsius = 0;
-        bool have_celsius = false;
-        snprintf(path, sizeof(path), "%s/mem_info_vram_used", device);
-        if (!read_integer(path, &used)) used = 0;
-        snprintf(path, sizeof(path), "%s/mem_info_vram_total", device);
-        if (!read_integer(path, &total)) total = 0;
-        char probe[8192];
-        snprintf(probe, sizeof(probe), "%s/hwmon", device);
-        size_t sensors = 0;
-        char **sensor_names = list_directory(probe, true, &sensors);
-        for (size_t sensor = 0; sensor < sensors; sensor++) {
-            char input[16384];
-            snprintf(input, sizeof(input), "%s/hwmon/%s/temp1_input", device,
-                     sensor_names[sensor]);
-            int64_t value = 0;
-            if (read_integer(input, &value)) { celsius = value / 1000; have_celsius = true; break; }
-        }
-        free_names(sensor_names, sensors);
+    for (size_t index = 0; index < sensors.card_count; index++) {
+        const struct res_card *card = &sensors.cards[index];
+        int64_t busy = 0, used = 0, total = 0, celsius = 0;
+        if (!read_integer(card->busy, &busy)) { sensors.stale = true; continue; }
+        if (!read_integer(card->used, &used)) used = 0;
+        if (!read_integer(card->total, &total)) total = 0;
+        bool have_celsius = card->temperature && read_integer(card->temperature, &celsius);
+        if (card->temperature && !have_celsius) sensors.stale = true;
         if (!first) rb_append(text, " ", 1);
         first = false;
         rb_append(text, "(:name ", 7);
-        rb_quoted_cstring(text, name);
+        rb_quoted_cstring(text, card->name);
         rb_printf(text, " :busy %lld :vram-used %lld :vram-total %lld :temperature ",
                   (long long)busy, (long long)(used / 1048576), (long long)(total / 1048576));
-        if (have_celsius) rb_printf(text, "%lld)", (long long)celsius);
+        if (have_celsius) rb_printf(text, "%lld)", (long long)(celsius / 1000));
         else rb_append(text, "nil)", 4);
     }
-    free_names(names, count);
     rb_append(text, ")", 1);
 }
 
 static void append_cpu_temperature(struct res_buffer *text) {
-    size_t count = 0;
-    char **names = list_directory("/sys/class/hwmon", true, &count);
-    for (size_t index = 0; index < count; index++) {
-        char path[8192], name[256];
-        snprintf(path, sizeof(path), "/sys/class/hwmon/%s/name", names[index]);
-        if (!read_first_line(path, name, sizeof(name))) continue;
-        const char *want = NULL;
-        if (!strcmp(name, "k10temp")) want = "Tctl";
-        else if (!strcmp(name, "coretemp")) want = "Package id 0";
-        else if (!strcmp(name, "zenpower")) want = "Tdie";
-        if (!want) continue;
-        char directory[4096];
-        snprintf(directory, sizeof(directory), "/sys/class/hwmon/%s", names[index]);
-        size_t labels = 0;
-        char **files = list_directory(directory, false, &labels);
-        int64_t milli = 0;
-        bool found = false;
-        for (size_t file = 0; file < labels && !found; file++) {
-            size_t length = strlen(files[file]);
-            if (length < 11 || strncmp(files[file], "temp", 4) ||
-                    strcmp(files[file] + length - 6, "_label")) continue;
-            char label_path[8192], label[256];
-            snprintf(label_path, sizeof(label_path), "%s/%s", directory, files[file]);
-            if (!read_first_line(label_path, label, sizeof(label))) continue;
-            if (strcmp(label, want)) continue;
-            char input[16384];
-            snprintf(input, sizeof(input), "%s/%.*sinput", directory,
-                     (int)(length - 5), files[file]);
-            if (read_integer(input, &milli)) found = true;
-        }
-        free_names(files, labels);
-        if (!found) {
-            char input[16384];
-            snprintf(input, sizeof(input), "%s/temp1_input", directory);
-            found = read_integer(input, &milli);
-        }
-        if (found) {
-            rb_printf(text, "%lld", (long long)(milli / 1000));
-            free_names(names, count);
-            return;
-        }
+    int64_t milli = 0;
+    if (sensors.cpu_temperature && read_integer(sensors.cpu_temperature, &milli)) {
+        rb_printf(text, "%lld", (long long)(milli / 1000));
+        return;
     }
-    free_names(names, count);
+    if (sensors.cpu_temperature) sensors.stale = true;
     rb_append(text, "nil", 3);
 }
 
 static char *sample_system(void) {
     struct res_buffer text = {0};
+    sensors_refresh();
     int64_t total = 0, idle = 0;
     char line[8192];
     if (read_first_line("/proc/stat", line, sizeof(line))) {
@@ -603,6 +681,7 @@ void res_services_stop(void) {
     }
     free(res.system_text);
     res.system_text = NULL;
+    sensors_clear();
 }
 
 void res_services_service(uint64_t now, uint64_t *next) {
@@ -615,7 +694,7 @@ void res_services_service(uint64_t now, uint64_t *next) {
         }
         if (producer->due < *next) *next = producer->due;
     }
-    if (res_system_read()) {
+    if (res_system_read() && tomoe_outputs_lit(res.server)) {
         if (now >= res.system_due) system_sample(now);
         if (res.system_due < *next) *next = res.system_due;
     }

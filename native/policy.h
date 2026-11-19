@@ -140,6 +140,8 @@ uint64_t loop_now_ms(void);
 double loop_refresh_ms(struct tomoe *server);
 
 int resources_start(struct tomoe *server);
+void resources_outputs_changed(void);
+bool tomoe_outputs_lit(struct tomoe *server);
 void resources_stop(struct tomoe *server);
 int tomoe_service_run_begin(const char *runtime, int *cleared, char *error, size_t error_size);
 void tomoe_service_run_end(void);

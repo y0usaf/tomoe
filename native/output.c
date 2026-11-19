@@ -420,8 +420,16 @@ lisp_value outputs_event_value(struct tomoe *s, const struct tomoe_event *event)
     return lisp_nreverse(list);
 }
 
+bool tomoe_outputs_lit(struct tomoe *s) {
+    struct output *o;
+    wl_list_for_each(o, &s->outputs, link)
+        if (output_is_active(o) && !o->screen->power_off) return true;
+    return false;
+}
+
 void outputs_event(struct tomoe *s) {
     if (s->configuring_outputs) return;
+    resources_outputs_changed();
     output_management_refresh(s);
     uint64_t revision = s->outputs_revision + 1;
     struct tomoe_event *event = policy_event_push(s, EV_OUTPUTS);
