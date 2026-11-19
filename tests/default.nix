@@ -1240,6 +1240,58 @@ let
       cp upstream.trace $out/share/tomoe/mtdev-equivalence
     '';
   };
+  evdevEquivalence = pkgs.stdenv.mkDerivation {
+    name = "tomoe-evdev-equivalence";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        ../lib/evdev
+        ./evdev-trace.c
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [
+      pkgs.python3
+      pkgs.gnutar
+    ];
+    dontConfigure = true;
+    buildPhase = ''
+      tar xf ${pkgs.libevdev.src}
+      upstream=$(echo libevdev-*)
+      mkdir native
+      printf '#define _GNU_SOURCE 1\n' > native/config.h
+      python3 "$upstream/libevdev/make-event-names.py" \
+        "$upstream/include/linux/linux/input.h" \
+        "$upstream/include/linux/linux/input-event-codes.h" > native/event-names.h
+      $CC -O2 -std=c11 -D_GNU_SOURCE -Wno-unused-parameter -Wall -Wextra \
+        -I"$upstream" -Inative -I"$upstream/libevdev" \
+        tests/evdev-trace.c "$upstream/libevdev/libevdev.c" \
+        "$upstream/libevdev/libevdev-names.c" \
+        -Wl,--wrap=ioctl,--wrap=read -o evdev-trace-native
+      $CC -O2 -std=c11 -D_GNU_SOURCE -Wno-unused-parameter -Wall -Wextra -Werror \
+        -Ilib/evdev/include/libevdev-1.0 \
+        tests/evdev-trace.c lib/evdev/*.c \
+        -Wl,--wrap=ioctl,--wrap=read -o evdev-trace
+      ./evdev-trace-native > native.trace
+      ./evdev-trace > module.trace
+      lines=$(wc -l < native.trace)
+      if [ "$lines" -lt 50000 ]; then
+        echo "evdev-trace stopped after $lines lines"
+        exit 1
+      fi
+      if diff -u native.trace module.trace > trace.diff; then
+        echo "evdev-trace matches libevdev $lines lines"
+      else
+        echo "evdev-trace differs from libevdev:"
+        head -80 trace.diff
+        exit 1
+      fi
+    '';
+    installPhase = ''
+      mkdir -p $out/share/tomoe
+      cp native.trace $out/share/tomoe/evdev-equivalence
+    '';
+  };
   libraries = pkgs.stdenv.mkDerivation {
     name = "tomoe-libraries";
     src = ../lib;
@@ -1250,15 +1302,16 @@ let
     ];
     dontConfigure = true;
     buildPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire; do
+      for library in png lisp wayland xkb mtdev pipewire evdev; do
         make -C $library -j"$NIX_BUILD_CORES" \
           WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
       done
     '';
     installPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire; do
+      for library in png lisp wayland xkb mtdev pipewire evdev; do
         install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
-        install -Dm644 -t $out/include/tomoe-$library $library/include/*.h
+        mkdir -p $out/include/tomoe-$library
+        cp -r $library/include/. $out/include/tomoe-$library/
       done
       install -Dm644 -t $out/include/tomoe-wayland/scanner wayland/scanner/*.h wayland/build/wayland-*-protocol.h
       install -Dm644 -t $out/include/tomoe-mtdev/libinput mtdev/libinput/*.h
@@ -1269,6 +1322,7 @@ let
     mtdevEquivalence
     animationUnit
     xkbEquivalence
+    evdevEquivalence
     lispUnit
     eventRing
     portalFormat
@@ -1808,6 +1862,7 @@ in
   lisp-unit = lispUnit;
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;
+  evdev-equivalence = evdevEquivalence;
   mtdev-equivalence = mtdevEquivalence;
   lease = pkgs.runCommand "tomoe-lease" {
     nativeBuildInputs = [

@@ -108,6 +108,7 @@
               pc,
               library,
               version,
+              includeSubdir ? "",
               adapter ? null,
             }:
             pkgs.stdenv.mkDerivation {
@@ -136,7 +137,7 @@
                 Description: Tomoe's lib/${name}, in place of ${pc}
                 Version: ${version}
                 Libs: -L\''${libdir} -l${library}
-                Cflags: -I\''${includedir}
+                Cflags: -I\''${includedir}${includeSubdir}
                 EOF
                 runHook postInstall
               '';
@@ -148,11 +149,19 @@
             version = "1.1.7";
             adapter = "libinput";
           };
+          evdev = dropIn {
+            name = "evdev";
+            pc = "libevdev";
+            library = "evdev";
+            version = "1.13.6";
+            includeSubdir = "/libevdev-1.0";
+          };
           libinput =
             (pkgs.libinput.override {
               luaSupport = false;
               wacomSupport = false;
               inherit mtdev;
+              libevdev = evdev;
             }).overrideAttrs
               (old: {
                 postPatch = old.postPatch + ''
