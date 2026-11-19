@@ -1081,6 +1081,10 @@ let
     ];
     dontConfigure = true;
     buildPhase = ''
+      wayland-scanner -c server-header ${pkgs.wayland-scanner}/share/wayland/wayland.xml \
+        wayland-server-protocol.h
+      wayland-scanner -c client-header ${pkgs.wayland-scanner}/share/wayland/wayland.xml \
+        wayland-client-protocol.h
       wayland-scanner client-header \
         ${pkgs.wlr-protocols}/share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml \
         wlr-layer-shell-unstable-v1-protocol.h
@@ -1088,8 +1092,10 @@ let
         ${pkgs.wayland-protocols}/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
         xdg-shell-protocol.h
       $CC -std=c11 -D_GNU_SOURCE -O1 -Wall -Wextra -Werror -Wno-unused-parameter \
-        -Inative -Ilib/lisp/include -Ilib/xkb/include -I. tests/animation-unit.c native/animation.c \
-        $(pkg-config --cflags --libs wayland-server libdrm glesv2) -lm \
+        -Inative -Ilib/lisp/include -Ilib/xkb/include -Ilib/wayland/include -Ilib/wayland/scanner -I. \
+        tests/animation-unit.c native/animation.c \
+        $(pkg-config --cflags libdrm glesv2) \
+        $(pkg-config --libs wayland-server libdrm glesv2) -lm \
         -o animation-unit
       ./animation-unit
     '';
@@ -1196,7 +1202,7 @@ let
         install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
         install -Dm644 -t $out/include/tomoe-$library $library/include/*.h
       done
-      install -Dm644 -t $out/include/tomoe-wayland wayland/build/wayland-*-protocol.h
+      install -Dm644 -t $out/include/tomoe-wayland/scanner wayland/scanner/*.h wayland/build/wayland-*-protocol.h
     '';
   };
   compositorPackages = [

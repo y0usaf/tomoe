@@ -1,10 +1,124 @@
-#ifndef TOMOE_WAYLAND_SERVER_CORE_H
-#define TOMOE_WAYLAND_SERVER_CORE_H
+#ifndef TOMOE_WAYLAND_H
+#define TOMOE_WAYLAND_H
 
+#include <inttypes.h>
+#include <math.h>
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
-#include "wayland-util.h"
+
+#define WL_PRINTF(x, y) __attribute__((__format__(__printf__, x, y)))
+#define WL_DEPRECATED __attribute__((deprecated))
+#define WL_MAX_MESSAGE_SIZE 4096
+
+struct wl_object;
+
+struct wl_message {
+    const char *name;
+    const char *signature;
+    const struct wl_interface **types;
+};
+
+struct wl_interface {
+    const char *name;
+    int version;
+    int method_count;
+    const struct wl_message *methods;
+    int event_count;
+    const struct wl_message *events;
+};
+
+struct wl_list {
+    struct wl_list *prev;
+    struct wl_list *next;
+};
+
+void wl_list_init(struct wl_list *list);
+void wl_list_insert(struct wl_list *list, struct wl_list *elm);
+void wl_list_remove(struct wl_list *elm);
+int wl_list_length(const struct wl_list *list);
+int wl_list_empty(const struct wl_list *list);
+void wl_list_insert_list(struct wl_list *list, struct wl_list *other);
+
+#define wl_container_of(ptr, sample, member) \
+    (__typeof__(sample))((char *)(ptr) - offsetof(__typeof__(*sample), member))
+
+#define wl_list_for_each(pos, head, member) \
+    for (pos = wl_container_of((head)->next, pos, member); &pos->member != (head); \
+         pos = wl_container_of(pos->member.next, pos, member))
+
+#define wl_list_for_each_safe(pos, tmp, head, member) \
+    for (pos = wl_container_of((head)->next, pos, member), \
+         tmp = wl_container_of((pos)->member.next, tmp, member); \
+         &pos->member != (head); \
+         pos = tmp, tmp = wl_container_of(pos->member.next, tmp, member))
+
+#define wl_list_for_each_reverse(pos, head, member) \
+    for (pos = wl_container_of((head)->prev, pos, member); &pos->member != (head); \
+         pos = wl_container_of(pos->member.prev, pos, member))
+
+#define wl_list_for_each_reverse_safe(pos, tmp, head, member) \
+    for (pos = wl_container_of((head)->prev, pos, member), \
+         tmp = wl_container_of((pos)->member.prev, tmp, member); \
+         &pos->member != (head); \
+         pos = tmp, tmp = wl_container_of(pos->member.prev, tmp, member))
+
+struct wl_array {
+    size_t size;
+    size_t alloc;
+    void *data;
+};
+
+static inline void wl_array_init(struct wl_array *array) {
+    memset(array, 0, sizeof(*array));
+}
+
+static inline void wl_array_release(struct wl_array *array) {
+    free(array->data);
+    array->data = (void *)0xdeadbeef;
+}
+
+void *wl_array_add(struct wl_array *array, size_t size);
+int wl_array_copy(struct wl_array *array, struct wl_array *source);
+
+#define wl_array_for_each(pos, array) \
+    for (pos = (array)->data; (array)->size != 0 && \
+         (const char *)pos < ((const char *)(array)->data + (array)->size); (pos)++)
+
+typedef int32_t wl_fixed_t;
+
+static inline double wl_fixed_to_double(wl_fixed_t f) {
+    return f / 256.0;
+}
+
+static inline wl_fixed_t wl_fixed_from_double(double d) {
+    return (wl_fixed_t)round(d * 256.0);
+}
+
+static inline int wl_fixed_to_int(wl_fixed_t f) {
+    return f / 256;
+}
+
+static inline wl_fixed_t wl_fixed_from_int(int i) {
+    return i * 256;
+}
+
+union wl_argument {
+    int32_t i;
+    uint32_t u;
+    wl_fixed_t f;
+    const char *s;
+    struct wl_object *o;
+    uint32_t n;
+    struct wl_array *a;
+    int32_t h;
+};
+
+typedef void (*wl_log_func_t)(const char *fmt, va_list args) WL_PRINTF(1, 0);
 
 enum {
     WL_EVENT_READABLE = 0x01,
@@ -150,5 +264,30 @@ struct wl_event_source *loop_add_owned_fd(struct wl_event_loop *loop, int fd, ui
     wl_event_loop_fd_func_t func, void *data);
 typedef const void *(*wl_implementation_map)(const void *implementation, void *data);
 void wl_display_repoint(struct wl_display *display, wl_implementation_map map, void *data);
+
+#define WL_MARSHAL_FLAG_DESTROY (1 << 0)
+
+struct wl_proxy;
+
+struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
+    const struct wl_interface *interface, uint32_t version, uint32_t flags, ...);
+void wl_proxy_destroy(struct wl_proxy *proxy);
+int wl_proxy_add_listener(struct wl_proxy *proxy, void (**implementation)(void), void *data);
+void wl_proxy_set_user_data(struct wl_proxy *proxy, void *user_data);
+void *wl_proxy_get_user_data(struct wl_proxy *proxy);
+uint32_t wl_proxy_get_version(struct wl_proxy *proxy);
+uint32_t wl_proxy_get_id(struct wl_proxy *proxy);
+
+struct wl_display *wl_display_connect(const char *name);
+void wl_display_disconnect(struct wl_display *display);
+int wl_display_get_fd(struct wl_display *display);
+int wl_display_dispatch(struct wl_display *display);
+int wl_display_dispatch_pending(struct wl_display *display);
+int wl_display_roundtrip(struct wl_display *display);
+int wl_display_flush(struct wl_display *display);
+int wl_display_prepare_read(struct wl_display *display);
+int wl_display_read_events(struct wl_display *display);
+void wl_display_cancel_read(struct wl_display *display);
+int wl_display_get_error(struct wl_display *display);
 
 #endif

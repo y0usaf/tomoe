@@ -70,8 +70,8 @@ LISP_SOURCES = prelude api ui cursor dialogs rules ipc plan runtime livepatch de
 LISP_EMBED = $(wildcard lisp/*.lisp)
 LIBRARIES = png lisp wayland xkb pipewire
 LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
-LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h)
-LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include)
+LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h lib/wayland/scanner/*.h)
+LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include) -Ilib/wayland/scanner
 LIB_OBJECTS = $(patsubst lib/%.c,build/obj/lib/%.o,$(filter-out lib/wayland/%,$(LIB_SOURCES)))
 WAYLAND_CORE = build/obj/lib/wayland/wire.o build/obj/wayland-protocol.o
 WAYLAND_SERVER = $(WAYLAND_CORE) build/obj/lib/wayland/loop.o build/obj/lib/wayland/server.o build/obj/lib/wayland/shm.o
@@ -82,10 +82,10 @@ CFLAGS_BASE = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-u
 CFLAGS_NATIVE = $(CFLAGS_BASE) -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"' -DTOMOE_PATH_PREFIX='"$(PATH_PREFIX)"' -DTOMOE_FONTCONFIG_FILE='"$(FONTCONFIG_FILE)"' -Ibuild -Inative $(LIB_INCLUDE) $(shell $(PKG_CONFIG) --cflags $(LIBS))
 CFLAGS_CORE = $(CFLAGS_NATIVE) -fPIC -DTOMOE_SHARED_CORE
 CFLAGS_SUPPORT = $(CFLAGS_CODE) -std=c11 -Wall -Wextra -Werror -fpatchable-function-entry=5,0 -DTOMOE_CORE_STAMP='"$(CORE_STAMP)"' -DTOMOE_VERSION='"$(VERSION)"'
-CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Ilib/wayland/include -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
+CFLAGS_PORTAL = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ibuild -Isupport -Ilib/wayland/include -Ilib/wayland/scanner -Ilib/pipewire/include $(shell $(PKG_CONFIG) --cflags $(PORTAL_LIBS))
 CFLAGS_LISP_UNIT = $(CFLAGS_CODE) -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Ilib/lisp/include
 LIB_CFLAGS_pipewire = $(CFLAGS_SUPPORT)
-LIB_FLAGS_wayland = -Ibuild
+LIB_FLAGS_wayland = -Ilib/wayland/scanner -Ibuild
 LIB_FLAGS_xkb = -DTOMOE_XKB_CONFIG_ROOT='"$(XKB_CONFIG_ROOT)"'
 lib_cflags = $(or $(LIB_CFLAGS_$(1)),$(CFLAGS_BASE)) -Ilib/$(1)/include $(LIB_FLAGS_$(1))
 

@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "wayland-util.h"
+#include "wayland.h"
 
 #define WIRE_MAX_ARGS 20
 #define WIRE_IN_SIZE 4096

@@ -20,7 +20,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#include <wayland-server-core.h>
+#include "wayland.h"
 
 struct execution;
 struct execution *tomoe_process_start_dependent(char *const argv[], char *const envp[], int *error);

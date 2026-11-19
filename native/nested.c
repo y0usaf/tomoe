@@ -2,7 +2,8 @@
 #include "drm.h"
 #include <fcntl.h>
 #include <unistd.h>
-#include <wayland-client.h>
+#include "wayland.h"
+#include "wayland-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"

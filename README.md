@@ -835,18 +835,18 @@ so these are compositor pipeline costs: nothing here measures input-to-photon
 latency, GPU cost or power draw. The landing queue runs the same script as
 `tomoe-land submit --timing -s bench`.
 
-The hand-rolled libraries live in `lib/`, one folder each with its public header in
-`include/`: `png` (PNG decoding and encoding with its own inflate, deflate and
-CRC), `lisp` (the runtime, reader, compiler and builtins), `wayland` (the wire
-protocol, event loop, server, shm and client, under libwayland's header names
-because wayland-scanner's output includes them), `xkb` (keymaps and keyboard
-state) and `pipewire` (the PipeWire wire protocol and an audio client). None of
-them includes anything from `native/` or from each other. `make -C lib/NAME`
-builds `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from that
-folder alone, and the `libraries` check, one of the compositor VMs' packages,
-builds all five. Tomoe compiles the same sources straight into its one binary and
-its core with its own flags, so the split adds no call, copy or library at run
-time.
+The hand-rolled libraries live in `lib/`, one folder each with its one public
+header in `include/`: `png` (PNG decoding and encoding with its own inflate,
+deflate and CRC), `lisp` (the runtime, reader, compiler and builtins), `wayland`
+(the wire protocol, event loop, server, shm and client, all in `wayland.h`; its
+`scanner/` only maps the libwayland file names wayland-scanner's output includes
+onto it), `xkb` (keymaps and keyboard state) and `pipewire` (the PipeWire wire
+protocol and an audio client). None of them includes anything from `native/` or
+from each other. `make -C lib/NAME` builds `libtomoe-NAME.a` and a
+`libtomoe-NAME.so` linked with `-z defs` from that folder alone, and the
+`libraries` check, one of the compositor VMs' packages, builds all five. Tomoe
+compiles the same sources straight into its one binary and its core with its own
+flags, so the split adds no call, copy or library at run time.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that

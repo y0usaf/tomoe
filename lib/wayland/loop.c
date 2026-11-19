@@ -6,7 +6,7 @@
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
-#include "wayland-server-core.h"
+#include "wayland.h"
 
 enum source_kind { SOURCE_FD, SOURCE_TIMER, SOURCE_IDLE, SOURCE_TIMERS };
 

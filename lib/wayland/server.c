@@ -10,7 +10,8 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include "wayland-server.h"
+#include "wayland.h"
+#include "wayland-server-protocol.h"
 #include "server.h"
 #include "wire.h"
 

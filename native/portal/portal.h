@@ -9,7 +9,8 @@
 #include "loop.h"
 #include "spa.h"
 #include <time.h>
-#include <wayland-client.h>
+#include "wayland.h"
+#include "wayland-client-protocol.h"
 
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
 #include "ext-image-capture-source-v1-client-protocol.h"

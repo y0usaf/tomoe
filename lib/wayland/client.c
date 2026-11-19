@@ -8,7 +8,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include "wayland-client.h"
+#include "wayland.h"
+#include "wayland-client-protocol.h"
 #include "wire.h"
 
 #define SERVER_ID_START 0xff000000u

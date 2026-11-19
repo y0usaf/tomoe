@@ -16,7 +16,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
-#include <wayland-server-core.h>
+#include "wayland.h"
 
 enum {
     IPC_FRAME_LIMIT = 1024 * 1024,

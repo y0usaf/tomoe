@@ -16,7 +16,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <wayland-server-core.h>
+#include "wayland.h"
 
 enum {
     CONTROL_LIMIT = 1024 * 1024,
