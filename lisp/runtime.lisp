@@ -38,7 +38,7 @@ on to it, so a recorded trace can compare an incremental layout with a full one.
         :ipc-call nil :ipc-sequence 0 :ipc-published-context nil :ipc-published-announcements nil
         :config-error nil :sources nil :source-packages nil
         :patches nil :patch-sequence 0 :motion-plan nil :layers-cache nil :keysym-codes nil
-        :constructions nil :declarations-cache nil :refused-surfaces nil :runaways nil
+        :constructions nil :declarations-cache nil :sorted-cache nil :refused-surfaces nil :runaways nil
         :frame-ms 16 :invocations 0 :layout-rebuilds 0 :layout-reuses 0
         :definitions-generation 0 :package-serial 0 :next-source-id 0 :budget-limits nil
         :ipc-baseline-sent nil))
@@ -905,13 +905,31 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                          :key (lambda (o) (getf o :name)))
                   :config-error (copy-data (runtime-config-error))
                   :keyboard-grab keyboard-grab
-                  :commands (sort (append (host-command-entries)
-                                          (copy-list (materialization-commands m)))
-                                  #'string< :key (lambda (entry) (getf entry :name)))
-                  :bindings (sort bindings
-                                  (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
-                                                    (and (= (getf a :modifiers) (getf b :modifiers))
-                                                         (< (getf a :code) (getf b :code)))))))))))))
+                  :commands (sorted-entries
+                             :commands (append (host-command-entries)
+                                               (copy-list (materialization-commands m)))
+                             (lambda (list)
+                               (sort list #'string< :key (lambda (entry) (getf entry :name)))))
+                  :bindings (sorted-entries
+                             :bindings bindings
+                             (lambda (list)
+                               (sort list
+                                     (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
+                                                       (and (= (getf a :modifiers) (getf b :modifiers))
+                                                            (< (getf a :code) (getf b :code)))))))))))))))
+
+(defun sorted-entries (key list sorter)
+  "LIST as SORTER orders it. A materialization sorts the same commands and bindings
+again whenever anything else changed; the last sort of an EQUAL list is kept under
+KEY and reused."
+  (let ((entry (getf (%r :sorted-cache) key)))
+    (if (and entry (equal (car entry) list))
+        (copy-list (cdr entry))
+        (let ((sorted (funcall sorter (copy-list list))))
+          (%r! :sorted-cache (list* key (cons list (copy-list sorted))
+                                    (loop for (k v) on (%r :sorted-cache) by #'cddr
+                                          unless (eq k key) append (list k v))))
+          sorted))))
 
 (defvar *surface-failures* :outside
   "Inside a transaction, (SPEC . MESSAGE) for each extension whose shell surfaces
