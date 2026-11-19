@@ -594,7 +594,8 @@ machine.succeed("cat > /run/capture-loop.sh <<'SH'\n"
     "done\n"
     "echo captured\n"
     "SH\nchmod +x /run/capture-loop.sh")
-machine.succeed("systemd-run --unit=capture-loop --property=Type=exec /run/capture-loop.sh")
+machine.succeed("systemd-run --unit=capture-loop --property=Type=exec "
+                "--setenv=PATH=/run/current-system/sw/bin /run/capture-loop.sh")
 captured_in_gl = False
 deadline = time.monotonic() + 60
 while time.monotonic() < deadline:
@@ -602,8 +603,12 @@ while time.monotonic() < deadline:
         captured_in_gl = True
         break
     time.sleep(0.01)
-machine.wait_until_succeeds(
-    "journalctl -u capture-loop -o cat | grep -qx captured", timeout=120)
+deadline = time.monotonic() + 120
+while time.monotonic() < deadline:
+    if machine.succeed("systemctl show -P SubState capture-loop").strip() in ("exited", "failed"):
+        break
+    time.sleep(0.1)
+machine.succeed("journalctl -u capture-loop -o cat | grep -qx captured")
 print(f"screencopies took the underlay out of the scanout: {captured_in_gl}", flush=True)
 same_pixels("/run/capture.ppm", "/run/plane-video-display.ppm", HOME_BOX, "screencopy")
 wait_for(lambda: counters()[":PLANES"] == 1, "the underlay returning after the screencopies")
