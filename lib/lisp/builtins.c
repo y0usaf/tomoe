@@ -93,8 +93,7 @@ lisp_value lisp_kw_key(struct kw *kw, lisp_value v)
 {
     if (!kw->has_key || nilp(kw->key))
         return v;
-    lisp_value args[1] = { v };
-    return apply_function(kw->key, 1, args);
+    return lisp_vm_call1(kw->key, v);
 }
 
 static int64_t opt_int(struct kw *kw, bool present, lisp_value value, int64_t deflt)
@@ -184,6 +183,20 @@ lisp_value builtin_mapcar(int argc, lisp_value *argv)
     for (int i = 0; i < lists_count; i++)
         lists[i] = argv[i + 1];
     lisp_value out = NIL_VAL, tail = NIL_VAL;
+    if (lists_count == 1) {
+        lisp_value list = lists[0];
+        while (consp(list)) {
+            lisp_value value = lisp_vm_call1(fn, CAR(list));
+            lisp_value cell = cons(value, NIL_VAL);
+            if (nilp(out))
+                out = cell;
+            else
+                CDR(tail) = cell;
+            tail = cell;
+            list = CDR(list);
+        }
+        return out;
+    }
     for (;;) {
         lisp_value args[16];
         bool any_empty = false;
@@ -196,7 +209,7 @@ lisp_value builtin_mapcar(int argc, lisp_value *argv)
         }
         if (any_empty)
             break;
-        lisp_value value = apply_function(fn, lists_count, args);
+        lisp_value value = lists_count == 2 ? lisp_vm_call2(fn, args[0], args[1]) : apply_function(fn, lists_count, args);
         lisp_value cell = cons(value, NIL_VAL);
         if (nilp(out))
             out = cell;
@@ -358,8 +371,7 @@ static lisp_value filter_list(int argc, lisp_value *argv, int mode)
         check_steps();
         lisp_value value = CAR(seq);
         seq = CDR(seq);
-        lisp_value args[1] = { value };
-        bool hit = truthy(apply_function(fn, 1, args));
+        bool hit = truthy(lisp_vm_call1(fn, value));
         bool keep = mode == 1 ? !hit : hit;
         if (!keep)
             continue;
@@ -378,8 +390,7 @@ static bool search_hit(lisp_value probe, bool predicate, struct kw *kw, lisp_val
     lisp_value key = lisp_kw_key(kw, value);
     if (!predicate)
         return lisp_kw_test(kw, probe, key);
-    lisp_value args[1] = { key };
-    return truthy(apply_function(probe, 1, args));
+    return truthy(lisp_vm_call1(probe, key));
 }
 
 static lisp_value sequence_search(int argc, lisp_value *argv, bool predicate, bool element)
@@ -450,19 +461,27 @@ lisp_value builtin_sort(int argc, lisp_value *argv)
     lisp_value *values = (lisp_value *)(uintptr_t)arr;
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
+    lisp_value *keys = kw.has_key && count > 0 ? heap_alloc(sizeof(lisp_value) * (size_t)count) : NULL;
+    if (keys) {
+        for (int i = 0; i < count; i++)
+            keys[i] = lisp_kw_key(&kw, values[i]);
+    }
     for (int i = 1; i < count; i++) {
         lisp_value value = values[i];
+        lisp_value vkey = keys ? keys[i] : value;
         int j = i - 1;
         while (j >= 0) {
-            lisp_value a = lisp_kw_key(&kw, values[j]);
-            lisp_value b = lisp_kw_key(&kw, value);
-            lisp_value args[2] = { b, a };
-            if (!truthy(apply_function(pred, 2, args)))
+            lisp_value a = keys ? keys[j] : values[j];
+            if (!truthy(lisp_vm_call2(pred, vkey, a)))
                 break;
             values[j + 1] = values[j];
+            if (keys)
+                keys[j + 1] = keys[j];
             j--;
         }
         values[j + 1] = value;
+        if (keys)
+            keys[j + 1] = vkey;
     }
     return list_from_array(count, values);
 }
@@ -2470,6 +2489,7 @@ lisp_value builtin_set_symbol_definition(int argc, lisp_value *argv)
 {
     if (argc < 2 || !symbolp(argv[0]))
         lisp_error("%%SET-SYMBOL-DEFINITION needs a symbol and a definition");
+    lisp_mark_builtin_redefined(SYM(argv[0]));
     SYM(argv[0])->function = argv[1];
     if (nilp(argv[1]))
         SYM(argv[0])->h.flags &= (uint8_t)~SYM_MACRO;

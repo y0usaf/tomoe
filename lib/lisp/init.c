@@ -435,6 +435,7 @@ int lisp_init(size_t region_bytes)
     lisp.initialised = true;
     lisp.mv_count = 0;
     lisp.ctl_top = 0;
+    lisp_vm_reset();
     lisp.cache_reservation = reservation;
     return 0;
 }
@@ -449,6 +450,7 @@ void lisp_shutdown(void)
     }
     free(lisp.blocks);
     lisp.blocks = NULL;
+    lisp_vm_reset();
     lisp.initialised = false;
 }
 

@@ -102,11 +102,17 @@ _Noreturn void lisp_error(const char *format, ...)
     va_start(ap, format);
     vsnprintf(message, sizeof(message), format, ap);
     va_end(ap);
-    for (int i = lisp.ctl_top - 1; i >= 0; i--) {
-        if (lisp.ctl[i].kind == CTL_BLOCK && symbolp(lisp.ctl[i].name) && !nilp(lisp.ctl[i].name)) {
-            size_t used = strlen(message);
-            snprintf(message + used, sizeof(message) - used, " (in %s)", SYM(lisp.ctl[i].name)->name);
-            break;
+    lisp_value vm_name = lisp_vm_current_name();
+    if (symbolp(vm_name) && !nilp(vm_name)) {
+        size_t used = strlen(message);
+        snprintf(message + used, sizeof(message) - used, " (in %s)", SYM(vm_name)->name);
+    } else {
+        for (int i = lisp.ctl_top - 1; i >= 0; i--) {
+            if (lisp.ctl[i].kind == CTL_BLOCK && symbolp(lisp.ctl[i].name) && !nilp(lisp.ctl[i].name)) {
+                size_t used = strlen(message);
+                snprintf(message + used, sizeof(message) - used, " (in %s)", SYM(lisp.ctl[i].name)->name);
+                break;
+            }
         }
     }
     if (g_file)
@@ -126,6 +132,8 @@ int push_ctl(int kind)
     struct lisp_ctl *entry = &lisp.ctl[index];
     entry->kind = (uint8_t)kind;
     entry->armed = true;
+    entry->vm_sp = lisp_vm_sp_get();
+    entry->vm_fp = lisp_vm_fp_get();
     entry->name = NIL_VAL;
     entry->sym = NULL;
     return index;
@@ -145,7 +153,7 @@ static void restore_pending(void)
     memcpy(saved_values, escape_values, sizeof(saved_values));
     lisp_value form = lisp.ctl[lisp.ctl_top].form;
     struct lisp_frame *env = lisp.ctl[lisp.ctl_top].env;
-    lisp_value result = eval_progn(form, env);
+    lisp_value result = TYPE(form) == LT_FUNCTION ? apply_fast(form, 0, NULL) : eval_progn(form, env);
     (void)result;
     escape_condition = saved_condition;
     escape_name = saved_name;
@@ -160,6 +168,8 @@ _Noreturn void unwind_to(int index)
         struct lisp_ctl *entry = &lisp.ctl[at];
         if (entry->kind == CTL_CLEANUP) {
             lisp.ctl_top = at;
+            lisp_vm_sp_set(entry->vm_sp);
+            lisp_vm_fp_set(entry->vm_fp);
             restore_pending();
         } else if (entry->kind == CTL_DYNBIND) {
             lisp.ctl_top = at;
@@ -172,6 +182,8 @@ _Noreturn void unwind_to(int index)
     lisp.ctl_top = index;
     if (!ctl_ready || index < 0 || index >= LISP_MAX_CTL)
         abort();
+    lisp_vm_sp_set(lisp.ctl[index].vm_sp);
+    lisp_vm_fp_set(lisp.ctl[index].vm_fp);
     longjmp(lisp.ctl[index].jb, 1);
 }
 
@@ -726,9 +738,8 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
         lisp_closure_info(fn);
     if (!(fn->info & FNI_COMPILED) && fn->gen && ++fn->calls >= 2)
         lisp_compile_closure(fn);
-    lisp_value direct;
-    if (fn->code && lisp_run_wrapper(fn->code, argc, argv, &direct))
-        return direct;
+    if (fn->code && (!lisp.builtin_redefined || fn->upval_count > 0))
+        return lisp_vm_apply(fn, argc, argv);
     uint32_t count = fn->slots;
     uint8_t info = fn->info;
     struct lisp_frame *frame;
@@ -771,7 +782,7 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
     lisp.ctl[ctl].name = fn->self_name;
     if (!(fn->info & FNI_ARMED)) {
         lisp.ctl[ctl].armed = false;
-        lisp_value result = fn->code ? lisp_run_code(fn->code, frame) : eval_progn(fn->body, frame);
+        lisp_value result = eval_progn(fn->body, frame);
         lisp.ctl_top = ctl;
         return result;
     }
@@ -783,7 +794,7 @@ __attribute__((noinline)) lisp_value apply_closure(struct lisp_function *fn, int
             lisp.mv[i] = i < escape_count ? escape_values[i] : NIL_VAL;
         return lisp.mv[0];
     }
-    lisp_value result = fn->code ? lisp_run_code(fn->code, frame) : eval_progn(fn->body, frame);
+    lisp_value result = eval_progn(fn->body, frame);
     lisp.ctl_top = ctl;
     return result;
 }
@@ -885,6 +896,70 @@ static lisp_value eval_let(lisp_value form, struct lisp_frame *env, bool star)
     }
     lisp_value result = eval_progn(body, frame);
     restore_dynamic_to(ctl_start);
+    return result;
+}
+
+lisp_value eval_unwind_thunk(lisp_value body_fn, lisp_value cleanup_fn)
+{
+    int ctl = push_ctl(CTL_CLEANUP);
+    lisp.ctl[ctl].form = cleanup_fn;
+    lisp.ctl[ctl].env = NULL;
+    lisp_value result = apply_fast(body_fn, 0, NULL);
+    lisp.ctl_top = ctl;
+    int count = lisp.mv_count;
+    lisp_value saved[LISP_MAX_MV];
+    for (int i = 0; i < count && i < LISP_MAX_MV; i++)
+        saved[i] = lisp.mv[i];
+    apply_fast(cleanup_fn, 0, NULL);
+    lisp.mv_count = count;
+    for (int i = 0; i < count && i < LISP_MAX_MV; i++)
+        lisp.mv[i] = saved[i];
+    return result;
+}
+
+lisp_value eval_ignore_errors_thunk(lisp_value body_fn)
+{
+    int ctl = push_ctl(CTL_CATCH);
+    if (setjmp(lisp.ctl[ctl].jb) != 0) {
+        lisp.ctl_top = ctl;
+        lisp_value condition = escape_condition;
+        mv_return2(NIL_VAL, condition);
+        return NIL_VAL;
+    }
+    lisp_value result = apply_fast(body_fn, 0, NULL);
+    lisp.ctl_top = ctl;
+    return result;
+}
+
+lisp_value eval_handler_case_thunk(lisp_value body_fn, lisp_value handler_fn)
+{
+    int ctl = push_ctl(CTL_CATCH);
+    if (setjmp(lisp.ctl[ctl].jb) != 0) {
+        lisp.ctl_top = ctl;
+        lisp_value condition = escape_condition;
+        if (!nilp(handler_fn))
+            return apply_fast(handler_fn, 1, &condition);
+        throw_error_value(condition);
+    }
+    lisp_value result = apply_fast(body_fn, 0, NULL);
+    lisp.ctl_top = ctl;
+    return result;
+}
+
+lisp_value eval_block_thunk(lisp_value name, lisp_value body_fn)
+{
+    int ctl = push_ctl(CTL_BLOCK);
+    lisp.ctl[ctl].name = name;
+    if (setjmp(lisp.ctl[ctl].jb) != 0) {
+        lisp.ctl_top = ctl;
+        int count = escape_count > 0 ? escape_count : 1;
+        lisp.mv_count = count;
+        for (int i = 0; i < count; i++)
+            lisp.mv[i] = i < escape_count ? escape_values[i] : NIL_VAL;
+        return lisp.mv[0];
+    }
+    lisp_value result = apply_fast(body_fn, 0, NULL);
+    lisp.ctl_top = ctl;
     return result;
 }
 
@@ -1527,6 +1602,7 @@ static lisp_value eval_special(lisp_value form, struct lisp_frame *env, int id)
         lisp_value params = CAR(CDR(args));
         lisp_value body = CDR(CDR(args));
         lisp_value fn = make_closure(params, body, env, name);
+        lisp_mark_builtin_redefined(SYM(name));
         SYM(name)->function = fn;
         SYM(name)->h.flags |= SYM_MACRO;
         if (SYM(name)->package == PKG_TOMOE)

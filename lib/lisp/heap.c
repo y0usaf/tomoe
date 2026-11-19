@@ -273,6 +273,22 @@ void *heap_alloc_raw(size_t bytes)
     return heap_alloc(bytes);
 }
 
+struct lisp_upval_vec {
+    struct lisp_obj h;
+    lisp_value vals[];
+};
+
+lisp_value *lisp_upvals_alloc(struct lisp_region *region, uint32_t count)
+{
+    size_t size = offsetof(struct lisp_upval_vec, vals) + (size_t)count * sizeof(lisp_value);
+    struct lisp_upval_vec *vec = heap_alloc_in(region, size);
+    vec->h.type = 0;
+    vec->h.flags = 0;
+    vec->h.aux = 0;
+    vec->h.size = (uint32_t)((size + 7u) & ~(size_t)7u);
+    return vec->vals;
+}
+
 lisp_value lisp_frame_alloc(struct lisp_frame *parent, uint32_t count)
 {
     size_t size = offsetof(struct lisp_frame, entry) + (size_t)count * sizeof(struct lisp_binding);
@@ -691,6 +707,16 @@ static lisp_value deep_copy(lisp_value value, struct lisp_region *dst, bool shar
                 out->body = deep_copy(src->body, dst, share);
                 out->gen = NULL;
                 out->code = NULL;
+            }
+            if (src->upval_count > 0 && src->upvals) {
+                lisp_value *uv = lisp_upvals_alloc(dst, src->upval_count);
+                for (uint32_t i = 0; i < src->upval_count; i++)
+                    uv[i] = deep_copy(src->upvals[i], dst, share);
+                out->upvals = uv;
+                out->upval_count = src->upval_count;
+            } else {
+                out->upvals = NULL;
+                out->upval_count = 0;
             }
         }
         return VAL(out);

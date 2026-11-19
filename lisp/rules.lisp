@@ -1,8 +1,11 @@
 (defun root-mounts (mounts)
-  (remove-if #'mounted-rule-parent mounts))
+  (if (some #'mounted-rule-parent mounts)
+      (remove-if #'mounted-rule-parent mounts)
+      mounts))
 
 (defun rule-instances (mounts)
-  (remove-if-not #'mounted-rule-parent mounts))
+  (when (some #'mounted-rule-parent mounts)
+    (remove-if-not #'mounted-rule-parent mounts)))
 
 (defun admission-scope-p (mounted mounts)
   "Rule descendants share their admission owner's proposal lifetime."
@@ -25,6 +28,8 @@
 (defun prune-rule-mounts (mounts)
   "Prune external lifetimes without evaluating any extension code. Recovery must
 still release dead window scopes when a predicate or reducer has failed."
+  (unless (some #'mounted-rule-parent mounts)
+    (return-from prune-rule-mounts mounts))
   (let ((result (copy-list (root-mounts mounts))))
     (dolist (instance (rule-instances mounts) result)
       (let ((parent (find (mounted-rule-parent instance) result :key #'mounted-spec)))

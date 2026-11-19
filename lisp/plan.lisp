@@ -83,43 +83,42 @@ staged outputs when PENDING and on the committed ones otherwise."
                        (getf output :refresh-mhz)))))
 
 (defun %stage-setting-flat (name value flat)
-  (cond ((keywordp value) (append flat (list name (string-downcase value))))
-        ((member value '(t nil)) (append flat (list name (if value 1 0))))
-        (t (append flat (list name value)))))
+  (cond ((keywordp value) (cons (string-downcase value) (cons name flat)))
+        ((member value '(t nil)) (cons (if value 1 0) (cons name flat)))
+        (t (cons value (cons name flat)))))
 
 (defun %stage-device (plist prefix flat)
   (loop for (key value) on plist by #'cddr
-        for name = (format nil "~A-~A" prefix (%lower key))
+        for name = (concatenate 'string prefix "-" (%lower key))
         do (setf flat (%stage-setting-flat name value flat))
         finally (return flat)))
 
 (defun %stage-settings (plist table prefix flat)
   (loop for (key type) in table
         for value = (getf plist key)
-        for name = (format nil "~A~A" (if prefix (concatenate 'string prefix "-") "")
-                           (%lower key))
+        for name = (if prefix (concatenate 'string prefix "-" (%lower key)) (%lower key))
         do (setf flat
                  (ecase (if (consp type) (first type) type)
                    (:boolean (%stage-setting-flat name (if value 1 0) flat))
                    ((:integer :real) (%stage-setting-flat name value flat))
                    (:color (%stage-setting-flat name (%ui-color value) flat))
                    (:member (%stage-setting-flat name (string-downcase value) flat))
-                   (:strings (dolist (item value) (setf flat (append flat (list name item)))) flat)
+                   (:strings (dolist (item value) (setf flat (cons item (cons name flat)))) flat)
                    (:colors (dolist (item value)
-                              (setf flat (append flat (list name (%ui-color item)))))
+                              (setf flat (cons (%ui-color item) (cons name flat))))
                             flat)
                    (:device (%stage-device value name flat))
                    (:animations
                     (let ((flat flat))
                       (loop for (property spec) on value by #'cddr
-                            for prefix = (format nil "~A-~A" name (%lower property)) do
+                            for prefix = (concatenate 'string name "-" (%lower property)) do
                         (setf flat (%stage-setting-flat
                                     (concatenate 'string prefix "-kind")
                                     (ecase (getf spec :kind) (:off 0) (:spring 1) (:ease 2)) flat))
                         (loop for field in '(:damping-ratio :stiffness :epsilon :launch :duration-ms)
                               when (getf spec field)
                                 do (setf flat (%stage-setting-flat
-                                               (format nil "~A-~A" prefix (%lower field))
+                                               (concatenate 'string prefix "-" (%lower field))
                                                (getf spec field) flat)))
                         (let ((curve (getf spec :curve)))
                           (when curve
@@ -131,11 +130,11 @@ staged outputs when PENDING and on the committed ones otherwise."
                             (when (listp curve)
                               (loop for point in curve for axis in '("x1" "y1" "x2" "y2")
                                     do (setf flat (%stage-setting-flat
-                                                   (format nil "~A-~A" prefix axis) point flat)))))))
+                                                   (concatenate 'string prefix "-" axis) point flat)))))))
                       flat))
                    (:devices
                     (loop for (device-name . plist) in value
-                          do (setf flat (append flat (list name device-name)))
+                          do (setf flat (cons device-name (cons name flat)))
                              (setf flat (%stage-device plist "device" flat)))
                     flat)
                    (:group (%stage-settings value (rest type) name flat))))
@@ -153,7 +152,7 @@ staged outputs when PENDING and on the committed ones otherwise."
            (stage (flat)
              (loop for (key value) on flat by #'cddr
                    do (if (stringp value) (text key value) (number key value)))))
-    (stage (%stage-settings settings +settings+ nil nil))))
+    (stage (nreverse (%stage-settings settings +settings+ nil nil)))))
 
 (defun stage-native-motion (motion)
   "Stage the pointer gate: nothing on the fast path unless MOTION says so."

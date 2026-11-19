@@ -211,6 +211,8 @@ struct lisp_function {
     struct lisp_frame *env;
     struct lisp_region *gen;
     const struct lisp_code *code;
+    uint32_t upval_count;
+    lisp_value *upvals;
 };
 
 struct lisp_binding {
@@ -276,6 +278,8 @@ struct lisp_region {
 struct lisp_ctl {
     uint8_t kind;
     bool armed;
+    uint32_t vm_sp;
+    uint32_t vm_fp;
     jmp_buf jb;
     lisp_value name;
     lisp_value form;
@@ -367,6 +371,7 @@ struct lisp_runtime {
     struct lisp_symbol *sym_keyword_end2;
     struct lisp_symbol *sym_keyword_initial_value;
     struct lisp_symbol *sym_keyword_test_not;
+    uint32_t builtin_redefined;
 };
 
 extern struct lisp_runtime *lisp_ptr;
@@ -460,6 +465,7 @@ _Noreturn void lisp_oom(void);
 lisp_value lisp_keep(lisp_value value);
 void lisp_release(lisp_value value);
 lisp_value lisp_frame_alloc(struct lisp_frame *parent, uint32_t count);
+lisp_value *lisp_upvals_alloc(struct lisp_region *region, uint32_t count);
 uint64_t lisp_now_ns(void);
 uint64_t lisp_cpu_ns(void);
 
@@ -511,14 +517,30 @@ static inline lisp_value apply_fast(lisp_value fn, int argc, lisp_value *argv)
 }
 void lisp_closure_info(struct lisp_function *fn);
 void lisp_compile_closure(struct lisp_function *fn);
-lisp_value lisp_run_code(const struct lisp_code *code, struct lisp_frame *frame);
-bool lisp_run_wrapper(const struct lisp_code *code, int argc, lisp_value *argv, lisp_value *result);
+lisp_value lisp_vm_apply(struct lisp_function *fn, int argc, lisp_value *argv);
+lisp_value lisp_vm_call1(lisp_value fn, lisp_value arg);
+lisp_value lisp_vm_call2(lisp_value fn, lisp_value a, lisp_value b);
+bool lisp_code_fast_apply1(const struct lisp_code *code, lisp_value arg, lisp_value *out);
+uint32_t lisp_vm_sp_get(void);
+void lisp_vm_sp_set(uint32_t sp);
+uint32_t lisp_vm_fp_get(void);
+void lisp_vm_fp_set(uint32_t fp);
+lisp_value lisp_vm_current_name(void);
+void lisp_vm_reset(void);
 lisp_value lisp_eval_cached(lisp_value form, struct lisp_frame *env);
 void lisp_forget_forms(struct lisp_region *region);
+static inline void lisp_mark_builtin_redefined(struct lisp_symbol *sym) {
+    if (sym && TYPE(sym->function) == LT_FUNCTION && PTR(sym->function, lisp_function)->kind == FN_BUILTIN)
+        lisp.builtin_redefined++;
+}
 lisp_value variable_value(lisp_value sym, struct lisp_frame *env);
 void set_variable(lisp_value sym, lisp_value value, struct lisp_frame *env);
 lisp_value function_value(lisp_value sym, struct lisp_frame *env, bool *found);
 void restore_dynamic_to(int ctl_index);
+lisp_value eval_unwind_thunk(lisp_value body_fn, lisp_value cleanup_fn);
+lisp_value eval_ignore_errors_thunk(lisp_value body_fn);
+lisp_value eval_handler_case_thunk(lisp_value body_fn, lisp_value handler_fn);
+lisp_value eval_block_thunk(lisp_value name, lisp_value body_fn);
 
 enum place_kind { PLACE_VAR, PLACE_GETF, PLACE_CDR, PLACE_NTH, PLACE_GETHASH, PLACE_VALUE };
 
@@ -597,6 +619,71 @@ void analyse_expr(struct lisp_actx *ctx, lisp_value form);
 void analyse_push_var(struct lisp_actx *ctx, lisp_value sym);
 void analyse_push_pattern(struct lisp_actx *ctx, lisp_value pattern);
 void analyse_push_func(struct lisp_actx *ctx, lisp_value sym);
+enum loop_for_kind { LF_IN, LF_ON, LF_ACROSS, LF_FROM, LF_EQ };
+enum loop_bound_kind { LB_NONE, LB_TO, LB_BELOW, LB_DOWNTO };
+enum loop_acc_kind { ACC_COLLECT, ACC_APPEND, ACC_NCONC, ACC_SUM, ACC_COUNT, ACC_MAX, ACC_MIN };
+enum loop_act_kind {
+    ACT_COLLECT,
+    ACT_APPEND,
+    ACT_NCONC,
+    ACT_SUM,
+    ACT_COUNT,
+    ACT_MAX,
+    ACT_MIN,
+    ACT_DO,
+    ACT_RETURN,
+    ACT_THEREIS,
+    ACT_ALWAYS
+};
+
+struct loop_for {
+    int kind;
+    lisp_value pattern;
+    lisp_value expr;
+    lisp_value then_expr;
+    lisp_value by;
+    lisp_value from_expr;
+    lisp_value bound;
+    int bound_kind;
+    lisp_value state;
+    lisp_value step_fn;
+    int64_t index;
+};
+
+struct loop_acc {
+    int kind;
+    lisp_value var;
+    lisp_value value;
+    lisp_value tail;
+    bool anonymous;
+    bool used;
+    int slot;
+};
+
+struct loop_act {
+    int kind;
+    lisp_value guard;
+    bool negate;
+    lisp_value expr;
+    lisp_value forms;
+    int acc;
+};
+
+struct loop_plan {
+    struct loop_for fors[16];
+    struct loop_acc accs[16];
+    struct loop_act acts[64];
+    lisp_value with_vars[32];
+    lisp_value with_inits[32];
+    lisp_value finally_forms[32];
+    int nf, na, nb, nw, nfin;
+    lisp_value while_expr;
+    lisp_value repeat_expr;
+    bool while_after_for;
+    bool always_used;
+};
+
+bool loop_parse(lisp_value clauses, struct loop_plan *plan, bool error_on_fail);
 void loop_analyse(struct lisp_actx *ctx, lisp_value clauses);
 lisp_value read_token_symbol(const char *name, size_t len, bool keyword, bool uninterned);
 
@@ -643,6 +730,7 @@ lisp_value bool_value(bool b);
 lisp_value list_from_array(int n, lisp_value *items);
 int list_length(lisp_value list);
 lisp_value list_reverse_copy(lisp_value list);
+lisp_value list_copy_shallow(lisp_value list);
 lisp_value list_append2(lisp_value a, lisp_value b);
 lisp_value list_nth(lisp_value list, int64_t n);
 lisp_value list_nthcdr(lisp_value list, int64_t n);

@@ -100,7 +100,7 @@ lisp_value builtin_append(int argc, lisp_value *argv)
 
 lisp_value builtin_copy_list(int argc, lisp_value *argv)
 {
-    return argc > 0 ? list_reverse_copy(list_reverse_copy(argv[0])) : NIL_VAL;
+    return argc > 0 ? list_copy_shallow(argv[0]) : NIL_VAL;
 }
 
 lisp_value builtin_reverse(int argc, lisp_value *argv)
@@ -162,14 +162,26 @@ lisp_value builtin_member(int argc, lisp_value *argv)
 {
     if (argc < 2)
         lisp_error("MEMBER needs an item and a list");
+    lisp_value item = argv[0];
+    lisp_value list = argv[1];
+    if (argc == 2) {
+        uint32_t it = 0;
+        while (consp(list)) {
+            if ((++it & 63u) == 0)
+                check_steps();
+            if (eql_value(item, CAR(list)))
+                return list;
+            list = CDR(list);
+        }
+        return NIL_VAL;
+    }
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
-    lisp_value list = argv[1];
     while (consp(list)) {
         check_steps();
         lisp_value value = CAR(list);
         lisp_value key = kw.has_key ? lisp_kw_key(&kw, value) : value;
-        if (lisp_kw_test(&kw, argv[0], key))
+        if (lisp_kw_test(&kw, item, key))
             return list;
         list = CDR(list);
     }
@@ -180,25 +192,35 @@ lisp_value builtin_assoc(int argc, lisp_value *argv)
 {
     if (argc < 2)
         lisp_error("ASSOC needs a key and an alist");
+    lisp_value target = argv[0];
+    lisp_value list = argv[1];
+    if (argc == 2) {
+        uint32_t it = 0;
+        while (consp(list)) {
+            if ((++it & 63u) == 0)
+                check_steps();
+            lisp_value pair = CAR(list);
+            lisp_value key = consp(pair) ? CAR(pair) : pair;
+            if (eql_value(target, key))
+                return pair;
+            list = CDR(list);
+        }
+        return NIL_VAL;
+    }
     struct kw kw;
     kw_parse(argc, argv, 2, &kw);
-    lisp_value list = argv[1];
     while (consp(list)) {
         check_steps();
         lisp_value pair = CAR(list);
         lisp_value key = consp(pair) ? CAR(pair) : pair;
-        if (kw.has_key) {
-            lisp_value args[1] = { key };
-            key = apply_function(kw.key, 1, args);
-        }
+        if (kw.has_key)
+            key = lisp_vm_call1(kw.key, key);
         bool hit;
         if (kw.has_test) {
-            if (!lisp_kw_direct_test(kw.test, argv[0], key, &hit)) {
-                lisp_value args[2] = { argv[0], key };
-                hit = truthy(apply_function(kw.test, 2, args));
-            }
+            if (!lisp_kw_direct_test(kw.test, target, key, &hit))
+                hit = truthy(lisp_vm_call2(kw.test, target, key));
         } else {
-            hit = eql_value(argv[0], key);
+            hit = eql_value(target, key);
         }
         if (hit)
             return pair;
@@ -230,7 +252,7 @@ static lisp_value quantifier(int argc, lisp_value *argv, int mode)
         }
         if (any_empty)
             break;
-        lisp_value result = apply_function(fn, lists_count, args);
+        lisp_value result = lists_count == 1 ? lisp_vm_call1(fn, args[0]) : (lists_count == 2 ? lisp_vm_call2(fn, args[0], args[1]) : apply_function(fn, lists_count, args));
         if (mode == 1 && truthy(result))
             return result;
         if (mode == 2 && nilp(result))
@@ -491,7 +513,7 @@ lisp_value builtin_copy_seq(int argc, lisp_value *argv)
     if (stringp(argv[0]))
         return argv[0];
     if (nilp(argv[0]) || consp(argv[0]))
-        return list_reverse_copy(list_reverse_copy(argv[0]));
+        return list_copy_shallow(argv[0]);
     lisp_error("COPY-SEQ needs a list or a string");
 }
 

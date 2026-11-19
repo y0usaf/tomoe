@@ -3,59 +3,6 @@
 
 #include "lisp-internal.h"
 
-enum loop_for_kind { LF_IN, LF_ON, LF_ACROSS, LF_FROM, LF_EQ };
-
-enum loop_bound_kind { LB_NONE, LB_TO, LB_BELOW, LB_DOWNTO };
-
-struct loop_for {
-    int kind;
-    lisp_value pattern;
-    lisp_value expr;
-    lisp_value then_expr;
-    lisp_value by;
-    lisp_value from_expr;
-    lisp_value bound;
-    int bound_kind;
-    lisp_value state;
-    lisp_value step_fn;
-    int64_t index;
-};
-
-enum loop_acc_kind { ACC_COLLECT, ACC_APPEND, ACC_NCONC, ACC_SUM, ACC_COUNT, ACC_MAX, ACC_MIN };
-
-struct loop_acc {
-    int kind;
-    lisp_value var;
-    lisp_value value;
-    lisp_value tail;
-    bool anonymous;
-    bool used;
-    int slot;
-};
-
-enum loop_act_kind {
-    ACT_COLLECT,
-    ACT_APPEND,
-    ACT_NCONC,
-    ACT_SUM,
-    ACT_COUNT,
-    ACT_MAX,
-    ACT_MIN,
-    ACT_DO,
-    ACT_RETURN,
-    ACT_THEREIS,
-    ACT_ALWAYS
-};
-
-struct loop_act {
-    int kind;
-    lisp_value guard;
-    bool negate;
-    lisp_value expr;
-    lisp_value forms;
-    int acc;
-};
-
 static bool name_is(lisp_value v, const char *name)
 {
     return symbolp(v) && strcmp(SYM(v)->name, name) == 0;
@@ -109,11 +56,11 @@ static lisp_value loop_num_op(int kind, lisp_value a, lisp_value b)
     }
 }
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wclobbered"
-lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *file)
+bool loop_parse(lisp_value clauses, struct loop_plan *plan, bool error_on_fail)
 {
-    (void)file;
+    memset(plan, 0, sizeof(*plan));
+    plan->while_expr = NIL_VAL;
+    plan->repeat_expr = NIL_VAL;
     lisp_value tokens[512];
     int n = 0;
     lisp_value p = clauses;
@@ -121,30 +68,28 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         tokens[n++] = CAR(p);
         p = CDR(p);
     }
-    struct loop_for fors[16];
-    struct loop_acc accs[16];
-    struct loop_act acts[64];
-    lisp_value with_vars[32];
-    lisp_value with_inits[32];
-    lisp_value finally_forms[32];
-    int nf = 0, na = 0, nb = 0, nw = 0, nfin = 0;
-    lisp_value while_expr = NIL_VAL;
-    lisp_value repeat_expr = NIL_VAL;
-    bool while_after_for = false;
-    bool always_used = false;
+    if (consp(p)) {
+        if (error_on_fail)
+            lisp_error("LOOP: too many clauses");
+        return false;
+    }
     int i = 0;
-
     while (i < n) {
         lisp_value token = tokens[i++];
         if (!symbolp(token)) {
             if (!consp(token)) {
+                if (!error_on_fail)
+                    return false;
                 char shown[160];
                 lisp_print(token, true, shown, sizeof(shown));
                 lisp_error("LOOP: unsupported clause %s", shown);
             }
-            if (nb >= 64)
-                lisp_error("LOOP: too many clauses");
-            struct loop_act *act = &acts[nb++];
+            if (plan->nb >= 64) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many clauses");
+                return false;
+            }
+            struct loop_act *act = &plan->acts[plan->nb++];
             memset(act, 0, sizeof(*act));
             act->guard = NIL_VAL;
             act->expr = NIL_VAL;
@@ -154,8 +99,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         }
         const char *name = SYM(token)->name;
         if (strcmp(name, "IF") == 0) {
-            if (i >= n)
-                lisp_error("LOOP: IF needs a test");
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: IF needs a test");
+                return false;
+            }
             lisp_value guard = tokens[i];
             tokens[i - 1] = VAL(symbol_intern(PKG_TOMOE, "WHEN", 4, false));
             int else_at = -1;
@@ -165,8 +113,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     break;
                 }
             if (else_at >= 0) {
-                if (n + 1 > 512)
-                    lisp_error("LOOP: too many clauses");
+                if (n + 1 > 512) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: too many clauses");
+                    return false;
+                }
                 for (int j = n - 1; j > else_at; j--)
                     tokens[j + 1] = tokens[j];
                 n += 1;
@@ -177,11 +128,17 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             continue;
         }
         if (strcmp(name, "FOR") == 0 || strcmp(name, "AS") == 0) {
-            if (nf >= 16)
-                lisp_error("LOOP: too many FOR clauses");
-            if (i >= n)
-                lisp_error("LOOP: FOR needs a variable");
-            struct loop_for *clause = &fors[nf];
+            if (plan->nf >= 16) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many FOR clauses");
+                return false;
+            }
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: FOR needs a variable");
+                return false;
+            }
+            struct loop_for *clause = &plan->fors[plan->nf];
             memset(clause, 0, sizeof(*clause));
             clause->pattern = tokens[i++];
             clause->state = NIL_VAL;
@@ -207,6 +164,8 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                                name_is(tokens[i], "DOWNTO")))
                 kind = LF_FROM;
             else {
+                if (!error_on_fail)
+                    return false;
                 char shown[600];
                 size_t used = 0;
                 shown[0] = '\0';
@@ -217,93 +176,137 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             clause->kind = kind;
             if (kind == LF_IN || kind == LF_ON || kind == LF_ACROSS) {
                 i++;
-                if (i >= n)
-                    lisp_error("LOOP: missing list");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing list");
+                    return false;
+                }
                 clause->expr = tokens[i++];
             } else if (kind == LF_EQ) {
                 i++;
-                if (i >= n)
-                    lisp_error("LOOP: missing initial value");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing initial value");
+                    return false;
+                }
                 clause->expr = tokens[i++];
                 if (i < n && name_is(tokens[i], "THEN")) {
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing THEN value");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing THEN value");
+                        return false;
+                    }
                     clause->then_expr = tokens[i++];
                 }
             } else {
                 clause->from_expr = make_int(0);
                 if (name_is(tokens[i], "FROM")) {
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing start");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing start");
+                        return false;
+                    }
                     clause->from_expr = tokens[i++];
                 }
                 if (i < n && name_is(tokens[i], "TO")) {
                     clause->bound_kind = LB_TO;
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing bound");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing bound");
+                        return false;
+                    }
                     clause->bound = tokens[i++];
                 } else if (i < n && name_is(tokens[i], "BELOW")) {
                     clause->bound_kind = LB_BELOW;
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing bound");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing bound");
+                        return false;
+                    }
                     clause->bound = tokens[i++];
                 } else if (i < n && name_is(tokens[i], "DOWNTO")) {
                     clause->bound_kind = LB_DOWNTO;
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing bound");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing bound");
+                        return false;
+                    }
                     clause->bound = tokens[i++];
                 }
             }
             if (i < n && name_is(tokens[i], "BY")) {
                 i++;
-                if (i >= n)
-                    lisp_error("LOOP: missing BY value");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing BY value");
+                    return false;
+                }
                 clause->by = tokens[i++];
             }
-            nf++;
+            plan->nf++;
             continue;
         }
         if (strcmp(name, "WITH") == 0) {
-            if (nw >= 32)
-                lisp_error("LOOP: too many WITH clauses");
-            if (i >= n)
-                lisp_error("LOOP: WITH needs a variable");
-            with_vars[nw] = tokens[i++];
-            with_inits[nw] = NIL_VAL;
+            if (plan->nw >= 32) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many WITH clauses");
+                return false;
+            }
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: WITH needs a variable");
+                return false;
+            }
+            plan->with_vars[plan->nw] = tokens[i++];
+            plan->with_inits[plan->nw] = NIL_VAL;
             if (i < n && name_is(tokens[i], "=")) {
                 i++;
-                if (i >= n)
-                    lisp_error("LOOP: missing WITH value");
-                with_inits[nw] = tokens[i++];
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing WITH value");
+                    return false;
+                }
+                plan->with_inits[plan->nw] = tokens[i++];
             }
-            nw++;
+            plan->nw++;
             continue;
         }
         if (strcmp(name, "REPEAT") == 0) {
-            if (i >= n)
-                lisp_error("LOOP: REPEAT needs a count");
-            repeat_expr = tokens[i++];
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: REPEAT needs a count");
+                return false;
+            }
+            plan->repeat_expr = tokens[i++];
             continue;
         }
         if (strcmp(name, "WHILE") == 0) {
-            if (i >= n)
-                lisp_error("LOOP: WHILE needs a test");
-            if (nf > 0)
-                while_after_for = true;
-            while_expr = tokens[i++];
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: WHILE needs a test");
+                return false;
+            }
+            if (plan->nf > 0)
+                plan->while_after_for = true;
+            plan->while_expr = tokens[i++];
             continue;
         }
         if (strcmp(name, "WHEN") == 0 || strcmp(name, "UNLESS") == 0) {
             bool negate = strcmp(name, "UNLESS") == 0;
-            if (i >= n)
-                lisp_error("LOOP: WHEN needs a test");
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: WHEN needs a test");
+                return false;
+            }
             lisp_value guard = tokens[i++];
             if (i >= n) {
+                if (!error_on_fail)
+                    return false;
                 char shown[600];
                 size_t used = 0;
                 shown[0] = '\0';
@@ -313,6 +316,8 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             }
             lisp_value sub = tokens[i++];
             if (!symbolp(sub)) {
+                if (!error_on_fail)
+                    return false;
                 char shown[600];
                 size_t used = 0;
                 shown[0] = '\0';
@@ -321,21 +326,26 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 lisp_error("LOOP: WHEN needs a clause, saw %s in %s", "value", shown);
             }
             const char *subname = SYM(sub)->name;
-            if (nb >= 64)
-                lisp_error("LOOP: too many clauses");
-            struct loop_act *act = &acts[nb++];
+            if (plan->nb >= 64) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many clauses");
+                return false;
+            }
+            struct loop_act *act = &plan->acts[plan->nb++];
             memset(act, 0, sizeof(*act));
-            act->guard = NIL_VAL;
-            act->expr = NIL_VAL;
-            act->forms = NIL_VAL;
             act->guard = guard;
             act->negate = negate;
+            act->expr = NIL_VAL;
+            act->forms = NIL_VAL;
             if (strcmp(subname, "COLLECT") == 0 || strcmp(subname, "APPEND") == 0 ||
                 strcmp(subname, "NCONC") == 0 || strcmp(subname, "SUM") == 0 ||
                 strcmp(subname, "COUNT") == 0 || strcmp(subname, "MAXIMIZE") == 0 ||
                 strcmp(subname, "MINIMIZE") == 0) {
-                if (i >= n)
-                    lisp_error("LOOP: missing expression");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing expression");
+                    return false;
+                }
                 act->expr = tokens[i++];
                 int kind = ACC_COLLECT;
                 int actkind = ACT_COLLECT;
@@ -362,28 +372,37 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 lisp_value var = NIL_VAL;
                 if (i < n && name_is(tokens[i], "INTO")) {
                     i++;
-                    if (i >= n)
-                        lisp_error("LOOP: missing INTO variable");
+                    if (i >= n) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: missing INTO variable");
+                        return false;
+                    }
                     var = tokens[i++];
                 }
-                int found = var ? find_acc(accs, na, var) : -1;
+                int found = var ? find_acc(plan->accs, plan->na, var) : -1;
                 if (found < 0) {
-                    if (na >= 16)
-                        lisp_error("LOOP: too many accumulators");
-                    found = na++;
-                    accs[found].kind = kind;
-                    accs[found].var = var;
-                    accs[found].value = NIL_VAL;
-                    accs[found].tail = NIL_VAL;
-                    accs[found].anonymous = nilp(var);
-                    accs[found].used = false;
-                    accs[found].slot = -1;
+                    if (plan->na >= 16) {
+                        if (error_on_fail)
+                            lisp_error("LOOP: too many accumulators");
+                        return false;
+                    }
+                    found = plan->na++;
+                    plan->accs[found].kind = kind;
+                    plan->accs[found].var = var;
+                    plan->accs[found].value = NIL_VAL;
+                    plan->accs[found].tail = NIL_VAL;
+                    plan->accs[found].anonymous = nilp(var);
+                    plan->accs[found].used = false;
+                    plan->accs[found].slot = -1;
                 }
                 act->acc = found;
             } else if (strcmp(subname, "DO") == 0 || strcmp(subname, "RETURN") == 0 ||
                        strcmp(subname, "THEREIS") == 0) {
-                if (i >= n)
-                    lisp_error("LOOP: missing form");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing form");
+                    return false;
+                }
                 lisp_value first = tokens[i++];
                 if (strcmp(subname, "DO") == 0) {
                     act->kind = ACT_DO;
@@ -399,7 +418,9 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     act->expr = first;
                 }
             } else {
-                lisp_error("LOOP: unsupported clause %s after WHEN", subname);
+                if (error_on_fail)
+                    lisp_error("LOOP: unsupported clause %s after WHEN", subname);
+                return false;
             }
             continue;
         }
@@ -407,11 +428,17 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             strcmp(name, "NCONC") == 0 || strcmp(name, "SUM") == 0 ||
             strcmp(name, "COUNT") == 0 || strcmp(name, "MAXIMIZE") == 0 ||
             strcmp(name, "MINIMIZE") == 0) {
-            if (nb >= 64)
-                lisp_error("LOOP: too many clauses");
-            if (i >= n)
-                lisp_error("LOOP: missing expression");
-            struct loop_act *act = &acts[nb++];
+            if (plan->nb >= 64) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many clauses");
+                return false;
+            }
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: missing expression");
+                return false;
+            }
+            struct loop_act *act = &plan->acts[plan->nb++];
             memset(act, 0, sizeof(*act));
             act->guard = NIL_VAL;
             act->expr = NIL_VAL;
@@ -442,32 +469,44 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
             lisp_value var = NIL_VAL;
             if (i < n && name_is(tokens[i], "INTO")) {
                 i++;
-                if (i >= n)
-                    lisp_error("LOOP: missing INTO variable");
+                if (i >= n) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: missing INTO variable");
+                    return false;
+                }
                 var = tokens[i++];
             }
-            int found = var ? find_acc(accs, na, var) : -1;
+            int found = var ? find_acc(plan->accs, plan->na, var) : -1;
             if (found < 0) {
-                if (na >= 16)
-                    lisp_error("LOOP: too many accumulators");
-                found = na++;
-                accs[found].kind = kind;
-                accs[found].var = var;
-                accs[found].value = NIL_VAL;
-                accs[found].tail = NIL_VAL;
-                accs[found].anonymous = nilp(var);
-                accs[found].used = false;
-                accs[found].slot = -1;
+                if (plan->na >= 16) {
+                    if (error_on_fail)
+                        lisp_error("LOOP: too many accumulators");
+                    return false;
+                }
+                found = plan->na++;
+                plan->accs[found].kind = kind;
+                plan->accs[found].var = var;
+                plan->accs[found].value = NIL_VAL;
+                plan->accs[found].tail = NIL_VAL;
+                plan->accs[found].anonymous = nilp(var);
+                plan->accs[found].used = false;
+                plan->accs[found].slot = -1;
             }
             act->acc = found;
             continue;
         }
         if (strcmp(name, "DO") == 0) {
-            if (i >= n)
-                lisp_error("LOOP: DO needs a form");
-            if (nb >= 64)
-                lisp_error("LOOP: too many clauses");
-            struct loop_act *act = &acts[nb++];
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: DO needs a form");
+                return false;
+            }
+            if (plan->nb >= 64) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many clauses");
+                return false;
+            }
+            struct loop_act *act = &plan->acts[plan->nb++];
             memset(act, 0, sizeof(*act));
             act->guard = NIL_VAL;
             act->expr = NIL_VAL;
@@ -484,11 +523,17 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
         }
         if (strcmp(name, "RETURN") == 0 || strcmp(name, "THEREIS") == 0 ||
             strcmp(name, "ALWAYS") == 0) {
-            if (i >= n)
-                lisp_error("LOOP: missing expression");
-            if (nb >= 64)
-                lisp_error("LOOP: too many clauses");
-            struct loop_act *act = &acts[nb++];
+            if (i >= n) {
+                if (error_on_fail)
+                    lisp_error("LOOP: missing expression");
+                return false;
+            }
+            if (plan->nb >= 64) {
+                if (error_on_fail)
+                    lisp_error("LOOP: too many clauses");
+                return false;
+            }
+            struct loop_act *act = &plan->acts[plan->nb++];
             memset(act, 0, sizeof(*act));
             act->guard = NIL_VAL;
             act->expr = NIL_VAL;
@@ -503,39 +548,55 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 lisp_value form = tokens[i++];
                 if (name_is(form, "END"))
                     continue;
-                if (nfin < 32)
-                    finally_forms[nfin++] = form;
+                if (plan->nfin < 32)
+                    plan->finally_forms[plan->nfin++] = form;
             }
             break;
         }
         if (strcmp(name, "END") == 0)
             continue;
-        {
-            char shown[600];
-            size_t used = 0;
-            shown[0] = '\0';
-            for (int j = i - 1; j < n && used < sizeof(shown) - 1; j++)
-                used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
-            lisp_error("LOOP: unsupported clause %s in %s", name, shown);
-        }
+        if (!error_on_fail)
+            return false;
+        char shown[600];
+        size_t used = 0;
+        shown[0] = '\0';
+        for (int j = i - 1; j < n && used < sizeof(shown) - 1; j++)
+            used += (size_t)lisp_print(tokens[j], true, shown + used, sizeof(shown) - used);
+        lisp_error("LOOP: unsupported clause %s in %s", name, shown);
     }
+    for (int k = 0; k < plan->nb; k++)
+        if (plan->acts[k].kind == ACT_ALWAYS)
+            plan->always_used = true;
+    return true;
+}
 
-    for (int k = 0; k < nb; k++)
-        if (acts[k].kind == ACT_ALWAYS)
-            always_used = true;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
+lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *file)
+{
+    (void)file;
+    struct loop_plan plan;
+    loop_parse(clauses, &plan, true);
+    struct loop_for *fors = plan.fors;
+    struct loop_acc *accs = plan.accs;
+    struct loop_act *acts = plan.acts;
+    int nf = plan.nf, na = plan.na, nb = plan.nb, nw = plan.nw, nfin = plan.nfin;
+    lisp_value while_expr = plan.while_expr;
+    lisp_value repeat_expr = plan.repeat_expr;
+    bool while_after_for = plan.while_after_for;
+    bool always_used = plan.always_used;
+
     uint32_t frame_slots = (uint32_t)(nw + na);
     struct lisp_frame *frame = frame_new(env, frame_slots + 1);
     uint32_t slot = 0;
     for (int k = 0; k < nw; k++) {
-        lisp_value value = nilp(with_inits[k]) ? NIL_VAL : eval(with_inits[k], frame);
-        frame_bind(frame, slot++, with_vars[k], value, BIND_VAR);
+        lisp_value value = nilp(plan.with_inits[k]) ? NIL_VAL : eval(plan.with_inits[k], frame);
+        frame_bind(frame, slot++, plan.with_vars[k], value, BIND_VAR);
     }
     for (int k = 0; k < na; k++) {
         accs[k].slot = (int)slot;
         frame_bind(frame, slot++, accs[k].var, NIL_VAL, BIND_VAR);
     }
-    if (na > 16)
-        lisp_error("LOOP: too many accumulators");
 
     for (int k = 0; k < nf; k++) {
         struct loop_for *clause = &fors[k];
@@ -631,11 +692,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                 else
                     value = consp(clause->state) ? CAR(clause->state) : NIL_VAL;
             }
-            uint32_t slots = pattern_slot_count(clause->pattern);
+            uint32_t pslots = pattern_slot_count(clause->pattern);
             if (clause->kind == LF_EQ) {
                 struct lisp_frame *then_env = iter;
                 if (!first_iteration && !nilp(clause->then_expr)) {
-                    struct lisp_frame *previous = frame_new(iter, slots + 1);
+                    struct lisp_frame *previous = frame_new(iter, pslots + 1);
                     destructure_bind(previous, clause->pattern, clause->state);
                     then_env = previous;
                 }
@@ -647,16 +708,16 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     value = lisp_eval_cached(clause->expr, then_env);
                 clause->state = value;
             }
-            struct lisp_frame *binding = frame_new(iter, slots + 1);
-            destructure_bind(binding, clause->pattern, value);
-            iter = binding;
+            struct lisp_frame *next = frame_new(iter, pslots + 1);
+            destructure_bind(next, clause->pattern, value);
+            iter = next;
         }
+        last_env = iter;
         if (!nilp(while_expr) && while_after_for) {
             lisp_value test = lisp_eval_cached(while_expr, iter);
             if (nilp(test))
                 break;
         }
-        last_env = iter;
         for (int k = 0; k < nb; k++) {
             struct loop_act *act = &acts[k];
             if (!nilp(act->guard)) {
@@ -665,10 +726,11 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
                     continue;
             }
             switch (act->kind) {
-            case ACT_DO:
+            case ACT_DO: {
                 for (lisp_value form = act->forms; consp(form); form = CDR(form))
                     lisp_eval_cached(CAR(form), iter);
                 break;
+            }
             case ACT_RETURN:
                 returned = lisp_eval_cached(act->expr, iter);
                 returning = true;
@@ -776,12 +838,12 @@ lisp_value loop_eval(lisp_value clauses, struct lisp_frame *env, const char *fil
     } else if (always_used) {
         result = T_VAL;
         for (int k = 0; k < nfin; k++)
-            eval(finally_forms[k], last_env);
+            eval(plan.finally_forms[k], last_env);
     } else {
         if (anonymous_count == 1)
             result = acc_value(&accs[anonymous]);
         for (int k = 0; k < nfin; k++)
-            eval(finally_forms[k], last_env);
+            eval(plan.finally_forms[k], last_env);
     }
     lisp.ctl_top = ctl;
     mv_return1(result);

@@ -199,6 +199,7 @@ void package_drop(uint32_t package)
 
 void symbol_defun(struct lisp_symbol *sym, lisp_value fn)
 {
+    lisp_mark_builtin_redefined(sym);
     sym->function = fn;
     if (sym->package == PKG_TOMOE && !name_hidden(sym->name, sym->name_len))
         sym->h.flags |= SYM_VISIBLE;

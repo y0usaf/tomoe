@@ -176,34 +176,47 @@ bool eql_value(lisp_value a, lisp_value b)
 
 static bool equal_inner(lisp_value a, lisp_value b, int depth)
 {
-    if (a == b)
-        return true;
-    if (depth > 1000)
-        return false;
-    check_steps();
-    uint8_t ta = TYPE(a), tb = TYPE(b);
-    if (ta != tb) {
-        if (numberp(a) && numberp(b))
+    uint32_t steps = 0;
+    for (;;) {
+        if (a == b)
+            return true;
+        if (depth > 1000)
             return false;
-        return false;
-    }
-    switch (ta) {
-    case LT_CONS:
-        return equal_inner(CAR(a), CAR(b), depth + 1) && equal_inner(CDR(a), CDR(b), depth + 1);
-    case LT_STRING: {
-        struct lisp_string *x = PTR(a, lisp_string), *y = PTR(b, lisp_string);
-        if (x->byte_len != y->byte_len)
+        if ((steps++ & 15u) == 0)
+            check_steps();
+        uint8_t ta = TYPE(a), tb = TYPE(b);
+        if (ta != tb)
             return false;
-        return memcmp(x->data, y->data, x->byte_len) == 0;
-    }
-    case LT_SYMBOL:
-        return false;
-    case LT_HASHTABLE:
-        return equal_inner(PTR(a, lisp_hashtable)->entries, PTR(b, lisp_hashtable)->entries, depth + 1);
-    case LT_CONDITION:
-        return equal_inner(PTR(a, lisp_condition)->message, PTR(b, lisp_condition)->message, depth + 1);
-    default:
-        return eql_value(a, b);
+        switch (ta) {
+        case LT_CONS: {
+            lisp_value ca = CAR(a), cb = CAR(b);
+            if (ca != cb && !equal_inner(ca, cb, depth + 1))
+                return false;
+            a = CDR(a);
+            b = CDR(b);
+            continue;
+        }
+        case LT_STRING: {
+            struct lisp_string *x = PTR(a, lisp_string), *y = PTR(b, lisp_string);
+            if (x->byte_len != y->byte_len)
+                return false;
+            return memcmp(x->data, y->data, x->byte_len) == 0;
+        }
+        case LT_SYMBOL:
+            return false;
+        case LT_HASHTABLE:
+            a = PTR(a, lisp_hashtable)->entries;
+            b = PTR(b, lisp_hashtable)->entries;
+            depth++;
+            continue;
+        case LT_CONDITION:
+            a = PTR(a, lisp_condition)->message;
+            b = PTR(b, lisp_condition)->message;
+            depth++;
+            continue;
+        default:
+            return eql_value(a, b);
+        }
     }
 }
 
@@ -297,6 +310,26 @@ lisp_value list_reverse_copy(lisp_value list)
     return out;
 }
 
+lisp_value list_copy_shallow(lisp_value list)
+{
+    if (!consp(list))
+        return list;
+    lisp_value head = cons(CAR(list), NIL_VAL);
+    lisp_value tail = head;
+    list = CDR(list);
+    uint32_t steps = 0;
+    while (consp(list)) {
+        if ((++steps & 15u) == 0)
+            check_steps();
+        lisp_value cell = cons(CAR(list), NIL_VAL);
+        CDR(tail) = cell;
+        tail = cell;
+        list = CDR(list);
+    }
+    CDR(tail) = list;
+    return head;
+}
+
 lisp_value list_append2(lisp_value a, lisp_value b)
 {
     if (nilp(a))
@@ -318,12 +351,14 @@ lisp_value list_append2(lisp_value a, lisp_value b)
 
 lisp_value list_nth(lisp_value list, int64_t n)
 {
-    while (n > 0) {
+    int64_t left = n;
+    while (left > 0) {
         if (!consp(list))
             return NIL_VAL;
-        check_steps();
+        if ((left & 15) == 0)
+            check_steps();
         list = CDR(list);
-        n--;
+        left--;
     }
     if (!consp(list))
         return NIL_VAL;

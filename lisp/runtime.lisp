@@ -806,49 +806,76 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
              :stacking (mapcar (lambda (window) (getf window :id)) (runtime-windows))
              :layers (copy-data (runtime-layers))
              :keyboard (default-keyboard-config)
-             :settings (copy-data +settings-defaults+)
+             :settings nil
              :view (list :x 0 :y 0 :zoom 1d0))))
-    (let ((declarations (loop for mounted in mounts
-                              for effects = (mounted-effects mounted)
-                              collect (list (spec-name (mounted-spec mounted))
-                                            (spec-id (mounted-spec mounted))
-                                            (%effects-of-kind effects :bind)
-                                            (%effects-of-kind effects :command))))
-          (cache (runtime-declarations-cache))
-          (reuse nil)
-          (later nil)
-          (bind (%effect-definition :bind))
-          (command (%effect-definition :command)))
-      (dolist (mounted mounts)
-        (dolist (effect (mounted-effects mounted))
-          (let* ((kind (effect-kind effect))
-                 (definition (case kind
-                               (:bind bind)
-                               (:command command)
-                               (t (%effect-definition kind))))
-                 (reduce (fourth definition)))
-            (when reduce
-              (case (fifth definition)
-                (0 (funcall reduce m (effect-arguments effect) mounted))
-                (1 (push (list reduce effect mounted) later)))))))
-      (setf (getf m :mod-bit)
-            (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64)))
-      (when (and cache (eql (first cache) (getf m :mod-bit))
-                 (equal (second cache) declarations))
-        (setf reuse t
-              (getf m :bindings) (copy-list (third cache))
-              (getf m :commands) (copy-list (fourth cache))
-              (getf m :binding-order) (fifth cache)))
-      (dolist (entry (nreverse later))
-        (destructuring-bind (reduce effect mounted) entry
-          (let ((kind (effect-kind effect)))
-            (unless (and reuse (or (eq kind :bind) (eq kind :command)))
-              (funcall reduce m (effect-arguments effect) mounted)))))
-      (unless reuse
-        (%r! :declarations-cache
-             (list (getf m :mod-bit) declarations
-                   (copy-list (materialization-bindings m)) (copy-list (materialization-commands m))
-                   (materialization-binding-order m)))))
+    (let ((settings-effects (loop for mounted in mounts
+                                  append (%effects-of-kind (mounted-effects mounted) :settings)))
+          (scache (%r :settings-cache))
+          (reuse-settings nil)
+          (sorted-commands nil)
+          (sorted-bindings nil))
+      (if (and scache (equal (car scache) settings-effects))
+          (setf (getf m :settings) (cdr scache)
+                reuse-settings t)
+          (setf (getf m :settings) (copy-data +settings-defaults+)))
+      (let ((declarations (loop for mounted in mounts
+                                for effects = (mounted-effects mounted)
+                                collect (list (spec-name (mounted-spec mounted))
+                                              (spec-id (mounted-spec mounted))
+                                              (%effects-of-kind effects :bind)
+                                              (%effects-of-kind effects :command))))
+            (cache (runtime-declarations-cache))
+            (reuse nil)
+            (later nil)
+            (bind (%effect-definition :bind))
+            (command (%effect-definition :command)))
+        (dolist (mounted mounts)
+          (dolist (effect (mounted-effects mounted))
+            (let ((kind (effect-kind effect)))
+              (unless (and reuse-settings (eq kind :settings))
+                (let* ((definition (case kind
+                                     (:bind bind)
+                                     (:command command)
+                                     (t (%effect-definition kind))))
+                       (reduce (fourth definition)))
+                  (when reduce
+                    (case (fifth definition)
+                      (0 (funcall reduce m (effect-arguments effect) mounted))
+                      (1 (push (list reduce effect mounted) later)))))))))
+        (unless reuse-settings
+          (%r! :settings-cache (cons settings-effects (materialization-settings m))))
+        (setf (getf m :mod-bit)
+              (ecase (getf (materialization-settings m) :mod) (:shift 1) (:control 4) (:alt 8) (:super 64)))
+        (when (and cache (eql (first cache) (getf m :mod-bit))
+                   (equal (second cache) declarations))
+          (setf reuse t
+                sorted-bindings (third cache)
+                sorted-commands (fourth cache)
+                (getf m :binding-order) (fifth cache)))
+        (dolist (entry (nreverse later))
+          (destructuring-bind (reduce effect mounted) entry
+            (let ((kind (effect-kind effect)))
+              (unless (and reuse (or (eq kind :bind) (eq kind :command)))
+                (funcall reduce m (effect-arguments effect) mounted)))))
+        (unless reuse
+          (setf sorted-commands
+                (sorted-entries
+                 :commands (append (host-command-entries)
+                                   (copy-list (materialization-commands m)))
+                 (lambda (list)
+                   (sort list #'string< :key (lambda (entry) (getf entry :name)))))
+                sorted-bindings
+                (sorted-entries
+                 :bindings (materialization-bindings m)
+                 (lambda (list)
+                   (sort list
+                         (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
+                                           (and (= (getf a :modifiers) (getf b :modifiers))
+                                                (< (getf a :code) (getf b :code)))))))))
+          (%r! :declarations-cache
+               (list (getf m :mod-bit) declarations
+                     sorted-bindings sorted-commands
+                     (materialization-binding-order m)))))
     (let* ((layout (materialization-layout m))
            (stacking (materialization-stacking m))
            (layers (materialization-layers m))
@@ -885,25 +912,44 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                   (values resolved areas)))
           (unless (find focused layout :key (lambda (w) (getf w :id)))
             (setf focused nil))
+          (let* ((ordered-surfaces (nreverse surfaces))
+                 (viewport (shell-viewport output-facts (materialization-data m)))
+                 (sc (%r :surfaces-cache)))
           (multiple-value-bind (surface-plans shell-workareas)
-              (resolve-owned-surfaces
-               mounts (nreverse surfaces) output-facts workareas
-               (shell-viewport output-facts (materialization-data m)))
+              (if (and sc (null (%r :refused-surfaces))
+                       (equal (first sc) ordered-surfaces)
+                       (equal (second sc) output-facts)
+                       (equal (third sc) workareas)
+                       (equal (fourth sc) viewport))
+                  (values (fifth sc) (sixth sc))
+                  (multiple-value-bind (plans areas)
+                      (resolve-owned-surfaces mounts ordered-surfaces output-facts workareas viewport)
+                    (when (and (null (%r :refused-surfaces)) (or (eq *surface-failures* :outside) (null *surface-failures*)))
+                      (%r! :surfaces-cache (list ordered-surfaces output-facts workareas viewport plans areas)))
+                    (values plans areas)))
             (list :windows (runtime-windows)
                   :window-geometry (resolved-window-geometry layout view output-facts)
                   :rules (resolved-rule-properties mounts) :data data
-                  :services (copy-data (runtime-services))
-                  :system (copy-data (runtime-system))
+                  :services (runtime-services)
+                  :system (runtime-system)
                   :outputs output-facts :connectors connector-facts
                   :output-config output-config :native-output-config native-output-config
                   :output-failures output-failures
                   :output-errors (loop for failure in output-failures collect
                                    (list :name (getf failure :name) :message (getf failure :message)))
                   :workareas shell-workareas
-                  :surface-plans (mapcar #'copy-data surface-plans)
+                  :surface-plans surface-plans
                   :surfaces (loop for plan in surface-plans
-                                  collect (loop for key in '(:owner :source-id :name :output :x :y :width :height :layer :click-through)
-                                                append (list key (copy-data (getf plan key)))))
+                                  collect (list :owner (getf plan :owner)
+                                                :source-id (getf plan :source-id)
+                                                :name (getf plan :name)
+                                                :output (getf plan :output)
+                                                :x (getf plan :x)
+                                                :y (getf plan :y)
+                                                :width (getf plan :width)
+                                                :height (getf plan :height)
+                                                :layer (getf plan :layer)
+                                                :click-through (getf plan :click-through)))
                   :view view :layout layout
                   :stacking (remove-if-not
                              (lambda (id) (getf (find id layout :key (lambda (window) (getf window :id))) :visible))
@@ -914,20 +960,10 @@ The single grab is not context data; RESOLVED-GRAB derives it from the mounts."
                                         :key (lambda (entry) (getf entry :order)))
                   :virtual-outputs (sort (copy-list (materialization-virtual-outputs m)) #'string<
                                          :key (lambda (o) (getf o :name)))
-                  :config-error (copy-data (runtime-config-error))
+                  :config-error (runtime-config-error)
                   :keyboard-grab keyboard-grab
-                  :commands (sorted-entries
-                             :commands (append (host-command-entries)
-                                               (copy-list (materialization-commands m)))
-                             (lambda (list)
-                               (sort list #'string< :key (lambda (entry) (getf entry :name)))))
-                  :bindings (sorted-entries
-                             :bindings bindings
-                             (lambda (list)
-                               (sort list
-                                     (lambda (a b) (or (< (getf a :modifiers) (getf b :modifiers))
-                                                       (and (= (getf a :modifiers) (getf b :modifiers))
-                                                            (< (getf a :code) (getf b :code)))))))))))))))
+                  :commands sorted-commands
+                  :bindings sorted-bindings)))))))))
 
 (defun sorted-entries (key list sorter)
   "LIST as SORTER orders it. A materialization sorts the same commands and bindings
@@ -1068,6 +1104,11 @@ output when its own output wakes it again, and the dependencies can settle."
     (unwind-protect (%with-held-clock (lambda () (%transact mounts event changed force)))
       (%ui-assets-discard))))
 
+(defun %any-member-p (keys reads)
+  (dolist (k keys)
+    (when (member k reads)
+      (return t))))
+
 (defun %transact (mounts event changed &optional force)
   "Stage reducers and dependency propagation before touching the native scene.
 A reducer or rule predicate that fails keeps its last answer, is not run again in
@@ -1157,7 +1198,7 @@ dependency cycle discards the entire candidate transaction."
           (dolist (mounted (root-mounts candidate))
             (when (and (not (spec-admission (mounted-spec mounted)))
                        (or (member (spec-name (mounted-spec mounted)) force :test #'equal)
-                           (intersection dirty (mount-context-reads mounted))))
+                           (%any-member-p dirty (mount-context-reads mounted))))
               (invoke mounted
                       (if (and (member (getf event :type) '(:timer :watch :exec :ipc :ui))
                                (not (member (spec-name (mounted-spec mounted)) force :test #'equal)))
@@ -1175,7 +1216,7 @@ dependency cycle discards the entire candidate transaction."
                   (when (or (mounted-rule-pending mounted)
                             (member name (append force new revised) :test #'equal)
                             (member (mounted-rule-parent mounted) invoked)
-                            (intersection child-dirty (mount-context-reads mounted)))
+                            (%any-member-p child-dirty (mount-context-reads mounted)))
                     (let* ((spec (mounted-spec mounted))
                            (entry (assoc spec deferred-deliveries :test #'eq))
                            (delivery
@@ -1204,8 +1245,8 @@ dependency cycle discards the entire candidate transaction."
             (let ((spec (mounted-spec mounted)))
               (when (and (spec-admission spec)
                          (or (and (zerop round) (member (spec-name spec) initial-force :test #'equal))
-                             (intersection (union dirty (changed-keys before context))
-                                           (mount-context-reads mounted))))
+                             (or (%any-member-p dirty (mount-context-reads mounted))
+                                 (%any-member-p (changed-keys before context) (mount-context-reads mounted)))))
                 (invoke mounted
                         (if (and (member (getf initial-event :type) '(:timer :watch :exec :ipc :ui))
                                  (not (member (spec-name spec) initial-force :test #'equal)))
