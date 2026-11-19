@@ -11,7 +11,7 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = pango pangoft2 fontconfig freetype2 libinput glesv2 egl gbm libudev
+LIBS = pango pangoft2 fontconfig freetype2 libinput glesv2 egl gbm
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system
@@ -68,7 +68,7 @@ NAMES = $(basename $(notdir $(PROTOCOLS)))
 HEADERS = build/wayland-server-protocol.h build/wayland-client-protocol.h $(NAMES:%=build/%-protocol.h) $(NAMES:%=build/%-client-protocol.h)
 LISP_SOURCES = prelude api ui cursor dialogs rules ipc plan runtime livepatch desktop default-config
 LISP_EMBED = $(wildcard lisp/*.lisp)
-LIBRARIES = png lisp wayland xkb pipewire
+LIBRARIES = png lisp wayland xkb pipewire udev
 LIB_SOURCES = $(foreach l,$(LIBRARIES),$(wildcard lib/$(l)/*.c))
 LIB_HEADERS = $(wildcard lib/*/*.h lib/*/include/*.h lib/wayland/scanner/*.h)
 LIB_INCLUDE = $(LIBRARIES:%=-Ilib/%/include) -Ilib/wayland/scanner

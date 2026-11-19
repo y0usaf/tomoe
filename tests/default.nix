@@ -1182,6 +1182,84 @@ let
       cat real.trace > $out/share/tomoe/xkb-equivalence
     '';
   };
+  udevTrace = pkgs.stdenv.mkDerivation {
+    name = "tomoe-udev-trace";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        ../lib/udev
+        ./udev-trace.c
+        ./udev-uinput.c
+        ./udev-datagram.c
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.udev ];
+    dontConfigure = true;
+    buildPhase = ''
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+        tests/udev-trace.c $(pkg-config --cflags --libs libudev) \
+        -Wl,-rpath,${pkgs.udev}/lib -o udev-trace-real
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -DNATIVE \
+        -Ilib/udev/include tests/udev-trace.c lib/udev/*.c -o udev-trace-module
+      $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+        tests/udev-uinput.c -o udev-uinput
+      $CC -std=c11 -D_GNU_SOURCE -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+        -fno-sanitize-recover=all -Ilib/udev/include tests/udev-datagram.c \
+        $(ls lib/udev/*.c | grep -v udev_monitor.c) -o udev-datagram
+      ./udev-datagram
+    '';
+    installPhase = ''
+      install -Dm755 udev-trace-real $out/bin/udev-trace-real
+      install -Dm755 udev-trace-module $out/bin/udev-trace-module
+      install -Dm755 udev-uinput $out/bin/udev-uinput
+    '';
+  };
+  udevEquivalence = pkgs.testers.runNixOSTest {
+    name = "tomoe-udev-equivalence";
+    globalTimeout = 900;
+    nodes.machine = {
+      boot.kernelModules = [ "uinput" ];
+      hardware.uinput.enable = true;
+      environment.systemPackages = [ udevTrace ];
+    };
+    testScript = ''
+      machine.wait_for_unit("multi-user.target")
+      machine.succeed("udevadm settle")
+
+      machine.succeed("UDEV_UINPUT_HOLD=/tmp/remove-dump setsid udev-uinput "
+                      "keyboard mouse touchpad touchscreen joystick tablet "
+                      "> /tmp/uinput-dump.log 2>&1 &")
+      machine.wait_until_succeeds("grep -q ready /tmp/uinput-dump.log")
+      machine.succeed("udevadm settle")
+      machine.succeed("udev-trace-real dump > /tmp/real.trace 2>/tmp/real.err")
+      machine.succeed("udev-trace-module dump > /tmp/module.trace 2>/tmp/module.err")
+      machine.succeed("test -s /tmp/real.trace")
+      machine.succeed("cmp /tmp/real.trace /tmp/module.trace || "
+                      "(diff -u /tmp/real.trace /tmp/module.trace | head -120; false)")
+      machine.succeed("touch /tmp/remove-dump")
+      machine.wait_until_succeeds("grep -q removed /tmp/uinput-dump.log")
+      machine.succeed("udevadm settle")
+
+      machine.succeed("setsid udev-trace-real monitor 20 > /tmp/real.mon 2>&1 &")
+      machine.succeed("setsid udev-trace-module monitor 20 > /tmp/module.mon 2>&1 &")
+      machine.sleep(1)
+      machine.succeed("UDEV_UINPUT_HOLD=/tmp/remove-mon setsid udev-uinput "
+                      "keyboard mouse touchpad touchscreen joystick tablet "
+                      "> /tmp/uinput-mon.log 2>&1 &")
+      machine.wait_until_succeeds("grep -q ready /tmp/uinput-mon.log")
+      machine.sleep(2)
+      machine.succeed("touch /tmp/remove-mon")
+      machine.wait_until_succeeds("grep -q removed /tmp/uinput-mon.log")
+      machine.wait_until_succeeds("grep -q 'monitor end' /tmp/real.mon", timeout=60)
+      machine.wait_until_succeeds("grep -q 'monitor end' /tmp/module.mon", timeout=60)
+      machine.succeed("cmp /tmp/real.mon /tmp/module.mon || "
+                      "(diff -u /tmp/real.mon /tmp/module.mon | head -120; false)")
+      machine.succeed("grep -q 'ev action=add' /tmp/real.mon")
+      machine.succeed("grep -q 'ev action=remove' /tmp/real.mon")
+    '';
+  };
   drmVersion = pkgs.stdenv.mkDerivation {
     name = "tomoe-test-drm-version";
     src = pkgs.lib.fileset.toSource {
@@ -1302,13 +1380,13 @@ let
     ];
     dontConfigure = true;
     buildPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire evdev; do
+      for library in png lisp wayland xkb mtdev pipewire evdev udev; do
         make -C $library -j"$NIX_BUILD_CORES" \
           WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
       done
     '';
     installPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire evdev; do
+      for library in png lisp wayland xkb mtdev pipewire evdev udev; do
         install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
         mkdir -p $out/include/tomoe-$library
         cp -r $library/include/. $out/include/tomoe-$library/
@@ -1322,6 +1400,7 @@ let
     mtdevEquivalence
     animationUnit
     xkbEquivalence
+    udevTrace
     evdevEquivalence
     lispUnit
     eventRing
@@ -1862,6 +1941,8 @@ in
   lisp-unit = lispUnit;
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;
+  udev-trace = udevTrace;
+  udev-equivalence = udevEquivalence;
   evdev-equivalence = evdevEquivalence;
   mtdev-equivalence = mtdevEquivalence;
   lease = pkgs.runCommand "tomoe-lease" {

@@ -156,12 +156,19 @@
             version = "1.13.6";
             includeSubdir = "/libevdev-1.0";
           };
+          udev = dropIn {
+            name = "udev";
+            pc = "libudev";
+            library = "udev";
+            version = "260";
+          };
           libinput =
             (pkgs.libinput.override {
               luaSupport = false;
               wacomSupport = false;
               inherit mtdev;
               libevdev = evdev;
+              inherit udev;
             }).overrideAttrs
               (old: {
                 postPatch = old.postPatch + ''

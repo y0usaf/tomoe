@@ -844,13 +844,14 @@ onto it), `xkb` (keymaps and keyboard state), `mtdev` (protocol A multitouch to
 slot conversion, in `mtdev.h`; its `libinput/` maps the other file name libinput
 includes onto it), `evdev` (the kernel input device state machine, event queue
 and name tables, in `libevdev-1.0/libevdev/libevdev.h` where libinput looks for
-it) and `pipewire` (the PipeWire wire protocol and an audio client). None of
-them includes anything from `native/` or from each other. `make -C lib/NAME`
+it), `udev` (sysfs devices, the udev database, enumeration and the netlink
+monitor) and `pipewire` (the PipeWire wire protocol and an audio client). None
+of them includes anything from `native/` or from each other. `make -C lib/NAME`
 builds `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from
 that folder alone, and the `libraries` check, one of the compositor VMs'
-packages, builds all seven. Tomoe compiles the same sources straight into its
-one binary and its core with its own flags, so the split adds no call, copy or
-library at run time.
+packages, builds all eight. Tomoe compiles the ones it calls itself straight
+into its one binary and its core with its own flags, so the split adds no call,
+copy or library at run time.
 
 The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not
 use left out. `libgbm` picks its backend by the kernel driver's name, which
@@ -859,7 +860,9 @@ libdrm is not among the libraries the binary links; a GBM driver plugin Mesa ope
 at run time may still bring it in. A library that stands in for one a dependency
 links is built by `dropIn` as a static archive under the upstream name, with a
 pkg-config file to match, so the dependency links Tomoe's code into itself:
-libinput takes `lib/mtdev` and `lib/evdev` in place of libmtdev and libevdev.
+libinput takes `lib/mtdev`, `lib/evdev` and `lib/udev` in place of libmtdev,
+libevdev and libudev. Tomoe compiles `lib/udev` in as well for its own `udev_new`,
+and the context it hands libinput is read by libinput's copy of the same code.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
