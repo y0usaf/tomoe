@@ -183,6 +183,21 @@ new keyboard is handed one that never gets its keymap, so its keys stop arriving
 a pre-existing seat bug the test does not trip over because the device it types
 with is the same for the whole run.
 
+## The keyboard
+
+`native/xkb_*.c` is Tomoe's own XKB: rules, keymap compiler, state machine, keysyms
+and the keymap text clients get, with libxkbcommon's API under a `txkb_` prefix.
+`tests/xkb-trace.c` drives it and libxkbcommon 1.13 through the same trace for
+every model, layout, variant and option in xkeyboard-config (`tests/xkb-cases.awk`)
+and the whole keysym table: each keymap's keysyms per level, repeat flags and names,
+every key tapped under every set of held Shift, Control, Alt, AltGr and Super with
+Caps and Num Lock, and 3000 seeded presses and releases of modifier, latch, lock
+and ordinary keys whose holds overlap and end in any order. A second pair replays
+the same events on libxkbcommon's state and reads them back, as a client does,
+through the keymap text each side sends. `xkb-equivalence` fails on any difference
+and prints the first diverging lines; it is one of the compositor VMs' packages,
+so the smoke check rebuilds it whenever those files change.
+
 ## Releasing
 
 `nix run .#release -- rc|soak|promote` (README, Releases). A candidate is a commit

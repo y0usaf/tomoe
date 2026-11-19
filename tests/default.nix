@@ -1114,8 +1114,71 @@ let
   lispUnit = hostUnit "lisp-unit" "lisp-unit" "make lisp-unit";
   eventRing = hostUnit "event-ring" "event-ring" "build/event-ring";
   portalFormat = hostUnit "portal-format" "portal-format" "build/portal-format";
+  xkbEquivalence = pkgs.stdenv.mkDerivation {
+    name = "tomoe-xkb-equivalence";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        (pkgs.lib.fileset.fileFilter (file: pkgs.lib.hasPrefix "xkb" file.name) ../native)
+        ./xkb-trace.c
+        ./xkb-cases.awk
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.libxkbcommon ];
+    dontConfigure = true;
+    buildPhase = ''
+      root=${pkgs.xkeyboard_config}/etc/X11/xkb
+      build() {
+        $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Inative \
+          -DTOMOE_XKB_CONFIG_ROOT="\"$root\"" tests/xkb-trace.c native/xkb_*.c "$@"
+      }
+      build $(pkg-config --cflags --libs xkbcommon) -o xkb-trace
+      build -DNATIVE -o xkb-trace-native
+      trace() {
+        if [ "$1" = native ]; then ./xkb-trace-native "''${@:2}"; else ./xkb-trace "$@"; fi
+      }
+      awk -f tests/xkb-cases.awk $root/rules/evdev.xml $root/rules/evdev.extras.xml > cases
+      split -n r/$NIX_BUILD_CORES -d -a 3 cases part.
+      for part in part.*; do
+        for mode in real native client text; do
+          trace $mode < $part > $part.$mode &
+        done
+      done
+      wait
+      for mode in real native client text; do
+        cat part.*.$mode | sort > $mode.trace
+        if [ "$(wc -l < $mode.trace)" != "$(wc -l < cases)" ]; then
+          echo "xkb-trace $mode stopped before the last case"
+          exit 1
+        fi
+      done
+      status=0
+      for pair in real:native client:text; do
+        want=''${pair%:*} got=''${pair#*:}
+        if diff $want.trace $got.trace > $got.diff; then
+          echo "$got matches $want on $(wc -l < cases) cases"
+          continue
+        fi
+        status=1
+        echo "$got differs from $want on $(grep -c '^>' $got.diff) of $(wc -l < cases) cases:"
+        grep '^>' $got.diff | cut -c3- | rev | cut -f3- | rev | head -20
+        grep -m1 '^>' $got.diff | cut -c3- | rev | cut -f3- | rev > first
+        trace $want full < first > $want.full
+        trace $got full < first > $got.full
+        diff $want.full $got.full | head -40 || true
+      done
+      [ $status = 0 ]
+    '';
+    installPhase = ''
+      mkdir -p $out/share/tomoe
+      cat real.trace > $out/share/tomoe/xkb-equivalence
+    '';
+  };
   compositorPackages = [
     animationUnit
+    xkbEquivalence
     lispUnit
     eventRing
     portalFormat
@@ -1651,6 +1714,7 @@ in
   inherit client;
   lisp-unit = lispUnit;
   event-ring = eventRing;
+  xkb-equivalence = xkbEquivalence;
   lease = pkgs.runCommand "tomoe-lease" {
     nativeBuildInputs = [
       pkgs.bash
