@@ -911,6 +911,7 @@ struct settings {
     double shader_hold;
     bool screenshot_freeze, screenshot_motion_enabled;
     bool pause_readings_when_dark;
+    double sound_pause_after;
     double screenshot_motion_stiffness, screenshot_motion_damping;
     uint32_t screenshot_mark_ink;
     int screenshot_mark_width, screenshot_mark_head, screenshot_mark_size;
@@ -981,6 +982,7 @@ void sound_play(struct tomoe *s, enum sound_event event);
 void sound_publish(struct tomoe *s, struct presentation *plan);
 void sound_bank_free(struct sound_bank *bank);
 void sound_finish(struct tomoe *s);
+void sound_settings(struct tomoe *s);
 bool system_bell_listen(struct tomoe *s);
 struct surface;
 struct subsurface;

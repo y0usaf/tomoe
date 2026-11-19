@@ -50,6 +50,9 @@ struct sound {
     struct sound_voice voices[SOUND_VOICES];
     _Atomic int state, error;
     _Atomic uint64_t played, dropped;
+    _Atomic uint32_t pause_frames;
+    _Atomic bool parked;
+    uint64_t silent;
     bool reported;
 };
 
@@ -212,6 +215,8 @@ static void sound_process(void *data, struct pwn_buffer *buffer) {
     struct sound_bank *bank = sound->playing;
     uint32_t head = atomic_load_explicit(&sound->head, memory_order_acquire);
     uint32_t tail = atomic_load_explicit(&sound->tail, memory_order_relaxed);
+    bool sounding = tail != head;
+    for (size_t i = 0; i < SOUND_VOICES && !sounding; i++) sounding = sound->voices[i].sample != NULL;
     for (; tail != head; tail++) {
         const struct sound_trigger *trigger = &sound->triggers[tail % SOUND_TRIGGERS];
         if (!bank || trigger->generation != bank->generation || trigger->sample >= bank->sample_count)
@@ -257,12 +262,38 @@ static void sound_process(void *data, struct pwn_buffer *buffer) {
         buffer->chunk[c]->stride = (int32_t)sizeof(float);
         buffer->chunk[c]->size = count * (uint32_t)sizeof(float);
     }
+    sound->silent = sounding ? 0 : sound->silent + count;
+}
+
+static bool sound_active(void *data) {
+    struct sound *sound = data;
+    uint32_t limit = atomic_load(&sound->pause_frames);
+    if (!limit || sound->silent < limit) {
+        atomic_store(&sound->parked, false);
+        return true;
+    }
+    atomic_store(&sound->parked, true);
+    if (atomic_load(&sound->head) == atomic_load(&sound->tail)) return false;
+    atomic_store(&sound->parked, false);
+    sound->silent = 0;
+    return true;
+}
+
+void sound_settings(struct tomoe *s) {
+    struct sound *sound = s->sound;
+    if (!sound) return;
+    double seconds = s->settings.sound_pause_after;
+    uint32_t frames = seconds > 0 ? (uint32_t)lround(seconds * SOUND_RATE) : 0;
+    if (atomic_exchange(&sound->pause_frames, frames) != frames) pwn_wake(sound->client);
 }
 
 static struct sound *sound_start(struct tomoe *s) {
-    static const struct pwn_ops ops = { .state = sound_changed, .process = sound_process };
+    static const struct pwn_ops ops = {
+        .state = sound_changed, .process = sound_process, .active = sound_active };
     struct sound *sound = calloc(1, sizeof(*sound));
     if (!sound) return NULL;
+    double seconds = s->settings.sound_pause_after;
+    atomic_store(&sound->pause_frames, seconds > 0 ? (uint32_t)lround(seconds * SOUND_RATE) : 0);
     sound->client = pwn_start("tomoe", "tomoe", SOUND_RATE, 2, &ops, sound);
     if (!sound->client) sound_report(sound, SOUND_FAILED, -ENOMEM);
     else atomic_store(&sound->state, SOUND_CONNECTING);
@@ -313,8 +344,9 @@ void sound_play(struct tomoe *s, enum sound_event event) {
     }
     sound->triggers[head % SOUND_TRIGGERS] = (struct sound_trigger){
         sound->bank->generation, cue->first + sound->cursor[event]++ % cue->count, cue->gain };
-    atomic_store_explicit(&sound->head, head + 1, memory_order_release);
+    atomic_store(&sound->head, head + 1);
     atomic_fetch_add(&sound->played, 1);
+    if (atomic_load(&sound->parked)) pwn_wake(sound->client);
 }
 
 const char *tomoe_sound_stats(struct tomoe *s) {

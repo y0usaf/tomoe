@@ -758,6 +758,7 @@ restores the preceding owner, or the session defaults (25 Hz, 600 ms)."
                               (:palette (:colors) nil) (:palette-keys :strings nil)))
     (:watchdog-ms (:integer 0 60000) 1000)
     (:pause-readings-when-dark :boolean t)
+    (:sound-pause-after (:real 0 3600) 5)
     (:budgets (:group
                (:lisp-heap-mb (:integer 4 1024) 256)
                (:windows (:integer 16 65536) 512)

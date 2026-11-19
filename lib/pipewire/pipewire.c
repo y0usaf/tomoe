@@ -85,6 +85,7 @@ struct pwn_client {
     uint32_t node_proxy;
     uint32_t node_global;
     int bound;
+    int active_sent;
     int paused;
     int streaming;
     int faulted;
@@ -509,12 +510,13 @@ static int send_port_update(struct pwn_client *c, unsigned port_id) {
     return pww_message_send(&c->wire, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_PORT_UPDATE);
 }
 
-static int send_set_active(struct pwn_client *c) {
+static int send_set_active(struct pwn_client *c, int active) {
     uint8_t storage[256];
     struct pww_build b;
     struct pww_frame root;
     pww_message_begin(&b, &root, storage);
-    pww_pod_bool(&b, 1);
+    pww_pod_bool(&b, active);
+    c->active_sent = active;
     return pww_message_send(&c->wire, &b, &root, c->node_proxy, PW_CLIENT_NODE_METHOD_SET_ACTIVE);
 }
 
@@ -969,7 +971,7 @@ static int handle_command(struct pwn_client *c, struct pww_parse *p) {
     case SPA_NODE_COMMAND_PAUSE:
     case SPA_NODE_COMMAND_SUSPEND:
     case SPA_NODE_COMMAND_FLUSH:
-        if (c->streaming && id != SPA_NODE_COMMAND_FLUSH) {
+        if (c->streaming && c->active_sent && id != SPA_NODE_COMMAND_FLUSH) {
             c->streaming = 0;
             c->paused = 1;
             report(c, PWN_CONNECTING, 0);
@@ -1198,7 +1200,7 @@ static int client_setup(struct pwn_client *c) {
     if ((res = send_update(c)) < 0) return res;
     if ((res = send_port_update(c, 0)) < 0) return res;
     if ((res = send_port_update(c, 1)) < 0) return res;
-    if ((res = send_set_active(c)) < 0) return res;
+    if ((res = send_set_active(c, 1)) < 0) return res;
     return send_sync(c);
 }
 
@@ -1250,6 +1252,10 @@ static void *client_thread(void *arg) {
             if (process_index >= 0 && (p[process_index].revents & POLLIN)) {
                 eventfd_read1(c->process_fd);
                 process_cycle(c);
+            }
+            if (c->ops.active) {
+                int want = c->ops.active(c->data) ? 1 : 0;
+                if (want != c->active_sent && (res = send_set_active(c, want)) < 0) break;
             }
         }
         if (!c->quit) {
@@ -1303,6 +1309,10 @@ struct pwn_client *pwn_start(const char *app_name, const char *node_name,
         return NULL;
     }
     return c;
+}
+
+void pwn_wake(struct pwn_client *c) {
+    if (c) eventfd_write1(c->wake);
 }
 
 void pwn_stop(struct pwn_client *c) {

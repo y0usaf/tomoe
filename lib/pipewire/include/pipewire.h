@@ -361,6 +361,7 @@ struct pwn_buffer {
 struct pwn_ops {
     void (*state)(void *data, int state, int error);
     void (*process)(void *data, struct pwn_buffer *buffer);
+    bool (*active)(void *data);
 };
 
 struct pwn_client;
@@ -368,5 +369,6 @@ struct pwn_client;
 struct pwn_client *pwn_start(const char *app_name, const char *node_name,
         unsigned rate, unsigned channels, const struct pwn_ops *ops, void *data);
 void pwn_stop(struct pwn_client *client);
+void pwn_wake(struct pwn_client *client);
 
 #endif
