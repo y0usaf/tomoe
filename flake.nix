@@ -82,7 +82,26 @@
             ];
             doCheck = false;
           });
-          fontconfig = pkgs.fontconfig.override { inherit freetype; };
+          expat = dropIn {
+            name = "expat";
+            pc = "expat";
+            library = "expat";
+            version = "2.8.1";
+          };
+          fontconfig =
+            (pkgs.fontconfig.override {
+              inherit freetype expat;
+            }).overrideAttrs
+              (old: {
+                NIX_LDFLAGS = (old.NIX_LDFLAGS or "") + " --exclude-libs=libexpat.a";
+                postFixup = (old.postFixup or "") + ''
+                  if nm -D --defined-only $lib/lib/libfontconfig.so.1 | grep -w 'XML_[A-Za-z]*'; then
+                    echo "libfontconfig exports the XML parser"
+                    exit 1
+                  fi
+                '';
+              });
+          fontconfigReal = pkgs.fontconfig.override { inherit freetype; };
           harfbuzz = (pkgs.harfbuzz.override {
             withGraphite2 = false;
             withIntrospection = false;
@@ -260,6 +279,9 @@
             install -Dm644 -t $out/share/tomoe/examples/shaders examples/shaders/*.glsl
             runHook postInstall
           '';
+          passthru = {
+            inherit expat fontconfig fontconfigReal;
+          };
           meta = {
             description = "Lisp-configured window management on a native Wayland stack";
             mainProgram = "tomoe";
@@ -326,11 +348,16 @@
         '';
       testsFor =
         pkgs:
+        let
+          base = package pkgs { };
+        in
         import ./tests {
           inherit pkgs;
-          tomoe = package pkgs { };
+          tomoe = base;
           coreB = package pkgs { coreStamp = "core-b"; };
           coreBad = packageFrom (coreBadSource pkgs) pkgs { coreStamp = "core-bad"; };
+          fontconfigModule = base.passthru.fontconfig;
+          fontconfigReal = base.passthru.fontconfigReal;
         };
     in
     {

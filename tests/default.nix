@@ -3,6 +3,8 @@
   tomoe,
   coreB ? null,
   coreBad ? null,
+  fontconfigModule ? null,
+  fontconfigReal ? null,
 }:
 let
   imeClient = pkgs.stdenv.mkDerivation {
@@ -1182,6 +1184,128 @@ let
       cat real.trace > $out/share/tomoe/xkb-equivalence
     '';
   };
+  expatCorpus = pkgs.runCommand "tomoe-expat-corpus" { } ''
+    mkdir -p $out
+    cp ${pkgs.fontconfig.out}/etc/fonts/fonts.conf $out/fonts.conf
+    for f in ${pkgs.fontconfig.out}/etc/fonts/conf.d/*.conf; do
+      cp "$f" "$out/conf-$(basename "$f")"
+    done
+    cp ${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts.minimal ]; }} \
+      $out/user.conf
+  '';
+  expatEquivalence = pkgs.stdenv.mkDerivation {
+    name = "tomoe-expat-equivalence";
+    src = pkgs.lib.fileset.toSource {
+      root = ./..;
+      fileset = pkgs.lib.fileset.unions [
+        ../lib/expat
+        ./expat-trace.c
+      ];
+    };
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.expat ];
+    dontConfigure = true;
+    buildPhase = ''
+      build() {
+        $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+          -Ilib/expat/include tests/expat-trace.c "$@"
+      }
+      build lib/expat/*.c -o expat-trace
+      build $(pkg-config --cflags --libs expat) -o expat-trace-real
+      status=0
+      i=0
+      for f in ${expatCorpus}/*; do
+        ./expat-trace "$f" $i nodocs > native.$i &
+        ./expat-trace-real "$f" $i nodocs > real.$i &
+        i=$((i + 1))
+      done
+      ./expat-trace - 0 > native.docs &
+      ./expat-trace-real - 0 > real.docs &
+      wait
+      for f in real.*; do
+        n=''${f#real.}
+        if ! cmp -s real.$n native.$n; then
+          status=1
+          echo "expat-trace differs on $(basename "$f"):"
+          diff real.$n native.$n | head -20 || true
+        fi
+      done
+      if [ $status = 0 ]; then
+        echo "expat matches on $(cat real.* native.* | wc -l) lines of trace"
+      fi
+      [ $status = 0 ]
+    '';
+    installPhase = ''
+      mkdir -p $out/share/tomoe
+      cat real.* > $out/share/tomoe/expat-equivalence
+    '';
+  };
+  fontconfigEquivalence =
+    if fontconfigModule == null || fontconfigReal == null then
+      null
+    else
+      pkgs.stdenv.mkDerivation {
+        name = "tomoe-fontconfig-equivalence";
+        src = pkgs.lib.fileset.toSource {
+          root = ./..;
+          fileset = pkgs.lib.fileset.unions [ ./fontconfig-dump.c ];
+        };
+        strictDeps = true;
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.freetype ];
+        dontConfigure = true;
+        buildPhase = ''
+          build() {
+            local fcdev=$1
+            local bin=$2
+            PKG_CONFIG_PATH=$fcdev/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH} \
+              $CC -std=c11 -O2 -Wall -Wextra -Werror tests/fontconfig-dump.c \
+              $(PKG_CONFIG_PATH=$fcdev/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH} pkg-config --cflags --libs fontconfig) \
+              -o $bin
+          }
+          mkdir -p real module
+          build ${fontconfigReal.dev} real/dump
+          build ${fontconfigModule.dev} module/dump
+          export FONTCONFIG_FILE=${pkgs.makeFontsConf {
+            fontDirectories = [ pkgs.dejavu_fonts.minimal ];
+          }}
+          export HOME=$TMPDIR/home
+          export XDG_CACHE_HOME=$TMPDIR/cache
+          mkdir -p $HOME $XDG_CACHE_HOME
+          run() {
+            local dumper=$1
+            local fclib=$2
+            local fcbin=$3
+            local tag=$4
+            LD_LIBRARY_PATH=$fclib $dumper ${expatCorpus}/* > dump.$tag
+            for q in "sans-serif" "serif" "monospace" "DejaVu Sans" \
+              "sans-serif:weight=bold" "serif:slant=italic" \
+              "monospace:lang=ja" "DejaVu Serif:style=Oblique"; do
+              LD_LIBRARY_PATH=$fclib $fcbin/fc-match -f '%{file}\n' "$q"
+            done > match.$tag
+            LD_LIBRARY_PATH=$fclib $fcbin/fc-list -f '%{file}\n' \
+              | sort > list.$tag
+          }
+          run ./real/dump ${fontconfigReal.lib}/lib ${fontconfigReal.bin}/bin real
+          run ./module/dump ${fontconfigModule.lib}/lib ${fontconfigModule.bin}/bin module
+          status=0
+          for part in dump match list; do
+            if cmp -s $part.real $part.module; then
+              echo "$part matches on $(wc -l < $part.real) lines"
+              continue
+            fi
+            status=1
+            echo "$part differs:"
+            diff $part.real $part.module | head -20 || true
+          done
+          [ $status = 0 ]
+        '';
+        installPhase = ''
+          mkdir -p $out/share/tomoe
+          cat dump.real match.real list.real > $out/share/tomoe/fontconfig-equivalence
+        '';
+      };
   udevTrace = pkgs.stdenv.mkDerivation {
     name = "tomoe-udev-trace";
     src = pkgs.lib.fileset.toSource {
@@ -1380,13 +1504,13 @@ let
     ];
     dontConfigure = true;
     buildPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire evdev udev; do
+      for library in png lisp wayland xkb mtdev pipewire evdev udev expat; do
         make -C $library -j"$NIX_BUILD_CORES" \
           WAYLAND_XML=${pkgs.wayland-scanner}/share/wayland/wayland.xml
       done
     '';
     installPhase = ''
-      for library in png lisp wayland xkb mtdev pipewire evdev udev; do
+      for library in png lisp wayland xkb mtdev pipewire evdev udev expat; do
         install -Dm644 -t $out/lib $library/build/libtomoe-$library.a $library/build/libtomoe-$library.so
         mkdir -p $out/include/tomoe-$library
         cp -r $library/include/. $out/include/tomoe-$library/
@@ -1400,6 +1524,8 @@ let
     mtdevEquivalence
     animationUnit
     xkbEquivalence
+    expatEquivalence
+  ] ++ pkgs.lib.optional (fontconfigEquivalence != null) fontconfigEquivalence ++ [
     udevTrace
     evdevEquivalence
     lispUnit
@@ -1943,6 +2069,7 @@ in
   lisp-unit = lispUnit;
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;
+  expat-equivalence = expatEquivalence;
   udev-trace = udevTrace;
   udev-equivalence = udevEquivalence;
   evdev-equivalence = evdevEquivalence;
@@ -1993,4 +2120,7 @@ in
     // suiteTargets kmsSettings kmsSuites
     // { services = servicesCheck; }
     // suiteTargets benchSettings benchSuites;
+}
+// pkgs.lib.optionalAttrs (fontconfigEquivalence != null) {
+  fontconfig-equivalence = fontconfigEquivalence;
 }

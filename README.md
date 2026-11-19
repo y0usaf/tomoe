@@ -845,13 +845,14 @@ slot conversion, in `mtdev.h`; its `libinput/` maps the other file name libinput
 includes onto it), `evdev` (the kernel input device state machine, event queue
 and name tables, in `libevdev-1.0/libevdev/libevdev.h` where libinput looks for
 it), `udev` (sysfs devices, the udev database, enumeration and the netlink
-monitor) and `pipewire` (the PipeWire wire protocol and an audio client). None
-of them includes anything from `native/` or from each other. `make -C lib/NAME`
-builds `libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from
-that folder alone, and the `libraries` check, one of the compositor VMs'
-packages, builds all eight. Tomoe compiles the ones it calls itself straight
-into its one binary and its core with its own flags, so the split adds no call,
-copy or library at run time.
+monitor), `expat` (the XML parser fontconfig's config files go through) and
+`pipewire` (the PipeWire wire protocol and an audio client). None of them
+includes anything from `native/` or from each other. `make -C lib/NAME` builds
+`libtomoe-NAME.a` and a `libtomoe-NAME.so` linked with `-z defs` from that
+folder alone, and the `libraries` check, one of the compositor VMs' packages,
+builds all nine. Tomoe compiles the ones it calls itself straight into its one
+binary and its core with its own flags, so the split adds no call, copy or
+library at run time.
 
 The libraries Tomoe still links are rebuilt in `flake.nix` with what it does not
 use left out. `libgbm` picks its backend by the kernel driver's name, which
@@ -863,6 +864,9 @@ pkg-config file to match, so the dependency links Tomoe's code into itself:
 libinput takes `lib/mtdev`, `lib/evdev` and `lib/udev` in place of libmtdev,
 libevdev and libudev. Tomoe compiles `lib/udev` in as well for its own `udev_new`,
 and the context it hands libinput is read by libinput's copy of the same code.
+fontconfig takes `lib/expat` in place of libexpat, with its `XML_*` symbols kept
+inside libfontconfig so a driver that loads the real libexpat later still gets its
+own.
 
 The package takes `{ cpu ? "", opt ? "-O2", lto ? false }`; the C core is built at
 `opt` with `-flto` when `lto` is set, and `cpu` adds `-march`/`-mtune` for that
