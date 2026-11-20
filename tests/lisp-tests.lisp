@@ -238,3 +238,16 @@ b" (format nil "a~%b"))
 (unit-check "alpha" t (and (alpha-char-p #\a) (alphanumericp #\5) (not (alpha-char-p #\5))))
 (unit-check "char-upcase" #\A (char-upcase #\a))
 (unit-check "digit-char-p" 15 (digit-char-p #\f 16))
+
+(defun unit-return-probe () (return-from unit-return-probe :early) :late)
+(unit-check "return-from-defun" :early (unit-return-probe))
+
+(defun unit-labels-probe ()
+  (labels ((inner (n) (when (= n 0) (return-from inner :zero)) :nonzero))
+    (inner 0)))
+(unit-check "return-from-labels" :zero (unit-labels-probe))
+
+(defun unit-flet-probe ()
+  (flet ((inner (n) (when (= n 0) (return-from inner :zero)) :nonzero))
+    (inner 0)))
+(unit-check "return-from-flet" :zero (unit-flet-probe))
