@@ -70,18 +70,6 @@
             NIX_CFLAGS_COMPILE = toString (old.NIX_CFLAGS_COMPILE or "") +
               " -DFT_CONFIG_OPTION_USE_PNG";
           });
-          glib = pkgs.glib.overrideAttrs (old: {
-            buildInputs = pkgs.lib.subtractLists [
-              pkgs.libselinux
-              pkgs.util-linuxMinimal
-            ] old.buildInputs;
-            mesonFlags = old.mesonFlags ++ [
-              "-Dselinux=disabled"
-              "-Dlibmount=disabled"
-              "-Dtests=false"
-            ];
-            doCheck = false;
-          });
           expat = dropIn {
             name = "expat";
             pc = "expat";
@@ -95,8 +83,13 @@
               (old: {
                 NIX_LDFLAGS = (old.NIX_LDFLAGS or "") + " --exclude-libs=libexpat.a";
                 postFixup = (old.postFixup or "") + ''
+                  test -f $lib/lib/libfontconfig.so.1
                   if nm -D --defined-only $lib/lib/libfontconfig.so.1 | grep -w 'XML_[A-Za-z]*'; then
                     echo "libfontconfig exports the XML parser"
+                    exit 1
+                  fi
+                  if nm -D --undefined-only $lib/lib/libfontconfig.so.1 | grep -w 'XML_[A-Za-z]*'; then
+                    echo "libfontconfig imports an external XML parser"
                     exit 1
                   fi
                 '';
@@ -105,21 +98,18 @@
           harfbuzz = (pkgs.harfbuzz.override {
             withGraphite2 = false;
             withIntrospection = false;
-            inherit freetype glib;
+            inherit freetype;
           }).overrideAttrs (old: {
-            mesonFlags = old.mesonFlags ++ [ "-Dpng=disabled" ];
+            buildInputs = pkgs.lib.subtractLists [ pkgs.glib pkgs.cairo pkgs.icu ] (old.buildInputs or [ ]);
+            propagatedBuildInputs = pkgs.lib.subtractLists [ pkgs.glib pkgs.cairo pkgs.icu ] (old.propagatedBuildInputs or [ ]);
+            mesonFlags = (pkgs.lib.filter (x: !(pkgs.lib.hasPrefix "-Dglib=" x || pkgs.lib.hasPrefix "-Dgobject=" x || pkgs.lib.hasPrefix "-Dcairo=" x || pkgs.lib.hasPrefix "-Dicu=" x)) (old.mesonFlags or [ ])) ++ [
+              "-Dpng=disabled"
+              "-Dglib=disabled"
+              "-Dgobject=disabled"
+              "-Dcairo=disabled"
+              "-Dicu=disabled"
+            ];
           });
-          pango =
-            (pkgs.pango.override {
-              x11Support = false;
-              withIntrospection = false;
-              inherit harfbuzz glib;
-            }).overrideAttrs
-              (old: {
-                buildInputs = pkgs.lib.remove pkgs.libthai old.buildInputs;
-                propagatedBuildInputs = [ freetype fontconfig ] ++ pkgs.lib.remove pkgs.cairo old.propagatedBuildInputs;
-                mesonFlags = old.mesonFlags ++ [ "-Dlibthai=disabled" "-Dcairo=disabled" ];
-              });
           libs = lean pkgs;
           dropIn =
             {
@@ -239,7 +229,9 @@
             libs.libgbm
             pkgs.wayland-protocols
             pkgs.wlr-protocols
-            pango
+            harfbuzz
+            fontconfig
+            freetype
           ];
           strictDeps = true;
           dontStrip = true;
@@ -361,8 +353,9 @@
         };
     in
     {
-      packages = nixpkgs.lib.mapAttrs (_: pkgs: {
+      packages = nixpkgs.lib.mapAttrs (_: pkgs: rec {
         default = package pkgs { };
+        tomoe = default;
         znver4 = package pkgs {
           cpu = "znver4";
           opt = "-O3";

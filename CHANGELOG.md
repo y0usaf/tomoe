@@ -15,6 +15,9 @@ The first release.
   libpng, libjpeg or cairo, and SVG icons and assets without resvg, with the
   same antialiasing, gradients, patterns, markers, images, masks, clips and
   filters.
+- Text is laid out in-tree on Fontconfig, HarfBuzz and FreeType: markup, font
+  fallback, emoji sequences and right-to-left runs without Pango, GLib, FriBidi
+  or cairo, itemized, placed and rounded by Pango's rules.
 - The window manager, bar and wallpaper are Lisp extensions, in a Common Lisp
   dialect the C core carries, loaded from `~/.config/tomoe/init.lisp`, reloaded
   on save and live-patchable with `tomoe command patch`. A config that fails to

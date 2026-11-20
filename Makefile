@@ -11,7 +11,7 @@ WLR ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wlr-protocols)/unstable
 WP ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_XML ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-scanner)/wayland.xml
 
-LIBS = pango pangoft2 fontconfig freetype2 libinput glesv2 egl gbm
+LIBS = harfbuzz fontconfig freetype2 libinput glesv2 egl gbm
 LINK = $(shell $(PKG_CONFIG) --libs $(LIBS))
 PORTAL_LIBS = gbm
 SUPPORT = bus executions watches notifications mpris backlight battery network tray system

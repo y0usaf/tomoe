@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 cairo-ft-font.c, cairo-scaled-font.c, cairo-image-source.c, cairo-image-compositor.c, cairo-matrix.c, pango 1.57.1 pangocairo-render.c, pangocairo-fcfont.c, pangocairo-fcfontmap.c and pixman 0.46.4 pixman-bits-image.c, pixman-fast-path.c, pixman-matrix.c, see NOTICE */
+/* SPDX-License-Identifier: LGPL-2.1-only OR MPL-1.1; derived from cairo 1.18.4 cairo-ft-font.c, cairo-scaled-font.c, cairo-image-source.c, cairo-image-compositor.c, cairo-matrix.c and pixman 0.46.4 pixman-bits-image.c, pixman-fast-path.c, pixman-matrix.c, see NOTICE */
 #include "fttext.h"
 #include "colr.h"
 #include "draw.h"
+#include "emoji-data.h"
 
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
@@ -10,13 +11,20 @@
 #include FT_OUTLINE_H
 #include FT_SYNTHESIS_H
 #include FT_LCD_FILTER_H
-#include <pango/pangofc-font.h>
-#include <pango/pangofc-fontmap.h>
+#include <hb.h>
+#include <hb-ft.h>
+#include <hb-ot.h>
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 struct fte_matrix { double xx, yx, xy, yy, x0, y0; };
 
@@ -26,86 +34,15 @@ struct fte_ft_options {
     struct fte_options base;
 };
 
-typedef struct _PangoFcFontKey PangoFcFontKey;
-typedef struct _PangoFcFontsetKey PangoFcFontsetKey;
-
-struct _PangoFcFontMap {
-    PangoFontMap parent_instance;
-    gpointer priv;
-    PangoFcSubstituteFunc substitute_func;
-    gpointer substitute_data;
-    GDestroyNotify substitute_destroy;
-};
-
-struct _PangoFcFontMapClass {
-    PangoFontMapClass parent_class;
-    void (*default_substitute) (PangoFcFontMap *fontmap, FcPattern *pattern);
-    PangoFcFont *(*new_font) (PangoFcFontMap *fontmap, FcPattern *pattern);
-    double (*get_resolution) (PangoFcFontMap *fcfontmap, PangoContext *context);
-    gconstpointer (*context_key_get) (PangoFcFontMap *fcfontmap, PangoContext *context);
-    gpointer (*context_key_copy) (PangoFcFontMap *fcfontmap, gconstpointer key);
-    void (*context_key_free) (PangoFcFontMap *fcfontmap, gpointer key);
-    guint32 (*context_key_hash) (PangoFcFontMap *fcfontmap, gconstpointer key);
-    gboolean (*context_key_equal) (PangoFcFontMap *fcfontmap, gconstpointer a, gconstpointer b);
-    void (*fontset_key_substitute) (PangoFcFontMap *fontmap, PangoFcFontsetKey *fontsetkey,
-        FcPattern *pattern);
-    PangoFcFont *(*create_font) (PangoFcFontMap *fontmap, PangoFcFontKey *fontkey);
-    void (*_pango_reserved1) (void);
-    void (*_pango_reserved2) (void);
-    void (*_pango_reserved3) (void);
-    void (*_pango_reserved4) (void);
-};
-
-struct _PangoFcFontClass {
-    PangoFontClass parent_class;
-    FT_Face (*lock_face) (PangoFcFont *font);
-    void (*unlock_face) (PangoFcFont *font);
-    gboolean (*has_char) (PangoFcFont *font, gunichar wc);
-    guint (*get_glyph) (PangoFcFont *font, gunichar wc);
-    PangoGlyph (*get_unknown_glyph) (PangoFcFont *font, gunichar wc);
-    void (*shutdown) (PangoFcFont *font);
-    void (*_pango_reserved1) (void);
-    void (*_pango_reserved2) (void);
-    void (*_pango_reserved3) (void);
-    void (*_pango_reserved4) (void);
-};
-
-extern const FcPattern *pango_fc_font_key_get_pattern (const PangoFcFontKey *key);
-extern const PangoMatrix *pango_fc_font_key_get_matrix (const PangoFcFontKey *key);
-extern gpointer pango_fc_font_key_get_context_key (const PangoFcFontKey *key);
-extern gpointer pango_fc_fontset_key_get_context_key (const PangoFcFontsetKey *key);
-
-typedef struct _FteFont FteFont;
-typedef struct _FteFontClass FteFontClass;
-
-struct fte_scaled;
-
-struct fte_hex {
-    PangoFont *font;
-    int rows;
-    double digit_width, digit_height, pad_x, pad_y, line_width, box_descent, box_height;
-    bool ready;
-};
-
-struct _FteFont {
-    PangoFcFont parent_instance;
-    struct fte_scaled *scaled;
-    PangoRectangle font_extents;
-    bool font_extents_set;
-    PangoMatrix key_matrix;
-    struct fte_hex hex;
-};
-
-struct _FteFontClass {
-    struct _PangoFcFontClass parent_class;
-};
-
 static const struct fte_options fte_default_options = { 0, 0, 0, 0, 0 };
+static const struct fte_options fte_render_options = {
+    FTE_ANTIALIAS_GRAY, FTE_HINT_STYLE_NONE, FTE_HINT_METRICS_OFF,
+    FTE_SUBPIXEL_DEFAULT, FTE_LCD_FILTER_DEFAULT
+};
 
 static double fte_from_26_6(int32_t v) { return (double)v / 64.0; }
 static double fte_from_16_16(int32_t v) { return (double)v / 65536.0; }
 static int fte_lround(double v) { return (int)lrint(v); }
-static int fte_units(double v) { return (int)floor(v * 1024.0 + 0.5); }
 
 static int32_t fte_fixed(double v)
 {
@@ -119,18 +56,6 @@ static int32_t fte_fixed_24_8(double v)
     union { double d; int32_t i[2]; } u;
     u.d = v + 26388279066624.0;
     return u.i[0];
-}
-
-static int fte_fixed_floor(int32_t f)
-{
-    if (f >= 0) return f >> 8;
-    return -(((-f - 1) >> 8)) - 1;
-}
-
-static int fte_fixed_ceil(int32_t f)
-{
-    if (f > 0) return ((f - 1) >> 8) + 1;
-    return -(int)((uint32_t)(-f) >> 8);
 }
 
 #define FTE_ONE 65536
@@ -275,13 +200,13 @@ struct fte_scaled {
     int metric_count, metric_capacity;
     struct fte_glyph *glyphs;
     int glyph_count, glyph_capacity;
+    hb_font_t *hb;
 };
 
 static FT_Library fte_library;
 static bool fte_library_ready;
 static struct fte_face *fte_faces;
 static struct fte_scaled *fte_scaleds;
-static PangoFontMap *fte_map;
 
 static FT_Library fte_ft_library(void)
 {
@@ -290,11 +215,6 @@ static FT_Library fte_ft_library(void)
         fte_library_ready = true;
     }
     return fte_library;
-}
-
-static GQuark fte_options_quark(void)
-{
-    return g_quark_from_static_string("tomoe-fte-font-options");
 }
 
 static uint32_t fte_colour(double r, double g, double b, double a)
@@ -1480,12 +1400,19 @@ static bool fte_glyph_surface(struct fte_scaled *scaled, struct fte_glyph *entry
     return true;
 }
 
-static struct fte_glyph *fte_glyph_get(struct fte_scaled *scaled, unsigned glyph,
+static unsigned long fte_glyph_key(const struct fte_scaled *scaled, unsigned glyph,
     unsigned xphase, unsigned yphase, uint32_t colour)
 {
     unsigned long key = (unsigned long)glyph | ((unsigned long)xphase << 24) |
         ((unsigned long)yphase << 26);
     if (scaled->face->have_color) key |= (unsigned long)colour << 32;
+    return key;
+}
+
+static struct fte_glyph *fte_glyph_get(struct fte_scaled *scaled, unsigned glyph,
+    unsigned xphase, unsigned yphase, uint32_t colour)
+{
+    unsigned long key = fte_glyph_key(scaled, glyph, xphase, yphase, colour);
     struct fte_glyph *entry = fte_glyph_lookup(scaled, key);
     if (entry) return entry;
     entry = fte_glyph_create(scaled, key);
@@ -1494,522 +1421,12 @@ static struct fte_glyph *fte_glyph_get(struct fte_scaled *scaled, unsigned glyph
     return entry;
 }
 
-static void fte_font_compute_extents(FteFont *font);
-static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph);
-
-static gunichar fte_nominal_glyph(PangoFont *font, gunichar ch)
+static void fte_matrix_transform(const struct fte_matrix *m, double *x, double *y)
 {
-    hb_font_t *hb = pango_font_get_hb_font(font);
-    hb_codepoint_t glyph = PANGO_GET_UNKNOWN_GLYPH(ch);
-    if (hb) hb_font_get_nominal_glyph(hb, ch, &glyph);
-    return (gunichar)glyph;
-}
-
-static int fte_absolute_size(FteFont *font)
-{
-    PangoFontDescription *description =
-        pango_font_describe_with_absolute_size(PANGO_FONT(font));
-    if (!description) return 0;
-    int size = pango_font_description_get_size(description);
-    pango_font_description_free(description);
-    return size;
-}
-
-static double fte_pango_scale_factor(const PangoMatrix *matrix)
-{
-    return pango_matrix_get_font_scale_factor(matrix);
-}
-
-static double fte_font_scale_factor(const struct fte_matrix *matrix)
-{
-    PangoMatrix pango = { matrix->xx, matrix->xy, matrix->yx, matrix->yy, matrix->x0,
-        matrix->y0 };
-    return pango_matrix_get_font_scale_factor(&pango);
-}
-
-static void fte_font_extents(FteFont *font, double *ascent, double *descent)
-{
-    struct fte_scaled *scaled = font->scaled;
-    FT_Face face = scaled->face->face;
-    double above, below;
-    fte_face_scale(scaled->face, &scaled->scale);
-    if (scaled->options.hint_metrics != FTE_HINT_METRICS_OFF || face->units_per_EM == 0) {
-        above = fte_from_26_6(face->size->metrics.ascender) / scaled->face->y_scale;
-        below = fte_from_26_6(-face->size->metrics.descender) / scaled->face->y_scale;
-    } else {
-        above = (double)face->ascender / (double)face->units_per_EM;
-        below = -(double)face->descender / (double)face->units_per_EM;
-    }
-    double scale = fte_font_scale_factor(&scaled->font_matrix);
-    *ascent = above * scale;
-    *descent = below * scale;
-}
-
-struct fte_nick { gunichar ch; const char *nick; };
-
-static const struct fte_nick fte_nicks[] = {
-    { 0x00ad, "SHY" }, { 0x034f, "CGJ" }, { 0x061c, "ALM" }, { 0x200b, "ZWS" },
-    { 0x200c, "ZWNJ" }, { 0x200d, "ZWJ" }, { 0x200e, "LRM" }, { 0x200f, "RLM" },
-    { 0x2028, "LS" }, { 0x2029, "PS" }, { 0x202a, "LRE" }, { 0x202b, "RLE" },
-    { 0x202c, "PDF" }, { 0x202d, "LRO" }, { 0x202e, "RLO" }, { 0x2060, "WJ" },
-    { 0x2061, "FA" }, { 0x2062, "IT" }, { 0x2063, "IS" }, { 0x2066, "LRI" },
-    { 0x2067, "RLI" }, { 0x2068, "FSI" }, { 0x2069, "PDI" }, { 0xfeff, "ZWNBS" }
-};
-
-static const char *fte_ignorable_size(gunichar ch, int *rows, int *cols)
-{
-    const char *nick = NULL;
-    for (size_t i = 0; i < sizeof(fte_nicks) / sizeof(*fte_nicks); i++)
-        if (fte_nicks[i].ch == ch) { nick = fte_nicks[i].nick; break; }
-    if (!nick) return NULL;
-    size_t len = strlen(nick);
-    if (len < 4) { *rows = 1; *cols = (int)len; }
-    else if (len > 4) { *rows = 2; *cols = 3; }
-    else { *rows = 2; *cols = 2; }
-    return nick;
-}
-
-static double fte_hint_axis(double value, double scale)
-{
-    return ceil((value - 1e-5) * scale) / scale;
-}
-
-static struct fte_hex *fte_font_hex(FteFont *font)
-{
-    struct fte_hex *hex = &font->hex;
-    if (hex->ready) return hex->font ? hex : NULL;
-    hex->ready = true;
-    struct fte_scaled *scaled = font->scaled;
-    if (!scaled) return NULL;
-    bool hinted = scaled->requested.hint_metrics != FTE_HINT_METRICS_OFF;
-    PangoMatrix ctm = font->key_matrix;
-    double scale_x = 1.0, scale_y = 1.0;
-    if (hinted) {
-        double x = 1.0, y = 0.0;
-        pango_matrix_transform_distance(&ctm, &x, &y);
-        scale_x = sqrt(x * x + y * y);
-        x = 0.0;
-        y = 1.0;
-        pango_matrix_transform_distance(&ctm, &x, &y);
-        scale_y = sqrt(x * x + y * y);
-        if (!(scale_x > 0)) scale_x = 1.0;
-        if (!(scale_y > 0)) scale_y = 1.0;
-    }
-    double size = fte_font_scale_factor(&scaled->font_matrix) / fte_pango_scale_factor(&ctm);
-    double mini_size = size / 2.2;
-    if (hinted) mini_size = fte_hint_axis(mini_size, scale_y);
-    PangoFontDescription *description =
-        pango_font_describe_with_absolute_size(PANGO_FONT(font));
-    if (!description) return NULL;
-    pango_font_description_unset_fields(description, PANGO_FONT_MASK_GRAVITY);
-    pango_font_description_set_family_static(description, "monospace");
-    pango_font_description_set_absolute_size(description, pango_units_from_double(mini_size));
-    struct fte_options options = scaled->requested;
-    PangoContext *context = fte_context_new_options(&options);
-    PangoFont *mini = NULL;
-    if (context) {
-        PangoMatrix matrix = ctm;
-        pango_context_set_matrix(context, &matrix);
-        pango_context_set_language(context,
-            pango_script_get_sample_language(PANGO_SCRIPT_LATIN));
-        mini = pango_font_map_load_font(fte_font_map(), context, description);
-        g_object_unref(context);
-    }
-    pango_font_description_free(description);
-    if (!mini) return NULL;
-    double width = 0, height = 0;
-    if (PANGO_IS_FC_FONT(mini)) {
-        FteFont *mini_font = (FteFont *)mini;
-        for (int i = 0; i < 16; i++) {
-            unsigned glyph = (unsigned)fte_nominal_glyph(mini, "0123456789ABCDEF"[i]);
-            struct fte_metric *metric = fte_run_metric(mini_font, glyph);
-            if (!metric || !metric->valid) continue;
-            if (metric->ink_w > width) width = metric->ink_w;
-            if (metric->ink_h > height) height = metric->ink_h;
-        }
-    }
-    double ascent, descent;
-    fte_font_extents(font, &ascent, &descent);
-    if (!(ascent + descent > 0)) {
-        ascent = 14.0;
-        descent = 0.0;
-    }
-    double pad = (ascent + descent) / 43.0;
-    if (pad > mini_size) pad = mini_size;
-    hex->font = mini;
-    hex->rows = 2;
-    hex->digit_width = width;
-    hex->digit_height = height;
-    hex->pad_x = pad;
-    hex->pad_y = pad;
-    if (hinted) {
-        hex->digit_width = fte_hint_axis(hex->digit_width, scale_x);
-        hex->digit_height = fte_hint_axis(hex->digit_height, scale_y);
-        hex->pad_x = fte_hint_axis(hex->pad_x, scale_x);
-        hex->pad_y = fte_hint_axis(hex->pad_y, scale_y);
-    }
-    hex->line_width = hex->pad_x < hex->pad_y ? hex->pad_x : hex->pad_y;
-    hex->box_height = 3 * hex->pad_y + hex->rows * (hex->pad_y + hex->digit_height);
-    if (hex->rows == 1 || hex->box_height <= ascent)
-        hex->box_descent = 2 * hex->pad_y;
-    else if (hex->box_height <= ascent + descent - 2 * hex->pad_y)
-        hex->box_descent = 2 * hex->pad_y + hex->box_height - ascent;
-    else
-        hex->box_descent = descent * hex->box_height / (ascent + descent);
-    if (hinted) hex->box_descent = fte_hint_axis(hex->box_descent, scale_y);
-    return hex;
-}
-
-static void fte_missing_metrics(FteFont *font, PangoGlyph glyph, PangoRectangle *ink,
-    PangoRectangle *logical)
-{
-    gunichar ch = (gunichar)(glyph & ~PANGO_GLYPH_UNKNOWN_FLAG);
-    if (ch == 0x20 || ch == 0x2423) {
-        int width = fte_absolute_size(font) / 4;
-        fte_font_compute_extents(font);
-        if (ink) {
-            ink->x = 0; ink->y = 0; ink->height = 0; ink->width = width;
-        }
-        if (logical) {
-            *logical = font->font_extents;
-            logical->width = width;
-        }
-        return;
-    }
-    struct fte_hex *hex = fte_font_hex(font);
-    if (!hex) {
-        if (ink) { ink->x = 0; ink->y = 0; ink->width = 0; ink->height = 0; }
-        if (logical) { logical->x = 0; logical->y = 0; logical->width = 0; logical->height = 0; }
-        return;
-    }
-    int rows, cols;
-    if (glyph == PANGO_GLYPH_INVALID_INPUT || ch > 0x10FFFF) { rows = hex->rows; cols = 1; }
-    else if (fte_ignorable_size(ch, &rows, &cols)) { }
-    else { rows = hex->rows; cols = (ch > 0xffff ? 6 : 4) / rows; }
-    if (ink) {
-        ink->x = (int)(1024.0 * hex->pad_x);
-        ink->y = (int)(1024.0 * (hex->box_descent - hex->box_height));
-        ink->width = (int)(1024.0 * (4 * hex->pad_x + cols * (hex->digit_width + hex->pad_x)));
-        ink->height = (int)(1024.0 * hex->box_height);
-    }
-    if (logical) {
-        logical->x = 0;
-        logical->y = (int)(1024.0 * (hex->box_descent - (hex->box_height + hex->pad_y)));
-        logical->width = (int)(1024.0 * (5 * hex->pad_x + cols * (hex->digit_width + hex->pad_x)));
-        logical->height = (int)(1024.0 * (hex->box_height + 2 * hex->pad_y));
-    }
-    (void)rows;
-}
-
-typedef struct _FteFontMap FteFontMap;
-typedef struct _FteFontMapClass FteFontMapClass;
-
-struct _FteFontMap {
-    PangoFcFontMap parent_instance;
-};
-
-struct _FteFontMapClass {
-    struct _PangoFcFontMapClass parent_class;
-};
-
-#define FTE_TYPE_FONT_MAP (fte_font_map_get_type())
-G_DEFINE_TYPE (FteFontMap, fte_font_map, PANGO_TYPE_FC_FONT_MAP)
-
-#define FTE_TYPE_FONT (fte_font_get_type())
-G_DEFINE_TYPE (FteFont, fte_font, PANGO_TYPE_FC_FONT)
-
-static void fte_font_map_init(FteFontMap *map) { (void)map; }
-
-static gconstpointer fte_context_key_get(PangoFcFontMap *map, PangoContext *context)
-{
-    (void)map;
-    gpointer key = g_object_get_qdata(G_OBJECT(context), fte_options_quark());
-    return key ? key : &fte_default_options;
-}
-
-static gpointer fte_context_key_copy(PangoFcFontMap *map, gconstpointer key)
-{
-    (void)map;
-    struct fte_options *copy = g_new(struct fte_options, 1);
-    if (copy) *copy = key ? *(const struct fte_options *)key : fte_default_options;
-    return copy;
-}
-
-static void fte_context_key_free(PangoFcFontMap *map, gpointer key)
-{
-    (void)map;
-    g_free(key);
-}
-
-static guint32 fte_context_key_hash(PangoFcFontMap *map, gconstpointer key)
-{
-    (void)map;
-    const struct fte_options *options = key ? key : &fte_default_options;
-    const unsigned char *bytes = (const unsigned char *)options;
-    guint32 hash = 0x811c9dc5u;
-    for (size_t i = 0; i < sizeof(*options); i++) hash = (hash ^ bytes[i]) * 16777619u;
-    return hash;
-}
-
-static gboolean fte_context_key_equal(PangoFcFontMap *map, gconstpointer a, gconstpointer b)
-{
-    (void)map;
-    if (!a) a = &fte_default_options;
-    if (!b) b = &fte_default_options;
-    return memcmp(a, b, sizeof(struct fte_options)) == 0;
-}
-
-struct fte_cairo_context {
-    double dpi;
-};
-
-static double fte_font_map_resolution(PangoFcFontMap *map, PangoContext *context)
-{
-    (void)map;
-    if (context) {
-        struct fte_cairo_context *info = g_object_get_qdata(G_OBJECT(context),
-            g_quark_from_static_string("pango-cairo-context-info"));
-        if (info && info->dpi > 0) return info->dpi;
-    }
-    return 96.0;
-}
-
-static void fte_font_map_fontset_key_substitute(PangoFcFontMap *map, PangoFcFontsetKey *key,
-    FcPattern *pattern)
-{
-    FcConfig *config = pango_fc_font_map_get_config(map);
-    FcConfigSubstitute(config, pattern, FcMatchPattern);
-    if (map->substitute_func) map->substitute_func(pattern, map->substitute_data);
-    if (key) fte_options_substitute(pango_fc_fontset_key_get_context_key(key), pattern);
-    FcConfigSetDefaultSubstitute(config, pattern);
-}
-
-static PangoFcFont *fte_font_map_create_font(PangoFcFontMap *map, PangoFcFontKey *key)
-{
-    const FcPattern *pattern = pango_fc_font_key_get_pattern(key);
-    const PangoMatrix *matrix = pango_fc_font_key_get_matrix(key);
-    const struct fte_options *options = pango_fc_font_key_get_context_key(key);
-    if (!pattern) return NULL;
-    struct fte_face *face = fte_face_get(pattern);
-    if (!face) return NULL;
-    double factor = 1.0;
-    if (matrix) {
-        factor = pango_matrix_get_font_scale_factor(matrix);
-        if (!(factor > 0)) factor = 1.0;
-    }
-    double size = fte_pattern_size(pattern) / factor;
-    FcMatrix fc_matrix, *value;
-    FcMatrixInit(&fc_matrix);
-    for (int i = 0; FcPatternGetMatrix(pattern, FC_MATRIX, i, &value) == FcResultMatch; i++)
-        FcMatrixMultiply(&fc_matrix, &fc_matrix, value);
-    struct fte_matrix font_matrix;
-    fte_matrix_init(&font_matrix, fc_matrix.xx, -fc_matrix.yx, -fc_matrix.xy, fc_matrix.yy,
-        0, 0);
-    fte_matrix_scale(&font_matrix, size, size);
-    struct fte_ft_options ft_options;
-    fte_pattern_ft_options(pattern, &ft_options);
-    if (!options) options = &fte_default_options;
-    struct fte_scaled *scaled = fte_scaled_get(face, &font_matrix, &font_matrix, options,
-        &ft_options);
-    if (!scaled) return NULL;
-    FteFont *font = g_object_new(FTE_TYPE_FONT, "pattern", pattern, "fontmap", map, NULL);
-    if (!font) return NULL;
-    font->scaled = scaled;
-    if (matrix) font->key_matrix = *matrix;
-    else font->key_matrix = (PangoMatrix){ 1, 0, 0, 1, 0, 0 };
-    font->parent_instance.is_hinted = options->hint_metrics != FTE_HINT_METRICS_OFF;
-    return (PangoFcFont *)font;
-}
-
-static void fte_font_map_class_init(FteFontMapClass *klass)
-{
-    struct _PangoFcFontMapClass *fc_class = (struct _PangoFcFontMapClass *)(void *)klass;
-    fc_class->fontset_key_substitute = fte_font_map_fontset_key_substitute;
-    fc_class->create_font = fte_font_map_create_font;
-    fc_class->context_key_get = fte_context_key_get;
-    fc_class->context_key_copy = fte_context_key_copy;
-    fc_class->context_key_free = fte_context_key_free;
-    fc_class->context_key_hash = fte_context_key_hash;
-    fc_class->context_key_equal = fte_context_key_equal;
-    fc_class->get_resolution = fte_font_map_resolution;
-}
-
-PangoFontMap *fte_font_map(void)
-{
-    if (!fte_map) fte_map = (PangoFontMap *)g_object_new(FTE_TYPE_FONT_MAP, NULL);
-    return fte_map;
-}
-
-PangoContext *fte_context_new_options(const struct fte_options *options)
-{
-    PangoFontMap *map = fte_font_map();
-    if (!map) return NULL;
-    PangoContext *context = pango_font_map_create_context(map);
-    if (!context) return NULL;
-    struct fte_options *copy = g_new(struct fte_options, 1);
-    if (!copy) { g_object_unref(context); return NULL; }
-    *copy = options ? *options : fte_default_options;
-    g_object_set_qdata_full(G_OBJECT(context), fte_options_quark(), copy, g_free);
-    return context;
-}
-
-PangoContext *fte_context_new(void)
-{
-    static const struct fte_options defaults = { FTE_ANTIALIAS_GRAY, FTE_HINT_STYLE_NONE,
-        FTE_HINT_METRICS_OFF, FTE_SUBPIXEL_DEFAULT, FTE_LCD_FILTER_DEFAULT };
-    return fte_context_new_options(&defaults);
-}
-
-static void fte_font_init(FteFont *font) { (void)font; }
-
-static int fte_units_floor(int v) { return v & ~(PANGO_SCALE - 1); }
-static int fte_units_ceil(int v) { return (v + PANGO_SCALE - 1) & ~(PANGO_SCALE - 1); }
-static int fte_pixels_ceil(int v) { return (v + PANGO_SCALE - 1) / PANGO_SCALE; }
-
-static bool fte_font_hinted(FteFont *font)
-{
-    return font->scaled && font->scaled->requested.hint_metrics != FTE_HINT_METRICS_OFF;
-}
-
-static void fte_font_compute_extents(FteFont *font)
-{
-    if (font->font_extents_set) return;
-    font->font_extents_set = true;
-    hb_font_t *hb = pango_font_get_hb_font(PANGO_FONT(font));
-    hb_font_extents_t extents;
-    if (!hb) return;
-    hb_font_get_extents_for_direction(hb, HB_DIRECTION_LTR, &extents);
-    font->font_extents.x = 0;
-    font->font_extents.width = 0;
-    font->font_extents.height = extents.ascender - extents.descender;
-    font->font_extents.y = -extents.ascender;
-    if (fte_font_hinted(font)) {
-        if (font->font_extents.y < 0) font->font_extents.y = fte_units_floor(
-            font->font_extents.y);
-        else font->font_extents.y = fte_units_ceil(font->font_extents.y);
-        if (font->font_extents.height < 0)
-            font->font_extents.height = fte_units_floor(extents.ascender) -
-                fte_units_ceil(extents.descender);
-        else
-            font->font_extents.height = fte_units_ceil(extents.ascender) -
-                fte_units_floor(extents.descender);
-    }
-}
-
-static PangoFontMetrics *(*fte_parent_get_metrics)(PangoFont *, PangoLanguage *);
-
-static PangoFontMetrics *fte_font_get_metrics(PangoFont *pfont, PangoLanguage *language)
-{
-    FteFont *font = (FteFont *)pfont;
-    if (!fte_parent_get_metrics) return NULL;
-    PangoFontMetrics *metrics = fte_parent_get_metrics(pfont, language);
-    if (!metrics || !fte_font_hinted(font)) return metrics;
-    metrics->ascent = fte_pixels_ceil(metrics->ascent) * PANGO_SCALE;
-    metrics->descent = fte_pixels_ceil(metrics->descent) * PANGO_SCALE;
-    metrics->height = fte_pixels_ceil(metrics->height) * PANGO_SCALE;
-    metrics->underline_position = fte_pixels_ceil(metrics->underline_position) * PANGO_SCALE;
-    metrics->underline_thickness = fte_pixels_ceil(metrics->underline_thickness) * PANGO_SCALE;
-    metrics->strikethrough_position = fte_pixels_ceil(metrics->strikethrough_position) *
-        PANGO_SCALE;
-    metrics->strikethrough_thickness = fte_pixels_ceil(metrics->strikethrough_thickness) *
-        PANGO_SCALE;
-    return metrics;
-}
-
-static void fte_font_get_glyph_extents(PangoFont *pfont, PangoGlyph glyph,
-    PangoRectangle *ink, PangoRectangle *logical)
-{
-    FteFont *font = (FteFont *)pfont;
-    fte_font_compute_extents(font);
-    if (glyph == PANGO_GLYPH_EMPTY) {
-        if (ink) { ink->x = 0; ink->y = 0; ink->width = 0; ink->height = 0; }
-        if (logical) *logical = font->font_extents;
-        return;
-    }
-    if (glyph & PANGO_GLYPH_UNKNOWN_FLAG) {
-        fte_missing_metrics(font, glyph, ink, logical);
-        return;
-    }
-    unsigned index = (unsigned)glyph;
-    struct fte_scaled *scaled = font->scaled;
-    struct fte_metric *metric = scaled ? fte_metric_lookup(scaled, index) : NULL;
-    if (scaled && !metric) {
-        metric = fte_metric_create(scaled, index);
-        if (metric) fte_glyph_metrics(scaled, index, metric);
-    }
-    if (metric && metric->valid) {
-        if (ink) {
-            if (metric->ink_w == 0 || metric->ink_h == 0) {
-                ink->x = 0; ink->y = 0; ink->width = 0; ink->height = 0;
-            } else {
-                ink->x = fte_units(metric->ink_x);
-                ink->y = fte_units(metric->ink_y);
-                ink->width = fte_units(metric->ink_w);
-                ink->height = fte_units(metric->ink_h);
-            }
-        }
-        if (logical) {
-            *logical = font->font_extents;
-            logical->width = fte_units(metric->adv_x);
-        }
-        return;
-    }
-    if (ink) { ink->x = 0; ink->y = 0; ink->width = 0; ink->height = 0; }
-    if (logical) {
-        *logical = font->font_extents;
-        logical->width = 0;
-    }
-}
-
-static void fte_font_class_init(FteFontClass *klass)
-{
-    PangoFontClass *font_class = (PangoFontClass *)(void *)klass;
-    fte_parent_get_metrics = font_class->get_metrics;
-    font_class->get_glyph_extents = fte_font_get_glyph_extents;
-    font_class->get_metrics = fte_font_get_metrics;
-}
-
-static void fte_rect_path(struct dpath *path, const struct fte_matrix *ctm, double x, double y,
-    double width, double height);
-
-static bool fte_fill_rect(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_matrix *ctm, double x, double y, double w, double h,
-    uint32_t colour, int antialias)
-{
-    struct dpath path;
-    dpath_init(&path);
-    fte_rect_path(&path, ctm, x, y, w, h);
-    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-    if (path.has_extents) {
-        x0 = fte_fixed_floor(path.min.x);
-        y0 = fte_fixed_floor(path.min.y);
-        x1 = fte_fixed_ceil(path.max.x);
-        y1 = fte_fixed_ceil(path.max.y);
-    }
-    if (x0 < clip.x0) x0 = clip.x0;
-    if (y0 < clip.y0) y0 = clip.y0;
-    if (x1 > clip.x1) x1 = clip.x1;
-    if (y1 > clip.y1) y1 = clip.y1;
-    if (x1 > width) x1 = width;
-    if (y1 > height) y1 = height;
-    if (x0 >= x1 || y0 >= y1) {
-        dpath_fini(&path);
-        return true;
-    }
-    int mw = x1 - x0, mh = y1 - y0;
-    unsigned char *mask = calloc((size_t)mw, (size_t)mh);
-    bool ok = false;
-    if (mask) {
-        struct drect rect = { x0, y0, x1, y1 };
-        if (dp_fill_mask(&path, rect, mask, mw, x0, y0, antialias)) {
-            dp_composite_over(pixels, stride, rect, mask, mw, x0, y0, colour,
-                (colour >> 24) == 0xff);
-            ok = true;
-        }
-        free(mask);
-    }
-    dpath_fini(&path);
-    return ok;
+    double nx = m->xx * (*x) + m->xy * (*y) + m->x0;
+    double ny = m->yx * (*x) + m->yy * (*y) + m->y0;
+    *x = nx;
+    *y = ny;
 }
 
 static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
@@ -2021,6 +1438,7 @@ static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
         if (dy < clip.y0 || dy >= clip.y1 || dy < 0 || dy >= height) continue;
         uint32_t *dst = pixels + (size_t)dy * (size_t)stride;
         int start = left < clip.x0 ? clip.x0 : left;
+        if (start < 0) start = 0;
         int end = left + glyph->width;
         if (end > clip.x1) end = clip.x1;
         if (end > width) end = width;
@@ -2052,324 +1470,1477 @@ static int fte_phase(double v)
     return (int)(floor(4 * (v + 0.125)) - 4 * floor(v + 0.125));
 }
 
-static uint32_t fte_run_colour(const PangoLayoutRun *run, uint32_t rgba, bool *background,
-    double *bg_r, double *bg_g, double *bg_b, double *bg_a)
-{
-    PangoColor *fg = NULL, *bg = NULL;
-    guint16 fg_alpha = 0, bg_alpha = 0;
-    for (GSList *l = run->item->analysis.extra_attrs; l; l = l->next) {
-        PangoAttribute *attr = l->data;
-        switch ((int)attr->klass->type) {
-        case PANGO_ATTR_FOREGROUND: fg = &((PangoAttrColor *)attr)->color; break;
-        case PANGO_ATTR_BACKGROUND: bg = &((PangoAttrColor *)attr)->color; break;
-        case PANGO_ATTR_FOREGROUND_ALPHA:
-            fg_alpha = (guint16)((PangoAttrInt *)attr)->value;
-            break;
-        case PANGO_ATTR_BACKGROUND_ALPHA:
-            bg_alpha = (guint16)((PangoAttrInt *)attr)->value;
-            break;
-        default: break;
-        }
-    }
-    *background = bg != NULL;
-    if (bg) {
-        *bg_r = bg->red / 65535.0;
-        *bg_g = bg->green / 65535.0;
-        *bg_b = bg->blue / 65535.0;
-        *bg_a = bg_alpha ? bg_alpha / 65535.0 : 1.0;
-    }
-    double alpha;
-    if (fg) {
-        double r = fg->red / 65535.0, g = fg->green / 65535.0, b = fg->blue / 65535.0;
-        alpha = fg_alpha ? fg_alpha / 65535.0 : 1.0;
-        return fte_colour(r, g, b, alpha);
-    }
-    double r, g, b;
-    double a = (rgba & 0xff) / 255.0;
-    r = ((rgba >> 24) & 0xff) / 255.0;
-    g = ((rgba >> 16) & 0xff) / 255.0;
-    b = ((rgba >> 8) & 0xff) / 255.0;
-    if (fg_alpha) a = fg_alpha / 65535.0;
-    return fte_colour(r, g, b, a);
-}
-
-static void fte_glyph_device_box(const struct fte_scaled *scaled, const struct fte_metric *m,
-    double gx, double gy, int32_t *x1, int32_t *y1, int32_t *x2, int32_t *y2);
-static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph);
-static void fte_draw_glyph(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_glyph *glyph, int left, int top, uint32_t colour);
-static int fte_position(double v);
-static int fte_phase(double v);
-
-static bool fte_paint_path(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct dpath *path, uint32_t colour, int stroke,
-    double line_width, int cap, int join, double miter, int antialias)
-{
-    if (clip.x0 >= clip.x1 || clip.y0 >= clip.y1) return true;
-    if (clip.x1 > width) clip.x1 = width;
-    if (clip.y1 > height) clip.y1 = height;
-    int mw = clip.x1 - clip.x0, mh = clip.y1 - clip.y0;
-    if (mw <= 0 || mh <= 0) return true;
-    unsigned char *mask = calloc((size_t)mw, (size_t)mh);
-    if (!mask) return false;
-    struct drect rect = { clip.x0, clip.y0, clip.x1, clip.y1 };
-    bool ok = stroke ?
-        dp_stroke_mask(path, line_width, cap, join, miter, rect, mask, mw, clip.x0, clip.y0,
-            antialias) :
-        dp_fill_mask(path, rect, mask, mw, clip.x0, clip.y0, antialias);
-    if (ok)
-        dp_composite_over(pixels, stride, rect, mask, mw, clip.x0, clip.y0, colour,
-            (colour >> 24) == 0xff);
-    free(mask);
-    return ok;
-}
-
-static void fte_path_line_fixed(struct dpath *path, int32_t x, int32_t y)
-{
-    dp_line_to(path, (double)x / 256.0, (double)y / 256.0);
-}
-
-static void fte_rect_path(struct dpath *path, const struct fte_matrix *ctm, double x, double y,
-    double width, double height)
-{
-    double px = x, py = y;
-    fte_matrix_transform_point(ctm, &px, &py);
-    dp_move_to(path, px, py);
-    struct dpoint p = { path->current.x, path->current.y };
-    double dx = width, dy = 0;
-    fte_matrix_transform_distance(ctm, &dx, &dy);
-    p.x += fte_fixed_24_8(dx);
-    p.y += fte_fixed_24_8(dy);
-    fte_path_line_fixed(path, p.x, p.y);
-    dx = 0; dy = height;
-    fte_matrix_transform_distance(ctm, &dx, &dy);
-    p.x += fte_fixed_24_8(dx);
-    p.y += fte_fixed_24_8(dy);
-    fte_path_line_fixed(path, p.x, p.y);
-    dx = -width; dy = 0;
-    fte_matrix_transform_distance(ctm, &dx, &dy);
-    p.x += fte_fixed_24_8(dx);
-    p.y += fte_fixed_24_8(dy);
-    fte_path_line_fixed(path, p.x, p.y);
-    dp_close_path(path);
-}
-
-static void fte_polygon_path(struct dpath *path, const struct fte_matrix *ctm,
-    const double points[][2], int count)
-{
-    for (int i = 0; i < count; i++) {
-        double x = points[i][0], y = points[i][1];
-        fte_matrix_transform_point(ctm, &x, &y);
-        if (!i) dp_move_to(path, x, y);
-        else dp_line_to(path, x, y);
-    }
-    dp_close_path(path);
-}
-
-static void fte_draw_box_frame(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_matrix *ctm, double x, double y, double w,
-    double h, double line_width, bool invalid, uint32_t colour, int antialias)
-{
-    struct dpath path;
-    dpath_init(&path);
-    fte_rect_path(&path, ctm, x, y, w, h);
-    if (invalid) {
-        const double cross[][2] = { { x, y }, { x + w, y + h }, { x + w, y }, { x, y + h } };
-        for (int i = 0; i < 4; i++) {
-            double px = cross[i][0], py = cross[i][1];
-            fte_matrix_transform_point(ctm, &px, &py);
-            if (!(i & 1)) dp_move_to(&path, px, py);
-            else dp_line_to(&path, px, py);
-        }
-    }
-    fte_paint_path(pixels, stride, width, height, clip, &path, colour, 1, line_width, 0, 0, 2.0,
-        antialias);
-    dpath_fini(&path);
-}
-
-static void fte_draw_digit(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_matrix *ctm, FteFont *font, gunichar ch,
-    double x, double y, uint32_t colour)
-{
-    if (!font->scaled) return;
-    struct fte_matrix ctm_scale = *ctm;
-    ctm_scale.x0 = 0;
-    ctm_scale.y0 = 0;
-    struct fte_matrix scale;
-    fte_matrix_multiply(&scale, &font->scaled->font_matrix, &ctm_scale);
-    struct fte_scaled *scaled = fte_scaled_get(font->scaled->face, &font->scaled->font_matrix,
-        &scale, &font->scaled->requested, &font->scaled->ft_options);
-    if (!scaled) return;
-    unsigned glyph = (unsigned)fte_nominal_glyph(PANGO_FONT(font), ch);
-    if (glyph & PANGO_GLYPH_UNKNOWN_FLAG) return;
-    struct fte_metric *metric = fte_run_metric(font, glyph);
-    if (!metric || !metric->valid) return;
-    double dx = x, dy = y;
-    fte_matrix_transform_point(ctm, &dx, &dy);
-    dx = (double)fte_fixed_24_8(dx) / 256.0;
-    dy = (double)fte_fixed_24_8(dy) / 256.0;
-    int32_t x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-    fte_glyph_device_box(scaled, metric, dx, dy, &x1, &y1, &x2, &y2);
-    int bx0 = fte_fixed_floor(x1), by0 = fte_fixed_floor(y1);
-    int bx1 = fte_fixed_ceil(x2), by1 = fte_fixed_ceil(y2);
-    bool contains = clip.x0 <= bx0 && clip.y0 <= by0 && clip.x1 >= bx1 && clip.y1 >= by1;
-    struct fte_rect limit;
-    if (contains) {
-        limit.x0 = 0;
-        limit.y0 = 0;
-        limit.x1 = width;
-        limit.y1 = height;
-    } else {
-        limit.x0 = clip.x0 > bx0 ? clip.x0 : bx0;
-        limit.y0 = clip.y0 > by0 ? clip.y0 : by0;
-        limit.x1 = clip.x1 < bx1 ? clip.x1 : bx1;
-        limit.y1 = clip.y1 < by1 ? clip.y1 : by1;
-        if (limit.x0 >= limit.x1 || limit.y0 >= limit.y1) return;
-    }
-    struct fte_glyph *entry = fte_glyph_get(scaled, glyph, (unsigned)fte_phase(dx),
-        (unsigned)fte_phase(dy), colour);
-    if (!entry) return;
-    fte_draw_glyph(pixels, stride, width, height, limit, entry, fte_position(dx) - entry->off_x,
-        fte_position(dy) - entry->off_y, colour);
-}
-
-static void fte_draw_unknown(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_matrix *ctm, FteFont *font, PangoGlyph glyph,
-    double cx, double cy, int advance, uint32_t colour, int antialias)
-{
-    gunichar ch = (gunichar)(glyph & ~PANGO_GLYPH_UNKNOWN_FLAG);
-    bool invalid = glyph == PANGO_GLYPH_INVALID_INPUT || ch > 0x10FFFF;
-    double box_width = (double)advance / 1024.0;
-    struct fte_hex *hex = fte_font_hex(font);
-    if (!hex) {
-        fte_draw_box_frame(pixels, stride, width, height, clip, ctm, cx + 1.5,
-            cy + 1.5 - 14, box_width - 3.0, 14 - 3.0, 1.0, invalid, colour, antialias);
-        return;
-    }
-    if (invalid) {
-        double frame = 3 * hex->pad_x + hex->digit_width + hex->pad_x;
-        double lsb = (box_width - frame) * .5;
-        lsb = floor(lsb / hex->pad_x) * hex->pad_x;
-        fte_draw_box_frame(pixels, stride, width, height, clip, ctm,
-            cx + lsb + 1.5 * hex->pad_x,
-            cy + hex->box_descent - hex->box_height + hex->pad_y * .5,
-            frame - hex->pad_x, hex->box_height - hex->pad_y, hex->line_width, true,
-            colour, antialias);
-        return;
-    }
-    if (ch == 0x2423 || g_unichar_type(ch) == G_UNICODE_SPACE_SEPARATOR) {
-        double x = cx + 0.5 * ((double)advance / 1024.0);
-        double y = cy + hex->box_descent - 0.5 * hex->box_height;
-        struct dpath path;
-        dpath_init(&path);
-        double radius = 1.5 * hex->line_width;
-        double px = x, py = y;
-        fte_matrix_transform_point(ctm, &px, &py);
-        dp_arc(&path, px, py, radius, 0, 2 * G_PI, false);
-        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
-            antialias);
-        dpath_fini(&path);
-        return;
-    }
-    if (ch == '\t') {
-        double y = cy + hex->box_descent - 0.5 * hex->box_height;
-        double wide = (double)advance / 1024.0;
-        double offset = 0.2 * wide;
-        double x = cx + offset;
-        double al = wide - 2 * offset;
-        double tl = hex->digit_width < 0.75 * al ? hex->digit_width : 0.75 * al;
-        double tw2 = 2.5 * hex->line_width;
-        double lw2 = 0.5 * hex->line_width;
-        const double points[][2] = {
-            { x - lw2, y - tw2 }, { x + lw2, y - tw2 }, { x + lw2, y - lw2 },
-            { x + al - tl, y - lw2 }, { x + al - tl, y - tw2 }, { x + al, y },
-            { x + al - tl, y + tw2 }, { x + al - tl, y + lw2 }, { x + lw2, y + lw2 },
-            { x + lw2, y + tw2 }, { x - lw2, y + tw2 } };
-        struct dpath path;
-        dpath_init(&path);
-        fte_polygon_path(&path, ctm, points, 11);
-        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
-            antialias);
-        dpath_fini(&path);
-        return;
-    }
-    if (ch == '\n' || ch == 0x2028 || ch == 0x2029) {
-        double wide = (double)advance / 1024.0;
-        double offset = 0.2 * wide;
-        double al = wide - 2 * offset;
-        double tl = hex->digit_width < 0.75 * al ? hex->digit_width : 0.75 * al;
-        double ah = al - 0.5 * tl;
-        double tw2 = 2.5 * hex->line_width;
-        double x = cx + offset;
-        double y = cy - (hex->box_height - al) / 2;
-        double lw2 = 0.5 * hex->line_width;
-        const double points[][2] = {
-            { x, y }, { x + tl, y - tw2 }, { x + tl, y - lw2 },
-            { x + al - lw2, y - lw2 }, { x + al - lw2, y - ah }, { x + al + lw2, y - ah },
-            { x + al + lw2, y + lw2 }, { x + tl, y + lw2 }, { x + tl, y + tw2 } };
-        struct dpath path;
-        dpath_init(&path);
-        fte_polygon_path(&path, ctm, points, 9);
-        fte_paint_path(pixels, stride, width, height, clip, &path, colour, 0, 0, 0, 0, 0,
-            antialias);
-        dpath_fini(&path);
-        return;
-    }
-    char buffer[8];
-    int rows, cols;
-    const char *name = fte_ignorable_size(ch, &rows, &cols);
-    if (!name) {
-        rows = hex->rows;
-        cols = (ch > 0xffff ? 6 : 4) / rows;
-        if (ch > 0xffff) snprintf(buffer, sizeof(buffer), "%06X", (unsigned)ch);
-        else snprintf(buffer, sizeof(buffer), "%04X", (unsigned)ch);
-        name = buffer;
-    }
-    double frame = 3 * hex->pad_x + cols * (hex->digit_width + hex->pad_x);
-    double lsb = (box_width - frame) * .5;
-    lsb = floor(lsb / hex->pad_x) * hex->pad_x;
-    fte_draw_box_frame(pixels, stride, width, height, clip, ctm,
-        cx + lsb + 1.5 * hex->pad_x,
-        cy + hex->box_descent - hex->box_height + hex->pad_y * .5,
-        frame - hex->pad_x, hex->box_height - hex->pad_y, hex->line_width, false, colour,
-        antialias);
-    double x0 = cx + lsb + hex->pad_x * 3;
-    double y0 = cy + hex->box_descent - hex->pad_y * 2 -
-        ((hex->rows - rows) * hex->digit_height / 2);
-    for (int row = 0; row < rows; row++) {
-        double y = y0 - (rows - 1 - row) * (hex->digit_height + hex->pad_y);
-        for (int col = 0; col < cols; col++) {
-            double x = x0 + col * (hex->digit_width + hex->pad_x);
-            if (!*name) return;
-            fte_draw_digit(pixels, stride, width, height, clip, ctm, (FteFont *)hex->font,
-                (gunichar)(unsigned char)*name, x, y, colour);
-            name++;
-        }
-    }
-}
-
-struct fte_pending {
-    struct fte_glyph *entry;
-    double x, y;
-    int32_t x1, y1, x2, y2;
+struct fte_font_desc {
+    char families[256];
+    int weight;
+    int slant;
+    int stretch;
+    double size;
 };
+
+static bool fte_match_weight(const char *tok, int *out)
+{
+    if (!strcasecmp(tok, "thin") || !strcasecmp(tok, "hairline")) { *out = FC_WEIGHT_THIN; return true; }
+    if (!strcasecmp(tok, "ultralight") || !strcasecmp(tok, "ultra-light") ||
+        !strcasecmp(tok, "extralight") || !strcasecmp(tok, "extra-light")) { *out = FC_WEIGHT_EXTRALIGHT; return true; }
+    if (!strcasecmp(tok, "light")) { *out = FC_WEIGHT_LIGHT; return true; }
+    if (!strcasecmp(tok, "semilight") || !strcasecmp(tok, "semi-light") ||
+        !strcasecmp(tok, "demilight") || !strcasecmp(tok, "demi-light")) { *out = FC_WEIGHT_DEMILIGHT; return true; }
+    if (!strcasecmp(tok, "book")) { *out = FC_WEIGHT_BOOK; return true; }
+    if (!strcasecmp(tok, "regular") || !strcasecmp(tok, "normal")) { *out = FC_WEIGHT_REGULAR; return true; }
+    if (!strcasecmp(tok, "medium")) { *out = FC_WEIGHT_MEDIUM; return true; }
+    if (!strcasecmp(tok, "semibold") || !strcasecmp(tok, "semi-bold") ||
+        !strcasecmp(tok, "demibold") || !strcasecmp(tok, "demi-bold")) { *out = FC_WEIGHT_SEMIBOLD; return true; }
+    if (!strcasecmp(tok, "bold")) { *out = FC_WEIGHT_BOLD; return true; }
+    if (!strcasecmp(tok, "extrabold") || !strcasecmp(tok, "extra-bold") ||
+        !strcasecmp(tok, "ultrabold") || !strcasecmp(tok, "ultra-bold")) { *out = FC_WEIGHT_EXTRABOLD; return true; }
+    if (!strcasecmp(tok, "black") || !strcasecmp(tok, "heavy")) { *out = FC_WEIGHT_BLACK; return true; }
+    if (!strcasecmp(tok, "extrablack") || !strcasecmp(tok, "extra-black") ||
+        !strcasecmp(tok, "ultrablack") || !strcasecmp(tok, "ultra-black")) { *out = FC_WEIGHT_EXTRABLACK; return true; }
+    char *endp = NULL;
+    long n = strtol(tok, &endp, 10);
+    if (endp && endp != tok && !*endp && n >= 1 && n <= 1000) {
+        *out = FcWeightFromOpenType((int)n);
+        return true;
+    }
+    return false;
+}
+
+static bool fte_match_slant(const char *tok, int *out)
+{
+    if (!strcasecmp(tok, "italic")) { *out = FC_SLANT_ITALIC; return true; }
+    if (!strcasecmp(tok, "oblique")) { *out = FC_SLANT_OBLIQUE; return true; }
+    if (!strcasecmp(tok, "roman")) { *out = FC_SLANT_ROMAN; return true; }
+    return false;
+}
+
+static bool fte_match_stretch(const char *tok, int *out)
+{
+    if (!strcasecmp(tok, "ultracondensed") || !strcasecmp(tok, "ultra-condensed")) { *out = FC_WIDTH_ULTRACONDENSED; return true; }
+    if (!strcasecmp(tok, "extracondensed") || !strcasecmp(tok, "extra-condensed")) { *out = FC_WIDTH_EXTRACONDENSED; return true; }
+    if (!strcasecmp(tok, "condensed")) { *out = FC_WIDTH_CONDENSED; return true; }
+    if (!strcasecmp(tok, "semicondensed") || !strcasecmp(tok, "semi-condensed")) { *out = FC_WIDTH_SEMICONDENSED; return true; }
+    if (!strcasecmp(tok, "semiexpanded") || !strcasecmp(tok, "semi-expanded")) { *out = FC_WIDTH_SEMIEXPANDED; return true; }
+    if (!strcasecmp(tok, "expanded")) { *out = FC_WIDTH_EXPANDED; return true; }
+    if (!strcasecmp(tok, "extraexpanded") || !strcasecmp(tok, "extra-expanded")) { *out = FC_WIDTH_EXTRAEXPANDED; return true; }
+    if (!strcasecmp(tok, "ultraexpanded") || !strcasecmp(tok, "ultra-expanded")) { *out = FC_WIDTH_ULTRAEXPANDED; return true; }
+    return false;
+}
+
+enum { FTE_DESC_FAMILY = 1, FTE_DESC_WEIGHT = 2, FTE_DESC_SLANT = 4, FTE_DESC_STRETCH = 8,
+    FTE_DESC_SIZE = 16 };
+
+static unsigned fte_parse_font_desc(const char *str, struct fte_font_desc *out)
+{
+    unsigned mask = 0;
+    memset(out, 0, sizeof(*out));
+    out->weight = FC_WEIGHT_REGULAR;
+    out->slant = FC_SLANT_ROMAN;
+    out->stretch = FC_WIDTH_NORMAL;
+    out->size = 0.0;
+    if (!str || !*str) {
+        strcpy(out->families, "sans");
+        return mask;
+    }
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", str);
+    size_t len = strlen(buf);
+    while (len > 0 && isspace((unsigned char)buf[len - 1])) buf[--len] = '\0';
+
+    while (len > 0) {
+        size_t start = len;
+        while (start > 0 && !isspace((unsigned char)buf[start - 1]) && buf[start - 1] != ',')
+            start--;
+        const char *tok = buf + start;
+        if (isdigit((unsigned char)tok[0])) {
+            char *endp = NULL;
+            double v = strtod(tok, &endp);
+            if (endp && (!*endp || !strcasecmp(endp, "px") || !strcasecmp(endp, "pt"))) {
+                if (v > 0.0 && isfinite(v)) {
+                    out->size = strcasecmp(endp, "px") ? v * 96.0 / 72.0 : v;
+                    mask |= FTE_DESC_SIZE;
+                }
+                len = start;
+                while (len > 0 && isspace((unsigned char)buf[len - 1])) len--;
+                buf[len] = '\0';
+                continue;
+            }
+        }
+        int val = 0;
+        if (fte_match_weight(tok, &val)) {
+            out->weight = val;
+            mask |= FTE_DESC_WEIGHT;
+            len = start;
+            while (len > 0 && isspace((unsigned char)buf[len - 1])) len--;
+            buf[len] = '\0';
+            continue;
+        }
+        if (fte_match_slant(tok, &val)) {
+            out->slant = val;
+            mask |= FTE_DESC_SLANT;
+            len = start;
+            while (len > 0 && isspace((unsigned char)buf[len - 1])) len--;
+            buf[len] = '\0';
+            continue;
+        }
+        if (fte_match_stretch(tok, &val)) {
+            out->stretch = val;
+            mask |= FTE_DESC_STRETCH;
+            len = start;
+            while (len > 0 && isspace((unsigned char)buf[len - 1])) len--;
+            buf[len] = '\0';
+            continue;
+        }
+        break;
+    }
+    while (len > 0 && (isspace((unsigned char)buf[len - 1]) || buf[len - 1] == ','))
+        buf[--len] = '\0';
+    const char *p = buf;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p) mask |= FTE_DESC_FAMILY;
+    snprintf(out->families, sizeof(out->families), "%s", *p ? p : "sans");
+    return mask;
+}
+
+
+struct fte_fontset {
+    struct fte_fontset *next;
+    int refcount;
+    char families[256];
+    int weight;
+    int slant;
+    int stretch;
+    double size;
+    FcPattern *base;
+    FcFontSet *fs;
+    struct fte_scaled **fonts;
+    int count;
+    double ascent;
+    double descent;
+};
+
+static struct fte_fontset *fte_fontsets;
+static int fte_fontset_count;
+#define FTE_FONTSET_LIMIT 64
+#define FTE_MARKUP_MAX_DEPTH 32
+#define FTE_MAX_TEXT_LEN 65536
+#define FTE_MAX_STYLES 4096
+
+static struct fte_scaled *fte_scaled_from_pattern(const FcPattern *pattern)
+{
+    if (!pattern) return NULL;
+    struct fte_face *face = fte_face_get(pattern);
+    if (!face) return NULL;
+    double size = fte_pattern_size(pattern);
+    FcMatrix fc_matrix, *value;
+    FcMatrixInit(&fc_matrix);
+    for (int i = 0; FcPatternGetMatrix(pattern, FC_MATRIX, i, &value) == FcResultMatch; i++)
+        FcMatrixMultiply(&fc_matrix, &fc_matrix, value);
+    struct fte_matrix font_matrix;
+    fte_matrix_init(&font_matrix, fc_matrix.xx, -fc_matrix.yx, -fc_matrix.xy, fc_matrix.yy,
+        0, 0);
+    fte_matrix_scale(&font_matrix, size, size);
+    struct fte_ft_options ft_options;
+    fte_pattern_ft_options(pattern, &ft_options);
+    return fte_scaled_get(face, &font_matrix, &font_matrix, &fte_render_options, &ft_options);
+}
+
+static hb_font_t *fte_scaled_hb(struct fte_scaled *scaled)
+{
+    if (!scaled || !scaled->face || !scaled->face->face) return NULL;
+    fte_face_scale(scaled->face, &scaled->scale);
+    if (!scaled->hb) {
+        scaled->hb = hb_ft_font_create_referenced(scaled->face->face);
+        if (!scaled->hb) return NULL;
+        hb_ft_font_set_load_flags(scaled->hb, scaled->load_flags);
+    } else {
+        hb_ft_font_changed(scaled->hb);
+    }
+    return scaled->hb;
+}
+
+static struct fte_scaled *fte_fontset_font(struct fte_fontset *set, int index)
+{
+    if (!set || index < 0 || index >= set->count) return NULL;
+    if (set->fonts[index]) return set->fonts[index];
+    FcPattern *rendered = FcFontRenderPrepare(NULL, set->base, set->fs->fonts[index]);
+    if (!rendered) return NULL;
+    struct fte_scaled *scaled = fte_scaled_from_pattern(rendered);
+    FcPatternDestroy(rendered);
+    set->fonts[index] = scaled;
+    return scaled;
+}
+
+static void fte_scaled_extents(struct fte_scaled *scaled, double *ascent, double *descent)
+{
+    *ascent = 0.0;
+    *descent = 0.0;
+    if (!scaled || !scaled->face || !scaled->face->face) return;
+    FT_Face ft = scaled->face->face;
+    fte_face_scale(scaled->face, &scaled->scale);
+    if (FT_IS_SCALABLE(ft)) {
+        double y_scale = scaled->face->y_scale;
+        if (scaled->hint_metrics) {
+            *ascent = fte_from_26_6(ft->size->metrics.ascender);
+            *descent = -fte_from_26_6(ft->size->metrics.descender);
+        } else {
+            *ascent = (double)ft->ascender / (double)ft->units_per_EM * y_scale;
+            *descent = -(double)ft->descender / (double)ft->units_per_EM * y_scale;
+        }
+    } else {
+        double sy = scaled->face->have_shape ? fabs(scaled->face->shape.yy) : 1.0;
+        *ascent = fte_from_26_6(ft->size->metrics.ascender) * sy;
+        *descent = -fte_from_26_6(ft->size->metrics.descender) * sy;
+    }
+    if (*ascent < 0.0) *ascent = 0.0;
+    if (*descent < 0.0) *descent = 0.0;
+}
+
+static void fte_fontset_free(struct fte_fontset *set)
+{
+    if (!set) return;
+    free(set->fonts);
+    if (set->fs) FcFontSetDestroy(set->fs);
+    if (set->base) FcPatternDestroy(set->base);
+    free(set);
+}
+
+static void fte_fontset_unref(struct fte_fontset *set)
+{
+    if (!set) return;
+    if (--set->refcount <= 0) fte_fontset_free(set);
+}
+
+static struct fte_fontset *fte_fontset_get(const struct fte_font_desc *desc, double size)
+{
+    if (size <= 0.0) size = desc->size > 0.0 ? desc->size : 12.0;
+    struct fte_fontset **prev = &fte_fontsets;
+    for (struct fte_fontset *s = fte_fontsets; s; prev = &s->next, s = s->next) {
+        if (s->weight == desc->weight && s->slant == desc->slant &&
+            s->stretch == desc->stretch && fabs(s->size - size) < 1e-6 &&
+            strcmp(s->families, desc->families) == 0) {
+            if (s != fte_fontsets) {
+                *prev = s->next;
+                s->next = fte_fontsets;
+                fte_fontsets = s;
+            }
+            s->refcount++;
+            return s;
+        }
+    }
+    FcPattern *pat = FcPatternCreate();
+    if (!pat) return NULL;
+    char copy[256];
+    snprintf(copy, sizeof(copy), "%s", desc->families);
+    char *save = NULL;
+    for (char *tok = strtok_r(copy, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok && isspace((unsigned char)*tok)) tok++;
+        size_t l = strlen(tok);
+        while (l > 0 && isspace((unsigned char)tok[l - 1])) tok[--l] = '\0';
+        if (*tok) FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)tok);
+    }
+    FcPatternAddInteger(pat, FC_WEIGHT, desc->weight);
+    FcPatternAddInteger(pat, FC_SLANT, desc->slant);
+    FcPatternAddInteger(pat, FC_WIDTH, desc->stretch);
+    FcPatternAddDouble(pat, FC_DPI, 96.0);
+    FcPatternAddDouble(pat, FC_SIZE, size * 72.0 / 96.0);
+    FcPatternAddDouble(pat, FC_PIXEL_SIZE, size);
+    FcConfigSubstitute(NULL, pat, FcMatchPattern);
+    fte_options_substitute(&fte_render_options, pat);
+    FcDefaultSubstitute(pat);
+
+    FcResult res = FcResultMatch;
+    FcFontSet *fs = FcFontSort(NULL, pat, FcTrue, NULL, &res);
+    if (!fs || fs->nfont <= 0) {
+        if (fs) FcFontSetDestroy(fs);
+        FcPatternDestroy(pat);
+        return NULL;
+    }
+    struct fte_fontset *set = calloc(1, sizeof(*set));
+    if (!set) {
+        FcFontSetDestroy(fs);
+        FcPatternDestroy(pat);
+        return NULL;
+    }
+    set->refcount = 2;
+    snprintf(set->families, sizeof(set->families), "%s", desc->families);
+    set->weight = desc->weight;
+    set->slant = desc->slant;
+    set->stretch = desc->stretch;
+    set->size = size;
+    set->base = pat;
+    set->fs = fs;
+    set->count = fs->nfont;
+    set->fonts = calloc((size_t)set->count, sizeof(*set->fonts));
+    if (!set->fonts) {
+        fte_fontset_free(set);
+        return NULL;
+    }
+    struct fte_scaled *primary = fte_fontset_font(set, 0);
+    if (primary) fte_scaled_extents(primary, &set->ascent, &set->descent);
+    if (fte_fontset_count >= FTE_FONTSET_LIMIT && fte_fontsets) {
+        struct fte_fontset **pp = &fte_fontsets;
+        while (*pp && (*pp)->next) pp = &(*pp)->next;
+        if (*pp) {
+            struct fte_fontset *evicted = *pp;
+            *pp = NULL;
+            fte_fontset_count--;
+            fte_fontset_unref(evicted);
+        }
+    }
+    set->next = fte_fontsets;
+    fte_fontsets = set;
+    fte_fontset_count++;
+    return set;
+}
+
+static bool fte_is_cluster_continuation(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+{
+    if (cp == 0x200c || cp == 0x200d) return true;
+    if ((cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef)) return true;
+    if (cp >= 0x1f3fb && cp <= 0x1f3ff) return true;
+    hb_unicode_general_category_t cat = hb_unicode_general_category(ufuncs, cp);
+    return cat == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK;
+}
+
+static bool fte_consider_as_space(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+{
+    switch (hb_unicode_general_category(ufuncs, cp)) {
+    case HB_UNICODE_GENERAL_CATEGORY_CONTROL:
+    case HB_UNICODE_GENERAL_CATEGORY_FORMAT:
+    case HB_UNICODE_GENERAL_CATEGORY_SURROGATE:
+    case HB_UNICODE_GENERAL_CATEGORY_LINE_SEPARATOR:
+    case HB_UNICODE_GENERAL_CATEGORY_PARAGRAPH_SEPARATOR:
+    case HB_UNICODE_GENERAL_CATEGORY_SPACE_SEPARATOR:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int fte_fontset_pick(struct fte_fontset *set, hb_unicode_funcs_t *ufuncs,
+    uint32_t cp, int current)
+{
+    if (!set || set->count <= 0) return -1;
+    if (current >= 0 && current < set->count) {
+        if (cp == 0x200c || cp == 0x200d ||
+            (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef))
+            return current;
+        FcCharSet *cs = NULL;
+        if (FcPatternGetCharSet(set->fs->fonts[current], FC_CHARSET, 0, &cs) == FcResultMatch &&
+            cs && FcCharSetHasChar(cs, cp))
+            return current;
+        if (fte_is_cluster_continuation(ufuncs, cp)) {
+            for (int i = 0; i < set->count; i++) {
+                FcCharSet *mcs = NULL;
+                if (FcPatternGetCharSet(set->fs->fonts[i], FC_CHARSET, 0, &mcs) == FcResultMatch &&
+                    mcs && FcCharSetHasChar(mcs, cp))
+                    return i;
+            }
+            return current;
+        }
+    }
+    for (int i = 0; i < set->count; i++) {
+        FcCharSet *cs = NULL;
+        if (FcPatternGetCharSet(set->fs->fonts[i], FC_CHARSET, 0, &cs) == FcResultMatch && cs) {
+            if (FcCharSetHasChar(cs, cp)) return i;
+        }
+    }
+    return 0;
+}
+
+static size_t fte_utf8_next(const char *s, size_t len, size_t pos, uint32_t *out)
+{
+    unsigned char c = (unsigned char)s[pos];
+    if (c < 0x80) { *out = c; return pos + 1; }
+    if ((c & 0xe0) == 0xc0 && pos + 1 < len && ((unsigned char)s[pos + 1] & 0xc0) == 0x80) {
+        uint32_t cp = ((uint32_t)(c & 0x1f) << 6) | ((unsigned char)s[pos + 1] & 0x3f);
+        *out = cp >= 0x80 ? cp : 0xfffd;
+        return pos + 2;
+    }
+    if ((c & 0xf0) == 0xe0 && pos + 2 < len &&
+        ((unsigned char)s[pos + 1] & 0xc0) == 0x80 && ((unsigned char)s[pos + 2] & 0xc0) == 0x80) {
+        uint32_t cp = ((uint32_t)(c & 0x0f) << 12) |
+            ((uint32_t)((unsigned char)s[pos + 1] & 0x3f) << 6) |
+            ((unsigned char)s[pos + 2] & 0x3f);
+        *out = (cp >= 0x800 && !(cp >= 0xd800 && cp <= 0xdfff)) ? cp : 0xfffd;
+        return pos + 3;
+    }
+    if ((c & 0xf8) == 0xf0 && pos + 3 < len &&
+        ((unsigned char)s[pos + 1] & 0xc0) == 0x80 &&
+        ((unsigned char)s[pos + 2] & 0xc0) == 0x80 &&
+        ((unsigned char)s[pos + 3] & 0xc0) == 0x80) {
+        uint32_t cp = ((uint32_t)(c & 0x07) << 18) |
+            ((uint32_t)((unsigned char)s[pos + 1] & 0x3f) << 12) |
+            ((uint32_t)((unsigned char)s[pos + 2] & 0x3f) << 6) |
+            ((unsigned char)s[pos + 3] & 0x3f);
+        *out = (cp >= 0x10000 && cp <= 0x10ffff) ? cp : 0xfffd;
+        return pos + 4;
+    }
+    *out = 0xfffd;
+    return pos + 1;
+}
+
+struct fte_style {
+    struct fte_font_desc desc;
+    double size;
+    bool has_fg;
+    uint32_t fg;
+    uint16_t fg_alpha;
+    bool has_alpha;
+    bool has_bg;
+    uint32_t bg;
+    bool has_bg_alpha;
+    uint16_t bg_alpha;
+    bool underline;
+    bool strikethrough;
+};
+
+struct fte_style_table {
+    struct fte_style *items;
+    size_t len;
+    size_t cap;
+};
+
+struct fte_char {
+    uint32_t cp;
+    uint16_t style_idx;
+    hb_script_t script;
+    uint8_t bidi_level;
+    bool emoji;
+};
+
+static bool fte_style_equal(const struct fte_style *a, const struct fte_style *b)
+{
+    return a->desc.weight == b->desc.weight && a->desc.slant == b->desc.slant &&
+        a->desc.stretch == b->desc.stretch && fabs(a->size - b->size) < 1e-6 &&
+        a->has_fg == b->has_fg && a->fg == b->fg && a->fg_alpha == b->fg_alpha &&
+        a->has_alpha == b->has_alpha && a->has_bg == b->has_bg && a->bg == b->bg &&
+        a->has_bg_alpha == b->has_bg_alpha && a->bg_alpha == b->bg_alpha &&
+        a->underline == b->underline && a->strikethrough == b->strikethrough &&
+        strcmp(a->desc.families, b->desc.families) == 0;
+}
+
+static uint16_t fte_style_intern(struct fte_style_table *tbl, const struct fte_style *st)
+{
+    for (size_t i = 0; i < tbl->len; i++) {
+        if (fte_style_equal(&tbl->items[i], st)) return (uint16_t)i;
+    }
+    if (tbl->len >= FTE_MAX_STYLES) return 0;
+    if (tbl->len >= tbl->cap) {
+        size_t ncap = tbl->cap ? tbl->cap * 2 : 8;
+        if (ncap > FTE_MAX_STYLES) ncap = FTE_MAX_STYLES;
+        struct fte_style *ni = realloc(tbl->items, ncap * sizeof(*ni));
+        if (!ni) return 0;
+        tbl->items = ni;
+        tbl->cap = ncap;
+    }
+    tbl->items[tbl->len] = *st;
+    return (uint16_t)(tbl->len++);
+}
+
+static bool fte_parse_hex_colour(const char *s, uint32_t *out)
+{
+    if (!s || s[0] != '#') return false;
+    size_t n = strlen(s + 1);
+    unsigned long v = 0;
+    char *endp = NULL;
+    v = strtoul(s + 1, &endp, 16);
+    if (!endp || *endp) return false;
+    if (n == 3) {
+        uint32_t r = ((v >> 8) & 0xf) * 17;
+        uint32_t g = ((v >> 4) & 0xf) * 17;
+        uint32_t b = (v & 0xf) * 17;
+        *out = (r << 24) | (g << 16) | (b << 8) | 0xff;
+        return true;
+    }
+    if (n == 6) {
+        *out = ((uint32_t)v << 8) | 0xff;
+        return true;
+    }
+    if (n == 8) {
+        *out = (uint32_t)v;
+        return true;
+    }
+    if (n == 12) {
+        uint32_t r = (uint32_t)((v >> 32) & 0xffff) / 257u;
+        uint32_t g = (uint32_t)((v >> 16) & 0xffff) / 257u;
+        uint32_t b = (uint32_t)(v & 0xffff) / 257u;
+        *out = (r << 24) | (g << 16) | (b << 8) | 0xff;
+        return true;
+    }
+    return false;
+}
+
+static bool fte_append_char(struct fte_char **arr, size_t *len, size_t *cap,
+    uint32_t cp, uint16_t style_idx)
+{
+    if (cp == '\n' || cp == '\r') cp = ' ';
+    if (*len >= FTE_MAX_TEXT_LEN) return true;
+    if (*len >= *cap) {
+        size_t ncap = *cap ? *cap * 2 : 64;
+        if (ncap > FTE_MAX_TEXT_LEN) ncap = FTE_MAX_TEXT_LEN;
+        struct fte_char *na = realloc(*arr, ncap * sizeof(*na));
+        if (!na) return false;
+        *arr = na;
+        *cap = ncap;
+    }
+    (*arr)[*len].cp = cp;
+    (*arr)[*len].style_idx = style_idx;
+    (*arr)[*len].script = HB_SCRIPT_COMMON;
+    (*arr)[*len].bidi_level = 0;
+    (*len)++;
+    return true;
+}
+
+static void fte_apply_span_attr(struct fte_style *st, const char *key, const char *val)
+{
+    if (!strcasecmp(key, "foreground") || !strcasecmp(key, "fgcolor") || !strcasecmp(key, "color")) {
+        uint32_t c = 0;
+        if (fte_parse_hex_colour(val, &c)) {
+            st->has_fg = true;
+            st->fg = c | 0xffu;
+            if (strlen(val) == 9) {
+                st->has_alpha = true;
+                st->fg_alpha = (uint16_t)((c & 0xffu) * 257u);
+            }
+        }
+    } else if (!strcasecmp(key, "background") || !strcasecmp(key, "bgcolor")) {
+        uint32_t c = 0;
+        if (fte_parse_hex_colour(val, &c)) {
+            st->has_bg = true;
+            st->bg = c | 0xffu;
+            if (strlen(val) == 9) {
+                st->has_bg_alpha = true;
+                st->bg_alpha = (uint16_t)((c & 0xffu) * 257u);
+            }
+        }
+    } else if (!strcasecmp(key, "bgalpha")) {
+        char *endp = NULL;
+        double v = strtod(val, &endp);
+        if (endp && endp != val && isfinite(v) && v >= 0.0) {
+            if (*endp == '%') v = (v > 100.0 ? 100.0 : v) * 65535.0 / 100.0;
+            else if (v > 65535.0) v = 65535.0;
+            st->has_bg_alpha = true;
+            st->bg_alpha = (uint16_t)v;
+        }
+    } else if (!strcasecmp(key, "alpha") || !strcasecmp(key, "fgalpha")) {
+        char *endp = NULL;
+        double v = strtod(val, &endp);
+        if (endp && endp != val && isfinite(v) && v >= 0.0) {
+            if (*endp == '%') {
+                if (v > 100.0) v = 100.0;
+                st->fg_alpha = (uint16_t)(v * 65535.0 / 100.0);
+            } else {
+                if (v > 65535.0) v = 65535.0;
+                st->fg_alpha = (uint16_t)v;
+            }
+            st->has_alpha = true;
+        }
+    } else if (!strcasecmp(key, "weight") || !strcasecmp(key, "font_weight")) {
+        int w = 0;
+        if (fte_match_weight(val, &w)) st->desc.weight = w;
+    } else if (!strcasecmp(key, "style") || !strcasecmp(key, "font_style")) {
+        int sl = 0;
+        if (fte_match_slant(val, &sl)) st->desc.slant = sl;
+    } else if (!strcasecmp(key, "stretch") || !strcasecmp(key, "font_stretch")) {
+        int sw = 0;
+        if (fte_match_stretch(val, &sw)) st->desc.stretch = sw;
+    } else if (!strcasecmp(key, "face") || !strcasecmp(key, "font_family")) {
+        if (*val) snprintf(st->desc.families, sizeof(st->desc.families), "%s", val);
+    } else if (!strcasecmp(key, "underline")) {
+        st->underline = strcasecmp(val, "none") && strcasecmp(val, "false") &&
+            strcasecmp(val, "no") && strcmp(val, "0");
+    } else if (!strcasecmp(key, "strikethrough")) {
+        st->strikethrough = !strcasecmp(val, "true") || !strcasecmp(val, "yes") ||
+            !strcasecmp(val, "t") || !strcasecmp(val, "y") || !strcmp(val, "1");
+    } else if (!strcasecmp(key, "font") || !strcasecmp(key, "font_desc")) {
+        struct fte_font_desc d;
+        unsigned mask = fte_parse_font_desc(val, &d);
+        if (mask & FTE_DESC_FAMILY) memcpy(st->desc.families, d.families, sizeof(d.families));
+        if (mask & FTE_DESC_WEIGHT) st->desc.weight = d.weight;
+        if (mask & FTE_DESC_SLANT) st->desc.slant = d.slant;
+        if (mask & FTE_DESC_STRETCH) st->desc.stretch = d.stretch;
+        if (mask & FTE_DESC_SIZE) st->size = d.size;
+    } else if (!strcasecmp(key, "size") || !strcasecmp(key, "font_size")) {
+        if (!strcasecmp(val, "xx-small")) st->size *= 0.5787;
+        else if (!strcasecmp(val, "x-small")) st->size *= 0.6944;
+        else if (!strcasecmp(val, "small")) st->size *= 0.8333;
+        else if (!strcasecmp(val, "large")) st->size *= 1.2;
+        else if (!strcasecmp(val, "x-large")) st->size *= 1.44;
+        else if (!strcasecmp(val, "xx-large")) st->size *= 1.728;
+        else if (!strcasecmp(val, "smaller")) st->size /= 1.2;
+        else if (!strcasecmp(val, "larger")) st->size *= 1.2;
+        else {
+            char *endp = NULL;
+            double v = strtod(val, &endp);
+            if (endp && endp != val && isfinite(v) && v > 0.0) {
+                if (*endp == '%') st->size *= v / 100.0;
+                else if (!strcasecmp(endp, "pt")) st->size = v * 96.0 / 72.0;
+                else if (!strcasecmp(endp, "px")) st->size = v;
+                else if (!*endp) st->size = v / 1024.0 * 96.0 / 72.0;
+            }
+        }
+    }
+}
+
+static struct fte_char *fte_parse_text(const char *text, const struct fte_style *base,
+    bool markup, struct fte_style_table *styles, size_t *out_len)
+{
+    *out_len = 0;
+    if (!text || !*text) return NULL;
+    size_t slen = strnlen(text, FTE_MAX_TEXT_LEN * 4);
+    struct fte_char *arr = NULL;
+    size_t len = 0, cap = 0;
+    uint16_t base_idx = fte_style_intern(styles, base);
+    if (!markup) {
+        size_t pos = 0;
+        while (pos < slen) {
+            uint32_t cp = 0;
+            pos = fte_utf8_next(text, slen, pos, &cp);
+            if (!fte_append_char(&arr, &len, &cap, cp, base_idx)) { free(arr); return NULL; }
+        }
+        *out_len = len;
+        return arr;
+    }
+    struct fte_style stack[FTE_MARKUP_MAX_DEPTH];
+    uint16_t idx_stack[FTE_MARKUP_MAX_DEPTH];
+    int depth = 0;
+    int skipped = 0;
+    stack[0] = *base;
+    idx_stack[0] = base_idx;
+    size_t pos = 0;
+    while (pos < slen) {
+        if (text[pos] == '<') {
+            const char *gt = memchr(text + pos, '>', slen - pos);
+            if (!gt) break;
+            size_t tlen = (size_t)(gt - (text + pos + 1));
+            const char *tag = text + pos + 1;
+            if (tlen > 0 && tag[0] == '/') {
+                if (skipped > 0) skipped--;
+                else if (depth > 0) depth--;
+            } else {
+                struct fte_style next = stack[depth];
+                size_t i = 0;
+                while (i < tlen && !isspace((unsigned char)tag[i]) && tag[i] != '/') i++;
+                if (i == 1 && (tag[0] == 'b' || tag[0] == 'B')) next.desc.weight = FC_WEIGHT_BOLD;
+                else if (i == 1 && (tag[0] == 'i' || tag[0] == 'I')) next.desc.slant = FC_SLANT_ITALIC;
+                else if (i == 1 && (tag[0] == 'u' || tag[0] == 'U')) next.underline = true;
+                else if (i == 1 && (tag[0] == 's' || tag[0] == 'S')) next.strikethrough = true;
+                else if (i == 2 && !strncasecmp(tag, "tt", 2))
+                    snprintf(next.desc.families, sizeof(next.desc.families), "monospace");
+                else if (i == 3 && !strncasecmp(tag, "big", 3)) next.size *= 1.2;
+                else if (i == 5 && !strncasecmp(tag, "small", 5)) next.size /= 1.2;
+                else if (i == 4 && !strncasecmp(tag, "span", 4)) {
+                    while (i < tlen) {
+                        while (i < tlen && isspace((unsigned char)tag[i])) i++;
+                        size_t ks = i;
+                        while (i < tlen && tag[i] != '=' && !isspace((unsigned char)tag[i]) && tag[i] != '/') i++;
+                        size_t kl = i - ks;
+                        while (i < tlen && isspace((unsigned char)tag[i])) i++;
+                        if (i >= tlen || tag[i] != '=') break;
+                        i++;
+                        while (i < tlen && isspace((unsigned char)tag[i])) i++;
+                        if (i >= tlen || (tag[i] != '"' && tag[i] != '\'')) break;
+                        char q = tag[i++];
+                        size_t vs = i;
+                        while (i < tlen && tag[i] != q) i++;
+                        size_t vl = i - vs;
+                        if (i < tlen && tag[i] == q) i++;
+                        char kbuf[64], vbuf[256];
+                        if (kl < sizeof(kbuf) && vl < sizeof(vbuf)) {
+                            memcpy(kbuf, tag + ks, kl); kbuf[kl] = '\0';
+                            memcpy(vbuf, tag + vs, vl); vbuf[vl] = '\0';
+                            fte_apply_span_attr(&next, kbuf, vbuf);
+                        }
+                    }
+                }
+                bool self_close = tlen > 0 && tag[tlen - 1] == '/';
+                if (!(next.size > 0.01)) next.size = 0.01;
+                if (next.size > 16384.0) next.size = 16384.0;
+                if (!self_close && depth + 1 < FTE_MARKUP_MAX_DEPTH) {
+                    stack[++depth] = next;
+                    idx_stack[depth] = fte_style_intern(styles, &next);
+                } else if (!self_close) {
+                    skipped++;
+                }
+            }
+            pos = (size_t)(gt - text) + 1;
+            continue;
+        }
+        if (text[pos] == '&') {
+            const char *sc = memchr(text + pos, ';', slen - pos < 16 ? slen - pos : 16);
+            if (sc && (size_t)(sc - (text + pos)) <= 12) {
+                size_t elen = (size_t)(sc - (text + pos + 1));
+                const char *ent = text + pos + 1;
+                uint32_t cp = 0;
+                if (elen == 3 && !memcmp(ent, "amp", 3)) cp = '&';
+                else if (elen == 2 && !memcmp(ent, "lt", 2)) cp = '<';
+                else if (elen == 2 && !memcmp(ent, "gt", 2)) cp = '>';
+                else if (elen == 4 && !memcmp(ent, "quot", 4)) cp = '"';
+                else if (elen == 4 && !memcmp(ent, "apos", 4)) cp = '\'';
+                else if (elen > 1 && ent[0] == '#') {
+                    unsigned long v = (ent[1] == 'x' || ent[1] == 'X') ?
+                        strtoul(ent + 2, NULL, 16) : strtoul(ent + 1, NULL, 10);
+                    if (v > 0 && v <= 0x10ffff) cp = (uint32_t)v;
+                }
+                if (cp) {
+                    if (!fte_append_char(&arr, &len, &cap, cp, idx_stack[depth])) { free(arr); return NULL; }
+                    pos = (size_t)(sc - text) + 1;
+                    continue;
+                }
+            }
+        }
+        uint32_t cp = 0;
+        pos = fte_utf8_next(text, slen, pos, &cp);
+        if (!fte_append_char(&arr, &len, &cap, cp, idx_stack[depth])) { free(arr); return NULL; }
+    }
+    *out_len = len;
+    return arr;
+}
+
+enum fte_bidi_cls {
+    FTE_B_L = 0,
+    FTE_B_R,
+    FTE_B_AL,
+    FTE_B_EN,
+    FTE_B_AN,
+    FTE_B_ES,
+    FTE_B_ET,
+    FTE_B_CS,
+    FTE_B_NSM,
+    FTE_B_WS,
+    FTE_B_ON
+};
+
+static enum fte_bidi_cls fte_bidi_classify(hb_unicode_funcs_t *ufuncs, uint32_t cp)
+{
+    if (cp == 0x200e) return FTE_B_L;
+    if (cp == 0x200f) return FTE_B_R;
+    if (cp == 0x061c) return FTE_B_AL;
+    if (cp >= '0' && cp <= '9') return FTE_B_EN;
+    if ((cp >= 0x0660 && cp <= 0x0669) || (cp >= 0x06f0 && cp <= 0x06f9)) return FTE_B_AN;
+    if (cp == '+' || cp == '-') return FTE_B_ES;
+    if (cp == '#' || cp == '$' || cp == '%' || (cp >= 0x00a2 && cp <= 0x00a5) ||
+        (cp >= 0x20a0 && cp <= 0x20cf)) return FTE_B_ET;
+    if (cp == ',' || cp == '.' || cp == ':' || cp == '/' || cp == 0x00a0) return FTE_B_CS;
+    if (cp == ' ' || cp == '\t' || (cp >= 0x2000 && cp <= 0x200a) || cp == 0x3000) return FTE_B_WS;
+
+    hb_unicode_general_category_t cat = hb_unicode_general_category(ufuncs, cp);
+    if (cat == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK)
+        return FTE_B_NSM;
+
+    if ((cp >= 0x0600 && cp <= 0x074f) || (cp >= 0x0750 && cp <= 0x077f) ||
+        (cp >= 0x08a0 && cp <= 0x08ff) || (cp >= 0xfb50 && cp <= 0xfdff) ||
+        (cp >= 0xfe70 && cp <= 0xfeff))
+        return FTE_B_AL;
+    if ((cp >= 0x0590 && cp <= 0x05ff) || (cp >= 0x0780 && cp <= 0x085f) ||
+        (cp >= 0xfb1d && cp <= 0xfb4f) || (cp >= 0x10800 && cp <= 0x10fff) ||
+        (cp >= 0x1e800 && cp <= 0x1efff))
+        return FTE_B_R;
+
+    if (cat == HB_UNICODE_GENERAL_CATEGORY_UPPERCASE_LETTER ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_LOWERCASE_LETTER ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_TITLECASE_LETTER ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_MODIFIER_LETTER ||
+        cat == HB_UNICODE_GENERAL_CATEGORY_OTHER_LETTER)
+        return FTE_B_L;
+
+    return FTE_B_ON;
+}
+
+static void fte_resolve_bidi_and_scripts(struct fte_char *chars, size_t clen,
+    hb_unicode_funcs_t *ufuncs)
+{
+    if (clen == 0) return;
+    uint8_t *cls = malloc(clen);
+    if (!cls) return;
+
+    uint8_t base_level = 0;
+    bool found_strong = false;
+    for (size_t i = 0; i < clen; i++) {
+        cls[i] = (uint8_t)fte_bidi_classify(ufuncs, chars[i].cp);
+        if (!found_strong) {
+            if (cls[i] == FTE_B_L) { base_level = 0; found_strong = true; }
+            else if (cls[i] == FTE_B_R || cls[i] == FTE_B_AL) { base_level = 1; found_strong = true; }
+        }
+    }
+    uint8_t base_dir = base_level ? FTE_B_R : FTE_B_L;
+
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_NSM) cls[i] = i > 0 ? cls[i - 1] : base_dir;
+    }
+
+    uint8_t last_strong = base_dir;
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_L || cls[i] == FTE_B_R || cls[i] == FTE_B_AL) last_strong = cls[i];
+        else if (cls[i] == FTE_B_EN && last_strong == FTE_B_AL) cls[i] = FTE_B_AN;
+    }
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_AL) cls[i] = FTE_B_R;
+    }
+    for (size_t i = 1; i + 1 < clen; i++) {
+        if (cls[i] == FTE_B_ES && cls[i - 1] == FTE_B_EN && cls[i + 1] == FTE_B_EN)
+            cls[i] = FTE_B_EN;
+        else if (cls[i] == FTE_B_CS && cls[i - 1] == FTE_B_EN && cls[i + 1] == FTE_B_EN)
+            cls[i] = FTE_B_EN;
+        else if (cls[i] == FTE_B_CS && cls[i - 1] == FTE_B_AN && cls[i + 1] == FTE_B_AN)
+            cls[i] = FTE_B_AN;
+    }
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_ET) {
+            size_t j = i;
+            while (j < clen && cls[j] == FTE_B_ET) j++;
+            bool adj_en = (i > 0 && cls[i - 1] == FTE_B_EN) || (j < clen && cls[j] == FTE_B_EN);
+            if (adj_en) {
+                for (size_t k = i; k < j; k++) cls[k] = FTE_B_EN;
+            }
+            i = j - 1;
+        }
+    }
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_ES || cls[i] == FTE_B_ET || cls[i] == FTE_B_CS) cls[i] = FTE_B_ON;
+    }
+    last_strong = base_dir;
+    for (size_t i = 0; i < clen; i++) {
+        if (cls[i] == FTE_B_L || cls[i] == FTE_B_R) last_strong = cls[i];
+        else if (cls[i] == FTE_B_EN && last_strong == FTE_B_L) cls[i] = FTE_B_L;
+    }
+
+    for (size_t i = 0; i < clen; ) {
+        if (cls[i] != FTE_B_ON && cls[i] != FTE_B_WS) { i++; continue; }
+        size_t j = i;
+        while (j < clen && (cls[j] == FTE_B_ON || cls[j] == FTE_B_WS)) j++;
+        uint8_t prev_d = base_dir;
+        if (i > 0) prev_d = (cls[i - 1] == FTE_B_L) ? FTE_B_L : FTE_B_R;
+        uint8_t next_d = base_dir;
+        if (j < clen) next_d = (cls[j] == FTE_B_L) ? FTE_B_L : FTE_B_R;
+        uint8_t resolved = (prev_d == next_d) ? prev_d : base_dir;
+        for (size_t k = i; k < j; k++) cls[k] = resolved;
+        i = j;
+    }
+
+    for (size_t i = 0; i < clen; i++) {
+        if (base_level == 0) {
+            if (cls[i] == FTE_B_R) chars[i].bidi_level = 1;
+            else if (cls[i] == FTE_B_EN || cls[i] == FTE_B_AN) chars[i].bidi_level = 2;
+            else chars[i].bidi_level = 0;
+        } else {
+            if (cls[i] == FTE_B_L || cls[i] == FTE_B_EN || cls[i] == FTE_B_AN)
+                chars[i].bidi_level = 2;
+            else chars[i].bidi_level = 1;
+        }
+        chars[i].script = hb_unicode_script(ufuncs, chars[i].cp);
+    }
+
+    hb_script_t cur = HB_SCRIPT_COMMON;
+    size_t pending = 0;
+    for (size_t i = 0; i < clen; i++) {
+        hb_script_t sc = chars[i].script;
+        if (sc == HB_SCRIPT_COMMON || sc == HB_SCRIPT_INHERITED || sc == HB_SCRIPT_UNKNOWN) {
+            chars[i].script = cur;
+            continue;
+        }
+        if (cur == HB_SCRIPT_COMMON) {
+            for (size_t k = pending; k < i; k++) chars[k].script = sc;
+        }
+        cur = sc;
+        pending = i + 1;
+    }
+
+    free(cls);
+}
+
+struct fte_run {
+    size_t start;
+    size_t len;
+    uint16_t style_idx;
+    uint8_t bidi_level;
+    hb_script_t script;
+    int font_idx;
+    bool emoji;
+};
+
+struct fte_shaped_glyph {
+    struct fte_scaled *scaled;
+    unsigned glyph_id;
+    double x;
+    double y;
+    double adv_x;
+    bool has_fg;
+    uint32_t fg;
+    uint16_t fg_alpha;
+    bool has_alpha;
+    bool has_bg;
+    uint32_t bg;
+    bool has_bg_alpha;
+    uint16_t bg_alpha;
+    bool underline;
+    bool strikethrough;
+    bool blank;
+    size_t run;
+    double ul_y, ul_h, st_y, st_h;
+};
+
+struct fte_layout {
+    struct fte_shaped_glyph *glyphs;
+    size_t glyph_count;
+    double ascent;
+    double descent;
+    double line_height;
+    double y_offset;
+    double advance;
+    struct fte_rect ink;
+    int width;
+    int height;
+};
+
+static struct fte_metric *fte_metric_get(struct fte_scaled *scaled, unsigned glyph)
+{
+    struct fte_metric *m = fte_metric_lookup(scaled, glyph);
+    if (m) return m;
+    m = fte_metric_create(scaled, glyph);
+    if (!m) return NULL;
+    fte_glyph_metrics(scaled, glyph, m);
+    return m;
+}
+
+static bool fte_in_ranges(const uint32_t (*ranges)[2], size_t count, uint32_t cp)
+{
+    size_t lo = 0, hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cp < ranges[mid][0]) hi = mid;
+        else if (cp > ranges[mid][1]) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
+#define FTE_IN_RANGES(table, cp) fte_in_ranges(table, sizeof(table) / sizeof(table[0]), cp)
+
+static bool fte_emoji_element(uint32_t cp)
+{
+    return FTE_IN_RANGES(fte_emoji_ranges, cp) || FTE_IN_RANGES(fte_pictographic_ranges, cp);
+}
+
+static bool fte_keycap_base(uint32_t cp)
+{
+    return (cp >= '0' && cp <= '9') || cp == '#' || cp == '*';
+}
+
+static bool fte_regional(uint32_t cp)
+{
+    return cp >= 0x1f1e6 && cp <= 0x1f1ff;
+}
+
+static size_t fte_emoji_element_len(const struct fte_char *chars, size_t clen, size_t i,
+    bool *presentation)
+{
+    uint32_t cp = chars[i].cp;
+    if (fte_keycap_base(cp)) {
+        size_t j = i + 1;
+        if (j < clen && chars[j].cp == 0xfe0f) j++;
+        if (j < clen && chars[j].cp == 0x20e3) {
+            *presentation = true;
+            return j + 1 - i;
+        }
+        if (j > i + 1) {
+            *presentation = true;
+            return j - i;
+        }
+        return 0;
+    }
+    if (fte_regional(cp)) {
+        *presentation = true;
+        return i + 1 < clen && fte_regional(chars[i + 1].cp) ? 2 : 1;
+    }
+    if (!fte_emoji_element(cp)) return 0;
+    bool emoji = FTE_IN_RANGES(fte_emoji_presentation_ranges, cp);
+    size_t j = i + 1;
+    if (j < clen && chars[j].cp == 0xfe0f) { emoji = true; j++; }
+    else if (j < clen && chars[j].cp == 0xfe0e) { emoji = false; j++; }
+    if (j < clen && chars[j].cp >= 0x1f3fb && chars[j].cp <= 0x1f3ff) { emoji = true; j++; }
+    if (j < clen && chars[j].cp >= 0xe0020 && chars[j].cp <= 0xe007e) {
+        while (j < clen && chars[j].cp >= 0xe0020 && chars[j].cp <= 0xe007e) j++;
+        if (j < clen && chars[j].cp == 0xe007f) j++;
+        emoji = true;
+    }
+    *presentation = emoji;
+    return j - i;
+}
+
+static void fte_mark_emoji(struct fte_char *chars, size_t clen)
+{
+    for (size_t i = 0; i < clen; ) {
+        bool presentation = false;
+        size_t len = fte_emoji_element_len(chars, clen, i, &presentation);
+        if (!len) {
+            chars[i].emoji = false;
+            i++;
+            continue;
+        }
+        size_t end = i + len;
+        bool joined = false;
+        while (end + 1 < clen && chars[end].cp == 0x200d) {
+            bool next = false;
+            size_t more = fte_emoji_element_len(chars, clen, end + 1, &next);
+            if (!more) break;
+            end += 1 + more;
+            joined = true;
+        }
+        bool emoji = presentation || joined;
+        for (size_t k = i; k < end; k++) chars[k].emoji = emoji;
+        i = end;
+    }
+}
+
+static struct fte_fontset *fte_run_fontset(const struct fte_style *st, bool emoji)
+{
+    if (!emoji) return fte_fontset_get(&st->desc, st->size);
+    struct fte_font_desc desc = st->desc;
+    snprintf(desc.families, sizeof(desc.families), "%s", "emoji");
+    return fte_fontset_get(&desc, st->size);
+}
+
+struct fte_layout *fte_layout_create(const char *font, const char *text, double size,
+    double line_height, bool markup)
+{
+    struct fte_style base;
+    memset(&base, 0, sizeof(base));
+    fte_parse_font_desc(font, &base.desc);
+    base.size = size > 0.0 ? size : (base.desc.size > 0.0 ? base.desc.size : 12.0);
+    if (!(base.size <= 16384.0)) base.size = 16384.0;
+    base.fg_alpha = 65535;
+
+    struct fte_fontset *base_set = fte_fontset_get(&base.desc, base.size);
+    struct fte_layout *layout = calloc(1, sizeof(*layout));
+    if (!layout) {
+        fte_fontset_unref(base_set);
+        return NULL;
+    }
+    if (base_set) {
+        layout->ascent = base_set->ascent;
+        layout->descent = base_set->descent;
+    } else {
+        layout->ascent = base.size * 0.8;
+        layout->descent = base.size * 0.2;
+    }
+    double natural_h = layout->ascent + layout->descent;
+    layout->line_height = line_height > natural_h ? line_height : natural_h;
+    layout->y_offset = 0.0;
+    layout->height = (int)ceil(natural_h);
+
+    struct fte_style_table styles = { NULL, 0, 0 };
+    size_t clen = 0;
+    struct fte_char *chars = fte_parse_text(text, &base, markup, &styles, &clen);
+    if (!chars || clen == 0 || !styles.items) {
+        free(chars);
+        free(styles.items);
+        fte_fontset_unref(base_set);
+        return layout;
+    }
+
+    hb_unicode_funcs_t *ufuncs = hb_unicode_funcs_get_default();
+    fte_resolve_bidi_and_scripts(chars, clen, ufuncs);
+    fte_mark_emoji(chars, clen);
+
+    struct fte_run *runs = NULL;
+    size_t run_count = 0, run_cap = 0;
+    bool runs_ok = true;
+    for (size_t i = 0; i < clen && runs_ok; ) {
+        uint16_t sidx = chars[i].style_idx;
+        uint8_t lvl = chars[i].bidi_level;
+        hb_script_t sc = chars[i].script;
+        bool emo = chars[i].emoji;
+        size_t seg_end = i + 1;
+        while (seg_end < clen && chars[seg_end].style_idx == sidx &&
+            chars[seg_end].bidi_level == lvl && chars[seg_end].script == sc &&
+            chars[seg_end].emoji == emo)
+            seg_end++;
+        const struct fte_style *st = &styles.items[sidx];
+        struct fte_fontset *set = fte_run_fontset(st, emo);
+        if (!set) { i = seg_end; continue; }
+        size_t item_start = i;
+        int item_font = -1;
+        size_t first_space = SIZE_MAX;
+        bool last_forced = false;
+        for (size_t c = i; c <= seg_end && runs_ok; c++) {
+            size_t cut = c;
+            int font = -1;
+            bool forced = false;
+            if (c < seg_end) {
+                uint32_t cp = chars[c].cp;
+                forced = cp == '\t' || cp == 0x2028;
+                bool space = fte_consider_as_space(ufuncs, cp);
+                if (!space)
+                    font = fte_fontset_pick(set, ufuncs, cp,
+                        c > item_start && fte_is_cluster_continuation(ufuncs, cp) ? item_font : -1);
+                size_t prev_first_space = first_space;
+                if (space) {
+                    if (first_space == SIZE_MAX) first_space = c;
+                } else {
+                    first_space = SIZE_MAX;
+                }
+                if (c == item_start) {
+                    item_font = font;
+                    last_forced = forced;
+                    continue;
+                }
+                if (item_font < 0 && font >= 0) item_font = font;
+                else if (item_font >= 0 && font < 0) font = item_font;
+                if (!forced && !last_forced && item_font == font) {
+                    last_forced = forced;
+                    continue;
+                }
+                if (prev_first_space != SIZE_MAX && item_start < prev_first_space &&
+                    font >= 0 && font < item_font)
+                    cut = prev_first_space;
+            }
+            if (run_count >= run_cap) {
+                size_t ncap = run_cap ? run_cap * 2 : 16;
+                struct fte_run *nr = realloc(runs, ncap * sizeof(*nr));
+                if (!nr) { runs_ok = false; break; }
+                runs = nr;
+                run_cap = ncap;
+            }
+            runs[run_count++] = (struct fte_run){
+                .start = item_start, .len = cut - item_start, .style_idx = sidx,
+                .bidi_level = lvl, .script = sc,
+                .font_idx = item_font >= 0 ? item_font : fte_fontset_pick(set, ufuncs, ' ', -1),
+                .emoji = emo
+            };
+            item_start = cut;
+            item_font = font;
+            last_forced = forced;
+        }
+        fte_fontset_unref(set);
+        i = seg_end;
+    }
+
+    uint8_t max_level = 0;
+    for (size_t r = 0; r < run_count; r++) {
+        if (runs[r].bidi_level > max_level) max_level = runs[r].bidi_level;
+    }
+    for (uint8_t lvl = max_level; lvl >= 1; lvl--) {
+        for (size_t r = 0; r < run_count; ) {
+            if (runs[r].bidi_level < lvl) { r++; continue; }
+            size_t end = r + 1;
+            while (end < run_count && runs[end].bidi_level >= lvl) end++;
+            for (size_t a = r, b = end - 1; a < b; a++, b--) {
+                struct fte_run tmp = runs[a];
+                runs[a] = runs[b];
+                runs[b] = tmp;
+            }
+            r = end;
+        }
+    }
+
+    bool have_run_metrics = false;
+    double run_ascent = 0.0, run_descent = 0.0;
+    for (size_t r = 0; r < run_count; r++) {
+        const struct fte_style *st = &styles.items[runs[r].style_idx];
+        struct fte_fontset *set = fte_run_fontset(st, runs[r].emoji);
+        if (!set) continue;
+        double a = 0.0, d = 0.0;
+        struct fte_scaled *rs = fte_fontset_font(set, runs[r].font_idx);
+        if (rs) {
+            fte_scaled_extents(rs, &a, &d);
+            if (!have_run_metrics || a > run_ascent) run_ascent = a;
+            if (!have_run_metrics || d > run_descent) run_descent = d;
+            have_run_metrics = true;
+        }
+        fte_fontset_unref(set);
+    }
+    if (have_run_metrics) {
+        layout->ascent = run_ascent;
+        layout->descent = run_descent;
+        double run_natural = run_ascent + run_descent;
+        layout->line_height = line_height > run_natural ? line_height : run_natural;
+        layout->height = (int)ceil(run_natural);
+    }
+
+    double tab_width = 0.0;
+    for (size_t i = 0; i < clen; i++) {
+        if (chars[i].cp != '\t') continue;
+        double space = base.size / 4.0;
+        struct fte_scaled *bs = base_set ?
+            fte_fontset_font(base_set, fte_fontset_pick(base_set, ufuncs, ' ', -1)) : NULL;
+        hb_font_t *bf = fte_scaled_hb(bs);
+        hb_codepoint_t sg = 0;
+        if (bf && hb_font_get_nominal_glyph(bf, ' ', &sg)) {
+            double sx = (!FT_IS_SCALABLE(bs->face->face) && bs->face->have_shape) ?
+                bs->face->shape.xx : 1.0;
+            space = (double)hb_font_get_glyph_h_advance(bf, sg) / 64.0 * sx;
+        }
+        tab_width = 8.0 * floor(space + 0.5);
+        if (!(tab_width > 0.0)) tab_width = 8.0;
+        break;
+    }
+
+    hb_buffer_t *buf = hb_buffer_create();
+    size_t gcap = clen + 16;
+    layout->glyphs = malloc(gcap * sizeof(*layout->glyphs));
+    hb_codepoint_t *cps = malloc(clen * sizeof(*cps));
+    if (!buf || !layout->glyphs || !cps) {
+        if (buf) hb_buffer_destroy(buf);
+        free(cps);
+        free(runs);
+        free(chars);
+        free(styles.items);
+        fte_fontset_unref(base_set);
+        return layout;
+    }
+
+    for (size_t i = 0; i < clen; i++) cps[i] = chars[i].cp;
+
+    double pen_x = 0.0;
+    double baseline_y = layout->y_offset + layout->ascent;
+    bool have_ink = false;
+    double ink_x0 = 0.0, ink_y0 = 0.0, ink_x1 = 0.0, ink_y1 = 0.0;
+
+    for (size_t r = 0; r < run_count; r++) {
+        const struct fte_run *run = &runs[r];
+        const struct fte_style *st = &styles.items[run->style_idx];
+        struct fte_fontset *set = fte_run_fontset(st, run->emoji);
+        if (!set) continue;
+        struct fte_scaled *scaled = fte_fontset_font(set, run->font_idx);
+        hb_font_t *hbf = fte_scaled_hb(scaled);
+        if (hbf) {
+            hb_buffer_clear_contents(buf);
+            hb_buffer_set_flags(buf, HB_BUFFER_FLAG_BOT | HB_BUFFER_FLAG_EOT);
+            hb_buffer_set_cluster_level(buf, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+            hb_buffer_add_codepoints(buf, cps, (int)clen, (unsigned)run->start, (int)run->len);
+            hb_buffer_set_direction(buf, (run->bidi_level & 1) ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+            hb_buffer_set_script(buf, run->script);
+            hb_buffer_set_language(buf, hb_language_get_default());
+            hb_shape(hbf, buf, NULL, 0);
+
+            unsigned count = 0;
+            hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buf, &count);
+            hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(buf, &count);
+            double adv_sx = (!FT_IS_SCALABLE(scaled->face->face) && scaled->face->have_shape)
+                ? scaled->face->shape.xx : 1.0;
+            double adv_sy = (!FT_IS_SCALABLE(scaled->face->face) && scaled->face->have_shape)
+                ? scaled->face->shape.yy : 1.0;
+            hb_position_t ul_off = 0, ul_size = 0, so_off = 0, so_size = 0;
+            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_UNDERLINE_SIZE, &ul_size) ||
+                ul_size == 0)
+                ul_size = (hb_position_t)lrint(64.0 / adv_sy);
+            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_UNDERLINE_OFFSET, &ul_off) ||
+                ul_off == 0)
+                ul_off = (hb_position_t)lrint(-64.0 / adv_sy);
+            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_STRIKEOUT_SIZE, &so_size) ||
+                so_size == 0)
+                so_size = (hb_position_t)lrint(64.0 / adv_sy);
+            if (!hb_ot_metrics_get_position(hbf, HB_OT_METRICS_TAG_STRIKEOUT_OFFSET, &so_off) ||
+                so_off == 0) {
+                hb_font_extents_t fe;
+                hb_font_get_h_extents(hbf, &fe);
+                so_off = fe.ascender / 2;
+            }
+            for (unsigned k = 0; k < count; k++) {
+                double gx = pen_x + floor((double)pos[k].x_offset / 64.0 * adv_sx + 0.5);
+                double gy = baseline_y - floor((double)pos[k].y_offset / 64.0 * adv_sy + 0.5);
+                double ax = floor((double)pos[k].x_advance / 64.0 * adv_sx + 0.5);
+                bool blank = false;
+                uint32_t src_cp = info[k].cluster < clen ? chars[info[k].cluster].cp : 0;
+                if (info[k].codepoint == 0 && src_cp == ' ') {
+                    ax = floor(st->size / 4.0 + 0.5);
+                    gx = pen_x;
+                    gy = baseline_y;
+                    blank = true;
+                }
+                if (src_cp == '\t' && tab_width > 0.0) {
+                    double stop = ceil((pen_x + tab_width / 8.0) / tab_width) * tab_width;
+                    if (stop < tab_width) stop = tab_width;
+                    ax = stop - pen_x;
+                    gx = pen_x;
+                    gy = baseline_y;
+                    blank = true;
+                }
+                if (layout->glyph_count >= gcap) {
+                    size_t ncap = gcap * 2;
+                    struct fte_shaped_glyph *ng = realloc(layout->glyphs, ncap * sizeof(*ng));
+                    if (!ng) break;
+                    layout->glyphs = ng;
+                    gcap = ncap;
+                }
+                layout->glyphs[layout->glyph_count++] = (struct fte_shaped_glyph){
+                    .scaled = scaled,
+                    .glyph_id = info[k].codepoint,
+                    .x = gx,
+                    .y = gy,
+                    .adv_x = ax,
+                    .has_fg = st->has_fg,
+                    .fg = st->fg,
+                    .fg_alpha = st->fg_alpha,
+                    .has_alpha = st->has_alpha,
+                    .has_bg_alpha = st->has_bg_alpha,
+                    .bg_alpha = st->bg_alpha,
+                    .has_bg = st->has_bg,
+                    .bg = st->bg,
+                    .underline = st->underline,
+                    .strikethrough = st->strikethrough,
+                    .blank = blank,
+                    .run = r,
+                    .ul_y = baseline_y - (double)ul_off / 64.0 * adv_sy,
+                    .ul_h = (double)ul_size / 64.0 * adv_sy,
+                    .st_y = baseline_y - (double)so_off / 64.0 * adv_sy,
+                    .st_h = (double)so_size / 64.0 * adv_sy,
+                };
+                if (st->underline || st->strikethrough) {
+                    const struct fte_shaped_glyph *ng = &layout->glyphs[layout->glyph_count - 1];
+                    double dy0 = st->underline ? ng->ul_y : ng->st_y;
+                    double dy1 = st->underline ? ng->ul_y + ng->ul_h : ng->st_y + ng->st_h;
+                    if (st->underline && st->strikethrough) {
+                        if (ng->st_y < dy0) dy0 = ng->st_y;
+                        if (ng->st_y + ng->st_h > dy1) dy1 = ng->st_y + ng->st_h;
+                    }
+                    if (ax > 0.0 && dy1 > dy0) {
+                        if (!have_ink) {
+                            ink_x0 = gx; ink_y0 = dy0; ink_x1 = gx + ax; ink_y1 = dy1;
+                            have_ink = true;
+                        } else {
+                            if (gx < ink_x0) ink_x0 = gx;
+                            if (dy0 < ink_y0) ink_y0 = dy0;
+                            if (gx + ax > ink_x1) ink_x1 = gx + ax;
+                            if (dy1 > ink_y1) ink_y1 = dy1;
+                        }
+                    }
+                }
+                struct fte_metric *m = blank ? NULL : fte_metric_get(scaled, info[k].codepoint);
+                if (m && m->valid && m->ink_w > 0.0 && m->ink_h > 0.0) {
+                    double bx0 = gx + m->ink_x;
+                    double by0 = gy + m->ink_y;
+                    double bx1 = bx0 + m->ink_w;
+                    double by1 = by0 + m->ink_h;
+                    if (!have_ink) {
+                        ink_x0 = bx0; ink_y0 = by0; ink_x1 = bx1; ink_y1 = by1;
+                        have_ink = true;
+                    } else {
+                        if (bx0 < ink_x0) ink_x0 = bx0;
+                        if (by0 < ink_y0) ink_y0 = by0;
+                        if (bx1 > ink_x1) ink_x1 = bx1;
+                        if (by1 > ink_y1) ink_y1 = by1;
+                    }
+                }
+                pen_x += ax;
+            }
+        }
+        fte_fontset_unref(set);
+    }
+
+    hb_buffer_destroy(buf);
+    free(cps);
+    free(runs);
+    free(chars);
+    free(styles.items);
+    fte_fontset_unref(base_set);
+
+    layout->advance = pen_x;
+    layout->width = (int)ceil(pen_x);
+    if (have_ink) {
+        layout->ink.x0 = (int)floor(ink_x0);
+        layout->ink.y0 = (int)floor(ink_y0);
+        layout->ink.x1 = (int)ceil(ink_x1);
+        layout->ink.y1 = (int)ceil(ink_y1);
+    }
+    return layout;
+}
+
+void fte_layout_destroy(struct fte_layout *layout)
+{
+    if (!layout) return;
+    free(layout->glyphs);
+    free(layout);
+}
+
+void fte_layout_extents(const struct fte_layout *layout, struct fte_rect *ink, int *width,
+    int *height)
+{
+    if (!layout) {
+        if (ink) *ink = (struct fte_rect){ 0, 0, 0, 0 };
+        if (width) *width = 0;
+        if (height) *height = 0;
+        return;
+    }
+    if (ink) *ink = layout->ink;
+    if (width) *width = layout->width;
+    if (height) *height = layout->height;
+}
+
+static void fte_ctm(struct fte_matrix *m, double x, double y, int rotate, double width,
+    double height)
+{
+    double angle = rotate * M_PI / 180.0;
+    double c = cos(angle), s = sin(angle);
+    double tx = x + (rotate == 90 ? height : rotate == 180 ? width : 0);
+    double ty = y + (rotate == 180 ? height : rotate == 270 ? width : 0);
+    fte_matrix_init(m, c, s, -s, c, tx, ty);
+}
+
+static void fte_fill_rect_ctm(uint32_t *pixels, int stride, struct fte_rect clip,
+    const struct fte_matrix *ctm, double x0, double y0, double x1, double y1, uint32_t colour)
+{
+    double ax = x0, ay = y0, bx = x1, by = y1;
+    fte_matrix_transform(ctm, &ax, &ay);
+    fte_matrix_transform(ctm, &bx, &by);
+    double rx0 = fmax(fmin(ax, bx), (double)clip.x0);
+    double ry0 = fmax(fmin(ay, by), (double)clip.y0);
+    double rx1 = fmin(fmax(ax, bx), (double)clip.x1);
+    double ry1 = fmin(fmax(ay, by), (double)clip.y1);
+    if (!(rx1 > rx0) || !(ry1 > ry0)) return;
+    int ix0 = (int)floor(rx0), iy0 = (int)floor(ry0);
+    int ix1 = (int)ceil(rx1), iy1 = (int)ceil(ry1);
+    for (int py = iy0; py < iy1; py++) {
+        double cy = fmin(py + 1.0, ry1) - fmax((double)py, ry0);
+        if (cy <= 0.0) continue;
+        uint32_t *dst = pixels + (size_t)py * (size_t)stride;
+        for (int px = ix0; px < ix1; px++) {
+            double cx = fmin(px + 1.0, rx1) - fmax((double)px, rx0);
+            int m = (int)floor(cx * cy * 256.0 + 0.5);
+            if (m <= 0) continue;
+            dst[px] = dp_masked_over(dst[px], colour, (uint8_t)(m > 255 ? 255 : m));
+        }
+    }
+}
+
+static uint32_t fte_glyph_colour(const struct fte_shaped_glyph *sg, uint32_t rgba)
+{
+    uint32_t c = sg->has_fg ? sg->fg : rgba;
+    double a = sg->has_fg ? 1.0 : (rgba & 0xffu) / 255.0;
+    if (sg->has_alpha && sg->fg_alpha) a = sg->fg_alpha / 65535.0;
+    return fte_colour(((c >> 24) & 0xffu) / 255.0, ((c >> 16) & 0xffu) / 255.0,
+        ((c >> 8) & 0xffu) / 255.0, a);
+}
+
+static uint32_t fte_glyph_bg_colour(const struct fte_shaped_glyph *sg)
+{
+    double a = sg->has_bg_alpha && sg->bg_alpha ? sg->bg_alpha / 65535.0 : 1.0;
+    return fte_colour(((sg->bg >> 24) & 0xffu) / 255.0, ((sg->bg >> 16) & 0xffu) / 255.0,
+        ((sg->bg >> 8) & 0xffu) / 255.0, a);
+}
 
 static void fte_glyph_device_box(const struct fte_scaled *scaled, const struct fte_metric *m,
     double gx, double gy, int32_t *x1, int32_t *y1, int32_t *x2, int32_t *y2)
 {
     double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
     for (int corner = 0; corner < 4; corner++) {
-        double x = m->fs_x + m->fs_w * (corner & 1);
-        double y = m->fs_y + m->fs_h * (corner >> 1);
-        fte_matrix_transform_distance(&scaled->scale, &x, &y);
+        double cx = m->fs_x + m->fs_w * (corner & 1);
+        double cy = m->fs_y + m->fs_h * (corner >> 1);
+        fte_matrix_transform_distance(&scaled->scale, &cx, &cy);
         if (corner == 0) {
-            min_x = max_x = x;
-            min_y = max_y = y;
+            min_x = max_x = cx;
+            min_y = max_y = cy;
         } else {
-            if (x < min_x) min_x = x;
-            if (x > max_x) max_x = x;
-            if (y < min_y) min_y = y;
-            if (y > max_y) max_y = y;
+            if (cx < min_x) min_x = cx;
+            if (cx > max_x) max_x = cx;
+            if (cy < min_y) min_y = cy;
+            if (cy > max_y) max_y = cy;
         }
     }
     int32_t bx = fte_fixed_24_8(floor(gx + 0.5));
@@ -2380,305 +2951,230 @@ static void fte_glyph_device_box(const struct fte_scaled *scaled, const struct f
     *y2 = by + fte_fixed_24_8(max_y);
 }
 
-static struct fte_metric *fte_run_metric(FteFont *fte, unsigned glyph)
+static int fte_fixed_floor(int32_t f)
 {
-    struct fte_metric *m = fte_metric_lookup(fte->scaled, glyph);
-    if (!m) {
-        m = fte_metric_create(fte->scaled, glyph);
-        if (m) fte_glyph_metrics(fte->scaled, glyph, m);
-    }
-    return m;
+    if (f >= 0) return f >> 8;
+    return -(((-f - 1) >> 8)) - 1;
 }
 
-static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
-    struct fte_rect clip, const struct fte_matrix *ctm, PangoLayoutRun *run, int x, int y,
-    uint32_t colour, int antialias)
+static int fte_fixed_ceil(int32_t f)
 {
-    PangoFont *font = run->item->analysis.font;
-    if (!PANGO_IS_FC_FONT(font)) return;
-    FteFont *fte = (FteFont *)font;
-    if (!fte->scaled) return;
-    struct fte_matrix ctm_scale = *ctm;
-    ctm_scale.x0 = 0;
-    ctm_scale.y0 = 0;
-    struct fte_matrix scale;
-    fte_matrix_multiply(&scale, &fte->scaled->font_matrix, &ctm_scale);
-    struct fte_scaled *scaled = fte_scaled_get(fte->scaled->face, &fte->scaled->font_matrix,
-        &scale, &fte->scaled->requested, &fte->scaled->ft_options);
-    if (!scaled) return;
-    struct fte_pending stack[128];
-    struct fte_pending *pending = stack;
-    int count = 0, capacity = 128;
-    int x_position = 0;
-    for (int i = 0; i < run->glyphs->num_glyphs; i++) {
-        PangoGlyphInfo *gi = &run->glyphs->glyphs[i];
-        if (gi->glyph == PANGO_GLYPH_EMPTY) {
-            x_position += gi->geometry.width;
-            continue;
-        }
-        double cx = (double)(x + x_position + gi->geometry.x_offset) / PANGO_SCALE;
-        double cy = gi->geometry.y_offset ?
-            (double)(y + gi->geometry.y_offset) / PANGO_SCALE : (double)y / PANGO_SCALE;
-        if (gi->glyph & PANGO_GLYPH_UNKNOWN_FLAG) {
-            if (gi->glyph != (0x20 | PANGO_GLYPH_UNKNOWN_FLAG))
-                fte_draw_unknown(pixels, stride, width, height, clip, ctm, fte, gi->glyph, cx,
-                    cy, gi->geometry.width, colour, antialias);
-            x_position += gi->geometry.width;
-            continue;
-        }
-        fte_matrix_transform_point(ctm, &cx, &cy);
-        struct fte_glyph *entry = fte_glyph_get(scaled, (unsigned)gi->glyph,
-            (unsigned)fte_phase(cx), (unsigned)fte_phase(cy), colour);
-        if (count == capacity) {
-            int next = capacity * 2;
-            struct fte_pending *grown = malloc((size_t)next * sizeof(*grown));
-            if (!grown) break;
-            memcpy(grown, pending, (size_t)count * sizeof(*grown));
-            if (pending != stack) free(pending);
-            pending = grown;
-            capacity = next;
-        }
-        pending[count].entry = entry;
-        pending[count].x = cx;
-        pending[count].y = cy;
-        pending[count].x1 = pending[count].y1 = pending[count].x2 = pending[count].y2 = 0;
-        count++;
-        x_position += gi->geometry.width;
+    if (f > 0) return ((f - 1) >> 8) + 1;
+    return -(int)((uint32_t)(-f) >> 8);
+}
+
+struct fte_pending {
+    struct fte_glyph *entry;
+    double x, y;
+    bool boxed;
+    int32_t x1, y1, x2, y2;
+};
+
+static void fte_draw_run(uint32_t *pixels, int stride, int width, int height,
+    struct fte_rect clip, const struct fte_matrix *ctm, bool translated,
+    const struct fte_shaped_glyph *gs, size_t n, uint32_t colour)
+{
+    if (!n) return;
+    struct fte_scaled *base = gs[0].scaled;
+    struct fte_scaled *scaled = base;
+    if (!translated) {
+        struct fte_matrix scale = base->font_matrix;
+        struct fte_matrix rot = *ctm;
+        rot.x0 = 0; rot.y0 = 0;
+        fte_matrix_multiply(&scale, &scale, &rot);
+        struct fte_scaled *rscaled = fte_scaled_get(base->face, &base->font_matrix, &scale,
+            &base->requested, &base->ft_options);
+        if (rscaled) scaled = rscaled;
     }
-    int first = -1, overlap = 0;
+    struct fte_pending stack[64];
+    struct fte_pending *pending = n <= 64 ? stack : malloc(n * sizeof(*pending));
+    if (!pending) return;
+    size_t count = 0;
+    double reach_x = (double)width + 1048576.0, reach_y = (double)height + 1048576.0;
+    for (int pass = 0; pass < 2; pass++)
+    for (size_t k = 0; k < n; k++) {
+        const struct fte_shaped_glyph *sg = &gs[k];
+        if (sg->blank) continue;
+        double dx = sg->x, dy = sg->y;
+        fte_matrix_transform(ctm, &dx, &dy);
+        if (!(dx > -1048576.0 && dx < reach_x && dy > -1048576.0 && dy < reach_y)) continue;
+        if (pass == 0) {
+            fte_glyph_get(scaled, sg->glyph_id, (unsigned)fte_phase(dx), (unsigned)fte_phase(dy),
+                colour);
+            continue;
+        }
+        struct fte_glyph *entry = fte_glyph_lookup(scaled, fte_glyph_key(scaled, sg->glyph_id,
+            (unsigned)fte_phase(dx), (unsigned)fte_phase(dy), colour));
+        if (!entry || entry->failed || !entry->data) continue;
+        pending[count++] = (struct fte_pending){ entry, dx, dy, false, 0, 0, 0, 0 };
+        struct fte_pending *pg = &pending[count - 1];
+        if (entry->color) continue;
+        struct fte_metric *m = fte_metric_get(base, sg->glyph_id);
+        if (m && m->valid) {
+            fte_glyph_device_box(scaled, m, dx, dy, &pg->x1, &pg->y1, &pg->x2, &pg->y2);
+            pg->boxed = true;
+        }
+    }
+    bool have = false, overlap = false;
     int32_t bx1 = 0, by1 = 0, bx2 = 0, by2 = 0;
-    for (int i = 0; i < count; i++) {
-        if (pending[i].entry && pending[i].entry->color) continue;
-        unsigned glyph = pending[i].entry ? (unsigned)(pending[i].entry->key & 0xffffffu) : 0;
-        struct fte_metric *m = fte_run_metric(fte, glyph);
-        if (!m || !m->valid) continue;
-        fte_glyph_device_box(scaled, m, pending[i].x, pending[i].y,
-            &pending[i].x1, &pending[i].y1, &pending[i].x2, &pending[i].y2);
-        if (first >= 0 && !(pending[i].x1 == pending[i].x2 || pending[i].y1 == pending[i].y2) &&
-                pending[i].x2 > bx1 && pending[i].x1 < bx2 &&
-                pending[i].y2 > by1 && pending[i].y1 < by2)
-            overlap = 1;
-        if (first < 0) {
-            bx1 = pending[i].x1; by1 = pending[i].y1;
-            bx2 = pending[i].x2; by2 = pending[i].y2;
-            first = i;
+    for (size_t k = 0; k < count; k++) {
+        const struct fte_pending *pg = &pending[k];
+        if (pg->entry->color || !pg->boxed) continue;
+        if (have && pg->x1 != pg->x2 && pg->y1 != pg->y2 &&
+                pg->x2 > bx1 && pg->x1 < bx2 && pg->y2 > by1 && pg->y1 < by2)
+            overlap = true;
+        if (!have) {
+            bx1 = pg->x1; by1 = pg->y1; bx2 = pg->x2; by2 = pg->y2;
+            have = true;
         } else {
-            if (pending[i].x1 < bx1) bx1 = pending[i].x1;
-            if (pending[i].y1 < by1) by1 = pending[i].y1;
-            if (pending[i].x2 > bx2) bx2 = pending[i].x2;
-            if (pending[i].y2 > by2) by2 = pending[i].y2;
+            if (pg->x1 < bx1) bx1 = pg->x1;
+            if (pg->y1 < by1) by1 = pg->y1;
+            if (pg->x2 > bx2) bx2 = pg->x2;
+            if (pg->y2 > by2) by2 = pg->y2;
         }
     }
-    if (overlap && scaled->requested.antialias == FTE_ANTIALIAS_NONE &&
-            (colour >> 24) == 0xff)
-        overlap = 0;
-    struct fte_rect bounds = { 0, 0, 0, 0 };
-    if (first >= 0 && bx1 < bx2 && by1 < by2) {
-        bounds.x0 = fte_fixed_floor(bx1);
-        bounds.y0 = fte_fixed_floor(by1);
-        bounds.x1 = fte_fixed_ceil(bx2);
-        bounds.y1 = fte_fixed_ceil(by2);
-    }
-    for (int i = 0; i < count; i++)
-        if (pending[i].entry && pending[i].entry->color)
-            fte_draw_glyph(pixels, stride, width, height, clip, pending[i].entry,
-                (int)floor(pending[i].x - pending[i].entry->off_x + 0.5),
-                (int)floor(pending[i].y - pending[i].entry->off_y + 0.5), colour);
-    if (bounds.x0 >= bounds.x1 || bounds.y0 >= bounds.y1) {
-        if (pending != stack) free(pending);
-        return;
-    }
-    struct fte_rect box = {
-        clip.x0 > bounds.x0 ? clip.x0 : bounds.x0,
-        clip.y0 > bounds.y0 ? clip.y0 : bounds.y0,
-        clip.x1 < bounds.x1 ? clip.x1 : bounds.x1,
-        clip.y1 < bounds.y1 ? clip.y1 : bounds.y1 };
-    if (box.x0 >= box.x1 || box.y0 >= box.y1) {
-        if (pending != stack) free(pending);
-        return;
+    if (overlap && scaled->requested.antialias == FTE_ANTIALIAS_NONE && (colour >> 24) == 0xff)
+        overlap = false;
+    for (size_t k = 0; k < count; k++) {
+        const struct fte_pending *pg = &pending[k];
+        if (pg->entry->color || !overlap)
+            fte_draw_glyph(pixels, stride, width, height, clip, pg->entry,
+                fte_position(pg->x) - pg->entry->off_x, fte_position(pg->y) - pg->entry->off_y,
+                colour);
     }
     if (overlap) {
+        struct fte_rect box = {
+            fte_fixed_floor(bx1), fte_fixed_floor(by1), fte_fixed_ceil(bx2), fte_fixed_ceil(by2) };
+        if (box.x0 < clip.x0) box.x0 = clip.x0;
+        if (box.y0 < clip.y0) box.y0 = clip.y0;
+        if (box.x1 > clip.x1) box.x1 = clip.x1;
+        if (box.y1 > clip.y1) box.y1 = clip.y1;
         int mw = box.x1 - box.x0, mh = box.y1 - box.y0;
         bool component = false;
-        for (int i = 0; i < count; i++)
-            if (pending[i].entry && !pending[i].entry->color)
-                component = pending[i].entry->component;
-        size_t pitch = (size_t)mw * (component ? 4 : 1);
-        unsigned char *mask = calloc(mh ? (size_t)mh : 1, pitch);
+        for (size_t k = 0; k < count; k++)
+            if (!pending[k].entry->color) component = pending[k].entry->component;
+        size_t pitch = (size_t)(mw > 0 ? mw : 0) * (component ? 4 : 1);
+        unsigned char *mask = mw > 0 && mh > 0 ? calloc((size_t)mh, pitch) : NULL;
         if (mask) {
-            for (int i = 0; i < count; i++) {
-                struct fte_glyph *entry = pending[i].entry;
-                if (!entry || entry->color || entry->failed || !entry->data) continue;
-                if (entry->component != component) continue;
-                int left = fte_position(pending[i].x) - entry->off_x;
-                int top = fte_position(pending[i].y) - entry->off_y;
+            for (size_t k = 0; k < count; k++) {
+                const struct fte_glyph *entry = pending[k].entry;
+                if (entry->color || (bool)entry->component != component) continue;
+                if (!component && entry->bpp != 1) continue;
+                int left = fte_position(pending[k].x) - entry->off_x;
+                int top = fte_position(pending[k].y) - entry->off_y;
                 for (int j = 0; j < entry->height; j++) {
-                    int dy = top + j - box.y0;
-                    if (dy < 0 || dy >= mh) continue;
-                    unsigned char *dst = mask + (size_t)dy * pitch;
-                    const uint8_t *src = (const uint8_t *)entry->data +
-                        (size_t)j * (size_t)entry->stride;
-                    if (component) {
-                        uint32_t *dw = (uint32_t *)dst;
-                        const uint32_t *row = (const uint32_t *)src;
-                        for (int ix = 0; ix < entry->width; ix++) {
-                            int dx = left + ix - box.x0;
-                            if (dx < 0 || dx >= mw) continue;
-                            dw[dx] = dp_component_add(dw[dx], row[ix]);
-                        }
-                    } else {
-                        for (int ix = 0; ix < entry->width; ix++) {
-                            int dx = left + ix - box.x0;
-                            if (dx < 0 || dx >= mw) continue;
-                            unsigned sum = dst[dx] + src[ix];
-                            dst[dx] = (unsigned char)(sum > 255 ? 255 : sum);
+                    int my = top + j - box.y0;
+                    if (my < 0 || my >= mh) continue;
+                    unsigned char *dst = mask + (size_t)my * pitch;
+                    const uint8_t *src = (const uint8_t *)entry->data + (size_t)j * (size_t)entry->stride;
+                    for (int ix = 0; ix < entry->width; ix++) {
+                        int mx = left + ix - box.x0;
+                        if (mx < 0 || mx >= mw) continue;
+                        if (component) {
+                            uint32_t *dw = (uint32_t *)dst;
+                            dw[mx] = dp_component_add(dw[mx], ((const uint32_t *)src)[ix]);
+                        } else {
+                            unsigned sum = dst[mx] + src[ix];
+                            dst[mx] = (unsigned char)(sum > 255 ? 255 : sum);
                         }
                     }
                 }
             }
-            for (int y = box.y0; y < box.y1; y++) {
-                const unsigned char *row = mask + (size_t)(y - box.y0) * pitch;
-                uint32_t *dst = pixels + (size_t)y * (size_t)stride;
-                if (component) {
-                    const uint32_t *values = (const uint32_t *)row;
-                    for (int x = box.x0; x < box.x1; x++)
-                        dst[x] = dp_component_over(dst[x], colour, values[x - box.x0]);
-                } else {
-                    for (int x = box.x0; x < box.x1; x++) {
-                        uint8_t m = row[x - box.x0];
-                        if (m) dst[x] = dp_masked_over(dst[x], colour, m);
+            for (int py = box.y0; py < box.y1; py++) {
+                const unsigned char *row = mask + (size_t)(py - box.y0) * pitch;
+                uint32_t *dst = pixels + (size_t)py * (size_t)stride;
+                for (int px = box.x0; px < box.x1; px++) {
+                    if (component) {
+                        dst[px] = dp_component_over(dst[px], colour, ((const uint32_t *)row)[px - box.x0]);
+                    } else {
+                        uint8_t mv = row[px - box.x0];
+                        if (mv) dst[px] = dp_masked_over(dst[px], colour, mv);
                     }
                 }
             }
             free(mask);
-        }
-    } else {
-        bool contains = clip.x0 <= bounds.x0 && clip.y0 <= bounds.y0 &&
-            clip.x1 >= bounds.x1 && clip.y1 >= bounds.y1;
-        struct fte_rect limit = box;
-        if (contains) {
-            limit.x0 = 0;
-            limit.y0 = 0;
-            limit.x1 = width;
-            limit.y1 = height;
-        }
-        for (int i = 0; i < count; i++) {
-            struct fte_glyph *entry = pending[i].entry;
-            if (!entry || entry->color) continue;
-            int left = fte_position(pending[i].x) - entry->off_x;
-            int top = fte_position(pending[i].y) - entry->off_y;
-            fte_draw_glyph(pixels, stride, width, height, limit, entry, left, top, colour);
+        } else if (mw > 0 && mh > 0) {
+            for (size_t k = 0; k < count; k++)
+                if (!pending[k].entry->color)
+                    fte_draw_glyph(pixels, stride, width, height, clip, pending[k].entry,
+                        fte_position(pending[k].x) - pending[k].entry->off_x,
+                        fte_position(pending[k].y) - pending[k].entry->off_y, colour);
         }
     }
     if (pending != stack) free(pending);
 }
 
-static void fte_draw_line(PangoLayoutLine *line, int x, int y, uint32_t *pixels, int stride,
-    int width, int height, struct fte_rect clip, const struct fte_matrix *ctm, uint32_t rgba,
-    int antialias)
+static bool fte_same_background(const struct fte_shaped_glyph *a, const struct fte_shaped_glyph *b)
 {
-    int x_off = 0;
-    bool got_overall = false;
-    PangoRectangle overall = { 0, 0, 0, 0 };
-    for (GSList *l = line->runs; l; l = l->next) {
-        PangoLayoutRun *run = l->data;
-        int glyph_width = pango_glyph_string_get_width(run->glyphs);
-        bool background = false;
-        double bg_r = 0, bg_g = 0, bg_b = 0, bg_a = 0;
-        uint32_t colour = fte_run_colour(run, rgba, &background, &bg_r, &bg_g, &bg_b, &bg_a);
-        int run_x = x + x_off + run->start_x_offset;
-        int run_y = y - run->y_offset;
-        if (background) {
-            if (!got_overall) {
-                pango_layout_line_get_extents(line, NULL, &overall);
-                got_overall = true;
-            }
-            fte_fill_rect(pixels, stride, width, height, clip, ctm,
-                (double)run_x / PANGO_SCALE, (double)(y + overall.y) / PANGO_SCALE,
-                (double)glyph_width / PANGO_SCALE, (double)overall.height / PANGO_SCALE,
-                fte_colour(bg_r, bg_g, bg_b, bg_a), antialias);
-        }
-        fte_draw_run(pixels, stride, width, height, clip, ctm, run, run_x, run_y, colour,
-            antialias);
-        x_off += run->start_x_offset + glyph_width + run->end_x_offset;
-    }
+    return a->has_bg && b->has_bg && a->bg == b->bg && a->has_bg_alpha == b->has_bg_alpha &&
+        a->bg_alpha == b->bg_alpha;
 }
 
-static int fte_context_antialias(PangoContext *context)
+static bool fte_same_decoration(const struct fte_shaped_glyph *a, const struct fte_shaped_glyph *b)
 {
-    if (context) {
-        const struct fte_options *options = g_object_get_qdata(G_OBJECT(context),
-            fte_options_quark());
-        if (options && options->antialias == FTE_ANTIALIAS_NONE) return PX_ANTIALIAS_NONE;
-    }
-    return PX_ANTIALIAS_GRAY;
+    return a->underline == b->underline && a->strikethrough == b->strikethrough &&
+        a->has_fg == b->has_fg && a->fg == b->fg && a->fg_alpha == b->fg_alpha &&
+        a->has_alpha == b->has_alpha && a->ul_y == b->ul_y && a->ul_h == b->ul_h && a->st_y == b->st_y && a->st_h == b->st_h;
 }
 
-static bool fte_draw_layout(PangoLayout *layout, uint32_t *pixels, int stride, int width,
-    int height, struct fte_rect clip, const struct fte_matrix *ctm, uint32_t rgba)
+bool fte_layout_draw(const struct fte_layout *layout, double layout_width, double layout_height,
+    uint32_t *pixels, int stride, int width, int height, struct fte_rect clip, double x,
+    double y, int rotate, uint32_t rgba)
 {
+    if (!layout || !pixels || width <= 0 || height <= 0 || stride < width) return false;
     if (clip.x0 < 0) clip.x0 = 0;
     if (clip.y0 < 0) clip.y0 = 0;
     if (clip.x1 > width) clip.x1 = width;
     if (clip.y1 > height) clip.y1 = height;
     if (clip.x0 >= clip.x1 || clip.y0 >= clip.y1) return true;
-    int antialias = fte_context_antialias(pango_layout_get_context(layout));
-    PangoLayoutIter *iter = pango_layout_get_iter(layout);
-    if (!iter) return false;
-    do {
-        PangoLayoutLine *line = pango_layout_iter_get_line_readonly(iter);
-        PangoRectangle logical;
-        pango_layout_iter_get_line_extents(iter, NULL, &logical);
-        int baseline = pango_layout_iter_get_baseline(iter);
-        fte_draw_line(line, logical.x, baseline, pixels, stride, width, height, clip, ctm,
-            rgba, antialias);
-    } while (pango_layout_iter_next_line(iter));
-    pango_layout_iter_free(iter);
-    return true;
-}
-
-static void fte_ctm(struct fte_matrix *m, double x, double y, int rotate, double width,
-    double height)
-{
-    double angle = rotate * G_PI / 180.0;
-    double c = cos(angle), s = sin(angle);
-    double tx = x + (rotate == 90 ? height : rotate == 180 ? width : 0);
-    double ty = y + (rotate == 180 ? height : rotate == 270 ? width : 0);
-    fte_matrix_init(m, c, s, -s, c, tx, ty);
-}
-
-bool fte_layout_draw(PangoLayout *layout, double layout_width, double layout_height,
-    uint32_t *pixels, int stride, int width, int height, struct fte_rect clip, double x,
-    double y, int rotate, uint32_t rgba)
-{
-    if (!layout || !pixels) return false;
     struct fte_matrix ctm;
     fte_ctm(&ctm, x, y, rotate, layout_width, layout_height);
-    return fte_draw_layout(layout, pixels, stride, width, height, clip, &ctm, rgba);
-}
+    bool translated = fte_matrix_is_translation(&ctm);
 
-static PangoLayout *fte_text_layout(const char *font, const char *text, double size)
-{
-    PangoContext *context = fte_context_new();
-    if (!context) return NULL;
-    PangoLayout *layout = pango_layout_new(context);
-    if (!layout) { g_object_unref(context); return NULL; }
-    const char *family = font && font[0] ? font : "sans";
-    PangoFontDescription *description = pango_font_description_from_string(family);
-    if (!description) {
-        g_object_unref(layout);
-        g_object_unref(context);
-        return NULL;
+    for (size_t i = 0; i < layout->glyph_count; i++) {
+        const struct fte_shaped_glyph *sg = &layout->glyphs[i];
+        const struct fte_shaped_glyph *prev = i > 0 ? &layout->glyphs[i - 1] : NULL;
+        if (sg->has_bg && !(prev && fte_same_background(prev, sg) &&
+                fabs(prev->x + prev->adv_x - sg->x) < 1e-6)) {
+            size_t j = i + 1;
+            double end = sg->x + sg->adv_x;
+            while (j < layout->glyph_count && fte_same_background(&layout->glyphs[j], sg) &&
+                fabs(end - layout->glyphs[j].x) < 1e-6) {
+                end = layout->glyphs[j].x + layout->glyphs[j].adv_x;
+                j++;
+            }
+            fte_fill_rect_ctm(pixels, stride, clip, &ctm, sg->x, layout->y_offset, end,
+                layout->y_offset + layout->ascent + layout->descent,
+                fte_glyph_bg_colour(sg));
+        }
+        if (prev && prev->run == sg->run) continue;
+        size_t j = i + 1;
+        while (j < layout->glyph_count && layout->glyphs[j].run == sg->run) j++;
+        fte_draw_run(pixels, stride, width, height, clip, &ctm, translated, layout->glyphs + i,
+            j - i, fte_glyph_colour(sg, rgba));
     }
-    pango_font_description_set_absolute_size(description, size * PANGO_SCALE);
-    pango_layout_set_font_description(layout, description);
-    pango_font_description_free(description);
-    pango_layout_set_text(layout, text, -1);
-    pango_layout_set_width(layout, -1);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
-    pango_layout_set_single_paragraph_mode(layout, TRUE);
-    g_object_unref(context);
-    return layout;
+    for (size_t i = 0; i < layout->glyph_count; i++) {
+        const struct fte_shaped_glyph *sg = &layout->glyphs[i];
+        if (!sg->underline && !sg->strikethrough) continue;
+        const struct fte_shaped_glyph *prev = i > 0 ? &layout->glyphs[i - 1] : NULL;
+        if (prev && fte_same_decoration(prev, sg) && fabs(prev->x + prev->adv_x - sg->x) < 1e-6)
+            continue;
+        size_t j = i + 1;
+        double end = sg->x + sg->adv_x;
+        while (j < layout->glyph_count && fte_same_decoration(&layout->glyphs[j - 1],
+                &layout->glyphs[j]) && fabs(end - layout->glyphs[j].x) < 1e-6) {
+            end = layout->glyphs[j].x + layout->glyphs[j].adv_x;
+            j++;
+        }
+        uint32_t colour = fte_glyph_colour(sg, rgba);
+        if (sg->underline)
+            fte_fill_rect_ctm(pixels, stride, clip, &ctm, sg->x, sg->ul_y, end,
+                sg->ul_y + sg->ul_h, colour);
+        if (sg->strikethrough)
+            fte_fill_rect_ctm(pixels, stride, clip, &ctm, sg->x, sg->st_y, end,
+                sg->st_y + sg->st_h, colour);
+    }
+    return true;
 }
 
 bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pixels,
@@ -2686,12 +3182,11 @@ bool fte_text_draw(const char *font, const char *text, double size, uint32_t *pi
     uint32_t rgba)
 {
     if (!text || !*text || !pixels) return false;
-    PangoLayout *layout = fte_text_layout(font, text, size);
+    struct fte_layout *layout = fte_layout_create(font, text, size, 0.0, false);
     if (!layout) return false;
-    struct fte_matrix ctm;
-    fte_ctm(&ctm, x, y, 0, 0, 0);
-    bool ok = fte_draw_layout(layout, pixels, stride, width, height, clip, &ctm, rgba);
-    g_object_unref(layout);
+    bool ok = fte_layout_draw(layout, (double)layout->width, (double)layout->height,
+        pixels, stride, width, height, clip, x, y, 0, rgba);
+    fte_layout_destroy(layout);
     return ok;
 }
 
@@ -2700,11 +3195,9 @@ bool fte_text_extents(const char *font, const char *text, double size, struct ft
     if (!ink) return false;
     *ink = (struct fte_rect){ 0, 0, 0, 0 };
     if (!text || !*text) return false;
-    PangoLayout *layout = fte_text_layout(font, text, size);
+    struct fte_layout *layout = fte_layout_create(font, text, size, 0.0, false);
     if (!layout) return false;
-    PangoRectangle box;
-    pango_layout_get_pixel_extents(layout, &box, NULL);
-    g_object_unref(layout);
-    *ink = (struct fte_rect){ box.x, box.y, box.x + box.width, box.y + box.height };
-    return box.width > 0 && box.height > 0;
+    *ink = layout->ink;
+    fte_layout_destroy(layout);
+    return ink->x1 > ink->x0 && ink->y1 > ink->y0;
 }

@@ -1502,6 +1502,46 @@ let
       cp native.trace $out/share/tomoe/evdev-equivalence
     '';
   };
+  fttextTest = pkgs.stdenv.mkDerivation {
+    name = "tomoe-fttext-test";
+    src = ../.;
+    strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = tomoe.buildInputs;
+    buildPhase = ''
+      srcs="tests/fttext-test.c"
+      for n in fttext colr draw blend intersect mesh paint boxes stroke-boxes stroke tor \
+        contour pen slope spline stroke-dash stroke-support tessellate hull; do
+        srcs="$srcs native/$n.c"
+      done
+      build() {
+        $CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Wno-unused-parameter -Inative \
+          $srcs $(pkg-config --cflags --libs harfbuzz fontconfig freetype2) -lm "$@"
+      }
+      build -O2 -o fttext-test
+      build -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -o fttext-test-asan
+      cat > fonts.conf <<EOF
+      <?xml version="1.0"?>
+      <fontconfig>
+        <dir>${pkgs.dejavu_fonts}</dir>
+        <dir>${pkgs.noto-fonts-color-emoji}</dir>
+        <include>${pkgs.fontconfig.out}/etc/fonts/conf.d</include>
+        <cachedir>$TMPDIR/fc-cache</cachedir>
+      </fontconfig>
+      EOF
+      export FONTCONFIG_FILE=$PWD/fonts.conf
+      export HOME=$TMPDIR/home
+      export XDG_CACHE_HOME=$TMPDIR/cache
+      mkdir -p $HOME $XDG_CACHE_HOME
+      ASAN_OPTIONS=detect_leaks=0 ./fttext-test-asan > fttext-test.out
+      ./fttext-test >> fttext-test.out
+    '';
+    installPhase = ''
+      mkdir -p $out/share/tomoe
+      cp fttext-test.out $out/share/tomoe/fttext-test
+    '';
+  };
+
   libraries = pkgs.stdenv.mkDerivation {
     name = "tomoe-libraries";
     src = ../lib;
@@ -2078,6 +2118,7 @@ in
   event-ring = eventRing;
   xkb-equivalence = xkbEquivalence;
   expat-equivalence = expatEquivalence;
+  fttext-test = fttextTest;
   udev-trace = udevTrace;
   udev-equivalence = udevEquivalence;
   evdev-equivalence = evdevEquivalence;

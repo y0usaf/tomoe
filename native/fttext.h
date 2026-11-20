@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <pango/pango.h>
 
 struct fte_rect { int x0, y0, x1, y1; };
 
@@ -36,11 +35,17 @@ struct fte_options {
     int lcd_filter;
 };
 
-PangoFontMap *fte_font_map(void);
-PangoContext *fte_context_new(void);
-PangoContext *fte_context_new_options(const struct fte_options *options);
+struct fte_layout;
 
-bool fte_layout_draw(PangoLayout *layout, double layout_width, double layout_height,
+struct fte_layout *fte_layout_create(const char *font, const char *text, double size,
+    double line_height, bool markup);
+
+void fte_layout_destroy(struct fte_layout *layout);
+
+void fte_layout_extents(const struct fte_layout *layout, struct fte_rect *ink, int *width,
+    int *height);
+
+bool fte_layout_draw(const struct fte_layout *layout, double layout_width, double layout_height,
     uint32_t *pixels, int stride, int width, int height, struct fte_rect clip, double x,
     double y, int rotate, uint32_t rgba);
 
