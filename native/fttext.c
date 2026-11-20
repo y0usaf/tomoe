@@ -1623,6 +1623,8 @@ static struct fte_fontset *fte_fontsets;
 static int fte_fontset_count;
 #define FTE_FONTSET_LIMIT 64
 #define FTE_MARKUP_MAX_DEPTH 32
+#define FTE_SIZE_MIN 0.5
+#define FTE_SIZE_MAX 512.0
 #define FTE_MAX_TEXT_LEN 65536
 #define FTE_MAX_STYLES 4096
 
@@ -2084,6 +2086,8 @@ static void fte_apply_span_attr(struct fte_style *st, const char *key, const cha
             }
         }
     }
+    if (!isfinite(st->size) || st->size < FTE_SIZE_MIN) st->size = FTE_SIZE_MIN;
+    else if (st->size > FTE_SIZE_MAX) st->size = FTE_SIZE_MAX;
 }
 
 static struct fte_char *fte_parse_text(const char *text, const struct fte_style *base,

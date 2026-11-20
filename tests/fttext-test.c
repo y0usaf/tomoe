@@ -410,6 +410,30 @@ static void test_bounds(void)
     fte_layout_destroy(lm);
 }
 
+static void test_markup_size_bounds(void)
+{
+    const char *cases[] = {
+        "<span size='1e999px'>x</span>",
+        "<span size='200%'><big><big><big><big><big><big><big><big><big><big>x</big></big></big></big></big></big></big></big></big></big></span>",
+        "<span size='999999999'>x</span>",
+        "<span size='-5px'>x</span>",
+        "<span size='0'>x</span>",
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct fte_layout *l = fte_layout_create("DejaVu Sans", cases[i], 12.0, 0.0, true);
+        assert(l != NULL);
+        int w = 0, h = 0;
+        struct fte_rect ink = { 0 };
+        fte_layout_extents(l, &ink, &w, &h);
+        assert(w >= 0 && w < 100000);
+        assert(h >= 0 && h < 100000);
+        uint32_t px[64];
+        struct fte_rect clip = { 0, 0, 8, 8 };
+        fte_layout_draw(l, (double)w, (double)h, px, 8, 8, 8, clip, 0, 0, 0, 0xffffffffu);
+        fte_layout_destroy(l);
+    }
+}
+
 static void test_steady_state(void)
 {
     static const char *const cycle[] = {
@@ -446,6 +470,7 @@ int main(void)
     test_combining_marks();
     test_markup_and_alpha();
     test_line_height();
+    test_markup_size_bounds();
     test_rotated_spans();
     test_lru_cache_stress();
     test_pango_metrics();
