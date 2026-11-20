@@ -9,6 +9,11 @@ AGENT=${TOMOE_AGENT:-tomoe-land}
 SYSTEM=${LAND_SYSTEM:-x86_64-linux}
 BASE=${LAND_BASE:-origin/main}
 SMOKE=${LAND_SMOKE:-smoke}
+if [[ -z ${LAND_SMOKE_SUITES+x} && $SMOKE == smoke ]]; then
+	SMOKE_SUITES="integration pointer-protocols livepatch livecore"
+else
+	SMOKE_SUITES=${LAND_SMOKE_SUITES:-}
+fi
 NIXCORES=${LAND_NIX_CORES:-4}
 LEASEWAIT=${LAND_LEASE_WAIT:-10800}
 PENDINGWAIT=${LAND_PENDING_WAIT:-600}
@@ -34,7 +39,6 @@ for d in "$QUEUE" "$ACTIVE" "$RESULTS" "$LOGS" "$DONE"; do mkdir -p "$d"; done
 
 LEASE_LIB=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lease.sh
 [[ -r $LEASE_LIB ]] || die "cannot find $LEASE_LIB"
-# shellcheck source=/dev/null
 . "$LEASE_LIB"
 LEASE_LOG=$ROOT/journal.log
 
@@ -63,6 +67,34 @@ repo_root() {
 	(cd "$dir" && pwd)
 }
 
+resolve_ref() {
+	local repo=$1 ref=$2 sha
+	sha=$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}")
+	[[ -n $sha ]] || sha=$(git -C "$repo" rev-parse --verify --quiet "$ref^{commit}")
+	[[ -n $sha ]] || return 1
+	printf '%s\n' "$sha"
+}
+
+is_cancelled() {
+	[[ -f $ACTIVE/$1.cancel ]]
+}
+
+suite_log_passed() {
+	local rc=$1 log=$2
+	shift 2
+	((rc == 0)) || return 1
+	grep -q 'tomoe suite FAILED' "$log" && return 1
+	local started passed name
+	started=$(tr -d '\r' <"$log" | sed -n 's/^tomoe suite: //p')
+	passed=$(tr -d '\r' <"$log" | sed -n 's/^tomoe suite passed: //p')
+	[[ -n $started && -n $passed ]] || return 1
+	[[ $started == "$passed" ]] || return 1
+	for name in "$@"; do
+		grep -Fxq "$name" <<<"$passed" || return 1
+	done
+	return 0
+}
+
 note_step() {
 	printf '%s %s %s\n' "$1" "$2" "$3" >>"$ROOT/steps"
 }
@@ -88,7 +120,7 @@ take_lease() {
 	return 0
 }
 
-release_lease() { lease_release; }
+release_lease() { lease_release "$LOCK"; }
 
 submit() {
 	local type=land ref="" suite=timing timeout=""
@@ -137,11 +169,12 @@ wait_result() {
 		shift
 	done
 	[[ -n $id ]] || die "wait needs an id"
-	local waited=0
+	[[ -z $limit || $limit =~ ^[0-9]+$ ]] || die "timeout must be a number of seconds"
+	local half_waited=0
 	while [[ ! -f $RESULTS/$id ]]; do
-		[[ -n $limit ]] && ((waited >= limit)) && die "no result for $id after ${limit}s"
+		[[ -n $limit ]] && ((half_waited >= limit * 2)) && die "no result for $id after ${limit}s"
 		sleep 0.5
-		waited=$((waited + 1))
+		half_waited=$((half_waited + 1))
 	done
 	[[ -f $RESULTS/$id ]] || die "no result for $id"
 	while ! grep -q '"finished"' "$RESULTS/$id" 2>/dev/null; do sleep 0.2; done
@@ -152,23 +185,23 @@ cancel() {
 	local id=${1:-}
 	[[ -n $id ]] || die "cancel needs an id"
 	local matcher
-	for matcher in "$QUEUE"/*-"$id" "$ACTIVE"/*-"$id"; do
+	for matcher in "$QUEUE"/*-"$id"; do
 		[[ -e $matcher ]] || continue
-		if [[ $matcher == "$ACTIVE"/* ]]; then
-			local pid
-			pid=$(cat "$matcher.pid" 2>/dev/null)
-			[[ -n $pid ]] && kill -TERM -- -"$pid" 2>/dev/null
+		if mv "$matcher" "$DONE/" 2>/dev/null; then
 			printf '{"id":"%s","status":"cancelled","finished":"%s"}\n' "$id" \
 				"$(date -u +%FT%TZ)" >"$RESULTS/.$id.tmp"
 			mv "$RESULTS/.$id.tmp" "$RESULTS/$id"
-			say "cancelled $id"
+			say "dropped $id from the queue"
 			return 0
 		fi
-		mv "$matcher" "$DONE/" 2>/dev/null || rm -f "$matcher"
-		printf '{"id":"%s","status":"cancelled","finished":"%s"}\n' "$id" \
-			"$(date -u +%FT%TZ)" >"$RESULTS/.$id.tmp"
-		mv "$RESULTS/.$id.tmp" "$RESULTS/$id"
-		say "dropped $id from the queue"
+	done
+	for matcher in "$ACTIVE"/*-"$id"; do
+		[[ -e $matcher ]] || continue
+		: >"$ACTIVE/$id.cancel"
+		local pid
+		pid=$(cat "$matcher.pid" 2>/dev/null)
+		[[ -n $pid ]] && kill -TERM -- -"$pid" 2>/dev/null || true
+		say "cancel requested for $id"
 		return 0
 	done
 	die "no queued or active job $id"
@@ -183,6 +216,9 @@ status() {
 	done
 	printf 'active:\n'
 	for f in $(ls "$ACTIVE" 2>/dev/null | sort); do
+		case $f in
+		*.pid | *.cancel) continue ;;
+		esac
 		id=${f#*-}
 		printf '  %s  %s\n' "$id" "$(tr '\t' ' ' <"$ACTIVE/$f")"
 	done
@@ -197,6 +233,10 @@ run_land() {
 	local log=$LOGS/$id
 	mkdir -p "$log"
 	local repo tree sha base_sha tip rc=0
+	if is_cancelled "$id"; then
+		finish "$id" cancelled "$ref" "" cancelled ""
+		return 1
+	fi
 	repo=$(repo_root) || {
 		finish "$id" failed "" "" "no git repository here" ""
 		return 1
@@ -210,16 +250,23 @@ run_land() {
 		finish "$id" failed "$ref" "" resolve "$log/resolve.log"
 		return 1
 	}
-	sha=$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}")
-	[[ -n $sha ]] || sha=$(git -C "$repo" rev-parse --verify --quiet "$ref^{commit}")
-	if [[ -z $sha ]]; then
+	if is_cancelled "$id"; then
+		finish "$id" cancelled "$ref" "$base_sha" cancelled ""
+		return 1
+	fi
+	sha=$(resolve_ref "$repo" "$ref") || {
 		printf '%s is not a commit here\n' "$ref" >"$log/resolve.log"
 		finish "$id" failed "$ref" "$base_sha" resolve "$log/resolve.log"
 		return 1
-	fi
+	}
 	printf 'ref %s\nsha %s\nbase %s\n' "$ref" "$sha" "$base_sha" >"$log/resolve.log"
 	: >"$ROOT/steps"
 	note_step resolve passed "$log/resolve.log"
+
+	if is_cancelled "$id"; then
+		finish "$id" cancelled "$sha" "$base_sha" cancelled ""
+		return 1
+	fi
 
 	tree=$ROOT/work/$id
 	rm -rf "$tree"
@@ -243,12 +290,31 @@ run_land() {
 	printf 'tip %s\n' "$tip" >>"$log/rebase.log"
 	note_step rebase passed "$log/rebase.log"
 
-	if ! run_smoke "$id" "$tree" "$log/smoke.log"; then
+	if is_cancelled "$id"; then
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$tip" "$base_sha" cancelled ""
+		return 1
+	fi
+
+	run_smoke "$id" "$tree" "$log/smoke.log"
+	rc=$?
+	if ((rc == 130)) || is_cancelled "$id"; then
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$tip" "$base_sha" cancelled "$log/smoke.log"
+		return 1
+	fi
+	if ((rc != 0)); then
 		cleanup_tree "$repo" "$tree"
 		finish "$id" failed "$tip" "$base_sha" smoke "$log/smoke.log"
 		return 1
 	fi
 	note_step smoke passed "$log/smoke.log"
+
+	if is_cancelled "$id"; then
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$tip" "$base_sha" cancelled ""
+		return 1
+	fi
 
 	push_landing "$id" "$repo" "$tip" "$base_sha" "$ref" "$log/push.log"
 	case $? in
@@ -259,6 +325,11 @@ run_land() {
 	2)
 		note_step push passed "$log/push.log"
 		note_step forgejo failed "$log/push.log.forgejo"
+		;;
+	3)
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$tip" "$base_sha" cancelled "$log/push.log"
+		return 1
 		;;
 	*)
 		cleanup_tree "$repo" "$tree"
@@ -278,27 +349,48 @@ cleanup_tree() {
 }
 
 run_smoke() {
-	local id=$1 tree=$2 log=$3 driver rc=0
-	{
-		printf 'land: building the smoke driver\n'
-	} >>"$log"
+	local id=$1 tree=$2 log=$3 driver build_rc=0 rc=0
+	local -a expected=()
+	if [[ -n $SMOKE_SUITES ]]; then
+		read -r -a expected <<<"$SMOKE_SUITES"
+	fi
+	: >"$log"
+	printf 'land: building the smoke driver\n' >>"$log"
+	if is_cancelled "$id"; then
+		printf 'land: smoke cancelled before build lease\n' >>"$log"
+		return 130
+	fi
 	if ! take_lease -s "$LANDPEND"; then
 		printf 'land: the shared lease timed out\n' >>"$log"
 		return 75
 	fi
+	if is_cancelled "$id"; then
+		release_lease
+		printf 'land: smoke cancelled before build\n' >>"$log"
+		return 130
+	fi
 	driver=$(
 		cd "$tree" || exit 1
 		nice -n 10 nix build --no-link --print-out-paths --max-jobs 1 \
-			--option cores "$NIXCORES" ".#checks.$SYSTEM.$SMOKE.driver"
-	) >>"$log" 2>&1
+			--option cores "$NIXCORES" ".#checks.$SYSTEM.$SMOKE.driver" 2>>"$log"
+	) || build_rc=$?
 	release_lease
-	if [[ -z $driver ]]; then
+	if is_cancelled "$id"; then
+		printf 'land: smoke cancelled after build\n' >>"$log"
+		return 130
+	fi
+	if ((build_rc != 0)) || [[ -z $driver ]]; then
 		printf 'land: the smoke driver did not build\n' >>"$log"
 		return 76
 	fi
 	if ! take_lease -x; then
 		printf 'land: the exclusive lease timed out\n' >>"$log"
 		return 75
+	fi
+	if is_cancelled "$id"; then
+		release_lease
+		printf 'land: smoke cancelled before driver\n' >>"$log"
+		return 130
 	fi
 	mkdir -p "$ROOT/run/$id/out"
 	local pid
@@ -312,27 +404,39 @@ run_smoke() {
 	wait "$pid" || rc=$?
 	rm -f "$ACTIVE_FILE.pid"
 	release_lease
+	if is_cancelled "$id"; then
+		printf 'land: smoke cancelled\n' >>"$log"
+		return 130
+	fi
 	case $rc in
 	124 | 137)
 		printf 'land: smoke hit its %ss limit\n' "$SMOKE_TIMEOUT" >>"$log"
 		return 1
 		;;
 	esac
-	if grep -q 'tomoe suite passed:' "$log"; then
+	if suite_log_passed "$rc" "$log" "${expected[@]}"; then
 		printf 'land: smoke passed\n' >>"$log"
 		return 0
 	fi
-	printf 'land: smoke did not report a passing suite (exit %s)\n' "$rc" >>"$log"
+	printf 'land: smoke did not report all expected suites passing (exit %s)\n' "$rc" >>"$log"
 	return 1
 }
 
 push_landing() {
 	local id=$1 repo=$2 tip=$3 base=$4 ref=$5 log=$6 head
 	: >"$log"
+	if is_cancelled "$id"; then
+		printf 'cancelled before push\n' >>"$log"
+		return 3
+	fi
 	head=$(git -C "$repo" rev-parse --verify --quiet refs/remotes/origin/main) || true
 	if [[ $head != "$base" ]]; then
 		printf 'origin/main moved to %s since %s; not pushing\n' "$head" "$base" >>"$log"
 		return 1
+	fi
+	if is_cancelled "$id"; then
+		printf 'cancelled before push\n' >>"$log"
+		return 3
 	fi
 	git -C "$repo" push origin "$tip:refs/heads/main" >>"$log" 2>&1 || return 1
 	head=$(git ls-remote --heads origin main | cut -f1)
@@ -357,41 +461,78 @@ push_landing() {
 }
 
 run_timing() {
-	local id=$1 suite=$2 limit=$3
-	local log=$LOGS/$id rc=0 repo tree driver pid
+	local id=$1 ref=$2 suite=$3 limit=$4
+	local log=$LOGS/$id rc=0 build_rc=0 repo tree sha driver pid
 	mkdir -p "$log"
+	: >"$log/timing.log"
+	if is_cancelled "$id"; then
+		finish "$id" cancelled "$ref" "" cancelled ""
+		return 1
+	fi
 	repo=$(repo_root) || {
-		finish "$id" failed "" "" resolve "$log/resolve.log"
+		finish "$id" failed "$ref" "" resolve "$log/resolve.log"
 		return 1
 	}
 	git -C "$repo" fetch --quiet origin >/dev/null 2>&1 || true
+	if is_cancelled "$id"; then
+		finish "$id" cancelled "$ref" "" cancelled ""
+		return 1
+	fi
+	sha=$(resolve_ref "$repo" "$ref") || {
+		printf '%s is not a commit here\n' "$ref" >"$log/resolve.log"
+		finish "$id" failed "$ref" "" resolve "$log/resolve.log"
+		return 1
+	}
+	printf 'ref %s\nsha %s\n' "$ref" "$sha" >"$log/resolve.log"
 	tree=$ROOT/work/$id
 	rm -rf "$tree"
 	git -C "$repo" worktree prune >/dev/null 2>&1 || true
-	git -C "$repo" worktree add --quiet --detach "$tree" "$BASE" >"$log/resolve.log" 2>&1 || {
-		finish "$id" failed "" "" resolve "$log/resolve.log"
+	git -C "$repo" worktree add --quiet --detach "$tree" "$sha" >>"$log/resolve.log" 2>&1 || {
+		finish "$id" failed "$sha" "" resolve "$log/resolve.log"
 		return 1
 	}
+	if is_cancelled "$id"; then
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$sha" "" cancelled ""
+		return 1
+	fi
 	if ! take_lease -s; then
 		cleanup_tree "$repo" "$tree"
-		finish "$id" failed "$(git -C "$tree" rev-parse HEAD 2>/dev/null)" "" lease "$log/timing.log"
+		finish "$id" failed "$sha" "" lease "$log/timing.log"
 		return 75
+	fi
+	if is_cancelled "$id"; then
+		release_lease
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$sha" "" cancelled "$log/timing.log"
+		return 1
 	fi
 	driver=$(
 		cd "$tree" || exit 1
 		nice -n 10 nix build --no-link --print-out-paths --max-jobs 1 \
-			--option cores "$NIXCORES" ".#legacyPackages.$SYSTEM.suites.$suite.driver"
-	) >"$log/timing.log" 2>&1
+			--option cores "$NIXCORES" ".#legacyPackages.$SYSTEM.suites.$suite.driver" 2>>"$log/timing.log"
+	) || build_rc=$?
 	release_lease
-	if [[ -z $driver ]]; then
+	if is_cancelled "$id"; then
 		cleanup_tree "$repo" "$tree"
-		finish "$id" failed "" "" driver "$log/timing.log"
+		finish "$id" cancelled "$sha" "" cancelled "$log/timing.log"
+		return 1
+	fi
+	if ((build_rc != 0)) || [[ -z $driver ]]; then
+		cleanup_tree "$repo" "$tree"
+		finish "$id" failed "$sha" "" driver "$log/timing.log"
 		return 1
 	fi
 	if ! take_lease -x; then
 		cleanup_tree "$repo" "$tree"
-		finish "$id" failed "" "" lease "$log/timing.log"
+		finish "$id" failed "$sha" "" lease "$log/timing.log"
 		return 75
+	fi
+	if is_cancelled "$id"; then
+		release_lease
+		cleanup_tree "$repo" "$tree"
+		finish "$id" cancelled "$sha" "" cancelled "$log/timing.log"
+		return 1
 	fi
 	mkdir -p "$ROOT/run/$id/out"
 	set -m
@@ -405,37 +546,49 @@ run_timing() {
 	rm -f "$ACTIVE_FILE.pid"
 	release_lease
 	cleanup_tree "$repo" "$tree"
+	if is_cancelled "$id"; then
+		printf 'land: %s cancelled\n' "$suite" >>"$log/timing.log"
+		finish "$id" cancelled "$sha" "" cancelled "$log/timing.log"
+		return 1
+	fi
 	case $rc in
 	124 | 137)
 		printf 'land: %s hit its %ss limit\n' "$suite" "$limit" >>"$log/timing.log"
-		finish "$id" failed "" "" timing "$log/timing.log"
+		finish "$id" failed "$sha" "" timing "$log/timing.log"
 		return 1
 		;;
 	esac
-	if grep -q 'tomoe suite passed:' "$log/timing.log"; then
-		finish "$id" passed "" "" timing "$log/timing.log"
+	if suite_log_passed "$rc" "$log/timing.log" "$suite"; then
+		finish "$id" passed "$sha" "" timing "$log/timing.log"
 		return 0
 	fi
-	finish "$id" failed "" "" timing "$log/timing.log"
+	finish "$id" failed "$sha" "" timing "$log/timing.log"
 	return 1
 }
 
 finish() {
 	local id=$1 status=$2 sha=$3 main=$4 step=$5 log=$6 tmp=$RESULTS/.$1.tmp
 	[[ -f $RESULTS/$id ]] && return 0
+	local step_result
+	case $status in
+	passed) step_result=passed ;;
+	cancelled) step_result=cancelled ;;
+	*) step_result=failed ;;
+	esac
 	{
 		printf '{"id":"%s","status":"%s","sha":"%s","main":"%s","steps":[' \
 			"$id" "$status" "$sha" "$main"
 		local first=1 name result path
-		while read -r name result path; do
-			((first)) || printf ','
-			first=0
-			printf '{"step":"%s","result":"%s","log":"%s"}' "$name" "$result" "$path"
-		done <"$ROOT/steps"
+		if [[ -f $ROOT/steps ]]; then
+			while read -r name result path; do
+				((first)) || printf ','
+				first=0
+				printf '{"step":"%s","result":"%s","log":"%s"}' "$name" "$result" "$path"
+			done <"$ROOT/steps"
+		fi
 		[[ -n $step ]] && {
 			((first)) || printf ','
-			printf '{"step":"%s","result":"%s","log":"%s"}' \
-				"$step" "$([[ $status == passed ]] && echo passed || echo failed)" "$log"
+			printf '{"step":"%s","result":"%s","log":"%s"}' "$step" "$step_result" "$log"
 		}
 		printf '],"finished":"%s"}\n' "$(date -u +%FT%TZ)"
 	} >"$tmp"
@@ -446,12 +599,26 @@ finish() {
 daemon() {
 	mkdir -p "$ROOT"
 	rm -f "$PENDING/$AGENT."* 2>/dev/null
+	local leftover leftover_name leftover_id
 	for leftover in "$ACTIVE"/*; do
 		[[ -e $leftover ]] || continue
+		case $leftover in
+		*.pid | *.cancel) continue ;;
+		esac
+		leftover_name=$(basename "$leftover")
+		leftover_id=${leftover_name#*-}
+		if [[ -f $ACTIVE/$leftover_id.cancel ]]; then
+			mv "$leftover" "$DONE/$leftover_name" 2>/dev/null || rm -f "$leftover"
+			finish "$leftover_id" cancelled "" "" cancelled ""
+			printf '%s cancelled-on-recovery %s\n' "$(date -u +%FT%TZ)" "$leftover_name" \
+				>>"$ROOT/journal.log"
+			continue
+		fi
 		mv "$leftover" "$QUEUE/" 2>/dev/null || true
-		printf '%s requeued %s\n' "$(date -u +%FT%TZ)" "$(basename "$leftover")" \
+		printf '%s requeued %s\n' "$(date -u +%FT%TZ)" "$leftover_name" \
 			>>"$ROOT/journal.log"
 	done
+	rm -f "$ACTIVE"/*.pid "$ACTIVE"/*.cancel
 	printf '%s daemon up pid %s\n' "$(date -u +%FT%TZ)" "$$" >>"$ROOT/daemon.log"
 	while :; do
 		local next id type ref suite timeout
@@ -472,14 +639,19 @@ daemon() {
 		timing)
 			[[ -n $timeout ]] || timeout=$TIMING_TIMEOUT
 			[[ -n $suite ]] || suite=timing
-			run_timing "$id" "$suite" "$timeout"
+			run_timing "$id" "$ref" "$suite" "$timeout"
 			;;
 		*) finish "$id" failed "" "" type "" ;;
 		esac
 		if [[ ! -f $RESULTS/$id ]]; then
-			finish "$id" failed "" "" lost "no result was written; the ticket is kept in done/"
-			printf '%s lost %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/journal.log"
+			if is_cancelled "$id"; then
+				finish "$id" cancelled "" "" cancelled ""
+			else
+				finish "$id" failed "" "" lost "no result was written; the ticket is kept in done/"
+				printf '%s lost %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/journal.log"
+			fi
 		fi
+		rm -f "$ACTIVE_FILE.pid" "$ACTIVE/$id.cancel"
 		mv "$ACTIVE_FILE" "$DONE/$next" 2>/dev/null || rm -f "$ACTIVE_FILE"
 		printf '%s done %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/journal.log"
 		printf '%s done %s\n' "$(date -u +%FT%TZ)" "$id" >>"$ROOT/daemon.log"

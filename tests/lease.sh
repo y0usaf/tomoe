@@ -72,4 +72,20 @@ EOF
 bash "$work/strict" "$lock" 2>/dev/null ||
 	fail "a shell running with set -e cannot take and release the lease"
 
+lock2=$work/tomoe-switch.lock
+free2() { flock -n -x "$lock2" true; }
+lease_take "$lock2" -x 5 || fail "could not take second lock"
+lease_take "$lock" -s 5 || fail "could not take nested lock while holding another"
+free2 && fail "taking a second lock dropped the first lock"
+free && fail "nested lock is not held"
+if lease_take "$lock2" -x 1 2>/dev/null; then
+	fail "retaking an already-held lock succeeded"
+fi
+free2 && fail "refused retake dropped the held lock"
+lease_release "$lock"
+free || fail "releasing nested lock by name did not free it"
+free2 && fail "releasing nested lock by name dropped the outer lock"
+lease_release "$lock2"
+free2 || fail "releasing outer lock by name did not free it"
+
 printf 'lease: held only by the process that needs it, and released with it\n'

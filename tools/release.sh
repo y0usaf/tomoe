@@ -51,6 +51,7 @@ SWITCH_LOCK=${TOMOE_SWITCH_LOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent/fi
 LEASE_LIB=${TOMOE_LEASE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/lease.sh}
 # shellcheck source=/dev/null
 . "$LEASE_LIB"
+trap "lease_release" EXIT
 SYSTEM=$(nix eval --raw --impure --expr builtins.currentSystem)
 [[ $SOAK =~ ^[0-9]+$ ]] || fail "RELEASE_SOAK must be a number of seconds"
 $dry || ((SOAK >= 1800)) || fail "a release soaks at least 1800s; a shorter RELEASE_SOAK is for --dry-run"
@@ -106,7 +107,7 @@ cut_candidate() {
   tag=v$version-rc.$((${last:-0} + 1))
   lease_take "$LOCK" -s 0 || fail "cannot take $LOCK"
   out=$(nix build --no-link --print-out-paths "git+file://$REPO?rev=$rev")
-  lease_release
+  lease_release "$LOCK"
   [[ $("$out/bin/tomoe" --version) == "tomoe $version,"* ]] || fail "$out/bin/tomoe --version does not report $version"
   if $dry; then
     git update-ref "$TAGS/$tag" "$rev"
@@ -170,7 +171,7 @@ move_stable() {
   commit=$(git -C "$tree" rev-parse HEAD)
   lease_take "$LOCK" -s 0 || fail "cannot take $LOCK"
   stable=$(nix build --no-link --print-out-paths "git+file://$tree?rev=$commit#packages.$SYSTEM.tomoe-stable") || stable=""
-  lease_release
+  lease_release "$LOCK"
   if [[ -z $stable ]]; then
     $dry || { git -C "$tree" reset -q --soft HEAD^ && git -C "$tree" restore -q --staged --worktree -- flake.nix flake.lock; }
     fail "tomoe-stable does not build at finix $commit"
@@ -187,6 +188,7 @@ move_stable() {
   remote=github
   git -C "$tree" remote | grep -qx "$remote" || remote=origin
   git -C "$tree" push -q "$remote" "$commit:refs/heads/main"
+  lease_release "$SWITCH_LOCK"
   echo "release: pushed finix $commit; finix-switch $commit installs it"
 }
 
