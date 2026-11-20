@@ -1,4 +1,5 @@
 import json
+import re
 
 start()
 machine.wait_for_unit("multi-user.target")
@@ -321,4 +322,88 @@ status = int(machine.succeed("cat /run/silent-status").strip())
 assert status != 124, status
 machine.succeed("systemctl stop traffic")
 machine.succeed("systemctl stop silent")
+
+tomoe_pid = machine.succeed("systemctl show -P MainPID tomoe").strip()
+
+
+def stall(server, resume):
+    machine.succeed("rm -f /run/xwm-stalled")
+    machine.succeed(f"kill -STOP {server}")
+    wake = f"kill -CONT {server}; " if resume else ""
+    unit(
+        "stall-watch",
+        "sh -c 'until ! timeout 1 tomoe --socket check msg windows >/dev/null; "
+        f"do sleep 0.2; done; {wake}touch /run/xwm-stalled'",
+    )
+    machine.execute(
+        ENV + "sh -c 'for i in $(seq 600); do test -e /run/xwm-stalled && break; "
+        "timeout 20 tomoe --socket check command focus-next-window >/dev/null; done'",
+        timeout=600,
+    )
+    stalled = machine.execute("test -e /run/xwm-stalled")[0] == 0
+    machine.execute("systemctl stop stall-watch; systemctl reset-failed stall-watch")
+    return stalled
+
+
+old_server = machine.succeed("pgrep -x Xwayland").strip()
+stalled = stall(old_server, True)
+machine.execute(f"kill -CONT {old_server}")
+unit("after-stall", f"{X11_CLIENT} normal 'X11 After Stall'")
+wait_drawn("X11 After Stall")
+assert stalled, "Tomoe never waited on a full window manager socket"
+assert machine.succeed("pgrep -x Xwayland").strip() == old_server
+assert machine.execute(
+    "journalctl -u tomoe -o cat | grep -q 'Xwayland window manager failed'"
+)[0] != 0, machine.succeed("journalctl -u tomoe -o cat | tail -20")
+machine.succeed("systemctl stop after-stall")
+
+assert stall(old_server, False), "Tomoe never waited on a stopped Xwayland"
+machine.wait_until_succeeds(
+    "journalctl -u tomoe -o cat | grep -q 'Xwayland window manager failed.*send timed out'",
+    timeout=30,
+)
+machine.wait_until_succeeds(
+    "journalctl -u tomoe -o cat | grep -q 'Xwayland .* ignored SIGTERM'", timeout=30
+)
+machine.wait_until_succeeds(f"! kill -0 {old_server}", timeout=30)
+unit("after-timeout", f"{X11_CLIENT} normal 'X11 After Timeout'")
+wait_drawn("X11 After Timeout")
+timeout_server = machine.succeed("pgrep -x Xwayland").strip()
+assert timeout_server != old_server, (old_server, timeout_server)
+machine.succeed("systemctl stop after-timeout")
+wait_gone("X11 After Timeout")
+
+
+def wm_fds():
+    links = machine.succeed(
+        f"for f in /proc/{tomoe_pid}/fd/*; do readlink $f; done"
+    ).split()
+    return sorted(
+        re.sub(r"\[\d+\]", "", link) for link in links
+        if not link.startswith(("/dmabuf:", "/memfd:", "anon_inode:sync_file"))
+    )
+
+
+fds_before = wm_fds()
+wm_window = machine.succeed(
+    f"DISPLAY={display} xprop -root -notype _NET_SUPPORTING_WM_CHECK"
+).split()[-1]
+machine.execute(f"DISPLAY={display} timeout 10 xdotool windowkill {int(wm_window, 16)}")
+machine.wait_until_succeeds(
+    "journalctl -u tomoe -o cat | grep -q 'Xwayland window manager failed.*connection closed'",
+    timeout=30,
+)
+machine.wait_until_succeeds(f"! kill -0 {timeout_server}", timeout=30)
+unit("after-wm", f"{X11_CLIENT} normal 'X11 After WM'")
+wait_drawn("X11 After WM")
+new_server = machine.succeed("pgrep -x Xwayland").strip()
+assert new_server != timeout_server, (timeout_server, new_server)
+machine.succeed("systemctl stop after-wm")
+wait_gone("X11 After WM")
+for _ in range(100):
+    fds_after = wm_fds()
+    if fds_after == fds_before:
+        break
+    time.sleep(0.1)
+assert fds_after == fds_before, (fds_before, fds_after)
 quit()

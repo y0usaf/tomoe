@@ -42,7 +42,8 @@ struct xwayland {
     int display_read;
     pid_t pid;
     int pidfd;
-    struct wl_event_source *exit, *retry;
+    struct wl_event_source *exit, *retry, *kill;
+    pid_t killing;
     struct timespec started;
     int failures;
     struct wl_global *global;
@@ -381,6 +382,27 @@ int xwayland_start(struct tomoe *s) {
     return x->listen[0] && x->listen[1] ? 0 : -1;
 }
 
+static int kill_ready(void *data) {
+    struct xwayland *x = data;
+    if (x->pid > 0 && x->pid == x->killing) {
+        tomoe_log(LOG_ERROR, "tomoe: Xwayland %d ignored SIGTERM; killing it", (int)x->pid);
+        kill(x->pid, SIGKILL);
+    }
+    return 0;
+}
+
+void xwayland_wm_failed(struct tomoe *s) {
+    struct xwayland *x = s->xwayland;
+    if (!x) return;
+    if (x->wmfd >= 0) shutdown(x->wmfd, SHUT_RDWR);
+    if (x->pid <= 0) return;
+    kill(x->pid, SIGTERM);
+    x->killing = x->pid;
+    if (!x->kill)
+        x->kill = wl_event_loop_add_timer(wl_display_get_event_loop(s->display), kill_ready, x);
+    if (x->kill) wl_event_source_timer_update(x->kill, 2000);
+}
+
 static void listen_again(struct xwayland *x) {
     for (int i = 0; i < 2; i++)
         if (!x->listen[i] && x->listen_fd[i] >= 0)
@@ -404,7 +426,11 @@ static int xwayland_exited(int fd, uint32_t mask, void *data) {
     if (x->pidfd >= 0) close(x->pidfd);
     x->pidfd = -1;
     x->pid = 0;
+    x->killing = 0;
+    if (x->kill) wl_event_source_timer_update(x->kill, 0);
     xwm_client_gone(s);
+    struct xw_pair *pair, *next;
+    wl_list_for_each_safe(pair, next, &x->pairs, link) pair_free(pair);
     if (x->wmfd >= 0) {
         close(x->wmfd);
         x->wmfd = -1;
@@ -439,6 +465,7 @@ void xwayland_finish(struct tomoe *s) {
         if (x->listen[i]) wl_event_source_remove(x->listen[i]);
     if (x->exit) wl_event_source_remove(x->exit);
     if (x->retry) wl_event_source_remove(x->retry);
+    if (x->kill) wl_event_source_remove(x->kill);
     if (x->pid > 0) {
         kill(x->pid, SIGTERM);
         for (int tries = 0; tries < 50; tries++) {

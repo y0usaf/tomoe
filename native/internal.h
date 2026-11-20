@@ -1930,6 +1930,7 @@ void xwayland_pair_window(struct tomoe *s, uint32_t xid, uint64_t serial);
 bool xwm_start(struct tomoe *s, int fd);
 void xwm_stop(struct tomoe *s);
 void xwayland_finish(struct tomoe *s);
+void xwayland_wm_failed(struct tomoe *s);
 void xwayland_pair_surface(struct tomoe *s, uint64_t serial, struct surface *surface);
 void xwm_associate(struct tomoe *s, uint32_t xid, struct surface *surface);
 void xwm_client_gone(struct tomoe *s);

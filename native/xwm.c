@@ -146,19 +146,37 @@ struct req {
     size_t len, cap;
 };
 
+static void x_fail(struct xwm *x, const char *reason, int error) {
+    if (x->failed || x->stopping) return;
+    x->failed = true;
+    tomoe_log(LOG_ERROR, "tomoe: Xwayland window manager failed on %d: %s%s%s; restarting Xwayland",
+        x->fd, reason, error ? ": " : "", error ? strerror(error) : "");
+    xwayland_wm_failed(x->server);
+}
+
 static void x_write(struct xwm *x, const void *data, size_t len) {
-    if (x->stopping) return;
+    if (x->stopping || x->failed) return;
     const unsigned char *p = data;
+    uint64_t deadline = xwm_deadline();
     while (len) {
         ssize_t n = send(x->fd, p, len, MSG_NOSIGNAL);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) {
-            tomoe_log(LOG_DEBUG, "tomoe: xwm send failed on %d: %s", x->fd, strerror(errno));
-            x->failed = true;
-            return;
+        if (n > 0) {
+            p += n;
+            len -= (size_t)n;
+            continue;
         }
-        p += n;
-        len -= (size_t)n;
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EAGAIN) {
+            uint64_t now = xwm_now();
+            if (now >= deadline) {
+                x_fail(x, "send timed out", 0);
+                return;
+            }
+            struct pollfd pollfd = { .fd = x->fd, .events = POLLOUT };
+            if (poll(&pollfd, 1, (int)(deadline - now)) >= 0 || errno == EINTR) continue;
+        }
+        x_fail(x, "send failed", n < 0 ? errno : 0);
+        return;
     }
 }
 
@@ -270,7 +288,6 @@ static ssize_t x_recv(struct xwm *x, int wait, uint64_t deadline) {
             if (ready < 0) return -1;
             continue;
         }
-        tomoe_log(LOG_DEBUG, "tomoe: xwm recv failed on %d: %s", x->fd, strerror(errno));
         return -1;
     }
 }
@@ -303,8 +320,7 @@ static unsigned char *x_packet(struct xwm *x, size_t *length, uint64_t deadline)
         ssize_t n = x_recv(x, 1, deadline);
         if (n == -3) return NULL;
         if (n <= 0) {
-            tomoe_log(LOG_DEBUG, "tomoe: xwm connection lost on %d", x->fd);
-            x->failed = true;
+            x_fail(x, n ? "recv failed" : "connection closed", n ? errno : 0);
             return NULL;
         }
         x->in_len += (size_t)n;
@@ -1567,7 +1583,7 @@ static void setup_atoms(struct xwm *x) {
 
 static void setup_reply(struct xwm *x, unsigned char *reply, size_t length) {
     if (reply[0] != 1 || length < 40) {
-        x->failed = true;
+        x_fail(x, "setup refused", 0);
         return;
     }
     x->rid_base = (uint32_t)reply[12] | (uint32_t)reply[13] << 8 |
@@ -1584,7 +1600,7 @@ static void setup_reply(struct xwm *x, unsigned char *reply, size_t length) {
             (uint32_t)screen[2] << 16 | (uint32_t)screen[3] << 24;
     }
     if (!x->root) {
-        x->failed = true;
+        x_fail(x, "setup has no root window", 0);
         return;
     }
     x->rid_next = 0;
@@ -1594,7 +1610,7 @@ static void setup_reply(struct xwm *x, unsigned char *reply, size_t length) {
 static void setup_atom_reply(struct xwm *x, unsigned char *reply, size_t length) {
     uint16_t seq = (uint16_t)(reply[2] | reply[3] << 8);
     if (length < 12) {
-        x->failed = true;
+        x_fail(x, "short atom reply", 0);
         return;
     }
     uint32_t atom = (uint32_t)reply[8] | (uint32_t)reply[9] << 8 |
@@ -1616,6 +1632,7 @@ static int xwm_event(int fd, uint32_t mask, void *data) {
         ssize_t n = x_recv(x, 0, 0);
         if (n == -2) break;
         if (n <= 0) {
+            x_fail(x, n ? "recv failed" : "connection closed", n ? errno : 0);
             xwm_stop(x->server);
             return 0;
         }
