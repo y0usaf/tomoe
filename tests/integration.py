@@ -177,6 +177,101 @@ assert not (m := colours(edge, ["#c06030"], ["#7aa1f7"])), f"the screenshot sele
 cli("unmount theme-probe")
 assert not (m := colours(edge, ["#7aa1f7"], ["#c06030"])), f"unmounting the :theme publisher left the selection frame recoloured: {m}"
 
+left, top = x + w // 4 + 12, y + h // 4 + 12
+region = f"{left},{top} {w // 2 - 24}x{h // 2 - 24}"
+machine.succeed("""cat > /run/marks.awk <<'AWK'
+function far(a, b) { return a - b > 48 || b - a > 48 }
+function near(r, g, b, i) { return (r - R[i]) ^ 2 + (g - G[i]) ^ 2 + (b - B[i]) ^ 2 < 1200 }
+BEGIN { split("red amber blue", N); split("255 255 87", R); split("93 200 200", G); split("93 87 255", B) }
+{ if (far($1, $4) || far($2, $5) || far($3, $6)) { changed++; for (i = 1; i <= 3; i++) if (near($4, $5, $6, i)) seen[i]++ } }
+END { printf "changed %d", changed; for (i = 1; i <= 3; i++) printf " %s %d", N[i], seen[i]; print "" }
+AWK""")
+
+
+def keys(*actions):
+    machine.succeed(ENV + f"WAYLAND_DISPLAY=check tomoe-pointer-script --extent {screen['w']}x{screen['h']} "
+                    + " ".join(f"'{action}'" for action in actions))
+
+
+def tap(*codes):
+    keys(*[f"key {code} {state}" for code in codes for state in ("down", "up")], "sync")
+
+
+def stroke(*points):
+    path = [command for px, py in points[1:] for command in (f"move {left + px} {top + py}", "sync")]
+    keys(f"move {left + points[0][0]} {top + points[0][1]}", "sync", "press 272", "sync", *path, "release 272", "sync")
+
+
+def marks(name):
+    path, previous = f"/run/marks-{name}.ppm", None
+    for _ in range(40):
+        time.sleep(0.2)
+        digest = machine.succeed(ENV + f"WAYLAND_DISPLAY=check grim -g '{region}' -t ppm {path} && sha256sum < {path}").split()[0]
+        if digest == previous:
+            return path
+        previous = digest
+    raise AssertionError(f"the selection never held still for {name}")
+
+
+def inked(path, base):
+    size = (w // 2 - 24) * (h // 2 - 24) * 3
+    words = machine.succeed(
+        f"tail -c {size} {base} | od -An -v -tu1 -w3 > /run/marks-a && tail -c {size} {path} | od -An -v -tu1 -w3 > /run/marks-b"
+        " && paste -d' ' /run/marks-a /run/marks-b | awk -f /run/marks.awk").split()
+    return {words[i]: int(words[i + 1]) for i in range(0, len(words), 2)}
+
+
+def same(path, base, what):
+    if machine.execute(f"cmp -s {path} {base}")[0] != 0:
+        raise AssertionError(f"{what}: {inked(path, base)['changed']} pixels differ")
+
+
+plain = marks("plain")
+tap(5)
+stroke((40, 40), (140, 90), (240, 140))
+arrow = inked(marks("arrow"), plain)
+assert arrow["changed"] > 300 and arrow["blue"] > 100 and arrow["red"] == 0, f"the arrow was not drawn in the colour picked for it: {arrow}"
+tap(3)
+red = inked(marks("red"), plain)
+assert red["blue"] == 0 and red["red"] * 10 >= arrow["blue"] * 8, (
+    f"picking a colour after drawing did not recolour the arrow just drawn: {arrow} then {red}")
+keys("key 27 down", "sync", "sleep 1500", "key 27 up", "sync")
+big = marks("big")
+grown = inked(big, plain)
+assert grown["changed"] * 100 >= red["changed"] * 115 and grown["blue"] == 0, (
+    f"holding ] did not widen the arrow just drawn: {red} then {grown}")
+tap(33, 4)
+same(marks("switched"), big, "a colour picked after switching to freehand changed the arrow drawn before")
+stroke((320, 40), (360, 90), (420, 60), (460, 100))
+stroke_drawn = inked(marks("stroke"), big)
+assert stroke_drawn["amber"] > 20 and stroke_drawn["red"] == 0 and stroke_drawn["blue"] == 0, (
+    f"the stroke after switching tools did not take the colour picked for it: {stroke_drawn}")
+tap(22)
+same(marks("undo-stroke"), big, "undoing the stroke left its pixels")
+tap(22)
+same(marks("undo-arrow"), plain, "undoing the edited arrow left its pixels")
+tap(30)
+stroke((40, 40), (240, 140))
+again = marks("again")
+tap(33)
+stroke((400, 60))
+dot = marks("dot")
+assert machine.execute(f"cmp -s {dot} {again}")[0] != 0, "a freehand click drew nothing"
+tap(22)
+same(marks("undo-dot"), again, "undoing a freehand click did not remove its dot and only that")
+tap(20)
+stroke((300, 120))
+keys("key 29 down", "key 44 down", "sync", "key 44 up", "key 29 up", "sync")
+same(marks("undo-typing"), plain, "Ctrl+Z on an empty label did not undo the arrow before it")
+tap(30)
+stroke((40, 140), (240, 40))
+kept = marks("kept")
+tap(30, 6)
+same(marks("let-go"), kept, "a colour picked after pressing the arrow key again changed the arrow drawn before")
+tap(22)
+same(marks("undo-kept"), plain, "undo after letting the arrow go left its pixels")
+tap(1)
+
 client("flood", "--mode xdg --app-id check-flood --commit-rate 1000")
 cli(f"mount {OFFSCREEN_PROBE}")
 flood = next(w for w in json.loads(cli("msg windows")) if w["app_id"] == "check-flood")

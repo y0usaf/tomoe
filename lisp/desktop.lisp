@@ -665,8 +665,10 @@ theme's text colour."
 markup, each key on a chip of HINT's :KEY colour, the tool holding the pointer's
 chip in HINT's ink so the mode shows in the chrome, each colour a mark can take
 as a swatch with the key that picks it and the one in hand inked, and that tool's
-own keys beside undo, reselect, freeze, capture and cancel. The tool keys are
-named from KEYS so a look that changes them is not described by the old ones."
+own keys beside undo, reselect, freeze, capture and cancel. While the colour and
+size keys still change the mark just drawn, an inked chip says so beside the tool
+key that lets it go. The tool keys are named from KEYS so a look that changes
+them is not described by the old ones."
   (labels ((key (label &optional active)
              (format nil "<span background='~A'~A> ~A </span>"
                      (if active (getf hint :ink) (getf hint :key))
@@ -678,6 +680,18 @@ named from KEYS so a look that changes them is not described by the old ones."
              (string-upcase (if (and (stringp key) (plusp (length key))) key fallback))))
          (tool (index fallback tool)
            (key (name index fallback) (eq tool (getf selector :tool))))
+         (editing (tool)
+           (let ((mark (getf selector :editing)))
+             (if mark
+                 (format nil "~A ~A next    "
+                         (key (format nil "editing last ~A"
+                                      (case mark (:arrow "arrow") (:free "stroke") (t "label")))
+                              t)
+                         (case tool
+                           (:arrow (key (name 0 "A")))
+                           (:text (key (name 1 "T")))
+                           (t (key (name 2 "F")))))
+                 "")))
          (size (tool)
            (case tool
              (:arrow (format nil "~A ~A size    ~A head" (key "[") (key "]") (key "H")))
@@ -697,13 +711,14 @@ named from KEYS so a look that changes them is not described by the old ones."
                                                        (eql index active)))))))
          (keys-line (tool)
            (cond ((getf selector :typing)
-                  (format nil "Type the label    ~A    ~A keep    ~A discard"
-                          (size :text) (key "Enter") (key "Esc")))
+                  (format nil "Type the label    ~A    ~A keep    ~A discard    ~A undo"
+                          (size :text) (key "Enter") (key "Esc") (key "Ctrl+Z")))
                  ((not (getf selector :selected))
                   (format nil "Drag to select    ~A whole screen    ~A cancel"
                           (key "Space") (key "Esc")))
                  (t (let ((shape (unless (eq tool :select) (size tool))))
-                      (format nil "~A arrow    ~A text    ~A freehand    ~A~A    ~A"
+                      (format nil "~A~A arrow    ~A text    ~A freehand    ~A~A    ~A"
+                              (editing tool)
                               (tool 0 "A" :arrow) (tool 1 "T" :text) (tool 2 "F" :free)
                               (if shape (format nil "~A    " shape) "")
                               (swatches) (tail)))))))

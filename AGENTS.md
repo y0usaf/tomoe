@@ -19,6 +19,10 @@ which `tomoe-land` runs on this machine; `tools/land.sh daemon` starts one.
 The smoke check is one VM, a few minutes: it builds the compositor, starts it,
 draws windows, takes keyboard and pointer input, and survives a policy reload
 (`integration`, `pointer-protocols` and `livepatch` in `tests/default.nix`).
+`integration` also annotates a region selection: a colour and a held `]` must
+change the arrow just drawn, a colour picked after switching tools or pressing
+the tool's key again must leave it alone, and every undo, Ctrl+Z on an empty
+label included, must give back the exact pixels from before that mark.
 
 Before a commit is pinned in finix, `tools/gate.sh REV` runs it with the config finix
 generates against that exact build: a private headless instance at 5120x1440@240,
