@@ -1209,20 +1209,27 @@ let
     buildPhase = ''
       build() {
         $CC -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
-          -Ilib/expat/include tests/expat-trace.c "$@"
+          tests/expat-trace.c "$@"
       }
-      build lib/expat/*.c -o expat-trace
+      build -Ilib/expat/include lib/expat/*.c -o expat-trace
       build $(pkg-config --cflags --libs expat) -o expat-trace-real
       status=0
+      pids=""
       i=0
       for f in ${expatCorpus}/*; do
         ./expat-trace "$f" $i nodocs > native.$i &
+        pids="$pids $!"
         ./expat-trace-real "$f" $i nodocs > real.$i &
+        pids="$pids $!"
         i=$((i + 1))
       done
       ./expat-trace - 0 > native.docs &
+      pids="$pids $!"
       ./expat-trace-real - 0 > real.docs &
-      wait
+      pids="$pids $!"
+      for pid in $pids; do
+        wait "$pid" || status=1
+      done
       for f in real.*; do
         n=''${f#real.}
         if ! cmp -s real.$n native.$n; then
@@ -1271,20 +1278,21 @@ let
             fontDirectories = [ pkgs.dejavu_fonts.minimal ];
           }}
           export HOME=$TMPDIR/home
-          export XDG_CACHE_HOME=$TMPDIR/cache
-          mkdir -p $HOME $XDG_CACHE_HOME
+          mkdir -p $HOME
           run() {
             local dumper=$1
             local fclib=$2
             local fcbin=$3
             local tag=$4
-            LD_LIBRARY_PATH=$fclib $dumper ${expatCorpus}/* > dump.$tag
+            local cache=$TMPDIR/cache-$tag
+            mkdir -p "$cache"
+            XDG_CACHE_HOME=$cache LD_LIBRARY_PATH=$fclib $dumper ${expatCorpus}/* > dump.$tag
             for q in "sans-serif" "serif" "monospace" "DejaVu Sans" \
               "sans-serif:weight=bold" "serif:slant=italic" \
               "monospace:lang=ja" "DejaVu Serif:style=Oblique"; do
-              LD_LIBRARY_PATH=$fclib $fcbin/fc-match -f '%{file}\n' "$q"
+              XDG_CACHE_HOME=$cache LD_LIBRARY_PATH=$fclib $fcbin/fc-match -f '%{file}\n' "$q"
             done > match.$tag
-            LD_LIBRARY_PATH=$fclib $fcbin/fc-list -f '%{file}\n' \
+            XDG_CACHE_HOME=$cache LD_LIBRARY_PATH=$fclib $fcbin/fc-list -f '%{file}\n' \
               | sort > list.$tag
           }
           run ./real/dump ${fontconfigReal.lib}/lib ${fontconfigReal.bin}/bin real

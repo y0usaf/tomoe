@@ -5648,8 +5648,10 @@ static void decode_input(struct XML_ParserStruct *p) {
     if (p->enc == 1) {
       if (!avail)
         return;
-      if (out_reserve(p, avail))
+      if (out_reserve(p, avail)) {
+        p->dec_err = XML_ERROR_NO_MEMORY;
         return;
+      }
       memcpy(p->buf + p->len, p->raw + p->rawpos, avail);
       p->len += avail;
       p->rawpos += avail;
@@ -5676,8 +5678,10 @@ static void decode_input(struct XML_ParserStruct *p) {
                          : ((unsigned)r[2] << 8) | (unsigned)r[3];
         cp = 0x10000UL + (((unsigned long)unit & 0x3FF) << 10)
              + ((unsigned long)lo & 0x3FF);
-        if (out_cp(p, cp))
+        if (out_cp(p, cp)) {
+          p->dec_err = XML_ERROR_NO_MEMORY;
           return;
+        }
         p->rawpos += 4;
         continue;
       }
@@ -5685,8 +5689,10 @@ static void decode_input(struct XML_ParserStruct *p) {
         p->dec_err = XML_ERROR_INVALID_TOKEN;
         return;
       }
-      if (out_cp(p, unit))
+      if (out_cp(p, unit)) {
+        p->dec_err = XML_ERROR_NO_MEMORY;
         return;
+      }
       p->rawpos += 2;
     }
   }
