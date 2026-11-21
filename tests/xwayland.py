@@ -77,6 +77,25 @@ machine.succeed(f"DISPLAY={display} xdpyinfo > /dev/null")
 machine.wait_until_succeeds("pgrep -x Xwayland")
 info = machine.succeed(f"DISPLAY={display} xdpyinfo")
 assert "vendor string:    The X.Org Foundation" in info, info
+machine.succeed(
+    ENV + "WAYLAND_DISPLAY=check setsid tomoe-pointer-script --extent 64x64 "
+    "'signal /tmp/keyboard-ready' 'wait /tmp/keyboard-done' > /tmp/keyboard.log 2>&1 & echo $! > /tmp/keyboard.pid"
+)
+machine.wait_until_succeeds("test -e /tmp/keyboard-ready || ! kill -0 $(cat /tmp/keyboard.pid)", timeout=60)
+assert machine.execute("test -e /tmp/keyboard-ready")[0] == 0, machine.execute("cat /tmp/keyboard.log")[1]
+machine.wait_until_succeeds(
+    f"DISPLAY={display} xkbcomp -xkb {display} - | grep -c 'xkb_symbols \"pc105\"'", timeout=60
+)
+core = machine.succeed(f"DISPLAY={display} xmodmap -pk")
+assert re.search(r"^\s*8\s*$", core, re.M), core
+assert re.search(r"^\s*9\s+0xff1b \(Escape\)", core, re.M), core
+assert re.search(r"^\s*38\s+0x0061 \(a\)", core, re.M), core
+assert re.search(r"^\s*50\s+0xffe1 \(Shift_L\)", core, re.M), core
+modmap = machine.succeed(f"DISPLAY={display} xmodmap -pm")
+assert re.search(r"^shift\s+Shift_L \(0x32\)", modmap, re.M), modmap
+assert re.search(r"^control\s+Control_L \(0x25\)", modmap, re.M), modmap
+machine.succeed("touch /tmp/keyboard-done")
+machine.wait_until_fails("kill -0 $(cat /tmp/keyboard.pid)", timeout=60)
 machine.succeed(f"DISPLAY={display} xset +fp {X11_FONTS} && DISPLAY={display} xset fp rehash")
 
 unit("xterm", "xterm -bg black -fg white -e sleep 3600")

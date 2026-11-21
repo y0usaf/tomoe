@@ -199,8 +199,10 @@ every key tapped under every set of held Shift, Control, Alt, AltGr and Super wi
 Caps and Num Lock, and 3000 seeded presses and releases of modifier, latch, lock
 and ordinary keys whose holds overlap and end in any order. A second pair replays
 the same events on libxkbcommon's state and reads them back, as a client does,
-through the keymap text each side sends. `xkb-equivalence` fails on any difference
-and prints the first diverging lines; it is one of the compositor VMs' packages,
+through the keymap text each side sends, and the range that text declares: like
+libxkbcommon's, it starts at 8 or lower and ends at 255 or higher, because Xwayland
+adopts it and X11 clients read the core mapping from keycode 8. `xkb-equivalence`
+fails on any difference and prints the first diverging lines; it is one of the compositor VMs' packages,
 so the smoke check rebuilds it whenever those files change.
 
 ## Releasing

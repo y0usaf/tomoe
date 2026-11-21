@@ -3137,7 +3137,8 @@ char *txkb_keymap_get_as_string(struct txkb_keymap *km, enum txkb_keymap_format 
     sb_printf(&sb, "xkb_keymap {\n");
 
     sb_printf(&sb, "xkb_keycodes \"%s\" {\n", km->keycodes_section_name ? km->keycodes_section_name : "");
-    sb_printf(&sb, "\tminimum = %u;\n\tmaximum = %u;\n", km->min_keycode, km->max_keycode);
+    sb_printf(&sb, "\tminimum = %u;\n\tmaximum = %u;\n", km->min_keycode < 8 ? km->min_keycode : 8,
+        km->max_keycode > 255 ? km->max_keycode : 255);
     for (txkb_keycode_t kc = km->min_keycode; kc <= km->max_keycode && kc < km->keys_cap; kc++) {
         if (km->keys[kc].name[0]) {
             sb_printf(&sb, "\t<%s> = %u;\n", km->keys[kc].name, kc);

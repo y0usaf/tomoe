@@ -1171,8 +1171,8 @@ let
         fi
         status=1
         echo "$got differs from $want on $(grep -c '^>' $got.diff) of $(wc -l < cases) cases:"
-        grep '^>' $got.diff | cut -c3- | rev | cut -f3- | rev | head -20
-        grep -m1 '^>' $got.diff | cut -c3- | rev | cut -f3- | rev > first
+        grep '^>' $got.diff | cut -c3- | sed -n -e 's/\t[^\t]*\t[^\t]*$//' -e 1,20p
+        grep -m1 '^>' $got.diff | cut -c3- | sed 's/\t[^\t]*\t[^\t]*$//' > first
         trace $want full < first > $want.full
         trace $got full < first > $got.full
         diff $want.full $got.full | head -40 || true
@@ -1590,6 +1590,8 @@ let
     pkgs.xeyes
     pkgs.xlogo
     pkgs.xprop
+    pkgs.xmodmap
+    pkgs.xkbcomp
     pkgs.xwininfo
     pkgs.xclip
     pkgs.wl-clipboard

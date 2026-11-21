@@ -272,6 +272,16 @@ static char *field(char **cursor) {
     return strcmp(start, "-") ? start : NULL;
 }
 
+#ifndef NATIVE
+static void bounds(const char *text) {
+    static const char *const names[2] = { "minimum = ", "maximum = " };
+    for (int i = 0; i < 2; i++) {
+        const char *at = strstr(text, names[i]);
+        out("%s%ld\n", names[i], at ? strtol(at + strlen(names[i]), NULL, 10) : -1L);
+    }
+}
+#endif
+
 static keymap_t *compile(const char *mode, char **f) {
     bool none = !f[0] && !f[1] && !f[2] && !f[3] && !f[4];
 #ifdef NATIVE
@@ -301,6 +311,7 @@ static keymap_t *compile(const char *mode, char **f) {
         if (source) text = txkb_keymap_get_as_string(source, TXKB_KEYMAP_FORMAT_TEXT_V1);
         txkb_keymap_unref(source);
     }
+    if (text) bounds(text);
     view_km = text ? xkb_keymap_new_from_string(context, text, XKB_KEYMAP_FORMAT_TEXT_V1,
         XKB_KEYMAP_COMPILE_NO_FLAGS) : NULL;
     free(text);
