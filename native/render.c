@@ -1512,6 +1512,26 @@ struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, u
     return &t->base;
 }
 
+bool texture_clear(struct texture *base) {
+    struct gl_texture *t = texture_of(base);
+    if (!t || t->buffer || t->target != GL_TEXTURE_2D) return false;
+    current(t->r);
+    while (glGetError() != GL_NO_ERROR) {}
+    GLuint fbo = texture_fbo(t);
+    if (!fbo) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (ok) {
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ok = glGetError() == GL_NO_ERROR;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (ok) base->serial = ++serials;
+    return ok;
+}
+
 bool texture_upload(struct texture *base, const void *data, uint32_t format,
         uint32_t stride, const struct rect *rects, int count) {
     if (!base || !data || count <= 0 || stride % 4 != 0) return false;
@@ -2753,6 +2773,21 @@ static void damage_box(struct region *out, struct box box) {
 
 static void damage_content(struct region *out, const struct op *was, const struct op *op) {
     struct box changed;
+    if (op->marks) {
+        struct region marks;
+        region_init(&marks);
+        if (op->mapped && op->src.width == op->box.width && op->src.height == op->box.height &&
+                screenshot_marks_since(op->marks, was->content_seq, &marks)) {
+            region_translate(&marks, op->box.x - (int)op->src.x, op->box.y - (int)op->src.y);
+            region_intersect_rect(&marks, &marks, op->box.x, op->box.y,
+                (uint32_t)op->box.width, (uint32_t)op->box.height);
+            region_union(out, out, &marks);
+        } else {
+            damage_box(out, op->box);
+        }
+        region_fini(&marks);
+        return;
+    }
     bool known = op->mapped && (op->content_seq
         ? ui_damage_since(op->ui, was->content_seq, &changed)
         : surface_damage_since(op->surface, was->seq, &changed));
@@ -2784,7 +2819,7 @@ static bool backdrop_moved(const struct oplist *old, const struct oplist *now,
         const struct op *before = &old->ops[match[j]];
         if (under->blur && under->key != before->key) return true;
         bool differs = under->surface ? under->seq != before->seq :
-            under->content_seq && under->content_seq != before->content_seq;
+            (under->content_seq || under->marks) && under->content_seq != before->content_seq;
         if (!differs) continue;
         struct region changed;
         region_init(&changed);
@@ -2876,7 +2911,7 @@ bool oplist_damage(struct oplist *old, struct oplist *now, struct region *out) {
         else if (op->key != old->ops[match[i]].key || (op->blur && !op->key))
             region_union(out, out, &op->visible);
         else if ((op->surface && op->seq != old->ops[match[i]].seq) ||
-                (op->content_seq && op->content_seq != old->ops[match[i]].content_seq)) {
+                ((op->content_seq || op->marks) && op->content_seq != old->ops[match[i]].content_seq)) {
             region_clear(&changed);
             damage_content(&changed, &old->ops[match[i]], op);
             region_intersect(&changed, &changed, &op->visible);

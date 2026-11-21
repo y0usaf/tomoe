@@ -2010,14 +2010,15 @@ void ui_render(struct output *o, struct frame *f, const struct presentation *pla
             float selection[16], marks_box[4];
             struct shader_inputs inputs = { surface->shader_data, surface->shader_data_count,
                 windows, surface->shader_window_count, NULL, NULL, NULL, NULL,
-                surface->shader_opaque, NULL, effects_frost_stamp(o->server) };
+                surface->shader_opaque, NULL, effects_frost_stamp(o->server), NULL, 0 };
             if (layer == UI_LAYER_SCREENSHOT) {
                 struct texture *marks;
                 struct fbox marks_at;
                 marks_box[0] = marks_box[1] = marks_box[2] = marks_box[3] = 0;
                 inputs.marks_box = marks_box;
                 if (screenshot_selection(o, area, now, selection)) inputs.selection = selection;
-                if (screenshot_marks(o, &marks, &marks_at)) {
+                if (screenshot_marks(o, &marks, &marks_at, &inputs.marks_owner,
+                        &inputs.marks_seq)) {
                     inputs.marks = marks;
                     marks_box[0] = (float)(o->x - area.x + marks_at.x);
                     marks_box[1] = (float)(area.y + area.height -

@@ -973,6 +973,15 @@ static bool frost_prepare(struct frame *f, struct fbox area, const struct shader
     return ok;
 }
 
+static void shader_marks_op(struct frame *f, struct op *op, struct box covered,
+        const struct shader_inputs *inputs) {
+    if (!op || !inputs->marks_owner) return;
+    op->marks = inputs->marks_owner;
+    op->content_seq = inputs->marks_seq;
+    op->src = (struct fbox){ covered.x + f->x, covered.y + f->y, covered.width, covered.height };
+    op->mapped = f->transform == WL_OUTPUT_TRANSFORM_NORMAL;
+}
+
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
         const struct shader_inputs *inputs) {
     struct fbox box = local_box(f, area);
@@ -986,7 +995,8 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     if (data_count > SHADER_DATA) data_count = SHADER_DATA;
     if (window_count > SHADER_WINDOWS) window_count = SHADER_WINDOWS;
     bool selection = inputs && inputs->selection && p->selection >= 0;
-    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16];
+    bool marks = inputs && inputs->marks && inputs->marks_box && p->marks >= 0;
+    double params[15 + 4 * POINTER_TRAIL + SHADER_DATA + 4 * SHADER_WINDOWS + 16 + 5];
     float trail[4 * POINTER_TRAIL];
     double fields[] = { 7, box.x, box.y, box.width, box.height, (double)(uintptr_t)p, time,
         mouse_x, mouse_y, count, window_count, drawn.x, drawn.y, drawn.width, drawn.height };
@@ -1013,11 +1023,16 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
     for (int i = 0; i < data_count; i++) params[used++] = inputs->data[i];
     for (int i = 0; i < 4 * window_count; i++) params[used++] = inputs->windows[i];
     for (int i = 0; selection && i < 16; i++) params[used++] = inputs->selection[i];
+    if (marks) {
+        params[used++] = (double)(uintptr_t)inputs->marks;
+        for (int i = 0; i < 4; i++) params[used++] = inputs->marks_box[i];
+    }
     struct box covered = covering(f, drawn);
     bool frosted = p->frost >= 0;
+    size_t before = pass_record_count(f->pass);
     if (p->channel < 0 && !frosted) {
-        size_t before = pass_record_count(f->pass);
         if (pass_record(f->pass, NULL, covered, (struct box){0}, params, used)) {
+            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
             struct op *op = inputs && inputs->opaque ? pass_recorded(f->pass, before) : NULL;
             if (op) {
                 int x0 = (int)ceil(drawn.x), y0 = (int)ceil(drawn.y);
@@ -1034,7 +1049,10 @@ void effect_shader(struct frame *f, struct program *p, struct fbox area, double 
             f->width, f->height, f->x, f->y };
         if (pass_record_blur(f->pass, covered, reach, (struct box){0}, NULL, params, used,
                 ++f->blurs,
-                seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) return;
+                seed, planes_cross(f, reach) ? 0 : sizeof(seed) / sizeof(seed[0]))) {
+            if (marks) shader_marks_op(f, pass_recorded(f->pass, before), covered, inputs);
+            return;
+        }
     }
     struct op_clip clip;
     if (!op_begin(f->pass, OP_SHADER, covered, &clip)) return;

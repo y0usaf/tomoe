@@ -193,10 +193,12 @@ enum { OP_RECT = 1, OP_TEXTURE, OP_BORDER, OP_SHADOW, OP_ROUNDED, OP_BLUR, OP_SH
     OP_MESH = 9, OP_TRAIL = 13, OP_CURSOR = 14, OP_GLASS = 15 };
 struct pass;
 struct blur_grid { struct box grown; int passes; double offset; };
+struct screenshot;
 struct op {
     uint64_t hash, seq, backdrop, key;
     const struct surface *surface;
     const struct ui_surface *ui;
+    const struct screenshot *marks;
     uint64_t content_seq;
     struct box box, reach, footprint;
     struct fbox src;
@@ -235,6 +237,7 @@ struct buffer *render_allocate(struct render *r, int width, int height,
     const struct format *format);
 struct texture *texture_from_buffer(struct render *r, struct buffer *buffer);
 struct texture *texture_new(struct render *r, uint32_t format, uint32_t width, uint32_t height);
+bool texture_clear(struct texture *texture);
 bool texture_upload(struct texture *texture, const void *data, uint32_t format,
     uint32_t stride, const struct rect *rects, int count);
 struct texture *texture_from_pixels(struct render *r, uint32_t format, uint32_t stride,
@@ -744,6 +747,8 @@ struct shader_inputs {
     bool opaque;
     const struct region *frost_ring;
     uint64_t frost_stamp;
+    const struct screenshot *marks_owner;
+    uint64_t marks_seq;
 };
 uint64_t effects_frost_stamp(struct tomoe *s);
 void effect_shader(struct frame *f, struct program *p, struct fbox area, double time, int frame,
@@ -1700,7 +1705,9 @@ bool screenshot_button(struct tomoe *s, uint32_t button, bool pressed);
 void screenshot_motion(struct tomoe *s);
 bool screenshot_render_frozen(struct output *o, struct frame *f);
 bool screenshot_on(const struct output *o);
-bool screenshot_marks(const struct output *o, struct texture **texture, struct fbox *box);
+bool screenshot_marks(const struct output *o, struct texture **texture, struct fbox *box,
+    const struct screenshot **owner, uint64_t *seq);
+bool screenshot_marks_since(const struct screenshot *shot, uint64_t seq, struct region *out);
 bool screenshot_selection(const struct output *o, struct fbox area, double now, float out[16]);
 bool screenshot_animate(struct tomoe *s, double now);
 void screenshot_output_gone(struct tomoe *s, struct output *o);

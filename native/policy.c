@@ -427,6 +427,8 @@ static lisp_value convert_screenshot(struct tomoe *s, const struct tomoe_event *
 
 static const char *const selector_tools[] = { "select", "arrow", "text", "free" };
 static const char *const selector_marks[] = { "arrow", "free", "text" };
+static const char *const selector_phases[] = { "aim", "selecting", "reselect", "ready", "editing",
+    "drawing", "typing", "typing" };
 
 static lisp_value convert_selector(struct tomoe *s, const struct tomoe_event *e) {
     lisp_value list = lisp_nil();
@@ -444,6 +446,8 @@ static lisp_value convert_selector(struct tomoe *s, const struct tomoe_event *e)
         list = put(list, "COLOUR", lisp_int((e->state >> 8) & 63));
         unsigned editing = (e->state >> 16) & 3;
         list = put(list, "EDITING", editing ? lisp_keyword(selector_marks[editing - 1]) : lisp_nil());
+        list = put(list, "PHASE", lisp_keyword(selector_phases[(e->state >> 20) & 7]));
+        list = put(list, "SIZE", lisp_double(e->fx));
     }
     return lisp_nreverse(list);
 }

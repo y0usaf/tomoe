@@ -665,10 +665,11 @@ theme's text colour."
 markup, each key on a chip of HINT's :KEY colour, the tool holding the pointer's
 chip in HINT's ink so the mode shows in the chrome, each colour a mark can take
 as a swatch with the key that picks it and the one in hand inked, and that tool's
-own keys beside undo, reselect, freeze, capture and cancel. While the colour and
-size keys still change the mark just drawn, an inked chip says so beside the tool
-key that lets it go. The tool keys are named from KEYS so a look that changes
-them is not described by the old ones."
+own keys beside undo, reselect, freeze, capture and cancel, the size keys with
+the brush size they have reached. While the colour and size keys still change
+the mark just drawn, an inked chip says so beside the tool key that lets it go.
+The tool keys are named from KEYS so a look that changes them is not described
+by the old ones."
   (labels ((key (label &optional active)
              (format nil "<span background='~A'~A> ~A </span>"
                      (if active (getf hint :ink) (getf hint :key))
@@ -692,10 +693,15 @@ them is not described by the old ones."
                            (:text (key (name 1 "T")))
                            (t (key (name 2 "F")))))
                  "")))
+         (size-value ()
+           (let ((size (getf selector :size)))
+             (cond ((not (realp size)) "")
+                   ((< size 10) (format nil " ~,1F" size))
+                   (t (format nil " ~D" (round size))))))
          (size (tool)
            (case tool
-             (:arrow (format nil "~A ~A size    ~A head" (key "[") (key "]") (key "H")))
-             ((:text :free) (format nil "~A ~A size" (key "[") (key "]")))
+             (:arrow (format nil "~A ~A size~A    ~A head" (key "[") (key "]") (size-value) (key "H")))
+             ((:text :free) (format nil "~A ~A size~A" (key "[") (key "]") (size-value)))
              (t nil)))
          (tail ()
            (format nil "~A undo    ~A reselect    ~A freeze    ~A capture    ~A cancel"

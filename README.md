@@ -274,6 +274,35 @@ reads the same property with `rules-for`. A launch from a key or pointer binding
 is a user action, so it still hands its child an activation token and may come
 forward; anything started from the command line carries none.
 
+### Annotating a screenshot
+
+`(screenshot)` opens the region selector (the desktop binds it to Alt+G). It is
+in exactly one phase at a time, and every key and pointer input is read against
+that phase alone (`enum phase` in `native/screenshot.c`); the selector event
+carries it as `:phase` with the brush size the hint shows as `:size`. Keys are
+the defaults (`:keys` and `:palette-keys` of a look's `:mark` rename them); a
+dash is an input the phase ignores.
+
+| phase | left button | motion | `1`-`5` | `[` `]` | `H` | `A` `T` `F` | `R` | `M` | `U`, Ctrl+Z | Esc | Enter, Space |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| aim | down: selecting | anchor follows | - | - | - | - | - | - | - | close | capture the output |
+| selecting | up: ready if 2x2 or more, else aim | corner follows | - | - | - | - | - | - | - | close | capture the box |
+| reselect (marks hidden) | down: selecting, marks dropped | - | brush colour | - | - | ready with that tool, marks shown | - | freeze, marks dropped | - | close | capture the region |
+| ready | down: drawing (`A` `F`), typing (`T`) | size preview follows | brush colour | step, then grow while held; preview at the pointer | arrow head style | other tool | reselect | freeze | remove the last mark | close | capture with marks |
+| editing (last mark) | as ready, and back here if the new mark is not kept | - | recolour it | resize it | its head | ready (own key lets it go) | reselect | freeze, ready | remove it, ready | close | capture with marks |
+| drawing | up: editing if it shows, else back | it follows | recolour it | resize it | its head | own key: let the earlier mark go; other: drop it, ready | drop it, reselect | freeze it in, ready | cancel it, back | close | keep it, capture |
+| typing | down: keep the label (editing), or drop it if empty | - | typed | resize it | typed | typed | typed | typed | `U` typed; Ctrl+Z drops it, and the mark before it too when it is empty | drop it, back | Enter keeps it; Space is typed |
+
+A press of `[` or `]` is one step at once (a pixel on a thin stroke, 15% on a
+thick one) and holding it grows or shrinks continuously from a quarter of a
+second on; with nothing to resize the brush itself shows at the pointer until it
+has rested for 0.7 s. Marks are painted into a mask in boxes along each mark and
+only those boxes are uploaded and redrawn on screen, so a long arrow resizing at
+240 Hz repaints a band along itself rather than the rectangle it spans; a look's
+shader that samples the marks away from the pixel it draws (a glow, a shadow)
+is only redrawn where the marks changed. The size preview is never part of a
+capture or a freeze.
+
 ## Patch it while it runs
 
 Two session commands, `patch` and `undo-patch`, change the running compositor
