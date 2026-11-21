@@ -291,11 +291,8 @@ static void apply(struct screen *screen, const struct screen_state *state) {
     if (state->committed & SCREEN_VRR)
         screen->adaptive_sync = screen->adaptive_sync_supported && state->adaptive_sync_enabled;
     if (!screen->enabled) screen->adaptive_sync = false;
-    if ((state->committed & SCREEN_BUFFER) && !screen->suspended) {
-        if (screen->frame_pending && screen->impl->replace_flip)
-            feedback_rebase(screen, screen->commit_seq, screen->commit_seq + 1);
+    if ((state->committed & SCREEN_BUFFER) && !screen->suspended)
         screen->frame_pending = true;
-    }
     screen->commit_seq++;
     global_update(screen);
     if (state->committed & (SCREEN_MODE | SCREEN_SCALE | SCREEN_TRANSFORM))
@@ -493,15 +490,12 @@ static bool frame_defer(struct screen *screen) {
 }
 
 static bool may_draw(struct screen *screen) {
-    if (screen->suspended) return false;
-    return !screen->frame_pending || (screen->impl->replace_flip && !screen->frame_replaced &&
-        !surfaces_fifo_waiting(screen));
+    return !screen->suspended && !screen->frame_pending;
 }
 
 static void idle_frame(struct screen *screen) {
     screen->idle_frame = false;
     if (!may_draw(screen)) return;
-    if (screen->frame_pending) screen->frame_replaced = true;
     dispatch_frame(screen);
 }
 
@@ -625,7 +619,6 @@ static void frame_account(struct screen *screen) {
 
 void screen_send_frame(struct screen *screen) {
     screen->frame_pending = false;
-    screen->frame_replaced = false;
     if (!late_frames(screen)) {
         dispatch_frame(screen);
         return;

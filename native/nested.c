@@ -199,7 +199,6 @@ static void output_destroy(struct screen *screen) {
 }
 
 static const struct screen_impl output_impl = {
-    .replace_flip = true,
     .test = output_test,
     .commit = output_commit,
     .destroy = output_destroy,

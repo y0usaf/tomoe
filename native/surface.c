@@ -59,11 +59,9 @@ static void hold_give(struct release_hold *hold) {
 struct feedback {
     struct wl_list resources, link;
     struct screen *output;
-    struct surface *surface;
     bool zero_copy, committed;
     size_t commit_seq;
-    uint64_t serial;
-    struct wl_listener commit, present, output_destroy, surface_destroy;
+    struct wl_listener commit, present, output_destroy;
 };
 
 struct acquire_wait {
@@ -442,7 +440,6 @@ static void feedback_free(struct feedback *f) {
     detach(&f->commit);
     detach(&f->present);
     detach(&f->output_destroy);
-    detach(&f->surface_destroy);
     wl_list_remove(&f->link);
     free(f);
 }
@@ -479,10 +476,7 @@ static void apply_state(struct surface *surface, struct surface_state *next) {
             entry_free(entry);
         }
     }
-    if (buffer) {
-        surface->buffer_serial++;
-        apply_buffer(surface);
-    }
+    if (buffer) apply_buffer(surface);
     region_intersect_rect(&surface->input_region, &surface->current.input, 0, 0,
         surface->current.width, surface->current.height);
     struct subsurface *sub, *next_sub;
@@ -1193,36 +1187,9 @@ static void feedback_presented(struct wl_listener *listener, void *data) {
     feedback_free(f);
 }
 
-void feedback_rebase(struct screen *screen, size_t from, size_t to) {
-    struct tomoe *s = screen->server;
-    struct feedback *f, *next;
-    wl_list_for_each_safe(f, next, &s->feedbacks, link) {
-        if (f->output != screen || !f->committed || f->commit_seq != from) continue;
-        if (f->surface && f->surface->buffer_serial == f->serial) {
-            f->commit_seq = to;
-            continue;
-        }
-        feedback_free(f);
-    }
-}
-
-bool surfaces_fifo_waiting(struct screen *screen) {
-    struct surface *surface;
-    wl_list_for_each(surface, &screen->server->surfaces, link)
-        if (surface->primary == screen && (surface->fifo_barrier || surface->fifo_latched))
-            return true;
-    return false;
-}
-
 static void feedback_output_destroyed(struct wl_listener *listener, void *data) {
     struct feedback *f = wl_container_of(listener, f, output_destroy);
     feedback_free(f);
-}
-
-static void feedback_surface_destroyed(struct wl_listener *listener, void *data) {
-    struct feedback *f = wl_container_of(listener, f, surface_destroy);
-    f->surface = NULL;
-    detach(&f->surface_destroy);
 }
 
 void surface_presented(struct surface *surface, struct screen *output, bool zero_copy) {
@@ -1234,13 +1201,10 @@ void surface_presented(struct surface *surface, struct screen *output, bool zero
     wl_list_init(&surface->current.feedbacks);
     wl_list_insert(&surface->server->feedbacks, &f->link);
     f->output = output;
-    f->surface = surface;
-    f->serial = surface->buffer_serial;
     f->zero_copy = zero_copy;
     listen(&f->commit, &output->events.commit, feedback_committed);
     listen(&f->present, &output->events.present, feedback_presented);
     listen(&f->output_destroy, &output->events.destroy, feedback_output_destroyed);
-    listen(&f->surface_destroy, &surface->events.destroy, feedback_surface_destroyed);
 }
 
 static void subsurface_consider_map(struct subsurface *sub) {
